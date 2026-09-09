@@ -200,7 +200,7 @@ flowchart LR
   queues a user message that is injected after the current tool batch — the
   oh-my-pi steering semantic, not a cancel.
 - `genai::exec_chat_stream` events map 1:1 to published events
-  (`TextDelta`, `ReasoningDelta`, `ToolCallStarted`, `ToolCallFinished`,
+  (`TextDelta`, `ReasoningDelta`, `ToolCallPending`, `ToolCallStarted`, `ToolCallFinished`,
   `TurnFinished { stop_reason, usage }`). No buffering in the agent except
   tool-call arguments, which genai only delivers parsed in `StreamEnd`
   (`with_capture_tool_calls(true)` is mandatory; chunks carry cumulative
@@ -308,7 +308,19 @@ is a rounded card with a glyph header in its own colour (text glyphs, never
 emoji): human turns `◆ you` in `AnsiValue(117)`, tool calls `⚙ name` in cyan
 (described args, `✓`/`✗` result line), peer messages `⟵ name` in magenta.
 Only the assistant's own words are unboxed markdown on the default
-background; reasoning is dim italic. Peer injections (`<subagent_result>`,
+background; reasoning is dim italic. Headings render bold yellow (h1/h2
+underlined) with no `#` marker. A finished tool card collapses its output
+to the first line; Ctrl+O expands the most recent card to the full output
+in a code fence, pretty-printed when it parses as JSON (also with a
+trailing `exit code` line).
+
+Nothing ever looks frozen: while a turn is in flight the status line and
+the transcript show a braille spinner with what is happening — `thinking…`
+(waiting for the first token, as a trailing row), `preparing <tool>…` (one
+row per `ToolCallPending`, the event the loop publishes on the first
+argument chunk of each call), `running <tool>…` inside the card until
+`ToolCallFinished`, `streaming…`/`reasoning…` while text arrives. The
+16 ms frame loop runs only while `Model::animating()`. Peer injections (`<subagent_result>`,
 `<message>`) never echo raw: `tui::model::injected` recognises the wrapper
 in `TurnStarted`/history and `MessageDelivered` becomes `Entry::Delivered`,
 a one-line `⟵ name (n lines)` collapsed by default; Ctrl+O toggles the most

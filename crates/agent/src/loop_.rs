@@ -359,6 +359,7 @@ impl Turn {
             },
         };
         let mut stream = stream;
+        let mut pending: Vec<String> = Vec::new();
         let end = loop {
             let ev = tokio::select! {
                 _ = self.cancel.cancelled() => return Round::Stop("cancelled".into()),
@@ -389,9 +390,21 @@ impl Turn {
                     })
                     .await
                 }
-                // Args arrive as cumulative partial JSON; the model sees them
-                // whole only at End, so ToolCallStarted is published at dispatch.
-                Some(Ok(ChatStreamEvent::ToolCallChunk(_))) => {}
+                // Arguments arrive whole only at End (ToolCallStarted is
+                // published at dispatch); the first chunk names the tool.
+                Some(Ok(ChatStreamEvent::ToolCallChunk(c))) => {
+                    let tc = c.tool_call;
+                    if !tc.fn_name.is_empty() && !pending.contains(&tc.call_id) {
+                        pending.push(tc.call_id.clone());
+                        self.publish(AgentEvent::ToolCallPending {
+                            session: self.shared.id,
+                            turn: self.turn,
+                            call_id: tc.call_id,
+                            name: tc.fn_name,
+                        })
+                        .await;
+                    }
+                }
                 Some(Ok(
                     ChatStreamEvent::Start
                     | ChatStreamEvent::Heartbeat

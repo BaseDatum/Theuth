@@ -38,6 +38,8 @@ const TOOL: Color = Color::Cyan;
 /// Peer (subagent / parent) message cards.
 const PEER: Color = Color::Magenta;
 /// Skill body cards.
+/// Markdown headings in assistant text.
+const HEADING: Color = Color::Yellow;
 const SKILL: Color = Color::Yellow;
 /// System prompt cards.
 const PROMPT: Color = Color::DarkGrey;
@@ -90,12 +92,12 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
         }
     });
 
-    // Typewriter: `read` does not schedule a render, so idle frames are free.
+    // Animation: `read` does not schedule a render, so idle frames are free.
     hooks.use_future(async move {
         let mut frames = tokio::time::interval(std::time::Duration::from_millis(16));
         loop {
             frames.tick().await;
-            if model.read().revealing() {
+            if model.read().animating() {
                 model.write().tick();
             }
         }
@@ -204,7 +206,10 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             View(flex_grow: 1.0, min_height: 0, flex_direction: FlexDirection::Column) {
                 ScrollView(auto_scroll: true, scrollbar: Some(false)) {
                     View(flex_direction: FlexDirection::Column, width: 100pct) {
-                        #(m.entries.iter().map(entry))
+                        #(m.entries.iter().map(|e| entry(e, m.spinner())))
+                        #(m.waiting().then(|| element!(View(margin_top: 1) {
+                            Text(content: format!("{} thinking…", m.spinner()), color: Color::DarkGrey, italic: true)
+                        })))
                     }
                 }
             }
@@ -365,7 +370,7 @@ fn menu(m: &Model, input: &str) -> Option<AnyElement<'static>> {
     )
 }
 
-fn entry(e: &Entry) -> AnyElement<'static> {
+fn entry(e: &Entry, spinner: &str) -> AnyElement<'static> {
     match e {
         // Human turns: the same card shape as tools and peers, own colour and glyph.
         Entry::User(t) => element! {
@@ -424,24 +429,47 @@ fn entry(e: &Entry) -> AnyElement<'static> {
             };
             element!(Text(content: shown, color: Color::DarkGrey, italic: true, wrap: TextWrap::Wrap)).into_any()
         }
+        Entry::Pending { name, .. } => element! {
+            View(margin_top: 1) {
+                Text(content: format!("{} preparing {name}…", spinner), color: Color::DarkGrey, italic: true)
+            }
+        }
+        .into_any(),
         // Tool calls: a card in the tool colour; name, arguments, then result.
         Entry::Tool {
             name,
             args,
             result,
+            expanded,
             ..
-        } => element! {
-            View(flex_direction: FlexDirection::Column, border_style: BorderStyle::Round, border_color: TOOL, padding_left: 1, padding_right: 1, margin_top: 1, margin_bottom: 1) {
-                Text(content: format!("⚙ {name}"), color: TOOL, weight: Weight::Bold)
-                #(args.iter().map(|l| element!(Text(content: l.clone(), wrap: TextWrap::Wrap))))
-                #(result.as_ref().map(|(output, is_error)| element!(Text(
-                    content: format!("{} {}", if *is_error { "✗" } else { "✓" }, result_line(output)),
-                    color: if *is_error { Color::Red } else { Color::Green },
-                    wrap: TextWrap::Wrap,
-                ))))
+        } => {
+            let summary = match result {
+                None => (format!("{spinner} running…"), Color::DarkGrey),
+                Some((output, is_error)) => {
+                    let mark = if *is_error { "✗" } else { "✓" };
+                    let hint = match (expanded.is_some(), output.lines().count() > 1) {
+                        (true, _) => "   ctrl+o collapses",
+                        (false, true) => "   ctrl+o expands",
+                        (false, false) => "",
+                    };
+                    (
+                        format!("{mark} {}{hint}", result_line(output)),
+                        if *is_error { Color::Red } else { Color::Green },
+                    )
+                }
+            };
+            element! {
+                View(flex_direction: FlexDirection::Column, border_style: BorderStyle::Round, border_color: TOOL, padding_left: 1, padding_right: 1, margin_top: 1, margin_bottom: 1) {
+                    Text(content: format!("⚙ {name}"), color: TOOL, weight: Weight::Bold)
+                    #(args.iter().map(|l| element!(Text(content: l.clone(), wrap: TextWrap::Wrap))))
+                    Text(content: summary.0, color: summary.1, wrap: TextWrap::Wrap)
+                    #(expanded.as_ref().map(|t| element!(View(flex_direction: FlexDirection::Column, margin_top: 1) {
+                        #(t.view().lines().map(line))
+                    })))
+                }
             }
+            .into_any()
         }
-        .into_any(),
         Entry::Info(t) => element!(Text(content: t.clone(), color: Color::DarkGrey)).into_any(),
         Entry::Error(t) => element!(Text(content: t.clone(), color: Color::Red)).into_any(),
     }
@@ -466,6 +494,12 @@ fn line(l: &markdown::Line) -> AnyElement<'static> {
             }
             if s.style.strike || s.style.dim {
                 c = c.color(Color::DarkGrey);
+            }
+            if s.style.heading > 0 {
+                c = c.color(HEADING);
+                if s.style.heading <= 2 {
+                    c = c.decoration(TextDecoration::Underline);
+                }
             }
             if s.style.code {
                 c = c.color(Color::Cyan);

@@ -173,6 +173,13 @@ pub enum Entry {
         /// No more deltas will come.
         done: bool,
     },
+    /// The model is still emitting a tool call's arguments.
+    Pending {
+        /// Provider call id (matches `ToolCallStarted`).
+        call_id: String,
+        /// Tool name.
+        name: String,
+    },
     /// A tool call and, once finished, its result.
     Tool {
         /// Provider call id (matches `ToolCallFinished`).
@@ -183,6 +190,8 @@ pub enum Entry {
         args: Vec<String>,
         /// `(output, is_error)` once finished.
         result: Option<(String, bool)>,
+        /// Full output shown (Ctrl+O); built on first expand.
+        expanded: Option<Box<markdown::Text>>,
     },
     /// Informational line (session lists, notices).
     Info(String),
@@ -323,6 +332,27 @@ pub fn describe(name: &str, args: &serde_json::Value) -> Vec<String> {
         .collect()
 }
 
+/// Full tool output for an expanded card in a code fence so it renders
+/// verbatim; JSON is pretty-printed, also when a trailer line follows it
+/// (the shell tool appends `exit code: n`).
+pub fn output_markdown(output: &str) -> String {
+    let output = output.trim_end();
+    let pretty = |s: &str| {
+        serde_json::from_str::<serde_json::Value>(s.trim())
+            .ok()
+            .and_then(|v| serde_json::to_string_pretty(&v).ok())
+    };
+    if let Some(json) = pretty(output) {
+        return format!("```json\n{json}\n```");
+    }
+    if let Some((head, tail)) = output.rsplit_once('\n')
+        && let Some(json) = pretty(head)
+    {
+        return format!("```json\n{json}\n```\n{tail}");
+    }
+    format!("```\n{output}\n```")
+}
+
 /// First output line plus a `(+n lines)` tail for the rest.
 pub fn result_line(output: &str) -> String {
     let mut lines = output.lines();
@@ -461,6 +491,8 @@ pub struct Model {
     pub entries: Vec<Entry>,
     /// The root has a turn in flight.
     pub streaming: bool,
+    /// Animation frame; advances while something is in flight.
+    pub frame: usize,
     /// Usage of the last finished turn of the shown session.
     pub usage: Option<Usage>,
     /// Model of the shown session (`TurnStarted.model`; the config default before that).
@@ -512,15 +544,33 @@ impl Model {
         }
     }
 
-    /// Expand or collapse the most recent card (Ctrl+O).
+    /// Expand or collapse the most recent card or finished tool call (Ctrl+O).
     pub fn toggle_card(&mut self) {
-        if let Some(Entry::Card { expanded, .. }) = self
-            .entries
-            .iter_mut()
-            .rev()
-            .find(|e| matches!(e, Entry::Card { .. }))
-        {
-            *expanded = !*expanded;
+        let Some(e) = self.entries.iter_mut().rev().find(|e| {
+            matches!(
+                e,
+                Entry::Card { .. }
+                    | Entry::Tool {
+                        result: Some(_),
+                        ..
+                    }
+            )
+        }) else {
+            return;
+        };
+        match e {
+            Entry::Card { expanded, .. } => *expanded = !*expanded,
+            Entry::Tool {
+                result: Some((output, _)),
+                expanded,
+                ..
+            } => {
+                *expanded = match expanded.take() {
+                    Some(_) => None,
+                    None => Some(Box::new(markdown::Text::complete(&output_markdown(output)))),
+                }
+            }
+            _ => {}
         }
     }
 
@@ -532,11 +582,53 @@ impl Model {
             .any(|e| matches!(e, Entry::Assistant(t) if t.unrevealed() > 0))
     }
 
-    /// One typewriter frame. Reveals a slice of the backlog proportional to
-    /// its size, so the cursor trails the provider by a fixed number of
-    /// frames (~a quarter second at 60 Hz) however fast it streams, and
-    /// settles smoothly when it stops.
+    /// Frames are needed: text is typing out or a turn is in flight.
+    pub fn animating(&self) -> bool {
+        self.revealing() || self.shown_running()
+    }
+
+    /// What the shown session is doing right now, for the status line and
+    /// the trailing activity row; `None` when idle.
+    pub fn activity(&self) -> Option<String> {
+        if !self.shown_running() {
+            return None;
+        }
+        // Parallel calls: a running card need not be the last entry.
+        let busy = self.entries.iter().rev().find_map(|e| match e {
+            Entry::Tool {
+                name, result: None, ..
+            } => Some(format!("running {name}…")),
+            Entry::Pending { name, .. } => Some(format!("preparing {name}…")),
+            _ => None,
+        });
+        if busy.is_some() {
+            return busy;
+        }
+        Some(match self.entries.last() {
+            Some(Entry::Assistant(t)) if !t.is_done() => "streaming…".into(),
+            Some(Entry::Reasoning { done: false, .. }) => "reasoning…".into(),
+            _ => "thinking…".into(),
+        })
+    }
+
+    /// The transcript's trailing activity row: only while waiting on the
+    /// model with nothing else showing progress in place.
+    pub fn waiting(&self) -> bool {
+        self.activity().is_some_and(|a| a == "thinking…")
+    }
+
+    /// Current spinner glyph.
+    pub fn spinner(&self) -> &'static str {
+        const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+        FRAMES[(self.frame / 5) % FRAMES.len()]
+    }
+
+    /// One animation frame: advance the spinner and reveal a slice of the
+    /// typewriter backlog proportional to its size, so the cursor trails the
+    /// provider by a fixed number of frames (~a quarter second at 60 Hz)
+    /// however fast it streams, and settles smoothly when it stops.
     pub fn tick(&mut self) {
+        self.frame = self.frame.wrapping_add(1);
         for e in self.entries.iter_mut().rev() {
             if let Entry::Assistant(t) = e {
                 let backlog = t.unrevealed();
@@ -800,17 +892,31 @@ impl Model {
                     done: false,
                 }),
             },
+            AgentEvent::ToolCallPending { call_id, name, .. } => {
+                self.entries.push(Entry::Pending { call_id, name });
+            }
             AgentEvent::ToolCallStarted {
                 call_id,
                 name,
                 args,
                 ..
-            } => self.entries.push(Entry::Tool {
-                call_id,
-                args: describe(&name, &args),
-                name,
-                result: None,
-            }),
+            } => {
+                let tool = Entry::Tool {
+                    call_id: call_id.clone(),
+                    args: describe(&name, &args),
+                    name,
+                    result: None,
+                    expanded: None,
+                };
+                match self
+                    .entries
+                    .iter_mut()
+                    .find(|e| matches!(e, Entry::Pending { call_id: c, .. } if *c == call_id))
+                {
+                    Some(slot) => *slot = tool,
+                    None => self.entries.push(tool),
+                }
+            }
             AgentEvent::ToolCallFinished {
                 call_id,
                 output,
@@ -829,6 +935,8 @@ impl Model {
                 }
             }
             AgentEvent::TurnFinished { usage, context, .. } => {
+                // A call the model abandoned mid-stream never starts.
+                self.entries.retain(|e| !matches!(e, Entry::Pending { .. }));
                 self.usage = Some(usage);
                 self.context = context;
             }
@@ -967,11 +1075,9 @@ impl Model {
     /// One-line status: session, streaming state, last usage, focus, roster.
     pub fn status(&self) -> String {
         let session = self.shown().map_or_else(|| "no session".to_owned(), short);
-        let state = if self.shown_running() {
-            "streaming…"
-        } else {
-            "idle"
-        };
+        let state = self
+            .activity()
+            .map_or_else(|| "idle".to_owned(), |a| format!("{} {a}", self.spinner()));
         let usage = self.usage.map_or_else(String::new, |u| {
             format!("  {}↑ {}↓", u.prompt, u.completion)
         });
@@ -1417,6 +1523,7 @@ impl From<HistoryEntry> for Entry {
                 args: describe(&name, &args),
                 name,
                 result: Some((output, is_error)),
+                expanded: None,
             },
         }
     }

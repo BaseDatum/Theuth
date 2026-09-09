@@ -24,8 +24,11 @@ pub struct Style {
     pub strike: bool,
     /// Inline code, code blocks, math.
     pub code: bool,
-    /// Structural decoration: heading markers, list bullets, quote bars, rules.
+    /// Structural decoration: list bullets, quote bars, rules.
     pub dim: bool,
+    /// Heading level 1–6 (0 = not a heading). Headings are also `bold`; a
+    /// renderer gives them colour/underline rather than a `#` marker.
+    pub heading: u8,
     /// Link or image target; render underlined / as OSC 8.
     pub link: Option<String>,
 }
@@ -241,6 +244,7 @@ struct Renderer {
     italic: u8,
     strike: u8,
     code: bool,
+    heading: u8,
     link: Option<String>,
     table_head: bool,
 }
@@ -253,6 +257,7 @@ impl Renderer {
             strike: self.strike > 0,
             code: self.code,
             dim: false,
+            heading: self.heading,
             link: self.link.clone(),
         }
     }
@@ -355,7 +360,7 @@ impl Renderer {
             }
             Tag::Heading { level, .. } => {
                 self.flush();
-                self.dim(&format!("{} ", "#".repeat(level as usize)));
+                self.heading = level as u8;
                 self.bold += 1;
             }
             Tag::BlockQuote(_) => {
@@ -426,6 +431,7 @@ impl Renderer {
             }
             TagEnd::Heading(_) => {
                 self.bold -= 1;
+                self.heading = 0;
                 self.end_block();
             }
             TagEnd::BlockQuote(_) => {
@@ -513,7 +519,7 @@ mod tests {
         assert_eq!(
             plain(&lines),
             [
-                "# Title",
+                "Title",
                 "",
                 "Some bold and code.",
                 "",
@@ -530,7 +536,7 @@ mod tests {
             ]
         );
         let title = &lines[0];
-        assert!(title[0].style.dim && title[1].style.bold);
+        assert!(title[0].style.heading == 1 && title[0].style.bold);
         let para = &lines[2];
         assert_eq!(para[1].text, "bold");
         assert!(para[1].style.bold && !para[1].style.code);

@@ -291,6 +291,18 @@ pub enum AgentEvent {
         /// Fragment.
         text: Arc<str>,
     },
+    /// The model has begun emitting a tool call (name known, arguments still
+    /// streaming). Lets a UI show activity before `ToolCallStarted`.
+    ToolCallPending {
+        /// Session.
+        session: SessionId,
+        /// Turn.
+        turn: TurnId,
+        /// Provider call id (matches `ToolCallStarted`).
+        call_id: String,
+        /// Tool name.
+        name: String,
+    },
     /// The model asked for a tool; the call is now routed to the registry.
     ToolCallStarted {
         /// Session.
@@ -374,6 +386,7 @@ impl AgentEvent {
             Self::TurnStarted { session, .. }
             | Self::TextDelta { session, .. }
             | Self::ReasoningDelta { session, .. }
+            | Self::ToolCallPending { session, .. }
             | Self::ToolCallStarted { session, .. }
             | Self::ToolCallFinished { session, .. }
             | Self::TurnFinished { session, .. }
