@@ -1996,8 +1996,7 @@ dependencies = [
 [[package]]
 name = "iocraft"
 version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "41b8c1ddc08a912247397bef7b99f9ed409eecc711557f5523fe362d880d6f98"
+source = "git+https://github.com/skymoore/iocraft?branch=newline-modifiers-0.9#43ce6f251292ddc872f293c4150eafb32e2bdde5"
 dependencies = [
  "bitflags 2.13.1",
  "crossterm",
@@ -2012,8 +2011,7 @@ dependencies = [
 [[package]]
 name = "iocraft-macros"
 version = "0.2.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5e8c51048da5618a10af1135e9e474700f19946f456c857ae0b12ebff2a91b4d"
+source = "git+https://github.com/skymoore/iocraft?branch=newline-modifiers-0.9#43ce6f251292ddc872f293c4150eafb32e2bdde5"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4747,12 +4745,14 @@ dependencies = [
  "agent",
  "anyhow",
  "async-trait",
+ "crossterm",
  "futures",
  "iocraft",
  "kameo",
  "markdown",
  "models",
  "runtime",
+ "serde_json",
  "tokio",
  "tools",
  "tracing",

@@ -30,5 +30,8 @@ Config (`~/.wth/`, created on first run; details in
 - `skills/**/*.md` — see [`docs/skills.md`](docs/skills.md).
 
 TUI: `/` opens the command list; `/model` picks a model (header above the
-input shows model and context used); `/mcp` toggles servers and tools. See
+input shows model and context used); `/mcp` toggles servers and tools;
+`/approvals off` stops approval prompts for this session, `/approvals off
+always` for good (`tools.approvals` in config.yaml). Shift+Enter inserts a
+newline; select text with the mouse to copy it (terminal-native). See
 [`docs/design/02-models-and-menus.md`](docs/design/02-models-and-menus.md).

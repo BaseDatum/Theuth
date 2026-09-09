@@ -40,8 +40,8 @@ pub struct ApprovalRequested {
     pub session: SessionId,
     /// Tool name.
     pub tool: String,
-    /// One-line description of what will run (shell: the parsed command list).
-    pub summary: String,
+    /// Raw arguments; UIs format these per tool (shell: `command`).
+    pub args: serde_json::Value,
     /// Risk class that triggered the ask.
     pub risk: Risk,
 }
@@ -77,8 +77,8 @@ pub struct RequestApproval {
     pub session: SessionId,
     /// Tool name.
     pub tool: String,
-    /// Human summary.
-    pub summary: String,
+    /// Raw arguments.
+    pub args: serde_json::Value,
     /// Risk class.
     pub risk: Risk,
 }
@@ -125,7 +125,7 @@ impl Message<RequestApproval> for Approval {
                 id,
                 session: m.session,
                 tool: m.tool,
-                summary: m.summary,
+                args: m.args,
                 risk: m.risk,
             })
             .await;

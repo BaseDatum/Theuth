@@ -24,6 +24,7 @@ fn export_bindings() {
         tools::ApprovalResolved,
         tools::ApprovalId,
         tools::Decision,
+        tools::ApprovalsState,
         runtime::SessionId,
         runtime::TurnId
     );

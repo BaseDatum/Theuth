@@ -3,7 +3,7 @@
 //! kameo message bus (events, type-routed) and the kameo registry (commands,
 //! `ask` on a named actor). This crate must stay small (design doc §4).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use kameo::actor::ActorRef;
 use kameo::mailbox;
@@ -64,6 +64,52 @@ impl Runtime {
     pub fn section<'de, T: Deserialize<'de>>(&self, name: &str) -> anyhow::Result<T> {
         Ok(self.config.extract_inner(name)?)
     }
+}
+
+/// Set `section.key: value` in the YAML file at `path`, keeping everything
+/// else (comments included) byte-for-byte: the first `key:` line inside the
+/// `section:` block is rewritten; a block without it gets the line inserted
+/// first; no block → one is appended; a missing file is created.
+pub fn write_config_value(
+    path: &Path,
+    section: &str,
+    key: &str,
+    value: &str,
+) -> std::io::Result<()> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e),
+    };
+    let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
+    let Some(start) = lines
+        .iter()
+        .position(|l| l.trim_end() == format!("{section}:"))
+    else {
+        if !lines.is_empty() {
+            lines.push(String::new());
+        }
+        lines.extend([format!("{section}:"), format!("  {key}: {value}")]);
+        return std::fs::write(path, lines.join("\n") + "\n");
+    };
+    let end = lines[start + 1..]
+        .iter()
+        .position(|l| l.starts_with(|c: char| !c.is_whitespace()))
+        .map_or(lines.len(), |i| start + 1 + i);
+    let prefix = format!("{key}:");
+    let indented =
+        |l: &str| l.starts_with(char::is_whitespace) && l.trim_start().starts_with(&prefix);
+    match lines[start + 1..end].iter().position(|l| indented(l)) {
+        Some(i) => {
+            let line = &mut lines[start + 1 + i];
+            let indent = line.len() - line.trim_start().len();
+            let rest = &line[indent + prefix.len()..];
+            let comment = rest.find(" #").map(|c| &rest[c..]).unwrap_or("");
+            *line = format!("{}{prefix} {value}{comment}", &line[..indent]);
+        }
+        None => lines.insert(start + 1, format!("  {key}: {value}")),
+    }
+    std::fs::write(path, lines.join("\n") + "\n")
 }
 
 /// Mailbox every bus subscriber must use (design doc §3: Guaranteed +
@@ -137,5 +183,43 @@ impl Default for TurnId {
 impl std::fmt::Display for TurnId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.0.fmt(f)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::write_config_value;
+
+    #[test]
+    fn write_back_edits_in_place_or_appends() {
+        let dir = std::env::temp_dir().join(format!("wth-wb-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.yaml");
+
+        let before = "# header\nrpc:\n  model: not-this\nagent:\n  # keep me\n  model: old # inline\n  # subagents:\n  #   model: null\nlog:\n  level: info\n";
+        std::fs::write(&path, before).unwrap();
+        write_config_value(&path, "agent", "model", "anthropic/claude-haiku-4-5").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            before.replace(
+                "model: old # inline",
+                "model: anthropic/claude-haiku-4-5 # inline"
+            )
+        );
+
+        std::fs::write(&path, "log:\n  level: info").unwrap();
+        write_config_value(&path, "tools", "approvals", "false").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "log:\n  level: info\n\ntools:\n  approvals: false\n"
+        );
+
+        std::fs::write(&path, "agent:\n  max_tool_rounds: 4\n").unwrap();
+        write_config_value(&path, "agent", "model", "x/y").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "agent:\n  model: x/y\n  max_tool_rounds: 4\n"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

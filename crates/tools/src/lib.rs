@@ -24,7 +24,9 @@ pub mod shell;
 
 pub use approval::{Approval, ApprovalId, ApprovalRequested, ApprovalResolved, Decision, Resolve};
 pub use mcp::{ListServers, Mcp, McpServer, McpToolInfo, SetGate};
-pub use registry::{Invoke, ListTools, RegisterTool, ToolRegistry, UnregisterTool};
+pub use registry::{
+    ApprovalsState, Invoke, ListTools, RegisterTool, SetApprovals, ToolRegistry, UnregisterTool,
+};
 
 /// Registry name of the [`ToolRegistry`] actor.
 pub const REGISTRY_ACTOR: &str = "tools";
@@ -124,18 +126,6 @@ pub trait Tool: Send + Sync + 'static {
     /// Description shown to the model.
     fn description(&self) -> String;
 
-    /// One-line human summary for the approval prompt. Default: tool name + args.
-    fn summary(&self, args: &Self::Args) -> String
-    where
-        Self::Args: Serialize,
-    {
-        format!(
-            "{} {}",
-            Self::NAME,
-            serde_json::to_string(args).unwrap_or_default()
-        )
-    }
-
     /// Run it.
     async fn call(&self, args: Self::Args, cx: ToolCx) -> anyhow::Result<ToolOutput>;
 }
@@ -144,8 +134,6 @@ pub trait Tool: Send + Sync + 'static {
 pub trait ErasedTool: Send + Sync + 'static {
     /// Spec for the model.
     fn spec(&self) -> ToolSpec;
-    /// Human summary for approval, given raw args.
-    fn summary(&self, args: &serde_json::Value) -> String;
     /// Invoke with raw args.
     fn call(
         &self,
@@ -159,24 +147,13 @@ pub trait ErasedTool: Send + Sync + 'static {
     }
 }
 
-impl<T> ErasedTool for T
-where
-    T: Tool,
-    T::Args: Serialize,
-{
+impl<T: Tool> ErasedTool for T {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: T::NAME.to_string(),
             description: self.description(),
             schema: serde_json::to_value(schemars::schema_for!(T::Args)).unwrap_or_default(),
             risk: T::RISK,
-        }
-    }
-
-    fn summary(&self, args: &serde_json::Value) -> String {
-        match serde_json::from_value::<T::Args>(args.clone()) {
-            Ok(a) => Tool::summary(self, &a),
-            Err(_) => format!("{} {}", T::NAME, args),
         }
     }
 
@@ -216,6 +193,9 @@ pub enum PolicyAction {
 pub struct ToolsConfig {
     /// Policy per risk class.
     pub policy: Policy,
+    /// `false` never prompts: every `ask` (policy or MCP gate) runs as
+    /// `allow`; `deny` still denies. Written back by [`SetApprovals`].
+    pub approvals: bool,
     /// Seconds to wait for a human before denying.
     pub approval_timeout_secs: u64,
     /// Seconds a shell command may run before its process group is killed.
@@ -226,6 +206,7 @@ impl Default for ToolsConfig {
     fn default() -> Self {
         Self {
             policy: Policy::default(),
+            approvals: true,
             approval_timeout_secs: 300,
             shell_timeout_secs: 120,
         }

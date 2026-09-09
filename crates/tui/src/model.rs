@@ -10,7 +10,8 @@ use models::Catalog;
 use runtime::SessionId;
 use tokio::sync::mpsc::UnboundedSender;
 use tools::{
-    ApprovalId, ApprovalRequested, ApprovalResolved, Decision, McpServer, McpToolInfo, PolicyAction,
+    ApprovalId, ApprovalRequested, ApprovalResolved, ApprovalsState, Decision, McpServer,
+    McpToolInfo, PolicyAction,
 };
 
 /// Everything the UI can receive: bus events plus replies to its own commands.
@@ -36,6 +37,8 @@ pub enum UiEvent {
     ModelSet(ModelInfo),
     /// Reply to [`Command::ListMcp`] (also sent after every [`Command::SetGate`]).
     Mcp(Vec<McpServer>),
+    /// Reply to [`Command::SetApprovals`].
+    Approvals(ApprovalsState),
     /// A command failed (actor missing, ask error).
     Error(String),
 }
@@ -93,6 +96,13 @@ pub enum Command {
         /// New action; `None` clears a tool override.
         action: Option<PolicyAction>,
     },
+    /// `SetApprovals` on the registry.
+    SetApprovals {
+        /// `None` = global, persisted.
+        session: Option<SessionId>,
+        /// On or off.
+        enabled: bool,
+    },
 }
 
 /// One transcript row.
@@ -115,9 +125,9 @@ pub enum Entry {
         call_id: String,
         /// Tool name.
         name: String,
-        /// Argument summary.
-        summary: String,
-        /// `(first line of output, is_error)`.
+        /// Arguments as [`describe`] lines.
+        args: Vec<String>,
+        /// `(output, is_error)` once finished.
         result: Option<(String, bool)>,
     },
     /// Informational line (session lists, notices).
@@ -146,6 +156,11 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ("/sessions", "", "list sessions"),
     ("/resume", "<id>", "open a session"),
     ("/new", "", "start a new session"),
+    (
+        "/approvals",
+        "[on|off] [always]",
+        "tool approval prompts; `always` persists to config.yaml",
+    ),
     ("/cancel", "", "abort the in-flight turn"),
     ("/quit", "", "exit"),
 ];
@@ -153,6 +168,56 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
 /// Commands whose name starts with the typed word (`/mo` → `/model`).
 pub fn slash_matches(word: &str) -> Vec<&'static (&'static str, &'static str, &'static str)> {
     COMMANDS.iter().filter(|c| c.0.starts_with(word)).collect()
+}
+
+/// Tool arguments as display lines. `shell` shows the command itself
+/// (`$ ` on the first line); anything else is `key: value` per argument,
+/// with long or multi-line strings collapsed to their size.
+pub fn describe(name: &str, args: &serde_json::Value) -> Vec<String> {
+    if name == "shell"
+        && let Some(cmd) = args.get("command").and_then(|c| c.as_str())
+    {
+        return cmd
+            .trim()
+            .lines()
+            .enumerate()
+            .map(|(i, l)| format!("{}{l}", if i == 0 { "$ " } else { "  " }))
+            .collect();
+    }
+    let Some(obj) = args.as_object() else {
+        return if args.is_null() {
+            Vec::new()
+        } else {
+            vec![args.to_string()]
+        };
+    };
+    obj.iter()
+        .map(|(k, v)| match v {
+            serde_json::Value::String(s) if !s.contains('\n') && s.chars().count() <= 120 => {
+                format!("{k}: {s}")
+            }
+            serde_json::Value::String(s) => {
+                format!("{k}: ({} lines, {} bytes)", s.lines().count(), s.len())
+            }
+            other => {
+                let s = other.to_string();
+                match s.char_indices().nth(120) {
+                    Some((cut, _)) => format!("{k}: {}…", &s[..cut]),
+                    None => format!("{k}: {s}"),
+                }
+            }
+        })
+        .collect()
+}
+
+/// First output line plus a `(+n lines)` tail for the rest.
+pub fn result_line(output: &str) -> String {
+    let mut lines = output.lines();
+    let first = lines.next().unwrap_or_default();
+    match lines.count() {
+        0 => first.to_owned(),
+        n => format!("{first}  (+{n} lines)"),
+    }
 }
 
 /// Visible slice of a list `max` rows tall that keeps `cursor` in view.
@@ -279,22 +344,27 @@ pub struct Model {
     pub menu: Option<Menu>,
     /// Pending approvals for the root or any child, oldest first; the front is shown.
     pub approvals: VecDeque<ApprovalRequested>,
+    /// `tools.approvals` (global); false = never prompts.
+    pub approvals_global: bool,
+    /// The root session opted out of prompts (`/approvals off`).
+    pub approvals_off: bool,
     /// The user asked to leave.
     pub quit: bool,
 }
 
 impl Model {
     /// Fresh state showing `default_model` in the header.
-    pub fn new(default_model: String) -> Self {
+    pub fn new(default_model: String, approvals: bool) -> Self {
         Self {
             model_id: default_model,
+            approvals_global: approvals,
             ..Self::default()
         }
     }
 
     /// `Self::new` keeping the current model: `/new` and `/resume`.
     fn reset(&mut self) {
-        *self = Self::new(std::mem::take(&mut self.model_id));
+        *self = Self::new(std::mem::take(&mut self.model_id), self.approvals_global);
     }
 
     /// The approval currently shown, if any.
@@ -431,6 +501,14 @@ impl Model {
                 }
                 _ => {}
             },
+            UiEvent::Approvals(s) => {
+                self.approvals_global = s.global;
+                self.entries.push(Entry::Info(format!(
+                    "approvals: {} (this session), {} (default)",
+                    on_off(s.session && !self.approvals_off),
+                    on_off(s.global)
+                )));
+            }
             UiEvent::Error(e) => self.entries.push(Entry::Error(e)),
         }
     }
@@ -523,12 +601,12 @@ impl Model {
             AgentEvent::ToolCallStarted {
                 call_id,
                 name,
-                summary,
+                args,
                 ..
             } => self.entries.push(Entry::Tool {
                 call_id,
+                args: describe(&name, &args),
                 name,
-                summary,
                 result: None,
             }),
             AgentEvent::ToolCallFinished {
@@ -537,14 +615,14 @@ impl Model {
                 is_error,
                 ..
             } => {
-                let first = output.lines().next().unwrap_or_default().to_owned();
                 match self.entries.iter_mut().rev().find(
                     |e| matches!(e, Entry::Tool { call_id: c, result: None, .. } if *c == call_id),
                 ) {
-                    Some(Entry::Tool { result, .. }) => *result = Some((first, is_error)),
+                    Some(Entry::Tool { result, .. }) => *result = Some((output, is_error)),
                     _ => self.entries.push(Entry::Info(format!(
-                        "{} {first}",
-                        if is_error { "✗" } else { "✓" }
+                        "{} {}",
+                        if is_error { "✗" } else { "✓" },
+                        result_line(&output)
                     ))),
                 }
             }
@@ -591,6 +669,7 @@ impl Model {
                     model: arg.to_owned(),
                 },
             ),
+            "/approvals" => self.approvals_cmd(arg, tx),
             "/mcp" => {
                 self.awaiting_mcp = true;
                 send(tx, Command::ListMcp);
@@ -716,12 +795,75 @@ impl Model {
                     _ => Level::Danger,
                 };
                 (
-                    format!("{}  ·  ctx {used} / {} ({pct}%)", self.model_id, k(limit)),
+                    format!(
+                        "{}  ·  ctx {used} / {} ({pct}%){}",
+                        self.model_id,
+                        k(limit),
+                        self.approvals_tag()
+                    ),
                     level,
                 )
             }
-            _ => (format!("{}  ·  ctx {used}", self.model_id), Level::Normal),
+            _ => (
+                format!("{}  ·  ctx {used}{}", self.model_id, self.approvals_tag()),
+                Level::Normal,
+            ),
         }
+    }
+
+    fn approvals_tag(&self) -> &'static str {
+        if !self.approvals_global || self.approvals_off {
+            "  ·  approvals off"
+        } else {
+            ""
+        }
+    }
+
+    /// `/approvals [on|off] [always]`: bare shows the state; `always` switches
+    /// the persisted default, otherwise the root session.
+    fn approvals_cmd(&mut self, arg: &str, tx: &UnboundedSender<Command>) {
+        let mut words = arg.split_whitespace();
+        let enabled = match words.next() {
+            None => {
+                self.entries.push(Entry::Info(format!(
+                    "approvals: {} (this session), {} (default)",
+                    on_off(!self.approvals_off),
+                    on_off(self.approvals_global)
+                )));
+                return;
+            }
+            Some("on") => true,
+            Some("off") => false,
+            Some(w) => {
+                self.entries.push(Entry::Error(format!(
+                    "/approvals: expected on|off, got {w:?}"
+                )));
+                return;
+            }
+        };
+        let session = match words.next() {
+            Some("always") => None,
+            None => match self.session {
+                Some(id) => Some(id),
+                None => {
+                    self.entries.push(Entry::Error(
+                        "no session yet: send a message first, or use `/approvals off always`"
+                            .into(),
+                    ));
+                    return;
+                }
+            },
+            Some(w) => {
+                self.entries.push(Entry::Error(format!(
+                    "/approvals: expected `always`, got {w:?}"
+                )));
+                return;
+            }
+        };
+        if session.is_some() {
+            self.approvals_off = !enabled;
+        }
+        send(tx, Command::SetApprovals { session, enabled });
     }
 
     /// Open or close the slash popup to match what the input box holds.
@@ -948,20 +1090,21 @@ impl From<HistoryEntry> for Entry {
             }
             HistoryEntry::Tool {
                 name,
-                summary,
+                args,
                 output,
                 is_error,
             } => Entry::Tool {
                 call_id: String::new(),
+                args: describe(&name, &args),
                 name,
-                summary,
-                result: Some((
-                    output.lines().next().unwrap_or_default().to_owned(),
-                    is_error,
-                )),
+                result: Some((output, is_error)),
             },
         }
     }
+}
+
+fn on_off(b: bool) -> &'static str {
+    if b { "on" } else { "off" }
 }
 
 fn send(tx: &UnboundedSender<Command>, cmd: Command) {
@@ -1058,7 +1201,7 @@ mod tests {
         assert_eq!(k(200_000), "200k");
         assert_eq!(k(1_000_000), "1.0M");
         let catalog = Catalog::load(std::env::temp_dir().join("wth-tui-no-user-file").as_path());
-        let mut m = Model::new("anthropic/claude-sonnet-4-5".into());
+        let mut m = Model::new("anthropic/claude-sonnet-4-5".into(), true);
         let limit = catalog
             .get(&m.model_id)
             .expect("bundled model")

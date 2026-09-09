@@ -222,10 +222,6 @@ impl ErasedTool for McpTool {
         self.spec.clone()
     }
 
-    fn summary(&self, args: &Value) -> String {
-        format!("{} {args}", self.spec.name)
-    }
-
     fn call(&self, args: Value, _: ToolCx) -> BoxFuture<'_, anyhow::Result<ToolOutput>> {
         Box::pin(async move {
             let arguments = match args {

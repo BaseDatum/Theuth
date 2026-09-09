@@ -38,10 +38,6 @@ impl Tool for ReadFile {
         "Read a text file. Optional 1-based `offset` line and `limit` line count. Output is capped at 64 KiB. Paths are relative to the process cwd; `~` is not expanded.".into()
     }
 
-    fn summary(&self, a: &ReadFileArgs) -> String {
-        format!("read_file {}", a.path.display())
-    }
-
     async fn call(&self, a: ReadFileArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
         let bytes = tokio::fs::read(&a.path)
             .await
@@ -90,14 +86,6 @@ impl Tool for WriteFile {
         "Create or overwrite a file with the given content; parent directories are created. Paths are relative to the process cwd; `~` is not expanded.".into()
     }
 
-    fn summary(&self, a: &WriteFileArgs) -> String {
-        format!(
-            "write_file {} ({} bytes)",
-            a.path.display(),
-            a.content.len()
-        )
-    }
-
     async fn call(&self, a: WriteFileArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
         if let Some(parent) = a.path.parent().filter(|p| !p.as_os_str().is_empty()) {
             tokio::fs::create_dir_all(parent)
@@ -133,10 +121,6 @@ impl Tool for ListDir {
 
     fn description(&self) -> String {
         "List a directory: one entry per line, sorted, directories end with `/`. Paths are relative to the process cwd; `~` is not expanded.".into()
-    }
-
-    fn summary(&self, a: &ListDirArgs) -> String {
-        format!("list_dir {}", a.path.display())
     }
 
     async fn call(&self, a: ListDirArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {

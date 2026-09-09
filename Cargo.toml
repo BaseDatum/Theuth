@@ -70,3 +70,8 @@ all = { level = "deny", priority = -1 }
 # brush-parser copies and brush-builtins' AST types would mismatch brush-core's.
 brush-core = { git = "https://github.com/skymoore/brush", branch = "on-spawn-0.5" }
 brush-parser = { git = "https://github.com/skymoore/brush", branch = "on-spawn-0.5" }
+# iocraft: `TextInput.newline_modifiers` so a multiline input inserts a newline
+# only on Shift+Enter and leaves plain Enter to the parent (submit). Branch
+# `newline-modifiers-0.9` = tag iocraft-v0.9.1 + one commit (also derives
+# `Default` for `KeyModifiers`).
+iocraft = { git = "https://github.com/skymoore/iocraft", branch = "newline-modifiers-0.9" }

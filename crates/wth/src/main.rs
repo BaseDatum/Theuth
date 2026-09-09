@@ -44,6 +44,7 @@ tools:
     read_only: allow
     mutating: ask
     destructive: ask
+  # approvals: false   # never prompt; `/approvals off always` writes this
 
 rpc:
   listen: 127.0.0.1:7777

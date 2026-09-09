@@ -137,10 +137,16 @@ pub trait Tool: Send + Sync + 'static {
     const RISK: Risk;                      // ReadOnly | Mutating | Destructive
     type Args: DeserializeOwned + JsonSchema + Send;
     fn description(&self) -> String;
-    fn summary(&self, args: &Self::Args) -> String; // one line for the approval prompt
     async fn call(&self, args: Self::Args, cx: ToolCx) -> anyhow::Result<ToolOutput>;
 }
 ```
+
+No `summary()`: `ToolCallStarted`, `HistoryEntry::Tool` and
+`ApprovalRequested` carry the raw `args: serde_json::Value` and every UI
+formats them itself (`tui::model::describe`: `shell` → the command with a
+`$ ` prompt, anything else → `key: value` per argument, long strings
+collapsed to their size). One presentation function, no per-tool string in
+the agent, structured args for any frontend.
 
 `schemars` produces the JSON Schema that `genai::chat::Tool` needs; no
 hand-written schemas. A `ToolRegistry` actor (in `tools`) holds
@@ -154,6 +160,14 @@ tool's `Risk` against config policy `{ read_only = "allow", mutating = "ask",
 destructive = "ask" }` → on `ask`, publishes `ApprovalRequest` (Guaranteed)
 and awaits `ask(Resolve { id, decision })` from whichever UI answers first.
 Timeout → deny. That is the whole permission system for v0.
+
+Two switches turn `ask` into `allow` without touching the policy: the
+persisted `tools.approvals: false` (written back to `config.yaml` by
+`SetApprovals { session: None }`) and a per-session set held by the registry
+(`SetApprovals { session: Some(id) }`, in memory). `deny` is never lifted.
+TUI: `/approvals [on|off] [always]`; RPC: `set_approvals`; header shows
+`approvals off` while either switch is off. Subagent sessions are not
+covered by their parent's session switch (they have their own id).
 
 ## 5. Agent plugin
 
@@ -228,14 +242,11 @@ but the external child is **orphaned** (brush spawns without `kill_on_drop`
 and does not expose the foreground pid). v0 runs each call under
 `ProcessGroupPolicy::NewProcessGroup` and `killpg`s on timeout; if brush
 lacks the hook, that is the first `[patch.crates-io]`.
-Real bash parser means the approval summary can name the actual commands,
-redirects, and pipes instead of regexing the string: ~15-line walk over
-`Program → complete_commands → AndOrList → Pipeline.seq → Command::Simple.word_or_name`.
-Words are unexpanded (`$CMD` stays literal) — the summary is advisory, the
-`Risk` gate is the decision.
+The approval prompt shows the command verbatim (`describe` in the TUI), so
+the parse-only shell that used to summarise it into command names is gone.
 
-Rejected: `std::process::Command("bash", "-c")`: no in-process state, no AST
-for the approval summary, spawns a subprocess per call.
+Rejected: `std::process::Command("bash", "-c")`: no in-process state, spawns
+a subprocess per call.
 
 **Filesystem**: `read_file`, `write_file`, `list_dir` — thin over
 `tokio::fs`, `Risk::ReadOnly`/`Mutating`.
@@ -276,8 +287,19 @@ agent's events and approval requests, and sends `UserInput`/`Steer`/`Resolve`
 by `ask`/`tell`. It does not know the agent exists beyond those types. The
 same code path a Tauri app will use over RPC.
 
+Input: `TextInput` is multiline with `newline_modifiers: SHIFT` (our iocraft
+patch, `[patch.crates-io]`): plain Enter submits, Shift+Enter inserts a
+newline. Shift+Enter is only distinguishable under the kitty keyboard
+protocol, so the app pushes `DISAMBIGUATE_ESCAPE_CODES` after iocraft enters
+the alternate screen and pops it on quit. Mouse capture is off
+(`disable_mouse_capture`): the terminal's own selection works, and Ghostty's
+copy-on-select copies on release without any code here. The cost is no
+wheel scrolling of the transcript (never implemented).
+
 Rejected: `ratatui` (immediate-mode; streaming markdown + approval modals
-are more code); line-oriented REPL (would be replaced immediately).
+are more code); line-oriented REPL (would be replaced immediately); an
+in-app selection/clipboard (would need mouse capture and re-implement what
+the terminal already does).
 
 ## 9. Config
 

@@ -200,7 +200,7 @@ request arriving while a menu is open takes precedence (renders on top,
 `y`/`n` still work); the menu resumes after.
 
 Rejected: a generic command palette with fuzzy matching (prefix is enough for
-nine commands). Rejected: mouse.
+ten commands). Mouse: see 00 §8 (native selection instead of capture).
 
 ## 5. MCP actor (tools crate)
 

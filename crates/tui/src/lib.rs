@@ -51,6 +51,9 @@ impl runtime::Plugin for TuiPlugin {
         tokio::spawn(run_commands(commands_rx, events_tx));
 
         let default_model = rt.section::<AgentConfig>("agent").unwrap_or_default().model;
+        let approvals = rt
+            .section::<tools::ToolsConfig>("tools")
+            .map_or(true, |c| c.approvals);
         let catalog = std::sync::Arc::new(models::Catalog::load(&rt.data_dir));
         let shutdown = rt.shutdown.clone();
         let resume = self.resume;
@@ -60,6 +63,7 @@ impl runtime::Plugin for TuiPlugin {
                     events: Some(events_rx),
                     commands: commands_tx,
                     default_model,
+                    approvals,
                     catalog,
                     resume,
                 };
@@ -68,7 +72,7 @@ impl runtime::Plugin for TuiPlugin {
                 }
             } else {
                 tracing::warn!("stdout is not a terminal; using the line printer");
-                line_printer(events_rx, commands_tx, resume).await;
+                line_printer(events_rx, commands_tx, resume, approvals).await;
             }
             shutdown.cancel();
         });
@@ -159,6 +163,15 @@ async fn execute(cmd: Command, tx: &UnboundedSender<UiEvent>) -> anyhow::Result<
             // Re-list here, not from the UI: commands run concurrently.
             UiEvent::Mcp(mcp.ask(tools::ListServers).await?)
         }
+        Command::SetApprovals { session, enabled } => {
+            let registry = ActorRef::<tools::ToolRegistry>::lookup(tools::REGISTRY_ACTOR)?
+                .context("tool registry is not running")?;
+            UiEvent::Approvals(
+                registry
+                    .ask(tools::SetApprovals { session, enabled })
+                    .await?,
+            )
+        }
     };
     let _ = tx.send(reply);
     Ok(())
@@ -178,8 +191,9 @@ async fn line_printer(
     mut events: UnboundedReceiver<UiEvent>,
     commands: UnboundedSender<Command>,
     resume: Option<SessionId>,
+    approvals: bool,
 ) {
-    let mut model = Model::default();
+    let mut model = Model::new(String::new(), approvals);
     if let Some(id) = resume {
         model.resume(id, &commands);
     }
@@ -220,8 +234,12 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         UiEvent::Agent(AgentEvent::TextDelta { text, .. }) => {
             out.write_all(text.as_bytes()).and_then(|()| out.flush())
         }
-        UiEvent::Agent(AgentEvent::ToolCallStarted { name, summary, .. }) => {
-            writeln!(out, "\n⚙ {name} {summary}")
+        UiEvent::Agent(AgentEvent::ToolCallStarted { name, args, .. }) => {
+            writeln!(
+                out,
+                "\n⚙ {name}\n{}",
+                model::describe(name, args).join("\n")
+            )
         }
         UiEvent::Agent(AgentEvent::ToolCallFinished {
             output, is_error, ..
@@ -230,7 +248,7 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
                 out,
                 "{} {}",
                 if *is_error { "✗" } else { "✓" },
-                output.lines().next().unwrap_or_default()
+                model::result_line(output)
             )
         }
         UiEvent::Agent(AgentEvent::TurnFinished {
@@ -249,15 +267,21 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         UiEvent::Agent(_) => Ok(()),
         UiEvent::ModelSet(info) => writeln!(out, "model → {}", info.id),
         UiEvent::Models(_) | UiEvent::Mcp(_) => writeln!(out, "menus need a TTY"),
+        UiEvent::Approvals(s) => writeln!(
+            out,
+            "approvals: {} (this session), {} (default)",
+            if s.session { "on" } else { "off" },
+            if s.global { "on" } else { "off" }
+        ),
         UiEvent::Approval(req) => writeln!(
             out,
-            "approve {} ({:?}){}: {}? [y/n]",
+            "approve {} ({:?}){}? [y/n]\n{}",
             req.tool,
             req.risk,
             model
                 .peer_name(req.session)
                 .map_or_else(String::new, |n| format!(" [agent: {n}]")),
-            req.summary
+            model::describe(&req.tool, &req.args).join("\n")
         ),
         UiEvent::Resolved(_) => Ok(()),
         UiEvent::Sessions(list) => list
@@ -271,14 +295,15 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             agent::HistoryEntry::Assistant { text } => writeln!(out, "{text}"),
             agent::HistoryEntry::Tool {
                 name,
-                summary,
+                args,
                 output,
                 is_error,
             } => writeln!(
                 out,
-                "⚙ {name} {summary}\n{} {}",
+                "⚙ {name}\n{}\n{} {}",
+                model::describe(name, args).join("\n"),
                 if *is_error { "✗" } else { "✓" },
-                output.lines().next().unwrap_or_default()
+                model::result_line(output)
             ),
         }),
         UiEvent::SessionCreated(id) => writeln!(out, "session {id}"),

@@ -2,14 +2,16 @@
 //! Owns every [`DynTool`]; every invocation passes through the approval
 //! policy here before the tool runs.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
 use kameo::reply::DelegatedReply;
-use runtime::Runtime;
+use runtime::{Runtime, SessionId};
+use serde::{Deserialize, Serialize};
 
 use crate::approval::{Approval, Decision, RequestApproval};
 use crate::{
@@ -22,6 +24,12 @@ use crate::{
 pub struct ToolRegistry {
     tools: HashMap<String, DynTool>,
     policy: Policy,
+    /// `tools.approvals`: false turns every `Ask` into `Allow`.
+    approvals: bool,
+    /// Sessions that turned prompts off for themselves.
+    bypass: HashSet<SessionId>,
+    /// `<data_dir>/config.yaml`, for the persistent switch.
+    config_path: PathBuf,
     /// Looked up at first `Ask`, never at start (no start-order coupling).
     approval: Option<ActorRef<Approval>>,
 }
@@ -40,6 +48,61 @@ pub struct RegisterTool(pub DynTool);
 
 /// `ask` → `()`. Removes a tool by name; unknown name is a no-op.
 pub struct UnregisterTool(pub String);
+
+/// `ask` → [`ApprovalsState`]. Turn approval prompts on or off: for one
+/// session (in memory) or, with `session: None`, for everyone, persisted to
+/// `tools.approvals` in `<data_dir>/config.yaml`.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct SetApprovals {
+    /// Session to switch; `None` switches the global default.
+    pub session: Option<SessionId>,
+    /// `true` prompts as the policy says; `false` never prompts.
+    pub enabled: bool,
+}
+
+/// Whether prompts are on, globally and for the session asked about.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct ApprovalsState {
+    /// `tools.approvals`.
+    pub global: bool,
+    /// False when the session opted out; meaningful only for a session query.
+    pub session: bool,
+}
+
+impl Message<SetApprovals> for ToolRegistry {
+    type Reply = ApprovalsState;
+
+    async fn handle(
+        &mut self,
+        m: SetApprovals,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> ApprovalsState {
+        match m.session {
+            Some(id) if m.enabled => {
+                self.bypass.remove(&id);
+            }
+            Some(id) => {
+                self.bypass.insert(id);
+            }
+            None => {
+                self.approvals = m.enabled;
+                let value = if m.enabled { "true" } else { "false" };
+                if let Err(e) =
+                    runtime::write_config_value(&self.config_path, "tools", "approvals", value)
+                {
+                    tracing::warn!("config.yaml: {e}");
+                }
+            }
+        }
+        ApprovalsState {
+            global: self.approvals,
+            session: m.session.is_none_or(|id| !self.bypass.contains(&id)),
+        }
+    }
+}
 
 impl Message<ListTools> for ToolRegistry {
     type Reply = Vec<ToolSpec>;
@@ -86,7 +149,10 @@ impl Message<Invoke> for ToolRegistry {
             return reply;
         };
         let spec = tool.spec();
-        let action = tool.gate().unwrap_or_else(|| self.policy.action(spec.risk));
+        let mut action = tool.gate().unwrap_or_else(|| self.policy.action(spec.risk));
+        if action == PolicyAction::Ask && (!self.approvals || self.bypass.contains(&call.session)) {
+            action = PolicyAction::Allow;
+        }
         let approval = match action {
             PolicyAction::Allow => None,
             PolicyAction::Deny => {
@@ -125,7 +191,7 @@ async fn invoke(
         let req = RequestApproval {
             session: call.session,
             tool: spec.name.clone(),
-            summary: tool.summary(&call.args),
+            args: call.args.clone(),
             risk: spec.risk,
         };
         match approval.ask(req).await {
@@ -176,6 +242,9 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
         ToolRegistry {
             tools: builtins.into_iter().map(|t| (t.spec().name, t)).collect(),
             policy: cfg.policy,
+            approvals: cfg.approvals,
+            bypass: HashSet::new(),
+            config_path: rt.data_dir.join("config.yaml"),
             approval: None,
         },
         runtime::subscriber_mailbox(),

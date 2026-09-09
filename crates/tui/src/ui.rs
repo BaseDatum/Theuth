@@ -8,7 +8,8 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tools::{Decision, Risk};
 
 use crate::model::{
-    Command, Entry, Level, Menu, MenuKey, Model, Row, UiEvent, gate_name, k, slash_matches, window,
+    Command, Entry, Level, Menu, MenuKey, Model, Row, UiEvent, describe, gate_name, k, result_line,
+    slash_matches, window,
 };
 
 /// Channels handed to the app through iocraft context (owned so the receiver
@@ -20,6 +21,8 @@ pub struct Links {
     pub commands: UnboundedSender<Command>,
     /// `agent.model` from config: what the header shows before the first turn.
     pub default_model: String,
+    /// `tools.approvals` from config.
+    pub approvals: bool,
     /// Context limits for the header.
     pub catalog: Arc<models::Catalog>,
     /// Session to `/resume` on first render.
@@ -29,7 +32,8 @@ pub struct Links {
 /// Rows a menu shows at most.
 const MENU_ROWS: usize = 10;
 
-/// Run the fullscreen UI until the user quits.
+/// Run the fullscreen UI until the user quits. Mouse capture stays off so
+/// the terminal's own selection (and copy-on-select) keeps working.
 pub async fn run(links: Links) -> std::io::Result<()> {
     element! {
         ContextProvider(value: Context::owned(links)) {
@@ -37,6 +41,7 @@ pub async fn run(links: Links) -> std::io::Result<()> {
         }
     }
     .fullscreen()
+    .disable_mouse_capture()
     .await
 }
 
@@ -45,7 +50,8 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     let mut system = hooks.use_context_mut::<SystemContext>();
     let mut links = hooks.use_context_mut::<Links>();
     let default_model = links.default_model.clone();
-    let mut model = hooks.use_state(move || Model::new(default_model));
+    let approvals = links.approvals;
+    let mut model = hooks.use_state(move || Model::new(default_model, approvals));
     let mut input = hooks.use_state(String::new);
     let commands = links.commands.clone();
     let catalog = links.catalog.clone();
@@ -57,6 +63,14 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
         let commands = commands.clone();
         async move {
             let Some(mut events) = events else { return };
+            // Kitty keyboard protocol: without it Shift+Enter is a plain `\r`.
+            // Pushed after iocraft entered the alternate screen (separate stack).
+            let _ = crossterm::execute!(
+                std::io::stdout(),
+                crossterm::event::PushKeyboardEnhancementFlags(
+                    crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                )
+            );
             if let Some(id) = resume {
                 model.write().resume(id, &commands);
             }
@@ -105,6 +119,10 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 }
                 return;
             }
+            // Shift+Enter: the input inserts the newline itself.
+            if code == KeyCode::Enter && modifiers.contains(KeyModifiers::SHIFT) {
+                return;
+            }
             if m.menu.is_some() {
                 let text = input.read().to_string();
                 if let MenuKey::Input(text) = m.menu_key(code, &text, &commands) {
@@ -128,6 +146,10 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
 
     let m = model.read();
     if m.quit {
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::event::PopKeyboardEnhancementFlags
+        );
         system.exit();
     }
     let modal = m.approval().map(|req| {
@@ -137,7 +159,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
         element! {
             View(border_style: BorderStyle::Double, border_color: Color::Yellow, flex_direction: FlexDirection::Column, padding_left: 1, padding_right: 1) {
                 Text(content: format!("approval: {}  ({}){agent}", req.tool, risk_name(req.risk)), weight: Weight::Bold)
-                Text(content: req.summary.clone(), wrap: TextWrap::Wrap)
+                #(describe(&req.tool, &req.args).into_iter().map(|l| element!(Text(content: l, color: Color::Cyan, wrap: TextWrap::Wrap))))
                 Text(content: "[y] allow  [n/esc] deny", color: Color::Yellow)
             }
         }
@@ -168,10 +190,13 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             View(height: 1, padding_left: 1) {
                 Text(content: header, color: header_color)
             }
-            View(border_style: BorderStyle::Round, border_color: Color::Blue, height: 3) {
+            View(border_style: BorderStyle::Round, border_color: Color::Blue, min_height: 3) {
                 TextInput(
                     has_focus,
                     value: input.to_string(),
+                    multiline: true,
+                    auto_grow: true,
+                    newline_modifiers: KeyModifiers::SHIFT,
                     on_change: move |v: String| {
                         model.write().sync_slash(&v);
                         input.set(v);
@@ -300,16 +325,22 @@ fn entry(e: &Entry) -> AnyElement<'static> {
         }
         Entry::Tool {
             name,
-            summary,
+            args,
             result,
             ..
         } => element! {
             View(flex_direction: FlexDirection::Column) {
-                Text(content: format!("⚙ {name} {summary}"), color: Color::Cyan)
-                #(result.as_ref().map(|(line, is_error)| element!(Text(
-                    content: format!("{} {line}", if *is_error { "✗" } else { "✓" }),
-                    color: if *is_error { Color::Red } else { Color::Green },
-                ))))
+                Text(content: format!("⚙ {name}"), color: Color::Cyan, weight: Weight::Bold)
+                #(args.iter().map(|l| element!(View(padding_left: 2) {
+                    Text(content: l.clone(), color: Color::Cyan, wrap: TextWrap::Wrap)
+                })))
+                #(result.as_ref().map(|(output, is_error)| element!(View(padding_left: 2) {
+                    Text(
+                        content: format!("{} {}", if *is_error { "✗" } else { "✓" }, result_line(output)),
+                        color: if *is_error { Color::Red } else { Color::Green },
+                        wrap: TextWrap::Wrap,
+                    )
+                })))
             }
         }
         .into_any(),

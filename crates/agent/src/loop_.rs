@@ -425,7 +425,7 @@ impl Turn {
                 turn: self.turn,
                 call_id: call.call_id.clone(),
                 name: call.fn_name.clone(),
-                summary: call.fn_arguments.to_string(),
+                args: call.fn_arguments.clone(),
             })
             .await;
         }

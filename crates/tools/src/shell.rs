@@ -3,10 +3,9 @@
 
 use std::collections::HashMap;
 use std::io::Read;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use brush_core::parser::ast;
 use brush_core::{
     ExecutionParameters, ProcessGroupPolicy, ProfileLoadBehavior, RcLoadBehavior, Shell, SourceInfo,
 };
@@ -30,12 +29,6 @@ pub struct ShellArgs {
     /// calls within a session.
     pub command: String,
 }
-
-/// Never runs anything; only parses for [`Tool::summary`]. Building with
-/// Skip/Skip never awaits, so `block_on` completes inline.
-static PARSER: LazyLock<Shell> = LazyLock::new(|| {
-    futures::executor::block_on(ShellTool::build_shell()).expect("parse-only shell needs no I/O")
-});
 
 /// Runs bash in-process; one persistent shell per session.
 pub struct ShellTool {
@@ -90,33 +83,6 @@ impl ShellTool {
     }
 }
 
-/// `ls -la | grep foo > out.txt && rm -rf /tmp/x` → `ls | grep && rm`.
-fn command_names(program: &ast::Program) -> String {
-    let mut out = String::new();
-    for ast::CompoundListItem(list, _) in program.complete_commands.iter().flat_map(|c| &c.0) {
-        for (op, pipeline) in list {
-            if !out.is_empty() {
-                out.push_str(if op == ast::PipelineOperator::Or {
-                    " || "
-                } else {
-                    " && "
-                });
-            }
-            let names = pipeline.seq.iter().map(|cmd| match cmd {
-                ast::Command::Simple(s) => s
-                    .word_or_name
-                    .as_ref()
-                    .map_or("(assignment)", |w| w.value.as_str()),
-                ast::Command::Compound(..) => "(compound)",
-                ast::Command::Function(f) => f.fname.value.as_str(),
-                ast::Command::ExtendedTest(..) => "[[",
-            });
-            out.push_str(&names.collect::<Vec<_>>().join(" | "));
-        }
-    }
-    out
-}
-
 fn truncate(mut s: String) -> String {
     if s.len() > MAX_OUTPUT {
         let mut cut = MAX_OUTPUT;
@@ -148,13 +114,6 @@ impl Tool for ShellTool {
 
     fn description(&self) -> String {
         "Run a bash command. cwd, variables and functions persist between calls. Output is stdout+stderr with the exit code.".into()
-    }
-
-    fn summary(&self, args: &ShellArgs) -> String {
-        match PARSER.parse_string(args.command.as_str()) {
-            Ok(program) => format!("shell: {}", command_names(&program)),
-            Err(_) => format!("shell: {}", args.command),
-        }
     }
 
     async fn call(&self, args: ShellArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {

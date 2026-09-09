@@ -46,6 +46,7 @@ agent:
     reply_timeout_secs: 120
 tools:
   policy: { read_only: allow, mutating: ask, destructive: ask }
+  approvals: true   # false: never prompt (`/approvals off always` writes this)
   approval_timeout_secs: 300
   shell_timeout_secs: 120
 rpc:

@@ -139,8 +139,8 @@ pub enum HistoryEntry {
     Tool {
         /// Tool name.
         name: String,
-        /// Human summary of the call.
-        summary: String,
+        /// Raw arguments.
+        args: serde_json::Value,
         /// Output, possibly truncated.
         output: String,
         /// Whether it failed.
@@ -203,8 +203,8 @@ pub enum AgentEvent {
         call_id: String,
         /// Tool name.
         name: String,
-        /// Human summary of the arguments.
-        summary: String,
+        /// Raw arguments; UIs format these per tool.
+        args: serde_json::Value,
     },
     /// The tool returned.
     ToolCallFinished {

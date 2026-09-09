@@ -613,7 +613,8 @@ impl Message<SetModel> for Agents {
         }
         self.default_model = resolved.id.clone();
         // ponytail: writes <data_dir>/config.yaml; a `--config <other>` file is not written back.
-        if let Err(e) = write_default_model(&self.rt.data_dir.join("config.yaml"), &resolved.id) {
+        let path = self.rt.data_dir.join("config.yaml");
+        if let Err(e) = runtime::write_config_value(&path, "agent", "model", &resolved.id) {
             tracing::warn!("config.yaml: {e}");
         }
         Ok(ModelInfo::from(&resolved))
@@ -647,48 +648,11 @@ impl From<&Resolved> for ModelInfo {
     }
 }
 
-/// Replace the value of the first `model:` line inside the `agent:` block of
-/// `path`, keeping everything else (comments included) byte-for-byte. No
-/// `agent:` block → one is appended; a block without `model:` gets the line
-/// inserted first. A missing file is created.
-pub fn write_default_model(path: &Path, id: &str) -> std::io::Result<()> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => return Err(e),
-    };
-    let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
-    let Some(agent) = lines.iter().position(|l| l.trim_end() == "agent:") else {
-        if !lines.is_empty() {
-            lines.push(String::new());
-        }
-        lines.extend(["agent:".to_owned(), format!("  model: {id}")]);
-        return std::fs::write(path, lines.join("\n") + "\n");
-    };
-    let block = lines[agent + 1..]
-        .iter()
-        .position(|l| l.starts_with(|c: char| !c.is_whitespace()))
-        .map_or(lines.len(), |i| agent + 1 + i);
-    let indented =
-        |l: &str| l.starts_with(char::is_whitespace) && l.trim_start().starts_with("model:");
-    match lines[agent + 1..block].iter().position(|l| indented(l)) {
-        Some(i) => {
-            let line = &mut lines[agent + 1 + i];
-            let indent = line.len() - line.trim_start().len();
-            let rest = &line[indent + "model:".len()..];
-            let comment = rest.find(" #").map(|c| &rest[c..]).unwrap_or("");
-            *line = format!("{}model: {id}{comment}", &line[..indent]);
-        }
-        None => lines.insert(agent + 1, format!("  model: {id}")),
-    }
-    std::fs::write(path, lines.join("\n") + "\n")
-}
-
 /// Collapse stored messages into UI entries; a tool call and its response
 /// become one `Tool` entry.
 fn render(messages: &[ChatMessage]) -> Vec<HistoryEntry> {
     let mut out = Vec::new();
-    let mut pending: HashMap<&str, (&str, String)> = HashMap::new();
+    let mut pending: HashMap<&str, (&str, &serde_json::Value)> = HashMap::new();
     for m in messages {
         match m.role {
             ChatRole::User => out.push(HistoryEntry::User {
@@ -700,17 +664,17 @@ fn render(messages: &[ChatMessage]) -> Vec<HistoryEntry> {
                     out.push(HistoryEntry::Assistant { text });
                 }
                 for c in m.content.tool_calls() {
-                    pending.insert(&c.call_id, (&c.fn_name, c.fn_arguments.to_string()));
+                    pending.insert(&c.call_id, (&c.fn_name, &c.fn_arguments));
                 }
             }
             ChatRole::Tool => {
                 for r in m.content.tool_responses() {
-                    let (name, summary) = pending
+                    let (name, args) = pending
                         .remove(r.call_id.as_str())
-                        .unwrap_or(("?", String::new()));
+                        .unwrap_or(("?", &serde_json::Value::Null));
                     out.push(HistoryEntry::Tool {
                         name: name.to_string(),
-                        summary,
+                        args: args.clone(),
                         is_error: r.content.starts_with("ERROR: "),
                         output: r.content.clone(),
                     });
@@ -824,42 +788,4 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         );
     });
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::write_default_model;
-
-    #[test]
-    fn write_back_edits_in_place_or_appends() {
-        let dir = std::env::temp_dir().join(format!("wth-wb-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("config.yaml");
-
-        let before = "# header\nrpc:\n  model: not-this\nagent:\n  # keep me\n  model: old # inline\n  # subagents:\n  #   model: null\nlog:\n  level: info\n";
-        std::fs::write(&path, before).unwrap();
-        write_default_model(&path, "anthropic/claude-haiku-4-5").unwrap();
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            before.replace(
-                "model: old # inline",
-                "model: anthropic/claude-haiku-4-5 # inline"
-            )
-        );
-
-        std::fs::write(&path, "log:\n  level: info").unwrap();
-        write_default_model(&path, "x/y").unwrap();
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            "log:\n  level: info\n\nagent:\n  model: x/y\n"
-        );
-
-        std::fs::write(&path, "agent:\n  max_tool_rounds: 4\n").unwrap();
-        write_default_model(&path, "x/y").unwrap();
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            "agent:\n  model: x/y\n  max_tool_rounds: 4\n"
-        );
-        std::fs::remove_dir_all(dir).unwrap();
-    }
 }

@@ -20,8 +20,8 @@ use kameo::reply::Reply;
 use runtime::{Runtime, SessionId};
 use tokio::sync::broadcast;
 use tools::{
-    Approval, ApprovalId, Decision, ListServers, ListTools, Mcp, McpServer, PolicyAction, Resolve,
-    SetGate, ToolRegistry, ToolSpec,
+    Approval, ApprovalId, ApprovalsState, Decision, ListServers, ListTools, Mcp, McpServer,
+    PolicyAction, Resolve, SetApprovals, SetGate, ToolRegistry, ToolSpec,
 };
 
 use crate::bridge::Event;
@@ -75,6 +75,13 @@ pub trait Api {
         tool: Option<String>,
         action: Option<PolicyAction>,
     ) -> RpcResult<()>;
+    /// Turn approval prompts on/off for `session`, or globally (persisted) with `None`.
+    #[method(name = "set_approvals")]
+    async fn set_approvals(
+        &self,
+        session: Option<SessionId>,
+        enabled: bool,
+    ) -> RpcResult<ApprovalsState>;
     /// Stop the whole process.
     #[method(name = "shutdown")]
     async fn shutdown(&self) -> RpcResult<()>;
@@ -183,6 +190,14 @@ impl ApiServer for Server {
             },
         )
         .await
+    }
+
+    async fn set_approvals(
+        &self,
+        session: Option<SessionId>,
+        enabled: bool,
+    ) -> RpcResult<ApprovalsState> {
+        ask::<ToolRegistry, _>(tools::REGISTRY_ACTOR, SetApprovals { session, enabled }).await
     }
 
     async fn shutdown(&self) -> RpcResult<()> {
