@@ -25,8 +25,8 @@ pub mod shell;
 
 pub use approval::{Approval, ApprovalId, ApprovalRequested, ApprovalResolved, Decision, Resolve};
 pub use mcp::{
-    AddRepo, AddServer, ListServers, Mcp, McpServer, McpToolInfo, RemoveServer, RepoInfo, Restart,
-    SetGate, SyncMcp,
+    AddRepo, AddServer, ListServers, Mcp, McpProgress, McpServer, McpToolInfo, Progress,
+    RemoveServer, RepoInfo, Restart, SetGate, SyncMcp,
 };
 pub use registry::{
     ApprovalsState, Invoke, ListTools, RegisterTool, SetApprovals, SetParent, ToolRegistry,

@@ -86,6 +86,8 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             if let Some(id) = resume {
                 model.write().resume(id, &commands);
             }
+            // Servers started connecting before this UI subscribed.
+            let _ = commands.send(Command::McpStatus);
             while let Some(ev) = events.recv().await {
                 model.write().apply(ev);
             }
@@ -230,8 +232,9 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                     },
                 )
             }
-            View(height: 1, padding_left: 1) {
+            View(height: 1, padding_left: 1, padding_right: 1, justify_content: JustifyContent::SpaceBetween) {
                 Text(content: m.status(), color: Color::DarkGrey)
+                Text(content: m.mcp_status(), color: Color::DarkGrey)
             }
         }
     }

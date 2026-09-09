@@ -23,6 +23,7 @@ fn export_bindings() {
         tools::PolicyAction,
         tools::McpServer,
         tools::McpToolInfo,
+        tools::McpProgress,
         tools::ApprovalRequested,
         tools::ApprovalResolved,
         tools::ApprovalId,

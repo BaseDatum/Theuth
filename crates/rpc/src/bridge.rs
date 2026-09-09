@@ -12,7 +12,7 @@ use kameo::message::{Context, Message};
 use runtime::Runtime;
 use serde::Serialize;
 use tokio::sync::broadcast;
-use tools::{ApprovalRequested, ApprovalResolved};
+use tools::{ApprovalRequested, ApprovalResolved, McpProgress};
 
 /// One serialized event; shared across every subscription without copying.
 pub type Event = Arc<serde_json::Value>;
@@ -54,7 +54,7 @@ macro_rules! forward {
         }
     )*};
 }
-forward!(AgentEvent, ApprovalRequested, ApprovalResolved);
+forward!(AgentEvent, ApprovalRequested, ApprovalResolved, McpProgress);
 
 /// Spawn the bridge, subscribe it to every event type, return the sender to
 /// `subscribe()` from.
@@ -64,5 +64,6 @@ pub async fn start(rt: &Runtime) -> broadcast::Sender<Event> {
     rt.subscribe::<Bridge, AgentEvent>(&actor).await;
     rt.subscribe::<Bridge, ApprovalRequested>(&actor).await;
     rt.subscribe::<Bridge, ApprovalResolved>(&actor).await;
+    rt.subscribe::<Bridge, McpProgress>(&actor).await;
     tx
 }

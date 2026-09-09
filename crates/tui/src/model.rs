@@ -13,8 +13,8 @@ use runtime::SessionId;
 use tokio::sync::mpsc::UnboundedSender;
 use tools::git::SyncResult;
 use tools::{
-    ApprovalId, ApprovalRequested, ApprovalResolved, ApprovalsState, Decision, McpServer,
-    McpToolInfo, PolicyAction, RepoInfo,
+    ApprovalId, ApprovalRequested, ApprovalResolved, ApprovalsState, Decision, McpProgress,
+    McpServer, McpToolInfo, PolicyAction, RepoInfo,
 };
 
 /// Everything the UI can receive: bus events plus replies to its own commands.
@@ -42,6 +42,8 @@ pub enum UiEvent {
     Mcp(Vec<McpServer>),
     /// Reply to [`Command::SetApprovals`].
     Approvals(ApprovalsState),
+    /// MCP reconcile snapshot (bus event).
+    McpProgress(McpProgress),
     /// Reply to [`Command::ShowPrompt`].
     Prompt(String),
     /// Reply to [`Command::ListSkills`].
@@ -106,6 +108,8 @@ pub enum Command {
     },
     /// `ListServers` on the MCP actor.
     ListMcp,
+    /// `Progress` on the MCP actor: the snapshot a late-attaching UI missed.
+    McpStatus,
     /// `SetGate` on the MCP actor, followed by a fresh `ListServers`.
     SetGate {
         /// Server name.
@@ -507,6 +511,8 @@ pub struct Model {
     pub approvals_global: bool,
     /// The root session opted out of prompts (`/approvals off`).
     pub approvals_off: bool,
+    /// Latest MCP reconcile snapshot; `None` before the first.
+    pub mcp: Option<McpProgress>,
     /// The user asked to leave.
     pub quit: bool,
 }
@@ -582,9 +588,45 @@ impl Model {
             .any(|e| matches!(e, Entry::Assistant(t) if t.unrevealed() > 0))
     }
 
-    /// Frames are needed: text is typing out or a turn is in flight.
+    /// Frames are needed: text is typing out, a turn is in flight, or MCP
+    /// servers are connecting.
     pub fn animating(&self) -> bool {
-        self.revealing() || self.shown_running()
+        self.revealing() || self.shown_running() || self.mcp_connecting()
+    }
+
+    fn mcp_connecting(&self) -> bool {
+        self.mcp.as_ref().is_some_and(|p| !p.connecting.is_empty())
+    }
+
+    /// Bottom-right status: MCP servers connecting (with a spinner and the
+    /// first names) or, once settled, `mcp 11/12`; empty with no servers.
+    pub fn mcp_status(&self) -> String {
+        let Some(p) = &self.mcp else {
+            return String::new();
+        };
+        let total = p.connecting.len() + p.connected.len() + p.failed.len();
+        if total == 0 {
+            return String::new();
+        }
+        let up = format!("mcp {}/{total}", p.connected.len());
+        if p.connecting.is_empty() {
+            return match p.failed.len() {
+                0 => up,
+                n => format!("{up}  ·  {n} failed"),
+            };
+        }
+        let names = p
+            .connecting
+            .iter()
+            .take(3)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        let more = match p.connecting.len() {
+            n if n > 3 => format!(" (+{})", n - 3),
+            _ => String::new(),
+        };
+        format!("{} {up}  ·  connecting {names}{more}", self.spinner())
     }
 
     /// What the shown session is doing right now, for the status line and
@@ -744,6 +786,7 @@ impl Model {
                     on_off(s.global)
                 )));
             }
+            UiEvent::McpProgress(p) => self.mcp = Some(p),
             // Verbatim: the point is to see exactly what the model sees.
             UiEvent::Prompt(text) => self.entries.push(card(
                 CardKind::Prompt,

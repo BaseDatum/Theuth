@@ -131,11 +131,24 @@ server name: new → connect + register tools; removed → unregister its tools 
 drop the connection (child process exits with it); changed (normalised entry
 differs) → drop + reconnect; `Restart(name)` forces the drop + reconnect for
 one server whose entry is unchanged (after `sync_mcp` rebuilt its repo).
-Startup is the same reconcile with an empty
-running set. A server that fails to connect is logged and retried on the next
-reconcile (any change in the dir), not in a loop. Registry gains
-`UnregisterTool(name)`. The model's tool list is read at the start of every
-round (`ListTools`), so a server added mid-turn is visible on the next round.
+Startup is the same reconcile with an empty running set. A server that fails
+to connect is logged and retried on the next reconcile (any change in the
+dir), not in a loop. Registry gains `UnregisterTool(name)`. The model's tool
+list is read at the start of every round (`ListTools`), so a server added
+mid-turn is visible on the next round.
+
+**Connects never block.** Reconcile only decides; each connect (+ first
+`list_tools`, bounded by a 10 s timeout) runs in its own task that `tell`s
+the actor a `Settled { name, spec, result }`. The actor stays responsive
+(`/mcp`, `ListServers`, `SetGate` answer while twenty servers boot), startup
+does not wait for any of them (`start` tells `Reconcile` and returns), and a
+settled server whose entry changed meanwhile is dropped and reconnected.
+Every state change publishes `McpProgress { connecting, connected, failed }`
+on the bus; the TUI shows it bottom-right (`⠹ mcp 3/12 · connecting a, b, c
+(+4)`, then `mcp 11/12 · 1 failed`) and asks `Progress` once on first render
+for the snapshots published before it subscribed. RPC forwards it on
+`subscribe_events`. `add_mcp_server` is the one deliberate wait: it connects
+first and writes the file only on success, so nothing is ever half-added.
 
 **No prefix.** A server's `echo` registers as `echo`. Native tools are
 registered first and win a name clash; between servers the first by sorted

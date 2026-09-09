@@ -17,7 +17,7 @@ use kameo::message::{Context, Message};
 use runtime::{Runtime, SessionId};
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
-use tools::{APPROVAL_ACTOR, Approval, ApprovalRequested, ApprovalResolved, Decision};
+use tools::{APPROVAL_ACTOR, Approval, ApprovalRequested, ApprovalResolved, Decision, McpProgress};
 
 pub mod model;
 mod ui;
@@ -48,6 +48,7 @@ impl runtime::Plugin for TuiPlugin {
         rt.subscribe::<Bridge, AgentEvent>(&bridge).await;
         rt.subscribe::<Bridge, ApprovalRequested>(&bridge).await;
         rt.subscribe::<Bridge, ApprovalResolved>(&bridge).await;
+        rt.subscribe::<Bridge, McpProgress>(&bridge).await;
         tokio::spawn(run_commands(commands_rx, events_tx));
 
         let default_model = rt.section::<AgentConfig>("agent").unwrap_or_default().model;
@@ -96,7 +97,12 @@ macro_rules! forward {
         }
     )*};
 }
-forward!(AgentEvent => Agent, ApprovalRequested => Approval, ApprovalResolved => Resolved);
+forward!(
+    AgentEvent => Agent,
+    ApprovalRequested => Approval,
+    ApprovalResolved => Resolved,
+    McpProgress => McpProgress,
+);
 
 /// The one place actors are looked up and asked. Each command runs in its
 /// own task so a slow ask never delays the next one.
@@ -147,6 +153,7 @@ async fn execute(cmd: Command, tx: &UnboundedSender<UiEvent>) -> anyhow::Result<
                 .map_err(|e| anyhow::anyhow!("{e}"))?,
         ),
         Command::ListMcp => UiEvent::Mcp(mcp()?.ask(tools::ListServers).await?),
+        Command::McpStatus => UiEvent::McpProgress(mcp()?.ask(tools::Progress).await?),
         Command::SetGate {
             server,
             tool,
@@ -336,6 +343,16 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             if s.session { "on" } else { "off" },
             if s.global { "on" } else { "off" }
         ),
+        UiEvent::McpProgress(p) if p.connecting.is_empty() => writeln!(
+            out,
+            "mcp: {} connected{}",
+            p.connected.len(),
+            match p.failed.as_slice() {
+                [] => String::new(),
+                f => format!(", failed: {}", f.join(", ")),
+            }
+        ),
+        UiEvent::McpProgress(_) => Ok(()),
         UiEvent::Approval(req) => writeln!(
             out,
             "approve {} ({:?}){}? [y/n]\n{}",

@@ -323,6 +323,8 @@ struct Running {
 #[derive(Default)]
 struct State {
     running: HashMap<String, Running>,
+    /// Servers with a connect task in flight.
+    pending: HashSet<String>,
     gates: Gates,
     /// Native tool names; always win a clash.
     natives: HashSet<String>,
@@ -331,12 +333,30 @@ struct State {
     errors: HashMap<String, String>,
 }
 
+/// Event: a reconcile snapshot, published every time a server changes state
+/// (also mid-reconcile as each connect settles). UIs show it as a status
+/// line; `connecting` empty means the reconcile is over.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(tag = "type")]
+pub struct McpProgress {
+    /// Servers still being connected, sorted.
+    pub connecting: Vec<String>,
+    /// Connected servers, sorted.
+    pub connected: Vec<String>,
+    /// Servers whose last connect failed, sorted.
+    pub failed: Vec<String>,
+}
+
 /// The MCP actor. Look up with `ActorRef::<Mcp>::lookup(MCP_ACTOR)`.
 #[derive(kameo::Actor)]
 pub struct Mcp {
     state: State,
     dir: PathBuf,
     registry: ActorRef<ToolRegistry>,
+    rt: Runtime,
 }
 
 /// `tell` from the watcher: re-read `<data_dir>/mcp` and apply.
@@ -455,8 +475,8 @@ pub struct McpToolInfo {
 impl Message<Reconcile> for Mcp {
     type Reply = ();
 
-    async fn handle(&mut self, _: Reconcile, _: &mut Context<Self, Self::Reply>) {
-        reconcile(&mut self.state, &self.dir, &self.registry).await;
+    async fn handle(&mut self, _: Reconcile, ctx: &mut Context<Self, Self::Reply>) {
+        self.reconcile(ctx.actor_ref()).await;
     }
 }
 
@@ -541,7 +561,7 @@ impl Message<SetGate> for Mcp {
     async fn handle(
         &mut self,
         m: SetGate,
-        _: &mut Context<Self, Self::Reply>,
+        ctx: &mut Context<Self, Self::Reply>,
     ) -> Result<(), String> {
         self.known(&m.server)?;
         // Edit a copy and let `reconcile` load it from the file: it diffs the
@@ -555,7 +575,7 @@ impl Message<SetGate> for Mcp {
         std::fs::write(&tmp, text)
             .and_then(|()| std::fs::rename(&tmp, &path))
             .map_err(|e| format!("write {}: {e}", path.display()))?;
-        reconcile(&mut self.state, &self.dir, &self.registry).await;
+        self.reconcile(ctx.actor_ref()).await;
         Ok(())
     }
 }
@@ -577,10 +597,10 @@ impl Message<Restart> for Mcp {
     async fn handle(
         &mut self,
         m: Restart,
-        _: &mut Context<Self, Self::Reply>,
+        ctx: &mut Context<Self, Self::Reply>,
     ) -> Result<(), String> {
         self.known(&m.name)?;
-        restart(&mut self.state, &self.dir, &self.registry, &[m.name]).await;
+        self.restart(ctx.actor_ref(), &[m.name]).await;
         Ok(())
     }
 }
@@ -602,26 +622,27 @@ impl Message<AddServer> for Mcp {
         if !is_entry(&m.entry) {
             return Err("entry must be an object with `command` or `url`".into());
         }
-        if entry(&m.entry, &self.dir).is_none() {
+        let Some(spec) = entry(&m.entry, &self.dir) else {
             return Err("entry is disabled or malformed".into());
-        }
+        };
         let path = self.dir.join(format!("{}.json", m.name));
         if path.exists() || self.known(&m.name).is_ok() {
             return Err(format!("mcp server `{}` already exists", m.name));
         }
-        write_json(&path, &m.entry)?;
-        reconcile(&mut self.state, &self.dir, &self.registry).await;
-        if self.state.running.contains_key(&m.name) {
-            return Ok(self.server(m.name, None));
+        if self.state.gates.for_server(&m.name) == PolicyAction::Deny {
+            return Err(format!("`{}` is denied by mcp/config.yaml", m.name));
         }
-        let err = self
-            .state
-            .errors
-            .remove(&m.name)
-            .unwrap_or_else(|| format!("`{}` is denied by mcp/config.yaml", m.name));
-        // Nothing half-added: the caller fixes the entry and calls again.
-        let _ = std::fs::remove_file(&path);
-        Err(err)
+        // Connect before writing: nothing half-added, the caller fixes the
+        // entry and calls again. This one wait is the caller's own request.
+        let result = attempt(&m.name, &spec)
+            .await
+            .map_err(|e| format!("{}: connect failed: {e:#}", m.name))?;
+        write_json(&path, &m.entry)?;
+        settle(&mut self.state, m.name.clone(), spec, Ok(result));
+        register(&mut self.state, &self.registry, Vec::new()).await;
+        self.rt.publish(progress(&self.state)).await;
+        // The watcher's reconcile then finds it running with the same spec.
+        Ok(self.server(m.name, None))
     }
 }
 
@@ -631,7 +652,7 @@ impl Message<RemoveServer> for Mcp {
     async fn handle(
         &mut self,
         m: RemoveServer,
-        _: &mut Context<Self, Self::Reply>,
+        ctx: &mut Context<Self, Self::Reply>,
     ) -> Result<(), String> {
         // Same order as `desired`, so the file that owns the name is the one edited.
         let hit = json_files(&self.dir).into_iter().find_map(|path| {
@@ -647,7 +668,7 @@ impl Message<RemoveServer> for Mcp {
                 .map_err(|e| format!("remove {}: {e}", path.display()))?,
             FileEdit::Rewrite => write_json(&path, &json)?,
         }
-        reconcile(&mut self.state, &self.dir, &self.registry).await;
+        self.reconcile(ctx.actor_ref()).await;
         Ok(())
     }
 }
@@ -709,7 +730,7 @@ impl Message<SyncMcp> for Mcp {
     async fn handle(
         &mut self,
         _: SyncMcp,
-        _: &mut Context<Self, Self::Reply>,
+        ctx: &mut Context<Self, Self::Reply>,
     ) -> Vec<git::SyncResult> {
         let repos = self.dir.join("repos");
         let results = git::sync_all(&repos).await;
@@ -730,29 +751,75 @@ impl Message<SyncMcp> for Mcp {
             .map(|(name, _)| name.clone())
             .collect();
         if !stale.is_empty() {
-            restart(&mut self.state, &self.dir, &self.registry, &stale).await;
+            self.restart(ctx.actor_ref(), &stale).await;
         }
         results
     }
 }
 
-/// Drop `names` (ending their processes) and unregister their tools, then
-/// reconcile: every dropped server the files still want reconnects.
-async fn restart(
-    state: &mut State,
-    dir: &Path,
-    registry: &ActorRef<ToolRegistry>,
-    names: &[String],
-) {
-    for name in names {
-        tracing::info!(server = %name, "mcp server restarting");
-        if let Some(r) = state.running.remove(name) {
-            for tool in r.tools {
-                let _ = registry.ask(UnregisterTool(tool)).await;
+impl Mcp {
+    async fn reconcile(&mut self, me: &ActorRef<Mcp>) {
+        reconcile(&mut self.state, &self.dir, &self.registry, &self.rt, me).await;
+    }
+
+    /// Drop `names` (ending their processes) and unregister their tools, then
+    /// reconcile: every dropped server the files still want reconnects.
+    async fn restart(&mut self, me: &ActorRef<Mcp>, names: &[String]) {
+        for name in names {
+            tracing::info!(server = %name, "mcp server restarting");
+            if let Some(r) = self.state.running.remove(name) {
+                for tool in r.tools {
+                    let _ = self.registry.ask(UnregisterTool(tool)).await;
+                }
             }
         }
+        self.reconcile(me).await;
     }
-    reconcile(state, dir, registry).await;
+}
+
+/// `tell` from a connect task: one server's attempt finished.
+struct Settled {
+    name: String,
+    spec: ServerSpec,
+    result: Attempt,
+}
+
+type Attempt = anyhow::Result<(Service, Vec<rmcp::model::Tool>)>;
+
+impl Message<Settled> for Mcp {
+    type Reply = ();
+
+    async fn handle(&mut self, m: Settled, ctx: &mut Context<Self, Self::Reply>) {
+        self.state.pending.remove(&m.name);
+        let wanted = desired(&self.dir).get(&m.name) == Some(&m.spec)
+            && self.state.gates.for_server(&m.name) != PolicyAction::Deny;
+        if !wanted {
+            // The entry changed or left while connecting: `result` is dropped
+            // (ending the process) and reconcile starts over if needed.
+            self.reconcile(ctx.actor_ref()).await;
+            return;
+        }
+        let connected = m.result.is_ok();
+        settle(&mut self.state, m.name, m.spec, m.result);
+        if connected {
+            register(&mut self.state, &self.registry, Vec::new()).await;
+        }
+        self.rt.publish(progress(&self.state)).await;
+    }
+}
+
+/// `ask` → [`McpProgress`]: the current snapshot, for a UI that attached
+/// after the first ones were published.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct Progress;
+
+impl Message<Progress> for Mcp {
+    type Reply = McpProgress;
+
+    async fn handle(&mut self, _: Progress, _: &mut Context<Self, Self::Reply>) -> McpProgress {
+        progress(&self.state)
+    }
 }
 
 async fn connect(name: &str, spec: &ServerSpec) -> anyhow::Result<Service> {
@@ -853,8 +920,69 @@ fn desired(dir: &Path) -> BTreeMap<String, ServerSpec> {
     out
 }
 
-/// Bring `state.running` in line with the files in `dir`.
-async fn reconcile(state: &mut State, dir: &Path, registry: &ActorRef<ToolRegistry>) {
+/// Progress snapshot of `state`.
+fn progress(state: &State) -> McpProgress {
+    let sorted = |it: Vec<String>| {
+        let mut v = it;
+        v.sort();
+        v
+    };
+    McpProgress {
+        connecting: sorted(state.pending.iter().cloned().collect()),
+        connected: sorted(state.running.keys().cloned().collect()),
+        failed: sorted(state.errors.keys().cloned().collect()),
+    }
+}
+
+/// Connect and list tools, bounded by [`CONNECT_TIMEOUT`].
+async fn attempt(name: &str, spec: &ServerSpec) -> Attempt {
+    tokio::time::timeout(CONNECT_TIMEOUT, async {
+        let service = connect(name, spec).await?;
+        let remote = service.list_all_tools().await?;
+        anyhow::Ok((service, remote))
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("no response within {CONNECT_TIMEOUT:?}"))
+    .and_then(|r| r)
+}
+
+/// Record a settled attempt for a server the files still want.
+fn settle(state: &mut State, name: String, spec: ServerSpec, result: Attempt) {
+    match result {
+        Ok((service, remote)) => {
+            tracing::info!(server = %name, count = remote.len(), "mcp server connected");
+            state.errors.remove(&name);
+            state.running.insert(
+                name,
+                Running {
+                    spec,
+                    service,
+                    remote,
+                    tools: Vec::new(),
+                },
+            );
+        }
+        Err(e) => {
+            tracing::warn!(server = %name, error = %e, "mcp connect failed");
+            state
+                .errors
+                .insert(name.clone(), format!("{name}: connect failed: {e:#}"));
+        }
+    }
+}
+
+/// Bring `state` in line with the files in `dir`: drop servers whose entry
+/// changed or left, and start a connect task for every wanted server not
+/// running or already connecting. Tasks report back as [`Settled`], so the
+/// actor never waits on a server. Publishes an [`McpProgress`] when anything
+/// moved.
+async fn reconcile(
+    state: &mut State,
+    dir: &Path,
+    registry: &ActorRef<ToolRegistry>,
+    rt: &Runtime,
+    me: &ActorRef<Mcp>,
+) {
     let want = desired(dir);
     let gates = load_gates(&dir.join("config.yaml"));
     let gates_changed = gates != state.gates;
@@ -880,47 +1008,30 @@ async fn reconcile(state: &mut State, dir: &Path, registry: &ActorRef<ToolRegist
     }
     state.errors.retain(|name, _| want.contains_key(name));
     for (name, spec) in want {
-        if state.running.contains_key(&name) || state.gates.for_server(&name) == PolicyAction::Deny
+        if state.running.contains_key(&name)
+            || state.pending.contains(&name)
+            || state.gates.for_server(&name) == PolicyAction::Deny
         {
             continue;
         }
-        let attempt = tokio::time::timeout(CONNECT_TIMEOUT, async {
-            let service = connect(&name, &spec).await?;
-            let remote = service.list_all_tools().await?;
-            anyhow::Ok((service, remote))
-        })
-        .await
-        .map_err(|_| anyhow::anyhow!("no response within {CONNECT_TIMEOUT:?}"))
-        .and_then(|r| r);
-        match attempt {
-            Ok((service, remote)) => {
-                tracing::info!(server = %name, count = remote.len(), "mcp server connected");
-                changed = true;
-                state.errors.remove(&name);
-                state.running.insert(
-                    name,
-                    Running {
-                        spec,
-                        service,
-                        remote,
-                        tools: Vec::new(),
-                    },
-                );
-            }
-            Err(e) => {
-                tracing::warn!(server = %name, error = %e, "mcp connect failed");
-                state
-                    .errors
-                    .insert(name.clone(), format!("{name}: connect failed: {e:#}"));
-            }
-        }
+        changed = true;
+        state.pending.insert(name.clone());
+        let me = me.clone();
+        tokio::spawn(async move {
+            let result = attempt(&name, &spec).await;
+            let _ = me.tell(Settled { name, spec, result }).await;
+        });
     }
-    if !changed {
-        return;
+    if changed {
+        register(state, registry, orphans).await;
+        rt.publish(progress(state)).await;
     }
+}
 
-    // Recompute every registration in sorted server order (first name wins),
-    // then diff against what is registered so nothing flickers.
+/// Recompute every registration in sorted server order (first name wins),
+/// then diff against what is registered so nothing flickers. `orphans` are
+/// names registered by servers that have since been dropped.
+async fn register(state: &mut State, registry: &ActorRef<ToolRegistry>, mut orphans: Vec<String>) {
     let mut taken: HashMap<String, String> = HashMap::new();
     let mut regs: Vec<(String, McpTool)> = Vec::new();
     let mut names: Vec<&String> = state.running.keys().collect();
@@ -975,9 +1086,9 @@ async fn reconcile(state: &mut State, dir: &Path, registry: &ActorRef<ToolRegist
 }
 
 /// Register the MCP source tools (natives, so they win clashes), spawn the
-/// [`Mcp`] actor, run the initial reconcile of `<data_dir>/mcp`, then watch
-/// the directory. Returns after the first reconcile so the tools exist when
-/// the plugin reports started.
+/// [`Mcp`] actor, kick off the first reconcile of `<data_dir>/mcp` without
+/// waiting for it (servers connect in the background and report through
+/// [`McpProgress`]), then watch the directory.
 pub async fn start(rt: &Runtime, registry: ActorRef<ToolRegistry>) -> anyhow::Result<()> {
     let dir = rt.data_dir.join("mcp");
     std::fs::create_dir_all(&dir)?;
@@ -1004,11 +1115,12 @@ pub async fn start(rt: &Runtime, registry: ActorRef<ToolRegistry>) -> anyhow::Re
             },
             dir: dir.clone(),
             registry,
+            rt: rt.clone(),
         },
         runtime::subscriber_mailbox(),
     );
     mcp.register(MCP_ACTOR)?;
-    mcp.ask(Reconcile).await?;
+    mcp.tell(Reconcile).await?;
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
