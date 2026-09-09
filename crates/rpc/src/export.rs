@@ -16,6 +16,8 @@ fn export_bindings() {
         agent::Loaded,
         agent::Usage,
         agent::ModelInfo,
+        agent::SkillMeta,
+        agent::SkillBody,
         tools::ToolSpec,
         tools::Risk,
         tools::PolicyAction,
@@ -26,6 +28,8 @@ fn export_bindings() {
         tools::ApprovalId,
         tools::Decision,
         tools::ApprovalsState,
+        tools::RepoInfo,
+        tools::git::SyncResult,
         runtime::SessionId,
         runtime::TurnId
     );

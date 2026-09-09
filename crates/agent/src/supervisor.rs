@@ -20,13 +20,20 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore, oneshot};
 use tokio::task::AbortHandle;
 use tools::{REGISTRY_ACTOR, RegisterTool, SetParent, ToolRegistry};
 
-use crate::loop_::{CancelTurn, IsRunning, Session, SwitchModel, UserInput, text_of};
+use crate::loop_::{
+    CancelTurn, IsRunning, Session, SwitchModel, UserInput, system_prompt, text_of,
+};
 use crate::peers::{SendMessageTool, SpawnSubagentTool};
-use crate::skills::{LoadSkillTool, Skills};
+use crate::skills::{
+    self, AddSkillRepoTool, AddSkillTool, LoadSkillTool, RemoveSkillRepoTool, RemoveSkillTool,
+    SyncSkillsTool,
+};
 use crate::store::Store;
 use crate::{
-    AGENT_ACTOR, AgentConfig, AgentEvent, Cancel, HistoryEntry, ListChildren, ListModels,
-    ListSessions, LoadSession, Loaded, ModelInfo, SendInput, SessionSummary, SetModel, Steer,
+    AGENT_ACTOR, AddSkill, AddSkillRepo, AgentConfig, AgentEvent, Cancel, HistoryEntry,
+    ListChildren, ListModels, ListSessions, ListSkills, LoadSession, LoadSkill, Loaded, ModelInfo,
+    RemoveSkill, RemoveSkillRepo, SendInput, SessionSummary, SetModel, ShowPrompt, SkillBody,
+    SkillMeta, Steer, SyncSkills,
 };
 
 /// The supervisor actor. Look up with `ActorRef::<Agents>::lookup(AGENT_ACTOR)`.
@@ -40,7 +47,6 @@ pub struct Agents {
     /// `configured(genai_namespace)`: whether genai can authenticate it.
     configured: Arc<dyn Fn(&str) -> bool + Send + Sync>,
     store: Store,
-    skills: Arc<Skills>,
     client: Client,
     sessions: HashMap<SessionId, Live>,
     /// Sessions with a turn in flight (from `TurnStarted`/`TurnFinished`).
@@ -191,7 +197,6 @@ impl Agents {
             self.store.clone(),
             self.client.clone(),
             self.rt.clone(),
-            self.skills.clone(),
         ));
         self.sessions.insert(
             id,
@@ -477,23 +482,18 @@ impl Message<Deliver> for Agents {
     }
 }
 
-impl Message<PeerContext> for Agents {
-    type Reply = String;
-
-    async fn handle(&mut self, m: PeerContext, _: &mut Context<Self, Self::Reply>) -> String {
+impl Agents {
+    /// The §2.5 prompt block for `session` (empty when it has no peers and cannot spawn).
+    async fn peer_context(&self, session: SessionId) -> String {
         let mut s = String::new();
-        if let Some((parent, name)) = self
-            .sessions
-            .get(&m.session)
-            .and_then(|l| l.parent.as_ref())
-        {
+        if let Some((parent, name)) = self.sessions.get(&session).and_then(|l| l.parent.as_ref()) {
             s.push_str(&format!(
                 "## Peers\nYou are `{name}`, a subagent of session {parent} (address it as `parent`).\nYour final message is delivered to the parent when your turn ends."
             ));
         }
-        let children = self.store.children(m.session).await.unwrap_or_default();
+        let children = self.store.children(session).await.unwrap_or_default();
         let can_spawn =
-            self.store.depth(m.session).await.unwrap_or(u8::MAX) < self.cfg.subagents.max_depth;
+            self.store.depth(session).await.unwrap_or(u8::MAX) < self.cfg.subagents.max_depth;
         if children.is_empty() && !can_spawn {
             return s;
         }
@@ -518,6 +518,114 @@ impl Message<PeerContext> for Agents {
             s.push_str("Steer or ask with send_message. Results arrive as <subagent_result> messages; you do not need to poll.");
         }
         s
+    }
+
+    fn skills_dir(&self) -> std::path::PathBuf {
+        skills::dir(&self.rt.data_dir)
+    }
+}
+
+impl Message<PeerContext> for Agents {
+    type Reply = String;
+
+    async fn handle(&mut self, m: PeerContext, _: &mut Context<Self, Self::Reply>) -> String {
+        self.peer_context(m.session).await
+    }
+}
+
+impl Message<ShowPrompt> for Agents {
+    type Reply = String;
+
+    async fn handle(&mut self, m: ShowPrompt, _: &mut Context<Self, Self::Reply>) -> String {
+        let peers = match m.session {
+            Some(s) => self.peer_context(s).await,
+            None => String::new(),
+        };
+        system_prompt(&self.rt.data_dir, &peers)
+    }
+}
+
+impl Message<ListSkills> for Agents {
+    type Reply = Vec<SkillMeta>;
+
+    async fn handle(
+        &mut self,
+        _: ListSkills,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Vec<SkillMeta> {
+        skills::index(&self.skills_dir())
+    }
+}
+
+impl Message<LoadSkill> for Agents {
+    type Reply = Result<SkillBody, String>;
+
+    async fn handle(
+        &mut self,
+        m: LoadSkill,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<SkillBody, String> {
+        skills::load(&self.skills_dir(), &m.name)
+    }
+}
+
+impl Message<AddSkill> for Agents {
+    type Reply = Result<SkillMeta, String>;
+
+    async fn handle(
+        &mut self,
+        m: AddSkill,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<SkillMeta, String> {
+        skills::add(&self.skills_dir(), m)
+    }
+}
+
+impl Message<RemoveSkill> for Agents {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        m: RemoveSkill,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<(), String> {
+        skills::remove(&self.skills_dir(), &m.name)
+    }
+}
+
+impl Message<AddSkillRepo> for Agents {
+    type Reply = Result<Vec<SkillMeta>, String>;
+
+    async fn handle(
+        &mut self,
+        m: AddSkillRepo,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<Vec<SkillMeta>, String> {
+        skills::add_repo(&self.skills_dir(), &m.url, m.name).await
+    }
+}
+
+impl Message<RemoveSkillRepo> for Agents {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        m: RemoveSkillRepo,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<(), String> {
+        skills::remove_repo(&self.skills_dir(), &m.name)
+    }
+}
+
+impl Message<SyncSkills> for Agents {
+    type Reply = Vec<tools::git::SyncResult>;
+
+    async fn handle(
+        &mut self,
+        _: SyncSkills,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Vec<tools::git::SyncResult> {
+        tools::git::sync_all(&self.skills_dir()).await
     }
 }
 
@@ -755,7 +863,6 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
     });
     let cfg = Arc::new(cfg);
     let store = Store::open(&rt.data_dir.join("sessions.sqlite")).await?;
-    let skills = Arc::new(Skills::load(&rt.data_dir.join("skills")));
     let creds = Arc::new(credentials(&rt.data_dir));
     let agents = Agents::spawn_with_mailbox(
         Agents {
@@ -765,7 +872,6 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             catalog: Arc::new(Catalog::load(&rt.data_dir)),
             configured: configured(creds.clone()),
             store,
-            skills: skills.clone(),
             client: client(creds)?,
             sessions: HashMap::new(),
             running: HashSet::new(),
@@ -781,11 +887,32 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
     rt.subscribe::<Agents, AgentEvent>(&agents).await;
 
     // The tools plugin may start after us; retry the lookup briefly.
+    let data_dir = rt.data_dir.clone();
     tokio::spawn(async move {
         for _ in 0..50 {
             if let Ok(Some(reg)) = ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR) {
+                let dir = skills::dir(&data_dir);
                 let _ = reg
-                    .ask(RegisterTool(Arc::new(LoadSkillTool { skills })))
+                    .ask(RegisterTool(Arc::new(LoadSkillTool { dir: dir.clone() })))
+                    .await;
+                let _ = reg
+                    .ask(RegisterTool(Arc::new(AddSkillTool { dir: dir.clone() })))
+                    .await;
+                let _ = reg
+                    .ask(RegisterTool(Arc::new(RemoveSkillTool { dir: dir.clone() })))
+                    .await;
+                let _ = reg
+                    .ask(RegisterTool(Arc::new(AddSkillRepoTool {
+                        dir: dir.clone(),
+                    })))
+                    .await;
+                let _ = reg
+                    .ask(RegisterTool(Arc::new(RemoveSkillRepoTool {
+                        dir: dir.clone(),
+                    })))
+                    .await;
+                let _ = reg
+                    .ask(RegisterTool(Arc::new(SyncSkillsTool { dir })))
                     .await;
                 let _ = reg.ask(RegisterTool(Arc::new(SpawnSubagentTool))).await;
                 let _ = reg
@@ -796,7 +923,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         tracing::warn!(
-            "tool registry never came up; load_skill/spawn_subagent/send_message not registered"
+            "tool registry never came up; skill/spawn_subagent/send_message tools not registered"
         );
     });
     Ok(())

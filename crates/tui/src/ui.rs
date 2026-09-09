@@ -8,8 +8,8 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tools::{Decision, Risk};
 
 use crate::model::{
-    Command, Entry, Level, Menu, MenuKey, Model, Row, UiEvent, describe, gate_name, k, result_line,
-    short, slash_matches, window,
+    CardKind, Command, Entry, Level, Menu, MenuKey, Model, Row, UiEvent, describe, gate_name, k,
+    result_line, short, slash_matches, window,
 };
 
 /// Channels handed to the app through iocraft context (owned so the receiver
@@ -37,6 +37,10 @@ const USER: Color = Color::AnsiValue(117);
 const TOOL: Color = Color::Cyan;
 /// Peer (subagent / parent) message cards.
 const PEER: Color = Color::Magenta;
+/// Skill body cards.
+const SKILL: Color = Color::Yellow;
+/// System prompt cards.
+const PROMPT: Color = Color::DarkGrey;
 
 /// Run the fullscreen UI until the user quits. Mouse capture stays off so
 /// the terminal's own selection (and copy-on-select) keeps working.
@@ -118,7 +122,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 return;
             }
             if code == KeyCode::Char('o') && modifiers.contains(KeyModifiers::CONTROL) {
-                m.toggle_delivered();
+                m.toggle_card();
                 return;
             }
             if m.approval().is_some() {
@@ -180,7 +184,12 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     let has_focus = m.approval().is_none()
         && !matches!(
             m.menu,
-            Some(Menu::Models { .. } | Menu::Sessions { .. } | Menu::Mcp { .. })
+            Some(
+                Menu::Models { .. }
+                    | Menu::Sessions { .. }
+                    | Menu::Mcp { .. }
+                    | Menu::Skills { .. }
+            )
         );
     let (header, level) = m.header(&catalog);
     let header_color = match level {
@@ -230,7 +239,7 @@ fn menu(m: &Model, input: &str) -> Option<AnyElement<'static>> {
             let word = input.split(' ').next().unwrap_or_default();
             let rows = slash_matches(word)
                 .into_iter()
-                .map(|(name, hint, desc)| format!("{:<16} {desc}", format!("{name} {hint}")))
+                .map(|(name, hint, desc)| format!("{:<30} {desc}", format!("{name} {hint}")))
                 .collect::<Vec<_>>();
             (
                 "↑↓ move  ⇥ complete  ⏎ run  esc close".to_owned(),
@@ -270,12 +279,12 @@ fn menu(m: &Model, input: &str) -> Option<AnyElement<'static>> {
         Menu::Mcp {
             cursor, expanded, ..
         } => (
-            "mcp  ␣ cycle gate  ⌫ inherit  →/← expand".to_owned(),
+            "mcp  ␣ cycle gate  ⌫ inherit  →/← expand  s sync".to_owned(),
             m.mcp_rows()
                 .iter()
                 .map(|r| match r {
                     Row::Server(s) => format!(
-                        "{} {:<16} {:>2} tools   {:<6} {}",
+                        "{} {:<16} {:>2} tools   {:<6} {}{}",
                         if expanded.contains(&s.name) {
                             "▾"
                         } else {
@@ -293,6 +302,9 @@ fn menu(m: &Model, input: &str) -> Option<AnyElement<'static>> {
                         } else {
                             "○ not connected"
                         },
+                        s.repo
+                            .as_deref()
+                            .map_or_else(String::new, |r| format!("   ⟳ {r}")),
                     ),
                     Row::Tool(_, t) => format!(
                         "    {:<24} {:<7}{}",
@@ -307,6 +319,26 @@ fn menu(m: &Model, input: &str) -> Option<AnyElement<'static>> {
                             "  not registered"
                         },
                     ),
+                })
+                .collect(),
+            *cursor,
+        ),
+        Menu::Skills { items, cursor } => (
+            "skills  ⏎ show  esc close".to_owned(),
+            items
+                .iter()
+                .map(|s| {
+                    // ponytail: fixed 48-char description; pass the terminal width if it grates.
+                    let desc: String = s.description.chars().take(48).collect();
+                    format!(
+                        "{:<20} {:<48} {:<16} {}",
+                        s.name,
+                        desc,
+                        s.repo
+                            .as_deref()
+                            .map_or_else(String::new, |r| format!("[{r}]")),
+                        if s.always { "always" } else { "" }
+                    )
                 })
                 .collect(),
             *cursor,
@@ -343,22 +375,29 @@ fn entry(e: &Entry) -> AnyElement<'static> {
             }
         }
         .into_any(),
-        // Peer traffic: a card in the peer colour, body hidden until Ctrl+O.
-        Entry::Delivered {
-            from,
+        // Cards (peer traffic, skill bodies, the prompt): body hidden until Ctrl+O.
+        Entry::Card {
+            kind,
+            title,
             text,
             expanded,
         } => {
+            let color = match kind {
+                CardKind::Peer => PEER,
+                CardKind::Skill => SKILL,
+                CardKind::Prompt => PROMPT,
+            };
             let v = text.view();
             let lines = v.lines().count();
+            let glyph = kind.glyph();
             let header = if *expanded {
-                format!("⟵ {from}   ctrl+o collapses")
+                format!("{glyph} {title}   ctrl+o collapses")
             } else {
-                format!("⟵ {from}   {lines} lines · ctrl+o expands")
+                format!("{glyph} {title}   {lines} lines · ctrl+o expands")
             };
             element! {
-                View(flex_direction: FlexDirection::Column, border_style: BorderStyle::Round, border_color: PEER, padding_left: 1, padding_right: 1, margin_top: 1) {
-                    Text(content: header, color: PEER, weight: Weight::Bold)
+                View(flex_direction: FlexDirection::Column, border_style: BorderStyle::Round, border_color: color, padding_left: 1, padding_right: 1, margin_top: 1) {
+                    Text(content: header, color, weight: Weight::Bold)
                     #(expanded.then(|| element!(View(flex_direction: FlexDirection::Column, margin_top: 1) {
                         #(v.lines().map(line))
                     })))

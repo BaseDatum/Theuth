@@ -5,8 +5,9 @@
 use std::fmt::Display;
 
 use agent::{
-    Agents, Cancel, ListModels, ListSessions, LoadSession, Loaded, ModelInfo, SendInput,
-    SessionSummary, SetModel, Steer,
+    AddSkill, AddSkillRepo, Agents, Cancel, ListModels, ListSessions, ListSkills, LoadSession,
+    LoadSkill, Loaded, ModelInfo, RemoveSkill, RemoveSkillRepo, SendInput, SessionSummary,
+    SetModel, ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills,
 };
 use jsonrpsee::core::{RpcResult, SubscriptionResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
@@ -19,9 +20,11 @@ use kameo::message::Message;
 use kameo::reply::Reply;
 use runtime::{Runtime, SessionId};
 use tokio::sync::broadcast;
+use tools::git::SyncResult;
 use tools::{
-    Approval, ApprovalId, ApprovalsState, Decision, ListServers, ListTools, Mcp, McpServer,
-    PolicyAction, Resolve, SetApprovals, SetGate, ToolRegistry, ToolSpec,
+    AddRepo, AddServer, Approval, ApprovalId, ApprovalsState, Decision, ListServers, ListTools,
+    Mcp, McpServer, PolicyAction, RemoveServer, RepoInfo, Resolve, SetApprovals, SetGate, SyncMcp,
+    ToolRegistry, ToolSpec,
 };
 
 use crate::bridge::Event;
@@ -82,6 +85,48 @@ pub trait Api {
         session: Option<SessionId>,
         enabled: bool,
     ) -> RpcResult<ApprovalsState>;
+    /// The assembled system prompt; without `session` the peers section is omitted.
+    #[method(name = "get_prompt")]
+    async fn get_prompt(&self, session: Option<SessionId>) -> RpcResult<String>;
+    /// Every skill under `<data_dir>/skills`.
+    #[method(name = "list_skills")]
+    async fn list_skills(&self) -> RpcResult<Vec<SkillMeta>>;
+    /// Body (and supporting files) of one skill.
+    #[method(name = "load_skill")]
+    async fn load_skill(&self, name: String) -> RpcResult<SkillBody>;
+    /// Write `skills/<name>.md`.
+    #[method(name = "add_skill")]
+    async fn add_skill(
+        &self,
+        name: String,
+        description: String,
+        body: String,
+        always: bool,
+    ) -> RpcResult<SkillMeta>;
+    /// Delete a local skill.
+    #[method(name = "remove_skill")]
+    async fn remove_skill(&self, name: String) -> RpcResult<()>;
+    /// Clone a skill repo into `skills/<name>`; returns the skills it holds.
+    #[method(name = "add_skill_repo")]
+    async fn add_skill_repo(&self, url: String, name: Option<String>) -> RpcResult<Vec<SkillMeta>>;
+    /// Delete a cloned skill repo.
+    #[method(name = "remove_skill_repo")]
+    async fn remove_skill_repo(&self, name: String) -> RpcResult<()>;
+    /// `git pull` every skill repo.
+    #[method(name = "sync_skills")]
+    async fn sync_skills(&self) -> RpcResult<Vec<SyncResult>>;
+    /// Write `mcp/<name>.json` and connect; returns the server with its tools.
+    #[method(name = "add_mcp_server")]
+    async fn add_mcp_server(&self, name: String, entry: serde_json::Value) -> RpcResult<McpServer>;
+    /// Remove (or disable) an MCP server entry.
+    #[method(name = "remove_mcp_server")]
+    async fn remove_mcp_server(&self, name: String) -> RpcResult<()>;
+    /// Clone a repo into `mcp/repos/<name>`.
+    #[method(name = "add_mcp_repo")]
+    async fn add_mcp_repo(&self, url: String, name: Option<String>) -> RpcResult<RepoInfo>;
+    /// `git pull` every MCP repo, restarting servers whose repo changed.
+    #[method(name = "sync_mcp")]
+    async fn sync_mcp(&self) -> RpcResult<Vec<SyncResult>>;
     /// Stop the whole process.
     #[method(name = "shutdown")]
     async fn shutdown(&self) -> RpcResult<()>;
@@ -198,6 +243,69 @@ impl ApiServer for Server {
         enabled: bool,
     ) -> RpcResult<ApprovalsState> {
         ask::<ToolRegistry, _>(tools::REGISTRY_ACTOR, SetApprovals { session, enabled }).await
+    }
+
+    async fn get_prompt(&self, session: Option<SessionId>) -> RpcResult<String> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, ShowPrompt { session }).await
+    }
+
+    async fn list_skills(&self) -> RpcResult<Vec<SkillMeta>> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, ListSkills).await
+    }
+
+    async fn load_skill(&self, name: String) -> RpcResult<SkillBody> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, LoadSkill { name }).await
+    }
+
+    async fn add_skill(
+        &self,
+        name: String,
+        description: String,
+        body: String,
+        always: bool,
+    ) -> RpcResult<SkillMeta> {
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            AddSkill {
+                name,
+                description,
+                body,
+                always,
+            },
+        )
+        .await
+    }
+
+    async fn remove_skill(&self, name: String) -> RpcResult<()> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, RemoveSkill { name }).await
+    }
+
+    async fn add_skill_repo(&self, url: String, name: Option<String>) -> RpcResult<Vec<SkillMeta>> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, AddSkillRepo { url, name }).await
+    }
+
+    async fn remove_skill_repo(&self, name: String) -> RpcResult<()> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, RemoveSkillRepo { name }).await
+    }
+
+    async fn sync_skills(&self) -> RpcResult<Vec<SyncResult>> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, SyncSkills).await
+    }
+
+    async fn add_mcp_server(&self, name: String, entry: serde_json::Value) -> RpcResult<McpServer> {
+        ask::<Mcp, _>(tools::MCP_ACTOR, AddServer { name, entry }).await
+    }
+
+    async fn remove_mcp_server(&self, name: String) -> RpcResult<()> {
+        ask::<Mcp, _>(tools::MCP_ACTOR, RemoveServer { name }).await
+    }
+
+    async fn add_mcp_repo(&self, url: String, name: Option<String>) -> RpcResult<RepoInfo> {
+        ask::<Mcp, _>(tools::MCP_ACTOR, AddRepo { url, name }).await
+    }
+
+    async fn sync_mcp(&self) -> RpcResult<Vec<SyncResult>> {
+        ask::<Mcp, _>(tools::MCP_ACTOR, SyncMcp).await
     }
 
     async fn shutdown(&self) -> RpcResult<()> {

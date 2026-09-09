@@ -36,7 +36,7 @@ overlay `WTH_<SECTION>__<KEY>` unchanged. Same sections, same structs:
 ```yaml
 agent:
   model: claude-sonnet-4-5
-  system_prompt: ""            # prepended to the built-in prompt
+  # standing instructions live in <data_dir>/prompt.md (design doc 04)
   max_tool_rounds: 50
   subagents:                   # §2.6
     model: null                # default: agent.model
@@ -96,10 +96,11 @@ Tauri build. Encrypting the file — same argument.
 Goal: copy any `mcp.json` from any README into `~/.wth/mcp/`, and its servers
 are usable on the next turn. No restart, no reformatting, no prefixes.
 
-**Files.** Every `*.json` in `~/.wth/mcp/` (non-recursive) may hold one server
-or many; the user organises by file however they like (`research.json`,
-`home-automation.json`, `everything.json`). Formats are detected
-structurally, not by a wrapper-key list:
+**Files.** Every `*.json` in `~/.wth/mcp/` (non-recursive; `repos/` holds git
+clones and is never scanned) may hold one server or many; the user organises
+by file however they like (`research.json`, `home-automation.json`,
+`everything.json`). Formats are detected structurally, not by a wrapper-key
+list:
 
 ```
 node is a server entry  ⇔  it is an object with `command` or `url`
@@ -117,6 +118,7 @@ Entry normalisation covers the shapes in the wild:
 | exe | `command: "npx"` + `args: [...]` (Claude/Cursor/LM Studio/VS Code) · `command: ["npx", ...]` (OpenCode) | array form: first element is the exe |
 | env | `env` · `environment` | map of string→string |
 | remote | `url` with `type` ∈ `http`/`sse`/`remote`/`streamable-http`/absent | all via rmcp streamable-HTTP; `headers` map passed through |
+| cwd | `cwd` | working directory for the exe; relative → against `mcp/` (`repos/my-server`) |
 | off | `enabled: false` · `disabled: true` | entry skipped |
 
 Anything else in an entry is ignored. A file that fails to parse is logged
@@ -127,7 +129,9 @@ server name in two files: first by sorted path wins, warning names both files.
 remove, rename), debounces 300 ms, then reconciles desired vs running by
 server name: new → connect + register tools; removed → unregister its tools +
 drop the connection (child process exits with it); changed (normalised entry
-differs) → drop + reconnect. Startup is the same reconcile with an empty
+differs) → drop + reconnect; `Restart(name)` forces the drop + reconnect for
+one server whose entry is unchanged (after `sync_mcp` rebuilt its repo).
+Startup is the same reconcile with an empty
 running set. A server that fails to connect is logged and retried on the next
 reconcile (any change in the dir), not in a loop. Registry gains
 `UnregisterTool(name)`. The model's tool list is read at the start of every

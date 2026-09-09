@@ -4,6 +4,7 @@
 //! it inside a spawned task and hands it back via [`TurnDone`], so the actor's
 //! mailbox never blocks on network I/O.
 
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use futures::StreamExt;
@@ -20,7 +21,7 @@ use tokio_util::sync::CancellationToken;
 use tools::{Invoke, ListTools, REGISTRY_ACTOR, ToolRegistry};
 
 use crate::peers::SpawnSubagentTool;
-use crate::skills::Skills;
+use crate::skills;
 use crate::store::Store;
 use crate::supervisor::PeerContext;
 use crate::{AGENT_ACTOR, AgentConfig, AgentEvent, Agents, Usage};
@@ -70,7 +71,6 @@ struct Shared {
     store: Store,
     client: Client,
     rt: Runtime,
-    skills: Arc<Skills>,
     steer: Arc<Mutex<Vec<String>>>,
 }
 
@@ -88,7 +88,6 @@ impl Session {
         store: Store,
         client: Client,
         rt: Runtime,
-        skills: Arc<Skills>,
     ) -> Self {
         let titled = !history.is_empty();
         Self {
@@ -100,7 +99,6 @@ impl Session {
                 store,
                 client,
                 rt,
-                skills,
                 steer: Arc::default(),
             },
             history,
@@ -343,7 +341,7 @@ impl Turn {
             }
         };
         let req = ChatRequest::new(history.clone())
-            .with_system(self.system_prompt())
+            .with_system(system_prompt(&self.shared.rt.data_dir, &self.peers))
             .with_tools(tools);
         let opts = ChatOptions::default()
             .with_capture_tool_calls(true)
@@ -478,30 +476,33 @@ impl Turn {
         self.persist(history, ChatMessage::from(responses)).await;
         Round::Tools
     }
+}
 
-    fn system_prompt(&self) -> String {
-        let cwd = std::env::current_dir()
-            .map(|p| p.display().to_string())
-            .unwrap_or_default();
-        let mut s = format!(
-            "You are a fast, direct assistant that does things for the user on their machine.\nWorking directory: {cwd}\nDate: {}",
-            chrono::Local::now().format("%Y-%m-%d")
-        );
-        if !self.shared.cfg.system_prompt.is_empty() {
-            s.push_str("\n\n");
-            s.push_str(&self.shared.cfg.system_prompt);
-        }
-        let skills = self.shared.skills.prompt_index();
-        if !skills.is_empty() {
-            s.push('\n');
-            s.push_str(&skills);
-        }
-        if !self.peers.is_empty() {
-            s.push_str("\n\n");
-            s.push_str(&self.peers);
-        }
-        s
-    }
+/// The system prompt (design doc 04 §1.1), rebuilt from disk per call:
+/// built-in header, `<data_dir>/prompt.md`, `always` skill bodies, skills
+/// index, `peers`; empty parts skipped, one blank line between the rest.
+pub(crate) fn system_prompt(data_dir: &Path, peers: &str) -> String {
+    let cwd = std::env::current_dir()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    let header = format!(
+        "You are a fast, direct assistant that does things for the user on their machine.\nWorking directory: {cwd}\nDate: {}",
+        chrono::Local::now().format("%Y-%m-%d")
+    );
+    let standing = std::fs::read_to_string(data_dir.join("prompt.md")).unwrap_or_default();
+    let skills = skills::index(&skills::dir(data_dir));
+    [
+        header.as_str(),
+        &standing,
+        &skills::always_bodies(&skills),
+        &skills::prompt_index(&skills),
+        peers,
+    ]
+    .iter()
+    .map(|s| s.trim())
+    .filter(|s| !s.is_empty())
+    .collect::<Vec<_>>()
+    .join("\n\n")
 }
 
 /// Outcome of one model call.
@@ -523,4 +524,38 @@ pub(crate) fn truncate(s: &str, max: usize) -> String {
 /// Text parts of a message joined, for history rendering.
 pub(crate) fn text_of(content: &MessageContent) -> String {
     content.texts().join("")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prompt_parts_in_order_with_blank_lines() {
+        let data_dir = std::env::temp_dir().join(format!("wth-prompt-{}", uuid::Uuid::new_v4()));
+        let skills_dir = skills::dir(&data_dir);
+        std::fs::create_dir_all(&skills_dir).unwrap();
+        let bare = system_prompt(&data_dir, "");
+        assert!(bare.starts_with("You are a fast"));
+        assert!(!bare.contains("## Skills"));
+
+        std::fs::write(data_dir.join("prompt.md"), "Standing rule.\n\n").unwrap();
+        std::fs::write(
+            skills_dir.join("rules.md"),
+            "---\nalways: true\n---\nAlways rule.\n",
+        )
+        .unwrap();
+        std::fs::write(skills_dir.join("later.md"), "Listed skill\n").unwrap();
+        let full = system_prompt(&data_dir, "## Peers\npeer text");
+        std::fs::remove_dir_all(&data_dir).unwrap();
+
+        let pos = |needle: &str| {
+            full.find(needle)
+                .unwrap_or_else(|| panic!("{needle:?} in {full}"))
+        };
+        assert!(pos("Date: ") < pos("\n\nStanding rule.\n\nAlways rule.\n\n## Skills\n"));
+        assert!(pos("- later: Listed skill\n\n## Peers\npeer text") > pos("## Skills"));
+        assert!(!full.contains("rules"));
+        assert!(full.ends_with("peer text"));
+    }
 }

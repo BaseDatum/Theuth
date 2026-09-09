@@ -4,14 +4,17 @@
 use std::collections::{BTreeSet, VecDeque};
 use std::ops::Range;
 
-use agent::{AgentEvent, HistoryEntry, Loaded, ModelInfo, SessionSummary, Usage};
+use agent::{
+    AgentEvent, HistoryEntry, Loaded, ModelInfo, SessionSummary, SkillBody, SkillMeta, Usage,
+};
 use iocraft::KeyCode;
 use models::Catalog;
 use runtime::SessionId;
 use tokio::sync::mpsc::UnboundedSender;
+use tools::git::SyncResult;
 use tools::{
     ApprovalId, ApprovalRequested, ApprovalResolved, ApprovalsState, Decision, McpServer,
-    McpToolInfo, PolicyAction,
+    McpToolInfo, PolicyAction, RepoInfo,
 };
 
 /// Everything the UI can receive: bus events plus replies to its own commands.
@@ -39,6 +42,22 @@ pub enum UiEvent {
     Mcp(Vec<McpServer>),
     /// Reply to [`Command::SetApprovals`].
     Approvals(ApprovalsState),
+    /// Reply to [`Command::ShowPrompt`].
+    Prompt(String),
+    /// Reply to [`Command::ListSkills`].
+    Skills(Vec<SkillMeta>),
+    /// Reply to [`Command::LoadSkill`].
+    Skill(SkillBody),
+    /// Reply to [`Command::AddSkillRepo`]: the skills the clone holds.
+    SkillsAdded(Vec<SkillMeta>),
+    /// Reply to [`Command::SyncSkills`] / [`Command::SyncMcp`].
+    Synced(Vec<SyncResult>),
+    /// Reply to [`Command::AddMcp`].
+    McpAdded(McpServer),
+    /// Reply to [`Command::AddMcpRepo`].
+    RepoAdded(RepoInfo),
+    /// A command succeeded with nothing to show but a notice.
+    Info(String),
     /// A command failed (actor missing, ask error).
     Error(String),
 }
@@ -103,6 +122,29 @@ pub enum Command {
         /// On or off.
         enabled: bool,
     },
+    /// `ShowPrompt` on the agent actor.
+    ShowPrompt(Option<SessionId>),
+    /// `ListSkills` on the agent actor.
+    ListSkills,
+    /// `LoadSkill` on the agent actor.
+    LoadSkill(String),
+    /// `AddSkillRepo` on the agent actor.
+    AddSkillRepo(String),
+    /// `RemoveSkillRepo`, falling back to `RemoveSkill`, on the agent actor.
+    RemoveSkill(String),
+    /// `SyncSkills` on the agent actor.
+    SyncSkills,
+    /// `AddServer` on the MCP actor.
+    AddMcp {
+        /// Server name (file stem).
+        name: String,
+        /// One server object (`command`/`args`/`env`/`cwd` or `url`/`headers`).
+        entry: serde_json::Value,
+    },
+    /// `AddRepo` on the MCP actor.
+    AddMcpRepo(String),
+    /// `SyncMcp` on the MCP actor.
+    SyncMcp,
 }
 
 /// One transcript row.
@@ -112,12 +154,14 @@ pub enum Entry {
     User(String),
     /// Streamed assistant text: rendered blocks + raw tail.
     Assistant(Box<markdown::Text>),
-    /// Text a peer injected into this session (`<subagent_result>` or
-    /// `<message>`), collapsed to one line until toggled.
-    Delivered {
-        /// Peer name.
-        from: String,
-        /// Body without the wrapper, rendered as markdown.
+    /// Collapsible card: a peer message, a skill body, or the system prompt.
+    /// One line until toggled with Ctrl+O.
+    Card {
+        /// Glyph and colour family.
+        kind: CardKind,
+        /// Peer name, skill name, or `prompt`.
+        title: String,
+        /// Body rendered as markdown.
         text: Box<markdown::Text>,
         /// Show the body.
         expanded: bool,
@@ -144,6 +188,38 @@ pub enum Entry {
     Info(String),
     /// Error line.
     Error(String),
+}
+
+/// What an [`Entry::Card`] holds; picks its glyph and colour.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CardKind {
+    /// Text a peer injected (`<subagent_result>` / `<message>`).
+    Peer,
+    /// A skill body (`/skills`).
+    Skill,
+    /// The assembled system prompt (`/prompt`).
+    Prompt,
+}
+
+impl CardKind {
+    /// Header glyph.
+    pub fn glyph(self) -> &'static str {
+        match self {
+            CardKind::Peer => "⟵",
+            CardKind::Skill => "◇",
+            CardKind::Prompt => "§",
+        }
+    }
+}
+
+/// A collapsed [`Entry::Card`] over `text`.
+fn card(kind: CardKind, title: String, text: &str) -> Entry {
+    Entry::Card {
+        kind,
+        title,
+        text: Box::new(markdown::Text::complete(text)),
+        expanded: false,
+    }
 }
 
 /// Split a harness-injected input (`<subagent_result name="…">` /
@@ -177,7 +253,17 @@ pub struct Child {
 /// Slash commands: name, argument hint (`<x>` required, `[x]` optional, `""` none), description.
 pub const COMMANDS: &[(&str, &str, &str)] = &[
     ("/model", "[id]", "switch model (picker without id)"),
-    ("/mcp", "", "MCP servers and tool gates"),
+    (
+        "/mcp",
+        "[add <url|json>|sync]",
+        "MCP servers and tool gates",
+    ),
+    (
+        "/skills",
+        "[add <url>|rm <name>|sync]",
+        "skills (picker without args)",
+    ),
+    ("/prompt", "", "show the assembled system prompt"),
     ("/agents", "", "list this session's subagents"),
     ("/focus", "<name>", "show a subagent's transcript"),
     ("/sessions", "", "switch session (picker)"),
@@ -287,6 +373,13 @@ pub enum Menu {
         cursor: usize,
         /// Servers whose tools are listed.
         expanded: BTreeSet<String>,
+    },
+    /// `/skills` picker.
+    Skills {
+        /// Every skill, as indexed.
+        items: Vec<SkillMeta>,
+        /// Highlighted row.
+        cursor: usize,
     },
 }
 
@@ -419,13 +512,13 @@ impl Model {
         }
     }
 
-    /// Expand or collapse the most recent peer message (Ctrl+O).
-    pub fn toggle_delivered(&mut self) {
-        if let Some(Entry::Delivered { expanded, .. }) = self
+    /// Expand or collapse the most recent card (Ctrl+O).
+    pub fn toggle_card(&mut self) {
+        if let Some(Entry::Card { expanded, .. }) = self
             .entries
             .iter_mut()
             .rev()
-            .find(|e| matches!(e, Entry::Delivered { .. }))
+            .find(|e| matches!(e, Entry::Card { .. }))
         {
             *expanded = !*expanded;
         }
@@ -559,6 +652,64 @@ impl Model {
                     on_off(s.global)
                 )));
             }
+            // Verbatim: the point is to see exactly what the model sees.
+            UiEvent::Prompt(text) => self.entries.push(card(
+                CardKind::Prompt,
+                "prompt".into(),
+                &format!("```\n{text}\n```"),
+            )),
+            UiEvent::Skills(items) => {
+                if items.is_empty() {
+                    self.entries.push(Entry::Info("no skills".into()));
+                } else {
+                    self.menu = Some(Menu::Skills { items, cursor: 0 });
+                }
+            }
+            UiEvent::Skill(s) => {
+                let text = if s.files.is_empty() {
+                    s.body
+                } else {
+                    format!("{}\n\n---\nfiles: {}", s.body, s.files.join(", "))
+                };
+                self.entries.push(card(CardKind::Skill, s.name, &text));
+            }
+            UiEvent::SkillsAdded(items) => self.entries.push(Entry::Info(if items.is_empty() {
+                "cloned; no skills found".into()
+            } else {
+                format!(
+                    "added {} skills: {}",
+                    items.len(),
+                    items
+                        .iter()
+                        .map(|s| s.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })),
+            UiEvent::Synced(results) => {
+                if results.is_empty() {
+                    self.entries.push(Entry::Info("no repos".into()));
+                }
+                for r in results {
+                    self.entries
+                        .push(Entry::Info(format!("{}  {}", r.name, r.status)));
+                }
+            }
+            UiEvent::McpAdded(s) => self.entries.push(Entry::Info(format!(
+                "{}  {} tools  {}",
+                s.name,
+                s.tools.len(),
+                if s.connected {
+                    "connected"
+                } else {
+                    "not connected"
+                }
+            ))),
+            UiEvent::RepoAdded(r) => self.entries.push(Entry::Info(format!(
+                "cloned {} → {}  (build it, then `/mcp add {{...\"cwd\": ...}}`)",
+                r.name, r.path
+            ))),
+            UiEvent::Info(t) => self.entries.push(Entry::Info(t)),
             UiEvent::Error(e) => self.entries.push(Entry::Error(e)),
         }
     }
@@ -593,11 +744,7 @@ impl Model {
                 text,
             } => {
                 if self.shown() == Some(*session) {
-                    self.entries.push(Entry::Delivered {
-                        from: from.clone(),
-                        text: Box::new(markdown::Text::complete(text)),
-                        expanded: false,
-                    });
+                    self.entries.push(card(CardKind::Peer, from.clone(), text));
                 }
                 return;
             }
@@ -725,10 +872,13 @@ impl Model {
                 },
             ),
             "/approvals" => self.approvals_cmd(arg, tx),
-            "/mcp" => {
+            "/mcp" if arg.is_empty() => {
                 self.awaiting_mcp = true;
                 send(tx, Command::ListMcp);
             }
+            "/mcp" => self.mcp_cmd(arg, tx),
+            "/skills" => self.skills_cmd(arg, tx),
+            "/prompt" => send(tx, Command::ShowPrompt(self.shown())),
             "/agents" => match self.session {
                 Some(root) => send(tx, Command::ListChildren(root)),
                 None => self.entries.push(Entry::Info("no session".into())),
@@ -921,6 +1071,40 @@ impl Model {
         send(tx, Command::SetApprovals { session, enabled });
     }
 
+    /// `/skills add <url>` | `rm <name>` | `sync`.
+    fn skills_cmd(&mut self, arg: &str, tx: &UnboundedSender<Command>) {
+        let (sub, rest) = arg
+            .split_once(' ')
+            .map_or((arg, ""), |(s, r)| (s, r.trim()));
+        match (sub, rest) {
+            ("", _) => send(tx, Command::ListSkills),
+            ("sync", _) => send(tx, Command::SyncSkills),
+            ("add", url) if !url.is_empty() => send(tx, Command::AddSkillRepo(url.to_owned())),
+            ("rm", name) if !name.is_empty() => send(tx, Command::RemoveSkill(name.to_owned())),
+            _ => self.entries.push(Entry::Error(
+                "usage: /skills [add <url> | rm <name> | sync]".into(),
+            )),
+        }
+    }
+
+    /// `/mcp add <url|json>` | `sync`.
+    fn mcp_cmd(&mut self, arg: &str, tx: &UnboundedSender<Command>) {
+        let (sub, rest) = arg
+            .split_once(' ')
+            .map_or((arg, ""), |(s, r)| (s, r.trim()));
+        match (sub, rest) {
+            ("sync", _) => send(tx, Command::SyncMcp),
+            ("add", src) if git_url(src) => send(tx, Command::AddMcpRepo(src.to_owned())),
+            ("add", src) if !src.is_empty() => match mcp_entry(src) {
+                Ok((name, entry)) => send(tx, Command::AddMcp { name, entry }),
+                Err(e) => self.entries.push(Entry::Error(format!("/mcp add: {e}"))),
+            },
+            _ => self
+                .entries
+                .push(Entry::Error("usage: /mcp [add <url|json> | sync]".into())),
+        }
+    }
+
     /// Open or close the slash popup to match what the input box holds.
     pub fn sync_slash(&mut self, input: &str) {
         match (&self.menu, input.starts_with('/')) {
@@ -970,6 +1154,7 @@ impl Model {
             Some(Menu::Models { .. }) => self.models_key(code, tx),
             Some(Menu::Sessions { .. }) => self.sessions_key(code, tx),
             Some(Menu::Mcp { .. }) => self.mcp_key(code, tx),
+            Some(Menu::Skills { .. }) => self.skills_key(code, tx),
         }
     }
 
@@ -1079,11 +1264,31 @@ impl Model {
         MenuKey::Consumed
     }
 
+    /// `/skills`: Enter shows the highlighted skill's body as a card.
+    fn skills_key(&mut self, code: KeyCode, tx: &UnboundedSender<Command>) -> MenuKey {
+        let Some(Menu::Skills { items, cursor }) = &mut self.menu else {
+            return MenuKey::Consumed;
+        };
+        match code {
+            KeyCode::Up => *cursor = cursor.saturating_sub(1),
+            KeyCode::Down => *cursor = (*cursor + 1).min(items.len().saturating_sub(1)),
+            KeyCode::Esc => self.menu = None,
+            KeyCode::Enter => {
+                if let Some(s) = items.get(*cursor) {
+                    send(tx, Command::LoadSkill(s.name.clone()));
+                }
+                self.menu = None;
+            }
+            _ => {}
+        }
+        MenuKey::Consumed
+    }
+
     fn mcp_key(&mut self, code: KeyCode, tx: &UnboundedSender<Command>) -> MenuKey {
         enum Act {
             Move(usize),
             Expand(String, bool),
-            Gate(Command),
+            Send(Command),
             Close,
             Nothing,
         }
@@ -1096,23 +1301,24 @@ impl Model {
             (KeyCode::Up, _) => Act::Move(cursor.saturating_sub(1)),
             (KeyCode::Down, _) => Act::Move((cursor + 1).min(rows.len().saturating_sub(1))),
             (KeyCode::Esc, _) => Act::Close,
+            (KeyCode::Char('s'), _) => Act::Send(Command::SyncMcp),
             (KeyCode::Right | KeyCode::Enter, Some(Row::Server(s))) => {
                 Act::Expand(s.name.clone(), true)
             }
             (KeyCode::Left, Some(Row::Server(s) | Row::Tool(s, _))) => {
                 Act::Expand(s.name.clone(), false)
             }
-            (KeyCode::Char(' '), Some(Row::Server(s))) => Act::Gate(Command::SetGate {
+            (KeyCode::Char(' '), Some(Row::Server(s))) => Act::Send(Command::SetGate {
                 server: s.name.clone(),
                 tool: None,
                 action: Some(next_gate(s.gate)),
             }),
-            (KeyCode::Char(' '), Some(Row::Tool(s, t))) => Act::Gate(Command::SetGate {
+            (KeyCode::Char(' '), Some(Row::Tool(s, t))) => Act::Send(Command::SetGate {
                 server: s.name.clone(),
                 tool: Some(t.name.clone()),
                 action: Some(next_gate(t.gate.unwrap_or(t.effective))),
             }),
-            (KeyCode::Backspace, Some(Row::Tool(s, t))) => Act::Gate(Command::SetGate {
+            (KeyCode::Backspace, Some(Row::Tool(s, t))) => Act::Send(Command::SetGate {
                 server: s.name.clone(),
                 tool: Some(t.name.clone()),
                 action: None,
@@ -1145,7 +1351,7 @@ impl Model {
                         + i
                 });
             }
-            Act::Gate(cmd) => send(tx, cmd),
+            Act::Send(cmd) => send(tx, cmd),
             Act::Close => self.menu = None,
             Act::Nothing => {}
         }
@@ -1161,15 +1367,41 @@ fn filter_models<'a>(items: &'a [ModelInfo], filter: &str) -> Vec<&'a ModelInfo>
         .collect()
 }
 
+/// `/mcp add` argument that means "clone a repo": a `.git` URL or a known git host.
+pub fn git_url(s: &str) -> bool {
+    s.ends_with(".git")
+        || ["github.com/", "gitlab.com/", "codeberg.org/"]
+            .iter()
+            .any(|h| s.contains(h))
+}
+
+/// Parse one MCP server from `/mcp add <json>`: a server object with a
+/// `name` key (stripped), `{ "<name>": {...} }`, or `{ "mcpServers": { "<name>": {...} } }`.
+pub fn mcp_entry(text: &str) -> Result<(String, serde_json::Value), String> {
+    let v: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    let serde_json::Value::Object(mut obj) = v else {
+        return Err("expected a JSON object".into());
+    };
+    if let Some(serde_json::Value::Object(servers)) = obj.remove("mcpServers") {
+        obj = servers;
+    }
+    if obj.contains_key("command") || obj.contains_key("url") {
+        return match obj.remove("name") {
+            Some(serde_json::Value::String(name)) => Ok((name, serde_json::Value::Object(obj))),
+            _ => Err("server object needs a \"name\" field".into()),
+        };
+    }
+    match (obj.len(), obj.into_iter().next()) {
+        (1, Some((name, entry))) if entry.is_object() => Ok((name, entry)),
+        _ => Err("expected exactly one server: {\"<name>\": {\"command\": ...}}".into()),
+    }
+}
+
 impl From<HistoryEntry> for Entry {
     fn from(h: HistoryEntry) -> Self {
         match h {
             HistoryEntry::User { text } => match injected(&text) {
-                Some((from, body)) => Entry::Delivered {
-                    from,
-                    text: Box::new(markdown::Text::complete(&body)),
-                    expanded: false,
-                },
+                Some((from, body)) => card(CardKind::Peer, from, &body),
                 None => Entry::User(text),
             },
             HistoryEntry::Assistant { text } => {
@@ -1242,6 +1474,7 @@ mod tests {
         let fresh = |gate: PolicyAction| McpServer {
             name: "fs".into(),
             connected: true,
+            repo: None,
             gate,
             tools: vec![McpToolInfo {
                 name: "read".into(),
@@ -1282,6 +1515,32 @@ mod tests {
         m.menu_key(KeyCode::Left, "", &tx);
         assert!(matches!(m.menu, Some(Menu::Mcp { cursor: 0, .. })));
         assert_eq!(m.mcp_rows().len(), 1);
+    }
+
+    #[test]
+    fn mcp_add_routes_urls_and_json_shapes() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        m.submit("/mcp add https://github.com/o/r", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::AddMcpRepo(u)) if u.ends_with("/o/r")));
+        for json in [
+            r#"{"name":"fs","command":"npx","args":["-y","x"]}"#,
+            r#"{"fs":{"command":"npx","args":["-y","x"]}}"#,
+            r#"{"mcpServers":{"fs":{"command":"npx","args":["-y","x"]}}}"#,
+        ] {
+            m.submit(&format!("/mcp add {json}"), &tx);
+            let Ok(Command::AddMcp { name, entry }) = rx.try_recv() else {
+                panic!("{json}");
+            };
+            assert_eq!(name, "fs");
+            assert_eq!(entry["command"], "npx");
+            assert!(entry.get("name").is_none());
+        }
+        m.submit(r#"/mcp add {"command":"npx"}"#, &tx);
+        assert!(rx.try_recv().is_err());
+        assert!(matches!(m.entries.last(), Some(Entry::Error(_))));
+        m.submit("/mcp sync", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::SyncMcp)));
     }
 
     #[test]

@@ -65,6 +65,13 @@ fn first_run(data_dir: &Path, config_path: &Path) -> std::io::Result<()> {
     if !config_path.exists() {
         std::fs::write(config_path, DEFAULT_CONFIG)?;
     }
+    let prompt = data_dir.join("prompt.md");
+    if !prompt.exists() {
+        std::fs::write(
+            prompt,
+            "<!-- Standing instructions for the assistant; read at every model call. -->\n",
+        )?;
+    }
     let creds = data_dir.join("credentials.yaml");
     if !creds.exists() {
         let mut open = std::fs::OpenOptions::new();

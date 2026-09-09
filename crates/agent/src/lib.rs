@@ -2,10 +2,11 @@
 //! session. Consumes tools through the `"tools"` registry; persists every
 //! message to sqlite; publishes [`AgentEvent`] for any UI.
 //!
-//! Public surface:
 //! - commands on the `"agent"` actor ([`Agents`]): [`SendInput`], [`Steer`],
 //!   [`Cancel`], [`ListSessions`], [`LoadSession`], [`ListChildren`],
-//!   [`ListModels`], [`SetModel`]
+//!   [`ListModels`], [`SetModel`], [`ShowPrompt`], [`ListSkills`],
+//!   [`LoadSkill`], [`AddSkill`], [`RemoveSkill`], [`AddSkillRepo`],
+//!   [`RemoveSkillRepo`], [`SyncSkills`]
 //! - event: [`AgentEvent`]
 
 use std::sync::Arc;
@@ -110,6 +111,93 @@ pub struct ModelInfo {
     pub context: u32,
     /// Supports reasoning.
     pub reasoning: bool,
+}
+
+/// `ask` → `String`: the assembled system prompt (design doc 04 §1.1) as
+/// `session` sees it; without a session the peers section is omitted.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct ShowPrompt {
+    /// Session whose peers block to include.
+    pub session: Option<SessionId>,
+}
+
+/// `ask` → `Vec<SkillMeta>`, sorted by name.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct ListSkills;
+
+/// `ask` → `Result<SkillBody, String>`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LoadSkill {
+    /// Skill name.
+    pub name: String,
+}
+
+/// `ask` → `Result<SkillMeta, String>`: write `<skills>/<name>.md`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AddSkill {
+    /// `[a-z0-9][a-z0-9._-]*`.
+    pub name: String,
+    /// Index line.
+    pub description: String,
+    /// Markdown body.
+    pub body: String,
+    /// Inline into every system prompt instead of indexing.
+    pub always: bool,
+}
+
+/// `ask` → `Result<(), String>`: delete a local skill.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RemoveSkill {
+    /// Skill name.
+    pub name: String,
+}
+
+/// `ask` → `Result<Vec<SkillMeta>, String>`: clone a skill repo; returns its skills.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AddSkillRepo {
+    /// Git URL.
+    pub url: String,
+    /// Directory name; defaults to the repo basename.
+    pub name: Option<String>,
+}
+
+/// `ask` → `Result<(), String>`: delete a cloned skill repo.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RemoveSkillRepo {
+    /// Directory name.
+    pub name: String,
+}
+
+/// `ask` → `Vec<SyncResult>`: `git pull` every skill repo.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct SyncSkills;
+
+/// One indexed skill.
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct SkillMeta {
+    /// Name (front matter, else file stem / directory name).
+    pub name: String,
+    /// Index line.
+    pub description: String,
+    /// Absolute path of the skill file.
+    pub path: String,
+    /// Inlined into the system prompt instead of indexed.
+    pub always: bool,
+    /// Clone directory name when the skill lives in a git repo under skills/.
+    pub repo: Option<String>,
+}
+
+/// A loaded skill.
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct SkillBody {
+    /// Name.
+    pub name: String,
+    /// Markdown without front matter.
+    pub body: String,
+    /// Other files of a `SKILL.md` skill, relative to its directory; empty otherwise.
+    pub files: Vec<String>,
 }
 
 /// One row of the session list.
@@ -304,8 +392,6 @@ pub struct AgentConfig {
     /// Model id, `provider/model` (`anthropic/claude-sonnet-4-5`) or bare
     /// (`claude-sonnet-4-5`, resolved against configured providers).
     pub model: String,
-    /// Prepended to the built-in system prompt.
-    pub system_prompt: String,
     /// Max tool-call rounds per turn before the loop stops itself.
     pub max_tool_rounds: u32,
     /// Max characters of tool output sent back to the model.
@@ -318,7 +404,6 @@ impl Default for AgentConfig {
     fn default() -> Self {
         Self {
             model: "anthropic/claude-sonnet-4-5".into(),
-            system_prompt: String::new(),
             max_tool_rounds: 32,
             max_tool_output_chars: 32_000,
             subagents: SubagentsConfig::default(),

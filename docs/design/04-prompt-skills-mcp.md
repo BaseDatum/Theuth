@@ -1,6 +1,16 @@
 # 04 — System prompt, skill sources, MCP sources
 
-Status: **plan** (2026-09-09). Nothing here is implemented yet.
+Status: **shipped** (2026-09-09).
+
+Deviations from the plan, as built: `add_mcp_server` does not poll — the
+`Mcp` actor awaits connect inline under a 10 s `CONNECT_TIMEOUT` that now
+applies to every server (a slower one fails until the next reconcile); a
+failed add deletes the file it just wrote so a retry needs no
+`remove_mcp_server`. `Command::AddMcp` in the TUI carries a required name
+(resolved from the JSON by `model::mcp_entry`). `/prompt` renders the text
+verbatim in a code fence. `RestartMcp` has no TUI/RPC surface — `sync_mcp`
+restarts affected servers actor-side. Skills tests clone from a local bare
+repo; no network in the suite.
 
 Goal: the agent can grow its own capabilities without the user editing
 files: write a skill, clone a skill repo, keep repos synced, install an MCP

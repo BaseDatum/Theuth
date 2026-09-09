@@ -172,6 +172,50 @@ async fn execute(cmd: Command, tx: &UnboundedSender<UiEvent>) -> anyhow::Result<
                     .await?,
             )
         }
+        Command::ShowPrompt(session) => {
+            UiEvent::Prompt(agent()?.ask(agent::ShowPrompt { session }).await?)
+        }
+        Command::ListSkills => UiEvent::Skills(agent()?.ask(agent::ListSkills).await?),
+        Command::LoadSkill(name) => UiEvent::Skill(
+            agent()?
+                .ask(agent::LoadSkill { name })
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?,
+        ),
+        Command::AddSkillRepo(url) => UiEvent::SkillsAdded(
+            agent()?
+                .ask(agent::AddSkillRepo { url, name: None })
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?,
+        ),
+        // A repo dir first (only removed when it holds `.git`), else a local skill.
+        Command::RemoveSkill(name) => {
+            let agent = agent()?;
+            let repo = agent::RemoveSkillRepo { name: name.clone() };
+            if agent.ask(repo).await.is_ok() {
+                UiEvent::Info(format!("removed repo {name}"))
+            } else {
+                agent
+                    .ask(agent::RemoveSkill { name: name.clone() })
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                UiEvent::Info(format!("removed skill {name}"))
+            }
+        }
+        Command::SyncSkills => UiEvent::Synced(agent()?.ask(agent::SyncSkills).await?),
+        Command::AddMcp { name, entry } => UiEvent::McpAdded(
+            mcp()?
+                .ask(tools::AddServer { name, entry })
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?,
+        ),
+        Command::AddMcpRepo(url) => UiEvent::RepoAdded(
+            mcp()?
+                .ask(tools::AddRepo { url, name: None })
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?,
+        ),
+        Command::SyncMcp => UiEvent::Synced(mcp()?.ask(tools::SyncMcp).await?),
     };
     let _ = tx.send(reply);
     Ok(())
@@ -267,6 +311,25 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         UiEvent::Agent(_) => Ok(()),
         UiEvent::ModelSet(info) => writeln!(out, "model → {}", info.id),
         UiEvent::Models(_) | UiEvent::Mcp(_) => writeln!(out, "menus need a TTY"),
+        UiEvent::Prompt(text) | UiEvent::Info(text) => writeln!(out, "{text}"),
+        UiEvent::Skills(list) | UiEvent::SkillsAdded(list) => list.iter().try_for_each(|s| {
+            writeln!(
+                out,
+                "{}  {}{}{}",
+                s.name,
+                s.description,
+                s.repo
+                    .as_deref()
+                    .map_or_else(String::new, |r| format!("  [{r}]")),
+                if s.always { "  always" } else { "" }
+            )
+        }),
+        UiEvent::Skill(s) => writeln!(out, "◇ {}\n{}\n{}", s.name, s.body, s.files.join("\n")),
+        UiEvent::Synced(list) => list
+            .iter()
+            .try_for_each(|r| writeln!(out, "{}  {}", r.name, r.status)),
+        UiEvent::McpAdded(s) => writeln!(out, "{}  {} tools", s.name, s.tools.len()),
+        UiEvent::RepoAdded(r) => writeln!(out, "cloned {} → {}\n{}", r.name, r.path, r.readme),
         UiEvent::Approvals(s) => writeln!(
             out,
             "approvals: {} (this session), {} (default)",

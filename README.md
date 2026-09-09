@@ -25,12 +25,15 @@ Config (`~/.wth/`, created on first run; details in
 - `config.yaml` — every plugin reads its own section; `WTH_<SECTION>__<KEY>` env overrides. `agent.model` is a models.dev id (`anthropic/claude-sonnet-4-5`); `/model` rewrites that one line in place.
 - `credentials.yaml` — `provider: key` (genai adapter names), mode 0600; beats env vars. A provider with a key (or its env var) is "configured": `/model` lists only those.
 - `models.json` — optional, same shape as the bundled catalog; adds or overrides models (local `ollama/...`, private gateways). Refresh the bundled data with `just models`.
-- `mcp/*.json` — drop in any `mcp.json` (Claude Desktop, Cursor, OpenCode, …); hot-reloaded, tools registered without prefix.
+- `prompt.md` — standing instructions, read into the system prompt on every model call; `/prompt` shows the assembled prompt.
+- `mcp/*.json` — drop in any `mcp.json` (Claude Desktop, Cursor, OpenCode, …); hot-reloaded, tools registered without prefix. `cwd` (relative → `mcp/`) points a server at a checkout under `mcp/repos/`, where `/mcp add <url>` clones and `/mcp sync` pulls.
 - `mcp/config.yaml` — per-server / per-tool `allow` | `ask` | `deny` gating; `/mcp` edits it (`deny` on a server = disabled).
-- `skills/**/*.md` — see [`docs/skills.md`](docs/skills.md).
+- `skills/` — `<name>/SKILL.md` directories, loose `*.md`, or git clones (`/skills add <url>`, `/skills sync`); see [`docs/skills.md`](docs/skills.md).
 
 TUI: `/` opens the command list; `/model` picks a model (header above the
-input shows model and context used); `/mcp` toggles servers and tools;
+input shows model and context used); `/mcp` toggles servers and tools,
+`/mcp add <url|json>` installs one, `/mcp sync` pulls repos; `/skills` lists
+skills; `/prompt` shows the system prompt;
 `/approvals off` stops approval prompts for this session, `/approvals off
 always` for good (`tools.approvals` in config.yaml). Shift+Enter inserts a
 newline; select text with the mouse to copy it (terminal-native). See
