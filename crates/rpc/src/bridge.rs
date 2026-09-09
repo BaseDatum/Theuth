@@ -5,7 +5,7 @@
 use std::convert::Infallible;
 use std::sync::Arc;
 
-use agent::AgentEvent;
+use agent::{AgentEvent, LoginFinished};
 use kameo::Actor;
 use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
@@ -54,7 +54,13 @@ macro_rules! forward {
         }
     )*};
 }
-forward!(AgentEvent, ApprovalRequested, ApprovalResolved, McpProgress);
+forward!(
+    AgentEvent,
+    LoginFinished,
+    ApprovalRequested,
+    ApprovalResolved,
+    McpProgress
+);
 
 /// Spawn the bridge, subscribe it to every event type, return the sender to
 /// `subscribe()` from.
@@ -62,6 +68,7 @@ pub async fn start(rt: &Runtime) -> broadcast::Sender<Event> {
     let (tx, _) = broadcast::channel(CAPACITY);
     let actor = Bridge::spawn_with_mailbox(tx.clone(), runtime::subscriber_mailbox());
     rt.subscribe::<Bridge, AgentEvent>(&actor).await;
+    rt.subscribe::<Bridge, LoginFinished>(&actor).await;
     rt.subscribe::<Bridge, ApprovalRequested>(&actor).await;
     rt.subscribe::<Bridge, ApprovalResolved>(&actor).await;
     rt.subscribe::<Bridge, McpProgress>(&actor).await;

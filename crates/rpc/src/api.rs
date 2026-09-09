@@ -5,9 +5,10 @@
 use std::fmt::Display;
 
 use agent::{
-    AddSkill, AddSkillRepo, Agents, Cancel, ListModels, ListSessions, ListSkills, LoadSession,
-    LoadSkill, Loaded, ModelInfo, RemoveSkill, RemoveSkillRepo, SendInput, SessionSummary,
-    SetModel, ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills,
+    AddSkill, AddSkillRepo, Agents, Cancel, ListLogins, ListModels, ListSessions, ListSkills,
+    LoadSession, LoadSkill, Loaded, Login, LoginInfo, Logout, ModelInfo, RemoveSkill,
+    RemoveSkillRepo, SendInput, SessionSummary, SetModel, ShowPrompt, SkillBody, SkillMeta, Steer,
+    SyncSkills,
 };
 use jsonrpsee::core::{RpcResult, SubscriptionResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
@@ -23,8 +24,8 @@ use tokio::sync::broadcast;
 use tools::git::SyncResult;
 use tools::{
     AddRepo, AddServer, Approval, ApprovalId, ApprovalsState, Decision, ListServers, ListTools,
-    Mcp, McpServer, PolicyAction, RemoveServer, RepoInfo, Resolve, SetApprovals, SetGate, SyncMcp,
-    ToolRegistry, ToolSpec,
+    Mcp, McpLogin, McpLogout, McpServer, PolicyAction, RemoveServer, RepoInfo, Resolve,
+    SetApprovals, SetGate, SyncMcp, ToolRegistry, ToolSpec,
 };
 
 use crate::bridge::Event;
@@ -127,6 +128,21 @@ pub trait Api {
     /// `git pull` every MCP repo, restarting servers whose repo changed.
     #[method(name = "sync_mcp")]
     async fn sync_mcp(&self) -> RpcResult<Vec<SyncResult>>;
+    /// Providers a user can log in to (design doc 05), with their status.
+    #[method(name = "list_logins")]
+    async fn list_logins(&self) -> RpcResult<Vec<LoginInfo>>;
+    /// Start a provider login; returns the URL to open. Ends with a `LoginFinished` event.
+    #[method(name = "login")]
+    async fn login(&self, provider: String) -> RpcResult<String>;
+    /// Forget a provider login.
+    #[method(name = "logout")]
+    async fn logout(&self, provider: String) -> RpcResult<()>;
+    /// Start an MCP server login; returns the URL to open. The server reconnects on success (`McpProgress`).
+    #[method(name = "mcp_login")]
+    async fn mcp_login(&self, server: String) -> RpcResult<String>;
+    /// Forget an MCP server login and restart it.
+    #[method(name = "mcp_logout")]
+    async fn mcp_logout(&self, server: String) -> RpcResult<()>;
     /// Stop the whole process.
     #[method(name = "shutdown")]
     async fn shutdown(&self) -> RpcResult<()>;
@@ -306,6 +322,26 @@ impl ApiServer for Server {
 
     async fn sync_mcp(&self) -> RpcResult<Vec<SyncResult>> {
         ask::<Mcp, _>(tools::MCP_ACTOR, SyncMcp).await
+    }
+
+    async fn list_logins(&self) -> RpcResult<Vec<LoginInfo>> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, ListLogins).await
+    }
+
+    async fn login(&self, provider: String) -> RpcResult<String> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, Login { provider }).await
+    }
+
+    async fn logout(&self, provider: String) -> RpcResult<()> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, Logout { provider }).await
+    }
+
+    async fn mcp_login(&self, server: String) -> RpcResult<String> {
+        ask::<Mcp, _>(tools::MCP_ACTOR, McpLogin { server }).await
+    }
+
+    async fn mcp_logout(&self, server: String) -> RpcResult<()> {
+        ask::<Mcp, _>(tools::MCP_ACTOR, McpLogout { server }).await
     }
 
     async fn shutdown(&self) -> RpcResult<()> {

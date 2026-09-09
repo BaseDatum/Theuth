@@ -15,7 +15,10 @@ use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
 use notify::Watcher;
 use rmcp::model::{CallToolRequestParams, ContentBlock};
-use rmcp::service::{RoleClient, RunningService, ServiceExt};
+use rmcp::service::{ClientInitializeError, RoleClient, RunningService, ServiceExt};
+use rmcp::transport::auth::{
+    AuthClient, AuthorizationManager, AuthorizationRequest, AuthorizationSession,
+};
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::transport::{StreamableHttpClientTransport, TokioChildProcess};
 use runtime::Runtime;
@@ -27,6 +30,7 @@ use crate::{
     DynTool, ErasedTool, MCP_ACTOR, PolicyAction, Risk, ToolCx, ToolOutput, ToolSpec, git,
 };
 
+mod oauth;
 mod tools;
 
 /// A server that has not answered `initialize` + `tools/list` by then is dropped
@@ -46,7 +50,17 @@ enum Transport {
     Http {
         url: String,
         headers: BTreeMap<String, String>,
+        /// Pre-registered OAuth client, for servers offering neither DCR nor CIMD.
+        oauth: Option<OauthClient>,
     },
+}
+
+/// The entry's optional `oauth` object (design doc 05 §3.2).
+#[derive(Clone, Debug, PartialEq)]
+struct OauthClient {
+    client_id: String,
+    client_secret: Option<String>,
+    scopes: Vec<String>,
 }
 
 /// One desired server. Equality is what "changed" means for reconcile.
@@ -99,10 +113,21 @@ fn entry(v: &Value, dir: &Path) -> Option<ServerSpec> {
     }
     if let Some(url) = v.get("url").and_then(Value::as_str) {
         // `type` (http/sse/remote/streamable-http) is not consulted: everything is streamable HTTP.
+        let oauth = v.get("oauth").and_then(|o| {
+            Some(OauthClient {
+                client_id: o.get("client_id")?.as_str()?.to_owned(),
+                client_secret: o
+                    .get("client_secret")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                scopes: strings(o.get("scopes")),
+            })
+        });
         return Some(ServerSpec {
             transport: Transport::Http {
                 url: url.to_owned(),
                 headers: string_map(v.get("headers")),
+                oauth,
             },
         });
     }
@@ -331,6 +356,9 @@ struct State {
     /// Last connect / list_tools failure per desired server; cleared on success
     /// or when the server leaves the files.
     errors: HashMap<String, String>,
+    /// Servers that answered 401 on connect: the `WWW-Authenticate` challenge,
+    /// consumed by [`McpLogin`]. Cleared with `errors`.
+    login: HashMap<String, String>,
 }
 
 /// Event: a reconcile snapshot, published every time a server changes state
@@ -355,6 +383,8 @@ pub struct McpProgress {
 pub struct Mcp {
     state: State,
     dir: PathBuf,
+    /// `<data_dir>/oauth/mcp`; `<name>.json` holds a server's rmcp credentials.
+    auth_dir: PathBuf,
     registry: ActorRef<ToolRegistry>,
     rt: Runtime,
 }
@@ -440,6 +470,39 @@ pub struct RepoInfo {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct SyncMcp;
 
+/// `ask` → `Result<String, String>`: start an OAuth login for a remote server
+/// and return the URL to open (the browser is also opened). On success the
+/// server is restarted and connects with the saved tokens (visible as
+/// [`McpProgress`]); on failure `failed` gains the server with a
+/// `login failed` error.
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct McpLogin {
+    /// Server name.
+    pub server: String,
+}
+
+/// `ask` → `Result<(), String>`: delete the server's tokens and restart it.
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct McpLogout {
+    /// Server name.
+    pub server: String,
+}
+
+/// Where a server stands with OAuth.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum McpAuth {
+    /// Stdio, hand-set header, or a remote that never asked.
+    None,
+    /// The server answered 401; `/login <name>`.
+    Required,
+    /// A token file exists.
+    LoggedIn,
+}
+
 /// One server as the files want it.
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -454,6 +517,8 @@ pub struct McpServer {
     pub tools: Vec<McpToolInfo>,
     /// Name of the clone under `mcp/repos/` that holds the entry's `cwd`, if any.
     pub repo: Option<String>,
+    /// OAuth standing (design doc 05 §3.1).
+    pub auth: McpAuth,
 }
 
 /// One remote tool of a connected server.
@@ -508,12 +573,23 @@ impl Mcp {
             connected: running.is_some(),
             gate: state.gates.for_server(&name),
             tools,
+            auth: if state.login.contains_key(&name) {
+                McpAuth::Required
+            } else if self.auth_path(&name).exists() {
+                McpAuth::LoggedIn
+            } else {
+                McpAuth::None
+            },
             repo: running
                 .map(|r| &r.spec)
                 .or(spec)
                 .and_then(|s| repo_of(&self.dir, s)),
             name,
         }
+    }
+
+    fn auth_path(&self, name: &str) -> PathBuf {
+        self.auth_dir.join(format!("{name}.json"))
     }
 
     /// Err unless some file wants `name` (or it is still running).
@@ -605,6 +681,111 @@ impl Message<Restart> for Mcp {
     }
 }
 
+impl Message<McpLogin> for Mcp {
+    type Reply = Result<String, String>;
+
+    async fn handle(
+        &mut self,
+        m: McpLogin,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Result<String, String> {
+        let name = m.server;
+        let Some(spec) = desired(&self.dir).remove(&name) else {
+            return Err(format!("unknown mcp server `{name}`"));
+        };
+        let Transport::Http { url, oauth, .. } = spec.transport else {
+            return Err(format!("{name} is a stdio server; nothing to log in to"));
+        };
+        let (port, back) = ::oauth::callback(0).await.map_err(|e| e.to_string())?;
+        let mut manager = AuthorizationManager::new(url.as_str())
+            .await
+            .map_err(|e| e.to_string())?;
+        manager.set_credential_store(oauth::FileStore::new(self.auth_path(&name)));
+        // Resolve before configuring the client (design doc 05 §6).
+        let resolved = manager
+            .resolve_metadata_from_challenge(self.state.login.get(&name).map(String::as_str))
+            .await
+            .map_err(|e| e.to_string())?;
+        manager.set_metadata(resolved.metadata);
+        let mut req = AuthorizationRequest::new(format!("http://127.0.0.1:{port}/callback"))
+            .with_client_name("wth");
+        if let Some(o) = oauth {
+            req = req.with_preregistered_client(o.client_id);
+            if let Some(s) = o.client_secret {
+                req = req.with_client_secret(s);
+            }
+            if !o.scopes.is_empty() {
+                req = req.with_scopes(o.scopes);
+            }
+        }
+        let session = AuthorizationSession::new(manager, req)
+            .await
+            .map_err(|(_, e)| e.to_string())?;
+        let url = session.get_authorization_url().to_owned();
+        ::oauth::open_browser(&url);
+        let me = ctx.actor_ref().clone();
+        tokio::spawn(async move {
+            let done = match tokio::time::timeout(::oauth::LOGIN_TIMEOUT, back).await {
+                // rmcp exchanges the code and saves through `FileStore`.
+                Ok(Ok(cb)) => session
+                    .handle_callback_url(&cb)
+                    .await
+                    .map(drop)
+                    .map_err(|e| e.to_string()),
+                Ok(Err(e)) => Err(e),
+                Err(_) => Err("timed out waiting for the browser".into()),
+            };
+            match done {
+                Ok(()) => {
+                    let _ = me.tell(Restart { name }).await;
+                }
+                Err(error) => {
+                    let _ = me.tell(LoginFailed { name, error }).await;
+                }
+            }
+        });
+        Ok(url)
+    }
+}
+
+/// `tell` from a login task: the browser round trip or the code exchange failed.
+struct LoginFailed {
+    name: String,
+    error: String,
+}
+
+impl Message<LoginFailed> for Mcp {
+    type Reply = ();
+
+    async fn handle(&mut self, m: LoginFailed, _: &mut Context<Self, Self::Reply>) {
+        tracing::warn!(server = %m.name, error = %m.error, "mcp login failed");
+        self.state.errors.insert(
+            m.name.clone(),
+            format!("{}: login failed: {}", m.name, m.error),
+        );
+        self.rt.publish(progress(&self.state)).await;
+    }
+}
+
+impl Message<McpLogout> for Mcp {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        m: McpLogout,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Result<(), String> {
+        self.known(&m.server)?;
+        if let Err(e) = std::fs::remove_file(self.auth_path(&m.server))
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(format!("remove tokens: {e}"));
+        }
+        self.restart(ctx.actor_ref(), &[m.server]).await;
+        Ok(())
+    }
+}
+
 impl Message<AddServer> for Mcp {
     type Reply = Result<McpServer, String>;
 
@@ -634,7 +815,7 @@ impl Message<AddServer> for Mcp {
         }
         // Connect before writing: nothing half-added, the caller fixes the
         // entry and calls again. This one wait is the caller's own request.
-        let result = attempt(&m.name, &spec)
+        let result = attempt(&m.name, &spec, &self.auth_dir)
             .await
             .map_err(|e| format!("{}: connect failed: {e:#}", m.name))?;
         write_json(&path, &m.entry)?;
@@ -759,7 +940,15 @@ impl Message<SyncMcp> for Mcp {
 
 impl Mcp {
     async fn reconcile(&mut self, me: &ActorRef<Mcp>) {
-        reconcile(&mut self.state, &self.dir, &self.registry, &self.rt, me).await;
+        reconcile(
+            &mut self.state,
+            &self.dir,
+            &self.auth_dir,
+            &self.registry,
+            &self.rt,
+            me,
+        )
+        .await;
     }
 
     /// Drop `names` (ending their processes) and unregister their tools, then
@@ -822,7 +1011,8 @@ impl Message<Progress> for Mcp {
     }
 }
 
-async fn connect(name: &str, spec: &ServerSpec) -> anyhow::Result<Service> {
+/// `auth_dir` holds the server's OAuth tokens, `<auth_dir>/<name>.json`.
+async fn connect(name: &str, spec: &ServerSpec, auth_dir: &Path) -> anyhow::Result<Service> {
     let service = match &spec.transport {
         Transport::Stdio {
             command,
@@ -852,15 +1042,36 @@ async fn connect(name: &str, spec: &ServerSpec) -> anyhow::Result<Service> {
             }
             ().serve(transport).await?
         }
-        Transport::Http { url, headers } => {
+        Transport::Http { url, headers, .. } => {
             let mut custom = HashMap::new();
             for (k, v) in headers {
                 custom.insert(k.parse()?, v.parse()?);
             }
             let cfg =
                 StreamableHttpClientTransportConfig::with_uri(url.as_str()).custom_headers(custom);
-            ().serve(StreamableHttpClientTransport::from_config(cfg))
+            if headers
+                .keys()
+                .any(|k| k.eq_ignore_ascii_case("authorization"))
+            {
+                // The user does auth by hand; leave them alone.
+                ().serve(StreamableHttpClientTransport::from_config(cfg))
+                    .await?
+            } else {
+                let http = reqwest::Client::new();
+                let mut manager = AuthorizationManager::new(url.as_str()).await?;
+                manager.with_client(http.clone())?;
+                manager.set_credential_store(oauth::FileStore::new(
+                    auth_dir.join(format!("{name}.json")),
+                ));
+                // Discovery only when tokens exist; without them the request
+                // goes out plain and a 401 lands in `settle` as `login required`.
+                manager.initialize_from_store().await?;
+                ().serve(StreamableHttpClientTransport::with_client(
+                    AuthClient::new(http, manager),
+                    cfg,
+                ))
                 .await?
+            }
         }
     };
     Ok(Arc::new(service))
@@ -935,9 +1146,9 @@ fn progress(state: &State) -> McpProgress {
 }
 
 /// Connect and list tools, bounded by [`CONNECT_TIMEOUT`].
-async fn attempt(name: &str, spec: &ServerSpec) -> Attempt {
+async fn attempt(name: &str, spec: &ServerSpec, auth_dir: &Path) -> Attempt {
     tokio::time::timeout(CONNECT_TIMEOUT, async {
-        let service = connect(name, spec).await?;
+        let service = connect(name, spec, auth_dir).await?;
         let remote = service.list_all_tools().await?;
         anyhow::Ok((service, remote))
     })
@@ -952,6 +1163,7 @@ fn settle(state: &mut State, name: String, spec: ServerSpec, result: Attempt) {
         Ok((service, remote)) => {
             tracing::info!(server = %name, count = remote.len(), "mcp server connected");
             state.errors.remove(&name);
+            state.login.remove(&name);
             state.running.insert(
                 name,
                 Running {
@@ -963,10 +1175,22 @@ fn settle(state: &mut State, name: String, spec: ServerSpec, result: Attempt) {
             );
         }
         Err(e) => {
-            tracing::warn!(server = %name, error = %e, "mcp connect failed");
-            state
-                .errors
-                .insert(name.clone(), format!("{name}: connect failed: {e:#}"));
+            let challenge = e
+                .downcast_ref::<ClientInitializeError>()
+                .and_then(ClientInitializeError::auth_challenge);
+            if let Some(challenge) = challenge {
+                tracing::info!(server = %name, "mcp server needs login");
+                state.login.insert(name.clone(), challenge.to_owned());
+                state.errors.insert(
+                    name.clone(),
+                    format!("{name}: login required (/login {name})"),
+                );
+            } else {
+                tracing::warn!(server = %name, error = %e, "mcp connect failed");
+                state
+                    .errors
+                    .insert(name.clone(), format!("{name}: connect failed: {e:#}"));
+            }
         }
     }
 }
@@ -979,6 +1203,7 @@ fn settle(state: &mut State, name: String, spec: ServerSpec, result: Attempt) {
 async fn reconcile(
     state: &mut State,
     dir: &Path,
+    auth_dir: &Path,
     registry: &ActorRef<ToolRegistry>,
     rt: &Runtime,
     me: &ActorRef<Mcp>,
@@ -1007,6 +1232,7 @@ async fn reconcile(
         }
     }
     state.errors.retain(|name, _| want.contains_key(name));
+    state.login.retain(|name, _| want.contains_key(name));
     for (name, spec) in want {
         if state.running.contains_key(&name)
             || state.pending.contains(&name)
@@ -1017,8 +1243,9 @@ async fn reconcile(
         changed = true;
         state.pending.insert(name.clone());
         let me = me.clone();
+        let auth_dir = auth_dir.to_owned();
         tokio::spawn(async move {
-            let result = attempt(&name, &spec).await;
+            let result = attempt(&name, &spec, &auth_dir).await;
             let _ = me.tell(Settled { name, spec, result }).await;
         });
     }
@@ -1114,6 +1341,7 @@ pub async fn start(rt: &Runtime, registry: ActorRef<ToolRegistry>) -> anyhow::Re
                 ..State::default()
             },
             dir: dir.clone(),
+            auth_dir: ::oauth::Store::new(&rt.data_dir).mcp_dir(),
             registry,
             rt: rt.clone(),
         },
@@ -1312,21 +1540,50 @@ mod tests {
     }
 
     #[test]
-    fn remote_url_with_headers() {
-        let json = serde_json::json!({"mcpServers": {"api": {
-            "type": "sse", "url": "https://x.example/mcp", "headers": {"Authorization": "Bearer t"}
-        }}});
+    fn remote_url_with_headers_and_oauth() {
+        let json = serde_json::json!({"mcpServers": {
+            "api": {"type": "sse", "url": "https://x.example/mcp", "headers": {"Authorization": "Bearer t"}},
+            "slack": {"url": "https://s.example/mcp", "oauth": {"client_id": "id", "scopes": ["a"]}},
+            "bad": {"url": "https://b.example/mcp", "oauth": {"client_secret": "no id"}}
+        }});
+        let http = |url: &str, headers: &[(&str, &str)], oauth| ServerSpec {
+            transport: Transport::Http {
+                url: url.into(),
+                headers: headers
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
+                oauth,
+            },
+        };
+        // Key order depends on whether `serde_json/preserve_order` is unified in.
+        let mut got = parse_file("r", &json);
+        got.sort_by(|a, b| a.0.cmp(&b.0));
         assert_eq!(
-            parse_file("r", &json),
-            vec![(
-                "api".into(),
-                ServerSpec {
-                    transport: Transport::Http {
-                        url: "https://x.example/mcp".into(),
-                        headers: [("Authorization".to_string(), "Bearer t".to_string())].into(),
-                    }
-                }
-            )]
+            got,
+            vec![
+                (
+                    "api".into(),
+                    http(
+                        "https://x.example/mcp",
+                        &[("Authorization", "Bearer t")],
+                        None
+                    )
+                ),
+                ("bad".into(), http("https://b.example/mcp", &[], None)),
+                (
+                    "slack".into(),
+                    http(
+                        "https://s.example/mcp",
+                        &[],
+                        Some(OauthClient {
+                            client_id: "id".into(),
+                            client_secret: None,
+                            scopes: vec!["a".into()],
+                        })
+                    )
+                ),
+            ]
         );
     }
 

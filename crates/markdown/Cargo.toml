@@ -8,6 +8,7 @@ description = "Streaming markdown: raw pending tail, completed blocks rendered o
 [dependencies]
 mdstream = { workspace = true }
 pulldown-cmark = { workspace = true }
+unicode-width = { workspace = true }
 
 [lints]
 workspace = true

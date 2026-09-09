@@ -9,6 +9,8 @@ description = "Model loop (genai), session store (sqlite), skills, subagents"
 runtime = { workspace = true }
 models = { workspace = true }
 tools = { workspace = true }
+oauth = { workspace = true }
+cursor = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 futures = { workspace = true }

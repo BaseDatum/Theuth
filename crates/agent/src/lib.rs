@@ -6,8 +6,8 @@
 //!   [`Cancel`], [`ListSessions`], [`LoadSession`], [`ListChildren`],
 //!   [`ListModels`], [`SetModel`], [`ShowPrompt`], [`ListSkills`],
 //!   [`LoadSkill`], [`AddSkill`], [`RemoveSkill`], [`AddSkillRepo`],
-//!   [`RemoveSkillRepo`], [`SyncSkills`]
-//! - event: [`AgentEvent`]
+//!   [`RemoveSkillRepo`], [`SyncSkills`], [`ListLogins`], [`Login`], [`Logout`]
+//! - events: [`AgentEvent`], [`LoginFinished`]
 
 use std::sync::Arc;
 
@@ -171,6 +171,50 @@ pub struct RemoveSkillRepo {
 /// `ask` → `Vec<SyncResult>`: `git pull` every skill repo.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct SyncSkills;
+
+/// `ask` → `Vec<LoginInfo>`: every provider a user can log in to (design doc 05 §2).
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct ListLogins;
+
+/// One OAuth provider row.
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct LoginInfo {
+    /// genai namespace (`openai`).
+    pub name: String,
+    /// Tokens on disk.
+    pub logged_in: bool,
+    /// Account the tokens belong to, when the provider tells us.
+    pub account: Option<String>,
+    /// Access token expiry, unix seconds.
+    pub expires_at: Option<u64>,
+}
+
+/// `ask` → `Result<String, String>`: the URL to open; the browser is also
+/// opened. Completion arrives as [`LoginFinished`].
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Login {
+    /// genai namespace (`openai`).
+    pub provider: String,
+}
+
+/// `ask` → `Result<(), String>`: delete the provider's tokens.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Logout {
+    /// genai namespace (`openai`).
+    pub provider: String,
+}
+
+/// Event: the login started by [`Login`] ended.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(tag = "type")]
+pub struct LoginFinished {
+    /// genai namespace (`openai`).
+    pub provider: String,
+    /// `None` on success.
+    pub error: Option<String>,
+}
 
 /// One indexed skill.
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]

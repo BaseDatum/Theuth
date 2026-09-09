@@ -5,7 +5,7 @@
 //! Public surface consumed by other plugins:
 //! - commands on the `"tools"` actor ([`ToolRegistry`]): [`ListTools`], [`Invoke`], [`RegisterTool`], [`UnregisterTool`]
 //! - commands on the `"approval"` actor ([`Approval`]): [`Resolve`]
-//! - commands on the `"mcp"` actor ([`Mcp`]): [`ListServers`], [`SetGate`], [`Restart`], [`AddServer`], [`RemoveServer`], [`AddRepo`], [`SyncMcp`]
+//! - commands on the `"mcp"` actor ([`Mcp`]): [`ListServers`], [`SetGate`], [`Restart`], [`AddServer`], [`RemoveServer`], [`AddRepo`], [`SyncMcp`], [`McpLogin`], [`McpLogout`]
 //! - events: [`ApprovalRequested`], [`ApprovalResolved`]
 
 use std::sync::Arc;
@@ -25,8 +25,8 @@ pub mod shell;
 
 pub use approval::{Approval, ApprovalId, ApprovalRequested, ApprovalResolved, Decision, Resolve};
 pub use mcp::{
-    AddRepo, AddServer, ListServers, Mcp, McpProgress, McpServer, McpToolInfo, Progress,
-    RemoveServer, RepoInfo, Restart, SetGate, SyncMcp,
+    AddRepo, AddServer, ListServers, Mcp, McpAuth, McpLogin, McpLogout, McpProgress, McpServer,
+    McpToolInfo, Progress, RemoveServer, RepoInfo, Restart, SetGate, SyncMcp,
 };
 pub use registry::{
     ApprovalsState, Invoke, ListTools, RegisterTool, SetApprovals, SetParent, ToolRegistry,

@@ -5,13 +5,14 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
 use genai::adapter::AdapterKind;
 use genai::chat::{ChatMessage, ChatRole};
-use genai::resolver::AuthData;
-use genai::{Client, ModelIden};
+use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
+use genai::{Client, Headers, ModelIden, ServiceTarget};
 use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
 use models::{Catalog, Resolved};
@@ -31,9 +32,9 @@ use crate::skills::{
 use crate::store::Store;
 use crate::{
     AGENT_ACTOR, AddSkill, AddSkillRepo, AgentConfig, AgentEvent, Cancel, HistoryEntry,
-    ListChildren, ListModels, ListSessions, ListSkills, LoadSession, LoadSkill, Loaded, ModelInfo,
-    RemoveSkill, RemoveSkillRepo, SendInput, SessionSummary, SetModel, ShowPrompt, SkillBody,
-    SkillMeta, Steer, SyncSkills,
+    ListChildren, ListLogins, ListModels, ListSessions, ListSkills, LoadSession, LoadSkill, Loaded,
+    Login, LoginFinished, LoginInfo, Logout, ModelInfo, RemoveSkill, RemoveSkillRepo, SendInput,
+    SessionSummary, SetModel, ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills,
 };
 
 /// The supervisor actor. Look up with `ActorRef::<Agents>::lookup(AGENT_ACTOR)`.
@@ -48,6 +49,7 @@ pub struct Agents {
     configured: Arc<dyn Fn(&str) -> bool + Send + Sync>,
     store: Store,
     client: Client,
+    auth: Auth,
     sessions: HashMap<SessionId, Live>,
     /// Sessions with a turn in flight (from `TurnStarted`/`TurnFinished`).
     running: HashSet<SessionId>,
@@ -196,6 +198,7 @@ impl Agents {
             self.cfg.clone(),
             self.store.clone(),
             self.client.clone(),
+            self.auth.clone(),
             self.rt.clone(),
         ));
         self.sessions.insert(
@@ -692,6 +695,26 @@ impl Message<ListModels> for Agents {
             .filter(|p| (self.configured)(Catalog::adapter(&p.id)))
             .flat_map(|p| p.models.values().map(|m| ModelInfo::new(&p.id, m)))
             .collect();
+        // Cursor is not in models.dev: ask the backend what the account may use.
+        if self.auth.login("cursor") {
+            match self.auth.oauth.access(&oauth::CURSOR).await {
+                Ok(t) => match cursor::models(&t.access_token).await {
+                    Ok(models) => out.extend(models.into_iter().map(|m| {
+                        let id = format!("cursor/{}", m.id);
+                        let near = self.catalog.closest(&id);
+                        ModelInfo {
+                            context: near.map_or(0, |n| n.limit.context),
+                            reasoning: near.is_some_and(|n| n.reasoning),
+                            id,
+                            name: m.name,
+                            provider: "cursor".into(),
+                        }
+                    })),
+                    Err(e) => tracing::warn!("cursor models: {e}"),
+                },
+                Err(e) => tracing::warn!("{e}"),
+            }
+        }
         out.sort_by(|a, b| (&a.provider, &a.id).cmp(&(&b.provider, &b.id)));
         out
     }
@@ -741,6 +764,70 @@ impl Message<SetModel> for Agents {
     }
 }
 
+impl Message<ListLogins> for Agents {
+    type Reply = Vec<LoginInfo>;
+
+    async fn handle(
+        &mut self,
+        _: ListLogins,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Vec<LoginInfo> {
+        oauth::PROVIDERS
+            .iter()
+            .map(|p| {
+                let t = self.auth.oauth.load(&p.ns);
+                LoginInfo {
+                    name: p.ns.to_string(),
+                    logged_in: t.is_some(),
+                    expires_at: t.as_ref().map(|t| t.expires_at),
+                    account: t.and_then(|t| t.account_id),
+                }
+            })
+            .collect()
+    }
+}
+
+impl Message<Login> for Agents {
+    type Reply = Result<String, String>;
+
+    async fn handle(&mut self, m: Login, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let p = login_provider(&m.provider)?;
+        let (url, finish) = self.auth.oauth.login(p).await?;
+        oauth::open_browser(&url);
+        let rt = self.rt.clone();
+        tokio::spawn(async move {
+            let error = finish.await.err();
+            match &error {
+                Some(e) => tracing::warn!("login {}: {e}", m.provider),
+                None => tracing::info!("login {}: ok", m.provider),
+            }
+            rt.publish(LoginFinished {
+                provider: m.provider,
+                error,
+            })
+            .await;
+        });
+        Ok(url)
+    }
+}
+
+impl Message<Logout> for Agents {
+    type Reply = Result<(), String>;
+
+    async fn handle(&mut self, m: Logout, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let p = login_provider(&m.provider)?;
+        self.auth.oauth.remove(&p.ns).map_err(|e| e.to_string())
+    }
+}
+
+/// [`oauth::provider`] with a user-facing error listing the choices.
+fn login_provider(ns: &str) -> Result<&'static oauth::Provider, String> {
+    oauth::provider(ns).ok_or_else(|| {
+        let all: Vec<&str> = oauth::PROVIDERS.iter().map(|p| &*p.ns).collect();
+        format!("unknown provider `{ns}`; providers: {}", all.join(", "))
+    })
+}
+
 impl ModelInfo {
     fn new(provider: &str, m: &models::Model) -> Self {
         Self {
@@ -755,15 +842,16 @@ impl ModelInfo {
 
 impl From<&Resolved> for ModelInfo {
     fn from(r: &Resolved) -> Self {
-        match (&r.provider, &r.model) {
-            (Some(p), Some(m)) => Self::new(p, m),
-            _ => Self {
-                id: r.id.clone(),
-                name: r.id.clone(),
-                provider: r.provider.clone().unwrap_or_default(),
-                context: 0,
-                reasoning: false,
-            },
+        // `r.model` may be a name-matched neighbour: keep the id the user chose.
+        Self {
+            id: r.id.clone(),
+            name: r
+                .model
+                .as_ref()
+                .map_or_else(|| r.id.clone(), |m| m.name.clone()),
+            provider: r.provider.clone().unwrap_or_default(),
+            context: r.model.as_ref().map_or(0, |m| m.limit.context),
+            reasoning: r.model.as_ref().is_some_and(|m| m.reasoning),
         }
     }
 }
@@ -831,23 +919,116 @@ fn credentials(data_dir: &Path) -> HashMap<String, String> {
     }
 }
 
-/// genai client whose keys come from `creds`, falling back to each adapter's env var.
-fn client(creds: Arc<HashMap<String, String>>) -> anyhow::Result<Client> {
+/// Key sources in precedence order (design doc 05 §2.2): `credentials.yaml`,
+/// then a `/login`, then the adapter's env var (left to genai).
+#[derive(Clone)]
+pub(crate) struct Auth {
+    pub(crate) creds: Arc<HashMap<String, String>>,
+    pub(crate) oauth: oauth::Store,
+}
+
+impl Auth {
+    /// A login is in force for genai namespace `ns`: no key in
+    /// `credentials.yaml` and tokens on disk.
+    pub(crate) fn login(&self, ns: &str) -> bool {
+        !self.creds.contains_key(ns)
+            && oauth::provider(ns).is_some()
+            && self.oauth.load(ns).is_some()
+    }
+}
+
+/// genai client whose keys come from `credentials.yaml`, falling back to each
+/// adapter's env var. A login in force (design doc 05 §2.3) rewrites the
+/// target instead: OpenAI → the ChatGPT Codex backend; Anthropic → the same
+/// Messages API with the Claude Code bearer and betas.
+fn client(auth: Auth) -> anyhow::Result<Client> {
+    let keys = auth.creds.clone();
     Ok(Client::builder()
         .with_auth_resolver_fn(move |m: ModelIden| {
-            Ok(match creds.get(m.adapter_kind.as_lower_str()) {
+            Ok(match keys.get(m.adapter_kind.as_lower_str()) {
                 Some(k) => Some(AuthData::Key(k.clone())),
                 None => AdapterKind::default_key_env_name(&m.adapter_kind).map(AuthData::from_env),
             })
         })
+        .with_service_target_resolver(ServiceTargetResolver::from_resolver_async_fn(
+            move |mut target: ServiceTarget| -> Pin<
+                Box<dyn Future<Output = genai::resolver::Result<ServiceTarget>> + Send>,
+            > {
+                let auth = auth.clone();
+                Box::pin(async move {
+                    match target.model.adapter_kind {
+                        AdapterKind::OpenAI | AdapterKind::OpenAIResp if auth.login("openai") => {
+                            let t = auth
+                                .oauth
+                                .access(&oauth::OPENAI)
+                                .await
+                                .map_err(genai::resolver::Error::Custom)?;
+                            target.model.adapter_kind = AdapterKind::OpenAIResp;
+                            target.endpoint =
+                                Endpoint::from_static("https://chatgpt.com/backend-api/codex/");
+                            target.auth = AuthData::RequestOverride {
+                                url: "https://chatgpt.com/backend-api/codex/responses".into(),
+                                headers: Headers::from(vec![
+                                    ("Authorization", format!("Bearer {}", t.access_token)),
+                                    ("chatgpt-account-id", t.account_id.unwrap_or_default()),
+                                    ("OpenAI-Beta", "responses=v1".to_owned()),
+                                    ("originator", "codex_cli_rs".to_owned()),
+                                ]),
+                            };
+                        }
+                        AdapterKind::Anthropic if auth.login("anthropic") => {
+                            let t = auth
+                                .oauth
+                                .access(&oauth::ANTHROPIC)
+                                .await
+                                .map_err(genai::resolver::Error::Custom)?;
+                            target.auth = AuthData::RequestOverride {
+                                url: "https://api.anthropic.com/v1/messages?beta=true".into(),
+                                headers: Headers::from(vec![
+                                    ("Authorization", format!("Bearer {}", t.access_token)),
+                                    ("anthropic-version", "2023-06-01".to_owned()),
+                                    ("anthropic-beta", ANTHROPIC_BETAS.to_owned()),
+                                    ("User-Agent", CLAUDE_CODE_UA.to_owned()),
+                                    ("x-app", "cli".to_owned()),
+                                    (
+                                        "anthropic-dangerous-direct-browser-access",
+                                        "true".to_owned(),
+                                    ),
+                                ]),
+                            };
+                        }
+                        AdapterKind::Xai if auth.login("xai") => {
+                            let t = auth
+                                .oauth
+                                .access(&oauth::XAI)
+                                .await
+                                .map_err(genai::resolver::Error::Custom)?;
+                            target.auth = AuthData::Key(t.access_token);
+                        }
+                        _ => {}
+                    }
+                    Ok(target)
+                })
+            },
+        ))
         .build()?)
 }
 
+/// Betas a subscription token is accepted with; `oauth-2025-04-20` is the
+/// one that turns a 403 into a 200.
+const ANTHROPIC_BETAS: &str =
+    "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14";
+/// The client the subscription token was minted for.
+const CLAUDE_CODE_UA: &str = "claude-cli/2.1.257 (external, cli)";
+
 /// The auth-resolver rule as a predicate over genai namespaces: a key in
-/// `creds`, the adapter's default env var set, or an adapter needing no key (`ollama`).
-fn configured(creds: Arc<HashMap<String, String>>) -> Arc<dyn Fn(&str) -> bool + Send + Sync> {
+/// `creds`, a login on disk, the adapter's default env var set, or an
+/// adapter needing no key (`ollama`). `cursor` is not a genai adapter: only
+/// a login configures it.
+fn configured(auth: Auth) -> Arc<dyn Fn(&str) -> bool + Send + Sync> {
     Arc::new(move |ns: &str| {
-        creds.contains_key(ns)
+        auth.creds.contains_key(ns)
+            || auth.login(ns)
             || AdapterKind::from_lower_str(ns).is_some_and(|k| {
                 k.default_key_env_name()
                     .is_none_or(|env| std::env::var_os(env).is_some_and(|v| !v.is_empty()))
@@ -863,16 +1044,20 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
     });
     let cfg = Arc::new(cfg);
     let store = Store::open(&rt.data_dir.join("sessions.sqlite")).await?;
-    let creds = Arc::new(credentials(&rt.data_dir));
+    let auth = Auth {
+        creds: Arc::new(credentials(&rt.data_dir)),
+        oauth: oauth::Store::new(&rt.data_dir),
+    };
     let agents = Agents::spawn_with_mailbox(
         Agents {
             rt: rt.clone(),
             cfg: cfg.clone(),
             default_model: cfg.model.clone(),
             catalog: Arc::new(Catalog::load(&rt.data_dir)),
-            configured: configured(creds.clone()),
+            configured: configured(auth.clone()),
             store,
-            client: client(creds)?,
+            client: client(auth.clone())?,
+            auth,
             sessions: HashMap::new(),
             running: HashSet::new(),
             waiters: HashMap::new(),

@@ -5,10 +5,11 @@
 //! mailbox never blocks on network I/O.
 
 use std::path::Path;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
-use futures::StreamExt;
 use futures::future::join_all;
+use futures::{Stream, StreamExt};
 use genai::Client;
 use genai::chat::{
     ChatMessage, ChatOptions, ChatRequest, ChatStreamEvent, MessageContent, ToolCall, ToolResponse,
@@ -23,11 +24,17 @@ use tools::{Invoke, ListTools, REGISTRY_ACTOR, ToolRegistry};
 use crate::peers::SpawnSubagentTool;
 use crate::skills;
 use crate::store::Store;
-use crate::supervisor::PeerContext;
+use crate::supervisor::{Auth, PeerContext};
 use crate::{AGENT_ACTOR, AgentConfig, AgentEvent, Agents, Usage};
 
 /// Characters of tool output shown in [`AgentEvent::ToolCallFinished`].
 const DISPLAY_OUTPUT_CHARS: usize = 2000;
+/// Subscription tokens are only honoured when the system prompt opens with
+/// the client's identity line (design doc 05 §2.3).
+const CLAUDE_CODE_IDENTITY: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
+
+/// One model call's events, from genai or the Cursor backend.
+type EventStream = Pin<Box<dyn Stream<Item = Result<ChatStreamEvent, String>> + Send>>;
 
 /// `tell`: user text. Starts a turn when idle, otherwise queued and injected
 /// after the current tool batch (steering).
@@ -70,6 +77,7 @@ struct Shared {
     cfg: Arc<AgentConfig>,
     store: Store,
     client: Client,
+    auth: Auth,
     rt: Runtime,
     steer: Arc<Mutex<Vec<String>>>,
 }
@@ -79,7 +87,7 @@ impl Session {
     /// messages for resumed ones. `depth` ≥ `subagents.max_depth` hides `spawn_subagent`.
     /// `model` is the resolved id and, when resolution failed, the message to surface.
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub(crate) fn new(
         id: SessionId,
         depth: u8,
         model: (Resolved, Option<String>),
@@ -87,6 +95,7 @@ impl Session {
         cfg: Arc<AgentConfig>,
         store: Store,
         client: Client,
+        auth: Auth,
         rt: Runtime,
     ) -> Self {
         let titled = !history.is_empty();
@@ -98,6 +107,7 @@ impl Session {
                 cfg,
                 store,
                 client,
+                auth,
                 rt,
                 steer: Arc::default(),
             },
@@ -340,18 +350,44 @@ impl Turn {
                 Vec::new()
             }
         };
+        // The namespace picks the transport: genai for every adapter it knows,
+        // the `cursor` crate for a Cursor login.
+        let ns = model.genai.split_once("::").map_or("", |(n, _)| n);
+        let mut system = system_prompt(&self.shared.rt.data_dir, &self.peers);
+        if ns == "anthropic" && self.shared.auth.login("anthropic") {
+            system = format!("{CLAUDE_CODE_IDENTITY}\n\n{system}");
+        }
         let req = ChatRequest::new(history.clone())
-            .with_system(system_prompt(&self.shared.rt.data_dir, &self.peers))
+            .with_system(system)
             .with_tools(tools);
         let opts = ChatOptions::default()
             .with_capture_tool_calls(true)
             .with_capture_usage(true)
             .with_capture_content(true);
 
+        let open = async {
+            if ns == "cursor" {
+                let t = self.shared.auth.oauth.access(&oauth::CURSOR).await?;
+                let slug = model
+                    .id
+                    .split_once('/')
+                    .map_or(model.id.as_str(), |(_, m)| m);
+                cursor::chat_stream(&t.access_token, slug, req, &self.shared.id.to_string()).await
+            } else {
+                self.shared
+                    .client
+                    .exec_chat_stream(&model.genai, req, Some(&opts))
+                    .await
+                    .map(|r| -> EventStream {
+                        Box::pin(r.stream.map(|ev| ev.map_err(|e| e.to_string())))
+                    })
+                    .map_err(|e| e.to_string())
+            }
+        };
         let stream = tokio::select! {
             _ = self.cancel.cancelled() => return Round::Stop("cancelled".into()),
-            r = self.shared.client.exec_chat_stream(&model.genai, req, Some(&opts)) => match r {
-                Ok(r) => r.stream,
+            r = open => match r {
+                Ok(s) => s,
                 Err(e) => {
                     self.error(format!("model: {e}")).await;
                     return Round::Stop("error".into());

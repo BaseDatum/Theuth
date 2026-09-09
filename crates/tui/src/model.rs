@@ -13,8 +13,8 @@ use runtime::SessionId;
 use tokio::sync::mpsc::UnboundedSender;
 use tools::git::SyncResult;
 use tools::{
-    ApprovalId, ApprovalRequested, ApprovalResolved, ApprovalsState, Decision, McpProgress,
-    McpServer, McpToolInfo, PolicyAction, RepoInfo,
+    ApprovalId, ApprovalRequested, ApprovalResolved, ApprovalsState, Decision, McpAuth,
+    McpProgress, McpServer, McpToolInfo, PolicyAction, RepoInfo,
 };
 
 /// Everything the UI can receive: bus events plus replies to its own commands.
@@ -62,6 +62,10 @@ pub enum UiEvent {
     Info(String),
     /// A command failed (actor missing, ask error).
     Error(String),
+    /// Reply to [`Command::ListLogins`]: providers and OAuth MCP servers.
+    Logins(Vec<LoginRow>),
+    /// A provider login started by [`Command::Login`] ended (bus event).
+    LoginFinished(agent::LoginFinished),
 }
 
 /// Everything the UI can ask of the rest of the process. One task owns all
@@ -149,6 +153,23 @@ pub enum Command {
     AddMcpRepo(String),
     /// `SyncMcp` on the MCP actor.
     SyncMcp,
+    /// `ListLogins` on the agent plus OAuth servers from `ListServers`.
+    ListLogins,
+    /// `Login` on the agent (provider name) or `McpLogin` on the MCP actor.
+    Login(String),
+    /// `Logout` on the agent or `McpLogout` on the MCP actor.
+    Logout(String),
+}
+
+/// One row of the `/login` picker.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoginRow {
+    /// Provider namespace or MCP server name.
+    pub name: String,
+    /// An MCP server (else a provider).
+    pub mcp: bool,
+    /// `logged in (acct)` / `login required` / `not logged in`.
+    pub status: String,
 }
 
 /// One transcript row.
@@ -235,6 +256,44 @@ fn card(kind: CardKind, title: String, text: &str) -> Entry {
     }
 }
 
+impl Entry {
+    /// Rows this entry draws before wrapping (borders and headers included).
+    fn height(&self) -> usize {
+        match self {
+            Entry::User(t) => t.lines().count() + 4,
+            Entry::Assistant(t) => {
+                let v = t.view();
+                v.lines().count() + v.plain.lines().count()
+            }
+            Entry::Card { text, expanded, .. } => {
+                4 + if *expanded {
+                    text.view().lines().count()
+                } else {
+                    0
+                }
+            }
+            Entry::Reasoning { done: true, .. } | Entry::Info(_) | Entry::Error(_) => 1,
+            Entry::Reasoning { text, .. } => text.lines().count(),
+            Entry::Pending { .. } => 2,
+            Entry::Tool { args, expanded, .. } => {
+                5 + args.len() + expanded.as_ref().map_or(0, |t| t.view().lines().count())
+            }
+        }
+    }
+}
+
+/// What the input box shows for a held paste: `[⎘ paste 1: 69 lines]`
+/// (`chars` for a single long line). `i` is the index into `Model::pastes`.
+pub fn paste_token(i: usize, text: &str) -> String {
+    let lines = text.lines().count();
+    let size = if lines > 1 {
+        format!("{lines} lines")
+    } else {
+        format!("{} chars", text.chars().count())
+    };
+    format!("[⎘ paste {}: {size}]", i + 1)
+}
+
 /// Split a harness-injected input into `(peer, body)` per wrapper. Inputs
 /// queued during a turn arrive as one text: `<subagent_result name="…">` /
 /// `<message from="…">` blocks joined by newlines. Empty for human text (or
@@ -292,6 +351,12 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "[add <url>|rm <name>|sync]",
         "skills (picker without args)",
     ),
+    (
+        "/login",
+        "[name]",
+        "log in to a provider or MCP server (picker without name)",
+    ),
+    ("/logout", "<name>", "forget a login"),
     ("/prompt", "", "show the assembled system prompt"),
     ("/agents", "", "list this session's subagents"),
     ("/focus", "<name>", "show a subagent's transcript"),
@@ -305,6 +370,7 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     ("/cancel", "", "abort the in-flight turn"),
     ("/quit", "", "exit"),
+    ("/exit", "", "same as /quit"),
 ];
 
 /// Commands whose name starts with the typed word (`/mo` → `/model`).
@@ -431,6 +497,13 @@ pub enum Menu {
         /// Highlighted row.
         cursor: usize,
     },
+    /// `/login` picker.
+    Logins {
+        /// Providers then OAuth MCP servers.
+        items: Vec<LoginRow>,
+        /// Highlighted row.
+        cursor: usize,
+    },
 }
 
 /// One line of the `/mcp` menu.
@@ -529,6 +602,9 @@ pub struct Model {
     pub approvals_off: bool,
     /// Latest MCP reconcile snapshot; `None` before the first.
     pub mcp: Option<McpProgress>,
+    /// Large pastes held out of the input box; the box shows one
+    /// [`paste_token`] each, expanded back on submit.
+    pub pastes: Vec<String>,
     /// The user asked to leave.
     pub quit: bool,
 }
@@ -556,6 +632,62 @@ impl Model {
     /// The session whose transcript is shown: the focused child, else the root.
     pub fn shown(&self) -> Option<SessionId> {
         self.focus.or(self.session)
+    }
+
+    /// The input box takes keys: no approval prompt and no modal menu
+    /// (the slash popup rides on the box).
+    pub fn input_focused(&self) -> bool {
+        self.approval().is_none()
+            && !matches!(
+                self.menu,
+                Some(
+                    Menu::Models { .. }
+                        | Menu::Sessions { .. }
+                        | Menu::Mcp { .. }
+                        | Menu::Skills { .. }
+                        | Menu::Logins { .. }
+                )
+            )
+    }
+
+    /// Index of the first entry worth drawing: the tail whose height (before
+    /// wrapping, so a lower bound) reaches `lines`. Every frame lays out and
+    /// paints every child it is given, so the whole history made each frame
+    /// O(session); the screen can only ever show the tail anyway.
+    // ponytail: scroll-back stops at this window; render on demand from the
+    // scroll offset if anyone wants to page further up.
+    pub fn tail(&self, lines: usize) -> usize {
+        let mut total = 0;
+        for (i, e) in self.entries.iter().enumerate().rev() {
+            total += e.height();
+            if total >= lines {
+                return i;
+            }
+        }
+        0
+    }
+
+    /// Take a paste: small ones come back verbatim for the input box; large
+    /// ones are held in `pastes` and a [`paste_token`] comes back instead.
+    /// Terminals paste newlines as `\r`; normalise to `\n`.
+    pub fn paste(&mut self, text: &str) -> String {
+        let text = text.replace("\r\n", "\n").replace('\r', "\n");
+        if text.lines().count() <= 5 && text.chars().count() <= 400 {
+            return text;
+        }
+        let token = paste_token(self.pastes.len(), &text);
+        self.pastes.push(text);
+        token
+    }
+
+    /// `line` with every paste token the user left in place replaced by its
+    /// text; `pastes` is emptied either way.
+    fn expand_pastes(&mut self, line: &str) -> String {
+        let mut text = line.to_owned();
+        for (i, p) in std::mem::take(&mut self.pastes).iter().enumerate() {
+            text = text.replace(&paste_token(i, p), p);
+        }
+        text
     }
 
     /// Add an entry that did not come from the model's stream (a peer message,
@@ -830,6 +962,18 @@ impl Model {
                     self.menu = Some(Menu::Skills { items, cursor: 0 });
                 }
             }
+            UiEvent::Logins(items) => {
+                if items.is_empty() {
+                    self.entries
+                        .push(Entry::Info("nothing to log in to".into()));
+                } else {
+                    self.menu = Some(Menu::Logins { items, cursor: 0 });
+                }
+            }
+            UiEvent::LoginFinished(f) => self.entries.push(match f.error {
+                None => Entry::Info(format!("login: {} ok", f.provider)),
+                Some(e) => Entry::Error(format!("login: {} failed: {e}", f.provider)),
+            }),
             UiEvent::Skill(s) => {
                 let text = if s.files.is_empty() {
                     s.body
@@ -1032,7 +1176,7 @@ impl Model {
             .split_once(' ')
             .map_or((line, ""), |(c, a)| (c, a.trim()));
         match cmd {
-            "/quit" => self.quit = true,
+            "/quit" | "/exit" => self.quit = true,
             "/sessions" => send(tx, Command::ListSessions),
             "/resume" => match arg.parse::<SessionId>() {
                 Ok(id) => self.resume(id, tx),
@@ -1060,6 +1204,12 @@ impl Model {
             "/mcp" => self.mcp_cmd(arg, tx),
             "/skills" => self.skills_cmd(arg, tx),
             "/prompt" => send(tx, Command::ShowPrompt(self.shown())),
+            "/login" if arg.is_empty() => send(tx, Command::ListLogins),
+            "/login" => send(tx, Command::Login(arg.to_owned())),
+            "/logout" if arg.is_empty() => self
+                .entries
+                .push(Entry::Error("usage: /logout <name>".into())),
+            "/logout" => send(tx, Command::Logout(arg.to_owned())),
             "/agents" => match self.session {
                 Some(root) => send(tx, Command::ListChildren(root)),
                 None => self.entries.push(Entry::Info("no session".into())),
@@ -1075,7 +1225,7 @@ impl Model {
                 .push(Entry::Error(format!("unknown command {c}"))),
             _ => {
                 self.entries.push(Entry::User(line.to_owned()));
-                let text = line.to_owned();
+                let text = self.expand_pastes(line);
                 match self.shown() {
                     Some(session) if self.shown_running() => {
                         send(tx, Command::Steer { session, text });
@@ -1170,7 +1320,7 @@ impl Model {
     /// Line above the input: `model  ·  ctx 12.3k / 200k (6%)` and its colour level.
     pub fn header(&self, catalog: &Catalog) -> (String, Level) {
         let used = k(self.context);
-        match catalog.get(&self.model_id).map(|(_, m)| m.limit.context) {
+        match catalog.closest(&self.model_id).map(|m| m.limit.context) {
             Some(limit) if limit > 0 => {
                 let pct = u64::from(self.context) * 100 / u64::from(limit);
                 let level = match pct {
@@ -1334,6 +1484,7 @@ impl Model {
             Some(Menu::Sessions { .. }) => self.sessions_key(code, tx),
             Some(Menu::Mcp { .. }) => self.mcp_key(code, tx),
             Some(Menu::Skills { .. }) => self.skills_key(code, tx),
+            Some(Menu::Logins { .. }) => self.logins_key(code, tx),
         }
     }
 
@@ -1463,6 +1614,26 @@ impl Model {
         MenuKey::Consumed
     }
 
+    /// `/login`: Enter logs the highlighted row in.
+    fn logins_key(&mut self, code: KeyCode, tx: &UnboundedSender<Command>) -> MenuKey {
+        let Some(Menu::Logins { items, cursor }) = &mut self.menu else {
+            return MenuKey::Consumed;
+        };
+        match code {
+            KeyCode::Up => *cursor = cursor.saturating_sub(1),
+            KeyCode::Down => *cursor = (*cursor + 1).min(items.len().saturating_sub(1)),
+            KeyCode::Esc => self.menu = None,
+            KeyCode::Enter => {
+                if let Some(r) = items.get(*cursor) {
+                    send(tx, Command::Login(r.name.clone()));
+                }
+                self.menu = None;
+            }
+            _ => {}
+        }
+        MenuKey::Consumed
+    }
+
     fn mcp_key(&mut self, code: KeyCode, tx: &UnboundedSender<Command>) -> MenuKey {
         enum Act {
             Move(usize),
@@ -1487,6 +1658,11 @@ impl Model {
             (KeyCode::Left, Some(Row::Server(s) | Row::Tool(s, _))) => {
                 Act::Expand(s.name.clone(), false)
             }
+            (KeyCode::Char('l'), Some(Row::Server(s))) => match s.auth {
+                McpAuth::Required => Act::Send(Command::Login(s.name.clone())),
+                McpAuth::LoggedIn => Act::Send(Command::Logout(s.name.clone())),
+                McpAuth::None => Act::Nothing,
+            },
             (KeyCode::Char(' '), Some(Row::Server(s))) => Act::Send(Command::SetGate {
                 server: s.name.clone(),
                 tool: None,
@@ -1658,6 +1834,7 @@ mod tests {
             name: "fs".into(),
             connected: true,
             repo: None,
+            auth: McpAuth::None,
             gate,
             tools: vec![McpToolInfo {
                 name: "read".into(),
@@ -1795,5 +1972,36 @@ mod tests {
         );
         assert_eq!(window(50, 20, 10), 11..21);
         assert_eq!(window(5, 0, 10), 0..5);
+    }
+
+    #[test]
+    fn large_paste_becomes_a_token_that_submit_expands() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        assert_eq!(m.paste("one\r\ntwo\r"), "one\ntwo\n");
+        let big: String = (0..69).map(|i| format!("line {i}\r\n")).collect();
+        let token = m.paste(&big);
+        assert_eq!(token, "[⎘ paste 1: 69 lines]");
+        assert_eq!(m.paste(&"x".repeat(500)), "[⎘ paste 2: 500 chars]");
+        m.submit(&format!("look: {token} and [⎘ paste 2: 500 chars]"), &tx);
+        let Some(Command::Send { text, .. }) = rx.try_recv().ok() else {
+            panic!("no send")
+        };
+        assert!(text.starts_with("look: line 0\nline 1\n"));
+        assert!(text.ends_with(&"x".repeat(500)));
+        assert!(m.pastes.is_empty(), "held pastes are dropped on submit");
+        assert!(matches!(&m.entries[0], Entry::User(t) if t.contains(&token)));
+    }
+
+    #[test]
+    fn tail_reaches_the_requested_height() {
+        let mut m = Model::default();
+        for _ in 0..10 {
+            m.entries.push(Entry::Info("x".into()));
+            m.entries.push(Entry::User("a\nb".into()));
+        }
+        assert_eq!(m.tail(1), 19);
+        assert_eq!(m.tail(7), 18, "Info 1 + User 6 rows");
+        assert_eq!(m.tail(1000), 0, "short histories draw whole");
     }
 }

@@ -298,10 +298,23 @@ Input: `TextInput` is multiline with `newline_modifiers: SHIFT` (our iocraft
 patch, `[patch.crates-io]`): plain Enter submits, Shift+Enter inserts a
 newline. Shift+Enter is only distinguishable under the kitty keyboard
 protocol, so the app pushes `DISAMBIGUATE_ESCAPE_CODES` after iocraft enters
-the alternate screen and pops it on quit. Mouse capture is off
+the alternate screen and pops it on quit; Ctrl+C is routed through the app
+(`ignore_ctrl_c`) so that teardown always runs. Mouse capture is off
 (`disable_mouse_capture`): the terminal's own selection works, and Ghostty's
 copy-on-select copies on release without any code here. The cost is no
-wheel scrolling of the transcript (never implemented).
+wheel scrolling of the transcript (never implemented). The box auto-grows
+with `flex_shrink: 0`, otherwise a full transcript squeezes it back to three
+rows. Bracketed paste is on (second iocraft patch: `TerminalEvent::Paste`):
+a paste lands at the cursor in one piece with `\r` normalised to `\n`; one
+over five lines or 400 chars is held in `Model::pastes` and the box shows
+`[⎘ paste 1: 69 lines]` instead. `submit` swaps the tokens back before
+sending; the `◆ you` card keeps the token.
+
+Only the tail of the transcript is built each frame (`Model::tail`: entries
+from the end until their pre-wrap height reaches eight screens). iocraft lays
+out and paints every child it is given, so the whole history made a frame
+O(session) — 27 ms at 150 turns, against a 16 ms tick — and typing during a
+stream lagged. Scroll-back (PageUp) stops at that window.
 
 Transcript shapes, so a glance tells the kinds apart: every input and event
 is a rounded card with a glyph header in its own colour (text glyphs, never
@@ -354,6 +367,7 @@ Cargo.toml            workspace, edition 2024, resolver 3
 crates/
   runtime/            Plugin trait + §4 contract types (≤400 lines)
   agent/              genai loop, session store, skills (phase 2), subagents (phase 3)
+  oauth/              loopback callback, PKCE, provider token store (doc 05)
   tools/              registry, approval, shell (brush), fs, mcp (rmcp)
   rpc/                jsonrpsee server, event subscription bridge
   tui/                iocraft frontend

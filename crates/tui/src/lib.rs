@@ -3,13 +3,14 @@
 //! `Resolve` by `ask`. Cancels `rt.shutdown` on quit. See design doc §8.
 //!
 //! Shape: a bridge actor forwards bus events into an mpsc channel; the UI
-//! (fullscreen iocraft, or a line printer when stdout is not a TTY) is pure
-//! over [`model::Model`]; one task turns [`model::Command`]s into actor asks
-//! and feeds replies back as [`model::UiEvent`]s.
+//! (fullscreen iocraft, or a line printer when stdout is not a TTY or `-p`
+//! was given) is pure over [`model::Model`]; one task turns
+//! [`model::Command`]s into actor asks and feeds replies back as
+//! [`model::UiEvent`]s.
 
 use std::io::{IsTerminal, Write};
 
-use agent::{AGENT_ACTOR, AgentConfig, AgentEvent, Agents};
+use agent::{AGENT_ACTOR, AgentConfig, AgentEvent, Agents, LoginFinished};
 use anyhow::Context as _;
 use kameo::Actor;
 use kameo::actor::{ActorRef, Spawn};
@@ -17,17 +18,21 @@ use kameo::message::{Context, Message};
 use runtime::{Runtime, SessionId};
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
-use tools::{APPROVAL_ACTOR, Approval, ApprovalRequested, ApprovalResolved, Decision, McpProgress};
+use tools::{
+    APPROVAL_ACTOR, Approval, ApprovalRequested, ApprovalResolved, Decision, McpAuth, McpProgress,
+};
 
 pub mod model;
 mod ui;
 
-use model::{Command, Model, UiEvent};
+use model::{Command, LoginRow, Model, UiEvent};
 
 /// The plugin.
 pub struct TuiPlugin {
     /// Session to open on start (`wth --resume <id>`); `None` starts fresh.
     pub resume: Option<SessionId>,
+    /// `wth -p <text>`: submit this, print the stream, exit at `TurnFinished`.
+    pub prompt: Option<String>,
 }
 
 #[async_trait::async_trait]
@@ -49,6 +54,7 @@ impl runtime::Plugin for TuiPlugin {
         rt.subscribe::<Bridge, ApprovalRequested>(&bridge).await;
         rt.subscribe::<Bridge, ApprovalResolved>(&bridge).await;
         rt.subscribe::<Bridge, McpProgress>(&bridge).await;
+        rt.subscribe::<Bridge, LoginFinished>(&bridge).await;
         tokio::spawn(run_commands(commands_rx, events_tx));
 
         let default_model = rt.section::<AgentConfig>("agent").unwrap_or_default().model;
@@ -58,8 +64,9 @@ impl runtime::Plugin for TuiPlugin {
         let catalog = std::sync::Arc::new(models::Catalog::load(&rt.data_dir));
         let shutdown = rt.shutdown.clone();
         let resume = self.resume;
+        let prompt = self.prompt;
         tokio::spawn(async move {
-            if std::io::stdout().is_terminal() {
+            if prompt.is_none() && std::io::stdout().is_terminal() {
                 let links = ui::Links {
                     events: Some(events_rx),
                     commands: commands_tx,
@@ -72,8 +79,10 @@ impl runtime::Plugin for TuiPlugin {
                     tracing::error!("tui render loop failed: {e}");
                 }
             } else {
-                tracing::warn!("stdout is not a terminal; using the line printer");
-                line_printer(events_rx, commands_tx, resume, approvals).await;
+                if prompt.is_none() {
+                    tracing::warn!("stdout is not a terminal; using the line printer");
+                }
+                line_printer(events_rx, commands_tx, resume, approvals, prompt).await;
             }
             shutdown.cancel();
         });
@@ -102,6 +111,7 @@ forward!(
     ApprovalRequested => Approval,
     ApprovalResolved => Resolved,
     McpProgress => McpProgress,
+    LoginFinished => LoginFinished,
 );
 
 /// The one place actors are looked up and asked. Each command runs in its
@@ -223,6 +233,71 @@ async fn execute(cmd: Command, tx: &UnboundedSender<UiEvent>) -> anyhow::Result<
                 .map_err(|e| anyhow::anyhow!("{e}"))?,
         ),
         Command::SyncMcp => UiEvent::Synced(mcp()?.ask(tools::SyncMcp).await?),
+        Command::ListLogins => {
+            let mut rows: Vec<LoginRow> = agent()?
+                .ask(agent::ListLogins)
+                .await?
+                .into_iter()
+                .map(|l| LoginRow {
+                    name: l.name,
+                    mcp: false,
+                    status: match (l.logged_in, l.account) {
+                        (false, _) => "not logged in".to_owned(),
+                        (true, Some(a)) => format!("logged in ({a})"),
+                        (true, None) => "logged in".to_owned(),
+                    },
+                })
+                .collect();
+            rows.extend(
+                mcp()?
+                    .ask(tools::ListServers)
+                    .await?
+                    .into_iter()
+                    .filter(|s| s.auth != McpAuth::None)
+                    .map(|s| LoginRow {
+                        name: s.name,
+                        mcp: true,
+                        status: match s.auth {
+                            McpAuth::LoggedIn => "logged in".to_owned(),
+                            _ => "login required".to_owned(),
+                        },
+                    }),
+            );
+            UiEvent::Logins(rows)
+        }
+        // A provider name first, else an MCP server.
+        Command::Login(name) => {
+            let url = if oauth::provider(&name).is_some() {
+                agent()?
+                    .ask(agent::Login { provider: name })
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?
+            } else {
+                mcp()?
+                    .ask(tools::McpLogin { server: name })
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?
+            };
+            UiEvent::Info(format!("login: open {url}"))
+        }
+        Command::Logout(name) => {
+            if oauth::provider(&name).is_some() {
+                agent()?
+                    .ask(agent::Logout {
+                        provider: name.clone(),
+                    })
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+            } else {
+                mcp()?
+                    .ask(tools::McpLogout {
+                        server: name.clone(),
+                    })
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+            }
+            UiEvent::Info(format!("logged out of {name}"))
+        }
     };
     let _ = tx.send(reply);
     Ok(())
@@ -236,29 +311,51 @@ fn mcp() -> anyhow::Result<ActorRef<tools::Mcp>> {
     ActorRef::<tools::Mcp>::lookup(tools::MCP_ACTOR)?.context("mcp actor is not running")
 }
 
-/// Non-TTY fallback: print what streams in, read lines from stdin. `y`/`n`
-/// answer a pending approval; anything else goes through [`Model::submit`].
+/// Non-TTY fallback and `-p` print mode: print what streams in, read lines
+/// from stdin. `y`/`n` answer a pending approval; anything else goes through
+/// [`Model::submit`]. With `prompt`, it is submitted first and the loop ends
+/// when the root turn finishes (or a command fails); stdin EOF then denies
+/// approvals instead of quitting, since a piped prompt leaves stdin closed.
 async fn line_printer(
     mut events: UnboundedReceiver<UiEvent>,
     commands: UnboundedSender<Command>,
     resume: Option<SessionId>,
     approvals: bool,
+    prompt: Option<String>,
 ) {
     let mut model = Model::new(String::new(), approvals);
     if let Some(id) = resume {
         model.resume(id, &commands);
     }
+    let print_mode = prompt.is_some();
+    if let Some(p) = &prompt {
+        model.submit(p, &commands);
+    }
     let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
+    let mut stdin_open = true;
     let mut out = std::io::stdout();
     loop {
         tokio::select! {
             ev = events.recv() => {
                 let Some(ev) = ev else { break };
                 print_event(&mut out, &model, &ev);
+                let done = print_mode && match &ev {
+                    UiEvent::Agent(AgentEvent::TurnFinished { session, .. }) => model.session == Some(*session),
+                    UiEvent::Error(_) => true,
+                    _ => false,
+                };
                 model.apply(ev);
+                if done { break; }
+                if !stdin_open && model.approval().is_some() {
+                    let _ = writeln!(out, "denied: stdin closed");
+                    model.decide(Decision::Deny, &commands);
+                }
             }
-            line = lines.next_line() => {
-                let Ok(Some(line)) = line else { break };
+            line = lines.next_line(), if stdin_open => {
+                let Ok(Some(line)) = line else {
+                    if print_mode { stdin_open = false; continue; }
+                    break;
+                };
                 match (line.trim(), model.approval().is_some()) {
                     ("y", true) => model.decide(Decision::Allow, &commands),
                     ("n", true) => model.decide(Decision::Deny, &commands),
@@ -318,6 +415,13 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         UiEvent::Agent(_) => Ok(()),
         UiEvent::ModelSet(info) => writeln!(out, "model → {}", info.id),
         UiEvent::Models(_) | UiEvent::Mcp(_) => writeln!(out, "menus need a TTY"),
+        UiEvent::Logins(rows) => rows
+            .iter()
+            .try_for_each(|r| writeln!(out, "{}  {}", r.name, r.status)),
+        UiEvent::LoginFinished(f) => match &f.error {
+            None => writeln!(out, "login: {} ok", f.provider),
+            Some(e) => writeln!(out, "login: {} failed: {e}", f.provider),
+        },
         UiEvent::Prompt(text) | UiEvent::Info(text) => writeln!(out, "{text}"),
         UiEvent::Skills(list) | UiEvent::SkillsAdded(list) => list.iter().try_for_each(|s| {
             writeln!(

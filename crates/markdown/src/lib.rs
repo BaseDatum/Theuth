@@ -11,7 +11,8 @@
 use std::fmt;
 
 use mdstream::{FootnotesMode, MdStream, Options};
-use pulldown_cmark::{CodeBlockKind, Event, Parser, Tag, TagEnd};
+use pulldown_cmark::{Alignment, CodeBlockKind, Event, Parser, Tag, TagEnd};
+use unicode_width::UnicodeWidthStr;
 
 /// How a run of text should look. All flags may combine.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -232,6 +233,14 @@ struct Prefix {
     once: bool,
 }
 
+/// Open table: cells are buffered until `TagEnd::Table`, when column widths
+/// are known. `rows[0]` is the header.
+struct Table {
+    align: Vec<Alignment>,
+    rows: Vec<Vec<Line>>,
+    row: Vec<Line>,
+}
+
 #[derive(Default)]
 struct Renderer {
     lines: Vec<Line>,
@@ -247,6 +256,7 @@ struct Renderer {
     heading: u8,
     link: Option<String>,
     table_head: bool,
+    table: Option<Table>,
 }
 
 impl Renderer {
@@ -411,14 +421,18 @@ impl Renderer {
             Tag::Link { dest_url, .. } | Tag::Image { dest_url, .. } => {
                 self.link = Some(dest_url.into_string());
             }
-            Tag::Table(_) => self.flush(),
-            Tag::TableHead => self.table_head = true,
-            Tag::TableRow => {}
-            Tag::TableCell => {
-                if self.cur.as_ref().is_some_and(|l| !l.is_empty()) {
-                    self.dim(" │ ");
-                }
+            Tag::Table(align) => {
+                self.flush();
+                self.table = Some(Table {
+                    align,
+                    rows: Vec::new(),
+                    row: Vec::new(),
+                });
             }
+            Tag::TableHead => self.table_head = true,
+            // A bare line, not `open()`: prefixes are added when the table is laid out.
+            Tag::TableCell => self.cur = Some(Line::new()),
+            Tag::TableRow => {}
             Tag::HtmlBlock | Tag::MetadataBlock(_) => self.flush(),
             _ => {}
         }
@@ -426,7 +440,13 @@ impl Renderer {
 
     fn end(&mut self, tag: TagEnd) {
         match tag {
-            TagEnd::Paragraph | TagEnd::HtmlBlock | TagEnd::Table | TagEnd::MetadataBlock(_) => {
+            TagEnd::Paragraph | TagEnd::HtmlBlock | TagEnd::MetadataBlock(_) => {
+                self.end_block();
+            }
+            TagEnd::Table => {
+                if let Some(t) = self.table.take() {
+                    self.layout_table(t);
+                }
                 self.end_block();
             }
             TagEnd::Heading(_) => {
@@ -468,12 +488,65 @@ impl Renderer {
             TagEnd::Strong => self.bold -= 1,
             TagEnd::Strikethrough => self.strike -= 1,
             TagEnd::Link | TagEnd::Image => self.link = None,
-            TagEnd::TableHead => {
+            TagEnd::TableCell => {
+                let cell = self.cur.take().unwrap_or_default();
+                if let Some(t) = &mut self.table {
+                    t.row.push(cell);
+                }
+            }
+            TagEnd::TableHead | TagEnd::TableRow => {
                 self.table_head = false;
+                if let Some(t) = &mut self.table {
+                    let row = std::mem::take(&mut t.row);
+                    t.rows.push(row);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Emit a buffered table: cells padded to their column's width, ` │ `
+    /// between columns, a `─┼─` rule under the header.
+    fn layout_table(&mut self, t: Table) {
+        let width = |l: &Line| l.iter().map(|s| s.text.width()).sum::<usize>();
+        let cols = t.rows.iter().map(Vec::len).max().unwrap_or(0);
+        let widths: Vec<usize> = (0..cols)
+            .map(|c| {
+                t.rows
+                    .iter()
+                    .filter_map(|r| r.get(c))
+                    .map(width)
+                    .max()
+                    .unwrap_or(0)
+            })
+            .collect();
+        for (i, row) in t.rows.into_iter().enumerate() {
+            self.open();
+            for (c, w) in widths.iter().enumerate() {
+                if c > 0 {
+                    self.dim(" │ ");
+                }
+                let cell = row.get(c).cloned().unwrap_or_default();
+                let pad = w - width(&cell);
+                let (left, right) = match t.align.get(c) {
+                    Some(Alignment::Right) => (pad, 0),
+                    Some(Alignment::Center) => (pad / 2, pad - pad / 2),
+                    // No trailing blanks after the last column.
+                    _ if c + 1 == cols => (0, 0),
+                    _ => (0, pad),
+                };
+                self.text(&" ".repeat(left));
+                for s in cell {
+                    push_span(self.open(), &s.text, s.style);
+                }
+                self.text(&" ".repeat(right));
+            }
+            self.flush();
+            if i == 0 {
+                let rule: Vec<String> = widths.iter().map(|w| "─".repeat(*w)).collect();
+                self.dim(&rule.join("─┼─"));
                 self.flush();
             }
-            TagEnd::TableRow => self.flush(),
-            _ => {}
         }
     }
 
@@ -542,6 +615,24 @@ mod tests {
         assert!(para[1].style.bold && !para[1].style.code);
         assert!(para[3].style.code);
         assert!(lines[11][0].style.code);
+    }
+
+    #[test]
+    fn tables_align_columns() {
+        let lines = render(
+            "| Name | N | Note |\n|:--|--:|:-:|\n| Alice | 3 | ok |\n| Bo | 1234 | 日本 |\n",
+        );
+        assert_eq!(
+            plain(&lines),
+            [
+                "Name  │    N │ Note",
+                "──────┼──────┼─────",
+                "Alice │    3 │  ok ",
+                "Bo    │ 1234 │ 日本",
+            ]
+        );
+        assert!(lines[0][0].style.bold);
+        assert!(!lines[2][0].style.bold);
     }
 
     fn shown(t: &Text) -> (Vec<String>, String) {

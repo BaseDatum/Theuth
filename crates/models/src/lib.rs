@@ -143,11 +143,52 @@ impl Catalog {
         Some((provider, provider.models.get(model)?))
     }
 
+    /// `provider/model` exact, else the catalog model whose id shares the most
+    /// name tokens with the model part (`cursor/claude-4.6-sonnet-medium` →
+    /// `claude-sonnet-4-6`). Effort/lane words (`low`, `xhigh`, `thinking`,
+    /// `max`, ...) are ignored; the family token (`claude`, `gpt`) must agree.
+    /// Ties go to the larger context, then the lower provider id. For limits
+    /// only; never for what is sent to the provider.
+    pub fn closest(&self, id: &str) -> Option<&Model> {
+        if let Some((_, m)) = self.get(id) {
+            return Some(m);
+        }
+        let (provider, slug) = id.rsplit_once('/').unwrap_or(("", id));
+        // `cursor/cursor-grok-4.6`: the vendor prefix is not the family.
+        let mut want: Vec<&str> = tokens(slug).collect();
+        if want
+            .first()
+            .is_some_and(|t| t.eq_ignore_ascii_case(provider))
+        {
+            want.remove(0);
+        }
+        let family = *want.first()?;
+        self.providers
+            .iter()
+            .flat_map(|(pid, p)| p.models.values().map(move |m| (pid, m)))
+            .filter_map(|(pid, m)| {
+                let have: Vec<&str> = tokens(&m.id).collect();
+                if !have.first().is_some_and(|h| h.eq_ignore_ascii_case(family)) {
+                    return None;
+                }
+                let shared = want
+                    .iter()
+                    .filter(|t| have.iter().any(|h| h.eq_ignore_ascii_case(t)))
+                    .count() as i32;
+                let score =
+                    2 * shared - (want.len() as i32 - shared) - (have.len() as i32 - shared);
+                Some((score, m.limit.context, std::cmp::Reverse(pid), m))
+            })
+            .max_by_key(|(score, ctx, pid, _)| (*score, *ctx, *pid))
+            .map(|(.., m)| m)
+    }
+
     /// Resolve a typed or configured id. `configured` is asked with the genai namespace
     /// (`Catalog::adapter(provider)`) and answers whether genai can authenticate it.
     ///
     /// 1. `provider/model` in the catalog → that model.
-    /// 2. `provider/model` unknown → pass through with the adapter mapped, no limit known.
+    /// 2. `provider/model` unknown → pass through with the adapter mapped; limits from the
+    ///    closest catalog model by name ([`Catalog::closest`]), if any.
     /// 3. Bare id → search configured providers: exactly one hit → it; several → `Err` naming
     ///    them; none → pass through to genai unchanged.
     pub fn resolve(&self, id: &str, configured: &dyn Fn(&str) -> bool) -> Result<Resolved, String> {
@@ -156,7 +197,7 @@ impl Catalog {
                 id: id.to_owned(),
                 genai: format!("{}::{model}", Self::adapter(provider)),
                 provider: Some(provider.to_owned()),
-                model: self.get(id).map(|(_, m)| m.clone()),
+                model: self.closest(id).cloned(),
             });
         }
         let hits: Vec<(&String, &Model)> = self
@@ -197,6 +238,22 @@ fn merge(base: &mut BTreeMap<String, Provider>, user: BTreeMap<String, Provider>
         }
         base.insert(pid, p);
     }
+}
+
+/// Name tokens of a model id, without effort/lane/date words.
+fn tokens(id: &str) -> impl Iterator<Item = &str> {
+    const NOISE: &[&str] = &[
+        "none", "minimal", "low", "medium", "high", "xhigh", "max", "thinking", "fast", "preview",
+        "latest",
+    ];
+    id.rsplit('/')
+        .next()
+        .unwrap_or(id)
+        .split(['-', '.', '_'])
+        .filter(|t| {
+            let date = t.len() >= 8 && t.bytes().all(|b| b.is_ascii_digit());
+            !(t.is_empty() || NOISE.contains(t) || date)
+        })
 }
 
 #[cfg(test)]
@@ -299,6 +356,38 @@ mod tests {
         assert!(
             c.get("openai/gpt-5").is_some(),
             "other bundled providers survive"
+        );
+    }
+
+    #[test]
+    fn closest_matches_cursor_slugs_against_bundled_catalog() {
+        let c = Catalog {
+            providers: BUNDLED.clone(),
+        };
+        let hit = |id: &str| {
+            c.closest(id)
+                .map(|m| m.id.as_str())
+                .unwrap_or("-")
+                .to_owned()
+        };
+        assert_eq!(
+            hit("cursor/claude-4.6-sonnet-medium-thinking"),
+            "claude-sonnet-4-6"
+        );
+        assert_eq!(hit("cursor/cursor-grok-4.6-xhigh"), "grok-4.6");
+        assert_eq!(
+            hit("cursor/claude-opus-4-7-thinking-xhigh"),
+            "claude-opus-4-7"
+        );
+        assert_eq!(hit("cursor/claude-sonnet-5-max"), "claude-sonnet-5");
+        assert_eq!(hit("cursor/gpt-5.4-mini-xhigh"), "gpt-5.4-mini");
+        assert_eq!(hit("cursor/gpt-5.1-high"), "gpt-5.1");
+        assert!(hit("cursor/gemini-3.1-pro").starts_with("gemini-3.1-pro"));
+        assert_eq!(hit("cursor/composer-2.5"), "-", "unknown family: no guess");
+        // Exact ids still win over the matcher.
+        assert_eq!(
+            hit("anthropic/claude-sonnet-4-5-20250929"),
+            "claude-sonnet-4-5-20250929"
         );
     }
 }

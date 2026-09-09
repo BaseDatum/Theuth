@@ -16,6 +16,7 @@ other through one tool. Both are modelled on oh-my-pi (`docs/tools/task.md`,
 ~/.wth/
   config.yaml          every plugin reads its own section (unchanged rule)
   credentials.yaml     provider -> api key; mode 0600; never merged into config
+  oauth/               /login tokens: <ns>.json (providers), mcp/<server>.json; 0600 (doc 05)
   mcp/
     <name>.json        one MCP server per file; file stem is the tool prefix
   sessions.sqlite      (existing)
@@ -82,10 +83,11 @@ Client::builder().with_auth_resolver_fn(move |m: ModelIden| {
 })
 ```
 
-Precedence: file beats env. Reason: the file is the thing the user edited on
-purpose; env vars leak in from shells and CI. Startup warns (not fails) if the
-file mode is wider than 0600 or if the configured model's provider has neither
-source; the model call then fails with genai's own error.
+Precedence: file beats login beats env. Reason: the file is the thing the
+user edited on purpose; env vars leak in from shells and CI. A `/login`
+(`oauth/<ns>.json`, doc 05) sits between them. Startup warns (not fails) if
+the file mode is wider than 0600 or if the configured model's provider has
+none of the three; the model call then fails with genai's own error.
 
 Rejected: OS keychain (`keyring` crate) — extra dep, platform prompts, and the
 sqlite/token already live unencrypted in the same directory; revisit with the

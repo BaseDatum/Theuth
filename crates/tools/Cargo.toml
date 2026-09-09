@@ -19,7 +19,9 @@ tracing = { workspace = true }
 kameo = { workspace = true }
 brush-core = { workspace = true }
 brush-builtins = { workspace = true }
-rmcp = { workspace = true }
+rmcp = { workspace = true, features = ["auth"] }
+oauth = { workspace = true }
+reqwest = { workspace = true }
 nix = { workspace = true }
 ts-rs = { workspace = true, optional = true }
 serde_yaml = { workspace = true }

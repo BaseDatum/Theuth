@@ -25,6 +25,10 @@ struct Cli {
     /// Open an existing session in the terminal UI.
     #[arg(long)]
     resume: Option<SessionId>,
+    /// Print mode: send this prompt (or stdin when omitted), stream the reply
+    /// to stdout, exit when the turn finishes. No full-screen UI.
+    #[arg(short, long, num_args = 0..=1, default_missing_value = "")]
+    prompt: Option<String>,
 }
 
 const DEFAULT_CONFIG: &str = "# wth configuration. Every plugin reads its own section.
@@ -124,7 +128,14 @@ async fn main() -> anyhow::Result<()> {
         plugins.push(Box::new(rpc::RpcPlugin));
     }
     if !cli.headless {
-        plugins.push(Box::new(tui::TuiPlugin { resume: cli.resume }));
+        let prompt = match cli.prompt {
+            Some(p) if p.is_empty() => Some(std::io::read_to_string(std::io::stdin())?),
+            p => p,
+        };
+        plugins.push(Box::new(tui::TuiPlugin {
+            resume: cli.resume,
+            prompt,
+        }));
     }
 
     for plugin in plugins {

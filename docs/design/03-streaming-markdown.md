@@ -63,7 +63,9 @@ printer is unchanged: raw text.
 
 Rendered shapes: `# ` dim + bold heading; `• ` / `1. ` list markers, nested by
 indent; `│ ` quote bar; `╭ lang` above fenced code; `────────` rule; table
-cells joined by ` │ `; `[x] ` task markers; `[^n]` footnotes.
+cells padded to their column's display width (`unicode-width`), joined by
+` │ `, `─┼─` rule under the header, `:--`/`--:`/`:-:` alignment honoured;
+`[x] ` task markers; `[^n]` footnotes.
 
 Ceiling: wrapped continuation lines lose the list/quote indent (iocraft wraps
 the whole `MixedText`); fix by measuring width and pre-wrapping in `render`

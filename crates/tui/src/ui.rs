@@ -45,7 +45,9 @@ const SKILL: Color = Color::Yellow;
 const PROMPT: Color = Color::DarkGrey;
 
 /// Run the fullscreen UI until the user quits. Mouse capture stays off so
-/// the terminal's own selection (and copy-on-select) keeps working.
+/// the terminal's own selection (and copy-on-select) keeps working. Ctrl+C
+/// reaches the app (`ignore_ctrl_c`) so quitting always runs the terminal
+/// teardown in `App` — iocraft's own exit skipped it.
 pub async fn run(links: Links) -> std::io::Result<()> {
     element! {
         ContextProvider(value: Context::owned(links)) {
@@ -54,6 +56,7 @@ pub async fn run(links: Links) -> std::io::Result<()> {
     }
     .fullscreen()
     .disable_mouse_capture()
+    .ignore_ctrl_c()
     .await
 }
 
@@ -65,6 +68,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     let approvals = links.approvals;
     let mut model = hooks.use_state(move || Model::new(default_model, approvals));
     let mut input = hooks.use_state(String::new);
+    let handle = hooks.use_ref_default::<TextInputHandle>();
     let commands = links.commands.clone();
     let catalog = links.catalog.clone();
 
@@ -77,11 +81,14 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             let Some(mut events) = events else { return };
             // Kitty keyboard protocol: without it Shift+Enter is a plain `\r`.
             // Pushed after iocraft entered the alternate screen (separate stack).
+            // Bracketed paste: a paste arrives as one `TerminalEvent::Paste`
+            // instead of a key per character.
             let _ = crossterm::execute!(
                 std::io::stdout(),
                 crossterm::event::PushKeyboardEnhancementFlags(
                     crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-                )
+                ),
+                crossterm::event::EnableBracketedPaste
             );
             if let Some(id) = resume {
                 model.write().resume(id, &commands);
@@ -108,6 +115,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     hooks.use_terminal_events({
         let commands = commands.clone();
         move |event| {
+            let mut m = model.write();
             let TerminalEvent::Key(KeyEvent {
                 code,
                 kind,
@@ -115,12 +123,22 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 ..
             }) = event
             else {
+                if let TerminalEvent::Paste(text) = event
+                    && m.input_focused()
+                {
+                    // At the cursor; `TextInput` sees an insertion there and
+                    // moves its cursor past it.
+                    let mut v = input.read().to_string();
+                    let at = handle.read().cursor_offset().min(v.len());
+                    v.insert_str(at, &m.paste(&text));
+                    m.sync_slash(&v);
+                    input.set(v);
+                }
                 return;
             };
             if kind == KeyEventKind::Release {
                 return;
             }
-            let mut m = model.write();
             if code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL) {
                 m.quit = true;
                 return;
@@ -166,7 +184,8 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     if m.quit {
         let _ = crossterm::execute!(
             std::io::stdout(),
-            crossterm::event::PopKeyboardEnhancementFlags
+            crossterm::event::PopKeyboardEnhancementFlags,
+            crossterm::event::DisableBracketedPaste
         );
         system.exit();
     }
@@ -184,31 +203,24 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
         .into_any()
     });
     // Approval on top; otherwise whichever menu is open.
-    let modal = modal.or_else(|| menu(&m, &input.read()));
-    let has_focus = m.approval().is_none()
-        && !matches!(
-            m.menu,
-            Some(
-                Menu::Models { .. }
-                    | Menu::Sessions { .. }
-                    | Menu::Mcp { .. }
-                    | Menu::Skills { .. }
-            )
-        );
+    let (width, height) = hooks.use_terminal_size();
+    let modal = modal.or_else(|| menu(&m, &input.read(), width));
+    let has_focus = m.input_focused();
     let (header, level) = m.header(&catalog);
     let header_color = match level {
         Level::Normal => Color::DarkGrey,
         Level::Warn => Color::Yellow,
         Level::Danger => Color::Red,
     };
-    let (width, height) = hooks.use_terminal_size();
 
+    // Only the tail that can reach the screen is built; see `Model::tail`.
+    let from = m.tail(usize::from(height) * 8);
     element! {
         View(flex_direction: FlexDirection::Column, width, height) {
             View(flex_grow: 1.0, min_height: 0, flex_direction: FlexDirection::Column) {
                 ScrollView(auto_scroll: true, scrollbar: Some(false)) {
                     View(flex_direction: FlexDirection::Column, width: 100pct) {
-                        #(m.entries.iter().map(|e| entry(e, m.spinner())))
+                        #(m.entries[from..].iter().map(|e| entry(e, m.spinner())))
                         #(m.waiting().then(|| element!(View(margin_top: 1) {
                             Text(content: format!("{} thinking…", m.spinner()), color: Color::DarkGrey, italic: true)
                         })))
@@ -219,8 +231,11 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             View(height: 1, padding_left: 1) {
                 Text(content: header, color: header_color)
             }
-            View(border_style: BorderStyle::Round, border_color: Color::Blue, min_height: 3) {
+            // `flex_shrink: 0`: once the transcript fills the screen the box
+            // would otherwise be squeezed back to `min_height` as it grows.
+            View(border_style: BorderStyle::Round, border_color: Color::Blue, min_height: 3, flex_shrink: 0.0) {
                 TextInput(
+                    handle,
                     has_focus,
                     value: input.to_string(),
                     multiline: true,
@@ -240,8 +255,11 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     }
 }
 
-/// The open menu as a bordered box; `None` without one.
-fn menu(m: &Model, input: &str) -> Option<AnyElement<'static>> {
+/// The open menu as a bordered box; `None` without one. Rows are clipped to
+/// one less than the box's inner width: a `NoWrap` row wider than the
+/// terminal makes the terminal wrap the frame, and one exactly as wide makes
+/// taffy hand the box several extra rows (see `menu_box_is_tight_at_any_width`).
+fn menu(m: &Model, input: &str, width: u16) -> Option<AnyElement<'static>> {
     let (title, rows, cursor): (String, Vec<String>, usize) = match m.menu.as_ref()? {
         Menu::Slash { cursor } => {
             let word = input.split(' ').next().unwrap_or_default();
@@ -287,7 +305,7 @@ fn menu(m: &Model, input: &str) -> Option<AnyElement<'static>> {
         Menu::Mcp {
             cursor, expanded, ..
         } => (
-            "mcp  ␣ cycle gate  ⌫ inherit  →/← expand  s sync".to_owned(),
+            "mcp  ␣ cycle gate  ⌫ inherit  →/← expand  l login/logout  s sync".to_owned(),
             m.mcp_rows()
                 .iter()
                 .map(|r| match r {
@@ -305,10 +323,10 @@ fn menu(m: &Model, input: &str) -> Option<AnyElement<'static>> {
                             "–".to_owned()
                         },
                         gate_name(s.gate),
-                        if s.connected {
-                            "● connected"
-                        } else {
-                            "○ not connected"
+                        match (s.connected, s.auth) {
+                            (true, _) => "● connected",
+                            (false, tools::McpAuth::Required) => "○ login required",
+                            (false, _) => "○ not connected",
                         },
                         s.repo
                             .as_deref()
@@ -351,9 +369,26 @@ fn menu(m: &Model, input: &str) -> Option<AnyElement<'static>> {
                 .collect(),
             *cursor,
         ),
+        Menu::Logins { items, cursor } => (
+            "login  ⏎ log in  esc close".to_owned(),
+            items
+                .iter()
+                .map(|r| {
+                    format!(
+                        "{:<8} {:<20} {}",
+                        if r.mcp { "mcp" } else { "provider" },
+                        r.name,
+                        r.status
+                    )
+                })
+                .collect(),
+            *cursor,
+        ),
     };
     let cursor = cursor.min(rows.len().saturating_sub(1));
     let shown = window(rows.len(), cursor, MENU_ROWS);
+    // border 2 + padding 2 + cursor glyph 2, then one less.
+    let fit = usize::from(width).saturating_sub(7);
     Some(
         element! {
             View(border_style: BorderStyle::Round, border_color: Color::DarkGrey, flex_direction: FlexDirection::Column, padding_left: 1, padding_right: 1) {
@@ -361,7 +396,7 @@ fn menu(m: &Model, input: &str) -> Option<AnyElement<'static>> {
                 #(rows[shown.clone()].iter().enumerate().map(|(i, row)| {
                     let here = shown.start + i == cursor;
                     element!(Text(
-                        content: format!("{} {row}", if here { "›" } else { " " }),
+                        content: format!("{} {}", if here { "›" } else { " " }, row.chars().take(fit).collect::<String>()),
                         wrap: TextWrap::NoWrap,
                         color: if here { Color::White } else { Color::Grey },
                         weight: if here { Weight::Bold } else { Weight::Normal },
@@ -521,5 +556,53 @@ fn risk_name(r: Risk) -> &'static str {
         Risk::ReadOnly => "read-only",
         Risk::Mutating => "mutating",
         Risk::Destructive => "destructive",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agent::ModelInfo;
+
+    /// Long rows used to make the box taller than its rows (empty space under
+    /// the list) at some widths; the box must be title + rows + border.
+    #[test]
+    fn menu_box_is_tight_at_any_width() {
+        let mut m = Model::default();
+        let items: Vec<ModelInfo> = (0..10)
+            .map(|i| ModelInfo {
+                id: format!("amazon-bedrock/us.anthropic.claude-sonnet-4-5-2025092{i}-v1:0"),
+                name: "Claude Sonnet 4.5 (2025-09-29)".into(),
+                provider: "amazon-bedrock".into(),
+                context: 200_000,
+                reasoning: false,
+            })
+            .collect();
+        m.menu = Some(Menu::Models {
+            items,
+            filter: String::new(),
+            cursor: 0,
+        });
+        for width in 60..=120u16 {
+            let modal = menu(&m, "", width).unwrap();
+            let frame = element! {
+                View(flex_direction: FlexDirection::Column, width, height: 30u16) {
+                    View(flex_grow: 1.0, min_height: 0)
+                    #(Some(modal))
+                    View(height: 3)
+                }
+            }
+            .to_string();
+            let lines: Vec<&str> = frame.lines().collect();
+            let top = lines.iter().position(|l| l.starts_with('╭')).unwrap();
+            let bottom = lines.iter().position(|l| l.starts_with('╰')).unwrap();
+            assert_eq!(bottom - top, 12, "width {width}: box spans {top}..{bottom}");
+            assert!(
+                lines
+                    .iter()
+                    .all(|l| l.chars().count() <= usize::from(width)),
+                "width {width}: a row overflows"
+            );
+        }
     }
 }
