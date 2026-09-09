@@ -320,12 +320,18 @@ the transcript show a braille spinner with what is happening — `thinking…`
 row per `ToolCallPending`, the event the loop publishes on the first
 argument chunk of each call), `running <tool>…` inside the card until
 `ToolCallFinished`, `streaming…`/`reasoning…` while text arrives. The
-16 ms frame loop runs only while `Model::animating()`. Peer injections (`<subagent_result>`,
-`<message>`) never echo raw: `tui::model::injected` recognises the wrapper
-in `TurnStarted`/history and `MessageDelivered` becomes `Entry::Delivered`,
-a one-line `⟵ name (n lines)` collapsed by default; Ctrl+O toggles the most
-recent one and the body renders through the same markdown path as assistant
-text.
+16 ms frame loop runs only while `Model::animating()`.
+
+Peer injections (`<subagent_result>`, `<message>`) never echo raw:
+`tui::model::injected` splits a `TurnStarted`/history text into one
+`(peer, body)` per wrapper (inputs queued during a turn arrive as several
+wrappers joined by newlines) and each becomes a `⟵ name` card, collapsed to
+one line by default; Ctrl+O toggles the most recent and the body renders
+through the same markdown path as assistant text. A `MessageDelivered` that
+lands while the model is mid-response is inserted *above* the streaming text
+(`Model::interject`), never after it: the deltas keep flowing into one
+`markdown::Text`, so a table or list is not split into two half-rendered
+pieces.
 
 Rejected: `ratatui` (immediate-mode; streaming markdown + approval modals
 are more code); line-oriented REPL (would be replaced immediately); an
