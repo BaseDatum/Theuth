@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod approval;
 pub mod fs;
+pub mod git;
 pub mod mcp;
 pub mod registry;
 pub mod shell;
