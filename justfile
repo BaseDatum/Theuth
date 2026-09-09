@@ -30,6 +30,10 @@ fmt:
 run *ARGS:
     cargo run -p wth -- {{ARGS}}
 
+# Release build of `wth` into ~/.cargo/bin (cargo's default install root).
+install:
+    cargo install --path crates/wth --locked --force
+
 # Export TypeScript bindings for the RPC wire types.
 ts:
     cargo test -p rpc --features ts --quiet export_bindings
