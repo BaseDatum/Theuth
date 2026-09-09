@@ -30,9 +30,12 @@ fmt:
 run *ARGS:
     cargo run -p wth -- {{ARGS}}
 
-# Release build of `wth` into ~/.cargo/bin (cargo's default install root).
+# Release build of `wth` copied into ~/.cargo/bin. Not `cargo install`: that
+# re-resolves (index + git fetch every time) and rebuilds in a scratch dir.
 install:
-    cargo install --path crates/wth --locked --force
+    cargo build --release -p wth
+    install -m 755 target/release/wth "${CARGO_HOME:-$HOME/.cargo}/bin/wth"
+    @echo "installed $(command -v wth)"
 
 # Export TypeScript bindings for the RPC wire types.
 ts:
