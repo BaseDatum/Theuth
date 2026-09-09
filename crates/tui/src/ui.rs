@@ -66,6 +66,17 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
         }
     });
 
+    // Typewriter: `read` does not schedule a render, so idle frames are free.
+    hooks.use_future(async move {
+        let mut frames = tokio::time::interval(std::time::Duration::from_millis(16));
+        loop {
+            frames.tick().await;
+            if model.read().revealing() {
+                model.write().tick();
+            }
+        }
+    });
+
     hooks.use_terminal_events({
         let commands = commands.clone();
         move |event| {
@@ -269,12 +280,12 @@ fn entry(e: &Entry) -> AnyElement<'static> {
                 .into_any()
         }
         Entry::Assistant(t) => {
-            let pending = t.pending().trim_start_matches('\n');
+            let v = t.view();
             element! {
                 View(flex_direction: FlexDirection::Column) {
-                    #(t.lines().map(line))
-                    #((!pending.is_empty() && !t.blocks().is_empty()).then(|| element!(Text(content: " "))))
-                    #((!pending.is_empty()).then(|| element!(Text(content: pending.to_owned(), wrap: TextWrap::Wrap))))
+                    #(v.lines().map(line))
+                    #((!v.plain.is_empty() && v.has_blocks()).then(|| element!(Text(content: " "))))
+                    #((!v.plain.is_empty()).then(|| element!(Text(content: v.plain.to_owned(), wrap: TextWrap::Wrap))))
                 }
             }
             .into_any()

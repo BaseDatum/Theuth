@@ -25,10 +25,17 @@ Crate `markdown` (no UI dependency) with two halves:
   react-markdown on the raw text, which it also gets).
 
 `markdown::Text` is what a UI holds per assistant message: `push(delta)`
-renders newly committed blocks once; `pending()` is the raw tail to show plain;
-`finish()` commits the tail; `lines()` yields committed lines with one blank
-between blocks; `Text::complete(md)` for history replay; `raw()` for the
-verbatim text (copy, line printer).
+renders newly committed blocks once and records where each ends in the raw
+buffer; `finish()` commits the tail; `Text::complete(md)` for history replay;
+`raw()` for the verbatim text (copy, line printer).
+
+**Reveal cursor.** Provider deltas are word-sized chunks; the eye wants a
+steady flow. `reveal(chars)` advances a cursor over the raw buffer at whatever
+pace the UI ticks; `view()` returns the blocks whose end the cursor has passed
+(rendered) and the revealed remainder (plain). The same characters type out
+plain and then snap into markdown once their block is behind the cursor.
+`unrevealed()` tells the UI whether to keep ticking; `reveal_all()` for
+history. Timing lives in the UI, not the crate.
 
 Rejected: publishing committed blocks as a bus/RPC event. The UI already has
 the deltas, so it can split locally; an event would need a byte-offset
@@ -44,10 +51,14 @@ ratatui, crossterm or ANSI.
 
 `Entry::Assistant(Box<markdown::Text>)`. `TextDelta` → `push`; any other event
 for the shown session finishes the open text (same rule as reasoning), so text
-before and after a tool call are separate entries. Rendering: `lines()` as
-`MixedText` rows (bold → `Weight::Bold`, italic, code → cyan, dim/strike →
+before and after a tool call are separate entries. A 60 Hz `use_future`
+interval calls `Model::tick` only while `revealing()` (`State::read` does not
+schedule a render, so idle frames cost nothing); each tick reveals
+`max(1, backlog/16)` characters, so the cursor trails the provider by ~16
+frames (~250 ms) at any stream rate and settles smoothly. Rendering:
+`view().lines()` as `MixedText` rows (bold → `Weight::Bold`, italic, code → cyan, dim/strike →
 dark grey (iocraft has no strikethrough), link → underline + OSC 8), a blank
-row, then the pending tail as one plain wrapped `Text`. The non-TTY line
+row, then `view().plain` as one wrapped `Text`. The non-TTY line
 printer is unchanged: raw text.
 
 Rendered shapes: `# ` dim + bold heading; `• ` / `1. ` list markers, nested by
@@ -59,6 +70,12 @@ the whole `MixedText`); fix by measuring width and pre-wrapping in `render`
 if it grates.
 
 ## 4. Verified
+
+Typewriter (pty sampled at 100 ms, 46 changed frames over a 14 s turn):
+`## Riv` at 1.9 s → `## Rivers` rendered at 2.0 s while the next paragraph
+types `Ri…`; `**fresh water for drinking**` types out with the stars visible,
+then the paragraph snaps to bold once its separator is revealed; `- Rivers…`
+list items type plain and become `• Rivers…` at the end.
 
 `cargo test -p markdown` (structure + streaming); `cargo test -p tui`.
 Real pty (pyte, 100×40) against Anthropic:

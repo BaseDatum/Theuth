@@ -54,12 +54,51 @@ pub fn render(md: &str) -> Vec<Line> {
     r.finish()
 }
 
-/// Streamed assistant text: rendered committed blocks plus the raw tail.
+/// A committed block and where its source ends in the raw buffer.
+struct Block {
+    lines: Vec<Line>,
+    end: usize,
+}
+
+/// Streamed assistant text with a reveal cursor.
+///
+/// Deltas arrive in provider-sized chunks; a UI wants a steady character
+/// flow. The cursor advances over the raw buffer at whatever pace the UI
+/// ticks it ([`Text::reveal`]); text behind the cursor is visible, and a
+/// committed block is drawn rendered only once the cursor has passed its
+/// end - so the reader sees the same characters type out plain and then snap
+/// into markdown.
 pub struct Text {
     stream: MdStream,
-    blocks: Vec<Vec<Line>>,
-    pending: String,
+    blocks: Vec<Block>,
+    /// Byte offset in the raw buffer up to which committed blocks are mapped.
+    mapped: usize,
+    /// Byte offset of the reveal cursor (always a char boundary).
+    revealed: usize,
     done: bool,
+}
+
+/// What to draw right now: rendered blocks, then plain text.
+pub struct View<'a> {
+    blocks: &'a [Block],
+    /// Revealed text after the last shown block, verbatim.
+    pub plain: &'a str,
+}
+
+impl View<'_> {
+    /// Rendered lines with one empty line between blocks.
+    pub fn lines(&self) -> impl Iterator<Item = &Line> {
+        static BLANK: Line = Vec::new();
+        self.blocks
+            .iter()
+            .enumerate()
+            .flat_map(|(i, b)| (i > 0).then_some(&BLANK).into_iter().chain(b.lines.iter()))
+    }
+
+    /// At least one rendered block is shown.
+    pub fn has_blocks(&self) -> bool {
+        !self.blocks.is_empty()
+    }
 }
 
 impl Default for Text {
@@ -69,7 +108,7 @@ impl Default for Text {
 }
 
 impl Text {
-    /// Empty, streaming.
+    /// Empty, streaming, nothing revealed.
     pub fn new() -> Self {
         Self {
             stream: MdStream::new(Options {
@@ -78,20 +117,22 @@ impl Text {
                 ..Options::default()
             }),
             blocks: Vec::new(),
-            pending: String::new(),
+            mapped: 0,
+            revealed: 0,
             done: false,
         }
     }
 
-    /// Already complete (history replay).
+    /// Already complete and fully revealed (history replay).
     pub fn complete(md: &str) -> Self {
         let mut t = Self::new();
         t.push(md);
         t.finish();
+        t.reveal_all();
         t
     }
 
-    /// Append a delta; newly completed blocks are rendered now.
+    /// Append a delta; newly completed blocks are rendered now (shown later).
     pub fn push(&mut self, delta: &str) {
         let update = self.stream.append(delta);
         self.apply(update);
@@ -105,41 +146,63 @@ impl Text {
         self.done = true;
         let update = self.stream.finalize();
         self.apply(update);
-        self.pending.clear();
     }
 
     fn apply(&mut self, update: mdstream::Update) {
         if update.reset {
             self.blocks.clear();
+            self.mapped = 0;
         }
-        self.blocks
-            .extend(update.committed.iter().map(|b| render(&b.raw)));
-        self.pending = update.pending.map(|b| b.raw).unwrap_or_default();
+        let raw = self.stream.buffer();
+        for b in &update.committed {
+            // Blocks are contiguous slices of the buffer (mdstream only
+            // rewrites `\r`), so the search succeeds at or just after `mapped`.
+            // Fail closed: an unmapped block shows once everything so far has.
+            let end = raw[self.mapped..]
+                .find(&b.raw)
+                .map_or(raw.len(), |i| self.mapped + i + b.raw.len());
+            self.mapped = end;
+            self.blocks.push(Block {
+                lines: render(&b.raw),
+                end,
+            });
+        }
     }
 
-    /// Rendered, immutable blocks in order.
-    pub fn blocks(&self) -> &[Vec<Line>] {
-        &self.blocks
+    /// Advance the cursor by up to `chars` characters. `false` when there was
+    /// nothing left to reveal.
+    pub fn reveal(&mut self, chars: usize) -> bool {
+        let rest = &self.stream.buffer()[self.revealed..];
+        if rest.is_empty() {
+            return false;
+        }
+        self.revealed += rest.chars().take(chars).map(char::len_utf8).sum::<usize>();
+        true
     }
 
-    /// Raw tail not yet committed; empty once finished.
-    pub fn pending(&self) -> &str {
-        &self.pending
+    /// Show everything received so far.
+    pub fn reveal_all(&mut self) {
+        self.revealed = self.stream.buffer().len();
+    }
+
+    /// Bytes received but not yet revealed.
+    pub fn unrevealed(&self) -> usize {
+        self.stream.buffer().len() - self.revealed
+    }
+
+    /// Blocks the cursor has passed, then the revealed remainder as plain text.
+    pub fn view(&self) -> View<'_> {
+        let shown = self.blocks.partition_point(|b| b.end <= self.revealed);
+        let from = self.blocks[..shown].last().map_or(0, |b| b.end);
+        View {
+            blocks: &self.blocks[..shown],
+            plain: self.stream.buffer()[from..self.revealed].trim_start_matches('\n'),
+        }
     }
 
     /// Everything received so far, verbatim.
     pub fn raw(&self) -> &str {
         self.stream.buffer()
-    }
-
-    /// Committed lines with one empty line between blocks: what a UI draws
-    /// above the pending tail.
-    pub fn lines(&self) -> impl Iterator<Item = &Line> {
-        static BLANK: Line = Vec::new();
-        self.blocks
-            .iter()
-            .enumerate()
-            .flat_map(|(i, b)| (i > 0).then_some(&BLANK).into_iter().chain(b.iter()))
     }
 
     /// `finish` was called.
@@ -152,7 +215,8 @@ impl fmt::Debug for Text {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Text")
             .field("blocks", &self.blocks.len())
-            .field("pending", &self.pending)
+            .field("revealed", &self.revealed)
+            .field("len", &self.stream.buffer().len())
             .field("done", &self.done)
             .finish()
     }
@@ -474,21 +538,51 @@ mod tests {
         assert!(lines[11][0].style.code);
     }
 
+    fn shown(t: &Text) -> (Vec<String>, String) {
+        let v = t.view();
+        (
+            v.lines()
+                .map(|l| l.iter().map(|s| s.text.as_str()).collect())
+                .collect(),
+            v.plain.to_owned(),
+        )
+    }
+
     #[test]
-    fn streams_plain_then_renders_completed_blocks() {
+    fn typewriter_reveals_plain_then_snaps_to_rendered_blocks() {
         let mut t = Text::new();
         t.push("Hello **wor");
-        assert!(t.blocks().is_empty());
-        assert_eq!(t.pending(), "Hello **wor");
+        assert_eq!(shown(&t), (vec![], String::new()));
+        assert!(t.reveal(5));
+        assert_eq!(shown(&t), (vec![], "Hello".into()));
+        // The first block is committed but the cursor is still inside it: plain.
         t.push("ld**\n\nNext para");
-        assert_eq!(t.blocks().len(), 1);
-        assert_eq!(t.blocks()[0][0][1].text, "world");
-        assert!(t.blocks()[0][0][1].style.bold);
-        assert_eq!(t.pending(), "Next para");
+        assert!(t.reveal(9));
+        assert_eq!(shown(&t), (vec![], "Hello **world*".into()));
+        // The block's source includes its separator newlines: revealing `**`
+        // alone keeps it plain, the newlines after it snap it to rendered.
+        t.reveal(1);
+        assert_eq!(shown(&t), (vec![], "Hello **world**".into()));
+        t.reveal(2);
+        assert_eq!(shown(&t), (vec!["Hello world".to_owned()], String::new()));
+        assert!(t.view().lines().next().unwrap()[1].style.bold);
+        t.reveal(4);
+        assert_eq!(shown(&t).1, "Next");
+        assert_eq!(t.unrevealed(), " para".len());
         t.finish();
-        assert_eq!(t.blocks().len(), 2);
-        assert_eq!(t.pending(), "");
+        t.reveal(100);
+        assert!(!t.reveal(1));
+        assert_eq!(
+            shown(&t),
+            (
+                ["Hello world", "", "Next para"].map(str::to_owned).to_vec(),
+                String::new()
+            )
+        );
         assert_eq!(t.raw(), "Hello **world**\n\nNext para");
-        assert_eq!(plain(&Text::complete(t.raw()).blocks()[1]), ["Next para"]);
+        assert_eq!(
+            shown(&Text::complete(t.raw())).0,
+            ["Hello world", "", "Next para"]
+        );
     }
 }

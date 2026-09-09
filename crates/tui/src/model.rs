@@ -315,6 +315,30 @@ impl Model {
         }
     }
 
+    /// Some assistant text is still typing out.
+    pub fn revealing(&self) -> bool {
+        self.entries
+            .iter()
+            .rev()
+            .any(|e| matches!(e, Entry::Assistant(t) if t.unrevealed() > 0))
+    }
+
+    /// One typewriter frame. Reveals a slice of the backlog proportional to
+    /// its size, so the cursor trails the provider by a fixed number of
+    /// frames (~a quarter second at 60 Hz) however fast it streams, and
+    /// settles smoothly when it stops.
+    pub fn tick(&mut self) {
+        for e in self.entries.iter_mut().rev() {
+            if let Entry::Assistant(t) = e {
+                let backlog = t.unrevealed();
+                if backlog == 0 {
+                    continue;
+                }
+                t.reveal((backlog / 16).max(1));
+            }
+        }
+    }
+
     fn child(&self, id: SessionId) -> Option<&Child> {
         self.children.iter().find(|c| c.id == id)
     }
