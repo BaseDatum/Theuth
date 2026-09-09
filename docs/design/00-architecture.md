@@ -303,6 +303,15 @@ the alternate screen and pops it on quit. Mouse capture is off
 copy-on-select copies on release without any code here. The cost is no
 wheel scrolling of the transcript (never implemented).
 
+Transcript shapes: human turns are a full-width slab (`AnsiValue(236)`
+background, `AnsiValue(117)` text, no prompt character) so they read apart
+from everything the harness prints. Peer injections (`<subagent_result>`,
+`<message>`) never echo raw: `tui::model::injected` recognises the wrapper
+in `TurnStarted`/history and `MessageDelivered` becomes `Entry::Delivered`,
+a one-line `⟵ name (n lines)` collapsed by default; Ctrl+O toggles the most
+recent one and the body renders through the same markdown path as assistant
+text.
+
 Rejected: `ratatui` (immediate-mode; streaming markdown + approval modals
 are more code); line-oriented REPL (would be replaced immediately); an
 in-app selection/clipboard (would need mouse capture and re-implement what

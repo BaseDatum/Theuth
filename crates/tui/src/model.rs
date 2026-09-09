@@ -112,6 +112,16 @@ pub enum Entry {
     User(String),
     /// Streamed assistant text: rendered blocks + raw tail.
     Assistant(Box<markdown::Text>),
+    /// Text a peer injected into this session (`<subagent_result>` or
+    /// `<message>`), collapsed to one line until toggled.
+    Delivered {
+        /// Peer name.
+        from: String,
+        /// Body without the wrapper, rendered as markdown.
+        text: Box<markdown::Text>,
+        /// Show the body.
+        expanded: bool,
+    },
     /// Streamed reasoning; collapsed once `done`.
     Reasoning {
         /// Text so far.
@@ -134,6 +144,23 @@ pub enum Entry {
     Info(String),
     /// Error line.
     Error(String),
+}
+
+/// Split a harness-injected input (`<subagent_result name="…">` /
+/// `<message from="…">` wrapper) into `(peer, body)`; `None` for human text.
+pub fn injected(text: &str) -> Option<(String, String)> {
+    let (open, rest) = text.split_once('\n')?;
+    let tag = open.strip_prefix('<')?.strip_suffix('>')?;
+    let (key, close) = if tag.starts_with("subagent_result ") {
+        ("name=\"", "</subagent_result>")
+    } else if tag.starts_with("message ") {
+        ("from=\"", "</message>")
+    } else {
+        return None;
+    };
+    let from = tag.split_once(key)?.1.split('"').next()?.to_owned();
+    let body = rest.trim_end().strip_suffix(close)?.trim_end();
+    Some((from, body.to_owned()))
 }
 
 /// A subagent of the root session, known from `SubagentSpawned` or `/agents`.
@@ -385,6 +412,18 @@ impl Model {
         }
     }
 
+    /// Expand or collapse the most recent peer message (Ctrl+O).
+    pub fn toggle_delivered(&mut self) {
+        if let Some(Entry::Delivered { expanded, .. }) = self
+            .entries
+            .iter_mut()
+            .rev()
+            .find(|e| matches!(e, Entry::Delivered { .. }))
+        {
+            *expanded = !*expanded;
+        }
+    }
+
     /// Some assistant text is still typing out.
     pub fn revealing(&self) -> bool {
         self.entries
@@ -543,9 +582,11 @@ impl Model {
                 text,
             } => {
                 if self.shown() == Some(*session) {
-                    let first = text.lines().next().unwrap_or_default();
-                    self.entries
-                        .push(Entry::Info(format!("⟵ {from}: {first}…")));
+                    self.entries.push(Entry::Delivered {
+                        from: from.clone(),
+                        text: Box::new(markdown::Text::complete(text)),
+                        expanded: false,
+                    });
                 }
                 return;
             }
@@ -573,10 +614,13 @@ impl Model {
             t.finish();
         }
         match ev {
-            // Echo the turn's input unless the human just typed it here.
+            // Echo the turn's input unless the human just typed it here or the
+            // harness injected it (`MessageDelivered` already shows those).
             AgentEvent::TurnStarted { text, model, .. } => {
                 self.model_id = model;
-                if !matches!(self.entries.last(), Some(Entry::User(t)) if *t == text) {
+                if injected(&text).is_none()
+                    && !matches!(self.entries.last(), Some(Entry::User(t)) if *t == text)
+                {
                     self.entries.push(Entry::User(text));
                 }
             }
@@ -1084,7 +1128,14 @@ fn filter_models<'a>(items: &'a [ModelInfo], filter: &str) -> Vec<&'a ModelInfo>
 impl From<HistoryEntry> for Entry {
     fn from(h: HistoryEntry) -> Self {
         match h {
-            HistoryEntry::User { text } => Entry::User(text),
+            HistoryEntry::User { text } => match injected(&text) {
+                Some((from, body)) => Entry::Delivered {
+                    from,
+                    text: Box::new(markdown::Text::complete(&body)),
+                    expanded: false,
+                },
+                None => Entry::User(text),
+            },
             HistoryEntry::Assistant { text } => {
                 Entry::Assistant(Box::new(markdown::Text::complete(&text)))
             }

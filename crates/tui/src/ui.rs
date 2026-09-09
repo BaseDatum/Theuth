@@ -31,6 +31,9 @@ pub struct Links {
 
 /// Rows a menu shows at most.
 const MENU_ROWS: usize = 10;
+/// Human turns: light text on a dark slab.
+const USER_BG: Color = Color::AnsiValue(236);
+const USER_FG: Color = Color::AnsiValue(117);
 
 /// Run the fullscreen UI until the user quits. Mouse capture stays off so
 /// the terminal's own selection (and copy-on-select) keeps working.
@@ -109,6 +112,10 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             let mut m = model.write();
             if code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL) {
                 m.quit = true;
+                return;
+            }
+            if code == KeyCode::Char('o') && modifiers.contains(KeyModifiers::CONTROL) {
+                m.toggle_delivered();
                 return;
             }
             if m.approval().is_some() {
@@ -300,9 +307,34 @@ fn menu(m: &Model, input: &str) -> Option<AnyElement<'static>> {
 
 fn entry(e: &Entry) -> AnyElement<'static> {
     match e {
-        Entry::User(t) => {
-            element!(Text(content: format!("> {t}"), weight: Weight::Bold, wrap: TextWrap::Wrap))
-                .into_any()
+        // A shaded block sets the human's turns apart from everything else.
+        Entry::User(t) => element! {
+            View(width: 100pct, background_color: USER_BG, padding_left: 1, padding_right: 1, margin_top: 1, margin_bottom: 1) {
+                Text(content: t.clone(), color: USER_FG, wrap: TextWrap::Wrap)
+            }
+        }
+        .into_any(),
+        Entry::Delivered {
+            from,
+            text,
+            expanded,
+        } => {
+            let v = text.view();
+            let lines = v.lines().count();
+            let header = if *expanded {
+                format!("⟵ {from}  (ctrl+o collapses)")
+            } else {
+                format!("⟵ {from}  ({lines} lines, ctrl+o expands)")
+            };
+            element! {
+                View(flex_direction: FlexDirection::Column) {
+                    Text(content: header, color: Color::DarkGrey, italic: true)
+                    #(expanded.then(|| element!(View(flex_direction: FlexDirection::Column, padding_left: 2) {
+                        #(v.lines().map(line))
+                    })))
+                }
+            }
+            .into_any()
         }
         Entry::Assistant(t) => {
             let v = t.view();
