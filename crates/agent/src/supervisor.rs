@@ -18,7 +18,7 @@ use models::{Catalog, Resolved};
 use runtime::{Runtime, SessionId};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, oneshot};
 use tokio::task::AbortHandle;
-use tools::{REGISTRY_ACTOR, RegisterTool, ToolRegistry};
+use tools::{REGISTRY_ACTOR, RegisterTool, SetParent, ToolRegistry};
 
 use crate::loop_::{CancelTurn, Session, SwitchModel, UserInput, text_of};
 use crate::peers::{SendMessageTool, SpawnSubagentTool};
@@ -171,6 +171,17 @@ impl Agents {
             }
         };
         let depth = self.store.depth(id).await?;
+        if let Some((parent, _)) = &parent
+            && let Ok(Some(reg)) = ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR)
+        {
+            // Subagents inherit the parent's approval switch.
+            let _ = reg
+                .tell(SetParent {
+                    session: id,
+                    parent: *parent,
+                })
+                .await;
+        }
         let actor = Session::spawn(Session::new(
             id,
             depth,

@@ -166,8 +166,10 @@ persisted `tools.approvals: false` (written back to `config.yaml` by
 `SetApprovals { session: None }`) and a per-session set held by the registry
 (`SetApprovals { session: Some(id) }`, in memory). `deny` is never lifted.
 TUI: `/approvals [on|off] [always]`; RPC: `set_approvals`; header shows
-`approvals off` while either switch is off. Subagent sessions are not
-covered by their parent's session switch (they have their own id).
+`approvals off` while either switch is off. The agent `tell`s the registry
+`SetParent { session, parent }` when a subagent session comes up, and the
+bypass check walks that chain, so children inherit the parent's switch
+(toggling the parent later applies to them too).
 
 ## 5. Agent plugin
 

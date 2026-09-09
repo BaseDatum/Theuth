@@ -26,8 +26,11 @@ pub struct ToolRegistry {
     policy: Policy,
     /// `tools.approvals`: false turns every `Ask` into `Allow`.
     approvals: bool,
-    /// Sessions that turned prompts off for themselves.
+    /// Sessions that turned prompts off for themselves (and, through
+    /// `parents`, for their subagents).
     bypass: HashSet<SessionId>,
+    /// child → parent, from [`SetParent`]; a session inherits its ancestors' bypass.
+    parents: HashMap<SessionId, SessionId>,
     /// `<data_dir>/config.yaml`, for the persistent switch.
     config_path: PathBuf,
     /// Looked up at first `Ask`, never at start (no start-order coupling).
@@ -58,6 +61,24 @@ pub struct SetApprovals {
     pub session: Option<SessionId>,
     /// `true` prompts as the policy says; `false` never prompts.
     pub enabled: bool,
+}
+
+/// `tell`: record that `session` is a subagent of `parent`, so it inherits
+/// the parent's approval switch.
+#[derive(Clone, Copy, Debug)]
+pub struct SetParent {
+    /// Child session.
+    pub session: SessionId,
+    /// Its parent.
+    pub parent: SessionId,
+}
+
+impl Message<SetParent> for ToolRegistry {
+    type Reply = ();
+
+    async fn handle(&mut self, m: SetParent, _: &mut Context<Self, Self::Reply>) {
+        self.parents.insert(m.session, m.parent);
+    }
 }
 
 /// Whether prompts are on, globally and for the session asked about.
@@ -99,7 +120,23 @@ impl Message<SetApprovals> for ToolRegistry {
         }
         ApprovalsState {
             global: self.approvals,
-            session: m.session.is_none_or(|id| !self.bypass.contains(&id)),
+            session: m.session.is_none_or(|id| !self.bypassed(id)),
+        }
+    }
+}
+
+impl ToolRegistry {
+    /// The session or any ancestor opted out of prompts.
+    fn bypassed(&self, mut id: SessionId) -> bool {
+        // ponytail: linear walk per invoke; depth is capped by `max_depth`.
+        loop {
+            if self.bypass.contains(&id) {
+                return true;
+            }
+            match self.parents.get(&id) {
+                Some(p) => id = *p,
+                None => return false,
+            }
         }
     }
 }
@@ -150,7 +187,7 @@ impl Message<Invoke> for ToolRegistry {
         };
         let spec = tool.spec();
         let mut action = tool.gate().unwrap_or_else(|| self.policy.action(spec.risk));
-        if action == PolicyAction::Ask && (!self.approvals || self.bypass.contains(&call.session)) {
+        if action == PolicyAction::Ask && (!self.approvals || self.bypassed(call.session)) {
             action = PolicyAction::Allow;
         }
         let approval = match action {
@@ -244,6 +281,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
             policy: cfg.policy,
             approvals: cfg.approvals,
             bypass: HashSet::new(),
+            parents: HashMap::new(),
             config_path: rt.data_dir.join("config.yaml"),
             approval: None,
         },

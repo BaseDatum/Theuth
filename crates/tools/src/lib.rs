@@ -25,7 +25,8 @@ pub mod shell;
 pub use approval::{Approval, ApprovalId, ApprovalRequested, ApprovalResolved, Decision, Resolve};
 pub use mcp::{ListServers, Mcp, McpServer, McpToolInfo, SetGate};
 pub use registry::{
-    ApprovalsState, Invoke, ListTools, RegisterTool, SetApprovals, ToolRegistry, UnregisterTool,
+    ApprovalsState, Invoke, ListTools, RegisterTool, SetApprovals, SetParent, ToolRegistry,
+    UnregisterTool,
 };
 
 /// Registry name of the [`ToolRegistry`] actor.
