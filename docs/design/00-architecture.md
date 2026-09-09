@@ -244,6 +244,11 @@ but the external child is **orphaned** (brush spawns without `kill_on_drop`
 and does not expose the foreground pid). v0 runs each call under
 `ProcessGroupPolicy::NewProcessGroup` and `killpg`s on timeout; if brush
 lacks the hook, that is the first `[patch.crates-io]`.
+Children get `/dev/null` on fd 0. With the TUI's tty inherited as stdin,
+brush makes a new-group child `tcsetpgrp` itself into the foreground; under
+the TUI that stops it with SIGTTOU and the turn hangs (and the blocked pipe
+drain then pinned process exit — `main` now `process::exit`s after the flush
+sleep instead of waiting for the runtime). Tools never read the terminal.
 The approval prompt shows the command verbatim (`describe` in the TUI), so
 the parse-only shell that used to summarise it into command names is gone.
 

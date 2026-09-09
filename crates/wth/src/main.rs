@@ -133,7 +133,10 @@ async fn main() -> anyhow::Result<()> {
         _ = rt.shutdown.cancelled() => {}
         _ = tokio::signal::ctrl_c() => rt.shutdown.cancel(),
     }
-    // Give actors a moment to flush (sqlite writes, terminal restore).
+    // Give actors a moment to flush (sqlite writes, terminal restore), then
+    // leave without waiting for the runtime: a `spawn_blocking` pipe drain
+    // whose child never closed its end would otherwise pin the process.
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    Ok(())
+    drop(_guard);
+    std::process::exit(0)
 }

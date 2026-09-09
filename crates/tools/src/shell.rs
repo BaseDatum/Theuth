@@ -124,6 +124,10 @@ impl Tool for ShellTool {
         let (err_r, err_w) = std::io::pipe()?;
         let pgids: Arc<Mutex<Vec<i32>>> = Arc::default();
         let mut params: ExecutionParameters = shell.default_exec_params();
+        // Never hand the TUI's terminal to a child: with a tty on fd 0 brush
+        // has the (new-group) child `tcsetpgrp` itself in the foreground, which
+        // gets it SIGTTOU-stopped under the TUI and hangs the turn.
+        params.set_fd(0, brush_core::openfiles::null()?);
         params.set_fd(1, out_w.into());
         params.set_fd(2, err_w.into());
         params.process_group_policy = ProcessGroupPolicy::NewProcessGroup;
