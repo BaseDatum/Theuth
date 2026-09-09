@@ -1,0 +1,13 @@
+[package]
+name = "markdown"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Streaming markdown: raw pending tail, completed blocks rendered once to styled lines"
+
+[dependencies]
+mdstream = { workspace = true }
+pulldown-cmark = { workspace = true }
+
+[lints]
+workspace = true

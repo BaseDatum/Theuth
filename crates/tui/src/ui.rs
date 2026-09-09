@@ -268,7 +268,17 @@ fn entry(e: &Entry) -> AnyElement<'static> {
             element!(Text(content: format!("> {t}"), weight: Weight::Bold, wrap: TextWrap::Wrap))
                 .into_any()
         }
-        Entry::Assistant(t) => element!(Text(content: t.clone(), wrap: TextWrap::Wrap)).into_any(),
+        Entry::Assistant(t) => {
+            let pending = t.pending().trim_start_matches('\n');
+            element! {
+                View(flex_direction: FlexDirection::Column) {
+                    #(t.lines().map(line))
+                    #((!pending.is_empty() && !t.blocks().is_empty()).then(|| element!(Text(content: " "))))
+                    #((!pending.is_empty()).then(|| element!(Text(content: pending.to_owned(), wrap: TextWrap::Wrap))))
+                }
+            }
+            .into_any()
+        }
         Entry::Reasoning { text, done } => {
             let shown = if *done {
                 format!("… {}", text.lines().next().unwrap_or_default())
@@ -295,6 +305,38 @@ fn entry(e: &Entry) -> AnyElement<'static> {
         Entry::Info(t) => element!(Text(content: t.clone(), color: Color::DarkGrey)).into_any(),
         Entry::Error(t) => element!(Text(content: t.clone(), color: Color::Red)).into_any(),
     }
+}
+
+/// One rendered markdown line. `Style` is renderer-agnostic; this is the
+/// iocraft mapping.
+fn line(l: &markdown::Line) -> AnyElement<'static> {
+    if l.is_empty() {
+        // An empty `Text` measures zero rows.
+        return element!(Text(content: " ")).into_any();
+    }
+    let contents: Vec<MixedTextContent> = l
+        .iter()
+        .map(|s| {
+            let mut c = MixedTextContent::new(&s.text);
+            if s.style.bold {
+                c = c.weight(Weight::Bold);
+            }
+            if s.style.italic {
+                c = c.italic();
+            }
+            if s.style.strike || s.style.dim {
+                c = c.color(Color::DarkGrey);
+            }
+            if s.style.code {
+                c = c.color(Color::Cyan);
+            }
+            if let Some(url) = &s.style.link {
+                c = c.decoration(TextDecoration::Underline).hyperlink(url);
+            }
+            c
+        })
+        .collect();
+    element!(MixedText(contents: contents, wrap: TextWrap::Wrap)).into_any()
 }
 
 fn risk_name(r: Risk) -> &'static str {

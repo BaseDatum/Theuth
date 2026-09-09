@@ -14,6 +14,7 @@ just ts                    # TypeScript bindings for the wire types → bindings
 ```
 
 Crates: `runtime` (plugin trait), `models` (bundled models.dev catalog),
+`markdown` (streaming markdown: raw tail, blocks rendered once),
 `tools` (registry, approval gate, shell via brush, fs, MCP), `agent` (genai
 loop, sqlite sessions, skills, subagents), `rpc` (jsonrpsee), `tui`
 (iocraft), `wth` (binary).

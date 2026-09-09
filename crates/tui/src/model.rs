@@ -100,8 +100,8 @@ pub enum Command {
 pub enum Entry {
     /// What the user typed.
     User(String),
-    /// Streamed assistant text.
-    Assistant(String),
+    /// Streamed assistant text: rendered blocks + raw tail.
+    Assistant(Box<markdown::Text>),
     /// Streamed reasoning; collapsed once `done`.
     Reasoning {
         /// Text so far.
@@ -465,6 +465,11 @@ impl Model {
         {
             *done = true;
         }
+        if !matches!(ev, AgentEvent::TextDelta { .. })
+            && let Some(Entry::Assistant(t)) = self.entries.last_mut()
+        {
+            t.finish();
+        }
         match ev {
             // Echo the turn's input unless the human just typed it here.
             AgentEvent::TurnStarted { text, model, .. } => {
@@ -474,8 +479,12 @@ impl Model {
                 }
             }
             AgentEvent::TextDelta { text, .. } => match self.entries.last_mut() {
-                Some(Entry::Assistant(s)) => s.push_str(&text),
-                _ => self.entries.push(Entry::Assistant(text.to_string())),
+                Some(Entry::Assistant(t)) if !t.is_done() => t.push(&text),
+                _ => {
+                    let mut t = markdown::Text::new();
+                    t.push(&text);
+                    self.entries.push(Entry::Assistant(Box::new(t)));
+                }
             },
             AgentEvent::ReasoningDelta { text, .. } => match self.entries.last_mut() {
                 Some(Entry::Reasoning {
@@ -910,7 +919,9 @@ impl From<HistoryEntry> for Entry {
     fn from(h: HistoryEntry) -> Self {
         match h {
             HistoryEntry::User { text } => Entry::User(text),
-            HistoryEntry::Assistant { text } => Entry::Assistant(text),
+            HistoryEntry::Assistant { text } => {
+                Entry::Assistant(Box::new(markdown::Text::complete(&text)))
+            }
             HistoryEntry::Tool {
                 name,
                 summary,

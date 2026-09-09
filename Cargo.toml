@@ -10,6 +10,7 @@ publish = false
 [workspace.dependencies]
 runtime = { path = "crates/runtime" }
 models = { path = "crates/models" }
+markdown = { path = "crates/markdown" }
 tools = { path = "crates/tools" }
 agent = { path = "crates/agent" }
 rpc = { path = "crates/rpc" }
@@ -21,6 +22,9 @@ futures = "0.3"
 async-trait = "0.1"
 anyhow = "1"
 thiserror = "2"
+# Streaming markdown: committed blocks + pending tail (design doc 03).
+mdstream = { version = "0.3", features = ["sync"] }
+pulldown-cmark = { version = "0.13", default-features = false }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 schemars = { version = "1", features = ["uuid1", "chrono04"] }
