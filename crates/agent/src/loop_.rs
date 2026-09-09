@@ -1,1 +1,448 @@
 //! One session's model loop: stream, dispatch tool calls, steer, cancel.
+//!
+//! The [`Session`] actor owns the history between turns; a running turn owns
+//! it inside a spawned task and hands it back via [`TurnDone`], so the actor's
+//! mailbox never blocks on network I/O.
+
+use std::sync::{Arc, Mutex};
+
+use futures::StreamExt;
+use futures::future::join_all;
+use genai::Client;
+use genai::chat::{
+    ChatMessage, ChatOptions, ChatRequest, ChatStreamEvent, MessageContent, ToolCall, ToolResponse,
+};
+use kameo::actor::ActorRef;
+use kameo::message::{Context, Message};
+use runtime::{Runtime, SessionId, TurnId};
+use tokio_util::sync::CancellationToken;
+use tools::{Invoke, ListTools, REGISTRY_ACTOR, ToolRegistry};
+
+use crate::skills::Skills;
+use crate::store::Store;
+use crate::subagent::SpawnSubagentTool;
+use crate::{AgentConfig, AgentEvent, Usage};
+
+/// Characters of tool output shown in [`AgentEvent::ToolCallFinished`].
+const DISPLAY_OUTPUT_CHARS: usize = 2000;
+
+/// `tell`: user text. Starts a turn when idle, otherwise queued and injected
+/// after the current tool batch (steering).
+pub struct UserInput(pub String);
+
+/// `tell`: abort the in-flight turn, if any.
+pub struct CancelTurn;
+
+/// `tell` (from the turn task to its own session): the turn ended.
+pub struct TurnDone(Vec<ChatMessage>);
+
+/// One conversation. Spawn with `Session::spawn(session)`.
+#[derive(kameo::Actor)]
+pub struct Session {
+    /// Everything a turn task needs, cloned per turn.
+    shared: Shared,
+    /// Messages so far; taken by the running turn and returned in [`TurnDone`].
+    history: Vec<ChatMessage>,
+    /// Cancels the in-flight turn; `None` when idle.
+    inflight: Option<CancellationToken>,
+    /// Whether `sessions.title` is set.
+    titled: bool,
+}
+
+/// Turn-invariant state; cheap to clone.
+#[derive(Clone)]
+struct Shared {
+    id: SessionId,
+    depth: u8,
+    model: String,
+    cfg: Arc<AgentConfig>,
+    store: Store,
+    client: Client,
+    rt: Runtime,
+    skills: Arc<Skills>,
+    steer: Arc<Mutex<Vec<String>>>,
+}
+
+impl Session {
+    /// Build a session; `history` is empty for new sessions and the stored
+    /// messages for resumed ones. `depth` ≥ 1 hides the `spawn_subagent` tool.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        id: SessionId,
+        depth: u8,
+        model: String,
+        history: Vec<ChatMessage>,
+        cfg: Arc<AgentConfig>,
+        store: Store,
+        client: Client,
+        rt: Runtime,
+        skills: Arc<Skills>,
+    ) -> Self {
+        let titled = !history.is_empty();
+        Self {
+            shared: Shared {
+                id,
+                depth,
+                model,
+                cfg,
+                store,
+                client,
+                rt,
+                skills,
+                steer: Arc::default(),
+            },
+            history,
+            inflight: None,
+            titled,
+        }
+    }
+
+    async fn start_turn(&mut self, inputs: Vec<String>, me: &ActorRef<Self>) {
+        let turn = TurnId::new();
+        let cancel = self.shared.rt.shutdown.child_token();
+        self.inflight = Some(cancel.clone());
+        if !self.titled {
+            self.titled = true;
+            if let Some(first) = inputs.first()
+                && let Err(e) = self
+                    .shared
+                    .store
+                    .set_title(
+                        self.shared.id,
+                        &first.trim().chars().take(60).collect::<String>(),
+                    )
+                    .await
+            {
+                tracing::warn!(session = %self.shared.id, "set_title: {e:#}");
+            }
+        }
+        self.shared
+            .rt
+            .publish(AgentEvent::TurnStarted {
+                session: self.shared.id,
+                turn,
+                text: inputs.join("\n"),
+            })
+            .await;
+        let task = Turn {
+            shared: self.shared.clone(),
+            turn,
+            cancel,
+        };
+        let history = std::mem::take(&mut self.history);
+        let me = me.clone();
+        tokio::spawn(async move {
+            let history = task.run(history, inputs).await;
+            let _ = me.tell(TurnDone(history)).await;
+        });
+    }
+}
+
+impl Message<UserInput> for Session {
+    type Reply = ();
+
+    async fn handle(&mut self, UserInput(text): UserInput, ctx: &mut Context<Self, Self::Reply>) {
+        if self.inflight.is_some() {
+            self.shared
+                .steer
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(text);
+        } else {
+            let me = ctx.actor_ref().clone();
+            self.start_turn(vec![text], &me).await;
+        }
+    }
+}
+
+impl Message<CancelTurn> for Session {
+    type Reply = ();
+
+    async fn handle(&mut self, _: CancelTurn, _: &mut Context<Self, Self::Reply>) {
+        if let Some(c) = &self.inflight {
+            c.cancel();
+        }
+    }
+}
+
+impl Message<TurnDone> for Session {
+    type Reply = ();
+
+    async fn handle(&mut self, TurnDone(history): TurnDone, ctx: &mut Context<Self, Self::Reply>) {
+        self.history = history;
+        self.inflight = None;
+        let queued =
+            std::mem::take(&mut *self.shared.steer.lock().unwrap_or_else(|p| p.into_inner()));
+        if !queued.is_empty() {
+            let me = ctx.actor_ref().clone();
+            self.start_turn(queued, &me).await;
+        }
+    }
+}
+
+/// One turn: model call, tool batch, steer injection, repeat.
+struct Turn {
+    shared: Shared,
+    turn: TurnId,
+    cancel: CancellationToken,
+}
+
+impl Turn {
+    async fn publish(&self, event: AgentEvent) {
+        self.shared.rt.publish(event).await;
+    }
+
+    async fn error(&self, message: String) {
+        tracing::warn!(session = %self.shared.id, turn = %self.turn, "{message}");
+        self.publish(AgentEvent::Error {
+            session: self.shared.id,
+            turn: Some(self.turn),
+            message,
+        })
+        .await;
+    }
+
+    async fn persist(&self, history: &mut Vec<ChatMessage>, msg: ChatMessage) {
+        if let Err(e) = self.shared.store.append(self.shared.id, &msg).await {
+            self.error(format!("store: {e:#}")).await;
+        }
+        history.push(msg);
+    }
+
+    /// Runs to completion (or cancel/error) and returns the history to hand back.
+    async fn run(self, mut history: Vec<ChatMessage>, inputs: Vec<String>) -> Vec<ChatMessage> {
+        for text in inputs {
+            self.persist(&mut history, ChatMessage::user(text)).await;
+        }
+        let mut usage = Usage::default();
+        let mut rounds = 0u32;
+        let stop_reason = loop {
+            match self.round(&mut history, &mut usage).await {
+                Round::Tools => {
+                    rounds += 1;
+                    if rounds >= self.shared.cfg.max_tool_rounds {
+                        self.error(format!("stopped after {rounds} tool rounds"))
+                            .await;
+                        break "max_tool_rounds".to_string();
+                    }
+                    let queued = std::mem::take(
+                        &mut *self.shared.steer.lock().unwrap_or_else(|p| p.into_inner()),
+                    );
+                    for text in queued {
+                        self.persist(&mut history, ChatMessage::user(text)).await;
+                    }
+                }
+                Round::Stop(reason) => break reason,
+            }
+        };
+        self.publish(AgentEvent::TurnFinished {
+            session: self.shared.id,
+            turn: self.turn,
+            stop_reason,
+            usage,
+        })
+        .await;
+        history
+    }
+
+    /// One model call plus its tool batch.
+    async fn round(&self, history: &mut Vec<ChatMessage>, usage: &mut Usage) -> Round {
+        let Some(registry) = ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR)
+            .ok()
+            .flatten()
+        else {
+            self.error("tool registry not running".into()).await;
+            return Round::Stop("error".into());
+        };
+        let tools = match registry.ask(ListTools).await {
+            Ok(specs) => specs
+                .into_iter()
+                .filter(|s| {
+                    self.shared.depth == 0 || s.name != <SpawnSubagentTool as tools::Tool>::NAME
+                })
+                .map(|s| {
+                    genai::chat::Tool::new(s.name)
+                        .with_description(s.description)
+                        .with_schema(s.schema)
+                })
+                .collect::<Vec<_>>(),
+            Err(e) => {
+                self.error(format!("list tools: {e}")).await;
+                Vec::new()
+            }
+        };
+        let req = ChatRequest::new(history.clone())
+            .with_system(self.system_prompt())
+            .with_tools(tools);
+        let opts = ChatOptions::default()
+            .with_capture_tool_calls(true)
+            .with_capture_usage(true)
+            .with_capture_content(true);
+
+        let stream = tokio::select! {
+            _ = self.cancel.cancelled() => return Round::Stop("cancelled".into()),
+            r = self.shared.client.exec_chat_stream(&self.shared.model, req, Some(&opts)) => match r {
+                Ok(r) => r.stream,
+                Err(e) => {
+                    self.error(format!("model: {e}")).await;
+                    return Round::Stop("error".into());
+                }
+            },
+        };
+        let mut stream = stream;
+        let end = loop {
+            let ev = tokio::select! {
+                _ = self.cancel.cancelled() => return Round::Stop("cancelled".into()),
+                ev = stream.next() => ev,
+            };
+            match ev {
+                None => {
+                    self.error("stream ended without End event".into()).await;
+                    return Round::Stop("error".into());
+                }
+                Some(Err(e)) => {
+                    self.error(format!("model: {e}")).await;
+                    return Round::Stop("error".into());
+                }
+                Some(Ok(ChatStreamEvent::Chunk(c))) => {
+                    self.publish(AgentEvent::TextDelta {
+                        session: self.shared.id,
+                        turn: self.turn,
+                        text: c.content.into(),
+                    })
+                    .await
+                }
+                Some(Ok(ChatStreamEvent::ReasoningChunk(c))) => {
+                    self.publish(AgentEvent::ReasoningDelta {
+                        session: self.shared.id,
+                        turn: self.turn,
+                        text: c.content.into(),
+                    })
+                    .await
+                }
+                // Args arrive as cumulative partial JSON; the model sees them
+                // whole only at End, so ToolCallStarted is published at dispatch.
+                Some(Ok(ChatStreamEvent::ToolCallChunk(_))) => {}
+                Some(Ok(
+                    ChatStreamEvent::Start
+                    | ChatStreamEvent::Heartbeat
+                    | ChatStreamEvent::ThoughtSignatureChunk(_),
+                )) => {}
+                Some(Ok(ChatStreamEvent::End(end))) => break end,
+            }
+        };
+
+        if let Some(u) = &end.captured_usage {
+            usage.prompt += u.prompt_tokens.unwrap_or(0).max(0) as u32;
+            usage.completion += u.completion_tokens.unwrap_or(0).max(0) as u32;
+        }
+        let stop = end
+            .captured_stop_reason
+            .as_ref()
+            .map(|s| s.raw().to_string())
+            .unwrap_or_else(|| "end_turn".into());
+        let calls: Vec<ToolCall> = end
+            .captured_tool_calls()
+            .map(|v| v.into_iter().cloned().collect())
+            .unwrap_or_default();
+        if calls.is_empty() {
+            if let Some(content) = end.captured_content.filter(|c| !c.is_empty()) {
+                self.persist(history, ChatMessage::assistant(content)).await;
+            }
+            return Round::Stop(stop);
+        }
+        let assistant = end
+            .into_assistant_message_for_tool_use()
+            .unwrap_or_else(|| ChatMessage::from(calls.clone()));
+        self.persist(history, assistant).await;
+
+        for call in &calls {
+            self.publish(AgentEvent::ToolCallStarted {
+                session: self.shared.id,
+                turn: self.turn,
+                call_id: call.call_id.clone(),
+                name: call.fn_name.clone(),
+                summary: call.fn_arguments.to_string(),
+            })
+            .await;
+        }
+        let outputs = tokio::select! {
+            _ = self.cancel.cancelled() => {
+                let responses = calls.iter().map(|c| ToolResponse::new(c.call_id.clone(), "cancelled by user")).collect::<Vec<_>>();
+                self.persist(history, ChatMessage::from(responses)).await;
+                return Round::Stop("cancelled".into());
+            }
+            outs = join_all(calls.iter().map(|c| {
+                registry.ask(Invoke(tools::ToolCall {
+                    id: c.call_id.clone(),
+                    name: c.fn_name.clone(),
+                    args: c.fn_arguments.clone(),
+                    session: self.shared.id,
+                })).send()
+            })) => outs,
+        };
+        let mut responses = Vec::with_capacity(calls.len());
+        for (call, out) in calls.iter().zip(outputs) {
+            let out = out.unwrap_or_else(|e| tools::ToolOutput::err(format!("tool registry: {e}")));
+            self.publish(AgentEvent::ToolCallFinished {
+                session: self.shared.id,
+                turn: self.turn,
+                call_id: call.call_id.clone(),
+                output: truncate(&out.content, DISPLAY_OUTPUT_CHARS),
+                is_error: out.is_error,
+            })
+            .await;
+            let content = truncate(&out.content, self.shared.cfg.max_tool_output_chars);
+            let content = if out.is_error {
+                format!("ERROR: {content}")
+            } else {
+                content
+            };
+            responses.push(ToolResponse::new(call.call_id.clone(), content));
+        }
+        // One tool message carrying every response (genai: `ChatMessage::from(Vec<ToolResponse>)`).
+        self.persist(history, ChatMessage::from(responses)).await;
+        Round::Tools
+    }
+
+    fn system_prompt(&self) -> String {
+        let cwd = std::env::current_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+        let mut s = format!(
+            "You are a fast, direct assistant that does things for the user on their machine.\nWorking directory: {cwd}\nDate: {}",
+            chrono::Local::now().format("%Y-%m-%d")
+        );
+        if !self.shared.cfg.system_prompt.is_empty() {
+            s.push_str("\n\n");
+            s.push_str(&self.shared.cfg.system_prompt);
+        }
+        let skills = self.shared.skills.prompt_index();
+        if !skills.is_empty() {
+            s.push('\n');
+            s.push_str(&skills);
+        }
+        s
+    }
+}
+
+/// Outcome of one model call.
+enum Round {
+    /// Tool calls ran; call the model again.
+    Tools,
+    /// The turn is over with this stop reason.
+    Stop(String),
+}
+
+/// Char-boundary-safe prefix with a marker when cut.
+pub(crate) fn truncate(s: &str, max: usize) -> String {
+    match s.char_indices().nth(max) {
+        Some((i, _)) => format!("{}…[truncated {} chars]", &s[..i], s.len() - i),
+        None => s.to_string(),
+    }
+}
+
+/// Text parts of a message joined, for history rendering.
+pub(crate) fn text_of(content: &MessageContent) -> String {
+    content.texts().join("")
+}

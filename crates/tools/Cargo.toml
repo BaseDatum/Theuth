@@ -28,3 +28,6 @@ ts = ["dep:ts-rs", "runtime/ts"]
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+figment = { workspace = true }

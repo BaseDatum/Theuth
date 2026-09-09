@@ -29,7 +29,9 @@ pub const REGISTRY_ACTOR: &str = "tools";
 pub const APPROVAL_ACTOR: &str = "approval";
 
 /// How much damage a tool can do; the only input to the approval policy.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum Risk {
@@ -70,7 +72,7 @@ pub struct ToolCall {
 
 /// Result returned to the model. Errors are content, not `Err`: the model
 /// must see them.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, kameo::Reply)]
 pub struct ToolOutput {
     /// Text handed back to the model.
     pub content: String,
@@ -81,11 +83,17 @@ pub struct ToolOutput {
 impl ToolOutput {
     /// Successful output.
     pub fn ok(content: impl Into<String>) -> Self {
-        Self { content: content.into(), is_error: false }
+        Self {
+            content: content.into(),
+            is_error: false,
+        }
     }
     /// Failed output the model should read.
     pub fn err(content: impl Into<String>) -> Self {
-        Self { content: content.into(), is_error: true }
+        Self {
+            content: content.into(),
+            is_error: true,
+        }
     }
 }
 
@@ -116,7 +124,11 @@ pub trait Tool: Send + Sync + 'static {
     where
         Self::Args: Serialize,
     {
-        format!("{} {}", Self::NAME, serde_json::to_string(args).unwrap_or_default())
+        format!(
+            "{} {}",
+            Self::NAME,
+            serde_json::to_string(args).unwrap_or_default()
+        )
     }
 
     /// Run it.
@@ -130,7 +142,11 @@ pub trait ErasedTool: Send + Sync + 'static {
     /// Human summary for approval, given raw args.
     fn summary(&self, args: &serde_json::Value) -> String;
     /// Invoke with raw args.
-    fn call(&self, args: serde_json::Value, cx: ToolCx) -> BoxFuture<'_, anyhow::Result<ToolOutput>>;
+    fn call(
+        &self,
+        args: serde_json::Value,
+        cx: ToolCx,
+    ) -> BoxFuture<'_, anyhow::Result<ToolOutput>>;
 }
 
 impl<T> ErasedTool for T
@@ -154,7 +170,11 @@ where
         }
     }
 
-    fn call(&self, args: serde_json::Value, cx: ToolCx) -> BoxFuture<'_, anyhow::Result<ToolOutput>> {
+    fn call(
+        &self,
+        args: serde_json::Value,
+        cx: ToolCx,
+    ) -> BoxFuture<'_, anyhow::Result<ToolOutput>> {
         Box::pin(async move {
             let args: T::Args = serde_json::from_value(args)
                 .map_err(|e| anyhow::anyhow!("invalid arguments for {}: {e}", T::NAME))?;

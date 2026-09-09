@@ -54,7 +54,10 @@ impl Runtime {
         A: kameo::Actor + Message<T>,
         T: Send + 'static,
     {
-        let _ = self.bus.tell(Register(actor.clone().recipient::<T>())).await;
+        let _ = self
+            .bus
+            .tell(Register(actor.clone().recipient::<T>()))
+            .await;
     }
 
     /// Extract a config section, e.g. `rt.section::<AgentConfig>("agent")`.
@@ -65,7 +68,8 @@ impl Runtime {
 
 /// Mailbox every bus subscriber must use (design doc §3: Guaranteed +
 /// unbounded = ordered, lossless, non-blocking).
-pub fn subscriber_mailbox<A: kameo::Actor>() -> (mailbox::MailboxSender<A>, mailbox::MailboxReceiver<A>) {
+pub fn subscriber_mailbox<A: kameo::Actor>()
+-> (mailbox::MailboxSender<A>, mailbox::MailboxReceiver<A>) {
     mailbox::unbounded()
 }
 

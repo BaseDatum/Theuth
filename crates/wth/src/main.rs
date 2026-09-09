@@ -67,16 +67,20 @@ async fn main() -> anyhow::Result<()> {
     // The TUI owns the terminal; logs go to a file.
     let logs = data_dir.join("logs");
     std::fs::create_dir_all(&logs)?;
-    let (writer, _guard) = tracing_appender::non_blocking(tracing_appender::rolling::daily(&logs, "wth.log"));
+    let (writer, _guard) =
+        tracing_appender::non_blocking(tracing_appender::rolling::daily(&logs, "wth.log"));
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env().add_directive("info".parse()?))
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::from_default_env().add_directive("info".parse()?),
+        )
         .with_writer(writer)
         .with_ansi(false)
         .init();
 
     let rt = Runtime::new(config, data_dir);
 
-    let mut plugins: Vec<Box<dyn Plugin>> = vec![Box::new(tools::ToolsPlugin), Box::new(agent::AgentPlugin)];
+    let mut plugins: Vec<Box<dyn Plugin>> =
+        vec![Box::new(tools::ToolsPlugin), Box::new(agent::AgentPlugin)];
     if cli.serve || cli.headless {
         plugins.push(Box::new(rpc::RpcPlugin));
     }
@@ -86,7 +90,10 @@ async fn main() -> anyhow::Result<()> {
 
     for plugin in plugins {
         let name = plugin.name();
-        plugin.start(&rt).await.map_err(|e| anyhow::anyhow!("plugin {name} failed to start: {e:#}"))?;
+        plugin
+            .start(&rt)
+            .await
+            .map_err(|e| anyhow::anyhow!("plugin {name} failed to start: {e:#}"))?;
         tracing::info!(plugin = name, "started");
     }
 

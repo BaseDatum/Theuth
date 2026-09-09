@@ -102,27 +102,32 @@ pub trait Plugin: Send {
 }
 
 pub struct Runtime {
-    pub bus: ActorRef<MessageBus>,   // kameo_actors
-    pub config: figment::Figment,    // §8
+    pub bus: ActorRef<MessageBus>,   // kameo_actors, Guaranteed
+    pub config: figment::Figment,    // §9; plugins call rt.section("name")
     pub data_dir: PathBuf,
+    pub shutdown: CancellationToken, // any plugin may end the process
 }
+// helpers: rt.publish(event), rt.subscribe::<A, T>(&actor), subscriber_mailbox()
 ```
 
 `wth/main.rs` is, in full: build `Runtime`, `for p in plugins { p.start(&rt).await? }`,
 wait for shutdown. Plugin order is the vector order; a plugin needing another
 looks it up by name at first use, never at start (no start-order coupling).
 
-Shared crate `runtime` contains exactly:
+Shared crate `runtime` contains exactly `Plugin`, `Runtime` (+ the three
+helpers above), `SessionId`, `TurnId`. Nothing else. The tool and approval
+contracts live in `tools`; the agent's commands and its `AgentEvent` live in
+`agent`. Plugins depend on each other's crates for those types along the
+acyclic order `runtime ← tools ← agent ← {tui, rpc} ← wth`. This keeps the
+shared crate at ~130 lines and puts each contract next to the code that
+enforces it. (Earlier draft put the tool contract in `runtime`; dropped once
+the agent needed `tools` anyway for the registry actor type.)
 
-| Item | Why shared |
-|---|---|
-| `Plugin`, `Runtime` | the extension point |
-| `Tool` trait, `ToolSpec`, `ToolCall`, `ToolOutput` | agent invokes tools it did not define |
-| `ApprovalRequest`, `Decision`, `Risk` | every tool routes through one gate |
-| `SessionId`, `TurnId` | correlation on every event |
-
-Ceiling: `runtime/src` stays under 400 lines. Growth past that is a design
-bug to fix by moving types back into the owning plugin.
+Events: a plugin may publish one struct per event or one `#[serde(tag =
+"type")]` enum per event *stream* — `agent::AgentEvent` is the latter because
+every UI consumes the whole stream with one subscription and one `match`.
+Both are the owning plugin's types; the rule being enforced is "no shared
+enum edited by every plugin", not "no enums".
 
 ### Tool contract (oh-my-pi ergonomics)
 
@@ -131,7 +136,8 @@ pub trait Tool: Send + Sync + 'static {
     const NAME: &'static str;
     const RISK: Risk;                      // ReadOnly | Mutating | Destructive
     type Args: DeserializeOwned + JsonSchema + Send;
-    fn description(&self) -> &str;
+    fn description(&self) -> String;
+    fn summary(&self, args: &Self::Args) -> String; // one line for the approval prompt
     async fn call(&self, args: Self::Args, cx: ToolCx) -> anyhow::Result<ToolOutput>;
 }
 ```
@@ -317,8 +323,9 @@ Workspace dependencies (versions verified 2026-09-09 via `cargo info`):
 | anyhow / thiserror | 1 / 2 | errors |
 | clap | 4 | CLI |
 
-Lints: `clippy::all = deny`, `missing_docs = warn` (same as jarvis; that part
-worked).
+Lints: `missing_docs = warn`, `clippy::all = warn` while the crates are being
+built out in parallel; flips to `deny` once phase 3 lands and the workspace is
+clippy-clean.
 
 ## 11. Spike results (2026-09-09)
 
@@ -383,16 +390,21 @@ The shell tool `killpg`s that group on timeout.
 
 Each phase ends with a runnable check, not a test suite.
 
-| Phase | Deliverable | Check |
-|---|---|---|
-| 0 | workspace, `runtime`, `wth` starts an empty plugin list | `wth --version` |
-| 1 | agent + tui: streamed chat, sessions persisted and resumable | chat, quit, `wth --resume <id>` shows history |
-| 1 | tools: shell via brush + fs, approval gate in tui | ask model to `ls`; approval modal; output returned |
-| 1 | mcp: one configured stdio server's tools callable | `@modelcontextprotocol/server-everything` `echo` |
-| 2 | rpc plugin, `--serve`; ts-rs bindings emitted | `websocat` subscribe + send_input round trip |
-| 2 | skills | skill body appears in prompt on load |
-| 3 | subagents, steering polish | parent receives child result as tool output |
-| 4 | Tauri frontend over rpc | out of scope for this doc |
+| Phase | Deliverable | Check | Status (2026-09-09) |
+|---|---|---|---|
+| 0 | workspace, `runtime`, `wth` starts an empty plugin list | `wth --version` | done |
+| 1 | agent + tui: streamed chat, sessions persisted and resumable | chat, quit, `wth --resume <id>` shows history | done; verified in a real pty |
+| 1 | tools: shell via brush + fs, approval gate in tui | ask model to `ls`; approval modal; output returned | done; orphan kill verified (`sleep 30` group dead after timeout) |
+| 1 | mcp: one configured stdio server's tools callable | `@modelcontextprotocol/server-everything` `echo` | done (`everything__echo` → `Echo: hi`) |
+| 2 | rpc plugin, `--serve`; ts-rs bindings emitted | subscribe + send_input round trip over WS | done; headless e2e: shell + write/read + list/load sessions + shutdown, all over the wire |
+| 2 | skills | skill body appears in prompt on load | done (`docs/skills.md`) |
+| 3 | subagents, steering polish | parent receives child result as tool output | done; child session row carries `parent` |
+| 4 | Tauri frontend over rpc | out of scope for this doc | not started; `just ts` emits `bindings/*.ts` |
+
+Known gaps carried forward: cancel/error paths in the loop are code-reviewed,
+not smoke-tested; a `setsid` child escapes `killpg`; no upstream PR yet for the
+brush `on_spawn` patch; RPC token compare is plain `==` (loopback only);
+session actors are never evicted from the supervisor.
 
 ## 13. Lessons carried from jarvis (design only, no code)
 

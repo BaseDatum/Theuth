@@ -18,6 +18,8 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 kameo = { workspace = true }
 jsonrpsee = { workspace = true }
+tower = { workspace = true }
+uuid = { workspace = true }
 ts-rs = { workspace = true, optional = true }
 
 [dev-dependencies]

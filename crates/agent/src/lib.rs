@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 pub mod loop_;
 pub mod skills;
 pub mod store;
+pub mod subagent;
 pub mod supervisor;
 
 pub use supervisor::Agents;

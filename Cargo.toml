@@ -23,7 +23,7 @@ thiserror = "2"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 schemars = { version = "1", features = ["uuid1", "chrono04"] }
-uuid = { version = "1", features = ["v7", "serde"] }
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
@@ -44,13 +44,22 @@ clap = { version = "4", features = ["derive", "env"] }
 dirs = "6"
 nix = { version = "0.31", features = ["signal"] }
 glob = "0.3"
+tower = { version = "0.5", features = ["util"] }
 
 [workspace.lints.rust]
 missing_docs = "warn"
 
 [workspace.lints.clippy]
-all = { level = "warn", priority = -1 }
+all = { level = "deny", priority = -1 }
 
 # In-repo dependency patches (design doc §1.3). Each entry names the fork branch
 # and the reason; drop when upstream ships the change.
 [patch.crates-io]
+# brush-core: `ExecutionParameters::on_spawn` hook reporting (pid, pgid) of every
+# spawned external command, so the shell tool can `killpg` orphans on timeout.
+# Branch `on-spawn-0.5` = tag brush-core-v0.5.0 + one commit. brush-parser is
+# patched to the same commit (identical to crates.io 0.4.0) because brush-core
+# depends on it by path inside the fork; without this entry cargo would build two
+# brush-parser copies and brush-builtins' AST types would mismatch brush-core's.
+brush-core = { git = "https://github.com/skymoore/brush", branch = "on-spawn-0.5" }
+brush-parser = { git = "https://github.com/skymoore/brush", branch = "on-spawn-0.5" }
