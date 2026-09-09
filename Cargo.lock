@@ -19,6 +19,7 @@ dependencies = [
  "genai",
  "gray_matter",
  "kameo",
+ "models",
  "runtime",
  "schemars 1.2.2",
  "serde",
@@ -2548,6 +2549,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "models"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
 name = "multiversion"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4715,6 +4725,7 @@ dependencies = [
  "futures",
  "iocraft",
  "kameo",
+ "models",
  "runtime",
  "tokio",
  "tools",

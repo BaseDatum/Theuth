@@ -1,12 +1,17 @@
 //! Pure UI state: bus events in, commands out. Shared by the fullscreen
 //! renderer and the non-TTY line printer; no I/O here.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
+use std::ops::Range;
 
-use agent::{AgentEvent, HistoryEntry, SessionSummary, Usage};
+use agent::{AgentEvent, HistoryEntry, ModelInfo, SessionSummary, Usage};
+use iocraft::KeyCode;
+use models::Catalog;
 use runtime::SessionId;
 use tokio::sync::mpsc::UnboundedSender;
-use tools::{ApprovalId, ApprovalRequested, ApprovalResolved, Decision};
+use tools::{
+    ApprovalId, ApprovalRequested, ApprovalResolved, Decision, McpServer, McpToolInfo, PolicyAction,
+};
 
 /// Everything the UI can receive: bus events plus replies to its own commands.
 #[derive(Debug)]
@@ -25,6 +30,12 @@ pub enum UiEvent {
     History(SessionId, Vec<HistoryEntry>),
     /// Reply to [`Command::Send`]: the session the turn went to.
     SessionCreated(SessionId),
+    /// Reply to [`Command::ListModels`].
+    Models(Vec<ModelInfo>),
+    /// Reply to [`Command::SetModel`].
+    ModelSet(ModelInfo),
+    /// Reply to [`Command::ListMcp`] (also sent after every [`Command::SetGate`]).
+    Mcp(Vec<McpServer>),
     /// A command failed (actor missing, ask error).
     Error(String),
 }
@@ -61,6 +72,26 @@ pub enum Command {
         id: ApprovalId,
         /// Answer.
         decision: Decision,
+    },
+    /// `ListModels` on the agent actor.
+    ListModels,
+    /// `SetModel` on the agent actor.
+    SetModel {
+        /// Session to switch now (`None`: only the default).
+        session: Option<SessionId>,
+        /// `provider/model` id.
+        model: String,
+    },
+    /// `ListServers` on the MCP actor.
+    ListMcp,
+    /// `SetGate` on the MCP actor, followed by a fresh `ListServers`.
+    SetGate {
+        /// Server name.
+        server: String,
+        /// Tool name; `None` sets the server gate.
+        tool: Option<String>,
+        /// New action; `None` clears a tool override.
+        action: Option<PolicyAction>,
     },
 }
 
@@ -106,6 +137,120 @@ pub struct Child {
     pub running: bool,
 }
 
+/// Slash commands: name, argument hint (`<x>` required, `[x]` optional, `""` none), description.
+pub const COMMANDS: &[(&str, &str, &str)] = &[
+    ("/model", "[id]", "switch model (picker without id)"),
+    ("/mcp", "", "MCP servers and tool gates"),
+    ("/agents", "", "list this session's subagents"),
+    ("/focus", "<name>", "show a subagent's transcript"),
+    ("/sessions", "", "list sessions"),
+    ("/resume", "<id>", "open a session"),
+    ("/new", "", "start a new session"),
+    ("/cancel", "", "abort the in-flight turn"),
+    ("/quit", "", "exit"),
+];
+
+/// Commands whose name starts with the typed word (`/mo` → `/model`).
+pub fn slash_matches(word: &str) -> Vec<&'static (&'static str, &'static str, &'static str)> {
+    COMMANDS.iter().filter(|c| c.0.starts_with(word)).collect()
+}
+
+/// Visible slice of a list `max` rows tall that keeps `cursor` in view.
+pub fn window(len: usize, cursor: usize, max: usize) -> Range<usize> {
+    let start = (cursor + 1)
+        .saturating_sub(max)
+        .min(len.saturating_sub(max));
+    start..len.min(start + max)
+}
+
+/// An open menu; modal except `Slash`, which rides on the input box.
+#[derive(Debug)]
+pub enum Menu {
+    /// Command list filtered by the input's first word.
+    Slash {
+        /// Highlighted match.
+        cursor: usize,
+    },
+    /// `/model` picker.
+    Models {
+        /// Everything `ListModels` returned.
+        items: Vec<ModelInfo>,
+        /// Substring typed inline (matched on id and name).
+        filter: String,
+        /// Highlighted filtered row.
+        cursor: usize,
+    },
+    /// `/mcp` gates.
+    Mcp {
+        /// Latest `ListServers` reply.
+        servers: Vec<McpServer>,
+        /// Highlighted row of [`Model::mcp_rows`].
+        cursor: usize,
+        /// Servers whose tools are listed.
+        expanded: BTreeSet<String>,
+    },
+}
+
+/// One line of the `/mcp` menu.
+#[derive(Debug)]
+pub enum Row<'a> {
+    /// A server (gate applies to all its tools).
+    Server(&'a McpServer),
+    /// A tool of an expanded server.
+    Tool(&'a McpServer, &'a McpToolInfo),
+}
+
+/// What the key handler should do after a menu saw a key.
+#[derive(Debug, PartialEq, Eq)]
+pub enum MenuKey {
+    /// Nothing more.
+    Consumed,
+    /// Replace the input text.
+    Input(String),
+}
+
+/// How full the context window is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Level {
+    /// Under 70 %.
+    Normal,
+    /// 70–90 %.
+    Warn,
+    /// 90 % and above.
+    Danger,
+}
+
+/// `12.3k`, `200k`, `1.0M`.
+pub fn k(n: u32) -> String {
+    let k = f64::from(n) / 1000.0;
+    if n < 1000 {
+        n.to_string()
+    } else if k < 100.0 {
+        format!("{k:.1}k")
+    } else if k < 1000.0 {
+        format!("{k:.0}k")
+    } else {
+        format!("{:.1}M", k / 1000.0)
+    }
+}
+
+/// Lowercase yaml name of a gate action.
+pub fn gate_name(a: PolicyAction) -> &'static str {
+    match a {
+        PolicyAction::Allow => "allow",
+        PolicyAction::Ask => "ask",
+        PolicyAction::Deny => "deny",
+    }
+}
+
+fn next_gate(a: PolicyAction) -> PolicyAction {
+    match a {
+        PolicyAction::Allow => PolicyAction::Ask,
+        PolicyAction::Ask => PolicyAction::Deny,
+        PolicyAction::Deny => PolicyAction::Allow,
+    }
+}
+
 /// UI state.
 #[derive(Debug, Default)]
 pub struct Model {
@@ -117,12 +262,21 @@ pub struct Model {
     pub children: Vec<Child>,
     /// A `Send { session: None }` is in flight; adopt the next `TurnStarted`.
     awaiting_session: bool,
+    /// `/mcp` was typed; the next `UiEvent::Mcp` opens the menu. Refreshes
+    /// after `SetGate` only update an open menu, never reopen a closed one.
+    awaiting_mcp: bool,
     /// Transcript of the shown session.
     pub entries: Vec<Entry>,
     /// The root has a turn in flight.
     pub streaming: bool,
     /// Usage of the last finished turn of the shown session.
     pub usage: Option<Usage>,
+    /// Model of the shown session (`TurnStarted.model`; the config default before that).
+    pub model_id: String,
+    /// Tokens the shown session's window held after its last turn.
+    pub context: u32,
+    /// Open menu.
+    pub menu: Option<Menu>,
     /// Pending approvals for the root or any child, oldest first; the front is shown.
     pub approvals: VecDeque<ApprovalRequested>,
     /// The user asked to leave.
@@ -130,6 +284,19 @@ pub struct Model {
 }
 
 impl Model {
+    /// Fresh state showing `default_model` in the header.
+    pub fn new(default_model: String) -> Self {
+        Self {
+            model_id: default_model,
+            ..Self::default()
+        }
+    }
+
+    /// `Self::new` keeping the current model: `/new` and `/resume`.
+    fn reset(&mut self) {
+        *self = Self::new(std::mem::take(&mut self.model_id));
+    }
+
     /// The approval currently shown, if any.
     pub fn approval(&self) -> Option<&ApprovalRequested> {
         self.approvals.front()
@@ -214,6 +381,32 @@ impl Model {
                     self.session = Some(id);
                 }
             }
+            UiEvent::Models(items) => {
+                if items.is_empty() {
+                    self.entries
+                        .push(Entry::Error("no models: no provider is configured".into()));
+                } else {
+                    self.menu = Some(Menu::Models {
+                        items,
+                        filter: String::new(),
+                        cursor: 0,
+                    });
+                }
+            }
+            UiEvent::ModelSet(info) => self.model_id = info.id,
+            // The cursor is clamped where it is used (`mcp_key`, renderer).
+            UiEvent::Mcp(list) => match &mut self.menu {
+                Some(Menu::Mcp { servers, .. }) => *servers = list,
+                _ if self.awaiting_mcp => {
+                    self.awaiting_mcp = false;
+                    self.menu = Some(Menu::Mcp {
+                        servers: list,
+                        cursor: 0,
+                        expanded: BTreeSet::new(),
+                    });
+                }
+                _ => {}
+            },
             UiEvent::Error(e) => self.entries.push(Entry::Error(e)),
         }
     }
@@ -274,7 +467,8 @@ impl Model {
         }
         match ev {
             // Echo the turn's input unless the human just typed it here.
-            AgentEvent::TurnStarted { text, .. } => {
+            AgentEvent::TurnStarted { text, model, .. } => {
+                self.model_id = model;
                 if !matches!(self.entries.last(), Some(Entry::User(t)) if *t == text) {
                     self.entries.push(Entry::User(text));
                 }
@@ -321,7 +515,14 @@ impl Model {
                     ))),
                 }
             }
-            AgentEvent::TurnFinished { usage, .. } => self.usage = Some(usage),
+            AgentEvent::TurnFinished { usage, context, .. } => {
+                self.usage = Some(usage);
+                self.context = context;
+            }
+            AgentEvent::ModelChanged { model, .. } => {
+                self.entries.push(Entry::Info(format!("model → {model}")));
+                self.model_id = model;
+            }
             AgentEvent::Error { message, .. } => self.entries.push(Entry::Error(message)),
             AgentEvent::SubagentSpawned { .. } | AgentEvent::MessageDelivered { .. } => {}
         }
@@ -346,8 +547,20 @@ impl Model {
                     .push(Entry::Error(format!("not a session id: {arg:?}"))),
             },
             "/new" => {
-                *self = Model::default();
+                self.reset();
                 self.entries.push(Entry::Info("new session".into()));
+            }
+            "/model" if arg.is_empty() => send(tx, Command::ListModels),
+            "/model" => send(
+                tx,
+                Command::SetModel {
+                    session: self.session,
+                    model: arg.to_owned(),
+                },
+            ),
+            "/mcp" => {
+                self.awaiting_mcp = true;
+                send(tx, Command::ListMcp);
             }
             "/agents" => match self.session {
                 Some(root) => send(tx, Command::ListChildren(root)),
@@ -383,7 +596,7 @@ impl Model {
     // runs (their approvals are hidden until then); fetch ListChildren here
     // silently if that bites.
     pub fn resume(&mut self, id: SessionId, tx: &UnboundedSender<Command>) {
-        *self = Model::default();
+        self.reset();
         self.session = Some(id);
         send(tx, Command::Load(id));
     }
@@ -407,6 +620,9 @@ impl Model {
         self.focus = (target != root).then_some(target);
         self.entries.clear();
         self.usage = None;
+        // ponytail: the header keeps the previous session's model until this
+        // one's next TurnStarted; carry model per session if that misleads.
+        self.context = 0;
         send(tx, Command::Load(target));
     }
 
@@ -432,7 +648,7 @@ impl Model {
     }
 
     /// One-line status: session, streaming state, last usage, focus, roster.
-    pub fn status(&self, model_name: &str) -> String {
+    pub fn status(&self) -> String {
         let session = self.shown().map_or_else(|| "no session".to_owned(), short);
         let state = if self.shown_running() {
             "streaming…"
@@ -452,8 +668,242 @@ impl Model {
         } else {
             String::new()
         };
-        format!("{session}  {model_name}  {state}{usage}{focus}{agents}")
+        format!("{session}  {state}{usage}{focus}{agents}")
     }
+
+    /// Line above the input: `model  ·  ctx 12.3k / 200k (6%)` and its colour level.
+    pub fn header(&self, catalog: &Catalog) -> (String, Level) {
+        let used = k(self.context);
+        match catalog.get(&self.model_id).map(|(_, m)| m.limit.context) {
+            Some(limit) if limit > 0 => {
+                let pct = u64::from(self.context) * 100 / u64::from(limit);
+                let level = match pct {
+                    0..70 => Level::Normal,
+                    70..90 => Level::Warn,
+                    _ => Level::Danger,
+                };
+                (
+                    format!("{}  ·  ctx {used} / {} ({pct}%)", self.model_id, k(limit)),
+                    level,
+                )
+            }
+            _ => (format!("{}  ·  ctx {used}", self.model_id), Level::Normal),
+        }
+    }
+
+    /// Open or close the slash popup to match what the input box holds.
+    pub fn sync_slash(&mut self, input: &str) {
+        match (&self.menu, input.starts_with('/')) {
+            (None, true) => self.menu = Some(Menu::Slash { cursor: 0 }),
+            (Some(Menu::Slash { .. }), false) => self.menu = None,
+            _ => {}
+        }
+    }
+
+    /// `/model` picker rows after the inline filter.
+    pub fn models_filtered(&self) -> Vec<&ModelInfo> {
+        match &self.menu {
+            Some(Menu::Models { items, filter, .. }) => filter_models(items, filter),
+            _ => Vec::new(),
+        }
+    }
+
+    /// `/mcp` menu rows: every server, then the tools of expanded ones.
+    pub fn mcp_rows(&self) -> Vec<Row<'_>> {
+        let Some(Menu::Mcp {
+            servers, expanded, ..
+        }) = &self.menu
+        else {
+            return Vec::new();
+        };
+        let mut rows = Vec::new();
+        for s in servers {
+            rows.push(Row::Server(s));
+            if expanded.contains(&s.name) {
+                rows.extend(s.tools.iter().map(|t| Row::Tool(s, t)));
+            }
+        }
+        rows
+    }
+
+    /// Route a key to the open menu (no-op without one). Returns what the
+    /// input box should do.
+    pub fn menu_key(
+        &mut self,
+        code: KeyCode,
+        input: &str,
+        tx: &UnboundedSender<Command>,
+    ) -> MenuKey {
+        match &self.menu {
+            None => MenuKey::Consumed,
+            Some(Menu::Slash { .. }) => self.slash_key(code, input, tx),
+            Some(Menu::Models { .. }) => self.models_key(code, tx),
+            Some(Menu::Mcp { .. }) => self.mcp_key(code, tx),
+        }
+    }
+
+    fn slash_key(&mut self, code: KeyCode, input: &str, tx: &UnboundedSender<Command>) -> MenuKey {
+        let Some(Menu::Slash { cursor }) = &mut self.menu else {
+            return MenuKey::Consumed;
+        };
+        let (word, arg) = input
+            .split_once(' ')
+            .map_or((input, ""), |(w, a)| (w, a.trim()));
+        let matches = slash_matches(word);
+        *cursor = (*cursor).min(matches.len().saturating_sub(1));
+        let picked = matches.get(*cursor).copied();
+        match code {
+            KeyCode::Up => *cursor = cursor.saturating_sub(1),
+            KeyCode::Down => *cursor = (*cursor + 1).min(matches.len().saturating_sub(1)),
+            KeyCode::Esc => self.menu = None,
+            KeyCode::Tab => {
+                if let Some((name, hint, _)) = picked {
+                    let tail = if arg.is_empty() && hint.is_empty() {
+                        ""
+                    } else {
+                        " "
+                    };
+                    return MenuKey::Input(format!("{name}{tail}{arg}"));
+                }
+            }
+            KeyCode::Enter => {
+                let line = match picked {
+                    Some((name, hint, _)) if hint.starts_with('<') && arg.is_empty() => {
+                        return MenuKey::Input(format!("{name} "));
+                    }
+                    Some((name, _, _)) => format!("{name} {arg}"),
+                    None => input.to_owned(),
+                };
+                self.menu = None;
+                self.submit(&line, tx);
+                return MenuKey::Input(String::new());
+            }
+            _ => {}
+        }
+        MenuKey::Consumed
+    }
+
+    fn models_key(&mut self, code: KeyCode, tx: &UnboundedSender<Command>) -> MenuKey {
+        let Some(Menu::Models {
+            items,
+            filter,
+            cursor,
+        }) = &mut self.menu
+        else {
+            return MenuKey::Consumed;
+        };
+        let filtered = filter_models(items, filter);
+        *cursor = (*cursor).min(filtered.len().saturating_sub(1));
+        match code {
+            KeyCode::Up => *cursor = cursor.saturating_sub(1),
+            KeyCode::Down => *cursor = (*cursor + 1).min(filtered.len().saturating_sub(1)),
+            KeyCode::Char(c) => {
+                filter.push(c);
+                *cursor = 0;
+            }
+            KeyCode::Backspace => {
+                filter.pop();
+                *cursor = 0;
+            }
+            KeyCode::Esc => self.menu = None,
+            KeyCode::Enter => {
+                if let Some(m) = filtered.get(*cursor) {
+                    let model = m.id.clone();
+                    send(
+                        tx,
+                        Command::SetModel {
+                            session: self.session,
+                            model,
+                        },
+                    );
+                    self.menu = None;
+                }
+            }
+            _ => {}
+        }
+        MenuKey::Consumed
+    }
+
+    fn mcp_key(&mut self, code: KeyCode, tx: &UnboundedSender<Command>) -> MenuKey {
+        enum Act {
+            Move(usize),
+            Expand(String, bool),
+            Gate(Command),
+            Close,
+            Nothing,
+        }
+        let Some(Menu::Mcp { cursor, .. }) = &self.menu else {
+            return MenuKey::Consumed;
+        };
+        let rows = self.mcp_rows();
+        let cursor = (*cursor).min(rows.len().saturating_sub(1));
+        let act = match (code, rows.get(cursor)) {
+            (KeyCode::Up, _) => Act::Move(cursor.saturating_sub(1)),
+            (KeyCode::Down, _) => Act::Move((cursor + 1).min(rows.len().saturating_sub(1))),
+            (KeyCode::Esc, _) => Act::Close,
+            (KeyCode::Right | KeyCode::Enter, Some(Row::Server(s))) => {
+                Act::Expand(s.name.clone(), true)
+            }
+            (KeyCode::Left, Some(Row::Server(s) | Row::Tool(s, _))) => {
+                Act::Expand(s.name.clone(), false)
+            }
+            (KeyCode::Char(' '), Some(Row::Server(s))) => Act::Gate(Command::SetGate {
+                server: s.name.clone(),
+                tool: None,
+                action: Some(next_gate(s.gate)),
+            }),
+            (KeyCode::Char(' '), Some(Row::Tool(s, t))) => Act::Gate(Command::SetGate {
+                server: s.name.clone(),
+                tool: Some(t.name.clone()),
+                action: Some(next_gate(t.gate.unwrap_or(t.effective))),
+            }),
+            (KeyCode::Backspace, Some(Row::Tool(s, t))) => Act::Gate(Command::SetGate {
+                server: s.name.clone(),
+                tool: Some(t.name.clone()),
+                action: None,
+            }),
+            _ => Act::Nothing,
+        };
+        let Some(Menu::Mcp {
+            servers,
+            cursor: cur,
+            expanded,
+        }) = &mut self.menu
+        else {
+            return MenuKey::Consumed;
+        };
+        *cur = cursor;
+        match act {
+            Act::Move(to) => *cur = to,
+            Act::Expand(name, true) => {
+                expanded.insert(name);
+            }
+            Act::Expand(name, false) => {
+                expanded.remove(&name);
+                // Land on the collapsed server's own row.
+                *cur = servers.iter().position(|s| s.name == name).map_or(0, |i| {
+                    servers[..i]
+                        .iter()
+                        .filter(|s| expanded.contains(&s.name))
+                        .map(|s| s.tools.len())
+                        .sum::<usize>()
+                        + i
+                });
+            }
+            Act::Gate(cmd) => send(tx, cmd),
+            Act::Close => self.menu = None,
+            Act::Nothing => {}
+        }
+        MenuKey::Consumed
+    }
+}
+
+fn filter_models<'a>(items: &'a [ModelInfo], filter: &str) -> Vec<&'a ModelInfo> {
+    let f = filter.to_lowercase();
+    items
+        .iter()
+        .filter(|m| m.id.to_lowercase().contains(&f) || m.name.to_lowercase().contains(&f))
+        .collect()
 }
 
 impl From<HistoryEntry> for Entry {
@@ -486,4 +936,111 @@ fn send(tx: &UnboundedSender<Command>, cmd: Command) {
 
 fn short(id: SessionId) -> String {
     id.to_string()[..8].to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::mpsc::unbounded_channel;
+
+    #[test]
+    fn slash_tab_completes_and_enter_asks_for_required_arg() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        m.sync_slash("/mo");
+        assert_eq!(
+            m.menu_key(KeyCode::Tab, "/mo", &tx),
+            MenuKey::Input("/model ".into())
+        );
+        assert_eq!(
+            m.menu_key(KeyCode::Enter, "/foc", &tx),
+            MenuKey::Input("/focus ".into())
+        );
+        assert!(rx.try_recv().is_err(), "nothing submitted yet");
+        // `/q` has one match; Enter runs it and clears the input.
+        assert_eq!(
+            m.menu_key(KeyCode::Enter, "/q", &tx),
+            MenuKey::Input(String::new())
+        );
+        assert!(m.quit && m.menu.is_none());
+        assert_eq!(slash_matches("/").len(), COMMANDS.len());
+        assert!(slash_matches("/zzz").is_empty());
+    }
+
+    #[test]
+    fn mcp_space_cycles_server_and_tool_gates() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        let fresh = |gate: PolicyAction| McpServer {
+            name: "fs".into(),
+            connected: true,
+            gate,
+            tools: vec![McpToolInfo {
+                name: "read".into(),
+                description: String::new(),
+                gate: None,
+                effective: gate,
+                registered: true,
+            }],
+        };
+        // A refresh with no menu open and no `/mcp` typed must not open one.
+        m.apply(UiEvent::Mcp(vec![fresh(PolicyAction::Allow)]));
+        assert!(m.menu.is_none());
+        m.submit("/mcp", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::ListMcp)));
+        m.apply(UiEvent::Mcp(vec![fresh(PolicyAction::Ask)]));
+        m.menu_key(KeyCode::Char(' '), "", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetGate { server, tool: None, action: Some(PolicyAction::Deny) }) if server == "fs"
+        ));
+        m.menu_key(KeyCode::Right, "", &tx);
+        m.menu_key(KeyCode::Down, "", &tx);
+        assert_eq!(m.mcp_rows().len(), 2);
+        m.menu_key(KeyCode::Char(' '), "", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetGate { tool: Some(t), action: Some(PolicyAction::Deny), .. }) if t == "read"
+        ));
+        m.menu_key(KeyCode::Backspace, "", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetGate {
+                tool: Some(_),
+                action: None,
+                ..
+            })
+        ));
+        m.menu_key(KeyCode::Left, "", &tx);
+        assert!(matches!(m.menu, Some(Menu::Mcp { cursor: 0, .. })));
+        assert_eq!(m.mcp_rows().len(), 1);
+    }
+
+    #[test]
+    fn header_numbers() {
+        assert_eq!(k(999), "999");
+        assert_eq!(k(12_345), "12.3k");
+        assert_eq!(k(200_000), "200k");
+        assert_eq!(k(1_000_000), "1.0M");
+        let catalog = Catalog::load(std::env::temp_dir().join("wth-tui-no-user-file").as_path());
+        let mut m = Model::new("anthropic/claude-sonnet-4-5".into());
+        let limit = catalog
+            .get(&m.model_id)
+            .expect("bundled model")
+            .1
+            .limit
+            .context;
+        m.context = limit * 9 / 10;
+        let (text, level) = m.header(&catalog);
+        assert_eq!(level, Level::Danger);
+        assert!(text.ends_with("(90%)"), "{text}");
+        m.model_id = "nobody/nothing".into();
+        m.context = 1500;
+        assert_eq!(
+            m.header(&catalog),
+            ("nobody/nothing  ·  ctx 1.5k".to_owned(), Level::Normal)
+        );
+        assert_eq!(window(50, 20, 10), 11..21);
+        assert_eq!(window(5, 0, 10), 0..5);
+    }
 }

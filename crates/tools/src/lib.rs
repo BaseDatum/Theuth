@@ -5,6 +5,7 @@
 //! Public surface consumed by other plugins:
 //! - commands on the `"tools"` actor ([`ToolRegistry`]): [`ListTools`], [`Invoke`], [`RegisterTool`], [`UnregisterTool`]
 //! - commands on the `"approval"` actor ([`Approval`]): [`Resolve`]
+//! - commands on the `"mcp"` actor ([`Mcp`]): [`ListServers`], [`SetGate`]
 //! - events: [`ApprovalRequested`], [`ApprovalResolved`]
 
 use std::sync::Arc;
@@ -22,12 +23,15 @@ pub mod registry;
 pub mod shell;
 
 pub use approval::{Approval, ApprovalId, ApprovalRequested, ApprovalResolved, Decision, Resolve};
+pub use mcp::{ListServers, Mcp, McpServer, McpToolInfo, SetGate};
 pub use registry::{Invoke, ListTools, RegisterTool, ToolRegistry, UnregisterTool};
 
 /// Registry name of the [`ToolRegistry`] actor.
 pub const REGISTRY_ACTOR: &str = "tools";
 /// Registry name of the [`Approval`] actor.
 pub const APPROVAL_ACTOR: &str = "approval";
+/// Registry name of the [`Mcp`] actor.
+pub const MCP_ACTOR: &str = "mcp";
 
 /// How much damage a tool can do; the only input to the approval policy.
 #[derive(
@@ -193,7 +197,8 @@ where
 pub type DynTool = Arc<dyn ErasedTool>;
 
 /// What the gate does for a risk class.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum PolicyAction {
     /// Run without asking.

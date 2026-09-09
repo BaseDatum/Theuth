@@ -1,11 +1,15 @@
 //! Fullscreen iocraft app. Pure: reads [`UiEvent`]s from a channel, writes
 //! [`Command`]s to another. All actor traffic lives in `lib.rs`.
 
+use std::sync::Arc;
+
 use iocraft::prelude::*;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tools::{Decision, Risk};
 
-use crate::model::{Command, Entry, Model, UiEvent};
+use crate::model::{
+    Command, Entry, Level, Menu, MenuKey, Model, Row, UiEvent, gate_name, k, slash_matches, window,
+};
 
 /// Channels handed to the app through iocraft context (owned so the receiver
 /// can be taken out on first render, per design doc §11.5).
@@ -14,11 +18,16 @@ pub struct Links {
     pub events: Option<UnboundedReceiver<UiEvent>>,
     /// Command sink.
     pub commands: UnboundedSender<Command>,
-    /// Model name for the status line.
-    pub model_name: String,
+    /// `agent.model` from config: what the header shows before the first turn.
+    pub default_model: String,
+    /// Context limits for the header.
+    pub catalog: Arc<models::Catalog>,
     /// Session to `/resume` on first render.
     pub resume: Option<runtime::SessionId>,
 }
+
+/// Rows a menu shows at most.
+const MENU_ROWS: usize = 10;
 
 /// Run the fullscreen UI until the user quits.
 pub async fn run(links: Links) -> std::io::Result<()> {
@@ -35,10 +44,11 @@ pub async fn run(links: Links) -> std::io::Result<()> {
 fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     let mut system = hooks.use_context_mut::<SystemContext>();
     let mut links = hooks.use_context_mut::<Links>();
-    let mut model = hooks.use_state(Model::default);
+    let default_model = links.default_model.clone();
+    let mut model = hooks.use_state(move || Model::new(default_model));
     let mut input = hooks.use_state(String::new);
     let commands = links.commands.clone();
-    let model_name = links.model_name.clone();
+    let catalog = links.catalog.clone();
 
     // Runs once: the receiver is `Some` only on the first render.
     let events = links.events.take();
@@ -84,6 +94,13 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 }
                 return;
             }
+            if m.menu.is_some() {
+                let text = input.read().to_string();
+                if let MenuKey::Input(text) = m.menu_key(code, &text, &commands) {
+                    input.set(text);
+                }
+                return;
+            }
             match code {
                 KeyCode::Enter => {
                     let line = std::mem::take(&mut *input.write());
@@ -113,8 +130,18 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 Text(content: "[y] allow  [n/esc] deny", color: Color::Yellow)
             }
         }
+        .into_any()
     });
-    let has_focus = modal.is_none();
+    // Approval on top; otherwise whichever menu is open.
+    let modal = modal.or_else(|| menu(&m, &input.read()));
+    let has_focus =
+        m.approval().is_none() && !matches!(m.menu, Some(Menu::Models { .. } | Menu::Mcp { .. }));
+    let (header, level) = m.header(&catalog);
+    let header_color = match level {
+        Level::Normal => Color::DarkGrey,
+        Level::Warn => Color::Yellow,
+        Level::Danger => Color::Red,
+    };
     let (width, height) = hooks.use_terminal_size();
 
     element! {
@@ -128,17 +155,111 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             }
             #(modal)
             View(height: 1, padding_left: 1) {
-                Text(content: m.status(&model_name), color: Color::DarkGrey)
+                Text(content: header, color: header_color)
             }
             View(border_style: BorderStyle::Round, border_color: Color::Blue, height: 3) {
                 TextInput(
                     has_focus,
                     value: input.to_string(),
-                    on_change: move |v| input.set(v),
+                    on_change: move |v: String| {
+                        model.write().sync_slash(&v);
+                        input.set(v);
+                    },
                 )
+            }
+            View(height: 1, padding_left: 1) {
+                Text(content: m.status(), color: Color::DarkGrey)
             }
         }
     }
+}
+
+/// The open menu as a bordered box; `None` without one.
+fn menu(m: &Model, input: &str) -> Option<AnyElement<'static>> {
+    let (title, rows, cursor): (String, Vec<String>, usize) = match m.menu.as_ref()? {
+        Menu::Slash { cursor } => {
+            let word = input.split(' ').next().unwrap_or_default();
+            let rows = slash_matches(word)
+                .into_iter()
+                .map(|(name, hint, desc)| format!("{:<16} {desc}", format!("{name} {hint}")))
+                .collect::<Vec<_>>();
+            (
+                "↑↓ move  ⇥ complete  ⏎ run  esc close".to_owned(),
+                rows,
+                *cursor,
+            )
+        }
+        Menu::Models { filter, cursor, .. } => (
+            format!("model  filter: {filter}▏"),
+            m.models_filtered()
+                .iter()
+                .map(|i| format!("{:<44} {:<32} {}", i.id, i.name, k(i.context)))
+                .collect(),
+            *cursor,
+        ),
+        Menu::Mcp {
+            cursor, expanded, ..
+        } => (
+            "mcp  ␣ cycle gate  ⌫ inherit  →/← expand".to_owned(),
+            m.mcp_rows()
+                .iter()
+                .map(|r| match r {
+                    Row::Server(s) => format!(
+                        "{} {:<16} {:>2} tools   {:<6} {}",
+                        if expanded.contains(&s.name) {
+                            "▾"
+                        } else {
+                            "▸"
+                        },
+                        s.name,
+                        if s.connected {
+                            s.tools.len().to_string()
+                        } else {
+                            "–".to_owned()
+                        },
+                        gate_name(s.gate),
+                        if s.connected {
+                            "● connected"
+                        } else {
+                            "○ not connected"
+                        },
+                    ),
+                    Row::Tool(_, t) => format!(
+                        "    {:<24} {:<7}{}",
+                        t.name,
+                        t.gate.map_or_else(
+                            || format!("({})", gate_name(t.effective)),
+                            |g| gate_name(g).to_owned()
+                        ),
+                        if t.registered || t.effective == tools::PolicyAction::Deny {
+                            ""
+                        } else {
+                            "  not registered"
+                        },
+                    ),
+                })
+                .collect(),
+            *cursor,
+        ),
+    };
+    let cursor = cursor.min(rows.len().saturating_sub(1));
+    let shown = window(rows.len(), cursor, MENU_ROWS);
+    Some(
+        element! {
+            View(border_style: BorderStyle::Round, border_color: Color::DarkGrey, flex_direction: FlexDirection::Column, padding_left: 1, padding_right: 1) {
+                Text(content: title, color: Color::DarkGrey)
+                #(rows[shown.clone()].iter().enumerate().map(|(i, row)| {
+                    let here = shown.start + i == cursor;
+                    element!(Text(
+                        content: format!("{} {row}", if here { "›" } else { " " }),
+                        color: if here { Color::White } else { Color::Grey },
+                        weight: if here { Weight::Bold } else { Weight::Normal },
+                    ))
+                }))
+            }
+        }
+        .into_any(),
+    )
 }
 
 fn entry(e: &Entry) -> AnyElement<'static> {

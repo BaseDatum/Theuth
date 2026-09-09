@@ -5,7 +5,8 @@
 use std::fmt::Display;
 
 use agent::{
-    Agents, Cancel, HistoryEntry, ListSessions, LoadSession, SendInput, SessionSummary, Steer,
+    Agents, Cancel, HistoryEntry, ListModels, ListSessions, LoadSession, ModelInfo, SendInput,
+    SessionSummary, SetModel, Steer,
 };
 use jsonrpsee::core::{RpcResult, SubscriptionResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
@@ -18,7 +19,10 @@ use kameo::message::Message;
 use kameo::reply::Reply;
 use runtime::{Runtime, SessionId};
 use tokio::sync::broadcast;
-use tools::{Approval, ApprovalId, Decision, ListTools, Resolve, ToolRegistry, ToolSpec};
+use tools::{
+    Approval, ApprovalId, Decision, ListServers, ListTools, Mcp, McpServer, PolicyAction, Resolve,
+    SetGate, ToolRegistry, ToolSpec,
+};
 
 use crate::bridge::Event;
 
@@ -54,6 +58,23 @@ pub trait Api {
     /// Answer a pending approval; `true` if it was still pending.
     #[method(name = "resolve_approval")]
     async fn resolve_approval(&self, id: ApprovalId, decision: Decision) -> RpcResult<bool>;
+    /// Every catalog model whose provider is configured.
+    #[method(name = "list_models")]
+    async fn list_models(&self) -> RpcResult<Vec<ModelInfo>>;
+    /// Switch `session` (and the default for new sessions) to `model`.
+    #[method(name = "set_model")]
+    async fn set_model(&self, session: Option<SessionId>, model: String) -> RpcResult<ModelInfo>;
+    /// MCP servers, their tools, and gates.
+    #[method(name = "list_mcp")]
+    async fn list_mcp(&self) -> RpcResult<Vec<McpServer>>;
+    /// Set (or clear with `None`) a server or tool gate; persists to `mcp/config.yaml`.
+    #[method(name = "set_mcp_gate")]
+    async fn set_mcp_gate(
+        &self,
+        server: String,
+        tool: Option<String>,
+        action: Option<PolicyAction>,
+    ) -> RpcResult<()>;
     /// Stop the whole process.
     #[method(name = "shutdown")]
     async fn shutdown(&self) -> RpcResult<()>;
@@ -133,6 +154,35 @@ impl ApiServer for Server {
 
     async fn resolve_approval(&self, id: ApprovalId, decision: Decision) -> RpcResult<bool> {
         ask::<Approval, _>(tools::APPROVAL_ACTOR, Resolve { id, decision }).await
+    }
+
+    async fn list_models(&self) -> RpcResult<Vec<ModelInfo>> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, ListModels).await
+    }
+
+    async fn set_model(&self, session: Option<SessionId>, model: String) -> RpcResult<ModelInfo> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, SetModel { session, model }).await
+    }
+
+    async fn list_mcp(&self) -> RpcResult<Vec<McpServer>> {
+        ask::<Mcp, _>(tools::MCP_ACTOR, ListServers).await
+    }
+
+    async fn set_mcp_gate(
+        &self,
+        server: String,
+        tool: Option<String>,
+        action: Option<PolicyAction>,
+    ) -> RpcResult<()> {
+        ask::<Mcp, _>(
+            tools::MCP_ACTOR,
+            SetGate {
+                server,
+                tool,
+                action,
+            },
+        )
+        .await
     }
 
     async fn shutdown(&self) -> RpcResult<()> {

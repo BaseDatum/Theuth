@@ -31,7 +31,7 @@ const DEFAULT_CONFIG: &str = "# wth configuration. Every plugin reads its own se
 # Env overrides: WTH_<SECTION>__<KEY>, e.g. WTH_RPC__LISTEN=127.0.0.1:7799
 
 agent:
-  model: claude-sonnet-4-5
+  model: anthropic/claude-sonnet-4-5
   # subagents:
   #   model: null              # default: agent.model
   #   max_depth: 1

@@ -33,3 +33,8 @@ run *ARGS:
 # Export TypeScript bindings for the RPC wire types.
 ts:
     cargo test -p rpc --features ts --quiet export_bindings
+
+# Refresh the bundled model catalog: models.dev api.json trimmed to the fields
+# `crates/models` reads and to providers genai can route (design doc 02 §1).
+models:
+    curl -sL https://models.dev/api.json | jq 'with_entries(select(.key | IN("google","openrouter","togetherai","fireworks-ai","moonshotai","alibaba","alibaba-cn","amazon-bedrock","opencode-go","github-copilot","google-vertex","google-vertex-anthropic","ollama-cloud","anthropic","openai","groq","xai","deepseek","cohere","zai","nebius","minimax","aihubmix"))) | map_values({id,name,env,models: (.models | map_values({id,name,limit,cost,reasoning,tool_call} | del(.cost | nulls)))})' > crates/models/data/models.json

@@ -14,6 +14,7 @@ use genai::chat::{
 };
 use kameo::actor::ActorRef;
 use kameo::message::{Context, Message};
+use models::Resolved;
 use runtime::{Runtime, SessionId, TurnId};
 use tokio_util::sync::CancellationToken;
 use tools::{Invoke, ListTools, REGISTRY_ACTOR, ToolRegistry};
@@ -33,6 +34,9 @@ pub struct UserInput(pub String);
 
 /// `tell`: abort the in-flight turn, if any.
 pub struct CancelTurn;
+
+/// `tell`: switch the model; takes effect on the next model call, mid-turn included.
+pub struct SwitchModel(pub Resolved);
 
 /// `tell` (from the turn task to its own session): the turn ended.
 pub struct TurnDone(Vec<ChatMessage>);
@@ -55,7 +59,10 @@ pub struct Session {
 struct Shared {
     id: SessionId,
     depth: u8,
-    model: String,
+    /// Current model plus the resolution error of the configured id, if any;
+    /// an error makes the next round stop instead of calling genai. Shared
+    /// with the running turn so [`SwitchModel`] applies mid-turn.
+    model: Arc<Mutex<(Resolved, Option<String>)>>,
     cfg: Arc<AgentConfig>,
     store: Store,
     client: Client,
@@ -67,11 +74,12 @@ struct Shared {
 impl Session {
     /// Build a session; `history` is empty for new sessions and the stored
     /// messages for resumed ones. `depth` ≥ `subagents.max_depth` hides `spawn_subagent`.
+    /// `model` is the resolved id and, when resolution failed, the message to surface.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: SessionId,
         depth: u8,
-        model: String,
+        model: (Resolved, Option<String>),
         history: Vec<ChatMessage>,
         cfg: Arc<AgentConfig>,
         store: Store,
@@ -84,7 +92,7 @@ impl Session {
             shared: Shared {
                 id,
                 depth,
-                model,
+                model: Arc::new(Mutex::new(model)),
                 cfg,
                 store,
                 client,
@@ -117,12 +125,21 @@ impl Session {
                 tracing::warn!(session = %self.shared.id, "set_title: {e:#}");
             }
         }
+        let model = self
+            .shared
+            .model
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .0
+            .id
+            .clone();
         self.shared
             .rt
             .publish(AgentEvent::TurnStarted {
                 session: self.shared.id,
                 turn,
                 text: inputs.join("\n"),
+                model,
             })
             .await;
         let task = Turn {
@@ -164,6 +181,18 @@ impl Message<CancelTurn> for Session {
         if let Some(c) = &self.inflight {
             c.cancel();
         }
+    }
+}
+
+impl Message<SwitchModel> for Session {
+    type Reply = ();
+
+    async fn handle(
+        &mut self,
+        SwitchModel(model): SwitchModel,
+        _: &mut Context<Self, Self::Reply>,
+    ) {
+        *self.shared.model.lock().unwrap_or_else(|p| p.into_inner()) = (model, None);
     }
 }
 
@@ -227,9 +256,10 @@ impl Turn {
                 .unwrap_or_default();
         }
         let mut usage = Usage::default();
+        let mut context = 0u32;
         let mut rounds = 0u32;
         let stop_reason = loop {
-            match self.round(&mut history, &mut usage).await {
+            match self.round(&mut history, &mut usage, &mut context).await {
                 Round::Tools => {
                     rounds += 1;
                     if rounds >= self.shared.cfg.max_tool_rounds {
@@ -252,13 +282,30 @@ impl Turn {
             turn: self.turn,
             stop_reason,
             usage,
+            context,
         })
         .await;
         history
     }
 
-    /// One model call plus its tool batch.
-    async fn round(&self, history: &mut Vec<ChatMessage>, usage: &mut Usage) -> Round {
+    /// One model call plus its tool batch. `context` receives this call's
+    /// prompt + completion tokens.
+    async fn round(
+        &self,
+        history: &mut Vec<ChatMessage>,
+        usage: &mut Usage,
+        context: &mut u32,
+    ) -> Round {
+        let (model, error) = self
+            .shared
+            .model
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        if let Some(e) = error {
+            self.error(format!("model: {e}")).await;
+            return Round::Stop("error".into());
+        }
         let Some(registry) = ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR)
             .ok()
             .flatten()
@@ -294,7 +341,7 @@ impl Turn {
 
         let stream = tokio::select! {
             _ = self.cancel.cancelled() => return Round::Stop("cancelled".into()),
-            r = self.shared.client.exec_chat_stream(&self.shared.model, req, Some(&opts)) => match r {
+            r = self.shared.client.exec_chat_stream(&model.genai, req, Some(&opts)) => match r {
                 Ok(r) => r.stream,
                 Err(e) => {
                     self.error(format!("model: {e}")).await;
@@ -346,8 +393,11 @@ impl Turn {
         };
 
         if let Some(u) = &end.captured_usage {
-            usage.prompt += u.prompt_tokens.unwrap_or(0).max(0) as u32;
-            usage.completion += u.completion_tokens.unwrap_or(0).max(0) as u32;
+            let prompt = u.prompt_tokens.unwrap_or(0).max(0) as u32;
+            let completion = u.completion_tokens.unwrap_or(0).max(0) as u32;
+            usage.prompt += prompt;
+            usage.completion += completion;
+            *context = prompt + completion;
         }
         let stop = end
             .captured_stop_reason

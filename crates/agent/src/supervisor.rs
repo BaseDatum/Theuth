@@ -14,18 +14,19 @@ use genai::resolver::AuthData;
 use genai::{Client, ModelIden};
 use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
+use models::{Catalog, Resolved};
 use runtime::{Runtime, SessionId};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, oneshot};
 use tokio::task::AbortHandle;
 use tools::{REGISTRY_ACTOR, RegisterTool, ToolRegistry};
 
-use crate::loop_::{CancelTurn, Session, UserInput, text_of};
+use crate::loop_::{CancelTurn, Session, SwitchModel, UserInput, text_of};
 use crate::peers::{SendMessageTool, SpawnSubagentTool};
 use crate::skills::{LoadSkillTool, Skills};
 use crate::store::Store;
 use crate::{
-    AGENT_ACTOR, AgentConfig, AgentEvent, Cancel, HistoryEntry, ListChildren, ListSessions,
-    LoadSession, SendInput, SessionSummary, Steer,
+    AGENT_ACTOR, AgentConfig, AgentEvent, Cancel, HistoryEntry, ListChildren, ListModels,
+    ListSessions, LoadSession, ModelInfo, SendInput, SessionSummary, SetModel, Steer,
 };
 
 /// The supervisor actor. Look up with `ActorRef::<Agents>::lookup(AGENT_ACTOR)`.
@@ -33,6 +34,11 @@ use crate::{
 pub struct Agents {
     rt: Runtime,
     cfg: Arc<AgentConfig>,
+    /// `cfg.model` as last set by [`SetModel`]; new sessions start on it.
+    default_model: String,
+    catalog: Arc<Catalog>,
+    /// `configured(genai_namespace)`: whether genai can authenticate it.
+    configured: Arc<dyn Fn(&str) -> bool + Send + Sync>,
     store: Store,
     skills: Arc<Skills>,
     client: Client,
@@ -118,6 +124,23 @@ const NOUNS: [&str; 8] = [
 ];
 
 impl Agents {
+    /// Resolve a config/row id; on failure keep it raw and carry the message
+    /// for the session's next round to surface.
+    fn resolve_model(&self, id: &str) -> (Resolved, Option<String>) {
+        match self.catalog.resolve(id, &*self.configured) {
+            Ok(r) => (r, None),
+            Err(e) => (
+                Resolved {
+                    id: id.to_owned(),
+                    genai: id.to_owned(),
+                    provider: None,
+                    model: None,
+                },
+                Some(e),
+            ),
+        }
+    }
+
     /// Live actor for `id`, resuming from the store (or creating the row) when needed.
     async fn session(
         &mut self,
@@ -130,18 +153,19 @@ impl Agents {
         }
         let (model, history, parent) = match self.store.session(id).await? {
             Some(row) => (
-                row.model,
+                self.resolve_model(&row.model),
                 self.store.messages(id).await?,
                 row.parent.zip(row.name),
             ),
             None => {
                 let sub = &self.cfg.subagents;
                 let model = match parent {
-                    Some(_) => sub.model.clone().unwrap_or_else(|| self.cfg.model.clone()),
-                    None => self.cfg.model.clone(),
+                    Some(_) => sub.model.as_deref().unwrap_or(&self.default_model),
+                    None => &self.default_model,
                 };
+                let model = self.resolve_model(model);
                 self.store
-                    .create_session(id, &model, parent.map(|p| p.0), parent.map(|p| p.1))
+                    .create_session(id, &model.0.id, parent.map(|p| p.0), parent.map(|p| p.1))
                     .await?;
                 (model, Vec::new(), parent.map(|(p, n)| (p, n.to_string())))
             }
@@ -534,6 +558,132 @@ impl Message<LoadSession> for Agents {
     }
 }
 
+impl Message<ListModels> for Agents {
+    type Reply = Vec<ModelInfo>;
+
+    async fn handle(
+        &mut self,
+        _: ListModels,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Vec<ModelInfo> {
+        let mut out: Vec<ModelInfo> = self
+            .catalog
+            .providers()
+            .filter(|p| (self.configured)(Catalog::adapter(&p.id)))
+            .flat_map(|p| p.models.values().map(|m| ModelInfo::new(&p.id, m)))
+            .collect();
+        out.sort_by(|a, b| (&a.provider, &a.id).cmp(&(&b.provider, &b.id)));
+        out
+    }
+}
+
+impl Message<SetModel> for Agents {
+    type Reply = Result<ModelInfo, String>;
+
+    async fn handle(
+        &mut self,
+        m: SetModel,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<ModelInfo, String> {
+        let resolved = self.catalog.resolve(&m.model, &*self.configured)?;
+        if let Some(id) = m.session {
+            if self
+                .store
+                .session(id)
+                .await
+                .map_err(|e| e.to_string())?
+                .is_none()
+            {
+                return Err(format!("unknown session {id}"));
+            }
+            let (_, actor) = self
+                .session(Some(id), None)
+                .await
+                .map_err(|e| format!("{e:#}"))?;
+            let _ = actor.tell(SwitchModel(resolved.clone())).await;
+            if let Err(e) = self.store.set_model(id, &resolved.id).await {
+                tracing::warn!(session = %id, "set_model: {e:#}");
+            }
+            self.rt
+                .publish(AgentEvent::ModelChanged {
+                    session: id,
+                    model: resolved.id.clone(),
+                })
+                .await;
+        }
+        self.default_model = resolved.id.clone();
+        // ponytail: writes <data_dir>/config.yaml; a `--config <other>` file is not written back.
+        if let Err(e) = write_default_model(&self.rt.data_dir.join("config.yaml"), &resolved.id) {
+            tracing::warn!("config.yaml: {e}");
+        }
+        Ok(ModelInfo::from(&resolved))
+    }
+}
+
+impl ModelInfo {
+    fn new(provider: &str, m: &models::Model) -> Self {
+        Self {
+            id: format!("{provider}/{}", m.id),
+            name: m.name.clone(),
+            provider: provider.to_owned(),
+            context: m.limit.context,
+            reasoning: m.reasoning,
+        }
+    }
+}
+
+impl From<&Resolved> for ModelInfo {
+    fn from(r: &Resolved) -> Self {
+        match (&r.provider, &r.model) {
+            (Some(p), Some(m)) => Self::new(p, m),
+            _ => Self {
+                id: r.id.clone(),
+                name: r.id.clone(),
+                provider: r.provider.clone().unwrap_or_default(),
+                context: 0,
+                reasoning: false,
+            },
+        }
+    }
+}
+
+/// Replace the value of the first `model:` line inside the `agent:` block of
+/// `path`, keeping everything else (comments included) byte-for-byte. No
+/// `agent:` block → one is appended; a block without `model:` gets the line
+/// inserted first. A missing file is created.
+pub fn write_default_model(path: &Path, id: &str) -> std::io::Result<()> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e),
+    };
+    let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
+    let Some(agent) = lines.iter().position(|l| l.trim_end() == "agent:") else {
+        if !lines.is_empty() {
+            lines.push(String::new());
+        }
+        lines.extend(["agent:".to_owned(), format!("  model: {id}")]);
+        return std::fs::write(path, lines.join("\n") + "\n");
+    };
+    let block = lines[agent + 1..]
+        .iter()
+        .position(|l| l.starts_with(|c: char| !c.is_whitespace()))
+        .map_or(lines.len(), |i| agent + 1 + i);
+    let indented =
+        |l: &str| l.starts_with(char::is_whitespace) && l.trim_start().starts_with("model:");
+    match lines[agent + 1..block].iter().position(|l| indented(l)) {
+        Some(i) => {
+            let line = &mut lines[agent + 1 + i];
+            let indent = line.len() - line.trim_start().len();
+            let rest = &line[indent + "model:".len()..];
+            let comment = rest.find(" #").map(|c| &rest[c..]).unwrap_or("");
+            *line = format!("{}model: {id}{comment}", &line[..indent]);
+        }
+        None => lines.insert(agent + 1, format!("  model: {id}")),
+    }
+    std::fs::write(path, lines.join("\n") + "\n")
+}
+
 /// Collapse stored messages into UI entries; a tool call and its response
 /// become one `Tool` entry.
 fn render(messages: &[ChatMessage]) -> Vec<HistoryEntry> {
@@ -572,11 +722,10 @@ fn render(messages: &[ChatMessage]) -> Vec<HistoryEntry> {
     out
 }
 
-/// genai client whose keys come from `<data_dir>/credentials.yaml`
-/// (`provider: key`), falling back to each provider's env var (design doc 01 §1.3).
-fn client(data_dir: &Path) -> anyhow::Result<Client> {
+/// `<data_dir>/credentials.yaml` as `genai_namespace: key` (design doc 01 §1.3).
+fn credentials(data_dir: &Path) -> HashMap<String, String> {
     let path = data_dir.join("credentials.yaml");
-    let creds: HashMap<String, String> = match std::fs::read_to_string(&path) {
+    match std::fs::read_to_string(&path) {
         Ok(s) => {
             #[cfg(unix)]
             {
@@ -595,7 +744,11 @@ fn client(data_dir: &Path) -> anyhow::Result<Client> {
                 .unwrap_or_default()
         }
         Err(_) => HashMap::new(),
-    };
+    }
+}
+
+/// genai client whose keys come from `creds`, falling back to each adapter's env var.
+fn client(creds: Arc<HashMap<String, String>>) -> anyhow::Result<Client> {
     Ok(Client::builder()
         .with_auth_resolver_fn(move |m: ModelIden| {
             Ok(match creds.get(m.adapter_kind.as_lower_str()) {
@@ -604,6 +757,18 @@ fn client(data_dir: &Path) -> anyhow::Result<Client> {
             })
         })
         .build()?)
+}
+
+/// The auth-resolver rule as a predicate over genai namespaces: a key in
+/// `creds`, the adapter's default env var set, or an adapter needing no key (`ollama`).
+fn configured(creds: Arc<HashMap<String, String>>) -> Arc<dyn Fn(&str) -> bool + Send + Sync> {
+    Arc::new(move |ns: &str| {
+        creds.contains_key(ns)
+            || AdapterKind::from_lower_str(ns).is_some_and(|k| {
+                k.default_key_env_name()
+                    .is_none_or(|env| std::env::var_os(env).is_some_and(|v| !v.is_empty()))
+            })
+    })
 }
 
 /// Open the store, spawn and register the supervisor.
@@ -615,13 +780,17 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
     let cfg = Arc::new(cfg);
     let store = Store::open(&rt.data_dir.join("sessions.sqlite")).await?;
     let skills = Arc::new(Skills::load(&rt.data_dir.join("skills")));
+    let creds = Arc::new(credentials(&rt.data_dir));
     let agents = Agents::spawn_with_mailbox(
         Agents {
             rt: rt.clone(),
             cfg: cfg.clone(),
+            default_model: cfg.model.clone(),
+            catalog: Arc::new(Catalog::load(&rt.data_dir)),
+            configured: configured(creds.clone()),
             store,
             skills: skills.clone(),
-            client: client(&rt.data_dir)?,
+            client: client(creds)?,
             sessions: HashMap::new(),
             running: HashSet::new(),
             waiters: HashMap::new(),
@@ -655,4 +824,42 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         );
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::write_default_model;
+
+    #[test]
+    fn write_back_edits_in_place_or_appends() {
+        let dir = std::env::temp_dir().join(format!("wth-wb-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.yaml");
+
+        let before = "# header\nrpc:\n  model: not-this\nagent:\n  # keep me\n  model: old # inline\n  # subagents:\n  #   model: null\nlog:\n  level: info\n";
+        std::fs::write(&path, before).unwrap();
+        write_default_model(&path, "anthropic/claude-haiku-4-5").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            before.replace(
+                "model: old # inline",
+                "model: anthropic/claude-haiku-4-5 # inline"
+            )
+        );
+
+        std::fs::write(&path, "log:\n  level: info").unwrap();
+        write_default_model(&path, "x/y").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "log:\n  level: info\n\nagent:\n  model: x/y\n"
+        );
+
+        std::fs::write(&path, "agent:\n  max_tool_rounds: 4\n").unwrap();
+        write_default_model(&path, "x/y").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "agent:\n  model: x/y\n  max_tool_rounds: 4\n"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

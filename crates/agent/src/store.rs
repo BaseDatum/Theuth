@@ -101,6 +101,16 @@ impl Store {
         Ok(())
     }
 
+    /// Record a model switch (canonical `provider/model` id).
+    pub async fn set_model(&self, id: SessionId, model: &str) -> anyhow::Result<()> {
+        sqlx::query("UPDATE sessions SET model = ? WHERE id = ?")
+            .bind(model)
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     /// Append one message; `seq` is assigned as max+1 within the session.
     pub async fn append(&self, id: SessionId, message: &ChatMessage) -> anyhow::Result<()> {
         let body = serde_json::to_string(message)?;

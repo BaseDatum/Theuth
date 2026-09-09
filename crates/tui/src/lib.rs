@@ -50,7 +50,8 @@ impl runtime::Plugin for TuiPlugin {
         rt.subscribe::<Bridge, ApprovalResolved>(&bridge).await;
         tokio::spawn(run_commands(commands_rx, events_tx));
 
-        let model_name = rt.section::<AgentConfig>("agent").unwrap_or_default().model;
+        let default_model = rt.section::<AgentConfig>("agent").unwrap_or_default().model;
+        let catalog = std::sync::Arc::new(models::Catalog::load(&rt.data_dir));
         let shutdown = rt.shutdown.clone();
         let resume = self.resume;
         tokio::spawn(async move {
@@ -58,7 +59,8 @@ impl runtime::Plugin for TuiPlugin {
                 let links = ui::Links {
                     events: Some(events_rx),
                     commands: commands_tx,
-                    model_name,
+                    default_model,
+                    catalog,
                     resume,
                 };
                 if let Err(e) = ui::run(links).await {
@@ -133,6 +135,30 @@ async fn execute(cmd: Command, tx: &UnboundedSender<UiEvent>) -> anyhow::Result<
         Command::Load(session) => {
             UiEvent::History(session, agent()?.ask(agent::LoadSession { session }).await?)
         }
+        Command::ListModels => UiEvent::Models(agent()?.ask(agent::ListModels).await?),
+        Command::SetModel { session, model } => UiEvent::ModelSet(
+            agent()?
+                .ask(agent::SetModel { session, model })
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?,
+        ),
+        Command::ListMcp => UiEvent::Mcp(mcp()?.ask(tools::ListServers).await?),
+        Command::SetGate {
+            server,
+            tool,
+            action,
+        } => {
+            let mcp = mcp()?;
+            mcp.ask(tools::SetGate {
+                server,
+                tool,
+                action,
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+            // Re-list here, not from the UI: commands run concurrently.
+            UiEvent::Mcp(mcp.ask(tools::ListServers).await?)
+        }
     };
     let _ = tx.send(reply);
     Ok(())
@@ -140,6 +166,10 @@ async fn execute(cmd: Command, tx: &UnboundedSender<UiEvent>) -> anyhow::Result<
 
 fn agent() -> anyhow::Result<ActorRef<Agents>> {
     ActorRef::<Agents>::lookup(AGENT_ACTOR)?.context("agent actor is not running")
+}
+
+fn mcp() -> anyhow::Result<ActorRef<tools::Mcp>> {
+    ActorRef::<tools::Mcp>::lookup(tools::MCP_ACTOR)?.context("mcp actor is not running")
 }
 
 /// Non-TTY fallback: print what streams in, read lines from stdin. `y`/`n`
@@ -212,10 +242,13 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
                 usage.prompt, usage.completion
             )
         }
+        UiEvent::Agent(AgentEvent::ModelChanged { model, .. }) => writeln!(out, "model → {model}"),
         UiEvent::Agent(AgentEvent::Error { message, .. }) | UiEvent::Error(message) => {
             writeln!(out, "error: {message}")
         }
         UiEvent::Agent(_) => Ok(()),
+        UiEvent::ModelSet(info) => writeln!(out, "model → {}", info.id),
+        UiEvent::Models(_) | UiEvent::Mcp(_) => writeln!(out, "menus need a TTY"),
         UiEvent::Approval(req) => writeln!(
             out,
             "approve {} ({:?}){}: {}? [y/n]",

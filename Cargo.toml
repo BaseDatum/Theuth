@@ -9,6 +9,7 @@ publish = false
 
 [workspace.dependencies]
 runtime = { path = "crates/runtime" }
+models = { path = "crates/models" }
 tools = { path = "crates/tools" }
 agent = { path = "crates/agent" }
 rpc = { path = "crates/rpc" }

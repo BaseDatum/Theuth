@@ -4,7 +4,8 @@
 //!
 //! Public surface:
 //! - commands on the `"agent"` actor ([`Agents`]): [`SendInput`], [`Steer`],
-//!   [`Cancel`], [`ListSessions`], [`LoadSession`], [`ListChildren`]
+//!   [`Cancel`], [`ListSessions`], [`LoadSession`], [`ListChildren`],
+//!   [`ListModels`], [`SetModel`]
 //! - event: [`AgentEvent`]
 
 use std::sync::Arc;
@@ -67,6 +68,38 @@ pub struct LoadSession {
 pub struct ListChildren {
     /// Owning session.
     pub parent: SessionId,
+}
+
+/// `ask` → `Vec<ModelInfo>`: every catalog model whose provider is configured,
+/// sorted by provider then id.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct ListModels;
+
+/// `ask` → `Result<ModelInfo, String>`. Resolves `model` (design doc 02 §1);
+/// switches `session` (if given) for its next model call, makes the id the
+/// default for new sessions and writes it back to `<data_dir>/config.yaml`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetModel {
+    /// Session to switch; `None` changes only the default.
+    pub session: Option<SessionId>,
+    /// `provider/model`, or a bare model id resolved against configured providers.
+    pub model: String,
+}
+
+/// One selectable model.
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct ModelInfo {
+    /// `provider/model`.
+    pub id: String,
+    /// Display name.
+    pub name: String,
+    /// models.dev provider id.
+    pub provider: String,
+    /// Context window in tokens; 0 when unknown.
+    pub context: u32,
+    /// Supports reasoning.
+    pub reasoning: bool,
 }
 
 /// One row of the session list.
@@ -139,6 +172,8 @@ pub enum AgentEvent {
         turn: TurnId,
         /// The user text (echo for UIs that did not send it).
         text: String,
+        /// Canonical model id the turn runs on.
+        model: String,
     },
     /// Streamed assistant text.
     TextDelta {
@@ -194,6 +229,8 @@ pub enum AgentEvent {
         stop_reason: String,
         /// Token usage summed over the turn's model calls.
         usage: Usage,
+        /// Prompt + completion tokens of the last model call: what the window holds now.
+        context: u32,
     },
     /// Non-fatal or fatal error text for the UI.
     Error {
@@ -223,6 +260,13 @@ pub enum AgentEvent {
         /// Delivered text without its wrapper.
         text: String,
     },
+    /// The session's model was switched (takes effect on its next model call).
+    ModelChanged {
+        /// Session.
+        session: SessionId,
+        /// Canonical model id.
+        model: String,
+    },
 }
 
 impl AgentEvent {
@@ -236,6 +280,7 @@ impl AgentEvent {
             | Self::ToolCallFinished { session, .. }
             | Self::TurnFinished { session, .. }
             | Self::MessageDelivered { session, .. }
+            | Self::ModelChanged { session, .. }
             | Self::Error { session, .. } => *session,
             Self::SubagentSpawned { child, .. } => *child,
         }
@@ -246,7 +291,8 @@ impl AgentEvent {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AgentConfig {
-    /// genai model name (`claude-sonnet-4-5`, `gpt-5-mini`, `ollama::llama3`, …).
+    /// Model id, `provider/model` (`anthropic/claude-sonnet-4-5`) or bare
+    /// (`claude-sonnet-4-5`, resolved against configured providers).
     pub model: String,
     /// Prepended to the built-in system prompt.
     pub system_prompt: String,
@@ -261,7 +307,7 @@ pub struct AgentConfig {
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
-            model: "claude-sonnet-4-5".into(),
+            model: "anthropic/claude-sonnet-4-5".into(),
             system_prompt: String::new(),
             max_tool_rounds: 32,
             max_tool_output_chars: 32_000,

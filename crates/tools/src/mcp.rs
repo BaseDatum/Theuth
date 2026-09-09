@@ -3,24 +3,25 @@
 //! name (no prefix). The directory is watched and reconciled on change;
 //! `<data_dir>/mcp/config.yaml` gates tools per server (design doc 01 §1.4).
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use futures::future::BoxFuture;
-use kameo::actor::ActorRef;
+use kameo::actor::{ActorRef, Spawn};
+use kameo::message::{Context, Message};
 use notify::Watcher;
 use rmcp::model::{CallToolRequestParams, ContentBlock};
 use rmcp::service::{RoleClient, RunningService, ServiceExt};
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::transport::{StreamableHttpClientTransport, TokioChildProcess};
 use runtime::Runtime;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::registry::{ListTools, RegisterTool, ToolRegistry, UnregisterTool};
-use crate::{ErasedTool, PolicyAction, Risk, ToolCx, ToolOutput, ToolSpec};
+use crate::{ErasedTool, MCP_ACTOR, PolicyAction, Risk, ToolCx, ToolOutput, ToolSpec};
 
 /// How to reach a server; the normalised form of one file entry.
 #[derive(Clone, Debug, PartialEq)]
@@ -131,17 +132,21 @@ fn parse_file(stem: &str, json: &Value) -> Vec<(String, ServerSpec)> {
 }
 
 /// `<data_dir>/mcp/config.yaml`: per-server and per-tool approval actions.
-#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+/// Machine-written by [`SetGate`] (comments are not preserved); `BTreeMap`
+/// keeps the output stable.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 struct Gates {
-    servers: HashMap<String, ServerGate>,
+    servers: BTreeMap<String, ServerGate>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 struct ServerGate {
+    #[serde(skip_serializing_if = "Option::is_none")]
     gate: Option<PolicyAction>,
-    tools: HashMap<String, PolicyAction>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    tools: BTreeMap<String, PolicyAction>,
 }
 
 impl Gates {
@@ -158,6 +163,28 @@ impl Gates {
             .get(server)
             .and_then(|g| g.tools.get(tool).copied().or(g.gate))
             .unwrap_or(PolicyAction::Allow)
+    }
+
+    /// The tool's own line, ignoring inheritance.
+    fn own(&self, server: &str, tool: &str) -> Option<PolicyAction> {
+        self.servers.get(server)?.tools.get(tool).copied()
+    }
+
+    /// Set or clear (`None`) a server or tool line; an emptied server entry is dropped.
+    fn set(&mut self, server: &str, tool: Option<&str>, action: Option<PolicyAction>) {
+        let g = self.servers.entry(server.to_owned()).or_default();
+        match (tool, action) {
+            (None, a) => g.gate = a,
+            (Some(t), Some(a)) => {
+                g.tools.insert(t.to_owned(), a);
+            }
+            (Some(t), None) => {
+                g.tools.remove(t);
+            }
+        }
+        if g.gate.is_none() && g.tools.is_empty() {
+            self.servers.remove(server);
+        }
     }
 }
 
@@ -248,12 +275,173 @@ struct State {
     natives: HashSet<String>,
 }
 
-async fn connect(spec: &ServerSpec) -> anyhow::Result<Service> {
+/// The MCP actor. Look up with `ActorRef::<Mcp>::lookup(MCP_ACTOR)`.
+#[derive(kameo::Actor)]
+pub struct Mcp {
+    state: State,
+    dir: PathBuf,
+    registry: ActorRef<ToolRegistry>,
+}
+
+/// `tell` from the watcher: re-read `<data_dir>/mcp` and apply.
+struct Reconcile;
+
+/// `ask` → `Vec<McpServer>`: every server the files want, sorted by name.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct ListServers;
+
+/// `ask` → `Result<(), String>`: set (or clear with `action: None`) a server
+/// or tool gate, rewrite `config.yaml`, reconcile now.
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct SetGate {
+    /// Server name (file stem or entry key).
+    pub server: String,
+    /// `None` = the server line.
+    pub tool: Option<String>,
+    /// `None` removes the line.
+    pub action: Option<PolicyAction>,
+}
+
+/// One server as the files want it.
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct McpServer {
+    /// Server name.
+    pub name: String,
+    /// False when deny-gated or connect failed; then `tools` is empty.
+    pub connected: bool,
+    /// Server-level gate (default allow).
+    pub gate: PolicyAction,
+    /// Remote tools, sorted by name.
+    pub tools: Vec<McpToolInfo>,
+}
+
+/// One remote tool of a connected server.
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct McpToolInfo {
+    /// Remote tool name (also the registered name).
+    pub name: String,
+    /// Remote description.
+    pub description: String,
+    /// The tool's own override, if any.
+    pub gate: Option<PolicyAction>,
+    /// What the gate does after inheritance.
+    pub effective: PolicyAction,
+    /// False when denied or hidden by a name clash.
+    pub registered: bool,
+}
+
+impl Message<Reconcile> for Mcp {
+    type Reply = ();
+
+    async fn handle(&mut self, _: Reconcile, _: &mut Context<Self, Self::Reply>) {
+        reconcile(&mut self.state, &self.dir, &self.registry).await;
+    }
+}
+
+impl Message<ListServers> for Mcp {
+    type Reply = Vec<McpServer>;
+
+    async fn handle(
+        &mut self,
+        _: ListServers,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Vec<McpServer> {
+        let state = &self.state;
+        let names: BTreeSet<String> = desired(&self.dir)
+            .into_keys()
+            .chain(state.running.keys().cloned())
+            .collect();
+        names
+            .into_iter()
+            .map(|name| {
+                let running = state.running.get(&name);
+                let mut tools: Vec<McpToolInfo> = running
+                    .map(|r| {
+                        r.remote
+                            .iter()
+                            .map(|t| {
+                                let tool = t.name.to_string();
+                                McpToolInfo {
+                                    gate: state.gates.own(&name, &tool),
+                                    effective: state.gates.for_tool(&name, &tool),
+                                    registered: r.tools.contains(&tool),
+                                    description: t
+                                        .description
+                                        .as_deref()
+                                        .unwrap_or_default()
+                                        .to_owned(),
+                                    name: tool,
+                                }
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                tools.sort_by(|a, b| a.name.cmp(&b.name));
+                McpServer {
+                    connected: running.is_some(),
+                    gate: state.gates.for_server(&name),
+                    tools,
+                    name,
+                }
+            })
+            .collect()
+    }
+}
+
+impl Message<SetGate> for Mcp {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        m: SetGate,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<(), String> {
+        if !self.state.running.contains_key(&m.server)
+            && !desired(&self.dir).contains_key(&m.server)
+        {
+            return Err(format!("unknown mcp server `{}`", m.server));
+        }
+        // Edit a copy and let `reconcile` load it from the file: it diffs the
+        // file against `state.gates` to decide whether to re-register.
+        let mut gates = self.state.gates.clone();
+        gates.set(&m.server, m.tool.as_deref(), m.action);
+        let text = serde_yaml::to_string(&gates).map_err(|e| e.to_string())?;
+        // Write-then-rename so the watcher never reads a half file.
+        let path = self.dir.join("config.yaml");
+        let tmp = self.dir.join("config.yaml.tmp");
+        std::fs::write(&tmp, text)
+            .and_then(|()| std::fs::rename(&tmp, &path))
+            .map_err(|e| format!("write {}: {e}", path.display()))?;
+        reconcile(&mut self.state, &self.dir, &self.registry).await;
+        Ok(())
+    }
+}
+
+async fn connect(name: &str, spec: &ServerSpec) -> anyhow::Result<Service> {
     let service = match &spec.transport {
         Transport::Stdio { command, args, env } => {
             let mut cmd = tokio::process::Command::new(command);
             cmd.args(args).envs(env);
-            ().serve(TokioChildProcess::new(cmd)?).await?
+            // The child must not touch our terminal: an inherited tty on stderr
+            // leaks its banners into the TUI and node resets termios when it dies.
+            let (transport, stderr) = TokioChildProcess::builder(cmd)
+                .stderr(std::process::Stdio::piped())
+                .spawn()?;
+            if let Some(stderr) = stderr {
+                let server = name.to_owned();
+                tokio::spawn(async move {
+                    use tokio::io::AsyncBufReadExt;
+                    let mut lines = tokio::io::BufReader::new(stderr).lines();
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        tracing::info!(server = %server, "mcp stderr: {line}");
+                    }
+                });
+            }
+            ().serve(transport).await?
         }
         Transport::Http { url, headers } => {
             let mut custom = HashMap::new();
@@ -342,7 +530,7 @@ async fn reconcile(state: &mut State, dir: &Path, registry: &ActorRef<ToolRegist
         {
             continue;
         }
-        match connect(&spec).await {
+        match connect(&name, &spec).await {
             Ok(service) => match service.list_all_tools().await {
                 Ok(remote) => {
                     tracing::info!(server = %name, count = remote.len(), "mcp server connected");
@@ -421,9 +609,9 @@ async fn reconcile(state: &mut State, dir: &Path, registry: &ActorRef<ToolRegist
     }
 }
 
-/// Initial reconcile of `<data_dir>/mcp`, then watch it for changes.
-/// Returns after the first reconcile so the tools exist when the plugin
-/// reports started.
+/// Spawn the [`Mcp`] actor, run the initial reconcile of `<data_dir>/mcp`,
+/// then watch the directory. Returns after the first reconcile so the tools
+/// exist when the plugin reports started.
 pub async fn start(rt: &Runtime, registry: ActorRef<ToolRegistry>) -> anyhow::Result<()> {
     let dir = rt.data_dir.join("mcp");
     std::fs::create_dir_all(&dir)?;
@@ -433,11 +621,19 @@ pub async fn start(rt: &Runtime, registry: ActorRef<ToolRegistry>) -> anyhow::Re
         .into_iter()
         .map(|s| s.name)
         .collect();
-    let mut state = State {
-        natives,
-        ..State::default()
-    };
-    reconcile(&mut state, &dir, &registry).await;
+    let mcp = Mcp::spawn_with_mailbox(
+        Mcp {
+            state: State {
+                natives,
+                ..State::default()
+            },
+            dir: dir.clone(),
+            registry,
+        },
+        runtime::subscriber_mailbox(),
+    );
+    mcp.register(MCP_ACTOR)?;
+    mcp.ask(Reconcile).await?;
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
@@ -453,7 +649,9 @@ pub async fn start(rt: &Runtime, registry: ActorRef<ToolRegistry>) -> anyhow::Re
             // reconnect storm ever shows up.
             tokio::time::sleep(Duration::from_millis(300)).await;
             while rx.try_recv().is_ok() {}
-            reconcile(&mut state, &dir, &registry).await;
+            if mcp.tell(Reconcile).await.is_err() {
+                break;
+            }
         }
     });
     Ok(())
@@ -582,5 +780,28 @@ mod tests {
         assert_eq!(g.for_server("f"), PolicyAction::Deny);
         assert_eq!(g.for_tool("unknown", "x"), PolicyAction::Allow);
         assert_eq!(serde_yaml::from_str::<Option<Gates>>("").unwrap(), None);
+    }
+
+    #[test]
+    fn gates_set_roundtrip_drops_empty() {
+        let mut g = Gates::default();
+        g.set("e", Some("echo"), Some(PolicyAction::Deny));
+        g.set("e", None, Some(PolicyAction::Ask));
+        g.set("f", None, Some(PolicyAction::Deny));
+        let back: Gates = serde_yaml::from_str(&serde_yaml::to_string(&g).unwrap()).unwrap();
+        assert_eq!(back, g);
+        assert_eq!(back.own("e", "echo"), Some(PolicyAction::Deny));
+        assert_eq!(back.for_tool("e", "other"), PolicyAction::Ask);
+
+        g.set("e", None, None);
+        assert_eq!(
+            g.for_tool("e", "echo"),
+            PolicyAction::Deny,
+            "tool override survives"
+        );
+        g.set("e", Some("echo"), None);
+        g.set("f", None, None);
+        assert!(g.servers.is_empty(), "emptied entries dropped: {g:?}");
+        assert_eq!(serde_yaml::to_string(&g).unwrap(), "servers: {}\n");
     }
 }
