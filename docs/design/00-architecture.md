@@ -303,7 +303,10 @@ the alternate screen and pops it on quit. Mouse capture is off
 copy-on-select copies on release without any code here. The cost is no
 wheel scrolling of the transcript (never implemented).
 
-Transcript shapes: human turns are a full-width slab (`AnsiValue(236)`
+Transcript shapes, so a glance tells the kinds apart: tool calls are a
+rounded card in cyan (`⚙ name`, described args, `✓`/`✗` result line); peer
+messages a rounded card in magenta; reasoning dim italic; assistant markdown
+unboxed on the default background. Human turns are a full-width slab (`AnsiValue(236)`
 background, `AnsiValue(117)` text, no prompt character) so they read apart
 from everything the harness prints. Peer injections (`<subagent_result>`,
 `<message>`) never echo raw: `tui::model::injected` recognises the wrapper

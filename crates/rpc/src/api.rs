@@ -5,7 +5,7 @@
 use std::fmt::Display;
 
 use agent::{
-    Agents, Cancel, HistoryEntry, ListModels, ListSessions, LoadSession, ModelInfo, SendInput,
+    Agents, Cancel, ListModels, ListSessions, LoadSession, Loaded, ModelInfo, SendInput,
     SessionSummary, SetModel, Steer,
 };
 use jsonrpsee::core::{RpcResult, SubscriptionResult, async_trait};
@@ -49,9 +49,9 @@ pub trait Api {
     /// Subagent sessions of `parent`, newest first, with their peer names.
     #[method(name = "list_children")]
     async fn list_children(&self, parent: SessionId) -> RpcResult<Vec<SessionSummary>>;
-    /// Rendered history of one session.
+    /// Rendered history of one session plus whether a turn is in flight.
     #[method(name = "load_session")]
-    async fn load_session(&self, session: SessionId) -> RpcResult<Vec<HistoryEntry>>;
+    async fn load_session(&self, session: SessionId) -> RpcResult<Loaded>;
     /// Every registered tool.
     #[method(name = "list_tools")]
     async fn list_tools(&self) -> RpcResult<Vec<ToolSpec>>;
@@ -151,7 +151,7 @@ impl ApiServer for Server {
         ask::<Agents, _>(agent::AGENT_ACTOR, agent::ListChildren { parent }).await
     }
 
-    async fn load_session(&self, session: SessionId) -> RpcResult<Vec<HistoryEntry>> {
+    async fn load_session(&self, session: SessionId) -> RpcResult<Loaded> {
         ask::<Agents, _>(agent::AGENT_ACTOR, LoadSession { session }).await
     }
 

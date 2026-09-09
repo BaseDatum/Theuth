@@ -20,13 +20,13 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore, oneshot};
 use tokio::task::AbortHandle;
 use tools::{REGISTRY_ACTOR, RegisterTool, SetParent, ToolRegistry};
 
-use crate::loop_::{CancelTurn, Session, SwitchModel, UserInput, text_of};
+use crate::loop_::{CancelTurn, IsRunning, Session, SwitchModel, UserInput, text_of};
 use crate::peers::{SendMessageTool, SpawnSubagentTool};
 use crate::skills::{LoadSkillTool, Skills};
 use crate::store::Store;
 use crate::{
     AGENT_ACTOR, AgentConfig, AgentEvent, Cancel, HistoryEntry, ListChildren, ListModels,
-    ListSessions, LoadSession, ModelInfo, SendInput, SessionSummary, SetModel, Steer,
+    ListSessions, LoadSession, Loaded, ModelInfo, SendInput, SessionSummary, SetModel, Steer,
 };
 
 /// The supervisor actor. Look up with `ActorRef::<Agents>::lookup(AGENT_ACTOR)`.
@@ -552,20 +552,21 @@ impl Message<ListSessions> for Agents {
 }
 
 impl Message<LoadSession> for Agents {
-    type Reply = Vec<HistoryEntry>;
+    type Reply = Loaded;
 
-    async fn handle(
-        &mut self,
-        m: LoadSession,
-        _: &mut Context<Self, Self::Reply>,
-    ) -> Vec<HistoryEntry> {
-        match self.store.messages(m.session).await {
+    async fn handle(&mut self, m: LoadSession, _: &mut Context<Self, Self::Reply>) -> Loaded {
+        let history = match self.store.messages(m.session).await {
             Ok(messages) => render(&messages),
             Err(e) => {
                 tracing::error!(session = %m.session, "load session: {e:#}");
                 Vec::new()
             }
-        }
+        };
+        let running = match self.sessions.get(&m.session) {
+            Some(live) => live.actor.ask(IsRunning).await.unwrap_or(false),
+            None => false,
+        };
+        Loaded { history, running }
     }
 }
 

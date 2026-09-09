@@ -290,7 +290,7 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         UiEvent::Children(list) => list
             .iter()
             .try_for_each(|s| writeln!(out, "{}  {}", s.name.as_deref().unwrap_or_default(), s.id)),
-        UiEvent::History(_, history) => history.iter().try_for_each(|h| match h {
+        UiEvent::History(_, loaded) => loaded.history.iter().try_for_each(|h| match h {
             agent::HistoryEntry::User { text } => writeln!(out, "> {text}"),
             agent::HistoryEntry::Assistant { text } => writeln!(out, "{text}"),
             agent::HistoryEntry::Tool {

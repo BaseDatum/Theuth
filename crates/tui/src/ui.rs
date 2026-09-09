@@ -9,7 +9,7 @@ use tools::{Decision, Risk};
 
 use crate::model::{
     Command, Entry, Level, Menu, MenuKey, Model, Row, UiEvent, describe, gate_name, k, result_line,
-    slash_matches, window,
+    short, slash_matches, window,
 };
 
 /// Channels handed to the app through iocraft context (owned so the receiver
@@ -34,6 +34,10 @@ const MENU_ROWS: usize = 10;
 /// Human turns: light text on a dark slab.
 const USER_BG: Color = Color::AnsiValue(236);
 const USER_FG: Color = Color::AnsiValue(117);
+/// Tool call cards.
+const TOOL: Color = Color::Cyan;
+/// Peer (subagent / parent) message cards.
+const PEER: Color = Color::Magenta;
 
 /// Run the fullscreen UI until the user quits. Mouse capture stays off so
 /// the terminal's own selection (and copy-on-select) keeps working.
@@ -174,8 +178,11 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     });
     // Approval on top; otherwise whichever menu is open.
     let modal = modal.or_else(|| menu(&m, &input.read()));
-    let has_focus =
-        m.approval().is_none() && !matches!(m.menu, Some(Menu::Models { .. } | Menu::Mcp { .. }));
+    let has_focus = m.approval().is_none()
+        && !matches!(
+            m.menu,
+            Some(Menu::Models { .. } | Menu::Sessions { .. } | Menu::Mcp { .. })
+        );
     let (header, level) = m.header(&catalog);
     let header_color = match level {
         Level::Normal => Color::DarkGrey,
@@ -240,6 +247,27 @@ fn menu(m: &Model, input: &str) -> Option<AnyElement<'static>> {
                 .collect(),
             *cursor,
         ),
+        Menu::Sessions { items, cursor } => (
+            "sessions  ⏎ switch  esc close  (the one you leave keeps running)".to_owned(),
+            items
+                .iter()
+                .map(|s| {
+                    // ponytail: fixed 40-char title; pass the terminal width if it grates.
+                    let title: String = s.title.chars().take(32).collect();
+                    format!(
+                        "{} {}  {}  {:<20} {}",
+                        if Some(s.id) == m.session { "●" } else { " " },
+                        short(s.id),
+                        s.created_at
+                            .with_timezone(&chrono::Local)
+                            .format("%m-%d %H:%M"),
+                        s.model.rsplit('/').next().unwrap_or(&s.model),
+                        title
+                    )
+                })
+                .collect(),
+            *cursor,
+        ),
         Menu::Mcp {
             cursor, expanded, ..
         } => (
@@ -295,6 +323,7 @@ fn menu(m: &Model, input: &str) -> Option<AnyElement<'static>> {
                     let here = shown.start + i == cursor;
                     element!(Text(
                         content: format!("{} {row}", if here { "›" } else { " " }),
+                        wrap: TextWrap::NoWrap,
                         color: if here { Color::White } else { Color::Grey },
                         weight: if here { Weight::Bold } else { Weight::Normal },
                     ))
@@ -314,6 +343,7 @@ fn entry(e: &Entry) -> AnyElement<'static> {
             }
         }
         .into_any(),
+        // Peer traffic: a card in the peer colour, body hidden until Ctrl+O.
         Entry::Delivered {
             from,
             text,
@@ -322,14 +352,14 @@ fn entry(e: &Entry) -> AnyElement<'static> {
             let v = text.view();
             let lines = v.lines().count();
             let header = if *expanded {
-                format!("⟵ {from}  (ctrl+o collapses)")
+                format!("⟵ {from}   ctrl+o collapses")
             } else {
-                format!("⟵ {from}  ({lines} lines, ctrl+o expands)")
+                format!("⟵ {from}   {lines} lines · ctrl+o expands")
             };
             element! {
-                View(flex_direction: FlexDirection::Column) {
-                    Text(content: header, color: Color::DarkGrey, italic: true)
-                    #(expanded.then(|| element!(View(flex_direction: FlexDirection::Column, padding_left: 2) {
+                View(flex_direction: FlexDirection::Column, border_style: BorderStyle::Round, border_color: PEER, padding_left: 1, padding_right: 1, margin_top: 1) {
+                    Text(content: header, color: PEER, weight: Weight::Bold)
+                    #(expanded.then(|| element!(View(flex_direction: FlexDirection::Column, margin_top: 1) {
                         #(v.lines().map(line))
                     })))
                 }
@@ -355,24 +385,21 @@ fn entry(e: &Entry) -> AnyElement<'static> {
             };
             element!(Text(content: shown, color: Color::DarkGrey, italic: true, wrap: TextWrap::Wrap)).into_any()
         }
+        // Tool calls: a card in the tool colour; name, arguments, then result.
         Entry::Tool {
             name,
             args,
             result,
             ..
         } => element! {
-            View(flex_direction: FlexDirection::Column) {
-                Text(content: format!("⚙ {name}"), color: Color::Cyan, weight: Weight::Bold)
-                #(args.iter().map(|l| element!(View(padding_left: 2) {
-                    Text(content: l.clone(), color: Color::Cyan, wrap: TextWrap::Wrap)
-                })))
-                #(result.as_ref().map(|(output, is_error)| element!(View(padding_left: 2) {
-                    Text(
-                        content: format!("{} {}", if *is_error { "✗" } else { "✓" }, result_line(output)),
-                        color: if *is_error { Color::Red } else { Color::Green },
-                        wrap: TextWrap::Wrap,
-                    )
-                })))
+            View(flex_direction: FlexDirection::Column, border_style: BorderStyle::Round, border_color: TOOL, padding_left: 1, padding_right: 1, margin_top: 1, margin_bottom: 1) {
+                Text(content: format!("⚙ {name}"), color: TOOL, weight: Weight::Bold)
+                #(args.iter().map(|l| element!(Text(content: l.clone(), wrap: TextWrap::Wrap))))
+                #(result.as_ref().map(|(output, is_error)| element!(Text(
+                    content: format!("{} {}", if *is_error { "✗" } else { "✓" }, result_line(output)),
+                    color: if *is_error { Color::Red } else { Color::Green },
+                    wrap: TextWrap::Wrap,
+                ))))
             }
         }
         .into_any(),

@@ -4,7 +4,7 @@
 use std::collections::{BTreeSet, VecDeque};
 use std::ops::Range;
 
-use agent::{AgentEvent, HistoryEntry, ModelInfo, SessionSummary, Usage};
+use agent::{AgentEvent, HistoryEntry, Loaded, ModelInfo, SessionSummary, Usage};
 use iocraft::KeyCode;
 use models::Catalog;
 use runtime::SessionId;
@@ -28,7 +28,7 @@ pub enum UiEvent {
     /// Reply to [`Command::ListChildren`]: the focused root's subagents.
     Children(Vec<SessionSummary>),
     /// Reply to [`Command::Load`].
-    History(SessionId, Vec<HistoryEntry>),
+    History(SessionId, Loaded),
     /// Reply to [`Command::Send`]: the session the turn went to.
     SessionCreated(SessionId),
     /// Reply to [`Command::ListModels`].
@@ -180,7 +180,7 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ("/mcp", "", "MCP servers and tool gates"),
     ("/agents", "", "list this session's subagents"),
     ("/focus", "<name>", "show a subagent's transcript"),
-    ("/sessions", "", "list sessions"),
+    ("/sessions", "", "switch session (picker)"),
     ("/resume", "<id>", "open a session"),
     ("/new", "", "start a new session"),
     (
@@ -270,6 +270,13 @@ pub enum Menu {
         /// Substring typed inline (matched on id and name).
         filter: String,
         /// Highlighted filtered row.
+        cursor: usize,
+    },
+    /// `/sessions` picker.
+    Sessions {
+        /// Top-level sessions, newest first.
+        items: Vec<SessionSummary>,
+        /// Highlighted row.
         cursor: usize,
     },
     /// `/mcp` gates.
@@ -468,17 +475,16 @@ impl Model {
             }
             UiEvent::Resolved(r) => self.approvals.retain(|a| a.id != r.id),
             UiEvent::Sessions(list) => {
-                if list.is_empty() {
+                let items: Vec<SessionSummary> =
+                    list.into_iter().filter(|s| s.parent.is_none()).collect();
+                if items.is_empty() {
                     self.entries.push(Entry::Info("no sessions".into()));
-                }
-                for s in list {
-                    self.entries.push(Entry::Info(format!(
-                        "{}  {}  {}  {}",
-                        s.id,
-                        s.created_at.format("%Y-%m-%d %H:%M"),
-                        s.model,
-                        s.title
-                    )));
+                } else {
+                    let cursor = items
+                        .iter()
+                        .position(|s| Some(s.id) == self.session)
+                        .unwrap_or(0);
+                    self.menu = Some(Menu::Sessions { items, cursor });
                 }
             }
             UiEvent::Children(list) => {
@@ -503,9 +509,14 @@ impl Model {
                         .push(Entry::Info(format!("{name}  {status}  {}", short(s.id))));
                 }
             }
-            UiEvent::History(id, history) => {
+            UiEvent::History(id, loaded) => {
                 if self.shown() == Some(id) {
-                    self.entries = history.into_iter().map(Entry::from).collect();
+                    self.entries = loaded.history.into_iter().map(Entry::from).collect();
+                    if self.session == Some(id) {
+                        self.streaming = loaded.running;
+                    } else if let Some(c) = self.children.iter_mut().find(|c| c.id == id) {
+                        c.running = loaded.running;
+                    }
                 }
             }
             UiEvent::SessionCreated(id) => {
@@ -957,6 +968,7 @@ impl Model {
             None => MenuKey::Consumed,
             Some(Menu::Slash { .. }) => self.slash_key(code, input, tx),
             Some(Menu::Models { .. }) => self.models_key(code, tx),
+            Some(Menu::Sessions { .. }) => self.sessions_key(code, tx),
             Some(Menu::Mcp { .. }) => self.mcp_key(code, tx),
         }
     }
@@ -1036,6 +1048,30 @@ impl Model {
                         },
                     );
                     self.menu = None;
+                }
+            }
+            _ => {}
+        }
+        MenuKey::Consumed
+    }
+
+    /// `/sessions`: Enter switches to the highlighted session. The one left
+    /// behind keeps running in the agent; only what is shown changes.
+    fn sessions_key(&mut self, code: KeyCode, tx: &UnboundedSender<Command>) -> MenuKey {
+        let Some(Menu::Sessions { items, cursor }) = &mut self.menu else {
+            return MenuKey::Consumed;
+        };
+        match code {
+            KeyCode::Up => *cursor = cursor.saturating_sub(1),
+            KeyCode::Down => *cursor = (*cursor + 1).min(items.len().saturating_sub(1)),
+            KeyCode::Esc => self.menu = None,
+            KeyCode::Enter => {
+                let picked = items.get(*cursor).map(|s| s.id);
+                self.menu = None;
+                match picked {
+                    Some(id) if Some(id) == self.session => {}
+                    Some(id) => self.resume(id, tx),
+                    None => {}
                 }
             }
             _ => {}
@@ -1163,8 +1199,11 @@ fn send(tx: &UnboundedSender<Command>, cmd: Command) {
     let _ = tx.send(cmd);
 }
 
-fn short(id: SessionId) -> String {
-    id.to_string()[..8].to_owned()
+/// Last 8 chars of a session id, for display (the first 8 of a UUIDv7 are
+/// the timestamp and collide across sessions created close together).
+pub fn short(id: SessionId) -> String {
+    let s = id.to_string();
+    s[s.len() - 8..].to_owned()
 }
 
 #[cfg(test)]

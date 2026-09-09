@@ -35,6 +35,9 @@ pub struct UserInput(pub String);
 /// `tell`: abort the in-flight turn, if any.
 pub struct CancelTurn;
 
+/// `ask` → whether a turn is in flight.
+pub struct IsRunning;
+
 /// `tell`: switch the model; takes effect on the next model call, mid-turn included.
 pub struct SwitchModel(pub Resolved);
 
@@ -181,6 +184,14 @@ impl Message<CancelTurn> for Session {
         if let Some(c) = &self.inflight {
             c.cancel();
         }
+    }
+}
+
+impl Message<IsRunning> for Session {
+    type Reply = bool;
+
+    async fn handle(&mut self, _: IsRunning, _: &mut Context<Self, Self::Reply>) -> bool {
+        self.inflight.is_some()
     }
 }
 

@@ -176,6 +176,16 @@ name); Enter → `Command::SetModel { session: shown root, model }`; the reply
 `UiEvent::ModelSet(info)` updates the header immediately. `/model <id>` skips
 the picker.
 
+**`/sessions` picker.** `Command::ListSessions` → picker over top-level
+sessions, newest first (`● id  mm-dd hh:mm  model  title`, ● = shown); Enter
+→ `resume(id)`, which is `Command::Load`. Switching never touches the agent:
+the session left behind keeps its turn running in its actor and its events
+keep flowing; the TUI only changes which session it renders. `LoadSession`
+replies `Loaded { history, running }` so the status line shows `streaming…`
+on return; a tool call in flight at switch time is not in the store yet, so
+only its result line appears when it finishes. Ids display as their last 8
+chars (UUIDv7's first 8 are the timestamp and collide).
+
 **`/mcp` menu.** `Command::ListMcp` → `UiEvent::Mcp(Vec<McpServer>)` → menu:
 
 ```

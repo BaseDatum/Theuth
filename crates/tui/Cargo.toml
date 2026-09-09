@@ -9,6 +9,7 @@ description = "Terminal frontend (iocraft): an ordinary bus subscriber"
 runtime = { workspace = true }
 tools = { workspace = true }
 agent = { workspace = true }
+chrono = { workspace = true }
 models = { workspace = true }
 markdown = { workspace = true }
 tokio = { workspace = true }

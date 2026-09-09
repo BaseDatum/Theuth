@@ -56,11 +56,21 @@ pub struct Cancel {
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct ListSessions;
 
-/// `ask` → `Vec<HistoryEntry>` for rendering a resumed session.
+/// `ask` → [`Loaded`] for rendering a resumed session.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct LoadSession {
     /// Target session.
     pub session: SessionId,
+}
+
+/// Reply to [`LoadSession`].
+#[derive(Clone, Debug, Default, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct Loaded {
+    /// Rendered messages so far (an in-flight round is not yet stored).
+    pub history: Vec<HistoryEntry>,
+    /// A turn is in flight; its events keep streaming.
+    pub running: bool,
 }
 
 /// `ask` → `Vec<SessionSummary>`: subagents of `parent` (with `name` set), newest first.

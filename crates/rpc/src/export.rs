@@ -13,6 +13,7 @@ fn export_bindings() {
         agent::AgentEvent,
         agent::SessionSummary,
         agent::HistoryEntry,
+        agent::Loaded,
         agent::Usage,
         agent::ModelInfo,
         tools::ToolSpec,
