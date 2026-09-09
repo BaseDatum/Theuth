@@ -31,9 +31,8 @@ pub struct Links {
 
 /// Rows a menu shows at most.
 const MENU_ROWS: usize = 10;
-/// Human turns: light text on a dark slab.
-const USER_BG: Color = Color::AnsiValue(236);
-const USER_FG: Color = Color::AnsiValue(117);
+/// Human turn cards.
+const USER: Color = Color::AnsiValue(117);
 /// Tool call cards.
 const TOOL: Color = Color::Cyan;
 /// Peer (subagent / parent) message cards.
@@ -336,10 +335,11 @@ fn menu(m: &Model, input: &str) -> Option<AnyElement<'static>> {
 
 fn entry(e: &Entry) -> AnyElement<'static> {
     match e {
-        // A shaded block sets the human's turns apart from everything else.
+        // Human turns: the same card shape as tools and peers, own colour and glyph.
         Entry::User(t) => element! {
-            View(width: 100pct, background_color: USER_BG, padding_left: 1, padding_right: 1, margin_top: 1, margin_bottom: 1) {
-                Text(content: t.clone(), color: USER_FG, wrap: TextWrap::Wrap)
+            View(flex_direction: FlexDirection::Column, border_style: BorderStyle::Round, border_color: USER, padding_left: 1, padding_right: 1, margin_top: 1) {
+                Text(content: "◆ you", color: USER, weight: Weight::Bold)
+                Text(content: t.clone(), wrap: TextWrap::Wrap)
             }
         }
         .into_any(),
