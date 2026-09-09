@@ -1,0 +1,31 @@
+[package]
+name = "agent"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Model loop (genai), session store (sqlite), skills, subagents"
+
+[dependencies]
+runtime = { workspace = true }
+tools = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+kameo = { workspace = true }
+genai = { workspace = true }
+sqlx = { workspace = true }
+gray_matter = { workspace = true }
+ts-rs = { workspace = true, optional = true }
+
+[features]
+ts = ["dep:ts-rs", "runtime/ts", "tools/ts"]
+
+[lints]
+workspace = true

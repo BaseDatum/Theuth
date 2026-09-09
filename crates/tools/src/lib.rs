@@ -1,0 +1,292 @@
+//! Tools plugin: the registry every tool lives in, the single approval gate
+//! every invocation passes through, builtin tools, and MCP-sourced tools.
+//!
+//! Public surface consumed by other plugins:
+//! - commands on the `"tools"` actor ([`ToolRegistry`]): [`ListTools`], [`Invoke`], [`RegisterTool`]
+//! - commands on the `"approval"` actor ([`Approval`]): [`Resolve`]
+//! - events: [`ApprovalRequested`], [`ApprovalResolved`]
+
+use std::sync::Arc;
+
+use futures::future::BoxFuture;
+use runtime::SessionId;
+use schemars::JsonSchema;
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
+
+pub mod approval;
+pub mod fs;
+pub mod mcp;
+pub mod registry;
+pub mod shell;
+
+pub use approval::{Approval, ApprovalId, ApprovalRequested, ApprovalResolved, Decision, Resolve};
+pub use registry::{Invoke, ListTools, RegisterTool, ToolRegistry};
+
+/// Registry name of the [`ToolRegistry`] actor.
+pub const REGISTRY_ACTOR: &str = "tools";
+/// Registry name of the [`Approval`] actor.
+pub const APPROVAL_ACTOR: &str = "approval";
+
+/// How much damage a tool can do; the only input to the approval policy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum Risk {
+    /// Observes only.
+    ReadOnly,
+    /// Changes state that can be undone or is scoped.
+    Mutating,
+    /// Irreversible or unbounded (arbitrary shell, delete, network writes).
+    Destructive,
+}
+
+/// What the model sees for a tool.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct ToolSpec {
+    /// Unique name; MCP tools are `<server>__<tool>`.
+    pub name: String,
+    /// Shown to the model.
+    pub description: String,
+    /// JSON Schema for the arguments object.
+    pub schema: serde_json::Value,
+    /// Drives the approval policy.
+    pub risk: Risk,
+}
+
+/// A model-requested invocation.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ToolCall {
+    /// Provider call id, echoed back in the tool response.
+    pub id: String,
+    /// Tool name.
+    pub name: String,
+    /// Arguments object.
+    pub args: serde_json::Value,
+    /// Session the call belongs to (persistent shell, cwd, approvals).
+    pub session: SessionId,
+}
+
+/// Result returned to the model. Errors are content, not `Err`: the model
+/// must see them.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ToolOutput {
+    /// Text handed back to the model.
+    pub content: String,
+    /// Marks the output as a failure for providers that distinguish.
+    pub is_error: bool,
+}
+
+impl ToolOutput {
+    /// Successful output.
+    pub fn ok(content: impl Into<String>) -> Self {
+        Self { content: content.into(), is_error: false }
+    }
+    /// Failed output the model should read.
+    pub fn err(content: impl Into<String>) -> Self {
+        Self { content: content.into(), is_error: true }
+    }
+}
+
+/// Per-invocation context.
+#[derive(Clone, Debug)]
+pub struct ToolCx {
+    /// Owning session.
+    pub session: SessionId,
+    /// Provider call id.
+    pub call_id: String,
+}
+
+/// One struct per tool; the schema is derived from `Args`.
+#[async_trait::async_trait]
+pub trait Tool: Send + Sync + 'static {
+    /// Unique tool name.
+    const NAME: &'static str;
+    /// Risk class for the approval policy.
+    const RISK: Risk;
+    /// Argument type; its `JsonSchema` is what the model sees.
+    type Args: DeserializeOwned + JsonSchema + Send;
+
+    /// Description shown to the model.
+    fn description(&self) -> String;
+
+    /// One-line human summary for the approval prompt. Default: tool name + args.
+    fn summary(&self, args: &Self::Args) -> String
+    where
+        Self::Args: Serialize,
+    {
+        format!("{} {}", Self::NAME, serde_json::to_string(args).unwrap_or_default())
+    }
+
+    /// Run it.
+    async fn call(&self, args: Self::Args, cx: ToolCx) -> anyhow::Result<ToolOutput>;
+}
+
+/// Object-safe form stored in the registry; MCP tools implement this directly.
+pub trait ErasedTool: Send + Sync + 'static {
+    /// Spec for the model.
+    fn spec(&self) -> ToolSpec;
+    /// Human summary for approval, given raw args.
+    fn summary(&self, args: &serde_json::Value) -> String;
+    /// Invoke with raw args.
+    fn call(&self, args: serde_json::Value, cx: ToolCx) -> BoxFuture<'_, anyhow::Result<ToolOutput>>;
+}
+
+impl<T> ErasedTool for T
+where
+    T: Tool,
+    T::Args: Serialize,
+{
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: T::NAME.to_string(),
+            description: self.description(),
+            schema: serde_json::to_value(schemars::schema_for!(T::Args)).unwrap_or_default(),
+            risk: T::RISK,
+        }
+    }
+
+    fn summary(&self, args: &serde_json::Value) -> String {
+        match serde_json::from_value::<T::Args>(args.clone()) {
+            Ok(a) => Tool::summary(self, &a),
+            Err(_) => format!("{} {}", T::NAME, args),
+        }
+    }
+
+    fn call(&self, args: serde_json::Value, cx: ToolCx) -> BoxFuture<'_, anyhow::Result<ToolOutput>> {
+        Box::pin(async move {
+            let args: T::Args = serde_json::from_value(args)
+                .map_err(|e| anyhow::anyhow!("invalid arguments for {}: {e}", T::NAME))?;
+            Tool::call(self, args, cx).await
+        })
+    }
+}
+
+/// Shared handle type stored in the registry.
+pub type DynTool = Arc<dyn ErasedTool>;
+
+/// What the gate does for a risk class.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PolicyAction {
+    /// Run without asking.
+    Allow,
+    /// Publish [`ApprovalRequested`] and wait for [`Resolve`].
+    #[default]
+    Ask,
+    /// Refuse; the model sees an error output.
+    Deny,
+}
+
+/// `[tools]` config section.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ToolsConfig {
+    /// Policy per risk class.
+    pub policy: Policy,
+    /// Seconds to wait for a human before denying.
+    pub approval_timeout_secs: u64,
+    /// Seconds a shell command may run before its process group is killed.
+    pub shell_timeout_secs: u64,
+    /// External MCP servers whose tools join the registry.
+    pub mcp: Vec<McpServerConfig>,
+}
+
+impl Default for ToolsConfig {
+    fn default() -> Self {
+        Self {
+            policy: Policy::default(),
+            approval_timeout_secs: 300,
+            shell_timeout_secs: 120,
+            mcp: Vec::new(),
+        }
+    }
+}
+
+/// Risk → action.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Policy {
+    /// For [`Risk::ReadOnly`].
+    pub read_only: PolicyAction,
+    /// For [`Risk::Mutating`].
+    pub mutating: PolicyAction,
+    /// For [`Risk::Destructive`].
+    pub destructive: PolicyAction,
+}
+
+impl Default for Policy {
+    fn default() -> Self {
+        Self {
+            read_only: PolicyAction::Allow,
+            mutating: PolicyAction::Ask,
+            destructive: PolicyAction::Ask,
+        }
+    }
+}
+
+impl Policy {
+    /// Look up the action for a risk class.
+    pub fn action(&self, risk: Risk) -> PolicyAction {
+        match risk {
+            Risk::ReadOnly => self.read_only,
+            Risk::Mutating => self.mutating,
+            Risk::Destructive => self.destructive,
+        }
+    }
+}
+
+/// One `[[tools.mcp]]` entry.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct McpServerConfig {
+    /// Prefix for the server's tools.
+    pub name: String,
+    /// Transport.
+    #[serde(flatten)]
+    pub transport: McpTransport,
+    /// Risk assigned to every tool from this server.
+    #[serde(default = "default_mcp_risk")]
+    pub risk: Risk,
+}
+
+fn default_mcp_risk() -> Risk {
+    Risk::Mutating
+}
+
+/// How to reach an MCP server.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum McpTransport {
+    /// Spawn a child process speaking stdio.
+    Stdio {
+        /// Executable.
+        command: String,
+        /// Arguments.
+        #[serde(default)]
+        args: Vec<String>,
+        /// Extra environment.
+        #[serde(default)]
+        env: std::collections::HashMap<String, String>,
+    },
+    /// Streamable HTTP endpoint.
+    Http {
+        /// Base URL.
+        url: String,
+    },
+}
+
+/// The plugin. Starts [`ToolRegistry`] and [`Approval`], registers builtin
+/// tools and MCP servers from config.
+pub struct ToolsPlugin;
+
+#[async_trait::async_trait]
+impl runtime::Plugin for ToolsPlugin {
+    fn name(&self) -> &'static str {
+        "tools"
+    }
+
+    async fn start(self: Box<Self>, rt: &runtime::Runtime) -> anyhow::Result<()> {
+        registry::start(rt).await
+    }
+}

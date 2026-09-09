@@ -1,0 +1,56 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+runtime = { path = "crates/runtime" }
+tools = { path = "crates/tools" }
+agent = { path = "crates/agent" }
+rpc = { path = "crates/rpc" }
+tui = { path = "crates/tui" }
+
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "fs", "time", "io-util", "process", "signal"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+futures = "0.3"
+async-trait = "0.1"
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = "1"
+schemars = { version = "1", features = ["uuid1", "chrono04"] }
+uuid = { version = "1", features = ["v7", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-appender = "0.2"
+figment = { version = "0.10", features = ["toml", "env"] }
+kameo = "0.22"
+kameo_actors = "0.8"
+genai = "0.7.0-beta.23"
+brush-core = "0.5"
+brush-builtins = "0.2"
+rmcp = { version = "3", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "reqwest"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros", "chrono", "uuid"] }
+jsonrpsee = { version = "0.26", features = ["server", "macros"] }
+iocraft = "0.9"
+gray_matter = "0.3"
+ts-rs = { version = "12", features = ["serde-compat", "uuid-impl", "chrono-impl", "serde-json-impl"] }
+clap = { version = "4", features = ["derive", "env"] }
+dirs = "6"
+nix = { version = "0.31", features = ["signal"] }
+glob = "0.3"
+
+[workspace.lints.rust]
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+# In-repo dependency patches (design doc §1.3). Each entry names the fork branch
+# and the reason; drop when upstream ships the change.
+[patch.crates-io]

@@ -1,0 +1,30 @@
+[package]
+name = "tools"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Tool registry, approval gate, builtin tools (shell, fs), MCP tool source"
+
+[dependencies]
+runtime = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+kameo = { workspace = true }
+brush-core = { workspace = true }
+brush-builtins = { workspace = true }
+rmcp = { workspace = true }
+nix = { workspace = true }
+ts-rs = { workspace = true, optional = true }
+
+[features]
+ts = ["dep:ts-rs", "runtime/ts"]
+
+[lints]
+workspace = true
