@@ -18,10 +18,11 @@ use runtime::{Runtime, SessionId, TurnId};
 use tokio_util::sync::CancellationToken;
 use tools::{Invoke, ListTools, REGISTRY_ACTOR, ToolRegistry};
 
+use crate::peers::SpawnSubagentTool;
 use crate::skills::Skills;
 use crate::store::Store;
-use crate::subagent::SpawnSubagentTool;
-use crate::{AgentConfig, AgentEvent, Usage};
+use crate::supervisor::PeerContext;
+use crate::{AGENT_ACTOR, AgentConfig, AgentEvent, Agents, Usage};
 
 /// Characters of tool output shown in [`AgentEvent::ToolCallFinished`].
 const DISPLAY_OUTPUT_CHARS: usize = 2000;
@@ -65,7 +66,7 @@ struct Shared {
 
 impl Session {
     /// Build a session; `history` is empty for new sessions and the stored
-    /// messages for resumed ones. `depth` ≥ 1 hides the `spawn_subagent` tool.
+    /// messages for resumed ones. `depth` ≥ `subagents.max_depth` hides `spawn_subagent`.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: SessionId,
@@ -128,6 +129,7 @@ impl Session {
             shared: self.shared.clone(),
             turn,
             cancel,
+            peers: String::new(),
         };
         let history = std::mem::take(&mut self.history);
         let me = me.clone();
@@ -185,6 +187,8 @@ struct Turn {
     shared: Shared,
     turn: TurnId,
     cancel: CancellationToken,
+    /// §2.5 prompt block, fetched once per turn.
+    peers: String,
 }
 
 impl Turn {
@@ -210,9 +214,17 @@ impl Turn {
     }
 
     /// Runs to completion (or cancel/error) and returns the history to hand back.
-    async fn run(self, mut history: Vec<ChatMessage>, inputs: Vec<String>) -> Vec<ChatMessage> {
+    async fn run(mut self, mut history: Vec<ChatMessage>, inputs: Vec<String>) -> Vec<ChatMessage> {
         for text in inputs {
             self.persist(&mut history, ChatMessage::user(text)).await;
+        }
+        if let Ok(Some(agents)) = ActorRef::<Agents>::lookup(AGENT_ACTOR) {
+            self.peers = agents
+                .ask(PeerContext {
+                    session: self.shared.id,
+                })
+                .await
+                .unwrap_or_default();
         }
         let mut usage = Usage::default();
         let mut rounds = 0u32;
@@ -258,7 +270,8 @@ impl Turn {
             Ok(specs) => specs
                 .into_iter()
                 .filter(|s| {
-                    self.shared.depth == 0 || s.name != <SpawnSubagentTool as tools::Tool>::NAME
+                    s.name != <SpawnSubagentTool as tools::Tool>::NAME
+                        || self.shared.depth < self.shared.cfg.subagents.max_depth
                 })
                 .map(|s| {
                     genai::chat::Tool::new(s.name)
@@ -421,6 +434,10 @@ impl Turn {
         if !skills.is_empty() {
             s.push('\n');
             s.push_str(&skills);
+        }
+        if !self.peers.is_empty() {
+            s.push_str("\n\n");
+            s.push_str(&self.peers);
         }
         s
     }

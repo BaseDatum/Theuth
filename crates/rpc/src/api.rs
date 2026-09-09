@@ -42,6 +42,9 @@ pub trait Api {
     /// Every session, newest first.
     #[method(name = "list_sessions")]
     async fn list_sessions(&self) -> RpcResult<Vec<SessionSummary>>;
+    /// Subagent sessions of `parent`, newest first, with their peer names.
+    #[method(name = "list_children")]
+    async fn list_children(&self, parent: SessionId) -> RpcResult<Vec<SessionSummary>>;
     /// Rendered history of one session.
     #[method(name = "load_session")]
     async fn load_session(&self, session: SessionId) -> RpcResult<Vec<HistoryEntry>>;
@@ -114,6 +117,10 @@ impl ApiServer for Server {
 
     async fn list_sessions(&self) -> RpcResult<Vec<SessionSummary>> {
         ask::<Agents, _>(agent::AGENT_ACTOR, ListSessions).await
+    }
+
+    async fn list_children(&self, parent: SessionId) -> RpcResult<Vec<SessionSummary>> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, agent::ListChildren { parent }).await
     }
 
     async fn load_session(&self, session: SessionId) -> RpcResult<Vec<HistoryEntry>> {

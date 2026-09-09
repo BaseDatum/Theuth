@@ -89,6 +89,9 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                     let line = std::mem::take(&mut *input.write());
                     m.submit(&line, &commands);
                 }
+                KeyCode::Esc if m.focus.is_some() && input.read().is_empty() => {
+                    m.focus("", &commands);
+                }
                 KeyCode::Esc => m.cancel(&commands),
                 _ => {}
             }
@@ -100,9 +103,12 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
         system.exit();
     }
     let modal = m.approval().map(|req| {
+        let agent = m
+            .peer_name(req.session)
+            .map_or_else(String::new, |n| format!("  [agent: {n}]"));
         element! {
             View(border_style: BorderStyle::Double, border_color: Color::Yellow, flex_direction: FlexDirection::Column, padding_left: 1, padding_right: 1) {
-                Text(content: format!("approval: {}  ({})", req.tool, risk_name(req.risk)), weight: Weight::Bold)
+                Text(content: format!("approval: {}  ({}){agent}", req.tool, risk_name(req.risk)), weight: Weight::Bold)
                 Text(content: req.summary.clone(), wrap: TextWrap::Wrap)
                 Text(content: "[y] allow  [n/esc] deny", color: Color::Yellow)
             }

@@ -14,7 +14,7 @@ use runtime::Runtime;
 use crate::approval::{Approval, Decision, RequestApproval};
 use crate::{
     APPROVAL_ACTOR, DynTool, Policy, PolicyAction, REGISTRY_ACTOR, ToolCall, ToolCx, ToolOutput,
-    ToolSpec, ToolsConfig, fs, mcp, shell,
+    ToolSpec, ToolsConfig, fs, shell,
 };
 
 /// The registry actor. Look up with `ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR)`.
@@ -38,6 +38,9 @@ pub struct Invoke(pub ToolCall);
 /// `ask` → `()`. Replaces an existing tool with the same name.
 pub struct RegisterTool(pub DynTool);
 
+/// `ask` → `()`. Removes a tool by name; unknown name is a no-op.
+pub struct UnregisterTool(pub String);
+
 impl Message<ListTools> for ToolRegistry {
     type Reply = Vec<ToolSpec>;
 
@@ -58,6 +61,16 @@ impl Message<RegisterTool> for ToolRegistry {
     }
 }
 
+impl Message<UnregisterTool> for ToolRegistry {
+    type Reply = ();
+
+    async fn handle(&mut self, m: UnregisterTool, _: &mut Context<Self, Self::Reply>) {
+        if self.tools.remove(&m.0).is_some() {
+            tracing::info!(tool = %m.0, "unregistered tool");
+        }
+    }
+}
+
 impl Message<Invoke> for ToolRegistry {
     type Reply = DelegatedReply<ToolOutput>;
 
@@ -73,7 +86,8 @@ impl Message<Invoke> for ToolRegistry {
             return reply;
         };
         let spec = tool.spec();
-        let approval = match self.policy.action(spec.risk) {
+        let action = tool.gate().unwrap_or_else(|| self.policy.action(spec.risk));
+        let approval = match action {
             PolicyAction::Allow => None,
             PolicyAction::Deny => {
                 tx.send(ToolOutput::err(format!("{}: denied by policy", call.name)));
@@ -135,8 +149,9 @@ async fn invoke(
     }
 }
 
-/// Spawn registry + approval actors, register builtins and MCP servers.
-pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
+/// Spawn registry + approval actors and register builtins. Returns the
+/// registry so the caller can attach further tool sources (MCP).
+pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
     let cfg: ToolsConfig = if rt.config.contains("tools") {
         rt.section("tools")?
     } else {
@@ -166,15 +181,5 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         runtime::subscriber_mailbox(),
     );
     registry.register(REGISTRY_ACTOR)?;
-
-    for server in cfg.mcp {
-        let registry = registry.clone();
-        let name = server.name.clone();
-        tokio::spawn(async move {
-            if let Err(e) = mcp::connect(server, registry).await {
-                tracing::error!(server = %name, error = %e, "mcp server failed");
-            }
-        });
-    }
-    Ok(())
+    Ok(registry)
 }

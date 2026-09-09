@@ -22,6 +22,8 @@ brush-builtins = { workspace = true }
 rmcp = { workspace = true }
 nix = { workspace = true }
 ts-rs = { workspace = true, optional = true }
+serde_yaml = { workspace = true }
+notify = { workspace = true }
 
 [features]
 ts = ["dep:ts-rs", "runtime/ts"]

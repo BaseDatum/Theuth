@@ -24,6 +24,7 @@ genai = { workspace = true }
 sqlx = { workspace = true }
 gray_matter = { workspace = true }
 ts-rs = { workspace = true, optional = true }
+serde_yaml = { workspace = true }
 
 [features]
 ts = ["dep:ts-rs", "runtime/ts", "tools/ts"]

@@ -19,6 +19,8 @@ pub enum UiEvent {
     Resolved(ApprovalResolved),
     /// Reply to [`Command::ListSessions`].
     Sessions(Vec<SessionSummary>),
+    /// Reply to [`Command::ListChildren`]: the focused root's subagents.
+    Children(Vec<SessionSummary>),
     /// Reply to [`Command::Load`].
     History(SessionId, Vec<HistoryEntry>),
     /// Reply to [`Command::Send`]: the session the turn went to.
@@ -49,6 +51,8 @@ pub enum Command {
     Cancel(SessionId),
     /// `ListSessions`.
     ListSessions,
+    /// `ListChildren` of the root session.
+    ListChildren(SessionId),
     /// `LoadSession`.
     Load(SessionId),
     /// `Resolve` on the approval actor.
@@ -91,20 +95,35 @@ pub enum Entry {
     Error(String),
 }
 
+/// A subagent of the root session, known from `SubagentSpawned` or `/agents`.
+#[derive(Debug)]
+pub struct Child {
+    /// Peer name.
+    pub name: String,
+    /// Its session.
+    pub id: SessionId,
+    /// A turn is in flight.
+    pub running: bool,
+}
+
 /// UI state.
 #[derive(Debug, Default)]
 pub struct Model {
-    /// Session being viewed; events for other sessions are ignored.
+    /// Root session (the one the human started or resumed).
     pub session: Option<SessionId>,
+    /// Child whose transcript is shown instead of the root's (`/focus`).
+    pub focus: Option<SessionId>,
+    /// Subagents under the root, in spawn order.
+    pub children: Vec<Child>,
     /// A `Send { session: None }` is in flight; adopt the next `TurnStarted`.
     awaiting_session: bool,
-    /// Transcript.
+    /// Transcript of the shown session.
     pub entries: Vec<Entry>,
-    /// A turn is in flight.
+    /// The root has a turn in flight.
     pub streaming: bool,
-    /// Usage of the last finished turn.
+    /// Usage of the last finished turn of the shown session.
     pub usage: Option<Usage>,
-    /// Pending approvals for this session, oldest first; the front is shown.
+    /// Pending approvals for the root or any child, oldest first; the front is shown.
     pub approvals: VecDeque<ApprovalRequested>,
     /// The user asked to leave.
     pub quit: bool,
@@ -116,12 +135,34 @@ impl Model {
         self.approvals.front()
     }
 
+    /// The session whose transcript is shown: the focused child, else the root.
+    pub fn shown(&self) -> Option<SessionId> {
+        self.focus.or(self.session)
+    }
+
+    /// Whether the shown session has a turn in flight.
+    fn shown_running(&self) -> bool {
+        match self.focus {
+            Some(id) => self.child(id).is_some_and(|c| c.running),
+            None => self.streaming,
+        }
+    }
+
+    fn child(&self, id: SessionId) -> Option<&Child> {
+        self.children.iter().find(|c| c.id == id)
+    }
+
+    /// Peer name of a child session; `None` for the root or strangers.
+    pub fn peer_name(&self, id: SessionId) -> Option<&str> {
+        self.child(id).map(|c| c.name.as_str())
+    }
+
     /// Fold one event into the state.
     pub fn apply(&mut self, ev: UiEvent) {
         match ev {
             UiEvent::Agent(ev) => self.apply_agent(ev),
             UiEvent::Approval(req) => {
-                if self.session == Some(req.session) {
+                if self.session == Some(req.session) || self.child(req.session).is_some() {
                     self.approvals.push_back(req);
                 }
             }
@@ -140,8 +181,30 @@ impl Model {
                     )));
                 }
             }
+            UiEvent::Children(list) => {
+                if list.is_empty() {
+                    self.entries.push(Entry::Info("no subagents".into()));
+                }
+                for s in list {
+                    let name = s.name.unwrap_or_default();
+                    if self.child(s.id).is_none() {
+                        self.children.push(Child {
+                            name: name.clone(),
+                            id: s.id,
+                            running: false,
+                        });
+                    }
+                    let status = if self.child(s.id).is_some_and(|c| c.running) {
+                        "running"
+                    } else {
+                        "idle"
+                    };
+                    self.entries
+                        .push(Entry::Info(format!("{name}  {status}  {}", short(s.id))));
+                }
+            }
             UiEvent::History(id, history) => {
-                if self.session == Some(id) {
+                if self.shown() == Some(id) {
                     self.entries = history.into_iter().map(Entry::from).collect();
                 }
             }
@@ -156,13 +219,53 @@ impl Model {
     }
 
     fn apply_agent(&mut self, ev: AgentEvent) {
-        if self.session != Some(ev.session()) {
-            if self.awaiting_session && matches!(ev, AgentEvent::TurnStarted { .. }) {
-                self.session = Some(ev.session());
-                self.awaiting_session = false;
-            } else {
+        if self.awaiting_session && matches!(ev, AgentEvent::TurnStarted { .. }) {
+            self.session = Some(ev.session());
+            self.awaiting_session = false;
+        }
+        // Roster bookkeeping, independent of what is shown.
+        match &ev {
+            AgentEvent::SubagentSpawned {
+                parent,
+                child,
+                name,
+            } => {
+                if self.session == Some(*parent) || self.child(*parent).is_some() {
+                    self.children.push(Child {
+                        name: name.clone(),
+                        id: *child,
+                        running: false,
+                    });
+                }
+                if self.shown() == Some(*parent) {
+                    self.entries.push(Entry::Info(format!("↳ spawned {name}")));
+                }
                 return;
             }
+            AgentEvent::MessageDelivered {
+                session,
+                from,
+                text,
+            } => {
+                if self.shown() == Some(*session) {
+                    let first = text.lines().next().unwrap_or_default();
+                    self.entries
+                        .push(Entry::Info(format!("⟵ {from}: {first}…")));
+                }
+                return;
+            }
+            AgentEvent::TurnStarted { session, .. } | AgentEvent::TurnFinished { session, .. } => {
+                let running = matches!(ev, AgentEvent::TurnStarted { .. });
+                if self.session == Some(*session) {
+                    self.streaming = running;
+                } else if let Some(c) = self.children.iter_mut().find(|c| c.id == *session) {
+                    c.running = running;
+                }
+            }
+            _ => {}
+        }
+        if self.shown() != Some(ev.session()) {
+            return;
         }
         if !matches!(ev, AgentEvent::ReasoningDelta { .. })
             && let Some(Entry::Reasoning { done, .. }) = self.entries.last_mut()
@@ -170,7 +273,12 @@ impl Model {
             *done = true;
         }
         match ev {
-            AgentEvent::TurnStarted { .. } => self.streaming = true,
+            // Echo the turn's input unless the human just typed it here.
+            AgentEvent::TurnStarted { text, .. } => {
+                if !matches!(self.entries.last(), Some(Entry::User(t)) if *t == text) {
+                    self.entries.push(Entry::User(text));
+                }
+            }
             AgentEvent::TextDelta { text, .. } => match self.entries.last_mut() {
                 Some(Entry::Assistant(s)) => s.push_str(&text),
                 _ => self.entries.push(Entry::Assistant(text.to_string())),
@@ -213,11 +321,9 @@ impl Model {
                     ))),
                 }
             }
-            AgentEvent::TurnFinished { usage, .. } => {
-                self.streaming = false;
-                self.usage = Some(usage);
-            }
+            AgentEvent::TurnFinished { usage, .. } => self.usage = Some(usage),
             AgentEvent::Error { message, .. } => self.entries.push(Entry::Error(message)),
+            AgentEvent::SubagentSpawned { .. } | AgentEvent::MessageDelivered { .. } => {}
         }
     }
 
@@ -243,8 +349,13 @@ impl Model {
                 *self = Model::default();
                 self.entries.push(Entry::Info("new session".into()));
             }
+            "/agents" => match self.session {
+                Some(root) => send(tx, Command::ListChildren(root)),
+                None => self.entries.push(Entry::Info("no session".into())),
+            },
+            "/focus" => self.focus(arg, tx),
             "/cancel" => {
-                if let Some(session) = self.session {
+                if let Some(session) = self.shown() {
                     send(tx, Command::Cancel(session));
                 }
             }
@@ -254,8 +365,10 @@ impl Model {
             _ => {
                 self.entries.push(Entry::User(line.to_owned()));
                 let text = line.to_owned();
-                match self.session {
-                    Some(session) if self.streaming => send(tx, Command::Steer { session, text }),
+                match self.shown() {
+                    Some(session) if self.shown_running() => {
+                        send(tx, Command::Steer { session, text });
+                    }
                     session => {
                         self.awaiting_session = session.is_none();
                         send(tx, Command::Send { session, text });
@@ -266,15 +379,40 @@ impl Model {
     }
 
     /// Switch to `id` and ask for its history.
+    // ponytail: children spawned before a resume are unknown until `/agents`
+    // runs (their approvals are hidden until then); fetch ListChildren here
+    // silently if that bites.
     pub fn resume(&mut self, id: SessionId, tx: &UnboundedSender<Command>) {
         *self = Model::default();
         self.session = Some(id);
         send(tx, Command::Load(id));
     }
 
-    /// Cancel the in-flight turn, if any.
+    /// `/focus <name>` shows that child's transcript; `/focus` (or Esc)
+    /// returns to the root. Either way the transcript is reloaded.
+    pub fn focus(&mut self, name: &str, tx: &UnboundedSender<Command>) {
+        let Some(root) = self.session else { return };
+        let target = if name.is_empty() {
+            root
+        } else {
+            match self.children.iter().find(|c| c.name == name) {
+                Some(c) => c.id,
+                None => {
+                    self.entries
+                        .push(Entry::Error(format!("no subagent named {name:?}")));
+                    return;
+                }
+            }
+        };
+        self.focus = (target != root).then_some(target);
+        self.entries.clear();
+        self.usage = None;
+        send(tx, Command::Load(target));
+    }
+
+    /// Cancel the shown session's in-flight turn, if any.
     pub fn cancel(&self, tx: &UnboundedSender<Command>) {
-        if let (Some(session), true) = (self.session, self.streaming) {
+        if let (Some(session), true) = (self.shown(), self.shown_running()) {
             send(tx, Command::Cancel(session));
         }
     }
@@ -293,13 +431,10 @@ impl Model {
         }
     }
 
-    /// One-line status: session, streaming state, last usage.
+    /// One-line status: session, streaming state, last usage, focus, roster.
     pub fn status(&self, model_name: &str) -> String {
-        let session = self.session.map_or_else(
-            || "no session".to_owned(),
-            |s| s.to_string()[..8].to_owned(),
-        );
-        let state = if self.streaming {
+        let session = self.shown().map_or_else(|| "no session".to_owned(), short);
+        let state = if self.shown_running() {
             "streaming…"
         } else {
             "idle"
@@ -307,7 +442,17 @@ impl Model {
         let usage = self.usage.map_or_else(String::new, |u| {
             format!("  {}↑ {}↓", u.prompt, u.completion)
         });
-        format!("{session}  {model_name}  {state}{usage}")
+        let focus = self
+            .focus
+            .and_then(|id| self.peer_name(id))
+            .map_or_else(String::new, |n| format!("  ↳ {n}"));
+        let running = self.children.iter().filter(|c| c.running).count();
+        let agents = if running > 0 {
+            format!("  agents: {running} running")
+        } else {
+            String::new()
+        };
+        format!("{session}  {model_name}  {state}{usage}{focus}{agents}")
     }
 }
 
@@ -337,4 +482,8 @@ impl From<HistoryEntry> for Entry {
 fn send(tx: &UnboundedSender<Command>, cmd: Command) {
     // The receiver lives as long as the UI; a closed channel means shutdown.
     let _ = tx.send(cmd);
+}
+
+fn short(id: SessionId) -> String {
+    id.to_string()[..8].to_owned()
 }

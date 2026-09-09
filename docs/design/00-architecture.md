@@ -203,8 +203,9 @@ writes it; UIs read via `ask(ListSessions)`/`ask(LoadSession)`). Tables:
 `<data_dir>/skills`; the agent lists names+descriptions in the system prompt
 and loads a body on `ask(LoadSkill)` from the model via a builtin tool.
 
-**Subagents** (phase 3): `Agent` spawns child `Agent` actors and links them
-(kameo supervision); child `TurnFinished` is the parent's tool result.
+**Subagents**: detached — `spawn_subagent` returns at once, the child's result
+arrives in the parent as a new turn, peers talk via `send_message`. Design,
+limits and events: `01-config-and-subagents.md` §2.
 
 ## 6. Tools plugin
 
@@ -280,10 +281,12 @@ are more code); line-oriented REPL (would be replaced immediately).
 
 ## 9. Config
 
-`figment` 0.10: `<data_dir>/config.toml` merged with `WTH_*` env. No shared
+`figment` 0.10: `<data_dir>/config.yaml` merged with `WTH_*` env; data dir
+defaults to `~/.wth`, with `credentials.yaml` and `mcp/` beside it. No shared
 `Config` struct: each plugin extracts its own section
-(`rt.config.extract_inner::<AgentConfig>("agent")`), so `runtime` never
-knows the union of all config. No hot reload in v0.
+(`rt.config.extract_inner::<AgentConfig>("agent")`), so `runtime` never knows
+the union of all config. Layout, first run, credentials and MCP drop-in files:
+`01-config-and-subagents.md` §1.
 
 ## 10. Workspace
 
@@ -316,7 +319,7 @@ Workspace dependencies (versions verified 2026-09-09 via `cargo info`):
 | iocraft | 0.9 | TUI |
 | schemars | 1.2 | tool schemas |
 | serde / serde_json | 1 | wire |
-| figment (toml, env) | 0.10 | config |
+| figment (yaml, env) | 0.10 | config |
 | ts-rs | 12 | TS bindings (feature-gated) |
 | gray_matter | 0.3 | skill front matter (phase 2) |
 | tracing / tracing-subscriber | 0.1 / 0.3 | logs |
@@ -398,7 +401,7 @@ Each phase ends with a runnable check, not a test suite.
 | 1 | mcp: one configured stdio server's tools callable | `@modelcontextprotocol/server-everything` `echo` | done (`everything__echo` → `Echo: hi`) |
 | 2 | rpc plugin, `--serve`; ts-rs bindings emitted | subscribe + send_input round trip over WS | done; headless e2e: shell + write/read + list/load sessions + shutdown, all over the wire |
 | 2 | skills | skill body appears in prompt on load | done (`docs/skills.md`) |
-| 3 | subagents, steering polish | parent receives child result as tool output | done; child session row carries `parent` |
+| 3 | subagents, steering polish | parent receives child result as tool output | superseded by 01 §2 (detached) |
 | 4 | Tauri frontend over rpc | out of scope for this doc | not started; `just ts` emits `bindings/*.ts` |
 
 Known gaps carried forward: cancel/error paths in the loop are code-reviewed,

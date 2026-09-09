@@ -1,8 +1,9 @@
 //! Tools plugin: the registry every tool lives in, the single approval gate
-//! every invocation passes through, builtin tools, and MCP-sourced tools.
+//! every invocation passes through, builtin tools, and MCP-sourced tools
+//! (drop-in `<data_dir>/mcp/*.json`, hot-reloaded).
 //!
 //! Public surface consumed by other plugins:
-//! - commands on the `"tools"` actor ([`ToolRegistry`]): [`ListTools`], [`Invoke`], [`RegisterTool`]
+//! - commands on the `"tools"` actor ([`ToolRegistry`]): [`ListTools`], [`Invoke`], [`RegisterTool`], [`UnregisterTool`]
 //! - commands on the `"approval"` actor ([`Approval`]): [`Resolve`]
 //! - events: [`ApprovalRequested`], [`ApprovalResolved`]
 
@@ -21,7 +22,7 @@ pub mod registry;
 pub mod shell;
 
 pub use approval::{Approval, ApprovalId, ApprovalRequested, ApprovalResolved, Decision, Resolve};
-pub use registry::{Invoke, ListTools, RegisterTool, ToolRegistry};
+pub use registry::{Invoke, ListTools, RegisterTool, ToolRegistry, UnregisterTool};
 
 /// Registry name of the [`ToolRegistry`] actor.
 pub const REGISTRY_ACTOR: &str = "tools";
@@ -147,6 +148,11 @@ pub trait ErasedTool: Send + Sync + 'static {
         args: serde_json::Value,
         cx: ToolCx,
     ) -> BoxFuture<'_, anyhow::Result<ToolOutput>>;
+    /// Explicit approval action; `None` → registry uses `policy.action(spec.risk)`.
+    /// Only MCP tools return `Some`.
+    fn gate(&self) -> Option<PolicyAction> {
+        None
+    }
 }
 
 impl<T> ErasedTool for T
@@ -199,7 +205,7 @@ pub enum PolicyAction {
     Deny,
 }
 
-/// `[tools]` config section.
+/// `tools` config section.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ToolsConfig {
@@ -209,8 +215,6 @@ pub struct ToolsConfig {
     pub approval_timeout_secs: u64,
     /// Seconds a shell command may run before its process group is killed.
     pub shell_timeout_secs: u64,
-    /// External MCP servers whose tools join the registry.
-    pub mcp: Vec<McpServerConfig>,
 }
 
 impl Default for ToolsConfig {
@@ -219,7 +223,6 @@ impl Default for ToolsConfig {
             policy: Policy::default(),
             approval_timeout_secs: 300,
             shell_timeout_secs: 120,
-            mcp: Vec::new(),
         }
     }
 }
@@ -257,47 +260,9 @@ impl Policy {
     }
 }
 
-/// One `[[tools.mcp]]` entry.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct McpServerConfig {
-    /// Prefix for the server's tools.
-    pub name: String,
-    /// Transport.
-    #[serde(flatten)]
-    pub transport: McpTransport,
-    /// Risk assigned to every tool from this server.
-    #[serde(default = "default_mcp_risk")]
-    pub risk: Risk,
-}
-
-fn default_mcp_risk() -> Risk {
-    Risk::Mutating
-}
-
-/// How to reach an MCP server.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum McpTransport {
-    /// Spawn a child process speaking stdio.
-    Stdio {
-        /// Executable.
-        command: String,
-        /// Arguments.
-        #[serde(default)]
-        args: Vec<String>,
-        /// Extra environment.
-        #[serde(default)]
-        env: std::collections::HashMap<String, String>,
-    },
-    /// Streamable HTTP endpoint.
-    Http {
-        /// Base URL.
-        url: String,
-    },
-}
-
 /// The plugin. Starts [`ToolRegistry`] and [`Approval`], registers builtin
-/// tools and MCP servers from config.
+/// tools, then MCP servers from `<data_dir>/mcp` (natives first so they win
+/// name clashes).
 pub struct ToolsPlugin;
 
 #[async_trait::async_trait]
@@ -307,6 +272,7 @@ impl runtime::Plugin for ToolsPlugin {
     }
 
     async fn start(self: Box<Self>, rt: &runtime::Runtime) -> anyhow::Result<()> {
-        registry::start(rt).await
+        let registry = registry::start(rt).await?;
+        mcp::start(rt, registry).await
     }
 }

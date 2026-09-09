@@ -127,6 +127,9 @@ async fn execute(cmd: Command, tx: &UnboundedSender<UiEvent>) -> anyhow::Result<
             return Ok(());
         }
         Command::ListSessions => UiEvent::Sessions(agent()?.ask(agent::ListSessions).await?),
+        Command::ListChildren(parent) => {
+            UiEvent::Children(agent()?.ask(agent::ListChildren { parent }).await?)
+        }
         Command::Load(session) => {
             UiEvent::History(session, agent()?.ask(agent::LoadSession { session }).await?)
         }
@@ -156,7 +159,7 @@ async fn line_printer(
         tokio::select! {
             ev = events.recv() => {
                 let Some(ev) = ev else { break };
-                print_event(&mut out, &ev);
+                print_event(&mut out, &model, &ev);
                 model.apply(ev);
             }
             line = lines.next_line() => {
@@ -172,8 +175,18 @@ async fn line_printer(
     }
 }
 
-fn print_event(out: &mut impl Write, ev: &UiEvent) {
+fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
     let _ = match ev {
+        UiEvent::Agent(AgentEvent::SubagentSpawned { name, .. }) => {
+            writeln!(out, "↳ spawned {name}")
+        }
+        UiEvent::Agent(AgentEvent::MessageDelivered { from, text, .. }) => {
+            writeln!(
+                out,
+                "⟵ {from}: {}…",
+                text.lines().next().unwrap_or_default()
+            )
+        }
         UiEvent::Agent(AgentEvent::TextDelta { text, .. }) => {
             out.write_all(text.as_bytes()).and_then(|()| out.flush())
         }
@@ -205,13 +218,21 @@ fn print_event(out: &mut impl Write, ev: &UiEvent) {
         UiEvent::Agent(_) => Ok(()),
         UiEvent::Approval(req) => writeln!(
             out,
-            "approve {} ({:?}): {}? [y/n]",
-            req.tool, req.risk, req.summary
+            "approve {} ({:?}){}: {}? [y/n]",
+            req.tool,
+            req.risk,
+            model
+                .peer_name(req.session)
+                .map_or_else(String::new, |n| format!(" [agent: {n}]")),
+            req.summary
         ),
         UiEvent::Resolved(_) => Ok(()),
         UiEvent::Sessions(list) => list
             .iter()
             .try_for_each(|s| writeln!(out, "{}  {}  {}", s.id, s.model, s.title)),
+        UiEvent::Children(list) => list
+            .iter()
+            .try_for_each(|s| writeln!(out, "{}  {}", s.name.as_deref().unwrap_or_default(), s.id)),
         UiEvent::History(_, history) => history.iter().try_for_each(|h| match h {
             agent::HistoryEntry::User { text } => writeln!(out, "> {text}"),
             agent::HistoryEntry::Assistant { text } => writeln!(out, "{text}"),

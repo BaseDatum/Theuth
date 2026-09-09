@@ -1,19 +1,19 @@
 //! `wth`: build the runtime, start the plugin list, wait for shutdown.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::Parser;
 use figment::Figment;
-use figment::providers::{Env, Format, Toml};
+use figment::providers::{Env, Format, Yaml};
 use runtime::{Plugin, Runtime, SessionId};
 
 #[derive(Parser, Debug)]
 #[command(name = "wth", version, about = "what the harness")]
 struct Cli {
-    /// Data directory (config, sqlite, logs, token, skills).
+    /// Data directory (config, credentials, mcp/, sqlite, logs, token, skills).
     #[arg(long, env = "WTH_DATA_DIR")]
     data_dir: Option<PathBuf>,
-    /// Config file; defaults to `<data_dir>/config.toml`.
+    /// Config file; defaults to `<data_dir>/config.yaml`.
     #[arg(long)]
     config: Option<PathBuf>,
     /// Start the JSON-RPC server plugin.
@@ -27,24 +27,58 @@ struct Cli {
     resume: Option<SessionId>,
 }
 
-const DEFAULT_CONFIG: &str = r#"# wth configuration. Every plugin reads its own section.
+const DEFAULT_CONFIG: &str = "# wth configuration. Every plugin reads its own section.
+# Env overrides: WTH_<SECTION>__<KEY>, e.g. WTH_RPC__LISTEN=127.0.0.1:7799
 
-[agent]
-model = "claude-sonnet-4-5"
+agent:
+  model: claude-sonnet-4-5
+  # subagents:
+  #   model: null              # default: agent.model
+  #   max_depth: 1
+  #   max_concurrent: 8
+  #   max_runtime_secs: 600
+  #   reply_timeout_secs: 120
 
-[tools.policy]
-read_only = "allow"
-mutating = "ask"
-destructive = "ask"
+tools:
+  policy:
+    read_only: allow
+    mutating: ask
+    destructive: ask
 
-[rpc]
-listen = "127.0.0.1:7777"
+rpc:
+  listen: 127.0.0.1:7777
+";
 
-# [[tools.mcp]]
-# name = "everything"
-# command = "npx"
-# args = ["-y", "@modelcontextprotocol/server-everything"]
-"#;
+const DEFAULT_CREDENTIALS: &str =
+    "# Provider API keys, one per line. The file beats the environment.
+# anthropic: sk-ant-...
+# openai: sk-...
+# gemini: AIza...
+# groq: gsk_...
+# ollama needs no key.
+";
+
+/// Creates the data-dir skeleton on first run. Existing files are never overwritten.
+fn first_run(data_dir: &Path, config_path: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(data_dir.join("mcp"))?;
+    if !config_path.exists() {
+        std::fs::write(config_path, DEFAULT_CONFIG)?;
+    }
+    let creds = data_dir.join("credentials.yaml");
+    if !creds.exists() {
+        let mut open = std::fs::OpenOptions::new();
+        open.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            open.mode(0o600);
+        }
+        use std::io::Write;
+        open.open(&creds)?
+            .write_all(DEFAULT_CREDENTIALS.as_bytes())?;
+    }
+    Ok(())
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -52,16 +86,13 @@ async fn main() -> anyhow::Result<()> {
 
     let data_dir = cli
         .data_dir
-        .or_else(|| dirs::data_dir().map(|d| d.join("wth")))
+        .or_else(|| dirs::home_dir().map(|h| h.join(".wth")))
         .ok_or_else(|| anyhow::anyhow!("cannot determine data dir; pass --data-dir"))?;
-    std::fs::create_dir_all(&data_dir)?;
 
-    let config_path = cli.config.unwrap_or_else(|| data_dir.join("config.toml"));
-    if !config_path.exists() {
-        std::fs::write(&config_path, DEFAULT_CONFIG)?;
-    }
+    let config_path = cli.config.unwrap_or_else(|| data_dir.join("config.yaml"));
+    first_run(&data_dir, &config_path)?;
     let config = Figment::new()
-        .merge(Toml::file(&config_path))
+        .merge(Yaml::file(&config_path))
         .merge(Env::prefixed("WTH_").split("__"));
 
     // The TUI owns the terminal; logs go to a file.

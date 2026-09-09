@@ -4,7 +4,7 @@
 //!
 //! Public surface:
 //! - commands on the `"agent"` actor ([`Agents`]): [`SendInput`], [`Steer`],
-//!   [`Cancel`], [`ListSessions`], [`LoadSession`]
+//!   [`Cancel`], [`ListSessions`], [`LoadSession`], [`ListChildren`]
 //! - event: [`AgentEvent`]
 
 use std::sync::Arc;
@@ -13,9 +13,9 @@ use runtime::{SessionId, TurnId};
 use serde::{Deserialize, Serialize};
 
 pub mod loop_;
+pub mod peers;
 pub mod skills;
 pub mod store;
-pub mod subagent;
 pub mod supervisor;
 
 pub use supervisor::Agents;
@@ -62,6 +62,13 @@ pub struct LoadSession {
     pub session: SessionId,
 }
 
+/// `ask` → `Vec<SessionSummary>`: subagents of `parent` (with `name` set), newest first.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct ListChildren {
+    /// Owning session.
+    pub parent: SessionId,
+}
+
 /// One row of the session list.
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -76,6 +83,8 @@ pub struct SessionSummary {
     pub model: String,
     /// Parent session when this is a subagent.
     pub parent: Option<SessionId>,
+    /// Peer name; `None` for top-level sessions.
+    pub name: Option<String>,
 }
 
 /// Rendered history for UIs (tool traffic collapsed to summaries).
@@ -195,6 +204,25 @@ pub enum AgentEvent {
         /// Message.
         message: String,
     },
+    /// A subagent session was created for `parent`.
+    SubagentSpawned {
+        /// Owning session.
+        parent: SessionId,
+        /// New session.
+        child: SessionId,
+        /// Peer name, unique among the parent's children.
+        name: String,
+    },
+    /// Text injected into `session` by the harness (subagent result or peer
+    /// message), for transcripts.
+    MessageDelivered {
+        /// Receiving session.
+        session: SessionId,
+        /// Sender: a child's name or `"parent"`.
+        from: String,
+        /// Delivered text without its wrapper.
+        text: String,
+    },
 }
 
 impl AgentEvent {
@@ -207,7 +235,9 @@ impl AgentEvent {
             | Self::ToolCallStarted { session, .. }
             | Self::ToolCallFinished { session, .. }
             | Self::TurnFinished { session, .. }
+            | Self::MessageDelivered { session, .. }
             | Self::Error { session, .. } => *session,
+            Self::SubagentSpawned { child, .. } => *child,
         }
     }
 }
@@ -224,8 +254,8 @@ pub struct AgentConfig {
     pub max_tool_rounds: u32,
     /// Max characters of tool output sent back to the model.
     pub max_tool_output_chars: usize,
-    /// Model for subagents; defaults to `model`.
-    pub subagent_model: Option<String>,
+    /// Subagent limits and model.
+    pub subagents: SubagentsConfig,
 }
 
 impl Default for AgentConfig {
@@ -235,7 +265,35 @@ impl Default for AgentConfig {
             system_prompt: String::new(),
             max_tool_rounds: 32,
             max_tool_output_chars: 32_000,
-            subagent_model: None,
+            subagents: SubagentsConfig::default(),
+        }
+    }
+}
+
+/// `[agent.subagents]` config section (design doc 01 §2.6).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SubagentsConfig {
+    /// Child model; defaults to `agent.model`.
+    pub model: Option<String>,
+    /// Sessions at depth ≥ this cannot spawn.
+    pub max_depth: u8,
+    /// Concurrent child turns; further spawns queue.
+    pub max_concurrent: usize,
+    /// Wall clock per child turn; on expiry the turn is cancelled.
+    pub max_runtime_secs: u64,
+    /// How long `send_message{await_reply}` waits.
+    pub reply_timeout_secs: u64,
+}
+
+impl Default for SubagentsConfig {
+    fn default() -> Self {
+        Self {
+            model: None,
+            max_depth: 1,
+            max_concurrent: 8,
+            max_runtime_secs: 600,
+            reply_timeout_secs: 120,
         }
     }
 }
