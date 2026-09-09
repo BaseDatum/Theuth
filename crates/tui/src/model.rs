@@ -235,21 +235,37 @@ fn card(kind: CardKind, title: String, text: &str) -> Entry {
     }
 }
 
-/// Split a harness-injected input (`<subagent_result name="…">` /
-/// `<message from="…">` wrapper) into `(peer, body)`; `None` for human text.
-pub fn injected(text: &str) -> Option<(String, String)> {
-    let (open, rest) = text.split_once('\n')?;
-    let tag = open.strip_prefix('<')?.strip_suffix('>')?;
-    let (key, close) = if tag.starts_with("subagent_result ") {
-        ("name=\"", "</subagent_result>")
-    } else if tag.starts_with("message ") {
-        ("from=\"", "</message>")
-    } else {
-        return None;
-    };
-    let from = tag.split_once(key)?.1.split('"').next()?.to_owned();
-    let body = rest.trim_end().strip_suffix(close)?.trim_end();
-    Some((from, body.to_owned()))
+/// Split a harness-injected input into `(peer, body)` per wrapper. Inputs
+/// queued during a turn arrive as one text: `<subagent_result name="…">` /
+/// `<message from="…">` blocks joined by newlines. Empty for human text (or
+/// anything not entirely made of wrappers).
+pub fn injected(text: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut rest = text.trim_start();
+    while !rest.is_empty() {
+        let Some((open, after)) = rest.split_once('\n') else {
+            return Vec::new();
+        };
+        let Some(tag) = open.strip_prefix('<').and_then(|t| t.strip_suffix('>')) else {
+            return Vec::new();
+        };
+        let (key, close) = if tag.starts_with("subagent_result ") {
+            ("name=\"", "</subagent_result>")
+        } else if tag.starts_with("message ") {
+            ("from=\"", "</message>")
+        } else {
+            return Vec::new();
+        };
+        let Some(from) = tag.split_once(key).and_then(|(_, v)| v.split('"').next()) else {
+            return Vec::new();
+        };
+        let Some((body, tail)) = after.split_once(close) else {
+            return Vec::new();
+        };
+        out.push((from.to_owned(), body.trim_end().to_owned()));
+        rest = tail.trim_start();
+    }
+    out
 }
 
 /// A subagent of the root session, known from `SubagentSpawned` or `/agents`.
@@ -542,6 +558,20 @@ impl Model {
         self.focus.or(self.session)
     }
 
+    /// Add an entry that did not come from the model's stream (a peer message,
+    /// a spawn notice). It goes above a still-streaming tail so the text keeps
+    /// accumulating in one `markdown::Text`: pushing it last would split the
+    /// response mid-block and render both halves as broken markdown.
+    fn interject(&mut self, e: Entry) {
+        let streaming = match self.entries.last() {
+            Some(Entry::Assistant(t)) => !t.is_done(),
+            Some(Entry::Reasoning { done, .. }) => !done,
+            _ => false,
+        };
+        let at = self.entries.len() - usize::from(streaming);
+        self.entries.insert(at, e);
+    }
+
     /// Whether the shown session has a turn in flight.
     fn shown_running(&self) -> bool {
         match self.focus {
@@ -738,7 +768,7 @@ impl Model {
             }
             UiEvent::History(id, loaded) => {
                 if self.shown() == Some(id) {
-                    self.entries = loaded.history.into_iter().map(Entry::from).collect();
+                    self.entries = loaded.history.into_iter().flat_map(from_history).collect();
                     if self.session == Some(id) {
                         self.streaming = loaded.running;
                     } else if let Some(c) = self.children.iter_mut().find(|c| c.id == id) {
@@ -869,7 +899,7 @@ impl Model {
                     });
                 }
                 if self.shown() == Some(*parent) {
-                    self.entries.push(Entry::Info(format!("↳ spawned {name}")));
+                    self.interject(Entry::Info(format!("↳ spawned {name}")));
                 }
                 return;
             }
@@ -879,7 +909,7 @@ impl Model {
                 text,
             } => {
                 if self.shown() == Some(*session) {
-                    self.entries.push(card(CardKind::Peer, from.clone(), text));
+                    self.interject(card(CardKind::Peer, from.clone(), text));
                 }
                 return;
             }
@@ -911,7 +941,7 @@ impl Model {
             // harness injected it (`MessageDelivered` already shows those).
             AgentEvent::TurnStarted { text, model, .. } => {
                 self.model_id = model;
-                if injected(&text).is_none()
+                if injected(&text).is_empty()
                     && !matches!(self.entries.last(), Some(Entry::User(t)) if *t == text)
                 {
                     self.entries.push(Entry::User(text));
@@ -1546,29 +1576,32 @@ pub fn mcp_entry(text: &str) -> Result<(String, serde_json::Value), String> {
     }
 }
 
-impl From<HistoryEntry> for Entry {
-    fn from(h: HistoryEntry) -> Self {
-        match h {
-            HistoryEntry::User { text } => match injected(&text) {
-                Some((from, body)) => card(CardKind::Peer, from, &body),
-                None => Entry::User(text),
-            },
-            HistoryEntry::Assistant { text } => {
-                Entry::Assistant(Box::new(markdown::Text::complete(&text)))
-            }
-            HistoryEntry::Tool {
-                name,
-                args,
-                output,
-                is_error,
-            } => Entry::Tool {
-                call_id: String::new(),
-                args: describe(&name, &args),
-                name,
-                result: Some((output, is_error)),
-                expanded: None,
-            },
+/// Transcript entries for one history record: an injected user turn holding
+/// several peer messages becomes one card each.
+fn from_history(h: HistoryEntry) -> Vec<Entry> {
+    match h {
+        HistoryEntry::User { text } => match injected(&text).as_slice() {
+            [] => vec![Entry::User(text)],
+            peers => peers
+                .iter()
+                .map(|(from, body)| card(CardKind::Peer, from.clone(), body))
+                .collect(),
+        },
+        HistoryEntry::Assistant { text } => {
+            vec![Entry::Assistant(Box::new(markdown::Text::complete(&text)))]
         }
+        HistoryEntry::Tool {
+            name,
+            args,
+            output,
+            is_error,
+        } => vec![Entry::Tool {
+            call_id: String::new(),
+            args: describe(&name, &args),
+            name,
+            result: Some((output, is_error)),
+            expanded: None,
+        }],
     }
 }
 
@@ -1691,6 +1724,49 @@ mod tests {
         assert!(matches!(m.entries.last(), Some(Entry::Error(_))));
         m.submit("/mcp sync", &tx);
         assert!(matches!(rx.try_recv(), Ok(Command::SyncMcp)));
+    }
+
+    #[test]
+    fn injected_splits_a_batched_turn_and_leaves_human_text_alone() {
+        let text = "<message from=\"pinger\" id=\"m1\" reply_expected=\"false\">\nPONG\n</message>\n<subagent_result name=\"pinger\" session=\"x\" stop=\"end_turn\">\nSent.\n</subagent_result>";
+        assert_eq!(
+            injected(text),
+            vec![
+                ("pinger".to_owned(), "PONG".to_owned()),
+                ("pinger".to_owned(), "Sent.".to_owned()),
+            ]
+        );
+        assert!(injected("<b>\nnot a wrapper\n</b>").is_empty());
+        assert!(injected("hello").is_empty());
+    }
+
+    #[test]
+    fn peer_message_lands_above_streaming_text() {
+        let mut m = Model::new("m".into(), true);
+        let s = SessionId::new();
+        m.session = Some(s);
+        let turn = runtime::TurnId::new();
+        m.apply_agent(AgentEvent::TextDelta {
+            session: s,
+            turn,
+            text: "| a | b |\n|---|---|\n".into(),
+        });
+        m.apply_agent(AgentEvent::MessageDelivered {
+            session: s,
+            from: "pinger".into(),
+            text: "PONG".into(),
+        });
+        m.apply_agent(AgentEvent::TextDelta {
+            session: s,
+            turn,
+            text: "| 1 | 2 |\n".into(),
+        });
+        assert!(matches!(m.entries[0], Entry::Card { .. }));
+        assert_eq!(m.entries.len(), 2);
+        let Entry::Assistant(t) = &m.entries[1] else {
+            panic!("text not kept as one entry");
+        };
+        assert_eq!(t.raw(), "| a | b |\n|---|---|\n| 1 | 2 |\n");
     }
 
     #[test]
