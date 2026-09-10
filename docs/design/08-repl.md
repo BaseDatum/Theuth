@@ -127,10 +127,11 @@ then corrected against the spikes and `repl::tests::capping_binds_out_name`
   coroutine's `try/except` and surfaces at the `gather` await; two such
   errors in one gather produce `RuntimeError: Internal error in monty:
   asyncio scheduler stalled` (the downgraded panic of pydantic/monty#732,
-  which upstream never reproduced). A `try/except` *around* the gather, or
-  around a directly awaited call, works. The bridge appends the workaround
-  to that error text and the Runtime prompt block states the rule; remove
-  both when upstream fixes it.
+  which upstream never reproduced; likely introduced by #772). Filed as
+  **pydantic/monty#839** with the driver. A `try/except` *around* the
+  gather, or around a directly awaited call, works. The bridge appends the
+  workaround to that error text and the Runtime prompt block states the
+  rule; remove both when #839 is fixed.
 - **Errors.** An uncaught exception is `Err(PoolError::Runtime(
   MontyException))`; `exc.exc_type()` and `Display` give the CPython-style
   traceback with `<python-input-N>` as the file name. A type-check failure
