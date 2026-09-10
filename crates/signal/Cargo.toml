@@ -1,0 +1,40 @@
+[package]
+name = "signal"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Signal messenger frontend for the daemon (design doc 09)"
+
+[dependencies]
+runtime = { workspace = true }
+agent = { workspace = true }
+tools = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+kameo = { workspace = true }
+presage = { workspace = true }
+presage-store-sqlite = { workspace = true }
+qrcode = { workspace = true }
+ts-rs = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+figment = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
+serde_yaml = { workspace = true }
+
+[features]
+ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "agent/ts"]
+
+[lints]
+workspace = true

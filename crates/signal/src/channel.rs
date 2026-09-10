@@ -1,0 +1,1720 @@
+//! Link/connect supervisor, inbound envelopes → agent asks, agent events →
+//! outbound text / reactions / typing (design doc 09 §3.1, §5–8, §10).
+//!
+//! Shape: [`spawn`] runs one supervisor task (linking phase, then a
+//! connected phase over `transport.incoming()`), two ordered worker tasks
+//! (envelopes, bus events) and a small bus-subscriber actor feeding the
+//! event worker. [`Handle`] is what the `"signal"` actor in `lib.rs` talks to.
+
+use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
+
+use agent::{AGENT_ACTOR, AgentEvent, Agents, SendInput, Steer};
+use async_trait::async_trait;
+use futures::StreamExt;
+use kameo::Actor;
+use kameo::actor::{ActorRef, Spawn};
+use kameo::message::{Context, Message};
+use runtime::{Runtime, SessionId};
+use std::sync::{Mutex, MutexGuard, PoisonError};
+use tokio::sync::{mpsc, oneshot};
+use tokio::task::AbortHandle;
+use tokio::time::Instant;
+use tools::{
+    APPROVAL_ACTOR, Approval, ApprovalId, ApprovalRequested, ApprovalResolved, Decision, Resolve,
+};
+use uuid::Uuid;
+
+use crate::commands::{self, Cx, Reply};
+use crate::transport::{IncomingAttachment, Recipient, SignalEnvelope, SignalTransport};
+use crate::{SIGNAL_ACTOR, SignalConfig, SignalEvent, SignalStatus, approvals, text};
+
+/// How long the Signal server keeps a provisioning URL scannable.
+pub const LINK_URL_TTL: Duration = Duration::from_secs(90);
+/// Pause between an expired provisioning URL and the next one.
+pub const LINK_CHAIN_PAUSE: Duration = Duration::from_secs(3);
+/// After this many unscanned URLs in a row, rotate at [`LINK_SLOW_PAUSE`].
+pub const MAX_FAST_LINK_ATTEMPTS: u32 = 10;
+/// Slow rotation cadence once nobody is scanning.
+pub const LINK_SLOW_PAUSE: Duration = Duration::from_secs(300);
+/// A connection that lived this long resets the reconnect backoff.
+pub const STABLE_CONNECTION: Duration = Duration::from_secs(30);
+/// Extra `send_text` attempts per chunk after the first failure.
+pub const SEND_RETRIES: u32 = 2;
+/// Pause between send attempts.
+pub const RETRY_DELAY: Duration = Duration::from_millis(200);
+/// Typing "started" is re-sent this often while a turn runs (clients clear
+/// it after ~15 s).
+pub const TYPING_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
+/// A failed number → ACI lookup is not retried before this.
+pub const ACI_RESOLVE_COOLDOWN: Duration = Duration::from_secs(300);
+
+/// Reconnect backoff: `min(2^min(attempt, 6), 60)` seconds.
+#[must_use]
+pub fn backoff_delay(attempt: u32) -> Duration {
+    Duration::from_secs((1u64 << attempt.min(6)).min(60))
+}
+
+/// Strips ` -.()` and prefixes `+` when what remains is all digits, so
+/// `"+1 (409) 519-3333"` and `"14095193333"` both match `"+14095193333"`.
+#[must_use]
+pub fn normalize_number(s: &str) -> String {
+    let stripped: String = s
+        .trim()
+        .chars()
+        .filter(|c| !matches!(c, ' ' | '-' | '.' | '(' | ')'))
+        .collect();
+    if !stripped.is_empty() && stripped.chars().all(|c| c.is_ascii_digit()) {
+        format!("+{stripped}")
+    } else {
+        stripped
+    }
+}
+
+/// Contact → live session, persisted at `<data_dir>/signal/threads.json` on
+/// every change (09 §6).
+#[derive(Debug)]
+pub struct Threads {
+    path: PathBuf,
+    map: BTreeMap<String, SessionId>,
+}
+
+impl Threads {
+    /// Reads the file; missing or corrupt → empty.
+    #[must_use]
+    pub fn load(data_dir: &Path) -> Self {
+        let path = data_dir.join("signal").join("threads.json");
+        let map = std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default();
+        Self { path, map }
+    }
+
+    fn save(&self) {
+        if let Some(dir) = self.path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let result = serde_json::to_vec_pretty(&self.map)
+            .map_err(std::io::Error::other)
+            .and_then(|bytes| std::fs::write(&self.path, bytes));
+        if let Err(e) = result {
+            tracing::warn!(path = %self.path.display(), error = %e, "failed to save signal threads");
+        }
+    }
+
+    /// The session bound to `number`.
+    #[must_use]
+    pub fn get(&self, number: &str) -> Option<SessionId> {
+        self.map.get(&normalize_number(number)).copied()
+    }
+
+    /// The number whose thread is `session`.
+    #[must_use]
+    pub fn number_for(&self, session: SessionId) -> Option<&str> {
+        self.map
+            .iter()
+            .find(|(_, s)| **s == session)
+            .map(|(n, _)| n.as_str())
+    }
+
+    /// Binds `number` to `session` and saves.
+    pub fn bind(&mut self, number: &str, session: SessionId) {
+        self.map.insert(normalize_number(number), session);
+        self.save();
+    }
+
+    /// Drops `number`'s binding and saves.
+    pub fn unbind(&mut self, number: &str) {
+        if self.map.remove(&normalize_number(number)).is_some() {
+            self.save();
+        }
+    }
+
+    /// Every binding.
+    #[must_use]
+    pub fn all(&self) -> Vec<(String, SessionId)> {
+        self.map.iter().map(|(n, s)| (n.clone(), *s)).collect()
+    }
+}
+
+/// The asks the channel makes of other plugins, behind a trait so the
+/// inbound/outbound paths are testable without live actors.
+#[async_trait]
+trait Port: Send + Sync {
+    async fn send_input(
+        &self,
+        session: Option<SessionId>,
+        text: String,
+    ) -> Result<SessionId, String>;
+    async fn steer(&self, session: SessionId, text: String) -> Result<(), String>;
+    async fn resolve(&self, id: ApprovalId, decision: Decision) -> Result<bool, String>;
+}
+
+/// [`Port`] over the registered `agent` and `approval` actors.
+struct Actors;
+
+fn agents() -> Result<ActorRef<Agents>, String> {
+    ActorRef::<Agents>::lookup(AGENT_ACTOR)
+        .ok()
+        .flatten()
+        .ok_or_else(|| "agent actor is not running".to_string())
+}
+
+#[async_trait]
+impl Port for Actors {
+    async fn send_input(
+        &self,
+        session: Option<SessionId>,
+        text: String,
+    ) -> Result<SessionId, String> {
+        agents()?
+            .ask(SendInput { session, text })
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    async fn steer(&self, session: SessionId, text: String) -> Result<(), String> {
+        agents()?
+            .ask(Steer { session, text })
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    async fn resolve(&self, id: ApprovalId, decision: Decision) -> Result<bool, String> {
+        ActorRef::<Approval>::lookup(APPROVAL_ACTOR)
+            .ok()
+            .flatten()
+            .ok_or_else(|| "approval actor is not running".to_string())?
+            .ask(Resolve { id, decision })
+            .await
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// Bus events the channel renders, in bus order.
+enum Event {
+    Agent(AgentEvent),
+    Requested(ApprovalRequested),
+    Resolved(ApprovalResolved),
+}
+
+/// Bus subscriber: forwards into the ordered event worker.
+#[derive(Actor)]
+struct Bus {
+    tx: mpsc::UnboundedSender<Event>,
+}
+
+impl Message<AgentEvent> for Bus {
+    type Reply = ();
+    async fn handle(&mut self, m: AgentEvent, _: &mut Context<Self, ()>) {
+        let _ = self.tx.send(Event::Agent(m));
+    }
+}
+
+impl Message<ApprovalRequested> for Bus {
+    type Reply = ();
+    async fn handle(&mut self, m: ApprovalRequested, _: &mut Context<Self, ()>) {
+        let _ = self.tx.send(Event::Requested(m));
+    }
+}
+
+impl Message<ApprovalResolved> for Bus {
+    type Reply = ();
+    async fn handle(&mut self, m: ApprovalResolved, _: &mut Context<Self, ()>) {
+        let _ = self.tx.send(Event::Resolved(m));
+    }
+}
+
+/// Requests from [`Handle`] to the supervisor.
+enum Control {
+    Link(oneshot::Sender<Result<String, String>>),
+    Unlink(oneshot::Sender<Result<(), String>>),
+}
+
+/// Sealed-sender attribution (09 §5.2): ACI → configured number.
+#[derive(Default)]
+struct AciDirectory {
+    by_aci: HashMap<Uuid, String>,
+    failed_at: HashMap<String, Instant>,
+}
+
+/// Per-session outbound state between `TurnStarted` and `TurnFinished`.
+#[derive(Default)]
+struct Turn {
+    in_flight: bool,
+    text: String,
+    /// User messages (author, ts) waiting for the terminal reaction (§8.2).
+    marks: Vec<(Recipient, u64)>,
+    typing: Option<AbortHandle>,
+}
+
+struct State {
+    allowed: Vec<String>,
+    threads: Threads,
+    aci: AciDirectory,
+    turns: HashMap<SessionId, Turn>,
+    last_event: Option<SignalEvent>,
+    link_url: Option<String>,
+}
+
+struct Channel {
+    transport: Arc<dyn SignalTransport>,
+    port: Arc<dyn Port>,
+    rt: Runtime,
+    owner: String,
+    device_name: String,
+    control: mpsc::UnboundedSender<Control>,
+    // ponytail: one std mutex for all state, never held across an await; split if it ever contends.
+    state: Mutex<State>,
+    /// Async lock: `commands::handle` needs `&mut Pending` across its asks.
+    approvals: tokio::sync::Mutex<approvals::Pending>,
+}
+
+/// Control handle the `"signal"` actor uses. Cheap to clone.
+#[derive(Clone)]
+pub struct Handle {
+    chan: Arc<Channel>,
+}
+
+impl Handle {
+    /// The current provisioning URL (starting the linking phase if it is
+    /// paused), or `Err("already linked as <number>")`.
+    pub async fn link(&self) -> Result<String, String> {
+        self.chan.control_link().await
+    }
+
+    /// The 09 §4 snapshot.
+    pub async fn status(&self) -> SignalStatus {
+        self.chan.status().await
+    }
+
+    /// Adds `number` to the live allowlist (the config file is `lib.rs`'s job).
+    pub async fn allow(&self, number: String) -> Result<(), String> {
+        let number = normalize_number(&number);
+        if number.is_empty() {
+            return Err("not a phone number".into());
+        }
+        if number == self.chan.owner {
+            return Err(format!("{number} is the owner"));
+        }
+        let mut s = self.chan.lock();
+        if !s.allowed.contains(&number) {
+            s.allowed.push(number);
+        }
+        Ok(())
+    }
+
+    /// Removes `number` from the live allowlist.
+    pub async fn remove_allowed(&self, number: String) -> Result<(), String> {
+        let number = normalize_number(&number);
+        let mut s = self.chan.lock();
+        let before = s.allowed.len();
+        s.allowed.retain(|n| *n != number);
+        if s.allowed.len() == before {
+            return Err(format!("{number} is not in the allowed list"));
+        }
+        Ok(())
+    }
+
+    /// Stops the pump, deletes `presage.db`, publishes `Unlinked` and
+    /// re-enters the linking phase. Threads are kept.
+    pub async fn unlink(&self) -> Result<(), String> {
+        self.chan.control_unlink().await
+    }
+}
+
+/// Spawns the supervisor under `rt.shutdown`; returns immediately.
+pub fn spawn(transport: Arc<dyn SignalTransport>, cfg: SignalConfig, rt: Runtime) -> Handle {
+    spawn_with(transport, cfg, rt, Arc::new(Actors))
+}
+
+fn spawn_with(
+    transport: Arc<dyn SignalTransport>,
+    cfg: SignalConfig,
+    rt: Runtime,
+    port: Arc<dyn Port>,
+) -> Handle {
+    let (tx, rx) = mpsc::unbounded_channel();
+    let chan = Arc::new(Channel::new(transport, cfg, rt, port, tx));
+    tokio::spawn(run(Arc::clone(&chan), rx));
+    Handle { chan }
+}
+
+/// Epoch milliseconds (URL expiry stamps).
+fn now_ms() -> u64 {
+    u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or_default()
+}
+
+const STOPPED: &str = "signal channel stopped";
+
+/// Supervisor: linking phase ↔ connected phase until shutdown (09 §3.1).
+async fn run(chan: Arc<Channel>, mut ctrl: mpsc::UnboundedReceiver<Control>) {
+    let (env_tx, mut env_rx) = mpsc::unbounded_channel::<SignalEnvelope>();
+    let (ev_tx, mut ev_rx) = mpsc::unbounded_channel::<Event>();
+    let bus = Bus::spawn_with_mailbox(Bus { tx: ev_tx }, runtime::subscriber_mailbox());
+    chan.rt.subscribe::<Bus, AgentEvent>(&bus).await;
+    chan.rt.subscribe::<Bus, ApprovalRequested>(&bus).await;
+    chan.rt.subscribe::<Bus, ApprovalResolved>(&bus).await;
+    let inbound = {
+        let chan = Arc::clone(&chan);
+        tokio::spawn(async move {
+            while let Some(env) = env_rx.recv().await {
+                chan.handle_envelope(env).await;
+            }
+        })
+    };
+    let events = {
+        let chan = Arc::clone(&chan);
+        tokio::spawn(async move {
+            while let Some(ev) = ev_rx.recv().await {
+                chan.handle_event(ev).await;
+            }
+        })
+    };
+    let mut skip_check = false;
+    loop {
+        if chan.linking(&mut ctrl, skip_check).await.is_none() {
+            break;
+        }
+        match chan.connected(&mut ctrl, &env_tx).await {
+            Some(force) => skip_check = force,
+            None => break,
+        }
+    }
+    drop(env_tx);
+    inbound.abort();
+    events.abort();
+    bus.kill();
+}
+
+impl Channel {
+    fn new(
+        transport: Arc<dyn SignalTransport>,
+        cfg: SignalConfig,
+        rt: Runtime,
+        port: Arc<dyn Port>,
+        control: mpsc::UnboundedSender<Control>,
+    ) -> Self {
+        let owner = normalize_number(&cfg.owner);
+        let allowed = cfg
+            .allowed
+            .iter()
+            .map(|n| normalize_number(n))
+            .filter(|n| !n.is_empty() && *n != owner)
+            .collect();
+        Self {
+            transport,
+            port,
+            owner,
+            device_name: cfg.device_name,
+            control,
+            state: Mutex::new(State {
+                allowed,
+                threads: Threads::load(&rt.data_dir),
+                aci: AciDirectory::default(),
+                turns: HashMap::new(),
+                last_event: None,
+                link_url: None,
+            }),
+            approvals: tokio::sync::Mutex::new(approvals::Pending::default()),
+            rt,
+        }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, State> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    async fn publish(&self, ev: SignalEvent) {
+        self.lock().last_event = Some(ev.clone());
+        self.rt.publish(ev).await;
+    }
+
+    async fn account_number(&self) -> Option<String> {
+        self.transport
+            .account()
+            .await
+            .ok()
+            .flatten()
+            .map(|r| r.number)
+            .filter(|n| !n.is_empty())
+    }
+
+    async fn already_linked(&self) -> String {
+        format!(
+            "already linked as {}",
+            self.account_number()
+                .await
+                .unwrap_or_else(|| "unknown".into())
+        )
+    }
+
+    async fn status(&self) -> SignalStatus {
+        let registered = self.transport.is_registered().await.unwrap_or(false);
+        let number = self.account_number().await;
+        let s = self.lock();
+        SignalStatus {
+            state: s.last_event.clone(),
+            registered,
+            number,
+            owner: self.owner.clone(),
+            allowed: s.allowed.clone(),
+            threads: s.threads.all(),
+        }
+    }
+
+    async fn control_link(&self) -> Result<String, String> {
+        let (tx, rx) = oneshot::channel();
+        self.control
+            .send(Control::Link(tx))
+            .map_err(|_| STOPPED.to_string())?;
+        rx.await.map_err(|_| STOPPED.to_string())?
+    }
+
+    async fn control_unlink(&self) -> Result<(), String> {
+        let (tx, rx) = oneshot::channel();
+        self.control
+            .send(Control::Unlink(tx))
+            .map_err(|_| STOPPED.to_string())?;
+        rx.await.map_err(|_| STOPPED.to_string())?
+    }
+
+    // -- supervisor ------------------------------------------------------
+
+    /// Linking phase: returns `Some` once registered, `None` on shutdown.
+    /// `skip_check` (after an unlink) provisions without consulting
+    /// `is_registered`, which the frozen transport keeps in memory.
+    async fn linking(
+        &self,
+        ctrl: &mut mpsc::UnboundedReceiver<Control>,
+        mut skip_check: bool,
+    ) -> Option<()> {
+        let mut fault: u32 = 0;
+        let mut expired: u32 = 0;
+        let mut waiters: Vec<oneshot::Sender<Result<String, String>>> = Vec::new();
+        loop {
+            if self.rt.shutdown.is_cancelled() {
+                return None;
+            }
+            if !std::mem::take(&mut skip_check) {
+                match self.transport.is_registered().await {
+                    Ok(true) => {
+                        let msg = self.already_linked().await;
+                        for w in waiters.drain(..) {
+                            let _ = w.send(Err(msg.clone()));
+                        }
+                        return Some(());
+                    }
+                    Ok(false) => {}
+                    Err(e) => {
+                        tracing::warn!(error = %e, "signal registration check failed");
+                        self.sleep_linking(ctrl, backoff_delay(fault), &mut waiters)
+                            .await?;
+                        fault = fault.saturating_add(1);
+                        continue;
+                    }
+                }
+            }
+            let attempt = match self.transport.link_device(&self.device_name).await {
+                Ok(attempt) => attempt,
+                Err(e) => {
+                    tracing::warn!(error = %e, "signal provisioning could not start");
+                    for w in waiters.drain(..) {
+                        let _ = w.send(Err(format!("provisioning failed to start: {e}")));
+                    }
+                    self.sleep_linking(ctrl, backoff_delay(fault), &mut waiters)
+                        .await?;
+                    fault = fault.saturating_add(1);
+                    continue;
+                }
+            };
+            fault = 0;
+            let url = attempt.url.0;
+            let expires_at_ms = now_ms() + u64::try_from(LINK_URL_TTL.as_millis()).unwrap_or(0);
+            tracing::warn!(%url, "signal provisioning required (scan from Signal → Settings → Linked devices)");
+            self.lock().link_url = Some(url.clone());
+            self.publish(SignalEvent::LinkUrl {
+                url: url.clone(),
+                expires_at_ms,
+            })
+            .await;
+            for w in waiters.drain(..) {
+                let _ = w.send(Ok(url.clone()));
+            }
+            let mut done = attempt.done;
+            let outcome = loop {
+                tokio::select! {
+                    () = self.rt.shutdown.cancelled() => return None,
+                    result = &mut done => break result,
+                    c = ctrl.recv() => match c {
+                        Some(Control::Link(reply)) => { let _ = reply.send(Ok(url.clone())); }
+                        Some(Control::Unlink(reply)) => { let _ = reply.send(Err("not linked".into())); }
+                        None => return None,
+                    },
+                }
+            };
+            self.lock().link_url = None;
+            match outcome {
+                Ok(()) => {
+                    let number = self.account_number().await.unwrap_or_default();
+                    tracing::info!(%number, "signal device linked");
+                    self.publish(SignalEvent::Linked { number }).await;
+                    return Some(());
+                }
+                Err(e) => {
+                    expired = expired.saturating_add(1);
+                    tracing::warn!(error = %e, attempts = expired, "signal provisioning URL expired unscanned; rotating");
+                    let pause = if expired >= MAX_FAST_LINK_ATTEMPTS {
+                        LINK_SLOW_PAUSE
+                    } else {
+                        LINK_CHAIN_PAUSE
+                    };
+                    self.sleep_linking(ctrl, pause, &mut waiters).await?;
+                }
+            }
+        }
+    }
+
+    /// Sleeps in the linking phase. A `Link` request cuts the pause short
+    /// (its reply is queued for the next URL); `Unlink` is refused.
+    /// `None` on shutdown.
+    async fn sleep_linking(
+        &self,
+        ctrl: &mut mpsc::UnboundedReceiver<Control>,
+        delay: Duration,
+        waiters: &mut Vec<oneshot::Sender<Result<String, String>>>,
+    ) -> Option<()> {
+        let sleep = tokio::time::sleep(delay);
+        tokio::pin!(sleep);
+        loop {
+            tokio::select! {
+                () = self.rt.shutdown.cancelled() => return None,
+                () = &mut sleep => return Some(()),
+                c = ctrl.recv() => match c {
+                    Some(Control::Link(reply)) => { waiters.push(reply); return Some(()); }
+                    Some(Control::Unlink(reply)) => { let _ = reply.send(Err("not linked".into())); }
+                    None => return None,
+                },
+            }
+        }
+    }
+
+    /// Connected phase: pumps `incoming()` into the envelope worker,
+    /// reconnecting with backoff. Returns `Some(force_relink)` when the
+    /// registration is gone (`true` after an explicit unlink), `None` on
+    /// shutdown.
+    async fn connected(
+        &self,
+        ctrl: &mut mpsc::UnboundedReceiver<Control>,
+        env_tx: &mpsc::UnboundedSender<SignalEnvelope>,
+    ) -> Option<bool> {
+        let mut attempt: u32 = 0;
+        loop {
+            let mut stream = self.transport.incoming();
+            self.publish(SignalEvent::Connected).await;
+            let connected_at = Instant::now();
+            let unlink = loop {
+                tokio::select! {
+                    () = self.rt.shutdown.cancelled() => return None,
+                    env = stream.next() => match env {
+                        Some(env) => {
+                            attempt = 0;
+                            if env_tx.send(env).is_err() {
+                                return None;
+                            }
+                        }
+                        None => break None,
+                    },
+                    c = ctrl.recv() => match c {
+                        Some(Control::Link(reply)) => { let _ = reply.send(Err(self.already_linked().await)); }
+                        Some(Control::Unlink(reply)) => break Some(reply),
+                        None => return None,
+                    },
+                }
+            };
+            drop(stream);
+            if let Some(reply) = unlink {
+                self.unlink().await;
+                let _ = reply.send(Ok(()));
+                return Some(true);
+            }
+            if matches!(self.transport.is_registered().await, Ok(false)) {
+                tracing::warn!("signal account no longer registered; back to linking");
+                self.publish(SignalEvent::Unlinked).await;
+                return Some(false);
+            }
+            if connected_at.elapsed() >= STABLE_CONNECTION {
+                attempt = 0;
+            }
+            let delay = backoff_delay(attempt);
+            attempt = attempt.saturating_add(1);
+            if attempt == 1 {
+                tracing::info!(
+                    delay_s = delay.as_secs(),
+                    "signal stream ended; reconnecting"
+                );
+            } else {
+                tracing::warn!(
+                    delay_s = delay.as_secs(),
+                    attempt,
+                    "signal stream disconnected; reconnecting"
+                );
+                self.publish(SignalEvent::Disconnected {
+                    retry_in_secs: delay.as_secs(),
+                })
+                .await;
+            }
+            let sleep = tokio::time::sleep(delay);
+            tokio::pin!(sleep);
+            loop {
+                tokio::select! {
+                    () = self.rt.shutdown.cancelled() => return None,
+                    () = &mut sleep => break,
+                    c = ctrl.recv() => match c {
+                        Some(Control::Link(reply)) => { let _ = reply.send(Err(self.already_linked().await)); }
+                        Some(Control::Unlink(reply)) => {
+                            self.unlink().await;
+                            let _ = reply.send(Ok(()));
+                            return Some(true);
+                        }
+                        None => return None,
+                    },
+                }
+            }
+        }
+    }
+
+    /// Deletes the presage store files and publishes `Unlinked` (09 §11.4).
+    async fn unlink(&self) {
+        let dir = self.rt.data_dir.join("signal");
+        for name in ["presage.db", "presage.db-wal", "presage.db-shm"] {
+            match tokio::fs::remove_file(dir.join(name)).await {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => tracing::warn!(file = name, error = %e, "failed to delete presage store"),
+            }
+        }
+        tracing::info!("signal device unlinked; back to linking");
+        self.publish(SignalEvent::Unlinked).await;
+    }
+
+    // -- trust -----------------------------------------------------------
+
+    fn is_owner(&self, number: &str) -> bool {
+        !self.owner.is_empty() && normalize_number(number) == self.owner
+    }
+
+    fn is_allowed(&self, number: &str) -> bool {
+        if self.is_owner(number) {
+            return true;
+        }
+        let number = normalize_number(number);
+        !number.is_empty() && self.lock().allowed.contains(&number)
+    }
+
+    /// Rewrites a sealed-sender (ACI only) sender to its configured number
+    /// via the [`AciDirectory`] (09 §5.2). Allowed senders come back
+    /// normalised.
+    async fn resolve_sender(&self, mut sender: Recipient) -> Recipient {
+        if self.is_allowed(&sender.number) {
+            sender.number = normalize_number(&sender.number);
+            return sender;
+        }
+        let Some(aci) = sender.uuid else {
+            return sender;
+        };
+        if let Some(n) = self.lock().aci.by_aci.get(&aci).cloned() {
+            sender.number = n;
+            return sender;
+        }
+        let candidates: Vec<String> = {
+            let s = self.lock();
+            std::iter::once(&self.owner)
+                .chain(s.allowed.iter())
+                .filter(|n| !n.is_empty())
+                .filter(|n| !s.aci.by_aci.values().any(|v| v == *n))
+                .filter(|n| {
+                    s.aci
+                        .failed_at
+                        .get(*n)
+                        .is_none_or(|at| at.elapsed() >= ACI_RESOLVE_COOLDOWN)
+                })
+                .cloned()
+                .collect()
+        };
+        for number in candidates {
+            match self.transport.resolve_uuid(&number).await {
+                Ok(Some(uuid)) => {
+                    tracing::info!(%number, %uuid, "resolved allowed signal number to ACI");
+                    let mut s = self.lock();
+                    s.aci.failed_at.remove(&number);
+                    s.aci.by_aci.insert(uuid, number);
+                }
+                Ok(None) => {
+                    tracing::info!(%number, "signal number has no known ACI; save it as a contact on the primary phone");
+                    self.lock().aci.failed_at.insert(number, Instant::now());
+                }
+                Err(e) => {
+                    tracing::debug!(%number, error = %e, "signal ACI resolution failed");
+                    self.lock().aci.failed_at.insert(number, Instant::now());
+                }
+            }
+        }
+        if let Some(n) = self.lock().aci.by_aci.get(&aci).cloned() {
+            sender.number = n;
+        }
+        sender
+    }
+
+    // -- sends -----------------------------------------------------------
+
+    /// `send_text` with [`SEND_RETRIES`]; the sent timestamp on success.
+    async fn send_text(&self, to: &Recipient, text: &str) -> Option<u64> {
+        for attempt in 0..=SEND_RETRIES {
+            match self.transport.send_text(to, text).await {
+                Ok(ts) => return Some(ts),
+                Err(e) => {
+                    tracing::warn!(to = %to.number, attempt, error = %e, "signal send failed");
+                    if attempt < SEND_RETRIES {
+                        tokio::time::sleep(RETRY_DELAY).await;
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Chunks and sends plain text; the last chunk's timestamp.
+    async fn send_chunks(&self, to: &Recipient, plain: &str) -> Option<u64> {
+        let mut last = None;
+        for chunk in text::chunk_text(plain, text::MAX_CHUNK_CHARS) {
+            last = self.send_text(to, &chunk).await;
+        }
+        last
+    }
+
+    async fn react(&self, to: &Recipient, emoji: &str, author: &Recipient, ts: u64) {
+        if let Err(e) = self.transport.send_reaction(to, emoji, author, ts).await {
+            tracing::debug!(error = %e, emoji, "failed to send reaction");
+        }
+    }
+
+    async fn typing(&self, to: &Recipient, active: bool) {
+        if let Err(e) = self.transport.send_typing(to, active).await {
+            tracing::debug!(error = %e, "failed to send typing indicator");
+        }
+    }
+
+    // -- inbound (09 §7) -------------------------------------------------
+
+    async fn handle_envelope(&self, env: SignalEnvelope) {
+        let sender = self.resolve_sender(env.sender).await;
+        if !self.is_allowed(&sender.number) {
+            tracing::warn!(
+                sender = %if sender.number.is_empty() { "unknown" } else { sender.number.as_str() },
+                aci = ?sender.uuid,
+                "dropping signal message from a number not in the allowlist"
+            );
+            return;
+        }
+        if let Err(e) = self.transport.send_receipt(&sender, env.timestamp).await {
+            tracing::debug!(error = %e, "failed to send read receipt");
+        }
+        if let Some(reaction) = env.reaction {
+            if reaction.remove {
+                return;
+            }
+            let id = self
+                .approvals
+                .lock()
+                .await
+                .by_reaction(&sender.number, reaction.target_timestamp);
+            if let (Some(id), Some(decision)) = (id, approvals::decision_for_emoji(&reaction.emoji))
+                && let Err(e) = self.port.resolve(id, decision).await
+            {
+                tracing::warn!(error = %e, "approval resolve by reaction failed");
+            }
+            return;
+        }
+        let body = env.text.as_deref().map(str::trim).unwrap_or_default();
+        if !body.is_empty() {
+            let reply = {
+                let status = self.status().await;
+                let session = self.lock().threads.get(&sender.number);
+                let mut pending = self.approvals.lock().await;
+                let cx = Cx {
+                    session,
+                    is_owner: self.is_owner(&sender.number),
+                    status,
+                    approvals: &mut pending,
+                };
+                commands::handle(cx, body).await
+            };
+            if let Some(reply) = reply {
+                self.apply_reply(&sender, reply).await;
+                return;
+            }
+        }
+        let mut lines: Vec<String> = Vec::new();
+        if let Some(quoted) = env
+            .quote_text
+            .as_deref()
+            .map(str::trim)
+            .filter(|q| !q.is_empty())
+        {
+            lines.push(format!("(replying to: \"{quoted}\")"));
+        }
+        if !body.is_empty() {
+            lines.push(body.to_owned());
+        }
+        lines.extend(self.save_attachments(env.timestamp, &env.attachments).await);
+        if lines.is_empty() {
+            return;
+        }
+        let input = lines.join("\n");
+        self.react(&sender, "👀", &sender, env.timestamp).await;
+        let (session, in_flight) = {
+            let s = self.lock();
+            let session = s.threads.get(&sender.number);
+            let in_flight = session.is_some_and(|id| s.turns.get(&id).is_some_and(|t| t.in_flight));
+            (session, in_flight)
+        };
+        let result = match session {
+            Some(id) if in_flight => self.port.steer(id, input).await.map(|()| id),
+            _ => self.port.send_input(session, input).await,
+        };
+        match result {
+            Ok(id) => {
+                let mut s = self.lock();
+                if session != Some(id) {
+                    s.threads.bind(&sender.number, id);
+                }
+                s.turns
+                    .entry(id)
+                    .or_default()
+                    .marks
+                    .push((sender.clone(), env.timestamp));
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "agent ask failed");
+                self.send_chunks(&sender, &format!("⚠️ {e}")).await;
+                self.react(&sender, "❌", &sender, env.timestamp).await;
+            }
+        }
+    }
+
+    /// Acts on a slash-command outcome (09 §9).
+    async fn apply_reply(&self, sender: &Recipient, reply: Reply) {
+        let text = match reply {
+            Reply::Text(t) => t,
+            Reply::NewThread => {
+                self.lock().threads.unbind(&sender.number);
+                "new thread; next message starts a session".into()
+            }
+            Reply::Resume(id) => {
+                self.lock().threads.bind(&sender.number, id);
+                format!("resumed {id}")
+            }
+            Reply::Allow(n) => match ask_signal(crate::Allow(n.clone())).await {
+                Ok(()) => format!("{n} allowed"),
+                Err(e) => e,
+            },
+            Reply::RemoveAllowed(n) => match ask_signal(crate::RemoveAllowed(n.clone())).await {
+                Ok(()) => format!("{n} removed"),
+                Err(e) => e,
+            },
+            Reply::Unlink => match ask_signal(crate::Unlink).await {
+                // Not registered any more: nothing to send.
+                Ok(()) => return,
+                Err(e) => e,
+            },
+            Reply::Link => match self.control_link().await {
+                Ok(url) => url,
+                Err(e) => e,
+            },
+        };
+        self.send_chunks(sender, &text).await;
+    }
+
+    /// Writes attachments to `<data_dir>/signal/inbox/<ts>-<n>.<ext>` and
+    /// returns one `[attachment: …]` line each (09 §7.4).
+    async fn save_attachments(&self, ts: u64, attachments: &[IncomingAttachment]) -> Vec<String> {
+        let mut lines = Vec::with_capacity(attachments.len());
+        if attachments.is_empty() {
+            return lines;
+        }
+        let dir = self.rt.data_dir.join("signal").join("inbox");
+        if let Err(e) = tokio::fs::create_dir_all(&dir).await {
+            tracing::warn!(error = %e, "failed to create signal inbox dir");
+            return lines;
+        }
+        for (n, a) in attachments.iter().enumerate() {
+            let mime = effective_mime(&a.mime, &a.bytes);
+            let path = dir.join(format!("{ts}-{n}.{}", extension_for(&mime)));
+            if let Err(e) = tokio::fs::write(&path, &a.bytes).await {
+                tracing::warn!(error = %e, path = %path.display(), "failed to save attachment");
+                continue;
+            }
+            let mut detail = format!("{mime}, {}", fmt_size(a.bytes.len()));
+            if a.voice_note {
+                detail.push_str(", voice note");
+                if let Some(ms) = a.duration_ms {
+                    detail.push_str(&format!(", {} s", ms.div_ceil(1000)));
+                }
+            }
+            lines.push(format!("[attachment: {} ({detail})]", path.display()));
+        }
+        lines
+    }
+
+    // -- outbound (09 §8, §10) -------------------------------------------
+
+    async fn handle_event(&self, ev: Event) {
+        match ev {
+            Event::Agent(ev) => self.handle_agent(ev).await,
+            Event::Requested(req) => {
+                let number = self
+                    .lock()
+                    .threads
+                    .number_for(req.session)
+                    .map(str::to_owned);
+                let Some(number) = number else { return };
+                let code = self.approvals.lock().await.insert(&req, &number);
+                let to = Recipient::new(number);
+                if let Some(ts) = self
+                    .send_chunks(&to, &approvals::message(&req, &code))
+                    .await
+                {
+                    self.approvals.lock().await.mark_sent(&code, ts);
+                }
+            }
+            Event::Resolved(res) => {
+                let Some(entry) = self.approvals.lock().await.resolve(&res) else {
+                    return;
+                };
+                let to = Recipient::new(entry.number);
+                if let Some(ts) = entry.sent_ts {
+                    match self.transport.account().await {
+                        Ok(Some(me)) => {
+                            self.react(&to, approvals::reaction_for(&res), &me, ts)
+                                .await
+                        }
+                        _ => tracing::debug!("own account unknown; skipping approval reaction"),
+                    }
+                }
+                if res.timed_out {
+                    self.send_chunks(&to, &format!("⌛ {} expired", entry.code))
+                        .await;
+                }
+            }
+        }
+    }
+
+    async fn handle_agent(&self, ev: AgentEvent) {
+        match ev {
+            AgentEvent::TurnStarted { session, .. } => {
+                let number = {
+                    let mut s = self.lock();
+                    let Some(number) = s.threads.number_for(session).map(str::to_owned) else {
+                        return;
+                    };
+                    let turn = s.turns.entry(session).or_default();
+                    turn.in_flight = true;
+                    if let Some(h) = turn.typing.take() {
+                        h.abort();
+                    }
+                    number
+                };
+                let to = Recipient::new(number);
+                self.typing(&to, true).await;
+                let transport = Arc::clone(&self.transport);
+                let typing = tokio::spawn(async move {
+                    loop {
+                        tokio::time::sleep(TYPING_REFRESH_INTERVAL).await;
+                        if let Err(e) = transport.send_typing(&to, true).await {
+                            tracing::debug!(error = %e, "failed to refresh typing indicator");
+                        }
+                    }
+                })
+                .abort_handle();
+                self.lock().turns.entry(session).or_default().typing = Some(typing);
+            }
+            AgentEvent::TextDelta { session, text, .. } => {
+                let mut s = self.lock();
+                if s.threads.number_for(session).is_some() {
+                    s.turns.entry(session).or_default().text.push_str(&text);
+                }
+            }
+            AgentEvent::TurnFinished {
+                session,
+                stop_reason,
+                ..
+            } => {
+                let (number, turn) = {
+                    let mut s = self.lock();
+                    (
+                        s.threads.number_for(session).map(str::to_owned),
+                        s.turns.remove(&session),
+                    )
+                };
+                let Some(mut turn) = turn else { return };
+                if let Some(h) = turn.typing.take() {
+                    h.abort();
+                }
+                let Some(number) = number else { return };
+                let to = Recipient::new(number);
+                self.typing(&to, false).await;
+                let plain = text::markdown_to_plain(&turn.text);
+                if !plain.trim().is_empty() {
+                    self.send_chunks(&to, &plain).await;
+                }
+                let emoji = match stop_reason.as_str() {
+                    "cancelled" => "🛑",
+                    "error" => "❌",
+                    _ => "✅",
+                };
+                for (author, ts) in &turn.marks {
+                    self.react(&to, emoji, author, *ts).await;
+                }
+            }
+            AgentEvent::Error {
+                session, message, ..
+            } => {
+                let (number, marks) = {
+                    let s = self.lock();
+                    (
+                        s.threads.number_for(session).map(str::to_owned),
+                        s.turns
+                            .get(&session)
+                            .map(|t| t.marks.clone())
+                            .unwrap_or_default(),
+                    )
+                };
+                let Some(number) = number else { return };
+                let to = Recipient::new(number);
+                self.send_chunks(&to, &format!("⚠️ {message}")).await;
+                for (author, ts) in &marks {
+                    self.react(&to, "❌", author, *ts).await;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Asks the `"signal"` actor so `lib.rs` keeps config persistence in one place.
+async fn ask_signal<M>(m: M) -> Result<(), String>
+where
+    M: Send + 'static,
+    crate::Signal: Message<M, Reply = Result<(), String>>,
+{
+    let actor = ActorRef::<crate::Signal>::lookup(SIGNAL_ACTOR)
+        .ok()
+        .flatten()
+        .ok_or_else(|| "signal actor is not running".to_string())?;
+    actor.ask(m).await.map_err(|e| e.to_string())
+}
+
+/// The declared MIME unless it is generic, then the magic-byte guess.
+fn effective_mime(declared: &str, bytes: &[u8]) -> String {
+    let base = declared
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let generic = matches!(
+        base.as_str(),
+        "" | "application/octet-stream" | "binary/octet-stream" | "application/binary"
+    );
+    if !generic {
+        return base;
+    }
+    sniff(bytes)
+        .unwrap_or(if base.is_empty() {
+            "application/octet-stream"
+        } else {
+            base.as_str()
+        })
+        .to_owned()
+}
+
+fn sniff(b: &[u8]) -> Option<&'static str> {
+    if b.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
+        Some("image/png")
+    } else if b.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("image/jpeg")
+    } else if b.starts_with(b"GIF87a") || b.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if b.len() >= 12 && b.starts_with(b"RIFF") && &b[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else if b.starts_with(b"%PDF") {
+        Some("application/pdf")
+    } else if b.starts_with(b"OggS") {
+        Some("audio/ogg")
+    } else {
+        None
+    }
+}
+
+fn extension_for(mime: &str) -> String {
+    match mime {
+        "image/jpeg" => "jpg".into(),
+        "text/plain" => "txt".into(),
+        "audio/mpeg" => "mp3".into(),
+        "audio/mp4" => "m4a".into(),
+        "application/octet-stream" => "bin".into(),
+        _ => {
+            let sub: String = mime
+                .rsplit('/')
+                .next()
+                .unwrap_or_default()
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric())
+                .collect();
+            if sub.is_empty() { "bin".into() } else { sub }
+        }
+    }
+}
+
+fn fmt_size(bytes: usize) -> String {
+    const KIB: usize = 1024;
+    const MIB: usize = KIB * 1024;
+    if bytes >= MIB {
+        format!("{:.1} MiB", bytes as f64 / MIB as f64)
+    } else if bytes >= KIB {
+        format!("{} KiB", bytes.div_ceil(KIB))
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tools::Risk;
+
+    use super::*;
+    use crate::mock::{MockTransport, SentItem};
+    use crate::transport::IncomingReaction;
+
+    const OWNER: &str = "+15550001111";
+    const FRIEND: &str = "+15550002222";
+
+    #[derive(Debug, PartialEq)]
+    enum Call {
+        SendInput(Option<SessionId>, String),
+        Steer(SessionId, String),
+        Resolve(ApprovalId, Decision),
+    }
+
+    struct Stub {
+        session: SessionId,
+        calls: Mutex<Vec<Call>>,
+    }
+
+    impl Stub {
+        fn calls(&self) -> Vec<Call> {
+            std::mem::take(&mut *self.calls.lock().unwrap())
+        }
+    }
+
+    #[async_trait]
+    impl Port for Stub {
+        async fn send_input(
+            &self,
+            session: Option<SessionId>,
+            text: String,
+        ) -> Result<SessionId, String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(Call::SendInput(session, text));
+            Ok(session.unwrap_or(self.session))
+        }
+        async fn steer(&self, session: SessionId, text: String) -> Result<(), String> {
+            self.calls.lock().unwrap().push(Call::Steer(session, text));
+            Ok(())
+        }
+        async fn resolve(&self, id: ApprovalId, decision: Decision) -> Result<bool, String> {
+            self.calls.lock().unwrap().push(Call::Resolve(id, decision));
+            Ok(true)
+        }
+    }
+
+    #[derive(Actor)]
+    struct Recorder {
+        events: Arc<Mutex<Vec<SignalEvent>>>,
+    }
+
+    impl Message<SignalEvent> for Recorder {
+        type Reply = ();
+        async fn handle(&mut self, m: SignalEvent, _: &mut Context<Self, ()>) {
+            self.events.lock().unwrap().push(m);
+        }
+    }
+
+    struct Fixture {
+        transport: MockTransport,
+        stub: Arc<Stub>,
+        chan: Arc<Channel>,
+        handle: Handle,
+        events: Arc<Mutex<Vec<SignalEvent>>>,
+        _dir: tempfile::TempDir,
+    }
+
+    impl Fixture {
+        fn events(&self) -> Vec<SignalEvent> {
+            self.events.lock().unwrap().clone()
+        }
+
+        fn disconnects(&self) -> Vec<u64> {
+            self.events()
+                .into_iter()
+                .filter_map(|e| match e {
+                    SignalEvent::Disconnected { retry_in_secs } => Some(retry_in_secs),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        /// Spawns the supervisor on this fixture's runtime.
+        fn start(self) -> Self {
+            let handle = spawn_with(
+                Arc::new(self.transport.clone()),
+                cfg(),
+                self.chan.rt.clone(),
+                Arc::clone(&self.stub) as Arc<dyn Port>,
+            );
+            Self {
+                chan: Arc::clone(&handle.chan),
+                handle,
+                ..self
+            }
+        }
+
+        fn link_urls(&self) -> usize {
+            self.events()
+                .iter()
+                .filter(|e| matches!(e, SignalEvent::LinkUrl { .. }))
+                .count()
+        }
+
+        /// Polls (advancing paused time) until `pred` holds.
+        async fn until(&self, mut pred: impl FnMut(&Self) -> bool) {
+            tokio::time::timeout(Duration::from_secs(3600), async {
+                while !pred(self) {
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+            })
+            .await
+            .expect("condition not reached");
+        }
+    }
+
+    fn cfg() -> SignalConfig {
+        SignalConfig {
+            owner: OWNER.into(),
+            allowed: vec![FRIEND.into()],
+            ..SignalConfig::default()
+        }
+    }
+
+    /// An unstarted channel (call `start` for the supervisor tests).
+    async fn fixture() -> Fixture {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let rec = Recorder::spawn_with_mailbox(
+            Recorder {
+                events: Arc::clone(&events),
+            },
+            runtime::subscriber_mailbox(),
+        );
+        rt.subscribe::<Recorder, SignalEvent>(&rec).await;
+        let transport = MockTransport::new();
+        transport.set_account(Some(Recipient::new("+15559990000")));
+        let stub = Arc::new(Stub {
+            session: SessionId::new(),
+            calls: Mutex::new(Vec::new()),
+        });
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let handle = Handle {
+            chan: Arc::new(Channel::new(
+                Arc::new(transport.clone()),
+                cfg(),
+                rt,
+                Arc::clone(&stub) as Arc<dyn Port>,
+                tx,
+            )),
+        };
+        Fixture {
+            transport,
+            stub,
+            chan: Arc::clone(&handle.chan),
+            handle,
+            events,
+            _dir: dir,
+        }
+    }
+
+    fn env(from: &str, ts: u64, text: &str) -> SignalEnvelope {
+        SignalEnvelope {
+            sender: Recipient::new(from),
+            timestamp: ts,
+            text: Some(text.into()),
+            quote_text: None,
+            attachments: Vec::new(),
+            reaction: None,
+        }
+    }
+
+    fn finished(session: SessionId, stop: &str) -> AgentEvent {
+        AgentEvent::TurnFinished {
+            session,
+            turn: runtime::TurnId(Uuid::nil()),
+            stop_reason: stop.into(),
+            usage: agent::Usage::default(),
+            context: 0,
+        }
+    }
+
+    fn started(session: SessionId) -> AgentEvent {
+        AgentEvent::TurnStarted {
+            session,
+            turn: runtime::TurnId(Uuid::nil()),
+            text: String::new(),
+            model: String::new(),
+        }
+    }
+
+    #[test]
+    fn backoff_and_numbers() {
+        let secs: Vec<u64> = (0..8).map(|a| backoff_delay(a).as_secs()).collect();
+        assert_eq!(secs, [1, 2, 4, 8, 16, 32, 60, 60]);
+        assert_eq!(normalize_number(" +1 (409) 519-3333 "), "+14095193333");
+        assert_eq!(normalize_number("14095193333"), "+14095193333");
+        assert_eq!(normalize_number("bob"), "bob");
+        assert_eq!(normalize_number(""), "");
+    }
+
+    #[test]
+    fn threads_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = SessionId::new();
+        let mut t = Threads::load(dir.path());
+        t.bind("+1 555 000 1111", id);
+        let t2 = Threads::load(dir.path());
+        assert_eq!(t2.get(OWNER), Some(id));
+        assert_eq!(t2.number_for(id), Some(OWNER));
+        t.unbind(OWNER);
+        assert!(Threads::load(dir.path()).all().is_empty());
+        std::fs::write(dir.path().join("signal/threads.json"), b"{nope").unwrap();
+        assert!(Threads::load(dir.path()).all().is_empty());
+    }
+
+    // -- supervisor (09 §15.2) ------------------------------------------
+
+    #[tokio::test(start_paused = true)]
+    async fn reconnect_backoff_and_stable_reset() {
+        let f = fixture().await;
+        for _ in 0..8 {
+            f.transport.script_connection(Vec::new(), false);
+        }
+        let live = f.transport.script_live();
+        f.transport.script_connection(Vec::new(), true);
+        let start = Instant::now();
+        let f = f.start();
+
+        f.until(|f| f.transport.incoming_calls() == 9).await;
+        // 1 (silent), 2, 4, 8, 16, 32, 60, 60
+        assert_eq!(f.disconnects(), [2, 4, 8, 16, 32, 60, 60]);
+        assert!(start.elapsed() >= Duration::from_secs(183));
+        // Stable for 30 s, then dropped: backoff resets to a silent 1 s.
+        let before = Instant::now();
+        tokio::time::sleep(STABLE_CONNECTION + Duration::from_secs(1)).await;
+        drop(live);
+        f.until(|f| f.transport.incoming_calls() == 10).await;
+        assert_eq!(f.disconnects().len(), 7);
+        assert!(before.elapsed() < Duration::from_secs(34));
+        assert_eq!(
+            f.handle.link().await,
+            Err("already linked as +15559990000".into())
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn link_url_rotation_slows_after_ten() {
+        let f = fixture().await;
+        f.transport.set_registered(false);
+        for i in 0..11 {
+            drop(f.transport.script_link_attempt(format!("sgnl://u{i}")));
+        }
+        let start = Instant::now();
+        let f = f.start();
+        f.until(|f| f.link_urls() == 10).await;
+        let at_ten = start.elapsed();
+        assert!(
+            at_ten >= Duration::from_secs(27) && at_ten < Duration::from_secs(60),
+            "{at_ten:?}"
+        );
+        f.until(|f| f.link_urls() == 11).await;
+        assert!(start.elapsed() >= Duration::from_secs(327));
+        // The 12th (unscripted) attempt hangs: `link` returns its URL.
+        f.until(|f| f.link_urls() == 12).await;
+        assert_eq!(
+            f.handle.link().await.unwrap(),
+            "sgnl://linkdevice?uuid=mock&device=wth"
+        );
+        assert!(f.transport.linked_device_names().iter().all(|n| n == "wth"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn unregistered_after_drop_returns_to_linking() {
+        let f = fixture().await;
+        let live = f.transport.script_live();
+        let f = f.start();
+        f.until(|f| f.transport.incoming_calls() == 1).await;
+        f.transport.set_registered(false);
+        drop(live);
+        f.until(|f| f.transport.linked_device_names().len() == 1)
+            .await;
+        assert!(f.events().contains(&SignalEvent::Unlinked));
+        assert_eq!(
+            f.handle
+                .status()
+                .await
+                .state
+                .map(|e| matches!(e, SignalEvent::LinkUrl { .. })),
+            Some(true)
+        );
+    }
+
+    // -- trust + inbound (09 §15.3–15.4) --------------------------------
+
+    #[tokio::test]
+    async fn stranger_dropped_silently() {
+        let f = fixture().await;
+        f.chan.handle_envelope(env("+19998887777", 1, "hi")).await;
+        assert!(f.transport.sent().is_empty());
+        assert!(f.stub.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn sealed_sender_resolved_and_cached() {
+        let f = fixture().await;
+        let aci = Uuid::new_v4();
+        f.transport.script_uuid(OWNER, aci);
+        let mut e = env("", 1, "hi");
+        e.sender.uuid = Some(aci);
+        f.chan.handle_envelope(e.clone()).await;
+        assert_eq!(
+            f.transport.sent()[0],
+            SentItem::Receipt {
+                to: OWNER.into(),
+                ts: 1
+            }
+        );
+        assert_eq!(
+            f.chan.lock().aci.by_aci.get(&aci).map(String::as_str),
+            Some(OWNER)
+        );
+        // Unknown ACI: every configured number is tried, failures cached.
+        let mut other = env("", 2, "hi");
+        other.sender.uuid = Some(Uuid::new_v4());
+        f.chan.handle_envelope(other).await;
+        assert!(f.chan.lock().aci.failed_at.contains_key(FRIEND));
+        assert_eq!(f.stub.calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn receipt_first_then_eyes_then_send_input_and_bind() {
+        let f = fixture().await;
+        f.chan.handle_envelope(env(OWNER, 42, "hi")).await;
+        let sent = f.transport.sent();
+        assert_eq!(
+            sent[0],
+            SentItem::Receipt {
+                to: OWNER.into(),
+                ts: 42
+            }
+        );
+        assert_eq!(
+            sent[1],
+            SentItem::Reaction {
+                to: OWNER.into(),
+                emoji: "👀".into(),
+                target_author: OWNER.into(),
+                target_ts: 42
+            }
+        );
+        assert_eq!(f.stub.calls(), [Call::SendInput(None, "hi".into())]);
+        assert_eq!(f.chan.lock().threads.get(OWNER), Some(f.stub.session));
+    }
+
+    #[tokio::test]
+    async fn slash_never_reaches_the_agent() {
+        let f = fixture().await;
+        f.chan.handle_envelope(env(OWNER, 1, "/help")).await;
+        assert!(f.stub.calls().is_empty());
+        let sent = f.transport.sent();
+        assert!(matches!(sent[0], SentItem::Receipt { .. }));
+        assert!(matches!(&sent[1], SentItem::Text { text, .. } if text == &commands::help()));
+    }
+
+    #[tokio::test]
+    async fn attachment_saved_and_quote_prefixed() {
+        let f = fixture().await;
+        let mut e = env(OWNER, 7, "look");
+        e.quote_text = Some("earlier".into());
+        e.attachments.push(IncomingAttachment {
+            bytes: vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A],
+            mime: "application/octet-stream".into(),
+            file_name: None,
+            voice_note: false,
+            duration_ms: None,
+        });
+        f.chan.handle_envelope(e).await;
+        let path = f.chan.rt.data_dir.join("signal/inbox/7-0.png");
+        assert!(path.exists());
+        assert_eq!(
+            f.stub.calls(),
+            [Call::SendInput(
+                None,
+                format!(
+                    "(replying to: \"earlier\")\nlook\n[attachment: {} (image/png, 8 B)]",
+                    path.display()
+                )
+            )]
+        );
+    }
+
+    // -- reactions + typing (09 §15.5) -----------------------------------
+
+    #[tokio::test]
+    async fn eyes_then_check_on_same_message_and_steer_in_flight() {
+        let f = fixture().await;
+        let session = f.stub.session;
+        f.chan.handle_envelope(env(OWNER, 10, "hi")).await;
+        f.chan.handle_event(Event::Agent(started(session))).await;
+        f.chan.handle_envelope(env(OWNER, 11, "also")).await;
+        assert_eq!(
+            f.stub.calls(),
+            [
+                Call::SendInput(None, "hi".into()),
+                Call::Steer(session, "also".into())
+            ]
+        );
+        for piece in ["**hel", "lo**"] {
+            f.chan
+                .handle_event(Event::Agent(AgentEvent::TextDelta {
+                    session,
+                    turn: runtime::TurnId(Uuid::nil()),
+                    text: piece.into(),
+                }))
+                .await;
+        }
+        f.chan
+            .handle_event(Event::Agent(finished(session, "end_turn")))
+            .await;
+        let sent = f.transport.sent();
+        assert!(sent.contains(&SentItem::Typing {
+            to: OWNER.into(),
+            active: true
+        }));
+        let tail = &sent[sent.len() - 4..];
+        assert_eq!(
+            tail[0],
+            SentItem::Typing {
+                to: OWNER.into(),
+                active: false
+            }
+        );
+        assert!(matches!(&tail[1], SentItem::Text { text, .. } if text == "hello"));
+        let check = |ts| SentItem::Reaction {
+            to: OWNER.into(),
+            emoji: "✅".into(),
+            target_author: OWNER.into(),
+            target_ts: ts,
+        };
+        assert_eq!(tail[2], check(10));
+        assert_eq!(tail[3], check(11));
+        assert!(!f.chan.lock().turns.contains_key(&session));
+
+        f.chan.handle_envelope(env(OWNER, 12, "more")).await;
+        f.chan
+            .handle_event(Event::Agent(finished(session, "cancelled")))
+            .await;
+        assert!(
+            matches!(f.transport.sent().last(), Some(SentItem::Reaction { emoji, target_ts: 12, .. }) if emoji == "🛑")
+        );
+    }
+
+    #[tokio::test]
+    async fn approval_reaction_resolves_allow() {
+        let f = fixture().await;
+        let session = f.stub.session;
+        f.chan.lock().threads.bind(OWNER, session);
+        let id = ApprovalId(Uuid::new_v4());
+        f.chan
+            .handle_event(Event::Requested(ApprovalRequested {
+                id,
+                session,
+                tool: "shell".into(),
+                args: serde_json::json!({ "command": "rm -rf target/" }),
+                risk: Risk::Destructive,
+            }))
+            .await;
+        let Some(SentItem::Text { timestamp, .. }) = f.transport.sent().last().cloned() else {
+            panic!("approval message not sent");
+        };
+        let react = |from: &str, emoji: &str| SignalEnvelope {
+            reaction: Some(IncomingReaction {
+                emoji: emoji.into(),
+                target_timestamp: timestamp,
+                remove: false,
+            }),
+            text: None,
+            ..env(from, 99, "")
+        };
+        f.chan.handle_envelope(react(FRIEND, "👍")).await;
+        f.chan.handle_envelope(react(OWNER, "🎉")).await;
+        assert!(f.stub.calls().is_empty());
+        f.chan.handle_envelope(react(OWNER, "👍")).await;
+        assert_eq!(f.stub.calls(), [Call::Resolve(id, Decision::Allow)]);
+
+        f.chan
+            .handle_event(Event::Resolved(ApprovalResolved {
+                id,
+                decision: Decision::Allow,
+                timed_out: false,
+            }))
+            .await;
+        assert_eq!(
+            f.transport.sent().last(),
+            Some(&SentItem::Reaction {
+                to: OWNER.into(),
+                emoji: "✅".into(),
+                target_author: "+15559990000".into(),
+                target_ts: timestamp,
+            })
+        );
+    }
+
+    #[test]
+    fn mime_helpers() {
+        assert_eq!(effective_mime("image/PNG; charset=x", b""), "image/png");
+        assert_eq!(effective_mime("", b"%PDF-1.4"), "application/pdf");
+        assert_eq!(
+            effective_mime("application/octet-stream", b"zzz"),
+            "application/octet-stream"
+        );
+        assert_eq!(extension_for("image/jpeg"), "jpg");
+        assert_eq!(extension_for("application/pdf"), "pdf");
+        assert_eq!(extension_for("weird"), "weird");
+        assert_eq!(fmt_size(83_000), "82 KiB");
+        assert_eq!(fmt_size(3 * 1024 * 1024), "3.0 MiB");
+    }
+}

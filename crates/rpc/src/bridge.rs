@@ -11,6 +11,7 @@ use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
 use runtime::Runtime;
 use serde::Serialize;
+use signal::SignalEvent;
 use tokio::sync::broadcast;
 use tools::{ApprovalRequested, ApprovalResolved, McpProgress};
 
@@ -59,7 +60,8 @@ forward!(
     LoginFinished,
     ApprovalRequested,
     ApprovalResolved,
-    McpProgress
+    McpProgress,
+    SignalEvent
 );
 
 /// Spawn the bridge, subscribe it to every event type, return the sender to
@@ -72,5 +74,6 @@ pub async fn start(rt: &Runtime) -> broadcast::Sender<Event> {
     rt.subscribe::<Bridge, ApprovalRequested>(&actor).await;
     rt.subscribe::<Bridge, ApprovalResolved>(&actor).await;
     rt.subscribe::<Bridge, McpProgress>(&actor).await;
+    rt.subscribe::<Bridge, SignalEvent>(&actor).await;
     tx
 }

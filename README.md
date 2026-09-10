@@ -12,6 +12,7 @@ just run -- --headless     # JSON-RPC only, ws://127.0.0.1:7777 with <data_dir>/
 just run -- --resume <id>  # reopen a session
 just run -- -p "prompt"    # print mode: stream the reply, exit when the turn ends
 echo "prompt" | just run -- -p   # same, prompt from stdin
+just run -- --link-signal --owner +15551234567   # pair as a Signal linked device (one-shot QR), then run --headless
 just ts                    # TypeScript bindings for the wire types → bindings/
 ```
 
@@ -21,7 +22,8 @@ Crates: `runtime` (plugin trait), `models` (bundled models.dev catalog),
 gate, shell via brush, fs, MCP), `agent` (genai loop, sqlite sessions with
 compaction epochs, skills, subagents, persistent Python runtime over monty
 worker subprocesses — [`docs/design/08-repl.md`](docs/design/08-repl.md)),
-`rpc` (jsonrpsee), `tui` (iocraft), `wth` (binary).
+`signal` (phone frontend over Signal messenger), `rpc` (jsonrpsee), `tui`
+(iocraft), `wth` (binary).
 
 Config (`~/.wth/`, created on first run; details in
 [`docs/design/01-config-and-subagents.md`](docs/design/01-config-and-subagents.md) §1):
@@ -55,3 +57,17 @@ folds the conversation so far into a summary the model keeps working from;
 always` for good (`tools.approvals` in config.yaml). Shift+Enter inserts a
 newline; select text with the mouse to copy it (terminal-native). See
 [`docs/design/02-models-and-menus.md`](docs/design/02-models-and-menus.md).
+
+Signal: a phone-side frontend that runs only in the daemon. Pair once with
+`wth --link-signal --owner +15551234567` (scan the QR from Signal → Settings
+→ Linked devices on the phone that owns the account; the daemon is a linked
+device, so that account needs a primary phone — usually a dedicated number
+you text from your own), then `wth --headless`. The owner's number must be
+saved as a contact on that primary phone, or its messages arrive without a
+number and are dropped. Texts become turns in a per-contact session (👀
+while working, ✅/🛑/❌ when done; a message mid-turn steers it); the slash
+commands mirror the TUI (`/status`, `/new`, `/sessions`, `/resume <id>`,
+`/model`, `/compact`, `/signal allow <n>`, …); tool approvals arrive as a
+message you answer with 👍/👎 or `/approve <code>`. Inbound files land in
+`~/.wth/signal/inbox/`. See
+[`docs/design/09-signal.md`](docs/design/09-signal.md).

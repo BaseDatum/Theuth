@@ -32,6 +32,8 @@ fn export_bindings() {
         tools::RepoInfo,
         tools::git::SyncResult,
         runtime::SessionId,
-        runtime::TurnId
+        runtime::TurnId,
+        signal::SignalEvent,
+        signal::SignalStatus
     );
 }

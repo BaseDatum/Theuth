@@ -17,6 +17,7 @@ agent = { path = "crates/agent" }
 rpc = { path = "crates/rpc" }
 tui = { path = "crates/tui" }
 cursor = { path = "crates/cursor" }
+signal = { path = "crates/signal" }
 
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "fs", "time", "io-util", "process", "signal"] }
 tokio-util = { version = "0.7", features = ["rt"] }
@@ -72,6 +73,11 @@ monty-pool = "0.0.23"
 monty-types = "0.0.23"
 monty-fs = "0.0.23"
 regex = "1"
+# Signal channel (design doc 09). crates.io `presage` is an unrelated crate; the
+# rev is the one jarvis reviewed and ran. `cdsi` = E.164→ACI fallback (09 §5.2).
+presage = { git = "https://github.com/whisperfish/presage", rev = "c363731038acf176ab6b5ee0600d7de85f8a2da8", features = ["cdsi"] }
+presage-store-sqlite = { git = "https://github.com/whisperfish/presage", rev = "c363731038acf176ab6b5ee0600d7de85f8a2da8" }
+qrcode = { version = "0.14", default-features = false }
 
 [workspace.lints.rust]
 missing_docs = "warn"
@@ -96,3 +102,6 @@ brush-parser = { git = "https://github.com/skymoore/brush", branch = "on-spawn-0
 # `newline-modifiers-0.9` = tag iocraft-v0.9.1 + two commits (also derives
 # `Default` for `KeyModifiers`).
 iocraft = { git = "https://github.com/skymoore/iocraft", branch = "newline-modifiers-0.9" }
+# curve25519-dalek: libsignal (under presage) must build against Signal's fork;
+# only presage's tree resolves this crate, so nothing else is affected.
+curve25519-dalek = { git = "https://github.com/signalapp/curve25519-dalek", tag = "signal-curve25519-4.1.3" }

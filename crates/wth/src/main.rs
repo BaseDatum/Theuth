@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use clap::Parser;
 use figment::Figment;
 use figment::providers::{Env, Format, Yaml};
-use runtime::{Plugin, Runtime, SessionId};
+use runtime::{Plugin, Runtime, SessionId, write_config_value};
 
 #[derive(Parser, Debug)]
 #[command(name = "wth", version, about = "what the harness")]
@@ -29,6 +29,16 @@ struct Cli {
     /// to stdout, exit when the turn finishes. No full-screen UI.
     #[arg(short, long, num_args = 0..=1, default_missing_value = "")]
     prompt: Option<String>,
+    /// Pair this machine as a Signal linked device (one-shot: prints a QR,
+    /// waits for the scan, writes `signal.owner`/`device_name`, exits).
+    #[arg(long)]
+    link_signal: bool,
+    /// Owner E.164 (`+15551234567`) for --link-signal; prompted on a TTY when absent.
+    #[arg(long, requires = "link_signal")]
+    owner: Option<String>,
+    /// Device name shown in the phone's Linked devices list (default: config `signal.device_name`).
+    #[arg(long, requires = "link_signal")]
+    device_name: Option<String>,
 }
 
 const DEFAULT_CONFIG: &str = "# wth configuration. Every plugin reads its own section.
@@ -52,6 +62,12 @@ tools:
 
 rpc:
   listen: 127.0.0.1:7777
+
+# signal:                   # phone frontend; runs in `wth --headless`. Pair with `wth --link-signal`.
+#   enabled: true           # daemon starts the channel when linked
+#   device_name: wth        # shown in the phone's Linked devices list
+#   owner: \"+15551234567\"   # set by --link-signal / signal_link; owner-only commands
+#   allowed: []             # more E.164s; each gets its own thread
 ";
 
 const DEFAULT_CREDENTIALS: &str =
@@ -92,6 +108,60 @@ fn first_run(data_dir: &Path, config_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// `wth --link-signal`: pair, persist owner/device name, exit (design doc 09 §11.1).
+async fn link_signal(
+    config: &Figment,
+    data_dir: &Path,
+    config_path: &Path,
+    owner: Option<String>,
+    device_name: Option<String>,
+) -> anyhow::Result<()> {
+    let mut cfg: signal::SignalConfig = config.extract_inner("signal").unwrap_or_default();
+    if let Some(n) = device_name {
+        cfg.device_name = n;
+    }
+    let owner = owner
+        .map(|o| signal::e164(&o))
+        .transpose()
+        .map_err(anyhow::Error::msg)?;
+    let number = signal::link_oneshot(data_dir, &cfg, |url| {
+        println!(
+            "scan from Signal → Settings → Linked devices (expires in ~90 s; a fresh code follows):\n\n{}\n{url}\n",
+            signal::qr(url)
+        );
+    })
+    .await?;
+    let owner = match owner {
+        Some(o) => o,
+        None if !cfg.owner.is_empty() => cfg.owner.clone(),
+        None => {
+            use std::io::{IsTerminal, Write};
+            let mut line = String::new();
+            if std::io::stdin().is_terminal() {
+                print!("owner number (E.164, e.g. +15551234567): ");
+                std::io::stdout().flush()?;
+                std::io::stdin().read_line(&mut line)?;
+            }
+            match signal::e164(line.trim()) {
+                Ok(o) => o,
+                Err(e) => {
+                    eprintln!(
+                        "{e}; set signal.owner in {} yourself",
+                        config_path.display()
+                    );
+                    String::new()
+                }
+            }
+        }
+    };
+    if !owner.is_empty() {
+        write_config_value(config_path, "signal", "owner", &format!("{owner:?}"))?;
+    }
+    write_config_value(config_path, "signal", "device_name", &cfg.device_name)?;
+    println!("linked as {number}; owner {owner}; run wth --headless");
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -120,10 +190,21 @@ async fn main() -> anyhow::Result<()> {
         .with_ansi(false)
         .init();
 
+    if cli.link_signal {
+        link_signal(&config, &data_dir, &config_path, cli.owner, cli.device_name).await?;
+        drop(_guard);
+        std::process::exit(0);
+    }
+
     let rt = Runtime::new(config, data_dir);
 
-    let mut plugins: Vec<Box<dyn Plugin>> =
-        vec![Box::new(tools::ToolsPlugin), Box::new(agent::AgentPlugin)];
+    let mut plugins: Vec<Box<dyn Plugin>> = vec![
+        Box::new(tools::ToolsPlugin),
+        Box::new(agent::AgentPlugin),
+        Box::new(signal::SignalPlugin {
+            channel: cli.headless,
+        }),
+    ];
     if cli.serve || cli.headless {
         plugins.push(Box::new(rpc::RpcPlugin));
     }

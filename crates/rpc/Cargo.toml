@@ -9,6 +9,7 @@ description = "JSON-RPC 2.0 over WebSocket: commands as methods, bus events as a
 runtime = { workspace = true }
 tools = { workspace = true }
 agent = { workspace = true }
+signal = { workspace = true }
 tokio = { workspace = true }
 futures = { workspace = true }
 async-trait = { workspace = true }
@@ -26,7 +27,7 @@ ts-rs = { workspace = true, optional = true }
 jsonrpsee = { workspace = true, features = ["ws-client"] }
 
 [features]
-ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "agent/ts"]
+ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "agent/ts", "signal/ts"]
 
 [lints]
 workspace = true
