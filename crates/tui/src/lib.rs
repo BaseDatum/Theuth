@@ -148,6 +148,13 @@ async fn execute(cmd: Command, tx: &UnboundedSender<UiEvent>) -> anyhow::Result<
             agent()?.ask(agent::Cancel { session }).await?;
             return Ok(());
         }
+        Command::Compact(session) => {
+            let epoch = agent()?
+                .ask(agent::Compact { session })
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            UiEvent::Info(format!("context compacted (epoch {epoch})"))
+        }
         Command::ListSessions => UiEvent::Sessions(agent()?.ask(agent::ListSessions).await?),
         Command::ListChildren(parent) => {
             UiEvent::Children(agent()?.ask(agent::ListChildren { parent }).await?)
@@ -382,10 +389,16 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         UiEvent::Agent(AgentEvent::TextDelta { text, .. }) => {
             out.write_all(text.as_bytes()).and_then(|()| out.flush())
         }
-        UiEvent::Agent(AgentEvent::ToolCallStarted { name, args, .. }) => {
+        UiEvent::Agent(AgentEvent::ToolCallStarted {
+            call_id,
+            name,
+            args,
+            ..
+        }) => {
             writeln!(
                 out,
-                "\n⚙ {name}\n{}",
+                "\n⚙ {}{name}\n{}",
+                if call_id.contains('.') { "↳ " } else { "" },
                 model::describe(name, args).join("\n")
             )
         }
@@ -402,13 +415,19 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         UiEvent::Agent(AgentEvent::TurnFinished {
             stop_reason, usage, ..
         }) => {
+            let cache = (usage.cached * 100)
+                .checked_div(usage.prompt)
+                .map_or_else(String::new, |pct| format!(" cache {pct}%"));
             writeln!(
                 out,
-                "\n[{stop_reason}] {}↑ {}↓",
+                "\n[{stop_reason}] {}↑ {}↓{cache}",
                 usage.prompt, usage.completion
             )
         }
         UiEvent::Agent(AgentEvent::ModelChanged { model, .. }) => writeln!(out, "model → {model}"),
+        UiEvent::Agent(AgentEvent::Compacted { epoch, .. }) => {
+            writeln!(out, "context compacted (epoch {epoch})")
+        }
         UiEvent::Agent(AgentEvent::Error { message, .. }) | UiEvent::Error(message) => {
             writeln!(out, "error: {message}")
         }
@@ -489,6 +508,9 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
                 if *is_error { "✗" } else { "✓" },
                 model::result_line(output)
             ),
+            agent::HistoryEntry::Compacted { epoch, summary } => {
+                writeln!(out, "── context compacted (epoch {epoch}) ──\n{summary}")
+            }
         }),
         UiEvent::SessionCreated(id) => writeln!(out, "session {id}"),
     };

@@ -67,6 +67,9 @@ pub struct ToolSpec {
     pub schema: serde_json::Value,
     /// Drives the approval policy.
     pub risk: Risk,
+    /// Exposed as a direct tool definition even when the runtime is on
+    /// (`true` for native tools; MCP tools are runtime functions only).
+    pub direct: bool,
 }
 
 /// A model-requested invocation.
@@ -90,6 +93,8 @@ pub struct ToolOutput {
     pub content: String,
     /// Marks the output as a failure for providers that distinguish.
     pub is_error: bool,
+    /// Machine-readable result (MCP `structuredContent`); `None` for text-only tools.
+    pub structured: Option<serde_json::Value>,
 }
 
 impl ToolOutput {
@@ -98,6 +103,7 @@ impl ToolOutput {
         Self {
             content: content.into(),
             is_error: false,
+            structured: None,
         }
     }
     /// Failed output the model should read.
@@ -105,6 +111,7 @@ impl ToolOutput {
         Self {
             content: content.into(),
             is_error: true,
+            structured: None,
         }
     }
 }
@@ -159,6 +166,7 @@ impl<T: Tool> ErasedTool for T {
             description: self.description(),
             schema: serde_json::to_value(schemars::schema_for!(T::Args)).unwrap_or_default(),
             risk: T::RISK,
+            direct: true,
         }
     }
 

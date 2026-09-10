@@ -135,9 +135,12 @@ differs) → drop + reconnect; `Restart(name)` forces the drop + reconnect for
 one server whose entry is unchanged (after `sync_mcp` rebuilt its repo).
 Startup is the same reconcile with an empty running set. A server that fails
 to connect is logged and retried on the next reconcile (any change in the
-dir), not in a loop. Registry gains `UnregisterTool(name)`. The model's tool
-list is read at the start of every round (`ListTools`), so a server added
-mid-turn is visible on the next round.
+dir), not in a loop. Registry gains `UnregisterTool(name)`. MCP tools
+register with `direct: false`: while the Python runtime is on
+(`08-repl.md` §0.4) they are callable inside `python` by name and are not
+direct tool definitions; with the runtime off they are direct tools and the
+model's tool list is read at the start of every round (`ListTools`), so a
+server added mid-turn is visible on the next round (`07-context.md` §5).
 
 **Connects never block.** Reconcile only decides; each connect (+ first
 `list_tools`, bounded by a 10 s timeout) runs in its own task that `tell`s
@@ -303,28 +306,31 @@ because it renders it into every child's system prompt; we get the same by
 telling the model to put shared background in each `task` (system prompt
 line). Add the batch shape only if models observably fail to fan out.
 
-Removed: `list_subagents`, `cancel_subagent`, `wait`. The roster is in the
-system prompt (§2.5), cancel is a human action from the TUI, and waiting is
-what `await_reply` does. Any of these returns as a tool when a transcript
-shows the model needing it.
+Removed: `list_subagents`, `cancel_subagent`, `wait`. The model already
+has the names from `spawn_subagent`'s output and the compaction head
+(§2.5), cancel is a human action from the TUI, and waiting is what
+`await_reply` does. Any of these returns as a tool when a transcript shows
+the model needing it.
 
 ### 2.5 Prompt surface
 
-Appended to the system prompt per turn, from supervisor state:
+Children get one identity block, rendered into the system prompt once per
+turn from supervisor state (`PeerContext`, `07-context.md` §4):
 
 ```
 ## Peers
 You are `grep-logs`, a subagent of session 01a0… (address it as `parent`).
 Your final message is delivered to the parent when your turn ends.
 ```
-or
-```
-## Subagents
-- grep-logs  idle    (last result delivered 2m ago)
-- fix-tests  running (turn 3)
-Spawn with spawn_subagent; steer or ask with send_message. Results arrive as
-<subagent_result> messages; you do not need to poll.
-```
+
+The live roster (`- grep-logs idle …`) is **not** in the prompt: it changed
+between turns and busted the parent's system-prompt cache every time a
+child finished (`07-context.md` §10). The parent learns names from
+`spawn_subagent`'s output and completion from `<subagent_result>`; after a
+compaction the head carries `Subagents: grep-logs (running), fix-tests
+(idle)` (`Roster`, `07 §8.4`). The how-to (spawn with `spawn_subagent`;
+steer or ask with `send_message`; results arrive as `<subagent_result>`
+messages) is static text in `frame::baseline`'s `GUIDANCE`.
 
 Children get no `yield` tool (oh-my-pi's) — our turn end *is* the yield.
 

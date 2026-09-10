@@ -147,15 +147,17 @@ user's comments; a line edit is 15 lines and lossless.
 One line directly above the input box, dark grey, omp-style:
 
 ```
-anthropic/claude-sonnet-4-5  ·  ctx 12.3k / 200k (6%)
+anthropic/claude-sonnet-4-5  ·  ctx 12.3k / 200k (6%)  ·  cache 94%
 ```
 
 Model = `TurnStarted.model` of the shown session (falls back to the config
 default before the first turn). Context = `TurnFinished.context` of the shown
 session vs `Catalog::get(id).limit.context`; unknown limit → `ctx 12.3k`.
-Colour steps at 70 % (yellow) and 90 % (red). While streaming the value is
-the previous turn's; no per-delta counting (providers only report usage at
-end).
+Colour steps at 70 % (yellow) and 90 % (red). `cache` = `usage.cached /
+usage.prompt` of the last finished turn, the prefix-cache hit ratio
+(`07-context.md` §7); omitted until a turn has reported usage. While
+streaming the values are the previous turn's; no per-delta counting
+(providers only report usage at end).
 
 The existing status line (session id, focus, approvals) stays below the input.
 
@@ -167,7 +169,8 @@ description. ↑/↓ moves, Tab completes the name (plus a trailing space when i
 takes an argument), Enter runs it (or completes when the highlighted command
 needs an argument), Esc closes without clearing the input. Commands:
 `/model [id]`, `/mcp`, `/agents`, `/focus <name>`, `/sessions`,
-`/resume <id>`, `/new`, `/cancel`, `/quit`.
+`/resume <id>`, `/new`, `/cancel`, `/compact` (fold the conversation into a
+summary, `07 §8.6`), `/quit`.
 
 **Picker (shared modal).** Items, cursor, optional filter typed inline.
 `/model` with no argument: `Command::ListModels` → picker over `ModelInfo`

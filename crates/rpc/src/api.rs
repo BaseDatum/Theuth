@@ -5,8 +5,8 @@
 use std::fmt::Display;
 
 use agent::{
-    AddSkill, AddSkillRepo, Agents, Cancel, ListLogins, ListModels, ListSessions, ListSkills,
-    LoadSession, LoadSkill, Loaded, Login, LoginInfo, Logout, ModelInfo, RemoveSkill,
+    AddSkill, AddSkillRepo, Agents, Cancel, Compact, ListLogins, ListModels, ListSessions,
+    ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginInfo, Logout, ModelInfo, RemoveSkill,
     RemoveSkillRepo, SendInput, SessionSummary, SetModel, ShowPrompt, SkillBody, SkillMeta, Steer,
     SyncSkills,
 };
@@ -47,6 +47,10 @@ pub trait Api {
     /// Abort the in-flight turn.
     #[method(name = "cancel")]
     async fn cancel(&self, session: SessionId) -> RpcResult<()>;
+    /// Fold the conversation into a summary now (design doc 07 §8.6); returns
+    /// the new epoch. Refused while a turn is running.
+    #[method(name = "compact")]
+    async fn compact(&self, session: SessionId) -> RpcResult<u32>;
     /// Every session, newest first.
     #[method(name = "list_sessions")]
     async fn list_sessions(&self) -> RpcResult<Vec<SessionSummary>>;
@@ -202,6 +206,10 @@ impl ApiServer for Server {
 
     async fn cancel(&self, session: SessionId) -> RpcResult<()> {
         ask::<Agents, _>(agent::AGENT_ACTOR, Cancel { session }).await
+    }
+
+    async fn compact(&self, session: SessionId) -> RpcResult<u32> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, Compact { session }).await
     }
 
     async fn list_sessions(&self) -> RpcResult<Vec<SessionSummary>> {

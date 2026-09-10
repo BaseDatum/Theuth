@@ -14,11 +14,16 @@ use std::sync::Arc;
 use runtime::{SessionId, TurnId};
 use serde::{Deserialize, Serialize};
 
+pub mod compact;
+pub mod frame;
 pub mod loop_;
 pub mod peers;
+pub mod repl;
 pub mod skills;
+pub mod spill;
 pub mod store;
 pub mod supervisor;
+pub mod todo;
 
 pub use supervisor::Agents;
 
@@ -50,6 +55,14 @@ pub struct Steer {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Cancel {
     /// Target session.
+    pub session: SessionId,
+}
+
+/// `ask` → `Result<u32 /* epoch */, String>`: compact `session` now,
+/// threshold ignored (design doc 07 §8.6). Refused while a turn is running.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct Compact {
+    /// Session to compact.
     pub session: SessionId,
 }
 
@@ -288,16 +301,26 @@ pub enum HistoryEntry {
         /// Whether it failed.
         is_error: bool,
     },
+    /// A compaction boundary: everything before it was folded into `summary`
+    /// (design doc 07 §8.4).
+    Compacted {
+        /// Epoch number the boundary opened.
+        epoch: u32,
+        /// The summary text the model works from.
+        summary: String,
+    },
 }
 
 /// Token usage for a turn.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct Usage {
-    /// Prompt tokens.
+    /// Prompt tokens (cached + written + fresh).
     pub prompt: u32,
     /// Completion tokens.
     pub completion: u32,
+    /// Prompt tokens read from the provider's prefix cache.
+    pub cached: u32,
 }
 
 /// Everything a UI needs to render a session live. Every variant carries the
@@ -421,6 +444,26 @@ pub enum AgentEvent {
         /// Canonical model id.
         model: String,
     },
+    /// Compaction started: the summariser call is in flight (design doc 07 §8).
+    Compacting {
+        /// Session.
+        session: SessionId,
+        /// Turn, when triggered mid-turn; `None` for `/compact`.
+        turn: Option<TurnId>,
+    },
+    /// Compaction finished: a new epoch opened.
+    Compacted {
+        /// Session.
+        session: SessionId,
+        /// Turn, when triggered mid-turn; `None` for `/compact`.
+        turn: Option<TurnId>,
+        /// New epoch number.
+        epoch: u32,
+        /// Projected tokens before the cut.
+        before: u32,
+        /// Messages folded into the summary.
+        folded: u32,
+    },
 }
 
 impl AgentEvent {
@@ -436,6 +479,8 @@ impl AgentEvent {
             | Self::TurnFinished { session, .. }
             | Self::MessageDelivered { session, .. }
             | Self::ModelChanged { session, .. }
+            | Self::Compacting { session, .. }
+            | Self::Compacted { session, .. }
             | Self::Error { session, .. } => *session,
             Self::SubagentSpawned { child, .. } => *child,
         }
@@ -455,6 +500,20 @@ pub struct AgentConfig {
     pub max_tool_output_chars: usize,
     /// Subagent limits and model.
     pub subagents: SubagentsConfig,
+    /// Auto-compaction threshold as a fraction of the model's context window;
+    /// `0` disables it (design doc 07 §8.1).
+    pub compact_at: f32,
+    /// Persistent Python runtime (design doc 08).
+    pub repl: ReplConfig,
+}
+
+/// `[agent.repl]` config section (design doc 08 §10).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ReplConfig {
+    /// Path to the `monty` worker binary; default: `monty` on `PATH`, then
+    /// the active toolchain's bin dir. Not found → the runtime is off.
+    pub monty: Option<std::path::PathBuf>,
 }
 
 impl Default for AgentConfig {
@@ -464,6 +523,8 @@ impl Default for AgentConfig {
             max_tool_rounds: 32,
             max_tool_output_chars: 32_000,
             subagents: SubagentsConfig::default(),
+            compact_at: 0.8,
+            repl: ReplConfig::default(),
         }
     }
 }

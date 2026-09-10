@@ -508,6 +508,30 @@ fn entry(e: &Entry, spinner: &str) -> AnyElement<'static> {
             }
             .into_any()
         }
+        // Compaction boundary: a divider in the prompt colour; the summary
+        // (history only) hidden until Ctrl+O.
+        Entry::Compacted {
+            epoch,
+            summary,
+            expanded,
+        } => {
+            let hint = match (summary, *expanded) {
+                (None, _) => String::new(),
+                (Some(_), true) => "   ctrl+o collapses".to_owned(),
+                (Some(t), false) => {
+                    format!("   {} lines · ctrl+o expands", t.view().lines().count())
+                }
+            };
+            element! {
+                View(flex_direction: FlexDirection::Column, border_style: BorderStyle::Round, border_color: PROMPT, padding_left: 1, padding_right: 1, margin_top: 1) {
+                    Text(content: format!("── context compacted (epoch {epoch}) ──{hint}"), color: PROMPT, weight: Weight::Bold)
+                    #(summary.as_ref().filter(|_| *expanded).map(|t| element!(View(flex_direction: FlexDirection::Column, margin_top: 1) {
+                        #(t.view().lines().map(line))
+                    })))
+                }
+            }
+            .into_any()
+        }
         Entry::Info(t) => element!(Text(content: t.clone(), color: Color::DarkGrey)).into_any(),
         Entry::Error(t) => element!(Text(content: t.clone(), color: Color::Red)).into_any(),
     }

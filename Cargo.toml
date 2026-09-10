@@ -67,6 +67,11 @@ protox = "0.9"
 bytes = "1"
 h2 = "0.4"
 http = "1"
+# Python runtime (design doc 08): pool of `monty` worker subprocesses.
+monty-pool = "0.0.23"
+monty-types = "0.0.23"
+monty-fs = "0.0.23"
+regex = "1"
 
 [workspace.lints.rust]
 missing_docs = "warn"

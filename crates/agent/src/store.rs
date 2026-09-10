@@ -1,4 +1,4 @@
-//! sqlite session store (sqlx): `sessions` + `messages`; resume by replay.
+//! sqlite session store (sqlx): `sessions` + `messages` + `epochs`; resume by replay.
 //! Only the agent writes it; UIs read through the supervisor's commands.
 
 use std::path::Path;
@@ -17,6 +17,19 @@ use crate::loop_::text_of;
 #[derive(Clone)]
 pub struct Store {
     pool: SqlitePool,
+}
+
+/// One compaction (07 §8.4); epoch 0 has no row.
+#[derive(Clone, Debug)]
+pub struct Epoch {
+    /// Epoch number, 1-based.
+    pub n: u32,
+    /// Last message seq when compaction ran (UI divider position).
+    pub at_seq: i64,
+    /// First message seq replayed after the head.
+    pub tail_from: i64,
+    /// The `<context_summary>` user message.
+    pub head: ChatMessage,
 }
 
 /// Raw `sessions` row; ids and timestamps are TEXT and parsed on the way out.
@@ -111,37 +124,105 @@ impl Store {
         Ok(())
     }
 
-    /// Append one message; `seq` is assigned as max+1 within the session.
-    pub async fn append(&self, id: SessionId, message: &ChatMessage) -> anyhow::Result<()> {
+    /// Append one message; returns its `seq` (max+1 within the session).
+    pub async fn append(&self, id: SessionId, message: &ChatMessage) -> anyhow::Result<i64> {
         let body = serde_json::to_string(message)?;
-        sqlx::query(
+        let (seq,): (i64,) = sqlx::query_as(
             "INSERT INTO messages (session_id, seq, body) \
-             SELECT ?1, COALESCE(MAX(seq), -1) + 1, ?2 FROM messages WHERE session_id = ?1",
+             SELECT ?1, COALESCE(MAX(seq), -1) + 1, ?2 FROM messages WHERE session_id = ?1 \
+             RETURNING seq",
         )
         .bind(id.to_string())
         .bind(body)
-        .execute(&self.pool)
+        .fetch_one(&self.pool)
         .await?;
-        Ok(())
+        Ok(seq)
     }
 
-    /// All messages in `seq` order.
-    pub async fn messages(&self, id: SessionId) -> anyhow::Result<Vec<ChatMessage>> {
-        let rows: Vec<(i64, String)> =
-            sqlx::query_as("SELECT seq, body FROM messages WHERE session_id = ? ORDER BY seq")
-                .bind(id.to_string())
-                .fetch_all(&self.pool)
-                .await?;
+    /// All messages with their seq, in `seq` order.
+    pub async fn messages(&self, id: SessionId) -> anyhow::Result<Vec<(i64, ChatMessage)>> {
+        self.messages_from(id, 0).await
+    }
+
+    async fn messages_from(
+        &self,
+        id: SessionId,
+        from: i64,
+    ) -> anyhow::Result<Vec<(i64, ChatMessage)>> {
+        let rows: Vec<(i64, String)> = sqlx::query_as(
+            "SELECT seq, body FROM messages WHERE session_id = ? AND seq >= ? ORDER BY seq",
+        )
+        .bind(id.to_string())
+        .bind(from)
+        .fetch_all(&self.pool)
+        .await?;
         Ok(rows
             .into_iter()
             .filter_map(|(seq, body)| match serde_json::from_str(&body) {
-                Ok(m) => Some(m),
+                Ok(m) => Some((seq, m)),
                 Err(e) => {
                     tracing::warn!(session = %id, seq, error = %e, "skipping undecodable message row");
                     None
                 }
             })
             .collect())
+    }
+
+    /// All epochs of a session, by `n` ascending.
+    pub async fn epochs(&self, id: SessionId) -> anyhow::Result<Vec<Epoch>> {
+        let rows: Vec<(i64, i64, i64, String)> = sqlx::query_as(
+            "SELECT n, at_seq, tail_from, head FROM epochs WHERE session_id = ? ORDER BY n",
+        )
+        .bind(id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|(n, at_seq, tail_from, head)| {
+                Ok(Epoch {
+                    n: u32::try_from(n).context("bad epoch n")?,
+                    at_seq,
+                    tail_from,
+                    head: serde_json::from_str(&head).context("bad epoch head")?,
+                })
+            })
+            .collect()
+    }
+
+    /// Record a compaction: one `epochs` row. `messages` is untouched.
+    pub async fn compact(
+        &self,
+        id: SessionId,
+        n: u32,
+        at_seq: i64,
+        tail_from: i64,
+        head: &ChatMessage,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO epochs (session_id, n, at_seq, tail_from, head, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(id.to_string())
+        .bind(i64::from(n))
+        .bind(at_seq)
+        .bind(tail_from)
+        .bind(serde_json::to_string(head)?)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// What the model last saw: latest epoch number, its head, and the
+    /// messages from `tail_from` on (`(0, None, all)` before any compaction).
+    pub async fn frame(
+        &self,
+        id: SessionId,
+    ) -> anyhow::Result<(u32, Option<ChatMessage>, Vec<(i64, ChatMessage)>)> {
+        let latest = self.epochs(id).await?.pop();
+        let (n, head, from) = match latest {
+            Some(e) => (e.n, Some(e.head), e.tail_from),
+            None => (0, None, 0),
+        };
+        Ok((n, head, self.messages_from(id, from).await?))
     }
 
     /// One session, if it exists.
@@ -213,12 +294,12 @@ impl Store {
         let messages = self.messages(id).await?;
         let start = messages
             .iter()
-            .rposition(|m| m.role == ChatRole::User)
+            .rposition(|(_, m)| m.role == ChatRole::User)
             .map_or(0, |i| i + 1);
         Ok(messages[start..]
             .iter()
-            .filter(|m| m.role == ChatRole::Assistant)
-            .map(|m| text_of(&m.content))
+            .filter(|(_, m)| m.role == ChatRole::Assistant)
+            .map(|(_, m)| text_of(&m.content))
             .filter(|t| !t.is_empty())
             .collect::<Vec<_>>()
             .join("\n"))
@@ -239,18 +320,21 @@ mod tests {
 
         let id = SessionId::new();
         store.create_session(id, "m", None, None).await.unwrap();
-        for m in [
+        for (i, m) in [
             ChatMessage::system("sys"),
             ChatMessage::user("hi"),
             ChatMessage::assistant(MessageContent::from_text("hello")),
-        ] {
-            store.append(id, &m).await.unwrap();
+        ]
+        .iter()
+        .enumerate()
+        {
+            assert_eq!(store.append(id, m).await.unwrap(), i as i64);
         }
 
         let got = store.messages(id).await.unwrap();
         let flat: Vec<(ChatRole, String)> = got
             .iter()
-            .map(|m| (m.role.clone(), m.content.joined_texts().unwrap_or_default()))
+            .map(|(_, m)| (m.role.clone(), m.content.joined_texts().unwrap_or_default()))
             .collect();
         assert_eq!(
             flat,
@@ -326,6 +410,43 @@ mod tests {
             store.append(id, &m).await.unwrap();
         }
         assert_eq!(store.last_turn_text(id).await.unwrap(), "first\nsecond");
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn compact_frames_from_tail() {
+        let dir = std::env::temp_dir().join(format!("wth-store-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open(&dir.join("sessions.sqlite")).await.unwrap();
+        let id = SessionId::new();
+        store.create_session(id, "m", None, None).await.unwrap();
+        for i in 0..6 {
+            store
+                .append(id, &ChatMessage::user(format!("m{i}")))
+                .await
+                .unwrap();
+        }
+        let (n, head, tail) = store.frame(id).await.unwrap();
+        assert_eq!((n, head.is_none(), tail.len()), (0, true, 6));
+
+        let head = ChatMessage::user("<context_summary epoch=\"1\">s</context_summary>");
+        store.compact(id, 1, 5, 4, &head).await.unwrap();
+        let (n, got, tail) = store.frame(id).await.unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(text_of(&got.unwrap().content), text_of(&head.content));
+        assert_eq!(
+            tail.iter()
+                .map(|(s, m)| (*s, text_of(&m.content)))
+                .collect::<Vec<_>>(),
+            [(4, "m4".to_string()), (5, "m5".to_string())]
+        );
+        let epochs = store.epochs(id).await.unwrap();
+        assert_eq!(epochs.len(), 1);
+        assert_eq!(
+            (epochs[0].n, epochs[0].at_seq, epochs[0].tail_from),
+            (1, 5, 4)
+        );
         drop(store);
         let _ = std::fs::remove_dir_all(&dir);
     }

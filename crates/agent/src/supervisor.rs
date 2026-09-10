@@ -19,23 +19,24 @@ use models::{Catalog, Resolved};
 use runtime::{Runtime, SessionId};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, oneshot};
 use tokio::task::AbortHandle;
-use tools::{REGISTRY_ACTOR, RegisterTool, SetParent, ToolRegistry};
+use tools::{ListTools, REGISTRY_ACTOR, RegisterTool, SetParent, ToolRegistry};
 
 use crate::loop_::{
-    CancelTurn, IsRunning, Session, SwitchModel, UserInput, system_prompt, text_of,
+    CancelTurn, CompactNow, IsRunning, Session, SessionState, SwitchModel, UserInput, text_of,
 };
 use crate::peers::{SendMessageTool, SpawnSubagentTool};
 use crate::skills::{
     self, AddSkillRepoTool, AddSkillTool, LoadSkillTool, RemoveSkillRepoTool, RemoveSkillTool,
     SyncSkillsTool,
 };
-use crate::store::Store;
+use crate::store::{Epoch, Store};
 use crate::{
-    AGENT_ACTOR, AddSkill, AddSkillRepo, AgentConfig, AgentEvent, Cancel, HistoryEntry,
+    AGENT_ACTOR, AddSkill, AddSkillRepo, AgentConfig, AgentEvent, Cancel, Compact, HistoryEntry,
     ListChildren, ListLogins, ListModels, ListSessions, ListSkills, LoadSession, LoadSkill, Loaded,
     Login, LoginFinished, LoginInfo, Logout, ModelInfo, RemoveSkill, RemoveSkillRepo, SendInput,
     SessionSummary, SetModel, ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills,
 };
+use crate::{frame, repl, spill};
 
 /// The supervisor actor. Look up with `ActorRef::<Agents>::lookup(AGENT_ACTOR)`.
 #[derive(kameo::Actor)]
@@ -45,6 +46,8 @@ pub struct Agents {
     /// `cfg.model` as last set by [`SetModel`]; new sessions start on it.
     default_model: String,
     catalog: Arc<Catalog>,
+    /// Python runtime workers; `None` when the `monty` binary was not found (design doc 08 §9).
+    pool: Option<Arc<monty_pool::Pool>>,
     /// `configured(genai_namespace)`: whether genai can authenticate it.
     configured: Arc<dyn Fn(&str) -> bool + Send + Sync>,
     store: Store,
@@ -106,11 +109,19 @@ pub struct Deliver {
     pub reply_to: Option<String>,
 }
 
-/// `ask` → `String`: the §2.5 prompt block for `session` (empty when it has
-/// no peers and cannot spawn).
+/// `ask` → `String`: the child's identity line only (design doc 07 §10 — the
+/// roster and static guidance live in [`frame::baseline`]). Empty for a root session.
 #[derive(Clone, Copy, Debug)]
 pub struct PeerContext {
     /// Session.
+    pub session: SessionId,
+}
+
+/// `ask` → `String`: `"Subagents: a (running), b (idle)"` or `""` — harness
+/// truth for the compaction head (design doc 07 §8.4).
+#[derive(Clone, Copy, Debug)]
+pub struct Roster {
+    /// Session whose children to list.
     pub session: SessionId,
 }
 
@@ -159,12 +170,15 @@ impl Agents {
         if let Some(live) = self.sessions.get(&id).filter(|l| l.actor.is_alive()) {
             return Ok((id, live.actor.clone()));
         }
-        let (model, history, parent) = match self.store.session(id).await? {
-            Some(row) => (
-                self.resolve_model(&row.model),
-                self.store.messages(id).await?,
-                row.parent.zip(row.name),
-            ),
+        let (model, state, parent) = match self.store.session(id).await? {
+            Some(row) => {
+                let (epoch, head, history) = self.store.frame(id).await?;
+                (
+                    self.resolve_model(&row.model),
+                    SessionState::resume(epoch, head, history),
+                    row.parent.zip(row.name),
+                )
+            }
             None => {
                 let sub = &self.cfg.subagents;
                 let model = match parent {
@@ -175,7 +189,11 @@ impl Agents {
                 self.store
                     .create_session(id, &model.0.id, parent.map(|p| p.0), parent.map(|p| p.1))
                     .await?;
-                (model, Vec::new(), parent.map(|(p, n)| (p, n.to_string())))
+                (
+                    model,
+                    SessionState::resume(0, None, Vec::new()),
+                    parent.map(|(p, n)| (p, n.to_string())),
+                )
             }
         };
         let depth = self.store.depth(id).await?;
@@ -194,12 +212,14 @@ impl Agents {
             id,
             depth,
             model,
-            history,
+            state,
             self.cfg.clone(),
             self.store.clone(),
             self.client.clone(),
             self.auth.clone(),
             self.rt.clone(),
+            self.catalog.clone(),
+            self.pool.clone(),
         ));
         self.sessions.insert(
             id,
@@ -339,6 +359,28 @@ impl Message<Cancel> for Agents {
                 let _ = live.actor.tell(CancelTurn).await;
             }
         }
+    }
+}
+
+impl Message<Compact> for Agents {
+    type Reply = kameo::reply::DelegatedReply<Result<u32, String>>;
+
+    async fn handle(&mut self, m: Compact, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let actor = match self.session(Some(m.session), None).await {
+            Ok((_, actor)) => actor,
+            Err(e) => {
+                tx.send(Err(format!("{e:#}")));
+                return reply;
+            }
+        };
+        // Off the mailbox: `compact_now` asks us for the `Roster`, so awaiting
+        // here would deadlock. `SendError::HandlerError` displays as the inner `String`.
+        tokio::spawn(async move {
+            tx.send(actor.ask(CompactNow).await.map_err(|e| e.to_string()));
+        });
+        reply
     }
 }
 
@@ -486,41 +528,24 @@ impl Message<Deliver> for Agents {
 }
 
 impl Agents {
-    /// The §2.5 prompt block for `session` (empty when it has no peers and cannot spawn).
-    async fn peer_context(&self, session: SessionId) -> String {
-        let mut s = String::new();
-        if let Some((parent, name)) = self.sessions.get(&session).and_then(|l| l.parent.as_ref()) {
-            s.push_str(&format!(
+    /// Identity lines of a subagent (design doc 07 §10); `""` for a root session.
+    fn peer_context(&self, session: SessionId) -> String {
+        match self.sessions.get(&session).and_then(|l| l.parent.as_ref()) {
+            Some((parent, name)) => format!(
                 "## Peers\nYou are `{name}`, a subagent of session {parent} (address it as `parent`).\nYour final message is delivered to the parent when your turn ends."
-            ));
+            ),
+            None => String::new(),
         }
-        let children = self.store.children(session).await.unwrap_or_default();
-        let can_spawn =
-            self.store.depth(session).await.unwrap_or(u8::MAX) < self.cfg.subagents.max_depth;
-        if children.is_empty() && !can_spawn {
-            return s;
-        }
-        if !s.is_empty() {
-            s.push_str("\n\n");
-        }
-        s.push_str("## Subagents\n");
-        for c in children.iter().rev() {
-            let status = if self.running.contains(&c.id) {
-                "running"
-            } else {
-                "idle"
-            };
-            s.push_str(&format!(
-                "- {}  {status}\n",
-                c.name.as_deref().unwrap_or("?")
-            ));
-        }
-        if can_spawn {
-            s.push_str("Spawn with spawn_subagent (put all shared background in `task`; the subagent sees nothing else); steer or ask with send_message. Results arrive as <subagent_result> messages; you do not need to poll.");
-        } else {
-            s.push_str("Steer or ask with send_message. Results arrive as <subagent_result> messages; you do not need to poll.");
-        }
-        s
+    }
+
+    /// Whether the Claude Code identity line leads the system prompt for `model`
+    /// (design doc 05 §2.3): Anthropic namespace with a login in force.
+    fn claude_code(&self, model: &Resolved) -> bool {
+        model
+            .genai
+            .split_once("::")
+            .is_some_and(|(ns, _)| ns == "anthropic")
+            && self.auth.login("anthropic")
     }
 
     fn skills_dir(&self) -> std::path::PathBuf {
@@ -532,7 +557,31 @@ impl Message<PeerContext> for Agents {
     type Reply = String;
 
     async fn handle(&mut self, m: PeerContext, _: &mut Context<Self, Self::Reply>) -> String {
-        self.peer_context(m.session).await
+        self.peer_context(m.session)
+    }
+}
+
+impl Message<Roster> for Agents {
+    type Reply = String;
+
+    async fn handle(&mut self, m: Roster, _: &mut Context<Self, Self::Reply>) -> String {
+        let children = self.store.children(m.session).await.unwrap_or_default();
+        if children.is_empty() {
+            return String::new();
+        }
+        let mut s = String::from("Subagents: ");
+        for (i, c) in children.iter().rev().enumerate() {
+            if i > 0 {
+                s.push_str(", ");
+            }
+            s.push_str(c.name.as_deref().unwrap_or("?"));
+            s.push_str(if self.running.contains(&c.id) {
+                " (running)"
+            } else {
+                " (idle)"
+            });
+        }
+        s
     }
 }
 
@@ -540,11 +589,17 @@ impl Message<ShowPrompt> for Agents {
     type Reply = String;
 
     async fn handle(&mut self, m: ShowPrompt, _: &mut Context<Self, Self::Reply>) -> String {
-        let peers = match m.session {
-            Some(s) => self.peer_context(s).await,
-            None => String::new(),
-        };
-        system_prompt(&self.rt.data_dir, &peers)
+        let peers = m.session.map(|s| self.peer_context(s)).unwrap_or_default();
+        let (model, _) = self.resolve_model(&self.default_model);
+        let mut prompt = frame::baseline(&self.rt.data_dir, &peers, self.claude_code(&model));
+        if self.pool.is_some()
+            && let Ok(Some(reg)) = ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR)
+            && let Ok(specs) = reg.ask(ListTools).await
+        {
+            prompt.push_str("\n\n");
+            prompt.push_str(&repl::prompt_block(&specs));
+        }
+        prompt
     }
 }
 
@@ -666,8 +721,29 @@ impl Message<LoadSession> for Agents {
     type Reply = Loaded;
 
     async fn handle(&mut self, m: LoadSession, _: &mut Context<Self, Self::Reply>) -> Loaded {
-        let history = match self.store.messages(m.session).await {
-            Ok(messages) => render(&messages),
+        let store = &self.store;
+        let loaded = async {
+            anyhow::Ok((
+                store.messages(m.session).await?,
+                store.epochs(m.session).await?,
+            ))
+        }
+        .await;
+        let history = match loaded {
+            Ok((messages, epochs)) => {
+                // A boundary sits right after the last entry completed at or
+                // before `at_seq`, i.e. before the first entry past it.
+                let mut epochs = epochs.into_iter().peekable();
+                let mut out = Vec::new();
+                for (seq, entry) in render(&messages) {
+                    while let Some(e) = epochs.next_if(|e| e.at_seq < seq) {
+                        out.push(compacted(e));
+                    }
+                    out.push(entry);
+                }
+                out.extend(epochs.map(compacted));
+                out
+            }
             Err(e) => {
                 tracing::error!(session = %m.session, "load session: {e:#}");
                 Vec::new()
@@ -856,20 +932,24 @@ impl From<&Resolved> for ModelInfo {
     }
 }
 
-/// Collapse stored messages into UI entries; a tool call and its response
-/// become one `Tool` entry.
-fn render(messages: &[ChatMessage]) -> Vec<HistoryEntry> {
+/// Collapse stored messages into UI entries tagged with the seq of the
+/// message that completed them; a tool call and its response become one
+/// `Tool` entry (tagged with the response's seq).
+fn render(messages: &[(i64, ChatMessage)]) -> Vec<(i64, HistoryEntry)> {
     let mut out = Vec::new();
     let mut pending: HashMap<&str, (&str, &serde_json::Value)> = HashMap::new();
-    for m in messages {
+    for (seq, m) in messages {
         match m.role {
-            ChatRole::User => out.push(HistoryEntry::User {
-                text: text_of(&m.content),
-            }),
+            ChatRole::User => out.push((
+                *seq,
+                HistoryEntry::User {
+                    text: text_of(&m.content),
+                },
+            )),
             ChatRole::Assistant => {
                 let text = text_of(&m.content);
                 if !text.is_empty() {
-                    out.push(HistoryEntry::Assistant { text });
+                    out.push((*seq, HistoryEntry::Assistant { text }));
                 }
                 for c in m.content.tool_calls() {
                     pending.insert(&c.call_id, (&c.fn_name, &c.fn_arguments));
@@ -880,18 +960,37 @@ fn render(messages: &[ChatMessage]) -> Vec<HistoryEntry> {
                     let (name, args) = pending
                         .remove(r.call_id.as_str())
                         .unwrap_or(("?", &serde_json::Value::Null));
-                    out.push(HistoryEntry::Tool {
-                        name: name.to_string(),
-                        args: args.clone(),
-                        is_error: r.content.starts_with("ERROR: "),
-                        output: r.content.clone(),
-                    });
+                    out.push((
+                        *seq,
+                        HistoryEntry::Tool {
+                            name: name.to_string(),
+                            args: args.clone(),
+                            is_error: r.content.starts_with("ERROR: "),
+                            output: r.content.clone(),
+                        },
+                    ));
                 }
             }
             ChatRole::System => {}
         }
     }
     out
+}
+
+/// The UI divider for one epoch: the head text without its
+/// `<context_summary …>` wrapper (design doc 07 §8.4).
+fn compacted(e: Epoch) -> HistoryEntry {
+    let text = text_of(&e.head.content);
+    let summary = text
+        .strip_prefix("<context_summary")
+        .and_then(|s| s.split_once('>'))
+        .and_then(|(_, s)| s.strip_suffix("</context_summary>"))
+        .map_or(text.as_str(), str::trim)
+        .to_owned();
+    HistoryEntry::Compacted {
+        epoch: e.n,
+        summary,
+    }
 }
 
 /// `<data_dir>/credentials.yaml` as `genai_namespace: key` (design doc 01 §1.3).
@@ -1048,12 +1147,19 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         creds: Arc::new(credentials(&rt.data_dir)),
         oauth: oauth::Store::new(&rt.data_dir),
     };
+    // One worker per concurrent child turn plus the root session (design doc 08 §9).
+    let pool = repl::open_pool(&cfg.repl, cfg.subagents.max_concurrent.max(1) + 1).await;
+    spill::sweep(
+        &rt.data_dir.join("spill"),
+        Duration::from_secs(7 * 24 * 3600),
+    );
     let agents = Agents::spawn_with_mailbox(
         Agents {
             rt: rt.clone(),
             cfg: cfg.clone(),
             default_model: cfg.model.clone(),
             catalog: Arc::new(Catalog::load(&rt.data_dir)),
+            pool,
             configured: configured(auth.clone()),
             store,
             client: client(auth.clone())?,

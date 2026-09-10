@@ -326,6 +326,7 @@ impl ErasedTool for McpTool {
             Ok(ToolOutput {
                 content,
                 is_error: result.is_error.unwrap_or(false),
+                structured: result.structured_content,
             })
         })
     }
@@ -1289,6 +1290,7 @@ async fn register(state: &mut State, registry: &ActorRef<ToolRegistry>, mut orph
                         description: t.description.as_deref().unwrap_or_default().to_owned(),
                         schema: Value::Object((*t.input_schema).clone()),
                         risk: Risk::Mutating,
+                        direct: false,
                     },
                     remote_name: name,
                     service: Arc::clone(&r.service),

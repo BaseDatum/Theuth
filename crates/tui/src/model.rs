@@ -88,6 +88,8 @@ pub enum Command {
     },
     /// `Cancel`.
     Cancel(SessionId),
+    /// `Compact` on the agent actor.
+    Compact(SessionId),
     /// `ListSessions`.
     ListSessions,
     /// `ListChildren` of the root session.
@@ -218,6 +220,16 @@ pub enum Entry {
         /// Full output shown (Ctrl+O); built on first expand.
         expanded: Option<Box<markdown::Text>>,
     },
+    /// A compaction boundary (design doc 07 §8.4): a divider, expandable with
+    /// Ctrl+O to the summary when loaded from history (the live event has none).
+    Compacted {
+        /// Epoch the boundary opened.
+        epoch: u32,
+        /// Summary the model works from; `None` for the live event.
+        summary: Option<Box<markdown::Text>>,
+        /// Show the summary.
+        expanded: bool,
+    },
     /// Informational line (session lists, notices).
     Info(String),
     /// Error line.
@@ -278,6 +290,14 @@ impl Entry {
             Entry::Tool { args, expanded, .. } => {
                 5 + args.len() + expanded.as_ref().map_or(0, |t| t.view().lines().count())
             }
+            Entry::Compacted {
+                summary, expanded, ..
+            } => {
+                4 + match summary {
+                    Some(t) if *expanded => t.view().lines().count(),
+                    _ => 0,
+                }
+            }
         }
     }
 }
@@ -296,35 +316,36 @@ pub fn paste_token(i: usize, text: &str) -> String {
 
 /// Split a harness-injected input into `(peer, body)` per wrapper. Inputs
 /// queued during a turn arrive as one text: `<subagent_result name="…">` /
-/// `<message from="…">` blocks joined by newlines. Empty for human text (or
-/// anything not entirely made of wrappers).
-pub fn injected(text: &str) -> Vec<(String, String)> {
+/// `<message from="…">` blocks joined by newlines. Harness notes
+/// (`<context_summary>`, `<todo>`, `<context_pressure>`, `<runtime>`; design
+/// doc 07 §8.7) are wrappers too but yield no card. `None` for human text
+/// (or anything not entirely made of wrappers).
+pub fn injected(text: &str) -> Option<Vec<(String, String)>> {
     let mut out = Vec::new();
     let mut rest = text.trim_start();
     while !rest.is_empty() {
-        let Some((open, after)) = rest.split_once('\n') else {
-            return Vec::new();
+        let (open, after) = rest.strip_prefix('<')?.split_once('>')?;
+        let name = open.split(' ').next()?;
+        let (key, close) = match name {
+            "subagent_result" => (Some("name=\""), "</subagent_result>"),
+            "message" => (Some("from=\""), "</message>"),
+            "context_summary" => (None, "</context_summary>"),
+            "todo" => (None, "</todo>"),
+            "context_pressure" => (None, "</context_pressure>"),
+            "runtime" => (None, "</runtime>"),
+            _ => return None,
         };
-        let Some(tag) = open.strip_prefix('<').and_then(|t| t.strip_suffix('>')) else {
-            return Vec::new();
-        };
-        let (key, close) = if tag.starts_with("subagent_result ") {
-            ("name=\"", "</subagent_result>")
-        } else if tag.starts_with("message ") {
-            ("from=\"", "</message>")
-        } else {
-            return Vec::new();
-        };
-        let Some(from) = tag.split_once(key).and_then(|(_, v)| v.split('"').next()) else {
-            return Vec::new();
-        };
-        let Some((body, tail)) = after.split_once(close) else {
-            return Vec::new();
-        };
-        out.push((from.to_owned(), body.trim_end().to_owned()));
+        let (body, tail) = after.split_once(close)?;
+        if let Some(key) = key {
+            let from = open
+                .split_once(key)
+                .and_then(|(_, v)| v.split('"').next())?;
+            let body = body.strip_prefix('\n').unwrap_or(body).trim_end();
+            out.push((from.to_owned(), body.to_owned()));
+        }
         rest = tail.trim_start();
     }
-    out
+    Some(out)
 }
 
 /// A subagent of the root session, known from `SubagentSpawned` or `/agents`.
@@ -369,6 +390,7 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "tool approval prompts; `always` persists to config.yaml",
     ),
     ("/cancel", "", "abort the in-flight turn"),
+    ("/compact", "", "fold the conversation into a summary"),
     ("/quit", "", "exit"),
     ("/exit", "", "same as /quit"),
 ];
@@ -605,6 +627,8 @@ pub struct Model {
     /// Large pastes held out of the input box; the box shows one
     /// [`paste_token`] each, expanded back on submit.
     pub pastes: Vec<String>,
+    /// The shown session's summariser call is in flight (`Compacting`).
+    pub compacting: bool,
     /// The user asked to leave.
     pub quit: bool,
 }
@@ -722,12 +746,18 @@ impl Model {
                         result: Some(_),
                         ..
                     }
+                    | Entry::Compacted {
+                        summary: Some(_),
+                        ..
+                    }
             )
         }) else {
             return;
         };
         match e {
-            Entry::Card { expanded, .. } => *expanded = !*expanded,
+            Entry::Card { expanded, .. } | Entry::Compacted { expanded, .. } => {
+                *expanded = !*expanded;
+            }
             Entry::Tool {
                 result: Some((output, _)),
                 expanded,
@@ -750,10 +780,10 @@ impl Model {
             .any(|e| matches!(e, Entry::Assistant(t) if t.unrevealed() > 0))
     }
 
-    /// Frames are needed: text is typing out, a turn is in flight, or MCP
-    /// servers are connecting.
+    /// Frames are needed: text is typing out, a turn is in flight, MCP
+    /// servers are connecting, or a compaction runs.
     pub fn animating(&self) -> bool {
-        self.revealing() || self.shown_running() || self.mcp_connecting()
+        self.revealing() || self.shown_running() || self.mcp_connecting() || self.compacting
     }
 
     fn mcp_connecting(&self) -> bool {
@@ -794,6 +824,9 @@ impl Model {
     /// What the shown session is doing right now, for the status line and
     /// the trailing activity row; `None` when idle.
     pub fn activity(&self) -> Option<String> {
+        if self.compacting {
+            return Some("compacting…".into());
+        }
         if !self.shown_running() {
             return None;
         }
@@ -1019,7 +1052,11 @@ impl Model {
                 r.name, r.path
             ))),
             UiEvent::Info(t) => self.entries.push(Entry::Info(t)),
-            UiEvent::Error(e) => self.entries.push(Entry::Error(e)),
+            UiEvent::Error(e) => {
+                // A failed `/compact` answers here, not with an agent event.
+                self.compacting = false;
+                self.entries.push(Entry::Error(e));
+            }
         }
     }
 
@@ -1085,7 +1122,7 @@ impl Model {
             // harness injected it (`MessageDelivered` already shows those).
             AgentEvent::TurnStarted { text, model, .. } => {
                 self.model_id = model;
-                if injected(&text).is_empty()
+                if injected(&text).is_none()
                     && !matches!(self.entries.last(), Some(Entry::User(t)) if *t == text)
                 {
                     self.entries.push(Entry::User(text));
@@ -1118,10 +1155,13 @@ impl Model {
                 args,
                 ..
             } => {
+                // A `.` in the id marks a call made from inside a `python` cell
+                // (design doc 08 §4.1); it lands right after its parent card.
+                let inner = call_id.contains('.');
                 let tool = Entry::Tool {
                     call_id: call_id.clone(),
                     args: describe(&name, &args),
-                    name,
+                    name: if inner { format!("↳ {name}") } else { name },
                     result: None,
                     expanded: None,
                 };
@@ -1156,12 +1196,25 @@ impl Model {
                 self.entries.retain(|e| !matches!(e, Entry::Pending { .. }));
                 self.usage = Some(usage);
                 self.context = context;
+                self.compacting = false;
             }
             AgentEvent::ModelChanged { model, .. } => {
                 self.entries.push(Entry::Info(format!("model → {model}")));
                 self.model_id = model;
             }
-            AgentEvent::Error { message, .. } => self.entries.push(Entry::Error(message)),
+            AgentEvent::Compacting { .. } => self.compacting = true,
+            AgentEvent::Compacted { epoch, .. } => {
+                self.compacting = false;
+                self.interject(Entry::Compacted {
+                    epoch,
+                    summary: None,
+                    expanded: false,
+                });
+            }
+            AgentEvent::Error { message, .. } => {
+                self.compacting = false;
+                self.entries.push(Entry::Error(message));
+            }
             AgentEvent::SubagentSpawned { .. } | AgentEvent::MessageDelivered { .. } => {}
         }
     }
@@ -1215,6 +1268,10 @@ impl Model {
                 None => self.entries.push(Entry::Info("no session".into())),
             },
             "/focus" => self.focus(arg, tx),
+            "/compact" => match self.shown() {
+                Some(session) => send(tx, Command::Compact(session)),
+                None => self.entries.push(Entry::Info("no session".into())),
+            },
             "/cancel" => {
                 if let Some(session) = self.shown() {
                     send(tx, Command::Cancel(session));
@@ -1317,9 +1374,20 @@ impl Model {
         format!("{session}  {state}{usage}{focus}{agents}")
     }
 
-    /// Line above the input: `model  ·  ctx 12.3k / 200k (6%)` and its colour level.
+    /// Line above the input: `model  ·  ctx 12.3k / 200k (6%)  ·  cache 94%`
+    /// and its colour level. `cache` is the prefix-cache hit ratio of the last
+    /// finished turn (design doc 07 §7), omitted until one has reported usage.
     pub fn header(&self, catalog: &Catalog) -> (String, Level) {
         let used = k(self.context);
+        let cache = match self.usage {
+            Some(u) if u.prompt > 0 => {
+                format!(
+                    "  ·  cache {}%",
+                    u64::from(u.cached) * 100 / u64::from(u.prompt)
+                )
+            }
+            _ => String::new(),
+        };
         match catalog.closest(&self.model_id).map(|m| m.limit.context) {
             Some(limit) if limit > 0 => {
                 let pct = u64::from(self.context) * 100 / u64::from(limit);
@@ -1330,7 +1398,7 @@ impl Model {
                 };
                 (
                     format!(
-                        "{}  ·  ctx {used} / {} ({pct}%){}",
+                        "{}  ·  ctx {used} / {} ({pct}%){cache}{}",
                         self.model_id,
                         k(limit),
                         self.approvals_tag()
@@ -1339,7 +1407,11 @@ impl Model {
                 )
             }
             _ => (
-                format!("{}  ·  ctx {used}{}", self.model_id, self.approvals_tag()),
+                format!(
+                    "{}  ·  ctx {used}{cache}{}",
+                    self.model_id,
+                    self.approvals_tag()
+                ),
                 Level::Normal,
             ),
         }
@@ -1756,11 +1828,11 @@ pub fn mcp_entry(text: &str) -> Result<(String, serde_json::Value), String> {
 /// several peer messages becomes one card each.
 fn from_history(h: HistoryEntry) -> Vec<Entry> {
     match h {
-        HistoryEntry::User { text } => match injected(&text).as_slice() {
-            [] => vec![Entry::User(text)],
-            peers => peers
-                .iter()
-                .map(|(from, body)| card(CardKind::Peer, from.clone(), body))
+        HistoryEntry::User { text } => match injected(&text) {
+            None => vec![Entry::User(text)],
+            Some(peers) => peers
+                .into_iter()
+                .map(|(from, body)| card(CardKind::Peer, from, &body))
                 .collect(),
         },
         HistoryEntry::Assistant { text } => {
@@ -1777,6 +1849,11 @@ fn from_history(h: HistoryEntry) -> Vec<Entry> {
             name,
             result: Some((output, is_error)),
             expanded: None,
+        }],
+        HistoryEntry::Compacted { epoch, summary } => vec![Entry::Compacted {
+            epoch,
+            summary: Some(Box::new(markdown::Text::complete(&summary))),
+            expanded: false,
         }],
     }
 }
@@ -1908,13 +1985,23 @@ mod tests {
         let text = "<message from=\"pinger\" id=\"m1\" reply_expected=\"false\">\nPONG\n</message>\n<subagent_result name=\"pinger\" session=\"x\" stop=\"end_turn\">\nSent.\n</subagent_result>";
         assert_eq!(
             injected(text),
-            vec![
+            Some(vec![
                 ("pinger".to_owned(), "PONG".to_owned()),
                 ("pinger".to_owned(), "Sent.".to_owned()),
-            ]
+            ])
         );
-        assert!(injected("<b>\nnot a wrapper\n</b>").is_empty());
-        assert!(injected("hello").is_empty());
+        // Harness notes are hidden without producing a card; a peer message
+        // batched with one still gets its card.
+        assert_eq!(injected("<todo>- [ ] x\n- [x] y</todo>"), Some(Vec::new()));
+        assert_eq!(
+            injected(
+                "<context_pressure>80% full</context_pressure>\n<message from=\"p\">\nhi\n</message>"
+            ),
+            Some(vec![("p".to_owned(), "hi".to_owned())])
+        );
+        assert_eq!(injected("<b>\nnot a wrapper\n</b>"), None);
+        assert_eq!(injected("hello"), None);
+        assert_eq!(injected("<todo>unterminated"), None);
     }
 
     #[test]
@@ -1964,12 +2051,24 @@ mod tests {
         let (text, level) = m.header(&catalog);
         assert_eq!(level, Level::Danger);
         assert!(text.ends_with("(90%)"), "{text}");
+        m.usage = Some(Usage {
+            prompt: 1000,
+            completion: 10,
+            cached: 940,
+        });
+        let (text, _) = m.header(&catalog);
+        assert!(text.ends_with("(90%)  ·  cache 94%"), "{text}");
         m.model_id = "nobody/nothing".into();
         m.context = 1500;
         assert_eq!(
             m.header(&catalog),
-            ("nobody/nothing  ·  ctx 1.5k".to_owned(), Level::Normal)
+            (
+                "nobody/nothing  ·  ctx 1.5k  ·  cache 94%".to_owned(),
+                Level::Normal
+            )
         );
+        m.usage = Some(Usage::default());
+        assert_eq!(m.header(&catalog).0, "nobody/nothing  ·  ctx 1.5k");
         assert_eq!(window(50, 20, 10), 11..21);
         assert_eq!(window(5, 0, 10), 0..5);
     }

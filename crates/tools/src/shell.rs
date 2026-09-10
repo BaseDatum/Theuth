@@ -210,6 +210,7 @@ impl Tool for ShellTool {
                 ToolOutput {
                     content: truncate(format!("{body}{sep}exit code: {code}")),
                     is_error: code != 0,
+                    structured: None,
                 }
             }
         })

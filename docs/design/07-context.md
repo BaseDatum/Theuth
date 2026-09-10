@@ -1,9 +1,10 @@
 # 07 — Context: append-only frames, epochs, compaction
 
-Status: draft v0 · 2026-09-09 · extends `00-architecture.md` §5,
+Status: implemented v0 · 2026-09-10 · extends `00-architecture.md` §5,
 `02-models-and-menus.md` §3 (header), `04-prompt-skills-mcp.md` §1.1,
 `01-config-and-subagents.md` §2.5. Where this doc disagrees with those, this
-doc wins; §13 lists the edits to make there.
+doc wins; §13 lists the edits made there. Code: `crates/agent/src/{frame,
+compact,spill,todo,loop_,store}.rs`.
 
 Goal: a session can run for hours and hundreds of tool rounds without the
 model losing the thread, and every model call after the first reads its
@@ -89,12 +90,13 @@ pub struct Frame<'a> {
     pub history: &'a [ChatMessage],
 }
 impl Frame<'_> {
-    /// The request for `transport`, cache marks placed (§3).
-    pub fn request(&self, t: Transport) -> ChatRequest;
+    /// The request and options for `t`, cache marks placed (§3); `session` is the OpenAI `prompt_cache_key`.
+    pub fn request(&self, t: Transport, session: SessionId) -> (ChatRequest, ChatOptions);
 }
 ```
 
-No state, no I/O. Cache marks are the only per-transport difference.
+No state, no I/O. Cache marks (and the OpenAI cache key) are the only
+per-transport difference.
 
 ### 2.2 Rules
 
@@ -107,7 +109,7 @@ No state, no I/O. Cache marks are the only per-transport difference.
    saw. It is then history: frozen, persisted, replayed identically on
    resume.
 3. **The system prompt is frozen for a turn.** Rendered once when the turn
-   starts (not per round, as `04 §1.1` says today). A mid-turn `add_skill`
+   starts (not per round, as the pre-07 loop did). A mid-turn `add_skill`
    or `prompt.md` edit is picked up by the next turn; the model can use a
    skill it just wrote via `load_skill` in the meantime.
 4. **Nothing in the frame carries a clock finer than the day.** The date is
@@ -129,12 +131,12 @@ No state, no I/O. Cache marks are the only per-transport difference.
 | identity line, Claude Code identity (login-dependent), cwd | system | never within a process | — |
 | date | system | midnight | rebase at the next turn start |
 | `prompt.md`, `always` skill bodies, skills index | system | user or model edits | rebase at the next turn start (one miss, deliberate) |
-| peer guidance (how to spawn/message) | system | never | static text; the live roster is **removed** from the prompt (§10) |
-| tool list | tools | MCP server connects/disconnects, gate change | picked up next round; logged as `tools changed (+a −b)`; the miss is real and rare |
+| peer guidance (how to spawn/message), todo sentence | system | never | the `GUIDANCE` const in `frame::baseline`; the live roster is **removed** from the prompt (§10) |
+| tool list | tools | MCP server connects/disconnects, gate change — only while the runtime is off; with it on, MCP tools are `direct = false` and never in the list (§5) | picked up next round; logged as `tools changed (+a −b)`; the miss is real and rare |
 | user input, steering, `<message>`, `<subagent_result>` | history tail | per turn | append |
 | assistant output, tool results | history tail | per round | append |
 | harness notes: context pressure, todo reminder | history tail | pressure once per epoch; reminder rate-limited (§8.7, §9) | append |
-| todo list | `Session` state; visible via `todo` tool output, reminder notes, compaction head | every `todo` call | append only; the list is never re-injected in place (§9) |
+| todo list | `SessionState` state; visible via `todo` tool output, reminder notes, compaction head | every `todo` call | append only; the list is never re-injected in place (§9) |
 | runtime inventory (`08-repl.md` §6) | `Repl` state; visible in cell results and the compaction head | every `python` cell | append; harness truth |
 | epoch summary | head | compaction | new epoch |
 | model | request param | `/model` | outside the cached prefix; a different model is a different cache anyway |
@@ -213,9 +215,10 @@ The Cursor transport reads `req.system` and System-role messages alike
 ## 4. Baseline
 
 `agent::frame::baseline(data_dir, peer_line, claude_code) -> String` is
-today's `system_prompt` with two changes: it is called once per **turn** by
-`Turn::run` and stored on the `Turn`; and the peers block no longer contains
-the roster (§10). Parts, blank-line separated, empty parts skipped:
+the old `system_prompt` with two changes: it is called once per **turn** by
+`Turn::rebase` and stored on `SessionState.baseline`; and the peers block no
+longer contains the roster (§10). Parts, blank-line separated, empty parts
+skipped:
 
 ```
 1. [Claude Code identity line, when the anthropic login is used]   (05 §2.3)
@@ -223,12 +226,16 @@ the roster (§10). Parts, blank-line separated, empty parts skipped:
 3. <data_dir>/prompt.md
 4. always-skill bodies, name order
 5. skills index
-6. peer line: "You are `x`, a subagent of session …" for children, else nothing
-7. peer guidance: static text (spawn_subagent / send_message / <subagent_result>)
+6. peer line: `PeerContext { session }` → "## Peers\nYou are `x`, a subagent of session …" for children, else ""
+7. GUIDANCE const: the todo sentence (§9) + spawn_subagent / send_message / <subagent_result> text
 ```
 
-`Session` keeps `baseline: String` across turns. At turn start the new
-render is compared with it; on inequality:
+`Turn::rebase` then appends `repl::prompt_block(ListTools)` (`08 §3.2`) when
+the runtime pool is on. Only part 7 is static text; everything the roster
+used to contribute per turn is gone.
+
+`SessionState` keeps `baseline: String` across turns. At turn start the new
+render is compared with it; on inequality (and a non-empty previous value):
 
 ```
 tracing::info!(session, "rebase: system prompt changed ({} → {} bytes)", old, new)
@@ -239,32 +246,40 @@ shows a lower cache ratio and the log says why. A rebase does **not**
 touch `head` or `history` — the summary from the last compaction stays.
 
 Within the turn every round uses the stored string; `ShowPrompt` returns
-it. The one behaviour lost against `04 §1.1` ("editing `prompt.md` applies
-mid-turn on the next model call") is deliberate: a 30-round turn is
+it. The one behaviour lost against the original `04 §1.1` ("editing
+`prompt.md` applies mid-turn on the next model call") is deliberate: a 30-round turn is
 where the cache matters most, and a turn is seconds to minutes long.
 
-## 5. Tools
+`ListTools` is sorted by name (`tools/registry.rs`). `Turn::tools` builds
+the direct list every round:
 
-`ListTools` is already sorted by name (`tools/registry.rs:147-150`). The
-frame keeps the per-round fetch (an MCP server that comes up mid-turn is
-usable next round, as `01 §1.4` promises) but makes the cost visible:
-
-```rust
-let hash = { let mut h = DefaultHasher::new(); serde_json::to_vec(&tools)?.hash(&mut h); h.finish() };  // std; not security
-if let Some(prev) = self.tools_hash && prev != hash {
-    tracing::warn!(session, "tools changed mid-turn: +[{added}] -[{removed}] (prefix cache reset)");
-}
+```
+specs = ListTools
+      .filter(|s| (!runtime || s.direct) && (s.name != spawn_subagent || depth < max_depth))
+      + todo::spec()  + repl::spec() if runtime          // loop-local tools, §9, 08 §3.1
+      sorted by name
+hash = frame::tools_hash(&tools)                          // std DefaultHasher over the JSON; not security
+if let Some((prev, seen)) = tools_seen && prev != hash:
+    warn!(session, "tools changed mid-turn: +[{added}] -[{removed}] (prefix cache reset)"); reset_this_round = true
 ```
 
-The common trigger is startup: the user types before every MCP server has
-connected, round 1 has six tools, round 2 has twenty. One miss on the first
-turn. A flapping server would show up as a warning per round — that is the
-signal we want.
+The per-round fetch stays (an MCP server that comes up mid-turn is usable
+next round while the runtime is off, as `01 §1.4` promises) but the cost is
+visible. The common trigger is startup: the user types before every MCP
+server has connected, round 1 has six tools, round 2 has twenty. One miss
+on the first turn. A flapping server would show up as a warning per round —
+that is the signal we want.
 
-With the runtime on (`08-repl.md` §0.4) the direct tools list is native
-tools + `python` only; MCP servers connecting or flapping no longer touch
-it. The runtime's tool index lives in the baseline and changes at turn
-boundaries as a rebase.
+With the runtime on (`08-repl.md` §0.4) MCP tools carry `ToolSpec.direct =
+false` (`tools/mcp.rs`) and the `retain(direct)` above drops them: the direct
+list is native tools + `todo` + `python`, and MCP servers connecting or
+flapping no longer touch it. The runtime's tool index lives in the baseline
+and changes at turn boundaries as a rebase.
+
+`todo` and `python` are **loop-local**: not in the registry, dispatched by
+`Turn::round` itself (`Turn::todo`, `Turn::python`), so they bypass the
+approval policy — both are `Risk::ReadOnly`, and `python`'s inner tool
+calls go through the registry gate (`08 §4.3`).
 
 Rule 2.2.5 is enforced by review, not code: a tool's `description()` must
 not read the clock, the session, or the roster. `spawn_subagent`'s
@@ -317,28 +332,30 @@ number, not a tokenizer, drives everything:
 pub struct Usage {
     pub prompt: u32,      // Σ prompt_tokens over the turn (cached + written + fresh)
     pub completion: u32,  // Σ completion_tokens
-    pub cached: u32,      // Σ prompt_tokens_details.cached_tokens   (new)
+    pub cached: u32,      // Σ prompt_tokens_details.cached_tokens
 }
 ```
 
-`Session.used: u32` = `prompt + completion` of the **last** call (today's
-`TurnFinished.context`), kept across turns so the first call of the next
+`SessionState.used: u32` = `prompt + completion` of the **last** call
+(`TurnFinished.context`), kept across turns so the first call of the next
 turn has a baseline. It is reset to 0 by compaction and by resume.
 
-**Header** (`02 §3`): `claude-sonnet-4-5  ·  ctx 45.2k (23%)  ·  cache 94%`
-where `cache = cached / prompt` of the last finished turn. The ratio is the
-invariant's live readout: a healthy multi-round turn sits above 90 %; the
-turn after a rebase or compaction dips once; a turn that dips every round
-is a bug.
+**Header** (`02 §3`, `tui::model::Model::header`): `claude-sonnet-4-5  ·
+ctx 45.2k / 200k (23%)  ·  cache 94%` where `cache = cached / prompt` of the
+last finished turn (omitted until one has reported usage). Print mode
+(`-p`) prints the same ratio in its footer: `[end_turn] 12345↑ 678↓ cache
+83%`. The ratio is the invariant's live readout: a healthy multi-round turn
+sits above 90 %; the turn after a rebase or compaction dips once; a turn
+that dips every round is a bug.
 
-**Miss detection** — in `Turn::round`, after the usage arrives, on a
-transport with explicit or implicit caching:
+**Miss detection** — in `Turn::round`, after the usage arrives, when
+`transport != Transport::Plain`:
 
 ```
-if let Some(prev) = self.prev_call            // any earlier call in this session
-   && prev.at.elapsed() < 5 min && !self.reset_this_round
-   && prev.prompt >= 4096 && cached < prev.prompt * 9 / 10 {
-    tracing::warn!(session, round, cached, prev_prompt = prev.prompt,
+if let Some((at, prev_prompt)) = state.prev_call     // any earlier call in this session
+   && at.elapsed() < CACHE_TTL /* 5 min */ && !self.reset_this_round
+   && prev_prompt >= CACHE_FLOOR /* 4096 */ && cached < prev_prompt * 9 / 10 {
+    tracing::warn!(session, round, cached, prev_prompt,
         "prefix cache miss (no rebase/compaction/tool change since the previous call)");
 }
 ```
@@ -364,9 +381,10 @@ Before each model call:
 
 ```
 window   = catalog.closest(model).limit.context          (0 when unknown)
-appended = Σ est(messages persisted since the last call)   // user text, steering, tool results
+appended = Σ est(history[since..])                         // persisted since the last call: user text, steering, tool results
 projected = used + appended
-compact if window > 0 && projected >= compact_at * window
+debug!(session, round, window, used, appended, projected, "trigger check")
+compact if window > 0 && compact_at > 0 && projected / window >= compact_at
 ```
 
 `compact_at` defaults to 0.8. The results of the batch that just ran are
@@ -385,26 +403,36 @@ threshold ignored.
 
 ### 8.2 Cut
 
-`history` is `M[0..n)`. Choose `keep_from`:
+`history` is `M[0..n)`. `compact::keep_from(&M, limit)` with `limit =
+compact_at × window` (the raw `window` when `compact_at == 0`, i.e. a
+manual or overflow compaction with auto off):
 
 ```
-budget    = window / 8
+budget    = limit / 8
 valid(i)  = M[i].role != Tool             // never orphan a tool_result from its tool_use
 walk i from n-1 down to 1, acc += est(M[i]):
-    valid(i) && acc <= budget  → keep_from = i   (keep walking: a larger tail may still fit)
     acc > budget               → stop
+    valid(i)                   → keep_from = i   (keep walking: a larger tail may still fit)
 no keep_from recorded          → keep_from = largest valid i in 1..n   (smallest possible tail)
 no valid i in 1..n             → keep_from = 0: nothing to fold; skip ("nothing to compact")
 ```
+
+The budget is an eighth of the *threshold*, not of the window. The draft
+said `window / 8`; testing at `compact_at: 0.02` on a 1M-context model
+showed why that is wrong: the tail budget (125k) exceeded the threshold
+(20k), so every compaction folded exactly one message and the next round
+compacted again. Sizing the tail to the threshold keeps the post-compaction
+frame well under it at any `compact_at`.
 
 The fallback keeps the last assistant message and its results even when
 they alone exceed the budget; if they alone exceed the *window* the
 compacted frame overflows too and §8.5 surfaces the error — nothing else
 can help at that point.
 
-Kept verbatim: `M[keep_from..n)`, at most ~1/8 of the window (25k on 200k) —
-the tool outputs, file contents and error text the model is *currently*
-working from. Folded: everything before it, plus the previous head.
+Kept verbatim: `M[keep_from..n)`, at most ~1/8 of the threshold (20k on a
+200k window at 0.8) — the tool outputs, file contents and error text the
+model is *currently* working from. Folded: everything before it, plus the
+previous head.
 Cutting before an assistant message is fine (its tool results follow it);
 cutting before a user message is fine; cutting before a Tool message is
 not, hence `valid`. The first message of the kept tail may be a User
@@ -458,14 +486,15 @@ Nothing from the summariser call is persisted as a message. It publishes
 
 ```
 summary   = model text
-roster    = supervisor truth: "Subagents: grep-logs (running), fix-tests (idle)" or nothing
-todos     = todo::render(&self.todos) or nothing                              (§9)
-runtime   = repl::render_inventory(&names) or nothing                          (08 §6)
-head      = ChatMessage::user(format!("<context_summary epoch=\"{n}\">\n{summary}\n{roster}\n{todos}\n{runtime}\n</context_summary>"))
+roster    = agents.ask(Roster { session }): "Subagents: grep-logs (running), fix-tests (idle)" or ""
+todos     = todo::render(&state.todos) if non-empty                                   (§9)
+runtime   = "Runtime: " + (repl.render_inventory() | repl::saved_inventory(data_dir, session))  (08 §6)
+head      = ChatMessage::user("<context_summary epoch=\"{n}\">\n{summary}" + "\n{part}" for each present part + "\n</context_summary>")
 tail_from = seq(M[keep_from])
 at_seq    = seq(M[n-1])
 store.compact(session, n, at_seq, tail_from, &head)        // one INSERT into epochs
-history.drain(..keep_from); self.head = Some(head); used = 0; reset_this_round = true
+history.drain(..keep_from); head = Some(head); used = 0; epoch = n; pressure_sent = false; reset_this_round = true
+info!(session, epoch, folded, before, "compaction")
 publish Compacted { session, turn, epoch: n, before: projected, folded: keep_from }
 ```
 
@@ -531,9 +560,22 @@ error and stops the turn.
 ### 8.6 Manual, events, surfaces
 
 - `Compact { session }` — `ask` → `Result<u32 /* epoch */, String>` on the
-  `"agent"` actor; refused while a turn is running ("turn in flight").
-  Threshold ignored; `keep_from == 0` → `Err("nothing to compact")`.
-- TUI `/compact`; RPC `compact`.
+  `"agent"` supervisor (`supervisor.rs` `impl Message<Compact>`), which
+  forwards `CompactNow` to the session actor. Threshold ignored; `keep_from
+  == 0` → `Err("nothing to compact")`; `Err("turn in flight")` while a turn
+  runs.
+- **A `/compact` is a mini-turn.** `Session`'s `CompactNow` handler takes
+  the `SessionState`, sets `inflight`, and runs `Turn::compact_now` (rebase,
+  tools, transport, then `Turn::compact` with `turn: None`) in a spawned
+  task that hands the state back via `TurnDone`; the reply is a
+  `DelegatedReply`. The supervisor's `Compact` handler is delegated too
+  (`tokio::spawn` around `actor.ask(CompactNow)`). Reason: the summariser
+  asks the supervisor for `Roster`; handling either message inline on its
+  own mailbox deadlocked in testing. Side effects of the mini-turn shape:
+  input arriving meanwhile queues as steering and starts a turn when the
+  compaction hands back, and `IsRunning` is true during it.
+- TUI `/compact` → `Command::Compact(session)` → `Info("context compacted
+  (epoch n)")`; RPC `compact`.
 - Events: `Compacting { session, turn: Option<TurnId> }`, `Compacted {
   session, turn: Option<TurnId>, epoch: u32, before: u32, folded: u32 }`.
   `TurnFinished.usage.cached` (§7).
@@ -542,22 +584,26 @@ error and stops the turn.
 
 A **note** is a user-role message the harness appends at the tail before a
 model call: `Turn::note(kind, text)` → `persist(ChatMessage::user(format!(
-"<{kind}>{text}</{kind}>")))`. Notes are ordinary history afterwards:
+"<{kind}>\n{text}\n</{kind}>")))`. Notes are ordinary history afterwards:
 persisted, frozen, replayed on resume, hidden by UIs the way `<message>`
 wrappers are (`tui::model::injected`). They are the *only* way the harness
 speaks to the model mid-turn, and they are append-only by construction —
 this is what replaces jarvis's `retain()+push()` stickies.
 
-Three kinds exist:
+Two kinds exist:
 
-- `context_pressure` — once per epoch, when `projected >= (compact_at − 0.1)
-  × window`: *"The context window is {pct}% full; compaction is near.
-  Finish the current step and state results and next steps explicitly in
-  your reply so they survive."* It makes the model write its working state
-  down right before the summariser needs it.
+- `context_pressure` — once per epoch (`pressure_sent`, reset by
+  compaction), when `compact_at > 0.1` and `projected / window >= compact_at
+  − 0.1`: *"The context window is {pct}% full; compaction is near. Finish
+  the current step and state results and next steps explicitly in your
+  reply so they survive."* It makes the model write its working state down
+  right before the summariser needs it. The `> 0.1` guard keeps a tiny
+  test threshold from sending the note on round one.
 - `todo` — the reminder in §9.
-- `runtime` — the state-lost line after a failed restore or a crash
-  (`08-repl.md` §5).
+
+A lost or crashed runtime is *not* a note: the `<runtime>` line opens the
+result of the cell that discovered it (`08-repl.md` §5), where the model
+is already looking.
 
 Notes are a user text block following a `tool_result` block; on Haiku and
 pre-4.6 Sonnet that strips earlier thinking blocks (§3), the same as
@@ -593,16 +639,20 @@ ever edited or moved:
    state, so the list crosses the epoch boundary exactly (jarvis's
    `active_state.rs`, wired), and the summariser cannot drift it.
 
-State, on `Session`:
+State, on `SessionState`:
 
 ```rust
 pub struct Todo { pub text: String, pub status: Status }   // Pending | InProgress | Done | Dropped
-todos: Vec<Todo>, todo_touched_round: u32                  // Session; cleared by `init`
+todos: Vec<Todo>, todo_touched_round: u32                  // SessionState; `init` replaces the list
 ```
 
-Tool `todo` (agent crate, next to `load_skill`; `Risk::ReadOnly`; `ask`s the
-`"agent"` supervisor which forwards to the session actor by
-`ToolCx.session`, the same route `spawn_subagent` uses):
+Tool `todo` (`agent::todo`; `Risk::ReadOnly`) is **loop-local**: it is not
+in the registry. `Turn::tools` appends `todo::spec()` to the direct list and
+`Turn::round` dispatches it to `Turn::todo`, which applies the op to
+`state.todos` in place — no actor hop, no `Invoke`, so the approval policy
+never sees it (it is read-only harness state). The design draft had it
+`ask` the supervisor; owning the state on the turn is shorter and needs no
+forwarding.
 
 ```rust
 struct TodoArgs {
@@ -633,9 +683,10 @@ Todo (2/5 done):
   ✗ update the docs   (dropped)
 ```
 
-The system prompt gains one static sentence under the tool guidance: *"For
-work with three or more steps, keep a `todo` list and mark items as you
-go."* Static text — no cache effect.
+The system prompt gains one static sentence, the first line of
+`frame::baseline`'s `GUIDANCE` const: *"For work with three or more steps,
+keep a `todo` list and mark items as you go."* Static text — no cache
+effect.
 
 UI: `todo` calls render as ordinary tool cards (the list is the output);
 the `<todo>` note is hidden like other wrappers. No `/todos` command, no
@@ -652,8 +703,11 @@ message is its task. Two changes from `01 §2.5`:
    system cache every time a child finished. The model learns children's
    names from `spawn_subagent`'s output and their completion from
    `<subagent_result>`; both are already in history. After compaction the
-   head carries the roster (§8.4). `PeerContext` returns the child's
-   identity line plus static guidance.
+   head carries the roster (§8.4), fetched with `Roster { session }` →
+   `"Subagents: a (running), b (idle)"` or `""`. `PeerContext { session }`
+   returns only the identity lines (`"## Peers\nYou are `x`, a subagent of
+   session …"`), `""` for a root; the static spawn/send guidance moved into
+   `frame::baseline`'s `GUIDANCE` const.
 2. **Children carry their own compaction.** A child running 40 rounds
    compacts like any session. The parent receives only the child's final
    text, as before.
@@ -669,43 +723,66 @@ spawn and is listed in §14 as a follow-up with its precondition.
 
 ## 11. Types, config, messages
 
-New/changed in `agent`:
+As built (`crates/agent/src`):
 
 ```rust
 // agent::frame
-pub struct Frame<'a> { tools, system, head, history }        // §2.1
-pub enum Transport { Anthropic, OpenAiLike, Plain }          // from AdapterKind, §3 table
-pub fn baseline(data_dir: &Path, peer_line: &str, claude_code: bool) -> String;
+pub enum Transport { Anthropic, OpenAiLike, Plain }              // §3 table
+impl Transport { pub fn of(kind: AdapterKind) -> Self; }         // `cursor` never reaches genai → caller uses Plain
+pub struct Frame<'a> { pub tools: &'a [Tool], pub system: &'a str, pub head: Option<&'a ChatMessage>, pub history: &'a [ChatMessage] }
+impl Frame<'_> { pub fn request(&self, t: Transport, session: SessionId) -> (ChatRequest, ChatOptions); }
+pub fn tools_hash(tools: &[Tool]) -> u64;                        // §5
+pub fn baseline(data_dir: &Path, peer_line: &str, claude_code: bool) -> String;   // §4; GUIDANCE const appended
+pub fn truncate(s: &str, max: usize) -> String;                  // UI copies only
 
 // agent::spill
 pub fn cap(session: SessionId, call_id: &str, content: &str, max_chars: usize, dir: &Path) -> String;
 pub fn sweep(dir: &Path, max_age: Duration);
 
 // agent::todo
-pub struct Todo { text, status }; pub enum Status { Pending, InProgress, Done, Dropped }
+pub const NAME: &str = "todo";  pub const TODO_REMIND_ROUNDS: u32 = 4;
+pub struct Todo { pub text: String, pub status: Status }
+pub enum Status { Pending, InProgress, Done, Dropped }
+pub enum Op { Init, Add, Start, Done, Drop, View }               // serde snake_case
+pub struct TodoArgs { pub op: Op, #[serde(default)] pub items: Vec<String>, pub task: Option<String> }
 pub fn apply(list: &mut Vec<Todo>, args: TodoArgs) -> Result<(), String>;   // pure; §9 semantics
 pub fn render(list: &[Todo]) -> String;
-pub struct TodoTool;                                                          // Risk::ReadOnly
-pub const TODO_REMIND_ROUNDS: u32 = 4;
+pub fn spec() -> ToolSpec;                                       // Risk::ReadOnly, direct: true; loop-local
 
 // agent::compact
 pub const COMPACT_INSTRUCTION: &str;
-pub fn keep_from(history: &[ChatMessage], window: u32) -> usize;   // §8.2, pure
-pub fn is_overflow(err: &str) -> bool;                              // §8.5
+pub fn est(m: &ChatMessage) -> u32;                              // serialised chars / 4
+pub fn keep_from(history: &[ChatMessage], limit: u32) -> usize;  // §8.2; limit = compact_at × window
+pub fn is_overflow(err: &str) -> bool;                           // §8.5
 
-// Session state (loop_.rs)
-baseline: String, head: Option<ChatMessage>, history: Vec<(i64, ChatMessage)>,
-used: u32, epoch: u32, pressure_sent: bool, prev_call: Option<(Instant, u32 /* prompt */)>
-// Turn state: tools_hash: Option<u64>, reset_this_round: bool
+// agent::loop_
+pub struct SessionState { pub epoch: u32, pub head: Option<ChatMessage>, pub history: Vec<(i64, ChatMessage)>,
+    pub used: u32, pub baseline: String, pub pressure_sent: bool, pub prev_call: Option<(Instant, u32 /* prompt */)>,
+    pub todos: Vec<todo::Todo>, pub todo_touched_round: u32 }
+impl SessionState { pub fn resume(epoch: u32, head: Option<ChatMessage>, history: Vec<(i64, ChatMessage)>) -> Self; }
+pub struct CompactNow;                                           // ask → DelegatedReply<Result<u32, String>> (§8.6)
+pub struct TurnDone(SessionState);                               // tell, turn task → its Session
+// Turn (private): turn: Option<TurnId>, usage, transport: Option<(String, Transport)>,
+//   tools_seen: Option<(u64, Vec<String>)>, reset_this_round, overflowed, since: usize, window_logged, repl: Option<Repl>
 
-// lib.rs
-pub struct Compact { pub session: SessionId }                       // ask → Result<u32, String>
+// agent::supervisor
+pub struct PeerContext { pub session: SessionId }                // ask → String: identity lines or ""
+pub struct Roster { pub session: SessionId }                     // ask → String: "Subagents: …" or ""
+
+// agent::store
+pub struct Epoch { pub n: u32, pub at_seq: i64, pub tail_from: i64, pub head: ChatMessage }
+pub async fn append(&self, id: SessionId, message: &ChatMessage) -> anyhow::Result<i64 /* seq */>;
+pub async fn epochs(&self, id: SessionId) -> anyhow::Result<Vec<Epoch>>;
+pub async fn compact(&self, id: SessionId, n: u32, at_seq: i64, tail_from: i64, head: &ChatMessage) -> anyhow::Result<()>;
+pub async fn frame(&self, id: SessionId) -> anyhow::Result<(u32, Option<ChatMessage>, Vec<(i64, ChatMessage)>)>;
+
+// agent (lib.rs)
+pub struct Compact { pub session: SessionId }                    // ask → Result<u32, String>
 AgentEvent::Compacting { session, turn: Option<TurnId> }
 AgentEvent::Compacted  { session, turn: Option<TurnId>, epoch: u32, before: u32, folded: u32 }
 HistoryEntry::Compacted { epoch: u32, summary: String }
-Usage { prompt, completion, cached }
-AgentConfig { …, compact_at: f32 /* 0.8 */ }
-// Session: todos: Vec<Todo>, todo_touched_round: u32
+pub struct Usage { pub prompt: u32, pub completion: u32, pub cached: u32 }
+AgentConfig { …, max_tool_output_chars: usize /* 32_000 */, compact_at: f32 /* 0.8 */, repl: ReplConfig }
 ```
 
 Config, complete:
@@ -714,9 +791,10 @@ Config, complete:
 agent:
   max_tool_output_chars: 32000   # existing; the only cap on tool output (§6)
   compact_at: 0.8                # fraction of the model's context window; 0 disables auto-compaction (§8.1)
+  repl: { monty: null }          # 08 §10; not part of this doc
 ```
 
-Two keys. jarvis has twenty-five.
+Two keys here (plus 08's one). jarvis has twenty-five.
 
 Removed from the loop: per-round `system_prompt()` (→ per turn), the
 `peers` roster fetch, `truncate` for model-facing output (→ `spill::cap`;
@@ -724,7 +802,8 @@ Removed from the loop: per-round `system_prompt()` (→ per turn), the
 
 ## 12. Verification
 
-Each item is a runnable check, not a suite.
+Each item is a runnable check, not a suite. Results as of 2026-09-10 follow
+each item.
 
 1. **Prefix oracle** (unit test in `agent::frame`): build frames for a
    scripted session — user, assistant+tool_use, tool results, steering,
@@ -734,61 +813,71 @@ Each item is a runnable check, not a suite.
    the later one, on all three transports. Then compact and assert the
    *new* epoch's frames satisfy the same property among themselves. This
    is the invariant as a test; any future code path that edits history
-   fails it.
+   fails it. **Pass** — `frame::tests::{prefix_oracle_across_rounds_and_epochs,
+   transport_marks}`.
 2. **Cut rules** (unit test in `agent::compact`): `keep_from` never
    returns an index whose message is `Tool`; the kept estimate is ≤
-   `window/8` whenever any valid cut fits; when none fits it returns the
+   `limit/8` whenever any valid cut fits; when none fits it returns the
    largest valid index (smallest tail); it returns 0 only when no valid
-   cut exists in `1..n`.
+   cut exists in `1..n`. **Pass** — `compact::tests::{cut_rules,
+   zero_only_when_no_valid_cut, overflow_needles}`.
 3. **Cap** (unit test in `agent::spill`): output over the cap yields head
    + marker + tail within the cap, the file exists with the full content,
-   the marker names the path; output at the cap is unchanged.
+   the marker names the path; output at the cap is unchanged. **Pass** —
+   `spill::tests::cap_spills_head_marker_tail`.
 3b. **Todo** (unit test in `agent::todo`): `apply` auto-promotes the first
    pending item when nothing is in progress; `done` on an unknown text is
-   `Err`; a 33rd item is `Err`. Prefix oracle (11.1) extended with a
+   `Err`; a 33rd item is `Err`. Prefix oracle (12.1) extended with a
    `todo` call and a `<todo>` note in the scripted session — same
    byte-prefix assertion, proving the reminder path never moves anything.
+   **Pass** — `todo::tests::{auto_promotes_first_pending,
+   unknown_task_and_cap_are_errors}`; the oracle's script includes both.
 4. **Live cache ratio** (headless e2e, real Anthropic key): a turn that
-   runs ≥ 5 shell rounds reports `cached / prompt ≥ 0.85` in
+   runs ≥ 5 tool rounds reports `cached / prompt ≥ 0.85` in
    `TurnFinished.usage`, and the log contains no `prefix cache miss`
-   warning. Repeat on an OpenAI model (`cached_tokens > 0` from round 2).
-   This is the check that the design actually meets the provider.
-5. **Compaction e2e** (headless, `compact_at: 0.05` in a throwaway
-   config): a turn that reads a large file three times triggers
-   `Compacting` → `Compacted`; the following round's `TurnFinished.context`
-   is under 20 % of the window; `load_session` shows the divider at the
-   right position; `--resume` reproduces the post-compaction frame (the
-   first call after resume within 5 min reports `cached > 0`).
+   warning. **Observed** — a 5-cell `python` turn reported `cache 83%`
+   over the turn (the first call of a fresh session has nothing to read,
+   so a per-turn mean of five calls sits just under the 0.85 bar); the
+   first call after `--resume` following a compaction reported `cache
+   97%`; no `prefix cache miss` warning in the logs. The OpenAI repeat was
+   not run.
+5. **Compaction e2e** (headless, small `compact_at` in a throwaway
+   config): a long turn triggers `Compacting` → `Compacted`; `load_session`
+   shows the divider at the right position; `--resume` reproduces the
+   post-compaction frame (the first call after resume within 5 min reports
+   `cached > 0`). **Pass** — run at `compact_at: 0.02` on a 1M-window
+   model: `Compacting` → `Compacted`; the heads carried the summary plus the
+   todo list; `--resume` reproduced the frame (97 % cached on the first
+   call); `load_session` interleaved `compacted(n)` dividers. Two manual
+   `compact` calls over RPC returned epochs 3 then 4 and the dividers
+   landed at the right positions. This run is what surfaced the `window/8`
+   budget bug (§8.2).
 6. **Rebase**: edit `prompt.md` between two turns → log line `rebase`,
    the next `TurnFinished` cache ratio dips once, the turn after is back
-   above 0.85.
+   above 0.85. **Not exercised.**
 
-## 13. Implementation order
+## 13. Implementation order (done)
 
-Each step leaves `wth` runnable.
+Each step left `wth` runnable.
 
 1. **Frame + marks + measurement.** `agent::frame` (`Frame`, `Transport`,
    per-turn `baseline`), `Usage.cached`, header `cache NN%`, miss warning,
-   tools-changed warning, roster out of `PeerContext`. Check: §12.1, §12.4.
+   tools-changed warning, roster out of `PeerContext`. Checked: §12.1, §12.4.
 2. **Spill.** `agent::spill::cap` replaces `truncate` in `round`; sweep at
-   start. Check: §12.3; a `shell` `cat` of a 200 KiB file returns head +
-   marker + tail and the file is under `spill/`.
+   `AgentPlugin::start`. Checked: §12.3.
 3. **Compaction.** `epochs` migration, `Store::{append RETURNING seq,
    compact, frame}`, `agent::compact`, trigger + cut + summariser + new
-   epoch, overflow retry, `Compact` command, `/compact`, RPC `compact`,
-   events, `HistoryEntry::Compacted`, TUI divider, `Turn::note` +
-   pressure note. Check: §12.2, §12.5.
-3b. **Todo.** `agent::todo`, the `todo` tool, reminder note, list in the
-   compaction head, system-prompt sentence. Check: §12.3b; headless: a
-   task with four steps produces `todo init`, the list appears in the
-   tool output, a `<todo>` note appears after four todo-free rounds, and
-   after a forced `/compact` the head contains the list with the right
-   statuses.
-4. **Docs.** `00 §5` ("Every ChatMessage is appended … Resume = load
-   messages" → point here; session store tables gain `epochs`), `02 §3`
-   header format, `04 §1.1` ("per round" → "per turn; see 07 §4"), `01 §2.5`
-   (roster removed; see 07 §10), README config block (`compact_at`), TUI
-   command list (`/compact`), bindings (`just ts`).
+   epoch, overflow retry, `Compact` command (delegated, §8.6), `/compact`,
+   RPC `compact`, events, `HistoryEntry::Compacted`, TUI divider,
+   `Turn::note` + pressure note. Checked: §12.2, §12.5.
+3b. **Todo.** `agent::todo` as a loop-local tool (§9), reminder note, list
+   in the compaction head, `GUIDANCE` sentence. Checked: §12.3b; the head
+   carried the list in the §12.5 run.
+4. **Docs** (this pass). `00 §5` (resume rule → §8.4; tables gain
+   `epochs`), `02 §3` header format, `02 §4` command list (`/compact`), `04
+   §1.1` ("per round" → "per turn; see 07 §4"), `01 §2.5` (roster removed;
+   see §10), `01 §1.4` (per-round tool list only while the runtime is
+   off), README config block (`compact_at`, `repl.monty`).
 
 ## 14. Rejected
 
@@ -841,3 +930,9 @@ Each step leaves `wth` runnable.
   See `08-repl.md` §0.4: they are runtime functions; the direct list is
   native tools + `python`, which also removes the most likely mid-turn
   tools-list reset (§5).
+- **Tail budget as `window / 8`** (the draft's §8.2). Changed after testing:
+  with a small `compact_at` on a 1M window the tail budget exceeded the
+  threshold, one message folded per compaction and every round compacted
+  again. The budget is `limit / 8` with `limit = compact_at × window`.
+- **`todo` as a registry tool that `ask`s the supervisor** (the draft's
+  §9). Loop-local dispatch owns the state where it lives; no actor hop.

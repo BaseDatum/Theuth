@@ -206,14 +206,20 @@ flowchart LR
   (`with_capture_tool_calls(true)` is mandatory; chunks carry cumulative
   partial JSON strings, usable for a "calling X…" indicator only).
 - Tool calls in one assistant message run concurrently (`join_all` on
-  `ask(Invoke)`); results appended as one tool-response message.
+  `ask(Invoke)`); results appended as one tool-response message. `todo` and
+  `python` are loop-local (dispatched by the turn, not the registry;
+  `07 §5`).
 - Every `ChatMessage` is appended to the session store before the next
-  request. Resume = load messages, rebuild `ChatRequest`.
+  request; history is append-only within an epoch and compaction opens a
+  new one. Resume = latest `epochs` row's head + messages from its
+  `tail_from` (`07-context.md` §8.4), rebuild the frame.
 
 **Session store**: `sqlx` 0.9 sqlite, inside the agent crate (only the agent
 writes it; UIs read via `ask(ListSessions)`/`ask(LoadSession)`). Tables:
 `sessions(id, created_at, title, model)`,
-`messages(session_id, seq, role, body_json)`. `sqlx::migrate!`.
+`messages(session_id, seq, role, body_json)`,
+`epochs(session_id, n, at_seq, tail_from, head, created_at)` (`07 §8.4`).
+`sqlx::migrate!`.
 
 **Skills** (phase 2): markdown files with front matter (`gray_matter`) under
 `<data_dir>/skills`; the agent lists names+descriptions in the system prompt

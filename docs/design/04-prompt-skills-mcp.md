@@ -27,22 +27,25 @@ Everything below reuses the two mechanisms that already exist:
 
 ## 1. System prompt
 
-### 1.1 Assembly (`agent::loop_::Turn::system_prompt`, per round)
+### 1.1 Assembly (`agent::frame::baseline`, per turn; see `07-context.md` §4)
 
 ```
 1. built-in header      identity line, working directory, date
 2. <data_dir>/prompt.md standing instructions, verbatim (missing → nothing)
 3. always-on skills     bodies of skills with `always: true`, in name order
 4. skills index         "## Skills" list, one line each (unchanged shape)
-5. peers                spawn/send guidance (unchanged)
+5. peers                child identity line (07 §10); static spawn/send + todo guidance
+6. runtime              `## Runtime` tool index when the Python runtime is on (08 §3.2)
 ```
 
 Each part is separated by a blank line; empty parts are skipped. The
-prompt is rebuilt every round from disk, so editing `prompt.md` or adding
-a skill applies mid-turn on the next model call — no watcher, no cache
-invalidation. Reason: a round is seconds apart and the inputs are a few KiB
-of text; a stat+read per round is nothing, and it removes the reload
-question entirely (rule §1.2 of 00: nothing custom to explain).
+prompt is rebuilt from disk once per **turn** (`Turn::rebase`), not per
+round: editing `prompt.md` or adding a skill applies on the next turn — no
+watcher, no cache invalidation beyond the one deliberate rebase miss
+(`07 §4`). Reason: a multi-round turn is where the provider prefix cache
+matters most, and a turn is seconds to minutes long; the model can still
+use a skill it just wrote via `load_skill` mid-turn. Nothing custom to
+explain (rule §1.2 of 00).
 
 `agent.system_prompt` in `config.yaml` is **removed** (clean cutover): the
 file is the one place. The first-run template gains a `prompt.md` with a
@@ -116,8 +119,9 @@ would be a second source of truth to keep in step with `rm -rf`.
 | `sync_skills` | — | Mutating | `git pull --ff-only` in every repo; returns per-repo `updated`/`unchanged`/`error` |
 
 `name` is validated `[a-z0-9][a-z0-9._-]*` and must not escape the dir
-(no `/`, no `..`). The index is rebuilt on the next round automatically
-(§1.1), so every tool's output can simply say "available now".
+(no `/`, no `..`). The index is rebuilt at the next turn start (§1.1) and
+`load_skill` reads the directory live, so every tool's output can simply
+say "available now".
 
 Git runs as the user's `git` binary via `tokio::process::Command`, in
 `tools::git` (`clone`, `pull`, `remote_url`, `repos(dir)`), shared with §3.
