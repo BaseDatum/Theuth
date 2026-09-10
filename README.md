@@ -5,7 +5,7 @@ crates talking over a typed message bus; any frontend attaches over JSON-RPC.
 Design: [`docs/design/00-architecture.md`](docs/design/00-architecture.md).
 
 ```sh
-just setup                 # rustup toolchain + `monty` Python worker; `just toolchain` prints the bin dir
+just setup                 # rustup toolchain; `just toolchain` prints its bin dir
 export ANTHROPIC_API_KEY=… # any genai provider works; default model in config
 just run                   # terminal UI; data dir is ~/.wth (--data-dir / WTH_DATA_DIR relocate it)
 just run -- --headless     # JSON-RPC only, ws://127.0.0.1:7777 with <data_dir>/token
@@ -34,8 +34,6 @@ Config (`~/.wth/`, created on first run; details in
   agent:
     model: anthropic/claude-sonnet-4-5
     compact_at: 0.8        # compact when the context is this full; 0 disables
-    repl:
-      monty: null          # `monty` worker path; default: PATH, then the toolchain bin dir
     knowledge:
       enabled: true        # false: no hints, no knowledge_* tools, no harvest
       hint_limit: 5        # lines per <knowledge> hint
@@ -44,7 +42,7 @@ Config (`~/.wth/`, created on first run; details in
       harvest_max: 8       # concepts accepted per harvest
   ```
 
-  The Python runtime is on whenever the `monty` worker is found (`just setup` installs it); every tool is then an `async` function inside the sandbox and state persists across turns.
+  The Python runtime is always on: the worker is the `wth` binary itself (`wth subprocess`, nothing to install); every tool is an `async` function inside the sandbox and state persists across turns.
 - `credentials.yaml` — `provider: key` (genai adapter names), mode 0600; beats env vars. A provider with a key, a login, or its env var is "configured": `/model` lists only those.
 - `oauth/` — tokens from `/login` (`openai.json` = ChatGPT subscription via the Codex client, `anthropic.json` = Claude Pro/Max via the Claude Code client, `cursor.json` = Cursor subscription, `xai.json` = SuperGrok via the Grok CLI client; `mcp/<server>.json` = MCP servers that answered 401), mode 0600; `/logout <name>` deletes one. See [`docs/design/05-oauth.md`](docs/design/05-oauth.md).
 - `models.json` — optional, same shape as the bundled catalog; adds or overrides models (local `ollama/...`, private gateways). Refresh the bundled data with `just models`.

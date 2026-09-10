@@ -7,13 +7,10 @@ export PATH := toolchain_bin + ":" + env("PATH")
 toolchain:
     @echo {{toolchain_bin}}
 
-# Ensure the stable toolchain from rust-toolchain.toml is installed, plus the
-# `monty` Python worker next to it (design doc 08 §9; worker-only build).
+# Ensure the stable toolchain from rust-toolchain.toml is installed.
 setup:
     rustup show active-toolchain || rustup toolchain install stable
     @echo "cargo: $(rustup which cargo)"
-    command -v monty >/dev/null || cargo install monty-runtime --version 0.0.23 --no-default-features --root "$(dirname "$(dirname "$(rustup which cargo)")")"
-    @echo "monty: $(command -v monty)"
 
 build *ARGS:
     cargo build {{ARGS}}

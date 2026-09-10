@@ -23,6 +23,8 @@ dirs = { workspace = true }
 figment = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+monty-proto = { workspace = true }
+monty-alloc = { workspace = true }
 tracing-appender = { workspace = true }
 
 [lints]

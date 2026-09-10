@@ -658,6 +658,10 @@ pub struct Model {
     /// Large pastes held out of the input box; the box shows one
     /// [`paste_token`] each, expanded back on submit.
     pub pastes: Vec<String>,
+    /// Text of the last input submitted here, pastes expanded: the next
+    /// `TurnStarted` echoing it is not shown again (its card is already up,
+    /// with paste tokens).
+    sent: Option<String>,
     /// The shown session's summariser call is in flight (`Compacting`).
     pub compacting: bool,
     /// The shown session's harvest call is in flight (`Harvesting`).
@@ -1197,9 +1201,7 @@ impl Model {
             // harness injected it (`MessageDelivered` already shows those).
             AgentEvent::TurnStarted { text, model, .. } => {
                 self.model_id = model;
-                if injected(&text).is_none()
-                    && !matches!(self.entries.last(), Some(Entry::User(t)) if *t == text)
-                {
+                if injected(&text).is_none() && self.sent.take().as_deref() != Some(&*text) {
                     self.entries.push(Entry::User(text));
                 }
             }
@@ -1368,6 +1370,7 @@ impl Model {
             _ => {
                 self.entries.push(Entry::User(line.to_owned()));
                 let text = self.expand_pastes(line);
+                self.sent = Some(text.clone());
                 match self.shown() {
                     Some(session) if self.shown_running() => {
                         send(tx, Command::Steer { session, text });
@@ -2244,6 +2247,22 @@ mod tests {
         assert!(text.ends_with(&"x".repeat(500)));
         assert!(m.pastes.is_empty(), "held pastes are dropped on submit");
         assert!(matches!(&m.entries[0], Entry::User(t) if t.contains(&token)));
+        // The agent echoes the expanded text; the token card already shows it.
+        let session = SessionId::new();
+        m.apply_agent(AgentEvent::TurnStarted {
+            session,
+            turn: runtime::TurnId::new(),
+            text: text.clone(),
+            model: "m".into(),
+        });
+        assert_eq!(m.entries.len(), 1, "expanded echo must not add a second card");
+        m.apply_agent(AgentEvent::TurnStarted {
+            session,
+            turn: runtime::TurnId::new(),
+            text: "from another frontend".into(),
+            model: "m".into(),
+        });
+        assert_eq!(m.entries.len(), 2, "foreign input is still echoed");
     }
 
     #[test]

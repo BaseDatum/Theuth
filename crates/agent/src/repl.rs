@@ -108,53 +108,26 @@ pub struct RunCx {
 // Pool
 // ---------------------------------------------------------------------------
 
-/// Locate the `monty` worker (08 §9: config → `PATH` → toolchain bin dir) and
-/// start the pool. `None` (with one `warn!`) when the binary is absent: the
-/// runtime is off for the process.
-pub async fn open_pool(cfg: &crate::ReplConfig, max_processes: usize) -> Option<Arc<Pool>> {
-    let Some(bin) = find_monty(cfg) else {
-        tracing::warn!(
-            "monty worker not found: python runtime disabled. Install with \
-             `cargo install monty-runtime --no-default-features` (or `uv tool install pydantic-monty-runtime`) \
-             or set `agent.repl.monty` in config.yaml"
-        );
-        return None;
-    };
-    let mut pool = PoolConfig::subprocess(&bin);
+/// Start the worker pool on `worker`, spawned as `<worker> subprocess`. In
+/// production that is this binary (`wth subprocess`, 08 §9), so nothing has
+/// to be installed. `None` (with one `warn!`) when the pool fails to start:
+/// the runtime is off for the process.
+pub async fn open_pool(worker: &Path, max_processes: usize) -> Option<Arc<Pool>> {
+    let mut pool = PoolConfig::subprocess(worker);
     pool.min_processes = 1;
     pool.max_processes = max_processes.max(1);
     pool.request_timeout = Some(REQUEST_TIMEOUT);
     pool.max_checkouts_per_worker = Some(100);
     match Pool::new(pool).await {
         Ok(p) => {
-            tracing::info!("python runtime on: {}", bin.display());
+            tracing::info!("python runtime on: {} subprocess", worker.display());
             Some(Arc::new(p))
         }
         Err(e) => {
-            tracing::warn!("monty pool failed to start ({e}); python runtime disabled");
+            tracing::warn!("worker pool failed to start ({e}); python runtime disabled");
             None
         }
     }
-}
-
-fn find_monty(cfg: &crate::ReplConfig) -> Option<PathBuf> {
-    if let Some(p) = &cfg.monty {
-        return p.is_file().then(|| p.clone());
-    }
-    let on_path = std::env::var_os("PATH").and_then(|path| {
-        std::env::split_paths(&path)
-            .map(|d| d.join("monty"))
-            .find(|p| p.is_file())
-    });
-    on_path.or_else(|| {
-        let out = std::process::Command::new("rustup")
-            .args(["which", "cargo"])
-            .output()
-            .ok()?;
-        let cargo = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
-        let monty = cargo.parent()?.join("monty");
-        monty.is_file().then_some(monty)
-    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1322,11 +1295,21 @@ mod tests {
         assert_eq!(from_monty(&d), serde_json::json!({"1": "a"}));
     }
 
-    /// Drives a real checkout: needs the `monty` binary (skipped when absent).
+    /// Drives a real checkout through a `monty` binary on `PATH` (the test
+    /// runner is not a worker); skipped when absent.
     #[tokio::test]
     async fn capping_binds_out_name() {
-        let Some(pool) = open_pool(&crate::ReplConfig::default(), 1).await else {
-            eprintln!("monty not installed; skipping");
+        let monty = std::env::var_os("PATH").and_then(|path| {
+            std::env::split_paths(&path)
+                .map(|d| d.join("monty"))
+                .find(|p| p.is_file())
+        });
+        let Some(monty) = monty else {
+            eprintln!("monty not on PATH; skipping");
+            return;
+        };
+        let Some(pool) = open_pool(&monty, 1).await else {
+            eprintln!("monty pool failed to start; skipping");
             return;
         };
         let dir = tempdir();

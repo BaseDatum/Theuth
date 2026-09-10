@@ -602,19 +602,8 @@ pub struct AgentConfig {
     /// Auto-compaction threshold as a fraction of the model's context window;
     /// `0` disables it (design doc 07 §8.1).
     pub compact_at: f32,
-    /// Persistent Python runtime (design doc 08).
-    pub repl: ReplConfig,
     /// Knowledge bundle (design doc 10).
     pub knowledge: knowledge::KnowledgeConfig,
-}
-
-/// `[agent.repl]` config section (design doc 08 §10).
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct ReplConfig {
-    /// Path to the `monty` worker binary; default: `monty` on `PATH`, then
-    /// the active toolchain's bin dir. Not found → the runtime is off.
-    pub monty: Option<std::path::PathBuf>,
 }
 
 impl Default for AgentConfig {
@@ -625,7 +614,6 @@ impl Default for AgentConfig {
             max_tool_output_chars: 32_000,
             subagents: SubagentsConfig::default(),
             compact_at: 0.8,
-            repl: ReplConfig::default(),
             knowledge: knowledge::KnowledgeConfig::default(),
         }
     }

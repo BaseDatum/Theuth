@@ -151,7 +151,7 @@ struct Shared {
     rt: Runtime,
     steer: Arc<Mutex<Vec<String>>>,
     catalog: Arc<models::Catalog>,
-    /// Python runtime pool; `None` when `monty` is absent (08 §9).
+    /// Python runtime pool; `None` when the pool failed to start (08 §9).
     pool: Option<Arc<Pool>>,
     /// Knowledge bundle; `None` when `agent.knowledge.enabled` is false (10).
     knowledge: Option<Arc<Knowledge>>,
@@ -1130,7 +1130,7 @@ impl Turn {
         call: &ToolCall,
     ) -> ToolOutput {
         let Some(pool) = &self.shared.pool else {
-            return ToolOutput::err("python runtime is off (monty worker not found)");
+            return ToolOutput::err("python runtime is off (worker pool failed to start)");
         };
         let code = match serde_json::from_value::<repl::PythonArgs>(call.fn_arguments.clone()) {
             Ok(a) => a.code,

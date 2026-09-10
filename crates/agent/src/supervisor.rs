@@ -1291,7 +1291,14 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         oauth: oauth::Store::new(&rt.data_dir),
     };
     // One worker per concurrent child turn plus the root session (design doc 08 §9).
-    let pool = repl::open_pool(&cfg.repl, cfg.subagents.max_concurrent.max(1) + 1).await;
+    // The worker is this binary (08 §9).
+    let pool = match std::env::current_exe() {
+        Ok(exe) => repl::open_pool(&exe, cfg.subagents.max_concurrent.max(1) + 1).await,
+        Err(e) => {
+            tracing::warn!("cannot locate own executable ({e}); python runtime disabled");
+            None
+        }
+    };
     spill::sweep(
         &rt.data_dir.join("spill"),
         Duration::from_secs(7 * 24 * 3600),

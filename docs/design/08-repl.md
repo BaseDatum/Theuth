@@ -572,27 +572,36 @@ answers = await asyncio.gather(*(send_message(to=n, message="report", await_repl
 That is prime-agent's blog-era `llm_batch` (values back into the program)
 built from wth's existing detached model, without a new tool.
 
-## 9. The worker binary
+## 9. The worker is this binary
 
 This is how monty is meant to be embedded from Rust: the parent links
-`monty-pool`/`monty-types` only, and the interpreter runs in `monty`
-worker subprocesses that the pool spawns (`<path> subprocess`), recycles
-and replaces on crash. wth finds the binary as `agent.repl.monty`
-(config; must be a file) → `monty` on `PATH` → `<dir of rustup which
-cargo>/monty` (`repl::find_monty`). `just setup` installs it the way the
-docs show:
-`command -v monty || cargo install monty-runtime --version 0.0.23 --no-default-features --root <toolchain root>`
-(the root is the directory above `rustup which cargo`'s `bin/`;
-`--no-default-features` is the worker-only build: no REPL, no TLS). The
-PyPI wheel `pydantic-monty-runtime` is the same binary for users who have
-`uv` and no Rust toolchain; either path yields a `monty` on `PATH`.
+`monty-pool`/`monty-types`, and the interpreter runs in worker
+subprocesses that the pool spawns (`<path> subprocess`), recycles and
+replaces on crash. The reference worker, the `monty` binary from
+`monty-runtime`, is 135 lines of stdio glue (`src/subprocess.rs`) over two
+library crates: `monty-proto` (`worker` feature: the `Child` protocol state
+machine plus the interpreter) and `monty-alloc` (the memory-limiting
+allocator). So `wth` is the worker: `crates/wth/src/worker.rs` is that
+shell (ported, MIT, attributed in its header), `main` runs it when
+`argv[1] == "subprocess"` before clap, tokio or logging exist (stdout is the
+protocol channel), and `repl::open_pool` hands `std::env::current_exe()` to
+`PoolConfig::subprocess`. One binary, nothing to install; `just setup` no
+longer touches monty and there is no `agent.repl` config section.
 
-Not found at start (or `Pool::new` fails) → `repl::open_pool` returns
-`None` with one `warn!` (`monty worker not found: python runtime disabled.
-Install with …`) and the runtime is off for the process: `Turn::tools`
-adds no `python`, skips the `direct` filter so MCP tools are **direct**
-tool definitions again, and `Turn::rebase` appends no `## Runtime` block.
-Transparent degradation, no half-state. Verified (§11.11).
+The price: `monty_alloc::LimitedAllocator` must be the process's
+`#[global_allocator]` (`set_limit` refuses otherwise), so every `wth`
+process runs it. Unarmed — the parent never calls `set_limit` — it is
+`System` plus one atomic live-byte add per allocation. The worker arms it
+per session; a cell that exceeds `max_memory` gets `MemoryError: memory
+limit exceeded: N bytes > 536870912 bytes` and the sandbox state is
+restored, the parent untouched (verified with every `monty` binary hidden
+from `PATH`, 2026-09-10). The binary grows by the interpreter.
+
+`Pool::new` failing (or `current_exe()` unavailable) → `repl::open_pool`
+returns `None` with one `warn!` and the runtime is off for the process:
+`Turn::tools` adds no `python`, skips the `direct` filter so MCP tools are
+**direct** tool definitions again, and `Turn::rebase` appends no `##
+Runtime` block. Transparent degradation, no half-state.
 
 ## 10. Types, config, store
 

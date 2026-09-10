@@ -1,4 +1,7 @@
 //! `wth`: build the runtime, start the plugin list, wait for shutdown.
+//! Also the Python runtime worker: `wth subprocess` (design doc 08 §9, [`worker`]).
+
+mod worker;
 
 use std::path::{Path, PathBuf};
 
@@ -6,6 +9,12 @@ use clap::Parser;
 use figment::Figment;
 use figment::providers::{Env, Format, Yaml};
 use runtime::{Plugin, Runtime, SessionId, write_config_value};
+
+/// The worker's memory limits are enforced by the allocator, so the process
+/// that runs `wth subprocess` must own it. Unarmed (every other mode) it is
+/// `System` plus one live-byte counter.
+#[global_allocator]
+static ALLOC: monty_alloc::LimitedAllocator = monty_alloc::LimitedAllocator;
 
 #[derive(Parser, Debug)]
 #[command(name = "wth", version, about = "what the harness")]
@@ -168,8 +177,19 @@ async fn link_signal(
     Ok(())
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
+    // Before clap, tokio, logging or anything that could touch stdout: the
+    // worker's stdout is the protocol channel (08 §9).
+    if std::env::args().nth(1).as_deref() == Some("subprocess") {
+        std::process::exit(i32::from(worker::run()));
+    }
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(run())
+}
+
+async fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     let data_dir = cli

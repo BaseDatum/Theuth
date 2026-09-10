@@ -76,6 +76,10 @@ http = "1"
 monty-pool = "0.0.23"
 monty-types = "0.0.23"
 monty-fs = "0.0.23"
+# The worker lives inside `wth` (`wth subprocess`, design doc 08 §9): the protocol state
+# machine + interpreter, and the limiting allocator it requires as the global allocator.
+monty-proto = { version = "0.0.23", features = ["worker"] }
+monty-alloc = { version = "0.0.23", features = ["exit-code"] }
 regex = "1"
 # Signal channel (design doc 09). crates.io `presage` is an unrelated crate; the
 # rev is the one jarvis reviewed and ran. `cdsi` = E.164→ACI fallback (09 §5.2).
