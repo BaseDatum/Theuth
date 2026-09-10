@@ -6,8 +6,8 @@
 //!   [`Cancel`], [`ListSessions`], [`LoadSession`], [`ListChildren`],
 //!   [`ListModels`], [`SetModel`], [`ShowPrompt`], [`ListSkills`],
 //!   [`LoadSkill`], [`AddSkill`], [`RemoveSkill`], [`AddSkillRepo`],
-//!   [`RemoveSkillRepo`], [`SyncSkills`], [`ListLogins`], [`Login`], [`Logout`]
-//! - events: [`AgentEvent`], [`LoginFinished`]
+//!   [`RemoveSkillRepo`], [`SyncSkills`], [`ListLogins`], [`Login`], [`Logout`],
+//!   [`ListProviders`], [`AddProvider`], [`RemoveProvider`]
 
 use std::sync::Arc;
 
@@ -19,6 +19,7 @@ pub mod frame;
 pub mod knowledge;
 pub mod loop_;
 pub mod peers;
+pub mod providers;
 pub mod repl;
 pub mod skills;
 pub mod spill;
@@ -300,6 +301,40 @@ pub struct LoginFinished {
     pub provider: String,
     /// `None` on success.
     pub error: Option<String>,
+}
+
+/// `ask` → `Vec<ProviderInfo>`: named OpenAI-compatible gateways.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct ListProviders;
+
+/// One named OpenAI-compatible gateway.
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct ProviderInfo {
+    /// User-facing prefix (`rwx` → `rwx/model`).
+    pub name: String,
+    /// OpenAI-compatible base URL.
+    pub base_url: String,
+    /// Models last fetched from `GET {base}models`.
+    pub models: u32,
+}
+
+/// `ask` → `Result<ProviderInfo, String>`: persist a gateway, fetch its models.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AddProvider {
+    /// `[a-z][a-z0-9_-]*`, not a built-in adapter.
+    pub name: String,
+    /// `https://host/v1`.
+    pub base_url: String,
+    /// Bearer key; stored in `credentials.yaml`.
+    pub key: String,
+}
+
+/// `ask` → `Result<(), String>`: delete a gateway's url, key, and catalog models.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RemoveProvider {
+    /// Gateway name.
+    pub name: String,
 }
 
 /// One indexed skill.

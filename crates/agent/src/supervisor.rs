@@ -6,7 +6,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use genai::adapter::AdapterKind;
@@ -32,12 +32,13 @@ use crate::skills::{
 };
 use crate::store::{Epoch, Store};
 use crate::{
-    AGENT_ACTOR, AddSkill, AddSkillRepo, AgentConfig, AgentEvent, Cancel, Compact, Harvest,
-    HistoryEntry, KnowledgeDelete, KnowledgeGet, KnowledgeHistory, KnowledgeList, KnowledgePut,
-    KnowledgeRestore, KnowledgeSearch, ListChildren, ListLogins, ListModels, ListSessions,
-    ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginFinished, LoginInfo, Logout, ModelInfo,
-    RemoveSkill, RemoveSkillRepo, SendInput, SessionSummary, SetModel, ShowPrompt, SkillBody,
-    SkillMeta, Steer, SyncSkills, knowledge,
+    AGENT_ACTOR, AddProvider, AddSkill, AddSkillRepo, AgentConfig, AgentEvent, Cancel, Compact,
+    Harvest, HistoryEntry, KnowledgeDelete, KnowledgeGet, KnowledgeHistory, KnowledgeList,
+    KnowledgePut, KnowledgeRestore, KnowledgeSearch, ListChildren, ListLogins, ListModels,
+    ListProviders, ListSessions, ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginFinished,
+    LoginInfo, Logout, ModelInfo, ProviderInfo, RemoveProvider, RemoveSkill, RemoveSkillRepo,
+    SendInput, SessionSummary, SetModel, ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills,
+    knowledge,
 };
 use crate::{frame, repl, spill};
 
@@ -1039,6 +1040,103 @@ impl Message<Logout> for Agents {
     }
 }
 
+impl Message<ListProviders> for Agents {
+    type Reply = Vec<ProviderInfo>;
+
+    async fn handle(
+        &mut self,
+        _: ListProviders,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Vec<ProviderInfo> {
+        let gws = self.auth.gateways.read().unwrap_or_else(|e| e.into_inner());
+        let mut out: Vec<ProviderInfo> = gws
+            .iter()
+            .map(|(name, g)| ProviderInfo {
+                models: self
+                    .catalog
+                    .providers()
+                    .find(|p| p.id == *name)
+                    .map_or(0, |p| p.models.len() as u32),
+                name: name.clone(),
+                base_url: g.base_url.clone(),
+            })
+            .collect();
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out
+    }
+}
+
+impl Message<AddProvider> for Agents {
+    type Reply = Result<ProviderInfo, String>;
+
+    async fn handle(
+        &mut self,
+        m: AddProvider,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<ProviderInfo, String> {
+        crate::providers::validate_name(&m.name)?;
+        let base_url = crate::providers::normalize_url(&m.base_url)?;
+        let key = m.key.trim();
+        if key.is_empty() {
+            return Err("api key is empty".into());
+        }
+        let models = match self
+            .client
+            .all_model_names(
+                AdapterKind::OpenAI,
+                (
+                    Endpoint::from_owned(base_url.clone()),
+                    AuthData::Key(key.to_owned()),
+                ),
+            )
+            .await
+        {
+            Ok(ids) => ids,
+            Err(e) => {
+                tracing::warn!(provider = %m.name, "listing models: {e}");
+                Vec::new()
+            }
+        };
+        crate::providers::save(&self.rt.data_dir, &m.name, &base_url, key, &models)?;
+        self.auth
+            .gateways
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(
+                m.name.clone(),
+                crate::providers::Gateway {
+                    base_url: base_url.clone(),
+                    key: key.to_owned(),
+                },
+            );
+        self.catalog = Arc::new(Catalog::load(&self.rt.data_dir));
+        Ok(ProviderInfo {
+            name: m.name,
+            base_url,
+            models: models.len() as u32,
+        })
+    }
+}
+
+impl Message<RemoveProvider> for Agents {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        m: RemoveProvider,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<(), String> {
+        crate::providers::remove(&self.rt.data_dir, &m.name)?;
+        self.auth
+            .gateways
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&m.name);
+        self.catalog = Arc::new(Catalog::load(&self.rt.data_dir));
+        Ok(())
+    }
+}
+
 /// [`oauth::provider`] with a user-facing error listing the choices.
 fn login_provider(ns: &str) -> Result<&'static oauth::Provider, String> {
     oauth::provider(ns).ok_or_else(|| {
@@ -1167,6 +1265,8 @@ fn credentials(data_dir: &Path) -> HashMap<String, String> {
 pub(crate) struct Auth {
     pub(crate) creds: Arc<HashMap<String, String>>,
     pub(crate) oauth: oauth::Store,
+    /// Named OpenAI-compatible gateways; interior-mutable so `/provider add` is live.
+    pub(crate) gateways: Arc<RwLock<HashMap<String, crate::providers::Gateway>>>,
 }
 
 impl Auth {
@@ -1176,6 +1276,11 @@ impl Auth {
         !self.creds.contains_key(ns)
             && oauth::provider(ns).is_some()
             && self.oauth.load(ns).is_some()
+    }
+
+    /// OpenAI-compatible gateway for user-facing provider id `ns`.
+    pub(crate) fn gateway(&self, ns: &str) -> Option<crate::providers::Gateway> {
+        self.gateways.read().ok()?.get(ns).cloned()
     }
 }
 
@@ -1270,6 +1375,7 @@ const CLAUDE_CODE_UA: &str = "claude-cli/2.1.257 (external, cli)";
 fn configured(auth: Auth) -> Arc<dyn Fn(&str) -> bool + Send + Sync> {
     Arc::new(move |ns: &str| {
         auth.creds.contains_key(ns)
+            || auth.gateway(ns).is_some()
             || auth.login(ns)
             || AdapterKind::from_lower_str(ns).is_some_and(|k| {
                 k.default_key_env_name()
@@ -1286,9 +1392,12 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
     });
     let cfg = Arc::new(cfg);
     let store = Store::open(&rt.data_dir.join("sessions.sqlite")).await?;
+    let creds = credentials(&rt.data_dir);
+    let gateways = crate::providers::load(&rt.data_dir, &creds);
     let auth = Auth {
-        creds: Arc::new(credentials(&rt.data_dir)),
+        creds: Arc::new(creds),
         oauth: oauth::Store::new(&rt.data_dir),
+        gateways: Arc::new(RwLock::new(gateways)),
     };
     // One worker per concurrent child turn plus the root session (design doc 08 §9).
     // The worker is this binary (08 §9).

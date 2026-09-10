@@ -6,11 +6,12 @@ use std::fmt::Display;
 
 use agent::knowledge::{Change, Concept, HarvestResult, History, Hit, Meta, Put, Source};
 use agent::{
-    AddSkill, AddSkillRepo, Agents, Cancel, Compact, Harvest, KnowledgeDelete, KnowledgeGet,
-    KnowledgeHistory, KnowledgeList, KnowledgePut, KnowledgeRestore, KnowledgeSearch, ListLogins,
-    ListModels, ListSessions, ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginInfo, Logout,
-    ModelInfo, RemoveSkill, RemoveSkillRepo, SendInput, SessionSummary, SetModel, ShowPrompt,
-    SkillBody, SkillMeta, Steer, SyncSkills,
+    AddProvider, AddSkill, AddSkillRepo, Agents, Cancel, Compact, Harvest, KnowledgeDelete,
+    KnowledgeGet, KnowledgeHistory, KnowledgeList, KnowledgePut, KnowledgeRestore, KnowledgeSearch,
+    ListLogins, ListModels, ListProviders, ListSessions, ListSkills, LoadSession, LoadSkill,
+    Loaded, Login, LoginInfo, Logout, ModelInfo, ProviderInfo, RemoveProvider, RemoveSkill,
+    RemoveSkillRepo, SendInput, SessionSummary, SetModel, ShowPrompt, SkillBody, SkillMeta, Steer,
+    SyncSkills,
 };
 use jsonrpsee::core::{RpcResult, SubscriptionResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
@@ -175,6 +176,20 @@ pub trait Api {
     /// Forget a provider login.
     #[method(name = "logout")]
     async fn logout(&self, provider: String) -> RpcResult<()>;
+    /// Named OpenAI-compatible gateways (`/provider`).
+    #[method(name = "list_providers")]
+    async fn list_providers(&self) -> RpcResult<Vec<ProviderInfo>>;
+    /// Persist a named OpenAI-compatible gateway (url + key); fetches `/models`.
+    #[method(name = "add_provider")]
+    async fn add_provider(
+        &self,
+        name: String,
+        base_url: String,
+        key: String,
+    ) -> RpcResult<ProviderInfo>;
+    /// Forget a named OpenAI-compatible gateway.
+    #[method(name = "remove_provider")]
+    async fn remove_provider(&self, name: String) -> RpcResult<()>;
     /// Start an MCP server login; returns the URL to open. The server reconnects on success (`McpProgress`).
     #[method(name = "mcp_login")]
     async fn mcp_login(&self, server: String) -> RpcResult<String>;
@@ -450,6 +465,31 @@ impl ApiServer for Server {
 
     async fn logout(&self, provider: String) -> RpcResult<()> {
         ask::<Agents, _>(agent::AGENT_ACTOR, Logout { provider }).await
+    }
+
+    async fn list_providers(&self) -> RpcResult<Vec<ProviderInfo>> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, ListProviders).await
+    }
+
+    async fn add_provider(
+        &self,
+        name: String,
+        base_url: String,
+        key: String,
+    ) -> RpcResult<ProviderInfo> {
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            AddProvider {
+                name,
+                base_url,
+                key,
+            },
+        )
+        .await
+    }
+
+    async fn remove_provider(&self, name: String) -> RpcResult<()> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, RemoveProvider { name }).await
     }
 
     async fn mcp_login(&self, server: String) -> RpcResult<String> {

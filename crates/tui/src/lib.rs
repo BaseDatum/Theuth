@@ -341,6 +341,28 @@ async fn execute(cmd: Command, tx: &UnboundedSender<UiEvent>) -> anyhow::Result<
             }
             UiEvent::Info(format!("logged out of {name}"))
         }
+        Command::ListProviders => UiEvent::Providers(agent()?.ask(agent::ListProviders).await?),
+        Command::AddProvider {
+            name,
+            base_url,
+            key,
+        } => UiEvent::ProviderAdded(
+            agent()?
+                .ask(agent::AddProvider {
+                    name,
+                    base_url,
+                    key,
+                })
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?,
+        ),
+        Command::RemoveProvider(name) => {
+            agent()?
+                .ask(agent::RemoveProvider { name: name.clone() })
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            UiEvent::Info(format!("removed provider {name}"))
+        }
     };
     let _ = tx.send(reply);
     Ok(())
@@ -565,5 +587,13 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             }
         }),
         UiEvent::SessionCreated(id) => writeln!(out, "session {id}"),
+        UiEvent::Providers(list) => list
+            .iter()
+            .try_for_each(|p| writeln!(out, "{}  {}  {} models", p.name, p.base_url, p.models)),
+        UiEvent::ProviderAdded(p) => writeln!(
+            out,
+            "provider {}  {}  {} models — /model {}/<id>",
+            p.name, p.base_url, p.models, p.name
+        ),
     };
 }

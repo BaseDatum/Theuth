@@ -171,6 +171,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                     let line = std::mem::take(&mut *input.write());
                     m.submit(&line, &commands);
                 }
+                KeyCode::Esc if m.prompt.is_some() => m.cancel_prompt(),
                 KeyCode::Esc if m.focus.is_some() && input.read().is_empty() => {
                     m.focus("", &commands);
                 }
@@ -228,6 +229,11 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 }
             }
             #(modal)
+            #(m.prompt.as_ref().map(|p| {
+                element!(View(height: 1, padding_left: 1) {
+                    Text(content: p.hint(), color: Color::Yellow)
+                })
+            }))
             View(height: 1, padding_left: 1) {
                 Text(content: header, color: header_color)
             }

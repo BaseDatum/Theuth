@@ -66,6 +66,11 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ("/login", "[name]", "list logins or start one"),
     ("/logout", "<name>", "log out"),
     (
+        "/provider",
+        "[add <name> <url> <key>|rm <name>]",
+        "OpenAI-compatible providers",
+    ),
+    (
         "/approvals",
         "on|off [always]",
         "tool approval prompts (owner)",
@@ -262,6 +267,7 @@ async fn run(cx: &mut Cx<'_>, name: &'static str, arg: &str) -> anyhow::Result<R
             }
             text(format!("logged out of {name}"))
         }
+        "/provider" => provider_cmd(arg).await,
         "/approvals" => approvals_cmd(cx.session, arg).await,
         "/approve" | "/deny" => {
             if arg.is_empty() {
@@ -450,6 +456,55 @@ async fn mcp_cmd(arg: &str) -> anyhow::Result<Reply> {
         _ => "usage: /mcp [add <url|json> | sync]".to_owned(),
     };
     Ok(Reply::Text(out))
+}
+
+async fn provider_cmd(arg: &str) -> anyhow::Result<Reply> {
+    let text = |s: String| Ok(Reply::Text(s));
+    let (sub, rest) = arg
+        .split_once(char::is_whitespace)
+        .map_or((arg, ""), |(s, r)| (s, r.trim()));
+    match (sub, rest) {
+        ("", _) => {
+            let rows = agent()?.ask(agent::ListProviders).await.map_err(err)?;
+            if rows.is_empty() {
+                return text("no custom providers; /provider add <name> <url> <key>".into());
+            }
+            text(table(rows.into_iter().map(|p| {
+                vec![p.name, p.base_url, format!("{} models", p.models)]
+            })))
+        }
+        ("add", rest) => {
+            let mut parts = rest.splitn(3, char::is_whitespace);
+            let name = parts.next().unwrap_or_default();
+            let url = parts.next().unwrap_or("").trim();
+            let key = parts.next().unwrap_or("").trim();
+            if name.is_empty() || url.is_empty() || key.is_empty() {
+                return text("usage: /provider add <name> <url> <key>".into());
+            }
+            let p = agent()?
+                .ask(agent::AddProvider {
+                    name: name.to_owned(),
+                    base_url: url.to_owned(),
+                    key: key.to_owned(),
+                })
+                .await
+                .map_err(err)?;
+            text(format!(
+                "provider {}  {}  {} models — /model {}/<id>",
+                p.name, p.base_url, p.models, p.name
+            ))
+        }
+        ("rm", name) if !name.is_empty() => {
+            agent()?
+                .ask(agent::RemoveProvider {
+                    name: name.to_owned(),
+                })
+                .await
+                .map_err(err)?;
+            text(format!("removed provider {name}"))
+        }
+        _ => text("usage: /provider [add <name> <url> <key> | rm <name>]".into()),
+    }
 }
 
 /// `/login`: providers, then MCP servers that use OAuth.

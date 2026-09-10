@@ -6,7 +6,8 @@ use std::ops::Range;
 
 use agent::knowledge::{Change, HarvestResult, History, Meta};
 use agent::{
-    AgentEvent, HistoryEntry, Loaded, ModelInfo, SessionSummary, SkillBody, SkillMeta, Usage,
+    AgentEvent, HistoryEntry, Loaded, ModelInfo, ProviderInfo, SessionSummary, SkillBody,
+    SkillMeta, Usage,
 };
 use iocraft::KeyCode;
 use models::Catalog;
@@ -75,6 +76,10 @@ pub enum UiEvent {
     Logins(Vec<LoginRow>),
     /// A provider login started by [`Command::Login`] ended (bus event).
     LoginFinished(agent::LoginFinished),
+    /// Reply to [`Command::ListProviders`].
+    Providers(Vec<ProviderInfo>),
+    /// Reply to [`Command::AddProvider`].
+    ProviderAdded(ProviderInfo),
 }
 
 /// Everything the UI can ask of the rest of the process. One task owns all
@@ -185,6 +190,19 @@ pub enum Command {
     Login(String),
     /// `Logout` on the agent or `McpLogout` on the MCP actor.
     Logout(String),
+    /// `AddProvider` on the agent actor.
+    AddProvider {
+        /// Gateway name.
+        name: String,
+        /// OpenAI-compatible base URL.
+        base_url: String,
+        /// API key.
+        key: String,
+    },
+    /// `RemoveProvider` on the agent actor.
+    RemoveProvider(String),
+    /// `ListProviders` on the agent actor.
+    ListProviders,
 }
 
 /// One row of the `/login` picker.
@@ -423,6 +441,11 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ("/cancel", "", "abort the in-flight turn"),
     ("/compact", "", "fold the conversation into a summary"),
     ("/quit", "", "exit"),
+    (
+        "/provider",
+        "[add|rm <name>]",
+        "OpenAI-compatible providers (add prompts for name, url, key)",
+    ),
     ("/exit", "", "same as /quit"),
 ];
 
@@ -559,6 +582,40 @@ pub enum Menu {
     },
 }
 
+/// Multi-step `/provider add` input. Rides on the input box (not a modal menu).
+#[derive(Debug)]
+pub enum Prompt {
+    /// Asking for the gateway name.
+    ProviderName,
+    /// Asking for the base URL.
+    ProviderUrl {
+        /// Name already collected.
+        name: String,
+    },
+    /// Asking for the API key.
+    ProviderKey {
+        /// Name already collected.
+        name: String,
+        /// Normalized URL already collected.
+        url: String,
+    },
+}
+
+impl Prompt {
+    /// Line shown above the input.
+    pub fn hint(&self) -> String {
+        match self {
+            Prompt::ProviderName => "provider add  name  (esc cancel)".into(),
+            Prompt::ProviderUrl { name } => {
+                format!("provider add  {name}  base url  (esc cancel)")
+            }
+            Prompt::ProviderKey { name, .. } => {
+                format!("provider add  {name}  api key  (esc cancel)")
+            }
+        }
+    }
+}
+
 /// One line of the `/mcp` menu.
 #[derive(Debug)]
 pub enum Row<'a> {
@@ -628,6 +685,8 @@ pub struct Model {
     pub focus: Option<SessionId>,
     /// Subagents under the root, in spawn order.
     pub children: Vec<Child>,
+    /// Multi-step `/provider add`; `None` when the input is a normal line.
+    pub prompt: Option<Prompt>,
     /// A `Send { session: None }` is in flight; adopt the next `TurnStarted`.
     awaiting_session: bool,
     /// `/mcp` was typed; the next `UiEvent::Mcp` opens the menu. Refreshes
@@ -1131,6 +1190,24 @@ impl Model {
                 r.added, r.updated
             ))),
             UiEvent::Info(t) => self.entries.push(Entry::Info(t)),
+            UiEvent::Providers(list) => {
+                if list.is_empty() {
+                    self.entries.push(Entry::Info(
+                        "no custom providers; /provider add to create one".into(),
+                    ));
+                } else {
+                    for p in list {
+                        self.entries.push(Entry::Info(format!(
+                            "{}  {}  {} models",
+                            p.name, p.base_url, p.models
+                        )));
+                    }
+                }
+            }
+            UiEvent::ProviderAdded(p) => self.entries.push(Entry::Info(format!(
+                "provider {}  {}  {} models — /model {}/<id>",
+                p.name, p.base_url, p.models, p.name
+            ))),
             UiEvent::Error(e) => {
                 // A failed `/compact` answers here, not with an agent event.
                 self.compacting = false;
@@ -1311,6 +1388,10 @@ impl Model {
         if line.is_empty() {
             return;
         }
+        if self.prompt.is_some() {
+            self.prompt_submit(line, tx);
+            return;
+        }
         let (cmd, arg) = line
             .split_once(' ')
             .map_or((line, ""), |(c, a)| (c, a.trim()));
@@ -1364,6 +1445,7 @@ impl Model {
                     send(tx, Command::Cancel(session));
                 }
             }
+            "/provider" => self.provider_cmd(arg, tx),
             c if c.starts_with('/') => self
                 .entries
                 .push(Entry::Error(format!("unknown command {c}"))),
@@ -1628,8 +1710,105 @@ impl Model {
         }
     }
 
+    /// `/provider` list | `add` [name [url [key]]] | `rm <name>`.
+    fn provider_cmd(&mut self, arg: &str, tx: &UnboundedSender<Command>) {
+        let (sub, rest) = arg
+            .split_once(' ')
+            .map_or((arg, ""), |(s, r)| (s, r.trim()));
+        match (sub, rest) {
+            ("", _) => send(tx, Command::ListProviders),
+            ("add", "") => {
+                self.prompt = Some(Prompt::ProviderName);
+                self.entries.push(Entry::Info("provider add: name".into()));
+            }
+            ("add", rest) => {
+                let mut parts = rest.splitn(3, char::is_whitespace);
+                let name = parts.next().unwrap_or_default();
+                let url = parts.next().unwrap_or("").trim();
+                let key = parts.next().unwrap_or("").trim();
+                if name.is_empty() {
+                    self.entries.push(Entry::Error(
+                        "usage: /provider add [name [url [key]]]".into(),
+                    ));
+                    return;
+                }
+                if url.is_empty() {
+                    self.prompt = Some(Prompt::ProviderUrl {
+                        name: name.to_owned(),
+                    });
+                    self.entries
+                        .push(Entry::Info(format!("provider add {name}: base url")));
+                    return;
+                }
+                if key.is_empty() {
+                    self.prompt = Some(Prompt::ProviderKey {
+                        name: name.to_owned(),
+                        url: url.to_owned(),
+                    });
+                    self.entries
+                        .push(Entry::Info(format!("provider add {name}: api key")));
+                    return;
+                }
+                send(
+                    tx,
+                    Command::AddProvider {
+                        name: name.to_owned(),
+                        base_url: url.to_owned(),
+                        key: key.to_owned(),
+                    },
+                );
+            }
+            ("rm", name) if !name.is_empty() => send(tx, Command::RemoveProvider(name.to_owned())),
+            _ => self.entries.push(Entry::Error(
+                "usage: /provider [add [name [url [key]]] | rm <name>]".into(),
+            )),
+        }
+    }
+
+    /// Advance `/provider add` one field. The API key is never written to the transcript.
+    fn prompt_submit(&mut self, line: &str, tx: &UnboundedSender<Command>) {
+        match self.prompt.take() {
+            Some(Prompt::ProviderName) => {
+                self.prompt = Some(Prompt::ProviderUrl {
+                    name: line.to_owned(),
+                });
+                self.entries.push(Entry::Info(format!("name: {line}")));
+            }
+            Some(Prompt::ProviderUrl { name }) => {
+                self.prompt = Some(Prompt::ProviderKey {
+                    name: name.clone(),
+                    url: line.to_owned(),
+                });
+                self.entries.push(Entry::Info(format!("url: {line}")));
+            }
+            Some(Prompt::ProviderKey { name, url }) => {
+                self.entries.push(Entry::Info("api key: set".into()));
+                send(
+                    tx,
+                    Command::AddProvider {
+                        name,
+                        base_url: url,
+                        key: line.to_owned(),
+                    },
+                );
+            }
+            None => {}
+        }
+    }
+
+    /// Drop an in-progress `/provider add`.
+    pub fn cancel_prompt(&mut self) {
+        if self.prompt.take().is_some() {
+            self.entries
+                .push(Entry::Info("provider add cancelled".into()));
+        }
+    }
+
     /// Open or close the slash popup to match what the input box holds.
     pub fn sync_slash(&mut self, input: &str) {
+        if self.prompt.is_some() {
+            return;
+        }
         match (&self.menu, input.starts_with('/')) {
             (None, true) => self.menu = Some(Menu::Slash { cursor: 0 }),
             (Some(Menu::Slash { .. }), false) => self.menu = None,
@@ -2028,6 +2207,50 @@ mod tests {
         assert!(m.quit && m.menu.is_none());
         assert_eq!(slash_matches("/").len(), COMMANDS.len());
         assert!(slash_matches("/zzz").is_empty());
+    }
+
+    #[test]
+    fn provider_add_wizard_then_one_shot() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        m.submit("/provider add", &tx);
+        assert!(matches!(m.prompt, Some(Prompt::ProviderName)));
+        assert!(rx.try_recv().is_err());
+        m.submit("rwx", &tx);
+        assert!(matches!(m.prompt, Some(Prompt::ProviderUrl { .. })));
+        m.submit("https://api.ai.rwx.dev/v1", &tx);
+        assert!(matches!(m.prompt, Some(Prompt::ProviderKey { .. })));
+        m.submit("sk-secret", &tx);
+        assert!(m.prompt.is_none());
+        let Ok(Command::AddProvider {
+            name,
+            base_url,
+            key,
+        }) = rx.try_recv()
+        else {
+            panic!("wizard did not send AddProvider");
+        };
+        assert_eq!(
+            (name.as_str(), base_url.as_str(), key.as_str()),
+            ("rwx", "https://api.ai.rwx.dev/v1", "sk-secret")
+        );
+        let leaked = m.entries.iter().any(|e| match e {
+            Entry::Info(t) | Entry::Error(t) | Entry::User(t) => t.contains("sk-secret"),
+            _ => false,
+        });
+        assert!(!leaked, "api key must not land in the transcript");
+        m.submit("/provider add rwx https://x/v1 sk-one", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::AddProvider { key, .. }) if key == "sk-one"
+        ));
+        m.submit("/provider", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::ListProviders)));
+        m.submit("/provider rm rwx", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::RemoveProvider(n)) if n == "rwx"));
+        m.submit("/provider add", &tx);
+        m.cancel_prompt();
+        assert!(m.prompt.is_none());
     }
 
     #[test]

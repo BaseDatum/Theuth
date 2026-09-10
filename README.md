@@ -43,9 +43,10 @@ Config (`~/.wth/`, created on first run; details in
   ```
 
   The Python runtime is always on: the worker is the `wth` binary itself (`wth subprocess`, nothing to install); every tool is an `async` function inside the sandbox and state persists across turns.
-- `credentials.yaml` — `provider: key` (genai adapter names), mode 0600; beats env vars. A provider with a key, a login, or its env var is "configured": `/model` lists only those.
+- `credentials.yaml` — `provider: key` (genai adapter names), mode 0600; beats env vars. A provider with a key, a login, or its env var is "configured": `/model` lists only those. Named OpenAI-compatible gateways (`/provider add`) store their key here under the gateway name.
+- `providers.yaml` — named OpenAI-compatible gateways (`name: { base_url }`); keys live in `credentials.yaml`. `/provider add` writes both and fetches `GET {base}models` into `models.json`.
+- `models.json` — optional, same shape as the bundled catalog; adds or overrides models (local `ollama/...`, private gateways). Refresh the bundled data with `just models`. `/provider add` writes the fetched model list here.
 - `oauth/` — tokens from `/login` (`openai.json` = ChatGPT subscription via the Codex client, `anthropic.json` = Claude Pro/Max via the Claude Code client, `cursor.json` = Cursor subscription, `xai.json` = SuperGrok via the Grok CLI client; `mcp/<server>.json` = MCP servers that answered 401), mode 0600; `/logout <name>` deletes one. See [`docs/design/05-oauth.md`](docs/design/05-oauth.md).
-- `models.json` — optional, same shape as the bundled catalog; adds or overrides models (local `ollama/...`, private gateways). Refresh the bundled data with `just models`.
 - `prompt.md` — standing instructions, read into the system prompt on every model call; `/prompt` shows the assembled prompt.
 - `mcp/*.json` — drop in any `mcp.json` (Claude Desktop, Cursor, OpenCode, …); hot-reloaded, tools registered without prefix. `cwd` (relative → `mcp/`) points a server at a checkout under `mcp/repos/`, where `/mcp add <url>` clones and `/mcp sync` pulls.
 - `mcp/config.yaml` — per-server / per-tool `allow` | `ask` | `deny` gating; `/mcp` edits it (`deny` on a server = disabled).
@@ -56,7 +57,9 @@ TUI: `/` opens the command list; `/model` picks a model (header above the
 input shows model and context used); `/mcp` toggles servers and tools (`l`
 logs a `login required` server in), `/mcp add <url|json>` installs one,
 `/mcp sync` pulls repos; `/login` picks a provider or MCP server to log in
-to; `/skills` lists skills; `/prompt` shows the system prompt; `/compact`
+to; `/provider add` prompts for name, base url, then API key (an OpenAI-compatible
+gateway such as `https://api.ai.rwx.dev/v1`); `/provider` lists them, `/provider rm <name>`
+forgets one; `/skills` lists skills; `/prompt` shows the system prompt; `/compact`
 folds the conversation so far into a summary the model keeps working from;
 `/knowledge` browses the knowledge base (below); `/approvals off` stops
 approval prompts for this session, `/approvals off always` for good

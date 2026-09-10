@@ -14,9 +14,12 @@ use std::time::{Duration, Instant};
 use futures::future::join_all;
 use futures::{Stream, StreamExt};
 use genai::Client;
+use genai::adapter::AdapterKind;
 use genai::chat::{
     ChatMessage, ChatRole, ChatStreamEvent, MessageContent, StreamEnd, Tool, ToolCall, ToolResponse,
 };
+use genai::resolver::{AuthData, Endpoint};
+use genai::{ModelIden, ServiceTarget};
 use kameo::actor::ActorRef;
 use kameo::message::{Context, Message};
 use models::Resolved;
@@ -607,6 +610,12 @@ impl Turn {
         }
         let t = if ns(&model.genai) == "cursor" {
             Transport::Plain
+        } else if model
+            .provider
+            .as_deref()
+            .is_some_and(|p| self.shared.auth.gateway(p).is_some())
+        {
+            Transport::OpenAiLike
         } else {
             let target = self
                 .shared
@@ -695,6 +704,28 @@ impl Turn {
                     .split_once('/')
                     .map_or(model.id.as_str(), |(_, m)| m);
                 cursor::chat_stream(&t.access_token, slug, req, &self.shared.id.to_string()).await
+            } else if let Some(gw) = model
+                .provider
+                .as_deref()
+                .and_then(|p| self.shared.auth.gateway(p))
+            {
+                let slug = model
+                    .id
+                    .split_once('/')
+                    .map_or(model.id.as_str(), |(_, m)| m);
+                let target = ServiceTarget {
+                    endpoint: Endpoint::from_owned(gw.base_url),
+                    auth: AuthData::Key(gw.key),
+                    model: ModelIden::new(AdapterKind::OpenAI, slug.to_owned()),
+                };
+                self.shared
+                    .client
+                    .exec_chat_stream(target, req, Some(&opts))
+                    .await
+                    .map(|r| -> EventStream {
+                        Box::pin(r.stream.map(|ev| ev.map_err(|e| e.to_string())))
+                    })
+                    .map_err(|e| e.to_string())
             } else {
                 self.shared
                     .client
