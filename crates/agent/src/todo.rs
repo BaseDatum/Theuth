@@ -135,6 +135,7 @@ pub fn spec() -> ToolSpec {
         schema: serde_json::to_value(schemars::schema_for!(TodoArgs)).unwrap_or_default(),
         risk: Risk::ReadOnly,
         direct: true,
+        returns: "str".to_owned(),
     }
 }
 

@@ -29,6 +29,14 @@ pub async fn register(reg: &ActorRef<ToolRegistry>, knowledge: Arc<Knowledge>) {
         .await;
 }
 
+/// Text for the transcript, the same data as a Python value for the runtime.
+fn structured<T: Serialize>(text: String, data: T) -> ToolOutput {
+    ToolOutput {
+        structured: serde_json::to_value(data).ok(),
+        ..ToolOutput::ok(text)
+    }
+}
+
 fn cwd() -> PathBuf {
     std::env::current_dir().unwrap_or_default()
 }
@@ -57,6 +65,7 @@ pub struct SearchTool(pub Arc<Knowledge>);
 #[async_trait::async_trait]
 impl Tool for SearchTool {
     const NAME: &'static str = "knowledge_search";
+    const RETURNS: &'static str = "list[dict]";
     const RISK: Risk = Risk::ReadOnly;
     type Args = SearchArgs;
 
@@ -69,17 +78,23 @@ impl Tool for SearchTool {
     async fn call(&self, a: SearchArgs, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
         let limit = a.limit.unwrap_or(10).clamp(1, 50);
         let hits = self.0.search(&a.query, &cwd(), limit).await?;
-        if hits.is_empty() {
-            return Ok(ToolOutput::ok("no matches"));
-        }
         let mut s = String::new();
+        let mut rows = Vec::with_capacity(hits.len());
         for h in &hits {
             s.push_str(&format!(
                 "`{}` — {} [{}] ({:.1}): {}\n",
                 h.meta.id, h.meta.title, h.meta.type_, h.score, h.snippet
             ));
+            // Frontmatter fields plus score and snippet, flat.
+            let mut row = serde_json::to_value(&h.meta)?;
+            row["score"] = h.score.into();
+            row["snippet"] = h.snippet.as_str().into();
+            rows.push(row);
         }
-        Ok(ToolOutput::ok(s))
+        if s.is_empty() {
+            s.push_str("no matches");
+        }
+        Ok(structured(s, rows))
     }
 }
 
@@ -156,6 +171,7 @@ pub struct ListTool(pub Arc<Knowledge>);
 #[async_trait::async_trait]
 impl Tool for ListTool {
     const NAME: &'static str = "knowledge_list";
+    const RETURNS: &'static str = "list[dict]";
     const RISK: Risk = Risk::ReadOnly;
     type Args = ListArgs;
 
@@ -174,15 +190,15 @@ impl Tool for ListTool {
                 a.limit.unwrap_or(50),
             )
             .await?;
-        if metas.is_empty() {
-            return Ok(ToolOutput::ok("no concepts"));
-        }
         let mut s = String::new();
         for m in &metas {
             meta_line(&mut s, m);
             s.push('\n');
         }
-        Ok(ToolOutput::ok(s))
+        if s.is_empty() {
+            s.push_str("no concepts");
+        }
+        Ok(structured(s, &metas))
     }
 }
 
@@ -251,6 +267,7 @@ pub struct HistoryTool(pub Arc<Knowledge>);
 #[async_trait::async_trait]
 impl Tool for HistoryTool {
     const NAME: &'static str = "knowledge_history";
+    const RETURNS: &'static str = "dict";
     const RISK: Risk = Risk::ReadOnly;
     type Args = HistoryArgs;
 
@@ -265,18 +282,18 @@ impl Tool for HistoryTool {
             .0
             .history(a.id.as_deref(), a.limit.unwrap_or(20))
             .await?;
-        if h.changes.is_empty() {
-            return Ok(ToolOutput::ok("no history"));
-        }
         let mut s = String::new();
         for c in &h.changes {
             s.push_str(&format!("{}  {}  {}\n", c.commit, c.time, c.message));
+        }
+        if s.is_empty() {
+            s.push_str("no history");
         }
         if let Some(diff) = &h.diff {
             s.push('\n');
             s.push_str(diff);
         }
-        Ok(ToolOutput::ok(s))
+        Ok(structured(s, &h))
     }
 }
 

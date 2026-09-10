@@ -70,6 +70,9 @@ pub struct ToolSpec {
     /// Exposed as a direct tool definition even when the runtime is on
     /// (`true` for native tools; MCP tools are runtime functions only).
     pub direct: bool,
+    /// Python annotation of what the runtime function returns (`ToolOutput::
+    /// structured` when set, else the text): `str`, `list[dict]`, `Any`, ...
+    pub returns: String,
 }
 
 /// A model-requested invocation.
@@ -134,6 +137,9 @@ pub trait Tool: Send + Sync + 'static {
     const RISK: Risk;
     /// Argument type; its `JsonSchema` is what the model sees.
     type Args: DeserializeOwned + JsonSchema + Send;
+    /// Python annotation of the value the runtime hands back: the text unless
+    /// `call` fills `ToolOutput::structured`, in which case name its shape.
+    const RETURNS: &'static str = "str";
 
     /// Description shown to the model.
     fn description(&self) -> String;
@@ -167,6 +173,7 @@ impl<T: Tool> ErasedTool for T {
             schema: serde_json::to_value(schemars::schema_for!(T::Args)).unwrap_or_default(),
             risk: T::RISK,
             direct: true,
+            returns: T::RETURNS.to_owned(),
         }
     }
 

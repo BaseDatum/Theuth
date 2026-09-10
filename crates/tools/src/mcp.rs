@@ -1291,6 +1291,7 @@ async fn register(state: &mut State, registry: &ActorRef<ToolRegistry>, mut orph
                         schema: Value::Object((*t.input_schema).clone()),
                         risk: Risk::Mutating,
                         direct: false,
+                        returns: "Any".to_owned(),
                     },
                     remote_name: name,
                     service: Arc::clone(&r.service),

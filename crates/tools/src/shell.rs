@@ -207,10 +207,13 @@ impl Tool for ShellTool {
                 } else {
                     "\n"
                 };
+                // The runtime hands Python the output alone: a non-zero exit
+                // raises, so the trailer only ever says `0` there.
+                let body = truncate(body);
                 ToolOutput {
-                    content: truncate(format!("{body}{sep}exit code: {code}")),
+                    content: format!("{body}{sep}exit code: {code}"),
                     is_error: code != 0,
-                    structured: None,
+                    structured: Some(serde_json::Value::String(body)),
                 }
             }
         })

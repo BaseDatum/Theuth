@@ -2255,7 +2255,11 @@ mod tests {
             text: text.clone(),
             model: "m".into(),
         });
-        assert_eq!(m.entries.len(), 1, "expanded echo must not add a second card");
+        assert_eq!(
+            m.entries.len(),
+            1,
+            "expanded echo must not add a second card"
+        );
         m.apply_agent(AgentEvent::TurnStarted {
             session,
             turn: runtime::TurnId::new(),

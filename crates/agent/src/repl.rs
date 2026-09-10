@@ -84,6 +84,7 @@ pub fn spec() -> ToolSpec {
         schema: serde_json::to_value(schemars::schema_for!(PythonArgs)).unwrap_or_default(),
         risk: Risk::ReadOnly,
         direct: true,
+        returns: "str".to_owned(),
     }
 }
 
@@ -243,12 +244,6 @@ fn py_literal(v: &Value) -> String {
     }
 }
 
-/// Return annotation: native tools hand back text, MCP tools whatever
-/// `structuredContent`/JSON parses to.
-fn return_type(spec: &ToolSpec) -> &'static str {
-    if spec.direct { "str" } else { "Any" }
-}
-
 /// First sentence of the description, cut at [`SUMMARY_CHARS`].
 fn summary(description: &str) -> String {
     let d = description.trim();
@@ -293,7 +288,7 @@ pub fn signature(spec: &ToolSpec) -> String {
         "async def {}({}) -> {}",
         sanitize_ident(&spec.name),
         render_params(spec, false),
-        return_type(spec)
+        spec.returns
     );
     if !summary.is_empty() {
         s.push_str("  # ");
@@ -310,7 +305,7 @@ pub fn stubs(specs: &[ToolSpec]) -> String {
             "async def {}({}) -> {}: ...\n",
             sanitize_ident(&spec.name),
             render_params(spec, true),
-            return_type(spec)
+            spec.returns
         ));
     }
     out.push_str("def tools(query: str | None = None) -> list[str]: ...\n");
@@ -336,7 +331,7 @@ fn help(spec: &ToolSpec) -> String {
         "async def {}({}) -> {}\n\n{}\n",
         sanitize_ident(&spec.name),
         render_params(spec, false),
-        return_type(spec),
+        spec.returns,
         spec.description.trim()
     );
     let ps = params(&spec.schema);
@@ -799,6 +794,17 @@ impl Repl {
             }
             body.push_str("bindings: ");
             body.push_str(&bound);
+            // The rest of the live inventory by name, so nothing is lost track of.
+            let rest: Vec<&str> = self
+                .names
+                .keys()
+                .filter(|n| !cell_names.contains(*n))
+                .map(String::as_str)
+                .collect();
+            if !rest.is_empty() {
+                body.push_str(" · also ");
+                body.push_str(&rest.join(", "));
+            }
         }
         self.dump().await;
         self.finish_output(body, is_error)
@@ -1250,6 +1256,7 @@ mod tests {
             }),
             risk: Risk::Mutating,
             direct: false,
+            returns: "Any".to_owned(),
         }
     }
 
@@ -1356,7 +1363,10 @@ mod tests {
             out.content
         );
         let out = repl.run("c4", "r = [1, 2, 3]\nr").await;
-        assert_eq!(out.content, "→ [1, 2, 3]\nbindings: r (list, 3)");
+        assert_eq!(
+            out.content,
+            "→ [1, 2, 3]\nbindings: r (list, 3) · also n, out1"
+        );
         assert_eq!(
             repl.render_inventory().as_deref(),
             Some("n (int) · out1 (str, 30000) · r (list, 3)")

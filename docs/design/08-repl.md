@@ -234,10 +234,16 @@ number→float, boolean→bool, array→list[T], object→dict, enum→Literal[�
 `anyOf`/`oneOf`→`A | B`, `type: [T, "null"]`→`T | None`; required
 parameters first in schema order, then optional sorted by name as `T | None
 = None` — a type that is already nullable renders once, `str | None =
-None`, never `str | None | None`), a return annotation (`-> str` for native
-tools, whose output is text; `-> Any` for MCP tools, whose value is whatever
-`structuredContent`/JSON parses to — not `-> dict`), and the first sentence
-of the description, cut at 120 chars. This is the codemcp result: two lines
+None`, never `str | None | None`), a return annotation (`ToolSpec::returns`,
+from the tool's `Tool::RETURNS`: `str` by default — the text; a tool that
+fills `ToolOutput::structured` names that shape, `knowledge_search` →
+`list[dict]`, `knowledge_history` → `dict`; MCP tools `Any`, whatever
+`structuredContent`/JSON parses to), and the first sentence of the
+description, cut at 120 chars. The annotation is a promise: `tool_result`
+hands back exactly that value, and with type checking on (§4.6) a call
+that treats a `list[dict]` as text fails before the cell runs. The lesson
+that made it a per-tool field: `-> str` on `knowledge_search` returning
+`"no matches"` let `len(hits)` be 10 with no error. This is the codemcp result: two lines
 per tool was the whole token win over direct exposure, and the full schema
 is one `help()` call away when the model needs it.
 
@@ -247,14 +253,14 @@ a rebase at the next turn start. Mid-turn MCP churn changes nothing the
 model sees: names resolve live at call time (§4.2) and the stubs follow
 the live set (§4.6). The `knowledge_*` tools (`10-knowledge.md` §6) are
 registered like any other native tool and appear in this index the same way
-(`async def knowledge_search(query: str, limit: int | None = None) -> str  # …`).
+(`async def knowledge_search(query: str, limit: int | None = None) -> list[dict]  # …`).
 
 ### 3.3 What comes back from a cell
 
 ```
 <stdout, capped at 8 000 chars>
 → <repr of the last expression, capped at 8 000 chars>      (omitted when None)
-bindings: r (list, 42) · total (int) · summarise (function)  (names bound by this cell)
+bindings: r (list, 42) · total (int) · summarise (function) · also n, hits  (names bound by this cell, then the rest of the live inventory by name)
 ```
 
 - Empty everything → `(no output)`.
@@ -278,6 +284,12 @@ bindings: r (list, 42) · total (int) · summarise (function)  (names bound by t
   `TimeoutError: shell: approval timed out` (the registry's own texts,
   classified by suffix in `repl::tool_result`) — all monty built-ins, all
   catchable.
+- Tool values are what the stub promises (§3.2): `ToolOutput::structured`
+  when the tool set it (JSON → list/dict/str), else the text, else text that
+  parses as a JSON object/array. `shell` sets `structured` to the output
+  alone — the transcript keeps `exit code: N`, but inside Python a non-zero
+  exit already raises, so the trailer would only ever say `0` and turned
+  `out.splitlines()` into a list with a fake last entry.
 - Worker lost → `RuntimeError: runtime crashed (<reason>); state restored to
   after the previous cell — this cell's effects are lost` (§5).
 - Saved state unrestorable → `<runtime> saved state could not be restored

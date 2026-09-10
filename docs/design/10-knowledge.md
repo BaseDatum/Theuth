@@ -518,14 +518,14 @@ a loop.
 Wire arg names are the field names below (`type`, not `type_`); `limit`s are
 `Option<u32>`.
 
-| tool | args | risk | returns |
+| tool | args | risk | returns (text for the transcript; the runtime gets `structured` where noted, 08 §3.2) |
 |---|---|---|---|
-| `knowledge_search` | `query`, `limit?` (default 10, clamped to 1..=50) | ReadOnly | one line per hit, best first: `` `id` — title [type] (score, one decimal): snippet ``; `no matches` when none |
+| `knowledge_search` | `query`, `limit?` (default 10, clamped to 1..=50) | ReadOnly | one line per hit, best first: `` `id` — title [type] (score, one decimal): snippet ``; `no matches` when none. Python: `list[dict]`, each the frontmatter fields plus `score` and `snippet`; `[]` when none |
 | `knowledge_get` | `id` | ReadOnly | the file verbatim (frontmatter + body), then `Links: facts/a, facts/b → missing` (resolved ids; `→ missing` when no such concept) and `Cited by: c, d`; each line only when non-empty |
-| `knowledge_list` | `prefix?`, `type?`, `tag?`, `limit?` (default 50, no cap) | ReadOnly | `` `id` — title [type]: description `` per line, sorted by id (`: description` omitted when empty); `no concepts` when none |
+| `knowledge_list` | `prefix?`, `type?`, `tag?`, `limit?` (default 50, no cap) | ReadOnly | `` `id` — title [type]: description `` per line, sorted by id (`: description` omitted when empty); `no concepts` when none. Python: `list[dict]` of frontmatter |
 | `knowledge_put` | `id`, `type`, `title`, `description?`, `tags?`, `scope?`, `body` (the `Put` type) | ReadOnly (below) | `put facts/x (new)` / `put facts/x (updated)` |
 | `knowledge_delete` | `id` | Destructive | `deleted facts/x` |
-| `knowledge_history` | `id?`, `limit?` (default 20) | ReadOnly | one line per commit touching `id` (the whole bundle when absent), newest first: `` a1b2c3d  2026-09-10 09:41  put facts/x `` (two spaces between fields); with `id`, a blank line and the unified diff of the latest change follow; `no history` when none |
+| `knowledge_history` | `id?`, `limit?` (default 20) | ReadOnly | one line per commit touching `id` (the whole bundle when absent), newest first: `` a1b2c3d  2026-09-10 09:41  put facts/x `` (two spaces between fields); with `id`, a blank line and the unified diff of the latest change follow; `no history` when none. Python: `dict {changes: list[dict], diff: str | None}` |
 | `knowledge_restore` | `id`, `commit?` (default: the commit before the latest change) | Mutating | rewrites `<id>.md` from that commit — also the way back for a deleted concept — through the ordinary write path; `restored facts/x from a1b2c3d` |
 
 `knowledge_put` is `ReadOnly` deliberately, unlike `add_skill` (Mutating):
