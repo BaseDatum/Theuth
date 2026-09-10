@@ -227,6 +227,42 @@ async fn execute(cmd: Command, tx: &UnboundedSender<UiEvent>) -> anyhow::Result<
             }
         }
         Command::SyncSkills => UiEvent::Synced(agent()?.ask(agent::SyncSkills).await?),
+        Command::KnowledgeList => UiEvent::Knowledge(
+            agent()?
+                .ask(agent::KnowledgeList {
+                    limit: Some(50),
+                    ..Default::default()
+                })
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?,
+        ),
+        Command::KnowledgeSearch(query) => UiEvent::Knowledge(
+            agent()?
+                .ask(agent::KnowledgeSearch { query, limit: None })
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?
+                .into_iter()
+                .map(|h| h.meta)
+                .collect(),
+        ),
+        Command::KnowledgeHistory(id) => UiEvent::KnowledgeHistory(
+            agent()?
+                .ask(agent::KnowledgeHistory { id, limit: None })
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?,
+        ),
+        Command::KnowledgeRestore { id, commit } => UiEvent::KnowledgeRestored(
+            agent()?
+                .ask(agent::KnowledgeRestore { id, commit })
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?,
+        ),
+        Command::Harvest(session) => UiEvent::Harvested(
+            agent()?
+                .ask(agent::Harvest { session })
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?,
+        ),
         Command::AddMcp { name, entry } => UiEvent::McpAdded(
             mcp()?
                 .ask(tools::AddServer { name, entry })
@@ -428,6 +464,9 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         UiEvent::Agent(AgentEvent::Compacted { epoch, .. }) => {
             writeln!(out, "context compacted (epoch {epoch})")
         }
+        UiEvent::Agent(AgentEvent::Harvested { added, updated, .. }) => {
+            writeln!(out, "knowledge +{added} ~{updated}")
+        }
         UiEvent::Agent(AgentEvent::Error { message, .. }) | UiEvent::Error(message) => {
             writeln!(out, "error: {message}")
         }
@@ -460,6 +499,19 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             .try_for_each(|r| writeln!(out, "{}  {}", r.name, r.status)),
         UiEvent::McpAdded(s) => writeln!(out, "{}  {} tools", s.name, s.tools.len()),
         UiEvent::RepoAdded(r) => writeln!(out, "cloned {} → {}\n{}", r.name, r.path, r.readme),
+        UiEvent::Knowledge(metas) => metas
+            .iter()
+            .try_for_each(|m| writeln!(out, "{}", model::meta_line(m))),
+        UiEvent::KnowledgeHistory(h) => h
+            .changes
+            .iter()
+            .try_for_each(|c| writeln!(out, "{}  {}  {}", c.commit, c.time, c.message))
+            .and_then(|()| match &h.diff {
+                Some(d) => writeln!(out, "{d}"),
+                None => Ok(()),
+            }),
+        UiEvent::KnowledgeRestored(c) => writeln!(out, "{}  {}", c.commit, c.message),
+        UiEvent::Harvested(r) => writeln!(out, "knowledge +{} ~{}", r.added, r.updated),
         UiEvent::Approvals(s) => writeln!(
             out,
             "approvals: {} (this session), {} (default)",

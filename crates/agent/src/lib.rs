@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod compact;
 pub mod frame;
+pub mod knowledge;
 pub mod loop_;
 pub mod peers;
 pub mod repl;
@@ -63,6 +64,78 @@ pub struct Cancel {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Compact {
     /// Session to compact.
+    pub session: SessionId,
+}
+
+/// `ask` → `Result<Vec<knowledge::Hit>, String>`: search the knowledge bundle (design doc 10 §8).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct KnowledgeSearch {
+    /// Free text.
+    pub query: String,
+    /// Default 10, max 50.
+    pub limit: Option<u32>,
+}
+
+/// `ask` → `Result<knowledge::Concept, String>`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct KnowledgeGet {
+    /// Concept id.
+    pub id: String,
+}
+
+/// `ask` → `Result<Vec<knowledge::Meta>, String>`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct KnowledgeList {
+    /// Id prefix.
+    pub prefix: Option<String>,
+    /// Frontmatter type.
+    #[serde(rename = "type")]
+    pub type_: Option<String>,
+    /// Tag.
+    pub tag: Option<String>,
+    /// Default 50.
+    pub limit: Option<u32>,
+}
+
+/// `ask` → `Result<knowledge::Meta, String>`: create or update a concept.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct KnowledgePut {
+    /// The document.
+    pub put: knowledge::Put,
+    /// Who is writing (`User` from RPC/TUI).
+    pub source: knowledge::Source,
+}
+
+/// `ask` → `Result<(), String>`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct KnowledgeDelete {
+    /// Concept id.
+    pub id: String,
+}
+
+/// `ask` → `Result<knowledge::History, String>` (design doc 10 §2.4).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct KnowledgeHistory {
+    /// Concept id; `None` for the whole bundle.
+    pub id: Option<String>,
+    /// Default 20.
+    pub limit: Option<u32>,
+}
+
+/// `ask` → `Result<knowledge::Change, String>`: rewrite a concept from a commit.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct KnowledgeRestore {
+    /// Concept id.
+    pub id: String,
+    /// Abbreviated commit id; default: the commit before the latest change.
+    pub commit: Option<String>,
+}
+
+/// `ask` → `Result<knowledge::HarvestResult, String>`: harvest a session's
+/// finished frame now (design doc 10 §5.2). `Err("turn in flight")` while it runs.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct Harvest {
+    /// Session.
     pub session: SessionId,
 }
 
@@ -464,11 +537,34 @@ pub enum AgentEvent {
         /// Messages folded into the summary.
         folded: u32,
     },
+    /// A concept was written or removed (design doc 10 §8). Global: not tied to a session.
+    KnowledgeChanged {
+        /// Concept id.
+        id: String,
+        /// Put or delete.
+        op: knowledge::KnowledgeOp,
+        /// Who wrote it.
+        source: knowledge::Source,
+    },
+    /// The harvest continuation is in flight (design doc 10 §5.2); precedes `TurnFinished`.
+    Harvesting {
+        /// Session.
+        session: SessionId,
+    },
+    /// A harvest finished for a session (design doc 10 §5.4).
+    Harvested {
+        /// Session.
+        session: SessionId,
+        /// Concepts created.
+        added: u32,
+        /// Concepts updated.
+        updated: u32,
+    },
 }
 
 impl AgentEvent {
-    /// Session the event belongs to.
-    pub fn session(&self) -> SessionId {
+    /// Session the event belongs to; `None` for global events.
+    pub fn session(&self) -> Option<SessionId> {
         match self {
             Self::TurnStarted { session, .. }
             | Self::TextDelta { session, .. }
@@ -481,8 +577,11 @@ impl AgentEvent {
             | Self::ModelChanged { session, .. }
             | Self::Compacting { session, .. }
             | Self::Compacted { session, .. }
-            | Self::Error { session, .. } => *session,
-            Self::SubagentSpawned { child, .. } => *child,
+            | Self::Harvesting { session, .. }
+            | Self::Harvested { session, .. }
+            | Self::Error { session, .. } => Some(*session),
+            Self::SubagentSpawned { child, .. } => Some(*child),
+            Self::KnowledgeChanged { .. } => None,
         }
     }
 }
@@ -505,6 +604,8 @@ pub struct AgentConfig {
     pub compact_at: f32,
     /// Persistent Python runtime (design doc 08).
     pub repl: ReplConfig,
+    /// Knowledge bundle (design doc 10).
+    pub knowledge: knowledge::KnowledgeConfig,
 }
 
 /// `[agent.repl]` config section (design doc 08 §10).
@@ -525,6 +626,7 @@ impl Default for AgentConfig {
             subagents: SubagentsConfig::default(),
             compact_at: 0.8,
             repl: ReplConfig::default(),
+            knowledge: knowledge::KnowledgeConfig::default(),
         }
     }
 }

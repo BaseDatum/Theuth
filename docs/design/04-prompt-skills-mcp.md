@@ -34,7 +34,7 @@ Everything below reuses the two mechanisms that already exist:
 2. <data_dir>/prompt.md standing instructions, verbatim (missing → nothing)
 3. always-on skills     bodies of skills with `always: true`, in name order
 4. skills index         "## Skills" list, one line each (unchanged shape)
-5. peers                child identity line (07 §10); static spawn/send + todo guidance
+5. peers                child identity line (07 §10); static spawn/send + todo guidance + the knowledge sentence (10 §4.3)
 6. runtime              `## Runtime` tool index when the Python runtime is on (08 §3.2)
 ```
 
@@ -46,6 +46,14 @@ watcher, no cache invalidation beyond the one deliberate rebase miss
 matters most, and a turn is seconds to minutes long; the model can still
 use a skill it just wrote via `load_skill` mid-turn. Nothing custom to
 explain (rule §1.2 of 00).
+
+Part 5's `GUIDANCE` const carries one static sentence pointing the model at
+the knowledge base (`<knowledge>` hints, `knowledge_search`, `knowledge_put`).
+The knowledge *index* is deliberately **not** a sibling of part 4: the skills
+index is in the prompt because skills change rarely and are few; the
+knowledge catalog changes on every harvest and grows without bound, so it
+would rebase the prefix every few turns. Hints arrive as tail notes instead
+(`10-knowledge.md` §4.3).
 
 `agent.system_prompt` in `config.yaml` is **removed** (clean cutover): the
 file is the one place. The first-run template gains a `prompt.md` with a
@@ -123,12 +131,15 @@ would be a second source of truth to keep in step with `rm -rf`.
 `load_skill` reads the directory live, so every tool's output can simply
 say "available now".
 
-Git runs as the user's `git` binary via `tokio::process::Command`, in
-`tools::git` (`clone`, `pull`, `remote_url`, `repos(dir)`), shared with §3.
-Reason (rule §1.2 of 00): `git2`/`gix` add a large dependency and their
-own credential/ssh story; the user's git already has keys, config and
-proxies set up. Ceiling: no git on PATH → the repo tools report that and
-everything else works.
+Git for **clone/pull** runs as the user's `git` binary via
+`tokio::process::Command`, in `tools::git` (`clone`, `pull`, `remote_url`,
+`repos(dir)`), shared with §3. Reason (rule §1.2 of 00): the network side —
+credentials, ssh keys, proxies — is already set up in the user's git, and
+`git2`/`gix` would need their own story for it. Ceiling: no git on PATH →
+the repo tools report that and everything else works. This rejection is
+scoped to clone/pull: the knowledge bundle's *local* history (init, commit,
+log, diff, restore — no transport) uses `gix` without default features so it
+works on a machine with no `git` at all (`10-knowledge.md` §2.4).
 
 ### 2.3 Human surface
 
@@ -229,7 +240,7 @@ trust boundary; only `/mcp` and RPC `set_mcp_gate` write it.
 
 ## 6. Rejected
 
-- `git2`/`gix` — see §2.2.
+- `git2`/`gix` for clone/pull — see §2.2 (local-only history in `gix` is the knowledge bundle's, 10 §2.4).
 - A sources manifest (`skills/sources.yaml`) — the clones are the record.
 - Skill "marketplaces"/search — the model can `add_skill_repo` any URL the
   user names; discovery is a web search away and not the harness's job.

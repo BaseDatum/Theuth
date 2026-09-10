@@ -36,6 +36,12 @@ Config (`~/.wth/`, created on first run; details in
     compact_at: 0.8        # compact when the context is this full; 0 disables
     repl:
       monty: null          # `monty` worker path; default: PATH, then the toolchain bin dir
+    knowledge:
+      enabled: true        # false: no hints, no knowledge_* tools, no harvest
+      hint_limit: 5        # lines per <knowledge> hint
+      hint_rounds: 4       # mid-turn hint cadence in tool rounds
+      harvest_every: 3     # tool-using turns per harvest; 0 disables harvest
+      harvest_max: 8       # concepts accepted per harvest
   ```
 
   The Python runtime is on whenever the `monty` worker is found (`just setup` installs it); every tool is then an `async` function inside the sandbox and state persists across turns.
@@ -46,6 +52,7 @@ Config (`~/.wth/`, created on first run; details in
 - `mcp/*.json` — drop in any `mcp.json` (Claude Desktop, Cursor, OpenCode, …); hot-reloaded, tools registered without prefix. `cwd` (relative → `mcp/`) points a server at a checkout under `mcp/repos/`, where `/mcp add <url>` clones and `/mcp sync` pulls.
 - `mcp/config.yaml` — per-server / per-tool `allow` | `ask` | `deny` gating; `/mcp` edits it (`deny` on a server = disabled).
 - `skills/` — `<name>/SKILL.md` directories, loose `*.md`, or git clones (`/skills add <url>`, `/skills sync`); see [`docs/skills.md`](docs/skills.md).
+- `knowledge/` — the knowledge bundle (OKF markdown, one `<id>.md` per concept, a git repo kept in-process); `knowledge.sqlite` beside it is its search index and can be deleted.
 
 TUI: `/` opens the command list; `/model` picks a model (header above the
 input shows model and context used); `/mcp` toggles servers and tools (`l`
@@ -53,10 +60,28 @@ logs a `login required` server in), `/mcp add <url|json>` installs one,
 `/mcp sync` pulls repos; `/login` picks a provider or MCP server to log in
 to; `/skills` lists skills; `/prompt` shows the system prompt; `/compact`
 folds the conversation so far into a summary the model keeps working from;
-`/approvals off` stops approval prompts for this session, `/approvals off
-always` for good (`tools.approvals` in config.yaml). Shift+Enter inserts a
-newline; select text with the mouse to copy it (terminal-native). See
+`/knowledge` browses the knowledge base (below); `/approvals off` stops
+approval prompts for this session, `/approvals off always` for good
+(`tools.approvals` in config.yaml). Shift+Enter inserts a newline; select
+text with the mouse to copy it (terminal-native). See
 [`docs/design/02-models-and-menus.md`](docs/design/02-models-and-menus.md).
+
+Knowledge: durable facts about your machines, projects, accounts and
+decisions, kept across sessions as plain markdown concepts in
+`~/.wth/knowledge/` (Google's Open Knowledge Format — any editor works). The
+agent reads it through `knowledge_search`/`knowledge_get`, and matching
+concepts are surfaced to it as `<knowledge>` hints at the start of a turn and
+every few tool rounds. It is built while you work: after every third turn
+that used tools (and right before a compaction) the harness asks the model,
+on the frame it already has cached, what is worth keeping, and writes the
+answer as concepts; the model can also record with `knowledge_put` at any
+time. Every write is a git commit made in-process (`gix`), so no `git`
+binary is needed and history and undo work everywhere: `/knowledge` lists
+concepts, `/knowledge <query>` searches, `/knowledge history [id]` shows the
+commits (and the latest diff), `/knowledge restore <id> [commit]` puts a
+concept back, `/knowledge harvest` runs a harvest now. Tune or turn off under
+`agent.knowledge` in `config.yaml`. See
+[`docs/design/10-knowledge.md`](docs/design/10-knowledge.md).
 
 Signal: a phone-side frontend that runs only in the daemon. Pair once with
 `wth --link-signal --owner +15551234567` (scan the QR from Signal → Settings

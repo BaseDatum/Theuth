@@ -131,11 +131,13 @@ per-transport difference.
 | identity line, Claude Code identity (login-dependent), cwd | system | never within a process | — |
 | date | system | midnight | rebase at the next turn start |
 | `prompt.md`, `always` skill bodies, skills index | system | user or model edits | rebase at the next turn start (one miss, deliberate) |
-| peer guidance (how to spawn/message), todo sentence | system | never | the `GUIDANCE` const in `frame::baseline`; the live roster is **removed** from the prompt (§10) |
+| peer guidance (how to spawn/message), todo sentence, knowledge sentence | system | never | the `GUIDANCE` const in `frame::baseline`; the live roster is **removed** from the prompt (§10); the knowledge *index* is deliberately not here (10 §4.3) |
 | tool list | tools | MCP server connects/disconnects, gate change — only while the runtime is off; with it on, MCP tools are `direct = false` and never in the list (§5) | picked up next round; logged as `tools changed (+a −b)`; the miss is real and rare |
 | user input, steering, `<message>`, `<subagent_result>` | history tail | per turn | append |
 | assistant output, tool results | history tail | per round | append |
 | harness notes: context pressure, todo reminder | history tail | pressure once per epoch; reminder rate-limited (§8.7, §9) | append |
+| `<knowledge>` hints (10 §4) | history tail | turn start against the input, then every `hint_rounds = 4` rounds against what was appended — only when there are hits | append |
+| harvest (10 §5) | a dead-end branch off the finished frame: history + one instruction, never persisted | every 3rd tool-using root turn (inline after `TurnFinished`), and right before a compaction cut | no effect on the session's prefix; the branch reads the cached prefix and writes one small mark |
 | todo list | `SessionState` state; visible via `todo` tool output, reminder notes, compaction head | every `todo` call | append only; the list is never re-injected in place (§9) |
 | runtime inventory (`08-repl.md` §6) | `Repl` state; visible in cell results and the compaction head | every `python` cell | append; harness truth |
 | epoch summary | head | compaction | new epoch |
@@ -489,11 +491,12 @@ summary   = model text
 roster    = agents.ask(Roster { session }): "Subagents: grep-logs (running), fix-tests (idle)" or ""
 todos     = todo::render(&state.todos) if non-empty                                   (§9)
 runtime   = "Runtime: " + (repl.render_inventory() | repl::saved_inventory(data_dir, session))  (08 §6)
+read      = "Knowledge: read " + state.knowledge_read.join(", ") if non-empty              (10 §7)
 head      = ChatMessage::user("<context_summary epoch=\"{n}\">\n{summary}" + "\n{part}" for each present part + "\n</context_summary>")
 tail_from = seq(M[keep_from])
 at_seq    = seq(M[n-1])
 store.compact(session, n, at_seq, tail_from, &head)        // one INSERT into epochs
-history.drain(..keep_from); head = Some(head); used = 0; epoch = n; pressure_sent = false; reset_this_round = true
+history.drain(..keep_from); head = Some(head); used = 0; epoch = n; pressure_sent = false; hinted.clear(); knowledge_read.clear(); reset_this_round = true
 info!(session, epoch, folded, before, "compaction")
 publish Compacted { session, turn, epoch: n, before: projected, folded: keep_from }
 ```
@@ -590,7 +593,7 @@ wrappers are (`tui::model::injected`). They are the *only* way the harness
 speaks to the model mid-turn, and they are append-only by construction —
 this is what replaces jarvis's `retain()+push()` stickies.
 
-Two kinds exist:
+Three kinds exist:
 
 - `context_pressure` — once per epoch (`pressure_sent`, reset by
   compaction), when `compact_at > 0.1` and `projected / window >= compact_at
@@ -600,6 +603,10 @@ Two kinds exist:
   right before the summariser needs it. The `> 0.1` guard keeps a tiny
   test threshold from sending the note on round one.
 - `todo` — the reminder in §9.
+- `knowledge` — matching concept ids (`10-knowledge.md` §4): at turn start
+  against the input, then every `hint_rounds` rounds against what was
+  appended since; each id once per epoch (`hinted`); nothing when nothing
+  matches.
 
 A lost or crashed runtime is *not* a note: the `<runtime>` line opens the
 result of the cell that discovered it (`08-repl.md` §5), where the model
@@ -758,7 +765,8 @@ pub fn is_overflow(err: &str) -> bool;                           // §8.5
 // agent::loop_
 pub struct SessionState { pub epoch: u32, pub head: Option<ChatMessage>, pub history: Vec<(i64, ChatMessage)>,
     pub used: u32, pub baseline: String, pub pressure_sent: bool, pub prev_call: Option<(Instant, u32 /* prompt */)>,
-    pub todos: Vec<todo::Todo>, pub todo_touched_round: u32 }
+    pub todos: Vec<todo::Todo>, pub todo_touched_round: u32,
+    pub hinted: BTreeSet<String>, pub knowledge_hinted_round: u32, pub knowledge_read: BTreeSet<String>, pub turns_since_harvest: u32 }  // 10 §10
 impl SessionState { pub fn resume(epoch: u32, head: Option<ChatMessage>, history: Vec<(i64, ChatMessage)>) -> Self; }
 pub struct CompactNow;                                           // ask → DelegatedReply<Result<u32, String>> (§8.6)
 pub struct TurnDone(SessionState);                               // tell, turn task → its Session

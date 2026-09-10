@@ -4,11 +4,13 @@
 
 use std::fmt::Display;
 
+use agent::knowledge::{Change, Concept, HarvestResult, History, Hit, Meta, Put, Source};
 use agent::{
-    AddSkill, AddSkillRepo, Agents, Cancel, Compact, ListLogins, ListModels, ListSessions,
-    ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginInfo, Logout, ModelInfo, RemoveSkill,
-    RemoveSkillRepo, SendInput, SessionSummary, SetModel, ShowPrompt, SkillBody, SkillMeta, Steer,
-    SyncSkills,
+    AddSkill, AddSkillRepo, Agents, Cancel, Compact, Harvest, KnowledgeDelete, KnowledgeGet,
+    KnowledgeHistory, KnowledgeList, KnowledgePut, KnowledgeRestore, KnowledgeSearch, ListLogins,
+    ListModels, ListSessions, ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginInfo, Logout,
+    ModelInfo, RemoveSkill, RemoveSkillRepo, SendInput, SessionSummary, SetModel, ShowPrompt,
+    SkillBody, SkillMeta, Steer, SyncSkills,
 };
 use jsonrpsee::core::{RpcResult, SubscriptionResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
@@ -121,6 +123,37 @@ pub trait Api {
     /// `git pull` every skill repo.
     #[method(name = "sync_skills")]
     async fn sync_skills(&self) -> RpcResult<Vec<SyncResult>>;
+    /// Search the knowledge bundle (design doc 10 §8); `limit` defaults to 10, max 50.
+    #[method(name = "knowledge_search")]
+    async fn knowledge_search(&self, query: String, limit: Option<u32>) -> RpcResult<Vec<Hit>>;
+    /// One concept verbatim with its links and citers.
+    #[method(name = "knowledge_get")]
+    async fn knowledge_get(&self, id: String) -> RpcResult<Concept>;
+    /// Concept metas sorted by id; `limit` defaults to 50.
+    #[method(name = "knowledge_list")]
+    async fn knowledge_list(
+        &self,
+        prefix: Option<String>,
+        #[argument(rename = "type")] type_: Option<String>,
+        tag: Option<String>,
+        limit: Option<u32>,
+    ) -> RpcResult<Vec<Meta>>;
+    /// Create or update a concept as `source: user`.
+    #[method(name = "knowledge_put")]
+    async fn knowledge_put(&self, put: Put) -> RpcResult<Meta>;
+    /// Delete a concept (restorable through `knowledge_restore`).
+    #[method(name = "knowledge_delete")]
+    async fn knowledge_delete(&self, id: String) -> RpcResult<()>;
+    /// Commits touching `id` (the whole bundle when absent), newest first; `limit` defaults to 20.
+    #[method(name = "knowledge_history")]
+    async fn knowledge_history(&self, id: Option<String>, limit: Option<u32>)
+    -> RpcResult<History>;
+    /// Rewrite `id` from `commit` (default: the commit before its latest change).
+    #[method(name = "knowledge_restore")]
+    async fn knowledge_restore(&self, id: String, commit: Option<String>) -> RpcResult<Change>;
+    /// Harvest `session`'s finished frame now (design doc 10 §5.2). Refused while a turn is running.
+    #[method(name = "knowledge_harvest")]
+    async fn knowledge_harvest(&self, session: SessionId) -> RpcResult<HarvestResult>;
     /// Write `mcp/<name>.json` and connect; returns the server with its tools.
     #[method(name = "add_mcp_server")]
     async fn add_mcp_server(&self, name: String, entry: serde_json::Value) -> RpcResult<McpServer>;
@@ -331,6 +364,64 @@ impl ApiServer for Server {
 
     async fn sync_skills(&self) -> RpcResult<Vec<SyncResult>> {
         ask::<Agents, _>(agent::AGENT_ACTOR, SyncSkills).await
+    }
+
+    async fn knowledge_search(&self, query: String, limit: Option<u32>) -> RpcResult<Vec<Hit>> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, KnowledgeSearch { query, limit }).await
+    }
+
+    async fn knowledge_get(&self, id: String) -> RpcResult<Concept> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, KnowledgeGet { id }).await
+    }
+
+    async fn knowledge_list(
+        &self,
+        prefix: Option<String>,
+        type_: Option<String>,
+        tag: Option<String>,
+        limit: Option<u32>,
+    ) -> RpcResult<Vec<Meta>> {
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            KnowledgeList {
+                prefix,
+                type_,
+                tag,
+                limit,
+            },
+        )
+        .await
+    }
+
+    async fn knowledge_put(&self, put: Put) -> RpcResult<Meta> {
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            KnowledgePut {
+                put,
+                source: Source::User,
+            },
+        )
+        .await
+    }
+
+    async fn knowledge_delete(&self, id: String) -> RpcResult<()> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, KnowledgeDelete { id }).await
+    }
+
+    async fn knowledge_history(
+        &self,
+        id: Option<String>,
+        limit: Option<u32>,
+    ) -> RpcResult<History> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, KnowledgeHistory { id, limit }).await
+    }
+
+    async fn knowledge_restore(&self, id: String, commit: Option<String>) -> RpcResult<Change> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, KnowledgeRestore { id, commit }).await
+    }
+
+    async fn knowledge_harvest(&self, session: SessionId) -> RpcResult<HarvestResult> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, Harvest { session }).await
     }
 
     async fn add_mcp_server(&self, name: String, entry: serde_json::Value) -> RpcResult<McpServer> {

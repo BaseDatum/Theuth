@@ -5,6 +5,7 @@
 //! turn owns it inside a spawned task and hands it back via [`TurnDone`], so
 //! the actor's mailbox never blocks on network I/O.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -14,7 +15,7 @@ use futures::future::join_all;
 use futures::{Stream, StreamExt};
 use genai::Client;
 use genai::chat::{
-    ChatMessage, ChatStreamEvent, MessageContent, StreamEnd, Tool, ToolCall, ToolResponse,
+    ChatMessage, ChatRole, ChatStreamEvent, MessageContent, StreamEnd, Tool, ToolCall, ToolResponse,
 };
 use kameo::actor::ActorRef;
 use kameo::message::{Context, Message};
@@ -25,6 +26,7 @@ use tokio_util::sync::CancellationToken;
 use tools::{Invoke, ListTools, REGISTRY_ACTOR, ToolOutput, ToolRegistry, ToolSpec};
 
 use crate::frame::{self, Frame, Transport};
+use crate::knowledge::{self, HarvestResult, Knowledge, Put, Source};
 use crate::peers::SpawnSubagentTool;
 use crate::repl::{self, Repl, RunCx};
 use crate::store::Store;
@@ -37,6 +39,8 @@ const DISPLAY_OUTPUT_CHARS: usize = 2000;
 const CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 /// Below this prompt size `cached == 0` is legitimate (07 §7).
 const CACHE_FLOOR: u32 = 4096;
+/// The tool whose `id` argument feeds the compaction head's `Knowledge:` line (10 §7).
+const KNOWLEDGE_GET: &str = "knowledge_get";
 
 /// One model call's events, from genai or the Cursor backend.
 type EventStream = Pin<Box<dyn Stream<Item = Result<ChatStreamEvent, String>> + Send>>;
@@ -58,6 +62,10 @@ pub struct SwitchModel(pub Resolved);
 /// ignored (07 §8.6). `Err("turn in flight")` while a turn runs;
 /// `Err("nothing to compact")` when nothing can be folded.
 pub struct CompactNow;
+
+/// `ask` → `Result<HarvestResult, String>`: harvest the finished frame now
+/// (10 §5.2). `Err("turn in flight")` while a turn runs.
+pub struct HarvestNow;
 
 /// `tell` (from the turn task to its own session): the turn ended.
 pub struct TurnDone(SessionState);
@@ -83,6 +91,14 @@ pub struct SessionState {
     pub todos: Vec<todo::Todo>,
     /// Round of this turn in which `todo` was last called or reminded.
     pub todo_touched_round: u32,
+    /// Concept ids hinted this epoch (10 §4.2); cleared by compaction, not persisted.
+    pub hinted: BTreeSet<String>,
+    /// Round of this turn in which the last `<knowledge>` check ran.
+    pub knowledge_hinted_round: u32,
+    /// Ids passed to `knowledge_get` this epoch, for the compaction head (10 §7).
+    pub knowledge_read: BTreeSet<String>,
+    /// Tool-using root turns since the last harvest (10 §5.2); in memory only.
+    pub turns_since_harvest: u32,
 }
 
 impl SessionState {
@@ -98,6 +114,10 @@ impl SessionState {
             prev_call: None,
             todos: Vec::new(),
             todo_touched_round: 0,
+            hinted: BTreeSet::new(),
+            knowledge_hinted_round: 0,
+            knowledge_read: BTreeSet::new(),
+            turns_since_harvest: 0,
         }
     }
 }
@@ -133,6 +153,8 @@ struct Shared {
     catalog: Arc<models::Catalog>,
     /// Python runtime pool; `None` when `monty` is absent (08 §9).
     pool: Option<Arc<Pool>>,
+    /// Knowledge bundle; `None` when `agent.knowledge.enabled` is false (10).
+    knowledge: Option<Arc<Knowledge>>,
     /// `<data_dir>/spill` (07 §6).
     spill_dir: PathBuf,
 }
@@ -154,6 +176,7 @@ impl Session {
         rt: Runtime,
         catalog: Arc<models::Catalog>,
         pool: Option<Arc<Pool>>,
+        knowledge: Option<Arc<Knowledge>>,
     ) -> Self {
         let titled = !state.history.is_empty() || state.head.is_some();
         Self {
@@ -170,6 +193,7 @@ impl Session {
                 steer: Arc::default(),
                 catalog,
                 pool,
+                knowledge,
             },
             state: Some(state),
             inflight: None,
@@ -304,6 +328,32 @@ impl Message<CompactNow> for Session {
     }
 }
 
+impl Message<HarvestNow> for Session {
+    type Reply = kameo::reply::DelegatedReply<Result<HarvestResult, String>>;
+
+    /// `/knowledge harvest` (10 §5.2): the [`CompactNow`] shape — refused
+    /// while a turn is in flight, otherwise a `Turn`-less task owns the state
+    /// and `inflight` until the harvest returns.
+    async fn handle(&mut self, _: HarvestNow, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let Some(state) = self.state.take().filter(|_| self.inflight.is_none()) else {
+            tx.send(Err("turn in flight".into()));
+            return reply;
+        };
+        let cancel = self.shared.rt.shutdown.child_token();
+        self.inflight = Some(cancel.clone());
+        let mut turn = Turn::new(self.shared.clone(), None, cancel, state);
+        let me = ctx.actor_ref().clone();
+        tokio::spawn(async move {
+            let result = turn.harvest_now().await;
+            let _ = me.tell(TurnDone(turn.state)).await;
+            tx.send(result);
+        });
+        reply
+    }
+}
+
 impl Message<TurnDone> for Session {
     type Reply = ();
 
@@ -342,6 +392,14 @@ struct Turn {
     window_logged: bool,
     /// Python runtime, opened on the first `python` call (08 §4).
     repl: Option<Repl>,
+    /// The turn's inputs joined, the round-0 hint query (10 §4.2).
+    input_text: String,
+    /// `history[hint_since..]` was appended since the last `<knowledge>` check.
+    hint_since: usize,
+    /// Tool calls dispatched this turn, the harvest trigger (10 §5.2).
+    calls: u32,
+    /// Process working directory, resolved once per turn.
+    cwd: PathBuf,
 }
 
 /// Why a model call did not return a [`StreamEnd`].
@@ -365,6 +423,36 @@ fn ns(genai: &str) -> &str {
     genai.split_once("::").map_or("", |(n, _)| n)
 }
 
+/// Text of `history` worth matching against the bundle (10 §4.2): user
+/// steering, assistant texts and tool-call arguments. Not tool results (mostly
+/// already read, and large) nor harness wrappers (`<note>`, `<message>`, …).
+fn hint_query(history: &[(i64, ChatMessage)]) -> String {
+    let mut out = String::new();
+    for (_, m) in history {
+        match m.role {
+            ChatRole::User => {
+                let text = text_of(&m.content);
+                if !text.trim_start().starts_with('<') {
+                    out.push_str(&text);
+                    out.push('\n');
+                }
+            }
+            ChatRole::Assistant => {
+                for t in m.content.texts() {
+                    out.push_str(t);
+                    out.push('\n');
+                }
+                for c in m.content.tool_calls() {
+                    out.push_str(&c.fn_arguments.to_string());
+                    out.push('\n');
+                }
+            }
+            ChatRole::System | ChatRole::Tool => {}
+        }
+    }
+    out
+}
+
 /// The messages of `history`, cloned for a frame.
 // ponytail: one clone per round (and one more inside `Frame::request`); keep a
 // parallel `Vec<ChatMessage>` in `SessionState` if a profile shows it.
@@ -381,6 +469,7 @@ impl Turn {
     ) -> Self {
         Self {
             since: state.history.len(),
+            hint_since: state.history.len(),
             shared,
             turn,
             cancel,
@@ -392,7 +481,20 @@ impl Turn {
             overflowed: false,
             window_logged: false,
             repl: None,
+            input_text: String::new(),
+            calls: 0,
+            cwd: std::env::current_dir().unwrap_or_default(),
         }
+    }
+
+    /// The bundle when knowledge is on (10 §8 `enabled`).
+    fn knowledge(&self) -> Option<Arc<Knowledge>> {
+        self.shared
+            .cfg
+            .knowledge
+            .enabled
+            .then(|| self.shared.knowledge.clone())
+            .flatten()
     }
 
     async fn publish(&self, event: AgentEvent) {
@@ -450,7 +552,21 @@ impl Turn {
     }
 
     /// Render the system prompt for this turn; log a rebase when it changed (07 §4).
+    /// Also resyncs the knowledge index with the bundle's files (10 §3.2).
     async fn rebase(&mut self, registry: &ActorRef<ToolRegistry>) {
+        if let Some(knowledge) = self.knowledge() {
+            match knowledge.sync().await {
+                Ok(s) if !s.is_empty() => tracing::info!(
+                    session = %self.shared.id,
+                    added = s.added,
+                    updated = s.updated,
+                    removed = s.removed,
+                    "knowledge sync"
+                ),
+                Ok(_) => {}
+                Err(e) => tracing::warn!(session = %self.shared.id, "knowledge sync: {e:#}"),
+            }
+        }
         let peer_line = match ActorRef::<Agents>::lookup(AGENT_ACTOR) {
             Ok(Some(agents)) => agents
                 .ask(PeerContext {
@@ -654,23 +770,25 @@ impl Turn {
 
     /// Runs to completion (or cancel/error) and returns the state to hand back.
     async fn run(mut self, turn: TurnId, inputs: Vec<String>) -> SessionState {
+        self.input_text = inputs.join("\n");
         for text in inputs {
             self.persist(ChatMessage::user(text)).await;
         }
         let registry = ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR)
             .ok()
             .flatten();
-        let stop_reason = match registry {
+        let stop_reason = match &registry {
             None => {
                 self.error("tool registry not running".into()).await;
                 "error".to_string()
             }
             Some(registry) => {
-                self.rebase(&registry).await;
+                self.rebase(registry).await;
                 self.state.todo_touched_round = 0;
+                self.state.knowledge_hinted_round = 0;
                 let mut rounds = 0u32;
                 loop {
-                    match self.round(&registry, turn, rounds).await {
+                    match self.round(registry, turn, rounds).await {
                         Round::Tools => {
                             rounds += 1;
                             if rounds >= self.shared.cfg.max_tool_rounds {
@@ -697,6 +815,28 @@ impl Turn {
                 drop(repl);
             } else {
                 repl.close().await;
+            }
+        }
+        // 10 §5.2 trigger (a), before `TurnFinished`: one-shot clients (`wth -p`)
+        // exit on that event, so a harvest published after it is always cancelled.
+        // Inline rather than concurrent with the next turn: the state is still
+        // owned here, so input arriving meanwhile queues as steering.
+        let harvestable = self.calls > 0 && stop_reason != "cancelled" && self.shared.depth == 0;
+        let every = self.shared.cfg.knowledge.harvest_every;
+        if harvestable
+            && let Some(registry) = &registry
+            && self.knowledge().is_some()
+        {
+            self.state.turns_since_harvest += 1;
+            if every > 0 && self.state.turns_since_harvest >= every {
+                self.state.turns_since_harvest = 0;
+                self.publish(AgentEvent::Harvesting {
+                    session: self.shared.id,
+                })
+                .await;
+                if let Err(e) = self.harvest_with(registry).await {
+                    tracing::warn!(session = %self.shared.id, "harvest: {e}");
+                }
             }
         }
         self.publish(AgentEvent::TurnFinished {
@@ -765,6 +905,37 @@ impl Turn {
             let list = todo::render(&self.state.todos);
             self.note("todo", &list).await;
             self.state.todo_touched_round = round;
+        }
+        // 10 §4.2: hints at turn start against the input, then every `hint_rounds`
+        // rounds against what was appended since; each id once per epoch.
+        if let Some(knowledge) = self.knowledge() {
+            let cfg = &self.shared.cfg.knowledge;
+            let query = if round == 0 {
+                Some(std::mem::take(&mut self.input_text))
+            } else if round - self.state.knowledge_hinted_round >= cfg.hint_rounds {
+                Some(hint_query(&self.state.history[self.hint_since..]))
+            } else {
+                None
+            };
+            if query.is_some() {
+                self.state.knowledge_hinted_round = round;
+                self.hint_since = self.state.history.len();
+            }
+            // A retried round 0 or a text-less span has nothing to match.
+            if let Some(query) = query.filter(|q| !q.trim().is_empty()) {
+                match knowledge
+                    .hint(&query, &self.cwd, &self.state.hinted, cfg.hint_limit)
+                    .await
+                {
+                    Ok(metas) if !metas.is_empty() => {
+                        self.note("knowledge", &knowledge::harvest::render_hints(&metas))
+                            .await;
+                        self.state.hinted.extend(metas.into_iter().map(|m| m.id));
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!(session = %self.shared.id, "knowledge hint: {e:#}"),
+                }
+            }
         }
 
         let msgs = messages(&self.state.history);
@@ -925,6 +1096,14 @@ impl Turn {
         }
         // One tool message carrying every response (genai: `ChatMessage::from(Vec<ToolResponse>)`).
         self.persist(ChatMessage::from(responses)).await;
+        self.calls += calls.len() as u32;
+        // 10 §7: the ids the model held verbatim this epoch, for the compaction head.
+        self.state.knowledge_read.extend(
+            calls
+                .iter()
+                .filter(|c| c.fn_name == KNOWLEDGE_GET)
+                .filter_map(|c| c.fn_arguments.get("id")?.as_str().map(str::to_owned)),
+        );
         if cancelled {
             return Round::Stop("cancelled".into());
         }
@@ -966,7 +1145,7 @@ impl Turn {
                     rt: self.shared.rt.clone(),
                     registry: registry.clone(),
                     spill_dir: self.shared.spill_dir.clone(),
-                    cwd: std::env::current_dir().unwrap_or_default(),
+                    cwd: self.cwd.clone(),
                 };
                 Repl::open(pool, self.shared.id, &self.shared.rt.data_dir, cx).await
             }
@@ -976,19 +1155,51 @@ impl Turn {
 
     /// `/compact` between turns: same baseline/tools/transport as a turn, then [`Turn::compact`].
     async fn compact_now(&mut self) -> Result<u32, String> {
-        let (model, error) = self.model();
-        if let Some(e) = error {
-            return Err(format!("model: {e}"));
-        }
+        let registry = self.between_turns().await?;
+        let (model, tools, transport) = self.resolve(&registry).await?;
+        let projected = self.state.used;
+        self.compact(&model, &tools, transport, projected).await
+    }
+
+    /// `/knowledge harvest` between turns (10 §5.2): rebase, then [`Turn::harvest`].
+    async fn harvest_now(&mut self) -> Result<HarvestResult, String> {
+        let registry = self.between_turns().await?;
+        self.harvest_with(&registry).await
+    }
+
+    /// The mini-turn preamble shared by `/compact` and `/knowledge harvest`:
+    /// a running registry and a fresh baseline.
+    async fn between_turns(&mut self) -> Result<ActorRef<ToolRegistry>, String> {
         let registry = ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR)
             .ok()
             .flatten()
             .ok_or("tool registry not running")?;
         self.rebase(&registry).await;
-        let tools = self.tools(&registry).await;
+        Ok(registry)
+    }
+
+    /// What a model call needs: the current model (or its resolution error),
+    /// this round's tools and the provider's transport.
+    async fn resolve(
+        &mut self,
+        registry: &ActorRef<ToolRegistry>,
+    ) -> Result<(Resolved, Vec<Tool>, Transport), String> {
+        let (model, error) = self.model();
+        if let Some(e) = error {
+            return Err(format!("model: {e}"));
+        }
+        let tools = self.tools(registry).await;
         let transport = self.transport(&model).await?;
-        let projected = self.state.used;
-        self.compact(&model, &tools, transport, projected).await
+        Ok((model, tools, transport))
+    }
+
+    /// [`Turn::resolve`] then [`Turn::harvest`].
+    async fn harvest_with(
+        &mut self,
+        registry: &ActorRef<ToolRegistry>,
+    ) -> Result<HarvestResult, String> {
+        let (model, tools, transport) = self.resolve(registry).await?;
+        self.harvest(&model, &tools, transport).await
     }
 
     /// Compaction (07 §8.2–§8.4): cut, summarise as a cache-hot continuation
@@ -1022,12 +1233,28 @@ impl Turn {
             turn: self.turn,
         })
         .await;
+        // 10 §7: harvest → summarise → cut; the frame's detail is cheapest to read now.
+        // Counts this turn's own tool calls too: a session's first long turn compacts
+        // with `turns_since_harvest == 0`. `calls` restarts so the turn end only
+        // recounts work done after the cut.
+        if self.shared.cfg.knowledge.harvest_every > 0
+            && self.shared.depth == 0
+            && (self.state.turns_since_harvest > 0 || self.calls > 0)
+            && self.knowledge().is_some()
+        {
+            self.state.turns_since_harvest = 0;
+            self.calls = 0;
+            if let Err(e) = self.harvest(model, tools, transport).await {
+                tracing::warn!(session = %session, "harvest before compaction: {e}");
+            }
+        }
         full.push(ChatMessage::user(compact::COMPACT_INSTRUCTION));
         let summary = self
             .summarise(model, tools, transport, &mut full, keep_from)
             .await?;
 
-        // 07 §8.4: harness truth the summariser cannot drift — roster, todos, runtime inventory.
+        // 07 §8.4, 10 §7: harness truth the summariser cannot drift — roster, todos,
+        // runtime inventory, concepts read.
         let n = self.state.epoch + 1;
         let roster = match ActorRef::<Agents>::lookup(AGENT_ACTOR) {
             Ok(Some(agents)) => agents.ask(Roster { session }).await.unwrap_or_default(),
@@ -1038,11 +1265,21 @@ impl Turn {
             Some(r) => r.render_inventory(),
             None => repl::saved_inventory(&self.shared.rt.data_dir, session),
         };
+        let read = (!self.state.knowledge_read.is_empty()).then(|| {
+            let ids: Vec<&str> = self
+                .state
+                .knowledge_read
+                .iter()
+                .map(String::as_str)
+                .collect();
+            format!("Knowledge: read {}", ids.join(", "))
+        });
         let mut text = format!("<context_summary epoch=\"{n}\">\n{}", summary.trim());
         for part in [
             Some(roster).filter(|r| !r.is_empty()),
             todos,
             runtime.map(|r| format!("Runtime: {r}")),
+            read,
         ]
         .into_iter()
         .flatten()
@@ -1065,8 +1302,11 @@ impl Turn {
         self.state.used = 0;
         self.state.epoch = n;
         self.state.pressure_sent = false;
+        self.state.hinted.clear();
+        self.state.knowledge_read.clear();
         self.reset_this_round = true;
         self.since = self.state.history.len();
+        self.hint_since = self.hint_since.saturating_sub(keep_from);
         tracing::info!(session = %session, epoch = n, folded = keep_from, before = projected, "compaction");
         self.publish(AgentEvent::Compacted {
             session,
@@ -1080,8 +1320,8 @@ impl Turn {
     }
 
     /// The summariser call (07 §8.3, §8.5): `full` is the history plus the
-    /// instruction as its last message. Retries once on a text-less reply
-    /// (`Text only.` prefix) and once on overflow (kept tail removed).
+    /// instruction as its last message. A [`Turn::continuation`] that retries
+    /// once on overflow with the kept tail removed.
     async fn summarise(
         &self,
         model: &Resolved,
@@ -1090,8 +1330,37 @@ impl Turn {
         full: &mut Vec<ChatMessage>,
         keep_from: usize,
     ) -> Result<String, String> {
-        let mut text_only = false;
         let mut trimmed = false;
+        loop {
+            match self
+                .continuation(model, tools, transport, full, compact::COMPACT_INSTRUCTION)
+                .await
+            {
+                Ok(text) => return Ok(text),
+                Err(e) if compact::is_overflow(&e) && !trimmed => {
+                    trimmed = true;
+                    tracing::info!(session = %self.shared.id, "summariser overflowed; retrying without the kept tail");
+                    full.truncate(keep_from);
+                    full.push(ChatMessage::user(compact::COMPACT_INSTRUCTION));
+                }
+                Err(e) => return Err(format!("summariser: {e}")),
+            }
+        }
+    }
+
+    /// A cache-hot continuation of the live frame (07 §8.3, 10 §5.4): `full`
+    /// is the history plus `instruction` as its last message. Retries once
+    /// with a `Text only.` prefix when the reply carries only tool calls.
+    /// `Err` is the raw model error (callers test `compact::is_overflow`).
+    async fn continuation(
+        &self,
+        model: &Resolved,
+        tools: &[Tool],
+        transport: Transport,
+        full: &mut Vec<ChatMessage>,
+        instruction: &str,
+    ) -> Result<String, String> {
+        let mut text_only = false;
         loop {
             let frame = Frame {
                 tools,
@@ -1107,24 +1376,97 @@ impl Turn {
                         return Ok(text);
                     }
                     if text_only {
-                        return Err("summariser returned no text twice".into());
+                        return Err("no text twice".into());
                     }
                     text_only = true;
-                    tracing::info!(session = %self.shared.id, "summariser replied without text; retrying");
+                    tracing::info!(session = %self.shared.id, "continuation replied without text; retrying");
+                    if let Some(last) = full.last_mut() {
+                        *last = ChatMessage::user(format!("Text only. {instruction}"));
+                    }
                 }
                 Err(Abort::Cancelled) => return Err("cancelled".into()),
-                Err(Abort::Model(e)) if compact::is_overflow(&e) && !trimmed => {
-                    trimmed = true;
-                    tracing::info!(session = %self.shared.id, "summariser overflowed; retrying without the kept tail");
-                    full.truncate(keep_from);
-                    full.push(ChatMessage::user(compact::COMPACT_INSTRUCTION));
-                }
-                Err(Abort::Model(e)) => return Err(format!("summariser: {e}")),
-            }
-            if text_only && let Some(last) = full.last_mut() {
-                *last = ChatMessage::user(format!("Text only. {}", compact::COMPACT_INSTRUCTION));
+                Err(Abort::Model(e)) => return Err(e),
             }
         }
+    }
+
+    /// Harvest (10 §5.4): ask the finished frame for durable knowledge as OKF
+    /// documents and write them. Nothing is persisted to the session; an
+    /// overflow is an `Err` (the frame is about to be compacted anyway).
+    async fn harvest(
+        &mut self,
+        model: &Resolved,
+        tools: &[Tool],
+        transport: Transport,
+    ) -> Result<HarvestResult, String> {
+        let knowledge = self.knowledge().ok_or("knowledge is off")?;
+        if self.state.history.is_empty() {
+            return Err("nothing to harvest".into());
+        }
+        let session = self.shared.id;
+        let related = knowledge
+            .hint(
+                &hint_query(&self.state.history),
+                &self.cwd,
+                &BTreeSet::new(),
+                10,
+            )
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(session = %session, "harvest related: {e:#}");
+                Vec::new()
+            });
+        let cwd = self.cwd.to_string_lossy();
+        let instruction = knowledge::harvest::instruction(&related, &cwd);
+        let mut full = messages(&self.state.history);
+        full.push(ChatMessage::user(&instruction));
+        let text = self
+            .continuation(model, tools, transport, &mut full, &instruction)
+            .await?;
+
+        let mut result = HarvestResult::default();
+        let max = self.shared.cfg.knowledge.harvest_max as usize;
+        for (id, doc) in knowledge::harvest::parse_harvest(&text)
+            .into_iter()
+            .take(max)
+        {
+            let fm = &doc.frontmatter;
+            let put = Put {
+                type_: fm.type_().unwrap_or_default(),
+                title: fm.title().unwrap_or_else(|| id.clone()),
+                description: fm.description(),
+                tags: fm.tags(),
+                scope: fm
+                    .get("scope")
+                    .and_then(okf::Value::as_display_string)
+                    .map(PathBuf::from),
+                body: doc.body,
+                id,
+            };
+            match knowledge.put(put, Source::Harvest).await {
+                Ok((_, true)) => result.added += 1,
+                Ok((_, false)) => result.updated += 1,
+                Err(e) => {
+                    result.skipped += 1;
+                    tracing::warn!(session = %session, "harvest put: {e:#}");
+                }
+            }
+        }
+        tracing::info!(
+            session = %session,
+            epoch = self.state.epoch,
+            added = result.added,
+            updated = result.updated,
+            skipped = result.skipped,
+            "harvest"
+        );
+        self.publish(AgentEvent::Harvested {
+            session,
+            added: result.added,
+            updated: result.updated,
+        })
+        .await;
+        Ok(result)
     }
 }
 
@@ -1137,6 +1479,37 @@ pub(crate) fn text_of(content: &MessageContent) -> String {
 mod tests {
     use super::*;
     use crate::skills;
+
+    #[test]
+    fn hint_query_keeps_steering_and_tool_args_only() {
+        let call = ToolCall {
+            call_id: "c1".into(),
+            fn_name: "read_file".into(),
+            fn_arguments: serde_json::json!({ "path": "crates/signal/src/channel.rs" }),
+            thought_signatures: None,
+        };
+        let history = vec![
+            (1, ChatMessage::user("fix the signal channel")),
+            (2, ChatMessage::user("<todo>\n- [ ] item\n</todo>")),
+            (
+                3,
+                ChatMessage::user("  <message from=\"peer\">hello</message>"),
+            ),
+            (4, ChatMessage::assistant("Reading the channel now.")),
+            (5, ChatMessage::from(vec![call])),
+            (
+                6,
+                ChatMessage::from(vec![ToolResponse::new("c1", "fn secret_body() {}")]),
+            ),
+        ];
+        let q = hint_query(&history);
+        assert!(q.contains("fix the signal channel"));
+        assert!(q.contains("Reading the channel now."));
+        assert!(q.contains("crates/signal/src/channel.rs"));
+        assert!(!q.contains("item"), "wrapped note leaked: {q}");
+        assert!(!q.contains("hello"), "wrapped message leaked: {q}");
+        assert!(!q.contains("secret_body"), "tool result leaked: {q}");
+    }
 
     #[test]
     fn prompt_parts_in_order_with_blank_lines() {

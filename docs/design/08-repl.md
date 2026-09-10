@@ -245,7 +245,9 @@ The block changes only when the registered tool set changes (a server
 added or removed, a gate flipped) — user-initiated, rare, and handled as
 a rebase at the next turn start. Mid-turn MCP churn changes nothing the
 model sees: names resolve live at call time (§4.2) and the stubs follow
-the live set (§4.6).
+the live set (§4.6). The `knowledge_*` tools (`10-knowledge.md` §6) are
+registered like any other native tool and appear in this index the same way
+(`async def knowledge_search(query: str, limit: int | None = None) -> str  # …`).
 
 ### 3.3 What comes back from a cell
 

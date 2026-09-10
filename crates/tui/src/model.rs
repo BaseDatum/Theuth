@@ -4,6 +4,7 @@
 use std::collections::{BTreeSet, VecDeque};
 use std::ops::Range;
 
+use agent::knowledge::{Change, HarvestResult, History, Meta};
 use agent::{
     AgentEvent, HistoryEntry, Loaded, ModelInfo, SessionSummary, SkillBody, SkillMeta, Usage,
 };
@@ -58,6 +59,14 @@ pub enum UiEvent {
     McpAdded(McpServer),
     /// Reply to [`Command::AddMcpRepo`].
     RepoAdded(RepoInfo),
+    /// Reply to [`Command::KnowledgeList`] / [`Command::KnowledgeSearch`]: metas: best first for a search, by id for a list.
+    Knowledge(Vec<Meta>),
+    /// Reply to [`Command::KnowledgeHistory`].
+    KnowledgeHistory(History),
+    /// Reply to [`Command::KnowledgeRestore`]: the restoring commit.
+    KnowledgeRestored(Change),
+    /// Reply to [`Command::Harvest`].
+    Harvested(HarvestResult),
     /// A command succeeded with nothing to show but a notice.
     Info(String),
     /// A command failed (actor missing, ask error).
@@ -144,6 +153,21 @@ pub enum Command {
     RemoveSkill(String),
     /// `SyncSkills` on the agent actor.
     SyncSkills,
+    /// `KnowledgeList` (first 50 by id) on the agent actor.
+    KnowledgeList,
+    /// `KnowledgeSearch` on the agent actor.
+    KnowledgeSearch(String),
+    /// `KnowledgeHistory` on the agent actor; `None` for the whole bundle.
+    KnowledgeHistory(Option<String>),
+    /// `KnowledgeRestore` on the agent actor.
+    KnowledgeRestore {
+        /// Concept id.
+        id: String,
+        /// Abbreviated commit; default the one before the latest change.
+        commit: Option<String>,
+    },
+    /// `Harvest` on the agent actor for the shown session.
+    Harvest(SessionId),
     /// `AddServer` on the MCP actor.
     AddMcp {
         /// Server name (file stem).
@@ -241,7 +265,7 @@ pub enum Entry {
 pub enum CardKind {
     /// Text a peer injected (`<subagent_result>` / `<message>`).
     Peer,
-    /// A skill body (`/skills`).
+    /// A skill body (`/skills`) or a knowledge card (`/knowledge`).
     Skill,
     /// The assembled system prompt (`/prompt`).
     Prompt,
@@ -317,8 +341,9 @@ pub fn paste_token(i: usize, text: &str) -> String {
 /// Split a harness-injected input into `(peer, body)` per wrapper. Inputs
 /// queued during a turn arrive as one text: `<subagent_result name="…">` /
 /// `<message from="…">` blocks joined by newlines. Harness notes
-/// (`<context_summary>`, `<todo>`, `<context_pressure>`, `<runtime>`; design
-/// doc 07 §8.7) are wrappers too but yield no card. `None` for human text
+/// (`<context_summary>`, `<todo>`, `<context_pressure>`, `<runtime>`,
+/// `<knowledge>`; design docs 07 §8.7, 10 §4) are wrappers too but yield no
+/// card. `None` for human text
 /// (or anything not entirely made of wrappers).
 pub fn injected(text: &str) -> Option<Vec<(String, String)>> {
     let mut out = Vec::new();
@@ -333,6 +358,7 @@ pub fn injected(text: &str) -> Option<Vec<(String, String)>> {
             "todo" => (None, "</todo>"),
             "context_pressure" => (None, "</context_pressure>"),
             "runtime" => (None, "</runtime>"),
+            "knowledge" => (None, "</knowledge>"),
             _ => return None,
         };
         let (body, tail) = after.split_once(close)?;
@@ -371,6 +397,11 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "/skills",
         "[add <url>|rm <name>|sync]",
         "skills (picker without args)",
+    ),
+    (
+        "/knowledge",
+        "[query | history [id] | restore <id> [commit] | harvest]",
+        "knowledge base: list, search, history, restore, harvest",
     ),
     (
         "/login",
@@ -629,6 +660,8 @@ pub struct Model {
     pub pastes: Vec<String>,
     /// The shown session's summariser call is in flight (`Compacting`).
     pub compacting: bool,
+    /// The shown session's harvest call is in flight (`Harvesting`).
+    pub harvesting: bool,
     /// The user asked to leave.
     pub quit: bool,
 }
@@ -783,7 +816,11 @@ impl Model {
     /// Frames are needed: text is typing out, a turn is in flight, MCP
     /// servers are connecting, or a compaction runs.
     pub fn animating(&self) -> bool {
-        self.revealing() || self.shown_running() || self.mcp_connecting() || self.compacting
+        self.revealing()
+            || self.shown_running()
+            || self.mcp_connecting()
+            || self.compacting
+            || self.harvesting
     }
 
     fn mcp_connecting(&self) -> bool {
@@ -826,6 +863,9 @@ impl Model {
     pub fn activity(&self) -> Option<String> {
         if self.compacting {
             return Some("compacting…".into());
+        }
+        if self.harvesting {
+            return Some("harvesting…".into());
         }
         if !self.shown_running() {
             return None;
@@ -1051,6 +1091,41 @@ impl Model {
                 "cloned {} → {}  (build it, then `/mcp add {{...\"cwd\": ...}}`)",
                 r.name, r.path
             ))),
+            UiEvent::Knowledge(metas) => {
+                if metas.is_empty() {
+                    self.entries.push(Entry::Info("no concepts".into()));
+                } else {
+                    let lines: Vec<String> = metas.iter().map(meta_line).collect();
+                    self.entries.push(card(
+                        CardKind::Skill,
+                        format!("knowledge: {} concepts", metas.len()),
+                        &lines.join("\n"),
+                    ));
+                }
+            }
+            UiEvent::KnowledgeHistory(h) => {
+                if h.changes.is_empty() {
+                    self.entries.push(Entry::Info("no history".into()));
+                } else {
+                    let mut text: String = h
+                        .changes
+                        .iter()
+                        .map(|c| format!("{}  {}  {}\n", c.commit, c.time, c.message))
+                        .collect();
+                    if let Some(diff) = &h.diff {
+                        text.push_str(&format!("\n```diff\n{diff}\n```"));
+                    }
+                    self.entries
+                        .push(card(CardKind::Skill, "knowledge history".into(), &text));
+                }
+            }
+            UiEvent::KnowledgeRestored(c) => self
+                .entries
+                .push(Entry::Info(format!("{}  {}", c.commit, c.message))),
+            UiEvent::Harvested(r) => self.entries.push(Entry::Info(format!(
+                "knowledge +{} ~{}",
+                r.added, r.updated
+            ))),
             UiEvent::Info(t) => self.entries.push(Entry::Info(t)),
             UiEvent::Error(e) => {
                 // A failed `/compact` answers here, not with an agent event.
@@ -1062,7 +1137,7 @@ impl Model {
 
     fn apply_agent(&mut self, ev: AgentEvent) {
         if self.awaiting_session && matches!(ev, AgentEvent::TurnStarted { .. }) {
-            self.session = Some(ev.session());
+            self.session = ev.session();
             self.awaiting_session = false;
         }
         // Roster bookkeeping, independent of what is shown.
@@ -1104,7 +1179,7 @@ impl Model {
             }
             _ => {}
         }
-        if self.shown() != Some(ev.session()) {
+        if ev.session().is_none_or(|s| self.shown() != Some(s)) {
             return;
         }
         if !matches!(ev, AgentEvent::ReasoningDelta { .. })
@@ -1197,6 +1272,7 @@ impl Model {
                 self.usage = Some(usage);
                 self.context = context;
                 self.compacting = false;
+                self.harvesting = false;
             }
             AgentEvent::ModelChanged { model, .. } => {
                 self.entries.push(Entry::Info(format!("model → {model}")));
@@ -1213,9 +1289,17 @@ impl Model {
             }
             AgentEvent::Error { message, .. } => {
                 self.compacting = false;
+                self.harvesting = false;
                 self.entries.push(Entry::Error(message));
             }
             AgentEvent::SubagentSpawned { .. } | AgentEvent::MessageDelivered { .. } => {}
+            AgentEvent::Harvesting { .. } => self.harvesting = true,
+            AgentEvent::Harvested { added, updated, .. } => {
+                self.harvesting = false;
+                self.interject(Entry::Info(format!("knowledge +{added} ~{updated}")))
+            }
+            // The log has it; `session()` is `None` so this arm is never reached.
+            AgentEvent::KnowledgeChanged { .. } => {}
         }
     }
 
@@ -1257,6 +1341,7 @@ impl Model {
             "/mcp" => self.mcp_cmd(arg, tx),
             "/skills" => self.skills_cmd(arg, tx),
             "/prompt" => send(tx, Command::ShowPrompt(self.shown())),
+            "/knowledge" => self.knowledge_cmd(arg, tx),
             "/login" if arg.is_empty() => send(tx, Command::ListLogins),
             "/login" => send(tx, Command::Login(arg.to_owned())),
             "/logout" if arg.is_empty() => self
@@ -1485,6 +1570,40 @@ impl Model {
             _ => self.entries.push(Entry::Error(
                 "usage: /skills [add <url> | rm <name> | sync]".into(),
             )),
+        }
+    }
+
+    /// `/knowledge [query | history [id] | restore <id> [commit] | harvest]`.
+    fn knowledge_cmd(&mut self, arg: &str, tx: &UnboundedSender<Command>) {
+        let (sub, rest) = arg
+            .split_once(' ')
+            .map_or((arg, ""), |(s, r)| (s, r.trim()));
+        match (sub, rest) {
+            ("", _) => send(tx, Command::KnowledgeList),
+            ("history", id) => send(
+                tx,
+                Command::KnowledgeHistory((!id.is_empty()).then(|| id.to_owned())),
+            ),
+            ("restore", "") => self.entries.push(Entry::Error(
+                "usage: /knowledge restore <id> [commit]".into(),
+            )),
+            ("restore", rest) => {
+                let (id, commit) = rest
+                    .split_once(' ')
+                    .map_or((rest, None), |(i, c)| (i, Some(c.trim().to_owned())));
+                send(
+                    tx,
+                    Command::KnowledgeRestore {
+                        id: id.to_owned(),
+                        commit,
+                    },
+                );
+            }
+            ("harvest", _) => match self.shown() {
+                Some(session) => send(tx, Command::Harvest(session)),
+                None => self.entries.push(Entry::Info("no session".into())),
+            },
+            _ => send(tx, Command::KnowledgeSearch(arg.to_owned())),
         }
     }
 
@@ -1862,6 +1981,11 @@ fn on_off(b: bool) -> &'static str {
     if b { "on" } else { "off" }
 }
 
+/// One `/knowledge` row: `` `id` — title [type]: description `` (10 §6).
+pub fn meta_line(m: &Meta) -> String {
+    format!("`{}` — {} [{}]: {}", m.id, m.title, m.type_, m.description)
+}
+
 fn send(tx: &UnboundedSender<Command>, cmd: Command) {
     // The receiver lives as long as the UI; a closed channel means shutdown.
     let _ = tx.send(cmd);
@@ -1994,6 +2118,10 @@ mod tests {
         // batched with one still gets its card.
         assert_eq!(injected("<todo>- [ ] x\n- [x] y</todo>"), Some(Vec::new()));
         assert_eq!(
+            injected("<knowledge>\nConcepts that may be relevant:\n- `facts/x`\n</knowledge>"),
+            Some(Vec::new())
+        );
+        assert_eq!(
             injected(
                 "<context_pressure>80% full</context_pressure>\n<message from=\"p\">\nhi\n</message>"
             ),
@@ -2002,6 +2130,32 @@ mod tests {
         assert_eq!(injected("<b>\nnot a wrapper\n</b>"), None);
         assert_eq!(injected("hello"), None);
         assert_eq!(injected("<todo>unterminated"), None);
+    }
+
+    #[test]
+    fn knowledge_command_grammar() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        m.submit("/knowledge", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::KnowledgeList)));
+        m.submit("/knowledge history facts/x", &tx);
+        assert!(
+            matches!(rx.try_recv(), Ok(Command::KnowledgeHistory(Some(id))) if id == "facts/x")
+        );
+        m.submit("/knowledge history", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::KnowledgeHistory(None))));
+        m.submit("/knowledge restore facts/x a1b2c3d", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::KnowledgeRestore { id, commit: Some(c) }) if id == "facts/x" && c == "a1b2c3d"
+        ));
+        m.submit("/knowledge restore", &tx);
+        assert!(rx.try_recv().is_err());
+        assert!(matches!(m.entries.last(), Some(Entry::Error(_))));
+        m.submit("/knowledge harvest", &tx);
+        assert!(rx.try_recv().is_err(), "no session shown");
+        m.submit("/knowledge rust toolchain", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::KnowledgeSearch(q)) if q == "rust toolchain"));
     }
 
     #[test]

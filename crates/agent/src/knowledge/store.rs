@@ -1,0 +1,1410 @@
+//! The bundle on disk + the FTS5 index (design doc 10 §2–3).
+//!
+//! Files are the truth; `knowledge.sqlite` is derived from them (`sync`) and
+//! can be deleted at any time. Every write goes through [`Knowledge::write_concept`]
+//! under one mutex: file, rows, `index.md`, `log.md`, commit, event.
+
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, UNIX_EPOCH};
+
+use anyhow::{Context, anyhow, bail};
+use okf::{ConceptId, Document, RESERVED_FILENAMES, Value};
+use runtime::Runtime;
+use sqlx::FromRow;
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
+
+use super::repo::Repo;
+use super::types::{Change, Concept, History, Hit, KnowledgeOp, Meta, Put, Source, Sync};
+use super::{BODY_MAX, DIR, INDEX_FILE};
+use crate::AgentEvent;
+
+const LOG_FILE: &str = "log.md";
+const INDEX_MD: &str = "index.md";
+
+/// Query stopwords (10 §3.3): English function words plus chat/code verbs
+/// that appear in nearly every turn and would match the whole catalog.
+const STOPWORDS: &[&str] = &[
+    "the", "and", "for", "with", "this", "that", "from", "file", "files", "use", "run", "please",
+    "let", "can", "into", "your", "you", "are", "was", "were", "have", "has", "had", "not", "but",
+    "all", "any", "one", "two", "new", "old", "set", "get", "put", "see", "now", "here", "there",
+    "what", "when", "which", "who", "how", "why", "also", "just", "like", "make", "made", "need",
+    "needs", "want", "wants", "would", "could", "should", "will", "shall", "may", "might", "must",
+    "than", "then", "them", "they", "their", "about", "after", "before", "over", "under",
+    "between", "each", "other", "some", "such", "very", "more", "most", "less", "least", "only",
+    "own", "same", "too", "read",
+];
+
+const CREATE_CONCEPTS: &str = "CREATE VIRTUAL TABLE IF NOT EXISTS concepts USING fts5(\
+    id UNINDEXED, type, title, description, tags, body, \
+    scope UNINDEXED, source UNINDEXED, timestamp UNINDEXED, \
+    path UNINDEXED, mtime UNINDEXED, size UNINDEXED, \
+    tokenize = 'porter unicode61 remove_diacritics 2')";
+const CREATE_LINKS: &str = "CREATE TABLE IF NOT EXISTS links (src TEXT NOT NULL, dst TEXT NOT NULL, PRIMARY KEY (src, dst))";
+const CREATE_LINKS_DST: &str = "CREATE INDEX IF NOT EXISTS links_dst ON links(dst)";
+
+/// Handle to `<data_dir>/knowledge/` and `<data_dir>/knowledge.sqlite`.
+/// Every write path runs under `write` (10 §2.3).
+pub struct Knowledge {
+    root: PathBuf,
+    db: SqlitePool,
+    repo: Option<Arc<Repo>>,
+    /// Publishes `AgentEvent::KnowledgeChanged` after every write (10 §8).
+    rt: Runtime,
+    write: tokio::sync::Mutex<()>,
+    /// Paths `sync` has already warned about; a broken file is reported once (10 §11).
+    warned: Mutex<HashSet<PathBuf>>,
+}
+
+/// Frontmatter columns of a row, as `list`/`search`/`get` read them.
+#[derive(FromRow)]
+struct MetaRow {
+    id: String,
+    #[sqlx(rename = "type")]
+    type_: String,
+    title: String,
+    description: String,
+    tags: String,
+    scope: Option<String>,
+    source: Option<String>,
+    timestamp: Option<String>,
+}
+
+impl From<MetaRow> for Meta {
+    fn from(r: MetaRow) -> Self {
+        Self {
+            id: r.id,
+            type_: r.type_,
+            title: r.title,
+            description: r.description,
+            tags: r.tags.split_whitespace().map(str::to_owned).collect(),
+            scope: r.scope.map(PathBuf::from),
+            source: r.source.as_deref().and_then(Source::parse),
+            timestamp: r.timestamp,
+        }
+    }
+}
+
+#[derive(FromRow)]
+struct HitRow {
+    #[sqlx(flatten)]
+    meta: MetaRow,
+    body: String,
+    s: f64,
+    snip: String,
+}
+
+/// One concept as it goes into the index.
+struct Indexed {
+    meta: Meta,
+    body: String,
+    /// Root-relative path.
+    path: String,
+    mtime: i64,
+    size: i64,
+    /// Outbound link targets (ids), deduplicated.
+    links: Vec<String>,
+}
+
+impl Indexed {
+    fn new(root: &Path, abs: &Path, doc: &Document, mtime: i64, size: i64) -> anyhow::Result<Self> {
+        let cid = ConceptId::from_path(root, abs)?;
+        let id = cid.to_string();
+        let fm = &doc.frontmatter;
+        let meta = Meta {
+            type_: fm.type_().unwrap_or_default(),
+            title: fm
+                .title()
+                .filter(|t| !t.is_empty())
+                .unwrap_or_else(|| id.clone()),
+            description: fm.description().unwrap_or_default(),
+            tags: fm.tags(),
+            scope: fm
+                .get("scope")
+                .and_then(Value::as_display_string)
+                .map(PathBuf::from),
+            source: fm
+                .get("source")
+                .and_then(Value::as_display_string)
+                .and_then(|s| Source::parse(&s)),
+            timestamp: fm.timestamp(),
+            id,
+        };
+        let links: BTreeSet<String> = doc
+            .links()
+            .iter()
+            .filter_map(|l| l.resolve(&cid))
+            .map(|c| c.to_string())
+            .collect();
+        Ok(Self {
+            meta,
+            body: doc.body.clone(),
+            path: abs.strip_prefix(root)?.to_string_lossy().into_owned(),
+            mtime,
+            size,
+            links: links.into_iter().collect(),
+        })
+    }
+
+    /// Read, stat and parse a bundle file.
+    fn load(root: &Path, abs: &Path) -> anyhow::Result<Self> {
+        let text = std::fs::read_to_string(abs)?;
+        let (mtime, size) = stat(abs)?;
+        Self::new(root, abs, &Document::parse(&text)?, mtime, size)
+    }
+}
+
+/// `(mtime as unix nanos, size)` — the sync key (10 §3.2).
+fn stat(path: &Path) -> std::io::Result<(i64, i64)> {
+    let m = std::fs::metadata(path)?;
+    let mtime = m
+        .modified()?
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as i64)
+        .unwrap_or(0);
+    Ok((mtime, m.len() as i64))
+}
+
+/// Normalise and validate an id (10 §2.1): trimmed, lowercased, no leading
+/// `/` or trailing `.md`, a valid `ConceptId`, ≤ 3 segments, no reserved name.
+fn concept_id(raw: &str) -> anyhow::Result<ConceptId> {
+    let id = raw.trim().to_lowercase();
+    let id = id.trim_start_matches('/');
+    let id = id.strip_suffix(".md").unwrap_or(id);
+    let cid = ConceptId::parse(id).map_err(|e| anyhow!("invalid id {raw:?}: {e}"))?;
+    if cid.segments().len() > 3 {
+        bail!("invalid id {raw:?}: more than 3 segments");
+    }
+    let reserved = RESERVED_FILENAMES
+        .iter()
+        .filter_map(|f| f.strip_suffix(".md"));
+    if let Some(seg) = cid
+        .segments()
+        .iter()
+        .find(|s| reserved.clone().any(|r| r == s.as_str()))
+    {
+        bail!("invalid id {raw:?}: {seg:?} is a reserved name");
+    }
+    Ok(cid)
+}
+
+/// `tmp` + rename; parents created.
+fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension("md.tmp");
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, path)
+}
+
+/// `okf::index::regenerate_indexes` minus dot-directories: the crate's walk
+/// lists `.git` under `# Subdirectories`. Same output otherwise (deepest-first
+/// so a parent reuses its children's descriptions); files whose text is
+/// unchanged are not rewritten. Returns the absolute paths written.
+fn regenerate_indexes(root: &Path) -> std::io::Result<Vec<PathBuf>> {
+    use okf::index::{IndexEntry, build_index_text, default_synthesize};
+    use std::fs;
+
+    fn hidden(p: &Path) -> bool {
+        p.file_name()
+            .is_some_and(|n| n.to_string_lossy().starts_with('.'))
+    }
+    fn is_md(p: &Path) -> bool {
+        p.extension().is_some_and(|e| e == "md")
+    }
+    /// Pushes `dir` and reports `true` when it holds a `.md` at any depth.
+    fn collect(dir: &Path, dirs: &mut Vec<PathBuf>) -> std::io::Result<bool> {
+        let mut has_md = false;
+        for entry in fs::read_dir(dir)? {
+            let path = entry?.path();
+            has_md |= if path.is_dir() {
+                !hidden(&path) && collect(&path, dirs)?
+            } else {
+                is_md(&path)
+            };
+        }
+        if has_md {
+            dirs.push(dir.to_path_buf());
+        }
+        Ok(has_md)
+    }
+
+    let mut dirs = Vec::new();
+    if root.exists() {
+        collect(root, &mut dirs)?;
+    }
+    dirs.sort_by(|a, b| {
+        b.components()
+            .count()
+            .cmp(&a.components().count())
+            .then_with(|| a.cmp(b))
+    });
+    let mut descriptions: HashMap<PathBuf, String> = HashMap::new();
+    let mut written = Vec::new();
+    for dir in &dirs {
+        let mut children: Vec<PathBuf> = fs::read_dir(dir)?
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .collect();
+        children.sort();
+        let mut entries = Vec::new();
+        for child in children {
+            let name = child
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if name == INDEX_MD {
+                continue;
+            }
+            if child.is_dir() {
+                if hidden(&child) {
+                    continue;
+                }
+                entries.push(IndexEntry {
+                    type_: "Subdirectories".into(),
+                    title: name.clone(),
+                    link: format!("{name}/{INDEX_MD}"),
+                    description: descriptions.get(&child).cloned().unwrap_or_default(),
+                });
+            } else if is_md(&child) {
+                let Some(doc) = fs::read_to_string(&child)
+                    .ok()
+                    .and_then(|t| Document::parse(&t).ok())
+                else {
+                    continue;
+                };
+                let stem = child
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                entries.push(IndexEntry {
+                    type_: doc.frontmatter.type_().unwrap_or_default(),
+                    title: doc.frontmatter.title().unwrap_or(stem),
+                    link: name,
+                    description: doc.frontmatter.description().unwrap_or_default(),
+                });
+            }
+        }
+        if entries.is_empty() {
+            continue;
+        }
+        let index_path = dir.join(INDEX_MD);
+        let text = build_index_text(&entries);
+        if fs::read_to_string(&index_path).ok().as_deref() != Some(text.as_str()) {
+            fs::write(&index_path, &text)?;
+            written.push(index_path);
+        }
+        if dir == root {
+            continue;
+        }
+        let desc = match entries.as_slice() {
+            [only] if !only.description.is_empty() => only.description.clone(),
+            _ => {
+                let pairs: Vec<(String, String)> = entries
+                    .iter()
+                    .map(|e| (e.title.clone(), e.description.clone()))
+                    .collect();
+                let rel = dir.strip_prefix(root).unwrap_or(dir).to_string_lossy();
+                default_synthesize(&rel, &pairs)
+            }
+        };
+        descriptions.insert(dir.clone(), desc);
+    }
+    Ok(written)
+}
+
+/// Steps 4–5 of a write (10 §2.3): regenerate every `index.md`, append `entry`
+/// under today's date in `log.md`. Returns the root-relative paths touched.
+fn finish_files(root: &Path, entry: &str) -> anyhow::Result<Vec<PathBuf>> {
+    let mut touched: Vec<PathBuf> = regenerate_indexes(root)
+        .context("regenerate index.md")?
+        .into_iter()
+        .filter_map(|p| p.strip_prefix(root).ok().map(Path::to_path_buf))
+        .collect();
+    let log_path = root.join(LOG_FILE);
+    let mut log = match std::fs::read_to_string(&log_path) {
+        Ok(text) => okf::Log::parse(&text),
+        Err(_) => okf::Log {
+            title: Some("Directory Update Log".into()),
+            days: Vec::new(),
+        },
+    };
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let e = okf::log::LogEntry {
+        kind: None,
+        text: entry.to_owned(),
+    };
+    match log.days.first_mut() {
+        Some(day) if day.date == today => day.entries.push(e),
+        _ => log.days.insert(
+            0,
+            okf::log::LogDay {
+                date: today,
+                entries: vec![e],
+            },
+        ),
+    }
+    std::fs::write(&log_path, log.to_markdown()).context("write log.md")?;
+    touched.push(PathBuf::from(LOG_FILE));
+    Ok(touched)
+}
+
+async fn open_db(path: &Path) -> anyhow::Result<SqlitePool> {
+    let opts = SqliteConnectOptions::new()
+        .filename(path)
+        .create_if_missing(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(Duration::from_secs(5));
+    let pool = SqlitePoolOptions::new()
+        .max_connections(4)
+        .connect_with(opts)
+        .await?;
+    for sql in [CREATE_CONCEPTS, CREATE_LINKS, CREATE_LINKS_DST] {
+        sqlx::query(sql).execute(&pool).await?;
+    }
+    Ok(pool)
+}
+
+/// Outcome of [`Knowledge::write_concept`].
+struct Written {
+    meta: Meta,
+    created: bool,
+    /// Abbreviated commit id; `None` without a repo or when the commit failed.
+    commit: Option<String>,
+}
+
+impl Knowledge {
+    /// Create/open the bundle dir, open the repo (`gix::open | init`, then
+    /// reconcile), open the index (`CREATE VIRTUAL TABLE IF NOT EXISTS`, no
+    /// migrations: it is derived), run `sync` (10 §2.1, §2.4, §3.2).
+    pub async fn open(data_dir: &Path, rt: Runtime) -> anyhow::Result<Arc<Self>> {
+        let root = data_dir.join(DIR);
+        std::fs::create_dir_all(&root).with_context(|| format!("create {}", root.display()))?;
+        let repo = {
+            let root = root.clone();
+            match tokio::task::spawn_blocking(move || Repo::open(&root)).await {
+                Ok(Ok(repo)) => Some(Arc::new(repo)),
+                Ok(Err(e)) => {
+                    tracing::warn!(
+                        error = format!("{e:#}"),
+                        "knowledge repo unavailable; history is off"
+                    );
+                    None
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "knowledge repo unavailable; history is off");
+                    None
+                }
+            }
+        };
+        let db_path = data_dir.join(INDEX_FILE);
+        let db = match open_db(&db_path).await {
+            Ok(db) => db,
+            Err(e) => {
+                // The index is derived: a corrupt file is thrown away and rebuilt by `sync` (10 §11).
+                tracing::warn!(error = format!("{e:#}"), path = %db_path.display(), "knowledge index unusable; rebuilding");
+                for suffix in ["", "-wal", "-shm"] {
+                    let _ = std::fs::remove_file(format!("{}{suffix}", db_path.display()));
+                }
+                open_db(&db_path)
+                    .await
+                    .with_context(|| format!("open {}", db_path.display()))?
+            }
+        };
+        let k = Arc::new(Self {
+            root,
+            db,
+            repo,
+            rt,
+            write: tokio::sync::Mutex::new(()),
+            warned: Mutex::new(HashSet::new()),
+        });
+        let s = k.sync().await?;
+        if !s.is_empty() {
+            tracing::info!(
+                added = s.added,
+                updated = s.updated,
+                removed = s.removed,
+                "knowledge sync"
+            );
+        }
+        Ok(k)
+    }
+
+    /// Bundle root.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Reconcile rows with the files by (mtime, size); commit external edits (10 §3.2).
+    pub async fn sync(&self) -> anyhow::Result<Sync> {
+        let _g = self.write.lock().await;
+        let rows: Vec<(String, String, i64, i64)> =
+            sqlx::query_as("SELECT id, path, mtime, size FROM concepts")
+                .fetch_all(&self.db)
+                .await?;
+        let known: HashMap<String, (String, i64, i64)> = rows
+            .into_iter()
+            .map(|(id, path, mtime, size)| (path, (id, mtime, size)))
+            .collect();
+        let keys: HashMap<String, (i64, i64)> = known
+            .iter()
+            .map(|(p, (_, m, s))| (p.clone(), (*m, *s)))
+            .collect();
+        let root = self.root.clone();
+        let (changed, seen, failed) =
+            tokio::task::spawn_blocking(move || walk(&root, &keys)).await?;
+        {
+            let mut warned = self.warned.lock().unwrap_or_else(|p| p.into_inner());
+            for (path, error) in failed {
+                if warned.insert(path.clone()) {
+                    tracing::warn!(path = %path.display(), error, "knowledge: unparsable concept skipped");
+                }
+            }
+        }
+
+        let mut out = Sync::default();
+        let mut written = Vec::new();
+        let mut removed = Vec::new();
+        let mut names = Vec::new();
+        let mut events = Vec::new();
+        for (path, (id, ..)) in &known {
+            if seen.contains(path) {
+                continue;
+            }
+            self.remove_rows(id).await?;
+            out.removed += 1;
+            removed.push(PathBuf::from(path));
+            names.push(format!("remove {id}"));
+            events.push((id.clone(), KnowledgeOp::Delete));
+        }
+        for ix in changed {
+            if known.contains_key(&ix.path) {
+                out.updated += 1;
+            } else {
+                out.added += 1;
+            }
+            self.upsert(&ix).await?;
+            written.push(PathBuf::from(&ix.path));
+            names.push(format!("edit {}", ix.meta.id));
+            events.push((ix.meta.id, KnowledgeOp::Put));
+        }
+        if !names.is_empty() {
+            self.commit(written, removed, format!("sync: {}", names.join(", ")))
+                .await;
+        }
+        for (id, op) in events {
+            self.rt
+                .publish(AgentEvent::KnowledgeChanged {
+                    id,
+                    op,
+                    source: Source::Sync,
+                })
+                .await;
+        }
+        Ok(out)
+    }
+
+    /// The file verbatim plus links and backlinks.
+    pub async fn get(&self, id: &str) -> anyhow::Result<Concept> {
+        let cid = concept_id(id)?;
+        let id = cid.to_string();
+        let path = cid.to_path(&self.root);
+        let text = tokio::fs::read_to_string(&path)
+            .await
+            .with_context(|| format!("no such concept: {id}"))?;
+        let row: Option<MetaRow> = sqlx::query_as(
+            "SELECT id, type, title, description, tags, scope, source, timestamp FROM concepts WHERE id = ?",
+        )
+        .bind(&id)
+        .fetch_optional(&self.db)
+        .await?;
+        let meta = match row {
+            Some(r) => r.into(),
+            None => {
+                // A file `sync` has not seen yet (or one it could not parse before): index it now.
+                let (mtime, size) = stat(&path)?;
+                let ix = Indexed::new(&self.root, &path, &Document::parse(&text)?, mtime, size)?;
+                self.upsert(&ix).await?;
+                ix.meta
+            }
+        };
+        let links: Vec<(String, bool)> = sqlx::query_as(
+            "SELECT l.dst, EXISTS(SELECT 1 FROM concepts c WHERE c.id = l.dst) FROM links l WHERE l.src = ? ORDER BY l.dst",
+        )
+        .bind(&id)
+        .fetch_all(&self.db)
+        .await?;
+        let cited_by: Vec<(String,)> =
+            sqlx::query_as("SELECT src FROM links WHERE dst = ? ORDER BY src")
+                .bind(&id)
+                .fetch_all(&self.db)
+                .await?;
+        Ok(Concept {
+            meta,
+            text,
+            links,
+            cited_by: cited_by.into_iter().map(|(s,)| s).collect(),
+        })
+    }
+
+    /// Validate, write atomically, index, `index.md`, `log.md`, commit, and
+    /// report whether the concept was created (10 §2.3).
+    pub async fn put(&self, p: Put, source: Source) -> anyhow::Result<(Meta, bool)> {
+        let cid = concept_id(&p.id)?;
+        let id = cid.to_string();
+        let type_ = p.type_.trim();
+        if type_.is_empty() {
+            bail!("type must not be empty");
+        }
+        if p.body.len() > BODY_MAX {
+            bail!(
+                "body is {} bytes; the limit is {BODY_MAX} — link to other concepts instead of pasting",
+                p.body.len()
+            );
+        }
+        let title = p.title.trim();
+        let title = if title.is_empty() { id.as_str() } else { title };
+        let description = p
+            .description
+            .as_deref()
+            .map(str::trim)
+            .filter(|d| !d.is_empty())
+            .unwrap_or(title);
+        let tags: Vec<Value> = p
+            .tags
+            .iter()
+            .map(|t| t.trim())
+            .filter(|t| !t.is_empty())
+            .map(|t| Value::String(t.to_owned()))
+            .collect();
+
+        let mut fm = okf::Frontmatter::new();
+        fm.set("type", Value::String(type_.to_owned()));
+        fm.set("title", Value::String(title.to_owned()));
+        fm.set("description", Value::String(description.to_owned()));
+        if !tags.is_empty() {
+            fm.set("tags", Value::Sequence(tags));
+        }
+        if let Some(scope) = &p.scope {
+            fm.set("scope", Value::String(scope.to_string_lossy().into_owned()));
+        }
+        fm.set("source", Value::String(source.as_str().to_owned()));
+        fm.set(
+            "timestamp",
+            Value::String(chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()),
+        );
+        let text = Document::new(fm, p.body).serialize();
+
+        let _g = self.write.lock().await;
+        let entry = format!("put {id}");
+        let w = self.write_concept(&cid, text, &entry, &entry).await?;
+        self.rt
+            .publish(AgentEvent::KnowledgeChanged {
+                id,
+                op: KnowledgeOp::Put,
+                source,
+            })
+            .await;
+        Ok((w.meta, w.created))
+    }
+
+    /// Remove the file, its rows, `index.md`, `log.md`, commit.
+    pub async fn delete(&self, id: &str) -> anyhow::Result<()> {
+        let cid = concept_id(id)?;
+        let id = cid.to_string();
+        let _g = self.write.lock().await;
+        let root = self.root.clone();
+        let path = cid.to_path(&root);
+        let rel = path.strip_prefix(&root)?.to_path_buf();
+        let row: Option<(String,)> = sqlx::query_as("SELECT id FROM concepts WHERE id = ?")
+            .bind(&id)
+            .fetch_optional(&self.db)
+            .await?;
+        if row.is_none() && !path.exists() {
+            bail!("no such concept: {id}");
+        }
+        let entry = format!("delete {id}");
+        let log_entry = entry.clone();
+        let (written, mut removed) = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+            match std::fs::remove_file(&path) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+                _ => {}
+            }
+            let mut removed = vec![rel];
+            // A directory left with only its index.md would keep listing the deleted concept.
+            if let Some(dir) = path.parent()
+                && dir != root
+                && let Ok(rd) = std::fs::read_dir(dir)
+                && rd.flatten().all(|e| e.file_name() == INDEX_MD)
+            {
+                let index = dir.join(INDEX_MD);
+                if std::fs::remove_file(&index).is_ok()
+                    && let Ok(r) = index.strip_prefix(&root)
+                {
+                    removed.push(r.to_path_buf());
+                }
+                let _ = std::fs::remove_dir(dir);
+            }
+            Ok((finish_files(&root, &log_entry)?, removed))
+        })
+        .await??;
+        self.remove_rows(&id).await?;
+        removed.sort();
+        self.commit(written, removed, entry).await;
+        self.rt
+            .publish(AgentEvent::KnowledgeChanged {
+                id,
+                op: KnowledgeOp::Delete,
+                source: Source::User,
+            })
+            .await;
+        Ok(())
+    }
+
+    /// Metas sorted by id, filtered by id prefix, type and tag.
+    pub async fn list(
+        &self,
+        prefix: Option<&str>,
+        type_: Option<&str>,
+        tag: Option<&str>,
+        limit: u32,
+    ) -> anyhow::Result<Vec<Meta>> {
+        // ponytail: filters run in Rust over every row; the catalog is hundreds of concepts.
+        let rows: Vec<MetaRow> = sqlx::query_as(
+            "SELECT id, type, title, description, tags, scope, source, timestamp FROM concepts ORDER BY id",
+        )
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(Meta::from)
+            .filter(|m| prefix.is_none_or(|p| m.id.starts_with(p)))
+            .filter(|m| type_.is_none_or(|t| m.type_ == t))
+            .filter(|m| tag.is_none_or(|t| m.tags.iter().any(|x| x == t)))
+            .take(limit as usize)
+            .collect())
+    }
+
+    /// bm25 + scope boost, best first (10 §3.3).
+    pub async fn search(&self, query: &str, cwd: &Path, limit: u32) -> anyhow::Result<Vec<Hit>> {
+        Ok(self
+            .ranked(&terms(query), cwd, limit)
+            .await?
+            .into_iter()
+            .map(|(hit, _)| hit)
+            .collect())
+    }
+
+    /// `search` with the ≥2-term rule, minus `exclude`, metas only (10 §3.3).
+    pub async fn hint(
+        &self,
+        text: &str,
+        cwd: &Path,
+        exclude: &BTreeSet<String>,
+        limit: u32,
+    ) -> anyhow::Result<Vec<Meta>> {
+        let terms = terms(text);
+        let need = terms.len().min(2);
+        let hits = self
+            .ranked(&terms, cwd, limit + exclude.len() as u32)
+            .await?;
+        let mut out = Vec::new();
+        for (hit, body) in hits {
+            if out.len() >= limit as usize {
+                break;
+            }
+            if exclude.contains(&hit.meta.id) {
+                continue;
+            }
+            let m = &hit.meta;
+            let hay = format!(
+                "{} {} {} {}",
+                m.title,
+                m.description,
+                m.tags.join(" "),
+                body
+            )
+            .to_lowercase();
+            let tokens: HashSet<&str> = hay
+                .split(|c: char| !c.is_alphanumeric())
+                .filter(|t| !t.is_empty())
+                .collect();
+            let matched = terms
+                .iter()
+                .filter(|t| tokens.iter().any(|tok| tok.starts_with(t.as_str())))
+                .count();
+            if matched >= need {
+                out.push(hit.meta);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Commits touching `id` (or the whole bundle), newest first, plus the
+    /// unified diff of the latest change to `id` (10 §2.4).
+    pub async fn history(&self, id: Option<&str>, limit: u32) -> anyhow::Result<History> {
+        let Some(repo) = self.repo.clone() else {
+            bail!("history unavailable: no repository")
+        };
+        let path = id
+            .map(concept_id)
+            .transpose()?
+            .map(|c| c.to_path(Path::new("")));
+        tokio::task::spawn_blocking(move || {
+            let changes = repo.history(path.as_deref(), limit as usize)?;
+            let diff = match &path {
+                Some(p) => repo.last_diff(p)?,
+                None => None,
+            };
+            Ok(History { changes, diff })
+        })
+        .await?
+    }
+
+    /// Rewrite `<id>.md` from `commit` (default: the commit before the latest
+    /// change to `id`) through the ordinary write path (10 §2.4).
+    pub async fn restore(&self, id: &str, commit: Option<&str>) -> anyhow::Result<Change> {
+        let Some(repo) = self.repo.clone() else {
+            bail!("restore unavailable: no repository")
+        };
+        let cid = concept_id(id)?;
+        let id = cid.to_string();
+        let rel = cid.to_path(Path::new(""));
+        let commit = commit.map(str::to_owned);
+        let (commit, text) = {
+            let id = id.clone();
+            tokio::task::spawn_blocking(move || -> anyhow::Result<(String, String)> {
+                let commit = match commit {
+                    Some(c) => c,
+                    None => repo.previous(&rel)?.context("nothing to restore")?,
+                };
+                let bytes = repo
+                    .show(&rel, &commit)?
+                    .with_context(|| format!("{id} is not in commit {commit}"))?;
+                Ok((
+                    commit,
+                    String::from_utf8(bytes).context("concept is not UTF-8")?,
+                ))
+            })
+            .await??
+        };
+        let _g = self.write.lock().await;
+        let message = format!("restore {id} from {commit}");
+        let w = self
+            .write_concept(&cid, text, &format!("restore {id}"), &message)
+            .await?;
+        let sha = w.commit.context("restore: commit failed")?;
+        self.rt
+            .publish(AgentEvent::KnowledgeChanged {
+                id,
+                op: KnowledgeOp::Put,
+                source: Source::User,
+            })
+            .await;
+        Ok(Change {
+            commit: sha,
+            time: chrono::Local::now().format("%Y-%m-%d %H:%M").to_string(),
+            message,
+        })
+    }
+
+    /// Steps 2–6 of a write (10 §2.3); the caller holds `write` and publishes.
+    async fn write_concept(
+        &self,
+        cid: &ConceptId,
+        text: String,
+        log_entry: &str,
+        message: &str,
+    ) -> anyhow::Result<Written> {
+        let doc = Document::parse(&text)?;
+        doc.validate_conformance().map_err(|e| anyhow!("{e}"))?;
+        let root = self.root.clone();
+        let path = cid.to_path(&root);
+        let rel = path.strip_prefix(&root)?.to_path_buf();
+        let created = !path.exists();
+        let entry = log_entry.to_owned();
+        let (ix, mut touched) =
+            tokio::task::spawn_blocking(move || -> anyhow::Result<(Indexed, Vec<PathBuf>)> {
+                write_atomic(&path, text.as_bytes())
+                    .with_context(|| format!("write {}", path.display()))?;
+                let (mtime, size) = stat(&path)?;
+                let ix = Indexed::new(&root, &path, &doc, mtime, size)?;
+                Ok((ix, finish_files(&root, &entry)?))
+            })
+            .await??;
+        self.upsert(&ix).await?;
+        touched.push(rel);
+        let commit = self.commit(touched, Vec::new(), message.to_owned()).await;
+        Ok(Written {
+            meta: ix.meta,
+            created,
+            commit,
+        })
+    }
+
+    /// Commit through the repo when present. A failure is logged, never
+    /// fatal: the files stand and the next `open` reconciles (10 §11).
+    async fn commit(
+        &self,
+        written: Vec<PathBuf>,
+        removed: Vec<PathBuf>,
+        message: String,
+    ) -> Option<String> {
+        let repo = self.repo.clone()?;
+        match tokio::task::spawn_blocking(move || repo.commit(&written, &removed, &message)).await {
+            Ok(Ok(id)) => Some(id),
+            Ok(Err(e)) => {
+                tracing::warn!(error = format!("{e:#}"), "knowledge commit failed");
+                None
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "knowledge commit failed");
+                None
+            }
+        }
+    }
+
+    /// Replace the concept's row and links. FTS5 has no UPSERT: delete, then insert.
+    async fn upsert(&self, ix: &Indexed) -> anyhow::Result<()> {
+        let m = &ix.meta;
+        let mut tx = self.db.begin().await?;
+        sqlx::query("DELETE FROM concepts WHERE id = ?")
+            .bind(&m.id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "INSERT INTO concepts (id, type, title, description, tags, body, scope, source, timestamp, path, mtime, size) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&m.id)
+        .bind(&m.type_)
+        .bind(&m.title)
+        .bind(&m.description)
+        .bind(m.tags.join(" "))
+        .bind(&ix.body)
+        .bind(m.scope.as_ref().map(|p| p.to_string_lossy().into_owned()))
+        .bind(m.source.map(Source::as_str))
+        .bind(&m.timestamp)
+        .bind(&ix.path)
+        .bind(ix.mtime)
+        .bind(ix.size)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("DELETE FROM links WHERE src = ?")
+            .bind(&m.id)
+            .execute(&mut *tx)
+            .await?;
+        for dst in &ix.links {
+            sqlx::query("INSERT OR IGNORE INTO links (src, dst) VALUES (?, ?)")
+                .bind(&m.id)
+                .bind(dst)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn remove_rows(&self, id: &str) -> anyhow::Result<()> {
+        let mut tx = self.db.begin().await?;
+        sqlx::query("DELETE FROM concepts WHERE id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM links WHERE src = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// FTS query for `terms`, scope-adjusted and sorted, with each hit's body
+    /// (the ≥2-term rule needs it). Empty terms → nothing.
+    async fn ranked(
+        &self,
+        terms: &[String],
+        cwd: &Path,
+        limit: u32,
+    ) -> anyhow::Result<Vec<(Hit, String)>> {
+        if terms.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let query = terms
+            .iter()
+            .map(|t| format!("\"{t}\""))
+            .collect::<Vec<_>>()
+            .join(" OR ");
+        let rows: Vec<HitRow> = sqlx::query_as(
+            "SELECT id, type, title, description, tags, scope, source, timestamp, body, \
+             bm25(concepts, 0, 3.0, 10.0, 5.0, 4.0, 1.0) AS s, snippet(concepts, 5, '', '', '…', 12) AS snip \
+             FROM concepts WHERE concepts MATCH ? ORDER BY s LIMIT ?",
+        )
+        .bind(query)
+        .bind(i64::from(limit) * 4)
+        .fetch_all(&self.db)
+        .await?;
+        let mut hits: Vec<(Hit, String)> = rows
+            .into_iter()
+            .map(|r| {
+                let meta: Meta = r.meta.into();
+                let boost = match &meta.scope {
+                    Some(scope) if cwd.starts_with(scope) => 1.5,
+                    Some(_) => 0.5,
+                    None => 1.0,
+                };
+                (
+                    Hit {
+                        meta,
+                        score: (-r.s * boost) as f32,
+                        snippet: r.snip,
+                    },
+                    r.body,
+                )
+            })
+            .collect();
+        hits.sort_by(|a, b| b.0.score.total_cmp(&a.0.score));
+        hits.truncate(limit as usize);
+        Ok(hits)
+    }
+}
+
+type Walked = (Vec<Indexed>, HashSet<String>, Vec<(PathBuf, String)>);
+
+/// Walk the bundle (skipping `.git/`, `index.md`, `log.md`, non-`.md`):
+/// files whose (mtime, size) differ from `known`, parsed; every path seen;
+/// paths that failed to parse with the error.
+fn walk(root: &Path, known: &HashMap<String, (i64, i64)>) -> Walked {
+    let mut changed = Vec::new();
+    let mut seen = HashSet::new();
+    let mut failed = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if path.is_dir() {
+                if name != ".git" {
+                    stack.push(path);
+                }
+                continue;
+            }
+            if !name.ends_with(".md") || RESERVED_FILENAMES.contains(&name.as_ref()) {
+                continue;
+            }
+            let Ok(rel) = path.strip_prefix(root) else {
+                continue;
+            };
+            let rel = rel.to_string_lossy().into_owned();
+            let Ok(key) = stat(&path) else { continue };
+            seen.insert(rel.clone());
+            if known.get(&rel) == Some(&key) {
+                continue;
+            }
+            match Indexed::load(root, &path) {
+                Ok(ix) => changed.push(ix),
+                Err(e) => failed.push((path, format!("{e:#}"))),
+            }
+        }
+    }
+    (changed, seen, failed)
+}
+
+/// Query terms (10 §3.3): split on non-alphanumeric, lowercase, drop `len < 3`
+/// and stopwords, dedupe preserving first occurrence, cap 64.
+pub fn terms(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for tok in text.split(|c: char| !c.is_alphanumeric()) {
+        if tok.chars().count() < 3 {
+            continue;
+        }
+        let t = tok.to_lowercase();
+        if STOPWORDS.contains(&t.as_str()) || out.contains(&t) {
+            continue;
+        }
+        out.push(t);
+        if out.len() == 64 {
+            break;
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tempdir() -> PathBuf {
+        let d = std::env::temp_dir().join(format!("wth-knowledge-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    async fn open() -> (Arc<Knowledge>, PathBuf) {
+        let dir = tempdir();
+        let rt = Runtime::new(figment::Figment::new(), dir.clone());
+        (Knowledge::open(&dir, rt).await.unwrap(), dir)
+    }
+
+    fn put(id: &str, title: &str, body: &str) -> Put {
+        Put {
+            id: id.into(),
+            type_: "fact".into(),
+            title: title.into(),
+            description: None,
+            tags: vec!["rust".into()],
+            scope: None,
+            body: body.into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn put_get_round_trip_with_links() {
+        let (k, _dir) = open().await;
+        let (meta, created) = k
+            .put(
+                put(
+                    "facts/toolchain",
+                    "Toolchain",
+                    "See [wth](/projects/wth.md) and [gone](./missing.md).",
+                ),
+                Source::Model,
+            )
+            .await
+            .unwrap();
+        assert!(created);
+        assert_eq!(meta.id, "facts/toolchain");
+        assert_eq!(meta.description, "Toolchain");
+        assert_eq!(meta.source, Some(Source::Model));
+        assert!(meta.timestamp.unwrap().ends_with('Z'));
+
+        let (_, created) = k
+            .put(put("projects/wth", "wth", "hub"), Source::User)
+            .await
+            .unwrap();
+        assert!(created);
+        let (_, created) = k
+            .put(put("projects/wth", "wth2", "hub"), Source::User)
+            .await
+            .unwrap();
+        assert!(!created, "second put on the same id is an update");
+
+        let c = k.get("facts/toolchain").await.unwrap();
+        assert!(c.text.starts_with("---\ntype: fact\ntitle: Toolchain\n"));
+        assert_eq!(
+            c.links,
+            vec![
+                ("facts/missing".to_string(), false),
+                ("projects/wth".to_string(), true)
+            ]
+        );
+        let w = k.get("/projects/wth.md").await.unwrap();
+        assert_eq!(w.meta.title, "wth2");
+        assert_eq!(w.cited_by, vec!["facts/toolchain".to_string()]);
+        assert!(k.root().join("index.md").exists());
+        assert!(
+            std::fs::read_to_string(k.root().join("log.md"))
+                .unwrap()
+                .contains("put facts/toolchain")
+        );
+
+        k.delete("facts/toolchain").await.unwrap();
+        assert!(k.get("facts/toolchain").await.is_err());
+        assert!(k.get("projects/wth").await.unwrap().cited_by.is_empty());
+        assert!(
+            !k.root().join("facts").exists(),
+            "emptied directory and its index.md go"
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_ids_and_documents_rejected() {
+        let (k, _dir) = open().await;
+        for id in ["../x", "index", "facts/log", "a/b/c/d", ""] {
+            assert!(
+                k.put(put(id, "t", "b"), Source::Model).await.is_err(),
+                "{id:?} accepted"
+            );
+        }
+        let mut p = put("facts/x", "t", "b");
+        p.type_ = "  ".into();
+        assert!(k.put(p, Source::Model).await.is_err());
+        let mut p = put("facts/x", "t", "b");
+        p.body = "x".repeat(BODY_MAX + 1);
+        assert!(k.put(p, Source::Model).await.is_err());
+        assert!(
+            k.put(put("Facts/Upper", "t", "b"), Source::Model)
+                .await
+                .unwrap()
+                .0
+                .id
+                == "facts/upper"
+        );
+    }
+
+    #[test]
+    fn terms_example() {
+        assert_eq!(
+            terms("read /Users/x/wth/crates/agent/src/loop_.rs"),
+            ["users", "wth", "crates", "agent", "src", "loop"]
+        );
+        assert_eq!(terms("The file, the FILE!"), Vec::<String>::new());
+        assert_eq!(terms("Toolchain toolchain rustup").len(), 2);
+    }
+
+    #[tokio::test]
+    async fn search_ranks_title_over_body_and_boosts_scope() {
+        let (k, _dir) = open().await;
+        k.put(
+            put("a/title-hit", "rustup toolchain", "nothing here"),
+            Source::Model,
+        )
+        .await
+        .unwrap();
+        k.put(
+            put(
+                "a/body-hit",
+                "unrelated",
+                "the rustup toolchains live under rustup",
+            ),
+            Source::Model,
+        )
+        .await
+        .unwrap();
+        let hits = k.search("toolchain", Path::new("/tmp"), 10).await.unwrap();
+        assert_eq!(
+            hits.iter().map(|h| h.meta.id.as_str()).collect::<Vec<_>>(),
+            ["a/title-hit", "a/body-hit"]
+        );
+        assert!(hits[1].snippet.contains("toolchains"));
+        assert!(
+            k.search("", Path::new("/tmp"), 10)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        let mut scoped = put("b/scoped", "cargo path", "cargo lives here");
+        scoped.scope = Some(PathBuf::from("/work/wth"));
+        k.put(scoped, Source::Model).await.unwrap();
+        k.put(
+            put("b/global", "cargo path", "cargo lives here"),
+            Source::Model,
+        )
+        .await
+        .unwrap();
+        let ids = |hits: Vec<Hit>| hits.into_iter().map(|h| h.meta.id).collect::<Vec<_>>();
+        let inside = ids(k
+            .search("cargo path", Path::new("/work/wth/crates"), 10)
+            .await
+            .unwrap());
+        assert_eq!(inside, ["b/scoped", "b/global"]);
+        let outside = ids(k
+            .search("cargo path", Path::new("/elsewhere"), 10)
+            .await
+            .unwrap());
+        assert_eq!(outside, ["b/global", "b/scoped"]);
+    }
+
+    #[tokio::test]
+    async fn hint_needs_two_terms_and_honours_exclude() {
+        let (k, _dir) = open().await;
+        k.put(
+            put("a/src-only", "the src directory", "src src src"),
+            Source::Model,
+        )
+        .await
+        .unwrap();
+        k.put(
+            put(
+                "a/both",
+                "agent loop",
+                "the agent loop lives in src/loop_.rs",
+            ),
+            Source::Model,
+        )
+        .await
+        .unwrap();
+        let text = "read /Users/x/wth/crates/agent/src/loop_.rs";
+        let hinted = k
+            .hint(text, Path::new("/tmp"), &BTreeSet::new(), 5)
+            .await
+            .unwrap();
+        assert_eq!(
+            hinted.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["a/both"]
+        );
+        let excluded = BTreeSet::from(["a/both".to_string()]);
+        assert!(
+            k.hint(text, Path::new("/tmp"), &excluded, 5)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        // One-term queries need one match.
+        assert_eq!(
+            k.hint("src", Path::new("/tmp"), &BTreeSet::new(), 5)
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_sees_external_add_edit_and_remove() {
+        let (k, _dir) = open().await;
+        let file = k.root().join("facts/external.md");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "---\ntype: fact\ntitle: External\n---\nbody\n").unwrap();
+        std::fs::write(k.root().join("broken.md"), "---\ntype: fact\n").unwrap();
+        let s = k.sync().await.unwrap();
+        assert_eq!((s.added, s.updated, s.removed), (1, 0, 0));
+        assert_eq!(
+            k.list(None, None, None, 10).await.unwrap()[0].title,
+            "External"
+        );
+
+        std::fs::write(
+            &file,
+            "---\ntype: fact\ntitle: External edited\n---\nlonger body\n",
+        )
+        .unwrap();
+        let s = k.sync().await.unwrap();
+        assert_eq!((s.added, s.updated, s.removed), (0, 1, 0));
+        assert_eq!(
+            k.get("facts/external").await.unwrap().meta.title,
+            "External edited"
+        );
+
+        std::fs::remove_file(&file).unwrap();
+        let s = k.sync().await.unwrap();
+        assert_eq!((s.added, s.updated, s.removed), (0, 0, 1));
+        assert!(k.list(None, None, None, 10).await.unwrap().is_empty());
+        assert!(k.sync().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_filters() {
+        let (k, _dir) = open().await;
+        k.put(put("facts/a", "a", "x"), Source::Model)
+            .await
+            .unwrap();
+        let mut d = put("decisions/b", "b", "x");
+        d.type_ = "decision".into();
+        d.tags = vec!["mutex".into(), "rust".into()];
+        k.put(d, Source::Model).await.unwrap();
+        let ids = |v: Vec<Meta>| v.into_iter().map(|m| m.id).collect::<Vec<_>>();
+        assert_eq!(
+            ids(k.list(None, None, None, 10).await.unwrap()),
+            ["decisions/b", "facts/a"]
+        );
+        assert_eq!(
+            ids(k.list(Some("facts/"), None, None, 10).await.unwrap()),
+            ["facts/a"]
+        );
+        assert_eq!(
+            ids(k.list(None, Some("decision"), None, 10).await.unwrap()),
+            ["decisions/b"]
+        );
+        assert_eq!(
+            ids(k.list(None, None, Some("mutex"), 10).await.unwrap()),
+            ["decisions/b"]
+        );
+        assert_eq!(
+            ids(k.list(None, None, Some("rust"), 1).await.unwrap()),
+            ["decisions/b"]
+        );
+        let m = &k.list(None, None, Some("mutex"), 10).await.unwrap()[0];
+        assert_eq!(m.tags, ["mutex", "rust"]);
+    }
+
+    #[tokio::test]
+    async fn index_rebuilt_when_deleted() {
+        let (k, dir) = open().await;
+        k.put(put("facts/a", "a", "x"), Source::Model)
+            .await
+            .unwrap();
+        drop(k);
+        std::fs::remove_file(dir.join(INDEX_FILE)).unwrap();
+        let rt = Runtime::new(figment::Figment::new(), dir.clone());
+        let k = Knowledge::open(&dir, rt).await.unwrap();
+        assert_eq!(k.list(None, None, None, 10).await.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn regenerate_indexes_skips_dot_dirs_and_unchanged_files() {
+        let dir = tempdir();
+        let md = "---\ntype: fact\ntitle: A\n---\nbody\n";
+        std::fs::create_dir_all(dir.join("facts")).unwrap();
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::write(dir.join("facts/a.md"), md).unwrap();
+        std::fs::write(dir.join(".git/x.md"), md).unwrap();
+
+        let written = regenerate_indexes(&dir).unwrap();
+        assert_eq!(
+            written,
+            vec![dir.join("facts/index.md"), dir.join(INDEX_MD)]
+        );
+        let root = std::fs::read_to_string(dir.join(INDEX_MD)).unwrap();
+        assert!(root.contains("[facts](facts/index.md)"), "{root}");
+        assert!(!root.contains(".git"), "{root}");
+        assert!(!dir.join(".git/index.md").exists());
+        assert!(regenerate_indexes(&dir).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn history_and_restore_through_repo() {
+        let (k, _dir) = open().await;
+        k.put(put("facts/a", "first", "one"), Source::Model)
+            .await
+            .unwrap();
+        k.put(put("facts/a", "second", "two"), Source::Model)
+            .await
+            .unwrap();
+        let h = k.history(Some("facts/a"), 10).await.unwrap();
+        assert_eq!(
+            h.changes
+                .iter()
+                .map(|c| c.message.as_str())
+                .collect::<Vec<_>>(),
+            ["put facts/a", "put facts/a"]
+        );
+        assert!(
+            h.diff
+                .as_deref()
+                .is_some_and(|d| d.contains("-title: first") && d.contains("+title: second"))
+        );
+
+        let change = k.restore("facts/a", None).await.unwrap();
+        assert!(change.message.starts_with("restore facts/a from "));
+        assert_eq!(change.commit.len(), 7);
+        let c = k.get("facts/a").await.unwrap();
+        assert_eq!(c.meta.title, "first");
+        assert!(
+            c.text.ends_with("one\n"),
+            "file restored verbatim: {}",
+            c.text
+        );
+        assert_eq!(
+            k.history(None, 10).await.unwrap().changes[0].message,
+            change.message
+        );
+
+        k.delete("facts/a").await.unwrap();
+        assert!(k.get("facts/a").await.is_err());
+        k.restore("facts/a", None).await.unwrap();
+        assert_eq!(
+            k.get("facts/a").await.unwrap().meta.title,
+            "first",
+            "restore brings a deleted concept back"
+        );
+    }
+}

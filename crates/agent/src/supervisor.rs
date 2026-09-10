@@ -22,7 +22,8 @@ use tokio::task::AbortHandle;
 use tools::{ListTools, REGISTRY_ACTOR, RegisterTool, SetParent, ToolRegistry};
 
 use crate::loop_::{
-    CancelTurn, CompactNow, IsRunning, Session, SessionState, SwitchModel, UserInput, text_of,
+    CancelTurn, CompactNow, HarvestNow, IsRunning, Session, SessionState, SwitchModel, UserInput,
+    text_of,
 };
 use crate::peers::{SendMessageTool, SpawnSubagentTool};
 use crate::skills::{
@@ -31,10 +32,12 @@ use crate::skills::{
 };
 use crate::store::{Epoch, Store};
 use crate::{
-    AGENT_ACTOR, AddSkill, AddSkillRepo, AgentConfig, AgentEvent, Cancel, Compact, HistoryEntry,
-    ListChildren, ListLogins, ListModels, ListSessions, ListSkills, LoadSession, LoadSkill, Loaded,
-    Login, LoginFinished, LoginInfo, Logout, ModelInfo, RemoveSkill, RemoveSkillRepo, SendInput,
-    SessionSummary, SetModel, ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills,
+    AGENT_ACTOR, AddSkill, AddSkillRepo, AgentConfig, AgentEvent, Cancel, Compact, Harvest,
+    HistoryEntry, KnowledgeDelete, KnowledgeGet, KnowledgeHistory, KnowledgeList, KnowledgePut,
+    KnowledgeRestore, KnowledgeSearch, ListChildren, ListLogins, ListModels, ListSessions,
+    ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginFinished, LoginInfo, Logout, ModelInfo,
+    RemoveSkill, RemoveSkillRepo, SendInput, SessionSummary, SetModel, ShowPrompt, SkillBody,
+    SkillMeta, Steer, SyncSkills, knowledge,
 };
 use crate::{frame, repl, spill};
 
@@ -48,6 +51,8 @@ pub struct Agents {
     catalog: Arc<Catalog>,
     /// Python runtime workers; `None` when the `monty` binary was not found (design doc 08 §9).
     pool: Option<Arc<monty_pool::Pool>>,
+    /// Knowledge bundle; `None` when disabled (design doc 10).
+    knowledge: Option<Arc<knowledge::Knowledge>>,
     /// `configured(genai_namespace)`: whether genai can authenticate it.
     configured: Arc<dyn Fn(&str) -> bool + Send + Sync>,
     store: Store,
@@ -220,6 +225,7 @@ impl Agents {
             self.rt.clone(),
             self.catalog.clone(),
             self.pool.clone(),
+            self.knowledge.clone(),
         ));
         self.sessions.insert(
             id,
@@ -379,6 +385,143 @@ impl Message<Compact> for Agents {
         // here would deadlock. `SendError::HandlerError` displays as the inner `String`.
         tokio::spawn(async move {
             tx.send(actor.ask(CompactNow).await.map_err(|e| e.to_string()));
+        });
+        reply
+    }
+}
+
+impl Agents {
+    /// The store, or the error every `knowledge_*` ask returns while disabled.
+    fn knowledge(&self) -> Result<Arc<knowledge::Knowledge>, String> {
+        self.knowledge
+            .clone()
+            .ok_or_else(|| "knowledge is disabled".to_owned())
+    }
+}
+
+// Store calls are local I/O (sqlite, files, spawn_blocking for the repo), so
+// awaiting them on the mailbox is fine; `Harvest` is a model call and delegates.
+impl Message<KnowledgeSearch> for Agents {
+    type Reply = Result<Vec<knowledge::Hit>, String>;
+
+    async fn handle(
+        &mut self,
+        m: KnowledgeSearch,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let k = self.knowledge()?;
+        let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+        k.search(&m.query, &cwd, m.limit.unwrap_or(10).min(50))
+            .await
+            .map_err(|e| format!("{e:#}"))
+    }
+}
+
+impl Message<KnowledgeGet> for Agents {
+    type Reply = Result<knowledge::Concept, String>;
+
+    async fn handle(&mut self, m: KnowledgeGet, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.knowledge()?
+            .get(&m.id)
+            .await
+            .map_err(|e| format!("{e:#}"))
+    }
+}
+
+impl Message<KnowledgeList> for Agents {
+    type Reply = Result<Vec<knowledge::Meta>, String>;
+
+    async fn handle(
+        &mut self,
+        m: KnowledgeList,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.knowledge()?
+            .list(
+                m.prefix.as_deref(),
+                m.type_.as_deref(),
+                m.tag.as_deref(),
+                m.limit.unwrap_or(50),
+            )
+            .await
+            .map_err(|e| format!("{e:#}"))
+    }
+}
+
+impl Message<KnowledgePut> for Agents {
+    type Reply = Result<knowledge::Meta, String>;
+
+    async fn handle(&mut self, m: KnowledgePut, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.knowledge()?
+            .put(m.put, m.source)
+            .await
+            .map(|(meta, _)| meta)
+            .map_err(|e| format!("{e:#}"))
+    }
+}
+
+impl Message<KnowledgeDelete> for Agents {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        m: KnowledgeDelete,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.knowledge()?
+            .delete(&m.id)
+            .await
+            .map_err(|e| format!("{e:#}"))
+    }
+}
+
+impl Message<KnowledgeHistory> for Agents {
+    type Reply = Result<knowledge::History, String>;
+
+    async fn handle(
+        &mut self,
+        m: KnowledgeHistory,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.knowledge()?
+            .history(m.id.as_deref(), m.limit.unwrap_or(20))
+            .await
+            .map_err(|e| format!("{e:#}"))
+    }
+}
+
+impl Message<KnowledgeRestore> for Agents {
+    type Reply = Result<knowledge::Change, String>;
+
+    async fn handle(
+        &mut self,
+        m: KnowledgeRestore,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.knowledge()?
+            .restore(&m.id, m.commit.as_deref())
+            .await
+            .map_err(|e| format!("{e:#}"))
+    }
+}
+
+impl Message<Harvest> for Agents {
+    type Reply = kameo::reply::DelegatedReply<Result<knowledge::HarvestResult, String>>;
+
+    async fn handle(&mut self, m: Harvest, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let actor = match self.session(Some(m.session), None).await {
+            Ok((_, actor)) => actor,
+            Err(e) => {
+                tx.send(Err(format!("{e:#}")));
+                return reply;
+            }
+        };
+        // Off the mailbox for the same reason as `Compact`: the harvest is a
+        // model call and may ask us back.
+        tokio::spawn(async move {
+            tx.send(actor.ask(HarvestNow).await.map_err(|e| e.to_string()));
         });
         reply
     }
@@ -1153,6 +1296,17 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         &rt.data_dir.join("spill"),
         Duration::from_secs(7 * 24 * 3600),
     );
+    let knowledge = if cfg.knowledge.enabled {
+        match knowledge::Knowledge::open(&rt.data_dir, rt.clone()).await {
+            Ok(k) => Some(k),
+            Err(e) => {
+                tracing::warn!("knowledge bundle unavailable: {e:#}");
+                None
+            }
+        }
+    } else {
+        None
+    };
     let agents = Agents::spawn_with_mailbox(
         Agents {
             rt: rt.clone(),
@@ -1160,6 +1314,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             default_model: cfg.model.clone(),
             catalog: Arc::new(Catalog::load(&rt.data_dir)),
             pool,
+            knowledge: knowledge.clone(),
             configured: configured(auth.clone()),
             store,
             client: client(auth.clone())?,
@@ -1205,6 +1360,9 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
                 let _ = reg
                     .ask(RegisterTool(Arc::new(SyncSkillsTool { dir })))
                     .await;
+                if let Some(k) = knowledge.clone() {
+                    knowledge::tools::register(&reg, k).await;
+                }
                 let _ = reg.ask(RegisterTool(Arc::new(SpawnSubagentTool))).await;
                 let _ = reg
                     .ask(RegisterTool(Arc::new(SendMessageTool { cfg })))

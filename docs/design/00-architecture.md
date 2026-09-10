@@ -360,8 +360,11 @@ the terminal already does).
 ## 9. Config
 
 `figment` 0.10: `<data_dir>/config.yaml` merged with `WTH_*` env; data dir
-defaults to `~/.wth`, with `credentials.yaml` and `mcp/` beside it. No shared
-`Config` struct: each plugin extracts its own section
+defaults to `~/.wth`, with `credentials.yaml`, `mcp/`, `skills/`,
+`knowledge/` (the OKF knowledge bundle, a git repository kept in-process by
+`gix`) and `knowledge.sqlite` (its derived FTS index; delete to rebuild)
+beside it — `10-knowledge.md`. No shared `Config` struct: each plugin
+extracts its own section
 (`rt.config.extract_inner::<AgentConfig>("agent")`), so `runtime` never knows
 the union of all config. Layout, first run, credentials and MCP drop-in files:
 `01-config-and-subagents.md` §1.

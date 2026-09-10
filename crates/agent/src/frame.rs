@@ -15,12 +15,14 @@ use crate::skills;
 /// Identity line the Claude Code login requires first in the system prompt (design doc 05 §2.3).
 const CLAUDE_CODE_IDENTITY: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
 
-/// Static tool/peer guidance (design doc 07 §4 part 7, §9): never changes, so it
-/// never busts the system cache. The live roster is deliberately absent (§10).
+/// Static tool/peer guidance (design doc 07 §4 part 7, §9; 10 §4.3): never changes,
+/// so it never busts the system cache. The live roster is deliberately absent (§10).
 const GUIDANCE: &str = "## Guidance\n\
 For work with three or more steps, keep a `todo` list and mark items as you go.\n\
 Spawn with spawn_subagent (put all shared background in `task`; the subagent sees nothing else); \
-steer or ask with send_message. Results arrive as <subagent_result> messages; you do not need to poll.";
+steer or ask with send_message. Results arrive as <subagent_result> messages; you do not need to poll.\n\
+Durable facts about the user's machines, projects, accounts and decisions belong in the knowledge base: \
+check <knowledge> hints and knowledge_search before assuming, record with knowledge_put.";
 
 /// How cache marks are placed for a provider family (design doc 07 §3 table).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
