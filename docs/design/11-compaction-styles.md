@@ -47,7 +47,8 @@ slash surface.
 7. **Snap is a style in v0's contract, a later crate in the build.** The
    operator-facing name and the head shape are specified here. The
    rasterizer (`agent::snap`) lands after `summary`/`cut` compile. A
-   `/compact snap` before that is `Err("snap not built")`.
+   `/compact snap` before that is `Err("snap not built")`. Build plan,
+   budget and geometry: `13-snap.md` (which wins where it differs).
 
 ## 1. What oh-my-pi actually does
 
@@ -456,7 +457,7 @@ Each step leaves `wth` runnable. Snap is last on purpose.
    edits in §9; this doc → as-built.
 5. **`snap` (later).** `Model.image`, `agent::snap` rasterizer, image
    parts on the head, `/compact snap`, auto fallback to cut when
-   `!image`. Fixture test with a canned PNG.
+   `!image`. Fixture test with a canned PNG. Planned in `13-snap.md`.
 
 v0 for the operator is steps 1–4: they can choose `summary` or `cut`,
 set the default, and auto/overflow do the right thing. Snap is a named
