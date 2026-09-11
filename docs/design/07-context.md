@@ -130,7 +130,8 @@ per-transport difference.
 | identity line, Claude Code identity (login-dependent), cwd | system | never within a process | — |
 | date | system | midnight | rebase at the next turn start |
 | `prompt.md`, `always` skill bodies, skills index | system | user or model edits | rebase at the next turn start (one miss, deliberate) |
-| peer guidance (how to spawn/message), todo sentence, knowledge sentence | system | never | the `GUIDANCE` const in `frame::baseline`; the live roster is **removed** from the prompt (§10); the knowledge *index* is deliberately not here (10 §4.3) |
+| peer guidance (how to spawn/message), todo sentence | system | never | the `GUIDANCE` const in `frame::baseline`; the live roster is **removed** from the prompt (§10) |
+| plugin prompt blocks (knowledge sentence, …) | system | a plugin registers/unregisters — in practice process start | `ask(ListPrompts)` in `Turn::rebase`; a block registered after the first turn's rebase lands with one rebase on the next turn; the knowledge *index* is deliberately not here (10 §4.3) |
 | tool list | tools | MCP server connects/disconnects, gate change — only while the runtime is off; with it on, MCP tools are `direct = false` and never in the list (§5) | fetched once per turn in `Turn::rebase` (12 §4); a change is visible on the next turn, never mid-turn |
 | user input, steering, `<message>`, `<subagent_result>` | history tail | per turn | append |
 | assistant output, tool results | history tail | per round | append |
@@ -215,7 +216,7 @@ The Cursor transport reads `req.system` and System-role messages alike
 
 ## 4. Baseline
 
-`agent::frame::baseline(data_dir, peer_line, claude_code) -> String` is
+`agent::frame::baseline(data_dir, peer_line, plugin_blocks, claude_code) -> String` is
 the old `system_prompt` with two changes: it is called once per **turn** by
 `Turn::rebase` and stored on `SessionState.baseline`; and the peers block no
 longer contains the roster (§10). Parts, blank-line separated, empty parts
@@ -228,12 +229,13 @@ skipped:
 4. always-skill bodies, name order
 5. skills index
 6. peer line: `PeerContext { session }` → "## Peers\nYou are `x`, a subagent of session …" for children, else ""
-7. GUIDANCE const: the todo sentence (§9) + spawn_subagent / send_message / <subagent_result> text
+7. plugin prompt blocks: `ask(ListPrompts)` on the tool registry, sorted by plugin name, joined by blank lines (00 §4); "" when none
+8. GUIDANCE const: the todo sentence (§9) + spawn_subagent / send_message / <subagent_result> text
 ```
 
 `Turn::rebase` then appends `repl::prompt_block(ListTools)` (`08 §3.2`) when
-the runtime pool is on. Only part 7 is static text; everything the roster
-used to contribute per turn is gone.
+the runtime pool is on. Parts 7 and 8 are static text within a process;
+everything the roster used to contribute per turn is gone.
 
 `SessionState` keeps `baseline: String` across turns. At turn start the new
 render is compared with it; on inequality (and a non-empty previous value):
@@ -742,7 +744,7 @@ impl Transport { pub fn of(kind: AdapterKind) -> Self; }         // `cursor` nev
 pub struct Frame<'a> { pub tools: &'a [Tool], pub system: &'a str, pub head: Option<&'a ChatMessage>, pub history: &'a [ChatMessage] }
 impl Frame<'_> { pub fn request(&self, t: Transport, session: SessionId) -> (ChatRequest, ChatOptions); }
 pub fn tools_hash(tools: &[Tool]) -> u64;                        // §5
-pub fn baseline(data_dir: &Path, peer_line: &str, claude_code: bool) -> String;   // §4; GUIDANCE const appended
+pub fn baseline(data_dir: &Path, peer_line: &str, plugin_blocks: &str, claude_code: bool) -> String;   // §4; GUIDANCE const appended
 pub fn truncate(s: &str, max: usize) -> String;                  // UI copies only
 
 // agent::spill

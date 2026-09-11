@@ -8,7 +8,7 @@ use kameo::actor::ActorRef;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tools::registry::ToolRegistry;
-use tools::{RegisterTool, Risk, Tool, ToolCx, ToolOutput};
+use tools::{RegisterPrompt, RegisterTool, Risk, Tool, ToolCx, ToolOutput};
 
 use crate::store::Knowledge;
 use crate::types::{Meta, Put, Source};
@@ -16,8 +16,19 @@ use crate::types::{Meta, Put, Source};
 /// Name of [`GetTool`]; the loop counts its calls for harvest cadence (10 §5.1).
 pub const GET: &str = "knowledge_get";
 
-/// Register every `knowledge_*` tool on `reg`.
+/// The plugin's system-prompt block (07 §4 part 7, 10 §4.3): when to reach for
+/// the knowledge base. Static, so it never busts the system cache.
+pub const PROMPT: &str = "Durable facts about the user's machines, projects, accounts and decisions belong in the knowledge base: \
+check <knowledge> hints and knowledge_search before assuming, record with knowledge_put.";
+
+/// Register every `knowledge_*` tool and the prompt block on `reg`.
 pub async fn register(reg: &ActorRef<ToolRegistry>, knowledge: Arc<Knowledge>) {
+    let _ = reg
+        .ask(RegisterPrompt {
+            plugin: "knowledge",
+            text: PROMPT.to_owned(),
+        })
+        .await;
     let k = &knowledge;
     let _ = reg.ask(RegisterTool(Arc::new(SearchTool(k.clone())))).await;
     let _ = reg.ask(RegisterTool(Arc::new(GetTool(k.clone())))).await;

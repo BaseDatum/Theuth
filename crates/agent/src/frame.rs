@@ -16,14 +16,13 @@ use crate::skills;
 /// Identity line the Claude Code login requires first in the system prompt (design doc 05 §2.3).
 const CLAUDE_CODE_IDENTITY: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
 
-/// Static tool/peer guidance (design doc 07 §4 part 7, §9; 10 §4.3): never changes,
-/// so it never busts the system cache. The live roster is deliberately absent (§10).
+/// Static todo/peer guidance (design doc 07 §4 part 8, §9): never changes, so it
+/// never busts the system cache. The live roster is deliberately absent (§10);
+/// plugin usage text arrives as prompt blocks (`ListPrompts`), not here.
 const GUIDANCE: &str = "## Guidance\n\
 For work with three or more steps, keep a `todo` list and mark items as you go.\n\
 Spawn with spawn_subagent (put all shared background in `task`; the subagent sees nothing else); \
-steer or ask with send_message. Results arrive as <subagent_result> messages; you do not need to poll.\n\
-Durable facts about the user's machines, projects, accounts and decisions belong in the knowledge base: \
-check <knowledge> hints and knowledge_search before assuming, record with knowledge_put.";
+steer or ask with send_message. Results arrive as <subagent_result> messages; you do not need to poll.";
 
 /// How cache marks are placed for a provider family (design doc 07 §3 table).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -115,9 +114,15 @@ impl Frame<'_> {
 
 /// The system prompt (design doc 07 §4), rendered once per turn: Claude Code
 /// identity (when `claude_code`), built-in header, `<data_dir>/prompt.md`,
-/// `always` skill bodies, skills index, `peer_line` verbatim, static guidance.
+/// `always` skill bodies, skills index, `peer_line` verbatim, `plugin_blocks`
+/// (registered `RegisterPrompt` texts, already joined), static guidance.
 /// Empty parts skipped, one blank line between the rest.
-pub fn baseline(data_dir: &Path, peer_line: &str, claude_code: bool) -> String {
+pub fn baseline(
+    data_dir: &Path,
+    peer_line: &str,
+    plugin_blocks: &str,
+    claude_code: bool,
+) -> String {
     let cwd = std::env::current_dir()
         .map(|p| p.display().to_string())
         .unwrap_or_default();
@@ -138,6 +143,7 @@ pub fn baseline(data_dir: &Path, peer_line: &str, claude_code: bool) -> String {
         &skills::always_bodies(&skills),
         &skills::prompt_index(&skills),
         peer_line,
+        plugin_blocks,
         GUIDANCE,
     ]
     .iter()

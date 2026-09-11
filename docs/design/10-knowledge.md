@@ -347,8 +347,9 @@ the input changes: a rebase per turn, exactly jarvis's miss. (b) An *index*
 of the catalog in the baseline (the skills-index shape, 04 §1.1) is stable
 per turn but changes on every harvest — every third turn a rebase — and
 grows without bound. The skills index is in the prompt because skills change
-rarely and are few; knowledge is neither. So the baseline gains one static
-sentence in `frame::baseline`'s `GUIDANCE` const and nothing else:
+rarely and are few; knowledge is neither. So the plugin registers one static
+sentence as its prompt block (`tools::PROMPT`, `RegisterPrompt`; 00 §4, 07 §4
+part 7) and nothing else:
 
 > Durable facts about the user's machines, projects, accounts and decisions
 > belong in the knowledge base: check `<knowledge>` hints and
@@ -638,7 +639,7 @@ Every knowledge input, where it lives, and what it does to the prefix
 
 | input | lives in | changes when | cache effect |
 |---|---|---|---|
-| guidance sentence | system (`GUIDANCE`) | never | none |
+| guidance sentence | system (plugin prompt block, `tools::PROMPT`) | never | none |
 | `<knowledge>` hints | history tail | turn start / every 4 rounds, only with hits | none (append) |
 | ids read this epoch | head | compaction | part of the one expected miss |
 | harvest instruction + reply | a dead-end branch off the finished frame | every 3rd tool-using turn, before compaction | prefix read at the cached rate; the branch's own small write; the session's next frame is unaffected |
@@ -901,7 +902,7 @@ of `agent` (paths above are post-move; steps 1–7 name the module as it was).
    migration — the index is derived, §3.1); unit tests against a tempdir
    bundle (`store::tests`, `repo::tests`, `harvest::tests`).
 2. ✅ Tools + registration in the agent plugin's start; `KnowledgeConfig`;
-   `GUIDANCE` sentence. Check §12.9.
+   guidance sentence (now the plugin's `RegisterPrompt` block). Check §12.9.
 3. ✅ Hints in `Turn::round`; `SessionState` fields; sync in `Turn::rebase`.
    Check §12.1–3.
 4. ✅ Harvest: `continuation()` factored out of `summarise`, `HARVEST_INSTRUCTION`,

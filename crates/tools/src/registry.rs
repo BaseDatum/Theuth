@@ -4,7 +4,7 @@
 //! `tools.policy`, with `Ask` rewritten to `Allow` by the approvals switches
 //! and nothing else (12 §5).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -27,6 +27,9 @@ use crate::{
 #[derive(kameo::Actor)]
 pub struct ToolRegistry {
     tools: HashMap<String, DynTool>,
+    /// Plugin system-prompt blocks by plugin name (07 §4 part 7): sorted, so
+    /// the rendered prompt is stable across restarts.
+    prompts: BTreeMap<&'static str, String>,
     policy: Policy,
     /// `tools.approvals`: false turns every `Ask` into `Allow`.
     approvals: bool,
@@ -55,6 +58,23 @@ pub struct RegisterTool(pub DynTool);
 
 /// `ask` → `()`. Removes a tool by name; unknown name is a no-op.
 pub struct UnregisterTool(pub String);
+
+/// `ask` → `()`. A plugin's system-prompt paragraph: what its tools are for and
+/// when to reach for them. Pure function of config (no clock, session, roster):
+/// anything dynamic busts the system cache. Replaces the block for `plugin`.
+pub struct RegisterPrompt {
+    /// The plugin's `Plugin::name`.
+    pub plugin: &'static str,
+    /// Plain sentences; the harness owns headings and order.
+    pub text: String,
+}
+
+/// `ask` → `()`. Removes a plugin's prompt block; unknown plugin is a no-op.
+pub struct UnregisterPrompt(pub &'static str);
+
+/// `ask` → every registered block, sorted by plugin name.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ListPrompts;
 
 /// `ask` → [`ApprovalsState`]. Turn approval prompts on or off: for one
 /// session (in memory) or, with `session: None`, for everyone, persisted to
@@ -175,6 +195,37 @@ impl Message<UnregisterTool> for ToolRegistry {
     }
 }
 
+impl Message<RegisterPrompt> for ToolRegistry {
+    type Reply = ();
+
+    async fn handle(&mut self, m: RegisterPrompt, _: &mut Context<Self, Self::Reply>) {
+        tracing::info!(
+            plugin = m.plugin,
+            chars = m.text.len(),
+            "registered prompt block"
+        );
+        self.prompts.insert(m.plugin, m.text);
+    }
+}
+
+impl Message<UnregisterPrompt> for ToolRegistry {
+    type Reply = ();
+
+    async fn handle(&mut self, m: UnregisterPrompt, _: &mut Context<Self, Self::Reply>) {
+        if self.prompts.remove(m.0).is_some() {
+            tracing::info!(plugin = m.0, "unregistered prompt block");
+        }
+    }
+}
+
+impl Message<ListPrompts> for ToolRegistry {
+    type Reply = Vec<String>;
+
+    async fn handle(&mut self, _: ListPrompts, _: &mut Context<Self, Self::Reply>) -> Vec<String> {
+        self.prompts.values().cloned().collect()
+    }
+}
+
 impl Message<Invoke> for ToolRegistry {
     type Reply = DelegatedReply<ToolOutput>;
 
@@ -289,6 +340,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
     let registry = ToolRegistry::spawn_with_mailbox(
         ToolRegistry {
             tools: builtins.into_iter().map(|t| (t.spec().name, t)).collect(),
+            prompts: BTreeMap::new(),
             policy: cfg.policy,
             approvals: cfg.approvals,
             bypass: HashSet::new(),

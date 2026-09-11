@@ -24,7 +24,7 @@ use models::Resolved;
 use monty_pool::Pool;
 use runtime::{Runtime, SessionId, TurnId};
 use tokio_util::sync::CancellationToken;
-use tools::{Invoke, ListTools, REGISTRY_ACTOR, ToolOutput, ToolRegistry, ToolSpec};
+use tools::{Invoke, ListPrompts, ListTools, REGISTRY_ACTOR, ToolOutput, ToolRegistry, ToolSpec};
 
 use crate::backend::Backend;
 use crate::frame::{self, Frame, Transport};
@@ -639,9 +639,15 @@ impl Turn {
                 Vec::new()
             }
         };
+        let blocks = registry
+            .ask(ListPrompts)
+            .await
+            .unwrap_or_default()
+            .join("\n\n");
         let genai = self.model().model.genai;
         let claude_code = ns(&genai) == "anthropic" && self.shared.auth.login("anthropic");
-        let mut baseline = frame::baseline(&self.shared.rt.data_dir, &peer_line, claude_code);
+        let mut baseline =
+            frame::baseline(&self.shared.rt.data_dir, &peer_line, &blocks, claude_code);
         if self.shared.pool.is_some() {
             baseline.push_str("\n\n");
             baseline.push_str(&repl::prompt_block(&specs));
@@ -1564,7 +1570,7 @@ mod tests {
         let data_dir = std::env::temp_dir().join(format!("wth-prompt-{}", uuid::Uuid::new_v4()));
         let skills_dir = skills::dir(&data_dir);
         std::fs::create_dir_all(&skills_dir).unwrap();
-        let bare = frame::baseline(&data_dir, "", false);
+        let bare = frame::baseline(&data_dir, "", "", false);
         assert!(bare.starts_with("You are a fast"));
         assert!(!bare.contains("## Skills"));
 
@@ -1575,7 +1581,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(skills_dir.join("later.md"), "Listed skill\n").unwrap();
-        let full = frame::baseline(&data_dir, "## Peers\npeer text", false);
+        let full = frame::baseline(&data_dir, "## Peers\npeer text", "Plugin block.", false);
         std::fs::remove_dir_all(&data_dir).unwrap();
 
         let pos = |needle: &str| {
@@ -1584,7 +1590,8 @@ mod tests {
         };
         assert!(pos("Date: ") < pos("\n\nStanding rule.\n\nAlways rule.\n\n## Skills\n"));
         assert!(
-            pos("- later: Listed skill\n\n## Peers\npeer text\n\n## Guidance") > pos("## Skills")
+            pos("- later: Listed skill\n\n## Peers\npeer text\n\nPlugin block.\n\n## Guidance")
+                > pos("## Skills")
         );
         assert!(!full.contains("rules"));
     }

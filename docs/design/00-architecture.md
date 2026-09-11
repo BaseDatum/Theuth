@@ -164,6 +164,20 @@ hand-written schemas. A `ToolRegistry` actor (in `tools`) holds
 `HashMap<String, Box<dyn ErasedTool>>` and answers `ask(ListTools)` /
 `ask(Invoke)`. MCP servers add tools to the same registry (§6).
 
+A plugin that wants the model to know *when* to use what it registered
+sends `ask(RegisterPrompt { plugin, text })` to the same registry (added
+2026-09-11): one static paragraph, a pure function of config. The agent
+fetches `ask(ListPrompts)` at turn start next to `ListTools` and renders the
+blocks, sorted by plugin name, as one baseline part (07 §4 part 7). The
+agent's own `GUIDANCE` const keeps only what the agent owns (todo,
+subagents); no plugin's usage text lives in `agent`. Alternatives rejected:
+(a) `Plugin::prompt()` on the trait — `start(self: Box<Self>)` consumes the
+plugin before the agent runs, so `main.rs` would carry the texts between
+plugins (§1.4), and the text could not depend on the plugin's config; (b)
+plugins appending to `<data_dir>/prompt.md` — the user's file, and the text
+outlives a disabled plugin; (c) tool descriptions alone — cross-tool
+guidance ("check hints *before* assuming") has no tool to hang on.
+
 Loop-local exception: `todo` and `python` are dispatched by the turn, not
 the registry (07 §5, 08). `todo` is turn state, not a capability. Every host
 call `python` makes is `Invoke` and takes the gate. A third loop-local name
@@ -543,7 +557,9 @@ Each phase ends with a runnable check, not a test suite.
 Known gaps carried forward: cancel/error paths in the loop are code-reviewed,
 not smoke-tested; a `setsid` child escapes `killpg`; no upstream PR yet for the
 brush `on_spawn` patch; RPC token compare is plain `==` (loopback only);
-session actors are never evicted from the supervisor.
+session actors are never evicted from the supervisor; `cargo test -p
+knowledge` hung once (2026-09-11, 0% CPU, parallel threads; 1/7 runs), not
+reproduced - run with `--test-threads=1` if it recurs and bisect gix vs sqlite.
 
 ## 13. Lessons carried from jarvis (design only, no code)
 

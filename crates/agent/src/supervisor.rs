@@ -19,7 +19,7 @@ use models::{Catalog, Resolved};
 use runtime::{Runtime, SessionId};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, oneshot};
 use tokio::task::AbortHandle;
-use tools::{ListTools, REGISTRY_ACTOR, RegisterTool, SetParent, ToolRegistry};
+use tools::{ListPrompts, ListTools, REGISTRY_ACTOR, RegisterTool, SetParent, ToolRegistry};
 
 use crate::loop_::{
     CancelTurn, CompactNow, HarvestNow, IsRunning, Session, SessionState, SetPendingEffort,
@@ -669,9 +669,19 @@ impl Message<ShowPrompt> for Agents {
     async fn handle(&mut self, m: ShowPrompt, _: &mut Context<Self, Self::Reply>) -> String {
         let peers = m.session.map(|s| self.peer_context(s)).unwrap_or_default();
         let (model, _) = self.resolve_model(&self.default_model);
-        let mut prompt = frame::baseline(&self.rt.data_dir, &peers, self.claude_code(&model));
+        let registry = ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR)
+            .ok()
+            .flatten();
+        let mut blocks = String::new();
+        if let Some(reg) = &registry
+            && let Ok(b) = reg.ask(ListPrompts).await
+        {
+            blocks = b.join("\n\n");
+        }
+        let mut prompt =
+            frame::baseline(&self.rt.data_dir, &peers, &blocks, self.claude_code(&model));
         if self.pool.is_some()
-            && let Ok(Some(reg)) = ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR)
+            && let Some(reg) = registry
             && let Ok(specs) = reg.ask(ListTools).await
         {
             prompt.push_str("\n\n");

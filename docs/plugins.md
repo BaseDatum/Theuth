@@ -209,6 +209,20 @@ pub async fn register(reg: &ActorRef<tools::ToolRegistry>, s: Arc<State>) {
 - Fill `ToolOutput::structured` and set `RETURNS` when the Python runtime should get a value, not text (08 §3.2).
 - Everything that can affect the world goes through `Invoke`. If your plugin lets the model do something without a tool call, that is a bug (00 §4).
 
+#### 3.5.1 Prompt block (optional)
+
+If the model needs to know *when* to reach for your tools — not their signatures, the schemas carry those — register one paragraph next to them:
+
+```rust
+let _ = reg.ask(tools::RegisterPrompt { plugin: "foo", text: FOO_PROMPT.to_owned() }).await;
+```
+
+- It lands in the system prompt at the next turn start, sorted with the other plugins' blocks, before the agent's own guidance (07 §4 part 7). The harness owns headings and order; write plain sentences.
+- Pure function of config: no clock, session, roster, counts. Anything that varies per turn busts the system cache for every session (07 §2.2.5). Knowledge's block is one `const` (`knowledge::tools::PROMPT`).
+- One paragraph. If you need more, the model needs a skill (`~/.wth/skills/`), not a longer prompt.
+- `tools::UnregisterPrompt("foo")` when your plugin turns itself off at runtime; a plugin that never starts never registers, so `foo.enabled: false` removes the text with no extra code.
+- `/prompt` in the TUI shows the rendered result; that is the check.
+
 ### 3.6 Config
 
 - `rt.section::<FooConfig>("foo")` — one section per plugin, `#[serde(default)]`, missing section → `Err` → fall back to `Default`. Never read another plugin's section; if you need a value it owns, that is a message.
