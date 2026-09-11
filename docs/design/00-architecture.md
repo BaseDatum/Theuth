@@ -99,7 +99,8 @@ carry `Arc<str>`; non-`Clone` payloads are published as `Arc<T>`.
 
 ## 4. Plugin system
 
-A plugin is a workspace crate exporting one type that implements:
+A plugin is a workspace crate exporting one type that implements the trait
+below. How to design, build and wire one: `../plugins.md`.
 
 ```rust
 // crate: runtime

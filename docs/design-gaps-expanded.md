@@ -1,24 +1,50 @@
 # Design gaps, expanded
 
-Status: notes · 2026-09-10 · short version [`design-gaps.md`](design-gaps.md)
+Status: audit · 2026-09-10 · resolved by [`design/12-course-correction.md`](design/12-course-correction.md) on 2026-09-11
 
 What was checked: the constitution in `docs/design/00-architecture.md` as
 first committed (`fa50c31`, phase 0, 2026-09-09), against the tree as of
 this writing. Later docs (01, 05, 08, 09, 10) describe what was built;
 several clauses in **current** 00 still describe what was promised not to.
-The interesting failures are the ones 00 still asserts.
+The interesting gaps are the ones 00 still asserted.
 
-How to read each item: the original rule, the code that breaks it (path and
-snippet), why that is the jarvis shape rather than a feature, then one
-recommended fix. “Amend 00” is a valid fix when the feature earned its keep
-and the constitution is what is stale — but then the amendment has to name
-the alternative it beat, same as every other decision in 00.
+How to read each item: the original rule, the code that diverged from it
+(path and snippet), why that matters (the jarvis shape, as opposed to a
+feature), then one recommended fix. Features that were not in v0 are
+additions past v0, not violations; the gap is 00 not describing them.
+“Amend 00” is a valid fix when the feature earned its keep and the
+constitution is what is stale — but then the amendment has to name the
+alternative it beat, same as every other decision in 00. Each `### Fix`
+ends with a **Resolved** line saying what actually shipped, including
+where it differs from the recommendation.
+
+---
+
+## Resolution
+
+What 12 did with each item. Where the outcome differs from this doc's
+recommendation, the row says so.
+
+| Id | Outcome | Where |
+|---|---|---|
+| G1 | `ErasedTool::gate` deleted. MCP `Risk` comes from the server's `ToolAnnotations` (`read_only_hint` / `destructive_hint`; unset = `Mutating`); `mcp/config.yaml` values are `read_only \| mutating \| destructive \| off`; the registry decides with `tools.policy.action(spec.risk)` alone. The Ask→Allow switches (global, per-session with parent inheritance) stay as the documented rewrite. | 12 §5, 00 §4 |
+| G2 | 00 §10 lists all twelve crates; §13 says “not in v0” with a returned-as table. Knowledge was extracted to plugin crate `knowledge` — user decision, overriding this doc's keep-in-agent; the harvest *model call* stays in the loop. Cursor stays a crate reached only through `agent::backend`. | 12 §1, §9 |
+| G3 | Pairing moved into `SignalPlugin::start` (`LinkOpts`); `main.rs` imports only `SignalPlugin` / `LinkOpts`. | 12 §3 |
+| G4 | `Runtime::lookup_when`; signal and agent register tools through it; the order comment and the `0..50` retry are gone. | 12 §2 |
+| G5 | `agent::backend::Backend { Genai, Cursor }` enum — a closed set of two, not the trait proposed here; `loop_.rs` has no `"cursor"` literal. | 12 §6, 00 §5 |
+| G6 | 00 §8 rewritten as the control-plane truth; Tauri gated on one command list; no refactor yet, deliberately. | 12 §7 |
+| G7 | Tool list fetched once per turn in `Turn::rebase`; `tools_seen` and the warn deleted; 00 §9 names the watcher. | 12 §4 |
+| G8 | 00 §4 carries the `todo` / `python` loop-local exception verbatim. | 12 §1 |
+| G9 | 00 §1.8 rewritten. This doc's “no grep/edit natives” reading was wrong: any assistant needs to search and edit files. `grep` and `edit` are natives now; coding-specific natives (LSP, notebooks, git, diff review) stay out. | 12 §10 |
+| G10 | 00 §10 budget sentence; `lib.rs` re-export rule; opportunistic. | 12 §8 |
+| G11 | `ToolSpec` comment and 00 §6 fixed. This doc's collision claim was stale: `mcp.rs` already logged and skipped clashes (`taken` map), never replaced. | 12 §1 |
+| Suggested order | Executed as 12 §12 waves. Differences: the guard/lint idea was dropped (docs are the record, no scripts enforce them), knowledge became a plugin, grep/edit were added. | 12 §0, §12 |
 
 ---
 
 ## What still holds
 
-Do not read the rest as “the architecture failed.” These did not:
+Do not read the rest as “the architecture broke.” These rules held:
 
 | Rule | Evidence it held |
 |---|---|
@@ -122,7 +148,7 @@ fn bypassed(&self, mut id: SessionId) -> bool {
 So for one `Invoke` the registry answers: MCP gate? else risk policy? then
 global kill switch? then this session or any ancestor opted out?
 
-### Why it is a transgression
+### Why it matters
 
 00 named the jarvis failure mode in the same bullet as the rule. The four
 axes are that failure mode with better names: a kill switch
@@ -155,6 +181,13 @@ Do not keep `gate()` and “document it.” That is how the paragraph under
 This is a behaviour change for MCP defaults (today: allow; after:
 `tools.policy` on `Mutating` = ask). Call it out. That is the point.
 
+**Resolved (12 §5):** `ErasedTool::gate` deleted; MCP `Risk` comes from
+`ToolAnnotations` (unset = `Mutating`); `mcp/config.yaml` assigns
+`read_only | mutating | destructive | off`; the registry decides with
+`tools.policy.action(spec.risk)` alone. The Ask→Allow switches stay as the
+documented rewrite (00 §4). Behaviour change landed: unannotated MCP tools
+prompt.
+
 ---
 
 ## G2. Crates that did not earn a phase, and §13’s not-planned list
@@ -177,6 +210,9 @@ Original phases (00 §12): 0 workspace, 1 agent+tui+tools+mcp, 2 rpc+skills,
 3 subagents, 4 Tauri (oos). No Signal, no OKF, no Cursor.
 
 ### What the code does
+
+Counts as of 2026-09-10. `knowledge` has since moved out of `agent` into
+its own plugin crate (12 §9), so `agent` is smaller today.
 
 | crate | lines | `Plugin`? | In an original phase? |
 |---|---|---|---|
@@ -225,7 +261,7 @@ plugin actor. That is exactly “a subsystem growing inside the agent.”
 Cursor is a library the agent calls by namespace. It is not a plugin, not
 in the 00 crate list, not in the README crate list. See G5.
 
-### Why it is a transgression
+### Why it matters
 
 §1.6 and §13 were the brake on jarvis’s crate/module sprawl. Signal is a
 5.4k-line plugin that 00 still says is not planned. Knowledge is OKF
@@ -258,7 +294,7 @@ Two layers, both required.
 - Knowledge: **keep in agent** and amend §13 with the harvest-coupling
   reason. Prefer that over extracting a plugin: harvest on the cached
   frame is the whole point of 10, and a plugin boundary there is costume.
-  The transgression is the lie in §13, not the module.
+  The gap is the stale §13, not the module.
 - Cursor: do not let it stay a free-floating crate. Either fold it under
   `agent` (it is a backend, see G5) or it becomes a plugin that registers a
   `ChatBackend` actor. A crate that only the agent calls, with no `Plugin`,
@@ -267,6 +303,14 @@ Two layers, both required.
 
 Do not split `agent` into ten crates to make the line counts look even.
 That is §1.6 in reverse.
+
+**Resolved (12 §1, §9):** 00 §10 lists all twelve crates; §13 says “not in
+v0” with a returned-as table. Knowledge did **not** stay in agent: the user
+overrode this doc's recommendation and it became plugin crate `knowledge`
+(store, index, history, tools, `KnowledgeChanged`); the harvest *model
+call* stays in the loop, so the cache-hot argument above still holds for
+the part that needed it. Cursor stays a crate reached only through
+`agent::backend` (G5).
 
 ---
 
@@ -322,7 +366,7 @@ The plugin vector itself is also conditional: Signal always, RPC if
 `--serve`/`--headless`, TUI unless headless, TUI gets `resume` and
 `prompt` as struct fields. That part is ordinary.
 
-### Why it is a transgression
+### Why it matters
 
 The spirit of §1.4 is “don’t thread handles.” They mostly don’t: plugins
 still look each other up by name. The literal rule is “the binary holds a
@@ -330,7 +374,7 @@ Vec and nothing else.” `--link-signal` is `jarvisd` knowing a subsystem:
 `main` imports `signal::` pairing and writes that plugin’s config keys.
 
 The monty worker path is process-level, not handle-threading. It is not
-the same sin. The `process::exit` after sleep is a bug working around
+the same thing. The `process::exit` after sleep is a bug working around
 another bug, not an architecture choice.
 
 ### Fix
@@ -359,6 +403,11 @@ another bug, not an architecture choice.
 4. The `process::exit` after sleep is a known gap (00 §12 already lists
    stuck drains). Fix the drain or keep the exit; don’t call it
    architecture.
+
+**Resolved (12 §3):** pairing moved into `SignalPlugin::start` via
+`LinkOpts`; `link_signal()` deleted from `main.rs`, which now imports only
+`SignalPlugin` / `LinkOpts` from `signal::`. Worker argv, allocator,
+`first_run` and the `process::exit` stay, documented in 00 §2 / §12.
 
 ---
 
@@ -414,7 +463,7 @@ tokio::spawn(async move {
 Two plugins, two policies, for the same dependency. Approval does the thing
 the rule asked for. Signal and agent do not.
 
-### Why it is a transgression
+### Why it matters
 
 The rule exists so `main.rs` is a list, not a DAG. Signal’s comment makes
 the list a DAG. Agent’s 50-retry is a workaround that still runs at start
@@ -448,6 +497,11 @@ model never sees them, so “first use” is start-of-session, not
 start-of-invoke.
 
 Delete the Signal comment as part of the same patch.
+
+**Resolved (12 §2):** `Runtime::lookup_when` added; signal and agent
+register their tools through it. The `main.rs order` comment and the
+`for _ in 0..50` retry are gone. 00 §4 now says a plugin may wait for a
+named actor at start but must not assume vector order.
 
 ---
 
@@ -496,7 +550,7 @@ a genai adapter: only a login configures it.”*
 05 documents the *how*. 00 still does not contain the *why we wrote a
 client*.
 
-### Why it is a transgression
+### Why it matters
 
 The loop is supposed to be provider-agnostic glue over genai. A string
 compare on `ns` in the hottest function is the opposite. It is also §1.2:
@@ -536,9 +590,15 @@ Recommended, in order:
    `crates/cursor` into `agent/src/cursor/` **or** keep the crate but
    depend on it only from the backend impl, never from `loop_.rs`. Prefer
    keep-the-crate: generated proto is loud in the agent crate. The
-   transgression is the `if ns` and the missing reason, not the directory.
+   gap is the `if ns` and the missing reason, not the directory.
 
 Do not add a third `if ns == "foo"` while this is open.
+
+**Resolved (12 §6):** an enum, not the trait proposed above:
+`agent::backend::Backend { Genai, Cursor }`, chosen in `SetModel`, one
+`match`, no vtable — a closed set of two did not need dynamic dispatch.
+`loop_.rs` has no `"cursor"` literal; `backend.rs` is the only agent file
+naming `cursor::`. 00 §5 carries the reason and the rejected alternatives.
 
 ---
 
@@ -562,9 +622,10 @@ defines none.”* The examples were `agent.send_input`, `agent.steer`,
 
 ### What the code does
 
-`crates/tui/src/model.rs` `Command` is 31 variants, `Send` through
-`Logout` (and growing — `Providers` / `AddProvider` sit next to it).
-`UiEvent` is 27 variants. Original surface was three asks.
+`crates/tui/src/model.rs` `Command` was 31 variants at audit time (36 by
+2026-09-11), `Send` through `Logout` (and growing — `Providers` /
+`AddProvider` sit next to it). `UiEvent` was 27 variants (30 by
+2026-09-11). Original surface was three asks.
 
 The TUI plugin subscribes to five event types, not two
 (`crates/tui/src/lib.rs`):
@@ -586,7 +647,8 @@ Slash commands (`/model`, `/mcp`, `/skills`, `/knowledge`, `/login`,
 bus events. They are a control plane. `run_commands` in `tui/src/lib.rs`
 is the in-process version of `rpc/src/api.rs`.
 
-RPC `Api` (`crates/rpc/src/api.rs`) is ~93 `async fn`s. It imports agent
+RPC `Api` (`crates/rpc/src/api.rs`) is 51 methods (this doc first counted
+`~93 async fn`; 12 §7 counts 51). It imports agent
 (including `knowledge::{Change, Concept, HarvestResult, History, Hit,
 Meta, Put, Source}`), tools (including `git::SyncResult`), and signal
 (`Allow`, `Link`, `RemoveAllowed`, `SignalStatus`, …). Payloads are still
@@ -605,7 +667,7 @@ forward!(
 A new event type that a UI should see is a three-crate edit (owner, tui
 Bridge, rpc Bridge). That is a dumping ground split across files.
 
-### Why it is a transgression
+### Why it matters
 
 00 §8 described a chat widget. The TUI is an operator console. Tauri-over-
 RPC cannot reuse the TUI path: the TUI talks kameo types, RPC talks
@@ -642,6 +704,13 @@ through it (keep the bus subscription).
 Do not add Tauri until A or B is done. Otherwise Tauri becomes a third
 list.
 
+**Resolved (12 §7):** option A's amendment landed — 00 §8 is rewritten as
+the control-plane truth, with the counts above, and phase 4 (Tauri) is
+gated on the two command lists becoming one. The unification itself was
+not done, deliberately: a real refactor with one beneficiary that has no
+date. `forward!` and the five `rt.subscribe` lines stay until a third
+consumer appears.
+
 ---
 
 ## G7. Hot reload in v0
@@ -671,7 +740,7 @@ Mid-turn, a tools-hash change already warns (07 §5, `loop_.rs`
 `tools_seen`). So a drop-in MCP file mid-turn can change the tool list
 the 07 invariant said was frozen for the turn.
 
-### Why it is a transgression
+### Why it matters
 
 A v0 constraint was ignored because the MCP drop-in dir is unusable
 without it. Fair. It was never struck from the constitution, and it
@@ -686,6 +755,11 @@ interacts with 07 (tool list is part of the cached prefix).
    baseline). The watcher can set a dirty flag; `Turn::rebase` is the
    apply point. That keeps 07’s prefix intact.
 3. Until (2), a file drop mid-turn is a known cache miss. Say so.
+
+**Resolved (12 §4):** the direct tool list is fetched once per turn in
+`Turn::rebase`; `tools_seen`, the hash diff and the warn are deleted. No
+dirty flag — fetching once per turn *is* the freeze. 00 §9 names the
+watcher and the turn-start resync; 01 §1.4 / 07 §5 say “next turn.”
 
 ---
 
@@ -726,7 +800,7 @@ is why this mostly works.
 `todo` is pure session state. No approval needed. Fine as an exception,
 undocumented in 00.
 
-### Why it is a transgression
+### Why it matters
 
 “Every invocation through the registry” is how you promise there is one
 gate (G1). Two names short-circuit it. Three ways to call a tool now
@@ -747,6 +821,10 @@ design; 00 should say it.
 
 Do not add a third loop-local name without amending that sentence. The
 test is: if it can affect the world without `Invoke`, it is a bug.
+
+**Resolved (12 §1):** 00 §4 carries the `todo` / `python` loop-local
+exception in the words above, including the “if it can affect the world
+without `Invoke`, it is a bug” test.
 
 ---
 
@@ -792,10 +870,10 @@ That is a provider constraint for the Claude Code OAuth login (05 §2.3),
 and it is also product branding in the system prompt (00 §1.1: *the only
 product name is the binary `wth`*).
 
-### Why it is a transgression
+### Why it matters
 
 §1.8 is a vibe rule, and shell+fs already made it thin. The sharp
-failure is Cursor: 00 said we would not take another product’s coding
+case is Cursor: 00 said we would not take another product’s coding
 agent as our shape, then we rented Cursor’s. Claude Code identity is
 §1.1, not §1.8, but it is the same gravity — we look like whoever minted
 the token.
@@ -816,6 +894,14 @@ the token.
 If you want §1.8 to stay as written, delete the cursor crate. That is the
 only consistent reading. Not recommended: the login is doing work.
 
+**Resolved (12 §10):** 00 §1.8 rewritten — but not with the text above.
+This doc's reading of §1.8 as “no grep/edit natives” was wrong: the user
+ruled that any assistant acting on a machine needs to find text and change
+part of a file, so `grep` and `edit` are now natives in `tools/src/fs.rs`.
+What stays out is *coding-specific* natives (LSP, notebooks, git, diff
+review). Cursor stays a provider (G5); the provider-identity sentence is
+documented as not product branding.
+
 ---
 
 ## G10. `agent` is the new `types.rs`
@@ -828,7 +914,8 @@ the shape, cap the core.* Original runtime table listed Tool/Risk in
 
 ### What the code does
 
-`crates/agent/src` is 9875 lines, 17 files. `lib.rs` is ~662 lines of
+`crates/agent/src` was 9875 lines, 17 files at audit time (10701 / 18 on
+2026-09-11 before knowledge moved out; smaller since, 12 §9). `lib.rs` is ~662 lines of
 command structs (`SendInput`, `Steer`, `KnowledgeSearch`, `AddSkillRepo`,
 `Login`, …) plus `AgentEvent` (16 variants: the original stream plus
 `SubagentSpawned`, `MessageDelivered`, `ModelChanged`, `Compacting`,
@@ -844,7 +931,7 @@ This is not a 129 KB `types.rs`. It is one crate that owns the loop, the
 store, the REPL, the knowledge bundle, the peer router, compaction, and
 the public command surface every UI imports.
 
-### Why it is a transgression
+### Why it matters
 
 §1.5 forbade a dumping ground in `runtime`. The dump moved one hop. UIs
 (`tui`, `rpc`, `signal`) all `use agent::{...}` for a supermarket of
@@ -873,6 +960,12 @@ Do:
    what the loop must own (store, frame, compact, repl, knowledge).
    Frontends do not grow it.*
 
+**Resolved (12 §8):** 00 §10 carries the budget sentence and the `lib.rs`
+re-exports rule; command structs move next to their handler when the file
+is next touched. Opportunistic, no date. Point 3 above is superseded:
+knowledge is a plugin now (G2), which also took `KnowledgeChanged` out of
+`AgentEvent`.
+
 ---
 
 ## G11. MCP names: 00 vs 01 vs the code
@@ -895,7 +988,7 @@ its own name (no prefix).”* README: *“tools registered without prefix.”*
 Three texts, two answers. The code matches 01 and the README, not 00,
 not `ToolSpec`’s doc comment.
 
-### Why it is a transgression
+### Why it matters
 
 This one is doc rot, not a secret feature. It is included because 00 §6
 is still false, and because no-prefix plus `gate()` (G1) is how two MCP
@@ -909,15 +1002,22 @@ plan. 01 rejected it without replacing the plan.
    name). Make that loud: on reconcile, if name N is owned by another
    server, log and skip, or namespace only the colliding ones. Write the
    choice in 01. Silent replace is the bug prefixing existed to avoid.
+   *(Stale — see Resolved.)*
 
 This is an amendment that already happened. Record it.
+
+**Resolved (12 §1):** `ToolSpec` comment and 00 §6 fixed to “no prefix,”
+pointing at 01. The collision claim above was stale at audit time:
+`mcp.rs` already tracked names in a `taken` map, logged the clash and
+skipped the loser (native wins, then first server by sorted name); nothing
+was ever silently replaced. 00 §6 now says so.
 
 ---
 
 ## Deliberate rewrites (not on the gap list)
 
 These changed the requirement in a later doc. Do not treat them as
-silent failures; do make 00 point at the doc that won.
+silent drift; do make 00 point at the doc that won.
 
 | Original 00 | Later | Where |
 |---|---|---|
@@ -931,6 +1031,10 @@ silent failures; do make 00 point at the doc that won.
 ---
 
 ## Suggested order of work
+
+Executed as 12 §12 waves; differences: the guard/lint idea was dropped
+(docs are the record, no scripts enforce them), knowledge became a plugin,
+grep/edit were added.
 
 Not by moral severity — by “restores a brake before the next plugin.”
 
@@ -954,12 +1058,16 @@ Not by moral severity — by “restores a brake before the next plugin.”
    Opportunistic, not a project.
 
 Do not extract ten crates. Do not delete Signal. Do not delete
-knowledge. The failures are brakes that rusted, not features that
+knowledge. The gaps are brakes that went unmaintained, not features that
 should die.
 
 ---
 
 ## Cross-reference
+
+Paths as of the audit; the Resolution table says where things moved
+(`crates/agent/src/knowledge/` is now `crates/knowledge/`, `ErasedTool::gate`
+is gone).
 
 | Id | 00 clause | Primary files |
 |---|---|---|

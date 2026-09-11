@@ -3,6 +3,7 @@
 A single-process AI harness that does things for the user. Plugins are Rust
 crates talking over a typed message bus; any frontend attaches over JSON-RPC.
 Design: [`docs/design/00-architecture.md`](docs/design/00-architecture.md).
+Adding a plugin: [`docs/plugins.md`](docs/plugins.md).
 
 ```sh
 just setup                 # rustup toolchain; `just toolchain` prints its bin dir
