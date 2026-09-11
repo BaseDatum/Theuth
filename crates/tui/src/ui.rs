@@ -8,8 +8,8 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tools::{Decision, Risk};
 
 use crate::model::{
-    CardKind, Command, Entry, Level, Menu, MenuKey, Model, Row, UiEvent, describe, gate_name, k,
-    result_line, short, slash_matches, window,
+    CardKind, Command, Entry, Level, Menu, MenuKey, Model, Row, UiEvent, action_name, describe,
+    gate_name, k, result_line, short, slash_matches, window,
 };
 
 /// Channels handed to the app through iocraft context (owned so the receiver
@@ -311,12 +311,12 @@ fn menu(m: &Model, input: &str, width: u16) -> Option<AnyElement<'static>> {
         Menu::Mcp {
             cursor, expanded, ..
         } => (
-            "mcp  ␣ cycle gate  ⌫ inherit  →/← expand  l login/logout  s sync".to_owned(),
+            "mcp  ␣ cycle risk  ⌫ annotations  →/← expand  l login/logout  s sync".to_owned(),
             m.mcp_rows()
                 .iter()
                 .map(|r| match r {
                     Row::Server(s) => format!(
-                        "{} {:<16} {:>2} tools   {:<6} {}{}",
+                        "{} {:<16} {:>2} tools   {:<18} {}{}",
                         if expanded.contains(&s.name) {
                             "▾"
                         } else {
@@ -328,7 +328,10 @@ fn menu(m: &Model, input: &str, width: u16) -> Option<AnyElement<'static>> {
                         } else {
                             "–".to_owned()
                         },
-                        gate_name(s.gate),
+                        s.gate.map_or_else(
+                            || "annotations".to_owned(),
+                            |g| format!("risk: {}", gate_name(g))
+                        ),
                         match (s.connected, s.auth) {
                             (true, _) => "● connected",
                             (false, tools::McpAuth::Required) => "○ login required",
@@ -338,17 +341,21 @@ fn menu(m: &Model, input: &str, width: u16) -> Option<AnyElement<'static>> {
                             .as_deref()
                             .map_or_else(String::new, |r| format!("   ⟳ {r}")),
                     ),
+                    // `mutating (ask)`: effective risk, then what `tools.policy`
+                    // does with it (12 §5). `*` marks the tool's own line.
                     Row::Tool(_, t) => format!(
-                        "    {:<24} {:<7}{}",
+                        "    {:<24} {:<22}{}",
                         t.name,
-                        t.gate.map_or_else(
-                            || format!("({})", gate_name(t.effective)),
-                            |g| gate_name(g).to_owned()
-                        ),
-                        if t.registered || t.effective == tools::PolicyAction::Deny {
-                            ""
-                        } else {
-                            "  not registered"
+                        match t.gate {
+                            Some(tools::Gate::Off) => "off".to_owned(),
+                            Some(_) =>
+                                format!("{}* ({})", risk_name(t.risk), action_name(t.action)),
+                            None => format!("{} ({})", risk_name(t.risk), action_name(t.action)),
+                        },
+                        match (t.gate, t.registered) {
+                            (Some(tools::Gate::Off), _) => "  hidden",
+                            (_, false) => "  not registered",
+                            (_, true) => "",
                         },
                     ),
                 })

@@ -1,9 +1,11 @@
 //! MCP client: every `*.json` in `<data_dir>/mcp/` holds one or more servers in
 //! whatever layout its README used; each remote tool registers under its own
 //! name (no prefix). The directory is watched and reconciled on change;
-//! `<data_dir>/mcp/config.yaml` gates tools per server (design doc 01 §1.4).
-//! `<data_dir>/mcp/repos/` holds git clones of server sources; an entry's
-//! `cwd` resolves against the mcp dir (design doc 04 §3).
+//! `<data_dir>/mcp/config.yaml` overrides a tool's [`Risk`] per server or per
+//! tool, or turns it `off` (design docs 01 §1.4, 12 §5). A tool's default risk
+//! comes from its `ToolAnnotations`. `<data_dir>/mcp/repos/` holds git clones
+//! of server sources; an entry's `cwd` resolves against the mcp dir (design
+//! doc 04 §3).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -27,7 +29,8 @@ use serde_json::Value;
 
 use crate::registry::{ListTools, RegisterTool, ToolRegistry, UnregisterTool};
 use crate::{
-    DynTool, ErasedTool, MCP_ACTOR, PolicyAction, Risk, ToolCx, ToolOutput, ToolSpec, git,
+    DynTool, ErasedTool, Gate, MCP_ACTOR, Policy, PolicyAction, Risk, ToolCx, ToolOutput, ToolSpec,
+    git,
 };
 
 mod oauth;
@@ -213,50 +216,55 @@ fn remove_entry(json: &mut Value, stem: &str, name: &str) -> Option<FileEdit> {
     Some(FileEdit::Rewrite)
 }
 
-/// `<data_dir>/mcp/config.yaml`: per-server and per-tool approval actions.
-/// Machine-written by [`SetGate`] (comments are not preserved); `BTreeMap`
-/// keeps the output stable.
+/// `<data_dir>/mcp/config.yaml`: per-server and per-tool [`Gate`] lines, a
+/// [`Risk`] override or `off` (12 §5). Machine-written by [`SetGate`]
+/// (comments are not preserved); `BTreeMap` keeps the output stable.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 struct Gates {
     servers: BTreeMap<String, ServerGate>,
 }
 
+/// `deny_unknown_fields` so a pre-12 §5 `gate: allow` line fails loudly
+/// instead of being ignored.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 struct ServerGate {
+    /// Every tool of the server; `None` = each tool's annotations.
     #[serde(skip_serializing_if = "Option::is_none")]
-    gate: Option<PolicyAction>,
+    risk: Option<Gate>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    tools: BTreeMap<String, PolicyAction>,
+    tools: BTreeMap<String, Gate>,
 }
 
 impl Gates {
-    fn for_server(&self, server: &str) -> PolicyAction {
-        self.servers
-            .get(server)
-            .and_then(|g| g.gate)
-            .unwrap_or(PolicyAction::Allow)
+    /// The server line; `None` = annotations.
+    fn for_server(&self, server: &str) -> Option<Gate> {
+        self.servers.get(server).and_then(|g| g.risk)
     }
 
-    /// tool line → server line → allow.
-    fn for_tool(&self, server: &str, tool: &str) -> PolicyAction {
+    /// `Some(Off)` on the server line: not connected.
+    fn server_off(&self, server: &str) -> bool {
+        self.for_server(server) == Some(Gate::Off)
+    }
+
+    /// tool line → server line → `None` (annotations).
+    fn for_tool(&self, server: &str, tool: &str) -> Option<Gate> {
         self.servers
             .get(server)
-            .and_then(|g| g.tools.get(tool).copied().or(g.gate))
-            .unwrap_or(PolicyAction::Allow)
+            .and_then(|g| g.tools.get(tool).copied().or(g.risk))
     }
 
     /// The tool's own line, ignoring inheritance.
-    fn own(&self, server: &str, tool: &str) -> Option<PolicyAction> {
+    fn own(&self, server: &str, tool: &str) -> Option<Gate> {
         self.servers.get(server)?.tools.get(tool).copied()
     }
 
     /// Set or clear (`None`) a server or tool line; an emptied server entry is dropped.
-    fn set(&mut self, server: &str, tool: Option<&str>, action: Option<PolicyAction>) {
+    fn set(&mut self, server: &str, tool: Option<&str>, gate: Option<Gate>) {
         let g = self.servers.entry(server.to_owned()).or_default();
-        match (tool, action) {
-            (None, a) => g.gate = a,
+        match (tool, gate) {
+            (None, a) => g.risk = a,
             (Some(t), Some(a)) => {
                 g.tools.insert(t.to_owned(), a);
             }
@@ -264,13 +272,13 @@ impl Gates {
                 g.tools.remove(t);
             }
         }
-        if g.gate.is_none() && g.tools.is_empty() {
+        if g.risk.is_none() && g.tools.is_empty() {
             self.servers.remove(server);
         }
     }
 }
 
-/// Missing file = all allow; unreadable/unparsable = warn + all allow.
+/// Missing file = annotations; unreadable/unparsable = warn + annotations.
 fn load_gates(path: &Path) -> Gates {
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
@@ -283,20 +291,39 @@ fn load_gates(path: &Path) -> Gates {
     match serde_yaml::from_str::<Option<Gates>>(&text) {
         Ok(g) => g.unwrap_or_default(),
         Err(e) => {
-            tracing::warn!(path = %path.display(), error = %e, "mcp gates invalid");
+            tracing::warn!(
+                path = %path.display(), error = %e,
+                "mcp gates invalid (values are read_only | mutating | destructive | off), all default"
+            );
             Gates::default()
         }
     }
 }
 
+/// Risk from the remote tool's annotations: `read_only_hint` → read-only,
+/// `destructive_hint` → destructive, else mutating. rmcp's
+/// `is_destructive()` reads an *unset* hint as destructive; we do not (12 §5):
+/// most servers set nothing, and `tools.policy.mutating = ask` already
+/// prompts. A server that means destructive says so.
+fn annotated(t: &rmcp::model::Tool) -> Risk {
+    let a = t.annotations.as_ref();
+    if a.and_then(|a| a.read_only_hint) == Some(true) {
+        Risk::ReadOnly
+    } else if a.and_then(|a| a.destructive_hint) == Some(true) {
+        Risk::Destructive
+    } else {
+        Risk::Mutating
+    }
+}
+
 type Service = Arc<RunningService<RoleClient, ()>>;
 
-/// A remote tool. Holds the connection alive through `service`.
+/// A remote tool. Holds the connection alive through `service`. Its
+/// `spec.risk` is the only thing the registry gates on (12 §5).
 struct McpTool {
     spec: ToolSpec,
     remote_name: String,
     service: Service,
-    gate: PolicyAction,
 }
 
 impl ErasedTool for McpTool {
@@ -329,10 +356,6 @@ impl ErasedTool for McpTool {
                 structured: result.structured_content,
             })
         })
-    }
-
-    fn gate(&self) -> Option<PolicyAction> {
-        Some(self.gate)
     }
 }
 
@@ -387,6 +410,9 @@ pub struct Mcp {
     /// `<data_dir>/oauth/mcp`; `<name>.json` holds a server's rmcp credentials.
     auth_dir: PathBuf,
     registry: ActorRef<ToolRegistry>,
+    /// `tools.policy`, read at start alongside the registry's copy; only used
+    /// to show what a tool's risk resolves to ([`McpToolInfo::action`]).
+    policy: Policy,
     rt: Runtime,
 }
 
@@ -398,8 +424,8 @@ struct Reconcile;
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ListServers;
 
-/// `ask` → `Result<(), String>`: set (or clear with `action: None`) a server
-/// or tool gate, rewrite `config.yaml`, reconcile now.
+/// `ask` → `Result<(), String>`: set (or clear with `gate: None`) a server
+/// or tool line, rewrite `config.yaml`, reconcile now.
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct SetGate {
@@ -407,8 +433,8 @@ pub struct SetGate {
     pub server: String,
     /// `None` = the server line.
     pub tool: Option<String>,
-    /// `None` removes the line.
-    pub action: Option<PolicyAction>,
+    /// `None` removes the line (back to annotations).
+    pub gate: Option<Gate>,
 }
 
 /// `ask` → `Result<(), String>`: drop one server's connection and tools, then
@@ -510,10 +536,10 @@ pub enum McpAuth {
 pub struct McpServer {
     /// Server name.
     pub name: String,
-    /// False when deny-gated or connect failed; then `tools` is empty.
+    /// False when `off` or connect failed; then `tools` is empty.
     pub connected: bool,
-    /// Server-level gate (default allow).
-    pub gate: PolicyAction,
+    /// Server line of `mcp/config.yaml`; `None` = each tool's annotations.
+    pub gate: Option<Gate>,
     /// Remote tools, sorted by name.
     pub tools: Vec<McpToolInfo>,
     /// Name of the clone under `mcp/repos/` that holds the entry's `cwd`, if any.
@@ -530,11 +556,13 @@ pub struct McpToolInfo {
     pub name: String,
     /// Remote description.
     pub description: String,
-    /// The tool's own override, if any.
-    pub gate: Option<PolicyAction>,
-    /// What the gate does after inheritance.
-    pub effective: PolicyAction,
-    /// False when denied or hidden by a name clash.
+    /// The tool's own line, if any.
+    pub gate: Option<Gate>,
+    /// Effective risk: tool line → server line → annotations.
+    pub risk: Risk,
+    /// What `tools.policy` does for `risk`; for display only.
+    pub action: PolicyAction,
+    /// False when `off` or hidden by a name clash.
     pub registered: bool,
 }
 
@@ -558,9 +586,11 @@ impl Mcp {
                     .iter()
                     .map(|t| {
                         let tool = t.name.to_string();
+                        let risk = risk_of(&state.gates, &name, t);
                         McpToolInfo {
                             gate: state.gates.own(&name, &tool),
-                            effective: state.gates.for_tool(&name, &tool),
+                            risk,
+                            action: self.policy.action(risk),
                             registered: r.tools.contains(&tool),
                             description: t.description.as_deref().unwrap_or_default().to_owned(),
                             name: tool,
@@ -644,7 +674,7 @@ impl Message<SetGate> for Mcp {
         // Edit a copy and let `reconcile` load it from the file: it diffs the
         // file against `state.gates` to decide whether to re-register.
         let mut gates = self.state.gates.clone();
-        gates.set(&m.server, m.tool.as_deref(), m.action);
+        gates.set(&m.server, m.tool.as_deref(), m.gate);
         let text = serde_yaml::to_string(&gates).map_err(|e| e.to_string())?;
         // Write-then-rename so the watcher never reads a half file.
         let path = self.dir.join("config.yaml");
@@ -811,8 +841,8 @@ impl Message<AddServer> for Mcp {
         if path.exists() || self.known(&m.name).is_ok() {
             return Err(format!("mcp server `{}` already exists", m.name));
         }
-        if self.state.gates.for_server(&m.name) == PolicyAction::Deny {
-            return Err(format!("`{}` is denied by mcp/config.yaml", m.name));
+        if self.state.gates.server_off(&m.name) {
+            return Err(format!("`{}` is off in mcp/config.yaml", m.name));
         }
         // Connect before writing: nothing half-added, the caller fixes the
         // entry and calls again. This one wait is the caller's own request.
@@ -982,7 +1012,7 @@ impl Message<Settled> for Mcp {
     async fn handle(&mut self, m: Settled, ctx: &mut Context<Self, Self::Reply>) {
         self.state.pending.remove(&m.name);
         let wanted = desired(&self.dir).get(&m.name) == Some(&m.spec)
-            && self.state.gates.for_server(&m.name) != PolicyAction::Deny;
+            && !self.state.gates.server_off(&m.name);
         if !wanted {
             // The entry changed or left while connecting: `result` is dropped
             // (ending the process) and reconcile starts over if needed.
@@ -1218,9 +1248,7 @@ async fn reconcile(
     let stale: Vec<String> = state
         .running
         .iter()
-        .filter(|(name, r)| {
-            want.get(*name) != Some(&r.spec) || state.gates.for_server(name) == PolicyAction::Deny
-        })
+        .filter(|(name, r)| want.get(*name) != Some(&r.spec) || state.gates.server_off(name))
         .map(|(name, _)| name.clone())
         .collect();
     let mut orphans: Vec<String> = Vec::new();
@@ -1237,7 +1265,7 @@ async fn reconcile(
     for (name, spec) in want {
         if state.running.contains_key(&name)
             || state.pending.contains(&name)
-            || state.gates.for_server(&name) == PolicyAction::Deny
+            || state.gates.server_off(&name)
         {
             continue;
         }
@@ -1256,6 +1284,15 @@ async fn reconcile(
     }
 }
 
+/// Effective risk of remote tool `t` on `server`: its gate line (tool → server)
+/// when that names a risk, else its annotations.
+fn risk_of(gates: &Gates, server: &str, t: &rmcp::model::Tool) -> Risk {
+    gates
+        .for_tool(server, &t.name)
+        .and_then(Gate::risk)
+        .unwrap_or_else(|| annotated(t))
+}
+
 /// Recompute every registration in sorted server order (first name wins),
 /// then diff against what is registered so nothing flickers. `orphans` are
 /// names registered by servers that have since been dropped.
@@ -1268,8 +1305,7 @@ async fn register(state: &mut State, registry: &ActorRef<ToolRegistry>, mut orph
         let r = &state.running[server];
         for t in &r.remote {
             let name = t.name.to_string();
-            let gate = state.gates.for_tool(server, &name);
-            if gate == PolicyAction::Deny {
+            if state.gates.for_tool(server, &name) == Some(Gate::Off) {
                 continue;
             }
             let owner = if state.natives.contains(&name) {
@@ -1289,13 +1325,12 @@ async fn register(state: &mut State, registry: &ActorRef<ToolRegistry>, mut orph
                         name: name.clone(),
                         description: t.description.as_deref().unwrap_or_default().to_owned(),
                         schema: Value::Object((*t.input_schema).clone()),
-                        risk: Risk::Mutating,
+                        risk: risk_of(&state.gates, server, t),
                         direct: false,
                         returns: "Any".to_owned(),
                     },
                     remote_name: name,
                     service: Arc::clone(&r.service),
-                    gate,
                 },
             ));
         }
@@ -1318,8 +1353,13 @@ async fn register(state: &mut State, registry: &ActorRef<ToolRegistry>, mut orph
 /// Register the MCP source tools (natives, so they win clashes), spawn the
 /// [`Mcp`] actor, kick off the first reconcile of `<data_dir>/mcp` without
 /// waiting for it (servers connect in the background and report through
-/// [`McpProgress`]), then watch the directory.
-pub async fn start(rt: &Runtime, registry: ActorRef<ToolRegistry>) -> anyhow::Result<()> {
+/// [`McpProgress`]), then watch the directory. `policy` is `tools.policy`,
+/// for [`McpToolInfo::action`].
+pub async fn start(
+    rt: &Runtime,
+    registry: ActorRef<ToolRegistry>,
+    policy: Policy,
+) -> anyhow::Result<()> {
     let dir = rt.data_dir.join("mcp");
     std::fs::create_dir_all(&dir)?;
     let sources: [DynTool; 4] = [
@@ -1346,6 +1386,7 @@ pub async fn start(rt: &Runtime, registry: ActorRef<ToolRegistry>) -> anyhow::Re
             dir: dir.clone(),
             auth_dir: ::oauth::Store::new(&rt.data_dir).mcp_dir(),
             registry,
+            policy,
             rt: rt.clone(),
         },
         runtime::subscriber_mailbox(),
@@ -1606,32 +1647,81 @@ mod tests {
     #[test]
     fn gates_resolution() {
         let g: Gates = serde_yaml::from_str(
-            "servers:\n  e:\n    gate: ask\n    tools:\n      echo: allow\n      slow: deny\n  f:\n    gate: deny\n",
+            "servers:\n  e:\n    risk: read_only\n    tools:\n      echo: destructive\n      slow: off\n  f:\n    risk: off\n",
         )
         .unwrap();
-        assert_eq!(g.for_tool("e", "echo"), PolicyAction::Allow);
-        assert_eq!(g.for_tool("e", "slow"), PolicyAction::Deny);
-        assert_eq!(g.for_tool("e", "other"), PolicyAction::Ask);
-        assert_eq!(g.for_server("f"), PolicyAction::Deny);
-        assert_eq!(g.for_tool("unknown", "x"), PolicyAction::Allow);
+        assert_eq!(g.for_tool("e", "echo"), Some(Gate::Destructive));
+        assert_eq!(g.for_tool("e", "slow"), Some(Gate::Off));
+        assert_eq!(g.for_tool("e", "other"), Some(Gate::ReadOnly));
+        assert!(g.server_off("f"));
+        assert_eq!(g.for_tool("unknown", "x"), None);
         assert_eq!(serde_yaml::from_str::<Option<Gates>>("").unwrap(), None);
+        // Old allow|ask|deny files fail to parse (12 §5: no migration).
+        assert!(serde_yaml::from_str::<Gates>("servers:\n  e:\n    gate: allow\n").is_err());
+        assert!(serde_yaml::from_str::<Gates>("servers:\n  e:\n    risk: allow\n").is_err());
+    }
+
+    #[test]
+    fn risk_from_annotations_then_gates() {
+        use rmcp::model::{Tool, ToolAnnotations};
+        let tool = |a: Option<ToolAnnotations>| {
+            let mut t = Tool::new("t", "", serde_json::Map::new());
+            t.annotations = a;
+            t
+        };
+        let g = Gates::default();
+        assert_eq!(risk_of(&g, "s", &tool(None)), Risk::Mutating);
+        assert_eq!(
+            risk_of(&g, "s", &tool(Some(ToolAnnotations::new().read_only(true)))),
+            Risk::ReadOnly
+        );
+        assert_eq!(
+            risk_of(
+                &g,
+                "s",
+                &tool(Some(ToolAnnotations::new().destructive(true)))
+            ),
+            Risk::Destructive
+        );
+        // Unset destructive_hint is *not* destructive here (12 §5).
+        assert_eq!(
+            risk_of(&g, "s", &tool(Some(ToolAnnotations::new()))),
+            Risk::Mutating
+        );
+        let mut g = Gates::default();
+        g.set("s", None, Some(Gate::ReadOnly));
+        assert_eq!(
+            risk_of(
+                &g,
+                "s",
+                &tool(Some(ToolAnnotations::new().destructive(true)))
+            ),
+            Risk::ReadOnly,
+            "server line beats annotations"
+        );
+        g.set("s", Some("t"), Some(Gate::Off));
+        assert_eq!(
+            risk_of(&g, "s", &tool(None)),
+            Risk::Mutating,
+            "off falls back to annotations for display"
+        );
     }
 
     #[test]
     fn gates_set_roundtrip_drops_empty() {
         let mut g = Gates::default();
-        g.set("e", Some("echo"), Some(PolicyAction::Deny));
-        g.set("e", None, Some(PolicyAction::Ask));
-        g.set("f", None, Some(PolicyAction::Deny));
+        g.set("e", Some("echo"), Some(Gate::Off));
+        g.set("e", None, Some(Gate::ReadOnly));
+        g.set("f", None, Some(Gate::Off));
         let back: Gates = serde_yaml::from_str(&serde_yaml::to_string(&g).unwrap()).unwrap();
         assert_eq!(back, g);
-        assert_eq!(back.own("e", "echo"), Some(PolicyAction::Deny));
-        assert_eq!(back.for_tool("e", "other"), PolicyAction::Ask);
+        assert_eq!(back.own("e", "echo"), Some(Gate::Off));
+        assert_eq!(back.for_tool("e", "other"), Some(Gate::ReadOnly));
 
         g.set("e", None, None);
         assert_eq!(
             g.for_tool("e", "echo"),
-            PolicyAction::Deny,
+            Some(Gate::Off),
             "tool override survives"
         );
         g.set("e", Some("echo"), None);

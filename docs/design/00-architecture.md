@@ -1,6 +1,7 @@
 # Architecture: event bus + plugins
 
-Status: draft v0 · 2026-09-09
+Status: draft v0 · 2026-09-11 (v0 text 2026-09-09; additions past v0 scope are
+marked "added in NN")
 
 A single-process Rust harness that does things for the user. Plugins are
 in-process crates that talk to each other only through a typed message bus.
@@ -28,8 +29,15 @@ names the alternative it beat and why.
 6. **A subsystem earns a crate only when the current phase needs it.**
 7. **Permissions are one contract type from day one**, not a subsystem that
    accretes. (jarvis: tiers, approvals, kill switch, safe mode grew ad hoc.)
-8. **Not a coding agent.** oh-my-pi is inspiration for loop shape, tool
-   ergonomics, sessions, steering, subagents, skills — not for its tool set.
+8. **Not a coding agent.** The tool set is what an assistant needs to act on
+   the user's machine: shell, files (read, write, list, `grep`, `edit`),
+   MCP, python, and whatever plugins register. We do not ship coding-specific
+   natives (LSP, notebooks, git, diff review): those are a use of the
+   harness, not a product line (12 §10). oh-my-pi
+   is inspiration for loop shape, tool ergonomics, sessions, steering,
+   subagents, skills — not for its tool set. Providers may be whoever mints
+   the token; a provider-required identity line (05 §2.3) is not product
+   branding and is not shown for key auth.
 
 ## 2. Process model
 
@@ -112,16 +120,18 @@ pub struct Runtime {
 
 `wth/main.rs` is, in full: build `Runtime`, `for p in plugins { p.start(&rt).await? }`,
 wait for shutdown. Plugin order is the vector order; a plugin needing another
-looks it up by name at first use, never at start (no start-order coupling).
+looks it up by name at first use. A plugin may wait for a named actor at
+start (`Runtime::lookup_when`, 12 §2); it must not assume vector order.
 
 Shared crate `runtime` contains exactly `Plugin`, `Runtime` (+ the three
 helpers above), `SessionId`, `TurnId`. Nothing else. The tool and approval
 contracts live in `tools`; the agent's commands and its `AgentEvent` live in
 `agent`. Plugins depend on each other's crates for those types along the
-acyclic order `runtime ← tools ← agent ← {tui, rpc} ← wth`. This keeps the
-shared crate at ~130 lines and puts each contract next to the code that
-enforces it. (Earlier draft put the tool contract in `runtime`; dropped once
-the agent needed `tools` anyway for the registry actor type.)
+acyclic order `runtime ← tools ← knowledge ← agent ← {tui, rpc, signal} ← wth`
+(`knowledge` joins the chain in 12 §9). This keeps the shared crate under
+its 400-line ceiling and puts each contract next to the code that enforces
+it. (Earlier draft put the tool contract in `runtime`; dropped once the
+agent needed `tools` anyway for the registry actor type.)
 
 Events: a plugin may publish one struct per event or one `#[serde(tag =
 "type")]` enum per event *stream* — `agent::AgentEvent` is the latter because
@@ -153,23 +163,27 @@ hand-written schemas. A `ToolRegistry` actor (in `tools`) holds
 `HashMap<String, Box<dyn ErasedTool>>` and answers `ask(ListTools)` /
 `ask(Invoke)`. MCP servers add tools to the same registry (§6).
 
+Loop-local exception: `todo` and `python` are dispatched by the turn, not
+the registry (07 §5, 08). `todo` is turn state, not a capability. Every host
+call `python` makes is `Invoke` and takes the gate. A third loop-local name
+amends this sentence first. Test: if it can affect the world without
+`Invoke`, it is a bug.
+
 ### Permission gate
 
-Single actor `Approval` (lives in `tools`). `Invoke` → registry checks the
-tool's `Risk` against config policy `{ read_only = "allow", mutating = "ask",
-destructive = "ask" }` → on `ask`, publishes `ApprovalRequest` (Guaranteed)
-and awaits `ask(Resolve { id, decision })` from whichever UI answers first.
-Timeout → deny. That is the whole permission system for v0.
+One contract: `Risk → PolicyAction` from `tools.policy` (`{ read_only =
+"allow", mutating = "ask", destructive = "ask" }`). On `Ask` the registry
+publishes `ApprovalRequested` (Guaranteed) and awaits `ask(Resolve { id,
+decision })` from whichever UI answers first; timeout → deny. Two UI
+switches rewrite `Ask` to `Allow` and nothing else: the persisted
+`tools.approvals: false` (written back to `config.yaml` by `SetApprovals {
+session: None }`) and the in-memory per-session set (`SetApprovals {
+session: Some(id) }`, inherited by subagents through `SetParent`). `Deny` is
+never rewritten. MCP config assigns a tool's `Risk` or hides it; it is not
+a second policy. *(Target; today `ErasedTool::gate` still exists, see 12 §5.)*
 
-Two switches turn `ask` into `allow` without touching the policy: the
-persisted `tools.approvals: false` (written back to `config.yaml` by
-`SetApprovals { session: None }`) and a per-session set held by the registry
-(`SetApprovals { session: Some(id) }`, in memory). `deny` is never lifted.
 TUI: `/approvals [on|off] [always]`; RPC: `set_approvals`; header shows
-`approvals off` while either switch is off. The agent `tell`s the registry
-`SetParent { session, parent }` when a subagent session comes up, and the
-bypass check walks that chain, so children inherit the parent's switch
-(toggling the parent later applies to them too).
+`approvals off` while either switch is off.
 
 ## 5. Agent plugin
 
@@ -180,6 +194,13 @@ prompt caching, 26 providers. Default provider/model comes from config.
 
 Rejected: `async-openai` (one provider), `llm-chain`/`rig` (framework
 opinions we would fight).
+
+**Cursor backend** (added in 05 §2.5, as library `cursor`): v0 did not
+include Cursor; it was added because Cursor's AgentService is
+Connect-RPC/protobuf over HTTP/2 — genai has no adapter and the protocol is
+not OpenAI-shaped. Crate `cursor` is that adapter, reached only through
+`agent::backend` (12 §6). Rejected: upstreaming to genai (protocol
+unstable); tonic (protoc, heavy).
 
 Actor `Agent` per session. Loop (oh-my-pi shape):
 
@@ -267,8 +288,11 @@ a subprocess per call.
 **MCP client**: `rmcp` 3.2 (official SDK; stable spec 2026-07-28). One
 `McpServer` actor per configured server (`TokioChildProcess` stdio or
 streamable HTTP). On start it lists tools and registers each into
-`ToolRegistry` under `<server>__<tool>` with `Risk` from config (default
-`Mutating`). Invoke forwards `call_tool`.
+`ToolRegistry` under its remote name, no prefix (01 §1.4). Clash: native
+wins, then first server by sorted name; the loser is logged and skipped
+(`mcp.rs` `taken`), never silently replaced. `Risk` comes from the server's
+tool annotations, overridable in `mcp/config.yaml` (12 §5). Invoke forwards
+`call_tool`.
 
 ## 7. RPC plugin
 
@@ -295,10 +319,15 @@ Library: `iocraft` 0.9 (declarative, flexbox via taffy, hooks;
 runtime-agnostic — `use_future` takes any future). Ink-like model matches
 the oh-my-pi rendering approach.
 
-The TUI is an ordinary bus subscriber: it registers recipients for the
-agent's events and approval requests, and sends `UserInput`/`Steer`/`Resolve`
-by `ask`/`tell`. It does not know the agent exists beyond those types. The
-same code path a Tauri app will use over RPC.
+The TUI is a control plane over the same actor commands RPC exposes. It
+subscribes to bus events for the transcript, approvals, MCP progress and
+logins, and `ask`s named actors for everything else (`tui::Command`, 36
+variants today). It is not a thin subscriber. Tauri uses RPC (`rpc::Api`, 51
+methods); the TUI uses in-process asks of the same command types. The two
+lists are maintained by hand and drift; **phase 4 (Tauri) does not start
+until they are one list.** Alternative rejected: TUI as a jsonrpsee client
+of localhost (§2's serialization cost on the chat path; acceptable for slash
+commands, but not worth doing before a third frontend exists). See 12 §7.
 
 Input: `TextInput` is multiline with `newline_modifiers: SHIFT` (our iocraft
 patch, `[patch.crates-io]`): plain Enter submits, Shift+Enter inserts a
@@ -369,23 +398,38 @@ extracts its own section
 the union of all config. Layout, first run, credentials and MCP drop-in files:
 `01-config-and-subagents.md` §1.
 
+Hot reload (v0 read everything once; added in 01 §1.4 because MCP drop-ins
+are edited while `wth` runs): `mcp/` is watched (`notify`, 300 ms debounce).
+Skills (04 §1.1) and knowledge (10) resync at turn start by mtime. The
+direct tool list is read once per turn (12 §4).
+
 ## 10. Workspace
 
 ```
 Cargo.toml            workspace, edition 2024, resolver 3
 crates/
-  runtime/            Plugin trait + §4 contract types (≤400 lines)
-  agent/              genai loop, session store, skills (phase 2), subagents (phase 3)
-  oauth/              loopback callback, PKCE, provider token store (doc 05)
-  tools/              registry, approval, shell (brush), fs, mcp (rmcp)
-  rpc/                jsonrpsee server, event subscription bridge
-  tui/                iocraft frontend
-  wth/                bin: config load, plugin list, run
+  runtime/            library: Plugin trait, Runtime, SessionId/TurnId (≤400 lines; §4)
+  models/             library: model catalog trimmed from models.dev (added in 02)
+  markdown/           library: streaming markdown renderer for the TUI (added in 03)
+  oauth/              library: loopback callback, PKCE, provider token store (added in 05)
+  cursor/             library: Cursor AgentService adapter behind agent::backend (added in 05 §2.5; seam 12 §6)
+  tools/              plugin: registry, approval, shell (brush), fs, mcp (rmcp) (§6, 01)
+  knowledge/          plugin: OKF bundle, FTS index, gix history, knowledge_* tools (added in 10; extracted from agent in 12 §9)
+  agent/              plugin: genai loop, session store, frame/compaction, skills, subagents, repl (§5, 07, 08)
+  signal/             plugin: Signal channel and device pairing (added in 09)
+  rpc/                plugin: jsonrpsee server, event subscription bridge (§7)
+  tui/                plugin: iocraft frontend (§8)
+  wth/                bin: config load, plugin list from CLI flags, run (§2)
 docs/design/          this file and per-plugin decisions
 ```
 
-Six crates for v0. `rpc` may be omitted from the default plugin list and
-enabled by `--serve` until a second frontend exists.
+v0 named six crates (`runtime`, `agent`, `oauth`, `tools`, `rpc`, `tui`) plus
+the `wth` bin; the rest were added by the docs named beside them, each as the kind
+(plugin or library) that doc argued for. `rpc` starts with `--serve` or
+`--headless`. Budget: `runtime` ≤ 400 lines. `agent` is the loop and what
+the loop must own (store, frame, compact, repl); frontends do not grow it.
+New subsystems earn a plugin. `agent/src/lib.rs` re-exports; command structs
+live next to the handler that answers them (12 §8).
 
 Workspace dependencies (versions verified 2026-09-09 via `cargo info`):
 
@@ -475,16 +519,17 @@ The shell tool `killpg`s that group on timeout.
 
 Each phase ends with a runnable check, not a test suite.
 
-| Phase | Deliverable | Check | Status (2026-09-09) |
+| Phase | Deliverable | Check | Status (2026-09-11) |
 |---|---|---|---|
 | 0 | workspace, `runtime`, `wth` starts an empty plugin list | `wth --version` | done |
 | 1 | agent + tui: streamed chat, sessions persisted and resumable | chat, quit, `wth --resume <id>` shows history | done; verified in a real pty |
 | 1 | tools: shell via brush + fs, approval gate in tui | ask model to `ls`; approval modal; output returned | done; orphan kill verified (`sleep 30` group dead after timeout) |
-| 1 | mcp: one configured stdio server's tools callable | `@modelcontextprotocol/server-everything` `echo` | done (`everything__echo` → `Echo: hi`) |
+| 1 | mcp: one configured stdio server's tools callable | `@modelcontextprotocol/server-everything` `echo` | done (`everything__echo` → `Echo: hi`; registered as plain `echo` since 01 §1.4) |
 | 2 | rpc plugin, `--serve`; ts-rs bindings emitted | subscribe + send_input round trip over WS | done; headless e2e: shell + write/read + list/load sessions + shutdown, all over the wire |
 | 2 | skills | skill body appears in prompt on load | done (`docs/skills.md`) |
 | 3 | subagents, steering polish | parent receives child result as tool output | superseded by 01 §2 (detached) |
-| 4 | Tauri frontend over rpc | out of scope for this doc | not started; `just ts` emits `bindings/*.ts` |
+| 4 | Tauri frontend over rpc | out of scope for this doc | not started; gated on §8 (one command list); `just ts` emits `bindings/*.ts` |
+| 5 | course correction (12) | docs and tree agree | in progress |
 
 Known gaps carried forward: cancel/error paths in the loop are code-reviewed,
 not smoke-tested; a `setsid` child escapes `killpg`; no upstream PR yet for the
@@ -499,5 +544,10 @@ session actors are never evicted from the supervisor.
   the core (§1.5).
 - `Event` enum on `tokio::broadcast`: replaced by type-routed `MessageBus`.
 - Subsystems that were never used daily (meetings, signal, slack, voice,
-  goals, loops, notes, okf, character, continuity): not planned. They return
-  as plugins only when needed, and only as plugins.
+  goals, loops, notes, okf, character, continuity): not in v0. They return
+  as plugins when a doc argues the need, and only as plugins. Returned so far:
+
+  | Was | Now | As | Doc |
+  |---|---|---|---|
+  | signal | `signal` crate: channel + pairing | plugin | 09 (in-agent module rejected: only plugins may return) |
+  | okf | `knowledge` crate: store, FTS index, gix history, `knowledge_*` tools | plugin | 10, 12 §9 (the harvest *model call* stays in `agent`: it is a continuation of the live frame, 07; keep-it-all-in-agent rejected by the user) |

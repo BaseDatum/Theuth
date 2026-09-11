@@ -42,6 +42,7 @@ pub fn validate_name(name: &str) -> Result<(), String> {
     {
         return Err("provider name: 1–32 chars, start with a-z, then a-z, 0-9, _ or -".into());
     }
+    // Which namespaces have a backend (12 §6); the only other place that knows is backend.rs.
     if name == "cursor"
         || name.starts_with("genai_")
         || oauth::provider(name).is_some()

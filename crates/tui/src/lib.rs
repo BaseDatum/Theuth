@@ -184,19 +184,11 @@ async fn execute(cmd: Command, tx: &UnboundedSender<UiEvent>) -> anyhow::Result<
         ),
         Command::ListMcp => UiEvent::Mcp(mcp()?.ask(tools::ListServers).await?),
         Command::McpStatus => UiEvent::McpProgress(mcp()?.ask(tools::Progress).await?),
-        Command::SetGate {
-            server,
-            tool,
-            action,
-        } => {
+        Command::SetGate { server, tool, gate } => {
             let mcp = mcp()?;
-            mcp.ask(tools::SetGate {
-                server,
-                tool,
-                action,
-            })
-            .await
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
+            mcp.ask(tools::SetGate { server, tool, gate })
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
             // Re-list here, not from the UI: commands run concurrently.
             UiEvent::Mcp(mcp.ask(tools::ListServers).await?)
         }

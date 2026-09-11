@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use clap::Parser;
 use figment::Figment;
 use figment::providers::{Env, Format, Yaml};
-use runtime::{Plugin, Runtime, SessionId, write_config_value};
+use runtime::{Plugin, Runtime, SessionId};
 
 /// The worker's memory limits are enforced by the allocator, so the process
 /// that runs `wth subprocess` must own it. Unarmed (every other mode) it is
@@ -123,60 +123,6 @@ fn first_run(data_dir: &Path, config_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// `wth --link-signal`: pair, persist owner/device name, exit (design doc 09 §11.1).
-async fn link_signal(
-    config: &Figment,
-    data_dir: &Path,
-    config_path: &Path,
-    owner: Option<String>,
-    device_name: Option<String>,
-) -> anyhow::Result<()> {
-    let mut cfg: signal::SignalConfig = config.extract_inner("signal").unwrap_or_default();
-    if let Some(n) = device_name {
-        cfg.device_name = n;
-    }
-    let owner = owner
-        .map(|o| signal::e164(&o))
-        .transpose()
-        .map_err(anyhow::Error::msg)?;
-    let number = signal::link_oneshot(data_dir, &cfg, |url| {
-        println!(
-            "scan from Signal → Settings → Linked devices (expires in ~90 s; a fresh code follows):\n\n{}\n{url}\n",
-            signal::qr(url)
-        );
-    })
-    .await?;
-    let owner = match owner {
-        Some(o) => o,
-        None if !cfg.owner.is_empty() => cfg.owner.clone(),
-        None => {
-            use std::io::{IsTerminal, Write};
-            let mut line = String::new();
-            if std::io::stdin().is_terminal() {
-                print!("owner number (E.164, e.g. +15551234567): ");
-                std::io::stdout().flush()?;
-                std::io::stdin().read_line(&mut line)?;
-            }
-            match signal::e164(line.trim()) {
-                Ok(o) => o,
-                Err(e) => {
-                    eprintln!(
-                        "{e}; set signal.owner in {} yourself",
-                        config_path.display()
-                    );
-                    String::new()
-                }
-            }
-        }
-    };
-    if !owner.is_empty() {
-        write_config_value(config_path, "signal", "owner", &format!("{owner:?}"))?;
-    }
-    write_config_value(config_path, "signal", "device_name", &cfg.device_name)?;
-    println!("linked as {number}; owner {owner}; run wth --headless");
-    Ok(())
-}
-
 fn main() -> anyhow::Result<()> {
     // Before clap, tokio, logging or anything that could touch stdout: the
     // worker's stdout is the protocol channel (08 §9).
@@ -216,34 +162,42 @@ async fn run() -> anyhow::Result<()> {
         .with_ansi(false)
         .init();
 
-    if cli.link_signal {
-        link_signal(&config, &data_dir, &config_path, cli.owner, cli.device_name).await?;
-        drop(_guard);
-        std::process::exit(0);
-    }
-
     let rt = Runtime::new(config, data_dir);
 
-    let mut plugins: Vec<Box<dyn Plugin>> = vec![
-        Box::new(tools::ToolsPlugin),
-        Box::new(agent::AgentPlugin),
-        Box::new(signal::SignalPlugin {
-            channel: cli.headless,
-        }),
-    ];
-    if cli.serve || cli.headless {
-        plugins.push(Box::new(rpc::RpcPlugin));
-    }
-    if !cli.headless {
-        let prompt = match cli.prompt {
-            Some(p) if p.is_empty() => Some(std::io::read_to_string(std::io::stdin())?),
-            p => p,
-        };
-        plugins.push(Box::new(tui::TuiPlugin {
-            resume: cli.resume,
-            prompt,
-        }));
-    }
+    // Pairing needs no TUI, agent or tools; the plugin cancels `shutdown`
+    // when the phone has scanned (12 §3).
+    let plugins: Vec<Box<dyn Plugin>> = if cli.link_signal {
+        vec![Box::new(signal::SignalPlugin {
+            channel: false,
+            link: Some(signal::LinkOpts {
+                owner: cli.owner,
+                device_name: cli.device_name,
+            }),
+        })]
+    } else {
+        let mut plugins: Vec<Box<dyn Plugin>> = vec![
+            Box::new(tools::ToolsPlugin),
+            Box::new(agent::AgentPlugin),
+            Box::new(signal::SignalPlugin {
+                channel: cli.headless,
+                link: None,
+            }),
+        ];
+        if cli.serve || cli.headless {
+            plugins.push(Box::new(rpc::RpcPlugin));
+        }
+        if !cli.headless {
+            let prompt = match cli.prompt {
+                Some(p) if p.is_empty() => Some(std::io::read_to_string(std::io::stdin())?),
+                p => p,
+            };
+            plugins.push(Box::new(tui::TuiPlugin {
+                resume: cli.resume,
+                prompt,
+            }));
+        }
+        plugins
+    };
 
     for plugin in plugins {
         let name = plugin.name();

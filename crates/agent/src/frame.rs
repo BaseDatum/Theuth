@@ -3,7 +3,6 @@
 //! A [`Frame`] is a pure function of `tools → system → head → history`; the
 //! only per-transport difference is where the cache marks go (§3 table).
 
-use std::hash::{Hash, Hasher};
 use std::path::Path;
 
 use genai::adapter::AdapterKind;
@@ -98,14 +97,6 @@ impl Frame<'_> {
         }
         (req, opts)
     }
-}
-
-/// Hash of the serialised tool list, for the mid-turn `tools changed` warning
-/// (design doc 07 §5). std `DefaultHasher`; not stable across processes, not security.
-pub fn tools_hash(tools: &[Tool]) -> u64 {
-    let mut h = std::hash::DefaultHasher::new();
-    serde_json::to_vec(tools).unwrap_or_default().hash(&mut h);
-    h.finish()
 }
 
 /// The system prompt (design doc 07 §4), rendered once per turn: Claude Code

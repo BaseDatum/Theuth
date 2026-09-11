@@ -50,12 +50,12 @@ Config (`~/.wth/`, created on first run; details in
 - `oauth/` — tokens from `/login` (`openai.json` = ChatGPT subscription via the Codex client, `anthropic.json` = Claude Pro/Max via the Claude Code client, `cursor.json` = Cursor subscription, `xai.json` = SuperGrok via the Grok CLI client; `mcp/<server>.json` = MCP servers that answered 401), mode 0600; `/logout <name>` deletes one. See [`docs/design/05-oauth.md`](docs/design/05-oauth.md).
 - `prompt.md` — standing instructions, read into the system prompt on every model call; `/prompt` shows the assembled prompt.
 - `mcp/*.json` — drop in any `mcp.json` (Claude Desktop, Cursor, OpenCode, …); hot-reloaded, tools registered without prefix. `cwd` (relative → `mcp/`) points a server at a checkout under `mcp/repos/`, where `/mcp add <url>` clones and `/mcp sync` pulls.
-- `mcp/config.yaml` — per-server / per-tool `allow` | `ask` | `deny` gating; `/mcp` edits it (`deny` on a server = disabled).
+- `mcp/config.yaml` — per-server / per-tool risk override (`read_only` | `mutating` | `destructive` | `off`); `/mcp` edits it (`off` on a server = disabled). An MCP tool's risk defaults to its annotations, and one without annotations prompts by default; set `risk: read_only` on a trusted server once.
 - `skills/` — `<name>/SKILL.md` directories, loose `*.md`, or git clones (`/skills add <url>`, `/skills sync`); see [`docs/skills.md`](docs/skills.md).
 - `knowledge/` — the knowledge bundle (OKF markdown, one `<id>.md` per concept, a git repo kept in-process); `knowledge.sqlite` beside it is its search index and can be deleted.
 
 TUI: `/` opens the command list; `/model` picks a model (header above the
-input shows model and context used); `/mcp` toggles servers and tools (`l`
+input shows model and context used); `/mcp` sets a server's or tool's risk or turns it off (`l`
 logs a `login required` server in), `/mcp add <url|json>` installs one,
 `/mcp sync` pulls repos; `/login` picks a provider or MCP server to log in
 to; `/provider add` prompts for name, base url, then API key (an OpenAI-compatible

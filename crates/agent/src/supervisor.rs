@@ -960,7 +960,7 @@ impl Message<ListModels> for Agents {
         // Cursor is not in models.dev: ask the backend what the account may use.
         if self.auth.login("cursor") {
             match self.auth.oauth.access(&oauth::CURSOR).await {
-                Ok(t) => match cursor::models(&t.access_token).await {
+                Ok(t) => match crate::backend::cursor_models(&t.access_token).await {
                     Ok(models) => out.extend(models.into_iter().map(|m| {
                         let id = format!("cursor/{}", m.id);
                         let near = self.catalog.closest(&id);
@@ -1493,48 +1493,43 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
     agents.register(AGENT_ACTOR)?;
     rt.subscribe::<Agents, AgentEvent>(&agents).await;
 
-    // The tools plugin may start after us; retry the lookup briefly.
+    // First use of the registry (00 §4, 12 §2).
     let data_dir = rt.data_dir.clone();
+    let rt = rt.clone();
     tokio::spawn(async move {
-        for _ in 0..50 {
-            if let Ok(Some(reg)) = ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR) {
-                let dir = skills::dir(&data_dir);
-                let _ = reg
-                    .ask(RegisterTool(Arc::new(LoadSkillTool { dir: dir.clone() })))
-                    .await;
-                let _ = reg
-                    .ask(RegisterTool(Arc::new(AddSkillTool { dir: dir.clone() })))
-                    .await;
-                let _ = reg
-                    .ask(RegisterTool(Arc::new(RemoveSkillTool { dir: dir.clone() })))
-                    .await;
-                let _ = reg
-                    .ask(RegisterTool(Arc::new(AddSkillRepoTool {
-                        dir: dir.clone(),
-                    })))
-                    .await;
-                let _ = reg
-                    .ask(RegisterTool(Arc::new(RemoveSkillRepoTool {
-                        dir: dir.clone(),
-                    })))
-                    .await;
-                let _ = reg
-                    .ask(RegisterTool(Arc::new(SyncSkillsTool { dir })))
-                    .await;
-                if let Some(k) = knowledge.clone() {
-                    knowledge::tools::register(&reg, k).await;
-                }
-                let _ = reg.ask(RegisterTool(Arc::new(SpawnSubagentTool))).await;
-                let _ = reg
-                    .ask(RegisterTool(Arc::new(SendMessageTool { cfg })))
-                    .await;
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
+        let Some(reg) = rt.lookup_when::<ToolRegistry>(REGISTRY_ACTOR).await else {
+            return;
+        };
+        let dir = skills::dir(&data_dir);
+        let _ = reg
+            .ask(RegisterTool(Arc::new(LoadSkillTool { dir: dir.clone() })))
+            .await;
+        let _ = reg
+            .ask(RegisterTool(Arc::new(AddSkillTool { dir: dir.clone() })))
+            .await;
+        let _ = reg
+            .ask(RegisterTool(Arc::new(RemoveSkillTool { dir: dir.clone() })))
+            .await;
+        let _ = reg
+            .ask(RegisterTool(Arc::new(AddSkillRepoTool {
+                dir: dir.clone(),
+            })))
+            .await;
+        let _ = reg
+            .ask(RegisterTool(Arc::new(RemoveSkillRepoTool {
+                dir: dir.clone(),
+            })))
+            .await;
+        let _ = reg
+            .ask(RegisterTool(Arc::new(SyncSkillsTool { dir })))
+            .await;
+        if let Some(k) = knowledge {
+            knowledge::tools::register(&reg, k).await;
         }
-        tracing::warn!(
-            "tool registry never came up; skill/spawn_subagent/send_message tools not registered"
-        );
+        let _ = reg.ask(RegisterTool(Arc::new(SpawnSubagentTool))).await;
+        let _ = reg
+            .ask(RegisterTool(Arc::new(SendMessageTool { cfg })))
+            .await;
     });
     Ok(())
 }

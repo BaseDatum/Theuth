@@ -14,6 +14,7 @@ use std::sync::Arc;
 use runtime::{SessionId, TurnId};
 use serde::{Deserialize, Serialize};
 
+mod backend;
 pub mod compact;
 pub mod frame;
 pub mod knowledge;

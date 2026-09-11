@@ -27,9 +27,9 @@ use signal::{Allow, Link, RemoveAllowed, SIGNAL_ACTOR, Signal, SignalStatus, Sta
 use tokio::sync::broadcast;
 use tools::git::SyncResult;
 use tools::{
-    AddRepo, AddServer, Approval, ApprovalId, ApprovalsState, Decision, ListServers, ListTools,
-    Mcp, McpLogin, McpLogout, McpServer, PolicyAction, RemoveServer, RepoInfo, Resolve,
-    SetApprovals, SetGate, SyncMcp, ToolRegistry, ToolSpec,
+    AddRepo, AddServer, Approval, ApprovalId, ApprovalsState, Decision, Gate, ListServers,
+    ListTools, Mcp, McpLogin, McpLogout, McpServer, RemoveServer, RepoInfo, Resolve, SetApprovals,
+    SetGate, SyncMcp, ToolRegistry, ToolSpec,
 };
 
 use crate::bridge::Event;
@@ -83,16 +83,17 @@ pub trait Api {
     /// Switch `session` (and the default for new sessions) to `model`.
     #[method(name = "set_model")]
     async fn set_model(&self, session: Option<SessionId>, model: String) -> RpcResult<ModelInfo>;
-    /// MCP servers, their tools, and gates.
+    /// MCP servers, their tools, and their `mcp/config.yaml` risk lines.
     #[method(name = "list_mcp")]
     async fn list_mcp(&self) -> RpcResult<Vec<McpServer>>;
-    /// Set (or clear with `None`) a server or tool gate; persists to `mcp/config.yaml`.
+    /// Set (or clear with `None`) a server or tool risk line
+    /// (`read_only | mutating | destructive | off`); persists to `mcp/config.yaml`.
     #[method(name = "set_mcp_gate")]
     async fn set_mcp_gate(
         &self,
         server: String,
         tool: Option<String>,
-        action: Option<PolicyAction>,
+        gate: Option<Gate>,
     ) -> RpcResult<()>;
     /// Turn approval prompts on/off for `session`, or globally (persisted) with `None`.
     #[method(name = "set_approvals")]
@@ -328,17 +329,9 @@ impl ApiServer for Server {
         &self,
         server: String,
         tool: Option<String>,
-        action: Option<PolicyAction>,
+        gate: Option<Gate>,
     ) -> RpcResult<()> {
-        ask::<Mcp, _>(
-            tools::MCP_ACTOR,
-            SetGate {
-                server,
-                tool,
-                action,
-            },
-        )
-        .await
+        ask::<Mcp, _>(tools::MCP_ACTOR, SetGate { server, tool, gate }).await
     }
 
     async fn set_approvals(

@@ -5,9 +5,9 @@ Status: draft v0 · 2026-09-09 · extends `00-architecture.md` and `01-config-an
 Four things: (1) a bundled models.dev catalog so the harness knows context
 limits and capabilities without asking anyone, (2) model resolution from
 *configured* providers and a `/model` switch, (3) an omp-style header above
-the input showing model + context, (4) a `/mcp` menu that enables/disables MCP
-servers and individual tools by editing the gates file the loader already
-watches.
+the input showing model + context, (4) a `/mcp` menu that sets MCP servers'
+and individual tools' risk (or turns them off) by editing the
+`mcp/config.yaml` the loader already watches.
 
 ## 1. Catalog (`crates/models`)
 
@@ -194,19 +194,22 @@ chars (UUIDv7's first 8 are the timestamp and collide).
 **`/mcp` menu.** `Command::ListMcp` → `UiEvent::Mcp(Vec<McpServer>)` → menu:
 
 ```
-▸ everything      13 tools   allow        ● connected
-▾ filesystem       4 tools   ask          ● connected
-    read_file                 (ask)
-    write_file                deny
+▸ everything      13 tools   risk: read_only    ● connected
+    echo                      read-only (allow)
+    read_file                 mutating* (ask)
+    write_file                off                 hidden
     …
-▸ broken           –          allow        ○ not connected
+▸ broken           –          annotations        ○ not connected
 ```
 
 →/Enter expands a server, ← collapses. **Space** on a server row cycles its
-gate allow → ask → deny → allow (deny = server killed, its tools gone; that's
-"disable"). Space on a tool row cycles the tool's own gate; **Backspace**
-clears the tool override so it inherits (shown in parentheses). Every change
-is `Command::SetGate { server, tool, action }` → on reply `Command::ListMcp`
+`mcp/config.yaml` line annotations → `read_only` → `mutating` → `destructive`
+→ `off` → annotations (`off` = server killed, its tools gone; that's
+"disable"). Space on a tool row cycles the tool's own line the same way;
+**Backspace** clears it so the tool inherits (server line, else its
+annotations). Every row shows the effective `Risk` and, in parentheses, what
+`tools.policy` does with it; `*` marks a tool's own line (12 §5). Every change
+is `Command::SetGate { server, tool, gate }` → on reply `Command::ListMcp`
 again, so the menu always shows what the loader has. Esc closes.
 
 Menus are modal in the same sense the approval box is: while one is open the
@@ -224,26 +227,30 @@ registered as `MCP_ACTOR = "mcp"`, holding `State` and answering:
 
 ```rust
 pub struct ListServers;                                       // ask → Vec<McpServer>
-pub struct SetGate { pub server: String, pub tool: Option<String>, pub action: Option<PolicyAction> } // ask → Result<(), String>
-pub struct McpServer { pub name: String, pub connected: bool, pub gate: PolicyAction, pub tools: Vec<McpToolInfo> }
-pub struct McpToolInfo { pub name: String, pub description: String, pub gate: Option<PolicyAction> /* own override */, pub effective: PolicyAction, pub registered: bool }
+pub enum Gate { ReadOnly, Mutating, Destructive, Off }        // serde: read_only | mutating | destructive | off (tools crate)
+pub struct SetGate { pub server: String, pub tool: Option<String>, pub gate: Option<Gate> } // ask → Result<(), String>
+pub struct McpServer { pub name: String, pub connected: bool, pub gate: Option<Gate> /* server line; None = annotations */, pub tools: Vec<McpToolInfo>, pub repo: Option<String>, pub auth: McpAuth }
+pub struct McpToolInfo { pub name: String, pub description: String, pub gate: Option<Gate> /* own line */, pub risk: Risk /* effective */, pub action: PolicyAction /* tools.policy(risk), display only */, pub registered: bool }
 ```
 
-`ListServers` lists every server the files *want* (connected or not; a
-deny-gated server is listed unconnected with `gate: Deny`) and, for connected
-ones, every remote tool with its override, effective action, and whether it
-is currently registered (false when denied or hidden by a name clash).
+`ListServers` lists every server the files *want* (connected or not; an
+`off` server is listed unconnected with `gate: Some(Off)`) and, for connected
+ones, every remote tool with its own line, effective risk (tool line → server
+line → annotations), the action `tools.policy` resolves that risk to, and
+whether it is currently registered (false when `off` or hidden by a name
+clash). The actor receives `tools.policy` at start, next to the registry ref,
+only to fill `action`; the registry alone decides at invoke time (12 §5).
 `SetGate` rewrites `<data_dir>/mcp/config.yaml` from the in-memory `Gates`
-via `serde_yaml` (`action: None` removes the key; an emptied server entry is
+via `serde_yaml` (`gate: None` removes the key; an emptied server entry is
 dropped) and calls `reconcile` immediately rather than waiting for the
 watcher. The gates file is machine-written from now on: hand edits still
 work (the watcher reconciles them) but comments do not survive the next
-`SetGate`. `Gates` gains `Serialize`; `PolicyAction` already has serde.
+`SetGate`.
 
 Reconcile itself is unchanged; the watcher task just sends `Reconcile` to the
 actor instead of owning the state.
 
-RPC: `list_mcp`, `set_mcp_gate(server, tool?, action?)`.
+RPC: `list_mcp`, `set_mcp_gate(server, tool?, gate?)`.
 
 ## 6. Implementation order
 

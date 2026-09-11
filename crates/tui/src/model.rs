@@ -15,7 +15,7 @@ use runtime::SessionId;
 use tokio::sync::mpsc::UnboundedSender;
 use tools::git::SyncResult;
 use tools::{
-    ApprovalId, ApprovalRequested, ApprovalResolved, ApprovalsState, Decision, McpAuth,
+    ApprovalId, ApprovalRequested, ApprovalResolved, ApprovalsState, Decision, Gate, McpAuth,
     McpProgress, McpServer, McpToolInfo, PolicyAction, RepoInfo,
 };
 
@@ -145,10 +145,10 @@ pub enum Command {
     SetGate {
         /// Server name.
         server: String,
-        /// Tool name; `None` sets the server gate.
+        /// Tool name; `None` sets the server line.
         tool: Option<String>,
-        /// New action; `None` clears a tool override.
-        action: Option<PolicyAction>,
+        /// New line; `None` clears it (back to annotations).
+        gate: Option<Gate>,
     },
     /// `SetApprovals` on the registry.
     SetApprovals {
@@ -636,7 +636,7 @@ impl Prompt {
 /// One line of the `/mcp` menu.
 #[derive(Debug)]
 pub enum Row<'a> {
-    /// A server (gate applies to all its tools).
+    /// A server (its line applies to all its tools).
     Server(&'a McpServer),
     /// A tool of an expanded server.
     Tool(&'a McpServer, &'a McpToolInfo),
@@ -676,8 +676,8 @@ pub fn k(n: u32) -> String {
     }
 }
 
-/// Lowercase yaml name of a gate action.
-pub fn gate_name(a: PolicyAction) -> &'static str {
+/// Lowercase yaml name of a policy action.
+pub fn action_name(a: PolicyAction) -> &'static str {
     match a {
         PolicyAction::Allow => "allow",
         PolicyAction::Ask => "ask",
@@ -685,11 +685,24 @@ pub fn gate_name(a: PolicyAction) -> &'static str {
     }
 }
 
-fn next_gate(a: PolicyAction) -> PolicyAction {
-    match a {
-        PolicyAction::Allow => PolicyAction::Ask,
-        PolicyAction::Ask => PolicyAction::Deny,
-        PolicyAction::Deny => PolicyAction::Allow,
+/// Lowercase yaml name of a `mcp/config.yaml` line.
+pub fn gate_name(g: Gate) -> &'static str {
+    match g {
+        Gate::ReadOnly => "read_only",
+        Gate::Mutating => "mutating",
+        Gate::Destructive => "destructive",
+        Gate::Off => "off",
+    }
+}
+
+/// Space in `/mcp`: annotations → read_only → mutating → destructive → off → annotations (12 §5).
+fn next_gate(g: Option<Gate>) -> Option<Gate> {
+    match g {
+        None => Some(Gate::ReadOnly),
+        Some(Gate::ReadOnly) => Some(Gate::Mutating),
+        Some(Gate::Mutating) => Some(Gate::Destructive),
+        Some(Gate::Destructive) => Some(Gate::Off),
+        Some(Gate::Off) => None,
     }
 }
 
@@ -2097,17 +2110,17 @@ impl Model {
             (KeyCode::Char(' '), Some(Row::Server(s))) => Act::Send(Command::SetGate {
                 server: s.name.clone(),
                 tool: None,
-                action: Some(next_gate(s.gate)),
+                gate: next_gate(s.gate),
             }),
             (KeyCode::Char(' '), Some(Row::Tool(s, t))) => Act::Send(Command::SetGate {
                 server: s.name.clone(),
                 tool: Some(t.name.clone()),
-                action: Some(next_gate(t.gate.unwrap_or(t.effective))),
+                gate: next_gate(t.gate),
             }),
             (KeyCode::Backspace, Some(Row::Tool(s, t))) => Act::Send(Command::SetGate {
                 server: s.name.clone(),
                 tool: Some(t.name.clone()),
-                action: None,
+                gate: None,
             }),
             _ => Act::Nothing,
         };
@@ -2320,7 +2333,7 @@ mod tests {
     fn mcp_space_cycles_server_and_tool_gates() {
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::default();
-        let fresh = |gate: PolicyAction| McpServer {
+        let fresh = |gate: Option<Gate>| McpServer {
             name: "fs".into(),
             connected: true,
             repo: None,
@@ -2330,35 +2343,49 @@ mod tests {
                 name: "read".into(),
                 description: String::new(),
                 gate: None,
-                effective: gate,
+                risk: tools::Risk::Mutating,
+                action: PolicyAction::Ask,
                 registered: true,
             }],
         };
         // A refresh with no menu open and no `/mcp` typed must not open one.
-        m.apply(UiEvent::Mcp(vec![fresh(PolicyAction::Allow)]));
+        m.apply(UiEvent::Mcp(vec![fresh(None)]));
         assert!(m.menu.is_none());
         m.submit("/mcp", &tx);
         assert!(matches!(rx.try_recv(), Ok(Command::ListMcp)));
-        m.apply(UiEvent::Mcp(vec![fresh(PolicyAction::Ask)]));
+        m.apply(UiEvent::Mcp(vec![fresh(Some(Gate::Destructive))]));
         m.menu_key(KeyCode::Char(' '), "", &tx);
         assert!(matches!(
             rx.try_recv(),
-            Ok(Command::SetGate { server, tool: None, action: Some(PolicyAction::Deny) }) if server == "fs"
+            Ok(Command::SetGate { server, tool: None, gate: Some(Gate::Off) }) if server == "fs"
         ));
+        m.apply(UiEvent::Mcp(vec![fresh(Some(Gate::Off))]));
+        m.menu_key(KeyCode::Char(' '), "", &tx);
+        assert!(
+            matches!(
+                rx.try_recv(),
+                Ok(Command::SetGate {
+                    tool: None,
+                    gate: None,
+                    ..
+                })
+            ),
+            "off cycles back to annotations"
+        );
         m.menu_key(KeyCode::Right, "", &tx);
         m.menu_key(KeyCode::Down, "", &tx);
         assert_eq!(m.mcp_rows().len(), 2);
         m.menu_key(KeyCode::Char(' '), "", &tx);
         assert!(matches!(
             rx.try_recv(),
-            Ok(Command::SetGate { tool: Some(t), action: Some(PolicyAction::Deny), .. }) if t == "read"
+            Ok(Command::SetGate { tool: Some(t), gate: Some(Gate::ReadOnly), .. }) if t == "read"
         ));
         m.menu_key(KeyCode::Backspace, "", &tx);
         assert!(matches!(
             rx.try_recv(),
             Ok(Command::SetGate {
                 tool: Some(_),
-                action: None,
+                gate: None,
                 ..
             })
         ));

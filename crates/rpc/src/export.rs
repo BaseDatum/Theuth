@@ -31,6 +31,7 @@ fn export_bindings() {
         tools::ToolSpec,
         tools::Risk,
         tools::PolicyAction,
+        tools::Gate,
         tools::McpServer,
         tools::McpToolInfo,
         tools::McpProgress,

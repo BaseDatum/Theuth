@@ -134,11 +134,23 @@ pub struct RemoveAllowed(pub String);
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Unlink;
 
+/// `wth --link-signal` inputs (09 §11.1, 12 §3).
+pub struct LinkOpts {
+    /// Owner E.164; prompted on a TTY when absent and not already configured.
+    pub owner: Option<String>,
+    /// Overrides config `signal.device_name`.
+    pub device_name: Option<String>,
+}
+
 /// The plugin. `channel: true` (headless) opens the presage store and runs
 /// the channel; `false` registers the actor and tools only (09 §3).
+/// `link: Some(_)` pairs one-shot instead: QR, persist owner/device name,
+/// cancel shutdown (12 §3).
 pub struct SignalPlugin {
     /// Run the receive/send channel (daemon mode).
     pub channel: bool,
+    /// Pair as a linked device and exit instead of starting.
+    pub link: Option<LinkOpts>,
 }
 
 /// Terminal-mode answer to [`Link`] (09 §11.1).
@@ -297,6 +309,12 @@ impl runtime::Plugin for SignalPlugin {
             tracing::debug!("no [signal] config section, using defaults: {e}");
             SignalConfig::default()
         });
+        let config_path = rt.data_dir.join("config.yaml");
+        if let Some(opts) = self.link {
+            pair(cfg, &rt.data_dir, &config_path, opts).await?;
+            rt.shutdown.cancel();
+            return Ok(());
+        }
         if !cfg.enabled {
             tracing::info!("signal disabled by config");
             return Ok(());
@@ -306,7 +324,6 @@ impl runtime::Plugin for SignalPlugin {
                 Arc::new(presage::PresageTransport::new(&rt.data_dir));
             channel::spawn(transport, cfg.clone(), rt.clone())
         });
-        let config_path = rt.data_dir.join("config.yaml");
         let cfg_for_tool = cfg.clone();
         let actor = Signal::spawn(Signal {
             handle,
@@ -316,26 +333,85 @@ impl runtime::Plugin for SignalPlugin {
         });
         actor.register(SIGNAL_ACTOR)?;
 
-        // tools starts before us (main.rs order), so one lookup is enough.
-        match ActorRef::<tools::ToolRegistry>::lookup(tools::REGISTRY_ACTOR) {
-            Ok(Some(reg)) => {
-                let _ = reg
-                    .ask(tools::RegisterTool(Arc::new(SignalLinkTool {
-                        data_dir: rt.data_dir.clone(),
-                        config_path,
-                        cfg: cfg_for_tool,
-                        daemon: self.channel,
-                        link: Mutex::new(None),
-                    })))
-                    .await;
-                let _ = reg
-                    .ask(tools::RegisterTool(Arc::new(SignalStatusTool)))
-                    .await;
-            }
-            _ => tracing::warn!("tool registry not running; signal tools not registered"),
-        }
+        // First use of the registry (00 §4, 12 §2).
+        let rt = rt.clone();
+        let daemon = self.channel;
+        tokio::spawn(async move {
+            let Some(reg) = rt
+                .lookup_when::<tools::ToolRegistry>(tools::REGISTRY_ACTOR)
+                .await
+            else {
+                return;
+            };
+            let _ = reg
+                .ask(tools::RegisterTool(Arc::new(SignalLinkTool {
+                    data_dir: rt.data_dir.clone(),
+                    config_path,
+                    cfg: cfg_for_tool,
+                    daemon,
+                    link: Mutex::new(None),
+                })))
+                .await;
+            let _ = reg
+                .ask(tools::RegisterTool(Arc::new(SignalStatusTool)))
+                .await;
+        });
         Ok(())
     }
+}
+
+/// `wth --link-signal` (09 §11.1): pair, print the QR, persist
+/// `signal.owner`/`signal.device_name`. Runs regardless of `signal.enabled`.
+async fn pair(
+    mut cfg: SignalConfig,
+    data_dir: &Path,
+    config_path: &Path,
+    opts: LinkOpts,
+) -> anyhow::Result<()> {
+    if let Some(n) = opts.device_name {
+        cfg.device_name = n;
+    }
+    let owner = opts
+        .owner
+        .map(|o| e164(&o))
+        .transpose()
+        .map_err(anyhow::Error::msg)?;
+    let number = link_oneshot(data_dir, &cfg, |url| {
+        println!(
+            "scan from Signal → Settings → Linked devices (expires in ~90 s; a fresh code follows):\n\n{}\n{url}\n",
+            qr(url)
+        );
+    })
+    .await?;
+    let owner = match owner {
+        Some(o) => o,
+        None if !cfg.owner.is_empty() => cfg.owner.clone(),
+        None => {
+            use std::io::{IsTerminal, Write};
+            let mut line = String::new();
+            if std::io::stdin().is_terminal() {
+                print!("owner number (E.164, e.g. +15551234567): ");
+                std::io::stdout().flush()?;
+                std::io::stdin().read_line(&mut line)?;
+            }
+            match e164(line.trim()) {
+                Ok(o) => o,
+                Err(e) => {
+                    eprintln!(
+                        "{e}; set signal.owner in {} yourself",
+                        config_path.display()
+                    );
+                    String::new()
+                }
+            }
+        }
+    };
+    if !owner.is_empty() {
+        runtime::write_config_value(config_path, "signal", "owner", &yaml_str(&owner))?;
+    }
+    runtime::write_config_value(config_path, "signal", "device_name", &cfg.device_name)?;
+    println!("linked as {number}; owner {owner}; run wth --headless");
+    Ok(())
 }
 
 /// Render `url` as a unicode half-block QR code without quiet zone (09 §11).

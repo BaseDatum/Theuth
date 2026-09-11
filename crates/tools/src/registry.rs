@@ -1,6 +1,8 @@
 //! `ToolRegistry` actor, registered as [`crate::REGISTRY_ACTOR`].
-//! Owns every [`DynTool`]; every invocation passes through the approval
-//! policy here before the tool runs.
+//! Owns every [`DynTool`]; every invocation passes through the one approval
+//! contract here before the tool runs: `Risk → PolicyAction` from
+//! `tools.policy`, with `Ask` rewritten to `Allow` by the approvals switches
+//! and nothing else (12 §5).
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -20,6 +22,8 @@ use crate::{
 };
 
 /// The registry actor. Look up with `ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR)`.
+/// `policy` is the only permission input; a tool's `ToolSpec.risk` is the
+/// only key into it (12 §5).
 #[derive(kameo::Actor)]
 pub struct ToolRegistry {
     tools: HashMap<String, DynTool>,
@@ -186,7 +190,7 @@ impl Message<Invoke> for ToolRegistry {
             return reply;
         };
         let spec = tool.spec();
-        let mut action = tool.gate().unwrap_or_else(|| self.policy.action(spec.risk));
+        let mut action = self.policy.action(spec.risk);
         if action == PolicyAction::Ask && (!self.approvals || self.bypassed(call.session)) {
             action = PolicyAction::Allow;
         }
@@ -252,14 +256,19 @@ async fn invoke(
     }
 }
 
+/// The `tools` section, defaults when absent.
+pub(crate) fn config(rt: &Runtime) -> anyhow::Result<ToolsConfig> {
+    if rt.config.contains("tools") {
+        rt.section("tools")
+    } else {
+        Ok(ToolsConfig::default())
+    }
+}
+
 /// Spawn registry + approval actors and register builtins. Returns the
 /// registry so the caller can attach further tool sources (MCP).
 pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
-    let cfg: ToolsConfig = if rt.config.contains("tools") {
-        rt.section("tools")?
-    } else {
-        ToolsConfig::default()
-    };
+    let cfg = config(rt)?;
 
     let approval = Approval::spawn_with_mailbox(
         Approval::new(rt.clone(), Duration::from_secs(cfg.approval_timeout_secs)),

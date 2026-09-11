@@ -1,6 +1,7 @@
-//! Tools plugin: the registry every tool lives in, the single approval gate
-//! every invocation passes through, builtin tools, and MCP-sourced tools
-//! (drop-in `<data_dir>/mcp/*.json`, hot-reloaded).
+//! Tools plugin: the registry every tool lives in, the single approval
+//! contract (`Risk → PolicyAction`, 12 §5) every invocation passes through,
+//! builtin tools, and MCP-sourced tools (drop-in `<data_dir>/mcp/*.json`,
+//! hot-reloaded; `mcp/config.yaml` overrides a tool's [`Risk`] with a [`Gate`]).
 //!
 //! Public surface consumed by other plugins:
 //! - commands on the `"tools"` actor ([`ToolRegistry`]): [`ListTools`], [`Invoke`], [`RegisterTool`], [`UnregisterTool`]
@@ -59,7 +60,7 @@ pub enum Risk {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ToolSpec {
-    /// Unique name; MCP tools are `<server>__<tool>`.
+    /// Unique name. MCP tools register under their remote name, no prefix (01 §1.4).
     pub name: String,
     /// Shown to the model.
     pub description: String,
@@ -149,6 +150,7 @@ pub trait Tool: Send + Sync + 'static {
 }
 
 /// Object-safe form stored in the registry; MCP tools implement this directly.
+/// The registry's only permission input is `spec().risk` (12 §5).
 pub trait ErasedTool: Send + Sync + 'static {
     /// Spec for the model.
     fn spec(&self) -> ToolSpec;
@@ -158,11 +160,6 @@ pub trait ErasedTool: Send + Sync + 'static {
         args: serde_json::Value,
         cx: ToolCx,
     ) -> BoxFuture<'_, anyhow::Result<ToolOutput>>;
-    /// Explicit approval action; `None` → registry uses `policy.action(spec.risk)`.
-    /// Only MCP tools return `Some`.
-    fn gate(&self) -> Option<PolicyAction> {
-        None
-    }
 }
 
 impl<T: Tool> ErasedTool for T {
@@ -205,6 +202,35 @@ pub enum PolicyAction {
     Ask,
     /// Refuse; the model sees an error output.
     Deny,
+}
+
+/// One line of `mcp/config.yaml`: a [`Risk`] that overrides the remote tool's
+/// annotations, or `off` (tool unregistered / server not connected). Not a
+/// second policy: the risk still goes through `tools.policy` (12 §5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum Gate {
+    /// [`Risk::ReadOnly`].
+    ReadOnly,
+    /// [`Risk::Mutating`].
+    Mutating,
+    /// [`Risk::Destructive`].
+    Destructive,
+    /// Hidden from the model; on a server line, not connected.
+    Off,
+}
+
+impl Gate {
+    /// The risk this line assigns; `None` for [`Gate::Off`].
+    pub fn risk(self) -> Option<Risk> {
+        match self {
+            Gate::ReadOnly => Some(Risk::ReadOnly),
+            Gate::Mutating => Some(Risk::Mutating),
+            Gate::Destructive => Some(Risk::Destructive),
+            Gate::Off => None,
+        }
+    }
 }
 
 /// `tools` config section.
@@ -279,6 +305,6 @@ impl runtime::Plugin for ToolsPlugin {
 
     async fn start(self: Box<Self>, rt: &runtime::Runtime) -> anyhow::Result<()> {
         let registry = registry::start(rt).await?;
-        mcp::start(rt, registry).await
+        mcp::start(rt, registry, registry::config(rt)?.policy).await
     }
 }

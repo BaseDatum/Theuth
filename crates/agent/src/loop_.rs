@@ -7,19 +7,15 @@
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
-use std::pin::Pin;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
+use futures::StreamExt;
 use futures::future::join_all;
-use futures::{Stream, StreamExt};
 use genai::Client;
-use genai::adapter::AdapterKind;
 use genai::chat::{
     ChatMessage, ChatRole, ChatStreamEvent, MessageContent, StreamEnd, Tool, ToolCall, ToolResponse,
 };
-use genai::resolver::{AuthData, Endpoint};
-use genai::{ModelIden, ServiceTarget};
 use kameo::actor::ActorRef;
 use kameo::message::{Context, Message};
 use models::Resolved;
@@ -28,6 +24,7 @@ use runtime::{Runtime, SessionId, TurnId};
 use tokio_util::sync::CancellationToken;
 use tools::{Invoke, ListTools, REGISTRY_ACTOR, ToolOutput, ToolRegistry, ToolSpec};
 
+use crate::backend::Backend;
 use crate::frame::{self, Frame, Transport};
 use crate::knowledge::{self, HarvestResult, Knowledge, Put, Source};
 use crate::peers::SpawnSubagentTool;
@@ -46,9 +43,6 @@ const CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 const CACHE_FLOOR: u32 = 4096;
 /// The tool whose `id` argument feeds the compaction head's `Knowledge:` line (10 §7).
 const KNOWLEDGE_GET: &str = "knowledge_get";
-
-/// One model call's events, from genai or the Cursor backend.
-type EventStream = Pin<Box<dyn Stream<Item = Result<ChatStreamEvent, String>> + Send>>;
 
 /// `tell`: user text. Starts a turn when idle, otherwise queued and injected
 /// after the current tool batch (steering).
@@ -148,10 +142,9 @@ pub struct Session {
 struct Shared {
     id: SessionId,
     depth: u8,
-    /// Current model plus the resolution error of the configured id, if any;
-    /// an error makes the next round stop instead of calling genai. Shared
-    /// with the running turn so [`SwitchModel`] applies mid-turn.
-    model: Arc<Mutex<(Resolved, Option<String>)>>,
+    /// What the session streams with; shared with the running turn so
+    /// [`SwitchModel`] applies mid-turn.
+    model: Arc<Mutex<Current>>,
     cfg: Arc<AgentConfig>,
     /// Live default style; shared with the supervisor so [`crate::SetCompactStyle`] is in-process.
     compact_style: Arc<RwLock<CompactStyle>>,
@@ -167,6 +160,26 @@ struct Shared {
     knowledge: Option<Arc<Knowledge>>,
     /// `<data_dir>/spill` (07 §6).
     spill_dir: PathBuf,
+}
+
+/// The model, what streams it (12 §6) and the resolution error of the
+/// configured id, if any; an error makes the next round stop instead of
+/// calling the model. Set by [`Session::new`] and [`SwitchModel`].
+#[derive(Clone)]
+struct Current {
+    model: Resolved,
+    backend: Backend,
+    error: Option<String>,
+}
+
+impl Current {
+    fn new(model: Resolved, error: Option<String>, client: &Client, auth: &Auth) -> Self {
+        Self {
+            backend: Backend::for_model(&model, client, auth),
+            model,
+            error,
+        }
+    }
 }
 
 impl Session {
@@ -190,11 +203,12 @@ impl Session {
         knowledge: Option<Arc<Knowledge>>,
     ) -> Self {
         let titled = !state.history.is_empty() || state.head.is_some();
+        let (model, error) = model;
         Self {
             shared: Shared {
                 id,
                 depth,
-                model: Arc::new(Mutex::new(model)),
+                model: Arc::new(Mutex::new(Current::new(model, error, &client, &auth))),
                 cfg,
                 compact_style,
                 store,
@@ -241,7 +255,7 @@ impl Session {
             .model
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .0
+            .model
             .id
             .clone();
         self.shared
@@ -305,7 +319,8 @@ impl Message<SwitchModel> for Session {
         SwitchModel(model): SwitchModel,
         _: &mut Context<Self, Self::Reply>,
     ) {
-        *self.shared.model.lock().unwrap_or_else(|p| p.into_inner()) = (model, None);
+        *self.shared.model.lock().unwrap_or_else(|p| p.into_inner()) =
+            Current::new(model, None, &self.shared.client, &self.shared.auth);
     }
 }
 
@@ -393,9 +408,9 @@ struct Turn {
     usage: Usage,
     /// Cached `(model.genai, transport)`; re-resolved when the model changes mid-turn.
     transport: Option<(String, Transport)>,
-    /// Hash + names of the last round's tool list (07 §5).
-    tools_seen: Option<(u64, Vec<String>)>,
-    /// A rebase, compaction or tool change happened since the last call (07 §7).
+    /// This turn's direct tools, fetched once in [`Turn::rebase`] (07 §5, 12 §4).
+    tools: Vec<Tool>,
+    /// A rebase or compaction happened since the last call (07 §7).
     reset_this_round: bool,
     /// The overflow retry was used this turn (07 §8.5).
     overflowed: bool,
@@ -432,7 +447,7 @@ enum Round {
 }
 
 /// genai namespace of a `adapter::model` id.
-fn ns(genai: &str) -> &str {
+pub(crate) fn ns(genai: &str) -> &str {
     genai.split_once("::").map_or("", |(n, _)| n)
 }
 
@@ -489,7 +504,7 @@ impl Turn {
             state,
             usage: Usage::default(),
             transport: None,
-            tools_seen: None,
+            tools: Vec::new(),
             reset_this_round: false,
             overflowed: false,
             window_logged: false,
@@ -524,7 +539,7 @@ impl Turn {
         .await;
     }
 
-    fn model(&self) -> (Resolved, Option<String>) {
+    fn model(&self) -> Current {
         self.shared
             .model
             .lock()
@@ -564,7 +579,8 @@ impl Turn {
             .await;
     }
 
-    /// Render the system prompt for this turn; log a rebase when it changed (07 §4).
+    /// Turn start: render the system prompt and log a rebase when it changed
+    /// (07 §4); fetch the tool list once for the whole turn (07 §5, 12 §4).
     /// Also resyncs the knowledge index with the bundle's files (10 §3.2).
     async fn rebase(&mut self, registry: &ActorRef<ToolRegistry>) {
         if let Some(knowledge) = self.knowledge() {
@@ -589,11 +605,17 @@ impl Turn {
                 .unwrap_or_default(),
             _ => String::new(),
         };
-        let genai = self.model().0.genai;
+        let specs = match registry.ask(ListTools).await {
+            Ok(specs) => specs,
+            Err(e) => {
+                self.error(format!("list tools: {e}")).await;
+                Vec::new()
+            }
+        };
+        let genai = self.model().model.genai;
         let claude_code = ns(&genai) == "anthropic" && self.shared.auth.login("anthropic");
         let mut baseline = frame::baseline(&self.shared.rt.data_dir, &peer_line, claude_code);
         if self.shared.pool.is_some() {
-            let specs = registry.ask(ListTools).await.unwrap_or_default();
             baseline.push_str("\n\n");
             baseline.push_str(&repl::prompt_block(&specs));
         }
@@ -609,47 +631,26 @@ impl Turn {
             }
             self.state.baseline = baseline;
         }
+        self.tools = self.direct_tools(specs);
     }
 
-    /// Cache marks for `model`'s provider; resolved once per model per turn (07 §3).
-    async fn transport(&mut self, model: &Resolved) -> Result<Transport, String> {
+    /// Cache marks for `current`'s provider; resolved once per model per turn (07 §3).
+    async fn transport(&mut self, current: &Current) -> Result<Transport, String> {
         if let Some((id, t)) = &self.transport
-            && *id == model.genai
+            && *id == current.model.genai
         {
             return Ok(*t);
         }
-        let t = if ns(&model.genai) == "cursor" {
-            Transport::Plain
-        } else if model
-            .provider
-            .as_deref()
-            .is_some_and(|p| self.shared.auth.gateway(p).is_some())
-        {
-            Transport::OpenAiLike
-        } else {
-            let target = self
-                .shared
-                .client
-                .resolve_service_target(model.genai.as_str())
-                .await
-                .map_err(|e| e.to_string())?;
-            Transport::of(target.model.adapter_kind)
-        };
-        self.transport = Some((model.genai.clone(), t));
+        let t = current.backend.transport(&current.model).await?;
+        self.transport = Some((current.model.genai.clone(), t));
         Ok(t)
     }
 
-    /// This round's direct tools (07 §5, 08 §0.4): registry tools (only
-    /// `direct` ones when the runtime is on, `spawn_subagent` gated by depth)
-    /// plus the loop-local `todo` and `python`.
-    async fn tools(&mut self, registry: &ActorRef<ToolRegistry>) -> Vec<Tool> {
-        let specs = match registry.ask(ListTools).await {
-            Ok(specs) => specs,
-            Err(e) => {
-                self.error(format!("list tools: {e}")).await;
-                Vec::new()
-            }
-        };
+    /// This turn's direct tools (07 §5, 08 §0.4, 12 §4), from one `ListTools`
+    /// per turn: registry tools (only `direct` ones when the runtime is on,
+    /// `spawn_subagent` gated by depth) plus the loop-local `todo` and `python`.
+    /// A tool registered mid-turn is visible on the next turn.
+    fn direct_tools(&self, specs: Vec<ToolSpec>) -> Vec<Tool> {
         let runtime = self.shared.pool.is_some();
         let mut specs: Vec<ToolSpec> = specs
             .into_iter()
@@ -664,89 +665,29 @@ impl Turn {
             specs.push(repl::spec());
         }
         specs.sort_by(|a, b| a.name.cmp(&b.name));
-        let names: Vec<String> = specs.iter().map(|s| s.name.clone()).collect();
-        let tools: Vec<Tool> = specs
+        specs
             .into_iter()
             .map(|s| {
                 Tool::new(s.name)
                     .with_description(s.description)
                     .with_schema(s.schema)
             })
-            .collect();
-        let hash = frame::tools_hash(&tools);
-        if let Some((prev, seen)) = &self.tools_seen
-            && *prev != hash
-        {
-            let diff = |a: &[String], b: &[String]| {
-                a.iter()
-                    .filter(|n| !b.contains(n))
-                    .map(String::as_str)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            };
-            tracing::warn!(
-                session = %self.shared.id,
-                "tools changed mid-turn: +[{}] -[{}] (prefix cache reset)",
-                diff(&names, seen),
-                diff(seen, &names)
-            );
-            self.reset_this_round = true;
-        }
-        self.tools_seen = Some((hash, names));
-        tools
+            .collect()
     }
 
     /// Open the stream for `frame` and drain it to its `End`. With `live`,
     /// deltas and pending tool calls are published; the summariser passes `None`.
     async fn call(
         &self,
-        model: &Resolved,
+        current: &Current,
         frame: Frame<'_>,
         transport: Transport,
         live: Option<TurnId>,
     ) -> Result<StreamEnd, Abort> {
         let (req, opts) = frame.request(transport, self.shared.id);
-        let open = async {
-            if ns(&model.genai) == "cursor" {
-                let t = self.shared.auth.oauth.access(&oauth::CURSOR).await?;
-                let slug = model
-                    .id
-                    .split_once('/')
-                    .map_or(model.id.as_str(), |(_, m)| m);
-                cursor::chat_stream(&t.access_token, slug, req, &self.shared.id.to_string()).await
-            } else if let Some(gw) = model
-                .provider
-                .as_deref()
-                .and_then(|p| self.shared.auth.gateway(p))
-            {
-                let slug = model
-                    .id
-                    .split_once('/')
-                    .map_or(model.id.as_str(), |(_, m)| m);
-                let target = ServiceTarget {
-                    endpoint: Endpoint::from_owned(gw.base_url),
-                    auth: AuthData::Key(gw.key),
-                    model: ModelIden::new(AdapterKind::OpenAI, slug.to_owned()),
-                };
-                self.shared
-                    .client
-                    .exec_chat_stream(target, req, Some(&opts))
-                    .await
-                    .map(|r| -> EventStream {
-                        Box::pin(r.stream.map(|ev| ev.map_err(|e| e.to_string())))
-                    })
-                    .map_err(|e| e.to_string())
-            } else {
-                self.shared
-                    .client
-                    .exec_chat_stream(&model.genai, req, Some(&opts))
-                    .await
-                    .map(|r| -> EventStream {
-                        Box::pin(r.stream.map(|ev| ev.map_err(|e| e.to_string())))
-                    })
-                    .map_err(|e| e.to_string())
-            }
-        };
+        let open = current
+            .backend
+            .stream(&current.model, req, &opts, self.shared.id);
         let mut stream = tokio::select! {
             _ = self.cancel.cancelled() => return Err(Abort::Cancelled),
             r = open => r.map_err(Abort::Model)?,
@@ -864,10 +805,7 @@ impl Turn {
         // owned here, so input arriving meanwhile queues as steering.
         let harvestable = self.calls > 0 && stop_reason != "cancelled" && self.shared.depth == 0;
         let every = self.shared.cfg.knowledge.harvest_every;
-        if harvestable
-            && let Some(registry) = &registry
-            && self.knowledge().is_some()
-        {
+        if harvestable && registry.is_some() && self.knowledge().is_some() {
             self.state.turns_since_harvest += 1;
             if every > 0 && self.state.turns_since_harvest >= every {
                 self.state.turns_since_harvest = 0;
@@ -875,7 +813,7 @@ impl Turn {
                     session: self.shared.id,
                 })
                 .await;
-                if let Err(e) = self.harvest_with(registry).await {
+                if let Err(e) = self.harvest_with().await {
                     tracing::warn!(session = %self.shared.id, "harvest: {e}");
                 }
             }
@@ -898,13 +836,12 @@ impl Turn {
         turn: TurnId,
         round: u32,
     ) -> Round {
-        let (model, error) = self.model();
-        if let Some(e) = error {
+        let current = self.model();
+        if let Some(e) = &current.error {
             self.error(format!("model: {e}")).await;
             return Round::Stop("error".into());
         }
-        let tools = self.tools(registry).await;
-        let transport = match self.transport(&model).await {
+        let transport = match self.transport(&current).await {
             Ok(t) => t,
             Err(e) => {
                 self.error(format!("model: {e}")).await;
@@ -913,7 +850,7 @@ impl Turn {
         };
 
         // 07 §8.1 trigger, §8.7 pressure note, §9 todo reminder — all before the call.
-        let window = self.window(&model);
+        let window = self.window(&current.model);
         let appended: u32 = self.state.history[self.since..]
             .iter()
             .map(|(_, m)| compact::est(m))
@@ -926,8 +863,7 @@ impl Turn {
             if fill >= compact_at {
                 if let Err(e) = self
                     .compact(
-                        &model,
-                        &tools,
+                        &current,
                         transport,
                         projected,
                         None,
@@ -991,12 +927,12 @@ impl Turn {
 
         let msgs = messages(&self.state.history);
         let frame = Frame {
-            tools: &tools,
+            tools: &self.tools,
             system: &self.state.baseline,
             head: self.state.head.as_ref(),
             history: &msgs,
         };
-        let end = match self.call(&model, frame, transport, Some(turn)).await {
+        let end = match self.call(&current, frame, transport, Some(turn)).await {
             Ok(end) => end,
             Err(Abort::Cancelled) => return Round::Stop("cancelled".into()),
             Err(Abort::Model(e)) => {
@@ -1005,8 +941,7 @@ impl Turn {
                     self.overflowed = true;
                     match self
                         .compact(
-                            &model,
-                            &tools,
+                            &current,
                             transport,
                             projected,
                             None,
@@ -1051,7 +986,7 @@ impl Turn {
                     round,
                     cached,
                     prev_prompt,
-                    "prefix cache miss (no rebase/compaction/tool change since the previous call)"
+                    "prefix cache miss (no rebase/compaction since the previous call)"
                 );
             }
             self.state.prev_call = Some((Instant::now(), prompt));
@@ -1216,12 +1151,11 @@ impl Turn {
 
     /// `/compact` between turns: same baseline/tools/transport as a turn, then [`Turn::compact`].
     async fn compact_now(&mut self, style: Option<CompactStyle>) -> Result<u32, String> {
-        let registry = self.between_turns().await?;
-        let (model, tools, transport) = self.resolve(&registry).await?;
+        self.between_turns().await?;
+        let (current, transport) = self.resolve().await?;
         let projected = self.state.used;
         self.compact(
-            &model,
-            &tools,
+            &current,
             transport,
             projected,
             style,
@@ -1232,57 +1166,49 @@ impl Turn {
 
     /// `/knowledge harvest` between turns (10 §5.2): rebase, then [`Turn::harvest`].
     async fn harvest_now(&mut self) -> Result<HarvestResult, String> {
-        let registry = self.between_turns().await?;
-        self.harvest_with(&registry).await
+        self.between_turns().await?;
+        self.harvest_with().await
     }
 
     /// The mini-turn preamble shared by `/compact` and `/knowledge harvest`:
-    /// a running registry and a fresh baseline.
-    async fn between_turns(&mut self) -> Result<ActorRef<ToolRegistry>, String> {
+    /// a running registry, a fresh baseline and this turn's tools.
+    async fn between_turns(&mut self) -> Result<(), String> {
         let registry = ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR)
             .ok()
             .flatten()
             .ok_or("tool registry not running")?;
         self.rebase(&registry).await;
-        Ok(registry)
+        Ok(())
     }
 
-    /// What a model call needs: the current model (or its resolution error),
-    /// this round's tools and the provider's transport.
-    async fn resolve(
-        &mut self,
-        registry: &ActorRef<ToolRegistry>,
-    ) -> Result<(Resolved, Vec<Tool>, Transport), String> {
-        let (model, error) = self.model();
-        if let Some(e) = error {
+    /// What a model call needs besides the frame: the current model and
+    /// backend (or the model's resolution error) and the provider's transport.
+    async fn resolve(&mut self) -> Result<(Current, Transport), String> {
+        let current = self.model();
+        if let Some(e) = &current.error {
             return Err(format!("model: {e}"));
         }
-        let tools = self.tools(registry).await;
-        let transport = self.transport(&model).await?;
-        Ok((model, tools, transport))
+        let transport = self.transport(&current).await?;
+        Ok((current, transport))
     }
 
     /// [`Turn::resolve`] then [`Turn::harvest`].
-    async fn harvest_with(
-        &mut self,
-        registry: &ActorRef<ToolRegistry>,
-    ) -> Result<HarvestResult, String> {
-        let (model, tools, transport) = self.resolve(registry).await?;
-        self.harvest(&model, &tools, transport).await
+    async fn harvest_with(&mut self) -> Result<HarvestResult, String> {
+        let (current, transport) = self.resolve().await?;
+        self.harvest(&current, transport).await
     }
 
     /// Compaction (07 §8.2–§8.4, 11): cut, build the head, open a new epoch.
     /// `projected` is reported in `Compacted.before`. Styles only change the head.
     async fn compact(
         &mut self,
-        model: &Resolved,
-        tools: &[Tool],
+        current: &Current,
         transport: Transport,
         projected: u32,
         r#override: Option<CompactStyle>,
         reason: compact::CompactReason,
     ) -> Result<u32, String> {
-        let window = self.window(model);
+        let window = self.window(&current.model);
         // 07 §8.2: the kept tail is 1/8 of the *threshold* — a tail sized to the
         // raw window would leave a small-threshold session re-compacting every round.
         let compact_at = self.shared.cfg.compact_at;
@@ -1321,7 +1247,7 @@ impl Turn {
         {
             self.state.turns_since_harvest = 0;
             self.calls = 0;
-            if let Err(e) = self.harvest(model, tools, transport).await {
+            if let Err(e) = self.harvest(current, transport).await {
                 tracing::warn!(session = %session, "harvest before compaction: {e}");
             }
         }
@@ -1335,7 +1261,7 @@ impl Turn {
             CompactStyle::Summary => {
                 full.push(ChatMessage::user(compact::COMPACT_INSTRUCTION));
                 match self
-                    .summarise(model, tools, transport, &mut full, keep_from)
+                    .summarise(current, transport, &mut full, keep_from)
                     .await
                 {
                     Ok(text) => text,
@@ -1422,8 +1348,7 @@ impl Turn {
     /// once on overflow with the kept tail removed.
     async fn summarise(
         &self,
-        model: &Resolved,
-        tools: &[Tool],
+        current: &Current,
         transport: Transport,
         full: &mut Vec<ChatMessage>,
         keep_from: usize,
@@ -1431,7 +1356,7 @@ impl Turn {
         let mut trimmed = false;
         loop {
             match self
-                .continuation(model, tools, transport, full, compact::COMPACT_INSTRUCTION)
+                .continuation(current, transport, full, compact::COMPACT_INSTRUCTION)
                 .await
             {
                 Ok(text) => return Ok(text),
@@ -1452,8 +1377,7 @@ impl Turn {
     /// `Err` is the raw model error (callers test `compact::is_overflow`).
     async fn continuation(
         &self,
-        model: &Resolved,
-        tools: &[Tool],
+        current: &Current,
         transport: Transport,
         full: &mut Vec<ChatMessage>,
         instruction: &str,
@@ -1461,12 +1385,12 @@ impl Turn {
         let mut text_only = false;
         loop {
             let frame = Frame {
-                tools,
+                tools: &self.tools,
                 system: &self.state.baseline,
                 head: self.state.head.as_ref(),
                 history: full.as_slice(),
             };
-            match self.call(model, frame, transport, None).await {
+            match self.call(current, frame, transport, None).await {
                 Ok(end) => {
                     let has_calls = end.captured_tool_calls().is_some_and(|c| !c.is_empty());
                     let text = end.captured_texts().map(|t| t.concat()).unwrap_or_default();
@@ -1493,8 +1417,7 @@ impl Turn {
     /// overflow is an `Err` (the frame is about to be compacted anyway).
     async fn harvest(
         &mut self,
-        model: &Resolved,
-        tools: &[Tool],
+        current: &Current,
         transport: Transport,
     ) -> Result<HarvestResult, String> {
         let knowledge = self.knowledge().ok_or("knowledge is off")?;
@@ -1519,7 +1442,7 @@ impl Turn {
         let mut full = messages(&self.state.history);
         full.push(ChatMessage::user(&instruction));
         let text = self
-            .continuation(model, tools, transport, &mut full, &instruction)
+            .continuation(current, transport, &mut full, &instruction)
             .await?;
 
         let mut result = HarvestResult::default();

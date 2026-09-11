@@ -160,28 +160,30 @@ registered first and win a name clash; between servers the first by sorted
 server name wins; both cases log a warning naming the loser's server so the
 user can gate or rename via the server's own config. No rename map yet.
 
-**Gating — `~/.wth/mcp/config.yaml`** (same watcher, same reconcile):
+**Risk override — `~/.wth/mcp/config.yaml`** (same watcher, same reconcile; 12 §5):
 
 ```yaml
 servers:
   everything:
-    gate: ask                # every tool of this server; default allow
+    risk: read_only            # every tool of this server; default: annotations
     tools:
-      echo: allow            # per tool, overrides the server line
-      longRunningOperation: deny
+      longRunningOperation: off  # unregistered, model never sees it
   filesystem:
-    gate: deny               # connect nothing from this server
+    risk: off                  # not connected
 ```
 
-Values are the existing `PolicyAction` (`allow` | `ask` | `deny`). MCP tools
-always carry an explicit action — `allow` unless this file says otherwise —
-so `tools.policy` (a *risk* → action map for tools whose risk we know) never
-applies to them. `ask` goes through the same `Approval` actor and the same TUI
-modal as native tools; `deny` at tool level hides the tool from the model,
-at server level skips the connection entirely. Resolution: tool line →
-server line → `allow`. Implementation: `ErasedTool::gate(&self) ->
-Option<PolicyAction>` (default `None`), consulted by the registry before
-`policy.action(risk)`; only MCP tools return `Some`.
+Values are a `Risk` (`read_only` | `mutating` | `destructive`) or `off`. An
+MCP tool's default `Risk` comes from its `ToolAnnotations`:
+`read_only_hint: true` → read-only, `destructive_hint: true` → destructive,
+else mutating (an *unset* `destructive_hint` is deliberately read as mutating,
+not the spec's destructive: most servers set nothing). The registry then
+applies `tools.policy` exactly as for a native tool — there is no second
+policy for MCP tools. `off` at tool level hides the tool from the model, at
+server level skips the connection entirely. Resolution: tool line → server
+line → annotations. An MCP tool without annotations therefore prompts by
+default (`tools.policy.mutating = ask`); a user who trusts a server sets
+`risk: read_only` on it once. Old `allow | ask | deny` files fail to parse
+and are ignored with a warning naming the file and the accepted words.
 
 The agent sees no difference between native and MCP tools: same `ToolSpec`,
 same approval flow, same events.

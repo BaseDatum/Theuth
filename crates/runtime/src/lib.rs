@@ -64,6 +64,23 @@ impl Runtime {
     pub fn section<'de, T: Deserialize<'de>>(&self, name: &str) -> anyhow::Result<T> {
         Ok(self.config.extract_inner(name)?)
     }
+
+    /// `ActorRef::<A>::lookup(name)` until it resolves or `shutdown` fires (12 §2).
+    /// Polls every 50 ms: kameo's registry has no watch API.
+    pub async fn lookup_when<A: kameo::actor::Actor>(
+        &self,
+        name: &'static str,
+    ) -> Option<ActorRef<A>> {
+        loop {
+            if let Ok(Some(r)) = ActorRef::<A>::lookup(name) {
+                return Some(r);
+            }
+            tokio::select! {
+                _ = self.shutdown.cancelled() => return None,
+                _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
+            }
+        }
+    }
 }
 
 /// Set `section.key: value` in the YAML file at `path`, keeping everything
