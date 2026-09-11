@@ -64,7 +64,9 @@ generators, no class inheritance; stdlib: json re math datetime collections iter
 functools dataclasses pathlib base64 asyncio(gather). State persists, except names
 starting with `_`, which do not carry across cells. A tool error inside a coroutine
 passed to `gather` cannot be caught inside that coroutine (monty bug): catch around
-the `gather` itself, or await tools one at a time.
+the `gather` itself, or await tools one at a time. `shell()` returns the output when
+the command finishes within a few seconds, otherwise `{\"job\": id, \"log\": path}`; the
+result arrives later as <job_result>.
 
 Tools available in the runtime (all `async`; native tools are also direct tool calls):
 ";

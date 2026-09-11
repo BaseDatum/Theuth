@@ -610,12 +610,12 @@ pub enum AgentEvent {
         /// Peer name, unique among the parent's children.
         name: String,
     },
-    /// Text injected into `session` by the harness (subagent result or peer
-    /// message), for transcripts.
+    /// Text injected into `session` by the harness (subagent result, peer
+    /// message or finished job), for transcripts.
     MessageDelivered {
         /// Receiving session.
         session: SessionId,
-        /// Sender: a child's name or `"parent"`.
+        /// Sender: a child's name, `"parent"`, or `"job j3"` for a `<job_result>`.
         from: String,
         /// Delivered text without its wrapper.
         text: String,

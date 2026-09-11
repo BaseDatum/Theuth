@@ -575,6 +575,63 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// 13 §6.5: a multi-part snap head (caption, PNG frames, closing tag)
+    /// survives the epochs row byte for byte.
+    #[tokio::test]
+    async fn snap_head_round_trips_parts() {
+        use base64::Engine as _;
+        use genai::chat::ContentPart;
+
+        use crate::{compact, snap};
+
+        let (store, id, dir) = fresh().await;
+        append_all(&store, id, [ChatMessage::user("m0"), asst("a0")]).await;
+        let caption = "Archive of 2 folded messages as 2 image(s), most recent last.";
+        let shape = snap::shape("anthropic");
+        let png = snap::rasterize(&["x".into()], &shape).remove(0);
+        let frame = |i: usize| {
+            ContentPart::from_binary_base64(
+                "image/png",
+                base64::engine::general_purpose::STANDARD.encode(&png),
+                Some(format!("frame-{i}.png")),
+            )
+        };
+        let head = ChatMessage::user(MessageContent::from_parts(vec![
+            ContentPart::Text(compact::wrap_head_open(
+                1,
+                compact::CompactStyle::Snap,
+                caption,
+                [String::from("Roster: a")],
+            )),
+            frame(0),
+            frame(1),
+            ContentPart::Text(compact::HEAD_CLOSE.into()),
+        ]));
+        store.compact(id, 1, 1, 1, &head).await.unwrap();
+
+        let (n, got, tail) = store.frame(id).await.unwrap();
+        let got = got.unwrap();
+        assert_eq!((n, tail.len()), (1, 1));
+        assert_eq!(got.content.parts().len(), 4);
+        assert_eq!(
+            got.content.parts()[1]
+                .as_binary()
+                .map(|b| b.content_type.as_str()),
+            Some("image/png")
+        );
+        let text = text_of(&got.content);
+        assert_eq!(compact::style_of_head(&text), compact::CompactStyle::Snap);
+        assert!(text.contains(caption));
+        assert!(text.contains("Roster: a"));
+        assert!(text.ends_with(compact::HEAD_CLOSE));
+        assert_eq!(
+            serde_json::to_string(&got).unwrap(),
+            serde_json::to_string(&head).unwrap()
+        );
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[tokio::test]
     async fn undo_redo_hides_whole_turns_including_steers() {
         let (store, id, dir) = fresh().await;

@@ -1,7 +1,7 @@
 //! `Agents` supervisor: registered as [`crate::AGENT_ACTOR`]; owns one
 //! session actor per live session, the sqlite store, and peer routing
-//! (design doc 01 §2.3): child results and peer messages are injected as
-//! [`UserInput`] into the addressee.
+//! (design doc 01 §2.3): child results, peer messages and finished jobs
+//! (14 §3) are injected as [`UserInput`] into the addressee.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -19,7 +19,10 @@ use models::{Catalog, Resolved};
 use runtime::{InputId, Runtime, SessionId};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, oneshot};
 use tokio::task::AbortHandle;
-use tools::{ListPrompts, ListTools, REGISTRY_ACTOR, RegisterTool, SetParent, ToolRegistry};
+use tools::{
+    JobEvent, JobExit, JobId, ListPrompts, ListTools, REGISTRY_ACTOR, RegisterTool, SetParent,
+    ToolRegistry,
+};
 
 use crate::loop_::{
     CancelTurn, CompactNow, HarvestNow, IsRunning, QueuedInputs, RedoTurn, Session, SessionState,
@@ -363,6 +366,69 @@ impl Message<AgentEvent> for Agents {
             _ => {}
         }
     }
+}
+
+/// Finished jobs (14 §3): `Finished` becomes a `<job_result>` harness input
+/// via [`Agents::inject`] — an idle session starts a new turn, a turn in
+/// flight queues it after the current tool batch. A session with no live
+/// actor is resumed from the store by `input`, so a job that outlives its
+/// actor still wakes the session. `Started` / `Output` are for the UIs.
+impl Message<JobEvent> for Agents {
+    type Reply = ();
+
+    async fn handle(&mut self, ev: JobEvent, _: &mut Context<Self, Self::Reply>) {
+        let JobEvent::Finished {
+            session,
+            id,
+            command,
+            exit,
+            secs,
+            output,
+        } = ev
+        else {
+            return;
+        };
+        // Same cap and dir as tool results in the loop (07 §6).
+        let text = spill::cap(
+            session,
+            &format!("job-{id}"),
+            &output,
+            self.cfg.max_tool_output_chars,
+            &self.rt.data_dir.join("spill"),
+        );
+        let wrapped = job_result(&id, &command, &exit, secs, &text);
+        self.inject(session, &format!("job {id}"), text, wrapped)
+            .await;
+    }
+}
+
+/// The `<job_result>` wrapper (14 §1.2): `command` cut to 120 chars and
+/// attribute-escaped; `exit` is the code, `timeout` or `killed`.
+pub(crate) fn job_result(
+    id: &JobId,
+    command: &str,
+    exit: &JobExit,
+    secs: u64,
+    text: &str,
+) -> String {
+    let cmd: String = command.chars().take(120).collect();
+    let exit = match exit {
+        JobExit::Exited(code) => code.to_string(),
+        JobExit::Timeout => "timeout".into(),
+        JobExit::Killed => "killed".into(),
+    };
+    format!(
+        "<job_result id=\"{id}\" command=\"{}\" exit=\"{exit}\" secs=\"{secs}\">\n{text}\n</job_result>",
+        attr(&cmd)
+    )
+}
+
+/// XML attribute escape.
+fn attr(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 impl Message<SendInput> for Agents {
@@ -1559,6 +1625,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
     );
     agents.register(AGENT_ACTOR)?;
     rt.subscribe::<Agents, AgentEvent>(&agents).await;
+    rt.subscribe::<Agents, JobEvent>(&agents).await;
 
     // First use of the registry (00 §4, 12 §2).
     let data_dir = rt.data_dir.clone();
@@ -1596,4 +1663,27 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             .await;
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn job_result_wrapper_escapes_and_names_exit() {
+        let id = JobId("j3".into());
+        let w = job_result(&id, "echo \"a\" <b>", &JobExit::Exited(0), 7, "out");
+        assert_eq!(
+            w,
+            "<job_result id=\"j3\" command=\"echo &quot;a&quot; &lt;b&gt;\" exit=\"0\" secs=\"7\">\nout\n</job_result>"
+        );
+        let w = job_result(&id, "sleep 9", &JobExit::Timeout, 1800, "");
+        assert!(w.contains(" exit=\"timeout\" "));
+        let w = job_result(&id, "x", &JobExit::Killed, 1, "");
+        assert!(w.contains(" exit=\"killed\" "));
+        let long = "a".repeat(200);
+        let w = job_result(&id, &long, &JobExit::Exited(1), 0, "");
+        assert!(w.contains(&format!(" command=\"{}\" ", "a".repeat(120))));
+        assert!(!w.contains(&"a".repeat(121)));
+    }
 }

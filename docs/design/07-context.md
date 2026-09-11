@@ -125,6 +125,9 @@ per-transport difference.
 7. **Every mutation that is not an append is a named event** (`rebase`,
    `compaction`), logged with its cause, so an unexpected cache miss can
    always be explained from the log.
+8. **Harness inputs are plain user messages.** `<subagent_result>`,
+   `<job_result>` (14 §3) and peer `<message>` are appended like typed
+   input; they carry no id and publish no `Input*` event (01 §2.3).
 
 ### 2.3 What changes, where it lives, what happens
 
@@ -136,7 +139,7 @@ per-transport difference.
 | peer guidance (how to spawn/message), todo sentence | system | never | the `GUIDANCE` const in `frame::baseline`; the live roster is **removed** from the prompt (§10) |
 | plugin prompt blocks (knowledge sentence, …) | system | a plugin registers/unregisters — in practice process start | `ask(ListPrompts)` in `Turn::rebase`; a block registered after the first turn's rebase lands with one rebase on the next turn; the knowledge *index* is deliberately not here (10 §4.3) |
 | tool list | tools | MCP server connects/disconnects, gate change — only while the runtime is off; with it on, MCP tools are `direct = false` and never in the list (§5) | fetched once per turn in `Turn::rebase` (12 §4); a change is visible on the next turn, never mid-turn |
-| user input, steering, `<message>`, `<subagent_result>` | history tail | per turn | append |
+| user input, steering, `<message>`, `<subagent_result>`, `<job_result>` | history tail | per turn | append |
 | assistant output, tool results | history tail | per round | append |
 | harness notes: context pressure, todo reminder | history tail | pressure once per epoch; reminder rate-limited (§8.7, §9) | append |
 | `<knowledge>` hints (10 §4) | history tail | turn start against the input, then every `hint_rounds = 4` rounds against what was appended — only when there are hits | append |
@@ -530,6 +533,8 @@ CREATE TABLE epochs (
 `messages` is unchanged and still append-only; nothing is ever deleted or
 rewritten. `Store::append` gains `RETURNING seq` so history rows carry
 their seq (`Vec<(i64, ChatMessage)>`), which is what `tail_from` needs.
+`epochs.head` may hold base64 PNG parts for `snap` heads (13 §2.4; ~0.5 MiB
+per epoch row at the default budget).
 
 **Resume** (`--resume`, subagent lazy load, `LoadSession`):
 
@@ -647,7 +652,8 @@ appends after the visible tail as usual. A no-op when `cut_at` is `NULL`.
 predecessor is nothing or an assistant-role message. Steering and harness
 notes follow Tool or User rows, so they never count; a queued batch is
 several User rows in a row and only the first counts; a turn the harness
-starts (`<subagent_result>`, peer `<message>` into an idle session) counts.
+starts (`<subagent_result>`, `<job_result>`, peer `<message>` into an idle
+session) counts, so undo hides a job's turn like any other.
 `Store::hidden_turns` counts turn starts among the hidden rows; it is
 `Loaded.undone` (0 when `cut_at` is `NULL`), which the TUI shows as *N
 turn(s) undone — /redo restores*.

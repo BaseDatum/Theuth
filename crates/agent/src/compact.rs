@@ -125,21 +125,19 @@ pub(crate) enum CompactReason {
     Overflow,
 }
 
-/// Rasterizer crate is a later slice (design doc 11 §2.3).
-pub(crate) fn snap_built() -> bool {
-    false
-}
-
-/// Pick the style that will actually run (design doc 11 §3.1).
+/// Pick the style that will actually run (design docs 11 §3.1, 13 §3):
+/// `snap` on a text-only model errors when asked for by hand and falls back
+/// to `cut` when automatic.
 pub(crate) fn resolve(
     r#override: Option<CompactStyle>,
     cfg: CompactStyle,
     reason: CompactReason,
+    vision: bool,
 ) -> Result<CompactStyle, String> {
     let requested = r#override.unwrap_or(cfg);
-    if requested == CompactStyle::Snap && !snap_built() {
+    if requested == CompactStyle::Snap && !vision {
         if reason == CompactReason::Manual {
-            Err("snap not built".into())
+            Err("snap needs a vision model (this one is text-only)".into())
         } else {
             Ok(CompactStyle::Cut)
         }
@@ -148,8 +146,26 @@ pub(crate) fn resolve(
     }
 }
 
+/// Closing tag of a head; a snap head carries it as its own text part
+/// after the frames (design doc 13 §2.4).
+pub const HEAD_CLOSE: &str = "</context_summary>";
+
 /// `<context_summary epoch="n" style="…">` wrapper (design doc 11 §2).
 pub fn wrap_head(
+    n: u32,
+    style: CompactStyle,
+    body: &str,
+    parts: impl IntoIterator<Item = String>,
+) -> String {
+    let mut text = wrap_head_open(n, style, body, parts);
+    text.push('\n');
+    text.push_str(HEAD_CLOSE);
+    text
+}
+
+/// [`wrap_head`] without the closing tag: the first text part of a snap
+/// head, followed by the frames and [`HEAD_CLOSE`].
+pub fn wrap_head_open(
     n: u32,
     style: CompactStyle,
     body: &str,
@@ -162,7 +178,6 @@ pub fn wrap_head(
             text.push_str(&part);
         }
     }
-    text.push_str("\n</context_summary>");
     text
 }
 
@@ -274,17 +289,22 @@ mod tests {
     fn resolve_table() {
         use CompactReason::*;
         use CompactStyle::*;
-        assert_eq!(resolve(None, Summary, Manual).unwrap(), Summary);
-        assert_eq!(resolve(None, Summary, Auto).unwrap(), Summary);
-        assert_eq!(resolve(Some(Cut), Summary, Manual).unwrap(), Cut);
-        assert_eq!(resolve(None, Snap, Auto).unwrap(), Cut);
-        assert_eq!(resolve(Some(Snap), Summary, Auto).unwrap(), Cut);
-        assert_eq!(resolve(None, Snap, Overflow).unwrap(), Cut);
+        assert_eq!(resolve(None, Summary, Manual, false).unwrap(), Summary);
+        assert_eq!(resolve(None, Summary, Auto, true).unwrap(), Summary);
+        assert_eq!(resolve(Some(Cut), Summary, Manual, true).unwrap(), Cut);
+        // Text-only model: automatic snap degrades to cut, manual snap refuses.
+        assert_eq!(resolve(None, Snap, Auto, false).unwrap(), Cut);
+        assert_eq!(resolve(Some(Snap), Summary, Auto, false).unwrap(), Cut);
+        assert_eq!(resolve(None, Snap, Overflow, false).unwrap(), Cut);
         assert_eq!(
-            resolve(Some(Snap), Summary, Manual).unwrap_err(),
-            "snap not built"
+            resolve(Some(Snap), Summary, Manual, false).unwrap_err(),
+            "snap needs a vision model (this one is text-only)"
         );
-        assert_eq!(resolve(None, Snap, Manual).unwrap_err(), "snap not built");
+        assert!(resolve(None, Snap, Manual, false).is_err());
+        // Vision model: snap runs whatever the reason.
+        assert_eq!(resolve(None, Snap, Manual, true).unwrap(), Snap);
+        assert_eq!(resolve(Some(Snap), Summary, Auto, true).unwrap(), Snap);
+        assert_eq!(resolve(None, Snap, Overflow, true).unwrap(), Snap);
     }
 
     #[test]
@@ -299,6 +319,23 @@ mod tests {
         assert!(h.starts_with("<context_summary epoch=\"3\" style=\"cut\">"));
         assert!(h.contains("Roster: a"));
         assert!(h.ends_with("</context_summary>"));
+    }
+
+    #[test]
+    fn wrap_head_open_plus_close_equals_wrap_head() {
+        let parts = || {
+            [
+                String::from("Roster: a"),
+                String::new(),
+                String::from("Runtime: x"),
+            ]
+        };
+        let open = wrap_head_open(4, CompactStyle::Snap, "caption", parts());
+        assert!(!open.contains(HEAD_CLOSE));
+        assert_eq!(
+            format!("{open}\n{HEAD_CLOSE}"),
+            wrap_head(4, CompactStyle::Snap, "caption", parts())
+        );
     }
 
     #[test]

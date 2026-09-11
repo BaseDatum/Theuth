@@ -242,7 +242,9 @@ flowchart LR
   (`with_capture_tool_calls(true)` is mandatory; chunks carry cumulative
   partial JSON strings, usable for a "calling X…" indicator only).
 - Tool calls in one assistant message run concurrently (`join_all` on
-  `ask(Invoke)`); results appended as one tool-response message. `todo` and
+  `ask(Invoke)`); results appended as one tool-response message. `shell`
+  returns within `tools.job_grace_secs`; the process continues as a job and
+  its result arrives as a `<job_result>` input (14). `todo` and
   `python` are loop-local (dispatched by the turn, not the registry;
   `07 §5`).
 - Every `ChatMessage` is appended to the session store before the next
@@ -558,7 +560,8 @@ Each phase ends with a runnable check, not a test suite.
 | 8 | background jobs (14) | `shell` returns within grace; `<job_result>` starts a turn; no orphans at shutdown | planned 2026-09-11 |
 
 Known gaps carried forward: cancel/error paths in the loop are code-reviewed,
-not smoke-tested; a `setsid` child escapes `killpg`; no upstream PR yet for the
+not smoke-tested; the `Jobs` actor kills every process group on shutdown
+(14 §2); a `setsid` child still escapes; no upstream PR yet for the
 brush `on_spawn` patch; RPC token compare is plain `==` (loopback only);
 session actors are never evicted from the supervisor; `cargo test -p
 knowledge` hung once (2026-09-11, 0% CPU, parallel threads; 1/7 runs), not

@@ -67,6 +67,7 @@ const COMMANDS: &[(&str, &str, &str)] = &[
         "show or set the reasoning effort",
     ),
     ("/agents", "", "this session's subagents"),
+    ("/jobs", "[kill <id>]", "list background jobs"),
     ("/prompt", "", "the assembled system prompt"),
     ("/skills", "[add <url>|rm <name>|sync]", "skills"),
     ("/mcp", "[add <url|json>|sync]", "MCP servers"),
@@ -195,12 +196,12 @@ async fn run(cx: &mut Cx<'_>, name: &'static str, arg: &str) -> anyhow::Result<R
         }
         "/model" if arg.is_empty() => {
             let models = agent()?.ask(agent::ListModels).await.map_err(err)?;
-            let mut out = table(
-                models
-                    .iter()
-                    .take(20)
-                    .map(|m| vec![m.id.clone(), k(m.context)]),
-            );
+            let mut out = table(models.iter().take(20).map(|m| {
+                vec![
+                    m.id.clone(),
+                    format!("{}{}", k(m.context), if m.image { " · vision" } else { "" }),
+                ]
+            }));
             if models.len() > 20 {
                 out.push_str(&format!("\n{} more; /model <id> to set", models.len() - 20));
             }
@@ -272,6 +273,31 @@ async fn run(cx: &mut Cx<'_>, name: &'static str, arg: &str) -> anyhow::Result<R
                     age(s.created_at),
                 ]
             })))
+        }
+        "/jobs" => {
+            let session = cx.session.context(NO_SESSION)?;
+            match arg.split_once(' ') {
+                None if arg.is_empty() => {
+                    let rows = jobs()?.ask(tools::ListJobs(session)).await.map_err(err)?;
+                    text(if rows.is_empty() {
+                        "no jobs".to_owned()
+                    } else {
+                        format!("```\n{}\n```", tools::jobs::table(&rows))
+                    })
+                }
+                Some(("kill", id)) if !id.trim().is_empty() => {
+                    let id = id.trim();
+                    jobs()?
+                        .ask(tools::CancelJob {
+                            session,
+                            id: tools::JobId(id.to_owned()),
+                        })
+                        .await
+                        .map_err(err)?;
+                    text(format!("killed {id}"))
+                }
+                _ => text("usage: /jobs [kill <id>]".into()),
+            }
         }
         "/prompt" => text(
             agent()?
@@ -693,6 +719,10 @@ fn mcp() -> anyhow::Result<ActorRef<tools::Mcp>> {
     ActorRef::<tools::Mcp>::lookup(tools::MCP_ACTOR)?.context("mcp actor is not running")
 }
 
+fn jobs() -> anyhow::Result<ActorRef<tools::Jobs>> {
+    ActorRef::<tools::Jobs>::lookup(tools::JOBS_ACTOR)?.context("jobs actor is not running")
+}
+
 fn err<E: Display>(e: E) -> anyhow::Error {
     anyhow::anyhow!("{e}")
 }
@@ -821,6 +851,7 @@ mod tests {
         assert_eq!(classify(&p, "/re"), Some(("/help", "")));
         assert_eq!(classify(&p, "/u"), Some(("/undo", "")));
         assert_eq!(classify(&p, "/skills sync"), Some(("/skills", "sync")));
+        assert_eq!(classify(&p, "/j kill j3"), Some(("/jobs", "kill j3")));
         assert_eq!(classify(&p, "/zzz"), Some(("/help", "")));
         assert_eq!(classify(&p, "hello /model"), None);
         assert_eq!(classify(&p, "k7mq"), None);

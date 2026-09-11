@@ -254,6 +254,7 @@ actor and the parent column:
 | child `TurnFinished` | if a peer is awaiting a reply *from this child* → resolve that waiter with the child's final text; else → `parent.tell(UserInput(<subagent_result>))` |
 | `send_message{to, text, await_reply}` | if `to` is awaiting a reply *from the sender* → resolve that waiter with `text` (no injection); else → `to.tell(UserInput(<message>))`. If `await_reply` → register waiter `(sender, to)`, return when resolved or on timeout |
 | waiter timeout | tool returns `no reply from <to> within Ns` as a normal (non-error) output; the message stays delivered |
+| `Jobs` `Finished` | `parent.tell(UserInput(<job_result>))` — the session that started the job (14 §3) |
 
 "Final assistant text of the turn" = concatenated assistant content persisted
 after the turn's last user message — read from the store, not collected from
@@ -300,7 +301,7 @@ has a three-state lifecycle:
 `ListQueued` and `Loaded.queued` give a frontend attaching mid-turn the
 current queue. The queue is memory only — a queued steer is a pending
 action, not history, and does not survive the process. Harness inputs
-(`<subagent_result>`, peer `<message>`) carry no id and publish no `Input*`
+(`<subagent_result>`, `<job_result>`, peer `<message>`) carry no id and publish no `Input*`
 event. `SendInput` is unchanged: it starts a turn when idle and is echoed
 by `TurnStarted`.
 

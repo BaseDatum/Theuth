@@ -20,7 +20,10 @@ just ts                    # TypeScript bindings for the wire types → bindings
 Crates: `runtime` (plugin trait), `models` (bundled models.dev catalog),
 `markdown` (streaming markdown: raw tail, blocks rendered once), `oauth`
 (loopback callback, PKCE, provider token store), `tools` (registry, approval
-gate, shell via brush, fs (read, write, list, grep, edit), MCP), `knowledge`
+gate, shell via brush, fs (read, write, list, grep, edit), MCP; shell commands
+run as background jobs: output within 3 s comes back inline, otherwise the
+model gets a job id and is woken with `<job_result>` when it exits —
+[`docs/design/14-jobs.md`](docs/design/14-jobs.md)), `knowledge`
 (OKF bundle, FTS index, gix history, `knowledge_*` tools —
 [`docs/design/10-knowledge.md`](docs/design/10-knowledge.md)), `agent` (genai
 loop, sqlite sessions with compaction epochs, skills, subagents, persistent
@@ -69,6 +72,7 @@ to; `/provider add` prompts for name, base url, then API key (an OpenAI-compatib
 gateway such as `https://api.ai.rwx.dev/v1`); `/provider` lists them, `/provider rm <name>`
 forgets one; `/skills` lists skills; `/prompt` shows the system prompt; `/compact` folds into a summary by default; `/compact cut` drops the folded span with no model call; `/compact style` lists/sets the default;
 `/undo` drops the last turn (yours and the reply), `/redo` restores it;
+`/jobs` lists the session's shell jobs, `/jobs kill <id>` stops one;
 `/knowledge` browses the knowledge base (below); `/approvals off` stops
 approval prompts for this session, `/approvals off always` for good
 (`tools.approvals` in config.yaml). Typing while the model works queues the

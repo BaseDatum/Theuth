@@ -16,8 +16,8 @@ use runtime::{InputId, SessionId, TurnId};
 use tokio::sync::mpsc::UnboundedSender;
 use tools::git::SyncResult;
 use tools::{
-    ApprovalId, ApprovalRequested, ApprovalResolved, ApprovalsState, Decision, Gate, McpAuth,
-    McpProgress, McpServer, McpToolInfo, PolicyAction, RepoInfo,
+    ApprovalId, ApprovalRequested, ApprovalResolved, ApprovalsState, Decision, Gate, JobEvent,
+    JobView, McpAuth, McpProgress, McpServer, McpToolInfo, PolicyAction, RepoInfo,
 };
 
 /// Everything the UI can receive: bus events plus replies to its own commands.
@@ -96,6 +96,10 @@ pub enum UiEvent {
     Undone(String),
     /// Reply to [`Command::Redo`]: first line of the turn restored.
     Redone(String),
+    /// Reply to [`Command::ListJobs`].
+    Jobs(Vec<JobView>),
+    /// A background job started, wrote output or ended (bus event).
+    Job(JobEvent),
 }
 
 /// Everything the UI can ask of the rest of the process. One task turns
@@ -131,6 +135,15 @@ pub enum Command {
     Redo(SessionId),
     /// `cancel`.
     Cancel(SessionId),
+    /// `list_jobs` for the shown session.
+    ListJobs(SessionId),
+    /// `cancel_job`.
+    CancelJob {
+        /// Owning session.
+        session: SessionId,
+        /// Job id, e.g. `j3`.
+        id: String,
+    },
     /// `compact`.
     Compact {
         /// Target.
@@ -334,6 +347,8 @@ pub enum CardKind {
     Skill,
     /// The assembled system prompt (`/prompt`).
     Prompt,
+    /// A `<job_result>` the harness injected when a background job ended.
+    Job,
 }
 
 impl CardKind {
@@ -343,6 +358,7 @@ impl CardKind {
             CardKind::Peer => "⟵",
             CardKind::Skill => "◇",
             CardKind::Prompt => "§",
+            CardKind::Job => "⚙",
         }
     }
 }
@@ -403,14 +419,15 @@ pub fn paste_token(i: usize, text: &str) -> String {
     format!("[⎘ paste {}: {size}]", i + 1)
 }
 
-/// Split a harness-injected input into `(peer, body)` per wrapper. Inputs
-/// queued during a turn arrive as one text: `<subagent_result name="…">` /
-/// `<message from="…">` blocks joined by newlines. Harness notes
+/// Split a harness-injected input into `(kind, title, body)` per wrapper.
+/// Inputs queued during a turn arrive as one text: `<subagent_result
+/// name="…">` / `<message from="…">` / `<job_result id="…" command="…"
+/// exit="…" secs="…">` blocks joined by newlines. Harness notes
 /// (`<context_summary>`, `<todo>`, `<context_pressure>`, `<runtime>`,
 /// `<knowledge>`; design docs 07 §8.7, 10 §4) are wrappers too but yield no
 /// card. `None` for human text
 /// (or anything not entirely made of wrappers).
-pub fn injected(text: &str) -> Option<Vec<(String, String)>> {
+pub fn injected(text: &str) -> Option<Vec<(CardKind, String, String)>> {
     let mut out = Vec::new();
     let mut rest = text.trim_start();
     while !rest.is_empty() {
@@ -419,6 +436,7 @@ pub fn injected(text: &str) -> Option<Vec<(String, String)>> {
         let (key, close) = match name {
             "subagent_result" => (Some("name=\""), "</subagent_result>"),
             "message" => (Some("from=\""), "</message>"),
+            "job_result" => (Some("id=\""), "</job_result>"),
             "context_summary" => (None, "</context_summary>"),
             "todo" => (None, "</todo>"),
             "context_pressure" => (None, "</context_pressure>"),
@@ -428,15 +446,34 @@ pub fn injected(text: &str) -> Option<Vec<(String, String)>> {
         };
         let (body, tail) = after.split_once(close)?;
         if let Some(key) = key {
-            let from = open
-                .split_once(key)
-                .and_then(|(_, v)| v.split('"').next())?;
+            let from = attr(open, key)?;
+            let (kind, title) = if name == "job_result" {
+                let command = attr(open, "command=\"")
+                    .unwrap_or_default()
+                    .replace("&quot;", "\"")
+                    .replace("&lt;", "<")
+                    .replace("&gt;", ">")
+                    .replace("&amp;", "&");
+                let exit = attr(open, "exit=\"").unwrap_or_default();
+                let secs = attr(open, "secs=\"").unwrap_or_default();
+                (
+                    CardKind::Job,
+                    format!("{from} · {command} · exit {exit} · {secs}s"),
+                )
+            } else {
+                (CardKind::Peer, from.to_owned())
+            };
             let body = body.strip_prefix('\n').unwrap_or(body).trim_end();
-            out.push((from.to_owned(), body.to_owned()));
+            out.push((kind, title, body.to_owned()));
         }
         rest = tail.trim_start();
     }
     Some(out)
+}
+
+/// Value of `key` (`name="`) in an open tag, up to the closing quote.
+fn attr<'a>(open: &'a str, key: &str) -> Option<&'a str> {
+    open.split_once(key).and_then(|(_, v)| v.split('"').next())
 }
 
 /// A subagent of the root session, known from `SubagentSpawned` or `/agents`.
@@ -481,6 +518,11 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ("/logout", "<name>", "forget a login"),
     ("/prompt", "", "show the assembled system prompt"),
     ("/agents", "", "list this session's subagents"),
+    (
+        "/jobs",
+        "[kill <id>]",
+        "list this session's background jobs",
+    ),
     ("/focus", "<name>", "show a subagent's transcript"),
     ("/sessions", "", "switch session (picker)"),
     ("/resume", "<id>", "open a session"),
@@ -808,6 +850,8 @@ pub struct Model {
     /// Steers of the shown session waiting for the current tool batch to
     /// end, oldest first; drawn below the transcript until `InputInjected`.
     pub queued: Vec<QueuedInput>,
+    /// Ids of the shown session's running background jobs (`JobEvent`).
+    pub jobs: BTreeSet<String>,
     /// Turn the last `InputInjected` joined: its `TurnStarted` is not echoed
     /// (the card moved into `entries` on injection).
     last_injected_turn: Option<TurnId>,
@@ -1316,6 +1360,16 @@ impl Model {
                 r.added, r.updated
             ))),
             UiEvent::Info(t) => self.entries.push(Entry::Info(t)),
+            UiEvent::Jobs(jobs) => self.entries.push(Entry::Info(tools::jobs::table(&jobs))),
+            UiEvent::Job(ev) => match ev {
+                JobEvent::Started { session, id, .. } if self.shown() == Some(session) => {
+                    self.jobs.insert(id.0);
+                }
+                JobEvent::Finished { session, id, .. } if self.shown() == Some(session) => {
+                    self.jobs.remove(&id.0);
+                }
+                _ => {}
+            },
             UiEvent::CompactStyle(s) => self.entries.push(Entry::Info(format!(
                 "compact style: {s} (default)\n  summary  cache-hot LLM fold (07 §8.3)\n  cut      drop the folded span, keep the tail, no model call\n  snap     rasterize the folded span to images (vision model)"
             ))),
@@ -1384,7 +1438,12 @@ impl Model {
                 text,
             } => {
                 if self.shown() == Some(*session) {
-                    self.interject(card(CardKind::Peer, from.clone(), text));
+                    let kind = if from.starts_with("job ") {
+                        CardKind::Job
+                    } else {
+                        CardKind::Peer
+                    };
+                    self.interject(card(kind, from.clone(), text));
                 }
                 return;
             }
@@ -1626,6 +1685,20 @@ impl Model {
                 Some(root) => send(tx, Command::ListChildren(root)),
                 None => self.entries.push(Entry::Info("no session".into())),
             },
+            "/jobs" => match (self.shown(), arg.split_once(' ')) {
+                (None, _) => self.entries.push(Entry::Info("no session".into())),
+                (Some(session), None) if arg.is_empty() => send(tx, Command::ListJobs(session)),
+                (Some(session), Some(("kill", id))) if !id.trim().is_empty() => send(
+                    tx,
+                    Command::CancelJob {
+                        session,
+                        id: id.trim().to_owned(),
+                    },
+                ),
+                _ => self
+                    .entries
+                    .push(Entry::Error("usage: /jobs [kill <id>]".into())),
+            },
             "/focus" => self.focus(arg, tx),
             "/compact" => self.compact_cmd(arg, tx),
             "/cancel" => {
@@ -1694,6 +1767,7 @@ impl Model {
         };
         self.focus = (target != root).then_some(target);
         self.entries.clear();
+        self.jobs.clear();
         self.usage = None;
         // `Loaded` carries the target's model and effort; the header flips on its reply.
         self.context = 0;
@@ -1758,7 +1832,11 @@ impl Model {
             0 => String::new(),
             n => format!("  ·  {n} queued"),
         };
-        format!("{session}  {state}{usage}{focus}{agents}{queued}")
+        let jobs = match self.jobs.len() {
+            0 => String::new(),
+            n => format!("  ·  {n} job(s)"),
+        };
+        format!("{session}  {state}{usage}{focus}{agents}{queued}{jobs}")
     }
 
     /// Line above the input: `model  ·  high  ·  ctx 12.3k / 200k (6%)  ·  cache 94%`
@@ -2440,9 +2518,9 @@ fn from_history(h: HistoryEntry) -> Vec<Entry> {
     match h {
         HistoryEntry::User { text } => match injected(&text) {
             None => vec![Entry::User(text)],
-            Some(peers) => peers
+            Some(cards) => cards
                 .into_iter()
-                .map(|(from, body)| card(CardKind::Peer, from, &body))
+                .map(|(kind, title, body)| card(kind, title, &body))
                 .collect(),
         },
         HistoryEntry::Assistant { text } => {
@@ -2661,12 +2739,10 @@ mod tests {
     #[test]
     fn injected_splits_a_batched_turn_and_leaves_human_text_alone() {
         let text = "<message from=\"pinger\" id=\"m1\" reply_expected=\"false\">\nPONG\n</message>\n<subagent_result name=\"pinger\" session=\"x\" stop=\"end_turn\">\nSent.\n</subagent_result>";
+        let peer = |from: &str, body: &str| (CardKind::Peer, from.to_owned(), body.to_owned());
         assert_eq!(
             injected(text),
-            Some(vec![
-                ("pinger".to_owned(), "PONG".to_owned()),
-                ("pinger".to_owned(), "Sent.".to_owned()),
-            ])
+            Some(vec![peer("pinger", "PONG"), peer("pinger", "Sent.")])
         );
         // Harness notes are hidden without producing a card; a peer message
         // batched with one still gets its card.
@@ -2679,11 +2755,91 @@ mod tests {
             injected(
                 "<context_pressure>80% full</context_pressure>\n<message from=\"p\">\nhi\n</message>"
             ),
-            Some(vec![("p".to_owned(), "hi".to_owned())])
+            Some(vec![peer("p", "hi")])
         );
         assert_eq!(injected("<b>\nnot a wrapper\n</b>"), None);
         assert_eq!(injected("hello"), None);
         assert_eq!(injected("<todo>unterminated"), None);
+    }
+
+    #[test]
+    fn injected_parses_job_result() {
+        let text = "<job_result id=\"j3\" command=\"echo &quot;a&quot; &amp;&amp; ls &gt; x\" exit=\"0\" secs=\"47\">\nok\n</job_result>";
+        assert_eq!(
+            injected(text),
+            Some(vec![(
+                CardKind::Job,
+                "j3 · echo \"a\" && ls > x · exit 0 · 47s".to_owned(),
+                "ok".to_owned(),
+            )])
+        );
+        assert_eq!(
+            injected(
+                "<job_result id=\"j1\" command=\"sleep 9\" exit=\"killed\" secs=\"2\">\n</job_result>"
+            ),
+            Some(vec![(
+                CardKind::Job,
+                "j1 · sleep 9 · exit killed · 2s".to_owned(),
+                String::new()
+            )])
+        );
+    }
+
+    #[test]
+    fn jobs_slash_args_and_status_count() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        m.submit("/jobs", &tx);
+        assert!(rx.try_recv().is_err(), "no session");
+        assert!(matches!(m.entries.last(), Some(Entry::Info(t)) if t == "no session"));
+
+        let s = SessionId::new();
+        m.session = Some(s);
+        m.submit("/jobs", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::ListJobs(session)) if session == s));
+        m.submit("/jobs kill j3", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::CancelJob { session, id }) if session == s && id == "j3"
+        ));
+        for bad in ["/jobs foo", "/jobs kill"] {
+            m.submit(bad, &tx);
+            assert!(rx.try_recv().is_err(), "{bad}");
+            assert!(
+                matches!(m.entries.last(), Some(Entry::Error(t)) if t == "usage: /jobs [kill <id>]"),
+                "{bad}"
+            );
+        }
+
+        let started = |session, id: &str| JobEvent::Started {
+            session,
+            id: tools::JobId(id.into()),
+            command: "sleep 9".into(),
+            log: "/tmp/j.log".into(),
+        };
+        m.apply(UiEvent::Job(started(s, "j1")));
+        m.apply(UiEvent::Job(started(s, "j2")));
+        // Another session's job does not count.
+        m.apply(UiEvent::Job(started(SessionId::new(), "j1")));
+        assert!(m.status().ends_with("2 job(s)"), "{}", m.status());
+        m.apply(UiEvent::Job(JobEvent::Finished {
+            session: s,
+            id: tools::JobId("j1".into()),
+            command: "sleep 9".into(),
+            exit: tools::JobExit::Killed,
+            secs: 2,
+            output: String::new(),
+        }));
+        assert!(m.status().ends_with("1 job(s)"), "{}", m.status());
+        m.apply_agent(AgentEvent::MessageDelivered {
+            session: s,
+            from: "job j1".into(),
+            text: "done".into(),
+        });
+        assert!(matches!(
+            m.entries.last(),
+            Some(Entry::Card { kind: CardKind::Job, title, .. }) if title == "job j1"
+        ));
     }
 
     #[test]

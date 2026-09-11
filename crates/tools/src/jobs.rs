@@ -76,12 +76,15 @@ impl std::fmt::Display for JobExit {
 }
 
 /// Bus events. `Output` is coalesced to one per [`OUTPUT_EVERY`] per job and
-/// lossy under a flood; the log file is the truth.
+/// lossy under a flood; the log file is the truth. Wire tags are `JobStarted`
+/// | `JobOutput` | `JobFinished` so they read unambiguously on the shared
+/// RPC event stream.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(tag = "type")]
 pub enum JobEvent {
     /// A job was spawned.
+    #[serde(rename = "JobStarted")]
     Started {
         /// Owning session.
         session: SessionId,
@@ -93,6 +96,7 @@ pub enum JobEvent {
         log: PathBuf,
     },
     /// Bytes since the previous `Output`.
+    #[serde(rename = "JobOutput")]
     Output {
         /// Owning session.
         session: SessionId,
@@ -102,6 +106,7 @@ pub enum JobEvent {
         chunk: String,
     },
     /// The job ended; the agent injects this as `<job_result>`.
+    #[serde(rename = "JobFinished")]
     Finished {
         /// Owning session.
         session: SessionId,
@@ -705,6 +710,35 @@ fn render(stdout: &[u8], stderr: &[u8]) -> String {
     s
 }
 
+/// The `/jobs` listing shared by the `jobs` tool, the TUI and Signal: one
+/// line per job — `id  state  secs  command (≤60 chars)  | last output line`
+/// — or `no jobs`.
+pub fn table(jobs: &[JobView]) -> String {
+    if jobs.is_empty() {
+        return "no jobs".into();
+    }
+    let rows: Vec<String> = jobs
+        .iter()
+        .map(|j| {
+            let last = j
+                .tail
+                .lines()
+                .rev()
+                .find(|l| !l.trim().is_empty())
+                .unwrap_or("");
+            let mut command = j.command.chars().take(60).collect::<String>();
+            if j.command.chars().count() > 60 {
+                command.push('…');
+            }
+            format!(
+                "{}  {:<9} {:>5}s  {command}  | {last}",
+                j.id, j.state, j.secs
+            )
+        })
+        .collect();
+    rows.join("\n")
+}
+
 /// Arguments for [`JobsTool`]: none.
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
 pub struct JobsArgs {}
@@ -728,29 +762,7 @@ impl Tool for JobsTool {
             .ask(ListJobs(cx.session))
             .await
             .map_err(|e| anyhow::anyhow!("jobs actor: {e}"))?;
-        if jobs.is_empty() {
-            return Ok(ToolOutput::ok("no jobs"));
-        }
-        let rows: Vec<String> = jobs
-            .iter()
-            .map(|j| {
-                let last = j
-                    .tail
-                    .lines()
-                    .rev()
-                    .find(|l| !l.trim().is_empty())
-                    .unwrap_or("");
-                let mut command = j.command.chars().take(60).collect::<String>();
-                if j.command.chars().count() > 60 {
-                    command.push('…');
-                }
-                format!(
-                    "{:<4} {:<10} {:>4}s  {command}  | {last}",
-                    j.id, j.state, j.secs
-                )
-            })
-            .collect();
-        Ok(ToolOutput::ok(rows.join("\n")))
+        Ok(ToolOutput::ok(table(&jobs)))
     }
 }
 

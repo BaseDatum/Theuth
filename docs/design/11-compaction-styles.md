@@ -44,11 +44,11 @@ slash surface.
 6. **Heads declare their style.**
    `<context_summary epoch="n" style="cut">`. Existing heads with no
    `style` attribute are `summary`. The store gains no column.
-7. **Snap is a style in v0's contract, a later crate in the build.** The
+7. **Snap is a style in v0's contract, built as its own slice.** The
    operator-facing name and the head shape are specified here. The
-   rasterizer (`agent::snap`) lands after `summary`/`cut` compile. A
-   `/compact snap` before that is `Err("snap not built")`. Build plan,
-   budget and geometry: `13-snap.md` (which wins where it differs).
+   rasterizer (`agent::snap`) landed after `summary`/`cut`. Built
+   2026-09-11; see `13-snap.md` for the build plan, budget and geometry
+   (which wins where it differs).
 
 ## 1. What oh-my-pi actually does
 
@@ -186,10 +186,6 @@ reason    = Auto | Manual | Overflow
 
 if requested == Snap && !model.image:
     if reason == Manual: Err("snap needs a vision model…")
-    else:                requested = Cut
-
-if requested == Snap && !snap_built():
-    if reason == Manual: Err("snap not built")
     else:                requested = Cut
 
 run(requested)
@@ -352,7 +348,7 @@ pub fn keep_from(history: &[ChatMessage], limit: u32) -> usize;
 pub fn is_overflow(err: &str) -> bool;
 pub fn est(m: &ChatMessage) -> u32;
 
-// agent::snap  (later slice)
+// agent::snap (13 §2.3)
 pub fn rasterize(folded: &[ChatMessage], model: &Resolved) -> Vec<Vec<u8>>; // PNGs
 
 // agent (lib.rs)
@@ -424,7 +420,7 @@ head, resume, `ContentPart` count.
 
 ## 9. Edits to other docs
 
-Applied 2026-09-10. `Model.image` waits on snap.
+Applied 2026-09-10. `Model.image` landed with 13.
 
 - **07 §8.3–8.6.** Summariser is the `summary` style, not the only
   style. `Compact.style: Option<CompactStyle>`. Overflow may finish as
@@ -455,7 +451,7 @@ Each step leaves `wth` runnable. Snap is last on purpose.
    `config.yaml` and the live `AgentConfig`. Listing text.
 4. **Divider + docs.** Style on the TUI/print divider; 07/02/README
    edits in §9; this doc → as-built.
-5. **`snap` (later).** `Model.image`, `agent::snap` rasterizer, image
+5. **`snap` (13).** `Model.image`, `agent::snap` rasterizer, image
    parts on the head, `/compact snap`, auto fallback to cut when
    `!image`. Fixture test with a canned PNG. Planned in `13-snap.md`.
 

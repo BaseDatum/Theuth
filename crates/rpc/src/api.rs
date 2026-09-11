@@ -29,9 +29,10 @@ use signal::{Allow, Link, RemoveAllowed, SIGNAL_ACTOR, Signal, SignalStatus, Sta
 use tokio::sync::broadcast;
 use tools::git::SyncResult;
 use tools::{
-    AddRepo, AddServer, Approval, ApprovalId, ApprovalsState, Decision, Gate, ListServers,
-    ListTools, Mcp, McpLogin, McpLogout, McpProgress, McpServer, Progress, RemoveServer, RepoInfo,
-    Resolve, SetApprovals, SetGate, SyncMcp, ToolRegistry, ToolSpec,
+    AddRepo, AddServer, Approval, ApprovalId, ApprovalsState, CancelJob, Decision, Gate,
+    JOBS_ACTOR, JobId, JobView, Jobs, ListJobs, ListServers, ListTools, Mcp, McpLogin, McpLogout,
+    McpProgress, McpServer, Progress, RemoveServer, RepoInfo, Resolve, SetApprovals, SetGate,
+    SyncMcp, ToolRegistry, ToolSpec,
 };
 
 use crate::bridge::Event;
@@ -64,9 +65,15 @@ pub trait Api {
     /// Abort the in-flight turn.
     #[method(name = "cancel")]
     async fn cancel(&self, session: SessionId) -> RpcResult<()>;
+    /// Background jobs of a session (14 §2): id, state, seconds, log path, tail.
+    #[method(name = "list_jobs")]
+    async fn list_jobs(&self, session: SessionId) -> RpcResult<Vec<JobView>>;
+    /// Kill a running job; `Err` when unknown or already finished.
+    #[method(name = "cancel_job")]
+    async fn cancel_job(&self, session: SessionId, id: JobId) -> RpcResult<()>;
     /// Fold the conversation now (design doc 07 §8.6 / 11 §4.2); returns the
-    /// new epoch. `style: None` uses the configured default. Snap is not built
-    /// yet. Refused while a turn is running.
+    /// new epoch. `style: None` uses the configured default. Refused while a
+    /// turn is running.
     #[method(name = "compact")]
     async fn compact(&self, session: SessionId, style: Option<CompactStyle>) -> RpcResult<u32>;
     /// Hide the last turn from the frame; returns its first line.
@@ -352,6 +359,14 @@ impl ApiServer for Server {
 
     async fn cancel(&self, session: SessionId) -> RpcResult<()> {
         ask::<Agents, _>(agent::AGENT_ACTOR, Cancel { session }).await
+    }
+
+    async fn list_jobs(&self, session: SessionId) -> RpcResult<Vec<JobView>> {
+        ask::<Jobs, _>(JOBS_ACTOR, ListJobs(session)).await
+    }
+
+    async fn cancel_job(&self, session: SessionId, id: JobId) -> RpcResult<()> {
+        ask::<Jobs, _>(JOBS_ACTOR, CancelJob { session, id }).await
     }
 
     async fn compact(&self, session: SessionId, style: Option<CompactStyle>) -> RpcResult<u32> {

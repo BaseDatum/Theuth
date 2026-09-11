@@ -108,12 +108,13 @@ Binary parts inside the fold (an earlier snap head) print as
 `compact_at × window`, or `window`). `frames_max = max(1, budget_tokens /
 family.tokens_per_frame)`. `rows_max = frames_max × family.rows`.
 
-Take the **last** `rows_max` wrapped lines of the serialisation. If lines
-were dropped, the first printed line is
-`[… {dropped} earlier lines dropped; {m} of {k} folded messages archived …]`
-and the caption (§2.4) reports `m` of `k`. If nothing is printed (empty
-fold — cannot happen with `keep_from > 0`, but the branch exists), degrade
-to `cut` (11 §2.3).
+Take the **last** `rows_max` wrapped lines of the serialisation
+(`snap::budget_lines(lines, budget_tokens, &shape) -> (lines, dropped)`). If
+lines were dropped, the first printed line is `[… {dropped} earlier lines
+dropped …]` and the caption (§2.4) repeats the count. If nothing is printed
+(empty fold — cannot happen with `keep_from > 0`, but the branch exists),
+`rasterize` returns no frames and `Turn::compact` degrades to `cut` (11
+§2.3): `style = Cut`, body = the cut body.
 
 ### 2.3 Drawing
 
@@ -139,19 +140,25 @@ without a model.
 ### 2.4 Head
 
 ```rust
-let mut parts = vec![ContentPart::Text(compact::wrap_head_open(n, Snap, caption, harness_parts))];
-parts.extend(pngs.into_iter().enumerate().map(|(i, png)| ContentPart::Binary(
-    Binary::from_base64("image/png", BASE64.encode(png), Some(format!("frame-{i}.png"))))));
-parts.push(ContentPart::Text("</context_summary>".into()));
+// Turn::compact, after the harness parts (roster / todos / runtime / knowledge) are built
+let mut parts = vec![ContentPart::Text(compact::wrap_head_open(n, Snap, caption, harness))];
+parts.extend(pngs.into_iter().enumerate().map(|(i, png)| ContentPart::from_binary_base64(
+    "image/png", BASE64.encode(png), Some(format!("frame-{i}.png")))));
+parts.push(ContentPart::Text(compact::HEAD_CLOSE.into()));
 ChatMessage::user(MessageContent::from_parts(parts))
 ```
 
-Caption: `Archive of the last {m} of {k} folded messages as {f} image(s),
-most recent last. Read them if you need earlier facts. Recent turns follow
-verbatim.` Harness lines (roster / todos / runtime / knowledge) follow the
-caption inside the first text part, exactly where `wrap_head` puts them
-today; `wrap_head` is split into `wrap_head_open` + the closing tag so
-`summary`/`cut` keep producing one string.
+Caption, with `k = keep_from + (previous head ? 1 : 0)` (the same count the
+cut body reports) and `f = pngs.len()`:
+
+```
+Archive of {k} folded messages as {f} image(s), most recent last{; the earliest {dropped} lines were dropped}. Read them if you need earlier facts. Recent turns follow verbatim.
+```
+
+The `{; …}` clause appears only when `budget_lines` dropped lines. Harness
+lines follow the caption inside the first text part, exactly where
+`wrap_head` puts them today: `wrap_head` = `wrap_head_open` + `"\n"` +
+`compact::HEAD_CLOSE`, so `summary`/`cut` keep producing one string.
 
 Readers already cope: `style_of_head` parses the first text part
 (`compact.rs:170-187`); `text_of` joins text parts (`loop_.rs:1681`) so the
@@ -177,12 +184,16 @@ pub(crate) fn resolve(
 }
 ```
 
-`vision = current.model.image && transport != Transport::Cursor`, computed
-in `Turn::compact` from `Current` (it already has the resolved model and
-the transport). `Resolved` gains nothing; `models::Model` gains
-`pub image: bool` (`#[serde(default)]`), set by the trim recipe from
-`modalities.input`, and `ModelInfo` (02 §2) gains `image` so `/model` can
-mark vision models and the TUI listing can show `snap` as available.
+`vision = matches!(current.backend, Backend::Genai { .. }) &&
+current.model.model.as_ref().is_some_and(|m| m.image)`, computed in
+`Turn::compact` from `Current` (`Resolved.model: Option<models::Model>`;
+bare passthrough ids are `None` → text-only). The backend check stands in
+for "transport != Cursor": `Backend::Cursor` is the only text-only
+transport and `Current` names the backend directly. The frame shape is
+`snap::shape(models::Catalog::adapter(current.model.provider))`; a missing
+provider takes the Anthropic row. `models::Model.image: bool`
+(`#[serde(default)]`) is set by the trim recipe from `modalities.input`,
+and `ModelInfo` (02 §2) carries `image` so `/model` can mark vision models.
 
 Overflow: snap allowed (no LLM). The overflow retry sends the new frame
 with images; if the *provider* rejects images (a catalog lie), the error
@@ -213,12 +224,14 @@ or too costly; until then it would be a knob set wrong.
 3. `snap::tests::budget_keeps_the_tail` — 300 lines, `frames_max = 1`
    (98 rows) → the drop marker is line 0 and the last input line is the
    last output line.
-4. `compact::tests::resolve_table` — replaces the `"snap not built"` rows
-   with the `vision` column: manual + text-only → Err; auto/overflow +
-   text-only → Cut; vision → Snap.
-5. Store round trip: build a snap head with two fixture PNGs, `compact`,
-   `frame` → `head.content.parts().len() == 4`, `style_of_head == Snap`,
-   `text_of` contains the caption and the closing tag.
+4. `compact::tests::resolve_table` — the `vision` column: manual +
+   text-only → Err; auto/overflow + text-only → Cut; vision → Snap.
+   `compact::tests::wrap_head_open_plus_close_equals_wrap_head` pins the
+   split.
+5. `store::tests::snap_head_round_trips_parts`: a snap head with two
+   rasterized frames, `compact`, `frame` → `head.content.parts().len() ==
+   4`, `style_of_head == Snap`, `text_of` contains the caption and the
+   closing tag, JSON identical.
 6. Live (07 §12.5 shape): a real Anthropic session, `/compact snap`, then
    ask for a token that only exists in the archived span (a filename read
    in turn 1). Record in this doc's Status: frames, bytes, the provider's

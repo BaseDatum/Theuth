@@ -43,6 +43,8 @@ const HEADING: Color = Color::Yellow;
 const SKILL: Color = Color::Yellow;
 /// System prompt cards.
 const PROMPT: Color = Color::DarkGrey;
+/// Finished background job cards.
+const JOB: Color = Color::Green;
 
 /// Run the fullscreen UI until the user quits. Mouse capture stays off so
 /// the terminal's own selection (and copy-on-select) keeps working. Ctrl+C
@@ -308,7 +310,15 @@ fn menu(m: &Model, input: &str, width: u16) -> Option<AnyElement<'static>> {
             format!("model  filter: {filter}▏"),
             m.models_filtered()
                 .iter()
-                .map(|i| format!("{:<44} {:<32} {}", i.id, i.name, k(i.context)))
+                .map(|i| {
+                    format!(
+                        "{:<44} {:<32} {}{}",
+                        i.id,
+                        i.name,
+                        k(i.context),
+                        if i.image { " · vision" } else { "" }
+                    )
+                })
                 .collect(),
             *cursor,
         ),
@@ -472,6 +482,7 @@ fn entry(e: &Entry, spinner: &str) -> AnyElement<'static> {
                 CardKind::Peer => PEER,
                 CardKind::Skill => SKILL,
                 CardKind::Prompt => PROMPT,
+                CardKind::Job => JOB,
             };
             let v = text.view();
             let lines = v.lines().count();

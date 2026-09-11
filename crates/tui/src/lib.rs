@@ -21,7 +21,7 @@ use rpc::api::{ApiServer, Server};
 use runtime::{Runtime, SessionId};
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
-use tools::{ApprovalRequested, ApprovalResolved, Decision, McpAuth, McpProgress};
+use tools::{ApprovalRequested, ApprovalResolved, Decision, JobEvent, McpAuth, McpProgress};
 
 pub mod model;
 mod ui;
@@ -56,6 +56,7 @@ impl runtime::Plugin for TuiPlugin {
         rt.subscribe::<Bridge, ApprovalResolved>(&bridge).await;
         rt.subscribe::<Bridge, McpProgress>(&bridge).await;
         rt.subscribe::<Bridge, LoginFinished>(&bridge).await;
+        rt.subscribe::<Bridge, JobEvent>(&bridge).await;
         let api = Arc::new(Server::new(rt.clone()));
         tokio::spawn(run_commands(api, commands_rx, events_tx));
 
@@ -114,6 +115,7 @@ forward!(
     ApprovalResolved => Resolved,
     McpProgress => McpProgress,
     LoginFinished => LoginFinished,
+    JobEvent => Job,
 );
 
 /// The one place commands become `rpc::Api` calls. Each command runs in its
@@ -166,6 +168,11 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
         Command::Cancel(session) => {
             msg(api.cancel(session).await)?;
             return Ok(());
+        }
+        Command::ListJobs(session) => UiEvent::Jobs(msg(api.list_jobs(session).await)?),
+        Command::CancelJob { session, id } => {
+            msg(api.cancel_job(session, tools::JobId(id.clone())).await)?;
+            UiEvent::Info(format!("killed {id}"))
         }
         Command::Compact { session, style } => {
             let epoch = msg(api.compact(session, style).await)?;
@@ -431,6 +438,8 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             Some(e) => writeln!(out, "login: {} failed: {e}", f.provider),
         },
         UiEvent::Prompt(text) | UiEvent::Info(text) => writeln!(out, "{text}"),
+        UiEvent::Jobs(jobs) => writeln!(out, "{}", tools::jobs::table(jobs)),
+        UiEvent::Job(_) => Ok(()),
         UiEvent::Withdrawn { text, .. } => writeln!(out, "withdrawn: {text}"),
         UiEvent::Undone(text) => writeln!(out, "undone: {text} — /redo restores"),
         UiEvent::Redone(text) => writeln!(out, "restored: {text}"),

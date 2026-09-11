@@ -357,7 +357,10 @@ pass through (MCP servers may accept more than they declare). Return
 value (`repl::tool_result`): `ToolOutput.structured` when present (MCP
 `structuredContent`, set by `tools/mcp.rs`), else the text content parsed
 as JSON when it parses to an object or array, else the string. Native
-tools return their text (`shell` → the output string; `list_dir` → `str`).
+tools return their text (`list_dir` → `str`). `shell()` returns the output
+string when the command finishes within `tools.job_grace_secs`, otherwise
+`{"job": id, "log": path}`; the result arrives later as a `<job_result>`
+input (14 §1.4).
 
 `tools(query: str | None = None) -> list[str]` returns the prompt's
 signature lines (filtered by substring over the whole line); `help(name:

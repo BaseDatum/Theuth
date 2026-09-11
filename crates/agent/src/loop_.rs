@@ -17,12 +17,14 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use futures::StreamExt;
 use futures::future::join_all;
 use genai::Client;
 use genai::chat::{
-    ChatMessage, ChatRole, ChatStreamEvent, MessageContent, ReasoningEffort, StreamEnd, Tool,
-    ToolCall, ToolResponse,
+    ChatMessage, ChatRole, ChatStreamEvent, ContentPart, MessageContent, ReasoningEffort,
+    StreamEnd, Tool, ToolCall, ToolResponse,
 };
 use kameo::actor::ActorRef;
 use kameo::message::{Context, Message};
@@ -37,6 +39,7 @@ use crate::backend::Backend;
 use crate::frame::{self, Frame, Transport};
 use crate::peers::SpawnSubagentTool;
 use crate::repl::{self, Repl, RunCx};
+use crate::snap;
 use crate::store::Store;
 use crate::supervisor::{Auth, PeerContext, Roster};
 use crate::{
@@ -1415,7 +1418,11 @@ impl Turn {
             .compact_style
             .read()
             .unwrap_or_else(|p| p.into_inner());
-        let mut style = compact::resolve(r#override, cfg_style, reason)?;
+        // 13 §0.5: snap needs a model that takes images; the Cursor backend
+        // serialises text parts only, so it is text-only whatever the model.
+        let vision = matches!(current.backend, Backend::Genai { .. })
+            && current.model.model.as_ref().is_some_and(|m| m.image);
+        let mut style = compact::resolve(r#override, cfg_style, reason, vision)?;
         let session = self.shared.id;
         self.publish(AgentEvent::Compacting {
             session,
@@ -1437,12 +1444,38 @@ impl Turn {
                 tracing::warn!(session = %session, "harvest before compaction: {e}");
             }
         }
-        let cut_body = || {
-            let k = keep_from + usize::from(self.state.head.is_some());
-            format!("folded {k} messages; no summary. Recent turns follow verbatim.")
-        };
+        let k = keep_from + usize::from(self.state.head.is_some());
+        let cut_body = || format!("folded {k} messages; no summary. Recent turns follow verbatim.");
+        // Snap: the body is the caption and `pngs` the frames it describes (13 §2.4).
+        let mut pngs: Vec<Vec<u8>> = Vec::new();
         let body = match style {
-            CompactStyle::Snap => return Err("snap not built".into()),
+            CompactStyle::Snap => {
+                let adapter = current.model.provider.as_deref().unwrap_or_default();
+                let shape = snap::shape(models::Catalog::adapter(adapter));
+                let lines = snap::serialise(
+                    self.state.head.as_ref(),
+                    &full[..keep_from],
+                    snap::cols(&shape),
+                );
+                let (lines, dropped) = snap::budget_lines(lines, limit / 8, &shape);
+                pngs = snap::rasterize(&lines, &shape);
+                if pngs.is_empty() {
+                    // 13 §2.2: nothing printable → degrade to cut.
+                    style = CompactStyle::Cut;
+                    cut_body()
+                } else {
+                    let f = pngs.len();
+                    let dropped = if dropped > 0 {
+                        format!("; the earliest {dropped} lines were dropped")
+                    } else {
+                        String::new()
+                    };
+                    format!(
+                        "Archive of {k} folded messages as {f} image(s), most recent last{dropped}. \
+                         Read them if you need earlier facts. Recent turns follow verbatim."
+                    )
+                }
+            }
             CompactStyle::Cut => cut_body(),
             CompactStyle::Summary => {
                 full.push(ChatMessage::user(compact::COMPACT_INSTRUCTION));
@@ -1486,18 +1519,34 @@ impl Turn {
                 .collect();
             format!("Knowledge: read {}", ids.join(", "))
         });
-        let text = compact::wrap_head(
-            n,
-            style,
-            body.trim(),
-            [
-                roster,
-                todos.unwrap_or_default(),
-                runtime.map(|r| format!("Runtime: {r}")).unwrap_or_default(),
-                read.unwrap_or_default(),
-            ],
-        );
-        let head = ChatMessage::user(text);
+        let harness = [
+            roster,
+            todos.unwrap_or_default(),
+            runtime.map(|r| format!("Runtime: {r}")).unwrap_or_default(),
+            read.unwrap_or_default(),
+        ];
+        let frames = pngs.len();
+        let head = if pngs.is_empty() {
+            ChatMessage::user(compact::wrap_head(n, style, body.trim(), harness))
+        } else {
+            // 13 §2.4: open tag + caption, one PNG part per frame, closing tag.
+            let mut parts = Vec::with_capacity(frames + 2);
+            parts.push(ContentPart::Text(compact::wrap_head_open(
+                n,
+                style,
+                body.trim(),
+                harness,
+            )));
+            parts.extend(pngs.into_iter().enumerate().map(|(i, png)| {
+                ContentPart::from_binary_base64(
+                    "image/png",
+                    BASE64.encode(png),
+                    Some(format!("frame-{i}.png")),
+                )
+            }));
+            parts.push(ContentPart::Text(compact::HEAD_CLOSE.into()));
+            ChatMessage::user(MessageContent::from_parts(parts))
+        };
         let at_seq = self.state.history[n_msgs - 1].0;
         let tail_from = self.state.history[keep_from].0;
         self.shared
@@ -1516,7 +1565,7 @@ impl Turn {
         self.reset_this_round = true;
         self.since = self.state.history.len();
         self.hint_since = self.hint_since.saturating_sub(keep_from);
-        tracing::info!(session = %session, epoch = n, folded = keep_from, before = projected, style = %style, "compaction");
+        tracing::info!(session = %session, epoch = n, folded = keep_from, frames, before = projected, style = %style, "compaction");
         self.publish(AgentEvent::Compacted {
             session,
             turn: self.turn,
