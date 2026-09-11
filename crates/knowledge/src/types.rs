@@ -1,37 +1,9 @@
 //! Wire and domain types of the knowledge bundle (design doc 10 §10).
-//! Shared by the store, the tools, the supervisor messages, RPC and the TUI.
+//! Shared by the store, the tools, the actor messages, RPC and the TUI.
 
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-
-/// `[agent.knowledge]` config section (10 §8).
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(default)]
-pub struct KnowledgeConfig {
-    /// `false`: no sync, no tools, no hints, no harvest.
-    pub enabled: bool,
-    /// Lines per `<knowledge>` note.
-    pub hint_limit: u32,
-    /// Mid-turn hint cadence in rounds.
-    pub hint_rounds: u32,
-    /// Tool-using root turns per harvest; `0` disables harvest.
-    pub harvest_every: u32,
-    /// Documents accepted per harvest.
-    pub harvest_max: u32,
-}
-
-impl Default for KnowledgeConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            hint_limit: 5,
-            hint_rounds: super::KNOWLEDGE_HINT_ROUNDS,
-            harvest_every: 3,
-            harvest_max: 8,
-        }
-    }
-}
 
 /// Who wrote a concept (frontmatter `source`; absent for hand-written files).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

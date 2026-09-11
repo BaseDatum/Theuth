@@ -1,8 +1,8 @@
 //! Harvest instruction, reply parser, and hint rendering (design doc 10 §4.1, §5.3, §5.5).
 //! Pure functions, no I/O.
 
-use super::HINT_DESCRIPTION_CHARS;
-use super::types::Meta;
+use crate::HINT_DESCRIPTION_CHARS;
+use crate::types::Meta;
 
 /// The one user message appended to the finished frame (10 §5.3), with
 /// `{related}` and `{cwd}` placeholders for [`instruction`].

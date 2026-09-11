@@ -26,6 +26,9 @@ nix = { workspace = true }
 ts-rs = { workspace = true, optional = true }
 serde_yaml = { workspace = true }
 notify = { workspace = true }
+ignore = { workspace = true }
+grep-regex = { workspace = true }
+grep-searcher = { workspace = true }
 
 [features]
 ts = ["dep:ts-rs", "runtime/ts"]

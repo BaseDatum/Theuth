@@ -20,9 +20,11 @@ works**, without a single byte of the cached prefix changing.
    pure Rust, no network features): every write is a commit, history and
    revert are tools, and no `git` binary is needed — while a user who has
    one can `git log`/`push` the same `.git`.
-2. **Named by function.** Module `agent::knowledge`, directory `knowledge/`,
-   tools and RPC `knowledge_*`, config `agent.knowledge`. "OKF" names the
-   file format and nothing else (00 §1.1).
+2. **Named by function.** Crate `knowledge` (a plugin, 12 §9; the harvest
+   *model call* stays in the agent loop, which owns the frame), directory
+   `knowledge/`, tools and RPC `knowledge_*`, config `knowledge:` (the store:
+   `enabled`) and `agent.knowledge` (the loop's use of it: hint and harvest
+   cadence). "OKF" names the file format and nothing else (00 §1.1).
 3. **Retrieval = SQLite FTS5.** A derived index in `<data_dir>/knowledge.sqlite`
    (bm25 over title/description/tags/body, porter stemming, a scope boost for
    the current directory), rebuilt from the files, resynced by mtime at every
@@ -315,7 +317,8 @@ hidden by UIs like every wrapper (`tui::model::injected`).
 ### 4.2 When
 
 In `Turn::round`, before the model call, after the pressure note and the
-todo reminder (07 §8.7, §9), when `agent.knowledge.enabled`:
+todo reminder (07 §8.7, §9), when the knowledge actor is registered
+(`Shared.knowledge` is `Some`, 12 §9.2):
 
 | moment | query text | condition |
 |---|---|---|
@@ -513,7 +516,7 @@ a loop.
 - **Bounded.** `harvest_max = 8` documents per batch, 16 KiB bodies, the
   id-shape rules.
 
-## 6. Tools (`agent::knowledge::tools`, registered like the skills tools; direct = true, so also runtime functions under 08 §4.2)
+## 6. Tools (`knowledge::tools`, registered by `KnowledgePlugin::start` once the registry is up (`lookup_when`, 12 §9.1); direct = true, so also runtime functions under 08 §4.2)
 
 Wire arg names are the field names below (`type`, not `type_`); `limit`s are
 `Option<u32>`.
@@ -542,8 +545,8 @@ model records and it would stop recording. `knowledge_delete` and
 
 The bundle is also a directory: `read_file ~/.wth/knowledge/index.md` and
 `grep` work, and the `/cwd` mount does not include it (08 §4.4) — the tools
-are the runtime's path to it. When `agent.knowledge.enabled` is false the
-tools are not registered at all; when the repo failed to open,
+are the runtime's path to it. When `knowledge.enabled` is false the plugin
+starts nothing: no actor, no tools; when the repo failed to open,
 `knowledge_history`/`knowledge_restore` are `Err(… unavailable: no
 repository)` and the rest work.
 
@@ -579,47 +582,54 @@ knowledge_restore { id: String, commit?: String }                         → Ch
 knowledge_harvest { session: SessionId }                                  → HarvestResult  refused while a turn runs
 ```
 
-All `ask` the `"agent"` supervisor (`Agents`), which holds the
-`Option<Arc<Knowledge>>` and answers every `knowledge_*` ask with
-`Err("knowledge is disabled")` when it is `None`; the store asks are local
-I/O and run on the mailbox, `Harvest` delegates (it is a model call) to the
-session's `HarvestNow`. Events on the stream: `KnowledgeChanged { id, op:
-put | delete, source: harvest | model | user | sync }` (global, no session),
-`Harvesting { session }` (the continuation is in flight; the TUI shows
-`harvesting…`), `Harvested { session, added, updated }`. Bindings via `just ts`.
+All but `knowledge_harvest` `ask` the `"knowledge"` actor
+(`knowledge::KnowledgeActor`, 12 §9.1) with `knowledge::{Search, Get, List,
+PutConcept, Delete, HistoryOf, Restore}`; when the plugin is disabled the
+actor is not registered and the frontend answers `Err("knowledge is
+disabled")` from the failed lookup. The store asks are local I/O and run on
+the mailbox. `knowledge_harvest` asks the `"agent"` supervisor
+(`agent::Harvest`), which delegates (it is a model call) to the session's
+`HarvestNow`. Events on the stream: `knowledge::KnowledgeChanged { id, op:
+put | delete, source: harvest | model | user | sync }` (the plugin's own
+event struct, published by the store, global, no session — not an
+`AgentEvent` variant), `Harvesting { session }` (the continuation is in
+flight; the TUI shows `harvesting…`), `Harvested { session, added, updated }`.
+Bindings via `just ts`.
 
 **TUI** (`crates/tui`), `/knowledge [query | history [id] | restore <id> [commit] | harvest]`
 (`Model::knowledge_cmd`; first word decides, everything else is a search):
 
 | input | does | renders |
 |---|---|---|
-| `/knowledge` | `KnowledgeList { limit: 50 }` — the first 50 concepts by id | an `Entry` card (`CardKind::Skill`, the `/skills` shape) titled `knowledge: N concepts`, one `meta_line` per row: `` `id` — title [type]: description ``; `no concepts` info line when empty |
-| `/knowledge <query>` | `KnowledgeSearch { query }` (limit default 10), metas of the hits | the same card, best first |
-| `/knowledge history [id]` | `KnowledgeHistory { id?, limit: default 20 }` | card `knowledge history`: `commit  time  message` lines, then the diff in a ```` ```diff ```` fence when present; `no history` info line when empty |
-| `/knowledge restore <id> [commit]` | `KnowledgeRestore { id, commit? }` | info line `a1b2c3d  restore facts/x from b2c3d4e`; `/knowledge restore` alone is the error `usage: /knowledge restore <id> [commit]` |
-| `/knowledge harvest` | `Harvest { session }` for the shown session | info line `knowledge +a ~b`; `no session` when none is shown |
+| `/knowledge` | `knowledge::List { limit: 50 }` — the first 50 concepts by id | an `Entry` card (`CardKind::Skill`, the `/skills` shape) titled `knowledge: N concepts`, one `meta_line` per row: `` `id` — title [type]: description ``; `no concepts` info line when empty |
+| `/knowledge <query>` | `knowledge::Search { query }` (limit default 10), metas of the hits | the same card, best first |
+| `/knowledge history [id]` | `knowledge::HistoryOf { id?, limit: default 20 }` | card `knowledge history`: `commit  time  message` lines, then the diff in a ```` ```diff ```` fence when present; `no history` info line when empty |
+| `/knowledge restore <id> [commit]` | `knowledge::Restore { id, commit? }` | info line `a1b2c3d  restore facts/x from b2c3d4e`; `/knowledge restore` alone is the error `usage: /knowledge restore <id> [commit]` |
+| `/knowledge harvest` | `agent::Harvest { session }` for the shown session | info line `knowledge +a ~b`; `no session` when none is shown |
 
 The `Harvested` **event** (the cadence harvest, or one triggered from
 another client) is interjected as the same `knowledge +a ~b` info line in the
-transcript — an entry, not a status-line flash. `KnowledgeChanged` is not
-rendered (the log has it). `<knowledge>` notes are hidden with the other
+transcript — an entry, not a status-line flash. The TUI does not subscribe to
+`KnowledgeChanged` (the log has it). `<knowledge>` notes are hidden with the other
 wrappers (`injected`). Errors from any of these arrive as `UiEvent::Error`
 entries.
 
-**Config** (`agent.knowledge` in `config.yaml`, read by the agent plugin;
-commented out with these defaults in the first-run template):
+**Config** (two sections, each read by its own plugin — 00 §9; commented
+out with these defaults in the first-run template):
 
 ```yaml
+knowledge:               # the store (KnowledgePlugin)
+  enabled: true          # false: no actor, no knowledge_* tools, no hints, no harvest
 agent:
-  knowledge:
-    enabled: true        # false: no sync, no tools, no hints, no harvest
+  knowledge:             # the loop's use of it (AgentPlugin, `KnowledgeUse`)
     hint_limit: 5        # lines per <knowledge> note
     hint_rounds: 4       # mid-turn hint cadence in rounds
     harvest_every: 3     # tool-using root turns per harvest; 0 disables harvest
     harvest_max: 8       # documents accepted per harvest
 ```
 
-Env overrides follow 01 §1.1 (`WTH_AGENT__KNOWLEDGE__HARVEST_EVERY`).
+Env overrides follow 01 §1.1 (`WTH_KNOWLEDGE__ENABLED`,
+`WTH_AGENT__KNOWLEDGE__HARVEST_EVERY`).
 
 ## 9. Cache accounting
 
@@ -640,10 +650,16 @@ cache-hot continuation whose cost is the same as one summariser call.
 
 ## 10. Types
 
-As built (`crates/agent/src/knowledge/{types,store,repo,harvest,tools}.rs`):
+As built (`crates/knowledge/src/{lib,types,store,repo,harvest,tools}.rs`; the
+crate boundary is 12 §9.1):
 
 ```rust
-// agent::knowledge (mod.rs)
+// knowledge (lib.rs)
+pub const KNOWLEDGE_ACTOR: &str = "knowledge";
+pub struct KnowledgePlugin;                     // impl runtime::Plugin; name() = "knowledge"
+pub struct KnowledgeConfig { pub enabled: bool } // section `knowledge:`; #[serde(default)], enabled = true
+pub struct KnowledgeActor { .. }                // registered as KNOWLEDGE_ACTOR; wraps Arc<Knowledge>
+pub struct Handle;                              // ask → Arc<Knowledge> (the loop's hot path: hint/sync/put without a mailbox hop)
 pub const KNOWLEDGE_HINT_ROUNDS: u32 = 4;      // default of hint_rounds
 pub const DIR: &str = "knowledge";             // §2.1
 pub const INDEX_FILE: &str = "knowledge.sqlite"; // §3.1
@@ -651,8 +667,7 @@ pub const BODY_MAX: usize = 16 * 1024;         // §2.2
 pub const HINT_DESCRIPTION_CHARS: usize = 120; // §4.1
 pub use store::{Knowledge, terms}; pub use types::*;
 
-// agent::knowledge::types (serde + schemars + ts_rs; wire name of `type_` is `type`)
-pub struct KnowledgeConfig { pub enabled: bool, pub hint_limit: u32, pub hint_rounds: u32, pub harvest_every: u32, pub harvest_max: u32 }  // #[serde(default)]
+// knowledge::types (serde + schemars + ts_rs; wire name of `type_` is `type`)
 pub enum Source  { Harvest, Model, User, Sync }              // snake_case; as_str() / parse()
 pub enum KnowledgeOp { Put, Delete }                         // snake_case
 pub struct Meta  { pub id: String, pub type_: String, pub title: String /* the id when absent */, pub description: String /* "" when absent */,
@@ -666,7 +681,7 @@ pub struct HarvestResult { pub added: u32, pub updated: u32, pub skipped: u32 } 
 pub struct Change { pub commit: String /* 7 hex */, pub time: String /* "YYYY-MM-DD HH:MM" local */, pub message: String }
 pub struct History { pub changes: Vec<Change> /* newest first */, pub diff: Option<String> /* latest change to the requested id */ }
 
-// agent::knowledge::store
+// knowledge::store
 pub struct Knowledge { root: PathBuf, db: SqlitePool, repo: Option<Arc<Repo>>, rt: Runtime /* publishes KnowledgeChanged */,
                        write: tokio::sync::Mutex<()>, warned: Mutex<HashSet<PathBuf>> /* sync warned once per path */ }
 impl Knowledge {
@@ -684,7 +699,7 @@ impl Knowledge {
 }
 pub fn terms(text: &str) -> Vec<String>;                                        // §3.3
 
-// agent::knowledge::repo (sync, blocking; called inside spawn_blocking)
+// knowledge::repo (sync, blocking; called inside spawn_blocking)
 pub const SIGNATURE: (&str, &str) = ("wth", "wth@localhost");
 pub struct Repo { root: PathBuf, inner: gix::ThreadSafeRepository }
 impl Repo {
@@ -697,14 +712,15 @@ impl Repo {
     pub fn previous(&self, path: &Path) -> anyhow::Result<Option<String>>;
 }
 
-// agent::knowledge::harvest (pure)
+// knowledge::harvest (pure)
 pub const HARVEST_INSTRUCTION: &str;                                            // §5.3, with {related} and {cwd}
 pub fn instruction(related: &[Meta], cwd: &str) -> String;
 pub fn render_hints(metas: &[Meta]) -> String;                                  // §4.1 body
 pub fn render_related(metas: &[Meta]) -> String;                                // hint lines or "none"
 pub fn parse_harvest(text: &str) -> Vec<(String, okf::Document)>;               // §5.5
 
-// agent::knowledge::tools
+// knowledge::tools
+pub const GET: &str = "knowledge_get";
 pub async fn register(reg: &ActorRef<ToolRegistry>, knowledge: Arc<Knowledge>);   // the seven tools of §6
 
 // SessionState (loop_.rs) gains
@@ -716,30 +732,38 @@ pub turns_since_harvest: u32,            // in memory; 0 after resume
 // Session actor messages (loop_.rs)
 pub struct HarvestNow;                   // ask → kameo::reply::DelegatedReply<Result<HarvestResult, String>>; Err("turn in flight")
 
-// Agents messages (lib.rs), every reply Result<_, String>
-pub struct KnowledgeSearch { pub query: String, pub limit: Option<u32> }          // → Vec<Hit>
-pub struct KnowledgeGet { pub id: String }                                        // → Concept
-pub struct KnowledgeList { pub prefix: Option<String>, pub type_: Option<String>, pub tag: Option<String>, pub limit: Option<u32> }  // → Vec<Meta>; Default
-pub struct KnowledgePut { pub put: Put, pub source: Source }                      // → Meta
-pub struct KnowledgeDelete { pub id: String }                                     // → ()
-pub struct KnowledgeHistory { pub id: Option<String>, pub limit: Option<u32> }    // → History; Default
-pub struct KnowledgeRestore { pub id: String, pub commit: Option<String> }        // → Change
-pub struct Harvest { pub session: SessionId }                                     // → HarvestResult (DelegatedReply; forwards HarvestNow)
+// KnowledgeActor messages (knowledge lib.rs), every reply Result<_, String>
+pub struct Search { pub query: String, pub limit: Option<u32> }          // → Vec<Hit>; limit default 10, 1..=50; cwd = current_dir
+pub struct Get { pub id: String }                                        // → Concept
+pub struct List { pub prefix: Option<String>, pub type_: Option<String>, pub tag: Option<String>, pub limit: Option<u32> }  // → Vec<Meta>; Default; limit default 50
+pub struct PutConcept { pub put: Put, pub source: Source }               // → Meta
+pub struct Delete { pub id: String }                                     // → ()
+pub struct HistoryOf { pub id: Option<String>, pub limit: Option<u32> }  // → History; limit default 20
+pub struct Restore { pub id: String, pub commit: Option<String> }        // → Change
+
+// knowledge event (own struct, published by the store; not an AgentEvent variant)
+pub struct KnowledgeChanged { pub id: String, pub op: KnowledgeOp, pub source: Source }
+
+// Agents message (agent lib.rs)
+pub struct Harvest { pub session: SessionId }                            // → Result<HarvestResult, String> (DelegatedReply; forwards HarvestNow)
 
 // AgentEvent gains
-KnowledgeChanged { id: String, op: KnowledgeOp, source: Source }   // session() = None
 Harvesting { session: SessionId }
 Harvested { session: SessionId, added: u32, updated: u32 }
 
-// AgentConfig gains
-pub knowledge: KnowledgeConfig
+// AgentConfig gains (agent lib.rs)
+pub knowledge: KnowledgeUse   // { hint_limit: 5, hint_rounds: 4, harvest_every: 3, harvest_max: 8 }, #[serde(default)]
 ```
 
-`Option<Arc<Knowledge>>` is created by the agent plugin's start
-(`Knowledge::open(&rt.data_dir, rt.clone())` when `enabled`; an open error
-is a warning and `None`) and lives on `Agents` (the supervisor) and in
-`Shared` (per session); the tools are registered only when it is `Some`.
-Cargo, in `[workspace.dependencies]`, both used only in `agent::knowledge`:
+`KnowledgePlugin::start` reads `knowledge:`; disabled → `Ok(())` and nothing
+is spawned. Else `Knowledge::open(&rt.data_dir, rt.clone())`, spawn
+`KnowledgeActor`, register it as `KNOWLEDGE_ACTOR`, and once the tool
+registry is up (`rt.lookup_when`) register the seven tools. The agent's
+`Shared.knowledge: Option<Arc<Knowledge>>` is filled per turn in
+`Turn::rebase` (`lookup(KNOWLEDGE_ACTOR)` then `ask(Handle)`; `None` →
+knowledge off, 12 §9.2); an open error is a warning and the plugin starts
+nothing, as if disabled.
+Cargo, in `[workspace.dependencies]`, both used only in `knowledge`:
 `okf = "=0.1.0-alpha.1"` (pinned exact; alpha) and `gix = { version =
 "0.87", default-features = false, features = ["revision", "blob-diff",
 "sha1", "parallel"] }` (§2.4). `gix::ThreadSafeRepository` is `Send +
@@ -869,7 +893,8 @@ by the e2e pass.
 
 ## 13. Implementation order
 
-Each step leaves `wth` runnable. Steps 1–6 are built; 7 is this pass.
+Each step leaves `wth` runnable. Steps 1–7 are built; 8 moved the module out
+of `agent` (paths above are post-move; steps 1–7 name the module as it was).
 
 1. ✅ `agent::knowledge`: `Knowledge` store (open, sync, get, put, delete,
    list, search, hint, terms); the FTS schema is created at open (no
@@ -884,7 +909,11 @@ Each step leaves `wth` runnable. Steps 1–6 are built; 7 is this pass.
    `HarvestNow`. Check §12.6–8.
 5. ✅ Head line; `knowledge_read` tracking. Check §12.8.
 6. ✅ RPC + events + bindings; TUI command. Check §12.11–12.
-7. Docs (this pass): §15 edits, README paragraph.
+7. ✅ Docs: §15 edits, README paragraph.
+8. ✅ Crate `knowledge` (12 §9): `KnowledgePlugin`, `KnowledgeActor` and its
+   messages, `KnowledgeChanged` as the plugin's own event, `knowledge:`
+   config section; `agent.knowledge` shrinks to `KnowledgeUse`; TUI/RPC ask
+   the knowledge actor; the harvest model call stays in the agent.
 
 ## 14. Rejected
 

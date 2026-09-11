@@ -233,8 +233,8 @@ async fn execute(cmd: Command, tx: &UnboundedSender<UiEvent>) -> anyhow::Result<
         }
         Command::SyncSkills => UiEvent::Synced(agent()?.ask(agent::SyncSkills).await?),
         Command::KnowledgeList => UiEvent::Knowledge(
-            agent()?
-                .ask(agent::KnowledgeList {
+            knowledge()?
+                .ask(knowledge::List {
                     limit: Some(50),
                     ..Default::default()
                 })
@@ -242,8 +242,8 @@ async fn execute(cmd: Command, tx: &UnboundedSender<UiEvent>) -> anyhow::Result<
                 .map_err(|e| anyhow::anyhow!("{e}"))?,
         ),
         Command::KnowledgeSearch(query) => UiEvent::Knowledge(
-            agent()?
-                .ask(agent::KnowledgeSearch { query, limit: None })
+            knowledge()?
+                .ask(knowledge::Search { query, limit: None })
                 .await
                 .map_err(|e| anyhow::anyhow!("{e}"))?
                 .into_iter()
@@ -251,14 +251,14 @@ async fn execute(cmd: Command, tx: &UnboundedSender<UiEvent>) -> anyhow::Result<
                 .collect(),
         ),
         Command::KnowledgeHistory(id) => UiEvent::KnowledgeHistory(
-            agent()?
-                .ask(agent::KnowledgeHistory { id, limit: None })
+            knowledge()?
+                .ask(knowledge::HistoryOf { id, limit: None })
                 .await
                 .map_err(|e| anyhow::anyhow!("{e}"))?,
         ),
         Command::KnowledgeRestore { id, commit } => UiEvent::KnowledgeRestored(
-            agent()?
-                .ask(agent::KnowledgeRestore { id, commit })
+            knowledge()?
+                .ask(knowledge::Restore { id, commit })
                 .await
                 .map_err(|e| anyhow::anyhow!("{e}"))?,
         ),
@@ -379,6 +379,12 @@ fn agent() -> anyhow::Result<ActorRef<Agents>> {
 
 fn mcp() -> anyhow::Result<ActorRef<tools::Mcp>> {
     ActorRef::<tools::Mcp>::lookup(tools::MCP_ACTOR)?.context("mcp actor is not running")
+}
+
+/// The knowledge actor; absent when `knowledge.enabled: false` (12 §9.3).
+fn knowledge() -> anyhow::Result<ActorRef<knowledge::KnowledgeActor>> {
+    ActorRef::<knowledge::KnowledgeActor>::lookup(knowledge::KNOWLEDGE_ACTOR)?
+        .context("knowledge is disabled")
 }
 
 /// Non-TTY fallback and `-p` print mode: print what streams in, read lines

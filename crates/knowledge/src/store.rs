@@ -15,10 +15,9 @@ use runtime::Runtime;
 use sqlx::FromRow;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
 
-use super::repo::Repo;
-use super::types::{Change, Concept, History, Hit, KnowledgeOp, Meta, Put, Source, Sync};
-use super::{BODY_MAX, DIR, INDEX_FILE};
-use crate::AgentEvent;
+use crate::repo::Repo;
+use crate::types::{Change, Concept, History, Hit, KnowledgeOp, Meta, Put, Source, Sync};
+use crate::{BODY_MAX, DIR, INDEX_FILE, KnowledgeChanged};
 
 const LOG_FILE: &str = "log.md";
 const INDEX_MD: &str = "index.md";
@@ -50,7 +49,7 @@ pub struct Knowledge {
     root: PathBuf,
     db: SqlitePool,
     repo: Option<Arc<Repo>>,
-    /// Publishes `AgentEvent::KnowledgeChanged` after every write (10 §8).
+    /// Publishes [`KnowledgeChanged`] after every write (10 §8, 12 §9).
     rt: Runtime,
     write: tokio::sync::Mutex<()>,
     /// Paths `sync` has already warned about; a broken file is reported once (10 §11).
@@ -497,7 +496,7 @@ impl Knowledge {
         }
         for (id, op) in events {
             self.rt
-                .publish(AgentEvent::KnowledgeChanged {
+                .publish(KnowledgeChanged {
                     id,
                     op,
                     source: Source::Sync,
@@ -602,7 +601,7 @@ impl Knowledge {
         let entry = format!("put {id}");
         let w = self.write_concept(&cid, text, &entry, &entry).await?;
         self.rt
-            .publish(AgentEvent::KnowledgeChanged {
+            .publish(KnowledgeChanged {
                 id,
                 op: KnowledgeOp::Put,
                 source,
@@ -655,7 +654,7 @@ impl Knowledge {
         removed.sort();
         self.commit(written, removed, entry).await;
         self.rt
-            .publish(AgentEvent::KnowledgeChanged {
+            .publish(KnowledgeChanged {
                 id,
                 op: KnowledgeOp::Delete,
                 source: Source::User,
@@ -798,7 +797,7 @@ impl Knowledge {
             .await?;
         let sha = w.commit.context("restore: commit failed")?;
         self.rt
-            .publish(AgentEvent::KnowledgeChanged {
+            .publish(KnowledgeChanged {
                 id,
                 op: KnowledgeOp::Put,
                 source: Source::User,

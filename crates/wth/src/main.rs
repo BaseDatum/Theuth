@@ -61,12 +61,14 @@ agent:
   #   max_concurrent: 8
   #   max_runtime_secs: 600
   #   reply_timeout_secs: 120
-  # knowledge:                # design doc 10; the bundle lives in <data_dir>/knowledge/
-  #   enabled: true            # false: no sync, no tools, no hints, no harvest
+  # knowledge:                # loop policy (design doc 10 §5); the store itself is `knowledge:` below
   #   hint_limit: 5            # lines per <knowledge> note
   #   hint_rounds: 4           # mid-turn hint cadence in rounds
   #   harvest_every: 3         # tool-using root turns per harvest; 0 disables harvest
   #   harvest_max: 8           # documents accepted per harvest
+
+# knowledge:                 # design doc 10; the bundle lives in <data_dir>/knowledge/
+#   enabled: true            # false: no store, no knowledge_* tools, no hints, no harvest
 
 tools:
   policy:
@@ -177,6 +179,7 @@ async fn run() -> anyhow::Result<()> {
     } else {
         let mut plugins: Vec<Box<dyn Plugin>> = vec![
             Box::new(tools::ToolsPlugin),
+            Box::new(knowledge::KnowledgePlugin),
             Box::new(agent::AgentPlugin),
             Box::new(signal::SignalPlugin {
                 channel: cli.headless,

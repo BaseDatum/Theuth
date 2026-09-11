@@ -1,0 +1,33 @@
+[package]
+name = "knowledge"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Knowledge bundle: OKF files, FTS index, gix history, knowledge_* tools (design doc 10)"
+
+[dependencies]
+okf = { workspace = true }
+gix = { workspace = true }
+runtime = { workspace = true }
+tools = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+kameo = { workspace = true }
+sqlx = { workspace = true }
+ts-rs = { workspace = true, optional = true }
+
+[dev-dependencies]
+figment = { workspace = true }
+uuid = { workspace = true }
+
+[features]
+ts = ["dep:ts-rs", "runtime/ts", "tools/ts"]
+
+[lints]
+workspace = true

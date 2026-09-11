@@ -19,28 +19,31 @@ just ts                    # TypeScript bindings for the wire types → bindings
 Crates: `runtime` (plugin trait), `models` (bundled models.dev catalog),
 `markdown` (streaming markdown: raw tail, blocks rendered once), `oauth`
 (loopback callback, PKCE, provider token store), `tools` (registry, approval
-gate, shell via brush, fs, MCP), `agent` (genai loop, sqlite sessions with
-compaction epochs, skills, subagents, persistent Python runtime over monty
-worker subprocesses — [`docs/design/08-repl.md`](docs/design/08-repl.md)),
-`signal` (phone frontend over Signal messenger), `rpc` (jsonrpsee), `tui`
-(iocraft), `wth` (binary).
+gate, shell via brush, fs (read, write, list, grep, edit), MCP), `knowledge`
+(OKF bundle, FTS index, gix history, `knowledge_*` tools —
+[`docs/design/10-knowledge.md`](docs/design/10-knowledge.md)), `agent` (genai
+loop, sqlite sessions with compaction epochs, skills, subagents, persistent
+Python runtime over monty worker subprocesses —
+[`docs/design/08-repl.md`](docs/design/08-repl.md)), `signal` (phone frontend
+over Signal messenger), `rpc` (jsonrpsee), `tui` (iocraft), `wth` (binary).
 
 Config (`~/.wth/`, created on first run; details in
 [`docs/design/01-config-and-subagents.md`](docs/design/01-config-and-subagents.md) §1):
 
-- `config.yaml` — every plugin reads its own section; `WTH_<SECTION>__<KEY>` env overrides. `agent.model` is a models.dev id (`anthropic/claude-sonnet-4-5`); `/model` rewrites that one line in place. The `agent` section with its defaults:
+- `config.yaml` — every plugin reads its own section; `WTH_<SECTION>__<KEY>` env overrides. `agent.model` is a models.dev id (`anthropic/claude-sonnet-4-5`); `/model` rewrites that one line in place. The `agent` and `knowledge` sections with their defaults:
 
   ```yaml
   agent:
     model: anthropic/claude-sonnet-4-5
     compact_at: 0.8        # compact when the context is this full; 0 disables
     compact_style: summary  # summary | cut | snap
-    knowledge:
-      enabled: true        # false: no hints, no knowledge_* tools, no harvest
+    knowledge:             # how the loop uses the store
       hint_limit: 5        # lines per <knowledge> hint
       hint_rounds: 4       # mid-turn hint cadence in tool rounds
       harvest_every: 3     # tool-using turns per harvest; 0 disables harvest
       harvest_max: 8       # concepts accepted per harvest
+  knowledge:
+    enabled: true          # false: no store, no knowledge_* tools, no hints, no harvest
   ```
 
   The Python runtime is always on: the worker is the `wth` binary itself (`wth subprocess`, nothing to install); every tool is an `async` function inside the sandbox and state persists across turns.
@@ -80,8 +83,9 @@ time. Every write is a git commit made in-process (`gix`), so no `git`
 binary is needed and history and undo work everywhere: `/knowledge` lists
 concepts, `/knowledge <query>` searches, `/knowledge history [id]` shows the
 commits (and the latest diff), `/knowledge restore <id> [commit]` puts a
-concept back, `/knowledge harvest` runs a harvest now. Tune or turn off under
-`agent.knowledge` in `config.yaml`. See
+concept back, `/knowledge harvest` runs a harvest now. Turn off with
+`knowledge.enabled: false`; tune hint/harvest cadence under `agent.knowledge`
+in `config.yaml`. See
 [`docs/design/10-knowledge.md`](docs/design/10-knowledge.md).
 
 Signal: a phone-side frontend that runs only in the daemon. Pair once with

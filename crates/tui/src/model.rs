@@ -4,12 +4,12 @@
 use std::collections::{BTreeSet, VecDeque};
 use std::ops::Range;
 
-use agent::knowledge::{Change, HarvestResult, History, Meta};
 use agent::{
     AgentEvent, CompactStyle, HistoryEntry, Loaded, ModelInfo, ProviderInfo, SessionSummary,
     SkillBody, SkillMeta, Usage,
 };
 use iocraft::KeyCode;
+use knowledge::{Change, HarvestResult, History, Meta};
 use models::Catalog;
 use runtime::SessionId;
 use tokio::sync::mpsc::UnboundedSender;
@@ -169,13 +169,13 @@ pub enum Command {
     RemoveSkill(String),
     /// `SyncSkills` on the agent actor.
     SyncSkills,
-    /// `KnowledgeList` (first 50 by id) on the agent actor.
+    /// `List` (first 50 by id) on the knowledge actor.
     KnowledgeList,
-    /// `KnowledgeSearch` on the agent actor.
+    /// `Search` on the knowledge actor.
     KnowledgeSearch(String),
-    /// `KnowledgeHistory` on the agent actor; `None` for the whole bundle.
+    /// `HistoryOf` on the knowledge actor; `None` for the whole bundle.
     KnowledgeHistory(Option<String>),
-    /// `KnowledgeRestore` on the agent actor.
+    /// `Restore` on the knowledge actor.
     KnowledgeRestore {
         /// Concept id.
         id: String,
@@ -1411,8 +1411,6 @@ impl Model {
                 self.harvesting = false;
                 self.interject(Entry::Info(format!("knowledge +{added} ~{updated}")))
             }
-            // The log has it; `session()` is `None` so this arm is never reached.
-            AgentEvent::KnowledgeChanged { .. } => {}
         }
     }
 

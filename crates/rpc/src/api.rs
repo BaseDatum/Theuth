@@ -4,14 +4,12 @@
 
 use std::fmt::Display;
 
-use agent::knowledge::{Change, Concept, HarvestResult, History, Hit, Meta, Put, Source};
 use agent::{
     AddProvider, AddSkill, AddSkillRepo, Agents, Cancel, Compact, CompactStyle, GetCompactStyle,
-    Harvest, KnowledgeDelete, KnowledgeGet, KnowledgeHistory, KnowledgeList, KnowledgePut,
-    KnowledgeRestore, KnowledgeSearch, ListLogins, ListModels, ListProviders, ListSessions,
-    ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginInfo, Logout, ModelInfo, ProviderInfo,
-    RemoveProvider, RemoveSkill, RemoveSkillRepo, SendInput, SessionSummary, SetCompactStyle,
-    SetModel, ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills,
+    Harvest, ListLogins, ListModels, ListProviders, ListSessions, ListSkills, LoadSession,
+    LoadSkill, Loaded, Login, LoginInfo, Logout, ModelInfo, ProviderInfo, RemoveProvider,
+    RemoveSkill, RemoveSkillRepo, SendInput, SessionSummary, SetCompactStyle, SetModel, ShowPrompt,
+    SkillBody, SkillMeta, Steer, SyncSkills,
 };
 use jsonrpsee::core::{RpcResult, SubscriptionResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
@@ -22,6 +20,10 @@ use kameo::actor::ActorRef;
 use kameo::error::SendError;
 use kameo::message::Message;
 use kameo::reply::Reply;
+use knowledge::{
+    Change, Concept, Delete, Get, HarvestResult, History, HistoryOf, Hit, KNOWLEDGE_ACTOR,
+    KnowledgeActor, List, Meta, Put, PutConcept, Restore, Search, Source,
+};
 use runtime::{Runtime, SessionId};
 use signal::{Allow, Link, RemoveAllowed, SIGNAL_ACTOR, Signal, SignalStatus, Status, Unlink};
 use tokio::sync::broadcast;
@@ -261,9 +263,27 @@ where
     M: Send + 'static,
     <A::Reply as Reply>::Error: Display,
 {
-    let actor = lookup::<A>(name)?;
+    send(&lookup::<A>(name)?, msg).await
+}
+
+/// `ask` a resolved actor; handler errors and a stopped actor become `ASK_FAILED`.
+async fn send<A, M>(actor: &ActorRef<A>, msg: M) -> RpcResult<<A::Reply as Reply>::Ok>
+where
+    A: Actor + Message<M>,
+    M: Send + 'static,
+    <A::Reply as Reply>::Error: Display,
+{
     actor.ask(msg).await.map_err(|e: SendError<M, _>| {
         ErrorObjectOwned::owned(ASK_FAILED, e.to_string(), None::<()>)
+    })
+}
+
+/// The knowledge actor; `knowledge.enabled: false` means it was never
+/// spawned (12 §9.3).
+fn knowledge() -> RpcResult<ActorRef<KnowledgeActor>> {
+    lookup::<KnowledgeActor>(KNOWLEDGE_ACTOR).map_err(|e| match e.code() {
+        NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "knowledge is disabled", None::<()>),
+        _ => e,
     })
 }
 
@@ -390,11 +410,11 @@ impl ApiServer for Server {
     }
 
     async fn knowledge_search(&self, query: String, limit: Option<u32>) -> RpcResult<Vec<Hit>> {
-        ask::<Agents, _>(agent::AGENT_ACTOR, KnowledgeSearch { query, limit }).await
+        send(&knowledge()?, Search { query, limit }).await
     }
 
     async fn knowledge_get(&self, id: String) -> RpcResult<Concept> {
-        ask::<Agents, _>(agent::AGENT_ACTOR, KnowledgeGet { id }).await
+        send(&knowledge()?, Get { id }).await
     }
 
     async fn knowledge_list(
@@ -404,9 +424,9 @@ impl ApiServer for Server {
         tag: Option<String>,
         limit: Option<u32>,
     ) -> RpcResult<Vec<Meta>> {
-        ask::<Agents, _>(
-            agent::AGENT_ACTOR,
-            KnowledgeList {
+        send(
+            &knowledge()?,
+            List {
                 prefix,
                 type_,
                 tag,
@@ -417,9 +437,9 @@ impl ApiServer for Server {
     }
 
     async fn knowledge_put(&self, put: Put) -> RpcResult<Meta> {
-        ask::<Agents, _>(
-            agent::AGENT_ACTOR,
-            KnowledgePut {
+        send(
+            &knowledge()?,
+            PutConcept {
                 put,
                 source: Source::User,
             },
@@ -428,7 +448,7 @@ impl ApiServer for Server {
     }
 
     async fn knowledge_delete(&self, id: String) -> RpcResult<()> {
-        ask::<Agents, _>(agent::AGENT_ACTOR, KnowledgeDelete { id }).await
+        send(&knowledge()?, Delete { id }).await
     }
 
     async fn knowledge_history(
@@ -436,11 +456,11 @@ impl ApiServer for Server {
         id: Option<String>,
         limit: Option<u32>,
     ) -> RpcResult<History> {
-        ask::<Agents, _>(agent::AGENT_ACTOR, KnowledgeHistory { id, limit }).await
+        send(&knowledge()?, HistoryOf { id, limit }).await
     }
 
     async fn knowledge_restore(&self, id: String, commit: Option<String>) -> RpcResult<Change> {
-        ask::<Agents, _>(agent::AGENT_ACTOR, KnowledgeRestore { id, commit }).await
+        send(&knowledge()?, Restore { id, commit }).await
     }
 
     async fn knowledge_harvest(&self, session: SessionId) -> RpcResult<HarvestResult> {

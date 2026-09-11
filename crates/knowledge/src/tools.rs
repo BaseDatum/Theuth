@@ -1,5 +1,5 @@
 //! The `knowledge_*` tools (design doc 10 §6), registered by
-//! `AgentPlugin::start` like the skills tools.
+//! `KnowledgePlugin::start` once the tool registry is up (12 §9).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -10,8 +10,11 @@ use serde::{Deserialize, Serialize};
 use tools::registry::ToolRegistry;
 use tools::{RegisterTool, Risk, Tool, ToolCx, ToolOutput};
 
-use super::store::Knowledge;
-use super::types::{Meta, Put};
+use crate::store::Knowledge;
+use crate::types::{Meta, Put, Source};
+
+/// Name of [`GetTool`]; the loop counts its calls for harvest cadence (10 §5.1).
+pub const GET: &str = "knowledge_get";
 
 /// Register every `knowledge_*` tool on `reg`.
 pub async fn register(reg: &ActorRef<ToolRegistry>, knowledge: Arc<Knowledge>) {
@@ -110,7 +113,7 @@ pub struct GetTool(pub Arc<Knowledge>);
 
 #[async_trait::async_trait]
 impl Tool for GetTool {
-    const NAME: &'static str = "knowledge_get";
+    const NAME: &'static str = GET;
     const RISK: Risk = Risk::ReadOnly;
     type Args = IdArgs;
 
@@ -224,7 +227,7 @@ impl Tool for PutTool {
     }
 
     async fn call(&self, p: Put, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
-        let (meta, created) = self.0.put(p, super::types::Source::Model).await?;
+        let (meta, created) = self.0.put(p, Source::Model).await?;
         let how = if created { "new" } else { "updated" };
         Ok(ToolOutput::ok(format!("put {} ({how})", meta.id)))
     }

@@ -13,7 +13,7 @@ use gix::diff::blob::{Algorithm, InternedInput, UnifiedDiff};
 use gix::objs::tree::EntryKind;
 use gix::{Commit, ObjectId, Repository};
 
-use super::types::Change;
+use crate::types::Change;
 
 /// Committer identity; the user's git config is never read.
 pub const SIGNATURE: (&str, &str) = ("wth", "wth@localhost");

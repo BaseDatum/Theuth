@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 runtime = { workspace = true }
 tools = { workspace = true }
+knowledge = { workspace = true }
 agent = { workspace = true }
 rpc = { workspace = true }
 signal = { workspace = true }

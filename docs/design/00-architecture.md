@@ -282,8 +282,10 @@ the parse-only shell that used to summarise it into command names is gone.
 Rejected: `std::process::Command("bash", "-c")`: no in-process state, spawns
 a subprocess per call.
 
-**Filesystem**: `read_file`, `write_file`, `list_dir` — thin over
-`tokio::fs`, `Risk::ReadOnly`/`Mutating`.
+**Filesystem**: `read_file`, `write_file`, `list_dir`, `grep` (`ignore` +
+`grep-searcher`: gitignore-aware walk, regex, `path:line: text`), `edit`
+(exact-string replace, exactly-once unless `all`) — thin,
+`Risk::ReadOnly`/`Mutating` (12 §10).
 
 **MCP client**: `rmcp` 3.2 (official SDK; stable spec 2026-07-28). One
 `McpServer` actor per configured server (`TokioChildProcess` stdio or

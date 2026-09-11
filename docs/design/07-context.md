@@ -116,13 +116,12 @@ per-transport difference.
    in the baseline (as today); when it changes the next turn rebases. The
    time is not in the prompt at all; the shell tool has `date`.
 5. **Tool descriptions and schemas are pure functions of configuration.**
-   Not of the session, the turn, the roster or the clock. The frame builder
-   hashes the serialised tool list per round and `warn!`s when it changes
-   mid-turn (§5).
+   Not of the session, the turn, the roster or the clock. The tool list is
+   fetched once per turn (§5), so it cannot change mid-turn.
 6. **Tool output is bounded when it is appended, never later.** §6.
 7. **Every mutation that is not an append is a named event** (`rebase`,
-   `compaction`, `tools changed`), logged with its cause, so an unexpected
-   cache miss can always be explained from the log.
+   `compaction`), logged with its cause, so an unexpected cache miss can
+   always be explained from the log.
 
 ### 2.3 What changes, where it lives, what happens
 
@@ -132,7 +131,7 @@ per-transport difference.
 | date | system | midnight | rebase at the next turn start |
 | `prompt.md`, `always` skill bodies, skills index | system | user or model edits | rebase at the next turn start (one miss, deliberate) |
 | peer guidance (how to spawn/message), todo sentence, knowledge sentence | system | never | the `GUIDANCE` const in `frame::baseline`; the live roster is **removed** from the prompt (§10); the knowledge *index* is deliberately not here (10 §4.3) |
-| tool list | tools | MCP server connects/disconnects, gate change — only while the runtime is off; with it on, MCP tools are `direct = false` and never in the list (§5) | picked up next round; logged as `tools changed (+a −b)`; the miss is real and rare |
+| tool list | tools | MCP server connects/disconnects, gate change — only while the runtime is off; with it on, MCP tools are `direct = false` and never in the list (§5) | fetched once per turn in `Turn::rebase` (12 §4); a change is visible on the next turn, never mid-turn |
 | user input, steering, `<message>`, `<subagent_result>` | history tail | per turn | append |
 | assistant output, tool results | history tail | per round | append |
 | harness notes: context pressure, todo reminder | history tail | pressure once per epoch; reminder rate-limited (§8.7, §9) | append |
@@ -252,25 +251,21 @@ it. The one behaviour lost against the original `04 §1.1` ("editing
 `prompt.md` applies mid-turn on the next model call") is deliberate: a 30-round turn is
 where the cache matters most, and a turn is seconds to minutes long.
 
-`ListTools` is sorted by name (`tools/registry.rs`). `Turn::tools` builds
-the direct list every round:
+`ListTools` is sorted by name (`tools/registry.rs`). `Turn::rebase` asks it
+once per turn and `Turn::direct_tools` builds the direct list from that
+(12 §4):
 
 ```
 specs = ListTools
       .filter(|s| (!runtime || s.direct) && (s.name != spawn_subagent || depth < max_depth))
       + todo::spec()  + repl::spec() if runtime          // loop-local tools, §9, 08 §3.1
       sorted by name
-hash = frame::tools_hash(&tools)                          // std DefaultHasher over the JSON; not security
-if let Some((prev, seen)) = tools_seen && prev != hash:
-    warn!(session, "tools changed mid-turn: +[{added}] -[{removed}] (prefix cache reset)"); reset_this_round = true
 ```
 
-The per-round fetch stays (an MCP server that comes up mid-turn is usable
-next round while the runtime is off, as `01 §1.4` promises) but the cost is
-visible. The common trigger is startup: the user types before every MCP
-server has connected, round 1 has six tools, round 2 has twenty. One miss
-on the first turn. A flapping server would show up as a warning per round —
-that is the signal we want.
+The list is fixed for the turn, so the prefix never resets because of tools
+mid-turn; a tool registered during a turn (an MCP server connecting, the
+knowledge plugin's tools landing after the registry) is visible on the next
+turn.
 
 With the runtime on (`08-repl.md` §0.4) MCP tools carry `ToolSpec.direct =
 false` (`tools/mcp.rs`) and the `retain(direct)` above drops them: the direct
@@ -780,7 +775,7 @@ impl SessionState { pub fn resume(epoch: u32, head: Option<ChatMessage>, history
 pub struct CompactNow { pub style: Option<CompactStyle> }        // ask → DelegatedReply<Result<u32, String>> (§8.6)
 pub struct TurnDone(SessionState);                               // tell, turn task → its Session
 // Turn (private): turn: Option<TurnId>, usage, transport: Option<(String, Transport)>,
-//   tools_seen: Option<(u64, Vec<String>)>, reset_this_round, overflowed, since: usize, window_logged, repl: Option<Repl>
+//   tools: Vec<Tool> (this turn's direct list, 12 §4), reset_this_round, overflowed, since: usize, window_logged, repl: Option<Repl>
 
 // agent::supervisor
 pub struct PeerContext { pub session: SessionId }                // ask → String: identity lines or ""

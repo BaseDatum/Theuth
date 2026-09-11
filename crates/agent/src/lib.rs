@@ -17,7 +17,6 @@ use serde::{Deserialize, Serialize};
 mod backend;
 pub mod compact;
 pub mod frame;
-pub mod knowledge;
 pub mod loop_;
 pub mod peers;
 pub mod providers;
@@ -84,70 +83,6 @@ pub struct SetCompactStyle {
 /// `ask` → [`CompactStyle`]: the live default style.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct GetCompactStyle;
-
-/// `ask` → `Result<Vec<knowledge::Hit>, String>`: search the knowledge bundle (design doc 10 §8).
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct KnowledgeSearch {
-    /// Free text.
-    pub query: String,
-    /// Default 10, max 50.
-    pub limit: Option<u32>,
-}
-
-/// `ask` → `Result<knowledge::Concept, String>`.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct KnowledgeGet {
-    /// Concept id.
-    pub id: String,
-}
-
-/// `ask` → `Result<Vec<knowledge::Meta>, String>`.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct KnowledgeList {
-    /// Id prefix.
-    pub prefix: Option<String>,
-    /// Frontmatter type.
-    #[serde(rename = "type")]
-    pub type_: Option<String>,
-    /// Tag.
-    pub tag: Option<String>,
-    /// Default 50.
-    pub limit: Option<u32>,
-}
-
-/// `ask` → `Result<knowledge::Meta, String>`: create or update a concept.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct KnowledgePut {
-    /// The document.
-    pub put: knowledge::Put,
-    /// Who is writing (`User` from RPC/TUI).
-    pub source: knowledge::Source,
-}
-
-/// `ask` → `Result<(), String>`.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct KnowledgeDelete {
-    /// Concept id.
-    pub id: String,
-}
-
-/// `ask` → `Result<knowledge::History, String>` (design doc 10 §2.4).
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct KnowledgeHistory {
-    /// Concept id; `None` for the whole bundle.
-    pub id: Option<String>,
-    /// Default 20.
-    pub limit: Option<u32>,
-}
-
-/// `ask` → `Result<knowledge::Change, String>`: rewrite a concept from a commit.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct KnowledgeRestore {
-    /// Concept id.
-    pub id: String,
-    /// Abbreviated commit id; default: the commit before the latest change.
-    pub commit: Option<String>,
-}
 
 /// `ask` → `Result<knowledge::HarvestResult, String>`: harvest a session's
 /// finished frame now (design doc 10 §5.2). `Err("turn in flight")` while it runs.
@@ -594,15 +529,6 @@ pub enum AgentEvent {
         /// Style actually used (cut if the summariser fell back).
         style: CompactStyle,
     },
-    /// A concept was written or removed (design doc 10 §8). Global: not tied to a session.
-    KnowledgeChanged {
-        /// Concept id.
-        id: String,
-        /// Put or delete.
-        op: knowledge::KnowledgeOp,
-        /// Who wrote it.
-        source: knowledge::Source,
-    },
     /// The harvest continuation is in flight (design doc 10 §5.2); precedes `TurnFinished`.
     Harvesting {
         /// Session.
@@ -638,7 +564,6 @@ impl AgentEvent {
             | Self::Harvested { session, .. }
             | Self::Error { session, .. } => Some(*session),
             Self::SubagentSpawned { child, .. } => Some(*child),
-            Self::KnowledgeChanged { .. } => None,
         }
     }
 }
@@ -662,8 +587,8 @@ pub struct AgentConfig {
     /// How auto-compaction, overflow, and a bare `/compact` fold history:
     /// `summary` | `cut` | `snap`.
     pub compact_style: CompactStyle,
-    /// Knowledge bundle (design doc 10).
-    pub knowledge: knowledge::KnowledgeConfig,
+    /// How the loop uses the knowledge plugin (12 §9.2); the store itself is `knowledge.enabled`.
+    pub knowledge: KnowledgeUse,
 }
 
 impl Default for AgentConfig {
@@ -675,7 +600,33 @@ impl Default for AgentConfig {
             subagents: SubagentsConfig::default(),
             compact_at: 0.8,
             compact_style: CompactStyle::Summary,
-            knowledge: knowledge::KnowledgeConfig::default(),
+            knowledge: KnowledgeUse::default(),
+        }
+    }
+}
+
+/// `agent.knowledge`: how the loop uses the knowledge plugin (12 §9.2); the
+/// store itself is `knowledge.enabled`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct KnowledgeUse {
+    /// Lines per `<knowledge>` note.
+    pub hint_limit: u32,
+    /// Mid-turn hint cadence in rounds.
+    pub hint_rounds: u32,
+    /// Tool-using root turns per harvest; `0` disables harvest.
+    pub harvest_every: u32,
+    /// Documents accepted per harvest.
+    pub harvest_max: u32,
+}
+
+impl Default for KnowledgeUse {
+    fn default() -> Self {
+        Self {
+            hint_limit: 5,
+            hint_rounds: knowledge::KNOWLEDGE_HINT_ROUNDS,
+            harvest_every: 3,
+            harvest_max: 8,
         }
     }
 }

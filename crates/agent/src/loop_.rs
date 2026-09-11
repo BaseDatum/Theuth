@@ -18,6 +18,7 @@ use genai::chat::{
 };
 use kameo::actor::ActorRef;
 use kameo::message::{Context, Message};
+use knowledge::{HarvestResult, KNOWLEDGE_ACTOR, Knowledge, KnowledgeActor, Put, Source};
 use models::Resolved;
 use monty_pool::Pool;
 use runtime::{Runtime, SessionId, TurnId};
@@ -26,7 +27,6 @@ use tools::{Invoke, ListTools, REGISTRY_ACTOR, ToolOutput, ToolRegistry, ToolSpe
 
 use crate::backend::Backend;
 use crate::frame::{self, Frame, Transport};
-use crate::knowledge::{self, HarvestResult, Knowledge, Put, Source};
 use crate::peers::SpawnSubagentTool;
 use crate::repl::{self, Repl, RunCx};
 use crate::store::Store;
@@ -41,8 +41,6 @@ const DISPLAY_OUTPUT_CHARS: usize = 2000;
 const CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 /// Below this prompt size `cached == 0` is legitimate (07 §7).
 const CACHE_FLOOR: u32 = 4096;
-/// The tool whose `id` argument feeds the compaction head's `Knowledge:` line (10 §7).
-const KNOWLEDGE_GET: &str = "knowledge_get";
 
 /// `tell`: user text. Starts a turn when idle, otherwise queued and injected
 /// after the current tool batch (steering).
@@ -156,7 +154,8 @@ struct Shared {
     catalog: Arc<models::Catalog>,
     /// Python runtime pool; `None` when the pool failed to start (08 §9).
     pool: Option<Arc<Pool>>,
-    /// Knowledge bundle; `None` when `agent.knowledge.enabled` is false (10).
+    /// Knowledge store, looked up per turn in [`Turn::rebase`]; `None` when the
+    /// plugin is disabled or not started (12 §9.2).
     knowledge: Option<Arc<Knowledge>>,
     /// `<data_dir>/spill` (07 §6).
     spill_dir: PathBuf,
@@ -200,7 +199,6 @@ impl Session {
         rt: Runtime,
         catalog: Arc<models::Catalog>,
         pool: Option<Arc<Pool>>,
-        knowledge: Option<Arc<Knowledge>>,
     ) -> Self {
         let titled = !state.history.is_empty() || state.head.is_some();
         let (model, error) = model;
@@ -219,7 +217,7 @@ impl Session {
                 steer: Arc::default(),
                 catalog,
                 pool,
-                knowledge,
+                knowledge: None,
             },
             state: Some(state),
             inflight: None,
@@ -515,14 +513,9 @@ impl Turn {
         }
     }
 
-    /// The bundle when knowledge is on (10 §8 `enabled`).
+    /// The store when the knowledge plugin is up (12 §9.2).
     fn knowledge(&self) -> Option<Arc<Knowledge>> {
-        self.shared
-            .cfg
-            .knowledge
-            .enabled
-            .then(|| self.shared.knowledge.clone())
-            .flatten()
+        self.shared.knowledge.clone()
     }
 
     async fn publish(&self, event: AgentEvent) {
@@ -581,8 +574,13 @@ impl Turn {
 
     /// Turn start: render the system prompt and log a rebase when it changed
     /// (07 §4); fetch the tool list once for the whole turn (07 §5, 12 §4).
-    /// Also resyncs the knowledge index with the bundle's files (10 §3.2).
+    /// Also looks up the knowledge store (12 §9.2) and resyncs its index with
+    /// the bundle's files (10 §3.2).
     async fn rebase(&mut self, registry: &ActorRef<ToolRegistry>) {
+        self.shared.knowledge = match ActorRef::<KnowledgeActor>::lookup(KNOWLEDGE_ACTOR) {
+            Ok(Some(a)) => a.ask(knowledge::Handle).await.ok(),
+            _ => None,
+        };
         if let Some(knowledge) = self.knowledge() {
             match knowledge.sync().await {
                 Ok(s) if !s.is_empty() => tracing::info!(
@@ -1097,7 +1095,7 @@ impl Turn {
         self.state.knowledge_read.extend(
             calls
                 .iter()
-                .filter(|c| c.fn_name == KNOWLEDGE_GET)
+                .filter(|c| c.fn_name == knowledge::tools::GET)
                 .filter_map(|c| c.fn_arguments.get("id")?.as_str().map(str::to_owned)),
         );
         if cancelled {
@@ -1459,7 +1457,7 @@ impl Turn {
                 tags: fm.tags(),
                 scope: fm
                     .get("scope")
-                    .and_then(okf::Value::as_display_string)
+                    .and_then(|v| v.as_display_string())
                     .map(PathBuf::from),
                 body: doc.body,
                 id,

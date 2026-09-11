@@ -17,6 +17,7 @@ models = { path = "crates/models" }
 markdown = { path = "crates/markdown" }
 oauth = { path = "crates/oauth" }
 tools = { path = "crates/tools" }
+knowledge = { path = "crates/knowledge" }
 agent = { path = "crates/agent" }
 rpc = { path = "crates/rpc" }
 tui = { path = "crates/tui" }
@@ -81,6 +82,10 @@ monty-fs = "0.0.23"
 monty-proto = { version = "0.0.23", features = ["worker"] }
 monty-alloc = { version = "0.0.23", features = ["exit-code"] }
 regex = "1"
+# grep tool (12 §10): ripgrep's walker and matcher crates
+ignore = "0.4.33"
+grep-regex = "0.1.14"
+grep-searcher = "0.1.17"
 # Signal channel (design doc 09). crates.io `presage` is an unrelated crate; the
 # rev is the one jarvis reviewed and ran. `cdsi` = E.164→ACI fallback (09 §5.2).
 presage = { git = "https://github.com/whisperfish/presage", rev = "c363731038acf176ab6b5ee0600d7de85f8a2da8", features = ["cdsi"] }

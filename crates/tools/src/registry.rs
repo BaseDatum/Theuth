@@ -276,13 +276,15 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
     );
     approval.register(APPROVAL_ACTOR)?;
 
-    let builtins: [DynTool; 4] = [
+    let builtins: [DynTool; 6] = [
         Arc::new(shell::ShellTool::new(Duration::from_secs(
             cfg.shell_timeout_secs,
         ))),
         Arc::new(fs::ReadFile),
         Arc::new(fs::WriteFile),
         Arc::new(fs::ListDir),
+        Arc::new(fs::Grep),
+        Arc::new(fs::Edit),
     ];
     let registry = ToolRegistry::spawn_with_mailbox(
         ToolRegistry {

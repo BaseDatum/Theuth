@@ -139,8 +139,9 @@ dir), not in a loop. Registry gains `UnregisterTool(name)`. MCP tools
 register with `direct: false`: while the Python runtime is on
 (`08-repl.md` §0.4) they are callable inside `python` by name and are not
 direct tool definitions; with the runtime off they are direct tools and the
-model's tool list is read at the start of every round (`ListTools`), so a
-server added mid-turn is visible on the next round (`07-context.md` §5).
+model's tool list is read once at the start of every turn (`ListTools` in
+`Turn::rebase`), so a server added mid-turn is visible on the next turn
+(`07-context.md` §5, 12 §4).
 
 **Connects never block.** Reconcile only decides; each connect (+ first
 `list_tools`, bounded by a 10 s timeout) runs in its own task that `tell`s
