@@ -14,7 +14,8 @@ use futures::StreamExt;
 use futures::future::join_all;
 use genai::Client;
 use genai::chat::{
-    ChatMessage, ChatRole, ChatStreamEvent, MessageContent, StreamEnd, Tool, ToolCall, ToolResponse,
+    ChatMessage, ChatRole, ChatStreamEvent, MessageContent, ReasoningEffort, StreamEnd, Tool,
+    ToolCall, ToolResponse,
 };
 use kameo::actor::ActorRef;
 use kameo::message::{Context, Message};
@@ -54,6 +55,11 @@ pub struct IsRunning;
 
 /// `tell`: switch the model; takes effect on the next model call, mid-turn included.
 pub struct SwitchModel(pub Resolved);
+
+/// `tell`: reasoning effort for the session's next turn (`None` = provider
+/// default). Not applied mid-turn: Anthropic rejects thinking changes inside a
+/// tool-use turn.
+pub struct SetPendingEffort(pub Option<ReasoningEffort>);
 
 /// `ask` → `Result<u32 /* new epoch */, String>`: compact now, threshold
 /// ignored (07 §8.6). `Err("turn in flight")` while a turn runs;
@@ -133,6 +139,8 @@ pub struct Session {
     inflight: Option<CancellationToken>,
     /// Whether `sessions.title` is set.
     titled: bool,
+    /// Effort set while a turn ran (or between turns); applied when the next turn starts.
+    pending_effort: Option<Option<ReasoningEffort>>,
 }
 
 /// Turn-invariant state; cheap to clone.
@@ -169,6 +177,8 @@ struct Current {
     model: Resolved,
     backend: Backend,
     error: Option<String>,
+    /// Reasoning effort sent with every call; `None` = provider default.
+    effort: Option<ReasoningEffort>,
 }
 
 impl Current {
@@ -177,6 +187,7 @@ impl Current {
             backend: Backend::for_model(&model, client, auth),
             model,
             error,
+            effort: None,
         }
     }
 }
@@ -185,11 +196,13 @@ impl Session {
     /// Build a session around `state` (`SessionState::resume(0, None, vec![])`
     /// for a new one). `depth` ≥ `subagents.max_depth` hides `spawn_subagent`.
     /// `model` is the resolved id and, when resolution failed, the message to surface.
+    /// `effort` is the reasoning effort the first turn runs with.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         id: SessionId,
         depth: u8,
         model: (Resolved, Option<String>),
+        effort: Option<ReasoningEffort>,
         state: SessionState,
         cfg: Arc<AgentConfig>,
         compact_style: Arc<RwLock<CompactStyle>>,
@@ -202,11 +215,13 @@ impl Session {
     ) -> Self {
         let titled = !state.history.is_empty() || state.head.is_some();
         let (model, error) = model;
+        let mut current = Current::new(model, error, &client, &auth);
+        current.effort = effort;
         Self {
             shared: Shared {
                 id,
                 depth,
-                model: Arc::new(Mutex::new(Current::new(model, error, &client, &auth))),
+                model: Arc::new(Mutex::new(current)),
                 cfg,
                 compact_style,
                 store,
@@ -222,6 +237,7 @@ impl Session {
             state: Some(state),
             inflight: None,
             titled,
+            pending_effort: None,
         }
     }
 
@@ -248,14 +264,13 @@ impl Session {
                 tracing::warn!(session = %self.shared.id, "set_title: {e:#}");
             }
         }
-        let model = self
-            .shared
-            .model
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .model
-            .id
-            .clone();
+        let model = {
+            let mut current = self.shared.model.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(e) = self.pending_effort.take() {
+                current.effort = e;
+            }
+            current.model.id.clone()
+        };
         self.shared
             .rt
             .publish(AgentEvent::TurnStarted {
@@ -317,8 +332,22 @@ impl Message<SwitchModel> for Session {
         SwitchModel(model): SwitchModel,
         _: &mut Context<Self, Self::Reply>,
     ) {
-        *self.shared.model.lock().unwrap_or_else(|p| p.into_inner()) =
-            Current::new(model, None, &self.shared.client, &self.shared.auth);
+        let mut current = self.shared.model.lock().unwrap_or_else(|p| p.into_inner());
+        let effort = current.effort.take();
+        *current = Current::new(model, None, &self.shared.client, &self.shared.auth);
+        current.effort = effort;
+    }
+}
+
+impl Message<SetPendingEffort> for Session {
+    type Reply = ();
+
+    async fn handle(
+        &mut self,
+        SetPendingEffort(effort): SetPendingEffort,
+        _: &mut Context<Self, Self::Reply>,
+    ) {
+        self.pending_effort = Some(effort);
     }
 }
 
@@ -682,7 +711,7 @@ impl Turn {
         transport: Transport,
         live: Option<TurnId>,
     ) -> Result<StreamEnd, Abort> {
-        let (req, opts) = frame.request(transport, self.shared.id);
+        let (req, opts) = frame.request(transport, self.shared.id, current.effort.clone());
         let open = current
             .backend
             .stream(&current.model, req, &opts, self.shared.id);

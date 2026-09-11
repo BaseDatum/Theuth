@@ -14,16 +14,24 @@ and individual tools' risk (or turns them off) by editing the
 Purpose-named crate `models`. No network at build or run time.
 
 **Data.** `crates/models/data/models.json` is models.dev `api.json` trimmed by
-the `just models` recipe (curl + jq) to the fields we use and to providers
-routable through genai. Committed; refreshed by hand. Shape (a map keyed by
-provider id, identical to models.dev minus dropped fields):
+the `just models` recipe (`curl | cargo run -p models --bin trim`) to the
+fields we use and to providers routable through genai. The projection *is*
+the Rust `Model` type: `trim` deserialises upstream into `Catalog` and
+serialises it back, so adding a field means adding it to the struct — there
+is no second field list to keep in step. The provider allow-list is the
+`models::ROUTABLE` const. Committed; refreshed by hand. `just models-check`
+diffs upstream against the committed file (network; deliberately not part of
+`just check`). Shape (a map keyed by provider id, identical to models.dev
+minus dropped fields):
 
 ```json
 { "anthropic": { "id": "anthropic", "name": "Anthropic", "env": ["ANTHROPIC_API_KEY"],
     "models": { "claude-sonnet-4-5": { "id": "claude-sonnet-4-5", "name": "Claude Sonnet 4.5",
         "limit": { "context": 200000, "output": 64000 },
         "cost": { "input": 3, "output": 15, "cache_read": 0.3, "cache_write": 3.75 },
-        "reasoning": true, "tool_call": true } } } }
+        "reasoning": true, "tool_call": true,
+        "reasoning_options": [{ "type": "effort", "values": ["low", "medium", "high"] },
+                              { "type": "budget_tokens", "min": 1024, "max": 32000 }] } } } }
 ```
 
 `include_str!` + `serde_json` on first use (`LazyLock`). Measured: full
@@ -79,7 +87,11 @@ predicate.
 ```rust
 pub struct Catalog { /* providers: BTreeMap<String, Provider> */ }
 pub struct Provider { pub id: String, pub name: String, pub env: Vec<String>, pub models: BTreeMap<String, Model> }
-pub struct Model { pub id: String, pub name: String, pub limit: Limit, pub cost: Option<Cost>, pub reasoning: bool, pub tool_call: bool }
+pub struct Model { pub id: String, pub name: String, pub limit: Limit, pub cost: Option<Cost>, pub reasoning: bool, pub tool_call: bool,
+                   #[serde(default)] pub reasoning_options: Vec<ReasoningOption> }
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ReasoningOption { Effort { values: Vec<String> }, BudgetTokens { min: u32, max: Option<u32> }, Toggle }
+pub const ROUTABLE: &[&str]; // models.dev provider ids the trim keeps
 pub struct Limit { pub context: u32, pub output: u32 }
 pub struct Cost { pub input: f64, pub output: f64, pub cache_read: Option<f64>, pub cache_write: Option<f64> }
 
@@ -97,9 +109,30 @@ impl Catalog {
 pub struct Resolved { pub id: String /* canonical or raw */, pub genai: String /* adapter::model or raw */, pub provider: Option<String>, pub model: Option<Model> }
 ```
 
+**`reasoning_options`** is models.dev's per-model description of how thinking
+is dialled: `effort {values}` (keyword levels, verbatim from upstream —
+`low|medium|high`, some add `minimal`/`xhigh`/`max`), `budget_tokens {min,
+max}` (legacy Anthropic-style token budget), `toggle` (on/off only). Derived
+accessors on `Model`:
+
+```rust
+impl Model {
+    /// Keywords the model accepts: the `effort` values verbatim; only `toggle` → ["off","on"];
+    /// only `budget_tokens` → ["low","medium","high"] (genai maps those to budgets); none → [].
+    pub fn efforts(&self) -> Vec<String>;
+    /// (min, max) when the model takes `budget_tokens`.
+    pub fn budget(&self) -> Option<(u32, Option<u32>)>;
+    /// Ok for a value in `efforts()` or an integer within `budget()`; Err lists what is accepted.
+    pub fn validate_effort(&self, s: &str) -> Result<(), String>;
+}
+```
+
 Rejected: fetching models.dev at runtime (network dependency for a static
 fact; the recipe refresh is one command). Rejected: genai-native ids
 (`anthropic::…`) for users; they don't match the site people copy from.
+Rejected (was v0): a `jq` filter in the justfile as the projection — a second
+field list that drifted from the struct and silently dropped
+`reasoning_options`, which is why `trim` is Rust.
 
 ## 2. Model resolution and `/model` (agent crate)
 
@@ -135,24 +168,78 @@ is running); `TurnFinished` gains `context: u32` = the *last* round's
 `prompt_tokens + completion_tokens` (what the window holds now; 0 if the
 provider reported nothing); new `AgentEvent::ModelChanged { session, model }`.
 
-RPC: `list_models`, `set_model(session?, model)`.
+RPC: `list_models`, `set_model(session?, model)`, `set_effort(session?, effort?)`.
 
 Rejected: switching the model for running subagents (they finish on what they
 started with; `subagents.model` governs new ones). Rejected: `/model` writing
 through `figment` — figment is read-only and a serde round-trip drops the
 user's comments; a line edit is 15 lines and lossless.
 
+### 2.1 Effort
+
+Reasoning effort is a **setting separate from the model id**. Precedence:
+session value > `agent.effort` (config) > provider default (unset, nothing
+sent). `subagents.effort` is the child default; `None` → `agent.effort`.
+
+```rust
+pub struct AgentConfig { …, pub effort: Option<String> }
+pub struct SubagentsConfig { …, pub effort: Option<String> }
+pub struct SetEffort { pub session: Option<SessionId>, pub effort: Option<String> } // ask → Result<(), String>
+pub struct ModelInfo { …, pub efforts: Vec<String>, pub budget_min: Option<u32>, pub budget_max: Option<u32> }
+pub struct SessionSummary { …, pub effort: Option<String> }
+pub struct Loaded { …, pub model: String, pub effort: Option<String> }
+pub enum AgentEvent { …, EffortChanged { session: SessionId, effort: Option<String> } }
+```
+
+`SetEffort` mirrors `SetModel`: the value is validated with
+`Model::validate_effort` against the session's *current* model (a passthrough
+model unknown to the catalog accepts any genai keyword or integer); on
+success the `Session` actor takes it, the store writes the `sessions.effort`
+column, `EffortChanged` is published, and `agent.effort` in `config.yaml` is
+line-edited (or removed, for `None`) exactly as `/model` edits `model:`.
+Unlike `SetModel` it takes effect at the **next turn**, not mid-turn:
+Anthropic rejects adding or dropping thinking inside a tool-use turn (the
+replayed assistant blocks no longer match the request's thinking config).
+`/model` to a model whose `efforts()` lacks the current value clears it and
+prints an Info line, so a stale level never reaches a provider that rejects it.
+
+String → genai (`effort_of`, agent crate):
+
+| setting | `ReasoningEffort` |
+|---|---|
+| `off` · `none` · `zero` | `Zero` |
+| `on` | `Medium` |
+| `default` | unset (option not sent) |
+| all digits | `Budget(n)` |
+| anything else | `ReasoningEffort::from_keyword` (`minimal|low|medium|high|xhigh|max`) |
+
+For legacy-budget models (`budget_tokens` only) genai's Anthropic adapter
+maps the presets to budgets: low = 1024, medium = 8000, high = 24000 tokens.
+
+`capture_reasoning_content` is now always on: genai's
+`into_assistant_message_for_tool_use` replays the signed thinking blocks on
+every tool-use round, which Anthropic requires whenever thinking is enabled.
+Cost is the reasoning text kept in memory for the turn; it is not stored.
+
+Rejected: encoding effort in the id (`provider/model@high`). models.dev ids
+already contain `:`, `@` and `-high` suffixes (`gpt-5-codex-high`,
+`…:free`), so a compound id needs an escape rule and a second resolver, and
+the session row would store a value that is not a catalog key. A separate
+column is one `Option<String>`.
+
 ## 3. Input header (tui crate)
 
 One line directly above the input box, dark grey, omp-style:
 
 ```
-anthropic/claude-sonnet-4-5  ·  ctx 12.3k / 200k (6%)  ·  cache 94%
+anthropic/claude-sonnet-4-5  ·  high  ·  ctx 12.3k / 200k (6%)  ·  cache 94%
 ```
 
 Model = `TurnStarted.model` of the shown session (falls back to the config
-default before the first turn). Context = `TurnFinished.context` of the shown
-session vs `Catalog::get(id).limit.context`; unknown limit → `ctx 12.3k`.
+default before the first turn). Effort = the session's value (`Loaded.effort`,
+then `EffortChanged`); the segment is omitted when unset. Context =
+`TurnFinished.context` of the shown session vs
+`Catalog::get(id).limit.context`; unknown limit → `ctx 12.3k`.
 Colour steps at 70 % (yellow) and 90 % (red). `cache` = `usage.cached /
 usage.prompt` of the last finished turn, the prefix-cache hit ratio
 (`07-context.md` §7); omitted until a turn has reported usage. While
@@ -168,18 +255,26 @@ every command whose name starts with the typed prefix, with a one-line
 description. ↑/↓ moves, Tab completes the name (plus a trailing space when it
 takes an argument), Enter runs it (or completes when the highlighted command
 needs an argument), Esc closes without clearing the input. Commands:
-`/model [id]`, `/mcp`, `/agents`, `/focus <name>`, `/sessions`,
-`/resume <id>`, `/new`, `/cancel`, `/compact [summary|cut|snap|style …]`
-(11), `/knowledge [query | history [id] | restore <id>
-[commit] | harvest]` (the knowledge bundle: list, search, git history,
-restore, harvest now — `10 §8`), `/quit`.
+`/model [id]`, `/effort [level|clear]`, `/mcp`, `/agents`, `/focus <name>`,
+`/sessions`, `/resume <id>`, `/new`, `/cancel`,
+`/compact [summary|cut|snap|style …]` (11), `/knowledge [query | history [id]
+| restore <id> [commit] | harvest]` (the knowledge bundle: list, search, git
+history, restore, harvest now — `10 §8`), `/quit`. Signal mirrors `/effort`
+and its `/status` shows the current level (09).
 
 **Picker (shared modal).** Items, cursor, optional filter typed inline.
 `/model` with no argument: `Command::ListModels` → picker over `ModelInfo`
 rows `provider/model    name    200k`; typing filters (substring on id and
 name); Enter → `Command::SetModel { session: shown root, model }`; the reply
-`UiEvent::ModelSet(info)` updates the header immediately. `/model <id>` skips
-the picker.
+`UiEvent::ModelSet(info)` updates the header immediately and, when
+`info.efforts` is non-empty, chains into the effort picker. `/model <id>`
+skips the picker.
+
+**`/effort` picker.** No argument → picker over the current model's
+`efforts()` with a trailing `clear` entry; Enter → `Command::SetEffort
+{ session: shown root, effort }` (`clear` → `None`). `/effort <level>` and
+`/effort clear` skip the picker. The reply updates the header; the model
+call itself changes only from the next turn (§2.1).
 
 **`/sessions` picker.** `Command::ListSessions` → picker over top-level
 sessions, newest first (`● id  mm-dd hh:mm  model  title`, ● = shown); Enter
@@ -291,3 +386,25 @@ explicit `gate: allow` rather than clearing; the status line no longer repeats
 the model. Not exercised: non-anthropic providers live, `models.json` user
 file end to end, `--config <other>` write-back (only `<data_dir>/config.yaml`
 is edited).
+
+effort: implemented 2026-09-11. Verified headless over RPC on a fresh data
+dir: `list_models` carries `efforts` from the regenerated catalog (opus-4-6
+`low|medium|high|max`, sonnet-4-5 `low|medium|high`, gpt-5.1
+`none|low|medium|high`); `set_effort` rejects `turbo` and out-of-range
+budgets with the accepted list, persists to the session row and
+`config.yaml` (`effort: "high"`, `~` to clear), publishes typed
+`EffortChanged`; `set_model` to a model lacking the value clears it;
+`load_session`/`list_sessions` return it after a process restart.
+Live Anthropic: sonnet-4-5 (legacy `budget_tokens` path) at `high` and
+`low` and opus-4-6 (`output_config.effort`) at `max`/`high` each ran a
+tool-use turn to `end_turn` with `ReasoningDelta`s streaming, so signed
+thinking blocks replay on round 2. TUI on a pty: `/effort` picker rows +
+`clear`, `/effort low` puts `· low ·` in the header, `clear` drops it,
+`/effort bogus` shows the accepted list, `/model` chains into the picker.
+Found during verification: genai sends a numeric budget as
+`thinking.adaptive.budget_tokens` on Claude 4.6+, which Anthropic rejects
+(`Extra inputs are not permitted`) - `Model::budget` is `None` when the
+model also has `effort` keywords, so budgets are offered only on
+budget-only models. Not exercised: OpenAI live (the ChatGPT-account Codex
+endpoint rejected every model id for this account, effort or not),
+Signal `/effort`, `subagents.effort`.

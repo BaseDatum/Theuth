@@ -59,6 +59,11 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ("/cancel", "", "abort the turn"),
     ("/compact", "[summary|cut|snap|style …]", "fold the context"),
     ("/model", "[id]", "show or set the model"),
+    (
+        "/effort",
+        "[level|clear]",
+        "show or set the reasoning effort",
+    ),
     ("/agents", "", "this session's subagents"),
     ("/prompt", "", "the assembled system prompt"),
     ("/skills", "[add <url>|rm <name>|sync]", "skills"),
@@ -199,6 +204,48 @@ async fn run(cx: &mut Cx<'_>, name: &'static str, arg: &str) -> anyhow::Result<R
                 .map_err(err)?;
             text(format!("model: {}", info.id))
         }
+        "/effort" if arg.is_empty() => {
+            let session = cx.session.context(NO_SESSION)?;
+            let agent = agent()?;
+            let s = agent
+                .ask(agent::ListSessions)
+                .await
+                .map_err(err)?
+                .into_iter()
+                .find(|s| s.id == session)
+                .context("session not found")?;
+            let current = s.effort.as_deref().unwrap_or("unset");
+            let info = agent
+                .ask(agent::ListModels)
+                .await
+                .map_err(err)?
+                .into_iter()
+                .find(|m| m.id == s.model);
+            let accepts = match info {
+                Some(m) if !m.efforts.is_empty() || m.budget_min.is_some() => {
+                    let mut a = m.efforts.join("|");
+                    if let Some(min) = m.budget_min {
+                        let max = m.budget_max.map_or(String::new(), |x| x.to_string());
+                        a.push_str(&format!("; or budget {min}..{max}"));
+                    }
+                    a
+                }
+                Some(_) => "no reasoning effort levels".to_owned(),
+                None => "any genai keyword or token budget".to_owned(),
+            };
+            text(format!("effort: {current}; accepts: {accepts}"))
+        }
+        "/effort" => {
+            let effort = (arg != "clear").then(|| arg.to_owned());
+            agent()?
+                .ask(agent::SetEffort {
+                    session: cx.session,
+                    effort: effort.clone(),
+                })
+                .await
+                .map_err(err)?;
+            text(effort.map_or_else(|| "effort cleared".to_owned(), |e| format!("effort: {e}")))
+        }
         "/agents" => {
             let parent = cx.session.context(NO_SESSION)?;
             let rows = agent()?
@@ -298,13 +345,14 @@ async fn status(cx: &Cx<'_>) -> anyhow::Result<String> {
         return Ok(out);
     };
     let agent = agent()?;
-    let model = agent
+    let (model, effort) = agent
         .ask(agent::ListSessions)
         .await
         .map_err(err)?
         .into_iter()
         .find(|s| s.id == session)
-        .map_or_else(|| "?".to_owned(), |s| s.model);
+        .map_or_else(|| ("?".to_owned(), None), |s| (s.model, s.effort));
+    let effort = effort.map_or(String::new(), |e| format!(" · effort {e}"));
     // ponytail: LoadSession renders the whole history just for `running`;
     // have the channel pass its TurnStarted/TurnFinished flag if this shows.
     let loaded = agent
@@ -313,7 +361,7 @@ async fn status(cx: &Cx<'_>) -> anyhow::Result<String> {
         .map_err(err)?;
     let turn = if loaded.running { "running" } else { "idle" };
     out.push_str(&format!(
-        "\nsession: {}\nmodel: {model}\nturn: {turn}",
+        "\nsession: {}\nmodel: {model}{effort}\nturn: {turn}",
         short(session)
     ));
     Ok(out)
@@ -755,6 +803,7 @@ mod tests {
     fn completes_unique_prefixes_only() {
         let p = Pending::default();
         assert_eq!(classify(&p, "/mo gpt"), Some(("/model", "gpt")));
+        assert_eq!(classify(&p, "/eff high"), Some(("/effort", "high")));
         assert_eq!(classify(&p, "  /MODEL  "), Some(("/model", "")));
         assert_eq!(classify(&p, "/s"), Some(("/help", "")));
         assert_eq!(classify(&p, "/skills sync"), Some(("/skills", "sync")));

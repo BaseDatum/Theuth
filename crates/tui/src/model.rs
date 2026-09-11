@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeSet, VecDeque};
 use std::ops::Range;
+use std::sync::Arc;
 
 use agent::{
     AgentEvent, CompactStyle, HistoryEntry, Loaded, ModelInfo, ProviderInfo, SessionSummary,
@@ -40,6 +41,8 @@ pub enum UiEvent {
     Models(Vec<ModelInfo>),
     /// Reply to [`Command::SetModel`].
     ModelSet(ModelInfo),
+    /// Reply to [`Command::SetEffort`]: the value now in force.
+    EffortSet(Option<String>),
     /// Reply to [`Command::ListMcp`] (also sent after every [`Command::SetGate`]).
     Mcp(Vec<McpServer>),
     /// Reply to [`Command::SetApprovals`].
@@ -136,6 +139,13 @@ pub enum Command {
         session: Option<SessionId>,
         /// `provider/model` id.
         model: String,
+    },
+    /// `set_effort`.
+    SetEffort {
+        /// Session to switch from its next turn (`None`: only the default).
+        session: Option<SessionId>,
+        /// Effort keyword or token budget; `None` clears it (provider default).
+        effort: Option<String>,
     },
     /// `list_mcp`.
     ListMcp,
@@ -420,6 +430,11 @@ pub struct Child {
 pub const COMMANDS: &[(&str, &str, &str)] = &[
     ("/model", "[id]", "switch model (picker without id)"),
     (
+        "/effort",
+        "[level|clear]",
+        "reasoning effort (picker without arg)",
+    ),
+    (
         "/mcp",
         "[add <url|json>|sync]",
         "MCP servers and tool gates",
@@ -565,6 +580,13 @@ pub enum Menu {
         /// Substring typed inline (matched on id and name).
         filter: String,
         /// Highlighted filtered row.
+        cursor: usize,
+    },
+    /// `/effort` picker.
+    Efforts {
+        /// The model's effort levels, then `clear`.
+        items: Vec<String>,
+        /// Highlighted row.
         cursor: usize,
     },
     /// `/sessions` picker.
@@ -732,6 +754,12 @@ pub struct Model {
     pub usage: Option<Usage>,
     /// Model of the shown session (`TurnStarted.model`; the config default before that).
     pub model_id: String,
+    /// Reasoning effort of the shown session; `None` = provider default.
+    pub effort: Option<String>,
+    /// A `SetEffort` is in flight; its `EffortChanged` echo is not announced twice.
+    awaiting_effort: bool,
+    /// Effort levels per model for the `/effort` picker; `None` in the line printer.
+    pub catalog: Option<Arc<Catalog>>,
     /// Tokens the shown session's window held after its last turn.
     pub context: u32,
     /// Open menu.
@@ -769,9 +797,13 @@ impl Model {
         }
     }
 
-    /// `Self::new` keeping the current model: `/new` and `/resume`.
+    /// `Self::new` keeping the current model, effort and catalog: `/new` and `/resume`.
     fn reset(&mut self) {
-        *self = Self::new(std::mem::take(&mut self.model_id), self.approvals_global);
+        *self = Self {
+            effort: self.effort.take(),
+            catalog: self.catalog.take(),
+            ..Self::new(std::mem::take(&mut self.model_id), self.approvals_global)
+        };
     }
 
     /// The approval currently shown, if any.
@@ -792,6 +824,7 @@ impl Model {
                 self.menu,
                 Some(
                     Menu::Models { .. }
+                        | Menu::Efforts { .. }
                         | Menu::Sessions { .. }
                         | Menu::Mcp { .. }
                         | Menu::Skills { .. }
@@ -1067,6 +1100,8 @@ impl Model {
             UiEvent::History(id, loaded) => {
                 if self.shown() == Some(id) {
                     self.entries = loaded.history.into_iter().flat_map(from_history).collect();
+                    self.model_id = loaded.model;
+                    self.effort = loaded.effort;
                     if self.session == Some(id) {
                         self.streaming = loaded.running;
                     } else if let Some(c) = self.children.iter_mut().find(|c| c.id == id) {
@@ -1092,7 +1127,21 @@ impl Model {
                     });
                 }
             }
-            UiEvent::ModelSet(info) => self.model_id = info.id,
+            // Chained picker: a model with effort levels asks for one right away (Esc skips).
+            UiEvent::ModelSet(info) => {
+                self.model_id = info.id;
+                if !info.efforts.is_empty() {
+                    self.open_efforts(info.efforts);
+                }
+            }
+            UiEvent::EffortSet(effort) => {
+                self.awaiting_effort = false;
+                self.entries.push(Entry::Info(match &effort {
+                    Some(e) => format!("effort: {e}"),
+                    None => "effort cleared".to_owned(),
+                }));
+                self.effort = effort;
+            }
             // The cursor is clamped where it is used (`mcp_key`, renderer).
             UiEvent::Mcp(list) => match &mut self.menu {
                 Some(Menu::Mcp { servers, .. }) => *servers = list,
@@ -1244,6 +1293,7 @@ impl Model {
             UiEvent::Error(e) => {
                 // A failed `/compact` answers here, not with an agent event.
                 self.compacting = false;
+                self.awaiting_effort = false;
                 self.entries.push(Entry::Error(e));
             }
         }
@@ -1390,6 +1440,17 @@ impl Model {
                 self.entries.push(Entry::Info(format!("model → {model}")));
                 self.model_id = model;
             }
+            // Our own `SetEffort` is announced by its reply; anything else
+            // (a `/model` switch dropping a level the new model lacks) here.
+            AgentEvent::EffortChanged { effort, .. } => {
+                if !self.awaiting_effort && self.effort != effort {
+                    self.entries.push(Entry::Info(match &effort {
+                        Some(e) => format!("effort → {e}"),
+                        None => format!("effort reset: not offered by {}", self.model_id),
+                    }));
+                }
+                self.effort = effort;
+            }
             AgentEvent::Compacting { .. } => self.compacting = true,
             AgentEvent::Compacted { epoch, style, .. } => {
                 self.compacting = false;
@@ -1448,6 +1509,16 @@ impl Model {
                     model: arg.to_owned(),
                 },
             ),
+            "/effort" if arg.is_empty() => {
+                let items = self
+                    .catalog
+                    .as_ref()
+                    .and_then(|c| c.closest(&self.model_id))
+                    .map(|m| m.efforts())
+                    .unwrap_or_default();
+                self.open_efforts(items);
+            }
+            "/effort" => self.set_effort((arg != "clear").then(|| arg.to_owned()), tx),
             "/approvals" => self.approvals_cmd(arg, tx),
             "/mcp" if arg.is_empty() => {
                 self.awaiting_mcp = true;
@@ -1524,8 +1595,7 @@ impl Model {
         self.focus = (target != root).then_some(target);
         self.entries.clear();
         self.usage = None;
-        // ponytail: the header keeps the previous session's model until this
-        // one's next TurnStarted; carry model per session if that misleads.
+        // `Loaded` carries the target's model and effort; the header flips on its reply.
         self.context = 0;
         send(tx, Command::Load(target));
     }
@@ -1573,9 +1643,10 @@ impl Model {
         format!("{session}  {state}{usage}{focus}{agents}")
     }
 
-    /// Line above the input: `model  ·  ctx 12.3k / 200k (6%)  ·  cache 94%`
-    /// and its colour level. `cache` is the prefix-cache hit ratio of the last
-    /// finished turn (design doc 07 §7), omitted until one has reported usage.
+    /// Line above the input: `model  ·  high  ·  ctx 12.3k / 200k (6%)  ·  cache 94%`
+    /// and its colour level. The effort segment is omitted while unset;
+    /// `cache` is the prefix-cache hit ratio of the last finished turn (design
+    /// doc 07 §7), omitted until one has reported usage.
     pub fn header(&self, catalog: &Catalog) -> (String, Level) {
         let used = k(self.context);
         let cache = match self.usage {
@@ -1587,6 +1658,10 @@ impl Model {
             }
             _ => String::new(),
         };
+        let effort = self
+            .effort
+            .as_deref()
+            .map_or_else(String::new, |e| format!("  ·  {e}"));
         match catalog.closest(&self.model_id).map(|m| m.limit.context) {
             Some(limit) if limit > 0 => {
                 let pct = u64::from(self.context) * 100 / u64::from(limit);
@@ -1597,7 +1672,7 @@ impl Model {
                 };
                 (
                     format!(
-                        "{}  ·  ctx {used} / {} ({pct}%){cache}{}",
+                        "{}{effort}  ·  ctx {used} / {} ({pct}%){cache}{}",
                         self.model_id,
                         k(limit),
                         self.approvals_tag()
@@ -1607,7 +1682,7 @@ impl Model {
             }
             _ => (
                 format!(
-                    "{}  ·  ctx {used}{cache}{}",
+                    "{}{effort}  ·  ctx {used}{cache}{}",
                     self.model_id,
                     self.approvals_tag()
                 ),
@@ -1622,6 +1697,31 @@ impl Model {
         } else {
             ""
         }
+    }
+
+    /// Open the `/effort` picker over `items` plus a `clear` row; no levels → a notice.
+    fn open_efforts(&mut self, mut items: Vec<String>) {
+        if items.is_empty() {
+            self.entries.push(Entry::Info(format!(
+                "{} has no reasoning effort levels",
+                self.model_id
+            )));
+            return;
+        }
+        items.push("clear".into());
+        self.menu = Some(Menu::Efforts { items, cursor: 0 });
+    }
+
+    /// `SetEffort` for the root session (and the default); the reply announces it.
+    fn set_effort(&mut self, effort: Option<String>, tx: &UnboundedSender<Command>) {
+        self.awaiting_effort = true;
+        send(
+            tx,
+            Command::SetEffort {
+                session: self.session,
+                effort,
+            },
+        );
     }
 
     /// `/approvals [on|off] [always]`: bare shows the state; `always` switches
@@ -1923,6 +2023,7 @@ impl Model {
             None => MenuKey::Consumed,
             Some(Menu::Slash { .. }) => self.slash_key(code, input, tx),
             Some(Menu::Models { .. }) => self.models_key(code, tx),
+            Some(Menu::Efforts { .. }) => self.efforts_key(code, tx),
             Some(Menu::Sessions { .. }) => self.sessions_key(code, tx),
             Some(Menu::Mcp { .. }) => self.mcp_key(code, tx),
             Some(Menu::Skills { .. }) => self.skills_key(code, tx),
@@ -2005,6 +2106,27 @@ impl Model {
                         },
                     );
                     self.menu = None;
+                }
+            }
+            _ => {}
+        }
+        MenuKey::Consumed
+    }
+
+    /// `/effort`: Enter sets the highlighted level (`clear` unsets) from the next turn.
+    fn efforts_key(&mut self, code: KeyCode, tx: &UnboundedSender<Command>) -> MenuKey {
+        let Some(Menu::Efforts { items, cursor }) = &mut self.menu else {
+            return MenuKey::Consumed;
+        };
+        match code {
+            KeyCode::Up => *cursor = cursor.saturating_sub(1),
+            KeyCode::Down => *cursor = (*cursor + 1).min(items.len().saturating_sub(1)),
+            KeyCode::Esc => self.menu = None,
+            KeyCode::Enter => {
+                let picked = items.get(*cursor).cloned();
+                self.menu = None;
+                if let Some(v) = picked {
+                    self.set_effort((v != "clear").then_some(v), tx);
                 }
             }
             _ => {}
@@ -2572,6 +2694,54 @@ mod tests {
         assert_eq!(m.header(&catalog).0, "nobody/nothing  ·  ctx 1.5k");
         assert_eq!(window(50, 20, 10), 11..21);
         assert_eq!(window(5, 0, 10), 0..5);
+    }
+
+    #[test]
+    fn effort_sets_clears_and_picks() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        m.submit("/effort high", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetEffort { session: None, effort: Some(e) }) if e == "high"
+        ));
+        m.submit("/effort clear", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetEffort { effort: None, .. })
+        ));
+        // Picker: levels then `clear`; Enter on `clear` unsets.
+        m.open_efforts(vec!["low".into(), "high".into()]);
+        m.menu_key(KeyCode::Down, "", &tx);
+        m.menu_key(KeyCode::Down, "", &tx);
+        m.menu_key(KeyCode::Down, "", &tx);
+        m.menu_key(KeyCode::Enter, "", &tx);
+        assert!(m.menu.is_none());
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetEffort { effort: None, .. })
+        ));
+        // The reply lands in the header; the echo event is not announced twice.
+        m.apply(UiEvent::EffortSet(Some("high".into())));
+        assert_eq!(m.effort.as_deref(), Some("high"));
+        assert!(matches!(m.entries.last(), Some(Entry::Info(t)) if t == "effort: high"));
+        // No levels: a notice, no menu.
+        m.open_efforts(Vec::new());
+        assert!(m.menu.is_none());
+        assert!(
+            matches!(m.entries.last(), Some(Entry::Info(t)) if t.ends_with("no reasoning effort levels"))
+        );
+    }
+
+    #[test]
+    fn header_shows_effort_when_set() {
+        let catalog = Catalog::load(std::env::temp_dir().join("wth-tui-no-user-file").as_path());
+        let mut m = Model::new("nobody/nothing".into(), true);
+        assert_eq!(m.header(&catalog).0, "nobody/nothing  ·  ctx 0");
+        m.effort = Some("high".into());
+        assert_eq!(m.header(&catalog).0, "nobody/nothing  ·  high  ·  ctx 0");
+        m.model_id = "anthropic/claude-sonnet-4-5".into();
+        assert!(m.header(&catalog).0.contains("  ·  high  ·  ctx "));
     }
 
     #[test]

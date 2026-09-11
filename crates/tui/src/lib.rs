@@ -172,6 +172,10 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
         Command::SetModel { session, model } => {
             UiEvent::ModelSet(msg(api.set_model(session, model).await)?)
         }
+        Command::SetEffort { session, effort } => {
+            msg(api.set_effort(session, effort.clone()).await)?;
+            UiEvent::EffortSet(effort)
+        }
         Command::ListMcp => UiEvent::Mcp(msg(api.list_mcp().await)?),
         Command::McpStatus => UiEvent::McpProgress(msg(api.mcp_status().await)?),
         Command::SetGate { server, tool, gate } => {
@@ -402,6 +406,8 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         }
         UiEvent::Agent(_) => Ok(()),
         UiEvent::ModelSet(info) => writeln!(out, "model → {}", info.id),
+        UiEvent::EffortSet(Some(e)) => writeln!(out, "effort: {e}"),
+        UiEvent::EffortSet(None) => writeln!(out, "effort cleared"),
         UiEvent::Models(_) | UiEvent::Mcp(_) => writeln!(out, "menus need a TTY"),
         UiEvent::Logins(rows) => rows
             .iter()

@@ -41,6 +41,7 @@ struct SessionRow {
     model: String,
     parent: Option<String>,
     name: Option<String>,
+    effort: Option<String>,
 }
 
 impl TryFrom<SessionRow> for SessionSummary {
@@ -59,6 +60,7 @@ impl TryFrom<SessionRow> for SessionSummary {
                 .transpose()
                 .context("bad parent id")?,
             name: r.name,
+            effort: r.effort,
         })
     }
 }
@@ -118,6 +120,16 @@ impl Store {
     pub async fn set_model(&self, id: SessionId, model: &str) -> anyhow::Result<()> {
         sqlx::query("UPDATE sessions SET model = ? WHERE id = ?")
             .bind(model)
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Record the reasoning effort; `None` clears it (provider default).
+    pub async fn set_effort(&self, id: SessionId, effort: Option<&str>) -> anyhow::Result<()> {
+        sqlx::query("UPDATE sessions SET effort = ? WHERE id = ?")
+            .bind(effort)
             .bind(id.to_string())
             .execute(&self.pool)
             .await?;
@@ -228,7 +240,7 @@ impl Store {
     /// One session, if it exists.
     pub async fn session(&self, id: SessionId) -> anyhow::Result<Option<SessionSummary>> {
         let row: Option<SessionRow> = sqlx::query_as(
-            "SELECT id, created_at, title, model, parent, name FROM sessions WHERE id = ?",
+            "SELECT id, created_at, title, model, parent, name, effort FROM sessions WHERE id = ?",
         )
         .bind(id.to_string())
         .fetch_optional(&self.pool)
@@ -239,7 +251,7 @@ impl Store {
     /// Every session, newest first.
     pub async fn list_sessions(&self) -> anyhow::Result<Vec<SessionSummary>> {
         let rows: Vec<SessionRow> = sqlx::query_as(
-            "SELECT id, created_at, title, model, parent, name FROM sessions ORDER BY created_at DESC, id DESC",
+            "SELECT id, created_at, title, model, parent, name, effort FROM sessions ORDER BY created_at DESC, id DESC",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -249,7 +261,7 @@ impl Store {
     /// Subagents of `parent`, newest first.
     pub async fn children(&self, parent: SessionId) -> anyhow::Result<Vec<SessionSummary>> {
         let rows: Vec<SessionRow> = sqlx::query_as(
-            "SELECT id, created_at, title, model, parent, name FROM sessions WHERE parent = ? ORDER BY created_at DESC, id DESC",
+            "SELECT id, created_at, title, model, parent, name, effort FROM sessions WHERE parent = ? ORDER BY created_at DESC, id DESC",
         )
         .bind(parent.to_string())
         .fetch_all(&self.pool)

@@ -8,8 +8,8 @@ use agent::{
     AddProvider, AddSkill, AddSkillRepo, Agents, Cancel, Compact, CompactStyle, GetCompactStyle,
     Harvest, ListLogins, ListModels, ListProviders, ListSessions, ListSkills, LoadSession,
     LoadSkill, Loaded, Login, LoginInfo, Logout, ModelInfo, ProviderInfo, RemoveProvider,
-    RemoveSkill, RemoveSkillRepo, SendInput, SessionSummary, SetCompactStyle, SetModel, ShowPrompt,
-    SkillBody, SkillMeta, Steer, SyncSkills,
+    RemoveSkill, RemoveSkillRepo, SendInput, SessionSummary, SetCompactStyle, SetEffort, SetModel,
+    ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills,
 };
 use jsonrpsee::core::{RpcResult, SubscriptionResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
@@ -85,6 +85,13 @@ pub trait Api {
     /// Switch `session` (and the default for new sessions) to `model`.
     #[method(name = "set_model")]
     async fn set_model(&self, session: Option<SessionId>, model: String) -> RpcResult<ModelInfo>;
+    /// Set (or clear with `None`) the reasoning effort for `session` from its next turn, and as
+    /// the default (`agent.effort`). Values come from the model's catalog entry
+    /// (`ModelInfo.efforts`, or an integer token budget within `budget_min..budget_max`);
+    /// `EffortChanged` follows on the stream.
+    #[method(name = "set_effort")]
+    async fn set_effort(&self, session: Option<SessionId>, effort: Option<String>)
+    -> RpcResult<()>;
     /// MCP servers, their tools, and their `mcp/config.yaml` risk lines.
     #[method(name = "list_mcp")]
     async fn list_mcp(&self) -> RpcResult<Vec<McpServer>>;
@@ -353,6 +360,14 @@ impl ApiServer for Server {
 
     async fn set_model(&self, session: Option<SessionId>, model: String) -> RpcResult<ModelInfo> {
         ask::<Agents, _>(agent::AGENT_ACTOR, SetModel { session, model }).await
+    }
+
+    async fn set_effort(
+        &self,
+        session: Option<SessionId>,
+        effort: Option<String>,
+    ) -> RpcResult<()> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, SetEffort { session, effort }).await
     }
 
     async fn list_mcp(&self) -> RpcResult<Vec<McpServer>> {

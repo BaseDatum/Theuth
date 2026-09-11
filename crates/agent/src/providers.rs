@@ -200,6 +200,7 @@ pub fn write_models(data_dir: &Path, name: &str, ids: &[String]) -> Result<(), S
                     cost: None,
                     reasoning: false,
                     tool_call: true,
+                    reasoning_options: Vec::new(),
                 },
             )
         })

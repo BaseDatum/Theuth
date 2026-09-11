@@ -6,7 +6,9 @@
 use std::path::Path;
 
 use genai::adapter::AdapterKind;
-use genai::chat::{CacheControl, ChatMessage, ChatOptions, ChatRequest, ChatRole, Tool};
+use genai::chat::{
+    CacheControl, ChatMessage, ChatOptions, ChatRequest, ChatRole, ReasoningEffort, Tool,
+};
 use runtime::SessionId;
 
 use crate::skills;
@@ -64,7 +66,12 @@ pub struct Frame<'a> {
 
 impl Frame<'_> {
     /// The request and options for `t`, cache marks placed (design doc 07 §3).
-    pub fn request(&self, t: Transport, session: SessionId) -> (ChatRequest, ChatOptions) {
+    pub fn request(
+        &self,
+        t: Transport,
+        session: SessionId,
+        effort: Option<ReasoningEffort>,
+    ) -> (ChatRequest, ChatOptions) {
         let mut messages = Vec::with_capacity(
             usize::from(t == Transport::Anthropic)
                 + usize::from(self.head.is_some())
@@ -86,14 +93,21 @@ impl Frame<'_> {
         if t != Transport::Anthropic {
             req = req.with_system(self.system);
         }
+        // Reasoning content is always captured: Anthropic's thinking blocks
+        // (with signatures) must round-trip in the assistant message of a
+        // tool-use turn, or the next round is rejected.
         let mut opts = ChatOptions::default()
             .with_capture_tool_calls(true)
             .with_capture_usage(true)
-            .with_capture_content(true);
+            .with_capture_content(true)
+            .with_capture_reasoning_content(true);
         if t == Transport::OpenAiLike {
             opts = opts
                 .with_prompt_cache_key(session.to_string())
                 .with_cache_control(CacheControl::Ephemeral24h);
+        }
+        if let Some(e) = effort {
+            opts = opts.with_reasoning_effort(e);
         }
         (req, opts)
     }
@@ -245,7 +259,7 @@ mod tests {
                     head,
                     history: &history[..n],
                 };
-                let (req, opts) = frame.request(t, session);
+                let (req, opts) = frame.request(t, session, None);
                 assert_eq!(opts.capture_tool_calls, Some(true));
                 let cur = shape(&req, t);
                 if let Some(p) = &prev {
@@ -285,7 +299,7 @@ mod tests {
         };
         let session = SessionId::new();
 
-        let (req, opts) = frame.request(Transport::OpenAiLike, session);
+        let (req, opts) = frame.request(Transport::OpenAiLike, session, None);
         assert_eq!(req.system.as_deref(), Some("sys"));
         assert_eq!(req.messages.len(), history.len());
         assert!(req.messages.iter().all(|m| m.options.is_none()));
@@ -295,11 +309,11 @@ mod tests {
         );
         assert_eq!(opts.cache_control, Some(CacheControl::Ephemeral24h));
 
-        let (req, opts) = frame.request(Transport::Plain, session);
+        let (req, opts) = frame.request(Transport::Plain, session, None);
         assert_eq!(req.system.as_deref(), Some("sys"));
         assert!(opts.cache_control.is_none() && opts.prompt_cache_key.is_none());
 
-        let (req, opts) = frame.request(Transport::Anthropic, session);
+        let (req, opts) = frame.request(Transport::Anthropic, session, None);
         assert!(req.system.is_none());
         assert_eq!(req.messages.len(), history.len() + 1);
         assert!(opts.cache_control.is_none());
@@ -310,7 +324,7 @@ mod tests {
             head: None,
             history: &[],
         };
-        let (req, _) = empty.request(Transport::Anthropic, session);
+        let (req, _) = empty.request(Transport::Anthropic, session, None);
         assert_eq!(
             req.messages[0].options.as_ref().unwrap().cache_control,
             Some(CacheControl::Ephemeral1h)

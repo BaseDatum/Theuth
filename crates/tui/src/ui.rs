@@ -66,11 +66,18 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     let mut links = hooks.use_context_mut::<Links>();
     let default_model = links.default_model.clone();
     let approvals = links.approvals;
-    let mut model = hooks.use_state(move || Model::new(default_model, approvals));
+    let catalog = links.catalog.clone();
+    let mut model = hooks.use_state({
+        let catalog = catalog.clone();
+        move || {
+            let mut m = Model::new(default_model, approvals);
+            m.catalog = Some(catalog);
+            m
+        }
+    });
     let mut input = hooks.use_state(String::new);
     let handle = hooks.use_ref_default::<TextInputHandle>();
     let commands = links.commands.clone();
-    let catalog = links.catalog.clone();
 
     // Runs once: the receiver is `Some` only on the first render.
     let events = links.events.take();
@@ -285,6 +292,11 @@ fn menu(m: &Model, input: &str, width: u16) -> Option<AnyElement<'static>> {
                 .iter()
                 .map(|i| format!("{:<44} {:<32} {}", i.id, i.name, k(i.context)))
                 .collect(),
+            *cursor,
+        ),
+        Menu::Efforts { items, cursor } => (
+            "effort  ⏎ set  esc close".to_owned(),
+            items.clone(),
             *cursor,
         ),
         Menu::Sessions { items, cursor } => (
@@ -614,6 +626,9 @@ mod tests {
                 provider: "amazon-bedrock".into(),
                 context: 200_000,
                 reasoning: false,
+                efforts: Vec::new(),
+                budget_min: None,
+                budget_max: None,
             })
             .collect();
         m.menu = Some(Menu::Models {

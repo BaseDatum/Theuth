@@ -41,7 +41,17 @@ install:
 ts:
     cargo test -p rpc --features ts --quiet export_bindings
 
-# Refresh the bundled model catalog: models.dev api.json trimmed to the fields
-# `crates/models` reads and to providers genai can route (design doc 02 §1).
+# Refresh the bundled model catalog: models.dev api.json trimmed to `models::ROUTABLE`
+# providers and re-emitted through the crate's own types, so the field list lives in
+# `crates/models/src/lib.rs` (`Model`), not here (design doc 02 §1).
 models:
-    curl -sL https://models.dev/api.json | jq 'with_entries(select(.key | IN("google","openrouter","togetherai","fireworks-ai","moonshotai","alibaba","alibaba-cn","amazon-bedrock","opencode-go","github-copilot","google-vertex","google-vertex-anthropic","ollama-cloud","anthropic","openai","groq","xai","deepseek","cohere","zai","nebius","minimax","aihubmix"))) | map_values({id,name,env,models: (.models | map_values({id,name,limit,cost,reasoning,tool_call} | del(.cost | nulls)))})' > crates/models/data/models.json
+    curl -sL https://models.dev/api.json | cargo run -q -p models --bin trim > crates/models/data/models.json
+
+# Fail when the committed catalog differs from upstream: drift; run `just models`.
+models-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    tmp=$(mktemp)
+    trap 'rm -f "$tmp"' EXIT
+    curl -sL https://models.dev/api.json | cargo run -q -p models --bin trim > "$tmp"
+    diff -q "$tmp" crates/models/data/models.json || { echo "catalog drift: run \`just models\`" >&2; exit 1; }

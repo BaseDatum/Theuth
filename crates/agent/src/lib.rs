@@ -4,7 +4,7 @@
 //!
 //! - commands on the `"agent"` actor ([`Agents`]): [`SendInput`], [`Steer`],
 //!   [`Cancel`], [`Compact`], [`SetCompactStyle`], [`ListSessions`], [`LoadSession`], [`ListChildren`],
-//!   [`ListModels`], [`SetModel`], [`ShowPrompt`], [`ListSkills`],
+//!   [`ListModels`], [`SetModel`], [`SetEffort`], [`ShowPrompt`], [`ListSkills`],
 //!   [`LoadSkill`], [`AddSkill`], [`RemoveSkill`], [`AddSkillRepo`],
 //!   [`RemoveSkillRepo`], [`SyncSkills`], [`ListLogins`], [`Login`], [`Logout`],
 //!   [`ListProviders`], [`AddProvider`], [`RemoveProvider`]
@@ -111,6 +111,10 @@ pub struct Loaded {
     pub history: Vec<HistoryEntry>,
     /// A turn is in flight; its events keep streaming.
     pub running: bool,
+    /// Canonical model id the session runs on.
+    pub model: String,
+    /// Reasoning effort in force; `None` = provider default.
+    pub effort: Option<String>,
 }
 
 /// `ask` → `Vec<SessionSummary>`: subagents of `parent` (with `name` set), newest first.
@@ -136,6 +140,19 @@ pub struct SetModel {
     pub model: String,
 }
 
+/// `ask` → `Result<(), String>`: set (or clear with `None`) the reasoning
+/// effort. Validated against the session's current model via the catalog
+/// (unknown/passthrough models accept any genai keyword or integer budget).
+/// Like [`SetModel`]: switches `session` (from its next turn) and makes the
+/// value the default (`agent.effort` in config.yaml).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetEffort {
+    /// Session to switch; `None` changes only the default.
+    pub session: Option<SessionId>,
+    /// Effort keyword or token budget; `None` clears.
+    pub effort: Option<String>,
+}
+
 /// One selectable model.
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -150,6 +167,23 @@ pub struct ModelInfo {
     pub context: u32,
     /// Supports reasoning.
     pub reasoning: bool,
+    /// Effort keywords the model accepts (catalog); empty when unknown.
+    pub efforts: Vec<String>,
+    /// Smallest `budget_tokens` value when the model takes one.
+    pub budget_min: Option<u32>,
+    /// Largest `budget_tokens` value, when bounded.
+    pub budget_max: Option<u32>,
+}
+
+/// Effort keyword or integer budget → genai. `"default"` → `None` (provider default).
+pub fn effort_of(s: &str) -> Option<genai::chat::ReasoningEffort> {
+    use genai::chat::ReasoningEffort as E;
+    match s {
+        "off" | "none" | "zero" => Some(E::Zero),
+        "on" => Some(E::Medium),
+        "default" => None,
+        _ => s.parse().map(E::Budget).ok().or_else(|| E::from_keyword(s)),
+    }
 }
 
 /// `ask` → `String`: the assembled system prompt (design doc 04 §1.1) as
@@ -333,6 +367,8 @@ pub struct SessionSummary {
     pub parent: Option<SessionId>,
     /// Peer name; `None` for top-level sessions.
     pub name: Option<String>,
+    /// Reasoning effort in force; `None` = provider default.
+    pub effort: Option<String>,
 }
 
 /// Rendered history for UIs (tool traffic collapsed to summaries).
@@ -507,6 +543,13 @@ pub enum AgentEvent {
         /// Canonical model id.
         model: String,
     },
+    /// The session's reasoning effort was set or cleared (takes effect on its next turn).
+    EffortChanged {
+        /// Session.
+        session: SessionId,
+        /// Effort keyword or budget; `None` = provider default.
+        effort: Option<String>,
+    },
     /// Compaction started: the summariser call is in flight (design doc 07 §8).
     Compacting {
         /// Session.
@@ -558,6 +601,7 @@ impl AgentEvent {
             | Self::TurnFinished { session, .. }
             | Self::MessageDelivered { session, .. }
             | Self::ModelChanged { session, .. }
+            | Self::EffortChanged { session, .. }
             | Self::Compacting { session, .. }
             | Self::Compacted { session, .. }
             | Self::Harvesting { session, .. }
@@ -575,6 +619,9 @@ pub struct AgentConfig {
     /// Model id, `provider/model` (`anthropic/claude-sonnet-4-5`) or bare
     /// (`claude-sonnet-4-5`, resolved against configured providers).
     pub model: String,
+    /// Reasoning effort for new sessions (`low`, `high`, `off`, a token
+    /// budget, …; what the model accepts); unset = provider default.
+    pub effort: Option<String>,
     /// Max tool-call rounds per turn before the loop stops itself.
     pub max_tool_rounds: u32,
     /// Max characters of tool output sent back to the model.
@@ -595,6 +642,7 @@ impl Default for AgentConfig {
     fn default() -> Self {
         Self {
             model: "anthropic/claude-sonnet-4-5".into(),
+            effort: None,
             max_tool_rounds: 32,
             max_tool_output_chars: 32_000,
             subagents: SubagentsConfig::default(),
@@ -637,6 +685,8 @@ impl Default for KnowledgeUse {
 pub struct SubagentsConfig {
     /// Child model; defaults to `agent.model`.
     pub model: Option<String>,
+    /// Child reasoning effort; defaults to `agent.effort`.
+    pub effort: Option<String>,
     /// Sessions at depth ≥ this cannot spawn.
     pub max_depth: u8,
     /// Concurrent child turns; further spawns queue.
@@ -651,6 +701,7 @@ impl Default for SubagentsConfig {
     fn default() -> Self {
         Self {
             model: None,
+            effort: None,
             max_depth: 1,
             max_concurrent: 8,
             max_runtime_secs: 600,

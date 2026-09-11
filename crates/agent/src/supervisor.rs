@@ -22,8 +22,8 @@ use tokio::task::AbortHandle;
 use tools::{ListTools, REGISTRY_ACTOR, RegisterTool, SetParent, ToolRegistry};
 
 use crate::loop_::{
-    CancelTurn, CompactNow, HarvestNow, IsRunning, Session, SessionState, SwitchModel, UserInput,
-    text_of,
+    CancelTurn, CompactNow, HarvestNow, IsRunning, Session, SessionState, SetPendingEffort,
+    SwitchModel, UserInput, text_of,
 };
 use crate::peers::{SendMessageTool, SpawnSubagentTool};
 use crate::skills::{
@@ -36,8 +36,8 @@ use crate::{
     CompactStyle, GetCompactStyle, Harvest, HistoryEntry, ListChildren, ListLogins, ListModels,
     ListProviders, ListSessions, ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginFinished,
     LoginInfo, Logout, ModelInfo, ProviderInfo, RemoveProvider, RemoveSkill, RemoveSkillRepo,
-    SendInput, SessionSummary, SetCompactStyle, SetModel, ShowPrompt, SkillBody, SkillMeta, Steer,
-    SyncSkills,
+    SendInput, SessionSummary, SetCompactStyle, SetEffort, SetModel, ShowPrompt, SkillBody,
+    SkillMeta, Steer, SyncSkills, effort_of,
 };
 use crate::{frame, repl, spill};
 
@@ -48,6 +48,8 @@ pub struct Agents {
     cfg: Arc<AgentConfig>,
     /// `cfg.model` as last set by [`SetModel`]; new sessions start on it.
     default_model: String,
+    /// `cfg.effort` as last set by [`SetEffort`]; new sessions start on it.
+    default_effort: Option<String>,
     /// Live default compaction style; cloned into each session so [`SetCompactStyle`] is in-process.
     compact_style: Arc<RwLock<CompactStyle>>,
     catalog: Arc<Catalog>,
@@ -175,27 +177,35 @@ impl Agents {
         if let Some(live) = self.sessions.get(&id).filter(|l| l.actor.is_alive()) {
             return Ok((id, live.actor.clone()));
         }
-        let (model, state, parent) = match self.store.session(id).await? {
+        let (model, effort, state, parent) = match self.store.session(id).await? {
             Some(row) => {
                 let (epoch, head, history) = self.store.frame(id).await?;
                 (
                     self.resolve_model(&row.model),
+                    row.effort,
                     SessionState::resume(epoch, head, history),
                     row.parent.zip(row.name),
                 )
             }
             None => {
                 let sub = &self.cfg.subagents;
-                let model = match parent {
-                    Some(_) => sub.model.as_deref().unwrap_or(&self.default_model),
-                    None => &self.default_model,
+                let (model, effort) = match parent {
+                    Some(_) => (
+                        sub.model.as_deref().unwrap_or(&self.default_model),
+                        sub.effort.clone().or_else(|| self.default_effort.clone()),
+                    ),
+                    None => (self.default_model.as_str(), self.default_effort.clone()),
                 };
                 let model = self.resolve_model(model);
                 self.store
                     .create_session(id, &model.0.id, parent.map(|p| p.0), parent.map(|p| p.1))
                     .await?;
+                if let Some(e) = &effort {
+                    self.store.set_effort(id, Some(e)).await?;
+                }
                 (
                     model,
+                    effort,
                     SessionState::resume(0, None, Vec::new()),
                     parent.map(|(p, n)| (p, n.to_string())),
                 )
@@ -217,6 +227,7 @@ impl Agents {
             id,
             depth,
             model,
+            effort.as_deref().and_then(effort_of),
             state,
             self.cfg.clone(),
             self.compact_style.clone(),
@@ -791,13 +802,14 @@ impl Message<LoadSession> for Agents {
         let store = &self.store;
         let loaded = async {
             anyhow::Ok((
+                store.session(m.session).await?,
                 store.messages(m.session).await?,
                 store.epochs(m.session).await?,
             ))
         }
         .await;
-        let history = match loaded {
-            Ok((messages, epochs)) => {
+        let (row, history) = match loaded {
+            Ok((row, messages, epochs)) => {
                 // A boundary sits right after the last entry completed at or
                 // before `at_seq`, i.e. before the first entry past it.
                 let mut epochs = epochs.into_iter().peekable();
@@ -809,18 +821,24 @@ impl Message<LoadSession> for Agents {
                     out.push(entry);
                 }
                 out.extend(epochs.map(compacted));
-                out
+                (row, out)
             }
             Err(e) => {
                 tracing::error!(session = %m.session, "load session: {e:#}");
-                Vec::new()
+                (None, Vec::new())
             }
         };
         let running = match self.sessions.get(&m.session) {
             Some(live) => live.actor.ask(IsRunning).await.unwrap_or(false),
             None => false,
         };
-        Loaded { history, running }
+        let (model, effort) = row.map(|r| (r.model, r.effort)).unwrap_or_default();
+        Loaded {
+            history,
+            running,
+            model,
+            effort,
+        }
     }
 }
 
@@ -848,6 +866,9 @@ impl Message<ListModels> for Agents {
                         ModelInfo {
                             context: near.map_or(0, |n| n.limit.context),
                             reasoning: near.is_some_and(|n| n.reasoning),
+                            efforts: near.map(|n| n.efforts()).unwrap_or_default(),
+                            budget_min: near.and_then(|n| n.budget()).map(|b| b.0),
+                            budget_max: near.and_then(|n| n.budget()).and_then(|b| b.1),
                             id,
                             name: m.name,
                             provider: "cursor".into(),
@@ -873,15 +894,9 @@ impl Message<SetModel> for Agents {
     ) -> Result<ModelInfo, String> {
         let resolved = self.catalog.resolve(&m.model, &*self.configured)?;
         if let Some(id) = m.session {
-            if self
-                .store
-                .session(id)
-                .await
-                .map_err(|e| e.to_string())?
-                .is_none()
-            {
+            let Some(row) = self.store.session(id).await.map_err(|e| e.to_string())? else {
                 return Err(format!("unknown session {id}"));
-            }
+            };
             let (_, actor) = self
                 .session(Some(id), None)
                 .await
@@ -896,6 +911,15 @@ impl Message<SetModel> for Agents {
                     model: resolved.id.clone(),
                 })
                 .await;
+            // An effort the new model does not take would 400 its next call: drop it.
+            if let Some(e) = &row.effort
+                && resolved
+                    .model
+                    .as_ref()
+                    .is_some_and(|m| m.validate_effort(e).is_err())
+            {
+                self.apply_effort(id, &actor, None).await;
+            }
         }
         self.default_model = resolved.id.clone();
         // ponytail: writes <data_dir>/config.yaml; a `--config <other>` file is not written back.
@@ -904,6 +928,72 @@ impl Message<SetModel> for Agents {
             tracing::warn!("config.yaml: {e}");
         }
         Ok(ModelInfo::from(&resolved))
+    }
+}
+
+impl Agents {
+    /// Switch `id`'s effort from its next turn, persist it, and announce it.
+    async fn apply_effort(&self, id: SessionId, actor: &ActorRef<Session>, effort: Option<String>) {
+        let _ = actor
+            .tell(SetPendingEffort(effort.as_deref().and_then(effort_of)))
+            .await;
+        if let Err(e) = self.store.set_effort(id, effort.as_deref()).await {
+            tracing::warn!(session = %id, "set_effort: {e:#}");
+        }
+        self.rt
+            .publish(AgentEvent::EffortChanged {
+                session: id,
+                effort,
+            })
+            .await;
+    }
+}
+
+impl Message<SetEffort> for Agents {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        m: SetEffort,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<(), String> {
+        let target = match m.session {
+            Some(id) => {
+                self.store
+                    .session(id)
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .ok_or_else(|| format!("unknown session {id}"))?
+                    .model
+            }
+            None => self.default_model.clone(),
+        };
+        if let Some(e) = &m.effort {
+            let known = self.catalog.resolve(&target, &*self.configured).ok();
+            match known.and_then(|r| r.model) {
+                Some(model) => model.validate_effort(e)?,
+                None if effort_of(e).is_none() => return Err(format!("unknown effort {e}")),
+                None => {}
+            }
+        }
+        if let Some(id) = m.session {
+            let (_, actor) = self
+                .session(Some(id), None)
+                .await
+                .map_err(|e| format!("{e:#}"))?;
+            self.apply_effort(id, &actor, m.effort.clone()).await;
+        }
+        self.default_effort = m.effort.clone();
+        // Quoted so a bare budget (`"8000"`) stays a YAML string; `~` clears.
+        let value = m
+            .effort
+            .as_ref()
+            .map_or_else(|| "~".to_owned(), |e| format!("\"{e}\""));
+        let path = self.rt.data_dir.join("config.yaml");
+        if let Err(e) = runtime::write_config_value(&path, "agent", "effort", &value) {
+            tracing::warn!("config.yaml: {e}");
+        }
+        Ok(())
     }
 }
 
@@ -1070,12 +1160,16 @@ fn login_provider(ns: &str) -> Result<&'static oauth::Provider, String> {
 
 impl ModelInfo {
     fn new(provider: &str, m: &models::Model) -> Self {
+        let budget = m.budget();
         Self {
             id: format!("{provider}/{}", m.id),
             name: m.name.clone(),
             provider: provider.to_owned(),
             context: m.limit.context,
             reasoning: m.reasoning,
+            efforts: m.efforts(),
+            budget_min: budget.map(|b| b.0),
+            budget_max: budget.and_then(|b| b.1),
         }
     }
 }
@@ -1083,6 +1177,7 @@ impl ModelInfo {
 impl From<&Resolved> for ModelInfo {
     fn from(r: &Resolved) -> Self {
         // `r.model` may be a name-matched neighbour: keep the id the user chose.
+        let budget = r.model.as_ref().and_then(|m| m.budget());
         Self {
             id: r.id.clone(),
             name: r
@@ -1092,6 +1187,9 @@ impl From<&Resolved> for ModelInfo {
             provider: r.provider.clone().unwrap_or_default(),
             context: r.model.as_ref().map_or(0, |m| m.limit.context),
             reasoning: r.model.as_ref().is_some_and(|m| m.reasoning),
+            efforts: r.model.as_ref().map(|m| m.efforts()).unwrap_or_default(),
+            budget_min: budget.map(|b| b.0),
+            budget_max: budget.and_then(|b| b.1),
         }
     }
 }
@@ -1342,6 +1440,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             rt: rt.clone(),
             cfg: cfg.clone(),
             default_model: cfg.model.clone(),
+            default_effort: cfg.effort.clone(),
             compact_style: Arc::new(RwLock::new(cfg.compact_style)),
             catalog: Arc::new(Catalog::load(&rt.data_dir)),
             pool,

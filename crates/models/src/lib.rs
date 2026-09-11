@@ -32,7 +32,7 @@ pub struct Model {
     /// Token limits.
     pub limit: Limit,
     /// USD per million tokens; absent for free/local models.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost: Option<Cost>,
     /// Supports reasoning/thinking.
     #[serde(default)]
@@ -40,6 +40,102 @@ pub struct Model {
     /// Supports tool calls.
     #[serde(default)]
     pub tool_call: bool,
+    /// How reasoning can be steered (models.dev `reasoning_options`).
+    #[serde(default)]
+    pub reasoning_options: Vec<ReasoningOption>,
+}
+
+/// One way a model lets callers steer reasoning.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ReasoningOption {
+    /// Named effort levels (`low`, `high`, ...).
+    Effort {
+        /// Accepted keywords, in the provider's order.
+        values: Vec<String>,
+    },
+    /// Thinking token budget; models.dev omits `min` for some models.
+    BudgetTokens {
+        /// Smallest accepted budget; 0 when upstream omits it.
+        #[serde(default)]
+        min: u32,
+        /// Largest accepted budget when bounded.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max: Option<u32>,
+    },
+    /// Thinking on/off.
+    Toggle,
+}
+
+impl Model {
+    /// Effort keywords the model accepts: the `effort` option's values verbatim, or
+    /// `low|medium|high` for a `budget_tokens`-only model (genai maps them to budgets);
+    /// `off` is prepended when the model has a `toggle`, so toggle-only → `off|on`.
+    pub fn efforts(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        let toggle = self
+            .reasoning_options
+            .iter()
+            .any(|o| matches!(o, ReasoningOption::Toggle));
+        if toggle {
+            out.push("off".to_owned());
+        }
+        let effort = self.reasoning_options.iter().find_map(|o| match o {
+            ReasoningOption::Effort { values } => Some(values.as_slice()),
+            _ => None,
+        });
+        match effort {
+            Some(values) => out.extend(values.iter().filter(|v| *v != "off").cloned()),
+            None if self.budget().is_some() => {
+                out.extend(["low", "medium", "high"].map(str::to_owned));
+            }
+            None if toggle => out.push("on".to_owned()),
+            None => {}
+        }
+        out
+    }
+
+    /// `(min, max)` when the model takes a raw `budget_tokens` and has no `effort`
+    /// keywords. Models with both (Claude 4.6+) are keyword-only here: genai sends
+    /// the budget inside `thinking.adaptive`, which Anthropic rejects.
+    // ponytail: drop the `Effort` exclusion when genai emits budgets as `thinking.enabled` on adaptive models.
+    pub fn budget(&self) -> Option<(u32, Option<u32>)> {
+        let mut budget = None;
+        for o in &self.reasoning_options {
+            match o {
+                ReasoningOption::Effort { .. } => return None,
+                ReasoningOption::BudgetTokens { min, max } => budget = Some((*min, *max)),
+                ReasoningOption::Toggle => {}
+            }
+        }
+        budget
+    }
+
+    /// Ok for a value in [`Self::efforts`] or an integer within [`Self::budget`];
+    /// Err names the model and lists what it accepts.
+    pub fn validate_effort(&self, s: &str) -> Result<(), String> {
+        let efforts = self.efforts();
+        if efforts.iter().any(|e| e == s) {
+            return Ok(());
+        }
+        let budget = self.budget();
+        if let (Ok(n), Some((min, max))) = (s.parse::<u32>(), budget)
+            && n >= min
+            && n <= max.unwrap_or(u32::MAX)
+        {
+            return Ok(());
+        }
+        let mut accepted = efforts.join("|");
+        if let Some((min, max)) = budget {
+            let max = max.map(|m| m.to_string()).unwrap_or_default();
+            let sep = if accepted.is_empty() { "" } else { " " };
+            accepted = format!("{accepted}{sep}or a token budget {min}..{max}");
+        }
+        if accepted.is_empty() {
+            accepted.push_str("no reasoning effort");
+        }
+        Err(format!("{} accepts {accepted}", self.id))
+    }
 }
 
 /// Token limits.
@@ -59,10 +155,10 @@ pub struct Cost {
     /// Output tokens.
     pub output: f64,
     /// Cache read tokens.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_read: Option<f64>,
     /// Cache write tokens.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_write: Option<f64>,
 }
 
@@ -84,6 +180,33 @@ pub struct Resolved {
 pub struct Catalog {
     providers: BTreeMap<String, Provider>,
 }
+
+/// models.dev provider ids we bundle: the ones genai can route (`just models` keeps only these).
+pub const ROUTABLE: &[&str] = &[
+    "google",
+    "openrouter",
+    "togetherai",
+    "fireworks-ai",
+    "moonshotai",
+    "alibaba",
+    "alibaba-cn",
+    "amazon-bedrock",
+    "opencode-go",
+    "github-copilot",
+    "google-vertex",
+    "google-vertex-anthropic",
+    "ollama-cloud",
+    "anthropic",
+    "openai",
+    "groq",
+    "xai",
+    "deepseek",
+    "cohere",
+    "zai",
+    "nebius",
+    "minimax",
+    "aihubmix",
+];
 
 static BUNDLED: LazyLock<BTreeMap<String, Provider>> = LazyLock::new(|| {
     serde_json::from_str(include_str!("../data/models.json"))
@@ -268,6 +391,7 @@ mod tests {
             cost: None,
             reasoning: false,
             tool_call: false,
+            reasoning_options: vec![],
         }
     }
 
@@ -364,9 +488,11 @@ mod tests {
         let c = Catalog {
             providers: BUNDLED.clone(),
         };
+        // Vertex/openrouter spell ids `vendor/model`; `closest` is for limits, so
+        // the slug is what matters.
         let hit = |id: &str| {
             c.closest(id)
-                .map(|m| m.id.as_str())
+                .map(|m| m.id.rsplit('/').next().unwrap_or(&m.id))
                 .unwrap_or("-")
                 .to_owned()
         };
@@ -388,6 +514,69 @@ mod tests {
         assert_eq!(
             hit("anthropic/claude-sonnet-4-5-20250929"),
             "claude-sonnet-4-5-20250929"
+        );
+    }
+
+    fn with_options(opts: Vec<ReasoningOption>) -> Model {
+        Model {
+            reasoning_options: opts,
+            ..model("m", 1)
+        }
+    }
+
+    #[test]
+    fn efforts_verbatim_for_effort_option() {
+        let m = with_options(vec![
+            ReasoningOption::Effort {
+                values: vec!["low".into(), "high".into(), "max".into()],
+            },
+            ReasoningOption::BudgetTokens {
+                min: 1024,
+                max: None,
+            },
+        ]);
+        assert_eq!(m.efforts(), ["low", "high", "max"]);
+        // Anthropic rejects a budget inside `thinking.adaptive`; keyword-only.
+        assert_eq!(m.budget(), None);
+        assert!(m.validate_effort("4096").is_err());
+    }
+
+    #[test]
+    fn efforts_off_on_for_toggle_only() {
+        let m = with_options(vec![ReasoningOption::Toggle]);
+        assert_eq!(m.efforts(), ["off", "on"]);
+        assert!(model("plain", 1).efforts().is_empty());
+    }
+
+    #[test]
+    fn efforts_low_medium_high_for_budget_only() {
+        let m = with_options(vec![ReasoningOption::BudgetTokens {
+            min: 1024,
+            max: Some(81920),
+        }]);
+        assert_eq!(m.efforts(), ["low", "medium", "high"]);
+        assert_eq!(m.budget(), Some((1024, Some(81920))));
+    }
+
+    #[test]
+    fn validate_effort_checks_keywords_and_budget_range() {
+        let m = with_options(vec![
+            ReasoningOption::Toggle,
+            ReasoningOption::BudgetTokens {
+                min: 1024,
+                max: Some(81920),
+            },
+        ]);
+        assert_eq!(m.validate_effort("off"), Ok(()));
+        assert_eq!(m.validate_effort("high"), Ok(()));
+        assert_eq!(m.validate_effort("4096"), Ok(()));
+        let err = m.validate_effort("100").unwrap_err();
+        assert!(err.starts_with("m accepts off|low|medium|high"), "{err}");
+        assert!(err.contains("1024..81920"), "{err}");
+        assert!(m.validate_effort("xhigh").is_err());
+        assert_eq!(
+            model("plain", 1).validate_effort("high").unwrap_err(),
+            "plain accepts no reasoning effort"
         );
     }
 }

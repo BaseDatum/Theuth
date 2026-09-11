@@ -36,6 +36,7 @@ Config (`~/.wth/`, created on first run; details in
   ```yaml
   agent:
     model: anthropic/claude-sonnet-4-5
+    # effort: high        # low|medium|high|… per model (/model lists them); unset = provider default
     compact_at: 0.8        # compact when the context is this full; 0 disables
     compact_style: summary  # summary | cut | snap
     knowledge:             # how the loop uses the store
@@ -59,7 +60,9 @@ Config (`~/.wth/`, created on first run; details in
 - `knowledge/` — the knowledge bundle (OKF markdown, one `<id>.md` per concept, a git repo kept in-process); `knowledge.sqlite` beside it is its search index and can be deleted.
 
 TUI: `/` opens the command list; `/model` picks a model (header above the
-input shows model and context used); `/mcp` sets a server's or tool's risk or turns it off (`l`
+input shows model, effort and context used); `/effort [level|clear]` sets the
+reasoning effort for this session and as the default (`agent.effort`), from
+the next turn; `/mcp` sets a server's or tool's risk or turns it off (`l`
 logs a `login required` server in), `/mcp add <url|json>` installs one,
 `/mcp sync` pulls repos; `/login` picks a provider or MCP server to log in
 to; `/provider add` prompts for name, base url, then API key (an OpenAI-compatible
@@ -98,7 +101,7 @@ saved as a contact on that primary phone, or its messages arrive without a
 number and are dropped. Texts become turns in a per-contact session (👀
 while working, ✅/🛑/❌ when done; a message mid-turn steers it); the slash
 commands mirror the TUI (`/status`, `/new`, `/sessions`, `/resume <id>`,
-`/model`, `/compact`, `/signal allow <n>`, …); tool approvals arrive as a
+`/model`, `/effort`, `/compact`, `/signal allow <n>`, …); tool approvals arrive as a
 message you answer with 👍/👎 or `/approve <code>`. Inbound files land in
 `~/.wth/signal/inbox/`. See
 [`docs/design/09-signal.md`](docs/design/09-signal.md).
