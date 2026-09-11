@@ -9,6 +9,7 @@ use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::pin::pin;
+use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -105,7 +106,7 @@ pub enum JobEvent {
         /// Lossy UTF-8 of the new bytes.
         chunk: String,
     },
-    /// The job ended; the agent injects this as `<job_result>`.
+    /// The job ended; the agent injects this as `<job_result>` unless `inline`.
     #[serde(rename = "JobFinished")]
     Finished {
         /// Owning session.
@@ -120,6 +121,9 @@ pub enum JobEvent {
         secs: u64,
         /// stdout+stderr, truncated to 64 KiB; the agent applies spill.
         output: String,
+        /// The tool call already returned this result (exited within the
+        /// grace window); UIs still count it, the agent must not inject it.
+        inline: bool,
     },
 }
 
@@ -350,7 +354,11 @@ impl Message<Start> for Jobs {
             pending: VecDeque::new(),
         }));
         let cancel = Arc::new(Notify::new());
-        let (done_tx, done_rx) = oneshot::channel();
+        let (done_tx, mut done_rx) = oneshot::channel();
+        // Whoever swaps this first owns the result: the grace waiter (reply
+        // `Running`, the event is injected later) or the task (reply `Done`,
+        // the event is `inline` and not injected).
+        let claimable = Arc::new(AtomicBool::new(true));
         let started = Instant::now();
         let task = tokio::spawn(run(Run {
             rt: self.rt.clone(),
@@ -367,6 +375,7 @@ impl Message<Start> for Jobs {
             log: log.clone(),
             pgids: pgids.clone(),
             cancel: cancel.clone(),
+            claimable: claimable.clone(),
             timeout: self.timeout,
             started,
             done: done_tx,
@@ -395,14 +404,17 @@ impl Message<Start> for Jobs {
         // The grace wait leaves the mailbox so `ListJobs` / `CancelJob` stay live.
         let grace = self.grace;
         tokio::spawn(async move {
-            let done = if grace.is_zero() {
+            // `Some`: the task finished (or died) within grace; `None`: grace elapsed.
+            let within = if grace.is_zero() {
                 None
             } else {
-                tokio::select! {
-                    biased;
-                    r = done_rx => r.ok(),
-                    () = tokio::time::sleep(grace) => None,
-                }
+                tokio::time::timeout(grace, &mut done_rx).await.ok()
+            };
+            let done = match within {
+                Some(r) => r.ok(),
+                None if claimable.swap(false, SeqCst) => None,
+                // The task claimed inline just as grace ran out: its result is ours.
+                None => done_rx.await.ok(),
             };
             tx.send(match done {
                 Some(out) => StartReply::Done(out),
@@ -534,6 +546,7 @@ struct Run {
     log: Arc<Mutex<Log>>,
     pgids: Arc<Mutex<Vec<i32>>>,
     cancel: Arc<Notify>,
+    claimable: Arc<AtomicBool>,
     timeout: Duration,
     started: Instant,
     done: oneshot::Sender<ToolOutput>,
@@ -658,7 +671,9 @@ async fn run(mut j: Run) {
     if !matches!(exit, JobExit::Timeout | JobExit::Killed) {
         (j.put_back)(j.shell);
     }
-    // Row update is queued before anyone can react to the reply or the event.
+    // Claim the result (see `Start`); then the row update is queued before
+    // anyone can react to the reply or the event.
+    let inline = j.claimable.swap(false, SeqCst);
     let _ =
         j.me.tell(Finished {
             session: j.session,
@@ -674,6 +689,7 @@ async fn run(mut j: Run) {
         exit,
         secs,
         output,
+        inline,
     })
     .await;
     let _ = j.done.send(out);
@@ -816,18 +832,58 @@ mod tests {
         jobs: ActorRef<Jobs>,
         session: SessionId,
         dir: PathBuf,
+        /// Every [`JobEvent`] published on this fixture's bus.
+        events: Arc<Mutex<Vec<JobEvent>>>,
+    }
+
+    #[derive(kameo::Actor)]
+    struct Recorder(Arc<Mutex<Vec<JobEvent>>>);
+
+    impl Message<JobEvent> for Recorder {
+        type Reply = ();
+        async fn handle(&mut self, e: JobEvent, _: &mut Context<Self, Self::Reply>) {
+            lock(&self.0).push(e);
+        }
     }
 
     async fn fixture(grace: Duration, timeout: Duration) -> Fx {
         let dir = std::env::temp_dir().join(format!("wth-jobs-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let rt = Runtime::new(figment::Figment::new(), dir.clone());
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let rec = Recorder::spawn_with_mailbox(
+            Recorder(Arc::clone(&events)),
+            runtime::subscriber_mailbox(),
+        );
+        rt.subscribe::<Recorder, JobEvent>(&rec).await;
         let jobs =
             Jobs::spawn_with_mailbox(Jobs::new(rt, grace, timeout), runtime::subscriber_mailbox());
         Fx {
             jobs,
             session: SessionId::new(),
             dir,
+            events,
+        }
+    }
+
+    /// `(exit, output, inline)` of the first `Finished` event, once published.
+    async fn finished(fx: &Fx) -> (JobExit, String, bool) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let hit = lock(&fx.events).iter().find_map(|e| match e {
+                JobEvent::Finished {
+                    exit,
+                    output,
+                    inline,
+                    ..
+                } => Some((exit.clone(), output.clone(), *inline)),
+                _ => None,
+            });
+            if let Some(hit) = hit {
+                return hit;
+            }
+            assert!(Instant::now() < deadline, "no Finished event");
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
     }
 
@@ -875,37 +931,15 @@ mod tests {
         assert_eq!(rows[0].id, JobId("j1".into()));
         assert_eq!(rows[0].state, "exited 0");
         assert_eq!(rows[0].tail, "hi\n");
-    }
-
-    #[derive(kameo::Actor)]
-    struct Recorder(Arc<Mutex<Vec<JobEvent>>>);
-
-    impl Message<JobEvent> for Recorder {
-        type Reply = ();
-        async fn handle(&mut self, e: JobEvent, _: &mut Context<Self, Self::Reply>) {
-            lock(&self.0).push(e);
-        }
+        assert_eq!(
+            finished(&fx).await,
+            (JobExit::Exited(0), "hi\n".to_owned(), true)
+        );
     }
 
     #[tokio::test]
     async fn stub_then_finished_event() {
-        let dir = std::env::temp_dir().join(format!("wth-jobs-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let rt = Runtime::new(figment::Figment::new(), dir.clone());
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let rec = Recorder::spawn_with_mailbox(
-            Recorder(Arc::clone(&events)),
-            runtime::subscriber_mailbox(),
-        );
-        rt.subscribe::<Recorder, JobEvent>(&rec).await;
-        let fx = Fx {
-            jobs: Jobs::spawn_with_mailbox(
-                Jobs::new(rt, Duration::from_millis(200), Duration::from_secs(60)),
-                runtime::subscriber_mailbox(),
-            ),
-            session: SessionId::new(),
-            dir,
-        };
+        let fx = fixture(Duration::from_millis(200), Duration::from_secs(60)).await;
         let StartReply::Running { id, log, .. } = spawn_job(&fx, "sleep 2; echo late").await else {
             panic!("expected Running");
         };
@@ -917,17 +951,14 @@ mod tests {
         assert_eq!(v.state, "exited 0");
         assert!(std::fs::read_to_string(&log).unwrap().contains("late"));
 
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        let events = lock(&events);
-        assert!(matches!(events.first(), Some(JobEvent::Started { .. })));
-        let finished = events
-            .iter()
-            .find_map(|e| match e {
-                JobEvent::Finished { exit, output, .. } => Some((exit.clone(), output.clone())),
-                _ => None,
-            })
-            .expect("Finished event");
-        assert_eq!(finished, (JobExit::Exited(0), "late\n".to_owned()));
+        assert!(matches!(
+            lock(&fx.events).first(),
+            Some(JobEvent::Started { .. })
+        ));
+        assert_eq!(
+            finished(&fx).await,
+            (JobExit::Exited(0), "late\n".to_owned(), false)
+        );
     }
 
     #[tokio::test]

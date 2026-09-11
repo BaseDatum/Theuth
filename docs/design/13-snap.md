@@ -1,7 +1,19 @@
 # 13 — Snap compaction: build plan and the decisions 11 left open
 
-Status: draft v0 · 2026-09-11 · completes `11-compaction-styles.md` §2.3 / §10
+Status: as-built v0 · 2026-09-11 · completes `11-compaction-styles.md` §2.3 / §10
 step 5. Where this doc disagrees with 11, this doc wins; §9 lists the edits.
+Verified live (claude-sonnet-4-5, headless): 11 turns of `read_file` grew a
+session to 40.9k tokens; `compact(session, "snap")` folded 19 messages into
+4 frames (1568×1568 ×3 + 1568×1520, 33–48 KiB each, 226 KB epoch row);
+asked without tools for every `offset` value in the folded span the model
+listed all ten correctly from the images. Frame text is crisp at 11×16.
+Measured bill: the next single call was 34.9k input tokens against ~8.5k
+system + ~8.2k kept tail, so the four frames cost ~18k — **~4.5k per full
+frame**, 1.4× omp's 3,136 figure; `snap::shape("anthropic")` now carries
+the measured number. Auto-compaction was not reached in this run
+(`compact_at: 0.15` on claude-sonnet-4-5's 1M-token window is 150k; the
+session stopped at 41k) — the trigger path is unchanged from 07. Not
+exercised: OpenAI/Gemini frames, manual snap on a text-only model.
 
 11 named `snap` as "a style in v0's contract, a later crate in the build" and
 specified the head shape. Nothing was built: `compact::snap_built()` returns
@@ -56,11 +68,11 @@ serialisation, budget and gates so the implementation has no open choices,
 ## 1. Economics (the part 11 skipped)
 
 Measured per-frame bills (omp's live benchmarks, quoted in the snapcompact
-header; verify once against our own usage line before calling snap done):
+header; the Anthropic row replaced by our own measurement, Status above):
 
 | family | frame | bill / frame | cells (cols × rows) | chars / frame | text-token equiv (÷4) | ratio |
 |---|---|---|---|---|---|---|
-| anthropic | 1568², 11×16 | ~3,136 (28 px patches ×1.05) | 142 × 98 | ~13,900 | ~3,500 | 1.1× |
+| anthropic | 1568², 11×16 | **~4,500 measured** (omp: 3,136) | 142 × 98 | ~13,900 | ~3,500 | 0.8× — costs more than the text it replaces |
 | openai | 1568², 8×22 | ~2,881 (32 px patches ×1.2) | 196 × 71 | ~13,900 | ~3,500 | 1.2× |
 | google | 2048², 8×22 | 1,120 (fixed `media_resolution`) | 256 × 93 | ~23,800 | ~6,000 | 5.3× |
 

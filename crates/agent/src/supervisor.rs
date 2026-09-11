@@ -384,10 +384,16 @@ impl Message<JobEvent> for Agents {
             exit,
             secs,
             output,
+            inline,
         } = ev
         else {
             return;
         };
+        // An inline result was the `shell` tool's own reply; injecting it
+        // too would hand the model the same output twice.
+        if inline {
+            return;
+        }
         // Same cap and dir as tool results in the loop (07 §6).
         let text = spill::cap(
             session,

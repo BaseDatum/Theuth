@@ -1,9 +1,23 @@
 # 14 — Jobs: every process the model starts runs in the background
 
-Status: draft v0 · 2026-09-11 · extends `00-architecture.md` §4 (tools),
-`01-config-and-subagents.md` §2.3 (delivery rules), `08-repl.md` §5
+Status: as-built v0 · 2026-09-11 · extends `00-architecture.md` §4 (tools),
+`01-config-and-subagents.md` §2.3 (delivery rules), `08-repl.md` §4
 (runtime `shell`). Where this doc disagrees with those, this doc wins; §10
-lists the edits.
+lists the edits. Grace window confirmed at 3 s (§8).
+Verified headless (claude-sonnet-4-5, real model): `sleep 8; echo …` → the
+tool returned the §1.1 stub, the model answered and ended the turn, ~8 s
+later `TurnStarted` carried `<job_result id="j1" … exit="0" secs="8">` and
+the model reported the output; a `sleep 5` job inside a six-tool turn was
+injected after the second tool batch (one turn, `<job_result id="j2">`
+persisted between the tool rows) and the model quoted its value; `echo`
+jobs finished inside the grace window returned inline and were **not**
+injected (`JobFinished.inline == true` — found and fixed during smoke: the
+first build delivered them twice); `list_jobs` showed `exited 0` /
+`running` rows with tails; `sh -c 'echo $$; exec sleep 300'` was dead one
+second after RPC `shutdown` (`kill -0` failed, no `ps` row). Not exercised:
+TUI `/jobs` on a pty, Signal `/jobs`, `job_timeout_secs` at 1800 (the 500 ms
+unit test covers the arm), a `<job_result>` arriving for a session whose
+actor was evicted (no eviction exists).
 
 ## What exists today
 
@@ -170,7 +184,8 @@ struct Cancel { session, id }              // ask → Result<(), String>
 pub enum JobEvent {
     Started  { session, id, command, log },
     Output   { session, id, chunk: String },          // coalesced ≥ 500 ms apart
-    Finished { session, id, command, exit: JobExit, secs: u64, output: String /* spill-capped */ },
+    Finished { session, id, command, exit: JobExit, secs: u64, output: String /* spill-capped */,
+               inline: bool /* the tool call already returned this result (exited within grace) */ },
 }
 ```
 
@@ -183,6 +198,10 @@ the shell back to `ShellTool` (last-finished-wins, §0.5) and keeps the
 more than 32, then the oldest go). The `ask` for `Start` resolves when
 either the task exits or `grace` elapses — `tokio::select!` on the
 task's completion oneshot and `sleep(grace)`; the task keeps running.
+Which side owns the result is decided once, by a per-job `AtomicBool`
+swapped by whichever of the grace waiter (reply `Running`) or the task
+(reply `Done`, event `inline: true`) gets there first; `grace: 0` has
+the waiter swap immediately.
 
 Deadline: `sleep(job_timeout)` in the task's `select!`; on fire, `killpg`
 every recorded pgid (today's code) and finish as `Timeout`. `Cancel`
@@ -200,7 +219,8 @@ groups; dependency order stays `runtime ← tools ← knowledge ← agent`.
 ## 3. Delivery (agent)
 
 `Agents` already subscribes to `AgentEvent` for child `TurnFinished`. It
-additionally subscribes to `JobEvent` and on `Finished`:
+additionally subscribes to `JobEvent` and on `Finished` (unless
+`inline`: that result was the tool call's own reply and is not injected):
 
 ```rust
 let text = e.output;                                  // already spill-capped by Jobs
@@ -290,9 +310,11 @@ in the registry *before* `Start`, so a job never runs unapproved.
 4. `jobs::tests::deadline` — `job_timeout: 500ms`, `sleep 5` → `Timeout`.
 5. `jobs::tests::state_last_finished_wins` — `cd /tmp` job, then `pwd` job
    after it finished → `/tmp`.
-6. `supervisor::tests::job_result_starts_a_turn_when_idle` — publish a
-   `Finished` for an idle session → `TurnStarted` whose text is the
-   wrapper; in-flight session → no `TurnStarted`, queue length 1.
+6. `supervisor::tests::job_result_wrapper_escapes_and_names_exit` — the
+   wrapper's attribute escaping, `exit` wording, 120-char command cap. The
+   idle→turn / in-flight→queue behaviour is the existing `inject` path
+   (01 §2.3) and was verified headless (Status) rather than unit-tested:
+   an `Agents` fixture needs a store, client, catalog and pool.
 7. `tui::model::tests::injected_parses_job_result` and `/jobs kill j3` →
    `Command::CancelJob`.
 8. Headless smoke (07 §12.5 shape): real model, "run `sleep 8; echo done`

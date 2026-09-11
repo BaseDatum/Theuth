@@ -556,8 +556,8 @@ Each phase ends with a runnable check, not a test suite.
 | 4 | Tauri frontend over rpc | out of scope for this doc | not started; command surface ready (§8); `just ts` emits `bindings/*.ts` |
 | 5 | course correction (12) | docs and tree agree | done 2026-09-11 (12 §8 lib.rs re-exports stays opportunistic) |
 | 6 | steering ids + undo/redo | 01 §2.3, 07 §8.8 | done 2026-09-11 |
-| 7 | snap compaction (13) | `/compact snap` on a vision model; a fact only in the archive is recalled | planned 2026-09-11 |
-| 8 | background jobs (14) | `shell` returns within grace; `<job_result>` starts a turn; no orphans at shutdown | planned 2026-09-11 |
+| 7 | snap compaction (13) | `/compact snap` on a vision model; a fact only in the archive is recalled | done 2026-09-11 (4 frames, 10/10 offsets recalled without tools; ~4.5k tokens/frame measured) |
+| 8 | background jobs (14) | `shell` returns within grace; `<job_result>` starts a turn; no orphans at shutdown | done 2026-09-11 (stub → wake turn, mid-turn inject, inline once, `sleep 300` dead after shutdown) |
 
 Known gaps carried forward: cancel/error paths in the loop are code-reviewed,
 not smoke-tested; the `Jobs` actor kills every process group on shutdown

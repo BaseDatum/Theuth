@@ -2829,6 +2829,7 @@ mod tests {
             exit: tools::JobExit::Killed,
             secs: 2,
             output: String::new(),
+            inline: false,
         }));
         assert!(m.status().ends_with("1 job(s)"), "{}", m.status());
         m.apply_agent(AgentEvent::MessageDelivered {

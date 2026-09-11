@@ -88,11 +88,13 @@ pub fn shape(adapter: &str) -> Shape {
             frame: 2048,
             tokens_per_frame: 1120,
         },
+        // Measured 2026-09-11 on claude-sonnet-4-5: four 1568² frames billed
+        // ~18k input tokens (13 §1), not the 3,136 the 28 px patch formula gives.
         _ => Shape {
             cell_w: 11,
             cell_h: 16,
             frame: 1568,
-            tokens_per_frame: 3136,
+            tokens_per_frame: 4500,
         },
     }
 }
