@@ -180,7 +180,7 @@ switches rewrite `Ask` to `Allow` and nothing else: the persisted
 session: None }`) and the in-memory per-session set (`SetApprovals {
 session: Some(id) }`, inherited by subagents through `SetParent`). `Deny` is
 never rewritten. MCP config assigns a tool's `Risk` or hides it; it is not
-a second policy. *(Target; today `ErasedTool::gate` still exists, see 12 §5.)*
+a second policy (12 §5; MCP risk comes from the server's tool annotations).
 
 TUI: `/approvals [on|off] [always]`; RPC: `set_approvals`; header shows
 `approvals off` while either switch is off.
@@ -531,7 +531,7 @@ Each phase ends with a runnable check, not a test suite.
 | 2 | skills | skill body appears in prompt on load | done (`docs/skills.md`) |
 | 3 | subagents, steering polish | parent receives child result as tool output | superseded by 01 §2 (detached) |
 | 4 | Tauri frontend over rpc | out of scope for this doc | not started; gated on §8 (one command list); `just ts` emits `bindings/*.ts` |
-| 5 | course correction (12) | docs and tree agree | in progress |
+| 5 | course correction (12) | docs and tree agree | done 2026-09-11 (12 §8 lib.rs re-exports stays opportunistic) |
 
 Known gaps carried forward: cancel/error paths in the loop are code-reviewed,
 not smoke-tested; a `setsid` child escapes `killpg`; no upstream PR yet for the
