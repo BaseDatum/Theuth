@@ -91,6 +91,8 @@ grep-searcher = "0.1.17"
 presage = { git = "https://github.com/whisperfish/presage", rev = "c363731038acf176ab6b5ee0600d7de85f8a2da8", features = ["cdsi"] }
 presage-store-sqlite = { git = "https://github.com/whisperfish/presage", rev = "c363731038acf176ab6b5ee0600d7de85f8a2da8" }
 qrcode = { version = "0.14", default-features = false }
+# Snap compaction frames (design doc 13 §0.4): 8-bit grayscale encode only; not `image`.
+png = "0.17"
 
 [workspace.lints.rust]
 missing_docs = "warn"

@@ -7,7 +7,8 @@
 //! - commands on the `"tools"` actor ([`ToolRegistry`]): [`ListTools`], [`Invoke`], [`RegisterTool`], [`UnregisterTool`]
 //! - commands on the `"approval"` actor ([`Approval`]): [`Resolve`]
 //! - commands on the `"mcp"` actor ([`Mcp`]): [`ListServers`], [`SetGate`], [`Restart`], [`AddServer`], [`RemoveServer`], [`AddRepo`], [`SyncMcp`], [`McpLogin`], [`McpLogout`]
-//! - events: [`ApprovalRequested`], [`ApprovalResolved`]
+//! - commands on the `"jobs"` actor ([`Jobs`]): [`ListJobs`], [`CancelJob`]
+//! - events: [`ApprovalRequested`], [`ApprovalResolved`], [`JobEvent`]
 
 use std::sync::Arc;
 
@@ -20,11 +21,13 @@ use serde::{Deserialize, Serialize};
 pub mod approval;
 pub mod fs;
 pub mod git;
+pub mod jobs;
 pub mod mcp;
 pub mod registry;
 pub mod shell;
 
 pub use approval::{Approval, ApprovalId, ApprovalRequested, ApprovalResolved, Decision, Resolve};
+pub use jobs::{CancelJob, JOBS_ACTOR, JobEvent, JobExit, JobId, JobView, Jobs, ListJobs};
 pub use mcp::{
     AddRepo, AddServer, ListServers, Mcp, McpAuth, McpLogin, McpLogout, McpProgress, McpServer,
     McpToolInfo, Progress, RemoveServer, RepoInfo, Restart, SetGate, SyncMcp,
@@ -244,8 +247,11 @@ pub struct ToolsConfig {
     pub approvals: bool,
     /// Seconds to wait for a human before denying.
     pub approval_timeout_secs: u64,
-    /// Seconds a shell command may run before its process group is killed.
-    pub shell_timeout_secs: u64,
+    /// Seconds `shell` waits for a job to exit before replying with a stub
+    /// instead of the output; `0` makes every command a stub.
+    pub job_grace_secs: u64,
+    /// Seconds a job may run before its process group is killed.
+    pub job_timeout_secs: u64,
 }
 
 impl Default for ToolsConfig {
@@ -254,7 +260,8 @@ impl Default for ToolsConfig {
             policy: Policy::default(),
             approvals: true,
             approval_timeout_secs: 300,
-            shell_timeout_secs: 120,
+            job_grace_secs: 3,
+            job_timeout_secs: 1800,
         }
     }
 }

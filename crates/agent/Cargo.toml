@@ -33,6 +33,7 @@ monty-pool = { workspace = true }
 monty-types = { workspace = true }
 monty-fs = { workspace = true }
 regex = { workspace = true }
+png = { workspace = true }
 
 [dev-dependencies]
 figment = { workspace = true }

@@ -49,7 +49,8 @@ tools:
   policy: { read_only: allow, mutating: ask, destructive: ask }
   approvals: true   # false: never prompt (`/approvals off always` writes this)
   approval_timeout_secs: 300
-  shell_timeout_secs: 120
+  job_grace_secs: 3
+  job_timeout_secs: 1800
 rpc:
   listen: 127.0.0.1:7777
 ```

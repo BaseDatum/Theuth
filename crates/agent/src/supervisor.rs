@@ -962,6 +962,7 @@ impl Message<ListModels> for Agents {
                         ModelInfo {
                             context: near.map_or(0, |n| n.limit.context),
                             reasoning: near.is_some_and(|n| n.reasoning),
+                            image: near.is_some_and(|n| n.image),
                             efforts: near.map(|n| n.efforts()).unwrap_or_default(),
                             budget_min: near.and_then(|n| n.budget()).map(|b| b.0),
                             budget_max: near.and_then(|n| n.budget()).and_then(|b| b.1),
@@ -1263,6 +1264,7 @@ impl ModelInfo {
             provider: provider.to_owned(),
             context: m.limit.context,
             reasoning: m.reasoning,
+            image: m.image,
             efforts: m.efforts(),
             budget_min: budget.map(|b| b.0),
             budget_max: budget.and_then(|b| b.1),
@@ -1283,6 +1285,7 @@ impl From<&Resolved> for ModelInfo {
             provider: r.provider.clone().unwrap_or_default(),
             context: r.model.as_ref().map_or(0, |m| m.limit.context),
             reasoning: r.model.as_ref().is_some_and(|m| m.reasoning),
+            image: r.model.as_ref().is_some_and(|m| m.image),
             efforts: r.model.as_ref().map(|m| m.efforts()).unwrap_or_default(),
             budget_min: budget.map(|b| b.0),
             budget_max: budget.and_then(|b| b.1),

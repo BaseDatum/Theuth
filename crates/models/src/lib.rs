@@ -40,6 +40,9 @@ pub struct Model {
     /// Supports tool calls.
     #[serde(default)]
     pub tool_call: bool,
+    /// Accepts image input (models.dev `modalities.input` contains `"image"`); false when unknown.
+    #[serde(default)]
+    pub image: bool,
     /// How reasoning can be steered (models.dev `reasoning_options`).
     #[serde(default)]
     pub reasoning_options: Vec<ReasoningOption>,
@@ -391,6 +394,7 @@ mod tests {
             cost: None,
             reasoning: false,
             tool_call: false,
+            image: false,
             reasoning_options: vec![],
         }
     }
@@ -515,6 +519,8 @@ mod tests {
             hit("anthropic/claude-sonnet-4-5-20250929"),
             "claude-sonnet-4-5-20250929"
         );
+        // Vision flag survives the trim (design doc 13 §3).
+        assert!(c.providers["anthropic"].models["claude-opus-4-6"].image);
     }
 
     fn with_options(opts: Vec<ReasoningOption>) -> Model {

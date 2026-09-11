@@ -1,12 +1,15 @@
 //! `just models` pipes models.dev `api.json` through this: keep [`models::ROUTABLE`]
 //! providers and re-emit them via the crate's own serde types, so the projection IS the
-//! Rust structs (design doc 02 §1) and cannot drift from what the catalog reads.
+//! Rust structs (design doc 02 §1) and cannot drift from what the catalog reads. The one
+//! upstream field the structs do not mirror is `modalities`: it is folded into
+//! [`models::Model::image`] here (design doc 13 §3).
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::process::ExitCode;
 
 use models::{Provider, ROUTABLE};
+use serde::Deserialize;
 
 fn main() -> ExitCode {
     let mut raw = String::new();
@@ -27,13 +30,19 @@ fn main() -> ExitCode {
         if !ROUTABLE.contains(&id.as_str()) {
             continue;
         }
-        match serde_json::from_value::<Provider>(value) {
-            Ok(p) => kept.insert(id, p),
+        let mut p = match Provider::deserialize(&value) {
+            Ok(p) => p,
             Err(e) => {
                 eprintln!("trim: provider {id}: {e}");
                 return ExitCode::FAILURE;
             }
         };
+        for (mid, m) in &mut p.models {
+            m.image = value["models"][mid.as_str()]["modalities"]["input"]
+                .as_array()
+                .is_some_and(|inputs| inputs.iter().any(|v| v == "image"));
+        }
+        kept.insert(id, p);
     }
     let mut out = serde_json::to_string_pretty(&kept).expect("catalog serializes");
     out.push('\n');

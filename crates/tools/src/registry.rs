@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use crate::approval::{Approval, Decision, RequestApproval};
 use crate::{
     APPROVAL_ACTOR, DynTool, Policy, PolicyAction, REGISTRY_ACTOR, ToolCall, ToolCx, ToolOutput,
-    ToolSpec, ToolsConfig, fs, shell,
+    ToolSpec, ToolsConfig, fs, jobs, shell,
 };
 
 /// The registry actor. Look up with `ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR)`.
@@ -316,7 +316,7 @@ pub(crate) fn config(rt: &Runtime) -> anyhow::Result<ToolsConfig> {
     }
 }
 
-/// Spawn registry + approval actors and register builtins. Returns the
+/// Spawn registry, approval and jobs actors and register builtins. Returns the
 /// registry so the caller can attach further tool sources (MCP).
 pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
     let cfg = config(rt)?;
@@ -326,11 +326,16 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
         runtime::subscriber_mailbox(),
     );
     approval.register(APPROVAL_ACTOR)?;
+    let jobs = jobs::start(
+        rt,
+        Duration::from_secs(cfg.job_grace_secs),
+        Duration::from_secs(cfg.job_timeout_secs),
+    )?;
 
-    let builtins: [DynTool; 6] = [
-        Arc::new(shell::ShellTool::new(Duration::from_secs(
-            cfg.shell_timeout_secs,
-        ))),
+    let builtins: [DynTool; 8] = [
+        Arc::new(shell::ShellTool::new(jobs.clone())),
+        Arc::new(jobs::JobsTool(jobs.clone())),
+        Arc::new(jobs::CancelJobTool(jobs)),
         Arc::new(fs::ReadFile),
         Arc::new(fs::WriteFile),
         Arc::new(fs::ListDir),

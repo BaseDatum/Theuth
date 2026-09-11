@@ -23,6 +23,7 @@ pub mod peers;
 pub mod providers;
 pub mod repl;
 pub mod skills;
+pub mod snap;
 pub mod spill;
 pub mod store;
 pub mod supervisor;
@@ -222,6 +223,8 @@ pub struct ModelInfo {
     pub context: u32,
     /// Supports reasoning.
     pub reasoning: bool,
+    /// Accepts image input (catalog); false when unknown.
+    pub image: bool,
     /// Effort keywords the model accepts (catalog); empty when unknown.
     pub efforts: Vec<String>,
     /// Smallest `budget_tokens` value when the model takes one.

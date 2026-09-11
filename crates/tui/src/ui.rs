@@ -644,6 +644,7 @@ mod tests {
                 provider: "amazon-bedrock".into(),
                 context: 200_000,
                 reasoning: false,
+                image: false,
                 efforts: Vec::new(),
                 budget_min: None,
                 budget_max: None,

@@ -29,10 +29,14 @@ minus dropped fields):
     "models": { "claude-sonnet-4-5": { "id": "claude-sonnet-4-5", "name": "Claude Sonnet 4.5",
         "limit": { "context": 200000, "output": 64000 },
         "cost": { "input": 3, "output": 15, "cache_read": 0.3, "cache_write": 3.75 },
-        "reasoning": true, "tool_call": true,
+        "reasoning": true, "tool_call": true, "image": true,
         "reasoning_options": [{ "type": "effort", "values": ["low", "medium", "high"] },
                               { "type": "budget_tokens", "min": 1024, "max": 32000 }] } } } }
 ```
+
+`image` is the one field not copied verbatim: `trim` folds models.dev
+`modalities.input ∋ "image"` into it (`#[serde(default)]`, so a silent
+catalog means `false`); it gates snap compaction (13 §3).
 
 `include_str!` + `serde_json` on first use (`LazyLock`). Measured: full
 api.json 4.5 MB; trimmed to these fields 1.8 MB; filtered to routable
@@ -88,7 +92,7 @@ predicate.
 pub struct Catalog { /* providers: BTreeMap<String, Provider> */ }
 pub struct Provider { pub id: String, pub name: String, pub env: Vec<String>, pub models: BTreeMap<String, Model> }
 pub struct Model { pub id: String, pub name: String, pub limit: Limit, pub cost: Option<Cost>, pub reasoning: bool, pub tool_call: bool,
-                   #[serde(default)] pub reasoning_options: Vec<ReasoningOption> }
+                   #[serde(default)] pub image: bool, #[serde(default)] pub reasoning_options: Vec<ReasoningOption> }
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ReasoningOption { Effort { values: Vec<String> }, BudgetTokens { min: u32, max: Option<u32> }, Toggle }
 pub const ROUTABLE: &[&str]; // models.dev provider ids the trim keeps
@@ -185,7 +189,7 @@ sent). `subagents.effort` is the child default; `None` → `agent.effort`.
 pub struct AgentConfig { …, pub effort: Option<String> }
 pub struct SubagentsConfig { …, pub effort: Option<String> }
 pub struct SetEffort { pub session: Option<SessionId>, pub effort: Option<String> } // ask → Result<(), String>
-pub struct ModelInfo { …, pub efforts: Vec<String>, pub budget_min: Option<u32>, pub budget_max: Option<u32> }
+pub struct ModelInfo { …, pub image: bool, pub efforts: Vec<String>, pub budget_min: Option<u32>, pub budget_max: Option<u32> }
 pub struct SessionSummary { …, pub effort: Option<String> }
 pub struct Loaded { …, pub model: String, pub effort: Option<String> }
 pub enum AgentEvent { …, EffortChanged { session: SessionId, effort: Option<String> } }
