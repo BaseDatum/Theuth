@@ -126,12 +126,12 @@ pub(crate) enum CompactReason {
 }
 
 /// Rasterizer crate is a later slice (design doc 11 §2.3).
-pub fn snap_built() -> bool {
+pub(crate) fn snap_built() -> bool {
     false
 }
 
 /// Pick the style that will actually run (design doc 11 §3.1).
-pub fn resolve(
+pub(crate) fn resolve(
     r#override: Option<CompactStyle>,
     cfg: CompactStyle,
     reason: CompactReason,
