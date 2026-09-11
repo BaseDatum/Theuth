@@ -1,6 +1,10 @@
-//! Compaction: cut rules, summariser instruction, overflow classifier (design doc 07 §8).
+//! Compaction: styles, cut rules, summariser instruction, overflow classifier (design docs 07 §8, 11).
+
+use std::fmt;
+use std::str::FromStr;
 
 use genai::chat::{ChatMessage, ChatRole};
+use serde::{Deserialize, Serialize};
 
 /// Appended as one user message to the live frame; the summary replaces
 /// everything above it in the next epoch (07 §8.3).
@@ -63,6 +67,122 @@ pub fn keep_from(history: &[ChatMessage], limit: u32) -> usize {
 pub fn is_overflow(err: &str) -> bool {
     let e = err.to_lowercase();
     OVERFLOW_NEEDLES.iter().any(|n| e.contains(n))
+}
+
+/// How a compaction builds the new epoch head (design doc 11).
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    schemars::JsonSchema,
+    kameo::Reply,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "lowercase")]
+pub enum CompactStyle {
+    /// Cache-hot LLM fold (07 §8.3). The default.
+    #[default]
+    Summary,
+    /// Drop the folded span, keep the tail, no model call.
+    Cut,
+    /// Rasterize the folded span to images. Named in v0; not built.
+    Snap,
+}
+
+impl fmt::Display for CompactStyle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Summary => "summary",
+            Self::Cut => "cut",
+            Self::Snap => "snap",
+        })
+    }
+}
+
+impl FromStr for CompactStyle {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "summary" => Ok(Self::Summary),
+            "cut" => Ok(Self::Cut),
+            "snap" => Ok(Self::Snap),
+            other => Err(format!("unknown compact style: {other}")),
+        }
+    }
+}
+
+/// Why compaction ran. Auto/overflow may rewrite `snap` to `cut`; manual snap errors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CompactReason {
+    Auto,
+    Manual,
+    Overflow,
+}
+
+/// Rasterizer crate is a later slice (design doc 11 §2.3).
+pub fn snap_built() -> bool {
+    false
+}
+
+/// Pick the style that will actually run (design doc 11 §3.1).
+pub fn resolve(
+    r#override: Option<CompactStyle>,
+    cfg: CompactStyle,
+    reason: CompactReason,
+) -> Result<CompactStyle, String> {
+    let requested = r#override.unwrap_or(cfg);
+    if requested == CompactStyle::Snap && !snap_built() {
+        if reason == CompactReason::Manual {
+            Err("snap not built".into())
+        } else {
+            Ok(CompactStyle::Cut)
+        }
+    } else {
+        Ok(requested)
+    }
+}
+
+/// `<context_summary epoch="n" style="…">` wrapper (design doc 11 §2).
+pub fn wrap_head(
+    n: u32,
+    style: CompactStyle,
+    body: &str,
+    parts: impl IntoIterator<Item = String>,
+) -> String {
+    let mut text = format!("<context_summary epoch=\"{n}\" style=\"{style}\">\n{body}");
+    for part in parts {
+        if !part.is_empty() {
+            text.push('\n');
+            text.push_str(&part);
+        }
+    }
+    text.push_str("\n</context_summary>");
+    text
+}
+
+/// Style declared on a head; missing or unknown → [`CompactStyle::Summary`].
+pub fn style_of_head(text: &str) -> CompactStyle {
+    let Some(rest) = text.trim_start().strip_prefix("<context_summary") else {
+        return CompactStyle::Summary;
+    };
+    let Some(tag_end) = rest.find('>') else {
+        return CompactStyle::Summary;
+    };
+    let attrs = &rest[..tag_end];
+    let Some(i) = attrs.find("style=\"") else {
+        return CompactStyle::Summary;
+    };
+    let v = &attrs[i + 7..];
+    let Some(j) = v.find('"') else {
+        return CompactStyle::Summary;
+    };
+    v[..j].parse().unwrap_or(CompactStyle::Summary)
 }
 
 #[cfg(test)]
@@ -148,5 +268,48 @@ mod tests {
             "This model's maximum context length is 128000 tokens"
         ));
         assert!(!is_overflow("rate limit exceeded"));
+    }
+
+    #[test]
+    fn resolve_table() {
+        use CompactReason::*;
+        use CompactStyle::*;
+        assert_eq!(resolve(None, Summary, Manual).unwrap(), Summary);
+        assert_eq!(resolve(None, Summary, Auto).unwrap(), Summary);
+        assert_eq!(resolve(Some(Cut), Summary, Manual).unwrap(), Cut);
+        assert_eq!(resolve(None, Snap, Auto).unwrap(), Cut);
+        assert_eq!(resolve(Some(Snap), Summary, Auto).unwrap(), Cut);
+        assert_eq!(resolve(None, Snap, Overflow).unwrap(), Cut);
+        assert_eq!(
+            resolve(Some(Snap), Summary, Manual).unwrap_err(),
+            "snap not built"
+        );
+        assert_eq!(resolve(None, Snap, Manual).unwrap_err(), "snap not built");
+    }
+
+    #[test]
+    fn wrap_head_has_style() {
+        let h = wrap_head(
+            3,
+            CompactStyle::Cut,
+            "folded 2 messages; no summary. Recent turns follow verbatim.",
+            [String::from("Roster: a")],
+        );
+        assert!(h.contains("style=\"cut\""));
+        assert!(h.starts_with("<context_summary epoch=\"3\" style=\"cut\">"));
+        assert!(h.contains("Roster: a"));
+        assert!(h.ends_with("</context_summary>"));
+    }
+
+    #[test]
+    fn style_of_head_missing_attr_is_summary() {
+        assert_eq!(
+            style_of_head("<context_summary epoch=\"1\">\nold\n</context_summary>"),
+            CompactStyle::Summary
+        );
+        assert_eq!(
+            style_of_head(&wrap_head(2, CompactStyle::Cut, "x", Vec::<String>::new())),
+            CompactStyle::Cut
+        );
     }
 }

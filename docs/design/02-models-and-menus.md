@@ -169,8 +169,8 @@ description. ↑/↓ moves, Tab completes the name (plus a trailing space when i
 takes an argument), Enter runs it (or completes when the highlighted command
 needs an argument), Esc closes without clearing the input. Commands:
 `/model [id]`, `/mcp`, `/agents`, `/focus <name>`, `/sessions`,
-`/resume <id>`, `/new`, `/cancel`, `/compact` (fold the conversation into a
-summary, `07 §8.6`), `/knowledge [query | history [id] | restore <id>
+`/resume <id>`, `/new`, `/cancel`, `/compact [summary|cut|snap|style …]`
+(11), `/knowledge [query | history [id] | restore <id>
 [commit] | harvest]` (the knowledge bundle: list, search, git history,
 restore, harvest now — `10 §8`), `/quit`.
 

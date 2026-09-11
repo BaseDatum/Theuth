@@ -518,6 +518,7 @@ fn entry(e: &Entry, spinner: &str) -> AnyElement<'static> {
         // (history only) hidden until Ctrl+O.
         Entry::Compacted {
             epoch,
+            style,
             summary,
             expanded,
         } => {
@@ -530,7 +531,7 @@ fn entry(e: &Entry, spinner: &str) -> AnyElement<'static> {
             };
             element! {
                 View(flex_direction: FlexDirection::Column, border_style: BorderStyle::Round, border_color: PROMPT, padding_left: 1, padding_right: 1, margin_top: 1) {
-                    Text(content: format!("── context compacted (epoch {epoch}) ──{hint}"), color: PROMPT, weight: Weight::Bold)
+                    Text(content: format!("── context compacted (epoch {epoch} · {style}) ──{hint}"), color: PROMPT, weight: Weight::Bold)
                     #(summary.as_ref().filter(|_| *expanded).map(|t| element!(View(flex_direction: FlexDirection::Column, margin_top: 1) {
                         #(t.view().lines().map(line))
                     })))

@@ -6,12 +6,12 @@ use std::fmt::Display;
 
 use agent::knowledge::{Change, Concept, HarvestResult, History, Hit, Meta, Put, Source};
 use agent::{
-    AddProvider, AddSkill, AddSkillRepo, Agents, Cancel, Compact, Harvest, KnowledgeDelete,
-    KnowledgeGet, KnowledgeHistory, KnowledgeList, KnowledgePut, KnowledgeRestore, KnowledgeSearch,
-    ListLogins, ListModels, ListProviders, ListSessions, ListSkills, LoadSession, LoadSkill,
-    Loaded, Login, LoginInfo, Logout, ModelInfo, ProviderInfo, RemoveProvider, RemoveSkill,
-    RemoveSkillRepo, SendInput, SessionSummary, SetModel, ShowPrompt, SkillBody, SkillMeta, Steer,
-    SyncSkills,
+    AddProvider, AddSkill, AddSkillRepo, Agents, Cancel, Compact, CompactStyle, GetCompactStyle,
+    Harvest, KnowledgeDelete, KnowledgeGet, KnowledgeHistory, KnowledgeList, KnowledgePut,
+    KnowledgeRestore, KnowledgeSearch, ListLogins, ListModels, ListProviders, ListSessions,
+    ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginInfo, Logout, ModelInfo, ProviderInfo,
+    RemoveProvider, RemoveSkill, RemoveSkillRepo, SendInput, SessionSummary, SetCompactStyle,
+    SetModel, ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills,
 };
 use jsonrpsee::core::{RpcResult, SubscriptionResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
@@ -51,10 +51,17 @@ pub trait Api {
     /// Abort the in-flight turn.
     #[method(name = "cancel")]
     async fn cancel(&self, session: SessionId) -> RpcResult<()>;
-    /// Fold the conversation into a summary now (design doc 07 §8.6); returns
-    /// the new epoch. Refused while a turn is running.
+    /// Fold the conversation now (design doc 07 §8.6 / 11 §4.2); returns the
+    /// new epoch. `style: None` uses the configured default. Snap is not built
+    /// yet. Refused while a turn is running.
     #[method(name = "compact")]
-    async fn compact(&self, session: SessionId) -> RpcResult<u32>;
+    async fn compact(&self, session: SessionId, style: Option<CompactStyle>) -> RpcResult<u32>;
+    /// The live default compaction style (`agent.compact_style`).
+    #[method(name = "compact_style")]
+    async fn compact_style(&self) -> RpcResult<CompactStyle>;
+    /// Persist `agent.compact_style` and update live sessions.
+    #[method(name = "set_compact_style")]
+    async fn set_compact_style(&self, style: CompactStyle) -> RpcResult<()>;
     /// Every session, newest first.
     #[method(name = "list_sessions")]
     async fn list_sessions(&self) -> RpcResult<Vec<SessionSummary>>;
@@ -273,8 +280,16 @@ impl ApiServer for Server {
         ask::<Agents, _>(agent::AGENT_ACTOR, Cancel { session }).await
     }
 
-    async fn compact(&self, session: SessionId) -> RpcResult<u32> {
-        ask::<Agents, _>(agent::AGENT_ACTOR, Compact { session }).await
+    async fn compact(&self, session: SessionId, style: Option<CompactStyle>) -> RpcResult<u32> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, Compact { session, style }).await
+    }
+
+    async fn compact_style(&self) -> RpcResult<CompactStyle> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, GetCompactStyle).await
+    }
+
+    async fn set_compact_style(&self, style: CompactStyle) -> RpcResult<()> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, SetCompactStyle { style }).await
     }
 
     async fn list_sessions(&self) -> RpcResult<Vec<SessionSummary>> {

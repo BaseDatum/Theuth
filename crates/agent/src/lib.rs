@@ -3,7 +3,7 @@
 //! message to sqlite; publishes [`AgentEvent`] for any UI.
 //!
 //! - commands on the `"agent"` actor ([`Agents`]): [`SendInput`], [`Steer`],
-//!   [`Cancel`], [`ListSessions`], [`LoadSession`], [`ListChildren`],
+//!   [`Cancel`], [`Compact`], [`SetCompactStyle`], [`ListSessions`], [`LoadSession`], [`ListChildren`],
 //!   [`ListModels`], [`SetModel`], [`ShowPrompt`], [`ListSkills`],
 //!   [`LoadSkill`], [`AddSkill`], [`RemoveSkill`], [`AddSkillRepo`],
 //!   [`RemoveSkillRepo`], [`SyncSkills`], [`ListLogins`], [`Login`], [`Logout`],
@@ -27,6 +27,7 @@ pub mod store;
 pub mod supervisor;
 pub mod todo;
 
+pub use compact::CompactStyle;
 pub use supervisor::Agents;
 
 /// Registry name of the [`Agents`] supervisor actor.
@@ -62,11 +63,26 @@ pub struct Cancel {
 
 /// `ask` → `Result<u32 /* epoch */, String>`: compact `session` now,
 /// threshold ignored (design doc 07 §8.6). Refused while a turn is running.
+/// `style: None` uses the configured default (design doc 11).
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Compact {
     /// Session to compact.
     pub session: SessionId,
+    /// One-shot style; `None` = configured default.
+    #[serde(default)]
+    pub style: Option<CompactStyle>,
 }
+
+/// `ask` → `Result<(), String>`: persist `agent.compact_style` and update live sessions.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct SetCompactStyle {
+    /// New default style.
+    pub style: CompactStyle,
+}
+
+/// `ask` → [`CompactStyle`]: the live default style.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct GetCompactStyle;
 
 /// `ask` → `Result<Vec<knowledge::Hit>, String>`: search the knowledge bundle (design doc 10 §8).
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -416,6 +432,9 @@ pub enum HistoryEntry {
         epoch: u32,
         /// The summary text the model works from.
         summary: String,
+        /// How the head was built; missing on old rows → summary.
+        #[serde(default)]
+        style: CompactStyle,
     },
 }
 
@@ -571,6 +590,8 @@ pub enum AgentEvent {
         before: u32,
         /// Messages folded into the summary.
         folded: u32,
+        /// Style actually used (cut if the summariser fell back).
+        style: CompactStyle,
     },
     /// A concept was written or removed (design doc 10 §8). Global: not tied to a session.
     KnowledgeChanged {
@@ -637,6 +658,9 @@ pub struct AgentConfig {
     /// Auto-compaction threshold as a fraction of the model's context window;
     /// `0` disables it (design doc 07 §8.1).
     pub compact_at: f32,
+    /// How auto-compaction, overflow, and a bare `/compact` fold history:
+    /// `summary` | `cut` | `snap`.
+    pub compact_style: CompactStyle,
     /// Knowledge bundle (design doc 10).
     pub knowledge: knowledge::KnowledgeConfig,
 }
@@ -649,6 +673,7 @@ impl Default for AgentConfig {
             max_tool_output_chars: 32_000,
             subagents: SubagentsConfig::default(),
             compact_at: 0.8,
+            compact_style: CompactStyle::Summary,
             knowledge: knowledge::KnowledgeConfig::default(),
         }
     }

@@ -8,7 +8,7 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use futures::future::join_all;
@@ -34,7 +34,9 @@ use crate::peers::SpawnSubagentTool;
 use crate::repl::{self, Repl, RunCx};
 use crate::store::Store;
 use crate::supervisor::{Auth, PeerContext, Roster};
-use crate::{AGENT_ACTOR, AgentConfig, AgentEvent, Agents, Usage, compact, spill, todo};
+use crate::{
+    AGENT_ACTOR, AgentConfig, AgentEvent, Agents, CompactStyle, Usage, compact, spill, todo,
+};
 
 /// Characters of tool output shown in [`AgentEvent::ToolCallFinished`].
 const DISPLAY_OUTPUT_CHARS: usize = 2000;
@@ -64,7 +66,10 @@ pub struct SwitchModel(pub Resolved);
 /// `ask` → `Result<u32 /* new epoch */, String>`: compact now, threshold
 /// ignored (07 §8.6). `Err("turn in flight")` while a turn runs;
 /// `Err("nothing to compact")` when nothing can be folded.
-pub struct CompactNow;
+pub struct CompactNow {
+    /// One-shot style; `None` = configured default.
+    pub style: Option<CompactStyle>,
+}
 
 /// `ask` → `Result<HarvestResult, String>`: harvest the finished frame now
 /// (10 §5.2). `Err("turn in flight")` while a turn runs.
@@ -148,6 +153,8 @@ struct Shared {
     /// with the running turn so [`SwitchModel`] applies mid-turn.
     model: Arc<Mutex<(Resolved, Option<String>)>>,
     cfg: Arc<AgentConfig>,
+    /// Live default style; shared with the supervisor so [`crate::SetCompactStyle`] is in-process.
+    compact_style: Arc<RwLock<CompactStyle>>,
     store: Store,
     client: Client,
     auth: Auth,
@@ -173,6 +180,7 @@ impl Session {
         model: (Resolved, Option<String>),
         state: SessionState,
         cfg: Arc<AgentConfig>,
+        compact_style: Arc<RwLock<CompactStyle>>,
         store: Store,
         client: Client,
         auth: Auth,
@@ -188,6 +196,7 @@ impl Session {
                 depth,
                 model: Arc::new(Mutex::new(model)),
                 cfg,
+                compact_style,
                 store,
                 client,
                 auth,
@@ -307,7 +316,7 @@ impl Message<CompactNow> for Session {
     /// compaction runs in its own task with `inflight` set — input arriving
     /// meanwhile queues as steering, `IsRunning` is true, and the actor's
     /// mailbox stays free (the summariser asks the supervisor for the roster).
-    async fn handle(&mut self, _: CompactNow, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(&mut self, m: CompactNow, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
         if self.inflight.is_some() {
@@ -322,8 +331,9 @@ impl Message<CompactNow> for Session {
         self.inflight = Some(cancel.clone());
         let mut turn = Turn::new(self.shared.clone(), None, cancel, state);
         let me = ctx.actor_ref().clone();
+        let style = m.style;
         tokio::spawn(async move {
-            let result = turn.compact_now().await;
+            let result = turn.compact_now(style).await;
             let _ = me.tell(TurnDone(turn.state)).await;
             tx.send(result);
         });
@@ -914,7 +924,17 @@ impl Turn {
         if window > 0 && compact_at > 0.0 {
             let fill = projected as f32 / window as f32;
             if fill >= compact_at {
-                if let Err(e) = self.compact(&model, &tools, transport, projected).await {
+                if let Err(e) = self
+                    .compact(
+                        &model,
+                        &tools,
+                        transport,
+                        projected,
+                        None,
+                        compact::CompactReason::Auto,
+                    )
+                    .await
+                {
                     self.error(format!("compaction: {e}")).await;
                 }
             } else if !self.state.pressure_sent && compact_at > 0.1 && fill >= compact_at - 0.1 {
@@ -983,7 +1003,17 @@ impl Turn {
                 // 07 §8.5: one forced compaction per turn, then retry the round.
                 if compact::is_overflow(&e) && !self.overflowed {
                     self.overflowed = true;
-                    match self.compact(&model, &tools, transport, projected).await {
+                    match self
+                        .compact(
+                            &model,
+                            &tools,
+                            transport,
+                            projected,
+                            None,
+                            compact::CompactReason::Overflow,
+                        )
+                        .await
+                    {
                         Ok(_) => return Round::Retry,
                         Err(ce) => {
                             tracing::warn!(session = %self.shared.id, "overflow compaction failed: {ce}")
@@ -1185,11 +1215,19 @@ impl Turn {
     }
 
     /// `/compact` between turns: same baseline/tools/transport as a turn, then [`Turn::compact`].
-    async fn compact_now(&mut self) -> Result<u32, String> {
+    async fn compact_now(&mut self, style: Option<CompactStyle>) -> Result<u32, String> {
         let registry = self.between_turns().await?;
         let (model, tools, transport) = self.resolve(&registry).await?;
         let projected = self.state.used;
-        self.compact(&model, &tools, transport, projected).await
+        self.compact(
+            &model,
+            &tools,
+            transport,
+            projected,
+            style,
+            compact::CompactReason::Manual,
+        )
+        .await
     }
 
     /// `/knowledge harvest` between turns (10 §5.2): rebase, then [`Turn::harvest`].
@@ -1233,14 +1271,16 @@ impl Turn {
         self.harvest(&model, &tools, transport).await
     }
 
-    /// Compaction (07 §8.2–§8.4): cut, summarise as a cache-hot continuation
-    /// of the live frame, open a new epoch. `projected` is reported in `Compacted.before`.
+    /// Compaction (07 §8.2–§8.4, 11): cut, build the head, open a new epoch.
+    /// `projected` is reported in `Compacted.before`. Styles only change the head.
     async fn compact(
         &mut self,
         model: &Resolved,
         tools: &[Tool],
         transport: Transport,
         projected: u32,
+        r#override: Option<CompactStyle>,
+        reason: compact::CompactReason,
     ) -> Result<u32, String> {
         let window = self.window(model);
         // 07 §8.2: the kept tail is 1/8 of the *threshold* — a tail sized to the
@@ -1258,6 +1298,12 @@ impl Turn {
         if keep_from == 0 {
             return Err("nothing to compact".into());
         }
+        let cfg_style = *self
+            .shared
+            .compact_style
+            .read()
+            .unwrap_or_else(|p| p.into_inner());
+        let mut style = compact::resolve(r#override, cfg_style, reason)?;
         let session = self.shared.id;
         self.publish(AgentEvent::Compacting {
             session,
@@ -1279,10 +1325,33 @@ impl Turn {
                 tracing::warn!(session = %session, "harvest before compaction: {e}");
             }
         }
-        full.push(ChatMessage::user(compact::COMPACT_INSTRUCTION));
-        let summary = self
-            .summarise(model, tools, transport, &mut full, keep_from)
-            .await?;
+        let cut_body = || {
+            let k = keep_from + usize::from(self.state.head.is_some());
+            format!("folded {k} messages; no summary. Recent turns follow verbatim.")
+        };
+        let body = match style {
+            CompactStyle::Snap => return Err("snap not built".into()),
+            CompactStyle::Cut => cut_body(),
+            CompactStyle::Summary => {
+                full.push(ChatMessage::user(compact::COMPACT_INSTRUCTION));
+                match self
+                    .summarise(model, tools, transport, &mut full, keep_from)
+                    .await
+                {
+                    Ok(text) => text,
+                    Err(e) if e.contains("cancelled") => return Err(e),
+                    Err(e)
+                        if compact::is_overflow(&e)
+                            || e.contains("no text twice")
+                            || reason == compact::CompactReason::Overflow =>
+                    {
+                        style = CompactStyle::Cut;
+                        cut_body()
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        };
 
         // 07 §8.4, 10 §7: harness truth the summariser cannot drift — roster, todos,
         // runtime inventory, concepts read.
@@ -1305,20 +1374,17 @@ impl Turn {
                 .collect();
             format!("Knowledge: read {}", ids.join(", "))
         });
-        let mut text = format!("<context_summary epoch=\"{n}\">\n{}", summary.trim());
-        for part in [
-            Some(roster).filter(|r| !r.is_empty()),
-            todos,
-            runtime.map(|r| format!("Runtime: {r}")),
-            read,
-        ]
-        .into_iter()
-        .flatten()
-        {
-            text.push('\n');
-            text.push_str(&part);
-        }
-        text.push_str("\n</context_summary>");
+        let text = compact::wrap_head(
+            n,
+            style,
+            body.trim(),
+            [
+                roster,
+                todos.unwrap_or_default(),
+                runtime.map(|r| format!("Runtime: {r}")).unwrap_or_default(),
+                read.unwrap_or_default(),
+            ],
+        );
         let head = ChatMessage::user(text);
         let at_seq = self.state.history[n_msgs - 1].0;
         let tail_from = self.state.history[keep_from].0;
@@ -1338,13 +1404,14 @@ impl Turn {
         self.reset_this_round = true;
         self.since = self.state.history.len();
         self.hint_since = self.hint_since.saturating_sub(keep_from);
-        tracing::info!(session = %session, epoch = n, folded = keep_from, before = projected, "compaction");
+        tracing::info!(session = %session, epoch = n, folded = keep_from, before = projected, style = %style, "compaction");
         self.publish(AgentEvent::Compacted {
             session,
             turn: self.turn,
             epoch: n,
             before: projected,
             folded: keep_from as u32,
+            style,
         })
         .await;
         Ok(n)

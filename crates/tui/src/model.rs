@@ -6,8 +6,8 @@ use std::ops::Range;
 
 use agent::knowledge::{Change, HarvestResult, History, Meta};
 use agent::{
-    AgentEvent, HistoryEntry, Loaded, ModelInfo, ProviderInfo, SessionSummary, SkillBody,
-    SkillMeta, Usage,
+    AgentEvent, CompactStyle, HistoryEntry, Loaded, ModelInfo, ProviderInfo, SessionSummary,
+    SkillBody, SkillMeta, Usage,
 };
 use iocraft::KeyCode;
 use models::Catalog;
@@ -70,6 +70,8 @@ pub enum UiEvent {
     Harvested(HarvestResult),
     /// A command succeeded with nothing to show but a notice.
     Info(String),
+    /// Reply to [`Command::GetCompactStyle`].
+    CompactStyle(CompactStyle),
     /// A command failed (actor missing, ask error).
     Error(String),
     /// Reply to [`Command::ListLogins`]: providers and OAuth MCP servers.
@@ -103,7 +105,16 @@ pub enum Command {
     /// `Cancel`.
     Cancel(SessionId),
     /// `Compact` on the agent actor.
-    Compact(SessionId),
+    Compact {
+        /// Target.
+        session: SessionId,
+        /// One-shot style; `None` = configured default.
+        style: Option<CompactStyle>,
+    },
+    /// `GetCompactStyle` on the agent actor.
+    GetCompactStyle,
+    /// `SetCompactStyle` on the agent actor.
+    SetCompactStyle(CompactStyle),
     /// `ListSessions`.
     ListSessions,
     /// `ListChildren` of the root session.
@@ -267,6 +278,8 @@ pub enum Entry {
     Compacted {
         /// Epoch the boundary opened.
         epoch: u32,
+        /// How the head was built.
+        style: CompactStyle,
         /// Summary the model works from; `None` for the live event.
         summary: Option<Box<markdown::Text>>,
         /// Show the summary.
@@ -439,7 +452,11 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "tool approval prompts; `always` persists to config.yaml",
     ),
     ("/cancel", "", "abort the in-flight turn"),
-    ("/compact", "", "fold the conversation into a summary"),
+    (
+        "/compact",
+        "[summary|cut|snap|style …]",
+        "fold context; style sets the default",
+    ),
     ("/quit", "", "exit"),
     (
         "/provider",
@@ -1190,6 +1207,9 @@ impl Model {
                 r.added, r.updated
             ))),
             UiEvent::Info(t) => self.entries.push(Entry::Info(t)),
+            UiEvent::CompactStyle(s) => self.entries.push(Entry::Info(format!(
+                "compact style: {s} (default)\n  summary  cache-hot LLM fold (07 §8.3)\n  cut      drop the folded span, keep the tail, no model call\n  snap     rasterize the folded span to images (vision model)"
+            ))),
             UiEvent::Providers(list) => {
                 if list.is_empty() {
                     self.entries.push(Entry::Info(
@@ -1358,10 +1378,11 @@ impl Model {
                 self.model_id = model;
             }
             AgentEvent::Compacting { .. } => self.compacting = true,
-            AgentEvent::Compacted { epoch, .. } => {
+            AgentEvent::Compacted { epoch, style, .. } => {
                 self.compacting = false;
                 self.interject(Entry::Compacted {
                     epoch,
+                    style,
                     summary: None,
                     expanded: false,
                 });
@@ -1436,10 +1457,7 @@ impl Model {
                 None => self.entries.push(Entry::Info("no session".into())),
             },
             "/focus" => self.focus(arg, tx),
-            "/compact" => match self.shown() {
-                Some(session) => send(tx, Command::Compact(session)),
-                None => self.entries.push(Entry::Info("no session".into())),
-            },
+            "/compact" => self.compact_cmd(arg, tx),
             "/cancel" => {
                 if let Some(session) = self.shown() {
                     send(tx, Command::Cancel(session));
@@ -1761,6 +1779,46 @@ impl Model {
             ("rm", name) if !name.is_empty() => send(tx, Command::RemoveProvider(name.to_owned())),
             _ => self.entries.push(Entry::Error(
                 "usage: /provider [add [name [url [key]]] | rm <name>]".into(),
+            )),
+        }
+    }
+
+    /// `/compact [summary|cut|snap|style …]`.
+    fn compact_cmd(&mut self, arg: &str, tx: &UnboundedSender<Command>) {
+        let (sub, rest) = arg
+            .split_once(char::is_whitespace)
+            .map_or((arg, ""), |(s, r)| (s, r.trim()));
+        match (sub, rest) {
+            ("", _) => match self.shown() {
+                Some(session) => send(
+                    tx,
+                    Command::Compact {
+                        session,
+                        style: None,
+                    },
+                ),
+                None => self.entries.push(Entry::Info("no session".into())),
+            },
+            (token, _) if token.parse::<CompactStyle>().is_ok() => {
+                let style = token.parse().expect("guard");
+                match self.shown() {
+                    Some(session) => send(
+                        tx,
+                        Command::Compact {
+                            session,
+                            style: Some(style),
+                        },
+                    ),
+                    None => self.entries.push(Entry::Info("no session".into())),
+                }
+            }
+            ("style", "") => send(tx, Command::GetCompactStyle),
+            ("style", rest) if rest.parse::<CompactStyle>().is_ok() => {
+                let style = rest.parse().expect("guard");
+                send(tx, Command::SetCompactStyle(style));
+            }
+            _ => self.entries.push(Entry::Error(
+                "usage: /compact [summary|cut|snap|style …]".into(),
             )),
         }
     }
@@ -2151,8 +2209,13 @@ fn from_history(h: HistoryEntry) -> Vec<Entry> {
             result: Some((output, is_error)),
             expanded: None,
         }],
-        HistoryEntry::Compacted { epoch, summary } => vec![Entry::Compacted {
+        HistoryEntry::Compacted {
             epoch,
+            summary,
+            style,
+        } => vec![Entry::Compacted {
+            epoch,
+            style,
             summary: Some(Box::new(markdown::Text::complete(&summary))),
             expanded: false,
         }],
@@ -2382,6 +2445,39 @@ mod tests {
         assert!(rx.try_recv().is_err(), "no session shown");
         m.submit("/knowledge rust toolchain", &tx);
         assert!(matches!(rx.try_recv(), Ok(Command::KnowledgeSearch(q)) if q == "rust toolchain"));
+    }
+
+    #[test]
+    fn compact_slash_args() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        m.submit("/compact", &tx);
+        assert!(rx.try_recv().is_err(), "no session");
+        assert!(matches!(m.entries.last(), Some(Entry::Info(t)) if t == "no session"));
+
+        let s = SessionId::new();
+        m.session = Some(s);
+        m.submit("/compact cut", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::Compact {
+                session,
+                style: Some(CompactStyle::Cut)
+            }) if session == s
+        ));
+        m.submit("/compact foo", &tx);
+        assert!(rx.try_recv().is_err());
+        assert!(matches!(
+            m.entries.last(),
+            Some(Entry::Error(t)) if t == "usage: /compact [summary|cut|snap|style …]"
+        ));
+        m.submit("/compact style", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::GetCompactStyle)));
+        m.submit("/compact style cut", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetCompactStyle(CompactStyle::Cut))
+        ));
     }
 
     #[test]

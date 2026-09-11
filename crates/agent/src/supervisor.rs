@@ -33,12 +33,12 @@ use crate::skills::{
 use crate::store::{Epoch, Store};
 use crate::{
     AGENT_ACTOR, AddProvider, AddSkill, AddSkillRepo, AgentConfig, AgentEvent, Cancel, Compact,
-    Harvest, HistoryEntry, KnowledgeDelete, KnowledgeGet, KnowledgeHistory, KnowledgeList,
-    KnowledgePut, KnowledgeRestore, KnowledgeSearch, ListChildren, ListLogins, ListModels,
-    ListProviders, ListSessions, ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginFinished,
-    LoginInfo, Logout, ModelInfo, ProviderInfo, RemoveProvider, RemoveSkill, RemoveSkillRepo,
-    SendInput, SessionSummary, SetModel, ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills,
-    knowledge,
+    CompactStyle, GetCompactStyle, Harvest, HistoryEntry, KnowledgeDelete, KnowledgeGet,
+    KnowledgeHistory, KnowledgeList, KnowledgePut, KnowledgeRestore, KnowledgeSearch, ListChildren,
+    ListLogins, ListModels, ListProviders, ListSessions, ListSkills, LoadSession, LoadSkill,
+    Loaded, Login, LoginFinished, LoginInfo, Logout, ModelInfo, ProviderInfo, RemoveProvider,
+    RemoveSkill, RemoveSkillRepo, SendInput, SessionSummary, SetCompactStyle, SetModel, ShowPrompt,
+    SkillBody, SkillMeta, Steer, SyncSkills, knowledge,
 };
 use crate::{frame, repl, spill};
 
@@ -49,6 +49,8 @@ pub struct Agents {
     cfg: Arc<AgentConfig>,
     /// `cfg.model` as last set by [`SetModel`]; new sessions start on it.
     default_model: String,
+    /// Live default compaction style; cloned into each session so [`SetCompactStyle`] is in-process.
+    compact_style: Arc<RwLock<CompactStyle>>,
     catalog: Arc<Catalog>,
     /// Python runtime workers; `None` when the `monty` binary was not found (design doc 08 §9).
     pool: Option<Arc<monty_pool::Pool>>,
@@ -220,6 +222,7 @@ impl Agents {
             model,
             state,
             self.cfg.clone(),
+            self.compact_style.clone(),
             self.store.clone(),
             self.client.clone(),
             self.auth.clone(),
@@ -385,9 +388,48 @@ impl Message<Compact> for Agents {
         // Off the mailbox: `compact_now` asks us for the `Roster`, so awaiting
         // here would deadlock. `SendError::HandlerError` displays as the inner `String`.
         tokio::spawn(async move {
-            tx.send(actor.ask(CompactNow).await.map_err(|e| e.to_string()));
+            tx.send(
+                actor
+                    .ask(CompactNow { style: m.style })
+                    .await
+                    .map_err(|e| e.to_string()),
+            );
         });
         reply
+    }
+}
+
+impl Message<SetCompactStyle> for Agents {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        m: SetCompactStyle,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<(), String> {
+        *self
+            .compact_style
+            .write()
+            .unwrap_or_else(|p| p.into_inner()) = m.style;
+        let path = self.rt.data_dir.join("config.yaml");
+        if let Err(e) =
+            runtime::write_config_value(&path, "agent", "compact_style", &m.style.to_string())
+        {
+            tracing::warn!("config.yaml: {e}");
+        }
+        Ok(())
+    }
+}
+
+impl Message<GetCompactStyle> for Agents {
+    type Reply = CompactStyle;
+
+    async fn handle(
+        &mut self,
+        _: GetCompactStyle,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> CompactStyle {
+        *self.compact_style.read().unwrap_or_else(|p| p.into_inner())
     }
 }
 
@@ -1222,6 +1264,7 @@ fn render(messages: &[(i64, ChatMessage)]) -> Vec<(i64, HistoryEntry)> {
 /// `<context_summary …>` wrapper (design doc 07 §8.4).
 fn compacted(e: Epoch) -> HistoryEntry {
     let text = text_of(&e.head.content);
+    let style = crate::compact::style_of_head(&text);
     let summary = text
         .strip_prefix("<context_summary")
         .and_then(|s| s.split_once('>'))
@@ -1231,6 +1274,7 @@ fn compacted(e: Epoch) -> HistoryEntry {
     HistoryEntry::Compacted {
         epoch: e.n,
         summary,
+        style,
     }
 }
 
@@ -1428,6 +1472,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             rt: rt.clone(),
             cfg: cfg.clone(),
             default_model: cfg.model.clone(),
+            compact_style: Arc::new(RwLock::new(cfg.compact_style)),
             catalog: Arc::new(Catalog::load(&rt.data_dir)),
             pool,
             knowledge: knowledge.clone(),

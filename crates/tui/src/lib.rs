@@ -148,12 +148,25 @@ async fn execute(cmd: Command, tx: &UnboundedSender<UiEvent>) -> anyhow::Result<
             agent()?.ask(agent::Cancel { session }).await?;
             return Ok(());
         }
-        Command::Compact(session) => {
+        Command::Compact { session, style } => {
             let epoch = agent()?
-                .ask(agent::Compact { session })
+                .ask(agent::Compact { session, style })
                 .await
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
-            UiEvent::Info(format!("context compacted (epoch {epoch})"))
+            UiEvent::Info(match style {
+                Some(s) => format!("context compacted (epoch {epoch} · {s})"),
+                None => format!("context compacted (epoch {epoch})"),
+            })
+        }
+        Command::GetCompactStyle => {
+            UiEvent::CompactStyle(agent()?.ask(agent::GetCompactStyle).await?)
+        }
+        Command::SetCompactStyle(style) => {
+            agent()?
+                .ask(agent::SetCompactStyle { style })
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            UiEvent::Info(format!("compact style: {style}"))
         }
         Command::ListSessions => UiEvent::Sessions(agent()?.ask(agent::ListSessions).await?),
         Command::ListChildren(parent) => {
@@ -483,8 +496,8 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             )
         }
         UiEvent::Agent(AgentEvent::ModelChanged { model, .. }) => writeln!(out, "model → {model}"),
-        UiEvent::Agent(AgentEvent::Compacted { epoch, .. }) => {
-            writeln!(out, "context compacted (epoch {epoch})")
+        UiEvent::Agent(AgentEvent::Compacted { epoch, style, .. }) => {
+            writeln!(out, "context compacted (epoch {epoch} · {style})")
         }
         UiEvent::Agent(AgentEvent::Harvested { added, updated, .. }) => {
             writeln!(out, "knowledge +{added} ~{updated}")
@@ -503,6 +516,10 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             Some(e) => writeln!(out, "login: {} failed: {e}", f.provider),
         },
         UiEvent::Prompt(text) | UiEvent::Info(text) => writeln!(out, "{text}"),
+        UiEvent::CompactStyle(s) => writeln!(
+            out,
+            "compact style: {s} (default)\n  summary  cache-hot LLM fold (07 §8.3)\n  cut      drop the folded span, keep the tail, no model call\n  snap     rasterize the folded span to images (vision model)"
+        ),
         UiEvent::Skills(list) | UiEvent::SkillsAdded(list) => list.iter().try_for_each(|s| {
             writeln!(
                 out,
@@ -582,8 +599,15 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
                 if *is_error { "✗" } else { "✓" },
                 model::result_line(output)
             ),
-            agent::HistoryEntry::Compacted { epoch, summary } => {
-                writeln!(out, "── context compacted (epoch {epoch}) ──\n{summary}")
+            agent::HistoryEntry::Compacted {
+                epoch,
+                summary,
+                style,
+            } => {
+                writeln!(
+                    out,
+                    "── context compacted (epoch {epoch} · {style}) ──\n{summary}"
+                )
             }
         }),
         UiEvent::SessionCreated(id) => writeln!(out, "session {id}"),

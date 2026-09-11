@@ -34,6 +34,7 @@ Config (`~/.wth/`, created on first run; details in
   agent:
     model: anthropic/claude-sonnet-4-5
     compact_at: 0.8        # compact when the context is this full; 0 disables
+    compact_style: summary  # summary | cut | snap
     knowledge:
       enabled: true        # false: no hints, no knowledge_* tools, no harvest
       hint_limit: 5        # lines per <knowledge> hint
@@ -59,8 +60,7 @@ logs a `login required` server in), `/mcp add <url|json>` installs one,
 `/mcp sync` pulls repos; `/login` picks a provider or MCP server to log in
 to; `/provider add` prompts for name, base url, then API key (an OpenAI-compatible
 gateway such as `https://api.ai.rwx.dev/v1`); `/provider` lists them, `/provider rm <name>`
-forgets one; `/skills` lists skills; `/prompt` shows the system prompt; `/compact`
-folds the conversation so far into a summary the model keeps working from;
+forgets one; `/skills` lists skills; `/prompt` shows the system prompt; `/compact` folds into a summary by default; `/compact cut` drops the folded span with no model call; `/compact style` lists/sets the default;
 `/knowledge` browses the knowledge base (below); `/approvals off` stops
 approval prompts for this session, `/approvals off always` for good
 (`tools.approvals` in config.yaml). Shift+Enter inserts a newline; select

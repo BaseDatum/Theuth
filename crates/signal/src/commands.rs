@@ -57,7 +57,7 @@ const COMMANDS: &[(&str, &str, &str)] = &[
         "bind this thread to a session (prefix ok)",
     ),
     ("/cancel", "", "abort the turn"),
-    ("/compact", "", "fold the context"),
+    ("/compact", "[summary|cut|snap|style …]", "fold the context"),
     ("/model", "[id]", "show or set the model"),
     ("/agents", "", "this session's subagents"),
     ("/prompt", "", "the assembled system prompt"),
@@ -175,14 +175,7 @@ async fn run(cx: &mut Cx<'_>, name: &'static str, arg: &str) -> anyhow::Result<R
             agent()?.ask(agent::Cancel { session }).await.map_err(err)?;
             text("cancelled".into())
         }
-        "/compact" => {
-            let session = cx.session.context(NO_SESSION)?;
-            let epoch = agent()?
-                .ask(agent::Compact { session })
-                .await
-                .map_err(err)?;
-            text(format!("compacted → epoch {epoch}"))
-        }
+        "/compact" => compact_cmd(cx, arg).await,
         "/model" if arg.is_empty() => {
             let models = agent()?.ask(agent::ListModels).await.map_err(err)?;
             let mut out = table(
@@ -456,6 +449,54 @@ async fn mcp_cmd(arg: &str) -> anyhow::Result<Reply> {
         _ => "usage: /mcp [add <url|json> | sync]".to_owned(),
     };
     Ok(Reply::Text(out))
+}
+
+/// `/compact [summary|cut|snap|style …]`.
+async fn compact_cmd(cx: &Cx<'_>, arg: &str) -> anyhow::Result<Reply> {
+    let text = |s: String| Ok(Reply::Text(s));
+    let (sub, rest) = arg
+        .split_once(char::is_whitespace)
+        .map_or((arg, ""), |(s, r)| (s, r.trim()));
+    match (sub, rest) {
+        ("", _) => {
+            let session = cx.session.context(NO_SESSION)?;
+            let epoch = agent()?
+                .ask(agent::Compact {
+                    session,
+                    style: None,
+                })
+                .await
+                .map_err(err)?;
+            text(format!("compacted → epoch {epoch}"))
+        }
+        (token, _) if token.parse::<agent::CompactStyle>().is_ok() => {
+            let style = token.parse().expect("guard");
+            let session = cx.session.context(NO_SESSION)?;
+            let epoch = agent()?
+                .ask(agent::Compact {
+                    session,
+                    style: Some(style),
+                })
+                .await
+                .map_err(err)?;
+            text(format!("compacted → epoch {epoch}"))
+        }
+        ("style", "") => {
+            let current = agent()?.ask(agent::GetCompactStyle).await.map_err(err)?;
+            text(format!(
+                "compact style: {current} (default)\n  summary  cache-hot LLM fold (07 §8.3)\n  cut      drop the folded span, keep the tail, no model call\n  snap     rasterize the folded span to images (vision model)"
+            ))
+        }
+        ("style", rest) if rest.parse::<agent::CompactStyle>().is_ok() => {
+            let style = rest.parse().expect("guard");
+            agent()?
+                .ask(agent::SetCompactStyle { style })
+                .await
+                .map_err(err)?;
+            text(format!("compact style: {style}"))
+        }
+        _ => text("usage: /compact [summary|cut|snap|style …]".into()),
+    }
 }
 
 async fn provider_cmd(arg: &str) -> anyhow::Result<Reply> {

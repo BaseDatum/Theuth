@@ -450,6 +450,9 @@ plus one appended user message, `COMPACT_INSTRUCTION`. The prefix up to
 reads the entire conversation from cache at 0.1×; only the instruction and
 the summary are billed at full rate. Same model as the session (no
 `compact_model` knob: the cache hit makes the strong model the cheap one).
+This is the `summary` style (`11-compaction-styles.md`). The new head wraps
+the model text in `<context_summary epoch="n" style="summary">`. `cut` and
+`snap` build a different head; they do not run this call.
 
 ```
 COMPACT_INSTRUCTION (const, fixed bytes):
@@ -477,9 +480,8 @@ naturally.
 
 If the response carries tool calls or empty text: retry once with the
 instruction prefixed `Text only. ` (still cache-hot). Second failure →
-compaction fails, `AgentEvent::Error`, history untouched, the turn
-continues (and will likely overflow, which §8.5 then handles with a forced
-attempt — at that point the failure is surfaced and the turn stops).
+finish as `cut` on the same `keep_from` (§8.5, 11 §3.2). Other errors emit
+`AgentEvent::Error` and leave history untouched.
 
 Nothing from the summariser call is persisted as a message. It publishes
 `AgentEvent::Compacting { session, turn }` before and streams no deltas.
@@ -492,14 +494,16 @@ roster    = agents.ask(Roster { session }): "Subagents: grep-logs (running), fix
 todos     = todo::render(&state.todos) if non-empty                                   (§9)
 runtime   = "Runtime: " + (repl.render_inventory() | repl::saved_inventory(data_dir, session))  (08 §6)
 read      = "Knowledge: read " + state.knowledge_read.join(", ") if non-empty              (10 §7)
-head      = ChatMessage::user("<context_summary epoch=\"{n}\">\n{summary}" + "\n{part}" for each present part + "\n</context_summary>")
+head      = ChatMessage::user("<context_summary epoch=\"{n}\" style=\"summary\">\n{summary}" + "\n{part}" for each present part + "\n</context_summary>")
 tail_from = seq(M[keep_from])
 at_seq    = seq(M[n-1])
 store.compact(session, n, at_seq, tail_from, &head)        // one INSERT into epochs
 history.drain(..keep_from); head = Some(head); used = 0; epoch = n; pressure_sent = false; hinted.clear(); knowledge_read.clear(); reset_this_round = true
 info!(session, epoch, folded, before, "compaction")
-publish Compacted { session, turn, epoch: n, before: projected, folded: keep_from }
+publish Compacted { session, turn, epoch: n, before: projected, folded: keep_from, style }
 ```
+Other styles (`cut`, `snap`) share this insert and differ only in the head
+(11). `cut` has no model call. Heads with no `style` attribute are `summary`.
 
 The roster line is harness-generated: the one piece of live state the
 model would otherwise have to recall correctly across the boundary
@@ -557,14 +561,17 @@ many tokens"`). On a match, once per turn: compaction with the threshold
 ignored, then retry the round. If the *summariser* call itself overflows,
 retry it once with `M[keep_from..)` removed from its frame (a strict
 prefix of the previous request — smaller, and usually still within the
-lookback window). A second overflow of the round surfaces the original
-error and stops the turn.
+lookback window). If `summary` still fails after that retry (overflow, or
+empty/tool-call after `Text only. `), finish as `cut` on the same
+`keep_from` (11 §3.2); `Compacted.style` is `cut`. If `keep_from == 0`,
+surface the original overflow and stop the turn.
 
 ### 8.6 Manual, events, surfaces
 
-- `Compact { session }` — `ask` → `Result<u32 /* epoch */, String>` on the
+- `Compact { session, style: Option<CompactStyle> }` — `ask` → `Result<u32 /* epoch */, String>` on the
   `"agent"` supervisor (`supervisor.rs` `impl Message<Compact>`), which
-  forwards `CompactNow` to the session actor. Threshold ignored; `keep_from
+  forwards `CompactNow` to the session actor. `style: None` = configured
+  default (`agent.compact_style`, then 11 §3.1). Threshold ignored; `keep_from
   == 0` → `Err("nothing to compact")`; `Err("turn in flight")` while a turn
   runs.
 - **A `/compact` is a mini-turn.** `Session`'s `CompactNow` handler takes
@@ -577,10 +584,11 @@ error and stops the turn.
   own mailbox deadlocked in testing. Side effects of the mini-turn shape:
   input arriving meanwhile queues as steering and starts a turn when the
   compaction hands back, and `IsRunning` is true during it.
-- TUI `/compact` → `Command::Compact(session)` → `Info("context compacted
-  (epoch n)")`; RPC `compact`.
+- TUI `/compact [summary|cut|snap|style …]` (11) → `Command::Compact { session, style }` → `Info("context compacted
+  (epoch n)")`; RPC `compact(session, style?)`. `/compact style` lists or
+  persists the default and does not compact.
 - Events: `Compacting { session, turn: Option<TurnId> }`, `Compacted {
-  session, turn: Option<TurnId>, epoch: u32, before: u32, folded: u32 }`.
+  session, turn: Option<TurnId>, epoch: u32, before: u32, folded: u32, style: CompactStyle }`.
   `TurnFinished.usage.cached` (§7).
 
 ### 8.7 Harness notes
@@ -757,6 +765,7 @@ pub fn render(list: &[Todo]) -> String;
 pub fn spec() -> ToolSpec;                                       // Risk::ReadOnly, direct: true; loop-local
 
 // agent::compact
+pub enum CompactStyle { Summary, Cut, Snap }                     // default Summary; 11
 pub const COMPACT_INSTRUCTION: &str;
 pub fn est(m: &ChatMessage) -> u32;                              // serialised chars / 4
 pub fn keep_from(history: &[ChatMessage], limit: u32) -> usize;  // §8.2; limit = compact_at × window
@@ -768,7 +777,7 @@ pub struct SessionState { pub epoch: u32, pub head: Option<ChatMessage>, pub his
     pub todos: Vec<todo::Todo>, pub todo_touched_round: u32,
     pub hinted: BTreeSet<String>, pub knowledge_hinted_round: u32, pub knowledge_read: BTreeSet<String>, pub turns_since_harvest: u32 }  // 10 §10
 impl SessionState { pub fn resume(epoch: u32, head: Option<ChatMessage>, history: Vec<(i64, ChatMessage)>) -> Self; }
-pub struct CompactNow;                                           // ask → DelegatedReply<Result<u32, String>> (§8.6)
+pub struct CompactNow { pub style: Option<CompactStyle> }        // ask → DelegatedReply<Result<u32, String>> (§8.6)
 pub struct TurnDone(SessionState);                               // tell, turn task → its Session
 // Turn (private): turn: Option<TurnId>, usage, transport: Option<(String, Transport)>,
 //   tools_seen: Option<(u64, Vec<String>)>, reset_this_round, overflowed, since: usize, window_logged, repl: Option<Repl>
@@ -785,12 +794,12 @@ pub async fn compact(&self, id: SessionId, n: u32, at_seq: i64, tail_from: i64, 
 pub async fn frame(&self, id: SessionId) -> anyhow::Result<(u32, Option<ChatMessage>, Vec<(i64, ChatMessage)>)>;
 
 // agent (lib.rs)
-pub struct Compact { pub session: SessionId }                    // ask → Result<u32, String>
+pub struct Compact { pub session: SessionId, pub style: Option<CompactStyle> }  // ask → Result<u32, String>; None = cfg default
 AgentEvent::Compacting { session, turn: Option<TurnId> }
-AgentEvent::Compacted  { session, turn: Option<TurnId>, epoch: u32, before: u32, folded: u32 }
-HistoryEntry::Compacted { epoch: u32, summary: String }
+AgentEvent::Compacted  { session, turn: Option<TurnId>, epoch: u32, before: u32, folded: u32, style: CompactStyle }
+HistoryEntry::Compacted { epoch: u32, summary: String, style: CompactStyle }
 pub struct Usage { pub prompt: u32, pub completion: u32, pub cached: u32 }
-AgentConfig { …, max_tool_output_chars: usize /* 32_000 */, compact_at: f32 /* 0.8 */, repl: ReplConfig }
+AgentConfig { …, max_tool_output_chars: usize /* 32_000 */, compact_at: f32 /* 0.8 */, compact_style: CompactStyle /* Summary */, repl: ReplConfig }
 ```
 
 Config, complete:
@@ -799,10 +808,11 @@ Config, complete:
 agent:
   max_tool_output_chars: 32000   # existing; the only cap on tool output (§6)
   compact_at: 0.8                # fraction of the model's context window; 0 disables auto-compaction (§8.1)
+  compact_style: summary         # summary | cut | snap; default for auto, overflow, bare `/compact` (11)
   repl: { monty: null }          # 08 §10; not part of this doc
 ```
 
-Two keys here (plus 08's one). jarvis has twenty-five.
+Three keys here (plus 08's one). jarvis has twenty-five.
 
 Removed from the loop: per-round `system_prompt()` (→ per turn), the
 `peers` roster fetch, `truncate` for model-facing output (→ `spill::cap`;
@@ -881,11 +891,14 @@ Each step left `wth` runnable.
 3b. **Todo.** `agent::todo` as a loop-local tool (§9), reminder note, list
    in the compaction head, `GUIDANCE` sentence. Checked: §12.3b; the head
    carried the list in the §12.5 run.
+3c. **Compaction styles.** `CompactStyle`, `compact_style`, `/compact
+   [summary|cut|snap|style …]`; overflow summariser-failure → `cut`; `snap`
+   named, not built. See 11.
 4. **Docs** (this pass). `00 §5` (resume rule → §8.4; tables gain
    `epochs`), `02 §3` header format, `02 §4` command list (`/compact`), `04
    §1.1` ("per round" → "per turn; see 07 §4"), `01 §2.5` (roster removed;
    see §10), `01 §1.4` (per-round tool list only while the runtime is
-   off), README config block (`compact_at`, `repl.monty`).
+   off), README config block (`compact_at`, `compact_style`, `repl.monty`).
 
 ## 14. Rejected
 
@@ -893,6 +906,8 @@ Each step left `wth` runnable.
   Every rewrite re-caches the rest of the history at 1.25× to save tokens
   that cost 0.1× cached. Bound output at append time instead (§6); the
   compaction fold is the only place old bodies leave the window.
+  `cut` and `snap` (11) are not this: they build a new head and drain
+  `history` the same way as `summary`; they are not in-place rewrites.
 - **Model-driven shelve/recall tools.** Same invalidation, plus a second
   stub protocol. `read_file` on the spill path is the recall.
 - **Sticky re-injection** (jarvis todos, harness status, steering banners
