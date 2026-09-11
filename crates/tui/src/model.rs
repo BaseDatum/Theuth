@@ -84,64 +84,64 @@ pub enum UiEvent {
     ProviderAdded(ProviderInfo),
 }
 
-/// Everything the UI can ask of the rest of the process. One task owns all
-/// actor traffic and turns replies into [`UiEvent`]s.
+/// Everything the UI can ask of the rest of the process. One task turns
+/// these into `rpc::Api` calls and their replies into [`UiEvent`]s.
 #[derive(Debug)]
 pub enum Command {
-    /// `SendInput`.
+    /// `send_input`.
     Send {
         /// `None` creates a session.
         session: Option<SessionId>,
         /// User text.
         text: String,
     },
-    /// `Steer`.
+    /// `steer`.
     Steer {
         /// Target.
         session: SessionId,
         /// User text.
         text: String,
     },
-    /// `Cancel`.
+    /// `cancel`.
     Cancel(SessionId),
-    /// `Compact` on the agent actor.
+    /// `compact`.
     Compact {
         /// Target.
         session: SessionId,
         /// One-shot style; `None` = configured default.
         style: Option<CompactStyle>,
     },
-    /// `GetCompactStyle` on the agent actor.
+    /// `compact_style`.
     GetCompactStyle,
-    /// `SetCompactStyle` on the agent actor.
+    /// `set_compact_style`.
     SetCompactStyle(CompactStyle),
-    /// `ListSessions`.
+    /// `list_sessions`.
     ListSessions,
-    /// `ListChildren` of the root session.
+    /// `list_children` of the root session.
     ListChildren(SessionId),
-    /// `LoadSession`.
+    /// `load_session`.
     Load(SessionId),
-    /// `Resolve` on the approval actor.
+    /// `resolve_approval`.
     Resolve {
         /// Request.
         id: ApprovalId,
         /// Answer.
         decision: Decision,
     },
-    /// `ListModels` on the agent actor.
+    /// `list_models`.
     ListModels,
-    /// `SetModel` on the agent actor.
+    /// `set_model`.
     SetModel {
         /// Session to switch now (`None`: only the default).
         session: Option<SessionId>,
         /// `provider/model` id.
         model: String,
     },
-    /// `ListServers` on the MCP actor.
+    /// `list_mcp`.
     ListMcp,
-    /// `Progress` on the MCP actor: the snapshot a late-attaching UI missed.
+    /// `mcp_status`: the snapshot a late-attaching UI missed.
     McpStatus,
-    /// `SetGate` on the MCP actor, followed by a fresh `ListServers`.
+    /// `set_mcp_gate`, then `list_mcp`.
     SetGate {
         /// Server name.
         server: String,
@@ -150,58 +150,58 @@ pub enum Command {
         /// New line; `None` clears it (back to annotations).
         gate: Option<Gate>,
     },
-    /// `SetApprovals` on the registry.
+    /// `set_approvals`.
     SetApprovals {
         /// `None` = global, persisted.
         session: Option<SessionId>,
         /// On or off.
         enabled: bool,
     },
-    /// `ShowPrompt` on the agent actor.
+    /// `get_prompt`.
     ShowPrompt(Option<SessionId>),
-    /// `ListSkills` on the agent actor.
+    /// `list_skills`.
     ListSkills,
-    /// `LoadSkill` on the agent actor.
+    /// `load_skill`.
     LoadSkill(String),
-    /// `AddSkillRepo` on the agent actor.
+    /// `add_skill_repo`.
     AddSkillRepo(String),
-    /// `RemoveSkillRepo`, falling back to `RemoveSkill`, on the agent actor.
+    /// `remove_skill_repo`, falling back to `remove_skill`.
     RemoveSkill(String),
-    /// `SyncSkills` on the agent actor.
+    /// `sync_skills`.
     SyncSkills,
-    /// `List` (first 50 by id) on the knowledge actor.
+    /// `knowledge_list` (first 50 by id).
     KnowledgeList,
-    /// `Search` on the knowledge actor.
+    /// `knowledge_search`.
     KnowledgeSearch(String),
-    /// `HistoryOf` on the knowledge actor; `None` for the whole bundle.
+    /// `knowledge_history`; `None` for the whole bundle.
     KnowledgeHistory(Option<String>),
-    /// `Restore` on the knowledge actor.
+    /// `knowledge_restore`.
     KnowledgeRestore {
         /// Concept id.
         id: String,
         /// Abbreviated commit; default the one before the latest change.
         commit: Option<String>,
     },
-    /// `Harvest` on the agent actor for the shown session.
+    /// `knowledge_harvest` for the shown session.
     Harvest(SessionId),
-    /// `AddServer` on the MCP actor.
+    /// `add_mcp_server`.
     AddMcp {
         /// Server name (file stem).
         name: String,
         /// One server object (`command`/`args`/`env`/`cwd` or `url`/`headers`).
         entry: serde_json::Value,
     },
-    /// `AddRepo` on the MCP actor.
+    /// `add_mcp_repo`.
     AddMcpRepo(String),
-    /// `SyncMcp` on the MCP actor.
+    /// `sync_mcp`.
     SyncMcp,
-    /// `ListLogins` on the agent plus OAuth servers from `ListServers`.
+    /// `list_logins` plus OAuth servers from `list_mcp`.
     ListLogins,
-    /// `Login` on the agent (provider name) or `McpLogin` on the MCP actor.
+    /// `login` (provider name) or `mcp_login` (server name).
     Login(String),
-    /// `Logout` on the agent or `McpLogout` on the MCP actor.
+    /// `logout` (provider name) or `mcp_logout` (server name).
     Logout(String),
-    /// `AddProvider` on the agent actor.
+    /// `add_provider`.
     AddProvider {
         /// Gateway name.
         name: String,
@@ -210,9 +210,9 @@ pub enum Command {
         /// API key.
         key: String,
     },
-    /// `RemoveProvider` on the agent actor.
+    /// `remove_provider`.
     RemoveProvider(String),
-    /// `ListProviders` on the agent actor.
+    /// `list_providers`.
     ListProviders,
 }
 

@@ -14,7 +14,7 @@ A plugin is a workspace crate that exports one type implementing `runtime::Plugi
 | A change to how turns run (hints, compaction, cadence) | `agent` | the loop owns the frame (07); a boundary there is costume |
 | A pure library with no actors, no config, no events (`models`, `markdown`, `oauth`, `cursor`) | a library crate, listed in 00 §10 as such | nothing to start, nothing to subscribe |
 | A subsystem with its own state on disk, its own actor(s), its own tools and/or events, its own config section (`knowledge`, `signal`, `tools`, `rpc`, `tui`) | **a plugin** | this guide |
-| Another frontend (Tauri) | RPC client, not a plugin — blocked until `tui::Command` and `rpc::Api` are one list (00 §8) | |
+| Another frontend (Tauri) | RPC client of `Api`; not a plugin | |
 
 Two tests. *Does it need to exist before `main` starts anything else?* — no plugin does; if yours does, it is part of `runtime` or the binary, and that needs a written reason. *Could a user turn it off and still have a working harness?* — a plugin can be left out of the vector or disabled by its config; if the answer is no, it is not a plugin, it is the loop.
 
@@ -222,12 +222,12 @@ pub async fn register(reg: &ActorRef<tools::ToolRegistry>, s: Arc<State>) {
 Order of edits once the crate compiles on its own.
 
 1. **`crates/wth/src/main.rs`** — one line in the plugin vector: `Box::new(foo::FooPlugin)`. Position is convention only (tools first, frontends last); nothing may depend on it. `wth/Cargo.toml` gains the dep.
-2. **RPC** (`crates/rpc`) — for each command a UI needs: a method in `trait Api` and `impl ApiServer` in `api.rs` (`#[method(name = "foo_ping")]`), asking your actor through a small `fn foo() -> RpcResult<ActorRef<FooActor>>` next to `knowledge()`; each wire-visible event into `bridge.rs`'s `forward!(…)` **and** its `rt.subscribe` line; each wire type into `export.rs` for `just ts`; `rpc`'s `ts` feature forwards to `foo/ts`.
-3. **TUI** (`crates/tui`) — `Command`/`UiEvent` variants in `model.rs`, the `ask` in `lib.rs` `run_commands`, the slash entry in `model::COMMANDS` and its arm in the command dispatcher, rendering in `ui.rs`; subscribe the TUI `Bridge` to your event if the transcript shows it. Menus are modal like the approval box; approvals take precedence (02 §4).
+2. **Commands** — add the method to `trait Api` + `impl ApiServer` in `crates/rpc/src/api.rs` (`#[method(name = "foo_ping")]`; lookup + one `ask`, through a small `fn foo() -> RpcResult<ActorRef<FooActor>>` next to `knowledge()`). That is the whole command list; the TUI calls it in-process, Tauri over the socket. Events: each wire-visible event into `bridge.rs`'s `forward!(…)` **and** its `rt.subscribe` line; each wire type into `export.rs` for `just ts`; `rpc`'s `ts` feature forwards to `foo/ts`.
+3. **TUI** (`crates/tui`) — `Command`/`UiEvent` variants in `model.rs` (UI intent), the arm in `execute` calling the `Api` method, the slash entry in `model::COMMANDS`, rendering in `ui.rs`; subscribe the TUI `Bridge` to your event if the transcript shows it. Menus are modal like the approval box; approvals take precedence (02 §4).
 4. **Signal** (`crates/signal`) — only if the phone needs it; slash commands there mirror the TUI.
 5. **Docs** — your design doc's Status section; 00 §10 line; README crate list and the `TUI:` paragraph; `docs/design/02` if you add a menu.
 
-Today the RPC method list and `tui::Command` are two hand-maintained lists (00 §8). Keep them identical: every command you add to one, add to the other in the same commit. Tauri is gated on collapsing them; do not make that job bigger than it has to be.
+There is one command list; if you find yourself writing a lookup+ask outside `rpc/src/api.rs`, stop.
 
 ## 5. Verify
 
@@ -268,7 +268,7 @@ Crate
 
 Integrate
 - [ ] `main.rs` vector line; `DEFAULT_CONFIG` section; README config bullet + crate list
-- [ ] RPC methods + `forward!` + subscribe + `export.rs`; TUI `Command`/`UiEvent`/`COMMANDS`/dispatch/render — same set in both
+- [ ] `Api` method (+ `forward!`/subscribe/`export.rs` for events); TUI `Command`/`UiEvent`/`COMMANDS`/`execute` arm/render
 
 Verify
 - [ ] check / clippy `-D warnings` / test / `rpc --features ts` green

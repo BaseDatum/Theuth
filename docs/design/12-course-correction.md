@@ -151,6 +151,8 @@ Why not unify now: `Command` exists because iocraft hooks are render-only and th
 
 Check: 00 §8 no longer says "ordinary bus subscriber" and names the phase-4 gate.
 
+**Resolved (2026-09-11):** the gate was lifted by doing the refactor. `rpc::Api` is the one list of harness commands; `rpc::api::Server` implements it as lookup + one `ask` per method. The TUI holds a `Server::new(rt)` in-process (fresh broadcast sender, no bridge, no socket) and its `execute` arms call the trait methods directly — plain async fn calls, no JSON; it keeps its own bus subscription for events so `TextDelta` never serializes. Tauri will call the same trait over the WebSocket. One method was added to `Api`, `mcp_status` (`ask::<Mcp, _>(MCP_ACTOR, tools::Progress)`), to cover the one ask only the TUI made; the TUI's actor lookups and message imports are gone (`tui` depends on `rpc`, not on the actor crates' command structs). Errors surface as `e.message()` → `UiEvent::Error` (`-32001` not running, `-32000` ask failed). Rejected: a `TypeId` registry both facades consume — reflection machinery for what a trait already does — and the TUI as a jsonrpsee client of localhost (00 §2 cost, RPC must always listen). 00 §8 carries the shipped text.
+
 ## 8. G10 — `agent/src/lib.rs` as re-exports (opportunistic)
 
 Target: `crates/agent/src/lib.rs` (722 lines, 33 command structs, `AgentEvent` 16 variants).

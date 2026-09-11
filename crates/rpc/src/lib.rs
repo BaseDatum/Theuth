@@ -1,5 +1,10 @@
 //! RPC plugin. Methods are `ask`s on named actors; `subscribe_events` streams
 //! every wire-visible bus event as `{"type": ..., ...}`. See design doc §7.
+//!
+//! [`api::Api`] is the single list of harness commands. In-process callers
+//! (the TUI) hold an [`api::Server`] from [`api::Server::new`] and call its
+//! [`ApiServer`] methods directly; `serve` exposes the same trait over the
+//! socket for remote clients.
 
 use std::net::SocketAddr;
 use std::path::Path;

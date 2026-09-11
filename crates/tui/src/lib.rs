@@ -1,26 +1,27 @@
 //! Terminal UI plugin. Subscribes to `agent::AgentEvent` and
-//! `tools::ApprovalRequested`; sends `SendInput` / `Steer` / `Cancel` /
-//! `Resolve` by `ask`. Cancels `rt.shutdown` on quit. See design doc §8.
+//! `tools::ApprovalRequested`; every command is an in-process call on
+//! [`rpc::api::Server`], the same [`rpc::api::Api`] the socket exposes.
+//! Cancels `rt.shutdown` on quit. See design doc §8.
 //!
 //! Shape: a bridge actor forwards bus events into an mpsc channel; the UI
 //! (fullscreen iocraft, or a line printer when stdout is not a TTY or `-p`
 //! was given) is pure over [`model::Model`]; one task turns
-//! [`model::Command`]s into actor asks and feeds replies back as
+//! [`model::Command`]s into `rpc::Api` calls and feeds replies back as
 //! [`model::UiEvent`]s.
 
 use std::io::{IsTerminal, Write};
+use std::sync::Arc;
 
-use agent::{AGENT_ACTOR, AgentConfig, AgentEvent, Agents, LoginFinished};
-use anyhow::Context as _;
+use agent::{AgentConfig, AgentEvent, LoginFinished};
+use jsonrpsee::core::RpcResult;
 use kameo::Actor;
-use kameo::actor::{ActorRef, Spawn};
+use kameo::actor::Spawn;
 use kameo::message::{Context, Message};
+use rpc::api::{ApiServer, Server};
 use runtime::{Runtime, SessionId};
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
-use tools::{
-    APPROVAL_ACTOR, Approval, ApprovalRequested, ApprovalResolved, Decision, McpAuth, McpProgress,
-};
+use tools::{ApprovalRequested, ApprovalResolved, Decision, McpAuth, McpProgress};
 
 pub mod model;
 mod ui;
@@ -55,13 +56,14 @@ impl runtime::Plugin for TuiPlugin {
         rt.subscribe::<Bridge, ApprovalResolved>(&bridge).await;
         rt.subscribe::<Bridge, McpProgress>(&bridge).await;
         rt.subscribe::<Bridge, LoginFinished>(&bridge).await;
-        tokio::spawn(run_commands(commands_rx, events_tx));
+        let api = Arc::new(Server::new(rt.clone()));
+        tokio::spawn(run_commands(api, commands_rx, events_tx));
 
         let default_model = rt.section::<AgentConfig>("agent").unwrap_or_default().model;
         let approvals = rt
             .section::<tools::ToolsConfig>("tools")
             .map_or(true, |c| c.approvals);
-        let catalog = std::sync::Arc::new(models::Catalog::load(&rt.data_dir));
+        let catalog = Arc::new(models::Catalog::load(&rt.data_dir));
         let shutdown = rt.shutdown.clone();
         let resume = self.resume;
         let prompt = self.prompt;
@@ -114,177 +116,111 @@ forward!(
     LoginFinished => LoginFinished,
 );
 
-/// The one place actors are looked up and asked. Each command runs in its
-/// own task so a slow ask never delays the next one.
-async fn run_commands(mut rx: UnboundedReceiver<Command>, tx: UnboundedSender<UiEvent>) {
+/// The one place commands become `rpc::Api` calls. Each command runs in its
+/// own task so a slow call never delays the next one.
+async fn run_commands(
+    api: Arc<Server>,
+    mut rx: UnboundedReceiver<Command>,
+    tx: UnboundedSender<UiEvent>,
+) {
     while let Some(cmd) = rx.recv().await {
         let tx = tx.clone();
+        let api = api.clone();
         tokio::spawn(async move {
-            if let Err(e) = execute(cmd, &tx).await {
+            if let Err(e) = execute(&api, cmd, &tx).await {
                 let _ = tx.send(UiEvent::Error(format!("{e:#}")));
             }
         });
     }
 }
 
-async fn execute(cmd: Command, tx: &UnboundedSender<UiEvent>) -> anyhow::Result<()> {
+async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> anyhow::Result<()> {
     let reply = match cmd {
         Command::Resolve { id, decision } => {
-            let approval = ActorRef::<Approval>::lookup(APPROVAL_ACTOR)?
-                .context("approval actor is not running")?;
-            if !approval.ask(tools::Resolve { id, decision }).await? {
+            if !msg(api.resolve_approval(id, decision).await)? {
                 anyhow::bail!("approval {} was no longer pending", id.0);
             }
             return Ok(());
         }
         Command::Send { session, text } => {
-            UiEvent::SessionCreated(agent()?.ask(agent::SendInput { session, text }).await?)
+            UiEvent::SessionCreated(msg(api.send_input(session, text).await)?)
         }
         Command::Steer { session, text } => {
-            agent()?.ask(agent::Steer { session, text }).await?;
+            msg(api.steer(session, text).await)?;
             return Ok(());
         }
         Command::Cancel(session) => {
-            agent()?.ask(agent::Cancel { session }).await?;
+            msg(api.cancel(session).await)?;
             return Ok(());
         }
         Command::Compact { session, style } => {
-            let epoch = agent()?
-                .ask(agent::Compact { session, style })
-                .await
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            let epoch = msg(api.compact(session, style).await)?;
             UiEvent::Info(match style {
                 Some(s) => format!("context compacted (epoch {epoch} · {s})"),
                 None => format!("context compacted (epoch {epoch})"),
             })
         }
-        Command::GetCompactStyle => {
-            UiEvent::CompactStyle(agent()?.ask(agent::GetCompactStyle).await?)
-        }
+        Command::GetCompactStyle => UiEvent::CompactStyle(msg(api.compact_style().await)?),
         Command::SetCompactStyle(style) => {
-            agent()?
-                .ask(agent::SetCompactStyle { style })
-                .await
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            msg(api.set_compact_style(style).await)?;
             UiEvent::Info(format!("compact style: {style}"))
         }
-        Command::ListSessions => UiEvent::Sessions(agent()?.ask(agent::ListSessions).await?),
-        Command::ListChildren(parent) => {
-            UiEvent::Children(agent()?.ask(agent::ListChildren { parent }).await?)
+        Command::ListSessions => UiEvent::Sessions(msg(api.list_sessions().await)?),
+        Command::ListChildren(parent) => UiEvent::Children(msg(api.list_children(parent).await)?),
+        Command::Load(session) => UiEvent::History(session, msg(api.load_session(session).await)?),
+        Command::ListModels => UiEvent::Models(msg(api.list_models().await)?),
+        Command::SetModel { session, model } => {
+            UiEvent::ModelSet(msg(api.set_model(session, model).await)?)
         }
-        Command::Load(session) => {
-            UiEvent::History(session, agent()?.ask(agent::LoadSession { session }).await?)
-        }
-        Command::ListModels => UiEvent::Models(agent()?.ask(agent::ListModels).await?),
-        Command::SetModel { session, model } => UiEvent::ModelSet(
-            agent()?
-                .ask(agent::SetModel { session, model })
-                .await
-                .map_err(|e| anyhow::anyhow!("{e}"))?,
-        ),
-        Command::ListMcp => UiEvent::Mcp(mcp()?.ask(tools::ListServers).await?),
-        Command::McpStatus => UiEvent::McpProgress(mcp()?.ask(tools::Progress).await?),
+        Command::ListMcp => UiEvent::Mcp(msg(api.list_mcp().await)?),
+        Command::McpStatus => UiEvent::McpProgress(msg(api.mcp_status().await)?),
         Command::SetGate { server, tool, gate } => {
-            let mcp = mcp()?;
-            mcp.ask(tools::SetGate { server, tool, gate })
-                .await
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            msg(api.set_mcp_gate(server, tool, gate).await)?;
             // Re-list here, not from the UI: commands run concurrently.
-            UiEvent::Mcp(mcp.ask(tools::ListServers).await?)
+            UiEvent::Mcp(msg(api.list_mcp().await)?)
         }
         Command::SetApprovals { session, enabled } => {
-            let registry = ActorRef::<tools::ToolRegistry>::lookup(tools::REGISTRY_ACTOR)?
-                .context("tool registry is not running")?;
-            UiEvent::Approvals(
-                registry
-                    .ask(tools::SetApprovals { session, enabled })
-                    .await?,
-            )
+            UiEvent::Approvals(msg(api.set_approvals(session, enabled).await)?)
         }
-        Command::ShowPrompt(session) => {
-            UiEvent::Prompt(agent()?.ask(agent::ShowPrompt { session }).await?)
+        Command::ShowPrompt(session) => UiEvent::Prompt(msg(api.get_prompt(session).await)?),
+        Command::ListSkills => UiEvent::Skills(msg(api.list_skills().await)?),
+        Command::LoadSkill(name) => UiEvent::Skill(msg(api.load_skill(name).await)?),
+        Command::AddSkillRepo(url) => {
+            UiEvent::SkillsAdded(msg(api.add_skill_repo(url, None).await)?)
         }
-        Command::ListSkills => UiEvent::Skills(agent()?.ask(agent::ListSkills).await?),
-        Command::LoadSkill(name) => UiEvent::Skill(
-            agent()?
-                .ask(agent::LoadSkill { name })
-                .await
-                .map_err(|e| anyhow::anyhow!("{e}"))?,
-        ),
-        Command::AddSkillRepo(url) => UiEvent::SkillsAdded(
-            agent()?
-                .ask(agent::AddSkillRepo { url, name: None })
-                .await
-                .map_err(|e| anyhow::anyhow!("{e}"))?,
-        ),
         // A repo dir first (only removed when it holds `.git`), else a local skill.
         Command::RemoveSkill(name) => {
-            let agent = agent()?;
-            let repo = agent::RemoveSkillRepo { name: name.clone() };
-            if agent.ask(repo).await.is_ok() {
+            if api.remove_skill_repo(name.clone()).await.is_ok() {
                 UiEvent::Info(format!("removed repo {name}"))
             } else {
-                agent
-                    .ask(agent::RemoveSkill { name: name.clone() })
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                msg(api.remove_skill(name.clone()).await)?;
                 UiEvent::Info(format!("removed skill {name}"))
             }
         }
-        Command::SyncSkills => UiEvent::Synced(agent()?.ask(agent::SyncSkills).await?),
-        Command::KnowledgeList => UiEvent::Knowledge(
-            knowledge()?
-                .ask(knowledge::List {
-                    limit: Some(50),
-                    ..Default::default()
-                })
-                .await
-                .map_err(|e| anyhow::anyhow!("{e}"))?,
-        ),
+        Command::SyncSkills => UiEvent::Synced(msg(api.sync_skills().await)?),
+        Command::KnowledgeList => {
+            UiEvent::Knowledge(msg(api.knowledge_list(None, None, None, Some(50)).await)?)
+        }
         Command::KnowledgeSearch(query) => UiEvent::Knowledge(
-            knowledge()?
-                .ask(knowledge::Search { query, limit: None })
-                .await
-                .map_err(|e| anyhow::anyhow!("{e}"))?
+            msg(api.knowledge_search(query, None).await)?
                 .into_iter()
                 .map(|h| h.meta)
                 .collect(),
         ),
-        Command::KnowledgeHistory(id) => UiEvent::KnowledgeHistory(
-            knowledge()?
-                .ask(knowledge::HistoryOf { id, limit: None })
-                .await
-                .map_err(|e| anyhow::anyhow!("{e}"))?,
-        ),
-        Command::KnowledgeRestore { id, commit } => UiEvent::KnowledgeRestored(
-            knowledge()?
-                .ask(knowledge::Restore { id, commit })
-                .await
-                .map_err(|e| anyhow::anyhow!("{e}"))?,
-        ),
-        Command::Harvest(session) => UiEvent::Harvested(
-            agent()?
-                .ask(agent::Harvest { session })
-                .await
-                .map_err(|e| anyhow::anyhow!("{e}"))?,
-        ),
-        Command::AddMcp { name, entry } => UiEvent::McpAdded(
-            mcp()?
-                .ask(tools::AddServer { name, entry })
-                .await
-                .map_err(|e| anyhow::anyhow!("{e}"))?,
-        ),
-        Command::AddMcpRepo(url) => UiEvent::RepoAdded(
-            mcp()?
-                .ask(tools::AddRepo { url, name: None })
-                .await
-                .map_err(|e| anyhow::anyhow!("{e}"))?,
-        ),
-        Command::SyncMcp => UiEvent::Synced(mcp()?.ask(tools::SyncMcp).await?),
+        Command::KnowledgeHistory(id) => {
+            UiEvent::KnowledgeHistory(msg(api.knowledge_history(id, None).await)?)
+        }
+        Command::KnowledgeRestore { id, commit } => {
+            UiEvent::KnowledgeRestored(msg(api.knowledge_restore(id, commit).await)?)
+        }
+        Command::Harvest(session) => UiEvent::Harvested(msg(api.knowledge_harvest(session).await)?),
+        Command::AddMcp { name, entry } => {
+            UiEvent::McpAdded(msg(api.add_mcp_server(name, entry).await)?)
+        }
+        Command::AddMcpRepo(url) => UiEvent::RepoAdded(msg(api.add_mcp_repo(url, None).await)?),
+        Command::SyncMcp => UiEvent::Synced(msg(api.sync_mcp().await)?),
         Command::ListLogins => {
-            let mut rows: Vec<LoginRow> = agent()?
-                .ask(agent::ListLogins)
-                .await?
+            let mut rows: Vec<LoginRow> = msg(api.list_logins().await)?
                 .into_iter()
                 .map(|l| LoginRow {
                     name: l.name,
@@ -297,9 +233,7 @@ async fn execute(cmd: Command, tx: &UnboundedSender<UiEvent>) -> anyhow::Result<
                 })
                 .collect();
             rows.extend(
-                mcp()?
-                    .ask(tools::ListServers)
-                    .await?
+                msg(api.list_mcp().await)?
                     .into_iter()
                     .filter(|s| s.auth != McpAuth::None)
                     .map(|s| LoginRow {
@@ -316,56 +250,28 @@ async fn execute(cmd: Command, tx: &UnboundedSender<UiEvent>) -> anyhow::Result<
         // A provider name first, else an MCP server.
         Command::Login(name) => {
             let url = if oauth::provider(&name).is_some() {
-                agent()?
-                    .ask(agent::Login { provider: name })
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{e}"))?
+                msg(api.login(name).await)?
             } else {
-                mcp()?
-                    .ask(tools::McpLogin { server: name })
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{e}"))?
+                msg(api.mcp_login(name).await)?
             };
             UiEvent::Info(format!("login: open {url}"))
         }
         Command::Logout(name) => {
             if oauth::provider(&name).is_some() {
-                agent()?
-                    .ask(agent::Logout {
-                        provider: name.clone(),
-                    })
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                msg(api.logout(name.clone()).await)?;
             } else {
-                mcp()?
-                    .ask(tools::McpLogout {
-                        server: name.clone(),
-                    })
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                msg(api.mcp_logout(name.clone()).await)?;
             }
             UiEvent::Info(format!("logged out of {name}"))
         }
-        Command::ListProviders => UiEvent::Providers(agent()?.ask(agent::ListProviders).await?),
+        Command::ListProviders => UiEvent::Providers(msg(api.list_providers().await)?),
         Command::AddProvider {
             name,
             base_url,
             key,
-        } => UiEvent::ProviderAdded(
-            agent()?
-                .ask(agent::AddProvider {
-                    name,
-                    base_url,
-                    key,
-                })
-                .await
-                .map_err(|e| anyhow::anyhow!("{e}"))?,
-        ),
+        } => UiEvent::ProviderAdded(msg(api.add_provider(name, base_url, key).await)?),
         Command::RemoveProvider(name) => {
-            agent()?
-                .ask(agent::RemoveProvider { name: name.clone() })
-                .await
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            msg(api.remove_provider(name.clone()).await)?;
             UiEvent::Info(format!("removed provider {name}"))
         }
     };
@@ -373,18 +279,9 @@ async fn execute(cmd: Command, tx: &UnboundedSender<UiEvent>) -> anyhow::Result<
     Ok(())
 }
 
-fn agent() -> anyhow::Result<ActorRef<Agents>> {
-    ActorRef::<Agents>::lookup(AGENT_ACTOR)?.context("agent actor is not running")
-}
-
-fn mcp() -> anyhow::Result<ActorRef<tools::Mcp>> {
-    ActorRef::<tools::Mcp>::lookup(tools::MCP_ACTOR)?.context("mcp actor is not running")
-}
-
-/// The knowledge actor; absent when `knowledge.enabled: false` (12 §9.3).
-fn knowledge() -> anyhow::Result<ActorRef<knowledge::KnowledgeActor>> {
-    ActorRef::<knowledge::KnowledgeActor>::lookup(knowledge::KNOWLEDGE_ACTOR)?
-        .context("knowledge is disabled")
+/// Keep only the message: the JSON-RPC code is not user-facing.
+fn msg<T>(r: RpcResult<T>) -> anyhow::Result<T> {
+    r.map_err(|e| anyhow::anyhow!("{}", e.message()))
 }
 
 /// Non-TTY fallback and `-p` print mode: print what streams in, read lines

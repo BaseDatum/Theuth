@@ -324,13 +324,19 @@ the oh-my-pi rendering approach.
 
 The TUI is a control plane over the same actor commands RPC exposes. It
 subscribes to bus events for the transcript, approvals, MCP progress and
-logins, and `ask`s named actors for everything else (`tui::Command`, 36
-variants today). It is not a thin subscriber. Tauri uses RPC (`rpc::Api`, 51
-methods); the TUI uses in-process asks of the same command types. The two
-lists are maintained by hand and drift; **phase 4 (Tauri) does not start
-until they are one list.** Alternative rejected: TUI as a jsonrpsee client
-of localhost (§2's serialization cost on the chat path; acceptable for slash
-commands, but not worth doing before a third frontend exists). See 12 §7.
+logins (its own subscription, so `TextDelta` never serializes), and for
+everything else calls the harness commands. **There is one list of
+commands: `rpc::Api`.** `rpc::api::Server` implements it as lookup + one
+`ask` per method; the TUI holds a `Server::new(rt)` in-process and calls
+the trait methods directly (plain async fn calls, no socket, no JSON);
+Tauri calls the same trait over the WebSocket. A command exists when it is
+an `Api` method: add it once, every frontend has it. `mcp_status` was
+added to `Api` to cover the one ask only the TUI made; the TUI's own actor
+lookups and message imports are gone. Alternatives rejected: (a) a
+`TypeId` registry both facades consume — reflection machinery for what a
+trait already does; (b) TUI as a real jsonrpsee client of localhost — §2's
+serialization cost on the chat path, and RPC would have to always listen.
+See 12 §7.
 
 Input: `TextInput` is multiline with `newline_modifiers: SHIFT` (our iocraft
 patch, `[patch.crates-io]`): plain Enter submits, Shift+Enter inserts a
@@ -531,7 +537,7 @@ Each phase ends with a runnable check, not a test suite.
 | 2 | rpc plugin, `--serve`; ts-rs bindings emitted | subscribe + send_input round trip over WS | done; headless e2e: shell + write/read + list/load sessions + shutdown, all over the wire |
 | 2 | skills | skill body appears in prompt on load | done (`docs/skills.md`) |
 | 3 | subagents, steering polish | parent receives child result as tool output | superseded by 01 §2 (detached) |
-| 4 | Tauri frontend over rpc | out of scope for this doc | not started; gated on §8 (one command list); `just ts` emits `bindings/*.ts` |
+| 4 | Tauri frontend over rpc | out of scope for this doc | not started; command surface ready (§8); `just ts` emits `bindings/*.ts` |
 | 5 | course correction (12) | docs and tree agree | done 2026-09-11 (12 §8 lib.rs re-exports stays opportunistic) |
 
 Known gaps carried forward: cancel/error paths in the loop are code-reviewed,

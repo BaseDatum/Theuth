@@ -30,8 +30,8 @@ use tokio::sync::broadcast;
 use tools::git::SyncResult;
 use tools::{
     AddRepo, AddServer, Approval, ApprovalId, ApprovalsState, Decision, Gate, ListServers,
-    ListTools, Mcp, McpLogin, McpLogout, McpServer, RemoveServer, RepoInfo, Resolve, SetApprovals,
-    SetGate, SyncMcp, ToolRegistry, ToolSpec,
+    ListTools, Mcp, McpLogin, McpLogout, McpProgress, McpServer, Progress, RemoveServer, RepoInfo,
+    Resolve, SetApprovals, SetGate, SyncMcp, ToolRegistry, ToolSpec,
 };
 
 use crate::bridge::Event;
@@ -88,6 +88,9 @@ pub trait Api {
     /// MCP servers, their tools, and their `mcp/config.yaml` risk lines.
     #[method(name = "list_mcp")]
     async fn list_mcp(&self) -> RpcResult<Vec<McpServer>>;
+    /// MCP connection progress snapshot (`McpProgress`), for a UI attaching after startup.
+    #[method(name = "mcp_status")]
+    async fn mcp_status(&self) -> RpcResult<McpProgress>;
     /// Set (or clear with `None`) a server or tool risk line
     /// (`read_only | mutating | destructive | off`); persists to `mcp/config.yaml`.
     #[method(name = "set_mcp_gate")]
@@ -240,6 +243,17 @@ pub struct Server {
     pub rt: Runtime,
 }
 
+impl Server {
+    /// A server with no event feed: for in-process callers (the TUI), which
+    /// subscribe to the bus themselves. `serve` builds the real one.
+    pub fn new(rt: Runtime) -> Self {
+        Self {
+            events: broadcast::channel(1).0,
+            rt,
+        }
+    }
+}
+
 fn lookup<A: Actor>(name: &str) -> RpcResult<ActorRef<A>> {
     match ActorRef::<A>::lookup(name) {
         Ok(Some(a)) => Ok(a),
@@ -343,6 +357,10 @@ impl ApiServer for Server {
 
     async fn list_mcp(&self) -> RpcResult<Vec<McpServer>> {
         ask::<Mcp, _>(tools::MCP_ACTOR, ListServers).await
+    }
+
+    async fn mcp_status(&self) -> RpcResult<McpProgress> {
+        ask::<Mcp, _>(tools::MCP_ACTOR, Progress).await
     }
 
     async fn set_mcp_gate(

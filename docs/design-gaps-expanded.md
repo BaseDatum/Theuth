@@ -32,7 +32,7 @@ recommendation, the row says so.
 | G3 | Pairing moved into `SignalPlugin::start` (`LinkOpts`); `main.rs` imports only `SignalPlugin` / `LinkOpts`. | 12 §3 |
 | G4 | `Runtime::lookup_when`; signal and agent register tools through it; the order comment and the `0..50` retry are gone. | 12 §2 |
 | G5 | `agent::backend::Backend { Genai, Cursor }` enum — a closed set of two, not the trait proposed here; `loop_.rs` has no `"cursor"` literal. | 12 §6, 00 §5 |
-| G6 | 00 §8 rewritten as the control-plane truth; Tauri gated on one command list; no refactor yet, deliberately. | 12 §7 |
+| G6 | One command list: `rpc::Api`; the TUI calls the `Api` impl in-process, Tauri over the socket; `mcp_status` added; 00 §8 rewritten. | 12 §7 |
 | G7 | Tool list fetched once per turn in `Turn::rebase`; `tools_seen` and the warn deleted; 00 §9 names the watcher. | 12 §4 |
 | G8 | 00 §4 carries the `todo` / `python` loop-local exception verbatim. | 12 §1 |
 | G9 | 00 §1.8 rewritten. This doc's “no grep/edit natives” reading was wrong: any assistant needs to search and edit files. `grep` and `edit` are natives now; coding-specific natives (LSP, notebooks, git, diff review) stay out. | 12 §10 |
@@ -704,12 +704,16 @@ through it (keep the bus subscription).
 Do not add Tauri until A or B is done. Otherwise Tauri becomes a third
 list.
 
-**Resolved (12 §7):** option A's amendment landed — 00 §8 is rewritten as
-the control-plane truth, with the counts above, and phase 4 (Tauri) is
-gated on the two command lists becoming one. The unification itself was
-not done, deliberately: a real refactor with one beneficiary that has no
-date. `forward!` and the five `rt.subscribe` lines stay until a third
-consumer appears.
+**Resolved (12 §7):** option B minus the socket. `rpc::Api` is the one
+command list; `rpc::api::Server` implements it as lookup + one `ask` per
+method; the TUI holds a `Server::new(rt)` in-process and calls the trait
+methods directly (plain async fn calls, no JSON), keeping its own bus
+subscription so `TextDelta` never serializes; Tauri calls the same trait
+over the WebSocket. `tui::Command`'s actor knowledge is gone; `mcp_status`
+was added to `Api` for the one TUI-only ask. Option A's `TypeId` registry
+was rejected as reflection machinery for what a trait already does.
+`forward!` and the five `rt.subscribe` lines stay until a third event
+consumer appears. 00 §8 carries the shipped text.
 
 ---
 
