@@ -203,6 +203,39 @@ impl std::fmt::Display for TurnId {
     }
 }
 
+/// One user input, identified by its sender so it can be shown before any
+/// reply arrives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(transparent)]
+pub struct InputId(pub uuid::Uuid);
+
+impl InputId {
+    /// Time-ordered id.
+    pub fn new() -> Self {
+        Self(uuid::Uuid::now_v7())
+    }
+}
+
+impl Default for InputId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::fmt::Display for InputId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::str::FromStr for InputId {
+    type Err = uuid::Error;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        s.parse().map(Self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::write_config_value;

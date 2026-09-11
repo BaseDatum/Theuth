@@ -145,9 +145,23 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
         Command::Send { session, text } => {
             UiEvent::SessionCreated(msg(api.send_input(session, text).await)?)
         }
-        Command::Steer { session, text } => {
-            msg(api.steer(session, text).await)?;
+        Command::Steer { session, id, text } => {
+            msg(api.steer(session, text, Some(id)).await)?;
             return Ok(());
+        }
+        Command::Withdraw { session, id } => UiEvent::Withdrawn {
+            id,
+            text: msg(api.withdraw(session, id).await)?,
+        },
+        // The transcript is reloaded here, not from the UI: commands run
+        // concurrently and the notice must land before the new history.
+        Command::Undo(session) => {
+            let _ = tx.send(UiEvent::Undone(msg(api.undo(session).await)?));
+            UiEvent::History(session, msg(api.load_session(session).await)?)
+        }
+        Command::Redo(session) => {
+            let _ = tx.send(UiEvent::Redone(msg(api.redo(session).await)?));
+            UiEvent::History(session, msg(api.load_session(session).await)?)
         }
         Command::Cancel(session) => {
             msg(api.cancel(session).await)?;
@@ -417,6 +431,9 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             Some(e) => writeln!(out, "login: {} failed: {e}", f.provider),
         },
         UiEvent::Prompt(text) | UiEvent::Info(text) => writeln!(out, "{text}"),
+        UiEvent::Withdrawn { text, .. } => writeln!(out, "withdrawn: {text}"),
+        UiEvent::Undone(text) => writeln!(out, "undone: {text} — /redo restores"),
+        UiEvent::Redone(text) => writeln!(out, "restored: {text}"),
         UiEvent::CompactStyle(s) => writeln!(
             out,
             "compact style: {s} (default)\n  summary  cache-hot LLM fold (07 §8.3)\n  cut      drop the folded span, keep the tail, no model call\n  snap     rasterize the folded span to images (vision model)"

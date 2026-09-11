@@ -3,7 +3,8 @@
 //! message to sqlite; publishes [`AgentEvent`] for any UI.
 //!
 //! - commands on the `"agent"` actor ([`Agents`]): [`SendInput`], [`Steer`],
-//!   [`Cancel`], [`Compact`], [`SetCompactStyle`], [`ListSessions`], [`LoadSession`], [`ListChildren`],
+//!   [`Withdraw`], [`ListQueued`], [`Undo`], [`Redo`], [`Cancel`], [`Compact`],
+//!   [`SetCompactStyle`], [`ListSessions`], [`LoadSession`], [`ListChildren`],
 //!   [`ListModels`], [`SetModel`], [`SetEffort`], [`ShowPrompt`], [`ListSkills`],
 //!   [`LoadSkill`], [`AddSkill`], [`RemoveSkill`], [`AddSkillRepo`],
 //!   [`RemoveSkillRepo`], [`SyncSkills`], [`ListLogins`], [`Login`], [`Logout`],
@@ -11,7 +12,7 @@
 
 use std::sync::Arc;
 
-use runtime::{SessionId, TurnId};
+use runtime::{InputId, SessionId, TurnId};
 use serde::{Deserialize, Serialize};
 
 mod backend;
@@ -44,14 +45,64 @@ pub struct SendInput {
 }
 
 /// `ask` → `()`. Injected as a user message after the current tool batch
-/// completes (oh-my-pi steering); no-op if the session is idle (then it is
-/// treated as [`SendInput`]).
+/// completes (oh-my-pi steering); the lifecycle arrives as
+/// [`AgentEvent::InputQueued`] → [`AgentEvent::InputInjected`] |
+/// [`AgentEvent::InputWithdrawn`]. Idle session → starts a turn now; the id
+/// still resolves through `InputInjected`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Steer {
     /// Target session.
     pub session: SessionId,
+    /// Client-minted id, echoed by the lifecycle events.
+    pub id: InputId,
     /// User text.
     pub text: String,
+}
+
+/// `ask` → `Result<String, String>`: pull a queued steer back before it enters
+/// the context; `Ok(text)` is the removed input, `Err("not queued")` when it
+/// was already injected (or never queued).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct Withdraw {
+    /// Target session.
+    pub session: SessionId,
+    /// The id given to [`Steer`].
+    pub id: InputId,
+}
+
+/// `ask` → `Vec<QueuedInput>`: steers waiting for the current tool batch to end.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct ListQueued {
+    /// Target session.
+    pub session: SessionId,
+}
+
+/// A user input waiting for the current tool batch to end.
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct QueuedInput {
+    /// The id given to [`Steer`].
+    pub id: InputId,
+    /// User text.
+    pub text: String,
+}
+
+/// `ask` → `Result<String, String>`: hide the last turn (a user message and
+/// everything after it) from the frame and transcript; `Ok` is the first line
+/// of its user text. `Err("turn in flight" | "nothing to undo")`. Nothing is
+/// deleted until the next write; [`Redo`] restores.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct Undo {
+    /// Target session.
+    pub session: SessionId,
+}
+
+/// `ask` → `Result<String, String>`: restore the most recently undone turn;
+/// `Ok` is the first line of its user text. `Err("turn in flight" | "nothing to redo")`.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct Redo {
+    /// Target session.
+    pub session: SessionId,
 }
 
 /// `ask` → `()`. Abort the in-flight turn; emits `TurnFinished { stop_reason: "cancelled" }`.
@@ -115,6 +166,10 @@ pub struct Loaded {
     pub model: String,
     /// Reasoning effort in force; `None` = provider default.
     pub effort: Option<String>,
+    /// Steers waiting for the current tool batch; empty when idle.
+    pub queued: Vec<QueuedInput>,
+    /// Turns hidden by [`Undo`] (the redo depth); 0 when none.
+    pub undone: u32,
 }
 
 /// `ask` → `Vec<SessionSummary>`: subagents of `parent` (with `name` set), newest first.
@@ -517,6 +572,32 @@ pub enum AgentEvent {
         /// Message.
         message: String,
     },
+    /// A [`Steer`] is waiting for the current tool batch to end.
+    InputQueued {
+        /// Session.
+        session: SessionId,
+        /// The steer's id.
+        id: InputId,
+        /// User text.
+        text: String,
+    },
+    /// A queued input entered the context as a user message; published before
+    /// `TurnStarted` when queued inputs start a turn.
+    InputInjected {
+        /// Session.
+        session: SessionId,
+        /// The steer's id.
+        id: InputId,
+        /// Turn it now belongs to.
+        turn: TurnId,
+    },
+    /// A queued input was pulled back by [`Withdraw`]; it never entered the context.
+    InputWithdrawn {
+        /// Session.
+        session: SessionId,
+        /// The steer's id.
+        id: InputId,
+    },
     /// A subagent session was created for `parent`.
     SubagentSpawned {
         /// Owning session.
@@ -599,6 +680,9 @@ impl AgentEvent {
             | Self::ToolCallStarted { session, .. }
             | Self::ToolCallFinished { session, .. }
             | Self::TurnFinished { session, .. }
+            | Self::InputQueued { session, .. }
+            | Self::InputInjected { session, .. }
+            | Self::InputWithdrawn { session, .. }
             | Self::MessageDelivered { session, .. }
             | Self::ModelChanged { session, .. }
             | Self::EffortChanged { session, .. }

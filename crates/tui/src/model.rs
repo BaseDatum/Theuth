@@ -6,13 +6,13 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use agent::{
-    AgentEvent, CompactStyle, HistoryEntry, Loaded, ModelInfo, ProviderInfo, SessionSummary,
-    SkillBody, SkillMeta, Usage,
+    AgentEvent, CompactStyle, HistoryEntry, Loaded, ModelInfo, ProviderInfo, QueuedInput,
+    SessionSummary, SkillBody, SkillMeta, Usage,
 };
 use iocraft::KeyCode;
 use knowledge::{Change, HarvestResult, History, Meta};
 use models::Catalog;
-use runtime::SessionId;
+use runtime::{InputId, SessionId, TurnId};
 use tokio::sync::mpsc::UnboundedSender;
 use tools::git::SyncResult;
 use tools::{
@@ -85,6 +85,17 @@ pub enum UiEvent {
     Providers(Vec<ProviderInfo>),
     /// Reply to [`Command::AddProvider`].
     ProviderAdded(ProviderInfo),
+    /// Reply to [`Command::Withdraw`]: the steer left the queue; its text goes back to the editor.
+    Withdrawn {
+        /// The withdrawn steer.
+        id: InputId,
+        /// Its text.
+        text: String,
+    },
+    /// Reply to [`Command::Undo`]: first line of the turn now hidden.
+    Undone(String),
+    /// Reply to [`Command::Redo`]: first line of the turn restored.
+    Redone(String),
 }
 
 /// Everything the UI can ask of the rest of the process. One task turns
@@ -98,13 +109,26 @@ pub enum Command {
         /// User text.
         text: String,
     },
-    /// `steer`.
+    /// `steer`: queued until the current tool batch ends.
     Steer {
         /// Target.
         session: SessionId,
+        /// Client-minted id, echoed by the `Input*` events.
+        id: InputId,
         /// User text.
         text: String,
     },
+    /// `withdraw`: take a steer back out of the queue.
+    Withdraw {
+        /// Target.
+        session: SessionId,
+        /// The steer.
+        id: InputId,
+    },
+    /// `undo`: hide the last turn.
+    Undo(SessionId),
+    /// `redo`: restore the last hidden turn.
+    Redo(SessionId),
     /// `cancel`.
     Cancel(SessionId),
     /// `compact`.
@@ -472,6 +496,8 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "[summary|cut|snap|style …]",
         "fold context; style sets the default",
     ),
+    ("/undo", "", "drop the last turn (redo restores)"),
+    ("/redo", "", "restore the last undone turn"),
     ("/quit", "", "exit"),
     (
         "/provider",
@@ -779,6 +805,16 @@ pub struct Model {
     /// `TurnStarted` echoing it is not shown again (its card is already up,
     /// with paste tokens).
     sent: Option<String>,
+    /// Steers of the shown session waiting for the current tool batch to
+    /// end, oldest first; drawn below the transcript until `InputInjected`.
+    pub queued: Vec<QueuedInput>,
+    /// Turn the last `InputInjected` joined: its `TurnStarted` is not echoed
+    /// (the card moved into `entries` on injection).
+    last_injected_turn: Option<TurnId>,
+    /// Text the editor takes on the next render: a withdrawn steer.
+    pub recall: Option<String>,
+    /// Notice shown after the transcript reloads that an undo/redo triggered.
+    notice: Option<String>,
     /// The shown session's summariser call is in flight (`Compacting`).
     pub compacting: bool,
     /// The shown session's harvest call is in flight (`Harvesting`).
@@ -1100,6 +1136,17 @@ impl Model {
             UiEvent::History(id, loaded) => {
                 if self.shown() == Some(id) {
                     self.entries = loaded.history.into_iter().flat_map(from_history).collect();
+                    // The reload an undo/redo triggered shows its own notice
+                    // instead of the generic depth line.
+                    match self.notice.take() {
+                        Some(n) => self.entries.push(Entry::Info(n)),
+                        None if loaded.undone > 0 => self.entries.push(Entry::Info(format!(
+                            "{} turn(s) undone — /redo restores",
+                            loaded.undone
+                        ))),
+                        None => {}
+                    }
+                    self.queued = loaded.queued;
                     self.model_id = loaded.model;
                     self.effort = loaded.effort;
                     if self.session == Some(id) {
@@ -1290,10 +1337,18 @@ impl Model {
                 "provider {}  {}  {} models — /model {}/<id>",
                 p.name, p.base_url, p.models, p.name
             ))),
+            UiEvent::Withdrawn { id, text } => {
+                self.queued.retain(|q| q.id != id);
+                self.recall = Some(text);
+            }
+            // The transcript reload that follows pushes the notice (`History`).
+            UiEvent::Undone(t) => self.notice = Some(format!("undone: {t} — /redo restores")),
+            UiEvent::Redone(t) => self.notice = Some(format!("restored: {t}")),
             UiEvent::Error(e) => {
                 // A failed `/compact` answers here, not with an agent event.
                 self.compacting = false;
                 self.awaiting_effort = false;
+                self.notice = None;
                 self.entries.push(Entry::Error(e));
             }
         }
@@ -1333,6 +1388,22 @@ impl Model {
                 }
                 return;
             }
+            // Queue bookkeeping mid-stream must not finish the streaming tail below.
+            AgentEvent::InputQueued { session, id, text } => {
+                if self.shown() == Some(*session) && !self.queued.iter().any(|q| q.id == *id) {
+                    self.queued.push(QueuedInput {
+                        id: *id,
+                        text: text.clone(),
+                    });
+                }
+                return;
+            }
+            AgentEvent::InputWithdrawn { session, id } => {
+                if self.shown() == Some(*session) {
+                    self.queued.retain(|q| q.id != *id);
+                }
+                return;
+            }
             AgentEvent::TurnStarted { session, .. } | AgentEvent::TurnFinished { session, .. } => {
                 let running = matches!(ev, AgentEvent::TurnStarted { .. });
                 if self.session == Some(*session) {
@@ -1357,13 +1428,27 @@ impl Model {
             t.finish();
         }
         match ev {
-            // Echo the turn's input unless the human just typed it here or the
-            // harness injected it (`MessageDelivered` already shows those).
-            AgentEvent::TurnStarted { text, model, .. } => {
+            // Echo the turn's input unless the human just typed it here, it was
+            // a steer whose card moved up on `InputInjected`, or the harness
+            // injected it (`MessageDelivered` already shows those).
+            AgentEvent::TurnStarted {
+                turn, text, model, ..
+            } => {
                 self.model_id = model;
-                if injected(&text).is_none() && self.sent.take().as_deref() != Some(&*text) {
+                let shown = injected(&text).is_some()
+                    || self.last_injected_turn.take() == Some(turn)
+                    || self.sent.take().as_deref() == Some(&*text);
+                if !shown {
                     self.entries.push(Entry::User(text));
                 }
+            }
+            // The steer enters the context now: its card moves from the queue
+            // to the transcript, after everything the model said before it.
+            AgentEvent::InputInjected { id, turn, .. } => {
+                if let Some(at) = self.queued.iter().position(|q| q.id == id) {
+                    self.entries.push(Entry::User(self.queued.remove(at).text));
+                }
+                self.last_injected_turn = Some(turn);
             }
             AgentEvent::TextDelta { text, .. } => match self.entries.last_mut() {
                 Some(Entry::Assistant(t)) if !t.is_done() => t.push(&text),
@@ -1466,7 +1551,10 @@ impl Model {
                 self.harvesting = false;
                 self.entries.push(Entry::Error(message));
             }
-            AgentEvent::SubagentSpawned { .. } | AgentEvent::MessageDelivered { .. } => {}
+            AgentEvent::SubagentSpawned { .. }
+            | AgentEvent::MessageDelivered { .. }
+            | AgentEvent::InputQueued { .. }
+            | AgentEvent::InputWithdrawn { .. } => {}
             AgentEvent::Harvesting { .. } => self.harvesting = true,
             AgentEvent::Harvested { added, updated, .. } => {
                 self.harvesting = false;
@@ -1545,19 +1633,31 @@ impl Model {
                     send(tx, Command::Cancel(session));
                 }
             }
+            "/undo" | "/redo" => match self.shown() {
+                Some(session) if cmd == "/undo" => send(tx, Command::Undo(session)),
+                Some(session) => send(tx, Command::Redo(session)),
+                None => self.entries.push(Entry::Info("no session".into())),
+            },
             "/provider" => self.provider_cmd(arg, tx),
             c if c.starts_with('/') => self
                 .entries
                 .push(Entry::Error(format!("unknown command {c}"))),
             _ => {
-                self.entries.push(Entry::User(line.to_owned()));
                 let text = self.expand_pastes(line);
-                self.sent = Some(text.clone());
                 match self.shown() {
+                    // Mid-turn: the card waits below the transcript until
+                    // `InputInjected` says where in the conversation it landed.
                     Some(session) if self.shown_running() => {
-                        send(tx, Command::Steer { session, text });
+                        let id = InputId::new();
+                        self.queued.push(QueuedInput {
+                            id,
+                            text: text.clone(),
+                        });
+                        send(tx, Command::Steer { session, id, text });
                     }
                     session => {
+                        self.entries.push(Entry::User(line.to_owned()));
+                        self.sent = Some(text.clone());
                         self.awaiting_session = session.is_none();
                         send(tx, Command::Send { session, text });
                     }
@@ -1607,6 +1707,20 @@ impl Model {
         }
     }
 
+    /// Alt+Up: take the newest queued steer back into the editor. Only into
+    /// an empty editor, so nothing typed is overwritten; the text arrives
+    /// with `UiEvent::Withdrawn` once the agent confirms it was still queued.
+    pub fn withdraw(&mut self, editor_empty: bool, tx: &UnboundedSender<Command>) {
+        let Some(q) = self.queued.last() else { return };
+        if !editor_empty {
+            self.entries.push(Entry::Info("editor not empty".into()));
+            return;
+        }
+        if let Some(session) = self.shown() {
+            send(tx, Command::Withdraw { session, id: q.id });
+        }
+    }
+
     /// Answer the shown approval and dismiss it locally; `ApprovalResolved`
     /// (or a `Resolve` failure) is then a no-op for this id.
     pub fn decide(&mut self, decision: Decision, tx: &UnboundedSender<Command>) {
@@ -1621,7 +1735,7 @@ impl Model {
         }
     }
 
-    /// One-line status: session, streaming state, last usage, focus, roster.
+    /// One-line status: session, streaming state, last usage, focus, roster, queue.
     pub fn status(&self) -> String {
         let session = self.shown().map_or_else(|| "no session".to_owned(), short);
         let state = self
@@ -1640,7 +1754,11 @@ impl Model {
         } else {
             String::new()
         };
-        format!("{session}  {state}{usage}{focus}{agents}")
+        let queued = match self.queued.len() {
+            0 => String::new(),
+            n => format!("  ·  {n} queued"),
+        };
+        format!("{session}  {state}{usage}{focus}{agents}{queued}")
     }
 
     /// Line above the input: `model  ·  high  ·  ctx 12.3k / 200k (6%)  ·  cache 94%`
@@ -2793,5 +2911,99 @@ mod tests {
         assert_eq!(m.tail(1), 19);
         assert_eq!(m.tail(7), 18, "Info 1 + User 6 rows");
         assert_eq!(m.tail(1000), 0, "short histories draw whole");
+    }
+
+    #[test]
+    fn steer_waits_in_the_queue_until_injected() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::new("m".into(), true);
+        let s = SessionId::new();
+        m.session = Some(s);
+        m.streaming = true;
+        m.apply_agent(AgentEvent::TextDelta {
+            session: s,
+            turn: TurnId::new(),
+            text: "working".into(),
+        });
+        m.submit("also do X", &tx);
+        let Ok(Command::Steer { id, text, .. }) = rx.try_recv() else {
+            panic!("mid-turn input must steer");
+        };
+        assert_eq!(text, "also do X");
+        assert_eq!(m.queued.len(), 1);
+        assert!(
+            !m.entries.iter().any(|e| matches!(e, Entry::User(_))),
+            "a queued steer has no transcript card yet"
+        );
+        assert!(m.status().contains("1 queued"));
+        // Another frontend's steer shows up too; ours is not duplicated.
+        let other = InputId::new();
+        for id in [other, id] {
+            m.apply_agent(AgentEvent::InputQueued {
+                session: s,
+                id,
+                text: "x".into(),
+            });
+        }
+        assert_eq!(m.queued.len(), 2);
+        assert!(
+            matches!(m.entries.last(), Some(Entry::Assistant(t)) if !t.is_done()),
+            "queue bookkeeping must not cut the streaming tail"
+        );
+        let turn = TurnId::new();
+        m.apply_agent(AgentEvent::InputInjected {
+            session: s,
+            id,
+            turn,
+        });
+        assert_eq!(m.queued.len(), 1, "injected steer left the queue");
+        assert!(
+            matches!(m.entries.last(), Some(Entry::User(t)) if t == "also do X"),
+            "the card lands after the streamed text"
+        );
+        let before = m.entries.len();
+        m.apply_agent(AgentEvent::TurnStarted {
+            session: s,
+            turn,
+            text: "also do X".into(),
+            model: "m".into(),
+        });
+        assert_eq!(
+            m.entries.len(),
+            before,
+            "the turn echo is not a second card"
+        );
+        m.apply_agent(AgentEvent::InputWithdrawn {
+            session: s,
+            id: other,
+        });
+        assert!(m.queued.is_empty());
+    }
+
+    #[test]
+    fn alt_up_withdraws_only_into_an_empty_editor() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::new("m".into(), true);
+        let s = SessionId::new();
+        m.session = Some(s);
+        m.streaming = true;
+        m.submit("first", &tx);
+        m.submit("second", &tx);
+        while rx.try_recv().is_ok() {}
+        m.withdraw(false, &tx);
+        assert!(
+            rx.try_recv().is_err(),
+            "a non-empty editor is never overwritten"
+        );
+        assert!(matches!(m.entries.last(), Some(Entry::Info(t)) if t == "editor not empty"));
+        m.withdraw(true, &tx);
+        let newest = m.queued[1].id;
+        assert!(matches!(rx.try_recv(), Ok(Command::Withdraw { id, .. }) if id == newest));
+        m.apply(UiEvent::Withdrawn {
+            id: newest,
+            text: "second".into(),
+        });
+        assert_eq!(m.queued.len(), 1);
+        assert_eq!(m.recall.take().as_deref(), Some("second"));
     }
 }

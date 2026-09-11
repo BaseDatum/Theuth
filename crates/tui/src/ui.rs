@@ -103,7 +103,12 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             // Servers started connecting before this UI subscribed.
             let _ = commands.send(Command::McpStatus);
             while let Some(ev) = events.recv().await {
-                model.write().apply(ev);
+                let mut m = model.write();
+                m.apply(ev);
+                // A withdrawn steer comes back into the (empty) editor.
+                if let Some(text) = m.recall.take() {
+                    input.set(text);
+                }
             }
         }
     });
@@ -164,6 +169,11 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             }
             // Shift+Enter: the input inserts the newline itself.
             if code == KeyCode::Enter && modifiers.contains(KeyModifiers::SHIFT) {
+                return;
+            }
+            // Alt+Up: pull the newest queued steer back into the editor.
+            if code == KeyCode::Up && modifiers.contains(KeyModifiers::ALT) {
+                m.withdraw(input.read().is_empty(), &commands);
                 return;
             }
             if m.menu.is_some() {
@@ -232,6 +242,14 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                         #(m.waiting().then(|| element!(View(margin_top: 1) {
                             Text(content: format!("{} thinking…", m.spinner()), color: Color::DarkGrey, italic: true)
                         })))
+                        // Steers not yet in the context: below the transcript,
+                        // never among its entries, until `InputInjected`.
+                        #(m.queued.iter().map(|q| element! {
+                            View(flex_direction: FlexDirection::Column, border_style: BorderStyle::Round, border_color: Color::DarkGrey, padding_left: 1, padding_right: 1, margin_top: 1) {
+                                Text(content: "◇ queued · ⌥↑ edit", color: Color::DarkGrey, weight: Weight::Bold)
+                                Text(content: q.text.clone(), color: Color::DarkGrey, wrap: TextWrap::Wrap)
+                            }
+                        }))
                     }
                 }
             }

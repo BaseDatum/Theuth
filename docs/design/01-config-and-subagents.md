@@ -217,9 +217,9 @@ the human cannot talk to the child.
 1. `spawn_subagent` returns immediately with the child's name and session id.
    The parent's turn continues (more tools, more text) or ends.
 2. When any child turn finishes, its result is delivered to the parent as an
-   input. Parent idle → a new turn starts. Parent mid-turn → injected after
-   the current tool batch, exactly like human steering. This is
-   `Session::UserInput` today; no new path.
+   input. Parent idle → a new turn starts. Parent mid-turn → queued and
+   injected after the current tool batch, the same path as human steering
+   (§2.3). This is `Session::UserInput` today; no new path.
 3. Peers talk with one tool, `send_message`. A child can address `parent`; a
    parent addresses children by name. `await_reply: true` blocks the caller
    until the addressee's next message to it (bounded by `reply_timeout_secs`).
@@ -273,6 +273,41 @@ Consequences worth stating:
   simple; batching them into one turn is an optimisation for later.
 - Result delivery is one-way (child → parent). A parent's turn text is never
   pushed to children; parents steer explicitly.
+
+**Human steering** (`Steer { session, id, text }`, `Withdraw { session,
+id }`, `ListQueued { session }`, all `ask` on `Agents`). A mid-turn input
+has a three-state lifecycle:
+
+- **queued** — the caller mints an `InputId` (uuid v7) and sends `Steer`;
+  the loop pushes `QueuedInput { id, text }` onto the session's in-memory
+  queue and publishes `InputQueued { session, id, text }`. Because the id is
+  the caller's, a frontend can paint the card the moment the user presses
+  Enter and address it later without waiting for any reply.
+- **injected** — after the current tool batch ends, or at `TurnDone` when
+  the queue is non-empty (then the queued inputs start the next turn), the
+  loop appends the text as a user message and publishes `InputInjected {
+  session, id, turn }`. When queued inputs start a turn, `InputInjected`
+  precedes `TurnStarted` for that turn, so a frontend that already shows
+  the card skips the `TurnStarted` echo. An idle session has no batch to
+  wait for: `Steer` starts a turn immediately and still publishes
+  `InputInjected`.
+- **withdrawn** — `Withdraw` while still queued removes the item and
+  returns `Ok(text)` to the caller (the TUI puts it back in the editor);
+  `InputWithdrawn { session, id }` goes to everyone else. Once injected it
+  is history: `Err("not queued")`.
+
+`ListQueued` and `Loaded.queued` give a frontend attaching mid-turn the
+current queue. The queue is memory only — a queued steer is a pending
+action, not history, and does not survive the process. Harness inputs
+(`<subagent_result>`, peer `<message>`) carry no id and publish no `Input*`
+event. `SendInput` is unchanged: it starts a turn when idle and is echoed
+by `TurnStarted`.
+
+Rejected: server-minted ids (the sender could not show the card until the
+reply arrived, and replies to concurrent commands are unordered, so it
+could not tell which reply was its own); injecting mid-stream (a provider
+stream cannot take a user message until it yields — after the tool batch
+is the earliest honest point).
 
 ### 2.4 Tools
 

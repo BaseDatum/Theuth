@@ -1,9 +1,16 @@
 //! One session's model loop: frame, stream, dispatch tool calls, steer,
-//! compact, cancel (design docs 07, 08).
+//! compact, cancel, undo (design docs 07, 08).
 //!
 //! The [`Session`] actor owns the [`SessionState`] between turns; a running
 //! turn owns it inside a spawned task and hands it back via [`TurnDone`], so
 //! the actor's mailbox never blocks on network I/O.
+//!
+//! Input arriving mid-turn queues in `Shared::steer` and is injected after the
+//! tool batch; a caller-minted [`InputId`] rides along so the UI can follow it
+//! (`InputQueued` → `InputInjected` | `InputWithdrawn`). Harness inputs
+//! (`<subagent_result>`, `<message>`) carry no id and publish nothing.
+//! [`UndoTurn`]/[`RedoTurn`] move the store's cut between turns; the first
+//! write afterwards (`Session::claim`) commits it.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -22,7 +29,7 @@ use kameo::message::{Context, Message};
 use knowledge::{HarvestResult, KNOWLEDGE_ACTOR, Knowledge, KnowledgeActor, Put, Source};
 use models::Resolved;
 use monty_pool::Pool;
-use runtime::{Runtime, SessionId, TurnId};
+use runtime::{InputId, Runtime, SessionId, TurnId};
 use tokio_util::sync::CancellationToken;
 use tools::{Invoke, ListPrompts, ListTools, REGISTRY_ACTOR, ToolOutput, ToolRegistry, ToolSpec};
 
@@ -33,7 +40,8 @@ use crate::repl::{self, Repl, RunCx};
 use crate::store::Store;
 use crate::supervisor::{Auth, PeerContext, Roster};
 use crate::{
-    AGENT_ACTOR, AgentConfig, AgentEvent, Agents, CompactStyle, Usage, compact, spill, todo,
+    AGENT_ACTOR, AgentConfig, AgentEvent, Agents, CompactStyle, QueuedInput, Usage, compact, spill,
+    todo,
 };
 
 /// Characters of tool output shown in [`AgentEvent::ToolCallFinished`].
@@ -44,8 +52,32 @@ const CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 const CACHE_FLOOR: u32 = 4096;
 
 /// `tell`: user text. Starts a turn when idle, otherwise queued and injected
-/// after the current tool batch (steering).
-pub struct UserInput(pub String);
+/// after the current tool batch (steering). `id` is the caller's
+/// [`InputId`]; `None` for harness inputs, which publish no `Input*` events.
+pub struct UserInput {
+    /// Caller-minted id, echoed by the `Input*` events.
+    pub id: Option<InputId>,
+    /// User text.
+    pub text: String,
+}
+
+/// One queued input: the caller's id (`None` for harness inputs) and its text.
+type Queued = (Option<InputId>, String);
+
+/// `ask` → `Result<String, String>`: remove a queued input; `Ok(text)`, or
+/// `Err("not queued")` when it already entered the context.
+pub struct WithdrawInput(pub InputId);
+
+/// `ask` → `Vec<QueuedInput>`: queued inputs that carry an id.
+pub struct QueuedInputs;
+
+/// `ask` → `Result<String, String>`: hide the last turn; `Ok(first line)`.
+/// `Err("turn in flight" | "nothing to undo")`.
+pub struct UndoTurn;
+
+/// `ask` → `Result<String, String>`: restore the last hidden turn; `Ok(first line)`.
+/// `Err("turn in flight" | "nothing to redo")`.
+pub struct RedoTurn;
 
 /// `tell`: abort the in-flight turn, if any.
 pub struct CancelTurn;
@@ -158,7 +190,8 @@ struct Shared {
     client: Client,
     auth: Auth,
     rt: Runtime,
-    steer: Arc<Mutex<Vec<String>>>,
+    /// Inputs waiting for the tool batch to end.
+    steer: Arc<Mutex<Vec<Queued>>>,
     catalog: Arc<models::Catalog>,
     /// Python runtime pool; `None` when the pool failed to start (08 §9).
     pool: Option<Arc<Pool>>,
@@ -241,8 +274,38 @@ impl Session {
         }
     }
 
-    async fn start_turn(&mut self, inputs: Vec<String>, me: &ActorRef<Self>) {
-        let Some(state) = self.state.take() else {
+    /// The idle state, with any pending undo cut committed first: this is the
+    /// first write after an undo, so the hidden tail is deleted for real.
+    /// `None` while a turn (or compaction/harvest) owns the state.
+    async fn claim(&mut self) -> Option<SessionState> {
+        let state = self.state.take()?;
+        if let Err(e) = self.shared.store.commit_cut(self.shared.id).await {
+            tracing::warn!(session = %self.shared.id, "commit_cut: {e:#}");
+        }
+        Some(state)
+    }
+
+    /// [`UndoTurn`]/[`RedoTurn`]: move the store's cut, reload the frame from
+    /// the visible rows, and return the first line of the moved turn's user text.
+    async fn cut(&mut self, undo: bool) -> Result<String, String> {
+        if self.inflight.is_some() || self.state.is_none() {
+            return Err("turn in flight".into());
+        }
+        let id = self.shared.id;
+        let store = &self.shared.store;
+        let (moved, empty) = if undo {
+            (store.undo(id).await, "nothing to undo")
+        } else {
+            (store.redo(id).await, "nothing to redo")
+        };
+        let text = moved.map_err(|e| e.to_string())?.ok_or(empty)?;
+        let (epoch, head, history) = store.frame(id).await.map_err(|e| e.to_string())?;
+        self.state = Some(SessionState::resume(epoch, head, history));
+        Ok(text.lines().next().unwrap_or("").chars().take(80).collect())
+    }
+
+    async fn start_turn(&mut self, inputs: Vec<Queued>, me: &ActorRef<Self>) {
+        let Some(state) = self.claim().await else {
             // Only reachable if a turn is already running; the caller checked `inflight`.
             return;
         };
@@ -251,7 +314,7 @@ impl Session {
         self.inflight = Some(cancel.clone());
         if !self.titled {
             self.titled = true;
-            if let Some(first) = inputs.first()
+            if let Some((_, first)) = inputs.first()
                 && let Err(e) = self
                     .shared
                     .store
@@ -271,6 +334,19 @@ impl Session {
             }
             current.model.id.clone()
         };
+        // Identified inputs resolve before `TurnStarted` so a UI already
+        // showing them skips the echo.
+        for id in inputs.iter().filter_map(|(id, _)| *id) {
+            self.shared
+                .rt
+                .publish(AgentEvent::InputInjected {
+                    session: self.shared.id,
+                    id,
+                    turn,
+                })
+                .await;
+        }
+        let inputs: Vec<String> = inputs.into_iter().map(|(_, text)| text).collect();
         self.shared
             .rt
             .publish(AgentEvent::TurnStarted {
@@ -292,17 +368,90 @@ impl Session {
 impl Message<UserInput> for Session {
     type Reply = ();
 
-    async fn handle(&mut self, UserInput(text): UserInput, ctx: &mut Context<Self, Self::Reply>) {
-        if self.inflight.is_some() {
-            self.shared
-                .steer
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .push(text);
-        } else {
+    async fn handle(
+        &mut self,
+        UserInput { id, text }: UserInput,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) {
+        if self.inflight.is_none() {
             let me = ctx.actor_ref().clone();
-            self.start_turn(vec![text], &me).await;
+            return self.start_turn(vec![(id, text)], &me).await;
         }
+        let event = id.map(|id| AgentEvent::InputQueued {
+            session: self.shared.id,
+            id,
+            text: text.clone(),
+        });
+        self.shared
+            .steer
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push((id, text));
+        if let Some(event) = event {
+            self.shared.rt.publish(event).await;
+        }
+    }
+}
+
+impl Message<WithdrawInput> for Session {
+    type Reply = Result<String, String>;
+
+    async fn handle(
+        &mut self,
+        WithdrawInput(id): WithdrawInput,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<String, String> {
+        let removed = {
+            let mut queue = self.shared.steer.lock().unwrap_or_else(|p| p.into_inner());
+            let at = queue.iter().position(|(q, _)| *q == Some(id));
+            at.map(|i| queue.remove(i).1)
+        };
+        let Some(text) = removed else {
+            return Err("not queued".into());
+        };
+        self.shared
+            .rt
+            .publish(AgentEvent::InputWithdrawn {
+                session: self.shared.id,
+                id,
+            })
+            .await;
+        Ok(text)
+    }
+}
+
+impl Message<QueuedInputs> for Session {
+    type Reply = Vec<QueuedInput>;
+
+    async fn handle(&mut self, _: QueuedInputs, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.shared
+            .steer
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .filter_map(|(id, text)| {
+                Some(QueuedInput {
+                    id: (*id)?,
+                    text: text.clone(),
+                })
+            })
+            .collect()
+    }
+}
+
+impl Message<UndoTurn> for Session {
+    type Reply = Result<String, String>;
+
+    async fn handle(&mut self, _: UndoTurn, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.cut(true).await
+    }
+}
+
+impl Message<RedoTurn> for Session {
+    type Reply = Result<String, String>;
+
+    async fn handle(&mut self, _: RedoTurn, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.cut(false).await
     }
 }
 
@@ -361,11 +510,7 @@ impl Message<CompactNow> for Session {
     async fn handle(&mut self, m: CompactNow, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        if self.inflight.is_some() {
-            tx.send(Err("turn in flight".into()));
-            return reply;
-        }
-        let Some(state) = self.state.take() else {
+        let Some(state) = self.claim().await.filter(|_| self.inflight.is_none()) else {
             tx.send(Err("turn in flight".into()));
             return reply;
         };
@@ -392,7 +537,7 @@ impl Message<HarvestNow> for Session {
     async fn handle(&mut self, _: HarvestNow, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        let Some(state) = self.state.take().filter(|_| self.inflight.is_none()) else {
+        let Some(state) = self.claim().await.filter(|_| self.inflight.is_none()) else {
             tx.send(Err("turn in flight".into()));
             return reply;
         };
@@ -814,8 +959,16 @@ impl Turn {
                             let queued = std::mem::take(
                                 &mut *self.shared.steer.lock().unwrap_or_else(|p| p.into_inner()),
                             );
-                            for text in queued {
+                            for (id, text) in queued {
                                 self.persist(ChatMessage::user(text)).await;
+                                if let Some(id) = id {
+                                    self.publish(AgentEvent::InputInjected {
+                                        session: self.shared.id,
+                                        id,
+                                        turn,
+                                    })
+                                    .await;
+                                }
                             }
                         }
                         Round::Retry => {}

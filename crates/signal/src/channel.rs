@@ -17,7 +17,7 @@ use futures::StreamExt;
 use kameo::Actor;
 use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
-use runtime::{Runtime, SessionId};
+use runtime::{InputId, Runtime, SessionId};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::AbortHandle;
@@ -149,7 +149,7 @@ trait Port: Send + Sync {
         session: Option<SessionId>,
         text: String,
     ) -> Result<SessionId, String>;
-    async fn steer(&self, session: SessionId, text: String) -> Result<(), String>;
+    async fn steer(&self, session: SessionId, id: InputId, text: String) -> Result<(), String>;
     async fn resolve(&self, id: ApprovalId, decision: Decision) -> Result<bool, String>;
 }
 
@@ -176,9 +176,9 @@ impl Port for Actors {
             .map_err(|e| e.to_string())
     }
 
-    async fn steer(&self, session: SessionId, text: String) -> Result<(), String> {
+    async fn steer(&self, session: SessionId, id: InputId, text: String) -> Result<(), String> {
         agents()?
-            .ask(Steer { session, text })
+            .ask(Steer { session, id, text })
             .await
             .map_err(|e| e.to_string())
     }
@@ -882,8 +882,20 @@ impl Channel {
             let in_flight = session.is_some_and(|id| s.turns.get(&id).is_some_and(|t| t.in_flight));
             (session, in_flight)
         };
+        // Mid-turn text queues behind the running tool batch; the phone hears
+        // `queued` now and the ✅ when the turn that took it finishes.
         let result = match session {
-            Some(id) if in_flight => self.port.steer(id, input).await.map(|()| id),
+            Some(id) if in_flight => {
+                let queued = self
+                    .port
+                    .steer(id, InputId::new(), input)
+                    .await
+                    .map(|()| id);
+                if queued.is_ok() {
+                    self.send_chunks(&sender, "queued").await;
+                }
+                queued
+            }
             _ => self.port.send_input(session, input).await,
         };
         match result {
@@ -1234,7 +1246,7 @@ mod tests {
                 .push(Call::SendInput(session, text));
             Ok(session.unwrap_or(self.session))
         }
-        async fn steer(&self, session: SessionId, text: String) -> Result<(), String> {
+        async fn steer(&self, session: SessionId, _: InputId, text: String) -> Result<(), String> {
             self.calls.lock().unwrap().push(Call::Steer(session, text));
             Ok(())
         }
@@ -1641,6 +1653,10 @@ mod tests {
         };
         assert_eq!(tail[2], check(10));
         assert_eq!(tail[3], check(11));
+        assert!(
+            sent.iter()
+                .any(|s| matches!(s, SentItem::Text { text, .. } if text == "queued"))
+        );
         assert!(!f.chan.lock().turns.contains_key(&session));
 
         f.chan.handle_envelope(env(OWNER, 12, "more")).await;

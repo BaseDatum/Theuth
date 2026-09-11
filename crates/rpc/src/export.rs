@@ -14,6 +14,7 @@ fn export_bindings() {
         agent::SessionSummary,
         agent::HistoryEntry,
         agent::Loaded,
+        agent::QueuedInput,
         agent::Usage,
         agent::ModelInfo,
         agent::SkillMeta,
@@ -45,6 +46,7 @@ fn export_bindings() {
         tools::git::SyncResult,
         runtime::SessionId,
         runtime::TurnId,
+        runtime::InputId,
         signal::SignalEvent,
         signal::SignalStatus
     );

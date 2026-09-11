@@ -553,6 +553,7 @@ Each phase ends with a runnable check, not a test suite.
 | 3 | subagents, steering polish | parent receives child result as tool output | superseded by 01 §2 (detached) |
 | 4 | Tauri frontend over rpc | out of scope for this doc | not started; command surface ready (§8); `just ts` emits `bindings/*.ts` |
 | 5 | course correction (12) | docs and tree agree | done 2026-09-11 (12 §8 lib.rs re-exports stays opportunistic) |
+| 6 | steering ids + undo/redo | 01 §2.3, 07 §8.8 | done 2026-09-11 |
 
 Known gaps carried forward: cancel/error paths in the loop are code-reviewed,
 not smoke-tested; a `setsid` child escapes `killpg`; no upstream PR yet for the

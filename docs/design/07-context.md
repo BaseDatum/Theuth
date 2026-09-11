@@ -103,7 +103,10 @@ per-transport difference.
 1. **Append-only within an epoch.** `history` only grows: `persist()` pushes
    and inserts a row. There is no code path that assigns to `history[i]`,
    removes from the middle, or reorders. Compaction is `drain(..keep_from)`
-   plus a new head, and is the *only* such path (§8).
+   plus a new head, and is the *only* such path (§8). Reads honour
+   `sessions.cut_at` (undo, §8.8) and return only visible rows; writes go
+   through `Session::claim`, which commits a pending cut first, so the
+   loop never sees a hidden row.
 2. **Volatile text lives at the tail.** Anything that changes per turn or
    per round is appended as a message *after* everything the model already
    saw. It is then history: frozen, persisted, replayed identically on
@@ -622,6 +625,55 @@ pre-4.6 Sonnet that strips earlier thinking blocks (§3), the same as
 steering. Both kinds are rate-limited for that reason as much as for
 tokens.
 
+### 8.8 Undo/redo
+
+`/undo` hides the last **turn** — a user message and everything after it —
+from the frame and the transcript; `/redo` restores it. Editor semantics:
+a new action clears the redo stack.
+
+**One column.** `sessions.cut_at INTEGER NULL`. Messages with `seq >=
+cut_at` and epochs with `at_seq >= cut_at` are hidden; `messages()`,
+`messages_from()`, `epochs()`, `frame()` and `last_turn_text()` return only
+visible rows. `Store::undo` moves `cut_at` back to the previous turn start
+(returns the hidden turn's user text; `None` when nothing is left to hide);
+`Store::redo` moves it forward to the next turn start, or to `NULL` when
+the last hidden turn comes back (`None` when `cut_at` is already `NULL`).
+Neither deletes. The first write after an undo — `Session::claim` calls
+`Store::commit_cut` — deletes messages `seq >= cut_at` and epochs `at_seq
+>= cut_at` in one transaction and sets `cut_at = NULL`; the new turn then
+appends after the visible tail as usual. A no-op when `cut_at` is `NULL`.
+
+**Turn start** (`store::is_turn_start(prev, m)`): a user-role message whose
+predecessor is nothing or an assistant-role message. Steering and harness
+notes follow Tool or User rows, so they never count; a queued batch is
+several User rows in a row and only the first counts; a turn the harness
+starts (`<subagent_result>`, peer `<message>` into an idle session) counts.
+`Store::hidden_turns` counts turn starts among the hidden rows; it is
+`Loaded.undone` (0 when `cut_at` is `NULL`), which the TUI shows as *N
+turn(s) undone — /redo restores*.
+
+**Across an epoch boundary.** Undo past a compaction hides the epoch row
+too (`at_seq >= cut_at`), so the latest *visible* epoch's head and tail are
+what the model sees: exactly the frame before that compaction, which the
+session had already sent. Nothing is re-summarised.
+
+**Cache.** The next request after an undo is a strict prefix of one the
+provider has already cached (tools, system and every visible message are
+unchanged), so it is a hit up to the new tail — the same reason §8.3's
+summariser is cache-hot.
+
+**Refused while a turn is in flight** (`Err("turn in flight")`): the loop
+holds `SessionState` for the duration of a turn and would otherwise
+persist after a row the store had just hidden. `Undo`/`Redo` are `ask` on
+`Agents` → `Result<String, String>`; `Ok` is the first line (≤80 chars) of
+the hidden/restored turn's user text, for the info card.
+
+Not doing: branching (a cut is linear; the hidden tail is gone after the
+next write), undo to a steer point inside a turn (it would leave a frame
+ending in tool results, which no provider accepts as a prefix for a new
+user message), an event for other frontends (they see the cut at their next
+`Loaded`, which already carries `undone`).
+
 ## 9. Todo list
 
 A run-local todo list: the model plans multi-step work, marks progress,
@@ -788,13 +840,28 @@ pub struct Epoch { pub n: u32, pub at_seq: i64, pub tail_from: i64, pub head: Ch
 pub async fn append(&self, id: SessionId, message: &ChatMessage) -> anyhow::Result<i64 /* seq */>;
 pub async fn epochs(&self, id: SessionId) -> anyhow::Result<Vec<Epoch>>;
 pub async fn compact(&self, id: SessionId, n: u32, at_seq: i64, tail_from: i64, head: &ChatMessage) -> anyhow::Result<()>;
-pub async fn frame(&self, id: SessionId) -> anyhow::Result<(u32, Option<ChatMessage>, Vec<(i64, ChatMessage)>)>;
+pub async fn frame(&self, id: SessionId) -> anyhow::Result<(u32, Option<ChatMessage>, Vec<(i64, ChatMessage)>)>;   // visible rows only (seq < cut_at)
+pub async fn undo(&self, id: SessionId) -> anyhow::Result<Option<String>>;    // §8.8; None = nothing to undo
+pub async fn redo(&self, id: SessionId) -> anyhow::Result<Option<String>>;    // §8.8; None = nothing to redo
+pub async fn commit_cut(&self, id: SessionId) -> anyhow::Result<()>;          // §8.8; first write after an undo; no-op when cut_at is NULL
+pub async fn hidden_turns(&self, id: SessionId) -> anyhow::Result<u32>;       // §8.8; Loaded.undone
+pub(crate) fn is_turn_start(prev: Option<&ChatMessage>, m: &ChatMessage) -> bool;
 
 // agent (lib.rs)
 pub struct Compact { pub session: SessionId, pub style: Option<CompactStyle> }  // ask → Result<u32, String>; None = cfg default
 AgentEvent::Compacting { session, turn: Option<TurnId> }
 AgentEvent::Compacted  { session, turn: Option<TurnId>, epoch: u32, before: u32, folded: u32, style: CompactStyle }
 HistoryEntry::Compacted { epoch: u32, summary: String, style: CompactStyle }
+pub struct QueuedInput { pub id: InputId, pub text: String }                    // 01 §2.3; InputId(pub uuid::Uuid) lives in runtime, minted by the caller (v7)
+pub struct Steer { pub session: SessionId, pub id: InputId, pub text: String }  // ask → (); idle: starts a turn now, still publishes InputInjected
+pub struct Withdraw { pub session: SessionId, pub id: InputId }                 // ask → Result<String, String>; Err("not queued")
+pub struct ListQueued { pub session: SessionId }                                // ask → Vec<QueuedInput>
+pub struct Undo { pub session: SessionId }                                      // ask → Result<String, String>; Err("turn in flight" | "nothing to undo") (§8.8)
+pub struct Redo { pub session: SessionId }                                      // ask → Result<String, String>; Err("turn in flight" | "nothing to redo")
+AgentEvent::InputQueued    { session, id: InputId, text: String }
+AgentEvent::InputInjected  { session, id: InputId, turn: TurnId }               // before TurnStarted when queued inputs start a turn
+AgentEvent::InputWithdrawn { session, id: InputId }
+Loaded { …, queued: Vec<QueuedInput> /* empty when idle */, undone: u32 /* hidden turns; 0 when cut_at is NULL */ }
 pub struct Usage { pub prompt: u32, pub completion: u32, pub cached: u32 }
 AgentConfig { …, max_tool_output_chars: usize /* 32_000 */, compact_at: f32 /* 0.8 */, compact_style: CompactStyle /* Summary */, repl: ReplConfig }
 ```

@@ -58,6 +58,8 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     ("/cancel", "", "abort the turn"),
     ("/compact", "[summary|cut|snap|style …]", "fold the context"),
+    ("/undo", "", "drop the last turn (redo restores)"),
+    ("/redo", "", "restore the last undone turn"),
     ("/model", "[id]", "show or set the model"),
     (
         "/effort",
@@ -181,6 +183,16 @@ async fn run(cx: &mut Cx<'_>, name: &'static str, arg: &str) -> anyhow::Result<R
             text("cancelled".into())
         }
         "/compact" => compact_cmd(cx, arg).await,
+        "/undo" => {
+            let session = cx.session.context(NO_SESSION)?;
+            let hidden = agent()?.ask(agent::Undo { session }).await.map_err(err)?;
+            text(format!("undone: {hidden} (/redo restores)"))
+        }
+        "/redo" => {
+            let session = cx.session.context(NO_SESSION)?;
+            let restored = agent()?.ask(agent::Redo { session }).await.map_err(err)?;
+            text(format!("restored: {restored}"))
+        }
         "/model" if arg.is_empty() => {
             let models = agent()?.ask(agent::ListModels).await.map_err(err)?;
             let mut out = table(
@@ -806,6 +818,8 @@ mod tests {
         assert_eq!(classify(&p, "/eff high"), Some(("/effort", "high")));
         assert_eq!(classify(&p, "  /MODEL  "), Some(("/model", "")));
         assert_eq!(classify(&p, "/s"), Some(("/help", "")));
+        assert_eq!(classify(&p, "/re"), Some(("/help", "")));
+        assert_eq!(classify(&p, "/u"), Some(("/undo", "")));
         assert_eq!(classify(&p, "/skills sync"), Some(("/skills", "sync")));
         assert_eq!(classify(&p, "/zzz"), Some(("/help", "")));
         assert_eq!(classify(&p, "hello /model"), None);

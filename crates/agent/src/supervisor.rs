@@ -16,14 +16,14 @@ use genai::{Client, Headers, ModelIden, ServiceTarget};
 use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
 use models::{Catalog, Resolved};
-use runtime::{Runtime, SessionId};
+use runtime::{InputId, Runtime, SessionId};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, oneshot};
 use tokio::task::AbortHandle;
 use tools::{ListPrompts, ListTools, REGISTRY_ACTOR, RegisterTool, SetParent, ToolRegistry};
 
 use crate::loop_::{
-    CancelTurn, CompactNow, HarvestNow, IsRunning, Session, SessionState, SetPendingEffort,
-    SwitchModel, UserInput, text_of,
+    CancelTurn, CompactNow, HarvestNow, IsRunning, QueuedInputs, RedoTurn, Session, SessionState,
+    SetPendingEffort, SwitchModel, UndoTurn, UserInput, WithdrawInput, text_of,
 };
 use crate::peers::{SendMessageTool, SpawnSubagentTool};
 use crate::skills::{
@@ -34,10 +34,10 @@ use crate::store::{Epoch, Store};
 use crate::{
     AGENT_ACTOR, AddProvider, AddSkill, AddSkillRepo, AgentConfig, AgentEvent, Cancel, Compact,
     CompactStyle, GetCompactStyle, Harvest, HistoryEntry, ListChildren, ListLogins, ListModels,
-    ListProviders, ListSessions, ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginFinished,
-    LoginInfo, Logout, ModelInfo, ProviderInfo, RemoveProvider, RemoveSkill, RemoveSkillRepo,
-    SendInput, SessionSummary, SetCompactStyle, SetEffort, SetModel, ShowPrompt, SkillBody,
-    SkillMeta, Steer, SyncSkills, effort_of,
+    ListProviders, ListQueued, ListSessions, ListSkills, LoadSession, LoadSkill, Loaded, Login,
+    LoginFinished, LoginInfo, Logout, ModelInfo, ProviderInfo, QueuedInput, Redo, RemoveProvider,
+    RemoveSkill, RemoveSkillRepo, SendInput, SessionSummary, SetCompactStyle, SetEffort, SetModel,
+    ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo, Withdraw, effort_of,
 };
 use crate::{frame, repl, spill};
 
@@ -248,11 +248,17 @@ impl Agents {
         Ok((id, actor))
     }
 
-    async fn input(&mut self, session: Option<SessionId>, text: String) -> SessionId {
+    /// Route `text` into `session` (created when `None`); errors surface as `AgentEvent::Error`.
+    async fn input(
+        &mut self,
+        session: Option<SessionId>,
+        id: Option<InputId>,
+        text: String,
+    ) -> SessionId {
         match self.session(session, None).await {
-            Ok((id, actor)) => {
-                let _ = actor.tell(UserInput(text)).await;
-                id
+            Ok((sid, actor)) => {
+                let _ = actor.tell(UserInput { id, text }).await;
+                sid
             }
             Err(e) => {
                 let id = session.unwrap_or_default();
@@ -269,9 +275,26 @@ impl Agents {
         }
     }
 
+    /// The live (or resumed) actor for `session`, with the lookup error as the
+    /// caller's `Err` string.
+    async fn actor(&mut self, session: SessionId) -> Result<ActorRef<Session>, String> {
+        self.session(Some(session), None)
+            .await
+            .map(|(_, actor)| actor)
+            .map_err(|e| format!("{e:#}"))
+    }
+
+    /// The live actor for `session`, if any; a session with no actor has nothing queued.
+    fn live(&self, session: SessionId) -> Option<&ActorRef<Session>> {
+        self.sessions
+            .get(&session)
+            .filter(|l| l.actor.is_alive())
+            .map(|l| &l.actor)
+    }
+
     /// Inject `text` (already wrapped) into `to` and announce it.
     async fn inject(&mut self, to: SessionId, from: &str, text: String, wrapped: String) {
-        self.input(Some(to), wrapped).await;
+        self.input(Some(to), None, wrapped).await;
         self.rt
             .publish(AgentEvent::MessageDelivered {
                 session: to,
@@ -350,7 +373,7 @@ impl Message<SendInput> for Agents {
         m: SendInput,
         _: &mut Context<Self, Self::Reply>,
     ) -> Result<SessionId, kameo::error::Infallible> {
-        Ok(self.input(m.session, m.text).await)
+        Ok(self.input(m.session, None, m.text).await)
     }
 }
 
@@ -358,7 +381,57 @@ impl Message<Steer> for Agents {
     type Reply = ();
 
     async fn handle(&mut self, m: Steer, _: &mut Context<Self, Self::Reply>) {
-        self.input(Some(m.session), m.text).await;
+        self.input(Some(m.session), Some(m.id), m.text).await;
+    }
+}
+
+impl Message<Withdraw> for Agents {
+    type Reply = Result<String, String>;
+
+    async fn handle(&mut self, m: Withdraw, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let Some(actor) = self.live(m.session) else {
+            return Err("not queued".into());
+        };
+        // `SendError::HandlerError` displays as the inner `String`.
+        actor
+            .ask(WithdrawInput(m.id))
+            .await
+            .map_err(|e| e.to_string())
+    }
+}
+
+impl Message<ListQueued> for Agents {
+    type Reply = Vec<QueuedInput>;
+
+    async fn handle(&mut self, m: ListQueued, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        match self.live(m.session) {
+            Some(actor) => actor.ask(QueuedInputs).await.unwrap_or_default(),
+            None => Vec::new(),
+        }
+    }
+}
+
+impl Message<Undo> for Agents {
+    type Reply = Result<String, String>;
+
+    async fn handle(&mut self, m: Undo, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.actor(m.session)
+            .await?
+            .ask(UndoTurn)
+            .await
+            .map_err(|e| e.to_string())
+    }
+}
+
+impl Message<Redo> for Agents {
+    type Reply = Result<String, String>;
+
+    async fn handle(&mut self, m: Redo, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.actor(m.session)
+            .await?
+            .ask(RedoTurn)
+            .await
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -534,7 +607,7 @@ impl Message<StartChildTurn> for Agents {
 
     async fn handle(&mut self, m: StartChildTurn, ctx: &mut Context<Self, Self::Reply>) {
         let child = m.child;
-        self.input(Some(child), m.text).await;
+        self.input(Some(child), None, m.text).await;
         let me = ctx.actor_ref().clone();
         let after = Duration::from_secs(self.cfg.subagents.max_runtime_secs);
         let timer = tokio::spawn(async move {
@@ -838,16 +911,29 @@ impl Message<LoadSession> for Agents {
                 (None, Vec::new())
             }
         };
-        let running = match self.sessions.get(&m.session) {
-            Some(live) => live.actor.ask(IsRunning).await.unwrap_or(false),
-            None => false,
+        let (running, queued) = match self.live(m.session) {
+            Some(actor) => (
+                actor.ask(IsRunning).await.unwrap_or(false),
+                actor.ask(QueuedInputs).await.unwrap_or_default(),
+            ),
+            None => (false, Vec::new()),
         };
+        let undone = self
+            .store
+            .hidden_turns(m.session)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::error!(session = %m.session, "hidden_turns: {e:#}");
+                0
+            });
         let (model, effort) = row.map(|r| (r.model, r.effort)).unwrap_or_default();
         Loaded {
             history,
             running,
             model,
             effort,
+            queued,
+            undone,
         }
     }
 }

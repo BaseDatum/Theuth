@@ -68,9 +68,13 @@ logs a `login required` server in), `/mcp add <url|json>` installs one,
 to; `/provider add` prompts for name, base url, then API key (an OpenAI-compatible
 gateway such as `https://api.ai.rwx.dev/v1`); `/provider` lists them, `/provider rm <name>`
 forgets one; `/skills` lists skills; `/prompt` shows the system prompt; `/compact` folds into a summary by default; `/compact cut` drops the folded span with no model call; `/compact style` lists/sets the default;
+`/undo` drops the last turn (yours and the reply), `/redo` restores it;
 `/knowledge` browses the knowledge base (below); `/approvals off` stops
 approval prompts for this session, `/approvals off always` for good
-(`tools.approvals` in config.yaml). Shift+Enter inserts a newline; select
+(`tools.approvals` in config.yaml). Typing while the model works queues the
+message: it is shown under the response until it enters the context (after
+the current tool batch or when the turn ends), and `⌥↑` pulls the newest one
+back into the editor. Shift+Enter inserts a newline; select
 text with the mouse to copy it (terminal-native). See
 [`docs/design/02-models-and-menus.md`](docs/design/02-models-and-menus.md).
 
@@ -101,7 +105,7 @@ saved as a contact on that primary phone, or its messages arrive without a
 number and are dropped. Texts become turns in a per-contact session (👀
 while working, ✅/🛑/❌ when done; a message mid-turn steers it); the slash
 commands mirror the TUI (`/status`, `/new`, `/sessions`, `/resume <id>`,
-`/model`, `/effort`, `/compact`, `/signal allow <n>`, …); tool approvals arrive as a
+`/model`, `/effort`, `/compact`, `/undo`, `/redo`, `/signal allow <n>`, …); tool approvals arrive as a
 message you answer with 👍/👎 or `/approve <code>`. Inbound files land in
 `~/.wth/signal/inbox/`. See
 [`docs/design/09-signal.md`](docs/design/09-signal.md).

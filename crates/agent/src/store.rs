@@ -1,5 +1,7 @@
 //! sqlite session store (sqlx): `sessions` + `messages` + `epochs`; resume by replay.
 //! Only the agent writes it; UIs read through the supervisor's commands.
+//! `sessions.cut_at` is the undo marker: rows with `seq >= cut_at` (epochs
+//! `at_seq >= cut_at`) are hidden from every reader until `commit_cut` deletes them.
 
 use std::path::Path;
 use std::time::Duration;
@@ -151,7 +153,7 @@ impl Store {
         Ok(seq)
     }
 
-    /// All messages with their seq, in `seq` order.
+    /// All visible messages with their seq, in `seq` order.
     pub async fn messages(&self, id: SessionId) -> anyhow::Result<Vec<(i64, ChatMessage)>> {
         self.messages_from(id, 0).await
     }
@@ -162,28 +164,101 @@ impl Store {
         from: i64,
     ) -> anyhow::Result<Vec<(i64, ChatMessage)>> {
         let rows: Vec<(i64, String)> = sqlx::query_as(
-            "SELECT seq, body FROM messages WHERE session_id = ? AND seq >= ? ORDER BY seq",
+            "SELECT seq, body FROM messages WHERE session_id = ?1 AND seq >= ?2 \
+             AND seq < COALESCE((SELECT cut_at FROM sessions WHERE id = ?1), 9223372036854775807) \
+             ORDER BY seq",
         )
         .bind(id.to_string())
         .bind(from)
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows
-            .into_iter()
-            .filter_map(|(seq, body)| match serde_json::from_str(&body) {
-                Ok(m) => Some((seq, m)),
-                Err(e) => {
-                    tracing::warn!(session = %id, seq, error = %e, "skipping undecodable message row");
-                    None
-                }
-            })
-            .collect())
+        Ok(decode_rows(id, rows))
     }
 
-    /// All epochs of a session, by `n` ascending.
+    /// Rows hidden by undo (`seq >= cut_at`); empty when `cut_at` is NULL.
+    async fn messages_hidden(&self, id: SessionId) -> anyhow::Result<Vec<(i64, ChatMessage)>> {
+        let rows: Vec<(i64, String)> = sqlx::query_as(
+            "SELECT seq, body FROM messages WHERE session_id = ?1 \
+             AND seq >= (SELECT cut_at FROM sessions WHERE id = ?1) ORDER BY seq",
+        )
+        .bind(id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(decode_rows(id, rows))
+    }
+
+    async fn set_cut(&self, id: SessionId, cut: Option<i64>) -> anyhow::Result<()> {
+        sqlx::query("UPDATE sessions SET cut_at = ? WHERE id = ?")
+            .bind(cut)
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Hide the last visible turn (its user message and everything after).
+    /// `None` when nothing is left to hide; `Some` is the hidden turn's user text.
+    pub async fn undo(&self, id: SessionId) -> anyhow::Result<Option<String>> {
+        let visible = self.messages(id).await?;
+        let Some(i) = turn_starts(&visible).last() else {
+            return Ok(None);
+        };
+        let (seq, m) = &visible[i];
+        self.set_cut(id, Some(*seq)).await?;
+        Ok(Some(text_of(&m.content)))
+    }
+
+    /// Restore the oldest hidden turn. `None` when nothing is hidden; `Some`
+    /// is the restored turn's user text.
+    pub async fn redo(&self, id: SessionId) -> anyhow::Result<Option<String>> {
+        let hidden = self.messages_hidden(id).await?;
+        let mut starts = turn_starts(&hidden);
+        let Some(first) = starts.next() else {
+            return Ok(None);
+        };
+        let next = starts.next().map(|i| hidden[i].0);
+        self.set_cut(id, next).await?;
+        Ok(Some(text_of(&hidden[first].1.content)))
+    }
+
+    /// Delete the hidden tail for real and clear `cut_at`; no-op when nothing is hidden.
+    pub async fn commit_cut(&self, id: SessionId) -> anyhow::Result<()> {
+        let sid = id.to_string();
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "DELETE FROM messages WHERE session_id = ?1 \
+             AND seq >= (SELECT cut_at FROM sessions WHERE id = ?1)",
+        )
+        .bind(&sid)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "DELETE FROM epochs WHERE session_id = ?1 \
+             AND at_seq >= (SELECT cut_at FROM sessions WHERE id = ?1)",
+        )
+        .bind(&sid)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("UPDATE sessions SET cut_at = NULL WHERE id = ?")
+            .bind(&sid)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Number of turns hidden by undo (the redo depth).
+    pub async fn hidden_turns(&self, id: SessionId) -> anyhow::Result<u32> {
+        let hidden = self.messages_hidden(id).await?;
+        Ok(u32::try_from(turn_starts(&hidden).count())?)
+    }
+
+    /// All visible epochs of a session, by `n` ascending.
     pub async fn epochs(&self, id: SessionId) -> anyhow::Result<Vec<Epoch>> {
         let rows: Vec<(i64, i64, i64, String)> = sqlx::query_as(
-            "SELECT n, at_seq, tail_from, head FROM epochs WHERE session_id = ? ORDER BY n",
+            "SELECT n, at_seq, tail_from, head FROM epochs WHERE session_id = ?1 \
+             AND at_seq < COALESCE((SELECT cut_at FROM sessions WHERE id = ?1), 9223372036854775807) \
+             ORDER BY n",
         )
         .bind(id.to_string())
         .fetch_all(&self.pool)
@@ -318,20 +393,65 @@ impl Store {
     }
 }
 
+/// A user message that opens a turn: first in the session or right after an
+/// assistant reply. Steers and notes follow Tool/User rows and never count.
+pub(crate) fn is_turn_start(prev: Option<&ChatMessage>, m: &ChatMessage) -> bool {
+    m.role == ChatRole::User && prev.is_none_or(|p| p.role == ChatRole::Assistant)
+}
+
+/// Indices of turn starts within `rows` (in order).
+fn turn_starts(rows: &[(i64, ChatMessage)]) -> impl Iterator<Item = usize> + '_ {
+    (0..rows.len())
+        .filter(move |&i| is_turn_start(i.checked_sub(1).map(|p| &rows[p].1), &rows[i].1))
+}
+
+fn decode_rows(id: SessionId, rows: Vec<(i64, String)>) -> Vec<(i64, ChatMessage)> {
+    rows.into_iter()
+        .filter_map(|(seq, body)| match serde_json::from_str(&body) {
+            Ok(m) => Some((seq, m)),
+            Err(e) => {
+                tracing::warn!(session = %id, seq, error = %e, "skipping undecodable message row");
+                None
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use genai::chat::{MessageContent, ToolCall, ToolResponse};
 
     use super::*;
 
-    #[tokio::test]
-    async fn resume_round_trip() {
+    /// Fresh store in a temp dir with one session; caller removes `dir` at the end.
+    async fn fresh() -> (Store, SessionId, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!("wth-store-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
         let store = Store::open(&dir.join("sessions.sqlite")).await.unwrap();
-
         let id = SessionId::new();
         store.create_session(id, "m", None, None).await.unwrap();
+        (store, id, dir)
+    }
+
+    async fn append_all(store: &Store, id: SessionId, msgs: impl IntoIterator<Item = ChatMessage>) {
+        for m in msgs {
+            store.append(id, &m).await.unwrap();
+        }
+    }
+
+    fn texts(rows: &[(i64, ChatMessage)]) -> Vec<(i64, String)> {
+        rows.iter()
+            .map(|(s, m)| (*s, text_of(&m.content)))
+            .collect()
+    }
+
+    fn asst(t: &str) -> ChatMessage {
+        ChatMessage::assistant(MessageContent::from_text(t))
+    }
+
+    #[tokio::test]
+    async fn resume_round_trip() {
+        let (store, id, dir) = fresh().await;
         for (i, m) in [
             ChatMessage::system("sys"),
             ChatMessage::user("hi"),
@@ -400,11 +520,7 @@ mod tests {
 
     #[tokio::test]
     async fn last_turn_text_joins_assistant_text_after_last_user() {
-        let dir = std::env::temp_dir().join(format!("wth-store-{}", uuid::Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let store = Store::open(&dir.join("sessions.sqlite")).await.unwrap();
-        let id = SessionId::new();
-        store.create_session(id, "m", None, None).await.unwrap();
+        let (store, id, dir) = fresh().await;
         for m in [
             ChatMessage::user("earlier"),
             ChatMessage::assistant(MessageContent::from_text("stale")),
@@ -428,11 +544,7 @@ mod tests {
 
     #[tokio::test]
     async fn compact_frames_from_tail() {
-        let dir = std::env::temp_dir().join(format!("wth-store-{}", uuid::Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let store = Store::open(&dir.join("sessions.sqlite")).await.unwrap();
-        let id = SessionId::new();
-        store.create_session(id, "m", None, None).await.unwrap();
+        let (store, id, dir) = fresh().await;
         for i in 0..6 {
             store
                 .append(id, &ChatMessage::user(format!("m{i}")))
@@ -459,6 +571,125 @@ mod tests {
             (epochs[0].n, epochs[0].at_seq, epochs[0].tail_from),
             (1, 5, 4)
         );
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn undo_redo_hides_whole_turns_including_steers() {
+        let (store, id, dir) = fresh().await;
+        append_all(
+            &store,
+            id,
+            [
+                ChatMessage::user("u1"),
+                asst("a1"),
+                ChatMessage::user("u2"),
+                asst("a2"),
+                ChatMessage::user("u3"),
+                ChatMessage::from(vec![ToolCall {
+                    call_id: "c1".into(),
+                    fn_name: "shell".into(),
+                    fn_arguments: serde_json::json!({}),
+                    thought_signatures: None,
+                }]),
+                ChatMessage::from(vec![ToolResponse::new("c1", "out")]),
+                ChatMessage::user("steer"),
+                asst("a3"),
+            ],
+        )
+        .await;
+        assert_eq!(store.hidden_turns(id).await.unwrap(), 0);
+
+        assert_eq!(store.undo(id).await.unwrap().as_deref(), Some("u3"));
+        assert_eq!(
+            texts(&store.messages(id).await.unwrap()),
+            [
+                (0, "u1".into()),
+                (1, "a1".into()),
+                (2, "u2".into()),
+                (3, "a2".into())
+            ]
+        );
+        assert_eq!(store.frame(id).await.unwrap().2.len(), 4);
+        assert_eq!(store.last_turn_text(id).await.unwrap(), "a2");
+
+        assert_eq!(store.undo(id).await.unwrap().as_deref(), Some("u2"));
+        assert_eq!(store.hidden_turns(id).await.unwrap(), 2);
+        assert_eq!(store.messages(id).await.unwrap().len(), 2);
+
+        assert_eq!(store.redo(id).await.unwrap().as_deref(), Some("u2"));
+        assert_eq!(store.hidden_turns(id).await.unwrap(), 1);
+        assert_eq!(store.messages(id).await.unwrap().len(), 4);
+
+        assert_eq!(store.redo(id).await.unwrap().as_deref(), Some("u3"));
+        assert_eq!(store.hidden_turns(id).await.unwrap(), 0);
+        assert_eq!(store.messages(id).await.unwrap().len(), 9);
+
+        assert_eq!(store.redo(id).await.unwrap(), None);
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn undo_hides_epochs_inside_the_turn() {
+        let (store, id, dir) = fresh().await;
+        append_all(
+            &store,
+            id,
+            [
+                ChatMessage::user("u1"),
+                asst("a1"),
+                ChatMessage::user("u2"),
+                asst("a2"),
+            ],
+        )
+        .await;
+        let head = ChatMessage::user("<context_summary epoch=\"1\">s</context_summary>");
+        store.compact(id, 1, 3, 2, &head).await.unwrap();
+        assert_eq!(store.frame(id).await.unwrap().0, 1);
+
+        assert_eq!(store.undo(id).await.unwrap().as_deref(), Some("u2"));
+        assert!(store.epochs(id).await.unwrap().is_empty());
+        let (n, head, tail) = store.frame(id).await.unwrap();
+        assert_eq!((n, head.is_none(), tail.len()), (0, true, 2));
+
+        assert_eq!(store.redo(id).await.unwrap().as_deref(), Some("u2"));
+        assert_eq!(store.epochs(id).await.unwrap().len(), 1);
+        assert_eq!(store.frame(id).await.unwrap().0, 1);
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn commit_cut_deletes_hidden_tail() {
+        let (store, id, dir) = fresh().await;
+        append_all(
+            &store,
+            id,
+            [
+                ChatMessage::user("u1"),
+                asst("a1"),
+                ChatMessage::user("u2"),
+                asst("a2"),
+            ],
+        )
+        .await;
+        store.commit_cut(id).await.unwrap();
+        assert_eq!(store.messages(id).await.unwrap().len(), 4);
+
+        assert_eq!(store.undo(id).await.unwrap().as_deref(), Some("u2"));
+        store.commit_cut(id).await.unwrap();
+        assert_eq!(
+            texts(&store.messages(id).await.unwrap()),
+            [(0, "u1".into()), (1, "a1".into())]
+        );
+        assert_eq!(
+            store.append(id, &ChatMessage::user("u2b")).await.unwrap(),
+            2
+        );
+        assert_eq!(store.redo(id).await.unwrap(), None);
+        assert_eq!(store.hidden_turns(id).await.unwrap(), 0);
         drop(store);
         let _ = std::fs::remove_dir_all(&dir);
     }

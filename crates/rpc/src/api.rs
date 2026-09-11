@@ -6,10 +6,10 @@ use std::fmt::Display;
 
 use agent::{
     AddProvider, AddSkill, AddSkillRepo, Agents, Cancel, Compact, CompactStyle, GetCompactStyle,
-    Harvest, ListLogins, ListModels, ListProviders, ListSessions, ListSkills, LoadSession,
-    LoadSkill, Loaded, Login, LoginInfo, Logout, ModelInfo, ProviderInfo, RemoveProvider,
-    RemoveSkill, RemoveSkillRepo, SendInput, SessionSummary, SetCompactStyle, SetEffort, SetModel,
-    ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills,
+    Harvest, ListLogins, ListModels, ListProviders, ListQueued, ListSessions, ListSkills,
+    LoadSession, LoadSkill, Loaded, Login, LoginInfo, Logout, ModelInfo, ProviderInfo, QueuedInput,
+    Redo, RemoveProvider, RemoveSkill, RemoveSkillRepo, SendInput, SessionSummary, SetCompactStyle,
+    SetEffort, SetModel, ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo, Withdraw,
 };
 use jsonrpsee::core::{RpcResult, SubscriptionResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
@@ -24,7 +24,7 @@ use knowledge::{
     Change, Concept, Delete, Get, HarvestResult, History, HistoryOf, Hit, KNOWLEDGE_ACTOR,
     KnowledgeActor, List, Meta, Put, PutConcept, Restore, Search, Source,
 };
-use runtime::{Runtime, SessionId};
+use runtime::{InputId, Runtime, SessionId};
 use signal::{Allow, Link, RemoveAllowed, SIGNAL_ACTOR, Signal, SignalStatus, Status, Unlink};
 use tokio::sync::broadcast;
 use tools::git::SyncResult;
@@ -47,9 +47,20 @@ pub trait Api {
     /// Start a turn; `session: None` creates a session. Returns once queued.
     #[method(name = "send_input")]
     async fn send_input(&self, session: Option<SessionId>, text: String) -> RpcResult<SessionId>;
-    /// Queue a user message after the current tool batch.
+    /// Queue a user message after the current tool batch; returns the id (minted when omitted).
     #[method(name = "steer")]
-    async fn steer(&self, session: SessionId, text: String) -> RpcResult<()>;
+    async fn steer(
+        &self,
+        session: SessionId,
+        text: String,
+        id: Option<InputId>,
+    ) -> RpcResult<InputId>;
+    /// Pull a queued message back out; returns its text.
+    #[method(name = "withdraw")]
+    async fn withdraw(&self, session: SessionId, id: InputId) -> RpcResult<String>;
+    /// Messages waiting for the current tool batch to end.
+    #[method(name = "list_queued")]
+    async fn list_queued(&self, session: SessionId) -> RpcResult<Vec<QueuedInput>>;
     /// Abort the in-flight turn.
     #[method(name = "cancel")]
     async fn cancel(&self, session: SessionId) -> RpcResult<()>;
@@ -58,6 +69,12 @@ pub trait Api {
     /// yet. Refused while a turn is running.
     #[method(name = "compact")]
     async fn compact(&self, session: SessionId, style: Option<CompactStyle>) -> RpcResult<u32>;
+    /// Hide the last turn from the frame; returns its first line.
+    #[method(name = "undo")]
+    async fn undo(&self, session: SessionId) -> RpcResult<String>;
+    /// Restore the last undone turn; returns its first line.
+    #[method(name = "redo")]
+    async fn redo(&self, session: SessionId) -> RpcResult<String>;
     /// The live default compaction style (`agent.compact_style`).
     #[method(name = "compact_style")]
     async fn compact_style(&self) -> RpcResult<CompactStyle>;
@@ -314,8 +331,23 @@ impl ApiServer for Server {
         ask::<Agents, _>(agent::AGENT_ACTOR, SendInput { session, text }).await
     }
 
-    async fn steer(&self, session: SessionId, text: String) -> RpcResult<()> {
-        ask::<Agents, _>(agent::AGENT_ACTOR, Steer { session, text }).await
+    async fn steer(
+        &self,
+        session: SessionId,
+        text: String,
+        id: Option<InputId>,
+    ) -> RpcResult<InputId> {
+        let id = id.unwrap_or_default();
+        ask::<Agents, _>(agent::AGENT_ACTOR, Steer { session, id, text }).await?;
+        Ok(id)
+    }
+
+    async fn withdraw(&self, session: SessionId, id: InputId) -> RpcResult<String> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, Withdraw { session, id }).await
+    }
+
+    async fn list_queued(&self, session: SessionId) -> RpcResult<Vec<QueuedInput>> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, ListQueued { session }).await
     }
 
     async fn cancel(&self, session: SessionId) -> RpcResult<()> {
@@ -324,6 +356,14 @@ impl ApiServer for Server {
 
     async fn compact(&self, session: SessionId, style: Option<CompactStyle>) -> RpcResult<u32> {
         ask::<Agents, _>(agent::AGENT_ACTOR, Compact { session, style }).await
+    }
+
+    async fn undo(&self, session: SessionId) -> RpcResult<String> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, Undo { session }).await
+    }
+
+    async fn redo(&self, session: SessionId) -> RpcResult<String> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, Redo { session }).await
     }
 
     async fn compact_style(&self) -> RpcResult<CompactStyle> {
