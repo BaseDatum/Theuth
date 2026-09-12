@@ -15,7 +15,7 @@ other through one tool. Both are modelled on oh-my-pi (`docs/tools/task.md`,
 ```
 ~/.wth/
   config.yaml          every plugin reads its own section (unchanged rule)
-  credentials.yaml     provider -> api key; mode 0600; never merged into config
+  credentials.yaml     provider -> api key; mode 0600; never merged into config; also web keys (`brave`, `firecrawl`, `github`; doc 16 §6)
   oauth/               /login tokens: <ns>.json (providers), mcp/<server>.json; 0600 (doc 05)
   acp/agents.yaml      external ACP harnesses: name -> {command, args, env, description} (doc 06)
   acp/registry.json    cached ACP registry (24 h)

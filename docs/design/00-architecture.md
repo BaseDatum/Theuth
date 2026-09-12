@@ -449,6 +449,8 @@ crates/
   tools/              plugin: registry, approval, shell (brush), fs, mcp (rmcp) (§6, 01)
   knowledge/          plugin: OKF bundle, FTS index, gix history, knowledge_* tools (added in 10; extracted from agent in 12 §9)
   agent/              plugin: genai loop, session store, frame/compaction, skills, subagents, repl (§5, 07, 08)
+  web/                plugin: search_web / read_url, SSRF-guarded fetcher, RRF aggregator, keyless engines (16)
+  search-providers/   plugin: Firecrawl, SearXNG, OpenSERP, Brave registered with web over the bus (16)
   signal/             plugin: Signal channel and device pairing (added in 09)
   rpc/                plugin: jsonrpsee server, event subscription bridge (§7)
   tui/                plugin: iocraft frontend (§8)
@@ -485,6 +487,8 @@ Workspace dependencies (versions verified 2026-09-09 via `cargo info`):
 | anyhow / thiserror | 1 / 2 | errors |
 | clap | 4 | CLI |
 | agent-client-protocol | 2.1 (pinned) | ACP client + agent (acp, agent, rpc) |
+| html-to-markdown-rs | 3.12 | HTML → markdown/text (web) |
+| wiremock | 0.6 dev | provider contract tests |
 
 Lints: `missing_docs = warn`, `clippy::all = warn` while the crates are being
 built out in parallel; flips to `deny` once phase 3 lands and the workspace is
@@ -569,7 +573,7 @@ Each phase ends with a runnable check, not a test suite.
 | 8 | background jobs (14) | `shell` returns within grace; `<job_result>` starts a turn; no orphans at shutdown | done 2026-09-11 (stub → wake turn, mid-turn inject, inline once, `sleep 300` dead after shutdown) |
 | 9 | ACP (06): external harnesses as subagents, `wth --acp` | opencode child streams, approval relayed, result delivered, resume via session/load; stdio client runs prompt/deny/cancel/load | done 2026-09-12 |
 | 10 | server configuration (15): owners, per-user sandboxed workers (Landlock/Seatbelt), postgres later | — | shelved 2026-09-12; preconditions in 15 §9 |
-| 11 | web (16): `web_search`/`web_fetch` plugin + `search-providers` plugin (Firecrawl, SearXNG, OpenSERP, Brave) | keyless search merges engines with SERP features; SSRF matrix rejects; rendered fetch via a provider | planned 2026-09-12 |
+| 11 | web (16): `search_web`/`read_url` plugin + `search-providers` plugin (Firecrawl, SearXNG, OpenSERP, Brave) | keyless search merges engines with SERP features; SSRF matrix rejects; rendered fetch via a provider | done 2026-09-12 (search_web merges duckduckgo+wikipedia with a knowledge panel; SSRF refusals; rendered errors without a provider; firecrawl default-on, key-gated) |
 
 Known gaps carried forward: cancel/error paths in the loop are code-reviewed,
 not smoke-tested; the `Jobs` actor kills every process group on shutdown
@@ -580,7 +584,8 @@ knowledge` hung once (2026-09-11, 0% CPU, parallel threads; 1/7 runs), not
 reproduced - run with `--test-threads=1` if it recurs and bisect gix vs sqlite.
 ACP: binary registry installs and terminal-type login messages are not
 smoke-tested; ACP children cannot message their parent (no MCP back-channel,
-06 §3.8).
+06 §3.8). web: hosted providers (Firecrawl, Brave, SearXNG, OpenSERP)
+verified only against documented response shapes, not live.
 
 ## 13. Lessons carried from jarvis (design only, no code)
 

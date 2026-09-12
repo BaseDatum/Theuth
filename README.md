@@ -29,7 +29,11 @@ model gets a job id and is woken with `<job_result>` when it exits —
 [`docs/design/10-knowledge.md`](docs/design/10-knowledge.md)), `agent` (genai
 loop, sqlite sessions with compaction epochs, skills, subagents, persistent
 Python runtime over monty worker subprocesses —
-[`docs/design/08-repl.md`](docs/design/08-repl.md)), `acp` (external
+[`docs/design/08-repl.md`](docs/design/08-repl.md)), `web` (`search_web` and
+`read_url`: SSRF-guarded fetch, keyless duckduckgo/wikipedia/arxiv/github
+merged by RRF with SERP features — [`docs/design/16-web.md`](docs/design/16-web.md)),
+`search-providers` (Firecrawl, SearXNG, OpenSERP, Brave; registered with `web`
+over the bus), `acp` (external
 harnesses over the Agent Client Protocol: agents.yaml, registry, harness
 connection), `signal` (phone frontend
 over Signal messenger), `rpc` (jsonrpsee), `tui` (iocraft), `wth` (binary).
@@ -37,7 +41,7 @@ over Signal messenger), `rpc` (jsonrpsee), `tui` (iocraft), `wth` (binary).
 Config (`~/.wth/`, created on first run; details in
 [`docs/design/01-config-and-subagents.md`](docs/design/01-config-and-subagents.md) §1):
 
-- `config.yaml` — every plugin reads its own section; `WTH_<SECTION>__<KEY>` env overrides. `agent.model` is a models.dev id (`anthropic/claude-sonnet-4-5`); `/model` rewrites that one line in place. The `agent` and `knowledge` sections with their defaults:
+- `config.yaml` — every plugin reads its own section; `WTH_<SECTION>__<KEY>` env overrides. `agent.model` is a models.dev id (`anthropic/claude-sonnet-4-5`); `/model` rewrites that one line in place. The `agent`, `knowledge`, `web` and `search_providers` sections with their defaults:
 
   ```yaml
   agent:
@@ -52,10 +56,17 @@ Config (`~/.wth/`, created on first run; details in
       harvest_max: 8       # concepts accepted per harvest
   knowledge:
     enabled: true          # false: no store, no knowledge_* tools, no hints, no harvest
+  web:
+    engines: [duckduckgo, wikipedia, arxiv, github]   # keyless; search_web / read_url
+  search_providers:
+    firecrawl: { enabled: true }   # on by default; active once `firecrawl: <key>` is in credentials.yaml (free tier at firecrawl.dev)
+    # searxng: { base_url: http://127.0.0.1:8080 }
+    # openserp: { base_url: http://127.0.0.1:7000 }
+    # brave: {}                    # key `brave` in credentials.yaml
   ```
 
   The Python runtime is always on: the worker is the `wth` binary itself (`wth subprocess`, nothing to install); every tool is an `async` function inside the sandbox and state persists across turns.
-- `credentials.yaml` — `provider: key` (genai adapter names), mode 0600; beats env vars. A provider with a key, a login, or its env var is "configured": `/model` lists only those. Named OpenAI-compatible gateways (`/provider add`) store their key here under the gateway name.
+- `credentials.yaml` — `provider: key` (genai adapter names), mode 0600; beats env vars. A provider with a key, a login, or its env var is "configured": `/model` lists only those. Named OpenAI-compatible gateways (`/provider add`) store their key here under the gateway name. Web search keys (`firecrawl`, `brave`, optional `github`) live here too.
 - `providers.yaml` — named OpenAI-compatible gateways (`name: { base_url }`); keys live in `credentials.yaml`. `/provider add` writes both and fetches `GET {base}models` into `models.json`.
 - `models.json` — optional, same shape as the bundled catalog; adds or overrides models (local `ollama/...`, private gateways). Refresh the bundled data with `just models`. `/provider add` writes the fetched model list here.
 - `oauth/` — tokens from `/login` (`openai.json` = ChatGPT subscription via the Codex client, `anthropic.json` = Claude Pro/Max via the Claude Code client, `cursor.json` = Cursor subscription, `xai.json` = SuperGrok via the Grok CLI client; `mcp/<server>.json` = MCP servers that answered 401), mode 0600; `/logout <name>` deletes one. See [`docs/design/05-oauth.md`](docs/design/05-oauth.md).

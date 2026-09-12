@@ -1,14 +1,35 @@
 # 16 — Web: search and fetch as a plugin
 
-Status: draft v0 · 2026-09-12 · extends `00-architecture.md` §1, §4, §6;
-`01-config-and-subagents.md` §1.1; `07-context.md` §6 (spill). Source
-material: `../jarvis/crates/jarvis-search` (19,268 lines) and its two
-`jarvis-agent` tools, re-verified against the tree today; every claim about
-it cites `file:line` in that crate.
+Status: as-built v0 · 2026-09-12 (draft v0 same day) · extends
+`00-architecture.md` §1, §4, §6; `01-config-and-subagents.md` §1.1;
+`07-context.md` §6 (spill). Source material:
+`../jarvis/crates/jarvis-search` (19,268 lines) and its two `jarvis-agent`
+tools, re-verified against the tree today; every claim about it cites
+`file:line` in that crate. Deviations from the draft are in §13.
+
+Verified 2026-09-12 headless against the real binary, a real model
+(`claude-sonnet-4-5`), the real network and **no provider keys**: the
+`search_web` description lists `duckduckgo (general, news; answer,
+knowledge_panel, definition, related), wikipedia (general, science;
+knowledge_panel), arxiv (science), github (it)` and ends with the sentence
+telling the user how to enable Firecrawl; `"Ada Lovelace"` merges wikipedia
++ duckduckgo (rank 1 `[duckduckgo, wikipedia]`) with a `knowledge_panel`;
+`"uuid"` yields an `answer` plus a knowledge panel; `category: it "tokio"`
+returns GitHub repos, `category: science` arXiv; `site: docs.rs, fetch_top:
+1` appends a `Fetched:` section truncated at 1500 chars; `read_url
+https://example.com/` returns markdown and text; `http://localhost:7799/`
+is `rejected: hostname `localhost` is not allowed`; `rendered: true` with no
+provider errors naming `firecrawl or openserp under search_providers`.
+Not exercised live: Firecrawl, Brave, SearXNG, OpenSERP (wiremock contract
+tests from documented response shapes only), the `Images`/`News`/`Faq`/
+`Videos`/`Discussions`/`Spelling`/`AiSummary` kinds, and `169.254.169.254`
+(integration test `fetcher_rejects_loopback_and_metadata_without_allowlist`
+covers it). Tests: web 17 unit + 7 ssrf + 7 url + 13 engines + 12
+aggregate; search-providers 4 unit + 12 wiremock; clippy `-D warnings`.
 
 ## 0. Decisions in one screen
 
-1. **Two plugins.** `web` owns the tools (`web_search`, `web_fetch`), the
+1. **Two plugins.** `web` owns the tools (`search_web`, `read_url`), the
    fetcher, the aggregator and the keyless built-in engines; it registers
    on the tool registry like `knowledge` does
    (`crates/knowledge/src/lib.rs:247-270`). `search-providers` owns every
@@ -44,7 +65,7 @@ it cites `file:line` in that crate.
 
 wth has no way to read the web: no search, no URL fetch. Every agent needs
 both daily; it is the single biggest hole against oh-my-pi's tool set
-(`read` of URLs, `web_search`). jarvis built it, then buried a working core
+(URL `read`, web search). jarvis built it, then buried a working core
 under a roadmap towards OpenSERP that never landed (§7).
 
 ## 2. Tool surface
@@ -52,7 +73,7 @@ under a roadmap towards OpenSERP that never landed (§7).
 Two tools, small schemas. Every field is implemented.
 
 ```rust
-// web_search - Risk::ReadOnly
+// search_web - Risk::ReadOnly
 struct SearchArgs {
     query: String,
     limit: Option<u8>,              // 1..=20, default 8
@@ -66,7 +87,7 @@ struct SearchArgs {
 //    "Fetched:" sections when fetch_top > 0; then "Failed: brave (rate limited)" if any.
 //    structured: SearchResponse (JSON, for RPC/TUI consumers).
 
-// web_fetch - Risk::ReadOnly
+// read_url - Risk::ReadOnly
 struct FetchArgs {
     url: String,
     max_chars: Option<u32>,         // 200..=16000, default 4000
@@ -76,7 +97,7 @@ struct FetchArgs {
 // -> text: "# title\nurl\n\n<content>" (truncated at max_chars with a marker); structured: FetchResponse.
 ```
 
-Dropped from jarvis's `web_search` schema (`jarvis-agent/src/tools/web_search.rs:197-329`):
+Dropped from jarvis's search tool schema (`jarvis-agent/src/tools/web_search.rs:197-329`):
 `snippet_max`, `format`, `lang/language`, `region`, `date` (replaced by
 `recent`), `file`, `start`, `mode`, `features` (always on), `extract*`
 (replaced by `fetch_top`), `min_runes`, `output_format`. Models used
@@ -217,21 +238,23 @@ pub struct Feature {
 
 ## 5. Fetch
 
-Port `fetch/mod.rs` + `fetch/ssrf.rs` + `fetch/clean.rs` (1,158 lines) and
-their tests nearly verbatim; they are the best-tested part of the crate.
+Port `fetch/mod.rs` + `fetch/ssrf.rs` (and the tests) nearly verbatim; they
+are the best-tested part of the crate. `fetch/clean.rs` is replaced by
+`fetch/text.rs` (§13).
 
 - SSRF: scheme/userinfo/host checks, hostname denylist, full private/
-  reserved v4+v6 ranges, **DNS resolve-and-check every address, re-checked
-  on every redirect hop** (`ssrf.rs:47-62,91-118,161-266`; `fetch/mod.rs:175`).
-  Not configurable off. Known TOCTOU on rebinding (`ssrf.rs:4-6`) recorded
-  in §10.
+  reserved v4+v6 ranges, **DNS resolve-and-check every address** through a
+  custom reqwest `dns::Resolve` (`ssrf::GuardedResolver`) that hands the
+  client only checked addresses, and the static guard re-run on every
+  redirect hop (redirects are followed manually). Not configurable off.
+  jarvis's TOCTOU (`ssrf.rs:4-6`) does not exist here (§13).
 - Limits: 8 s total, 2 s connect, 2 MiB body, 5 redirects, binary
   content-types rejected (`fetch/mod.rs:29-33,189-193,225-259`).
-- `format: text` = jarvis `clean_html` via `scraper` (main/article/body
-  preference, noise tags stripped — `clean.rs:82-148`). `format: markdown`
-  = `html-to-markdown-rs` (jarvis `extract.rs:20`), keeping headings and
-  links so the model can follow up. Both stacks exist in jarvis; we keep
-  both because agents need links (markdown) and token-cheap prose (text).
+- One HTML parser: `format: markdown` = `html-to-markdown-rs` 3.12
+  (default features off), keeping headings and links so the model can
+  follow up; `format: text` is a projection of that markdown (headings,
+  links and emphasis stripped), not a second parse. Agents get links
+  (markdown) or token-cheap prose (text) from one tree.
 - `rendered: true` → the first registered provider whose `meta().renders`
   is true (Firecrawl `/v2/scrape` with `formats: ["markdown"]`, else
   OpenSERP extract), in the order `search-providers` registered them. The
@@ -299,32 +322,29 @@ DDG instant answers, Wikipedia summary, `Feature` rendering, plugin glue).
 ```
 crates/web/                       plugin "web" - depends on runtime, tools
   src/lib.rs        WebPlugin: reads `web`, spawns WebActor ("web"), registers tools (knowledge pattern)
-  src/actor.rs      WebActor: provider set; RegisterProvider / UnregisterProvider / Search / Render
-  src/provider.rs   Provider trait, ProviderMeta, Query, RawResult, Feature, FeatureKind (pub - the contract)
+  src/actor.rs      WebActor: provider set; RegisterProvider / UnregisterProvider / ListProviders / Search / Render
+  src/provider.rs   Provider trait, ProviderMeta, Query, RawResult, Feature, FeatureKind, Rendered, ProviderError (pub - the contract)
   src/tools.rs      SearchTool, FetchTool (tools::Tool impls, description from the live provider set)
-  src/aggregate.rs  fan_out + merge_rank_dedupe (RRF k=60, α=0.001 - rank.rs:4-15)
+  src/aggregate.rs  fan-out (JoinSet, semaphore 6, per-provider + overall timeout), RRF k=60 α=0.001, feature dedupe/order, zero-yield detector
   src/render.rs     result list + features -> tool text
-  src/fetch/        mod.rs, ssrf.rs, clean.rs (ported)
+  src/fetch/        mod.rs (limits, manual redirects), ssrf.rs (guard + GuardedResolver), text.rs (markdown -> text)
   src/url.rs        canonicalize_url, DisplayUrl (ported normalize/url.rs)
   src/engines/      duckduckgo.rs wikipedia.rs arxiv.rs github.rs
-  tests/            ssrf matrix, rank/dedupe, url normalisation (ported), one wiremock contract test per engine
-  tests/fixtures/   captured responses, dated
+  tests/            ssrf matrix, rank/dedupe, url normalisation, engines (fixtures), aggregate
 
 crates/search-providers/          plugin "search-providers" - depends on runtime, web (library half)
-  src/lib.rs        SearchProvidersPlugin: reads `search_providers`, builds clients, registers with "web"
+  src/lib.rs        SearchProvidersPlugin: reads `search_providers`, builds clients, lookup_when("web"), registers
   src/{brave,firecrawl,searxng,openserp}.rs
-  tests/            one wiremock contract test per provider from a captured response
+  tests/            wiremock contract tests per provider (documented response shapes)
 ```
 
-`web` dependencies: `reqwest` (workspace), `url`, `schemars`, `serde*`,
-`tokio`, `thiserror`, `tracing`, `kameo` — all already in `Cargo.lock`.
-New: `scraper` 0.23 (html5ever tree + selectors; the HTML→text path) and
-`html-to-markdown-rs` 3.x (markdown path). Dev: `wiremock`.
-`async-trait`, `bitflags`, `base64`, `chrono`, `parking_lot`,
-`html-escape` from jarvis are not needed. Check at implementation whether
-`html-to-markdown-rs` pulls its own html5ever version; if two coexist,
-drop `scraper` and derive text from the markdown converter's tree (one
-parser, one dependency).
+`web` dependencies: `reqwest` (workspace, now with the `query` feature),
+`schemars`, `serde*`, `tokio`, `thiserror`, `tracing`, `kameo`. New to the
+workspace: `url`, `html-to-markdown-rs` 3.12 (default features off; the
+only HTML parser - §13). Dev: `wiremock`. `scraper`, `async-trait`,
+`bitflags`, `base64`, `chrono`, `parking_lot`, `html-escape` from jarvis
+are not used. `runtime::credentials(data_dir)` is the shared
+`credentials.yaml` reader (the agent's private copy was removed).
 
 `search-providers` dependencies: `reqwest`, `serde*`, `web`. No HTML
 parsing: every external provider returns JSON.
@@ -334,8 +354,8 @@ parsing: every external provider returns JSON.
 Crate `jarvis-search` → `web`; `DEFAULT_USER_AGENT` (`config.rs:51-52`) →
 `wth/0.1 (+…)` (the binary name is the one permitted product name, 00 §1);
 `JARVIS_*` env vars gone (§6); `from_jarvis_settings` and its tests gone;
-fixture headers and doc comments rewritten. Tool names `web_search`,
-`web_fetch` were already unbranded.
+fixture headers and doc comments rewritten. Tool names changed for a
+different reason (§13).
 
 ## 10. Risks and known gaps
 
@@ -345,9 +365,9 @@ fixture headers and doc comments rewritten. Tool names `web_search`,
   configured, search returns a clear failure, and the description already
   told the user how to add a provider. SearXNG is the recommended
   self-hosted answer; Brave the cheapest hosted one.
-- **DNS rebinding TOCTOU** in the SSRF guard (`ssrf.rs:4-6`): the fetch
-  client resolves again after our check. Mitigation available in reqwest
-  (`resolve()` pinning to the checked addresses); do it in the port.
+- ~~**DNS rebinding TOCTOU** in the SSRF guard (`ssrf.rs:4-6`)~~ — closed
+  at build time by `GuardedResolver` (§5, §13): the client never resolves
+  on its own.
 - **Provider response drift** (Brave/Firecrawl schema versions,
   OpenSERP's `serp_features` shapes): contract tests against dated
   fixtures, and §4.6's zero-yield detector at runtime.
@@ -362,25 +382,30 @@ fixture headers and doc comments rewritten. Tool names `web_search`,
 
 Each step leaves `wth` runnable.
 
-1. `web` crate: fetch + SSRF + clean + url canonicalisation ported with
-   tests; `web_fetch` registered. Check: fetch a docs page as markdown and
-   text; `http://169.254.169.254/` and a hostname resolving to loopback
-   are rejected; a 3-hop redirect chain ending on 127.0.0.1 is rejected.
+1. `web` crate: fetch + SSRF + url canonicalisation ported with tests;
+   `read_url` registered. Checked: `https://example.com/` as markdown
+   (`# Example Domain`, `[Learn more](…)`) and text; `http://localhost:7799/`
+   rejected by hostname; `169.254.169.254` and a redirect onto loopback by
+   integration test, not live.
 2. Provider trait + aggregator + `duckduckgo` (HTML + instant answers),
-   `wikipedia` (+ summary), `arxiv`, `github`; `web_search` registered;
-   `Feature` rendering. Check: `web_search{query:"rust async trait"}`
-   returns a merged list with `engines` per result; `"2^32"` yields an
-   `Answer` from DDG; `"Ada Lovelace"` yields a `KnowledgePanel` from
-   Wikipedia; unplugging the network yields `Failed:` lines, not an error.
+   `wikipedia` (+ summary), `arxiv`, `github`; `search_web` registered;
+   `Feature` rendering. Checked: `"Ada Lovelace"` merges wikipedia +
+   duckduckgo with a `knowledge_panel`; `"uuid"` yields an `answer` (DDG
+   IA `Answer` - §13; `"2^32"` does not); `category: it "tokio"` → GitHub,
+   `category: science` → arXiv; `fetch_top: 1` appends `Fetched:`. Not
+   checked: network unplugged.
 3. `search-providers` crate: `brave`, `firecrawl` (search + render),
    `searxng`, `openserp`; registration over the bus; descriptions reflect
-   the live set. Check: each with a wiremock contract test from a captured
-   response; start with only `web` → description lists four engines; add
-   a `brave` key and restart → five, `Faq`/`News` named; Firecrawl live on
-   a key: `web_fetch{url, rendered:true}` on a JS-only page returns
-   content the raw path did not; with `search-providers` removed from the
-   plugin list the same call errors naming it.
-4. Docs: 00 §4/§10/§12 rows, 01 §1.1 credentials keys, README.
+   the live set. Checked: wiremock contract test per provider (documented
+   shapes, no captured responses - no keys or instances); with only `web`
+   the description lists four engines and names Firecrawl as the way in;
+   `rendered: true` with no provider errors naming `search_providers`;
+   startup with `firecrawl` enabled and no key logs `firecrawl: no key in
+   credentials.yaml; add `firecrawl: <key>` (free tier at firecrawl.dev)
+   to enable web search through it`. Not checked live: a key on any
+   hosted provider, a JS-only page through `rendered: true`.
+4. Docs: 00 §10/§12 rows and deps, 01 §1.1 credentials keys, README, this
+   §13.
 
 ## 12. Open questions
 
@@ -393,3 +418,44 @@ Each step leaves `wth` runnable.
 4. `Images` kind: rendered as URLs only; is it worth carrying at all
    without a vision consumer? Keep because Firecrawl/OpenSERP give it for
    free; drop if unused by the first live check.
+
+## 13. Revisions at build time
+
+1. **Tools are `search_web` / `read_url`, not `web_search` / `web_fetch`.**
+   genai 0.7.0-beta.23 maps any tool literally named `web_search` onto
+   Anthropic's server tool `web_search_20250305`
+   (`adapter/adapters/anthropic/adapter_shared.rs:736-748`); the model then
+   emitted `server_tool_use` and the turn died with `unhandled content
+   type: server_tool_use`. Renamed in code; crate `web`, config sections
+   `web:` / `search_providers:` unchanged. §9's "already unbranded" claim
+   was true and irrelevant.
+2. **One HTML parser.** §8's rule fired: `scraper` was not added.
+   `html-to-markdown-rs` 3.12 (default features off) is the only parser;
+   `format: text` is derived from the markdown (`fetch/text.rs`), and
+   jarvis's `clean.rs` was not ported.
+3. **TOCTOU closed.** `ssrf::GuardedResolver` implements reqwest's
+   `dns::Resolve`: it rejects when any resolved address is non-global and
+   returns only checked addresses, so one shared client is enough (no
+   per-fetch client with `resolve()` pinning). Redirects are followed
+   manually with the static guard per hop. §10's bullet is struck.
+4. **DDG `Answer` scope.** The Instant Answer `Answer` field fires for its
+   answer types (guid/uuid, unit conversions, "my ip"), **not** arithmetic:
+   `"2^32"` yields only a knowledge panel. §11's check was rewritten to
+   `"uuid"`.
+5. **OpenSERP.** `recent` is not forwarded (its API wants civil dates, not
+   relative ranges); only `[General]` is requested as a category; render is
+   `GET /extract?url=`.
+6. **Firecrawl.** `/v2/search` general requests `sources: [web, news,
+   images]`; `/v2/scrape` renders; a 402 is surfaced as `payment required:
+   free credits exhausted`. `firecrawl: { hosted, enabled }` is present in
+   `SearchProvidersConfig` **by default**, gated on the key: without one
+   the plugin logs how to get a free key and skips it, and the search tool's
+   description ends with the same pointer.
+7. **Brave.** Snippet cleanup is HTML entity decoding only; no tag
+   stripping was needed on the documented shapes.
+8. **`rendered` always in the schema.** Confirmed as §3.1 states: the field
+   is static and, with no rendering provider, fails with `rendered fetch
+   needs a rendering provider: configure firecrawl or openserp under
+   search_providers`.
+9. **`ListProviders`** was added to `WebActor` so the tool description and
+   `search-providers`' startup can read the live set without a `Search`.
