@@ -5,6 +5,8 @@ use std::collections::{BTreeSet, VecDeque};
 use std::ops::Range;
 use std::sync::Arc;
 
+use acp::EntryInfo;
+use acp::registry::RegistryAgent;
 use agent::{
     AgentEvent, CompactStyle, HistoryEntry, Loaded, ModelInfo, ProviderInfo, QueuedInput,
     SessionSummary, SkillBody, SkillMeta, Usage,
@@ -63,6 +65,12 @@ pub enum UiEvent {
     McpAdded(McpServer),
     /// Reply to [`Command::AddMcpRepo`].
     RepoAdded(RepoInfo),
+    /// Reply to [`Command::ListAcp`] (also sent after [`Command::RemoveAcp`]).
+    Acp(Vec<EntryInfo>),
+    /// Reply to [`Command::ListAcpRegistry`].
+    AcpRegistry(Vec<RegistryAgent>),
+    /// Reply to [`Command::AddAcp`].
+    AcpAdded(EntryInfo),
     /// Reply to [`Command::KnowledgeList`] / [`Command::KnowledgeSearch`]: metas: best first for a search, by id for a list.
     Knowledge(Vec<Meta>),
     /// Reply to [`Command::KnowledgeHistory`].
@@ -244,6 +252,17 @@ pub enum Command {
     SyncMcp,
     /// `list_logins` plus OAuth servers from `list_mcp`.
     ListLogins,
+    /// `list_acp`.
+    ListAcp {
+        /// Run an `initialize` probe per entry (slow: spawns each harness).
+        probe: bool,
+    },
+    /// `add_acp` from the registry, then re-list.
+    AddAcp(String),
+    /// `remove_acp`, then `list_acp`.
+    RemoveAcp(String),
+    /// `list_acp_registry`.
+    ListAcpRegistry,
     /// `login` (provider name) or `mcp_login` (server name).
     Login(String),
     /// `logout` (provider name) or `mcp_logout` (server name).
@@ -485,6 +504,9 @@ pub struct Child {
     pub id: SessionId,
     /// A turn is in flight.
     pub running: bool,
+    /// External harness name (`agents.yaml` key) when it is an ACP child;
+    /// unknown at `SubagentSpawned`, filled by the next `/agents` reply.
+    pub agent: Option<String>,
 }
 
 /// Slash commands: name, argument hint (`<x>` required, `[x]` optional, `""` none), description.
@@ -499,6 +521,11 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "/mcp",
         "[add <url|json>|sync]",
         "MCP servers and tool gates",
+    ),
+    (
+        "/acp",
+        "[add <registry-id>|remove <name>]",
+        "External harnesses (ACP) and the registry",
     ),
     (
         "/skills",
@@ -687,6 +714,15 @@ pub enum Menu {
         /// Highlighted row.
         cursor: usize,
     },
+    /// `/acp`: configured harnesses, then the registry.
+    Acp {
+        /// Latest `ListAcp` reply.
+        entries: Vec<EntryInfo>,
+        /// Latest `ListAcpRegistry` reply; empty until it arrives.
+        registry: Vec<RegistryAgent>,
+        /// Highlighted row: entries first, then registry rows.
+        cursor: usize,
+    },
 }
 
 /// Multi-step `/provider add` input. Rides on the input box (not a modal menu).
@@ -730,6 +766,17 @@ pub enum Row<'a> {
     Server(&'a McpServer),
     /// A tool of an expanded server.
     Tool(&'a McpServer, &'a McpToolInfo),
+}
+
+/// One line of the `/acp` menu.
+#[derive(Debug)]
+pub enum AcpRow<'a> {
+    /// A configured harness (`agents.yaml`).
+    Entry(&'a EntryInfo),
+    /// Blank line between the two halves; the cursor skips it.
+    Sep,
+    /// A registry agent, addable with Enter.
+    Registry(&'a RegistryAgent),
 }
 
 /// What the key handler should do after a menu saw a key.
@@ -812,6 +859,8 @@ pub struct Model {
     /// `/mcp` was typed; the next `UiEvent::Mcp` opens the menu. Refreshes
     /// after `SetGate` only update an open menu, never reopen a closed one.
     awaiting_mcp: bool,
+    /// `/acp` was typed; the next `UiEvent::Acp` opens the menu (same rule as `awaiting_mcp`).
+    awaiting_acp: bool,
     /// Transcript of the shown session.
     pub entries: Vec<Entry>,
     /// The root has a turn in flight.
@@ -907,6 +956,7 @@ impl Model {
                         | Menu::Efforts { .. }
                         | Menu::Sessions { .. }
                         | Menu::Mcp { .. }
+                        | Menu::Acp { .. }
                         | Menu::Skills { .. }
                         | Menu::Logins { .. }
                 )
@@ -1161,20 +1211,28 @@ impl Model {
                 }
                 for s in list {
                     let name = s.name.unwrap_or_default();
-                    if self.child(s.id).is_none() {
-                        self.children.push(Child {
+                    let agent = s
+                        .agent
+                        .as_deref()
+                        .map_or_else(String::new, |a| format!(" ({a})"));
+                    match self.children.iter_mut().find(|c| c.id == s.id) {
+                        Some(c) => c.agent = s.agent,
+                        None => self.children.push(Child {
                             name: name.clone(),
                             id: s.id,
                             running: false,
-                        });
+                            agent: s.agent,
+                        }),
                     }
                     let status = if self.child(s.id).is_some_and(|c| c.running) {
                         "running"
                     } else {
                         "idle"
                     };
-                    self.entries
-                        .push(Entry::Info(format!("{name}  {status}  {}", short(s.id))));
+                    self.entries.push(Entry::Info(format!(
+                        "{name}  {status}{agent}  {}",
+                        short(s.id)
+                    )));
                 }
             }
             UiEvent::History(id, loaded) => {
@@ -1246,6 +1304,29 @@ impl Model {
                 }
                 _ => {}
             },
+            UiEvent::Acp(list) => match &mut self.menu {
+                Some(Menu::Acp { entries, .. }) => *entries = list,
+                _ if self.awaiting_acp => {
+                    self.awaiting_acp = false;
+                    self.menu = Some(Menu::Acp {
+                        entries: list,
+                        registry: Vec::new(),
+                        cursor: 0,
+                    });
+                }
+                _ => {}
+            },
+            UiEvent::AcpRegistry(list) => {
+                if let Some(Menu::Acp { registry, .. }) = &mut self.menu {
+                    *registry = list;
+                }
+            }
+            UiEvent::AcpAdded(e) => self.entries.push(Entry::Info(format!(
+                "acp: added `{}` ({} {})",
+                e.name,
+                e.command,
+                e.args.join(" ")
+            ))),
             UiEvent::Approvals(s) => {
                 self.approvals_global = s.global;
                 self.entries.push(Entry::Info(format!(
@@ -1425,6 +1506,7 @@ impl Model {
                         name: name.clone(),
                         id: *child,
                         running: false,
+                        agent: None,
                     });
                 }
                 if self.shown() == Some(*parent) {
@@ -1672,6 +1754,20 @@ impl Model {
                 send(tx, Command::ListMcp);
             }
             "/mcp" => self.mcp_cmd(arg, tx),
+            "/acp" if arg.is_empty() => {
+                self.awaiting_acp = true;
+                send(tx, Command::ListAcp { probe: false });
+                send(tx, Command::ListAcpRegistry);
+            }
+            "/acp" => match arg.split_once(' ').map(|(s, r)| (s, r.trim())) {
+                Some(("add", id)) if !id.is_empty() => send(tx, Command::AddAcp(id.to_owned())),
+                Some(("remove", name)) if !name.is_empty() => {
+                    send(tx, Command::RemoveAcp(name.to_owned()));
+                }
+                _ => self.entries.push(Entry::Error(
+                    "usage: /acp [add <registry-id> | remove <name>]".into(),
+                )),
+            },
             "/skills" => self.skills_cmd(arg, tx),
             "/prompt" => send(tx, Command::ShowPrompt(self.shown())),
             "/knowledge" => self.knowledge_cmd(arg, tx),
@@ -2222,6 +2318,7 @@ impl Model {
             Some(Menu::Efforts { .. }) => self.efforts_key(code, tx),
             Some(Menu::Sessions { .. }) => self.sessions_key(code, tx),
             Some(Menu::Mcp { .. }) => self.mcp_key(code, tx),
+            Some(Menu::Acp { .. }) => self.acp_key(code, tx),
             Some(Menu::Skills { .. }) => self.skills_key(code, tx),
             Some(Menu::Logins { .. }) => self.logins_key(code, tx),
         }
@@ -2465,6 +2562,77 @@ impl Model {
                         .sum::<usize>()
                         + i
                 });
+            }
+            Act::Send(cmd) => send(tx, cmd),
+            Act::Close => self.menu = None,
+            Act::Nothing => {}
+        }
+        MenuKey::Consumed
+    }
+
+    /// `/acp` menu rows in cursor order: entries, a separator when both
+    /// halves are present, then the registry.
+    pub fn acp_rows(&self) -> Vec<AcpRow<'_>> {
+        let Some(Menu::Acp {
+            entries, registry, ..
+        }) = &self.menu
+        else {
+            return Vec::new();
+        };
+        let mut rows: Vec<AcpRow<'_>> = entries.iter().map(AcpRow::Entry).collect();
+        if !entries.is_empty() && !registry.is_empty() {
+            rows.push(AcpRow::Sep);
+        }
+        rows.extend(registry.iter().map(AcpRow::Registry));
+        rows
+    }
+
+    fn acp_key(&mut self, code: KeyCode, tx: &UnboundedSender<Command>) -> MenuKey {
+        enum Act {
+            Move(usize),
+            Send(Command),
+            Probe,
+            Close,
+            Nothing,
+        }
+        let Some(Menu::Acp { cursor, .. }) = &self.menu else {
+            return MenuKey::Consumed;
+        };
+        let rows = self.acp_rows();
+        let last = rows.len().saturating_sub(1);
+        let cursor = (*cursor).min(last);
+        // Up/Down step over the separator row.
+        let step = |to: usize, dir: isize| match rows.get(to) {
+            Some(AcpRow::Sep) => to.saturating_add_signed(dir).min(last),
+            _ => to,
+        };
+        let act = match (code, rows.get(cursor)) {
+            (KeyCode::Up, _) => Act::Move(step(cursor.saturating_sub(1), -1)),
+            (KeyCode::Down, _) => Act::Move(step((cursor + 1).min(last), 1)),
+            (KeyCode::Esc, _) => Act::Close,
+            (KeyCode::Char('p'), _) => Act::Probe,
+            (KeyCode::Enter, Some(AcpRow::Registry(a))) => Act::Send(Command::AddAcp(a.id.clone())),
+            (KeyCode::Char('d') | KeyCode::Backspace, Some(AcpRow::Entry(e))) => {
+                Act::Send(Command::RemoveAcp(e.name.clone()))
+            }
+            _ => Act::Nothing,
+        };
+        let Some(Menu::Acp {
+            entries,
+            cursor: cur,
+            ..
+        }) = &mut self.menu
+        else {
+            return MenuKey::Consumed;
+        };
+        *cur = cursor;
+        match act {
+            Act::Move(to) => *cur = to,
+            Act::Probe => {
+                for e in entries.iter_mut() {
+                    e.status = Some("probing…".into());
+                }
+                send(tx, Command::ListAcp { probe: true });
             }
             Act::Send(cmd) => send(tx, cmd),
             Act::Close => self.menu = None,
@@ -2734,6 +2902,65 @@ mod tests {
         assert!(matches!(m.entries.last(), Some(Entry::Error(_))));
         m.submit("/mcp sync", &tx);
         assert!(matches!(rx.try_recv(), Ok(Command::SyncMcp)));
+    }
+
+    #[test]
+    fn acp_menu_lists_probes_adds_and_removes() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        let entry = EntryInfo {
+            name: "codex".into(),
+            command: "codex-acp".into(),
+            args: vec![],
+            description: None,
+            status: None,
+        };
+        let reg = RegistryAgent {
+            id: "codex-acp".into(),
+            name: "Codex".into(),
+            version: "1.0".into(),
+            description: String::new(),
+            distribution: serde_json::Value::Null,
+        };
+        // A refresh with no menu open and no `/acp` typed must not open one.
+        m.apply(UiEvent::Acp(vec![]));
+        assert!(m.menu.is_none());
+        m.submit("/acp", &tx);
+        assert!(m.awaiting_acp);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::ListAcp { probe: false })
+        ));
+        assert!(matches!(rx.try_recv(), Ok(Command::ListAcpRegistry)));
+        m.apply(UiEvent::Acp(vec![entry]));
+        m.apply(UiEvent::AcpRegistry(vec![reg]));
+        assert_eq!(m.acp_rows().len(), 3, "entry, separator, registry row");
+        m.menu_key(KeyCode::Char('p'), "", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::ListAcp { probe: true })
+        ));
+        assert!(matches!(
+            &m.menu,
+            Some(Menu::Acp { entries, .. }) if entries[0].status.as_deref() == Some("probing…")
+        ));
+        // Down skips the separator and lands on the registry row.
+        m.menu_key(KeyCode::Down, "", &tx);
+        assert!(matches!(m.menu, Some(Menu::Acp { cursor: 2, .. })));
+        m.menu_key(KeyCode::Enter, "", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::AddAcp(id)) if id == "codex-acp"));
+        m.menu_key(KeyCode::Up, "", &tx);
+        m.menu_key(KeyCode::Char('d'), "", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::RemoveAcp(n)) if n == "codex"));
+        m.menu_key(KeyCode::Esc, "", &tx);
+        assert!(m.menu.is_none());
+        m.submit("/acp add codex-acp", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::AddAcp(id)) if id == "codex-acp"));
+        m.submit("/acp remove codex", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::RemoveAcp(n)) if n == "codex"));
+        m.submit("/acp bogus", &tx);
+        assert!(rx.try_recv().is_err());
+        assert!(matches!(m.entries.last(), Some(Entry::Error(_))));
     }
 
     #[test]

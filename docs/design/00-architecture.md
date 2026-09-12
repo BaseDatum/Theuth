@@ -332,6 +332,13 @@ Rejected: raw bus envelope over the wire (couples internal type layout to the
 wire, no request semantics without reinventing JSON-RPC); `tonic` (no
 webview story without grpc-web).
 
+**ACP.** `wth --acp` speaks the Agent Client Protocol on stdio
+(`rpc::AcpPlugin`, `crates/rpc/src/acp.rs`): the same actor lookups as the
+methods above, a bus-subscribed `Relay` translating
+`AgentEvent`/`ApprovalRequested` into `session/update`/`session/request_permission`.
+Editors (Zed et al.) are frontends without a Tauri build; the jsonrpsee
+surface stays for the TUI and config menus. Design: doc 06 §4.
+
 ## 8. Terminal UI plugin
 
 Library: `iocraft` 0.9 (declarative, flexbox via taffy, hooks;
@@ -438,6 +445,7 @@ crates/
   markdown/           library: streaming markdown renderer for the TUI (added in 03)
   oauth/              library: loopback callback, PKCE, provider token store (added in 05)
   cursor/             library: Cursor AgentService adapter behind agent::backend (added in 05 §2.5; seam 12 §6)
+  acp/                library: agents.yaml, ACP registry, Harness (external harness process), renderers (06)
   tools/              plugin: registry, approval, shell (brush), fs, mcp (rmcp) (§6, 01)
   knowledge/          plugin: OKF bundle, FTS index, gix history, knowledge_* tools (added in 10; extracted from agent in 12 §9)
   agent/              plugin: genai loop, session store, frame/compaction, skills, subagents, repl (§5, 07, 08)
@@ -476,6 +484,7 @@ Workspace dependencies (versions verified 2026-09-09 via `cargo info`):
 | tracing / tracing-subscriber | 0.1 / 0.3 | logs |
 | anyhow / thiserror | 1 / 2 | errors |
 | clap | 4 | CLI |
+| agent-client-protocol | 2.1 (pinned) | ACP client + agent (acp, agent, rpc) |
 
 Lints: `missing_docs = warn`, `clippy::all = warn` while the crates are being
 built out in parallel; flips to `deny` once phase 3 lands and the workspace is
@@ -558,6 +567,7 @@ Each phase ends with a runnable check, not a test suite.
 | 6 | steering ids + undo/redo | 01 §2.3, 07 §8.8 | done 2026-09-11 |
 | 7 | snap compaction (13) | `/compact snap` on a vision model; a fact only in the archive is recalled | done 2026-09-11 (4 frames, 10/10 offsets recalled without tools; ~4.5k tokens/frame measured) |
 | 8 | background jobs (14) | `shell` returns within grace; `<job_result>` starts a turn; no orphans at shutdown | done 2026-09-11 (stub → wake turn, mid-turn inject, inline once, `sleep 300` dead after shutdown) |
+| 9 | ACP (06): external harnesses as subagents, `wth --acp` | opencode child streams, approval relayed, result delivered, resume via session/load; stdio client runs prompt/deny/cancel/load | done 2026-09-12 |
 
 Known gaps carried forward: cancel/error paths in the loop are code-reviewed,
 not smoke-tested; the `Jobs` actor kills every process group on shutdown
@@ -566,6 +576,9 @@ brush `on_spawn` patch; RPC token compare is plain `==` (loopback only);
 session actors are never evicted from the supervisor; `cargo test -p
 knowledge` hung once (2026-09-11, 0% CPU, parallel threads; 1/7 runs), not
 reproduced - run with `--test-threads=1` if it recurs and bisect gix vs sqlite.
+ACP: binary registry installs and terminal-type login messages are not
+smoke-tested; ACP children cannot message their parent (no MCP back-channel,
+06 §3.8).
 
 ## 13. Lessons carried from jarvis (design only, no code)
 

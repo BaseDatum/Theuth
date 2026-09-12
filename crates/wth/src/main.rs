@@ -38,6 +38,9 @@ struct Cli {
     /// to stdout, exit when the turn finishes. No full-screen UI.
     #[arg(short, long, num_args = 0..=1, default_missing_value = "")]
     prompt: Option<String>,
+    /// Speak the Agent Client Protocol on stdio (for editors); implies no TUI and no RPC server.
+    #[arg(long, conflicts_with_all = ["headless", "serve", "prompt", "link_signal"])]
+    acp: bool,
     /// Pair this machine as a Signal linked device (one-shot: prints a QR,
     /// waits for the scan, writes `signal.owner`/`device_name`, exits).
     #[arg(long)]
@@ -99,6 +102,7 @@ const DEFAULT_CREDENTIALS: &str =
 /// Creates the data-dir skeleton on first run. Existing files are never overwritten.
 fn first_run(data_dir: &Path, config_path: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(data_dir.join("mcp"))?;
+    std::fs::create_dir_all(data_dir.join("acp"))?;
     if !config_path.exists() {
         std::fs::write(config_path, DEFAULT_CONFIG)?;
     }
@@ -176,6 +180,19 @@ async fn run() -> anyhow::Result<()> {
                 device_name: cli.device_name,
             }),
         })]
+    } else if cli.acp {
+        // stdout is the protocol channel: no TUI, no line printer, no
+        // WebSocket server; tracing already goes to the file (06 §8.13).
+        vec![
+            Box::new(tools::ToolsPlugin),
+            Box::new(knowledge::KnowledgePlugin),
+            Box::new(agent::AgentPlugin),
+            Box::new(signal::SignalPlugin {
+                channel: false,
+                link: None,
+            }),
+            Box::new(rpc::AcpPlugin),
+        ]
     } else {
         let mut plugins: Vec<Box<dyn Plugin>> = vec![
             Box::new(tools::ToolsPlugin),

@@ -19,6 +19,8 @@ fn export_bindings() {
         agent::ModelInfo,
         agent::SkillMeta,
         agent::SkillBody,
+        acp::EntryInfo,
+        acp::registry::RegistryAgent,
         knowledge::Meta,
         knowledge::Concept,
         knowledge::Hit,

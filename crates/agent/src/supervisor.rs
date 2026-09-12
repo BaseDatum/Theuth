@@ -4,7 +4,7 @@
 //! (14 §3) are injected as [`UserInput`] into the addressee.
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -24,6 +24,7 @@ use tools::{
     ToolRegistry,
 };
 
+use crate::acp_child::AcpChild;
 use crate::loop_::{
     CancelTurn, CompactNow, HarvestNow, IsRunning, QueuedInputs, RedoTurn, Session, SessionState,
     SetPendingEffort, SwitchModel, UndoTurn, UserInput, WithdrawInput, text_of,
@@ -35,12 +36,13 @@ use crate::skills::{
 };
 use crate::store::{Epoch, Store};
 use crate::{
-    AGENT_ACTOR, AddProvider, AddSkill, AddSkillRepo, AgentConfig, AgentEvent, Cancel, Compact,
-    CompactStyle, GetCompactStyle, Harvest, HistoryEntry, ListChildren, ListLogins, ListModels,
-    ListProviders, ListQueued, ListSessions, ListSkills, LoadSession, LoadSkill, Loaded, Login,
-    LoginFinished, LoginInfo, Logout, ModelInfo, ProviderInfo, QueuedInput, Redo, RemoveProvider,
-    RemoveSkill, RemoveSkillRepo, SendInput, SessionSummary, SetCompactStyle, SetEffort, SetModel,
-    ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo, Withdraw, effort_of,
+    AGENT_ACTOR, AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentConfig, AgentEvent, Cancel,
+    Compact, CompactStyle, GetCompactStyle, Harvest, HistoryEntry, ListAcp, ListChildren,
+    ListLogins, ListModels, ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills,
+    LoadSession, LoadSkill, Loaded, Login, LoginFinished, LoginInfo, Logout, ModelInfo, NewSession,
+    ProviderInfo, QueuedInput, Redo, RemoveAcp, RemoveProvider, RemoveSkill, RemoveSkillRepo,
+    SendInput, SessionSummary, SetCompactStyle, SetEffort, SetModel, ShowPrompt, SkillBody,
+    SkillMeta, Steer, SyncSkills, Undo, Withdraw, effort_of,
 };
 use crate::{frame, repl, spill};
 
@@ -79,9 +81,66 @@ pub struct Agents {
 
 /// A live session actor plus its peer identity.
 struct Live {
-    actor: ActorRef<Session>,
+    actor: LiveActor,
     /// `(parent, name)` for subagents.
     parent: Option<(SessionId, String)>,
+}
+
+/// What runs a session's turns: wth's own loop, or an external ACP harness
+/// (design doc 06 §3.2). Both take [`UserInput`], [`CancelTurn`] and [`IsRunning`].
+#[derive(Clone)]
+enum LiveActor {
+    Native(ActorRef<Session>),
+    Acp(ActorRef<AcpChild>),
+}
+
+/// The refusal for every `Session`-only command on an ACP child.
+const NOT_NATIVE: &str = "not available for an external harness";
+
+impl LiveActor {
+    fn is_alive(&self) -> bool {
+        match self {
+            Self::Native(a) => a.is_alive(),
+            Self::Acp(a) => a.is_alive(),
+        }
+    }
+
+    async fn tell_input(&self, input: UserInput) {
+        match self {
+            Self::Native(a) => {
+                let _ = a.tell(input).await;
+            }
+            Self::Acp(a) => {
+                let _ = a.tell(input).await;
+            }
+        }
+    }
+
+    async fn tell_cancel(&self) {
+        match self {
+            Self::Native(a) => {
+                let _ = a.tell(CancelTurn).await;
+            }
+            Self::Acp(a) => {
+                let _ = a.tell(CancelTurn).await;
+            }
+        }
+    }
+
+    async fn is_running(&self) -> bool {
+        match self {
+            Self::Native(a) => a.ask(IsRunning).await.unwrap_or(false),
+            Self::Acp(a) => a.ask(IsRunning).await.unwrap_or(false),
+        }
+    }
+
+    /// The wth loop behind this session; `Err` for an external harness.
+    fn native(&self) -> Result<&ActorRef<Session>, String> {
+        match self {
+            Self::Native(a) => Ok(a),
+            Self::Acp(_) => Err(NOT_NATIVE.into()),
+        }
+    }
 }
 
 struct ChildTurn {
@@ -100,6 +159,10 @@ pub struct SpawnChild {
     pub name: Option<String>,
     /// First input of the child.
     pub task: String,
+    /// External harness (`agents.yaml` key); `None` runs a wth subagent (design doc 06 §3.2).
+    pub agent: Option<String>,
+    /// Working directory for an external harness's `session/new`; default: wth's cwd.
+    pub cwd: Option<PathBuf>,
 }
 
 /// `ask` → `Result<Option<oneshot::Receiver<String>>, String>`: route a peer
@@ -170,17 +233,31 @@ impl Agents {
         }
     }
 
-    /// Live actor for `id`, resuming from the store (or creating the row) when needed.
+    /// Live actor for `id`, resuming from the store (or creating the row) when
+    /// needed. `acp` = `(harness, cwd)` runs a new child on an external harness
+    /// (design doc 06 §3.2); a row whose `agent` column is set resumes on one.
     async fn session(
         &mut self,
         id: Option<SessionId>,
         parent: Option<(SessionId, &str)>,
-    ) -> anyhow::Result<(SessionId, ActorRef<Session>)> {
+        acp: Option<(String, Option<PathBuf>)>,
+    ) -> anyhow::Result<(SessionId, LiveActor)> {
         let id = id.unwrap_or_default();
         if let Some(live) = self.sessions.get(&id).filter(|l| l.actor.is_alive()) {
             return Ok((id, live.actor.clone()));
         }
-        let (model, effort, state, parent) = match self.store.session(id).await? {
+        let row = self.store.session(id).await?;
+        let harness = acp
+            .as_ref()
+            .map(|a| a.0.clone())
+            .or_else(|| row.as_ref().and_then(|r| r.agent.clone()));
+        if let Some(name) = harness {
+            let actor = self
+                .acp_session(id, row, parent, name, acp.and_then(|a| a.1))
+                .await?;
+            return Ok((id, actor));
+        }
+        let (model, effort, state, parent) = match row {
             Some(row) => {
                 let (epoch, head, history) = self.store.frame(id).await?;
                 (
@@ -215,17 +292,8 @@ impl Agents {
             }
         };
         let depth = self.store.depth(id).await?;
-        if let Some((parent, _)) = &parent
-            && let Ok(Some(reg)) = ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR)
-        {
-            // Subagents inherit the parent's approval switch.
-            let _ = reg
-                .tell(SetParent {
-                    session: id,
-                    parent: *parent,
-                })
-                .await;
-        }
+        self.inherit_approvals(id, parent.as_ref().map(|p| p.0))
+            .await;
         let actor = Session::spawn(Session::new(
             id,
             depth,
@@ -241,6 +309,7 @@ impl Agents {
             self.catalog.clone(),
             self.pool.clone(),
         ));
+        let actor = LiveActor::Native(actor);
         self.sessions.insert(
             id,
             Live {
@@ -251,6 +320,72 @@ impl Agents {
         Ok((id, actor))
     }
 
+    /// Spawn an [`AcpChild`] for `id` on harness `name`: a new row (model
+    /// column = the harness name) or a resume of `row` with its stored ACP
+    /// session id (design doc 06 §3.2, §3.6).
+    async fn acp_session(
+        &mut self,
+        id: SessionId,
+        row: Option<SessionSummary>,
+        parent: Option<(SessionId, &str)>,
+        name: String,
+        cwd: Option<PathBuf>,
+    ) -> anyhow::Result<LiveActor> {
+        let entries = acp::load(&self.rt.data_dir)?;
+        let Some(entry) = entries.get(&name) else {
+            let names: Vec<&str> = entries.keys().map(String::as_str).collect();
+            anyhow::bail!("unknown agent `{name}`; configured: {}", names.join(", "));
+        };
+        let (parent, cwd, resume) = match row {
+            Some(row) => (
+                row.parent.zip(row.name),
+                row.cwd.map(PathBuf::from),
+                self.store.acp_session(id).await?,
+            ),
+            None => {
+                self.store
+                    .create_session(id, &name, parent.map(|p| p.0), parent.map(|p| p.1))
+                    .await?;
+                self.store.set_acp(id, &name, cwd.as_deref()).await?;
+                (parent.map(|(p, n)| (p, n.to_string())), cwd, None)
+            }
+        };
+        let cwd = cwd.unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        self.inherit_approvals(id, parent.as_ref().map(|p| p.0))
+            .await;
+        let actor = LiveActor::Acp(AcpChild::spawn(AcpChild::new(
+            id,
+            name,
+            entry,
+            cwd,
+            resume,
+            self.store.clone(),
+            self.rt.clone(),
+        )));
+        self.sessions.insert(
+            id,
+            Live {
+                actor: actor.clone(),
+                parent,
+            },
+        );
+        Ok(actor)
+    }
+
+    /// Subagents inherit the parent's approval switch.
+    async fn inherit_approvals(&self, id: SessionId, parent: Option<SessionId>) {
+        if let Some(parent) = parent
+            && let Ok(Some(reg)) = ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR)
+        {
+            let _ = reg
+                .tell(SetParent {
+                    session: id,
+                    parent,
+                })
+                .await;
+        }
+    }
+
     /// Route `text` into `session` (created when `None`); errors surface as `AgentEvent::Error`.
     async fn input(
         &mut self,
@@ -258,9 +393,9 @@ impl Agents {
         id: Option<InputId>,
         text: String,
     ) -> SessionId {
-        match self.session(session, None).await {
+        match self.session(session, None, None).await {
             Ok((sid, actor)) => {
-                let _ = actor.tell(UserInput { id, text }).await;
+                actor.tell_input(UserInput { id, text }).await;
                 sid
             }
             Err(e) => {
@@ -280,15 +415,15 @@ impl Agents {
 
     /// The live (or resumed) actor for `session`, with the lookup error as the
     /// caller's `Err` string.
-    async fn actor(&mut self, session: SessionId) -> Result<ActorRef<Session>, String> {
-        self.session(Some(session), None)
+    async fn actor(&mut self, session: SessionId) -> Result<LiveActor, String> {
+        self.session(Some(session), None, None)
             .await
             .map(|(_, actor)| actor)
             .map_err(|e| format!("{e:#}"))
     }
 
     /// The live actor for `session`, if any; a session with no actor has nothing queued.
-    fn live(&self, session: SessionId) -> Option<&ActorRef<Session>> {
+    fn live(&self, session: SessionId) -> Option<&LiveActor> {
         self.sessions
             .get(&session)
             .filter(|l| l.actor.is_alive())
@@ -466,6 +601,7 @@ impl Message<Withdraw> for Agents {
         };
         // `SendError::HandlerError` displays as the inner `String`.
         actor
+            .native()?
             .ask(WithdrawInput(m.id))
             .await
             .map_err(|e| e.to_string())
@@ -476,7 +612,7 @@ impl Message<ListQueued> for Agents {
     type Reply = Vec<QueuedInput>;
 
     async fn handle(&mut self, m: ListQueued, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        match self.live(m.session) {
+        match self.live(m.session).and_then(|a| a.native().ok()) {
             Some(actor) => actor.ask(QueuedInputs).await.unwrap_or_default(),
             None => Vec::new(),
         }
@@ -489,6 +625,7 @@ impl Message<Undo> for Agents {
     async fn handle(&mut self, m: Undo, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.actor(m.session)
             .await?
+            .native()?
             .ask(UndoTurn)
             .await
             .map_err(|e| e.to_string())
@@ -501,6 +638,7 @@ impl Message<Redo> for Agents {
     async fn handle(&mut self, m: Redo, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.actor(m.session)
             .await?
+            .native()?
             .ask(RedoTurn)
             .await
             .map_err(|e| e.to_string())
@@ -518,7 +656,7 @@ impl Message<Cancel> for Agents {
                 .get(&id)
                 .filter(|_| id == m.session || self.running.contains(&id))
             {
-                let _ = live.actor.tell(CancelTurn).await;
+                live.actor.tell_cancel().await;
             }
         }
     }
@@ -530,10 +668,14 @@ impl Message<Compact> for Agents {
     async fn handle(&mut self, m: Compact, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        let actor = match self.session(Some(m.session), None).await {
-            Ok((_, actor)) => actor,
+        let actor = match self
+            .actor(m.session)
+            .await
+            .and_then(|a| a.native().cloned())
+        {
+            Ok(actor) => actor,
             Err(e) => {
-                tx.send(Err(format!("{e:#}")));
+                tx.send(Err(e));
                 return reply;
             }
         };
@@ -591,10 +733,14 @@ impl Message<Harvest> for Agents {
     async fn handle(&mut self, m: Harvest, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        let actor = match self.session(Some(m.session), None).await {
-            Ok((_, actor)) => actor,
+        let actor = match self
+            .actor(m.session)
+            .await
+            .and_then(|a| a.native().cloned())
+        {
+            Ok(actor) => actor,
             Err(e) => {
-                tx.send(Err(format!("{e:#}")));
+                tx.send(Err(e));
                 return reply;
             }
         };
@@ -645,9 +791,13 @@ impl Message<SpawnChild> for Agents {
             n += 1;
             name = format!("{base}-{n}");
         }
-        self.session(Some(id), Some((m.parent, &name)))
-            .await
-            .map_err(|e| format!("{e:#}"))?;
+        self.session(
+            Some(id),
+            Some((m.parent, &name)),
+            m.agent.map(|a| (a, m.cwd)),
+        )
+        .await
+        .map_err(|e| format!("{e:#}"))?;
         self.rt
             .publish(AgentEvent::SubagentSpawned {
                 parent: m.parent,
@@ -709,7 +859,7 @@ impl Message<ChildTimedOut> for Agents {
             && let Some(live) = self.sessions.get(&child)
         {
             self.timed_out.insert(child);
-            let _ = live.actor.tell(CancelTurn).await;
+            live.actor.tell_cancel().await;
         }
     }
 }
@@ -985,8 +1135,11 @@ impl Message<LoadSession> for Agents {
         };
         let (running, queued) = match self.live(m.session) {
             Some(actor) => (
-                actor.ask(IsRunning).await.unwrap_or(false),
-                actor.ask(QueuedInputs).await.unwrap_or_default(),
+                actor.is_running().await,
+                match actor.native() {
+                    Ok(a) => a.ask(QueuedInputs).await.unwrap_or_default(),
+                    Err(_) => Vec::new(),
+                },
             ),
             None => (false, Vec::new()),
         };
@@ -998,7 +1151,9 @@ impl Message<LoadSession> for Agents {
                 tracing::error!(session = %m.session, "hidden_turns: {e:#}");
                 0
             });
-        let (model, effort) = row.map(|r| (r.model, r.effort)).unwrap_or_default();
+        let (model, effort, agent) = row
+            .map(|r| (r.model, r.effort, r.agent))
+            .unwrap_or_default();
         Loaded {
             history,
             running,
@@ -1006,6 +1161,7 @@ impl Message<LoadSession> for Agents {
             effort,
             queued,
             undone,
+            agent,
         }
     }
 }
@@ -1066,10 +1222,7 @@ impl Message<SetModel> for Agents {
             let Some(row) = self.store.session(id).await.map_err(|e| e.to_string())? else {
                 return Err(format!("unknown session {id}"));
             };
-            let (_, actor) = self
-                .session(Some(id), None)
-                .await
-                .map_err(|e| format!("{e:#}"))?;
+            let actor = self.actor(id).await?.native()?.clone();
             let _ = actor.tell(SwitchModel(resolved.clone())).await;
             if let Err(e) = self.store.set_model(id, &resolved.id).await {
                 tracing::warn!(session = %id, "set_model: {e:#}");
@@ -1146,10 +1299,7 @@ impl Message<SetEffort> for Agents {
             }
         }
         if let Some(id) = m.session {
-            let (_, actor) = self
-                .session(Some(id), None)
-                .await
-                .map_err(|e| format!("{e:#}"))?;
+            let actor = self.actor(id).await?.native()?.clone();
             self.apply_effort(id, &actor, m.effort.clone()).await;
         }
         self.default_effort = m.effort.clone();
@@ -1316,6 +1466,138 @@ impl Message<RemoveProvider> for Agents {
             .remove(&m.name);
         self.catalog = Arc::new(Catalog::load(&self.rt.data_dir));
         Ok(())
+    }
+}
+
+impl Message<NewSession> for Agents {
+    type Reply = Result<SessionId, String>;
+
+    async fn handle(&mut self, m: NewSession, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (id, _) = self
+            .session(None, None, None)
+            .await
+            .map_err(|e| format!("{e:#}"))?;
+        if let Some(cwd) = &m.cwd {
+            self.store
+                .set_cwd(id, cwd)
+                .await
+                .map_err(|e| format!("{e:#}"))?;
+        }
+        Ok(id)
+    }
+}
+
+/// One `/acp` row, unprobed.
+fn acp_info(name: String, e: &acp::Entry) -> acp::EntryInfo {
+    acp::EntryInfo {
+        name,
+        command: e.command.clone(),
+        args: e.args.clone(),
+        description: e.description.clone(),
+        status: None,
+    }
+}
+
+impl Message<ListAcp> for Agents {
+    type Reply = kameo::reply::DelegatedReply<Vec<acp::EntryInfo>>;
+
+    async fn handle(&mut self, m: ListAcp, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let data_dir = self.rt.data_dir.clone();
+        // Probing spawns every harness (up to 10 s each): off the mailbox.
+        tokio::spawn(async move {
+            let entries = acp::load(&data_dir).unwrap_or_else(|e| {
+                tracing::warn!("acp/agents.yaml: {e:#}");
+                Default::default()
+            });
+            let logs = data_dir.join("logs");
+            let logs = &logs;
+            let probes = entries.iter().map(|(name, e)| async move {
+                let mut info = acp_info(name.clone(), e);
+                if m.probe {
+                    let r =
+                        acp::harness::probe(e.config(), logs.join(format!("acp-{name}.log"))).await;
+                    info.status = Some(r.status);
+                }
+                info
+            });
+            tx.send(futures::future::join_all(probes).await);
+        });
+        reply
+    }
+}
+
+impl Message<AddAcp> for Agents {
+    type Reply = kameo::reply::DelegatedReply<Result<acp::EntryInfo, String>>;
+
+    async fn handle(&mut self, m: AddAcp, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let data_dir = self.rt.data_dir.clone();
+        // Network + download: off the mailbox.
+        tokio::spawn(async move {
+            let result = async {
+                let agents = acp::registry::fetch(&data_dir)
+                    .await
+                    .map_err(|e| format!("registry: {e:#}"))?;
+                let agent = agents
+                    .iter()
+                    .find(|a| a.id == m.id)
+                    .ok_or_else(|| format!("unknown registry id `{}`", m.id))?;
+                let entry = acp::registry::install(&data_dir, agent)
+                    .await
+                    .map_err(|e| format!("install {}: {e:#}", m.id))?;
+                let mut entries = acp::load(&data_dir).map_err(|e| format!("{e:#}"))?;
+                entries.insert(m.id.clone(), entry.clone());
+                acp::save(&data_dir, &entries).map_err(|e| format!("{e:#}"))?;
+                Ok(acp_info(m.id, &entry))
+            }
+            .await;
+            tx.send(result);
+        });
+        reply
+    }
+}
+
+impl Message<RemoveAcp> for Agents {
+    type Reply = Result<(), String>;
+
+    async fn handle(&mut self, m: RemoveAcp, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let data_dir = &self.rt.data_dir;
+        let mut entries = acp::load(data_dir).map_err(|e| format!("{e:#}"))?;
+        if entries.remove(&m.name).is_none() {
+            let names: Vec<&str> = entries.keys().map(String::as_str).collect();
+            return Err(format!(
+                "unknown agent `{}`; configured: {}",
+                m.name,
+                names.join(", ")
+            ));
+        }
+        acp::save(data_dir, &entries).map_err(|e| format!("{e:#}"))?;
+        acp::registry::remove_bin(data_dir, &m.name).map_err(|e| format!("bin/{}: {e}", m.name))
+    }
+}
+
+impl Message<ListRegistry> for Agents {
+    type Reply = kameo::reply::DelegatedReply<Result<Vec<acp::registry::RegistryAgent>, String>>;
+
+    async fn handle(
+        &mut self,
+        _: ListRegistry,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let data_dir = self.rt.data_dir.clone();
+        tokio::spawn(async move {
+            tx.send(
+                acp::registry::fetch(&data_dir)
+                    .await
+                    .map_err(|e| format!("registry: {e:#}")),
+            );
+        });
+        reply
     }
 }
 
@@ -1663,7 +1945,9 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         let _ = reg
             .ask(RegisterTool(Arc::new(SyncSkillsTool { dir })))
             .await;
-        let _ = reg.ask(RegisterTool(Arc::new(SpawnSubagentTool))).await;
+        let _ = reg
+            .ask(RegisterTool(Arc::new(SpawnSubagentTool { data_dir })))
+            .await;
         let _ = reg
             .ask(RegisterTool(Arc::new(SendMessageTool { cfg })))
             .await;

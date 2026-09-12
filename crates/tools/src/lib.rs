@@ -4,7 +4,7 @@
 //! hot-reloaded; `mcp/config.yaml` overrides a tool's [`Risk`] with a [`Gate`]).
 //!
 //! Public surface consumed by other plugins:
-//! - commands on the `"tools"` actor ([`ToolRegistry`]): [`ListTools`], [`Invoke`], [`RegisterTool`], [`UnregisterTool`]
+//! - commands on the `"tools"` actor ([`ToolRegistry`]): [`ListTools`], [`Invoke`], [`ExternalApproval`], [`RegisterTool`], [`UnregisterTool`]
 //! - commands on the `"approval"` actor ([`Approval`]): [`Resolve`]
 //! - commands on the `"mcp"` actor ([`Mcp`]): [`ListServers`], [`SetGate`], [`Restart`], [`AddServer`], [`RemoveServer`], [`AddRepo`], [`SyncMcp`], [`McpLogin`], [`McpLogout`]
 //! - commands on the `"jobs"` actor ([`Jobs`]): [`ListJobs`], [`CancelJob`]
@@ -33,8 +33,8 @@ pub use mcp::{
     McpToolInfo, Progress, RemoveServer, RepoInfo, Restart, SetGate, SyncMcp,
 };
 pub use registry::{
-    ApprovalsState, Invoke, ListPrompts, ListTools, RegisterPrompt, RegisterTool, SetApprovals,
-    SetParent, ToolRegistry, UnregisterPrompt, UnregisterTool,
+    ApprovalsState, ExternalApproval, Invoke, ListPrompts, ListTools, RegisterPrompt, RegisterTool,
+    SetApprovals, SetParent, ToolRegistry, UnregisterPrompt, UnregisterTool,
 };
 
 /// Registry name of the [`ToolRegistry`] actor.

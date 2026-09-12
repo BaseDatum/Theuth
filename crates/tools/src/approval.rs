@@ -18,8 +18,10 @@ use crate::Risk;
 #[serde(transparent)]
 pub struct ApprovalId(pub uuid::Uuid);
 
-/// Human answer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+/// Human answer. A `kameo::Reply` so [`crate::ExternalApproval`] can answer with it directly.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,
+)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum Decision {

@@ -1,6 +1,12 @@
 # Agent Client Protocol: external harnesses as subagents, wth as an agent
 
-Status: draft v0 · 2026-09-09 · extends `00-architecture.md` §5, §7; `01-config-and-subagents.md` §2
+Status: as-built v0 · 2026-09-12 (draft v0 2026-09-09) · extends `00-architecture.md` §5, §7; `01-config-and-subagents.md` §2. §8 lists what the build changed against the draft; where §8 disagrees with §1-§7, §8 wins.
+
+Verified 2026-09-12. Client half (headless, real models; harness `opencode acp` 1.18.20 from `agents.yaml`, parent claude-sonnet-4-5): `spawn_subagent{agent:"opencode"}` → `SubagentSpawned`, child `TurnStarted{model:"opencode"}`, `ToolCallStarted bash`, `ToolCallFinished`, `TextDelta "ACP-OK-17"`, `TurnFinished end_turn`, parent turn with `<subagent_result stop="end_turn">ACP-OK-17</subagent_result>`; `send_message` with `await_reply` → second `session/prompt` on the same ACP session, answered from the child's context, `MessageDelivered` published; an entry with `OPENCODE_CONFIG` permission `bash: ask` → `ApprovalRequested{tool:"echo PERM-OK-5", risk: mutating, args:{command, kind:"execute"}}` on the child session, `resolve_approval allow` ran it, `deny` gave the harness `The user rejected permission to use this specific tool call.` and a silent turn end (result falls back to `[no reply; last tool result]`, §8.17); `cancel` on a child running `sleep 120` → `session/cancel` → `TurnFinished cancelled`, `<subagent_result stop="cancelled">`, process stays (idle child); RPC `shutdown` → zero `opencode acp` processes; restart + `send_message` to a store-only child respawned and `session/load`ed (harness recalled its first turn); unknown agent → tool error `unknown agent \`nope\`; configured: opencode, opencode-ask`; `list_acp(probe:true)` → `ok` for both; `command: /nonexistent/harness` → child `Error "spawn failed: Internal error: No such file or directory (os error 2)"` + `TurnFinished error`, parent `<subagent_result stop="error">` with that text.
+Registry: `list_acp_registry` → 40 agents; `add_acp("codex-acp")` wrote `codex-acp: {command: npx, args: [-y, "@agentclientprotocol/codex-acp@1.11.0"], description: "ACP adapter for OpenAI's coding assistant"}`; `spawn_subagent{agent:"codex-acp"}` streamed `CODEX-OK` and delivered the result (codex login already on disk); `remove_acp` removed entries.
+Agent half (`wth --acp` driven by a throwaway Bun stdio client): `initialize` → `{protocolVersion:1, agentCapabilities:{loadSession:true, promptCapabilities:{embeddedContext:true}}, authMethods:[], agentInfo:{name:"wth", version}}`; `session/new` → wth session id; `session/prompt` streamed `tool_call{title:"shell", kind:"execute", in_progress}`, `session/request_permission` with `allow_once`/`reject_once`, `tool_call_update completed` with the shell output, `agent_message_chunk`, `usage_update`, `{stopReason:"end_turn"}`; `reject_once` → `tool_call_update failed "shell: denied by user"` and the model explained the denial; `session/cancel` during `sleep 30` → `{stopReason:"cancelled"}`; `session/load` replayed `user_message_chunk`, `tool_call`, `agent_message_chunk` and a follow-up prompt answered from the replayed history; `session/list` returned the session with `cwd` and title; stdin EOF → exit 0, no leftover process.
+TUI on a pty: `/acp` opened the menu (entries, blank, registry rows `+ id  name version  description`); `p` showed `probing…` then `ok`.
+Not exercised: `binary` distribution install (download/sha256/tar|unzip), the `terminal`-type auth message, Zed/acpx as clients (not installed), `session/set_config_option`.
 
 [ACP](https://agentclientprotocol.com) is JSON-RPC 2.0 between an **Agent**
 (an LLM harness: Claude Code, Codex, Gemini CLI, OpenCode, Goose, Copilot,
@@ -378,56 +384,74 @@ close the most common gap.
 buffers), `plan` updates from a todo tool, `usage_update.cost` from the
 catalog's pricing, `session/close`, message ids.
 
-## 5. Crates and dependencies
+## 5. Crates and dependencies (as built)
 
 ```
-crates/acp/          client half: AcpChild actor, agents.yaml loader, registry
-                     fetch/install, ChildSink trait. Deps: agent-client-protocol,
-                     kameo, tokio, serde, reqwest (registry), sha2, runtime (SessionId).
-                     No dependency on agent or tools (like cursor).
-crates/agent/        Live::Acp, SpawnChild.agent/cwd, store columns, PeerContext line,
-                     ChildSink impl (Runtime + ActorRef<Approval>).
-crates/rpc/src/acp.rs   agent half: Agent.builder() handlers over the same lookups
-                     as api.rs and the same bridge receiver. Deps: agent-client-protocol.
-crates/wth/          --acp flag: plugin list = everything but tui and rpc-ws; run
-                     the ACP connection on stdio until EOF, then shutdown.
+crates/acp/          library, no dependency on agent or tools (like cursor):
+                       agents.rs   agents.yaml loader, describe() (tool-description line)
+                       registry.rs registry fetch/cache, install (npx/uvx/binary), remove_bin
+                       harness.rs  Harness: connect (spawn → initialize → auth → session/new|load),
+                                   prompt, cancel, close; probe
+                       render.rs   content/diff renderers, risk(kind), kind(name, risk)
+crates/agent/        acp_child.rs: AcpChild actor (session/update → AgentEvent, permissions,
+                       queued input, respawn + session/load); migrations/0006_acp.sql
+                       (agent, acp_session, cwd); Live.actor: LiveActor::{Native, Acp};
+                       SpawnChild.agent/cwd; spawn_subagent{agent, cwd} + description line
+                       from acp::describe; SessionSummary.agent/cwd; Loaded.agent; Agents
+                       messages NewSession, ListAcp{probe}, AddAcp{id}, RemoveAcp{name},
+                       ListRegistry.
+crates/tools/        ExternalApproval on ToolRegistry, sharing Invoke's decision (gate()).
+crates/rpc/src/acp.rs   agent half: AcpPlugin + Relay bus actor (AgentEvent, approvals,
+                       prompt waiters). RPC: list_acp(probe), add_acp(id), remove_acp(name),
+                       list_acp_registry(). TS bindings EntryInfo.ts, RegistryAgent.ts.
+crates/wth/          --acp flag (conflicts with headless/serve/-p/link-signal): plugins
+                       tools, knowledge, agent, signal (channel off), rpc::AcpPlugin;
+                       first_run creates acp/.
+crates/tui/          /acp menu (Menu::Acp; keys p/⏎/d; /acp add <id>, /acp remove <name>);
+                       /agents shows (agent).
 ```
 
-`agent-client-protocol = "2"` is the only new workspace dependency (its own
-tree: `serde`, `futures`, `tokio` — nothing new transitively of note; verify
-with `cargo tree -d` at implementation). The SDK's handler futures may be
-`!Send`; if so each connection runs on `tokio_util::task::LocalPoolHandle`
-(`tokio-util` `rt` feature is already enabled) and talks to actors via
-`ActorRef`s, which are `Send`.
+`agent-client-protocol = "=2.1.0"` is the only new workspace dependency. Its
+handlers are `Send` (no `LocalPoolHandle`, driven with `tokio::spawn`); it has
+no tokio dependency and adds `async-io`, `async-process`, `blocking`,
+`futures-concurrency`, `shell-words`, `rustix` transitively.
 
-## 6. Implementation order
+## 6. Implementation order (as executed)
 
-Each step leaves `wth` runnable.
+Each step left `wth` runnable.
 
-1. `acp` crate: `agents.yaml` loader + watcher, `AcpChild` with
-   `initialize` → `session/new` → one `session/prompt`, event translation
-   (§3.3), permission routing (§3.4), cancel. Check: a throwaway `main`
-   spawns `codex-acp` (or `npx -y @agentclientprotocol/claude-agent-acp`),
-   prints `AgentEvent`s for "list the files here", answers one
-   `request_permission` from stdin.
-2. `agent`: `Live` enum, `SpawnChild.agent`, columns, `spawn_subagent.agent`
-   + description line, `PeerContext` line, `SessionSummary.agent`. Check
-   (headless over RPC): parent `spawn_subagent{agent: "codex", task}` →
-   `SubagentSpawned`, child `TextDelta`s stream, an `ApprovalRequested`
-   for a shell command appears and `resolve_approval` lets it run,
-   `TurnFinished`, parent runs a `<subagent_result>` turn;
-   `send_message{to: child}` produces a second child turn on the same ACP
-   session; parent `cancel` kills the child process (no orphan in `ps`).
-3. `/acp` menu, registry fetch, `/acp add <id>` for `npx`/`uvx`/`binary`.
-   Check: `/acp add codex` on a machine without the entry writes
-   `agents.yaml` and step-2's flow works from that entry.
+1. `acp` crate: `agents.yaml` loader, `Harness` (`initialize` → `session/new`
+   → `session/prompt`), renderers, `risk`/`kind`, `probe`. Checked through
+   step 2 against `opencode acp` 1.18.20 (no throwaway `main`; the harness
+   was exercised via the supervisor) and `list_acp(probe:true)` → `ok`.
+2. `agent`: `LiveActor` enum, `SpawnChild.agent/cwd`, `0006_acp.sql`,
+   `spawn_subagent.agent/cwd` + description line, `SessionSummary.agent/cwd`,
+   `Loaded.agent`, `AcpChild`, `ExternalApproval`. Checked headless over RPC:
+   `spawn_subagent{agent:"opencode"}` → `SubagentSpawned`, `TurnStarted
+   {model:"opencode"}`, `ToolCallStarted bash` / `ToolCallFinished`,
+   `TextDelta`, `TurnFinished end_turn`, parent `<subagent_result>`;
+   `ApprovalRequested` for `echo PERM-OK-5` → allow ran it, deny ended the
+   turn silently (§8.17); `send_message` → second prompt on the same ACP
+   session; `cancel` → `TurnFinished cancelled`, process kept (idle child);
+   `shutdown` → no `opencode acp` left; restart + `send_message` respawned
+   and `session/load`ed; unknown agent and broken `command` produced the
+   tool error / `<subagent_result stop="error">` respectively.
+3. `/acp` menu, registry fetch, `add_acp`/`remove_acp` for `npx`/`uvx`/`binary`.
+   Checked: `list_acp_registry` → 40 agents; `add_acp("codex-acp")` wrote
+   the `npx` entry and `spawn_subagent{agent:"codex-acp"}` streamed
+   `CODEX-OK`; `remove_acp` removed it. `binary` install not exercised live.
 4. `wth --acp`: `initialize`, `session/new`, `session/prompt` with streaming
-   updates, `request_permission`, `session/cancel`, `session/load`. Check:
-   Zed with `agent_servers.wth` → a turn streams, a `shell` call prompts in
-   Zed's permission UI, Deny makes the model see the error; `acpx` (CLI
-   client) runs the same script headlessly for the regression check.
-5. Docs: `00-architecture.md` §7 and §9 point here; README config block;
-   `01-config-and-subagents.md` §2.4 notes the `agent` field.
+   updates, `request_permission`, `session/cancel`, `session/load`,
+   `session/list`. Checked with a throwaway Bun stdio client (Zed/acpx not
+   installed): a turn streamed `tool_call` → `request_permission` →
+   `tool_call_update completed` → `agent_message_chunk` → `usage_update` →
+   `end_turn`; `reject_once` → `tool_call_update failed "shell: denied by
+   user"` and the model explained the denial; cancel during `sleep 30` →
+   `cancelled`; `session/load` replayed history and a follow-up answered
+   from it; stdin EOF → exit 0, no leftover process.
+5. Docs: this section, §3 verification paragraph, §5, §8; `00-architecture.md`
+   §7 and §9 point here; README config block; `01-config-and-subagents.md`
+   §2.4 notes the `agent` field.
 
 ## 7. Risks
 
@@ -447,3 +471,88 @@ Each step leaves `wth` runnable.
   `usage_update` is optional and often absent, so `TurnFinished.usage` is
   zero for ACP children. The header shows the harness name, not a model, so
   the gap is visible rather than misleading.
+
+## 8. Revisions at build time (2026-09-12)
+
+Re-verified against `agent-client-protocol` 2.1.0 source (schema 1.7.0) and
+the tree at `93fa4bd`. Each item names the draft's claim, the fact, the
+decision.
+
+1. **SDK is `Send`; no `LocalPoolHandle`** (§5). Handlers are `AsyncFnMut + Send`
+   boxed into `BoxFuture`; `ConnectionTo<R>` is `Clone + Send + Sync`;
+   `connect_with` is a plain `Send` future. Drive it with `tokio::spawn`.
+   The SDK has no tokio dependency (`async-io`, `async-process`, `blocking`
+   helper threads). Pin `=2.1.0`.
+2. **Connection = closure lifetime.** The child process dies (process group
+   kill) when the `connect_with` closure returns. Pattern: the closure sends
+   its `ConnectionTo<Agent>` clone out over a oneshot and then awaits a
+   shutdown oneshot; the actor holds the handle. `cx.spawn` tasks run inside
+   that future; a task returning `Err` kills the connection, so tasks log
+   and return `Ok`.
+3. **Client must reject unknown session-scoped requests.** The SDK's `Agent`
+   counterpart marks every unhandled message carrying `sessionId` as
+   *retry* and queues it forever. A harness that ignores our empty
+   `fs`/`terminal` capabilities would hang. A last catch-all
+   `on_receive_request(AgentRequest → method_not_found)` is mandatory.
+4. **`AcpAgentConfig` has no cwd and denies unknown fields.** `agents.yaml`
+   deserialises into our own `Entry { command, args, env, description }`
+   and builds the SDK config; the process inherits wth's cwd; `cwd` goes
+   only into `session/new`.
+5. **No `crates/acp` actor, no `ChildSink` trait.** `AgentEvent` lives in
+   `agent`; an actor in `acp` publishing it would need `agent` (cycle) or a
+   mirrored event enum (two lists). So `acp` is a *library* (plugins.md §7,
+   like `cursor`): `agents.yaml` loader, registry fetch/install, the
+   `Harness` connection wrapper (spawn → `initialize` → auth → `session/new`
+   or `session/load`, `prompt`, `cancel`, `probe`), and pure renderers
+   (`render_content`, `risk(kind)`, `kind(name, risk)`). The `AcpChild`
+   actor is `crates/agent/src/acp_child.rs`, with the store, the registry
+   and `AgentEvent` in reach.
+6. **No watcher for `agents.yaml`.** The file is read at every spawn and
+   every `/acp`; "next spawn sees it" holds with zero code. The MCP watcher
+   exists because servers are long-lived processes to reconcile; harnesses
+   are spawned per child.
+7. **Spawn failure arrives as a result, not a tool error** (§3.2 "fails the
+   spawn"). The supervisor's spawn is non-blocking past row creation and
+   `npx` can take ten seconds; blocking the supervisor mailbox on it is
+   wrong. `spawn_subagent` returns as today; if `initialize`/`session/new`
+   fails, the child publishes `Error` + `TurnFinished { stop_reason:
+   "error" }`, persists the error text as its assistant message, and the
+   parent receives `<subagent_result stop="error">` naming the cause
+   (auth: the exact login command, §3.7). One delivery path.
+8. **Permissions go through the registry's contract, not around it** (§3.4
+   "never auto-allows by policy alone"). `ToolRegistry` gains
+   `ExternalApproval { session, tool, args, risk } -> Decision` running the
+   same `Risk -> PolicyAction` + `approvals`/bypass + `Approval.ask` as
+   `Invoke`. A policy that allows `read_only` without asking allows a
+   harness's read too; one contract (12 §5). `allow_always` is still never
+   selected.
+9. **`PeerContext` `## Subagents` line dropped** - no such block exists;
+   the tool description carries the harness list and that is where the
+   model reads it.
+10. **Store**: `0006_acp.sql` adds `agent TEXT`, `acp_session TEXT`,
+    `cwd TEXT` (the last for §4.1). `SessionSummary.agent/cwd` and
+    `Loaded.agent` are added; the TUI `/agents` list shows `(agent)` after
+    the status.
+11. **`session/load` replay chunks are ignored**: the local history was
+    persisted per turn (§3.6), so replay would duplicate it.
+12. **Agent half subscribes typed events.** There is no typed broadcast;
+    the RPC bridge carries JSON and only exists with `RpcPlugin`. `rpc::acp`
+    registers its own kameo actor on the bus for `AgentEvent`,
+    `ApprovalRequested`, `ApprovalResolved` (same shape as both bridges) and
+    keeps per-session prompt waiters. The wth `SessionId` string *is* the ACP
+    session id (no table).
+13. **`--acp` builds its own plugin vector**: tools, knowledge, agent,
+    signal (channel off), `rpc::AcpPlugin`. Not `--headless` (which turns on
+    the WebSocket server and the Signal channel). stdout belongs to ACP;
+    tracing already goes to the file in every mode.
+14. **Registry `binary` install shells out to `tar`/`unzip`** (archives are
+    `.tar.bz2`, `.tar.gz`, `.zip`); sha256 verified before extraction.
+15. **Signal gets no `/acp`** (plugins.md §4 step 4: only if the phone
+    needs it). `send_message` to an ACP child works from Signal unchanged.
+16. **Local check harness**: `opencode acp` (installed, 1.18.20) answers
+    `initialize` with `loadSession: true` and an `agent`-type auth method;
+    it is the step-1/2 smoke target. `codex-acp`/`claude-acp` via `npx` are
+    registry entries for the step-3 install check.
+17. **Turn with no text: the result carries the last tool output**
+    (`[no reply; last tool result]`) - found in smoke: opencode ends a turn
+    silently after a rejected permission.

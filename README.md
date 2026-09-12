@@ -14,6 +14,7 @@ just run -- --resume <id>  # reopen a session
 just run -- -p "prompt"    # print mode: stream the reply, exit when the turn ends
 echo "prompt" | just run -- -p   # same, prompt from stdin
 just run -- --link-signal --owner +15551234567   # pair as a Signal linked device (one-shot QR), then run --headless
+just run -- --acp          # Agent Client Protocol on stdio: use wth from Zed/editors (agent_servers: {"wth": {"command": "wth", "args": ["--acp"]}})
 just ts                    # TypeScript bindings for the wire types → bindings/
 ```
 
@@ -28,7 +29,9 @@ model gets a job id and is woken with `<job_result>` when it exits —
 [`docs/design/10-knowledge.md`](docs/design/10-knowledge.md)), `agent` (genai
 loop, sqlite sessions with compaction epochs, skills, subagents, persistent
 Python runtime over monty worker subprocesses —
-[`docs/design/08-repl.md`](docs/design/08-repl.md)), `signal` (phone frontend
+[`docs/design/08-repl.md`](docs/design/08-repl.md)), `acp` (external
+harnesses over the Agent Client Protocol: agents.yaml, registry, harness
+connection), `signal` (phone frontend
 over Signal messenger), `rpc` (jsonrpsee), `tui` (iocraft), `wth` (binary).
 
 Config (`~/.wth/`, created on first run; details in
@@ -59,6 +62,7 @@ Config (`~/.wth/`, created on first run; details in
 - `prompt.md` — standing instructions, read into the system prompt on every model call; `/prompt` shows the assembled prompt.
 - `mcp/*.json` — drop in any `mcp.json` (Claude Desktop, Cursor, OpenCode, …); hot-reloaded, tools registered without prefix. `cwd` (relative → `mcp/`) points a server at a checkout under `mcp/repos/`, where `/mcp add <url>` clones and `/mcp sync` pulls.
 - `mcp/config.yaml` — per-server / per-tool risk override (`read_only` | `mutating` | `destructive` | `off`); `/mcp` edits it (`off` on a server = disabled). An MCP tool's risk defaults to its annotations, and one without annotations prompts by default; set `risk: read_only` on a trusted server once.
+- `acp/agents.yaml` — one entry per external harness (`name: {command, args, env, description}`); `/acp` lists, probes, adds from the registry (`/acp add <id>`), removes. The model spawns one with `spawn_subagent{agent}`; it runs as a child session like a wth subagent.
 - `skills/` — `<name>/SKILL.md` directories, loose `*.md`, or git clones (`/skills add <url>`, `/skills sync`); see [`docs/skills.md`](docs/skills.md).
 - `knowledge/` — the knowledge bundle (OKF markdown, one `<id>.md` per concept, a git repo kept in-process); `knowledge.sqlite` beside it is its search index and can be deleted.
 
@@ -73,6 +77,7 @@ gateway such as `https://api.ai.rwx.dev/v1`); `/provider` lists them, `/provider
 forgets one; `/skills` lists skills; `/prompt` shows the system prompt; `/compact` folds into a summary by default; `/compact cut` drops the folded span with no model call; `/compact style` lists/sets the default;
 `/undo` drops the last turn (yours and the reply), `/redo` restores it;
 `/jobs` lists the session's shell jobs, `/jobs kill <id>` stops one;
+`/acp` manages external ACP harnesses;
 `/knowledge` browses the knowledge base (below); `/approvals off` stops
 approval prompts for this session, `/approvals off always` for good
 (`tools.approvals` in config.yaml). Typing while the model works queues the

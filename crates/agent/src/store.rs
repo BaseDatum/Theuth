@@ -44,6 +44,8 @@ struct SessionRow {
     parent: Option<String>,
     name: Option<String>,
     effort: Option<String>,
+    agent: Option<String>,
+    cwd: Option<String>,
 }
 
 impl TryFrom<SessionRow> for SessionSummary {
@@ -63,6 +65,8 @@ impl TryFrom<SessionRow> for SessionSummary {
                 .context("bad parent id")?,
             name: r.name,
             effort: r.effort,
+            agent: r.agent,
+            cwd: r.cwd,
         })
     }
 }
@@ -132,6 +136,53 @@ impl Store {
     pub async fn set_effort(&self, id: SessionId, effort: Option<&str>) -> anyhow::Result<()> {
         sqlx::query("UPDATE sessions SET effort = ? WHERE id = ?")
             .bind(effort)
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Mark `id` as an external harness session: `agent` is the `agents.yaml`
+    /// key, `cwd` the harness's working directory (design doc 06 §3.6).
+    pub async fn set_acp(
+        &self,
+        id: SessionId,
+        agent: &str,
+        cwd: Option<&Path>,
+    ) -> anyhow::Result<()> {
+        sqlx::query("UPDATE sessions SET agent = ?, cwd = COALESCE(?, cwd) WHERE id = ?")
+            .bind(agent)
+            .bind(cwd.map(|p| p.to_string_lossy().into_owned()))
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Record the harness's own session id, for `session/load` on resume.
+    pub async fn set_acp_session(&self, id: SessionId, sid: &str) -> anyhow::Result<()> {
+        sqlx::query("UPDATE sessions SET acp_session = ? WHERE id = ?")
+            .bind(sid)
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// The harness session id recorded by [`Store::set_acp_session`], if any.
+    pub async fn acp_session(&self, id: SessionId) -> anyhow::Result<Option<String>> {
+        let row: Option<(Option<String>,)> =
+            sqlx::query_as("SELECT acp_session FROM sessions WHERE id = ?")
+                .bind(id.to_string())
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.and_then(|(s,)| s))
+    }
+
+    /// Record the working directory an ACP client gave `session/new` (design doc 06 §4.1).
+    pub async fn set_cwd(&self, id: SessionId, cwd: &Path) -> anyhow::Result<()> {
+        sqlx::query("UPDATE sessions SET cwd = ? WHERE id = ?")
+            .bind(cwd.to_string_lossy().into_owned())
             .bind(id.to_string())
             .execute(&self.pool)
             .await?;
@@ -315,7 +366,7 @@ impl Store {
     /// One session, if it exists.
     pub async fn session(&self, id: SessionId) -> anyhow::Result<Option<SessionSummary>> {
         let row: Option<SessionRow> = sqlx::query_as(
-            "SELECT id, created_at, title, model, parent, name, effort FROM sessions WHERE id = ?",
+            "SELECT id, created_at, title, model, parent, name, effort, agent, cwd FROM sessions WHERE id = ?",
         )
         .bind(id.to_string())
         .fetch_optional(&self.pool)
@@ -326,7 +377,7 @@ impl Store {
     /// Every session, newest first.
     pub async fn list_sessions(&self) -> anyhow::Result<Vec<SessionSummary>> {
         let rows: Vec<SessionRow> = sqlx::query_as(
-            "SELECT id, created_at, title, model, parent, name, effort FROM sessions ORDER BY created_at DESC, id DESC",
+            "SELECT id, created_at, title, model, parent, name, effort, agent, cwd FROM sessions ORDER BY created_at DESC, id DESC",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -336,7 +387,7 @@ impl Store {
     /// Subagents of `parent`, newest first.
     pub async fn children(&self, parent: SessionId) -> anyhow::Result<Vec<SessionSummary>> {
         let rows: Vec<SessionRow> = sqlx::query_as(
-            "SELECT id, created_at, title, model, parent, name, effort FROM sessions WHERE parent = ? ORDER BY created_at DESC, id DESC",
+            "SELECT id, created_at, title, model, parent, name, effort, agent, cwd FROM sessions WHERE parent = ? ORDER BY created_at DESC, id DESC",
         )
         .bind(parent.to_string())
         .fetch_all(&self.pool)
@@ -513,6 +564,43 @@ mod tests {
             "first words"
         );
         assert!(store.session(SessionId::new()).await.unwrap().is_none());
+
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn acp_columns_round_trip() {
+        let (store, id, dir) = fresh().await;
+        let row = store.session(id).await.unwrap().unwrap();
+        assert_eq!((row.agent, row.cwd), (None, None));
+        assert_eq!(store.acp_session(id).await.unwrap(), None);
+
+        store
+            .set_acp(id, "codex", Some(Path::new("/tmp/w")))
+            .await
+            .unwrap();
+        store.set_acp_session(id, "s-1").await.unwrap();
+        let row = store.session(id).await.unwrap().unwrap();
+        assert_eq!(row.agent.as_deref(), Some("codex"));
+        assert_eq!(row.cwd.as_deref(), Some("/tmp/w"));
+        assert_eq!(store.acp_session(id).await.unwrap().as_deref(), Some("s-1"));
+        assert_eq!(
+            store.list_sessions().await.unwrap()[0].agent.as_deref(),
+            Some("codex")
+        );
+
+        // `set_acp` without a cwd keeps the recorded one; `set_cwd` replaces it.
+        store.set_acp(id, "codex", None).await.unwrap();
+        assert_eq!(
+            store.session(id).await.unwrap().unwrap().cwd.as_deref(),
+            Some("/tmp/w")
+        );
+        store.set_cwd(id, Path::new("/tmp/v")).await.unwrap();
+        assert_eq!(
+            store.session(id).await.unwrap().unwrap().cwd.as_deref(),
+            Some("/tmp/v")
+        );
 
         drop(store);
         let _ = std::fs::remove_dir_all(&dir);

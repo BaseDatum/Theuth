@@ -6,6 +6,7 @@
 //! session and depth/peer availability is enforced at call time; per-session
 //! tool visibility is the upgrade path.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -26,10 +27,27 @@ pub struct SpawnSubagentArgs {
     /// Stable peer name (used to address it with send_message); generated when omitted.
     #[serde(default)]
     pub name: Option<String>,
+    /// An external harness from ~/.wth/acp/agents.yaml; default: a wth subagent.
+    #[serde(default)]
+    pub agent: Option<String>,
+    /// Absolute working directory for an external harness; default: wth's cwd.
+    #[serde(default)]
+    pub cwd: Option<PathBuf>,
 }
 
 /// Non-blocking delegation to a child session.
-pub struct SpawnSubagentTool;
+pub struct SpawnSubagentTool {
+    /// For `acp/agents.yaml`: the harness names the description offers.
+    pub data_dir: PathBuf,
+}
+
+/// The configured harnesses, empty (and logged) when the file is unreadable.
+fn harnesses(data_dir: &std::path::Path) -> std::collections::BTreeMap<String, acp::Entry> {
+    acp::load(data_dir).unwrap_or_else(|e| {
+        tracing::warn!("acp/agents.yaml: {e:#}");
+        Default::default()
+    })
+}
 
 fn supervisor() -> Result<ActorRef<Agents>, ToolOutput> {
     ActorRef::<Agents>::lookup(AGENT_ACTOR)
@@ -45,10 +63,17 @@ impl Tool for SpawnSubagentTool {
     type Args = SpawnSubagentArgs;
 
     fn description(&self) -> String {
-        "Delegate a complete, self-contained task to a subagent running in its own session while you continue. \
-         Returns immediately with its name; its final message arrives later as a <subagent_result> input, so do not poll. \
-         Several calls in one message run concurrently. Message it with send_message."
-            .into()
+        let mut s = String::from(
+            "Delegate a complete, self-contained task to a subagent running in its own session while you continue. \
+             Returns immediately with its name; its final message arrives later as a <subagent_result> input, so do not poll. \
+             Several calls in one message run concurrently. Message it with send_message.",
+        );
+        let line = acp::describe(&harnesses(&self.data_dir));
+        if !line.is_empty() {
+            s.push(' ');
+            s.push_str(&line);
+        }
+        s
     }
 
     async fn call(&self, args: SpawnSubagentArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
@@ -56,12 +81,24 @@ impl Tool for SpawnSubagentTool {
             Ok(a) => a,
             Err(out) => return Ok(out),
         };
+        if let Some(agent) = &args.agent {
+            let known = harnesses(&self.data_dir);
+            if !known.contains_key(agent) {
+                let names: Vec<&str> = known.keys().map(String::as_str).collect();
+                return Ok(ToolOutput::err(format!(
+                    "unknown agent `{agent}`; configured: {}",
+                    names.join(", ")
+                )));
+            }
+        }
         Ok(
             match agents
                 .ask(SpawnChild {
                     parent: cx.session,
                     name: args.name,
                     task: args.task,
+                    agent: args.agent,
+                    cwd: args.cwd,
                 })
                 .await
             {
@@ -139,5 +176,41 @@ impl Tool for SendMessageTool {
                 _ => ToolOutput::ok(format!("no reply from {to} within {secs}s")),
             },
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spawn_description_lists_configured_harnesses() {
+        let dir = std::env::temp_dir().join(format!("wth-peers-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let plain = SpawnSubagentTool {
+            data_dir: dir.clone(),
+        }
+        .description();
+        assert!(!plain.contains("External harnesses"));
+
+        let mut entries = std::collections::BTreeMap::new();
+        entries.insert(
+            "codex".to_string(),
+            acp::Entry {
+                command: "codex-acp".into(),
+                args: Vec::new(),
+                env: Default::default(),
+                description: Some("ChatGPT's coding agent".into()),
+            },
+        );
+        acp::save(&dir, &entries).unwrap();
+        let with = SpawnSubagentTool {
+            data_dir: dir.clone(),
+        }
+        .description();
+        assert!(with.starts_with(&plain));
+        assert!(with.contains("External harnesses: codex"));
+        assert!(with.contains("ChatGPT's coding agent"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

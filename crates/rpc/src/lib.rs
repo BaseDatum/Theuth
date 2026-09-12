@@ -19,12 +19,14 @@ use serde::{Deserialize, Serialize};
 use tower::Service;
 use tower::layer::layer_fn;
 
+pub mod acp;
 pub mod api;
 pub mod bridge;
 
 #[cfg(test)]
 mod export;
 
+pub use acp::AcpPlugin;
 pub use api::ApiServer;
 
 /// `[rpc]` config section.

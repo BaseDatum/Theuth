@@ -1,0 +1,3 @@
+ALTER TABLE sessions ADD COLUMN agent TEXT;
+ALTER TABLE sessions ADD COLUMN acp_session TEXT;
+ALTER TABLE sessions ADD COLUMN cwd TEXT;

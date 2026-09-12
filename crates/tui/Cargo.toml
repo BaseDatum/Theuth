@@ -11,6 +11,7 @@ tools = { workspace = true }
 agent = { workspace = true }
 knowledge = { workspace = true }
 rpc = { workspace = true }
+acp = { workspace = true }
 jsonrpsee = { workspace = true }
 chrono = { workspace = true }
 models = { workspace = true }

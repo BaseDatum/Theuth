@@ -5,11 +5,12 @@
 use std::fmt::Display;
 
 use agent::{
-    AddProvider, AddSkill, AddSkillRepo, Agents, Cancel, Compact, CompactStyle, GetCompactStyle,
-    Harvest, ListLogins, ListModels, ListProviders, ListQueued, ListSessions, ListSkills,
-    LoadSession, LoadSkill, Loaded, Login, LoginInfo, Logout, ModelInfo, ProviderInfo, QueuedInput,
-    Redo, RemoveProvider, RemoveSkill, RemoveSkillRepo, SendInput, SessionSummary, SetCompactStyle,
-    SetEffort, SetModel, ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo, Withdraw,
+    AddAcp, AddProvider, AddSkill, AddSkillRepo, Agents, Cancel, Compact, CompactStyle,
+    GetCompactStyle, Harvest, ListAcp, ListLogins, ListModels, ListProviders, ListQueued,
+    ListRegistry, ListSessions, ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginInfo,
+    Logout, ModelInfo, ProviderInfo, QueuedInput, Redo, RemoveAcp, RemoveProvider, RemoveSkill,
+    RemoveSkillRepo, SendInput, SessionSummary, SetCompactStyle, SetEffort, SetModel, ShowPrompt,
+    SkillBody, SkillMeta, Steer, SyncSkills, Undo, Withdraw,
 };
 use jsonrpsee::core::{RpcResult, SubscriptionResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
@@ -211,6 +212,18 @@ pub trait Api {
     /// `git pull` every MCP repo, restarting servers whose repo changed.
     #[method(name = "sync_mcp")]
     async fn sync_mcp(&self) -> RpcResult<Vec<SyncResult>>;
+    /// Configured external harnesses (`acp/agents.yaml`); `probe` runs `initialize` on each.
+    #[method(name = "list_acp")]
+    async fn list_acp(&self, probe: bool) -> RpcResult<Vec<acp::EntryInfo>>;
+    /// Install a registry agent as a harness entry (`binary` distributions are downloaded).
+    #[method(name = "add_acp")]
+    async fn add_acp(&self, id: String) -> RpcResult<acp::EntryInfo>;
+    /// Remove a harness entry and its downloaded binary, if any.
+    #[method(name = "remove_acp")]
+    async fn remove_acp(&self, name: String) -> RpcResult<()>;
+    /// The ACP agent registry (cached for a day; offline returns the cache).
+    #[method(name = "list_acp_registry")]
+    async fn list_acp_registry(&self) -> RpcResult<Vec<acp::registry::RegistryAgent>>;
     /// Providers a user can log in to (design doc 05), with their status.
     #[method(name = "list_logins")]
     async fn list_logins(&self) -> RpcResult<Vec<LoginInfo>>;
@@ -285,7 +298,7 @@ impl Server {
     }
 }
 
-fn lookup<A: Actor>(name: &str) -> RpcResult<ActorRef<A>> {
+pub(crate) fn lookup<A: Actor>(name: &str) -> RpcResult<ActorRef<A>> {
     match ActorRef::<A>::lookup(name) {
         Ok(Some(a)) => Ok(a),
         Ok(None) => Err(ErrorObjectOwned::owned(
@@ -302,7 +315,7 @@ fn lookup<A: Actor>(name: &str) -> RpcResult<ActorRef<A>> {
 }
 
 /// Look up `name`, `ask` it `msg`, map every failure to a JSON-RPC error.
-async fn ask<A, M>(name: &str, msg: M) -> RpcResult<<A::Reply as Reply>::Ok>
+pub(crate) async fn ask<A, M>(name: &str, msg: M) -> RpcResult<<A::Reply as Reply>::Ok>
 where
     A: Actor + Message<M>,
     M: Send + 'static,
@@ -557,6 +570,22 @@ impl ApiServer for Server {
 
     async fn add_mcp_server(&self, name: String, entry: serde_json::Value) -> RpcResult<McpServer> {
         ask::<Mcp, _>(tools::MCP_ACTOR, AddServer { name, entry }).await
+    }
+
+    async fn list_acp(&self, probe: bool) -> RpcResult<Vec<acp::EntryInfo>> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, ListAcp { probe }).await
+    }
+
+    async fn add_acp(&self, id: String) -> RpcResult<acp::EntryInfo> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, AddAcp { id }).await
+    }
+
+    async fn remove_acp(&self, name: String) -> RpcResult<()> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, RemoveAcp { name }).await
+    }
+
+    async fn list_acp_registry(&self) -> RpcResult<Vec<acp::registry::RegistryAgent>> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, ListRegistry).await
     }
 
     async fn remove_mcp_server(&self, name: String) -> RpcResult<()> {

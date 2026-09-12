@@ -17,6 +17,9 @@ other through one tool. Both are modelled on oh-my-pi (`docs/tools/task.md`,
   config.yaml          every plugin reads its own section (unchanged rule)
   credentials.yaml     provider -> api key; mode 0600; never merged into config
   oauth/               /login tokens: <ns>.json (providers), mcp/<server>.json; 0600 (doc 05)
+  acp/agents.yaml      external ACP harnesses: name -> {command, args, env, description} (doc 06)
+  acp/registry.json    cached ACP registry (24 h)
+  acp/bin/<id>/        binary distributions installed by /acp add
   mcp/
     <name>.json        one MCP server per file; file stem is the tool prefix
   sessions.sqlite      (existing)
@@ -275,6 +278,10 @@ Consequences worth stating:
   simple; batching them into one turn is an optimisation for later.
 - Result delivery is one-way (child → parent). A parent's turn text is never
   pushed to children; parents steer explicitly.
+- An ACP child's turn is one `session/prompt`; `send_message` to it while a
+  prompt is in flight is queued and sent when the response arrives. Its
+  final text is the accumulated agent text (or the last tool result when the
+  harness ends silently).
 
 **Human steering** (`Steer { session, id, text }`, `Withdraw { session,
 id }`, `ListQueued { session }`, all `ask` on `Agents`). A mid-turn input
@@ -322,6 +329,8 @@ mutates nothing outside the harness.
 struct SpawnSubagentArgs {
     task: String,             // complete, self-contained instructions
     name: Option<String>,     // stable peer id; default generated (adjective-noun)
+    agent: Option<String>,    // an external harness from acp/agents.yaml; default: a wth subagent
+    cwd: Option<PathBuf>,
 }
 // -> "Spawned `grep-logs` (session 01a0…). Its result will arrive as a
 //     <subagent_result> when it finishes; message it with send_message."
@@ -335,6 +344,9 @@ struct SendMessageArgs {
 }
 // -> "delivered" | "<reply text>" | "no reply from X within Ns"
 ```
+
+The tool description appends the configured harness names and descriptions;
+an unknown name is a tool error listing them.
 
 Why one symmetric tool instead of `ask_parent` / `steer_subagent`: same
 schema, same routing table, same rendering; the direction is just `to`.

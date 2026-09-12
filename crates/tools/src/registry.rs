@@ -17,8 +17,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::approval::{Approval, Decision, RequestApproval};
 use crate::{
-    APPROVAL_ACTOR, DynTool, Policy, PolicyAction, REGISTRY_ACTOR, ToolCall, ToolCx, ToolOutput,
-    ToolSpec, ToolsConfig, fs, jobs, shell,
+    APPROVAL_ACTOR, DynTool, Policy, PolicyAction, REGISTRY_ACTOR, Risk, ToolCall, ToolCx,
+    ToolOutput, ToolSpec, ToolsConfig, fs, jobs, shell,
 };
 
 /// The registry actor. Look up with `ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR)`.
@@ -58,6 +58,21 @@ pub struct RegisterTool(pub DynTool);
 
 /// `ask` → `()`. Removes a tool by name; unknown name is a no-op.
 pub struct UnregisterTool(pub String);
+
+/// `ask` → [`Decision`]: the same gate as [`Invoke`] for a tool call wth does
+/// not run itself — an external harness's `session/request_permission`
+/// (design doc 06 §3.4, §8.8). Timeout and a missing approval actor are `Deny`.
+#[derive(Clone, Debug)]
+pub struct ExternalApproval {
+    /// Session the call belongs to (approval bypass inheritance).
+    pub session: SessionId,
+    /// Tool title, shown in the modal.
+    pub tool: String,
+    /// Raw arguments, shown in the modal.
+    pub args: serde_json::Value,
+    /// Risk class the caller derived (`acp::risk(kind)`).
+    pub risk: Risk,
+}
 
 /// `ask` → `()`. A plugin's system-prompt paragraph: what its tools are for and
 /// when to reach for them. Pure function of config (no clock, session, roster):
@@ -163,6 +178,74 @@ impl ToolRegistry {
             }
         }
     }
+
+    /// The one permission decision (12 §5), shared by [`Invoke`] and
+    /// [`ExternalApproval`]: `Ok(None)` run now, `Ok(Some(approval))` ask the
+    /// human first, `Err(why)` refuse.
+    fn gate(
+        &mut self,
+        session: SessionId,
+        risk: Risk,
+    ) -> Result<Option<ActorRef<Approval>>, &'static str> {
+        let mut action = self.policy.action(risk);
+        if action == PolicyAction::Ask && (!self.approvals || self.bypassed(session)) {
+            action = PolicyAction::Allow;
+        }
+        match action {
+            PolicyAction::Allow => Ok(None),
+            PolicyAction::Deny => Err("denied by policy"),
+            PolicyAction::Ask => {
+                if self.approval.is_none() {
+                    self.approval = ActorRef::<Approval>::lookup(APPROVAL_ACTOR).ok().flatten();
+                }
+                self.approval
+                    .clone()
+                    .map(Some)
+                    .ok_or("approval required but no approval actor is running")
+            }
+        }
+    }
+}
+
+impl Message<ExternalApproval> for ToolRegistry {
+    type Reply = DelegatedReply<Decision>;
+
+    async fn handle(
+        &mut self,
+        m: ExternalApproval,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let approval = match self.gate(m.session, m.risk) {
+            Ok(None) => {
+                tx.send(Decision::Allow);
+                return reply;
+            }
+            Ok(Some(a)) => a,
+            Err(why) => {
+                tracing::info!(tool = %m.tool, "external approval: {why}");
+                tx.send(Decision::Deny);
+                return reply;
+            }
+        };
+        tokio::spawn(async move {
+            let req = RequestApproval {
+                session: m.session,
+                tool: m.tool,
+                args: m.args,
+                risk: m.risk,
+            };
+            // Timeout already resolves as `Deny`; an unreachable actor is one too.
+            tx.send(
+                approval
+                    .ask(req)
+                    .await
+                    .map_or(Decision::Deny, |r| r.decision),
+            );
+        });
+        reply
+    }
 }
 
 impl Message<ListTools> for ToolRegistry {
@@ -241,28 +324,11 @@ impl Message<Invoke> for ToolRegistry {
             return reply;
         };
         let spec = tool.spec();
-        let mut action = self.policy.action(spec.risk);
-        if action == PolicyAction::Ask && (!self.approvals || self.bypassed(call.session)) {
-            action = PolicyAction::Allow;
-        }
-        let approval = match action {
-            PolicyAction::Allow => None,
-            PolicyAction::Deny => {
-                tx.send(ToolOutput::err(format!("{}: denied by policy", call.name)));
+        let approval = match self.gate(call.session, spec.risk) {
+            Ok(a) => a,
+            Err(why) => {
+                tx.send(ToolOutput::err(format!("{}: {why}", call.name)));
                 return reply;
-            }
-            PolicyAction::Ask => {
-                if self.approval.is_none() {
-                    self.approval = ActorRef::<Approval>::lookup(APPROVAL_ACTOR).ok().flatten();
-                }
-                let Some(a) = self.approval.clone() else {
-                    tx.send(ToolOutput::err(format!(
-                        "{}: approval required but no approval actor is running",
-                        call.name
-                    )));
-                    return reply;
-                };
-                Some(a)
             }
         };
         // Everything that awaits leaves the mailbox.

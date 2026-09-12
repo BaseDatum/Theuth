@@ -8,13 +8,16 @@
 //!   [`ListModels`], [`SetModel`], [`SetEffort`], [`ShowPrompt`], [`ListSkills`],
 //!   [`LoadSkill`], [`AddSkill`], [`RemoveSkill`], [`AddSkillRepo`],
 //!   [`RemoveSkillRepo`], [`SyncSkills`], [`ListLogins`], [`Login`], [`Logout`],
-//!   [`ListProviders`], [`AddProvider`], [`RemoveProvider`]
+//!   [`ListProviders`], [`AddProvider`], [`RemoveProvider`], [`NewSession`],
+//!   [`ListAcp`], [`AddAcp`], [`RemoveAcp`], [`ListRegistry`]
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use runtime::{InputId, SessionId, TurnId};
 use serde::{Deserialize, Serialize};
 
+pub mod acp_child;
 mod backend;
 pub mod compact;
 pub mod frame;
@@ -171,6 +174,8 @@ pub struct Loaded {
     pub queued: Vec<QueuedInput>,
     /// Turns hidden by [`Undo`] (the redo depth); 0 when none.
     pub undone: u32,
+    /// External harness (`agents.yaml` key) when this is an ACP child (design doc 06).
+    pub agent: Option<String>,
 }
 
 /// `ask` → `Vec<SessionSummary>`: subagents of `parent` (with `name` set), newest first.
@@ -381,6 +386,42 @@ pub struct RemoveProvider {
     pub name: String,
 }
 
+/// `ask` → `Result<SessionId, String>`: create an empty root session, for
+/// ACP `session/new` (design doc 06 §4.1); `cwd` is recorded on the row.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct NewSession {
+    /// The client's working directory.
+    pub cwd: Option<PathBuf>,
+}
+
+/// `ask` → `Vec<acp::EntryInfo>`: configured external harnesses
+/// (`<data_dir>/acp/agents.yaml`); `probe` runs `initialize` against each.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct ListAcp {
+    /// Spawn each harness and report whether `initialize` succeeds.
+    pub probe: bool,
+}
+
+/// `ask` → `Result<acp::EntryInfo, String>`: install a registry agent by id
+/// and write its `agents.yaml` entry (design doc 06 §3.1).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AddAcp {
+    /// Registry id.
+    pub id: String,
+}
+
+/// `ask` → `Result<(), String>`: delete an `agents.yaml` entry and its `bin/<name>`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RemoveAcp {
+    /// Entry name.
+    pub name: String,
+}
+
+/// `ask` → `Result<Vec<acp::registry::RegistryAgent>, String>`: the ACP
+/// registry (cached a day; offline serves the cache).
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct ListRegistry;
+
 /// One indexed skill.
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -427,6 +468,10 @@ pub struct SessionSummary {
     pub name: Option<String>,
     /// Reasoning effort in force; `None` = provider default.
     pub effort: Option<String>,
+    /// External harness (`agents.yaml` key) when this is an ACP child (design doc 06).
+    pub agent: Option<String>,
+    /// Working directory recorded by ACP (`session/new` or `spawn_subagent.cwd`).
+    pub cwd: Option<String>,
 }
 
 /// Rendered history for UIs (tool traffic collapsed to summaries).

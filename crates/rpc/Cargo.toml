@@ -11,6 +11,8 @@ tools = { workspace = true }
 agent = { workspace = true }
 knowledge = { workspace = true }
 signal = { workspace = true }
+acp = { workspace = true }
+agent-client-protocol = { workspace = true }
 tokio = { workspace = true }
 futures = { workspace = true }
 async-trait = { workspace = true }
@@ -28,7 +30,7 @@ ts-rs = { workspace = true, optional = true }
 jsonrpsee = { workspace = true, features = ["ws-client"] }
 
 [features]
-ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "knowledge/ts", "agent/ts", "signal/ts"]
+ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "knowledge/ts", "agent/ts", "signal/ts", "acp/ts"]
 
 [lints]
 workspace = true

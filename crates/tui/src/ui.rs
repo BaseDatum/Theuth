@@ -8,8 +8,8 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tools::{Decision, Risk};
 
 use crate::model::{
-    CardKind, Command, Entry, Level, Menu, MenuKey, Model, Row, UiEvent, action_name, describe,
-    gate_name, k, result_line, short, slash_matches, window,
+    AcpRow, CardKind, Command, Entry, Level, Menu, MenuKey, Model, Row, UiEvent, action_name,
+    describe, gate_name, k, result_line, short, slash_matches, window,
 };
 
 /// Channels handed to the app through iocraft context (owned so the receiver
@@ -398,6 +398,38 @@ fn menu(m: &Model, input: &str, width: u16) -> Option<AnyElement<'static>> {
                             (_, true) => "",
                         },
                     ),
+                })
+                .collect(),
+            *cursor,
+        ),
+        Menu::Acp { cursor, .. } => (
+            "acp  p probe  ⏎ add from registry  d remove".to_owned(),
+            m.acp_rows()
+                .iter()
+                .map(|r| match r {
+                    AcpRow::Entry(e) => {
+                        // ponytail: fixed 40-char command; pass the terminal width if it grates.
+                        let cmd: String = format!("{} {}", e.command, e.args.join(" "))
+                            .chars()
+                            .take(40)
+                            .collect();
+                        format!(
+                            "{:<16} {:<40} {}",
+                            e.name,
+                            cmd,
+                            e.status.as_deref().unwrap_or_default()
+                        )
+                    }
+                    AcpRow::Sep => String::new(),
+                    AcpRow::Registry(a) => {
+                        let desc: String = a.description.chars().take(50).collect();
+                        format!(
+                            "+ {:<16} {:<20} {}",
+                            a.id,
+                            format!("{} {}", a.name, a.version),
+                            desc
+                        )
+                    }
                 })
                 .collect(),
             *cursor,

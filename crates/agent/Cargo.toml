@@ -12,6 +12,8 @@ models = { workspace = true }
 tools = { workspace = true }
 oauth = { workspace = true }
 cursor = { workspace = true }
+acp = { workspace = true }
+agent-client-protocol = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 futures = { workspace = true }

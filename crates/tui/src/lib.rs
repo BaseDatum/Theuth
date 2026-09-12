@@ -244,6 +244,17 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
         }
         Command::AddMcpRepo(url) => UiEvent::RepoAdded(msg(api.add_mcp_repo(url, None).await)?),
         Command::SyncMcp => UiEvent::Synced(msg(api.sync_mcp().await)?),
+        Command::ListAcp { probe } => UiEvent::Acp(msg(api.list_acp(probe).await)?),
+        Command::AddAcp(id) => {
+            let _ = tx.send(UiEvent::AcpAdded(msg(api.add_acp(id).await)?));
+            // Re-list here, not from the UI: commands run concurrently.
+            UiEvent::Acp(msg(api.list_acp(false).await)?)
+        }
+        Command::RemoveAcp(name) => {
+            msg(api.remove_acp(name).await)?;
+            UiEvent::Acp(msg(api.list_acp(false).await)?)
+        }
+        Command::ListAcpRegistry => UiEvent::AcpRegistry(msg(api.list_acp_registry().await)?),
         Command::ListLogins => {
             let mut rows: Vec<LoginRow> = msg(api.list_logins().await)?
                 .into_iter()
@@ -464,6 +475,30 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             .iter()
             .try_for_each(|r| writeln!(out, "{}  {}", r.name, r.status)),
         UiEvent::McpAdded(s) => writeln!(out, "{}  {} tools", s.name, s.tools.len()),
+        UiEvent::Acp(list) => list.iter().try_for_each(|e| {
+            writeln!(
+                out,
+                "{}  {} {}  {}",
+                e.name,
+                e.command,
+                e.args.join(" "),
+                e.status.as_deref().unwrap_or_default()
+            )
+        }),
+        UiEvent::AcpRegistry(list) => list.iter().try_for_each(|a| {
+            writeln!(
+                out,
+                "+ {}  {} {}  {}",
+                a.id, a.name, a.version, a.description
+            )
+        }),
+        UiEvent::AcpAdded(e) => writeln!(
+            out,
+            "acp: added `{}` ({} {})",
+            e.name,
+            e.command,
+            e.args.join(" ")
+        ),
         UiEvent::RepoAdded(r) => writeln!(out, "cloned {} → {}\n{}", r.name, r.path, r.readme),
         UiEvent::Knowledge(metas) => metas
             .iter()
@@ -508,9 +543,17 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         UiEvent::Sessions(list) => list
             .iter()
             .try_for_each(|s| writeln!(out, "{}  {}  {}", s.id, s.model, s.title)),
-        UiEvent::Children(list) => list
-            .iter()
-            .try_for_each(|s| writeln!(out, "{}  {}", s.name.as_deref().unwrap_or_default(), s.id)),
+        UiEvent::Children(list) => list.iter().try_for_each(|s| {
+            writeln!(
+                out,
+                "{}  {}{}",
+                s.name.as_deref().unwrap_or_default(),
+                s.id,
+                s.agent
+                    .as_deref()
+                    .map_or_else(String::new, |a| format!("  ({a})"))
+            )
+        }),
         UiEvent::History(_, loaded) => loaded.history.iter().try_for_each(|h| match h {
             agent::HistoryEntry::User { text } => writeln!(out, "> {text}"),
             agent::HistoryEntry::Assistant { text } => writeln!(out, "{text}"),
