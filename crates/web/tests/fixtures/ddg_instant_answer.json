@@ -1,0 +1,54 @@
+{
+  "_capture": {
+    "date": "2026-09-12",
+    "endpoint": "GET https://api.duckduckgo.com/?q=rust+programming+language&format=json&no_html=1&skip_disambig=1",
+    "note": "Trimmed: Infobox.meta, RelatedTopics icons and Result HTML removed; Infobox.content cut to four rows; RelatedTopics cut to a mix of plain topics and one Topics group."
+  },
+  "Abstract": "Rust is a general-purpose programming language emphasizing performance, type safety, and concurrency.",
+  "AbstractSource": "Wikipedia",
+  "AbstractText": "Rust is a general-purpose programming language emphasizing performance, type safety, and concurrency. It enforces memory safety, meaning that all references point to valid memory, without a garbage collector.",
+  "AbstractURL": "https://en.wikipedia.org/wiki/Rust_(programming_language)",
+  "Answer": "",
+  "AnswerType": "",
+  "Definition": "",
+  "DefinitionSource": "",
+  "DefinitionURL": "",
+  "Entity": "programming language",
+  "Heading": "Rust (programming language)",
+  "Image": "/i/2b9d6e3a.png",
+  "ImageHeight": 270,
+  "ImageIsLogo": 1,
+  "ImageWidth": 270,
+  "Infobox": {
+    "content": [
+      { "data_type": "string", "label": "Designed by", "value": "Graydon Hoare", "wiki_order": 0 },
+      { "data_type": "string", "label": "Developer", "value": "Rust Foundation", "wiki_order": 1 },
+      { "data_type": "string", "label": "First appeared", "value": "May 15, 2015", "wiki_order": 2 },
+      { "data_type": "instance", "label": "Instance of", "value": { "entity-type": "item", "id": "Q575650" }, "wiki_order": "102" }
+    ],
+    "meta": []
+  },
+  "Redirect": "",
+  "RelatedTopics": [
+    {
+      "FirstURL": "https://duckduckgo.com/Rust_Foundation",
+      "Text": "Rust Foundation - An independent non-profit organization that stewards the Rust programming language."
+    },
+    {
+      "FirstURL": "https://duckduckgo.com/Cargo_(software)",
+      "Text": "Cargo (software) - Rust's build system and package manager."
+    },
+    {
+      "Name": "People",
+      "Topics": [
+        {
+          "FirstURL": "https://duckduckgo.com/Graydon_Hoare",
+          "Text": "Graydon Hoare - Software developer who created the Rust programming language."
+        }
+      ]
+    }
+  ],
+  "Results": [],
+  "Type": "A",
+  "meta": null
+}

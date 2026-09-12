@@ -1,0 +1,89 @@
+{
+  "_fixture": "Brave Search API v1 web/search response shape (api.search.brave.com docs), assembled 2026-09-12; trimmed to the fields the provider reads",
+  "type": "search",
+  "query": {
+    "original": "rust async trait",
+    "altered": "rust async traits",
+    "show_strict_warning": false
+  },
+  "web": {
+    "type": "search",
+    "results": [
+      {
+        "title": "async_trait - Rust",
+        "url": "https://docs.rs/async-trait",
+        "description": "Type erasure for async trait methods &amp; more.",
+        "age": "2025-11-02T00:00:00",
+        "page_age": "2025-11-02T00:00:00"
+      },
+      {
+        "title": "Async fn in trait - The Rust Blog",
+        "url": "https://blog.rust-lang.org/2023/12/21/async-fn-rpit-in-traits.html",
+        "description": "Stabilizing async fn in traits in Rust 1.75.",
+        "page_age": "2023-12-21T00:00:00"
+      },
+      {
+        "title": "",
+        "url": "https://example.com/dropped-no-title",
+        "description": "no title → dropped"
+      }
+    ]
+  },
+  "infobox": {
+    "type": "graph",
+    "results": [
+      {
+        "title": "Rust (programming language)",
+        "description": "General-purpose programming language",
+        "long_desc": "Rust is a multi-paradigm, general-purpose programming language that emphasizes performance, type safety, and concurrency.",
+        "url": "https://en.wikipedia.org/wiki/Rust_(programming_language)",
+        "thumbnail": { "src": "https://imgs.search.brave.com/rust-logo.png" },
+        "attributes": [["Designed by", "Graydon Hoare"], ["First appeared", "2015"]]
+      }
+    ]
+  },
+  "faq": {
+    "type": "faq",
+    "results": [
+      {
+        "question": "Can traits have async functions in Rust?",
+        "answer": "Yes, since Rust 1.75 async fn is allowed in traits.",
+        "title": "Async traits FAQ",
+        "url": "https://example.com/faq"
+      }
+    ]
+  },
+  "news": {
+    "type": "news",
+    "results": [
+      {
+        "title": "Rust 1.75 released",
+        "url": "https://blog.rust-lang.org/2023/12/28/Rust-1.75.0.html",
+        "description": "The Rust team is happy to announce a new version.",
+        "age": "2 years ago"
+      }
+    ]
+  },
+  "videos": {
+    "type": "videos",
+    "results": [
+      {
+        "title": "Async Rust traits explained",
+        "url": "https://www.youtube.com/watch?v=abc123",
+        "description": "A walkthrough.",
+        "age": "1 year ago"
+      }
+    ]
+  },
+  "discussions": {
+    "type": "search",
+    "results": [
+      {
+        "title": "Why does async_trait box the future?",
+        "url": "https://users.rust-lang.org/t/why-async-trait-boxes/1234",
+        "description": "Forum thread.",
+        "data": { "forum_name": "users.rust-lang.org" }
+      }
+    ]
+  }
+}

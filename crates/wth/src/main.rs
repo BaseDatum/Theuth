@@ -73,6 +73,21 @@ agent:
 # knowledge:                 # design doc 10; the bundle lives in <data_dir>/knowledge/
 #   enabled: true            # false: no store, no knowledge_* tools, no hints, no harvest
 
+# web:                       # web_search / web_fetch (design doc 16)
+#   enabled: true
+#   engines: [duckduckgo, wikipedia, arxiv, github]   # keyless built-ins
+#   fetch_max_chars: 4000
+
+# search_providers:          # external engines registered with `web` (design doc 16 §3)
+#   firecrawl:               # on by default; needs `firecrawl:` in credentials.yaml (free tier at firecrawl.dev)
+#     base_url: https://api.firecrawl.dev
+#   searxng:
+#     base_url: http://127.0.0.1:8080
+#   openserp:
+#     base_url: http://127.0.0.1:7000
+#     engines: [google, bing]
+#   brave: {}                # needs `brave:` in credentials.yaml
+
 tools:
   policy:
     read_only: allow
@@ -96,6 +111,8 @@ const DEFAULT_CREDENTIALS: &str =
 # openai: sk-...
 # gemini: AIza...
 # groq: gsk_...
+# firecrawl: fc-...        # web search + rendered fetch; free tier at firecrawl.dev
+# brave: BSA...            # Brave Search API
 # ollama needs no key.
 ";
 
@@ -202,6 +219,8 @@ async fn run() -> anyhow::Result<()> {
         vec![
             Box::new(tools::ToolsPlugin),
             Box::new(knowledge::KnowledgePlugin),
+            Box::new(web::WebPlugin),
+            Box::new(search_providers::SearchProvidersPlugin),
             Box::new(agent::AgentPlugin),
             Box::new(signal::SignalPlugin {
                 channel: false,
@@ -213,6 +232,8 @@ async fn run() -> anyhow::Result<()> {
         let mut plugins: Vec<Box<dyn Plugin>> = vec![
             Box::new(tools::ToolsPlugin),
             Box::new(knowledge::KnowledgePlugin),
+            Box::new(web::WebPlugin),
+            Box::new(search_providers::SearchProvidersPlugin),
             Box::new(agent::AgentPlugin),
             Box::new(signal::SignalPlugin {
                 channel: cli.headless,

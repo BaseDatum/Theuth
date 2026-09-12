@@ -129,6 +129,31 @@ pub fn write_config_value(
     std::fs::write(path, lines.join("\n") + "\n")
 }
 
+/// `<data_dir>/credentials.yaml` as a flat `name: key` map (design doc 01
+/// §1.1). Missing file → empty; unparsable → warn and empty; world-readable
+/// → warn. Every plugin that needs an API key reads it through here.
+pub fn credentials(data_dir: &Path) -> std::collections::HashMap<String, String> {
+    let path = data_dir.join("credentials.yaml");
+    let Ok(s) = std::fs::read_to_string(&path) else {
+        return Default::default();
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(md) = std::fs::metadata(&path)
+            && md.permissions().mode() & 0o077 != 0
+        {
+            tracing::warn!("{} is readable by others; chmod 600 it", path.display());
+        }
+    }
+    serde_yaml::from_str::<Option<std::collections::HashMap<String, String>>>(&s)
+        .unwrap_or_else(|e| {
+            tracing::warn!("{}: {e}; ignoring", path.display());
+            None
+        })
+        .unwrap_or_default()
+}
+
 /// Mailbox every bus subscriber must use (design doc §3: Guaranteed +
 /// unbounded = ordered, lossless, non-blocking).
 pub fn subscriber_mailbox<A: kameo::Actor>()

@@ -1,0 +1,29 @@
+[package]
+name = "web"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Web search and fetch: web_search / web_fetch tools, SSRF-guarded fetcher, RRF aggregator, keyless engines, provider registry (design doc 16)"
+
+[dependencies]
+runtime = { workspace = true }
+tools = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+tracing = { workspace = true }
+kameo = { workspace = true }
+reqwest = { workspace = true }
+url = { workspace = true }
+html-to-markdown-rs = { workspace = true }
+
+[dev-dependencies]
+wiremock = { workspace = true }
+figment = { workspace = true }
+
+[lints]
+workspace = true

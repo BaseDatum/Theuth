@@ -1,0 +1,12 @@
+{
+  "_fixture": "Firecrawl v2 POST /v2/scrape response shape (docs.firecrawl.dev/api-reference/endpoint/scrape), assembled 2026-09-12",
+  "success": true,
+  "data": {
+    "markdown": "# Example Domain\n\nThis domain is for use in illustrative examples.",
+    "metadata": {
+      "title": "Example Domain",
+      "sourceURL": "https://example.com/",
+      "statusCode": 200
+    }
+  }
+}

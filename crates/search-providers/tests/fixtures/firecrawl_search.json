@@ -1,0 +1,40 @@
+{
+  "_fixture": "Firecrawl v2 POST /v2/search response shape (docs.firecrawl.dev/api-reference/endpoint/search), assembled 2026-09-12",
+  "success": true,
+  "data": {
+    "web": [
+      {
+        "url": "https://docs.rs/async-trait",
+        "title": "async_trait - Rust",
+        "description": "Type erasure for async trait methods.",
+        "position": 1
+      },
+      {
+        "url": "https://blog.rust-lang.org/2023/12/21/async-fn-rpit-in-traits.html",
+        "title": "Async fn in trait",
+        "description": "Stabilizing async fn in traits.",
+        "position": 2
+      }
+    ],
+    "news": [
+      {
+        "title": "Rust 1.75 released",
+        "url": "https://blog.rust-lang.org/2023/12/28/Rust-1.75.0.html",
+        "snippet": "A new version of Rust.",
+        "date": "2023-12-28",
+        "source": "Rust Blog",
+        "position": 1
+      }
+    ],
+    "images": [
+      {
+        "title": "Rust logo",
+        "imageUrl": "https://www.rust-lang.org/static/images/rust-logo-blk.svg",
+        "imageWidth": 512,
+        "imageHeight": 512,
+        "url": "https://www.rust-lang.org/",
+        "position": 1
+      }
+    ]
+  }
+}

@@ -1,0 +1,60 @@
+{
+  "_capture": {
+    "date": "2026-09-12",
+    "endpoint": "GET https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=rust+programming+language&srlimit=5&format=json&utf8=1",
+    "note": "Verbatim MediaWiki response shape; snippets carry <span class=\"searchmatch\"> markup."
+  },
+  "batchcomplete": "",
+  "query": {
+    "searchinfo": {
+      "totalhits": 2655
+    },
+    "search": [
+      {
+        "ns": 0,
+        "title": "Rust (programming language)",
+        "pageid": 29414838,
+        "size": 114378,
+        "wordcount": 10562,
+        "snippet": "<span class=\"searchmatch\">Rust</span> is a general-purpose <span class=\"searchmatch\">programming</span> <span class=\"searchmatch\">language</span> which emphasizes performance, type safety, concurrency, and memory safety. <span class=\"searchmatch\">Rust</span> supports multiple programming",
+        "timestamp": "2026-07-08T16:57:46Z"
+      },
+      {
+        "ns": 0,
+        "title": "Outline of the Rust programming language",
+        "pageid": 81297551,
+        "size": 16807,
+        "wordcount": 1080,
+        "snippet": "topical guide to <span class=\"searchmatch\">Rust</span>: <span class=\"searchmatch\">Rust</span> is a multi-paradigm <span class=\"searchmatch\">programming</span> <span class=\"searchmatch\">language</span> emphasizing performance, memory safety, and concurrency. <span class=\"searchmatch\">Rust</span> was initially developed",
+        "timestamp": "2026-05-27T12:01:42Z"
+      },
+      {
+        "ns": 0,
+        "title": "List of programming languages by type",
+        "pageid": 144144,
+        "size": 96532,
+        "wordcount": 6811,
+        "snippet": "Raku Red Ruby <span class=\"searchmatch\">Rust</span> Scheme SequenceL Smalltalk Source TREE-META Wolfram Mathematica (Wolfram <span class=\"searchmatch\">language</span>) Zig Modular <span class=\"searchmatch\">programming</span> is a <span class=\"searchmatch\">programming</span> paradigm of",
+        "timestamp": "2026-06-26T23:25:09Z"
+      },
+      {
+        "ns": 0,
+        "title": "Rust syntax",
+        "pageid": 66392073,
+        "size": 50650,
+        "wordcount": 4777,
+        "snippet": "functional <span class=\"searchmatch\">programming</span> <span class=\"searchmatch\">languages</span> such as OCaml. Although <span class=\"searchmatch\">Rust</span> syntax is heavily influenced by the syntaxes of C and C++, the syntax of <span class=\"searchmatch\">Rust</span> is far more",
+        "timestamp": "2026-04-08T07:11:07Z"
+      },
+      {
+        "ns": 0,
+        "title": "Functional programming",
+        "pageid": 10933,
+        "size": 89917,
+        "wordcount": 8771,
+        "snippet": "functional <span class=\"searchmatch\">programming</span> is a <span class=\"searchmatch\">programming</span> paradigm where <span class=\"searchmatch\">programs</span> are constructed by applying and composing functions. It is a declarative <span class=\"searchmatch\">programming</span> paradigm",
+        "timestamp": "2026-06-23T15:06:05Z"
+      }
+    ]
+  }
+}

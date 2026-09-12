@@ -24,6 +24,8 @@ tui = { path = "crates/tui" }
 cursor = { path = "crates/cursor" }
 signal = { path = "crates/signal" }
 acp = { path = "crates/acp" }
+web = { path = "crates/web" }
+search-providers = { path = "crates/search-providers" }
 
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "fs", "time", "io-util", "process", "signal"] }
 tokio-util = { version = "0.7", features = ["rt"] }
@@ -36,7 +38,7 @@ mdstream = { version = "0.3", features = ["sync"] }
 pulldown-cmark = { version = "0.13", default-features = false }
 unicode-width = "0.2"
 # OAuth login (design doc 05). reqwest major must match rmcp's.
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "form", "http2", "stream"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "form", "query", "http2", "stream"] }
 sha2 = "0.10"
 base64 = "0.22"
 serde = { version = "1", features = ["derive", "rc"] }
@@ -73,6 +75,10 @@ prost-build = "0.14"
 protox = "0.9"
 bytes = "1"
 h2 = "0.4"
+# Web search/fetch (design doc 16): one HTML parser for markdown and text; wiremock for provider contract tests.
+html-to-markdown-rs = { version = "3.12", default-features = false }
+url = "2"
+wiremock = "0.6"
 http = "1"
 # Python runtime (design doc 08): pool of `monty` worker subprocesses.
 monty-pool = "0.0.23"

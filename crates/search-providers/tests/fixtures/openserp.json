@@ -1,0 +1,110 @@
+{
+  "_fixture": "OpenSERP v2.1 GET /mega/search envelope (github.com/karust/openserp docs/openapi.yaml), assembled 2026-09-12",
+  "query": { "text": "rust async trait", "engines_requested": ["google", "bing"] },
+  "meta": {
+    "request_id": "019ecdc0-a66d-79a4-9d2b-9e9b480d495e",
+    "requested_at": "2026-09-12T00:06:55Z",
+    "took_ms": 720,
+    "engines_responded": ["google"],
+    "engines_failed": [{ "engine": "bing", "error": "captcha" }],
+    "version": "2.1"
+  },
+  "results": [
+    {
+      "id": "s_1",
+      "rank": 1,
+      "type": "organic",
+      "title": "async_trait - Rust",
+      "url": "https://docs.rs/async-trait",
+      "display_url": "docs.rs › async-trait",
+      "snippet": "Type erasure for async trait methods.",
+      "domain": "docs.rs",
+      "engine": "google"
+    },
+    {
+      "id": "s_2",
+      "rank": 2,
+      "type": "organic",
+      "title": "Async fn in trait",
+      "url": "https://blog.rust-lang.org/2023/12/21/async-fn-rpit-in-traits.html",
+      "display_url": "blog.rust-lang.org",
+      "snippet": "Stabilizing async fn in traits.",
+      "domain": "blog.rust-lang.org",
+      "engine": "google"
+    }
+  ],
+  "serp_features": [
+    {
+      "id": "f_1",
+      "engine": "google",
+      "type": "ai_summary",
+      "text": "Rust supports async fn in traits since 1.75.",
+      "links": [{ "title": "The Rust Blog", "url": "https://blog.rust-lang.org/" }],
+      "extracted_at": "2026-09-12T00:06:56Z"
+    },
+    {
+      "id": "f_2",
+      "engine": "google",
+      "type": "answer_box",
+      "title": "async fn in trait",
+      "text": "Stable since Rust 1.75.",
+      "extracted_at": "2026-09-12T00:06:56Z"
+    },
+    {
+      "id": "f_3",
+      "engine": "google",
+      "type": "people_also_ask",
+      "items": [
+        { "title": "Can Rust traits be async?", "text": "Yes.", "link": "https://example.com/a" },
+        { "title": "What does async_trait do?", "text": "Boxes the future.", "link": "https://example.com/b" }
+      ],
+      "extracted_at": "2026-09-12T00:06:56Z"
+    },
+    {
+      "id": "f_4",
+      "engine": "google",
+      "type": "related_searches",
+      "items": [{ "title": "rust dyn async trait" }, { "title": "tokio async trait" }],
+      "extracted_at": "2026-09-12T00:06:56Z"
+    },
+    {
+      "id": "f_5",
+      "engine": "google",
+      "type": "news",
+      "items": [{ "title": "Rust 1.75 released", "text": "Rust Blog", "link": "https://blog.rust-lang.org/2023/12/28/Rust-1.75.0.html" }],
+      "extracted_at": "2026-09-12T00:06:56Z"
+    },
+    {
+      "id": "f_6",
+      "engine": "google",
+      "type": "knowledge_panel",
+      "title": "Rust",
+      "text": "General-purpose programming language.",
+      "links": [{ "title": "Wikipedia", "url": "https://en.wikipedia.org/wiki/Rust_(programming_language)" }],
+      "extracted_at": "2026-09-12T00:06:56Z"
+    },
+    {
+      "id": "f_7",
+      "engine": "google",
+      "type": "videos",
+      "items": [{ "title": "Async Rust traits explained", "link": "https://www.youtube.com/watch?v=abc123" }],
+      "extracted_at": "2026-09-12T00:06:56Z"
+    },
+    {
+      "id": "f_8",
+      "engine": "google",
+      "type": "images_inline",
+      "items": [{ "title": "Rust logo", "link": "https://www.rust-lang.org/static/images/rust-logo-blk.svg" }],
+      "extracted_at": "2026-09-12T00:06:56Z"
+    },
+    {
+      "id": "f_9",
+      "engine": "google",
+      "type": "shopping",
+      "items": [{ "title": "Rust book", "link": "https://example.com/shop" }],
+      "extracted_at": "2026-09-12T00:06:56Z"
+    }
+  ],
+  "pagination": { "page": 1, "has_more": false, "next_start": 10 },
+  "clusters": []
+}

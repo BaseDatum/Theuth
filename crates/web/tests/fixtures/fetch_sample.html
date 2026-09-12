@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>Sample Article Title</title>
+  <style type="text/css">
+    body { color: red; }
+    .hidden { display: none; }
+  </style>
+  <script>
+    alert("should not appear in cleaned text");
+    window.TRACK = true;
+  </script>
+</head>
+<body>
+  <nav>
+    <a href="/">Home</a>
+    <a href="/about">About</a>
+  </nav>
+  <aside>
+    <p>Sidebar ads and related junk</p>
+  </aside>
+  <main>
+    <h1>Hello fetch world</h1>
+    <p>Second paragraph with detail about the article body.</p>
+    <p>Third paragraph keeps useful content for agents; see <a href="https://example.com/docs">the docs</a>.</p>
+  </main>
+  <footer>
+    <p>Copyright 2099 No One</p>
+  </footer>
+  <noscript>Enable JS for more noise</noscript>
+</body>
+</html>

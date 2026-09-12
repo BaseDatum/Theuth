@@ -1,0 +1,51 @@
+{
+  "_fixture": "SearXNG /search?format=json response shape (docs.searxng.org, 2025.x), assembled 2026-09-12",
+  "query": "rust async trait",
+  "number_of_results": 2,
+  "results": [
+    {
+      "url": "https://docs.rs/async-trait",
+      "title": "async_trait - Rust",
+      "content": "Type erasure for async trait methods.",
+      "publishedDate": "2025-11-02T00:00:00",
+      "engine": "duckduckgo",
+      "engines": ["duckduckgo", "brave"],
+      "score": 2.0,
+      "category": "general"
+    },
+    {
+      "url": "https://blog.rust-lang.org/2023/12/21/async-fn-rpit-in-traits.html",
+      "title": "Async fn in trait",
+      "content": "Stabilizing async fn in traits.",
+      "publishedDate": null,
+      "engine": "brave",
+      "engines": ["brave"],
+      "score": 1.0,
+      "category": "general"
+    }
+  ],
+  "answers": [
+    "42",
+    { "answer": "Async fn in traits stabilised in Rust 1.75.", "url": "https://blog.rust-lang.org/", "engine": "wikidata" }
+  ],
+  "corrections": ["rust async traits"],
+  "infoboxes": [
+    {
+      "infobox": "Rust",
+      "id": "https://www.wikidata.org/wiki/Q575650",
+      "content": "Rust is a multi-paradigm, general-purpose programming language.",
+      "img_src": "https://upload.wikimedia.org/rust-logo.svg",
+      "urls": [
+        { "title": "Official website", "url": "https://www.rust-lang.org/" },
+        { "title": "Wikipedia", "url": "https://en.wikipedia.org/wiki/Rust_(programming_language)" }
+      ],
+      "attributes": [
+        { "label": "Developer", "value": "Rust Foundation" },
+        { "label": "Inception", "value": "2010" }
+      ],
+      "engine": "wikidata"
+    }
+  ],
+  "suggestions": ["rust async trait object", "rust dyn async trait"],
+  "unresponsive_engines": [["google", "CAPTCHA"]]
+}

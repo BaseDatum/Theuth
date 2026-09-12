@@ -4,7 +4,7 @@
 //! (14 §3) are injected as [`UserInput`] into the addressee.
 
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -1704,31 +1704,6 @@ fn compacted(e: Epoch) -> HistoryEntry {
     }
 }
 
-/// `<data_dir>/credentials.yaml` as `genai_namespace: key` (design doc 01 §1.3).
-fn credentials(data_dir: &Path) -> HashMap<String, String> {
-    let path = data_dir.join("credentials.yaml");
-    match std::fs::read_to_string(&path) {
-        Ok(s) => {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                if let Ok(md) = std::fs::metadata(&path)
-                    && md.permissions().mode() & 0o077 != 0
-                {
-                    tracing::warn!("{} is readable by others; chmod 600 it", path.display());
-                }
-            }
-            serde_yaml::from_str::<Option<HashMap<String, String>>>(&s)
-                .unwrap_or_else(|e| {
-                    tracing::warn!("{}: {e}; ignoring", path.display());
-                    None
-                })
-                .unwrap_or_default()
-        }
-        Err(_) => HashMap::new(),
-    }
-}
-
 /// Key sources in precedence order (design doc 05 §2.2): `credentials.yaml`,
 /// then a `/login`, then the adapter's env var (left to genai).
 #[derive(Clone)]
@@ -1862,7 +1837,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
     });
     let cfg = Arc::new(cfg);
     let store = Store::open(&rt.data_dir.join("sessions.sqlite")).await?;
-    let creds = credentials(&rt.data_dir);
+    let creds = runtime::credentials(&rt.data_dir);
     let gateways = crate::providers::load(&rt.data_dir, &creds);
     let auth = Auth {
         creds: Arc::new(creds),

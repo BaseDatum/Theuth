@@ -1,0 +1,13 @@
+{
+  "_fixture": "OpenSERP GET /extract JSON ExtractResult (docs/openapi.yaml), assembled 2026-09-12",
+  "url": "https://example.com/",
+  "title": "Example Domain",
+  "description": "Illustrative examples",
+  "markdown": "# Example Domain\n\nThis domain is for use in illustrative examples.",
+  "text": "Example Domain This domain is for use in illustrative examples.",
+  "headings": [{ "level": 1, "text": "Example Domain" }],
+  "links": [],
+  "canonical": "https://example.com/",
+  "lang": "en",
+  "meta": { "mode_used": "rendered", "fetched_at": "2026-09-12T00:06:56Z" }
+}

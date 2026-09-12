@@ -1,0 +1,93 @@
+<!--
+  DuckDuckGo HTML SERP fixture for the web crate's engine contract tests.
+  endpoint: POST https://html.duckduckgo.com/html/  (form q=rust async trait)
+  capture_date: 2026-09-12
+  note: trimmed to the organic-result markup (div.result / a.result__a /
+        a.result__snippet, one .result--ad row); head scripts and footer removed.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>rust async trait at DuckDuckGo</title>
+</head>
+<body>
+  <div id="links" class="results">
+    <!-- Organic result 1: protocol-relative DDG redirect wrapper -->
+    <div class="result results_links results_links_deep web-result">
+      <div class="links_main links_deep result__body">
+        <h2 class="result__title">
+          <a rel="nofollow" class="result__a"
+             href="//duckduckgo.com/l/?uddg=https%3A%2F%2Frust-lang.github.io%2Fasync-fundamentals-initiative%2Fevaluation%2Fsurvey.html&amp;rut=abc">
+            Async fn in traits
+          </a>
+        </h2>
+        <a class="result__snippet"
+           href="//duckduckgo.com/l/?uddg=https%3A%2F%2Frust-lang.github.io%2Fasync-fundamentals-initiative%2Fevaluation%2Fsurvey.html&amp;rut=abc">
+          <b>Async</b> functions in traits are a long-awaited feature for the Rust language.
+        </a>
+      </div>
+    </div>
+
+    <!-- Organic result 2: absolute https href (no uddg wrapper) -->
+    <div class="result results_links results_links_deep web-result">
+      <div class="links_main links_deep result__body">
+        <h2 class="result__title">
+          <a rel="nofollow" class="result__a"
+             href="https://crates.io/crates/async-trait">
+            async-trait - crates.io
+          </a>
+        </h2>
+        <a class="result__snippet" href="https://crates.io/crates/async-trait">
+          Type erasure for async trait methods. Makes async_trait macros easy.
+        </a>
+      </div>
+    </div>
+
+    <!-- Ad row: must be ignored by the parser -->
+    <div class="result result--ad results_links">
+      <div class="links_main result__body">
+        <h2 class="result__title">
+          <a rel="nofollow" class="result__a"
+             href="https://ads.example.com/async-course">
+            Buy Async Rust Course — Sponsored
+          </a>
+        </h2>
+        <a class="result__snippet" href="https://ads.example.com/async-course">
+          Learn async Rust today with our premium course.
+        </a>
+      </div>
+    </div>
+
+    <!-- Organic result 3: snippet in a div, not an anchor -->
+    <div class="result results_links web-result">
+      <div class="links_main result__body">
+        <h2 class="result__title">
+          <a rel="nofollow" class="result__a"
+             href="//duckduckgo.com/l/?uddg=https%3A%2F%2Frust-lang.github.io%2Frfcs%2F3185-static-async-fn-in-trait.html&amp;rut=def">
+            Async traits - Rust RFC 3185
+          </a>
+        </h2>
+        <div class="result__snippet">
+          Static async fn in traits. This RFC proposes a path for async functions in traits.
+        </div>
+      </div>
+    </div>
+
+    <!-- Organic result 4: duplicate of result 2's URL, must be deduplicated -->
+    <div class="result results_links web-result">
+      <div class="links_main">
+        <h2 class="result__title">
+          <a rel="nofollow" class="result__a"
+             href="https://crates.io/crates/async-trait">
+            async-trait (again)
+          </a>
+        </h2>
+        <a class="result__snippet" href="https://crates.io/crates/async-trait">
+          Duplicate row.
+        </a>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
