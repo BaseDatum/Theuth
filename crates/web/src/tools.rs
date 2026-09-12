@@ -1,4 +1,5 @@
-//! `web_search` and `web_fetch` (design doc 16 §2). Descriptions are a pure
+//! `search_web` and `read_url` (design doc 16 §2; not `web_search`: genai turns
+//! any tool of that name into Anthropic's server-side search). Descriptions are a pure
 //! function of the live provider set ([`ProviderMetas`]), so a provider
 //! registered later shows up on the next `ListTools`; schemas are static.
 
@@ -76,7 +77,7 @@ fn names<'a>(metas: impl Iterator<Item = &'a ProviderMeta>) -> Vec<&'a str> {
     metas.map(|m| m.name).collect()
 }
 
-/// `web_search` description for `metas` (16 §2, §4.5): what it does, each
+/// `search_web` description for `metas` (16 §2, §4.5): what it does, each
 /// provider with its categories and feature kinds, the union of feature kinds,
 /// a billing note when any provider is metered, and [`NO_EXTERNAL_PROVIDER`]
 /// when no provider came from outside [`BUILTIN`].
@@ -85,7 +86,7 @@ pub fn search_description(metas: &[ProviderMeta]) -> String {
     let mut s = String::from(
         "Search the web through the configured providers and merge the results: one ranked list \
          (title, URL, snippet, which providers agreed), then any SERP features. Prefer this over \
-         fetching whole pages; use fetch_top or web_fetch to read a hit.",
+         fetching whole pages; use fetch_top or read_url to read a hit.",
     );
     if metas.is_empty() {
         s.push_str(" No providers are registered; searches fail until one is.");
@@ -130,7 +131,7 @@ pub fn search_description(metas: &[ProviderMeta]) -> String {
     s
 }
 
-/// `web_fetch` description: names the rendering provider when one is registered.
+/// `read_url` description: names the rendering provider when one is registered.
 #[must_use]
 pub fn fetch_description(metas: &[ProviderMeta]) -> String {
     let mut s = String::from(
@@ -157,7 +158,7 @@ fn metas(p: &ProviderMetas) -> Vec<ProviderMeta> {
     p.read().map(|m| m.clone()).unwrap_or_default()
 }
 
-/// `web_search`: fan out to the providers, merge, rank, optionally fetch the top hits.
+/// `search_web`: fan out to the providers, merge, rank, optionally fetch the top hits.
 pub struct SearchTool {
     /// The provider registry.
     pub actor: ActorRef<WebActor>,
@@ -171,7 +172,7 @@ pub struct SearchTool {
 
 #[async_trait::async_trait]
 impl Tool for SearchTool {
-    const NAME: &'static str = "web_search";
+    const NAME: &'static str = "search_web";
     const RISK: Risk = Risk::ReadOnly;
     const RETURNS: &'static str = "dict";
     type Args = SearchArgs;
@@ -250,7 +251,7 @@ impl Tool for SearchTool {
     }
 }
 
-/// `web_fetch`: SSRF-guarded page fetch, or a provider-rendered one.
+/// `read_url`: SSRF-guarded page fetch, or a provider-rendered one.
 pub struct FetchTool {
     /// For `rendered: true`.
     pub actor: ActorRef<WebActor>,
@@ -264,7 +265,7 @@ pub struct FetchTool {
 
 #[async_trait::async_trait]
 impl Tool for FetchTool {
-    const NAME: &'static str = "web_fetch";
+    const NAME: &'static str = "read_url";
     const RISK: Risk = Risk::ReadOnly;
     const RETURNS: &'static str = "dict";
     type Args = FetchArgs;

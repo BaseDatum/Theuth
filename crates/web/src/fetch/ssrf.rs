@@ -1,4 +1,4 @@
-//! SSRF guard for `web_fetch` (design doc 16 §5): scheme / credential checks,
+//! SSRF guard for `read_url` (design doc 16 §5): scheme / credential checks,
 //! a hostname denylist, IP-range classification, and DNS resolve-and-check.
 //!
 //! [`check_url`] is the whole gate for callers that hand the URL to someone

@@ -1,4 +1,4 @@
-//! Body → content for `web_fetch` (design doc 16 §5, §8): one HTML parser
+//! Body → content for `read_url` (design doc 16 §5, §8): one HTML parser
 //! (`html_to_markdown_rs`) produces markdown; `text` is a plain projection of
 //! that markdown, so both formats see the same noise removal.
 

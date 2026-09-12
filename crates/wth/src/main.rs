@@ -73,7 +73,7 @@ agent:
 # knowledge:                 # design doc 10; the bundle lives in <data_dir>/knowledge/
 #   enabled: true            # false: no store, no knowledge_* tools, no hints, no harvest
 
-# web:                       # web_search / web_fetch (design doc 16)
+# web:                       # search_web / read_url (design doc 16)
 #   enabled: true
 #   engines: [duckduckgo, wikipedia, arxiv, github]   # keyless built-ins
 #   fetch_max_chars: 4000

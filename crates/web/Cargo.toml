@@ -3,7 +3,7 @@ name = "web"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
-description = "Web search and fetch: web_search / web_fetch tools, SSRF-guarded fetcher, RRF aggregator, keyless engines, provider registry (design doc 16)"
+description = "Web search and fetch: search_web / read_url tools, SSRF-guarded fetcher, RRF aggregator, keyless engines, provider registry (design doc 16)"
 
 [dependencies]
 runtime = { workspace = true }

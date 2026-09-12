@@ -33,7 +33,7 @@ pub enum FetchFormat {
     Markdown,
 }
 
-/// A fetched page (the `structured` half of `web_fetch`).
+/// A fetched page (the `structured` half of `read_url`).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FetchResponse {
     /// Final URL after redirects.

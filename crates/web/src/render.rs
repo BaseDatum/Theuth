@@ -51,7 +51,7 @@ fn feature_block(f: &Feature) -> String {
     s
 }
 
-/// The `web_search` text. `fetched` pairs each top URL with its page text or
+/// The `search_web` text. `fetched` pairs each top URL with its page text or
 /// the failure to fetch it.
 #[must_use]
 pub fn search_text(
@@ -111,7 +111,7 @@ pub fn search_text(
     s.trim_end().to_owned()
 }
 
-/// The `web_fetch` text: `# title`, the final URL, a blank line, the content,
+/// The `read_url` text: `# title`, the final URL, a blank line, the content,
 /// and a truncation marker when the page was cut.
 #[must_use]
 pub fn fetch_text(r: &FetchResponse) -> String {

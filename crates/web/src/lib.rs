@@ -1,6 +1,6 @@
 //! Web search and fetch (design doc 16). `WebPlugin` reads the `web` config
 //! section, spawns the provider registry actor ([`actor::WebActor`] as
-//! [`provider::WEB_ACTOR`]), and registers `web_search` / `web_fetch` on the
+//! [`provider::WEB_ACTOR`]), and registers `search_web` / `read_url` on the
 //! tool registry. External providers arrive over the bus
 //! ([`provider::RegisterProvider`]) from the `search-providers` plugin.
 
@@ -39,7 +39,7 @@ pub struct WebConfig {
     pub timeout_ms: u64,
     /// Deadline for one whole search.
     pub overall_timeout_ms: u64,
-    /// Default `max_chars` of `web_fetch`.
+    /// Default `max_chars` of `read_url`.
     pub fetch_max_chars: usize,
     /// Per-page cap for `fetch_top`.
     pub fetch_top_chars: usize,
@@ -71,7 +71,7 @@ impl Default for WebConfig {
 }
 
 /// The plugin: reads `web`, spawns [`WebActor`] as [`WEB_ACTOR`] with the
-/// configured built-in engines, registers `web_search` and `web_fetch` once
+/// configured built-in engines, registers `search_web` and `read_url` once
 /// the tool registry is up (knowledge pattern). The search tool registers even
 /// with zero engines: external providers may arrive over the bus, and the
 /// description tells the user how to add one.
