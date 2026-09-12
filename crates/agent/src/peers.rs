@@ -84,11 +84,7 @@ impl Tool for SpawnSubagentTool {
         if let Some(agent) = &args.agent {
             let known = harnesses(&self.data_dir);
             if !known.contains_key(agent) {
-                let names: Vec<&str> = known.keys().map(String::as_str).collect();
-                return Ok(ToolOutput::err(format!(
-                    "unknown agent `{agent}`; configured: {}",
-                    names.join(", ")
-                )));
+                return Ok(ToolOutput::err(acp::unknown(agent, &known)));
             }
         }
         Ok(
@@ -191,7 +187,7 @@ mod tests {
             data_dir: dir.clone(),
         }
         .description();
-        assert!(!plain.contains("External harnesses"));
+        assert!(plain.contains("none configured"));
 
         let mut entries = std::collections::BTreeMap::new();
         entries.insert(
@@ -208,7 +204,6 @@ mod tests {
             data_dir: dir.clone(),
         }
         .description();
-        assert!(with.starts_with(&plain));
         assert!(with.contains("External harnesses: codex"));
         assert!(with.contains("ChatGPT's coding agent"));
         let _ = std::fs::remove_dir_all(&dir);

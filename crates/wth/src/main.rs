@@ -99,10 +99,26 @@ const DEFAULT_CREDENTIALS: &str =
 # ollama needs no key.
 ";
 
+const DEFAULT_AGENTS: &str =
+    "# External harnesses runnable as subagents over the Agent Client Protocol
+# (spawn_subagent{agent: <name>}). `/acp` lists, probes and adds entries from the ACP registry.
+# opencode:
+#   command: opencode
+#   args: [acp]
+#   description: OpenCode, local install
+# codex-acp:
+#   command: npx
+#   args: [-y, \"@agentclientprotocol/codex-acp\"]
+";
+
 /// Creates the data-dir skeleton on first run. Existing files are never overwritten.
 fn first_run(data_dir: &Path, config_path: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(data_dir.join("mcp"))?;
     std::fs::create_dir_all(data_dir.join("acp"))?;
+    let agents = data_dir.join("acp").join("agents.yaml");
+    if !agents.exists() {
+        std::fs::write(agents, DEFAULT_AGENTS)?;
+    }
     if !config_path.exists() {
         std::fs::write(config_path, DEFAULT_CONFIG)?;
     }

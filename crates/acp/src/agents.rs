@@ -88,12 +88,14 @@ pub fn save(data_dir: &Path, entries: &BTreeMap<String, Entry>) -> anyhow::Resul
         .with_context(|| format!("write {}", path.display()))
 }
 
-/// One line for the tool description: `External harnesses: claude — …; codex — …`,
-/// or `""` when there are none. An entry without a description shows its command line.
+/// One line for the tool description: `External harnesses: claude — …; codex — …`.
+/// With none configured it says so and how the user adds one, so the model
+/// points at `/acp` instead of guessing a name. An entry without a description
+/// shows its command line.
 #[must_use]
 pub fn describe(entries: &BTreeMap<String, Entry>) -> String {
     if entries.is_empty() {
-        return String::new();
+        return "External harnesses: none configured; the user adds them with /acp (ACP registry) or in <data_dir>/acp/agents.yaml. Omit `agent` until then.".to_owned();
     }
     let items: Vec<String> = entries
         .iter()
@@ -110,6 +112,19 @@ pub fn describe(entries: &BTreeMap<String, Entry>) -> String {
         })
         .collect();
     format!("External harnesses: {}", items.join("; "))
+}
+
+/// Error text for a name that is not in `entries`: lists the configured names,
+/// or says how to add one when there are none.
+#[must_use]
+pub fn unknown(name: &str, entries: &BTreeMap<String, Entry>) -> String {
+    if entries.is_empty() {
+        return format!(
+            "unknown agent `{name}`; none configured - add one with /acp or in {DIR}/{AGENTS_FILE}"
+        );
+    }
+    let names: Vec<&str> = entries.keys().map(String::as_str).collect();
+    format!("unknown agent `{name}`; configured: {}", names.join(", "))
 }
 
 #[cfg(test)]
@@ -161,7 +176,7 @@ mod tests {
 
     #[test]
     fn describe_line() {
-        assert_eq!(describe(&BTreeMap::new()), "");
+        assert!(describe(&BTreeMap::new()).contains("none configured"));
         let entries: BTreeMap<String, Entry> = serde_yaml::from_str(
             "claude:\n  command: npx\n  args: [-y, x]\ncodex:\n  command: codex-acp\n  description: ChatGPT\n",
         )

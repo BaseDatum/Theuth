@@ -333,8 +333,7 @@ impl Agents {
     ) -> anyhow::Result<LiveActor> {
         let entries = acp::load(&self.rt.data_dir)?;
         let Some(entry) = entries.get(&name) else {
-            let names: Vec<&str> = entries.keys().map(String::as_str).collect();
-            anyhow::bail!("unknown agent `{name}`; configured: {}", names.join(", "));
+            anyhow::bail!("{}", acp::unknown(&name, &entries));
         };
         let (parent, cwd, resume) = match row {
             Some(row) => (
@@ -1567,12 +1566,7 @@ impl Message<RemoveAcp> for Agents {
         let data_dir = &self.rt.data_dir;
         let mut entries = acp::load(data_dir).map_err(|e| format!("{e:#}"))?;
         if entries.remove(&m.name).is_none() {
-            let names: Vec<&str> = entries.keys().map(String::as_str).collect();
-            return Err(format!(
-                "unknown agent `{}`; configured: {}",
-                m.name,
-                names.join(", ")
-            ));
+            return Err(acp::unknown(&m.name, &entries));
         }
         acp::save(data_dir, &entries).map_err(|e| format!("{e:#}"))?;
         acp::registry::remove_bin(data_dir, &m.name).map_err(|e| format!("bin/{}: {e}", m.name))

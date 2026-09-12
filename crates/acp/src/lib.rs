@@ -9,6 +9,6 @@ pub mod harness;
 pub mod registry;
 pub mod render;
 
-pub use agents::{AGENTS_FILE, DIR, Entry, EntryInfo, describe, load, path, save};
+pub use agents::{AGENTS_FILE, DIR, Entry, EntryInfo, describe, load, path, save, unknown};
 pub use harness::{Connect, Harness, Permission, ProbeResult, Turn, Update, probe};
 pub use render::{content_block_text, kind, render_content, render_diff, render_plan, risk};
