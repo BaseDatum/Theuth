@@ -3,6 +3,7 @@
 //! [`crate::bridge`].
 
 use std::fmt::Display;
+use std::path::PathBuf;
 
 use agent::{
     AddAcp, AddProvider, AddSkill, AddSkillRepo, Agents, Cancel, Compact, CompactStyle,
@@ -46,16 +47,24 @@ const NOT_RUNNING: i32 = -32001;
 /// The wire API. `#[rpc(server)]` generates `ApiServer` (+ `into_rpc()`).
 #[rpc(server)]
 pub trait Api {
-    /// Start a turn; `session: None` creates a session. Returns once queued.
+    /// Start a turn; `session: None` creates a session. `files` are image files
+    /// (17 §2) attached to the message. Returns once queued.
     #[method(name = "send_input")]
-    async fn send_input(&self, session: Option<SessionId>, text: String) -> RpcResult<SessionId>;
-    /// Queue a user message after the current tool batch; returns the id (minted when omitted).
+    async fn send_input(
+        &self,
+        session: Option<SessionId>,
+        text: String,
+        files: Vec<PathBuf>,
+    ) -> RpcResult<SessionId>;
+    /// Queue a user message after the current tool batch; returns the id (minted
+    /// when omitted). `files` are image files (17 §2).
     #[method(name = "steer")]
     async fn steer(
         &self,
         session: SessionId,
         text: String,
         id: Option<InputId>,
+        files: Vec<PathBuf>,
     ) -> RpcResult<InputId>;
     /// Pull a queued message back out; returns its text.
     #[method(name = "withdraw")]
@@ -347,8 +356,21 @@ fn knowledge() -> RpcResult<ActorRef<KnowledgeActor>> {
 
 #[async_trait]
 impl ApiServer for Server {
-    async fn send_input(&self, session: Option<SessionId>, text: String) -> RpcResult<SessionId> {
-        ask::<Agents, _>(agent::AGENT_ACTOR, SendInput { session, text }).await
+    async fn send_input(
+        &self,
+        session: Option<SessionId>,
+        text: String,
+        files: Vec<PathBuf>,
+    ) -> RpcResult<SessionId> {
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            SendInput {
+                session,
+                text,
+                files,
+            },
+        )
+        .await
     }
 
     async fn steer(
@@ -356,9 +378,19 @@ impl ApiServer for Server {
         session: SessionId,
         text: String,
         id: Option<InputId>,
+        files: Vec<PathBuf>,
     ) -> RpcResult<InputId> {
         let id = id.unwrap_or_default();
-        ask::<Agents, _>(agent::AGENT_ACTOR, Steer { session, id, text }).await?;
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            Steer {
+                session,
+                id,
+                text,
+                files,
+            },
+        )
+        .await?;
         Ok(id)
     }
 

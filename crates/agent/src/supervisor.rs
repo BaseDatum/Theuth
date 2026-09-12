@@ -385,16 +385,23 @@ impl Agents {
         }
     }
 
-    /// Route `text` into `session` (created when `None`); errors surface as `AgentEvent::Error`.
+    /// Route `text` (plus image `files`) into `session` (created when `None`);
+    /// errors surface as `AgentEvent::Error`. A rejected attachment drops the
+    /// whole input (17 §3.1).
     async fn input(
         &mut self,
         session: Option<SessionId>,
         id: Option<InputId>,
         text: String,
+        files: Vec<PathBuf>,
     ) -> SessionId {
-        match self.session(session, None, None).await {
+        let routed = match check_files(&files) {
+            Ok(()) => self.session(session, None, None).await,
+            Err(e) => Err(anyhow::anyhow!(e)),
+        };
+        match routed {
             Ok((sid, actor)) => {
-                actor.tell_input(UserInput { id, text }).await;
+                actor.tell_input(UserInput { id, text, files }).await;
                 sid
             }
             Err(e) => {
@@ -431,7 +438,7 @@ impl Agents {
 
     /// Inject `text` (already wrapped) into `to` and announce it.
     async fn inject(&mut self, to: SessionId, from: &str, text: String, wrapped: String) {
-        self.input(Some(to), None, wrapped).await;
+        self.input(Some(to), None, wrapped, Vec::new()).await;
         self.rt
             .publish(AgentEvent::MessageDelivered {
                 session: to,
@@ -579,7 +586,7 @@ impl Message<SendInput> for Agents {
         m: SendInput,
         _: &mut Context<Self, Self::Reply>,
     ) -> Result<SessionId, kameo::error::Infallible> {
-        Ok(self.input(m.session, None, m.text).await)
+        Ok(self.input(m.session, None, m.text, m.files).await)
     }
 }
 
@@ -587,7 +594,8 @@ impl Message<Steer> for Agents {
     type Reply = ();
 
     async fn handle(&mut self, m: Steer, _: &mut Context<Self, Self::Reply>) {
-        self.input(Some(m.session), Some(m.id), m.text).await;
+        self.input(Some(m.session), Some(m.id), m.text, m.files)
+            .await;
     }
 }
 
@@ -828,7 +836,7 @@ impl Message<StartChildTurn> for Agents {
 
     async fn handle(&mut self, m: StartChildTurn, ctx: &mut Context<Self, Self::Reply>) {
         let child = m.child;
-        self.input(Some(child), None, m.text).await;
+        self.input(Some(child), None, m.text, Vec::new()).await;
         let me = ctx.actor_ref().clone();
         let after = Duration::from_secs(self.cfg.subagents.max_runtime_secs);
         let timer = tokio::spawn(async move {
@@ -1729,6 +1737,36 @@ impl Auth {
     }
 }
 
+/// Largest attachment a provider accepts (17 §1: Anthropic's 5 MB is the binding cap).
+const MAX_ATTACHMENT: u64 = 5 * 1024 * 1024;
+
+/// Rejects what a provider would (17 §3.1): missing/non-regular file,
+/// non-`image/*` mime, over 5 MB.
+fn check_files(files: &[PathBuf]) -> Result<(), String> {
+    for f in files {
+        let name = f.file_name().unwrap_or(f.as_os_str()).to_string_lossy();
+        let meta = match std::fs::metadata(f) {
+            Ok(m) if m.is_file() => m,
+            Ok(_) => return Err(format!("attachment {name}: not a regular file")),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(format!("attachment {name}: not found"));
+            }
+            Err(e) => return Err(format!("attachment {name}: {e}")),
+        };
+        let mime = mime_guess::from_path(f).first_or_octet_stream();
+        if mime.type_() != mime_guess::mime::IMAGE {
+            return Err(format!("attachment {name}: {mime} is not an image"));
+        }
+        if meta.len() > MAX_ATTACHMENT {
+            return Err(format!(
+                "attachment {name}: {:.1} MB exceeds 5 MB",
+                meta.len() as f64 / (1024.0 * 1024.0)
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// genai client whose keys come from `credentials.yaml`, falling back to each
 /// adapter's env var. A login in force (design doc 05 §2.3) rewrites the
 /// target instead: OpenAI → the ChatGPT Codex backend; Anthropic → the same
@@ -1944,5 +1982,43 @@ mod tests {
         let w = job_result(&id, &long, &JobExit::Exited(1), 0, "");
         assert!(w.contains(&format!(" command=\"{}\" ", "a".repeat(120))));
         assert!(!w.contains(&"a".repeat(121)));
+    }
+
+    #[test]
+    fn check_files_rejects_what_a_provider_would() {
+        let dir = std::env::temp_dir().join(format!("wth-attach-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = dir.join("shot.png");
+        std::fs::write(&png, b"\x89PNG").unwrap();
+        let txt = dir.join("notes.txt");
+        std::fs::write(&txt, b"hi").unwrap();
+        let big = dir.join("big.jpg");
+        std::fs::File::create(&big)
+            .unwrap()
+            .set_len(MAX_ATTACHMENT + 1)
+            .unwrap();
+
+        assert_eq!(check_files(&[]), Ok(()));
+        assert_eq!(check_files(std::slice::from_ref(&png)), Ok(()));
+        assert_eq!(
+            check_files(&[png, txt]).unwrap_err(),
+            "attachment notes.txt: text/plain is not an image"
+        );
+        assert_eq!(
+            check_files(&[dir.join("gone.png")]).unwrap_err(),
+            "attachment gone.png: not found"
+        );
+        assert_eq!(
+            check_files(std::slice::from_ref(&dir)).unwrap_err(),
+            format!(
+                "attachment {}: not a regular file",
+                dir.file_name().unwrap().to_string_lossy()
+            )
+        );
+        assert_eq!(
+            check_files(&[big]).unwrap_err(),
+            "attachment big.jpg: 5.0 MB exceeds 5 MB"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

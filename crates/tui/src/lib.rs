@@ -23,6 +23,7 @@ use tokio::io::AsyncBufReadExt;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tools::{ApprovalRequested, ApprovalResolved, Decision, JobEvent, McpAuth, McpProgress};
 
+mod clip;
 pub mod model;
 mod ui;
 
@@ -66,6 +67,7 @@ impl runtime::Plugin for TuiPlugin {
             .map_or(true, |c| c.approvals);
         let catalog = Arc::new(models::Catalog::load(&rt.data_dir));
         let shutdown = rt.shutdown.clone();
+        let data_dir = rt.data_dir.clone();
         let resume = self.resume;
         let prompt = self.prompt;
         tokio::spawn(async move {
@@ -77,6 +79,7 @@ impl runtime::Plugin for TuiPlugin {
                     approvals,
                     catalog,
                     resume,
+                    data_dir,
                 };
                 if let Err(e) = ui::run(links).await {
                     tracing::error!("tui render loop failed: {e}");
@@ -144,11 +147,18 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             }
             return Ok(());
         }
-        Command::Send { session, text } => {
-            UiEvent::SessionCreated(msg(api.send_input(session, text).await)?)
-        }
-        Command::Steer { session, id, text } => {
-            msg(api.steer(session, text, Some(id)).await)?;
+        Command::Send {
+            session,
+            text,
+            files,
+        } => UiEvent::SessionCreated(msg(api.send_input(session, text, files).await)?),
+        Command::Steer {
+            session,
+            id,
+            text,
+            files,
+        } => {
+            msg(api.steer(session, text, Some(id), files).await)?;
             return Ok(());
         }
         Command::Withdraw { session, id } => UiEvent::Withdrawn {

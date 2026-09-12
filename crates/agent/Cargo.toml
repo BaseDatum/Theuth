@@ -37,6 +37,7 @@ monty-fs = { workspace = true }
 regex = { workspace = true }
 png = { workspace = true }
 base64 = { workspace = true }
+mime_guess = { workspace = true }
 
 [dev-dependencies]
 figment = { workspace = true }

@@ -1,12 +1,14 @@
 //! Fullscreen iocraft app. Pure: reads [`UiEvent`]s from a channel, writes
 //! [`Command`]s to another. All actor traffic lives in `lib.rs`.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use iocraft::prelude::*;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tools::{Decision, Risk};
 
+use crate::clip;
 use crate::model::{
     AcpRow, CardKind, Command, Entry, Level, Menu, MenuKey, Model, Row, UiEvent, action_name,
     describe, gate_name, k, result_line, short, slash_matches, window,
@@ -27,6 +29,8 @@ pub struct Links {
     pub catalog: Arc<models::Catalog>,
     /// Session to `/resume` on first render.
     pub resume: Option<runtime::SessionId>,
+    /// For `<data_dir>/attachments/` (17 §4).
+    pub data_dir: PathBuf,
 }
 
 /// Rows a menu shows at most.
@@ -80,6 +84,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     let mut input = hooks.use_state(String::new);
     let handle = hooks.use_ref_default::<TextInputHandle>();
     let commands = links.commands.clone();
+    let data_dir = links.data_dir.clone();
 
     // Runs once: the receiver is `Some` only on the first render.
     let events = links.events.take();
@@ -130,6 +135,16 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
         let commands = commands.clone();
         move |event| {
             let mut m = model.write();
+            // At the cursor; `TextInput` sees an insertion there and moves
+            // its cursor past it. `State`/`Ref` are `Copy`: `move` leaves
+            // `input` free for the key handling below.
+            let mut insert_at_cursor = move |m: &mut Model, s: &str| {
+                let mut v = input.read().to_string();
+                let at = handle.read().cursor_offset().min(v.len());
+                v.insert_str(at, s);
+                m.sync_slash(&v);
+                input.set(v);
+            };
             let TerminalEvent::Key(KeyEvent {
                 code,
                 kind,
@@ -140,13 +155,12 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 if let TerminalEvent::Paste(text) = event
                     && m.input_focused()
                 {
-                    // At the cursor; `TextInput` sees an insertion there and
-                    // moves its cursor past it.
-                    let mut v = input.read().to_string();
-                    let at = handle.read().cursor_offset().min(v.len());
-                    v.insert_str(at, &m.paste(&text));
-                    m.sync_slash(&v);
-                    input.set(v);
+                    // A dropped image path attaches the file (17 §4.2).
+                    let s = match clip::dropped_file(&text) {
+                        Some(img) => m.attach(img),
+                        None => m.paste(&text),
+                    };
+                    insert_at_cursor(&mut m, &s);
                 }
                 return;
             };
@@ -176,6 +190,21 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             // Alt+Up: pull the newest queued steer back into the editor.
             if code == KeyCode::Up && modifiers.contains(KeyModifiers::ALT) {
                 m.withdraw(input.read().is_empty(), &commands);
+                return;
+            }
+            // Ctrl+V: the OS clipboard image (bracketed paste carries text only).
+            if code == KeyCode::Char('v')
+                && modifiers.contains(KeyModifiers::CONTROL)
+                && m.input_focused()
+            {
+                match clip::image(&data_dir) {
+                    Ok(Some(img)) => {
+                        let s = m.attach(img);
+                        insert_at_cursor(&mut m, &s);
+                    }
+                    Ok(None) => {}
+                    Err(e) => m.entries.push(Entry::Error(format!("paste: {e:#}"))),
+                }
                 return;
             }
             if m.menu.is_some() {

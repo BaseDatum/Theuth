@@ -23,7 +23,7 @@ use futures::StreamExt;
 use futures::future::join_all;
 use genai::Client;
 use genai::chat::{
-    ChatMessage, ChatRole, ChatStreamEvent, ContentPart, MessageContent, ReasoningEffort,
+    Binary, ChatMessage, ChatRole, ChatStreamEvent, ContentPart, MessageContent, ReasoningEffort,
     StreamEnd, Tool, ToolCall, ToolResponse,
 };
 use kameo::actor::ActorRef;
@@ -62,10 +62,20 @@ pub struct UserInput {
     pub id: Option<InputId>,
     /// User text.
     pub text: String,
+    /// Image files to attach (17 §2); one `Binary` part each.
+    pub files: Vec<PathBuf>,
 }
 
-/// One queued input: the caller's id (`None` for harness inputs) and its text.
-type Queued = (Option<InputId>, String);
+/// What one input carries into the context: text plus image files (17 §2).
+pub struct Input {
+    /// User text.
+    pub text: String,
+    /// Image files, one `Binary` part each.
+    pub files: Vec<PathBuf>,
+}
+
+/// One queued input: the caller's id (`None` for harness inputs) and its content.
+type Queued = (Option<InputId>, Input);
 
 /// `ask` → `Result<String, String>`: remove a queued input; `Ok(text)`, or
 /// `Err("not queued")` when it already entered the context.
@@ -226,6 +236,13 @@ impl Current {
             effort: None,
         }
     }
+
+    /// Whether the model takes image parts (13 §0.5, 17 §3.3): the Cursor
+    /// backend serialises text parts only, so it is text-only whatever the model.
+    fn vision(&self) -> bool {
+        matches!(self.backend, Backend::Genai { .. })
+            && self.model.model.as_ref().is_some_and(|m| m.image)
+    }
 }
 
 impl Session {
@@ -323,7 +340,7 @@ impl Session {
                     .store
                     .set_title(
                         self.shared.id,
-                        &first.trim().chars().take(60).collect::<String>(),
+                        &first.text.trim().chars().take(60).collect::<String>(),
                     )
                     .await
             {
@@ -349,13 +366,18 @@ impl Session {
                 })
                 .await;
         }
-        let inputs: Vec<String> = inputs.into_iter().map(|(_, text)| text).collect();
+        let inputs: Vec<Input> = inputs.into_iter().map(|(_, input)| input).collect();
+        let text = inputs
+            .iter()
+            .map(|i| i.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
         self.shared
             .rt
             .publish(AgentEvent::TurnStarted {
                 session: self.shared.id,
                 turn,
-                text: inputs.join("\n"),
+                text,
                 model,
             })
             .await;
@@ -373,12 +395,14 @@ impl Message<UserInput> for Session {
 
     async fn handle(
         &mut self,
-        UserInput { id, text }: UserInput,
+        UserInput { id, text, files }: UserInput,
         ctx: &mut Context<Self, Self::Reply>,
     ) {
         if self.inflight.is_none() {
             let me = ctx.actor_ref().clone();
-            return self.start_turn(vec![(id, text)], &me).await;
+            return self
+                .start_turn(vec![(id, Input { text, files })], &me)
+                .await;
         }
         let event = id.map(|id| AgentEvent::InputQueued {
             session: self.shared.id,
@@ -389,7 +413,7 @@ impl Message<UserInput> for Session {
             .steer
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .push((id, text));
+            .push((id, Input { text, files }));
         if let Some(event) = event {
             self.shared.rt.publish(event).await;
         }
@@ -407,7 +431,7 @@ impl Message<WithdrawInput> for Session {
         let removed = {
             let mut queue = self.shared.steer.lock().unwrap_or_else(|p| p.into_inner());
             let at = queue.iter().position(|(q, _)| *q == Some(id));
-            at.map(|i| queue.remove(i).1)
+            at.map(|i| queue.remove(i).1.text)
         };
         let Some(text) = removed else {
             return Err("not queued".into());
@@ -432,10 +456,10 @@ impl Message<QueuedInputs> for Session {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .iter()
-            .filter_map(|(id, text)| {
+            .filter_map(|(id, input)| {
                 Some(QueuedInput {
                     id: (*id)?,
-                    text: text.clone(),
+                    text: input.text.clone(),
                 })
             })
             .collect()
@@ -932,10 +956,14 @@ impl Turn {
     }
 
     /// Runs to completion (or cancel/error) and returns the state to hand back.
-    async fn run(mut self, turn: TurnId, inputs: Vec<String>) -> SessionState {
-        self.input_text = inputs.join("\n");
-        for text in inputs {
-            self.persist(ChatMessage::user(text)).await;
+    async fn run(mut self, turn: TurnId, inputs: Vec<Input>) -> SessionState {
+        self.input_text = inputs
+            .iter()
+            .map(|i| i.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        for input in inputs {
+            self.persist(user_message(input)).await;
         }
         let registry = ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR)
             .ok()
@@ -962,8 +990,8 @@ impl Turn {
                             let queued = std::mem::take(
                                 &mut *self.shared.steer.lock().unwrap_or_else(|p| p.into_inner()),
                             );
-                            for (id, text) in queued {
-                                self.persist(ChatMessage::user(text)).await;
+                            for (id, input) in queued {
+                                self.persist(user_message(input)).await;
                                 if let Some(id) = id {
                                     self.publish(AgentEvent::InputInjected {
                                         session: self.shared.id,
@@ -1120,6 +1148,7 @@ impl Turn {
             system: &self.state.baseline,
             head: self.state.head.as_ref(),
             history: &msgs,
+            vision: current.vision(),
         };
         let end = match self.call(&current, frame, transport, Some(turn)).await {
             Ok(end) => end,
@@ -1418,10 +1447,7 @@ impl Turn {
             .compact_style
             .read()
             .unwrap_or_else(|p| p.into_inner());
-        // 13 §0.5: snap needs a model that takes images; the Cursor backend
-        // serialises text parts only, so it is text-only whatever the model.
-        let vision = matches!(current.backend, Backend::Genai { .. })
-            && current.model.model.as_ref().is_some_and(|m| m.image);
+        let vision = current.vision();
         let mut style = compact::resolve(r#override, cfg_style, reason, vision)?;
         let session = self.shared.id;
         self.publish(AgentEvent::Compacting {
@@ -1478,6 +1504,9 @@ impl Turn {
             }
             CompactStyle::Cut => cut_body(),
             CompactStyle::Summary => {
+                if !vision {
+                    full.iter_mut().for_each(frame::strip_images);
+                }
                 full.push(ChatMessage::user(compact::COMPACT_INSTRUCTION));
                 match self
                     .summarise(current, transport, &mut full, keep_from)
@@ -1624,6 +1653,7 @@ impl Turn {
                 system: &self.state.baseline,
                 head: self.state.head.as_ref(),
                 history: full.as_slice(),
+                vision: current.vision(),
             };
             match self.call(current, frame, transport, None).await {
                 Ok(end) => {
@@ -1726,9 +1756,40 @@ impl Turn {
     }
 }
 
-/// Text parts of a message joined, for history rendering.
+/// The user message for one input: text, then one `Binary` part per file (17 §3.2).
+/// A file that vanished since `check_files` becomes a placeholder rather than
+/// aborting the turn.
+fn user_message(Input { text, files }: Input) -> ChatMessage {
+    if files.is_empty() {
+        return ChatMessage::user(text);
+    }
+    let mut parts = Vec::with_capacity(files.len() + 1);
+    parts.push(ContentPart::Text(text));
+    for f in files {
+        parts.push(match Binary::from_file(&f) {
+            Ok(b) => ContentPart::Binary(b),
+            Err(e) => ContentPart::Text(format!("[image {} unreadable: {e}]", f.display())),
+        });
+    }
+    ChatMessage::user(MessageContent::from_parts(parts))
+}
+
+/// Text parts of a message joined, for history rendering; a binary part
+/// renders as `[image: <name>]` (17 §3.5).
 pub(crate) fn text_of(content: &MessageContent) -> String {
-    content.texts().join("")
+    let mut out = String::new();
+    for part in content.iter() {
+        match part {
+            ContentPart::Text(t) => out.push_str(t),
+            ContentPart::Binary(b) => {
+                out.push_str("[image: ");
+                out.push_str(b.name.as_deref().unwrap_or(&b.content_type));
+                out.push(']');
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 #[cfg(test)]

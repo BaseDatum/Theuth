@@ -3,7 +3,7 @@
 use std::fmt;
 use std::str::FromStr;
 
-use genai::chat::{ChatMessage, ChatRole};
+use genai::chat::{ChatMessage, ChatRole, ContentPart};
 use serde::{Deserialize, Serialize};
 
 /// Appended as one user message to the live frame; the summary replaces
@@ -35,11 +35,21 @@ const OVERFLOW_NEEDLES: [&str; 8] = [
     "too many tokens",
 ];
 
+/// Flat token charge for one binary part in [`est`] (17 §3.4): a ≤1568 px PNG lands near this.
+pub const IMAGE_TOKENS: u32 = 1600;
+
 /// Token estimate of one message: serialised chars / 4 (07 §7). The only
 /// local estimate in the design; applied to appended slices, never the whole history.
+/// A binary part counts a flat `IMAGE_TOKENS` — providers bill images by pixels (17 §3.4).
 pub fn est(m: &ChatMessage) -> u32 {
-    let chars = serde_json::to_string(m).map_or(0, |s| s.len());
-    u32::try_from(chars / 4).unwrap_or(u32::MAX)
+    let chars = |n: usize| u32::try_from(n / 4).unwrap_or(u32::MAX);
+    m.content.iter().fold(0u32, |acc, part| {
+        acc.saturating_add(match part {
+            ContentPart::Text(t) => chars(t.len()),
+            ContentPart::Binary(_) => IMAGE_TOKENS,
+            other => chars(serde_json::to_string(other).map_or(0, |s| s.len())),
+        })
+    })
 }
 
 /// Index of the first message kept verbatim (07 §8.2). `limit` is the token
@@ -230,6 +240,15 @@ mod tests {
 
     fn kept(h: &[ChatMessage], from: usize) -> u32 {
         h[from..].iter().map(est).sum()
+    }
+
+    #[test]
+    fn est_charges_images_flat() {
+        let img = ChatMessage::user(MessageContent::from_parts(vec![
+            ContentPart::from_binary_base64("image/png", "A".repeat(1024 * 1024), None),
+        ]));
+        assert!(est(&img) <= IMAGE_TOKENS + 64, "{}", est(&img));
+        assert_eq!(est(&ChatMessage::user("x".repeat(400))), 100);
     }
 
     #[test]

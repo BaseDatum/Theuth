@@ -148,8 +148,15 @@ trait Port: Send + Sync {
         &self,
         session: Option<SessionId>,
         text: String,
+        files: Vec<PathBuf>,
     ) -> Result<SessionId, String>;
-    async fn steer(&self, session: SessionId, id: InputId, text: String) -> Result<(), String>;
+    async fn steer(
+        &self,
+        session: SessionId,
+        id: InputId,
+        text: String,
+        files: Vec<PathBuf>,
+    ) -> Result<(), String>;
     async fn resolve(&self, id: ApprovalId, decision: Decision) -> Result<bool, String>;
 }
 
@@ -169,16 +176,32 @@ impl Port for Actors {
         &self,
         session: Option<SessionId>,
         text: String,
+        files: Vec<PathBuf>,
     ) -> Result<SessionId, String> {
         agents()?
-            .ask(SendInput { session, text })
+            .ask(SendInput {
+                session,
+                text,
+                files,
+            })
             .await
             .map_err(|e| e.to_string())
     }
 
-    async fn steer(&self, session: SessionId, id: InputId, text: String) -> Result<(), String> {
+    async fn steer(
+        &self,
+        session: SessionId,
+        id: InputId,
+        text: String,
+        files: Vec<PathBuf>,
+    ) -> Result<(), String> {
         agents()?
-            .ask(Steer { session, id, text })
+            .ask(Steer {
+                session,
+                id,
+                text,
+                files,
+            })
             .await
             .map_err(|e| e.to_string())
     }
@@ -870,7 +893,9 @@ impl Channel {
         if !body.is_empty() {
             lines.push(body.to_owned());
         }
-        lines.extend(self.save_attachments(env.timestamp, &env.attachments).await);
+        let (attachment_lines, files) =
+            self.save_attachments(env.timestamp, &env.attachments).await;
+        lines.extend(attachment_lines);
         if lines.is_empty() {
             return;
         }
@@ -888,7 +913,7 @@ impl Channel {
             Some(id) if in_flight => {
                 let queued = self
                     .port
-                    .steer(id, InputId::new(), input)
+                    .steer(id, InputId::new(), input, files)
                     .await
                     .map(|()| id);
                 if queued.is_ok() {
@@ -896,7 +921,7 @@ impl Channel {
                 }
                 queued
             }
-            _ => self.port.send_input(session, input).await,
+            _ => self.port.send_input(session, input, files).await,
         };
         match result {
             Ok(id) => {
@@ -952,16 +977,22 @@ impl Channel {
     }
 
     /// Writes attachments to `<data_dir>/signal/inbox/<ts>-<n>.<ext>` and
-    /// returns one `[attachment: …]` line each (09 §7.4).
-    async fn save_attachments(&self, ts: u64, attachments: &[IncomingAttachment]) -> Vec<String> {
+    /// returns one `[attachment: …]` line each (09 §7.4) plus the paths of
+    /// the `image/*` ones, which ride along as model input (17 §5).
+    async fn save_attachments(
+        &self,
+        ts: u64,
+        attachments: &[IncomingAttachment],
+    ) -> (Vec<String>, Vec<PathBuf>) {
         let mut lines = Vec::with_capacity(attachments.len());
+        let mut images = Vec::new();
         if attachments.is_empty() {
-            return lines;
+            return (lines, images);
         }
         let dir = self.rt.data_dir.join("signal").join("inbox");
         if let Err(e) = tokio::fs::create_dir_all(&dir).await {
             tracing::warn!(error = %e, "failed to create signal inbox dir");
-            return lines;
+            return (lines, images);
         }
         for (n, a) in attachments.iter().enumerate() {
             let mime = effective_mime(&a.mime, &a.bytes);
@@ -978,8 +1009,11 @@ impl Channel {
                 }
             }
             lines.push(format!("[attachment: {} ({detail})]", path.display()));
+            if mime.starts_with("image/") {
+                images.push(path);
+            }
         }
-        lines
+        (lines, images)
     }
 
     // -- outbound (09 §8, §10) -------------------------------------------
@@ -1217,8 +1251,8 @@ mod tests {
 
     #[derive(Debug, PartialEq)]
     enum Call {
-        SendInput(Option<SessionId>, String),
-        Steer(SessionId, String),
+        SendInput(Option<SessionId>, String, Vec<PathBuf>),
+        Steer(SessionId, String, Vec<PathBuf>),
         Resolve(ApprovalId, Decision),
     }
 
@@ -1239,15 +1273,25 @@ mod tests {
             &self,
             session: Option<SessionId>,
             text: String,
+            files: Vec<PathBuf>,
         ) -> Result<SessionId, String> {
             self.calls
                 .lock()
                 .unwrap()
-                .push(Call::SendInput(session, text));
+                .push(Call::SendInput(session, text, files));
             Ok(session.unwrap_or(self.session))
         }
-        async fn steer(&self, session: SessionId, _: InputId, text: String) -> Result<(), String> {
-            self.calls.lock().unwrap().push(Call::Steer(session, text));
+        async fn steer(
+            &self,
+            session: SessionId,
+            _: InputId,
+            text: String,
+            files: Vec<PathBuf>,
+        ) -> Result<(), String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(Call::Steer(session, text, files));
             Ok(())
         }
         async fn resolve(&self, id: ApprovalId, decision: Decision) -> Result<bool, String> {
@@ -1562,7 +1606,7 @@ mod tests {
                 target_ts: 42
             }
         );
-        assert_eq!(f.stub.calls(), [Call::SendInput(None, "hi".into())]);
+        assert_eq!(f.stub.calls(), [Call::SendInput(None, "hi".into(), vec![])]);
         assert_eq!(f.chan.lock().threads.get(OWNER), Some(f.stub.session));
     }
 
@@ -1598,7 +1642,8 @@ mod tests {
                 format!(
                     "(replying to: \"earlier\")\nlook\n[attachment: {} (image/png, 8 B)]",
                     path.display()
-                )
+                ),
+                vec![path]
             )]
         );
     }
@@ -1615,8 +1660,8 @@ mod tests {
         assert_eq!(
             f.stub.calls(),
             [
-                Call::SendInput(None, "hi".into()),
-                Call::Steer(session, "also".into())
+                Call::SendInput(None, "hi".into(), vec![]),
+                Call::Steer(session, "also".into(), vec![])
             ]
         );
         for piece in ["**hel", "lo**"] {

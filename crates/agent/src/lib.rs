@@ -46,6 +46,9 @@ pub struct SendInput {
     pub session: Option<SessionId>,
     /// User text.
     pub text: String,
+    /// Image files to attach (17 §2); absolute paths on this machine.
+    #[serde(default)]
+    pub files: Vec<PathBuf>,
 }
 
 /// `ask` → `()`. Injected as a user message after the current tool batch
@@ -61,6 +64,9 @@ pub struct Steer {
     pub id: InputId,
     /// User text.
     pub text: String,
+    /// Image files to attach (17 §2); absolute paths on this machine.
+    #[serde(default)]
+    pub files: Vec<PathBuf>,
 }
 
 /// `ask` → `Result<String, String>`: pull a queued steer back before it enters

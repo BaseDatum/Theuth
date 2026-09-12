@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeSet, VecDeque};
 use std::ops::Range;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use acp::EntryInfo;
@@ -21,6 +22,8 @@ use tools::{
     ApprovalId, ApprovalRequested, ApprovalResolved, ApprovalsState, Decision, Gate, JobEvent,
     JobView, McpAuth, McpProgress, McpServer, McpToolInfo, PolicyAction, RepoInfo,
 };
+
+use crate::clip::Image;
 
 /// Everything the UI can receive: bus events plus replies to its own commands.
 #[derive(Debug)]
@@ -120,6 +123,8 @@ pub enum Command {
         session: Option<SessionId>,
         /// User text.
         text: String,
+        /// Attached image files (17 §2).
+        files: Vec<PathBuf>,
     },
     /// `steer`: queued until the current tool batch ends.
     Steer {
@@ -129,6 +134,8 @@ pub enum Command {
         id: InputId,
         /// User text.
         text: String,
+        /// Attached image files (17 §2).
+        files: Vec<PathBuf>,
     },
     /// `withdraw`: take a steer back out of the queue.
     Withdraw {
@@ -426,16 +433,36 @@ impl Entry {
     }
 }
 
+/// A held paste: large text, or an attached image (17 §4.3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Paste {
+    /// Text too large for the input box.
+    Text(String),
+    /// An image file to send with the input.
+    Image(Image),
+}
+
 /// What the input box shows for a held paste: `[⎘ paste 1: 69 lines]`
-/// (`chars` for a single long line). `i` is the index into `Model::pastes`.
-pub fn paste_token(i: usize, text: &str) -> String {
-    let lines = text.lines().count();
-    let size = if lines > 1 {
-        format!("{lines} lines")
-    } else {
-        format!("{} chars", text.chars().count())
-    };
-    format!("[⎘ paste {}: {size}]", i + 1)
+/// (`chars` for a single long line), `[⎘ image 2: 1440×900]` (file name
+/// when the size is unknown). `i` is the index into `Model::pastes`.
+pub fn paste_token(i: usize, p: &Paste) -> String {
+    match p {
+        Paste::Text(text) => {
+            let lines = text.lines().count();
+            let size = if lines > 1 {
+                format!("{lines} lines")
+            } else {
+                format!("{} chars", text.chars().count())
+            };
+            format!("[⎘ paste {}: {size}]", i + 1)
+        }
+        Paste::Image(img) if img.w > 0 => format!("[⎘ image {}: {}×{}]", i + 1, img.w, img.h),
+        Paste::Image(img) => format!(
+            "[⎘ image {}: {}]",
+            i + 1,
+            img.path.file_name().unwrap_or_default().to_string_lossy()
+        ),
+    }
 }
 
 /// Split a harness-injected input into `(kind, title, body)` per wrapper.
@@ -889,9 +916,9 @@ pub struct Model {
     pub approvals_off: bool,
     /// Latest MCP reconcile snapshot; `None` before the first.
     pub mcp: Option<McpProgress>,
-    /// Large pastes held out of the input box; the box shows one
-    /// [`paste_token`] each, expanded back on submit.
-    pub pastes: Vec<String>,
+    /// Large pastes and attached images held out of the input box; the box
+    /// shows one [`paste_token`] each, expanded back on submit.
+    pub pastes: Vec<Paste>,
     /// Text of the last input submitted here, pastes expanded: the next
     /// `TurnStarted` echoing it is not shown again (its card is already up,
     /// with paste tokens).
@@ -988,19 +1015,61 @@ impl Model {
         if text.lines().count() <= 5 && text.chars().count() <= 400 {
             return text;
         }
-        let token = paste_token(self.pastes.len(), &text);
-        self.pastes.push(text);
+        let i = self.pastes.len();
+        self.pastes.push(Paste::Text(text));
+        paste_token(i, &self.pastes[i])
+    }
+
+    /// Hold an image for the next submit; returns its [`paste_token`]. A
+    /// text-only shown model gets a notice so the user can `/model` before
+    /// Enter (17 §4.4).
+    pub fn attach(&mut self, img: Image) -> String {
+        let text_only = self
+            .catalog
+            .as_ref()
+            .and_then(|c| c.closest(&self.model_id))
+            .is_some_and(|m| !m.image);
+        if text_only {
+            self.entries.push(Entry::Info(format!(
+                "{} is text-only; the image will be sent as omitted — /model to switch",
+                self.model_id
+            )));
+        }
+        let p = Paste::Image(img);
+        let token = paste_token(self.pastes.len(), &p);
+        self.pastes.push(p);
         token
     }
 
     /// `line` with every paste token the user left in place replaced by its
-    /// text; `pastes` is emptied either way.
-    fn expand_pastes(&mut self, line: &str) -> String {
+    /// text and every image token removed (with one adjacent space), the
+    /// images' paths in token order; `pastes` is emptied either way. A token
+    /// the user deleted drops its paste.
+    fn expand_pastes(&mut self, line: &str) -> (String, Vec<PathBuf>) {
         let mut text = line.to_owned();
-        for (i, p) in std::mem::take(&mut self.pastes).iter().enumerate() {
-            text = text.replace(&paste_token(i, p), p);
+        let mut files = Vec::new();
+        for (i, p) in std::mem::take(&mut self.pastes).into_iter().enumerate() {
+            let token = paste_token(i, &p);
+            match p {
+                Paste::Text(t) => text = text.replace(&token, &t),
+                Paste::Image(img) => {
+                    let Some(at) = text.find(&token) else {
+                        continue;
+                    };
+                    let end = at + token.len();
+                    let range = if text[end..].starts_with(' ') {
+                        at..end + 1
+                    } else if text[..at].ends_with(' ') {
+                        at - 1..end
+                    } else {
+                        at..end
+                    };
+                    text.replace_range(range, "");
+                    files.push(img.path);
+                }
+            }
         }
-        text
+        (text, files)
     }
 
     /// Add an entry that did not come from the model's stream (a peer message,
@@ -1812,7 +1881,7 @@ impl Model {
                 .entries
                 .push(Entry::Error(format!("unknown command {c}"))),
             _ => {
-                let text = self.expand_pastes(line);
+                let (text, files) = self.expand_pastes(line);
                 match self.shown() {
                     // Mid-turn: the card waits below the transcript until
                     // `InputInjected` says where in the conversation it landed.
@@ -1822,13 +1891,28 @@ impl Model {
                             id,
                             text: text.clone(),
                         });
-                        send(tx, Command::Steer { session, id, text });
+                        send(
+                            tx,
+                            Command::Steer {
+                                session,
+                                id,
+                                text,
+                                files,
+                            },
+                        );
                     }
                     session => {
                         self.entries.push(Entry::User(line.to_owned()));
                         self.sent = Some(text.clone());
                         self.awaiting_session = session.is_none();
-                        send(tx, Command::Send { session, text });
+                        send(
+                            tx,
+                            Command::Send {
+                                session,
+                                text,
+                                files,
+                            },
+                        );
                     }
                 }
             }
@@ -3283,6 +3367,43 @@ mod tests {
             model: "m".into(),
         });
         assert_eq!(m.entries.len(), 2, "foreign input is still echoed");
+    }
+
+    #[test]
+    fn attached_images_leave_the_text_and_travel_as_files() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        let shot = Image {
+            path: PathBuf::from("/tmp/a.png"),
+            w: 1440,
+            h: 900,
+        };
+        let dropped = Image {
+            path: PathBuf::from("/tmp/my shot.jpg"),
+            w: 0,
+            h: 0,
+        };
+        let t1 = m.attach(shot.clone());
+        let t2 = m.attach(dropped.clone());
+        assert_eq!(t1, "[⎘ image 1: 1440×900]");
+        assert_eq!(t2, "[⎘ image 2: my shot.jpg]");
+        m.submit(&format!("describe {t1} {t2}"), &tx);
+        let Ok(Command::Send { text, files, .. }) = rx.try_recv() else {
+            panic!("no send");
+        };
+        assert_eq!(text, "describe");
+        assert_eq!(files, vec![shot.path.clone(), dropped.path.clone()]);
+        assert!(m.pastes.is_empty());
+        assert!(matches!(&m.entries[0], Entry::User(t) if t.contains(&t1)));
+        // A token the user deleted drops its image.
+        m.attach(shot);
+        let t2 = m.attach(dropped);
+        m.submit(&format!("{t2} only this"), &tx);
+        let Ok(Command::Send { text, files, .. }) = rx.try_recv() else {
+            panic!("no send");
+        };
+        assert_eq!(text, "only this");
+        assert_eq!(files, vec![PathBuf::from("/tmp/my shot.jpg")]);
     }
 
     #[test]

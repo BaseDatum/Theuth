@@ -26,6 +26,9 @@ kameo = { workspace = true }
 iocraft = { workspace = true }
 serde_json = { workspace = true }
 crossterm = "0.29"
+arboard = { workspace = true }
+png = { workspace = true }
+sha2 = { workspace = true }
 
 [lints]
 workspace = true

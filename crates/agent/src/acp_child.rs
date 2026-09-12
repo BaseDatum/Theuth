@@ -522,12 +522,14 @@ impl Message<Connected> for AcpChild {
     }
 }
 
+// `files` is dropped: harness inputs come from text tools, so there is no
+// image to hand over (17 §5).
 impl Message<UserInput> for AcpChild {
     type Reply = ();
 
     async fn handle(
         &mut self,
-        UserInput { id, text }: UserInput,
+        UserInput { id, text, files: _ }: UserInput,
         ctx: &mut Context<Self, Self::Reply>,
     ) {
         if let Some(why) = self.dead.clone() {

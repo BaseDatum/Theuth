@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use agent::{
     AgentEvent, Agents, Cancel, HistoryEntry, ListSessions, LoadSession, NewSession, SendInput,
@@ -25,11 +25,13 @@ use agent_client_protocol::schema::v1::{
     ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, UsageUpdate,
 };
 use agent_client_protocol::{Agent, Client, ConnectionTo, Error, Stdio};
+use base64::Engine as _;
 use jsonrpsee::types::ErrorObjectOwned;
 use kameo::Actor;
 use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
 use runtime::{Runtime, SessionId};
+use sha2::{Digest, Sha256};
 use tokio::sync::oneshot;
 use tools::{Approval, ApprovalRequested, Decision, Resolve, Risk};
 
@@ -56,8 +58,9 @@ impl runtime::Plugin for AcpPlugin {
         rt.subscribe::<Relay, AgentEvent>(&relay).await;
         rt.subscribe::<Relay, ApprovalRequested>(&relay).await;
         let shutdown = rt.shutdown.clone();
+        let data_dir = rt.data_dir.clone();
         tokio::spawn(async move {
-            if let Err(e) = connect(relay).await {
+            if let Err(e) = connect(relay, data_dir).await {
                 tracing::error!(error = %e, "acp connection failed");
             }
             shutdown.cancel();
@@ -67,7 +70,8 @@ impl runtime::Plugin for AcpPlugin {
 }
 
 /// Serve ACP on stdio; returns when stdin hits EOF or the transport fails.
-async fn connect(relay: ActorRef<Relay>) -> Result<(), Error> {
+/// `data_dir` hosts `attachments/` for prompt images (17 §5).
+async fn connect(relay: ActorRef<Relay>, data_dir: PathBuf) -> Result<(), Error> {
     let for_prompt = relay.clone();
     Agent
         .builder()
@@ -80,7 +84,7 @@ async fn connect(relay: ActorRef<Relay>) -> Result<(), Error> {
                             AgentCapabilities::new()
                                 .load_session(true)
                                 .prompt_capabilities(
-                                    PromptCapabilities::new().embedded_context(true),
+                                    PromptCapabilities::new().embedded_context(true).image(true),
                                 ),
                         )
                         .agent_info(Implementation::new("wth", env!("CARGO_PKG_VERSION"))),
@@ -137,7 +141,7 @@ async fn connect(relay: ActorRef<Relay>) -> Result<(), Error> {
         .on_receive_request(
             async move |req: PromptRequest, responder, cx| {
                 let session = parse_session(&req.session_id)?;
-                let text = prompt_text(&req.prompt);
+                let (text, files) = prompt_parts(&req.prompt, &data_dir);
                 // Register before `SendInput` so the bus cannot deliver
                 // `TurnFinished` ahead of the waiter (one ordered mailbox).
                 let (tx, rx) = oneshot::channel();
@@ -147,6 +151,7 @@ async fn connect(relay: ActorRef<Relay>) -> Result<(), Error> {
                     SendInput {
                         session: Some(session),
                         text,
+                        files,
                     },
                 )
                 .await
@@ -188,10 +193,12 @@ fn parse_session(id: &AcpSessionId) -> Result<SessionId, Error> {
         .map_err(|_| Error::invalid_params().data(format!("unknown session {id}")))
 }
 
-/// `session/prompt` content as one user message: text verbatim, embedded
-/// text resources fenced with their uri, links as their uri.
-fn prompt_text(blocks: &[ContentBlock]) -> String {
+/// `session/prompt` content as one user message: text verbatim, embedded text
+/// resources fenced with their uri, links as their uri; image blocks decoded to
+/// files under `<data_dir>/attachments/` and returned as paths (17 §5).
+fn prompt_parts(blocks: &[ContentBlock], data_dir: &Path) -> (String, Vec<PathBuf>) {
     let mut out = String::new();
+    let mut files = Vec::new();
     for block in blocks {
         if !out.is_empty() {
             out.push('\n');
@@ -208,12 +215,45 @@ fn prompt_text(blocks: &[ContentBlock]) -> String {
                 }
                 _ => out.push_str("[resource]"),
             },
-            ContentBlock::Image(_) => out.push_str("[image]"),
+            ContentBlock::Image(img) => match save_image(&img.data, &img.mime_type, data_dir) {
+                Ok(Some(path)) => {
+                    // No text for this block: drop the separator pushed above.
+                    out.pop();
+                    files.push(path);
+                }
+                Ok(None) => {
+                    let _ = write!(out, "[image: unsupported {}]", img.mime_type);
+                }
+                Err(e) => {
+                    let _ = write!(out, "[image: {e}]");
+                }
+            },
             ContentBlock::Audio(_) => out.push_str("[audio]"),
             _ => out.push_str("[unsupported content]"),
         }
     }
-    out
+    (out, files)
+}
+
+/// Decodes a base64 image block into `<data_dir>/attachments/<sha256[..16]>.<ext>`;
+/// `None` for a mime type outside png/jpeg/gif/webp. An existing file is not rewritten.
+fn save_image(data: &str, mime: &str, data_dir: &Path) -> anyhow::Result<Option<PathBuf>> {
+    let ext = match mime {
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        _ => return Ok(None),
+    };
+    let bytes = base64::engine::general_purpose::STANDARD.decode(data)?;
+    let hex = format!("{:x}", Sha256::digest(&bytes));
+    let dir = data_dir.join("attachments");
+    let path = dir.join(format!("{}.{ext}", &hex[..16]));
+    if !path.exists() {
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(&path, bytes)?;
+    }
+    Ok(Some(path))
 }
 
 /// wth's stop reason string as ACP's: matching serde names pass through,
@@ -416,5 +456,37 @@ impl Message<ApprovalRequested> for Relay {
             };
             let _ = approval.ask(Resolve { id, decision }).await;
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use agent_client_protocol::schema::v1::{ImageContent, TextContent};
+
+    use super::*;
+
+    #[test]
+    fn image_block_becomes_sha_named_file() {
+        let dir = std::env::temp_dir().join(format!("wth-acp-{}", uuid::Uuid::new_v4()));
+        let bytes = b"\x89PNG\r\n\x1a\nnot really a png";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+        let blocks = [
+            ContentBlock::Text(TextContent::new("look")),
+            ContentBlock::Image(ImageContent::new(b64, "image/png")),
+            ContentBlock::Image(ImageContent::new("AAAA", "image/tiff")),
+            ContentBlock::Image(ImageContent::new("not base64!", "image/png")),
+        ];
+        let (text, files) = prompt_parts(&blocks, &dir);
+        let hex = format!("{:x}", Sha256::digest(bytes));
+        assert_eq!(
+            files,
+            [dir.join("attachments").join(format!("{}.png", &hex[..16]))]
+        );
+        assert_eq!(std::fs::read(&files[0]).unwrap(), bytes);
+        assert!(
+            text.starts_with("look\n[image: unsupported image/tiff]\n[image: "),
+            "{text}"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

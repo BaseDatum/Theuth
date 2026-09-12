@@ -7,7 +7,8 @@ use std::path::Path;
 
 use genai::adapter::AdapterKind;
 use genai::chat::{
-    CacheControl, ChatMessage, ChatOptions, ChatRequest, ChatRole, ReasoningEffort, Tool,
+    CacheControl, ChatMessage, ChatOptions, ChatRequest, ChatRole, ContentPart, ReasoningEffort,
+    Tool,
 };
 use runtime::SessionId;
 
@@ -61,6 +62,8 @@ pub struct Frame<'a> {
     pub head: Option<&'a ChatMessage>,
     /// Every message since the epoch began, verbatim, in order.
     pub history: &'a [ChatMessage],
+    /// Whether the model takes image parts; `false` strips them (17 §3.3).
+    pub vision: bool,
 }
 
 impl Frame<'_> {
@@ -81,6 +84,9 @@ impl Frame<'_> {
         }
         messages.extend(self.head.cloned());
         messages.extend_from_slice(self.history);
+        if !self.vision {
+            messages.iter_mut().for_each(strip_images);
+        }
         if t == Transport::Anthropic
             && let Some(last) = messages.last_mut()
             && last.role != ChatRole::System
@@ -109,6 +115,19 @@ impl Frame<'_> {
             opts = opts.with_reasoning_effort(e);
         }
         (req, opts)
+    }
+}
+
+/// Replaces every `ContentPart::Binary` in a user-role message with
+/// `Text("[image omitted: model is text-only]")` (17 §3.3). Other roles untouched.
+pub fn strip_images(m: &mut ChatMessage) {
+    if m.role != ChatRole::User {
+        return;
+    }
+    for part in &mut m.content {
+        if part.is_binary() {
+            *part = ContentPart::Text("[image omitted: model is text-only]".into());
+        }
     }
 }
 
@@ -165,7 +184,7 @@ pub fn truncate(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use genai::chat::{ToolCall, ToolResponse};
+    use genai::chat::{MessageContent, ToolCall, ToolResponse};
     use serde_json::json;
 
     const ALL: [Transport; 3] = [
@@ -264,6 +283,7 @@ mod tests {
                     system: "baseline",
                     head,
                     history: &history[..n],
+                    vision: true,
                 };
                 let (req, opts) = frame.request(t, session, None);
                 assert_eq!(opts.capture_tool_calls, Some(true));
@@ -302,6 +322,7 @@ mod tests {
             system: "sys",
             head: None,
             history: &history,
+            vision: true,
         };
         let session = SessionId::new();
 
@@ -329,11 +350,42 @@ mod tests {
             system: "sys",
             head: None,
             history: &[],
+            vision: true,
         };
         let (req, _) = empty.request(Transport::Anthropic, session, None);
         assert_eq!(
             req.messages[0].options.as_ref().unwrap().cache_control,
             Some(CacheControl::Ephemeral1h)
         );
+    }
+
+    #[test]
+    fn text_only_model_strips_user_images() {
+        let history = [ChatMessage::user(MessageContent::from_parts(vec![
+            ContentPart::Text("look".into()),
+            ContentPart::from_binary_base64("image/png", "AAAA", Some("shot.png".into())),
+            ContentPart::Text("at this".into()),
+        ]))];
+        let session = SessionId::new();
+        let frame = |vision| Frame {
+            tools: &[],
+            system: "sys",
+            head: None,
+            history: &history,
+            vision,
+        };
+
+        let (req, _) = frame(false).request(Transport::Plain, session, None);
+        let parts = req.messages[0].content.parts();
+        assert!(parts.iter().all(|p| !p.is_binary()));
+        let placeholders: Vec<_> = parts
+            .iter()
+            .filter(|p| p.as_text() == Some("[image omitted: model is text-only]"))
+            .collect();
+        assert_eq!(placeholders.len(), 1);
+        assert_eq!(parts.len(), 3);
+
+        let (req, _) = frame(true).request(Transport::Plain, session, None);
+        assert!(req.messages[0].content.iter().any(ContentPart::is_binary));
     }
 }

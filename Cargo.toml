@@ -103,6 +103,11 @@ png = "0.17"
 # Agent Client Protocol (design doc 06): external harnesses as subagents, `wth --acp`.
 # 2.x is a rewrite; pinned exactly, only the v1 schema module is used (06 §7).
 agent-client-protocol = "=2.1.0"
+# Image input (design doc 17): OS clipboard image read — bracketed paste is text-only.
+# `image-data` pulls `image` with minimal features; we encode with `png` ourselves.
+arboard = { version = "3.6", default-features = false, features = ["image-data"] }
+# Attachment mime check (17 §3.1); already in the tree via genai.
+mime_guess = "2"
 
 [workspace.lints.rust]
 missing_docs = "warn"
