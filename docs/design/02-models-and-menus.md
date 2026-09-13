@@ -256,7 +256,7 @@ usage.prompt` of the last finished turn, the prefix-cache hit ratio
 streaming the values are the previous turn's; no per-delta counting
 (providers only report usage at end).
 
-The existing status line (session id, focus, approvals) stays below the input.
+The existing status line (session id, agents, approvals) stays below the input.
 
 ## 4. Slash menu, `/model` picker, `/mcp` menu (tui crate)
 
@@ -265,7 +265,7 @@ every command whose name starts with the typed prefix, with a one-line
 description. ↑/↓ moves, Tab completes the name (plus a trailing space when it
 takes an argument), Enter runs it (or completes when the highlighted command
 needs an argument), Esc closes without clearing the input. Commands:
-`/model [id]`, `/effort [level|clear]`, `/mcp`, `/agents`, `/focus <name>`,
+`/model [id]`, `/effort [level|clear]`, `/mcp`, `/agents`, `/parent` (19),
 `/sessions`, `/resume <id>`, `/new`, `/cancel`,
 `/compact [summary|cut|snap|style …]` (11), `/knowledge [query | history [id]
 | restore <id> [commit] | harvest]` (the knowledge bundle: list, search, git

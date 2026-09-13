@@ -328,9 +328,11 @@ Library: `jsonrpsee` 0.26, `server` + `macros` features, WebSocket on
 The RPC layer is generic glue, not a second protocol:
 - **Methods** = `ask` on a named actor: `agent.send_input`, `agent.steer`,
   `agent.list_sessions`, `tools.resolve_approval`, `tools.list`.
-- **Subscriptions** = bus events: `subscribe_events(session?)` yields every
-  wire-visible event as `{ "type": "<TypeName>", ... }` via
-  `#[serde(tag = "type")]`.
+- **Subscriptions** = bus events: `subscribe_events(session?, descendants?)`
+  yields every wire-visible event as `{ "type": "<TypeName>", ... }` via
+  `#[serde(tag = "type")]`; `descendants: true` widens the filter to the
+  session's subtree, including `SubagentSpawned` whose parent is inside it
+  (19 §2.2).
 - Method params/results and event payloads are the plugins' own types; the
   RPC crate defines none. TypeScript bindings for Tauri are generated with
   `ts-rs` 12 from the same types (`#[derive(TS)]` behind a feature).
@@ -419,6 +421,13 @@ lands while the model is mid-response is inserted *above* the streaming text
 (`Model::interject`), never after it: the deltas keep flowing into one
 `markdown::Text`, so a table or list is not split into two half-rendered
 pieces.
+
+Subagents are sessions. `/agents` is a picker over the current session's
+subtree with live state on every row (`list_agents`); Enter opens one — the
+`/sessions` switch — and `/parent` climbs back. A board under the transcript
+shows the live rows only: board = live, transcript = history. A child's
+`Error` or cancelled `TurnFinished` interjects one line in the parent; its
+results keep arriving as `⟵ name` cards (19).
 
 Rejected: `ratatui` (immediate-mode; streaming markdown + approval modals
 are more code); line-oriented REPL (would be replaced immediately); an

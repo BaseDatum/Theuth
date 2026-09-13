@@ -35,6 +35,8 @@ pub struct Links {
 
 /// Rows a menu shows at most.
 const MENU_ROWS: usize = 10;
+/// Rows the board shows at most; the rest fold into `… n more (/agents)`.
+const BOARD_ROWS: usize = 6;
 /// Human turn cards.
 const USER: Color = Color::AnsiValue(117);
 /// Tool call cards.
@@ -178,10 +180,13 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 m.toggle_card();
                 return;
             }
-            if m.approval().is_some() {
+            if let Some(req) = m.approval() {
+                let (session, child) = (req.session, Some(req.session) != m.session);
                 match code {
                     KeyCode::Char('y') => m.decide(Decision::Allow, &commands),
                     KeyCode::Char('n') | KeyCode::Esc => m.decide(Decision::Deny, &commands),
+                    // Read what led to a child's request; the modal stays up (19 §3.4).
+                    KeyCode::Char('o') if child => m.resume(session, &commands),
                     _ => {}
                 }
                 return;
@@ -242,11 +247,12 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
         let agent = m
             .peer_name(req.session)
             .map_or_else(String::new, |n| format!("  [agent: {n}]"));
+        let open = if Some(req.session) == m.session { "" } else { "  [o] open" };
         element! {
             View(border_style: BorderStyle::Double, border_color: Color::Yellow, flex_direction: FlexDirection::Column, padding_left: 1, padding_right: 1) {
                 Text(content: format!("approval: {}  ({}){agent}", req.tool, risk_name(req.risk)), weight: Weight::Bold)
                 #(describe(&req.tool, &req.args).into_iter().map(|l| element!(Text(content: l, color: Color::Cyan, wrap: TextWrap::Wrap))))
-                Text(content: "[y] allow  [n/esc] deny", color: Color::Yellow)
+                Text(content: format!("[y] allow  [n/esc] deny{open}"), color: Color::Yellow)
             }
         }
         .into_any()
@@ -284,6 +290,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                     }
                 }
             }
+            #(board(&m, width))
             #(modal)
             #(m.prompt.as_ref().map(|p| {
                 element!(View(height: 1, padding_left: 1) {
@@ -547,6 +554,45 @@ fn menu(m: &Model, input: &str, width: u16) -> Option<AnyElement<'static>> {
     )
 }
 
+/// The subagent board (design doc 19 §3.3): the live rows of the current
+/// session's subtree, between the transcript and the editor; `None` while
+/// nothing is live. A display only: it takes no keys.
+fn board(m: &Model, width: u16) -> Option<AnyElement<'static>> {
+    let rows = m.board();
+    if rows.is_empty() {
+        return None;
+    }
+    let more = rows.len().saturating_sub(BOARD_ROWS);
+    // border 2 + padding 2, then one less (see `menu`); glyph + name take 17.
+    let fit = usize::from(width).saturating_sub(5);
+    Some(
+        element! {
+            View(border_style: BorderStyle::Round, border_color: Color::DarkGrey, flex_direction: FlexDirection::Column, padding_left: 1, padding_right: 1) {
+                Text(content: "agents", color: Color::DarkGrey)
+                #(rows.iter().take(BOARD_ROWS).map(|r| {
+                    let row = agent_row(r, m.spinner(), width);
+                    let (glyph, rest) = split_chars(&row, 2);
+                    let (name, rest) = split_chars(rest, 15);
+                    element! {
+                        View(flex_direction: FlexDirection::Row) {
+                            Text(content: glyph.to_owned(), color: Color::Grey, wrap: TextWrap::NoWrap)
+                            Text(content: name.to_owned(), color: PEER, wrap: TextWrap::NoWrap)
+                            Text(content: rest.chars().take(fit.saturating_sub(17)).collect::<String>(), color: Color::Grey, wrap: TextWrap::NoWrap)
+                        }
+                    }
+                }))
+                #((more > 0).then(|| element!(Text(content: format!("… {more} more (/agents)"), color: Color::DarkGrey))))
+            }
+        }
+        .into_any(),
+    )
+}
+
+/// Split after `n` chars (not bytes): `("⠹ ", rest)`.
+fn split_chars(s: &str, n: usize) -> (&str, &str) {
+    s.split_at(s.char_indices().nth(n).map_or(s.len(), |(i, _)| i))
+}
+
 fn entry(e: &Entry, spinner: &str) -> AnyElement<'static> {
     match e {
         // Human turns: the same card shape as tools and peers, own colour and glyph.
@@ -773,5 +819,56 @@ mod tests {
                 "width {width}: a row overflows"
             );
         }
+    }
+
+    /// Eight live children: six rows, one fold line, and no row wider than
+    /// the terminal (the rows are `NoWrap` texts in a row view).
+    #[test]
+    fn board_caps_rows_and_stays_tight() {
+        use agent::AgentEvent;
+        use runtime::SessionId;
+        let mut m = Model::default();
+        let root = SessionId::new();
+        m.session = Some(root);
+        for i in 0..8 {
+            m.apply(UiEvent::Agent(AgentEvent::SubagentSpawned {
+                parent: root,
+                child: SessionId::new(),
+                name: format!("worker-{i}-with-a-long-name"),
+            }));
+        }
+        for width in 60..=120u16 {
+            let frame = element! {
+                View(flex_direction: FlexDirection::Column, width, height: 30u16) {
+                    View(flex_grow: 1.0, min_height: 0)
+                    #(board(&m, width))
+                    View(height: 3)
+                }
+            }
+            .to_string();
+            let lines: Vec<&str> = frame.lines().collect();
+            let top = lines.iter().position(|l| l.starts_with('╭')).unwrap();
+            let bottom = lines.iter().position(|l| l.starts_with('╰')).unwrap();
+            // title + 6 rows + fold line + bottom border.
+            assert_eq!(bottom - top, 9, "width {width}: box spans {top}..{bottom}");
+            assert!(lines[bottom - 1].contains("… 2 more (/agents)"));
+            assert!(
+                lines
+                    .iter()
+                    .all(|l| l.chars().count() <= usize::from(width)),
+                "width {width}: a row overflows"
+            );
+        }
+        // Idle everywhere: no board.
+        for id in m.agents.keys().copied().collect::<Vec<_>>() {
+            m.apply(UiEvent::Agent(AgentEvent::TurnFinished {
+                session: id,
+                turn: runtime::TurnId::new(),
+                stop_reason: "end_turn".into(),
+                usage: agent::Usage::default(),
+                context: 0,
+            }));
+        }
+        assert!(board(&m, 80).is_none() && m.status().contains("agents: 8 idle"));
     }
 }

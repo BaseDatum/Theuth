@@ -69,8 +69,8 @@ policy, its own context management and its own login (a Claude Max
 subscription through `claude-agent-acp`, ChatGPT through `codex-acp`). What
 wth gets back is a finished task, a transcript, and a stop reason — exactly
 what `<subagent_result>` already carries. Modelling it as a session-shaped
-peer keeps every existing surface (roster, `/focus`, approvals, `send_message`,
-`list_children`, RPC events) working unchanged; modelling it as a model would
+peer keeps every existing surface (`/agents` picker, approvals, `send_message`,
+`list_agents`, RPC events) working unchanged; modelling it as a model would
 force wth's loop to drive a harness that already has one.
 
 ## 3. Client: external harnesses as subagents
@@ -277,8 +277,10 @@ empty.
 
 `SessionSummary` gains `agent: Option<String>`. `AgentEvent` gains nothing:
 `SubagentSpawned` already names the child; `TurnStarted.model` carries the
-harness name for the header. The TUI roster shows `codex-fix  running
-(codex)`; `/focus` and approval modals work because they key on `SessionId`.
+harness name for the header. ACP children appear in the `/agents` picker and
+board (19) with `running`/`idle`/`approval` only — never `awaiting`, since
+they have no `send_message` (§3.8); opening one and approval modals work
+because they key on `SessionId`.
 RPC: no new methods beyond `list_acp` / `add_acp` / `remove_acp` (the
 `/acp` menu over the wire, same shape as `list_mcp` / `add_mcp_server` /
 `remove_mcp_server`).
@@ -354,7 +356,7 @@ serialises every wire-visible event.
 | `session/request_permission` ← `ApprovalRequested` | options `[allow_once "Allow", reject_once "Deny"]`; `selected` → `Resolve {decision}`; `cancelled` → `Resolve Deny` |
 | `session/set_config_option` / `config_option_update` | `model_config` category listing `ListModels`; select → `SetModel`. v1, not v0 |
 | `available_commands_update` | none in v0; wth's slash commands are UI, not model input |
-| `_wth/steer`, `_wth/list_children`, … | extension methods, only if a client wants them; the jsonrpsee surface stays for the TUI and config menus |
+| `_wth/steer`, `_wth/list_agents`, … | extension methods, only if a client wants them; the jsonrpsee surface stays for the TUI and config menus |
 
 `kind(name, risk)`: `read_file`/`glob`/`grep`→`read`/`search`,
 `write_file`/`edit`→`edit`, `shell`→`execute`, `spawn_subagent`/`send_message`→`other`,

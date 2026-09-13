@@ -249,8 +249,9 @@ the human cannot talk to the child.
 4. Children stay alive after finishing (idle session actors, as today). A
    later `send_message` to an idle child starts a new child turn; its result
    comes back the same way as the first. Follow-up never needs a respawn.
-5. The human sees children in the TUI roster, can focus one to read its
-   transcript, and can steer it — same commands the parent gets.
+5. The human sees children in the TUI roster, opens one from the `/agents`
+   picker to read its transcript, and can steer it — same commands the
+   parent gets (19).
 
 ### 2.3 Delivery rules
 
@@ -433,18 +434,19 @@ all in sqlite; a parent messaging a child after `wth` restarts lazily loads
 the child session exactly as `--resume` does. Injected messages are persisted
 as ordinary user-role messages (with their wrapper) — no new table.
 
-TUI: `/agents` lists children of the focused session; `/focus <name>` switches
-the transcript, status line and input to that child (Esc returns); input while
-focused is `SendInput` to the child, i.e. human steering. Approval modals
+TUI: `/agents` is a picker over the current session's subtree with live state
+per row; Enter opens a child as a session switch (the transcript, status line
+and input become the child's; plain input steers it), `/parent` climbs back.
+A board under the transcript shows the live children (19). Approval modals
 already carry `session`; they gain the peer name in the header so a child's
 `shell` request is distinguishable from the parent's. RPC gains one method,
-`list_children(parent)`, for rosters; events already stream with `session`
+`list_agents(session)`, for rosters; events already stream with `session`
 and `send_input` already takes one.
 
 ### 2.8 Restart and cancellation
 
-- Parent cancelled (`Cancel`) → its running children are cancelled too
-  (supervisor walks the parent→children map). Idle children are left alone.
+- Parent cancelled (`Cancel`) → every running descendant is cancelled too
+  (supervisor walks the subtree, 19 §2.3). Idle descendants are left alone.
 - `wth` exits with children running → their turns die with the process; on
   next start nothing is auto-resumed (same as the parent today). The parent's
   history shows the spawn but no result; a human or the model can
@@ -478,7 +480,8 @@ Each step leaves `wth` runnable.
    in one message, its turn ends, two `<subagent_result>` turns follow; a
    child `send_message{to: parent, await_reply}` wakes the idle parent, whose
    reply lands as the child's tool output.
-4. TUI: roster, `/agents`, `/focus`, peer name on approval modals.
+4. TUI: roster, `/agents`, peer name on approval modals (the picker and
+   `/parent` came later, 19).
 5. Docs: `00-architecture.md` §5 subagent paragraph and §9 point here;
    README config block.
 
@@ -493,7 +496,7 @@ left no `server-everything` process. Parent spawned `a`/`b` in one message,
 ended its turn before either child's `sleep` finished, then ran two
 `<subagent_result>` turns. Child `q` asked `parent` with `await_reply`, the
 idle parent woke, replied `teal` via `send_message`, and `q`'s tool output was
-`teal`. `list_children` and `load_session` show names and the injected
+`teal`. `list_agents` and `load_session` show names and the injected
 wrappers after the fact.
 
 Not exercised: `max_runtime_secs` expiry, `reply_timeout_secs` expiry, remote

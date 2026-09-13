@@ -735,7 +735,7 @@ pub enum Menu {
     Agents {
         /// The current session's subtree: running first, then awaiting /
         /// approval, then the rest newest-finished first.
-        items: Vec<AgentInfo>,
+        items: Vec<AgentRow>,
         /// Highlighted row.
         cursor: usize,
     },
@@ -989,8 +989,8 @@ pub struct Model {
     /// Parent when the current session is a subagent (`Loaded.parent`): where `/parent` goes.
     pub session_parent: Option<SessionId>,
     /// The current session's subtree, seeded by `list_agents` on open and
-    /// kept roughly live by `SubagentSpawned` / `TurnStarted` / `TurnFinished`.
-    pub agents: HashMap<SessionId, AgentInfo>,
+    /// kept live by every event of a session in it (design doc 19 §3.3).
+    pub agents: HashMap<SessionId, AgentRow>,
     /// `/agents` was typed; the next `UiEvent::Agents` opens the picker
     /// (seeding replies on open only fill the map).
     agents_picker_pending: bool,
@@ -1245,13 +1245,24 @@ impl Model {
     }
 
     /// Frames are needed: text is typing out, a turn is in flight, MCP
-    /// servers are connecting, or a compaction runs.
+    /// servers are connecting, a compaction runs, or a subagent is live (the
+    /// board's spinner and elapsed column).
     pub fn animating(&self) -> bool {
         self.revealing()
             || self.streaming
             || self.mcp_connecting()
             || self.compacting
             || self.harvesting
+            || self.agents.values().any(AgentRow::live)
+    }
+
+    /// The board (design doc 19 §3.3): the subtree's live rows plus errors
+    /// and cancels the picker has not shown yet, in picker order. Empty =
+    /// hidden.
+    pub fn board(&self) -> Vec<&AgentRow> {
+        let mut rows: Vec<&AgentRow> = self.agents.values().filter(|r| r.on_board()).collect();
+        rows.sort_by_key(|r| rank(r));
+        rows
     }
 
     fn mcp_connecting(&self) -> bool {
@@ -1351,7 +1362,17 @@ impl Model {
     /// Peer name of a subagent in the current session's subtree; `None`
     /// for the session itself or strangers.
     pub fn peer_name(&self, id: SessionId) -> Option<&str> {
-        self.agents.get(&id).map(|a| a.name.as_str())
+        self.agents.get(&id).map(|a| a.info.name.as_str())
+    }
+
+    /// A pending approval was answered (here or elsewhere): its row runs again.
+    fn approval_done(&mut self, session: SessionId) {
+        if let Some(row) = self.agents.get_mut(&session)
+            && matches!(row.info.state, AgentState::Approval { .. })
+        {
+            row.info.state = AgentState::Running;
+            row.tool = None;
+        }
     }
 
     /// Fold one event into the state.
@@ -1359,11 +1380,27 @@ impl Model {
         match ev {
             UiEvent::Agent(ev) => self.apply_agent(ev),
             UiEvent::Approval(req) => {
+                if let Some(row) = self.agents.get_mut(&req.session) {
+                    row.info.state = AgentState::Approval {
+                        tool: req.tool.clone(),
+                    };
+                    row.tool = Some(format!(
+                        "{} {}",
+                        req.tool,
+                        describe(&req.tool, &req.args).join(" ")
+                    ));
+                }
                 if self.session == Some(req.session) || self.agents.contains_key(&req.session) {
                     self.approvals.push_back(req);
                 }
             }
-            UiEvent::Resolved(r) => self.approvals.retain(|a| a.id != r.id),
+            UiEvent::Resolved(r) => {
+                if let Some(req) = self.approvals.iter().find(|a| a.id == r.id) {
+                    let session = req.session;
+                    self.approval_done(session);
+                }
+                self.approvals.retain(|a| a.id != r.id);
+            }
             UiEvent::Sessions(list) => {
                 let items: Vec<SessionSummary> =
                     list.into_iter().filter(|s| s.parent.is_none()).collect();
@@ -1378,15 +1415,35 @@ impl Model {
                 }
             }
             UiEvent::Agents(list) => {
-                self.agents = list.iter().map(|a| (a.id, a.clone())).collect();
+                // Reseeding keeps what events taught about rows still there.
+                let mut old = std::mem::take(&mut self.agents);
+                self.agents = list
+                    .into_iter()
+                    .map(|info| {
+                        let row = match old.remove(&info.id) {
+                            Some(mut row) => {
+                                row.info = info;
+                                row
+                            }
+                            None => AgentRow::new(info),
+                        };
+                        (row.info.id, row)
+                    })
+                    .collect();
+                self.approvals
+                    .retain(|a| Some(a.session) == self.session || self.agents.contains_key(&a.session));
                 if !std::mem::take(&mut self.agents_picker_pending) {
                     return;
                 }
-                if list.is_empty() {
+                // The picker shows errors and cancels; the board lets go of them.
+                for row in self.agents.values_mut() {
+                    row.fresh = false;
+                }
+                if self.agents.is_empty() {
                     self.entries.push(Entry::Info("no subagents".into()));
                 } else {
                     self.menu = Some(Menu::Agents {
-                        items: sort_agents(list),
+                        items: sort_agents(self.agents.values().cloned().collect()),
                         cursor: 0,
                     });
                 }
@@ -1668,12 +1725,12 @@ impl Model {
                 let depth = if self.session == Some(*parent) {
                     Some(1)
                 } else {
-                    self.agents.get(parent).map(|p| p.depth + 1)
+                    self.agents.get(parent).map(|p| p.info.depth + 1)
                 };
                 if let Some(depth) = depth {
                     self.agents.insert(
                         *child,
-                        AgentInfo {
+                        AgentRow::new(AgentInfo {
                             id: *child,
                             name: name.clone(),
                             parent: *parent,
@@ -1684,7 +1741,7 @@ impl Model {
                             started_at: Some(chrono::Utc::now()),
                             finished_at: None,
                             last: String::new(),
-                        },
+                        }),
                     );
                 }
                 if self.session == Some(*parent) {
@@ -1723,32 +1780,13 @@ impl Model {
                 }
                 return;
             }
-            AgentEvent::TurnStarted { session, .. } => {
-                if self.session == Some(*session) {
-                    self.streaming = true;
-                } else if let Some(a) = self.agents.get_mut(session) {
-                    a.state = AgentState::Running;
-                    a.started_at = Some(chrono::Utc::now());
-                }
+            AgentEvent::TurnStarted { session, .. } if self.session == Some(*session) => {
+                self.streaming = true;
             }
-            AgentEvent::TurnFinished {
-                session,
-                stop_reason,
-                ..
-            } => {
-                if self.session == Some(*session) {
-                    self.streaming = false;
-                } else if let Some(a) = self.agents.get_mut(session) {
-                    a.state = match stop_reason.as_str() {
-                        "error" => AgentState::Error,
-                        "cancelled" => AgentState::Cancelled,
-                        _ => AgentState::Idle,
-                    };
-                    a.started_at = None;
-                    a.finished_at = Some(chrono::Utc::now());
-                }
+            AgentEvent::TurnFinished { session, .. } if self.session == Some(*session) => {
+                self.streaming = false;
             }
-            _ => {}
+            _ => self.track(&ev),
         }
         // A subagent's stream is not rendered here; open it to read it.
         if ev.session().is_none_or(|s| self.session != Some(s)) {
@@ -1897,6 +1935,76 @@ impl Model {
                 self.harvesting = false;
                 self.interject(Entry::Info(format!("knowledge +{added} ~{updated}")))
             }
+        }
+    }
+
+    /// Fold an event of a subtree session into its row (design doc 19 §3.3).
+    /// A direct child's error or cancel also interjects one line here: they
+    /// must not be silent, and the board has everything else.
+    fn track(&mut self, ev: &AgentEvent) {
+        let Some(row) = ev.session().and_then(|s| self.agents.get_mut(&s)) else {
+            return;
+        };
+        let direct = self.session == Some(row.info.parent);
+        let mut note = None;
+        match ev {
+            AgentEvent::TurnStarted { .. } => {
+                row.info.state = AgentState::Running;
+                row.info.started_at = Some(chrono::Utc::now());
+                row.tool = None;
+                row.fresh = false;
+            }
+            AgentEvent::ToolCallPending { name, .. } => {
+                row.tool = Some(format!("preparing {name}"));
+            }
+            AgentEvent::ToolCallStarted { name, args, .. } => {
+                if name == "send_message" && args["await_reply"] == true {
+                    row.info.state = AgentState::Awaiting {
+                        from: args["to"].as_str().unwrap_or("?").to_owned(),
+                    };
+                    row.question = args["message"]
+                        .as_str()
+                        .and_then(|m| m.lines().next())
+                        .map(str::to_owned);
+                }
+                row.tool = Some(match first_arg(args) {
+                    Some(arg) => format!("running {name} {arg}"),
+                    None => format!("running {name}"),
+                });
+            }
+            AgentEvent::ToolCallFinished { .. } => {
+                row.tool = None;
+                if matches!(row.info.state, AgentState::Awaiting { .. }) {
+                    row.info.state = AgentState::Running;
+                }
+            }
+            AgentEvent::TurnFinished { stop_reason, .. } => {
+                row.info.state = match stop_reason.as_str() {
+                    "error" => AgentState::Error,
+                    "cancelled" => AgentState::Cancelled,
+                    _ => AgentState::Idle,
+                };
+                row.fresh = row.info.state != AgentState::Idle;
+                row.info.started_at = None;
+                row.info.finished_at = Some(chrono::Utc::now());
+                row.tool = None;
+                if direct && stop_reason == "cancelled" {
+                    note = Some(Entry::Info(format!("↳ {} cancelled", row.info.name)));
+                }
+            }
+            AgentEvent::Error { message, .. } => {
+                row.error = Some(message.clone());
+                if direct {
+                    note = Some(Entry::Error(format!(
+                        "↳ {} error: {message}",
+                        row.info.name
+                    )));
+                }
+            }
+            _ => {}
+        }
+        if let Some(e) = note {
+            self.interject(e);
         }
     }
 
@@ -2061,8 +2169,12 @@ impl Model {
 
     /// Switch to `id`: ask for its history and its subtree (design doc 19
     /// §3.5). `/resume`, `/sessions`, `/agents` and `/parent` all land here.
+    /// Pending approvals ride along (an approval `o`pened from stays up); the
+    /// subtree reply prunes the ones that do not belong to the new view.
     pub fn resume(&mut self, id: SessionId, tx: &UnboundedSender<Command>) {
+        let approvals = std::mem::take(&mut self.approvals);
         self.reset();
+        self.approvals = approvals;
         self.session = Some(id);
         send(tx, Command::Load(id));
         send(tx, Command::ListAgents(id));
@@ -2093,6 +2205,7 @@ impl Model {
     /// (or a `Resolve` failure) is then a no-op for this id.
     pub fn decide(&mut self, decision: Decision, tx: &UnboundedSender<Command>) {
         if let Some(req) = self.approvals.pop_front() {
+            self.approval_done(req.session);
             send(
                 tx,
                 Command::Resolve {
@@ -2103,7 +2216,8 @@ impl Model {
         }
     }
 
-    /// One-line status: session, streaming state, last usage, roster, queue.
+    /// One-line status: session, streaming state, last usage, idle
+    /// subagents (while the board is hidden; it has the live ones), queue.
     pub fn status(&self) -> String {
         let session = self.session.map_or_else(|| "no session".to_owned(), short);
         let state = self
@@ -2112,15 +2226,10 @@ impl Model {
         let usage = self.usage.map_or_else(String::new, |u| {
             format!("  {}↑ {}↓", u.prompt, u.completion)
         });
-        let running = self
-            .agents
-            .values()
-            .filter(|a| a.state == AgentState::Running)
-            .count();
-        let agents = if running > 0 {
-            format!("  agents: {running} running")
-        } else {
-            String::new()
+        let agents = match self.agents.len() {
+            0 => String::new(),
+            _ if self.agents.values().any(AgentRow::on_board) => String::new(),
+            n => format!("  agents: {n} idle"),
         };
         let queued = match self.queued.len() {
             0 => String::new(),
@@ -2664,7 +2773,7 @@ impl Model {
             KeyCode::Down => *cursor = (*cursor + 1).min(items.len().saturating_sub(1)),
             KeyCode::Esc => self.menu = None,
             KeyCode::Enter => {
-                let picked = items.get(*cursor).map(|a| a.id);
+                let picked = items.get(*cursor).map(|a| a.info.id);
                 self.menu = None;
                 if let Some(id) = picked {
                     self.resume(id, tx);
@@ -3008,22 +3117,76 @@ pub fn short(id: SessionId) -> String {
     s[s.len() - 8..].to_owned()
 }
 
-/// `/agents` picker order: running first (spawn order), then awaiting /
-/// approval, then the rest newest-finished first.
-pub fn sort_agents(mut list: Vec<AgentInfo>) -> Vec<AgentInfo> {
-    list.sort_by_key(|a| match a.state {
-        AgentState::Running => (0, None),
-        AgentState::Awaiting { .. } | AgentState::Approval { .. } => (1, None),
-        _ => (2, Some(std::cmp::Reverse(a.finished_at))),
-    });
+/// One row of the `/agents` picker and the board: the supervisor's snapshot
+/// plus what the TUI learned from this session's events since (design doc
+/// 19 §3.3).
+#[derive(Clone, Debug)]
+pub struct AgentRow {
+    /// The snapshot (`list_agents`) as kept live by `TurnStarted` / `TurnFinished` and friends.
+    pub info: AgentInfo,
+    /// `preparing <tool>` / `running <tool> <arg>` while a call is in flight; the
+    /// tool and its args while an approval is pending. `None` = streaming text.
+    pub tool: Option<String>,
+    /// First line of the question while `Awaiting`.
+    pub question: Option<String>,
+    /// Last `Error` message; the detail of an `Error` row.
+    pub error: Option<String>,
+    /// The turn ended in error / cancelled while this TUI watched and the
+    /// picker has not been opened since: the row stays on the board.
+    pub fresh: bool,
+}
+
+impl AgentRow {
+    /// A row with nothing learned yet.
+    pub fn new(info: AgentInfo) -> Self {
+        Self {
+            info,
+            tool: None,
+            question: None,
+            error: None,
+            fresh: false,
+        }
+    }
+
+    /// The agent is in a turn: running, asking, or waiting on an approval.
+    pub fn live(&self) -> bool {
+        matches!(
+            self.info.state,
+            AgentState::Running | AgentState::Awaiting { .. } | AgentState::Approval { .. }
+        )
+    }
+
+    /// Shown on the board: live, or an unacknowledged error / cancel.
+    pub fn on_board(&self) -> bool {
+        self.live() || self.fresh
+    }
+}
+
+/// Picker / board order (design doc 19 §3.1): running first in spawn order,
+/// then awaiting / approval, then the rest newest-finished first. The id
+/// (UUIDv7, time-ordered) breaks ties so a `HashMap`-fed board never jitters.
+fn rank(a: &AgentRow) -> (u8, i64, u128) {
+    let ms = |t: Option<chrono::DateTime<chrono::Utc>>| t.map_or(0, |t| t.timestamp_millis());
+    let id = a.info.id.0.as_u128();
+    match a.info.state {
+        AgentState::Running => (0, ms(a.info.started_at), id),
+        AgentState::Awaiting { .. } | AgentState::Approval { .. } => (1, ms(a.info.started_at), id),
+        _ => (2, -ms(a.info.finished_at), id),
+    }
+}
+
+/// `/agents` picker order; see [`rank`].
+pub fn sort_agents(mut list: Vec<AgentRow>) -> Vec<AgentRow> {
+    list.sort_by_key(rank);
     list
 }
 
-/// One `/agents` picker row: `glyph name state detail age` (design doc 19
-/// §3.1). `spinner` is the running glyph; depth ≥ 2 indents the name under
-/// its parent; `width` (terminal columns) bounds the detail column.
-pub fn agent_row(a: &AgentInfo, spinner: &str, width: u16) -> String {
-    let glyph = match a.state {
+/// One `/agents` picker or board row: `glyph name state detail age` (design
+/// doc 19 §3.1). `spinner` is the running glyph; depth ≥ 2 indents the name
+/// under its parent; `width` (terminal columns) bounds the detail column.
+/// Age is elapsed while the agent is live, `ago` since it finished otherwise.
+pub fn agent_row(a: &AgentRow, spinner: &str, width: u16) -> String {
+    let glyph = match a.info.state {
         AgentState::Running => spinner,
         AgentState::Awaiting { .. } => "⏳",
         AgentState::Approval { .. } => "⚠",
@@ -3031,29 +3194,49 @@ pub fn agent_row(a: &AgentInfo, spinner: &str, width: u16) -> String {
         AgentState::Cancelled => "∅",
         AgentState::Idle => "·",
     };
-    let name = match a.depth {
-        0 | 1 => a.name.clone(),
-        d => format!("{}↳ {}", " ".repeat(2 * usize::from(d - 1)), a.name),
+    let name = match a.info.depth {
+        0 | 1 => a.info.name.clone(),
+        d => format!("{}↳ {}", " ".repeat(2 * usize::from(d - 1)), a.info.name),
     };
     let now = chrono::Utc::now();
-    let age = match (a.started_at, a.finished_at) {
-        (Some(t), _) if a.state == AgentState::Running => elapsed(now - t),
+    let age = match (a.info.started_at, a.info.finished_at) {
+        (Some(t), _) if a.live() => elapsed(now - t),
         (_, Some(t)) => ago(now - t),
         _ => String::new(),
     };
     // Glyph, name, state, gaps, age and the box take ~44 columns; the detail gets the rest.
     let room = usize::from(width).saturating_sub(44).max(16);
-    let detail = match &a.state {
-        AgentState::Running => "running".to_owned(),
-        AgentState::Awaiting { from } => format!("awaiting {from}"),
-        AgentState::Approval { tool } => format!("approval {tool}"),
-        _ => a.last.clone(),
+    let detail = match &a.info.state {
+        AgentState::Running => a.tool.clone().unwrap_or_else(|| "streaming".to_owned()),
+        AgentState::Awaiting { from } => match &a.question {
+            Some(q) => format!("{from}: \"{q}\""),
+            None => from.clone(),
+        },
+        AgentState::Approval { tool } => a.tool.clone().unwrap_or_else(|| tool.clone()),
+        AgentState::Error => a.error.clone().unwrap_or_else(|| a.info.last.clone()),
+        AgentState::Cancelled | AgentState::Idle => a.info.last.clone(),
     };
     let detail: String = detail.chars().take(room).collect();
     format!(
         "{glyph} {name:<14} {:<9} {detail:<room$}  {age}",
-        a.state.word()
+        a.info.state.word()
     )
+}
+
+/// The first string argument of a tool call, cut to 40 chars: the `running
+/// read_file crates/…` detail of a row.
+fn first_arg(args: &serde_json::Value) -> Option<String> {
+    args.as_object()?
+        .values()
+        .find_map(|v| v.as_str())
+        .map(|s| {
+            s.lines()
+                .next()
+                .unwrap_or_default()
+                .chars()
+                .take(40)
+                .collect()
+        })
 }
 
 /// Running time: `48s`, `1m32s`, `2h05m`.
@@ -3146,9 +3329,9 @@ mod tests {
         let Some(Menu::Agents { items, .. }) = &m.menu else {
             panic!("picker open");
         };
-        let names: Vec<&str> = items.iter().map(|a| a.name.as_str()).collect();
+        let names: Vec<&str> = items.iter().map(|a| a.info.name.as_str()).collect();
         assert_eq!(names, ["run", "ask", "new", "old"]);
-        let run = items[0].id;
+        let run = items[0].info.id;
         assert!(agent_row(&items[2], "⠹", 80).starts_with("✗ new            error"));
         // Enter is a session switch: load + reseed.
         m.menu_key(KeyCode::Enter, "", &tx);
@@ -3175,6 +3358,90 @@ mod tests {
         assert!(
             matches!(m.entries.last(), Some(Entry::Info(t)) if t == "this is the top-level session")
         );
+    }
+
+    #[test]
+    fn board_tracks_child_events_and_interjects() {
+        let mut m = Model::default();
+        let root = SessionId::new();
+        m.session = Some(root);
+        let (a, b) = (SessionId::new(), SessionId::new());
+        for (child, parent, name) in [(a, root, "a"), (b, a, "b")] {
+            m.apply_agent(AgentEvent::SubagentSpawned {
+                parent,
+                child,
+                name: name.into(),
+            });
+        }
+        assert!(m.animating() && m.board().len() == 2 && !m.status().contains("agents:"));
+        let turn = TurnId::new();
+        let call = |name: &str, args: serde_json::Value| AgentEvent::ToolCallStarted {
+            session: a,
+            turn,
+            call_id: "c1".into(),
+            name: name.into(),
+            args,
+        };
+        m.apply_agent(call(
+            "read_file",
+            serde_json::json!({ "path": "crates/agent/src/lib.rs" }),
+        ));
+        assert!(
+            agent_row(&m.agents[&a], "⠹", 80).contains("running   running read_file crates/agent")
+        );
+        // A blocking `send_message` is the `awaiting` state, question attached.
+        m.apply_agent(call(
+            "send_message",
+            serde_json::json!({ "to": "parent", "message": "which colour?\nteal or blue", "await_reply": true }),
+        ));
+        assert!(
+            matches!(&m.agents[&a].info.state, AgentState::Awaiting { from } if from == "parent")
+        );
+        assert!(agent_row(&m.agents[&a], "⠹", 80).contains("awaiting  parent: \"which colour?\""));
+        m.apply_agent(AgentEvent::ToolCallFinished {
+            session: a,
+            turn,
+            call_id: "c1".into(),
+            output: "teal".into(),
+            is_error: false,
+        });
+        assert_eq!(m.agents[&a].info.state, AgentState::Running);
+        assert!(agent_row(&m.agents[&a], "⠹", 80).contains("streaming"));
+        // A direct child's error interjects; a grandchild's only marks its row.
+        for (s, msg) in [(a, "429 rate limited"), (b, "deep")] {
+            m.apply_agent(AgentEvent::Error {
+                session: s,
+                turn: Some(turn),
+                message: msg.into(),
+            });
+        }
+        let errors: Vec<&str> = m
+            .entries
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Error(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(errors, ["↳ a error: 429 rate limited"]);
+        assert_eq!(m.agents[&b].error.as_deref(), Some("deep"));
+        // Cancelled: interject, stays on the board until the picker shows it.
+        m.apply_agent(AgentEvent::TurnFinished {
+            session: a,
+            turn,
+            stop_reason: "cancelled".into(),
+            usage: Usage::default(),
+            context: 0,
+        });
+        assert_eq!(m.agents[&a].info.state, AgentState::Cancelled);
+        assert!(matches!(m.entries.last(), Some(Entry::Info(t)) if t == "↳ a cancelled"));
+        assert!(m.board().iter().any(|r| r.info.id == a));
+        m.agents_picker_pending = true;
+        m.apply(UiEvent::Agents(
+            m.agents.values().map(|r| r.info.clone()).collect(),
+        ));
+        assert!(matches!(m.menu, Some(Menu::Agents { .. })));
+        assert!(m.board().iter().all(|r| r.info.id != a) && m.agents[&b].error.is_some());
     }
 
     #[test]

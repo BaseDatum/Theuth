@@ -1,6 +1,6 @@
 # 19 — Subagents: a picker, a board, and results that always flow up
 
-Status: design v0 · 2026-09-13 · not started · extends `01-config-and-subagents.md`
+Status: shipped 2026-09-13 · steps 1–6 of §7 · extends `01-config-and-subagents.md`
 §2.7 (events, UI), `00-architecture.md` §7 (RPC), §8 (TUI), `09-signal.md` §8.
 Where this doc disagrees with those, this doc wins; §9 lists the edits.
 Every file:line below was read on 2026-09-13.
@@ -306,6 +306,15 @@ Each step leaves `wth` runnable; formatters and the suite once per step.
    the tests?")` → `a` runs again and the parent receives a **second**
    `<subagent_result name="a">`; `cancel(root)` with a depth-2 child running
    → grandchild `TurnFinished cancelled`.
+   **Verified** (headless, claude-haiku-4-5): two children spawned;
+   `list_agents` showed both `running` with `started_at`; `b` reached
+   `awaiting parent`; `steer(b, "teal")` produced `MessageDelivered from=you`
+   on `b` and a `<subagent_result name="b">` containing `teal` in the root;
+   `send_input(a, …)` after `a` had finished produced a second
+   `<subagent_result name="a">` ("ALPHA AGAIN"); the descendants
+   subscription received the children's `TextDelta` and both
+   `SubagentSpawned`; `load_session(b)` returned `name=b`, `parent=root`.
+   Not exercised: depth-2 cancel fan-out with a real model.
 2. **RPC.** `list_agents`, `subscribe_events(session, descendants)`, remove
    `list_children`. Check: a subscription on the root with `descendants:
    true` receives the children's `TextDelta` and the `SubagentSpawned`;
@@ -324,6 +333,10 @@ Each step leaves `wth` runnable; formatters and the suite once per step.
    the parent; a child's approval modal `o` opens it.
 5. **Signal.** `/agents` from `list_agents`, `/cancel <name>`.
 6. **Docs.** §9 edits, in the same commit as step 3 (12 §0 rule).
+
+Deviations: `Model.agents` is a `HashMap<SessionId, AgentInfo>`, not a
+`BTreeMap` (`SessionId` has no `Ord`); `AgentInfo` has no `turns` field
+(dropped as unused).
 
 ## 8. Rejected
 

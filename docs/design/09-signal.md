@@ -339,7 +339,8 @@ Commands never reach the model.
 | `/cancel` | abort the turn | `Cancel` |
 | `/compact` | fold; replies `compacted → epoch n` | `Compact` |
 | `/model [id]` | set → `model: <id>`; without id lists configured models (id · context, ≤ 20, footer `N more; /model <id> to set`) | `ListModels`, `SetModel` |
-| `/agents` | this session's subagents: name · last-8 id · model · age | `ListChildren` |
+| `/agents` | this session's subtree: name · state · last · age (state word as the TUI, no glyphs; 19 §4) | `ListAgents` |
+| `/cancel <name>` | abort a named child's turn | `ListAgents`, `Cancel` |
 | `/prompt` | the assembled system prompt (chunked) | `ShowPrompt` |
 | `/skills [add <url>\|rm <name>\|sync]` | as the TUI; `rm` tries a repo first, then a loose skill | `ListSkills`, `AddSkillRepo`, `RemoveSkillRepo`, `RemoveSkill`, `SyncSkills` |
 | `/mcp [add <url\|json>\|sync]` | as the TUI, no gate editing (no picker); `add` clones a git URL or adds a JSON entry | `ListServers`, `AddRepo`, `AddServer`, `SyncMcp` |
@@ -348,8 +349,8 @@ Commands never reach the model.
 | `/approve <code>` / `/deny <code>` | owner only (§10) | `Resolve` |
 | `/signal [status\|link\|allow <n>\|rm <n>\|unlink]` | owner only; bare = `status`; `link` replies the current provisioning URL (text, no QR); `allow`/`rm` go through the `"signal"` actor (live list + `write_config_value`), reply `<n> allowed` / `<n> removed`; `unlink` deletes `presage.db` and returns to linking, no reply (the device is gone) | `Status`, `Link`, `Allow`, `RemoveAllowed`, `Unlink` |
 
-Missing on purpose: `/focus` (a transcript dump is not phone content — use
-`/resume` on the child), `/quit`/`/exit` (the daemon is not yours to stop
+Missing on purpose: opening a child (a transcript dump is not phone content —
+it is `wth --resume <id>` territory, 19 §4), `/quit`/`/exit` (the daemon is not yours to stop
 from a phone; `shutdown` stays RPC). Replies are plain text, ≤ 2000 chars
 per chunk, tables as aligned monospace lines inside a fence (rendered
 verbatim by `markdown_to_plain`).
@@ -551,7 +552,7 @@ struct Channel {
     approvals: tokio::sync::Mutex<approvals::Pending>,    // code ↔ Entry, tombstones
 }
 // bus subscriptions: AgentEvent, ApprovalRequested, ApprovalResolved
-// asks (commands.rs): agent (SendInput, Steer, Cancel, Compact, ListSessions, LoadSession, ListChildren, ListModels, SetModel,
+// asks (commands.rs): agent (SendInput, Steer, Cancel, Compact, ListSessions, LoadSession, ListAgents, ListModels, SetModel,
 //       ShowPrompt, ListSkills, AddSkillRepo, RemoveSkillRepo, RemoveSkill, SyncSkills, ListLogins, Login, Logout),
 //       tools registry (SetApprovals), approval actor (Resolve), mcp (ListServers, AddRepo, AddServer, SyncMcp, McpLogin, McpLogout)
 ```
