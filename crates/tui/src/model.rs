@@ -595,6 +595,11 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ("/resume", "<id>", "open a session"),
     ("/new", "", "start a new session"),
     (
+        "/clear",
+        "",
+        "drop the conversation, keep the session and its settings",
+    ),
+    (
         "/approvals",
         "[on|off] [always]",
         "tool approval prompts; `always` persists to config.yaml",
@@ -1914,12 +1919,20 @@ impl Model {
             AgentEvent::Compacting { .. } => self.compacting = true,
             AgentEvent::Compacted { epoch, style, .. } => {
                 self.compacting = false;
-                self.interject(Entry::Compacted {
-                    epoch,
-                    style,
-                    summary: None,
-                    expanded: false,
-                });
+                if style == CompactStyle::Clear {
+                    // A clean slate on screen too; `/resume` still shows everything.
+                    // Compaction only runs between turns, so nothing is streaming.
+                    self.entries.clear();
+                    self.entries
+                        .push(Entry::Info(format!("context cleared (epoch {epoch})")));
+                } else {
+                    self.interject(Entry::Compacted {
+                        epoch,
+                        style,
+                        summary: None,
+                        expanded: false,
+                    });
+                }
             }
             AgentEvent::Error { message, .. } => {
                 self.compacting = false;
@@ -2114,6 +2127,16 @@ impl Model {
                     .push(Entry::Error("usage: /jobs [kill <id>]".into())),
             },
             "/compact" => self.compact_cmd(arg, tx),
+            "/clear" => match self.session {
+                Some(session) => send(
+                    tx,
+                    Command::Compact {
+                        session,
+                        style: Some(CompactStyle::Clear),
+                    },
+                ),
+                None => self.entries.push(Entry::Info("no session".into())),
+            },
             "/cancel" => {
                 if let Some(session) = self.session {
                     send(tx, Command::Cancel(session));

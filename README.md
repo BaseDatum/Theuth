@@ -85,7 +85,7 @@ logs a `login required` server in), `/mcp add <url|json>` installs one,
 `/mcp sync` pulls repos; `/login` picks a provider or MCP server to log in
 to; `/provider add` prompts for name, base url, then API key (an OpenAI-compatible
 gateway such as `https://api.ai.rwx.dev/v1`); `/provider` lists them, `/provider rm <name>`
-forgets one; `/skills` lists skills; `/prompt` shows the system prompt; `/compact` folds into a summary by default; `/compact cut` drops the folded span with no model call; `/compact style` lists/sets the default;
+forgets one; `/skills` lists skills; `/prompt` shows the system prompt; `/compact` folds into a summary by default; `/compact cut` drops the folded span with no model call; `/compact style` lists/sets the default; `/clear` drops the conversation and keeps the session (id, title, model, settings; the history is still there on `/resume`);
 `/undo` drops the last turn (yours and the reply), `/redo` restores it;
 `/jobs` lists the session's shell jobs, `/jobs kill <id>` stops one;
 `/acp` manages external ACP harnesses;
@@ -128,7 +128,7 @@ saved as a contact on that primary phone, or its messages arrive without a
 number and are dropped. Texts become turns in a per-contact session (👀
 while working, ✅/🛑/❌ when done; a message mid-turn steers it); the slash
 commands mirror the TUI (`/status`, `/new`, `/sessions`, `/resume <id>`,
-`/model`, `/effort`, `/compact`, `/undo`, `/redo`, `/signal allow <n>`, …); tool approvals arrive as a
+`/model`, `/effort`, `/compact`, `/clear`, `/undo`, `/redo`, `/signal allow <n>`, …); tool approvals arrive as a
 message you answer with 👍/👎 or `/approve <code>`. Inbound files land in
 `~/.wth/signal/inbox/`. See
 [`docs/design/09-signal.md`](docs/design/09-signal.md).

@@ -107,6 +107,9 @@ pub enum CompactStyle {
     Cut,
     /// Rasterize the folded span to images. Named in v0; not built.
     Snap,
+    /// `/clear` (11 §2.4): fold everything, keep nothing, no model call. Manual only —
+    /// never a default or automatic style.
+    Clear,
 }
 
 impl fmt::Display for CompactStyle {
@@ -115,6 +118,7 @@ impl fmt::Display for CompactStyle {
             Self::Summary => "summary",
             Self::Cut => "cut",
             Self::Snap => "snap",
+            Self::Clear => "clear",
         })
     }
 }
@@ -127,6 +131,7 @@ impl FromStr for CompactStyle {
             "summary" => Ok(Self::Summary),
             "cut" => Ok(Self::Cut),
             "snap" => Ok(Self::Snap),
+            "clear" => Ok(Self::Clear),
             other => Err(format!("unknown compact style: {other}")),
         }
     }
@@ -142,7 +147,8 @@ pub(crate) enum CompactReason {
 
 /// Pick the style that will actually run (design docs 11 §3.1, 13 §3):
 /// `snap` on a text-only model errors when asked for by hand and falls back
-/// to `cut` when automatic.
+/// to `cut` when automatic. `clear` is only ever manual; a hand-edited
+/// default of `clear` compacts as `summary`.
 pub(crate) fn resolve(
     r#override: Option<CompactStyle>,
     cfg: CompactStyle,
@@ -150,14 +156,13 @@ pub(crate) fn resolve(
     vision: bool,
 ) -> Result<CompactStyle, String> {
     let requested = r#override.unwrap_or(cfg);
-    if requested == CompactStyle::Snap && !vision {
-        if reason == CompactReason::Manual {
+    match requested {
+        CompactStyle::Snap if !vision && reason == CompactReason::Manual => {
             Err("snap needs a vision model (this one is text-only)".into())
-        } else {
-            Ok(CompactStyle::Cut)
         }
-    } else {
-        Ok(requested)
+        CompactStyle::Snap if !vision => Ok(CompactStyle::Cut),
+        CompactStyle::Clear if reason != CompactReason::Manual => Ok(CompactStyle::Summary),
+        s => Ok(s),
     }
 }
 
@@ -328,6 +333,10 @@ mod tests {
         // Vision model: snap runs whatever the reason.
         assert_eq!(resolve(None, Snap, Manual, true).unwrap(), Snap);
         assert_eq!(resolve(Some(Snap), Summary, Auto, true).unwrap(), Snap);
+        // Clear is `/clear` only: a hand-edited default never wipes automatically.
+        assert_eq!(resolve(Some(Clear), Summary, Manual, false).unwrap(), Clear);
+        assert_eq!(resolve(None, Clear, Auto, true).unwrap(), Summary);
+        assert_eq!(resolve(None, Clear, Overflow, false).unwrap(), Summary);
         assert_eq!(resolve(None, Snap, Overflow, true).unwrap(), Snap);
     }
 

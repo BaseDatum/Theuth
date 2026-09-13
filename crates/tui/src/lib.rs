@@ -12,7 +12,7 @@
 use std::io::{IsTerminal, Write};
 use std::sync::Arc;
 
-use agent::{AgentConfig, AgentEvent, LoginFinished};
+use agent::{AgentConfig, AgentEvent, CompactStyle, LoginFinished};
 use jsonrpsee::core::RpcResult;
 use kameo::Actor;
 use kameo::actor::Spawn;
@@ -187,6 +187,8 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
         Command::Compact { session, style } => {
             let epoch = msg(api.compact(session, style).await)?;
             UiEvent::Info(match style {
+                // The `Compacted` event wipes the transcript and announces it.
+                Some(CompactStyle::Clear) => return Ok(()),
                 Some(s) => format!("context compacted (epoch {epoch} · {s})"),
                 None => format!("context compacted (epoch {epoch})"),
             })

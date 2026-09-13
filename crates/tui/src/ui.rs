@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use agent::CompactStyle;
 use iocraft::prelude::*;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tools::{Decision, Risk};
@@ -709,9 +710,13 @@ fn entry(e: &Entry, spinner: &str) -> AnyElement<'static> {
                     format!("   {} lines · ctrl+o expands", t.view().lines().count())
                 }
             };
+            let label = match style {
+                CompactStyle::Clear => format!("context cleared (epoch {epoch})"),
+                s => format!("context compacted (epoch {epoch} · {s})"),
+            };
             element! {
                 View(flex_direction: FlexDirection::Column, border_style: BorderStyle::Round, border_color: PROMPT, padding_left: 1, padding_right: 1, margin_top: 1) {
-                    Text(content: format!("── context compacted (epoch {epoch} · {style}) ──{hint}"), color: PROMPT, weight: Weight::Bold)
+                    Text(content: format!("── {label} ──{hint}"), color: PROMPT, weight: Weight::Bold)
                     #(summary.as_ref().filter(|_| *expanded).map(|t| element!(View(flex_direction: FlexDirection::Column, margin_top: 1) {
                         #(t.view().lines().map(line))
                     })))

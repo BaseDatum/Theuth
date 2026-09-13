@@ -267,7 +267,7 @@ takes an argument), Enter runs it (or completes when the highlighted command
 needs an argument), Esc closes without clearing the input. Commands:
 `/model [id]`, `/effort [level|clear]`, `/mcp`, `/agents`, `/parent` (19),
 `/sessions`, `/resume <id>`, `/new`, `/cancel`,
-`/compact [summary|cut|snap|style …]` (11), `/knowledge [query | history [id]
+`/compact [summary|cut|snap|style …]` (11), `/clear` (11 §2.4: the conversation goes, the session stays), `/knowledge [query | history [id]
 | restore <id> [commit] | harvest]` (the knowledge bundle: list, search, git
 history, restore, harvest now — `10 §8`), `/quit`. Signal mirrors `/effort`
 and its `/status` shows the current level (09).

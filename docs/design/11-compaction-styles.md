@@ -176,6 +176,35 @@ transcript shows unreadable frames or billed-token blowups.
 If the folded span rasterizes to zero frames (empty), `snap` degrades to
 `cut` rather than emitting a head with no images and a lying caption.
 
+### 2.4 `clear` (added 2026-09-13, `/clear`)
+
+What oh-my-pi's `/clear` does (`resetSessionContext`: drop every message,
+append a `reset_boundary` to the same transcript file, keep id, title,
+cwd, model, settings): an in-place context reset, not a new session.
+
+Here it is a compaction whose fold is the whole frame. No model call.
+`keep_from = history.len()`, so the tail is empty (`tail_from = at_seq + 1`);
+the head is one line — *"Context cleared by the user. Nothing of the
+earlier conversation is carried over; the session and its settings
+continue."* — plus the harness block of 07 §8.4 with todos emptied first
+(roster and runtime inventory are live truth and stay; the todo list was
+the conversation's). Everything the session *is* survives: id, title,
+model, effort, cwd, parent/name, hidden MCP servers, knowledge harvest
+(the `Clear` head goes through the same harvest-before-cut as any fold).
+Everything the session *said* is on disk in `messages` and shows on
+`/resume` under a `clear` divider; the model never sees it again.
+
+`clear` is manual only: `SetCompactStyle` refuses it and §3.1 resolves a
+hand-edited default of `clear` to `summary` for `Auto`/`Overflow`.
+
+Alternatives: a `reset_boundary`-style row (omp) — a second marker type
+beside epochs, when an epoch with an empty tail *is* a reset boundary;
+deleting the rows — loses the transcript and breaks `/undo` of the turn
+that preceded the clear; `/new` — a new id loses title, parent/name,
+session-scoped MCP hides, and the roster.
+
+Empty frame → `Err("nothing to clear")`.
+
 ## 3. Default algorithm
 
 ### 3.1 Resolve
@@ -187,6 +216,8 @@ reason    = Auto | Manual | Overflow
 if requested == Snap && !model.image:
     if reason == Manual: Err("snap needs a vision model…")
     else:                requested = Cut
+if requested == Clear && reason != Manual:
+    requested = Summary                       // §2.4: never automatic
 
 run(requested)
 ```
@@ -236,6 +267,8 @@ tail is what survives.
 /compact style                list; mark the default
 /compact style summary|cut|snap
                               persist default to config.yaml
+/clear                        = /compact clear (§2.4); the TUI also wipes
+                              the transcript view
 ```
 
 Unknown first token: `Err` / `Entry::Info("usage: /compact [summary|cut|snap|style …]")`.

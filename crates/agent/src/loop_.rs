@@ -1582,10 +1582,6 @@ impl Turn {
         let n_msgs = self.state.history.len();
         let mut full = Vec::with_capacity(n_msgs + 1);
         full.extend(self.state.history.iter().map(|(_, m)| m.clone()));
-        let keep_from = compact::keep_from(&full, limit);
-        if keep_from == 0 {
-            return Err("nothing to compact".into());
-        }
         let cfg_style = *self
             .shared
             .compact_style
@@ -1593,6 +1589,19 @@ impl Turn {
             .unwrap_or_else(|p| p.into_inner());
         let vision = current.vision();
         let mut style = compact::resolve(r#override, cfg_style, reason, vision)?;
+        // `/clear` (11 §2.4): the fold is the whole frame, nothing is kept.
+        let keep_from = if style == CompactStyle::Clear {
+            n_msgs
+        } else {
+            compact::keep_from(&full, limit)
+        };
+        if keep_from == 0 {
+            return Err(if style == CompactStyle::Clear {
+                "nothing to clear".into()
+            } else {
+                "nothing to compact".into()
+            });
+        }
         let session = self.shared.id;
         self.publish(AgentEvent::Compacting {
             session,
@@ -1647,6 +1656,10 @@ impl Turn {
                 }
             }
             CompactStyle::Cut => cut_body(),
+            CompactStyle::Clear => {
+                self.state.todos.clear();
+                "Context cleared by the user. Nothing of the earlier conversation is carried over; the session and its settings continue.".to_owned()
+            }
             CompactStyle::Summary => {
                 if !vision {
                     full.iter_mut().for_each(frame::strip_images);
@@ -1721,7 +1734,12 @@ impl Turn {
             ChatMessage::user(MessageContent::from_parts(parts))
         };
         let at_seq = self.state.history[n_msgs - 1].0;
-        let tail_from = self.state.history[keep_from].0;
+        // Whole frame folded → the tail starts past the last message.
+        let tail_from = self
+            .state
+            .history
+            .get(keep_from)
+            .map_or(at_seq + 1, |m| m.0);
         self.shared
             .store
             .compact(session, n, at_seq, tail_from, &head)

@@ -256,7 +256,9 @@ flowchart LR
 - Every `ChatMessage` is appended to the session store before the next
   request; history is append-only within an epoch and compaction opens a
   new one. Resume = latest `epochs` row's head + messages from its
-  `tail_from` (`07-context.md` §8.4), rebuild the frame.
+  `tail_from` (`07-context.md` §8.4), rebuild the frame. `/clear` is an
+  epoch with an empty tail (11 §2.4, added 2026-09-13): the conversation
+  leaves the frame, the session and its rows stay.
 
 **Session store**: `sqlx` 0.9 sqlite, inside the agent crate (only the agent
 writes it; UIs read via `ask(ListSessions)`/`ask(LoadSession)`). Tables:

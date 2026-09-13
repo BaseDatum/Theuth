@@ -62,6 +62,11 @@ const COMMANDS: &[(&str, &str, &str)] = &[
         "abort the turn, or a subagent's by name",
     ),
     ("/compact", "[summary|cut|snap|style …]", "fold the context"),
+    (
+        "/clear",
+        "",
+        "drop the conversation, keep the thread's settings",
+    ),
     ("/undo", "", "drop the last turn (redo restores)"),
     ("/redo", "", "restore the last undone turn"),
     ("/model", "[id]", "show or set the model"),
@@ -220,6 +225,7 @@ async fn run(cx: &mut Cx<'_>, name: &'static str, arg: &str) -> anyhow::Result<R
             }
         }
         "/compact" => compact_cmd(cx, arg).await,
+        "/clear" => compact_cmd(cx, "clear").await,
         "/undo" => {
             let session = cx.session.context(NO_SESSION)?;
             let hidden = agent()?.ask(agent::Undo { session }).await.map_err(err)?;

@@ -796,6 +796,9 @@ impl Message<SetCompactStyle> for Agents {
         m: SetCompactStyle,
         _: &mut Context<Self, Self::Reply>,
     ) -> Result<(), String> {
+        if m.style == CompactStyle::Clear {
+            return Err("clear is `/clear`, not a compaction default".into());
+        }
         *self
             .compact_style
             .write()
