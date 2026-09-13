@@ -804,7 +804,7 @@ impl Turn {
                 .unwrap_or_default(),
             _ => String::new(),
         };
-        let specs = match registry.ask(ListTools).await {
+        let specs = match registry.ask(ListTools(Some(self.shared.id))).await {
             Ok(specs) => specs,
             Err(e) => {
                 self.error(format!("list tools: {e}")).await;

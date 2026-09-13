@@ -171,10 +171,14 @@ for the snapshots published before it subscribed. RPC forwards it on
 `subscribe_events`. `add_mcp_server` is the one deliberate wait: it connects
 first and writes the file only on success, so nothing is ever half-added.
 
-**No prefix.** A server's `echo` registers as `echo`. Native tools are
-registered first and win a name clash; between servers the first by sorted
-server name wins; both cases log a warning naming the loser's server so the
-user can gate or rename via the server's own config. No rename map yet.
+**No prefix unless it clashes.** A server's `echo` registers as `echo`.
+When two running servers offer the same name (four `grafana-*` entries
+pointing at one server binary is the common case), or a native tool already
+has it, *every* server offering that name registers it as `<server>__<name>`
+(`grafana-qe__query_prometheus`), so each server keeps its own slot and can
+be gated, hidden or turned off on its own. The prefix disappears again when
+only one server is left offering the name. `/mcp` shows the registered name
+(`as grafana-qe__query_prometheus`) next to the remote one.
 
 **Risk override — `~/.wth/mcp/config.yaml`** (same watcher, same reconcile; 12 §5):
 
@@ -206,10 +210,13 @@ same approval flow, same events.
 
 Rejected: one `mcp.json` with a fixed schema (the user's whole point is
 copy-paste from anywhere); JSON5/comments (files from READMEs are plain
-JSON; add `json5` when one shows up with comments); prefixing (`server__tool`)
-— the model gains nothing and prompts get longer; subscribing to
-`tools/list_changed` notifications from servers (rmcp supports it; the file
-watcher covers the user-driven case, server-driven tool changes are rare).
+JSON; add `json5` when one shows up with comments); prefixing every tool
+(`server__tool`) — the model gains nothing and prompts get longer, so only a
+clash is prefixed; first-server-wins on a clash (the losers were dead
+entries, and a per-session switch on the shared name flipped every server
+offering it); subscribing to `tools/list_changed` notifications from servers
+(rmcp supports it; the file watcher covers the user-driven case,
+server-driven tool changes are rare).
 
 ### 1.5 First run
 

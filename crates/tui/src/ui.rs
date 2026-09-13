@@ -10,8 +10,8 @@ use tools::{Decision, Risk};
 
 use crate::clip;
 use crate::model::{
-    AcpRow, CardKind, Command, Entry, Level, Menu, MenuKey, Model, Row, UiEvent, action_name,
-    describe, gate_name, k, result_line, short, slash_matches, window,
+    AcpRow, CardKind, Command, Entry, Level, Menu, MenuKey, Model, Row, Switch, UiEvent,
+    action_name, describe, gate_name, k, result_line, short, slash_matches, window,
 };
 
 /// Channels handed to the app through iocraft context (owned so the receiver
@@ -115,6 +115,9 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 // A withdrawn steer comes back into the (empty) editor.
                 if let Some(text) = m.recall.take() {
                     input.set(text);
+                }
+                if std::mem::take(&mut m.refresh_mcp) {
+                    let _ = commands.send(Command::ListMcp(m.session));
                 }
             }
         }
@@ -378,14 +381,27 @@ fn menu(m: &Model, input: &str, width: u16) -> Option<AnyElement<'static>> {
             *cursor,
         ),
         Menu::Mcp {
-            cursor, expanded, ..
+            cursor,
+            expanded,
+            pending,
+            ..
         } => (
-            "mcp  ␣ cycle risk  ⌫ annotations  →/← expand  l login/logout  s sync".to_owned(),
+            match pending {
+                Some(t) => format!(
+                    "turn off {}{}?   press  s = this session only  ·  a = always (all sessions, saved to mcp/config.yaml)  ·  esc = cancel",
+                    t.server,
+                    t.tool.as_deref().map_or(String::new(), |n| format!(" › {n}")),
+                ),
+                None => {
+                    "mcp  ⏎ turn on/off (asks: this session or always)  ␣ cycle risk  ⌫ reset risk  →/← tools  l login/logout  s sync  esc close"
+                        .to_owned()
+                }
+            },
             m.mcp_rows()
                 .iter()
                 .map(|r| match r {
                     Row::Server(s) => format!(
-                        "{} {:<16} {:>2} tools   {:<18} {}{}",
+                        "{} {:<16} {:>2} tools   {:<20} {:<18} {}{}",
                         if expanded.contains(&s.name) {
                             "▾"
                         } else {
@@ -397,35 +413,38 @@ fn menu(m: &Model, input: &str, width: u16) -> Option<AnyElement<'static>> {
                         } else {
                             "–".to_owned()
                         },
-                        s.gate.map_or_else(
-                            || "annotations".to_owned(),
-                            |g| format!("risk: {}", gate_name(g))
-                        ),
-                        match (s.connected, s.auth) {
-                            (true, _) => "● connected",
-                            (false, tools::McpAuth::Required) => "○ login required",
-                            (false, _) => "○ not connected",
+                        r.switch().label(),
+                        match s.gate {
+                            None | Some(tools::Gate::Off) => "risk: annotations".to_owned(),
+                            Some(g) => format!("risk: {}", gate_name(g)),
+                        },
+                        match (r.switch(), s.connected, s.auth) {
+                            (Switch::OffAlways, ..) => "○ off",
+                            (_, true, _) => "● connected",
+                            (_, false, tools::McpAuth::Required) => "○ login required",
+                            (_, false, _) => "○ not connected",
                         },
                         s.repo
                             .as_deref()
                             .map_or_else(String::new, |r| format!("   ⟳ {r}")),
                     ),
                     // `mutating (ask)`: effective risk, then what `tools.policy`
-                    // does with it (12 §5). `*` marks the tool's own line.
+                    // does with it (12 §5). `*` marks the tool's own line;
+                    // `as x__y` the name the model sees when it clashes.
                     Row::Tool(_, t) => format!(
-                        "    {:<24} {:<22}{}",
+                        "    {:<24} {:<20} {:<22}{}",
                         t.name,
+                        r.switch().label(),
                         match t.gate {
-                            Some(tools::Gate::Off) => "off".to_owned(),
+                            Some(tools::Gate::Off) => String::new(),
                             Some(_) =>
                                 format!("{}* ({})", risk_name(t.risk), action_name(t.action)),
                             None => format!("{} ({})", risk_name(t.risk), action_name(t.action)),
                         },
-                        match (t.gate, t.registered) {
-                            (Some(tools::Gate::Off), _) => "  hidden",
-                            (_, false) => "  not registered",
-                            (_, true) => "",
-                        },
+                        t.registered
+                            .as_deref()
+                            .filter(|n| *n != t.name)
+                            .map_or_else(String::new, |n| format!("  as {n}")),
                     ),
                 })
                 .collect(),

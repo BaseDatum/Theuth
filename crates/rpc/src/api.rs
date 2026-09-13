@@ -9,9 +9,9 @@ use agent::{
     AddAcp, AddProvider, AddSkill, AddSkillRepo, Agents, Cancel, Compact, CompactStyle,
     GetCompactStyle, Harvest, ListAcp, ListLogins, ListModels, ListProviders, ListQueued,
     ListRegistry, ListSessions, ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginInfo,
-    Logout, ModelInfo, ProviderInfo, QueuedInput, Redo, RemoveAcp, RemoveProvider, RemoveSkill,
-    RemoveSkillRepo, SendInput, SessionSummary, SetCompactStyle, SetEffort, SetModel, ShowPrompt,
-    SkillBody, SkillMeta, Steer, SyncSkills, Undo, Withdraw,
+    Logout, ModelInfo, NewSession, ProviderInfo, QueuedInput, Redo, RemoveAcp, RemoveProvider,
+    RemoveSkill, RemoveSkillRepo, SendInput, SessionSummary, SetCompactStyle, SetEffort, SetModel,
+    ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo, Withdraw,
 };
 use jsonrpsee::core::{RpcResult, SubscriptionResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
@@ -34,7 +34,7 @@ use tools::{
     AddRepo, AddServer, Approval, ApprovalId, ApprovalsState, CancelJob, Decision, Gate,
     JOBS_ACTOR, JobId, JobView, Jobs, ListJobs, ListServers, ListTools, Mcp, McpLogin, McpLogout,
     McpProgress, McpServer, Progress, RemoveServer, RepoInfo, Resolve, SetApprovals, SetGate,
-    SyncMcp, ToolRegistry, ToolSpec,
+    SetHidden, SyncMcp, ToolRegistry, ToolSpec,
 };
 
 use crate::bridge::Event;
@@ -47,6 +47,10 @@ const NOT_RUNNING: i32 = -32001;
 /// The wire API. `#[rpc(server)]` generates `ApiServer` (+ `into_rpc()`).
 #[rpc(server)]
 pub trait Api {
+    /// Create an idle session (no turn) so per-session state can be set before
+    /// the first message; `send_input` to it afterwards.
+    #[method(name = "new_session")]
+    async fn new_session(&self) -> RpcResult<SessionId>;
     /// Start a turn; `session: None` creates a session. `files` are image files
     /// (17 §2) attached to the message. Returns once queued.
     #[method(name = "send_input")]
@@ -126,9 +130,10 @@ pub trait Api {
     #[method(name = "set_effort")]
     async fn set_effort(&self, session: Option<SessionId>, effort: Option<String>)
     -> RpcResult<()>;
-    /// MCP servers, their tools, and their `mcp/config.yaml` risk lines.
+    /// MCP servers, their tools, and their `mcp/config.yaml` risk lines; with
+    /// a session, which tools it hid (`set_mcp_hidden`).
     #[method(name = "list_mcp")]
-    async fn list_mcp(&self) -> RpcResult<Vec<McpServer>>;
+    async fn list_mcp(&self, session: Option<SessionId>) -> RpcResult<Vec<McpServer>>;
     /// MCP connection progress snapshot (`McpProgress`), for a UI attaching after startup.
     #[method(name = "mcp_status")]
     async fn mcp_status(&self) -> RpcResult<McpProgress>;
@@ -140,6 +145,16 @@ pub trait Api {
         server: String,
         tool: Option<String>,
         gate: Option<Gate>,
+    ) -> RpcResult<()>;
+    /// Hide (or show again) registered tools for one session and its
+    /// subagents, in memory: absent from the model's tool list, `unknown tool`
+    /// when called. The persistent form is `set_mcp_gate(.., Some(Off))`.
+    #[method(name = "set_mcp_hidden")]
+    async fn set_mcp_hidden(
+        &self,
+        session: SessionId,
+        tools: Vec<String>,
+        hidden: bool,
     ) -> RpcResult<()>;
     /// Turn approval prompts on/off for `session`, or globally (persisted) with `None`.
     #[method(name = "set_approvals")]
@@ -356,6 +371,10 @@ fn knowledge() -> RpcResult<ActorRef<KnowledgeActor>> {
 
 #[async_trait]
 impl ApiServer for Server {
+    async fn new_session(&self) -> RpcResult<SessionId> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, NewSession::default()).await
+    }
+
     async fn send_input(
         &self,
         session: Option<SessionId>,
@@ -447,7 +466,7 @@ impl ApiServer for Server {
     }
 
     async fn list_tools(&self) -> RpcResult<Vec<ToolSpec>> {
-        ask::<ToolRegistry, _>(tools::REGISTRY_ACTOR, ListTools).await
+        ask::<ToolRegistry, _>(tools::REGISTRY_ACTOR, ListTools(None)).await
     }
 
     async fn resolve_approval(&self, id: ApprovalId, decision: Decision) -> RpcResult<bool> {
@@ -470,8 +489,8 @@ impl ApiServer for Server {
         ask::<Agents, _>(agent::AGENT_ACTOR, SetEffort { session, effort }).await
     }
 
-    async fn list_mcp(&self) -> RpcResult<Vec<McpServer>> {
-        ask::<Mcp, _>(tools::MCP_ACTOR, ListServers).await
+    async fn list_mcp(&self, session: Option<SessionId>) -> RpcResult<Vec<McpServer>> {
+        ask::<Mcp, _>(tools::MCP_ACTOR, ListServers { session }).await
     }
 
     async fn mcp_status(&self) -> RpcResult<McpProgress> {
@@ -485,6 +504,23 @@ impl ApiServer for Server {
         gate: Option<Gate>,
     ) -> RpcResult<()> {
         ask::<Mcp, _>(tools::MCP_ACTOR, SetGate { server, tool, gate }).await
+    }
+
+    async fn set_mcp_hidden(
+        &self,
+        session: SessionId,
+        tools: Vec<String>,
+        hidden: bool,
+    ) -> RpcResult<()> {
+        ask::<ToolRegistry, _>(
+            tools::REGISTRY_ACTOR,
+            SetHidden {
+                session,
+                tools,
+                hidden,
+            },
+        )
+        .await
     }
 
     async fn set_approvals(

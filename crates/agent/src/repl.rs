@@ -609,7 +609,7 @@ impl Repl {
     /// Never fails: a failed restore (or checkout) leaves a fresh/empty
     /// runtime and the first cell result says so.
     pub async fn open(pool: &Arc<Pool>, session: SessionId, data_dir: &Path, cx: RunCx) -> Repl {
-        let specs = cx.registry.ask(ListTools).await.unwrap_or_default();
+        let specs = cx.registry.ask(ListTools(Some(session))).await.unwrap_or_default();
         let cfg = ReplConfig {
             limits: Some(ResourceLimits {
                 max_memory: Some(MAX_MEMORY),
@@ -693,7 +693,12 @@ impl Repl {
     /// fixed per checkout, so a change means a fresh checkout restored from
     /// the last dump — milliseconds, and the heap is byte-identical.
     async fn refresh_stubs(&mut self) {
-        let specs = self.cx.registry.ask(ListTools).await.unwrap_or_default();
+        let specs = self
+            .cx
+            .registry
+            .ask(ListTools(Some(self.cx.session)))
+            .await
+            .unwrap_or_default();
         let fresh = stubs(&specs);
         if self.cfg.type_check_stubs.as_deref() == Some(fresh.as_str()) {
             return;
@@ -940,7 +945,7 @@ impl Repl {
                             name,
                             docstring: None,
                         }),
-                        _ => match find_tool(&cx.registry, &name).await {
+                        _ => match find_tool(&cx.registry, cx.session, &name).await {
                             Some(spec) => NameLookupResult::Value(MontyObject::Function {
                                 name,
                                 docstring: Some(summary(&spec.description)),
@@ -964,7 +969,11 @@ impl Repl {
                                 MontyObject::String(s) => Some(s.as_str()),
                                 _ => None,
                             });
-                            let specs = cx.registry.ask(ListTools).await.unwrap_or_default();
+                            let specs = cx
+                                .registry
+                                .ask(ListTools(Some(cx.session)))
+                                .await
+                                .unwrap_or_default();
                             ResumeValue::Return(MontyObject::List(
                                 specs
                                     .iter()
@@ -975,7 +984,7 @@ impl Repl {
                             ))
                         }
                         "help" => match first_arg(&args, &kwargs, "name") {
-                            Some(MontyObject::String(name)) => match find_tool(&cx.registry, &name)
+                            Some(MontyObject::String(name)) => match find_tool(&cx.registry, cx.session, &name)
                                 .await
                             {
                                 Some(spec) => ResumeValue::Return(MontyObject::String(help(&spec))),
@@ -989,7 +998,7 @@ impl Repl {
                                 Some("help(name: str) takes one string argument".into()),
                             )),
                         },
-                        _ => match find_tool(&cx.registry, &function_name).await {
+                        _ => match find_tool(&cx.registry, cx.session, &function_name).await {
                             Some(spec) => {
                                 n += 1;
                                 let id = format!("{call_id}.{n}");
@@ -1081,11 +1090,15 @@ impl Repl {
     }
 }
 
-/// Live name resolution: the registered tool whose sanitised name is `ident`
-/// (first by sorted name on a clash).
-async fn find_tool(registry: &ActorRef<ToolRegistry>, ident: &str) -> Option<ToolSpec> {
+/// Live name resolution: the tool `session` sees whose sanitised name is
+/// `ident` (first by sorted name on a clash).
+async fn find_tool(
+    registry: &ActorRef<ToolRegistry>,
+    session: SessionId,
+    ident: &str,
+) -> Option<ToolSpec> {
     registry
-        .ask(ListTools)
+        .ask(ListTools(Some(session)))
         .await
         .ok()?
         .into_iter()

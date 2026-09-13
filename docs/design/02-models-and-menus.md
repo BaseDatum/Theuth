@@ -290,26 +290,40 @@ on return; a tool call in flight at switch time is not in the store yet, so
 only its result line appears when it finishes. Ids display as their last 8
 chars (UUIDv7's first 8 are the timestamp and collide).
 
-**`/mcp` menu.** `Command::ListMcp` → `UiEvent::Mcp(Vec<McpServer>)` → menu:
+**`/mcp` menu.** `Command::ListMcp(session)` → `UiEvent::Mcp(Vec<McpServer>)` → menu:
 
 ```
-▸ everything      13 tools   risk: read_only    ● connected
-    echo                      read-only (allow)
-    read_file                 mutating* (ask)
-    write_file                off                 hidden
+▸ everything      13 tools   on                   risk: read_only    ● connected
+    echo                     on                   read-only (allow)
+    read_file                off · this session   mutating* (ask)
+    write_file               off · always
     …
-▸ broken           –          annotations        ○ not connected
+▸ broken           – tools   on                   risk: annotations  ○ not connected
+▸ noisy            – tools   off · always         risk: annotations  ○ off
 ```
 
-→/Enter expands a server, ← collapses. **Space** on a server row cycles its
-`mcp/config.yaml` line annotations → `read_only` → `mutating` → `destructive`
-→ `off` → annotations (`off` = server killed, its tools gone; that's
-"disable"). Space on a tool row cycles the tool's own line the same way;
-**Backspace** clears it so the tool inherits (server line, else its
-annotations). Every row shows the effective `Risk` and, in parentheses, what
-`tools.policy` does with it; `*` marks a tool's own line (12 §5). Every change
-is `Command::SetGate { server, tool, gate }` → on reply `Command::ListMcp`
-again, so the menu always shows what the loader has. Esc closes.
+→ expands a server, ← collapses. Two switches, kept apart on purpose:
+
+- **Enter** turns the row on or off. Turning *off* asks for the scope on the
+  hint line: `s` this session only (`set_mcp_hidden`: the registry hides the
+  tool names for the root session and its subagents, in memory, other
+  sessions unaffected) or `a` always (`off` in `mcp/config.yaml`: server
+  killed / tool unregistered, every session, survives restart). Turning *on*
+  undoes whichever switch is off — no prompt. Before the first message there
+  is no session yet: `s` creates one (`new_session`) and the TUI adopts it,
+  so the hide is in place before the first turn lists tools. A server shows
+  `off · this session` when every tool it offers is hidden.
+- **Space** cycles the row's `mcp/config.yaml` risk line annotations →
+  `read_only` → `mutating` → `destructive` → annotations and never reaches
+  `off`; **Backspace** clears the line so it inherits (server line, else
+  annotations). Both are inert on an `off · always` row.
+
+Every row shows the effective `Risk` and, in parentheses, what `tools.policy`
+does with it; `*` marks a tool's own line (12 §5). Every change is
+`Command::SetGate { .. }` / `Command::SetHidden { .. }` → on reply
+`list_mcp(session)` again, so the menu always shows what the loader has; a
+reconcile settling while the menu is open re-lists too. Esc closes (or, in the
+scope prompt, cancels it).
 
 Menus are modal in the same sense the approval box is: while one is open the
 input has no focus and the key handler routes to the menu. An approval
@@ -325,19 +339,19 @@ ten commands). Mouse: see 00 §8 (native selection instead of capture).
 registered as `MCP_ACTOR = "mcp"`, holding `State` and answering:
 
 ```rust
-pub struct ListServers;                                       // ask → Vec<McpServer>
+pub struct ListServers { pub session: Option<SessionId> }        // ask → Vec<McpServer>; session fills `hidden`
 pub enum Gate { ReadOnly, Mutating, Destructive, Off }        // serde: read_only | mutating | destructive | off (tools crate)
 pub struct SetGate { pub server: String, pub tool: Option<String>, pub gate: Option<Gate> } // ask → Result<(), String>
 pub struct McpServer { pub name: String, pub connected: bool, pub gate: Option<Gate> /* server line; None = annotations */, pub tools: Vec<McpToolInfo>, pub repo: Option<String>, pub auth: McpAuth }
-pub struct McpToolInfo { pub name: String, pub description: String, pub gate: Option<Gate> /* own line */, pub risk: Risk /* effective */, pub action: PolicyAction /* tools.policy(risk), display only */, pub registered: bool }
+pub struct McpToolInfo { pub name: String, pub description: String, pub gate: Option<Gate> /* own line */, pub risk: Risk /* effective */, pub action: PolicyAction /* tools.policy(risk), display only */, pub registered: Option<String> /* registry name; None when off */, pub hidden: bool /* for the session asked about */ }
 ```
 
 `ListServers` lists every server the files *want* (connected or not; an
 `off` server is listed unconnected with `gate: Some(Off)`) and, for connected
 ones, every remote tool with its own line, effective risk (tool line → server
 line → annotations), the action `tools.policy` resolves that risk to, and
-whether it is currently registered (false when `off` or hidden by a name
-clash). The actor receives `tools.policy` at start, next to the registry ref,
+the name it is registered under (`<server>__<name>` when another server or
+a native offers `name`; `None` when `off`). The actor receives `tools.policy` at start, next to the registry ref,
 only to fill `action`; the registry alone decides at invoke time (12 §5).
 `SetGate` rewrites `<data_dir>/mcp/config.yaml` from the in-memory `Gates`
 via `serde_yaml` (`gate: None` removes the key; an emptied server entry is
@@ -349,7 +363,15 @@ work (the watcher reconciles them) but comments do not survive the next
 Reconcile itself is unchanged; the watcher task just sends `Reconcile` to the
 actor instead of owning the state.
 
-RPC: `list_mcp`, `set_mcp_gate(server, tool?, gate?)`.
+Session switch (registry, not the actor): `SetHidden { session, tools, hidden }`
+hides registered tool names for one session and its subagents in memory
+(`ListTools(Some(session))` omits them, `Invoke` answers `unknown tool`);
+`HiddenTools(session)` reads the set back, which `ListServers { session }`
+uses to fill `McpToolInfo::hidden`. Nothing is written; the persistent switch
+stays `off` in `mcp/config.yaml`.
+
+RPC: `list_mcp(session?)`, `set_mcp_gate(server, tool?, gate?)`,
+`set_mcp_hidden(session, tools, hidden)`.
 
 ## 6. Implementation order
 

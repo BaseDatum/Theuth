@@ -207,12 +207,33 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             msg(api.set_effort(session, effort.clone()).await)?;
             UiEvent::EffortSet(effort)
         }
-        Command::ListMcp => UiEvent::Mcp(msg(api.list_mcp().await)?),
+        Command::ListMcp(session) => UiEvent::Mcp(msg(api.list_mcp(session).await)?),
         Command::McpStatus => UiEvent::McpProgress(msg(api.mcp_status().await)?),
-        Command::SetGate { server, tool, gate } => {
+        Command::SetGate {
+            server,
+            tool,
+            gate,
+            session,
+        } => {
             msg(api.set_mcp_gate(server, tool, gate).await)?;
             // Re-list here, not from the UI: commands run concurrently.
-            UiEvent::Mcp(msg(api.list_mcp().await)?)
+            UiEvent::Mcp(msg(api.list_mcp(session).await)?)
+        }
+        Command::SetHidden {
+            session,
+            tools,
+            hidden,
+        } => {
+            let session = match session {
+                Some(s) => s,
+                None => {
+                    let s = msg(api.new_session().await)?;
+                    let _ = tx.send(UiEvent::SessionCreated(s));
+                    s
+                }
+            };
+            msg(api.set_mcp_hidden(session, tools, hidden).await)?;
+            UiEvent::Mcp(msg(api.list_mcp(Some(session)).await)?)
         }
         Command::SetApprovals { session, enabled } => {
             UiEvent::Approvals(msg(api.set_approvals(session, enabled).await)?)
@@ -279,7 +300,7 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
                 })
                 .collect();
             rows.extend(
-                msg(api.list_mcp().await)?
+                msg(api.list_mcp(None).await)?
                     .into_iter()
                     .filter(|s| s.auth != McpAuth::None)
                     .map(|s| LoginRow {

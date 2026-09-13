@@ -48,7 +48,7 @@ pub enum UiEvent {
     ModelSet(ModelInfo),
     /// Reply to [`Command::SetEffort`]: the value now in force.
     EffortSet(Option<String>),
-    /// Reply to [`Command::ListMcp`] (also sent after every [`Command::SetGate`]).
+    /// Reply to [`Command::ListMcp`] (also sent after every [`Command::SetGate`] / [`Command::SetHidden`]).
     Mcp(Vec<McpServer>),
     /// Reply to [`Command::SetApprovals`].
     Approvals(ApprovalsState),
@@ -199,8 +199,8 @@ pub enum Command {
         /// Effort keyword or token budget; `None` clears it (provider default).
         effort: Option<String>,
     },
-    /// `list_mcp`.
-    ListMcp,
+    /// `list_mcp` for the root session (its in-memory hides).
+    ListMcp(Option<SessionId>),
     /// `mcp_status`: the snapshot a late-attaching UI missed.
     McpStatus,
     /// `set_mcp_gate`, then `list_mcp`.
@@ -211,6 +211,18 @@ pub enum Command {
         tool: Option<String>,
         /// New line; `None` clears it (back to annotations).
         gate: Option<Gate>,
+        /// Root session, for the re-list.
+        session: Option<SessionId>,
+    },
+    /// `set_mcp_hidden`, then `list_mcp`. Without a session yet, `new_session`
+    /// first: the hide must exist before the first turn lists tools.
+    SetHidden {
+        /// Root session; `None` = create it.
+        session: Option<SessionId>,
+        /// Registered tool names.
+        tools: Vec<String>,
+        /// `true` hides.
+        hidden: bool,
     },
     /// `set_approvals`.
     SetApprovals {
@@ -547,7 +559,7 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     (
         "/mcp",
         "[add <url|json>|sync]",
-        "MCP servers and tool gates",
+        "MCP servers: on/off (this session or always), risk lines",
     ),
     (
         "/acp",
@@ -718,7 +730,7 @@ pub enum Menu {
         /// Highlighted row.
         cursor: usize,
     },
-    /// `/mcp` gates.
+    /// `/mcp` switches and risk lines.
     Mcp {
         /// Latest `ListServers` reply.
         servers: Vec<McpServer>,
@@ -726,6 +738,8 @@ pub enum Menu {
         cursor: usize,
         /// Servers whose tools are listed.
         expanded: BTreeSet<String>,
+        /// ⏎ on an `on` row: waiting for the scope (`s` session / `a` always).
+        pending: Option<Target>,
     },
     /// `/skills` picker.
     Skills {
@@ -795,6 +809,88 @@ pub enum Row<'a> {
     Tool(&'a McpServer, &'a McpToolInfo),
 }
 
+/// What a `/mcp` switch applies to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Target {
+    /// Server name.
+    pub server: String,
+    /// Tool name; `None` = the whole server.
+    pub tool: Option<String>,
+}
+
+/// Whether a `/mcp` row is on, and if not, which switch turned it off.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Switch {
+    /// Visible to the model.
+    On,
+    /// Hidden for this session (`set_mcp_hidden`); other sessions still see it.
+    OffSession,
+    /// `off` in `mcp/config.yaml`: every session, every restart.
+    OffAlways,
+}
+
+impl Switch {
+    /// Column text.
+    pub fn label(self) -> &'static str {
+        match self {
+            Switch::On => "on",
+            Switch::OffSession => "off · this session",
+            Switch::OffAlways => "off · always",
+        }
+    }
+}
+
+impl Row<'_> {
+    /// The row's switch. A server is `OffSession` when every tool it has
+    /// registered is hidden.
+    pub fn switch(&self) -> Switch {
+        match self {
+            Row::Server(s) if s.gate == Some(Gate::Off) => Switch::OffAlways,
+            Row::Server(s) => {
+                let mut live = s.tools.iter().filter(|t| t.registered.is_some());
+                if live.clone().next().is_some() && live.all(|t| t.hidden) {
+                    Switch::OffSession
+                } else {
+                    Switch::On
+                }
+            }
+            Row::Tool(_, t) if t.gate == Some(Gate::Off) => Switch::OffAlways,
+            Row::Tool(_, t) if t.hidden => Switch::OffSession,
+            _ => Switch::On,
+        }
+    }
+
+    /// Registered names a session switch covers (a clashing tool registers as
+    /// `<server>__<name>`, so this only ever touches this server's own slots).
+    fn tool_names(&self) -> Vec<String> {
+        match self {
+            Row::Server(s) => s.tools.iter().filter_map(|t| t.registered.clone()).collect(),
+            Row::Tool(_, t) => t.registered.clone().into_iter().collect(),
+        }
+    }
+
+    fn target(&self) -> Target {
+        match self {
+            Row::Server(s) => Target {
+                server: s.name.clone(),
+                tool: None,
+            },
+            Row::Tool(s, t) => Target {
+                server: s.name.clone(),
+                tool: Some(t.name.clone()),
+            },
+        }
+    }
+
+    /// The row's own risk line.
+    fn gate(&self) -> Option<Gate> {
+        match self {
+            Row::Server(s) => s.gate,
+            Row::Tool(_, t) => t.gate,
+        }
+    }
+}
+
 /// One line of the `/acp` menu.
 #[derive(Debug)]
 pub enum AcpRow<'a> {
@@ -859,14 +955,14 @@ pub fn gate_name(g: Gate) -> &'static str {
     }
 }
 
-/// Space in `/mcp`: annotations → read_only → mutating → destructive → off → annotations (12 §5).
+/// Space in `/mcp`: annotations → read_only → mutating → destructive → annotations (12 §5).
+/// `off` is not a risk; ⏎ switches it.
 fn next_gate(g: Option<Gate>) -> Option<Gate> {
     match g {
         None => Some(Gate::ReadOnly),
         Some(Gate::ReadOnly) => Some(Gate::Mutating),
         Some(Gate::Mutating) => Some(Gate::Destructive),
-        Some(Gate::Destructive) => Some(Gate::Off),
-        Some(Gate::Off) => None,
+        Some(Gate::Destructive | Gate::Off) => None,
     }
 }
 
@@ -916,6 +1012,9 @@ pub struct Model {
     pub approvals_off: bool,
     /// Latest MCP reconcile snapshot; `None` before the first.
     pub mcp: Option<McpProgress>,
+    /// A reconcile settled while the `/mcp` menu is open: the event loop
+    /// re-lists so the rows show the servers that just (dis)connected.
+    pub refresh_mcp: bool,
     /// Large pastes and attached images held out of the input box; the box
     /// shows one [`paste_token`] each, expanded back on submit.
     pub pastes: Vec<Paste>,
@@ -1369,6 +1468,7 @@ impl Model {
                         servers: list,
                         cursor: 0,
                         expanded: BTreeSet::new(),
+                        pending: None,
                     });
                 }
                 _ => {}
@@ -1404,7 +1504,15 @@ impl Model {
                     on_off(s.global)
                 )));
             }
-            UiEvent::McpProgress(p) => self.mcp = Some(p),
+            UiEvent::McpProgress(p) => {
+                if p.connecting.is_empty()
+                    && self.mcp.as_ref() != Some(&p)
+                    && matches!(self.menu, Some(Menu::Mcp { .. }))
+                {
+                    self.refresh_mcp = true;
+                }
+                self.mcp = Some(p);
+            }
             // Verbatim: the point is to see exactly what the model sees.
             UiEvent::Prompt(text) => self.entries.push(card(
                 CardKind::Prompt,
@@ -1820,7 +1928,7 @@ impl Model {
             "/approvals" => self.approvals_cmd(arg, tx),
             "/mcp" if arg.is_empty() => {
                 self.awaiting_mcp = true;
-                send(tx, Command::ListMcp);
+                send(tx, Command::ListMcp(self.session));
             }
             "/mcp" => self.mcp_cmd(arg, tx),
             "/acp" if arg.is_empty() => {
@@ -2580,51 +2688,83 @@ impl Model {
             Move(usize),
             Expand(String, bool),
             Send(Command),
+            Pending(Option<Target>),
             Close,
             Nothing,
         }
-        let Some(Menu::Mcp { cursor, .. }) = &self.menu else {
+        let Some(Menu::Mcp {
+            cursor, pending, ..
+        }) = &self.menu
+        else {
             return MenuKey::Consumed;
         };
+        let session = self.session;
         let rows = self.mcp_rows();
         let cursor = (*cursor).min(rows.len().saturating_sub(1));
-        let act = match (code, rows.get(cursor)) {
-            (KeyCode::Up, _) => Act::Move(cursor.saturating_sub(1)),
-            (KeyCode::Down, _) => Act::Move((cursor + 1).min(rows.len().saturating_sub(1))),
-            (KeyCode::Esc, _) => Act::Close,
-            (KeyCode::Char('s'), _) => Act::Send(Command::SyncMcp),
-            (KeyCode::Right | KeyCode::Enter, Some(Row::Server(s))) => {
-                Act::Expand(s.name.clone(), true)
+        let row = rows.get(cursor);
+        let set_gate = |row: &Row<'_>, gate: Option<Gate>| {
+            let t = row.target();
+            Act::Send(Command::SetGate {
+                server: t.server,
+                tool: t.tool,
+                gate,
+                session,
+            })
+        };
+        let set_hidden = |row: &Row<'_>, hidden: bool| {
+            Act::Send(Command::SetHidden {
+                session,
+                tools: row.tool_names(),
+                hidden,
+            })
+        };
+        // The scope prompt after ⏎ on an `on` row: the target is the row the
+        // cursor was on, re-found by name (a refresh may have moved it).
+        let act = if let Some(target) = pending {
+            let row = rows.iter().find(|r| r.target() == *target);
+            match (code, row) {
+                (KeyCode::Esc, _) => Act::Pending(None),
+                (KeyCode::Char('s') | KeyCode::Enter, Some(r)) => set_hidden(r, true),
+                (KeyCode::Char('a'), Some(r)) => set_gate(r, Some(Gate::Off)),
+                (_, None) => Act::Pending(None),
+                _ => Act::Nothing,
             }
-            (KeyCode::Left, Some(Row::Server(s) | Row::Tool(s, _))) => {
-                Act::Expand(s.name.clone(), false)
+        } else {
+            match (code, row) {
+                (KeyCode::Up, _) => Act::Move(cursor.saturating_sub(1)),
+                (KeyCode::Down, _) => Act::Move((cursor + 1).min(rows.len().saturating_sub(1))),
+                (KeyCode::Esc, _) => Act::Close,
+                (KeyCode::Char('s'), _) => Act::Send(Command::SyncMcp),
+                (KeyCode::Right, Some(Row::Server(s))) => Act::Expand(s.name.clone(), true),
+                (KeyCode::Left, Some(Row::Server(s) | Row::Tool(s, _))) => {
+                    Act::Expand(s.name.clone(), false)
+                }
+                (KeyCode::Char('l'), Some(Row::Server(s))) => match s.auth {
+                    McpAuth::Required => Act::Send(Command::Login(s.name.clone())),
+                    McpAuth::LoggedIn => Act::Send(Command::Logout(s.name.clone())),
+                    McpAuth::None => Act::Nothing,
+                },
+                // ⏎: turn on undoes whichever switch is off; turn off asks for the scope.
+                (KeyCode::Enter, Some(r)) => match r.switch() {
+                    Switch::OffAlways => set_gate(r, None),
+                    Switch::OffSession => set_hidden(r, false),
+                    Switch::On => Act::Pending(Some(r.target())),
+                },
+                (KeyCode::Char(' ') | KeyCode::Backspace, Some(r))
+                    if r.switch() == Switch::OffAlways =>
+                {
+                    Act::Nothing
+                }
+                (KeyCode::Char(' '), Some(r)) => set_gate(r, next_gate(r.gate())),
+                (KeyCode::Backspace, Some(r)) => set_gate(r, None),
+                _ => Act::Nothing,
             }
-            (KeyCode::Char('l'), Some(Row::Server(s))) => match s.auth {
-                McpAuth::Required => Act::Send(Command::Login(s.name.clone())),
-                McpAuth::LoggedIn => Act::Send(Command::Logout(s.name.clone())),
-                McpAuth::None => Act::Nothing,
-            },
-            (KeyCode::Char(' '), Some(Row::Server(s))) => Act::Send(Command::SetGate {
-                server: s.name.clone(),
-                tool: None,
-                gate: next_gate(s.gate),
-            }),
-            (KeyCode::Char(' '), Some(Row::Tool(s, t))) => Act::Send(Command::SetGate {
-                server: s.name.clone(),
-                tool: Some(t.name.clone()),
-                gate: next_gate(t.gate),
-            }),
-            (KeyCode::Backspace, Some(Row::Tool(s, t))) => Act::Send(Command::SetGate {
-                server: s.name.clone(),
-                tool: Some(t.name.clone()),
-                gate: None,
-            }),
-            _ => Act::Nothing,
         };
         let Some(Menu::Mcp {
             servers,
             cursor: cur,
             expanded,
+            pending,
         }) = &mut self.menu
         else {
             return MenuKey::Consumed;
@@ -2647,7 +2787,11 @@ impl Model {
                         + i
                 });
             }
-            Act::Send(cmd) => send(tx, cmd),
+            Act::Send(cmd) => {
+                *pending = None;
+                send(tx, cmd);
+            }
+            Act::Pending(p) => *pending = p,
             Act::Close => self.menu = None,
             Act::Nothing => {}
         }
@@ -2898,48 +3042,87 @@ mod tests {
     }
 
     #[test]
-    fn mcp_space_cycles_server_and_tool_gates() {
+    fn mcp_enter_switches_space_cycles_risk_only() {
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::default();
-        let fresh = |gate: Option<Gate>| McpServer {
+        let sid = SessionId::new();
+        m.session = Some(sid);
+        let fresh = |gate: Option<Gate>, tool_gate: Option<Gate>, hidden: bool| McpServer {
             name: "fs".into(),
-            connected: true,
+            connected: gate != Some(Gate::Off),
             repo: None,
             auth: McpAuth::None,
             gate,
             tools: vec![McpToolInfo {
                 name: "read".into(),
                 description: String::new(),
-                gate: None,
+                gate: tool_gate,
                 risk: tools::Risk::Mutating,
                 action: PolicyAction::Ask,
-                registered: true,
+                registered: Some("read".into()),
+                hidden,
             }],
         };
         // A refresh with no menu open and no `/mcp` typed must not open one.
-        m.apply(UiEvent::Mcp(vec![fresh(None)]));
+        m.apply(UiEvent::Mcp(vec![fresh(None, None, false)]));
         assert!(m.menu.is_none());
         m.submit("/mcp", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::ListMcp)));
-        m.apply(UiEvent::Mcp(vec![fresh(Some(Gate::Destructive))]));
+        assert!(matches!(rx.try_recv(), Ok(Command::ListMcp(Some(s))) if s == sid));
+        m.apply(UiEvent::Mcp(vec![fresh(Some(Gate::Destructive), None, false)]));
+
+        // Space never reaches `off`: destructive wraps to annotations.
         m.menu_key(KeyCode::Char(' '), "", &tx);
         assert!(matches!(
             rx.try_recv(),
-            Ok(Command::SetGate { server, tool: None, gate: Some(Gate::Off) }) if server == "fs"
+            Ok(Command::SetGate { server, tool: None, gate: None, .. }) if server == "fs"
         ));
-        m.apply(UiEvent::Mcp(vec![fresh(Some(Gate::Off))]));
+
+        // ⏎ on an `on` server asks for the scope; `s` hides its tools for the session.
+        m.menu_key(KeyCode::Enter, "", &tx);
+        assert!(matches!(&m.menu, Some(Menu::Mcp { pending: Some(t), .. }) if t.server == "fs"));
+        assert!(rx.try_recv().is_err(), "nothing sent until the scope is chosen");
+        m.menu_key(KeyCode::Char('s'), "", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetHidden { session, tools, hidden: true }) if session == Some(sid) && tools == ["read"]
+        ));
+        assert!(matches!(&m.menu, Some(Menu::Mcp { pending: None, .. })));
+
+        // Every tool hidden = server `off · this session`; ⏎ turns it back on.
+        m.apply(UiEvent::Mcp(vec![fresh(None, None, true)]));
+        assert_eq!(m.mcp_rows()[0].switch(), Switch::OffSession);
+        m.menu_key(KeyCode::Enter, "", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetHidden { hidden: false, .. })
+        ));
+
+        // `a` writes `off` to config.yaml; ⏎ on it clears the line; space is inert.
+        m.apply(UiEvent::Mcp(vec![fresh(None, None, false)]));
+        m.menu_key(KeyCode::Enter, "", &tx);
+        m.menu_key(KeyCode::Char('a'), "", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetGate { tool: None, gate: Some(Gate::Off), .. })
+        ));
+        m.apply(UiEvent::Mcp(vec![fresh(Some(Gate::Off), None, false)]));
+        assert_eq!(m.mcp_rows()[0].switch(), Switch::OffAlways);
         m.menu_key(KeyCode::Char(' '), "", &tx);
-        assert!(
-            matches!(
-                rx.try_recv(),
-                Ok(Command::SetGate {
-                    tool: None,
-                    gate: None,
-                    ..
-                })
-            ),
-            "off cycles back to annotations"
-        );
+        assert!(rx.try_recv().is_err(), "risk cycling on an off server does nothing");
+        m.menu_key(KeyCode::Enter, "", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetGate { tool: None, gate: None, .. })
+        ));
+
+        // Esc in the scope prompt cancels the prompt, not the menu.
+        m.apply(UiEvent::Mcp(vec![fresh(None, None, false)]));
+        m.menu_key(KeyCode::Enter, "", &tx);
+        m.menu_key(KeyCode::Esc, "", &tx);
+        assert!(matches!(&m.menu, Some(Menu::Mcp { pending: None, .. })));
+        assert!(rx.try_recv().is_err());
+
+        // Tool rows: space cycles the tool line, ⌫ clears it, ⏎ + a turns it off.
         m.menu_key(KeyCode::Right, "", &tx);
         m.menu_key(KeyCode::Down, "", &tx);
         assert_eq!(m.mcp_rows().len(), 2);
@@ -2951,15 +3134,27 @@ mod tests {
         m.menu_key(KeyCode::Backspace, "", &tx);
         assert!(matches!(
             rx.try_recv(),
-            Ok(Command::SetGate {
-                tool: Some(_),
-                gate: None,
-                ..
-            })
+            Ok(Command::SetGate { tool: Some(_), gate: None, .. })
+        ));
+        m.menu_key(KeyCode::Enter, "", &tx);
+        m.menu_key(KeyCode::Char('a'), "", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetGate { tool: Some(t), gate: Some(Gate::Off), .. }) if t == "read"
         ));
         m.menu_key(KeyCode::Left, "", &tx);
         assert!(matches!(m.menu, Some(Menu::Mcp { cursor: 0, .. })));
         assert_eq!(m.mcp_rows().len(), 1);
+
+        // Without a session the prompt still shows; `s` asks for one to be created.
+        m.session = None;
+        m.menu_key(KeyCode::Enter, "", &tx);
+        assert!(matches!(&m.menu, Some(Menu::Mcp { pending: Some(_), .. })));
+        m.menu_key(KeyCode::Char('s'), "", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetHidden { session: None, hidden: true, .. })
+        ));
     }
 
     #[test]

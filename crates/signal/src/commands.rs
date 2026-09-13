@@ -498,7 +498,7 @@ async fn mcp_cmd(arg: &str) -> anyhow::Result<Reply> {
     let mcp = mcp()?;
     let out = match (sub, rest) {
         ("", _) => {
-            let rows = mcp.ask(tools::ListServers).await.map_err(err)?;
+            let rows = mcp.ask(tools::ListServers::default()).await.map_err(err)?;
             table(rows.iter().map(|s| {
                 vec![
                     s.name.clone(),
@@ -652,7 +652,7 @@ async fn logins() -> anyhow::Result<Reply> {
         .collect();
     rows.extend(
         mcp()?
-            .ask(tools::ListServers)
+            .ask(tools::ListServers::default())
             .await
             .map_err(err)?
             .into_iter()

@@ -313,9 +313,10 @@ a subprocess per call.
 **MCP client**: `rmcp` 3.2 (official SDK; stable spec 2026-07-28). One
 `McpServer` actor per configured server (`TokioChildProcess` stdio or
 streamable HTTP). On start it lists tools and registers each into
-`ToolRegistry` under its remote name, no prefix (01 §1.4). Clash: native
-wins, then first server by sorted name; the loser is logged and skipped
-(`mcp.rs` `taken`), never silently replaced. `Risk` comes from the server's
+`ToolRegistry` under its remote name (01 §1.4). A name offered by more than
+one running server, or by a native, registers as `<server>__<name>` for each
+server offering it (`mcp.rs` `register`), so every server keeps its own
+slot; the prefix drops when the clash does. `Risk` comes from the server's
 tool annotations, overridable in `mcp/config.yaml` (12 §5). Invoke forwards
 `call_tool`.
 

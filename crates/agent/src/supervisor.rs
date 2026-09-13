@@ -984,7 +984,7 @@ impl Message<ShowPrompt> for Agents {
             frame::baseline(&self.rt.data_dir, &peers, &blocks, self.claude_code(&model));
         if self.pool.is_some()
             && let Some(reg) = registry
-            && let Ok(specs) = reg.ask(ListTools).await
+            && let Ok(specs) = reg.ask(ListTools(m.session)).await
         {
             prompt.push_str("\n\n");
             prompt.push_str(&repl::prompt_block(&specs));

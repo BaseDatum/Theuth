@@ -36,7 +36,11 @@ pub struct ToolRegistry {
     /// Sessions that turned prompts off for themselves (and, through
     /// `parents`, for their subagents).
     bypass: HashSet<SessionId>,
-    /// child → parent, from [`SetParent`]; a session inherits its ancestors' bypass.
+    /// Tool names a session (and its subagents) does not see: absent from
+    /// [`ListTools`], `unknown tool` on [`Invoke`]. In memory only; the
+    /// persistent switch is `off` in `mcp/config.yaml`.
+    hidden: HashMap<SessionId, HashSet<String>>,
+    /// child → parent, from [`SetParent`]; a session inherits its ancestors' bypass and hidden set.
     parents: HashMap<SessionId, SessionId>,
     /// `<data_dir>/config.yaml`, for the persistent switch.
     config_path: PathBuf,
@@ -44,9 +48,25 @@ pub struct ToolRegistry {
     approval: Option<ActorRef<Approval>>,
 }
 
-/// `ask` → `Vec<ToolSpec>` for every registered tool, sorted by name.
+/// `ask` → `Vec<ToolSpec>` for every registered tool, sorted by name; with a
+/// session, minus what [`SetHidden`] hid for it or an ancestor.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct ListTools;
+pub struct ListTools(pub Option<SessionId>);
+
+/// `ask` → `()`. Hide (or show again) tools for one session, in memory.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetHidden {
+    /// Session to switch (its subagents follow).
+    pub session: SessionId,
+    /// Registered tool names.
+    pub tools: Vec<String>,
+    /// `true` hides.
+    pub hidden: bool,
+}
+
+/// `ask` → `HashSet<String>`: what [`SetHidden`] hid for the session or an ancestor.
+#[derive(Clone, Copy, Debug)]
+pub struct HiddenTools(pub SessionId);
 
 /// `ask` → [`ToolOutput`]. Never fails: unknown tool, denied approval, bad
 /// args, tool panic and timeout all come back as `ToolOutput { is_error: true }`.
@@ -179,6 +199,19 @@ impl ToolRegistry {
         }
     }
 
+    /// `name` is hidden for the session or an ancestor.
+    fn is_hidden(&self, mut id: SessionId, name: &str) -> bool {
+        loop {
+            if self.hidden.get(&id).is_some_and(|h| h.contains(name)) {
+                return true;
+            }
+            match self.parents.get(&id) {
+                Some(p) => id = *p,
+                None => return false,
+            }
+        }
+    }
+
     /// The one permission decision (12 §5), shared by [`Invoke`] and
     /// [`ExternalApproval`]: `Ok(None)` run now, `Ok(Some(approval))` ask the
     /// human first, `Err(why)` refuse.
@@ -251,10 +284,56 @@ impl Message<ExternalApproval> for ToolRegistry {
 impl Message<ListTools> for ToolRegistry {
     type Reply = Vec<ToolSpec>;
 
-    async fn handle(&mut self, _: ListTools, _: &mut Context<Self, Self::Reply>) -> Vec<ToolSpec> {
-        let mut specs: Vec<ToolSpec> = self.tools.values().map(|t| t.spec()).collect();
+    async fn handle(
+        &mut self,
+        ListTools(session): ListTools,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Vec<ToolSpec> {
+        let mut specs: Vec<ToolSpec> = self
+            .tools
+            .iter()
+            .filter(|(name, _)| !session.is_some_and(|s| self.is_hidden(s, name)))
+            .map(|(_, t)| t.spec())
+            .collect();
         specs.sort_by(|a, b| a.name.cmp(&b.name));
         specs
+    }
+}
+
+impl Message<SetHidden> for ToolRegistry {
+    type Reply = ();
+
+    async fn handle(&mut self, m: SetHidden, _: &mut Context<Self, Self::Reply>) {
+        let set = self.hidden.entry(m.session).or_default();
+        if m.hidden {
+            set.extend(m.tools);
+        } else {
+            set.retain(|t| !m.tools.contains(t));
+        }
+        if set.is_empty() {
+            self.hidden.remove(&m.session);
+        }
+    }
+}
+
+impl Message<HiddenTools> for ToolRegistry {
+    type Reply = HashSet<String>;
+
+    async fn handle(
+        &mut self,
+        HiddenTools(mut id): HiddenTools,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> HashSet<String> {
+        let mut out = HashSet::new();
+        loop {
+            if let Some(h) = self.hidden.get(&id) {
+                out.extend(h.iter().cloned());
+            }
+            match self.parents.get(&id) {
+                Some(p) => id = *p,
+                None => return out,
+            }
+        }
     }
 }
 
@@ -319,7 +398,12 @@ impl Message<Invoke> for ToolRegistry {
     ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        let Some(tool) = self.tools.get(&call.name).cloned() else {
+        let Some(tool) = self
+            .tools
+            .get(&call.name)
+            .filter(|_| !self.is_hidden(call.session, &call.name))
+            .cloned()
+        else {
             tx.send(ToolOutput::err(format!("unknown tool: {}", call.name)));
             return reply;
         };
@@ -415,6 +499,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
             policy: cfg.policy,
             approvals: cfg.approvals,
             bypass: HashSet::new(),
+            hidden: HashMap::new(),
             parents: HashMap::new(),
             config_path: rt.data_dir.join("config.yaml"),
             approval: None,
@@ -423,4 +508,81 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
     );
     registry.register(REGISTRY_ACTOR)?;
     Ok(registry)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Tool, ToolCall};
+
+    struct Echo;
+
+    #[async_trait::async_trait]
+    impl Tool for Echo {
+        const NAME: &'static str = "echo";
+        const RISK: Risk = Risk::ReadOnly;
+        type Args = serde_json::Value;
+        fn description(&self) -> String {
+            String::new()
+        }
+        async fn call(&self, _: Self::Args, _: ToolCx) -> anyhow::Result<ToolOutput> {
+            Ok(ToolOutput::ok("hi"))
+        }
+    }
+
+    #[tokio::test]
+    async fn hidden_tools_are_per_session_and_inherited() {
+        let reg = ToolRegistry::spawn(ToolRegistry {
+            tools: HashMap::from([("echo".to_owned(), Arc::new(Echo) as DynTool)]),
+            prompts: BTreeMap::new(),
+            policy: Policy::default(),
+            approvals: true,
+            bypass: HashSet::new(),
+            hidden: HashMap::new(),
+            parents: HashMap::new(),
+            config_path: PathBuf::new(),
+            approval: None,
+        });
+        let (parent, child, other) = (SessionId::new(), SessionId::new(), SessionId::new());
+        reg.tell(SetParent {
+            session: child,
+            parent,
+        })
+        .await
+        .unwrap();
+        let call = |s| ToolCall {
+            id: "1".into(),
+            name: "echo".into(),
+            args: serde_json::json!({}),
+            session: s,
+        };
+        let names = |specs: Vec<ToolSpec>| specs.into_iter().map(|s| s.name).collect::<Vec<_>>();
+
+        reg.ask(SetHidden {
+            session: parent,
+            tools: vec!["echo".into()],
+            hidden: true,
+        })
+        .await
+        .unwrap();
+        assert!(names(reg.ask(ListTools(Some(child))).await.unwrap()).is_empty());
+        assert_eq!(names(reg.ask(ListTools(Some(other))).await.unwrap()), ["echo"]);
+        assert_eq!(names(reg.ask(ListTools(None)).await.unwrap()), ["echo"]);
+        assert!(reg.ask(Invoke(call(child))).await.unwrap().is_error);
+        assert!(!reg.ask(Invoke(call(other))).await.unwrap().is_error);
+        assert_eq!(
+            reg.ask(HiddenTools(child)).await.unwrap(),
+            HashSet::from(["echo".to_owned()])
+        );
+
+        reg.ask(SetHidden {
+            session: parent,
+            tools: vec!["echo".into()],
+            hidden: false,
+        })
+        .await
+        .unwrap();
+        assert_eq!(names(reg.ask(ListTools(Some(child))).await.unwrap()), ["echo"]);
+        assert!(!reg.ask(Invoke(call(child))).await.unwrap().is_error);
+    }
 }

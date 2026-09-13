@@ -27,7 +27,7 @@ use runtime::Runtime;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::registry::{ListTools, RegisterTool, ToolRegistry, UnregisterTool};
+use crate::registry::{HiddenTools, ListTools, RegisterTool, ToolRegistry, UnregisterTool};
 use crate::{
     DynTool, ErasedTool, Gate, MCP_ACTOR, Policy, PolicyAction, Risk, ToolCx, ToolOutput, ToolSpec,
     git,
@@ -365,8 +365,8 @@ struct Running {
     service: Service,
     /// Remote tool list, kept so a gates change can re-register without a round trip.
     remote: Vec<rmcp::model::Tool>,
-    /// Names currently registered from this server.
-    tools: Vec<String>,
+    /// Remote name → registered name, for what is currently registered from this server.
+    tools: BTreeMap<String, String>,
 }
 
 #[derive(Default)]
@@ -420,9 +420,13 @@ pub struct Mcp {
 struct Reconcile;
 
 /// `ask` → `Vec<McpServer>`: every server the files want, sorted by name.
+/// With a session, [`McpToolInfo::hidden`] reflects its [`crate::SetHidden`] state.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
-pub struct ListServers;
+pub struct ListServers {
+    /// Session whose in-memory hides to report; `None` reports none.
+    pub session: Option<runtime::SessionId>,
+}
 
 /// `ask` → `Result<(), String>`: set (or clear with `gate: None`) a server
 /// or tool line, rewrite `config.yaml`, reconcile now.
@@ -562,8 +566,11 @@ pub struct McpToolInfo {
     pub risk: Risk,
     /// What `tools.policy` does for `risk`; for display only.
     pub action: PolicyAction,
-    /// False when `off` or hidden by a name clash.
-    pub registered: bool,
+    /// Name in the registry: the remote name, or `<server>__<name>` when
+    /// another server or a native offers the same name. `None` when `off`.
+    pub registered: Option<String>,
+    /// Hidden for the session asked about ([`crate::SetHidden`]).
+    pub hidden: bool,
 }
 
 impl Message<Reconcile> for Mcp {
@@ -576,8 +583,8 @@ impl Message<Reconcile> for Mcp {
 
 impl Mcp {
     /// One [`McpServer`] from the current state; `spec` is the file's entry
-    /// when the server is not running.
-    fn server(&self, name: String, spec: Option<&ServerSpec>) -> McpServer {
+    /// when the server is not running; `hidden` is the session's hide set.
+    fn server(&self, name: String, spec: Option<&ServerSpec>, hidden: &HashSet<String>) -> McpServer {
         let state = &self.state;
         let running = state.running.get(&name);
         let mut tools: Vec<McpToolInfo> = running
@@ -591,7 +598,8 @@ impl Mcp {
                             gate: state.gates.own(&name, &tool),
                             risk,
                             action: self.policy.action(risk),
-                            registered: r.tools.contains(&tool),
+                            hidden: r.tools.get(&tool).is_some_and(|n| hidden.contains(n)),
+                            registered: r.tools.get(&tool).cloned(),
                             description: t.description.as_deref().unwrap_or_default().to_owned(),
                             name: tool,
                         }
@@ -643,9 +651,13 @@ impl Message<ListServers> for Mcp {
 
     async fn handle(
         &mut self,
-        _: ListServers,
+        m: ListServers,
         _: &mut Context<Self, Self::Reply>,
     ) -> Vec<McpServer> {
+        let hidden = match m.session {
+            Some(s) => self.registry.ask(HiddenTools(s)).await.unwrap_or_default(),
+            None => HashSet::new(),
+        };
         let want = desired(&self.dir);
         let names: BTreeSet<String> = want
             .keys()
@@ -656,7 +668,7 @@ impl Message<ListServers> for Mcp {
             .into_iter()
             .map(|name| {
                 let spec = want.get(&name);
-                self.server(name, spec)
+                self.server(name, spec, &hidden)
             })
             .collect()
     }
@@ -854,7 +866,7 @@ impl Message<AddServer> for Mcp {
         register(&mut self.state, &self.registry, Vec::new()).await;
         self.rt.publish(progress(&self.state)).await;
         // The watcher's reconcile then finds it running with the same spec.
-        Ok(self.server(m.name, None))
+        Ok(self.server(m.name, None, &HashSet::new()))
     }
 }
 
@@ -988,7 +1000,7 @@ impl Mcp {
         for name in names {
             tracing::info!(server = %name, "mcp server restarting");
             if let Some(r) = self.state.running.remove(name) {
-                for tool in r.tools {
+                for tool in r.tools.into_values() {
                     let _ = self.registry.ask(UnregisterTool(tool)).await;
                 }
             }
@@ -1243,7 +1255,7 @@ fn settle(state: &mut State, name: String, spec: ServerSpec, result: Attempt) {
                     spec,
                     service,
                     remote,
-                    tools: Vec::new(),
+                    tools: BTreeMap::new(),
                 },
             );
         }
@@ -1299,7 +1311,7 @@ async fn reconcile(
         tracing::info!(server = %name, "mcp server dropped");
         // Removing drops `service`, which ends the child / session.
         if let Some(r) = state.running.remove(&name) {
-            orphans.extend(r.tools);
+            orphans.extend(r.tools.into_values());
         }
     }
     state.errors.retain(|name, _| want.contains_key(name));
@@ -1335,27 +1347,38 @@ fn risk_of(gates: &Gates, server: &str, t: &rmcp::model::Tool) -> Risk {
         .unwrap_or_else(|| annotated(t))
 }
 
-/// Recompute every registration in sorted server order (first name wins),
-/// then diff against what is registered so nothing flickers. `orphans` are
-/// names registered by servers that have since been dropped.
+/// Recompute every registration, then diff against what is registered so
+/// nothing flickers. A tool name offered by more than one running server, or
+/// by a native, registers as `<server>__<name>` for every server offering
+/// it, so each server keeps its own slot (01 §1.4). `orphans` are names
+/// registered by servers that have since been dropped.
 async fn register(state: &mut State, registry: &ActorRef<ToolRegistry>, mut orphans: Vec<String>) {
+    let offered = |server: &str, t: &rmcp::model::Tool| {
+        state.gates.for_tool(server, &t.name) != Some(Gate::Off)
+    };
+    let mut count: HashMap<&str, usize> = HashMap::new();
+    for (server, r) in &state.running {
+        for t in r.remote.iter().filter(|t| offered(server, t)) {
+            *count.entry(&t.name).or_default() += 1;
+        }
+    }
     let mut taken: HashMap<String, String> = HashMap::new();
     let mut regs: Vec<(String, McpTool)> = Vec::new();
     let mut names: Vec<&String> = state.running.keys().collect();
     names.sort();
     for server in names {
         let r = &state.running[server];
-        for t in &r.remote {
-            let name = t.name.to_string();
-            if state.gates.for_tool(server, &name) == Some(Gate::Off) {
-                continue;
-            }
-            let owner = if state.natives.contains(&name) {
-                Some("native")
+        for t in r.remote.iter().filter(|t| offered(server, t)) {
+            let remote = t.name.to_string();
+            // ponytail: the prefix follows the *running* set, so a session hide on
+            // `a__x` is lost when `b` goes off and `x` re-registers bare; key hides
+            // by (server, remote name) if that bites.
+            let name = if state.natives.contains(&remote) || count[remote.as_str()] > 1 {
+                format!("{server}__{remote}")
             } else {
-                taken.get(&name).map(String::as_str)
+                remote.clone()
             };
-            if let Some(owner) = owner {
+            if let Some(owner) = taken.get(&name) {
                 tracing::warn!("mcp tool {name} from {server} hidden: clashes with {owner}");
                 continue;
             }
@@ -1364,30 +1387,35 @@ async fn register(state: &mut State, registry: &ActorRef<ToolRegistry>, mut orph
                 server.clone(),
                 McpTool {
                     spec: ToolSpec {
-                        name: name.clone(),
+                        name,
                         description: t.description.as_deref().unwrap_or_default().to_owned(),
                         schema: Value::Object((*t.input_schema).clone()),
                         risk: risk_of(&state.gates, server, t),
                         direct: false,
                         returns: "Any".to_owned(),
                     },
-                    remote_name: name,
+                    remote_name: remote,
                     service: Arc::clone(&r.service),
                 },
             ));
         }
     }
-    orphans.extend(state.running.values_mut().flat_map(|r| r.tools.drain(..)));
+    orphans.extend(
+        state
+            .running
+            .values_mut()
+            .flat_map(|r| std::mem::take(&mut r.tools).into_values()),
+    );
     for name in orphans {
         if !taken.contains_key(&name) {
             let _ = registry.ask(UnregisterTool(name)).await;
         }
     }
     for (server, tool) in regs {
-        let name = tool.spec.name.clone();
+        let (remote, name) = (tool.remote_name.clone(), tool.spec.name.clone());
         let _ = registry.ask(RegisterTool(Arc::new(tool))).await;
         if let Some(r) = state.running.get_mut(&server) {
-            r.tools.push(name);
+            r.tools.insert(remote, name);
         }
     }
 }
@@ -1414,7 +1442,7 @@ pub async fn start(
         registry.ask(RegisterTool(tool)).await?;
     }
     let natives = registry
-        .ask(ListTools)
+        .ask(ListTools(None))
         .await?
         .into_iter()
         .map(|s| s.name)
