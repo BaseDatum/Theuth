@@ -1042,7 +1042,44 @@ impl Message<Progress> for Mcp {
     }
 }
 
+/// Expand `$VAR`, `${VAR:-x}`, `$(cmd)` and backticks in one entry string with
+/// the user's shell (`$SHELL`, else `/bin/sh`), so a file can say
+/// `"GITHUB_PERSONAL_ACCESS_TOKEN=$(gh auth token)"` or `"${GRAFANA_TOKEN}"`.
+/// The string is fed as an unquoted heredoc: quotes stay literal, `\$` is a
+/// literal dollar, and the shell's own parser handles nesting. A `$`-free
+/// string is returned as is; a failed substitution is a warning and empty
+/// (POSIX), the server's own auth error names the consequence.
+async fn expand(s: &str) -> anyhow::Result<String> {
+    if !s.contains('$') && !s.contains('`') {
+        return Ok(s.to_owned());
+    }
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+    let out = tokio::process::Command::new(shell)
+        .arg("-c")
+        .arg(format!("cat <<__wth_mcp__\n{s}\n__wth_mcp__"))
+        .stdin(std::process::Stdio::null())
+        .output()
+        .await?;
+    let err = String::from_utf8_lossy(&out.stderr);
+    if !out.status.success() || !err.trim().is_empty() {
+        tracing::warn!(value = %s, status = %out.status, "mcp expansion: {}", err.trim());
+    }
+    let mut text = String::from_utf8(out.stdout)?;
+    text.pop(); // the heredoc's own trailing newline
+    Ok(text)
+}
+
+async fn expand_map(m: &BTreeMap<String, String>) -> anyhow::Result<BTreeMap<String, String>> {
+    let mut out = BTreeMap::new();
+    for (k, v) in m {
+        out.insert(k.clone(), expand(v).await?);
+    }
+    Ok(out)
+}
+
 /// `auth_dir` holds the server's OAuth tokens, `<auth_dir>/<name>.json`.
+/// Strings from the file go through [`expand`] here, at connect, so a
+/// `$(gh auth token)` runs once per connection and not on every reconcile.
 async fn connect(name: &str, spec: &ServerSpec, auth_dir: &Path) -> anyhow::Result<Service> {
     let service = match &spec.transport {
         Transport::Stdio {
@@ -1051,8 +1088,11 @@ async fn connect(name: &str, spec: &ServerSpec, auth_dir: &Path) -> anyhow::Resu
             env,
             cwd,
         } => {
-            let mut cmd = tokio::process::Command::new(command);
-            cmd.args(args).envs(env);
+            let mut cmd = tokio::process::Command::new(expand(command).await?);
+            for a in args {
+                cmd.arg(expand(a).await?);
+            }
+            cmd.envs(expand_map(env).await?);
             if let Some(cwd) = cwd {
                 cmd.current_dir(cwd);
             }
@@ -1074,6 +1114,8 @@ async fn connect(name: &str, spec: &ServerSpec, auth_dir: &Path) -> anyhow::Resu
             ().serve(transport).await?
         }
         Transport::Http { url, headers, .. } => {
+            let url = expand(url).await?;
+            let headers = &expand_map(headers).await?;
             let mut custom = HashMap::new();
             for (k, v) in headers {
                 custom.insert(k.parse()?, v.parse()?);
@@ -1438,6 +1480,20 @@ mod tests {
                 cwd: None,
             },
         }
+    }
+
+    #[tokio::test]
+    async fn expand_uses_the_shell_and_keeps_quotes_literal() {
+        // SAFETY: test-only unique key, set before any thread reads it.
+        unsafe { std::env::set_var("WTH_MCP_T", "tok") };
+        assert_eq!(
+            expand("Bearer ${WTH_MCP_T}-$(printf hi)-\"q\" \\$lit")
+                .await
+                .unwrap(),
+            "Bearer tok-hi-\"q\" $lit"
+        );
+        assert_eq!(expand("plain \"text\" ").await.unwrap(), "plain \"text\" ");
+        assert_eq!(expand("$(false)x").await.unwrap(), "x");
     }
 
     #[test]

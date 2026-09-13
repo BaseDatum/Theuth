@@ -127,6 +127,17 @@ Entry normalisation covers the shapes in the wild:
 | cwd | `cwd` | working directory for the exe; relative → against `mcp/` (`repos/my-server`) |
 | off | `enabled: false` · `disabled: true` | entry skipped |
 
+**Shell expansion.** `command`, `args`, `env` values, `url` and `headers`
+values go through the user's shell (`$SHELL`, else `/bin/sh`) at connect
+time, as an unquoted heredoc: `${GRAFANA_TOKEN}`, `$(gh auth token)`,
+`${VAR:-default}` and backticks expand, quotes stay literal, `\$` is a
+literal dollar. Strings without `$` or a backtick are not touched. Connect
+time, not parse time, so a token subshell runs once per connection instead of
+on every watcher tick, and reconcile equality stays on the file text. A
+failed substitution is empty (POSIX) with a warning naming the value; the
+server's own auth error names the consequence. (jarvis had a hand-rolled
+`${}`/`$()` parser; the shell already is that parser.)
+
 Anything else in an entry is ignored. A file that fails to parse is logged
 (`mcp/foo.json: expected …`) and skipped; the other files still load. Same
 server name in two files: first by sorted path wins, warning names both files.

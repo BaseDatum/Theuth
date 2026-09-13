@@ -71,7 +71,7 @@ Config (`~/.wth/`, created on first run; details in
 - `models.json` — optional, same shape as the bundled catalog; adds or overrides models (local `ollama/...`, private gateways). Refresh the bundled data with `just models`. `/provider add` writes the fetched model list here.
 - `oauth/` — tokens from `/login` (`openai.json` = ChatGPT subscription via the Codex client, `anthropic.json` = Claude Pro/Max via the Claude Code client, `cursor.json` = Cursor subscription, `xai.json` = SuperGrok via the Grok CLI client; `mcp/<server>.json` = MCP servers that answered 401), mode 0600; `/logout <name>` deletes one. See [`docs/design/05-oauth.md`](docs/design/05-oauth.md).
 - `prompt.md` — standing instructions, read into the system prompt on every model call; `/prompt` shows the assembled prompt.
-- `mcp/*.json` — drop in any `mcp.json` (Claude Desktop, Cursor, OpenCode, …); hot-reloaded, tools registered without prefix. `cwd` (relative → `mcp/`) points a server at a checkout under `mcp/repos/`, where `/mcp add <url>` clones and `/mcp sync` pulls.
+- `mcp/*.json` — drop in any `mcp.json` (Claude Desktop, Cursor, OpenCode, …); hot-reloaded, tools registered without prefix. `${VAR}` and `$(cmd)` in `command`/`args`/`env`/`url`/`headers` expand through your shell when the server starts (`"GITHUB_PERSONAL_ACCESS_TOKEN=$(gh auth token)"`). `cwd` (relative → `mcp/`) points a server at a checkout under `mcp/repos/`, where `/mcp add <url>` clones and `/mcp sync` pulls.
 - `mcp/config.yaml` — per-server / per-tool risk override (`read_only` | `mutating` | `destructive` | `off`); `/mcp` edits it (`off` on a server = disabled). An MCP tool's risk defaults to its annotations, and one without annotations prompts by default; set `risk: read_only` on a trusted server once.
 - `acp/agents.yaml` — one entry per external harness (`name: {command, args, env, description}`); `/acp` lists, probes, adds from the registry (`/acp add <id>`), removes. The model spawns one with `spawn_subagent{agent}`; it runs as a child session like a wth subagent.
 - `skills/` — `<name>/SKILL.md` directories, loose `*.md`, or git clones (`/skills add <url>`, `/skills sync`); see [`docs/skills.md`](docs/skills.md).
@@ -95,7 +95,10 @@ approval prompts for this session, `/approvals off always` for good
 message: it is shown under the response until it enters the context (after
 the current tool batch or when the turn ends), and `⌥↑` pulls the newest one
 back into the editor. Shift+Enter inserts a newline; select
-text with the mouse to copy it (terminal-native). See
+text with the mouse to copy it (terminal-native). Images: **Ctrl+V** (not
+⌘V — the terminal's paste sends text only, so a screenshot on the clipboard
+pastes nothing) attaches the clipboard image as `[⎘ image 1: W×H]`; dropping
+an image file onto the terminal attaches it by path. See
 [`docs/design/02-models-and-menus.md`](docs/design/02-models-and-menus.md).
 
 Knowledge: durable facts about your machines, projects, accounts and

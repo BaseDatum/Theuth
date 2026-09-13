@@ -305,6 +305,25 @@ files)`; same for `Steer`. Two lines.
 
 ## 6. Not in v0
 
+- **The terminal's own paste key (⌘V, Ctrl+Shift+V, right-click → Paste).**
+  Every shipping terminal services it by reading the clipboard *as text*
+  and writing that to the pty; a bitmap-only clipboard yields zero bytes, so
+  there is no event for a TUI to hook (ghostty 1.3.1 `paste_from_clipboard`
+  → `completeClipboardPaste(clipboardTextContent(..) orelse "")`; iTerm2,
+  WezTerm, Terminal.app, Windows Terminal behave the same). That is why
+  Claude Code, Codex CLI and this doc bind Ctrl+V + an OS clipboard read.
+  The fix exists upstream: kitty ≥ 0.44.1 and ghostty main (since
+  2026-08-21, not in 1.3.1) implement **mode 5522 paste events** from the
+  kitty clipboard protocol — with `CSI ? 5522 h` set, the paste key writes
+  an OSC 5522 `type=read:status=DATA:mime=.` listing of the clipboard's
+  MIME types plus a one-time `pw`, and the app answers with
+  `OSC 5522;type=read:pw=…:name=<b64 "Paste event">;<b64 "image/png">` to
+  receive base64 chunks (≤ 4096 B raw each) — no permission prompt, works
+  over SSH. Support is probeable with `CSI ? 5522 $ p` (DECRPM `Ps` 0/4 =
+  unsupported). Cost: crossterm's parser does not know OSC 5522, so the
+  response (megabytes of base64) has to be captured before iocraft's event
+  loop sees it — a second patch on the iocraft/crossterm backend. Build it
+  when a supported terminal is in daily use; until then Ctrl+V.
 - Inline preview in the transcript (kitty/sixel/iTerm2 graphics). iocraft
   has no image primitive; the token names the file. Add when a second
   frontend wants it — Zed renders ACP images itself.

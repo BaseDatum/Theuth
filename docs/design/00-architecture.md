@@ -48,6 +48,29 @@ a headless daemon that a Tauri app or a second terminal attaches to.
 Rejected: daemon + thin clients from day one (jarvis). Forces every UI
 interaction through serialization before there is a second UI.
 
+**How a GUI (Tauri `.app`) starts the daemon.** An app launched from
+Finder/Dock inherits launchd's environment, not the user's shell's: no
+Homebrew `PATH`, no `~/.zshrc` exports, no `gh`/`kubectl`/`uvx`. Rather than
+re-deriving that environment, the app *becomes a terminal for one command*:
+it opens a pty (`openpty`, or `portable-pty`) and runs
+`$SHELL -l -i -c 'exec wth --headless --data-dir …'` on it, with `TERM` set.
+The shell sources exactly what an opened terminal window would (`.zshenv`,
+`.zprofile`, `.zshrc`; `-i` matters: on this machine `-l` alone misses rbenv
+shims, `~/.cargo/bin`, `EDITOR`, the `NODE_EXTRA_CA_CERTS` override, and
+`GPG_TTY` is `not a tty` without the pty), then `exec` replaces itself with
+`wth`, so the daemon *is* the process a user's shell would have produced -
+same env, cwd, umask, controlling tty. No window: the pty's master
+side is drained to the app's log (rc-file noise, `Identity added:` from
+ssh-agent, startup banners). The app then connects to
+`ws://127.0.0.1:<port>` with `<data_dir>/token` like any other client, and
+`wth` itself spawns tools and MCP servers from that inherited environment,
+so the MCP shell expansion above (`$(gh auth token)`) resolves the same
+binaries a terminal would. Rejected: capturing `env -0` from a probe shell
+and re-applying it (VS Code / Zed / jarvis `probe_login_shell_path`): a
+second parse step, loses the tty-dependent variables, and drifts from what
+`exec` gives for free. Rejected: `launchctl setenv` / a LaunchAgent plist
+with a copied `PATH`: a snapshot the user must maintain.
+
 ## 3. Message bus: kameo
 
 Library: `kameo` 0.22 + `kameo_actors` 0.8 (`MessageBus`, `PubSub`, `Broker`).
