@@ -48,28 +48,11 @@ a headless daemon that a Tauri app or a second terminal attaches to.
 Rejected: daemon + thin clients from day one (jarvis). Forces every UI
 interaction through serialization before there is a second UI.
 
-**How a GUI (Tauri `.app`) starts the daemon.** An app launched from
-Finder/Dock inherits launchd's environment, not the user's shell's: no
-Homebrew `PATH`, no `~/.zshrc` exports, no `gh`/`kubectl`/`uvx`. Rather than
-re-deriving that environment, the app *becomes a terminal for one command*:
-it opens a pty (`openpty`, or `portable-pty`) and runs
-`$SHELL -l -i -c 'exec wth --headless --data-dir …'` on it, with `TERM` set.
-The shell sources exactly what an opened terminal window would (`.zshenv`,
-`.zprofile`, `.zshrc`; `-i` matters: on this machine `-l` alone misses rbenv
-shims, `~/.cargo/bin`, `EDITOR`, the `NODE_EXTRA_CA_CERTS` override, and
-`GPG_TTY` is `not a tty` without the pty), then `exec` replaces itself with
-`wth`, so the daemon *is* the process a user's shell would have produced -
-same env, cwd, umask, controlling tty. No window: the pty's master
-side is drained to the app's log (rc-file noise, `Identity added:` from
-ssh-agent, startup banners). The app then connects to
-`ws://127.0.0.1:<port>` with `<data_dir>/token` like any other client, and
-`wth` itself spawns tools and MCP servers from that inherited environment,
-so the MCP shell expansion above (`$(gh auth token)`) resolves the same
-binaries a terminal would. Rejected: capturing `env -0` from a probe shell
-and re-applying it (VS Code / Zed / jarvis `probe_login_shell_path`): a
-second parse step, loses the tty-dependent variables, and drifts from what
-`exec` gives for free. Rejected: `launchctl setenv` / a LaunchAgent plist
-with a copied `PATH`: a snapshot the user must maintain.
+**How a GUI starts the daemon.** A Tauri `.app` launched from Finder has
+launchd's environment, not the shell's. It opens a pty and runs
+`$SHELL -l -i -c 'exec wth --headless'` on it - a terminal for one command,
+no window - so the daemon is exactly the process a terminal would have
+produced. Design doc 18.
 
 ## 3. Message bus: kameo
 
@@ -589,7 +572,7 @@ Each phase ends with a runnable check, not a test suite.
 | 2 | rpc plugin, `--serve`; ts-rs bindings emitted | subscribe + send_input round trip over WS | done; headless e2e: shell + write/read + list/load sessions + shutdown, all over the wire |
 | 2 | skills | skill body appears in prompt on load | done (`docs/skills.md`) |
 | 3 | subagents, steering polish | parent receives child result as tool output | superseded by 01 §2 (detached) |
-| 4 | Tauri frontend over rpc | out of scope for this doc | not started; command surface ready (§8); `just ts` emits `bindings/*.ts` |
+| 4 | Tauri frontend over rpc | out of scope for this doc | not started; command surface ready (§8); `just ts` emits `bindings/*.ts`; daemon launch decided (18, mechanism verified 2026-09-13) |
 | 5 | course correction (12) | docs and tree agree | done 2026-09-11 (12 §8 lib.rs re-exports stays opportunistic) |
 | 6 | steering ids + undo/redo | 01 §2.3, 07 §8.8 | done 2026-09-11 |
 | 7 | snap compaction (13) | `/compact snap` on a vision model; a fact only in the archive is recalled | done 2026-09-11 (4 frames, 10/10 offsets recalled without tools; ~4.5k tokens/frame measured) |
