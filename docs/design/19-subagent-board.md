@@ -1,4 +1,4 @@
-# 19 — Subagent board: observing and steering any number of children
+# 19 — Subagents: a picker, a board, and results that always flow up
 
 Status: design v0 · 2026-09-13 · not started · extends `01-config-and-subagents.md`
 §2.7 (events, UI), `00-architecture.md` §7 (RPC), §8 (TUI), `09-signal.md` §8.
@@ -8,53 +8,61 @@ Every file:line below was read on 2026-09-13.
 ## 0. The problem, in the tree
 
 01 §2.2 item 5 promised: *the human sees children in the TUI roster, can
-focus one to read its transcript, and can steer it.* What shipped is
-`/agents` (a static list) and `/focus <name>` (a reload). Between those two
-the human is blind and mute:
+open one to read its transcript, and can steer it.* What shipped is
+`/agents` (a static list) and a `focus` mode — a second notion of "current
+session" layered on the first, with its own field, its own Esc semantics and
+its own reload path. Between those the human is blind and mute:
 
 | Fact | Where |
 |---|---|
 | A child's `TextDelta`, `ToolCall*`, `Error`, `Compacting`, `Harvesting` are dropped unless that child is focused. The parent view shows `↳ spawned x` and, minutes later, a result card. | `tui/src/model.rs:1750-1752` |
-| `/focus` **clears** `entries`, `jobs`, `usage`, `context` and reloads from the store; Esc reloads the root the same way. Root text streamed while focused is not shown live and is unrecoverable until persisted. | `model.rs:2078-2084`, `:1420-1442` |
+| `focus` is a parallel current-session: `Model.focus`, `shown() = focus.or(session)`, Esc-with-empty-editor unfocuses, `/agents` always lists the **root**'s children even when a child is shown. | `model.rs:989-990, :1085-1087`, `ui.rs:226-228`, `model.rs:1978-1981` |
 | The status line carries one number: `agents: N running`. Nothing says *which*, *doing what*, *for how long*, *blocked on whom*. | `model.rs:2134-2139` |
-| A child blocked in `send_message{await_reply}` waits up to 120 s for the parent model. A human who focuses it and types is *queued behind the blocked tool call*; the waiter key `(waiter, from)` compares session ids, so a human never resolves it. | `supervisor.rs:928-931`, `peers.rs:175-181` |
-| `subscribe_events(parent)` never receives children's events, nor `SubagentSpawned` (its `session()` is the child). A Tauri client must subscribe to everything and filter itself, or subscribe per child after discovering it. | `rpc/src/api.rs:770-776`, `lib.rs:761` |
+| A child blocked in `send_message{await_reply}` waits up to 120 s for the parent model. A human who opens it and types is *queued behind the blocked tool call*; the waiter key `(waiter, from)` compares session ids, so a human never resolves it. | `supervisor.rs:928-931`, `peers.rs:175-181` |
+| `subscribe_events(parent)` never receives children's events, nor `SubagentSpawned` (its `session()` is the child). A Tauri client must subscribe to everything and filter itself. | `rpc/src/api.rs:770-776`, `lib.rs:761` |
 | `ListChildren` is one level, store rows only: no running flag, no depth, no last text. `Cancel` fans out one level. After `--resume`, `/focus` fails until `/agents` runs. | `supervisor.rs:1122-1135`, `:662-672`, `model.rs:2052-2054` |
-| `Loaded` has no `name`/`parent`; a focused header shows the model only. | `lib.rs:183-200`, `model.rs:2155` |
-| Signal: `/agents` only. | `signal/src/commands.rs:262-276` |
+| `Loaded` has no `name`/`parent`; a child's header shows the model only. | `lib.rs:183-200`, `model.rs:2155` |
+
+What already works and must stay: **any** child turn that finishes delivers
+a `<subagent_result>` to the parent — `child_finished` runs on every child
+`TurnFinished`, whoever started the turn (`supervisor.rs:491-509, 464-488`).
+A human who steers a finished child gets, when that turn ends, a second
+result card in the parent, and the parent model reacts to it. That is the
+behaviour the whole design leans on; it is not new, it is verified in §7.
 
 The model side is fine and stays as is: children are detached, results
 arrive as `<subagent_result>`, peers talk through `send_message`, the roster
-is not in the prompt (07 §10). This doc is about the **human** side: one
-API surface for a roster with live state, one TUI shape that shows every
-child's state without leaving the parent, and one addressing form that
-steers any child from anywhere.
+is not in the prompt (07 §10). This doc is about the **human** side.
 
-## 1. Principles applied
+## 1. The shape
 
-- **One list of commands** (00 §8): everything below is an `rpc::Api` method
-  or an existing `AgentEvent`. The TUI calls the trait in-process; Tauri and
-  Signal get the same thing for free.
-- **Derive, don't duplicate**: no new `AgentEvent` variant. Running, current
-  tool, awaiting-reply, error, elapsed are all already on the bus as
-  `TurnStarted/Finished`, `ToolCallStarted/Finished`, `Error`,
-  `SubagentSpawned`. A frontend that has the primitive events computes the
-  board; a frontend attaching late asks for one snapshot (`list_agents`).
-  (Rejected: a supervisor-published `SubagentState` event — a second copy of
-  state that already streams, which drifts.)
-- **Board = live, transcript = history.** What is running is shown in a
-  place that updates in place; what finished becomes a card once. Same rule
-  tool cards already follow (00 §8 "nothing ever looks frozen").
-- **Text-native addressing.** Children are named; `@name` in the editor is
-  the steer, on every frontend, with completion where there is a screen.
-  (Rejected: number keys / tabs — collide with typing; a mouse-driven tree
-  — no mouse capture, 00 §8.)
-- **Scale by rule, not by pane.** N is bounded by `max_concurrent` (8) per
-  parent but unbounded over a session's life and over depth. The board shows
-  what is *live*, caps rows, and idle children fold into a count; `/agents`
-  expands. (Rejected: a side pane — 25 columns of an 80–120 column terminal
-  taken from markdown for a list that is empty most of the time. Tauri gets
-  the tree pane; the API here is what it needs.)
+Three ideas, no more:
+
+1. **A subagent is a session.** Opening one is a session switch — the
+   mechanism `/sessions` already has ("the one you leave keeps running").
+   There is one current session, `Model.session`. `focus`, `shown()`,
+   `Child`, `children`, the Esc unfocus branch, and `/focus` are deleted.
+2. **`/agents` is a picker** over the current session's subtree — running
+   and past children alike — with live state on every row. Pick one and you
+   are in it: its transcript, its status line, its editor. Type and you steer
+   it: `Steer` while it runs, `SendInput` when it is idle or finished, an
+   *answer* when it is blocked asking (§2.3). When that turn ends the parent
+   gets its result card, as today. **`/parent`** takes you up one level; with
+   the default `max_depth: 1` that is the top-level session.
+3. **A board** under the transcript shows what is live in the subtree while
+   anything is live, so you see every child's state without leaving the
+   parent. Board = live, transcript = history — the rule tool cards already
+   follow (00 §8 "nothing ever looks frozen").
+
+Principles behind them: **one list of commands** (00 §8) — everything below
+is an `rpc::Api` method or an existing `AgentEvent`, so Tauri and Signal get
+it for free; **derive, don't duplicate** — no new `AgentEvent` variant, the
+board is computed from `TurnStarted/Finished`, `ToolCallStarted/Finished`,
+`Error`, `SubagentSpawned`, and a late-attaching frontend asks for one
+snapshot (`list_agents`); **scale by rule, not by pane** — N is bounded by
+`max_concurrent` (8) per parent but unbounded over a session's life and over
+depth, so the board shows what is live and caps rows, the picker shows
+everything.
 
 ## 2. API surface (`rpc::Api`)
 
@@ -74,15 +82,16 @@ pub struct AgentInfo {
     pub agent: Option<String>,        // external harness name (06), None = wth
     pub model: String,
     pub state: AgentState,
-    pub turns: u32,                   // finished turns (store count of user rows, cheap)
-    pub started_at: Option<DateTime<Utc>>,  // current turn start; None when idle
+    pub turns: u32,                   // finished turns
+    pub started_at: Option<DateTime<Utc>>,  // current turn start; None when not running
+    pub finished_at: Option<DateTime<Utc>>, // last TurnFinished; the picker's "3m ago"
     pub last: String,                 // first line of the last assistant text, ≤ 80 chars
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum AgentState {
-    Idle,
+    Idle,                             // never ran or finished normally
     Running,
     Awaiting { from: String },        // blocked in send_message{await_reply} on `from` ("parent" or a child name)
     Approval { tool: String },        // an ApprovalRequested for this session is unanswered
@@ -93,15 +102,14 @@ pub enum AgentState {
 
 Sources, all already held by `Agents`: `running` set (`supervisor.rs:495-504`),
 `waiters` keys `(waiter, from)` → `Awaiting` for the `waiter` (`:74`),
-`child_turns` gains `started_at: Instant` next to its timer (`:149-152`),
-store `last_turn_text` (`store.rs`) for `last`. `Approval` comes from the
-bus: `Agents` subscribes to `ApprovalRequested`/`ApprovalResolved`
-(`tools/src/approval.rs:38, :56`, both carry `id`; the request carries
-`session` and `tool`) and keeps `HashMap<SessionId, (ApprovalId, String)>` —
-the same two events the TUI already renders the modal from, so no new ask on
-the registry. `Error`/`Cancelled` come from the last `TurnFinished.stop_reason`
-per session, kept in a small `HashMap<SessionId, String>` the supervisor
-already sees the event for.
+`child_turns` gains `started_at: Instant` next to its timer (`:149-152`;
+follow-up turns get an entry too, timer-less), store `last_turn_text` for
+`last`. `Approval` comes from the bus: `Agents` subscribes to
+`ApprovalRequested`/`ApprovalResolved` (`tools/src/approval.rs:38, :56`) and
+keeps `HashMap<SessionId, (ApprovalId, String)>` — the same two events the
+TUI renders the modal from, no new ask on the registry. `Error`/`Cancelled`
+and `finished_at` come from the last `TurnFinished` per session, kept in a
+small map the supervisor already sees the event for.
 
 `Roster { session }` (the compaction-head line `Subagents: a (running), b
 (idle)`, `:986-1007`) is rendered *from* this vector: one source of state.
@@ -122,220 +130,244 @@ is the one it would miss.)
 
 ### 2.3 Steering (behaviour, no new methods)
 
-- `steer` / `send_input` already take any session id. New rule in
-  `Agents::input`: if the target has a pending waiter `(target, _)` — it is
-  blocked in `send_message{await_reply}` — the text **resolves the waiter**
-  instead of queueing: the child's tool call returns the human's words, tagged
-  by publishing `MessageDelivered { session: target, from: "you", text }` so
-  both transcripts show it. A human answer is the most useful steer there is;
-  today it is the one that cannot land (§0 row 4).
+- `steer` / `send_input` already take any session id, and a finished child's
+  turn already reports to its parent (§0). New rule in `Agents::input`: if
+  the target has a pending waiter `(target, _)` — it is blocked in
+  `send_message{await_reply}` — the text **resolves the waiter** instead of
+  queueing: the child's tool call returns the human's words, and
+  `MessageDelivered { session: target, from: "you", text }` is published so
+  the transcript shows it. A human answer is the most useful steer there is;
+  today it is the one that cannot land.
 - `cancel(session)` fans out to every **running descendant**, not one level.
   Idle descendants are left alone (01 §2.8 unchanged).
 - `Loaded` gains `name: Option<String>` and `parent: Option<SessionId>` so a
-  focused view can head itself without a roster lookup.
+  child's view can head itself and `/parent` knows where to go without a
+  roster lookup.
 
 ### 2.4 Not added
 
-No `focus`/`view` state on the server (a frontend concern); no `rename_agent`
-(names are the model's handle; renaming them mid-run breaks `send_message`);
-no `pause`; no `steer_all`. Model-facing tools unchanged (01 §2.4 stands:
-no `list_subagents`, `cancel_subagent`, `wait`).
+No server-side "current agent" (a frontend concern; Signal has none); no
+`rename_agent` (names are the model's handle; renaming mid-run breaks
+`send_message`); no `pause`; no `steer_all`. Model-facing tools unchanged
+(01 §2.4 stands: no `list_subagents`, `cancel_subagent`, `wait`).
 
 ## 3. TUI
 
-### 3.1 Views: focus is a switch, not a reload
+### 3.1 `/agents`: the picker
 
-`Model` today has one `entries`, `streaming`, `usage`, `context`, `queued`,
-`jobs`, `model_id`, `effort` — the root's, overwritten on `/focus`. These
-move into `struct View` in `Model.views: BTreeMap<SessionId, View>`;
-`Model.shown: SessionId` picks the one rendered. `apply_agent` routes each
-event to `views[ev.session()]`, creating the view on first sight (a child
-spawned this run) or on `/focus` (a `Load` fills it once). Every view keeps
-receiving deltas whether shown or not; switching is instant and lossless in
-both directions — the root keeps streaming while you read a child, and the
-child's text is complete when you come back to it.
+Same widget as `/sessions` (`ui.rs:362-382`): a list under the editor, ↑↓,
+Enter switches, Esc closes. Rows are `list_agents(current)`, running first in
+spawn order, then awaiting/approval, then the rest newest-finished first;
+depth ≥ 2 indented under its parent:
 
-Memory: a `View` is the entries of one session, the same thing the root
-holds today; `Model::tail` already bounds what is *laid out* per frame
-(00 §8). A child view that is idle and unfocused for the whole session costs
-its transcript once. (Rejected: keeping only the shown view live and
-replaying from the store on switch — that is today's behaviour, and the
-store lags the stream by a tool batch.)
+```
+agents  ⏎ open  esc close  (the one you leave keeps running)
+● ⠹ grep-logs      running   read_file crates/agent/src/loop_.rs      1m32s
+  ⏳ fix-tests      awaiting  parent: "should I also update the docs?"  48s
+  ⚠ scout          approval  shell `cargo test -p agent`
+     ↳ probe       idle      "Ports 80 and 443 answer; 8080 is …"     3m ago
+  ✗ deploy-check   error     model: 429 rate limited                  12m ago
+  · summarise      idle      "Three findings: the cache miss is …"    41m ago
+```
 
-### 3.2 The board
+Row anatomy: glyph · name · state word · detail · age. Detail by state:
+running → `preparing <tool>` / `running <tool> <first arg>` / `streaming`
+(the words the status line already uses); awaiting → the question's first
+line; approval → tool and described args; error → the message; idle →
+`last`. Age is elapsed since `started_at` while running, since
+`finished_at` otherwise. Glyphs are text, not emoji (00 §8); the name
+colour is the peer magenta of `⟵` cards. `/agents` with no children says
+`no subagents`. Ctrl+O on a row — no: the picker is a list; the transcript
+is one Enter away.
+
+Enter is `Command::Open(id)` — the exact path `/sessions` takes today
+(`Load`, replace entries, `model_id`/`effort`/`queued` from `Loaded`). The
+session left keeps running; its events are no longer rendered but nothing is
+lost — the store has them, `Load` replays them. (Same semantics as
+`/sessions`; the one known gap — text mid-stream at the moment you switch
+back is shown from its next delta, the earlier part only after the turn
+persists — is `/sessions`' gap too and is fixed there if it is fixed.)
+
+### 3.2 In a subagent
+
+The view is a session view. Header: `↳ grep-logs  child of <parent title>
+· claude-haiku-4-5 · running 1m32s`; at depth 2: `↳ scout ▸ probe`. The
+status line is the child's. Plain input steers the child: `Steer` while it
+runs (`InputQueued` card, Alt+Up withdraws, as today), `SendInput` when idle,
+finished, errored or cancelled — a new child turn, whose end delivers a fresh
+`<subagent_result>` to the parent (§0). If the child is `Awaiting`, the
+input answers it (§2.3) and the editor's placeholder says so beforehand:
+`answer grep-logs (asked parent: "should I …")`. `/cancel` cancels this
+child. `/agents` here lists *this* child's subtree (usually empty →
+`no subagents`). `/model`, `/effort`, `/compact`, `/undo` act on the child
+exactly as on any session — it is one.
+
+**`/parent`** opens the parent (`Loaded.parent`), i.e. the top-level session
+at the default depth; at depth 2 it climbs one level and a second `/parent`
+reaches the top. At the top it says `this is the top-level session`. A
+`/parent`-then-`/agents` round trip is how you hop between siblings.
+
+### 3.3 The board
 
 A block between the transcript tail and the editor, present only while at
-least one descendant is not idle (or while pinned by `/agents`). One row per
-agent, indented by depth, running first in spawn order, then awaiting /
-approval, then error / cancelled; idle rows only when pinned. Rows are
-derived from `views[id]`'s last events plus the `list_agents` snapshot taken
-on attach/resume:
+least one descendant of the *current* session is not idle. One row per live
+agent, the same row format as the picker minus the age column collapsing to
+elapsed, indented by depth, running first then awaiting/approval then
+error/cancelled; rows capped at 6, overflow folds into `… 3 more (/agents)`.
+Idle children never appear on the board — they are history, the picker has
+them.
 
 ```
 ╭ agents ─────────────────────────────────────────────────────────────────╮
-│ ⠹ grep-logs      running  read_file crates/agent/src/loop_.rs   1m32s  4⚙ │
-│ ⏳ fix-tests      awaiting parent  "should I also update the docs?"  48s │
-│ ⚠ scout          approval  shell `cargo test -p agent`                   │
-│ ✗ deploy-check   error  model: 429 rate limited                          │
-│    ↳ probe       idle  ✓ 2 turns  "Ports 80 and 443 answer; 8080 is …"   │
-│ … 3 idle  (/agents to list)                                              │
+│ ⠹ grep-logs      running   read_file crates/agent/src/loop_.rs   1m32s  │
+│ ⏳ fix-tests      awaiting  parent: "should I also update the docs?" 48s │
+│ ⚠ scout          approval  shell `cargo test -p agent`                  │
 ╰──────────────────────────────────────────────────────────────────────────╯
 ```
 
-Row anatomy: glyph + name (14 cols, the same magenta as `⟵` peer cards,
-00 §8) · state word · detail · elapsed · tool count. Detail by state:
-running → `preparing <tool>` / `running <tool> <first arg>` / `streaming`
-(exactly the words the status line uses for the root); awaiting → the
-question's first line; approval → the tool and its described args; error →
-the message; idle → `✓ n turns` and `last`. Elapsed ticks from
-`started_at` while the frame loop runs (it already runs while anything
-animates). Rows are capped at 6; overflow folds into the `…` line. The
-board is not focusable and takes no keys; it is a display, like the status
-line. Glyphs are text, not emoji (00 §8).
+Rows derive from events routed by session id into `Model.agents:
+BTreeMap<SessionId, AgentRow>` (name, parent, state, current tool, last
+text line, started_at) — seeded by `list_agents(current)` on open/resume,
+updated by `SubagentSpawned`, `TurnStarted/Finished`,
+`ToolCallPending/Started/Finished`, `Error`, `ApprovalRequested/Resolved`
+for any id in the map (today these are dropped for non-shown sessions,
+`model.rs:1750-1752`; now they update a row before the drop). Elapsed ticks
+while the frame loop runs (it runs while anything animates). The board is
+not focusable and takes no keys; it is a display, like the status line.
 
-What changes in the root transcript: nothing is added for running children
-(the board has them). Two things that are dropped today become one-line
-interjects, because they must not be silent: a child's `Error`
-(`↳ grep-logs error: model: 429 …`, red) and a child's `TurnFinished` with
-`cancelled` (`↳ grep-logs cancelled after 10m (max_runtime)`). Results keep
-arriving as `⟵ name` cards (01 §2.7).
+What changes in the parent transcript: nothing is added for running
+children (the board has them). Two things that are silent today become
+one-line interjects, because they must not be silent: a child's `Error`
+(`↳ grep-logs error: model: 429 …`, red) and a child's `TurnFinished
+cancelled` (`↳ grep-logs cancelled after 10m (max_runtime)`). Results keep
+arriving as `⟵ name` cards (01 §2.7). When the board is hidden and idle
+children exist, the status line shows `agents: 5 idle`; when rows show, the
+count goes (redundant).
 
-### 3.3 Addressing: `@name`
+### 3.4 Approvals
 
-Typing `@` at the start of the editor opens the same popup the slash
-commands use, listing the tree's names with their board state; Tab/Enter
-completes `@grep-logs `. Submitting `@grep-logs use the second option` sends
-it to that child — `Steer` if it is running, `SendInput` if idle, and per
-§2.3 an answer if it is awaiting — **without changing the shown view**. The
-parent view echoes `◆ you → grep-logs` (one card, collapsed), and the child
-view gets the ordinary `◆ you` card via `InputQueued`/`TurnStarted`.
-`@parent` from a focused child addresses its parent; `@root` the root.
-Names resolve against the whole tree; a duplicate across parents is an
-error naming both (`ambiguous: deploy/probe, scout/probe` — address with
-`@deploy/probe`), the same shape `Catalog::resolve` uses for models.
+The modal already carries `[agent: name]` (01 §2.7). It gains `o open` beside
+`y`/`n`: answers nothing, opens the child so the human can read what led to
+the request, and the modal stays up. (Rejected: auto-opening the child on
+its approval — it yanks the editor from under a sentence being typed.)
 
-Plain input in a focused view still goes to the focused session (today's
-behaviour, `model.rs:2015-2046`). `/cancel` acts on the shown session;
-`/cancel <name>` on that agent. Alt+Up (withdraw) acts on the shown session.
+### 3.5 Open and resume
 
-### 3.4 Focus, header, keys
+On `--resume`, on `/sessions` switch, on `/agents`, and on `/parent`, the
+TUI calls `list_agents(current)` once and seeds `Model.agents`, so names,
+states and the board are right before any event arrives (fixes the
+`--resume` blindness at `model.rs:2052-2054`). No private path: Signal and
+Tauri make the same call.
 
-- `/focus <name>` switches `shown` (view created and `Load`ed on first use;
-  works after `--resume` because names come from the `list_agents` snapshot,
-  not from `SubagentSpawned` seen this run). Esc with an empty editor returns
-  to the parent of the shown view (one level; repeat to reach the root).
-- Header while focused: `↳ grep-logs  child of root · claude-haiku-4-5 ·
-  running 1m32s` (from `Loaded.name/parent` and the view's state). At depth
-  2: `↳ scout ▸ probe`.
-- Alt+Right / Alt+Left cycle `shown` through root and the board's row order
-  (Tab completes commands, Alt+Up withdraws — both taken). The status line
-  shows `alt+←→ agents` while a board exists so the binding is discoverable.
-- Approval modal from a child keeps `[agent: name]` (01 §2.7) and adds
-  `f focus`, a third key beside `y`/`n`, which answers nothing and switches
-  the view so the human can read what led to the request. (Rejected:
-  auto-focusing on a child's approval — it yanks the editor from under a
-  sentence being typed.)
-- Status line gains the board summary when the board is hidden (no live
-  rows): `agents: 5 idle`. When rows show, the count is redundant and goes.
+### 3.6 Later, if a transcript shows the need
 
-### 3.5 Attach and resume
-
-On `--resume` and on the first frame of a new session with a `parent`-less
-row, the TUI calls `list_agents(root)` once and seeds `views` (names, state,
-`last`) so `/focus`, `@name` and the board are correct before any event
-arrives. Same call after `/agents`. Signal and Tauri do the same call; the
-TUI has no private path.
+`@name text` in the editor as a steer that does not switch views (answer a
+child's question while the parent is mid-stream). The picker + `/parent`
+round trip covers it in three keystrokes today; add the shortcut when
+someone reaches for it.
 
 ## 4. Signal (09)
 
-`/agents` renders `list_agents`: `name · state · last · age` (state word as
-in §3.2; no glyphs — Signal renders text). `@name text` steers per §3.3
-rules; the reply is `→ grep-logs (queued)` / `(started)` / `(answered)`.
-No `/focus` (09 §8 stands: one bound session per chat; a child's transcript
-is `wth --resume <id>` territory). `/cancel <name>`.
+`/agents` renders `list_agents` for the bound session: `name · state · last
+· age` (state word as in §3.1; no glyphs). `/cancel <name>`. No opening of a
+child (09 §8 stands: one bound session per chat; a child is
+`wth --resume <id>` territory).
 
 ## 5. Tauri (18)
 
 Nothing specific: `list_agents(root)` + `subscribe_events(root, descendants:
-true)` is a live tree; `send_input`/`steer` per node; `ts-rs` emits
-`AgentInfo`/`AgentState`. The board of §3.2 is the terminal projection of
-the same data; a GUI shows it as a sidebar tree with the shown session's
+true)` is a live tree; `send_input`/`steer`/`cancel` per node; `ts-rs` emits
+`AgentInfo`/`AgentState`. The picker and board are the terminal projections
+of the same data; a GUI shows a sidebar tree with the selected session's
 transcript beside it.
 
 ## 6. What the model sees
 
 Unchanged. The roster is not in the prompt (07 §10); `Roster` for the
-compaction head now renders from `list_agents`, same text. A human answer to
+compaction head renders from `list_agents`, same text. A human steer to a
+child is an ordinary user message to that child (01 §2.3); a human answer to
 an awaiting child arrives as the tool's return value, exactly as the
-parent's would; the child cannot tell and does not need to. A human `@name`
-steer is an ordinary user message to that child (01 §2.3).
+parent's would. The parent sees a `<subagent_result>` when the steered turn
+ends, exactly as after the spawn turn — it does not know a human intervened,
+and does not need to: the result speaks for itself.
 
 ## 7. Implementation order
 
-Each step leaves `wth` runnable; skip formatters/tests mid-step, run once at
-the end of each.
+Each step leaves `wth` runnable; formatters and the suite once per step.
 
 1. **Store + supervisor.** `Store::descendants(root)` (recursive CTE),
    `AgentInfo`/`AgentState`, `ListAgents` (replaces `ListChildren`; `Roster`
-   renders from it), `child_turns.started_at`, last-stop map, human input
-   resolves waiters + `MessageDelivered{from: "you"}`, recursive `Cancel`,
-   `Loaded.name/parent`. Check (headless, RPC): parent spawns `a`, `b`;
-   `list_agents` shows both `running` with `started_at`; `b` asks parent with
-   `await_reply`; `steer(b, "teal")` → `b`'s tool output is `teal` and both
-   sessions show `MessageDelivered from=you`; `cancel(root)` with a
-   depth-2 child running → grandchild `TurnFinished cancelled`.
+   renders from it), `child_turns.started_at`, last-`TurnFinished` map,
+   `ApprovalRequested/Resolved` subscription, human input resolves waiters +
+   `MessageDelivered{from: "you"}`, recursive `Cancel`, `Loaded.name/parent`.
+   Check (headless, RPC): parent spawns `a`, `b`; `list_agents` shows both
+   `running` with `started_at`; `b` asks parent with `await_reply`;
+   `steer(b, "teal")` → `b`'s tool output is `teal`, both sessions get
+   `MessageDelivered from=you`; after `a` finishes, `send_input(a, "and
+   the tests?")` → `a` runs again and the parent receives a **second**
+   `<subagent_result name="a">`; `cancel(root)` with a depth-2 child running
+   → grandchild `TurnFinished cancelled`.
 2. **RPC.** `list_agents`, `subscribe_events(session, descendants)`, remove
    `list_children`. Check: a subscription on the root with `descendants:
    true` receives the children's `TextDelta` and the `SubagentSpawned`;
    without it, neither (today's behaviour).
-3. **TUI views.** `View` + `views` + `shown`; `/focus` and Esc switch without
-   `Load` after the first; `Loaded` header. Check (pty): `/focus a` while the
-   root streams, Esc → root text that streamed meanwhile is present; `/focus
-   a` again → `a`'s text is complete.
-4. **TUI board + `@name` + interjects + keys.** Check (pty, two children,
-   one asking the parent): board shows `⠹` and `⏳` rows with tool/question;
-   `@a hello` → `InputQueued` on `a`, `◆ you → a` in the root; `@b yes` →
-   `b`'s `send_message` returns `yes`; Alt+Right lands on `a`; a child
-   `Error` interjects red in the root.
-5. **Signal.** `/agents` from `list_agents`, `@name`, `/cancel <name>`.
-6. **Docs.** §9 edits, in the same commit as step 4 (12 §0 rule).
+3. **TUI: delete focus, add the picker and `/parent`.** Remove `Model.focus`,
+   `shown()`, `Child`/`children`, `/focus`, the Esc unfocus branch; `/agents`
+   → `Menu::Agents` picker → `Command::Open`; `/parent`; child header from
+   `Loaded`. Check (pty): `/agents` lists a running and a finished child;
+   Enter on the finished one shows its transcript; typing starts a new child
+   turn; `/parent` returns to the root, which shows the new `⟵ name` card
+   when the child ends; Esc with an empty editor no longer switches anything.
+4. **TUI: board + interjects + approval `o`.** Check (pty, two children, one
+   asking the parent): board shows `⠹` and `⏳` rows with tool and question;
+   opening the awaiting child shows the answer placeholder and typing
+   returns the text to its `send_message`; a child `Error` interjects red in
+   the parent; a child's approval modal `o` opens it.
+5. **Signal.** `/agents` from `list_agents`, `/cancel <name>`.
+6. **Docs.** §9 edits, in the same commit as step 3 (12 §0 rule).
 
 ## 8. Rejected
 
+- **Focus** (a second current-session with its own Esc and reload). Two
+  notions of "where am I" for one screen; the picker + `/parent` is the
+  `/sessions` model applied to the tree, nothing new to learn.
 - **Interleaving children's streams into the parent transcript** (oh-my-pi
   collapsed task cards, updated live). Readable at one child; at three the
   parent's own words are pushed off screen every second. The board is the
   live line; the card comes once.
-- **A right-hand tree pane in the TUI.** §1.
-- **`SubagentState` event / server-side board.** §1 — derived state on the
-  wire drifts from the primitives, and every frontend already receives them.
-- **`focus` as server state** (one "current agent" per client tracked by
-  `Agents`). Frontends differ (Signal has none); state belongs where it is
-  rendered.
-- **Auto-focus on child approval / on child error.** Yanks the editor.
-  Errors interject in the parent instead.
+- **A right-hand tree pane in the TUI.** 25 columns of an 80–120 column
+  terminal taken from markdown for a list that is empty most of the time.
+  Tauri gets the tree pane; the API here is what it needs.
+- **`SubagentState` event / server-side board.** Derived state on the wire
+  drifts from the primitives, and every frontend already receives them.
+- **A server-side "current agent".** Frontends differ (Signal has none);
+  state belongs where it is rendered.
+- **Auto-opening a child on its approval or error.** Yanks the editor.
+  Errors interject in the parent; approvals offer `o`.
 - **Numbered agents (`1`–`9` to switch).** Digits are typed constantly;
-  names are already the model's handle and are unique per parent.
+  names are the model's handle and unique per parent; the picker is ↑↓⏎.
 - **Human replies bypassing the waiter (always queue).** Leaves the child
   blocked up to `reply_timeout_secs` with the answer sitting in its queue.
-- **Broadcast steer (`@all`).** No transcript has needed it; one
-  `spawn_subagent` `task` carries shared context (01 §2.4).
+- **Suppressing the result card for human-steered child turns.** The parent
+  model should react to what its child did, whoever asked for it; the human
+  chose to steer *inside the parent's task*. Wanting a private side
+  conversation with a child is a new session, not a child.
 - **Child transcripts mirrored into the parent's history in sqlite** (so
-  `--resume` shows everything). The store already has both; `load_session`
-  per child is the read.
+  `--resume` shows everything). The store has both; `load_session` per child
+  is the read.
 
 ## 9. Amendments when shipped
 
 - `00-architecture.md` §7: `subscribe_events(session?, descendants?)`; §8:
-  the board paragraph and `@name` after the peer-cards paragraph; §12 known
+  picker/board/`/parent` paragraph after the peer-cards paragraph; §12 known
   gaps: strike "no per-child observability".
-- `01-config-and-subagents.md` §2.7: replace the `/agents`/`/focus` sentence
-  with a pointer here; `list_children` → `list_agents`; §2.8: cancel fan-out
-  is recursive.
-- `09-signal.md` §8: `/agents` columns, `@name`, `/cancel <name>`.
-- `06-acp.md` §3.6: ACP children appear on the board with `Running`/`Idle`
-  only (no `Awaiting`: they have no `send_message`, §3.8); `Approval` via
-  `ExternalApproval` is shown the same way.
+- `01-config-and-subagents.md` §2.2 item 5 and §2.7: "focus" → picker +
+  `/parent`, pointer here; `list_children` → `list_agents`; §2.8: cancel
+  fan-out is recursive.
+- `09-signal.md` §8: `/agents` columns, `/cancel <name>`.
+- `06-acp.md` §3.6: ACP children appear in the picker/board with
+  `Running`/`Idle`/`Approval` only (no `Awaiting`: they have no
+  `send_message`, §3.8).
 
 ## 10. Not in this doc
 
@@ -343,4 +375,5 @@ Permits and `max_runtime_secs` for follow-up child turns (today spawn-turn
 only, `supervisor.rs:876-897`); eviction of idle session actors (00 §12);
 an MCP back-channel so ACP children can message their parent (06 §3.8);
 `deltas: false` on `subscribe_events` for a GUI that only wants the tree
-(add when a measured client asks for it).
+(add when a measured client asks for it); replaying in-flight stream text on
+a session switch (`/sessions` and this picker share it).
