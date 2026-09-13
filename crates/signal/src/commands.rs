@@ -56,7 +56,11 @@ const COMMANDS: &[(&str, &str, &str)] = &[
         "<id>",
         "bind this thread to a session (prefix ok)",
     ),
-    ("/cancel", "", "abort the turn"),
+    (
+        "/cancel",
+        "[name]",
+        "abort the turn, or a subagent's by name",
+    ),
     ("/compact", "[summary|cut|snap|style …]", "fold the context"),
     ("/undo", "", "drop the last turn (redo restores)"),
     ("/redo", "", "restore the last undone turn"),
@@ -66,7 +70,11 @@ const COMMANDS: &[(&str, &str, &str)] = &[
         "[level|clear]",
         "show or set the reasoning effort",
     ),
-    ("/agents", "", "this session's subagents"),
+    (
+        "/agents",
+        "",
+        "this session's subagents: name · state · last · age",
+    ),
     ("/jobs", "[kill <id>]", "list background jobs"),
     ("/prompt", "", "the assembled system prompt"),
     ("/skills", "[add <url>|rm <name>|sync]", "skills"),
@@ -178,10 +186,38 @@ async fn run(cx: &mut Cx<'_>, name: &'static str, arg: &str) -> anyhow::Result<R
                 (None, _) => text(format!("no session {arg:?}")),
             }
         }
-        "/cancel" => {
+        "/cancel" if arg.is_empty() => {
             let session = cx.session.context(NO_SESSION)?;
             agent()?.ask(agent::Cancel { session }).await.map_err(err)?;
             text("cancelled".into())
+        }
+        "/cancel" => {
+            let session = cx.session.context(NO_SESSION)?;
+            let rows = agent()?
+                .ask(agent::ListAgents { session })
+                .await
+                .map_err(err)?;
+            let hits: Vec<&agent::AgentInfo> = rows
+                .iter()
+                .filter(|a| a.name == arg || path(a, &rows) == arg)
+                .collect();
+            match hits.as_slice() {
+                [a] => {
+                    agent()?
+                        .ask(agent::Cancel { session: a.id })
+                        .await
+                        .map_err(err)?;
+                    text(format!("cancelled {arg}"))
+                }
+                [] => text(format!("no subagent named {arg}")),
+                many => text(format!(
+                    "{arg} is ambiguous: {}",
+                    many.iter()
+                        .map(|a| path(a, &rows))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )),
+            }
         }
         "/compact" => compact_cmd(cx, arg).await,
         "/undo" => {
@@ -260,17 +296,25 @@ async fn run(cx: &mut Cx<'_>, name: &'static str, arg: &str) -> anyhow::Result<R
             text(effort.map_or_else(|| "effort cleared".to_owned(), |e| format!("effort: {e}")))
         }
         "/agents" => {
-            let parent = cx.session.context(NO_SESSION)?;
+            let session = cx.session.context(NO_SESSION)?;
             let rows = agent()?
-                .ask(agent::ListChildren { parent })
+                .ask(agent::ListAgents { session })
                 .await
                 .map_err(err)?;
-            text(table(rows.iter().map(|s| {
+            if rows.is_empty() {
+                return Ok(Reply::Text("no subagents".to_owned()));
+            }
+            text(table(rows.iter().map(|a| {
+                let since = if a.state == agent::AgentState::Running {
+                    a.started_at
+                } else {
+                    a.finished_at
+                };
                 vec![
-                    s.name.clone().unwrap_or_default(),
-                    short(s.id),
-                    s.model.clone(),
-                    age(s.created_at),
+                    path(a, &rows),
+                    a.state.word().to_owned(),
+                    a.last.chars().take(40).collect(),
+                    since.map_or_else(String::new, age),
                 ]
             })))
         }
@@ -755,6 +799,15 @@ fn age(t: DateTime<Utc>) -> String {
         60..3600 => format!("{}m", s / 60),
         3600..86400 => format!("{}h", s / 3600),
         _ => format!("{}d", s / 86400),
+    }
+}
+
+/// `parent/name` from the asked session down: a depth-1 child is its bare
+/// name, a grandchild `parent/name`. `/cancel` accepts either form.
+fn path(a: &agent::AgentInfo, rows: &[agent::AgentInfo]) -> String {
+    match rows.iter().find(|p| p.id == a.parent) {
+        Some(p) => format!("{}/{}", path(p, rows), a.name),
+        None => a.name.clone(),
     }
 }
 

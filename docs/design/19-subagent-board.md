@@ -82,7 +82,6 @@ pub struct AgentInfo {
     pub agent: Option<String>,        // external harness name (06), None = wth
     pub model: String,
     pub state: AgentState,
-    pub turns: u32,                   // finished turns
     pub started_at: Option<DateTime<Utc>>,  // current turn start; None when not running
     pub finished_at: Option<DateTime<Utc>>, // last TurnFinished; the picker's "3m ago"
     pub last: String,                 // first line of the last assistant text, ≤ 80 chars

@@ -2,17 +2,18 @@
 //! `ask`; the subscription drains a `broadcast::Receiver` fed by
 //! [`crate::bridge`].
 
+use std::collections::HashSet;
 use std::fmt::Display;
 use std::path::PathBuf;
 
 use agent::{
-    AddAcp, AddProvider, AddSkill, AddSkillRepo, Agents, Cancel, Compact, CompactStyle,
-    GetCompactStyle, GetTitleModel, Harvest, ListAcp, ListLogins, ListModels, ListProviders,
-    ListQueued, ListRegistry, ListSessions, ListSkills, LoadSession, LoadSkill, Loaded, Login,
-    LoginInfo, Logout, ModelInfo, NewSession, ProviderInfo, QueuedInput, Redo, RemoveAcp,
-    RemoveProvider, RemoveSkill, RemoveSkillRepo, SendInput, SessionSummary, SetCompactStyle,
-    SetEffort, SetModel, SetTitleModel, ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo,
-    Withdraw,
+    AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentInfo, Agents, Cancel, Compact, CompactStyle,
+    GetCompactStyle, GetTitleModel, Harvest, ListAcp, ListAgents, ListLogins, ListModels,
+    ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills, LoadSession, LoadSkill,
+    Loaded, Login, LoginInfo, Logout, ModelInfo, NewSession, ProviderInfo, QueuedInput, Redo,
+    RemoveAcp, RemoveProvider, RemoveSkill, RemoveSkillRepo, SendInput, SessionSummary,
+    SetCompactStyle, SetEffort, SetModel, SetTitleModel, ShowPrompt, SkillBody, SkillMeta, Steer,
+    SyncSkills, Undo, Withdraw,
 };
 use jsonrpsee::core::{RpcResult, SubscriptionResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
@@ -112,9 +113,10 @@ pub trait Api {
     /// Every session, newest first.
     #[method(name = "list_sessions")]
     async fn list_sessions(&self) -> RpcResult<Vec<SessionSummary>>;
-    /// Subagent sessions of `parent`, newest first, with their peer names.
-    #[method(name = "list_children")]
-    async fn list_children(&self, parent: SessionId) -> RpcResult<Vec<SessionSummary>>;
+    /// The subtree under `session` (children, grandchildren, …), pre-order,
+    /// each with its live state (19 §2.1).
+    #[method(name = "list_agents")]
+    async fn list_agents(&self, session: SessionId) -> RpcResult<Vec<AgentInfo>>;
     /// Rendered history of one session plus whether a turn is in flight.
     #[method(name = "load_session")]
     async fn load_session(&self, session: SessionId) -> RpcResult<Loaded>;
@@ -304,10 +306,16 @@ pub trait Api {
     #[method(name = "shutdown")]
     async fn shutdown(&self) -> RpcResult<()>;
     /// Stream every wire-visible event as `{"type": ..., ...}`, optionally
-    /// only those carrying `session`. A slow client sees
+    /// only those carrying `session`. `descendants: true` (default `false`)
+    /// also delivers events of every session in `session`'s subtree, plus
+    /// `SubagentSpawned` whose `parent` is in it (19 §2.2). A slow client sees
     /// `{"type":"Lagged","count":n}` where `n` events were dropped.
     #[subscription(name = "subscribe_events", unsubscribe = "unsubscribe_events", item = serde_json::Value)]
-    async fn subscribe_events(&self, session: Option<SessionId>) -> SubscriptionResult;
+    async fn subscribe_events(
+        &self,
+        session: Option<SessionId>,
+        descendants: Option<bool>,
+    ) -> SubscriptionResult;
 }
 
 /// Server state: the event feed and the runtime (for `shutdown`).
@@ -472,8 +480,8 @@ impl ApiServer for Server {
         ask::<Agents, _>(agent::AGENT_ACTOR, ListSessions).await
     }
 
-    async fn list_children(&self, parent: SessionId) -> RpcResult<Vec<SessionSummary>> {
-        ask::<Agents, _>(agent::AGENT_ACTOR, agent::ListChildren { parent }).await
+    async fn list_agents(&self, session: SessionId) -> RpcResult<Vec<AgentInfo>> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, ListAgents { session }).await
     }
 
     async fn load_session(&self, session: SessionId) -> RpcResult<Loaded> {
@@ -757,9 +765,25 @@ impl ApiServer for Server {
         &self,
         pending: PendingSubscriptionSink,
         session: Option<SessionId>,
+        descendants: Option<bool>,
     ) -> SubscriptionResult {
-        // Subscribe before accept so nothing published in between is missed.
+        // Subscribe before the snapshot and before accept so nothing published
+        // in between is missed; a child in both the snapshot and the feed is
+        // inserted twice, harmlessly.
         let mut rx = self.events.subscribe();
+        let mut tree: Option<HashSet<String>> = match (session, descendants) {
+            (Some(root), Some(true)) => {
+                let mut set: HashSet<String> = self
+                    .list_agents(root)
+                    .await?
+                    .into_iter()
+                    .map(|a| a.id.to_string())
+                    .collect();
+                set.insert(root.to_string());
+                Some(set)
+            }
+            _ => None,
+        };
         let sink = pending.accept().await?;
         let session = session.map(|s| s.to_string());
         tokio::spawn(async move {
@@ -768,11 +792,7 @@ impl ApiServer for Server {
                     _ = sink.closed() => return,
                     r = rx.recv() => match r {
                         Ok(ev) => {
-                            let mine = match (&session, ev.get("session").and_then(|s| s.as_str())) {
-                                (Some(want), Some(have)) => want == have,
-                                _ => true,
-                            };
-                            if !mine {
+                            if !wanted(&ev, session.as_deref(), tree.as_mut()) {
                                 continue;
                             }
                             serde_json::value::to_raw_value(&*ev)
@@ -791,4 +811,33 @@ impl ApiServer for Server {
         });
         Ok(())
     }
+}
+
+/// Does a subscription on `session` forward `ev`? With `tree` (descendants
+/// mode) an event passes when its `session` is in the tree, or it is a
+/// `SubagentSpawned` whose `parent` is — then `child` joins the tree.
+/// Without, everything passes unless both sides name a different session.
+fn wanted(
+    ev: &serde_json::Value,
+    session: Option<&str>,
+    tree: Option<&mut HashSet<String>>,
+) -> bool {
+    let field = |k: &str| ev.get(k).and_then(|v| v.as_str());
+    let Some(tree) = tree else {
+        return match (session, field("session")) {
+            (Some(want), Some(have)) => want == have,
+            _ => true,
+        };
+    };
+    if field("session").is_some_and(|s| tree.contains(s)) {
+        return true;
+    }
+    if field("type") == Some("SubagentSpawned")
+        && field("parent").is_some_and(|p| tree.contains(p))
+        && let Some(child) = field("child")
+    {
+        tree.insert(child.to_owned());
+        return true;
+    }
+    false
 }

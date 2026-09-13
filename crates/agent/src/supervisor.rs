@@ -9,6 +9,7 @@ use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
+use chrono::{DateTime, Utc};
 use genai::adapter::AdapterKind;
 use genai::chat::{ChatMessage, ChatRole};
 use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
@@ -20,8 +21,8 @@ use runtime::{InputId, Runtime, SessionId};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, oneshot};
 use tokio::task::AbortHandle;
 use tools::{
-    JobEvent, JobExit, JobId, ListPrompts, ListTools, REGISTRY_ACTOR, RegisterPrompt, RegisterTool,
-    SetParent, ToolRegistry,
+    ApprovalId, ApprovalRequested, ApprovalResolved, JobEvent, JobExit, JobId, ListPrompts,
+    ListTools, REGISTRY_ACTOR, RegisterPrompt, RegisterTool, SetParent, ToolRegistry,
 };
 
 use crate::acp_child::AcpChild;
@@ -36,13 +37,14 @@ use crate::skills::{
 };
 use crate::store::{Epoch, Store};
 use crate::{
-    AGENT_ACTOR, AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentConfig, AgentEvent, Cancel,
-    Compact, CompactStyle, GetCompactStyle, GetTitleModel, Harvest, HistoryEntry, ListAcp,
-    ListChildren, ListLogins, ListModels, ListProviders, ListQueued, ListRegistry, ListSessions,
-    ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginFinished, LoginInfo, Logout, ModelInfo,
-    NewSession, ProviderInfo, QueuedInput, Redo, RemoveAcp, RemoveProvider, RemoveSkill,
-    RemoveSkillRepo, SendInput, SessionSummary, SetCompactStyle, SetEffort, SetModel,
-    SetTitleModel, ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo, Withdraw, effort_of,
+    AGENT_ACTOR, AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentConfig, AgentEvent, AgentInfo,
+    AgentState, Cancel, Compact, CompactStyle, GetCompactStyle, GetTitleModel, Harvest,
+    HistoryEntry, ListAcp, ListAgents, ListLogins, ListModels, ListProviders, ListQueued,
+    ListRegistry, ListSessions, ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginFinished,
+    LoginInfo, Logout, ModelInfo, NewSession, ProviderInfo, QueuedInput, Redo, RemoveAcp,
+    RemoveProvider, RemoveSkill, RemoveSkillRepo, SendInput, SessionSummary, SetCompactStyle,
+    SetEffort, SetModel, SetTitleModel, ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo,
+    Withdraw, effort_of,
 };
 use crate::{frame, repl, spill};
 
@@ -74,10 +76,15 @@ pub struct Agents {
     waiters: HashMap<(SessionId, SessionId), oneshot::Sender<String>>,
     /// Concurrent child turns.
     permits: Arc<Semaphore>,
-    /// Child turns started by [`SpawnChild`]: permit + runtime timer.
+    /// Every running child turn: `started_at` always; permit + runtime timer
+    /// only for the spawn turn started by [`SpawnChild`].
     child_turns: HashMap<SessionId, ChildTurn>,
     /// Children whose current turn was cancelled by the runtime cap.
     timed_out: HashSet<SessionId>,
+    /// Last `TurnFinished` per session this process saw: `(stop_reason, when)`.
+    last_stop: HashMap<SessionId, (String, DateTime<Utc>)>,
+    /// Unanswered approvals per session: `(id, tool)` (design doc 19 §2.1).
+    approvals: HashMap<SessionId, (ApprovalId, String)>,
     next_msg: u64,
 }
 
@@ -145,9 +152,14 @@ impl LiveActor {
     }
 }
 
+/// One child turn in flight (design doc 19 §2.1).
 struct ChildTurn {
-    _permit: OwnedSemaphorePermit,
-    timer: AbortHandle,
+    /// Concurrency permit; `None` for a follow-up turn (human steer, peer message).
+    _permit: Option<OwnedSemaphorePermit>,
+    /// `max_runtime_secs` timer; `None` for a follow-up turn.
+    timer: Option<AbortHandle>,
+    /// When the turn started (the picker's elapsed column).
+    started_at: DateTime<Utc>,
 }
 
 /// `ask` → `Result<(name, child), String>`: create a child session and start
@@ -422,6 +434,43 @@ impl Agents {
         }
     }
 
+    /// [`SendInput`] / [`Steer`] from a human (design doc 19 §2.3): a session
+    /// blocked in `send_message{await_reply}` — a pending `(session, _)`
+    /// waiter — gets `text` as the tool's return value instead of a queued
+    /// message, announced as `MessageDelivered { from: "you" }`. Harness
+    /// inputs ([`Agents::inject`]) never take this path. Attachments cannot
+    /// answer a tool call, so an input with `files` is always routed.
+    async fn human_input(
+        &mut self,
+        session: Option<SessionId>,
+        id: Option<InputId>,
+        text: String,
+        files: Vec<PathBuf>,
+    ) -> SessionId {
+        let waiter = session
+            .filter(|_| files.is_empty())
+            .and_then(|s| self.waiters.keys().find(|(w, _)| *w == s).copied());
+        let text = match waiter.and_then(|k| self.waiters.remove(&k)) {
+            // A waiter that gave up (timeout) has dropped its receiver; fall through to route.
+            Some(tx) => match tx.send(text.clone()) {
+                Ok(()) => {
+                    let target = session.unwrap_or_default();
+                    self.rt
+                        .publish(AgentEvent::MessageDelivered {
+                            session: target,
+                            from: "you".into(),
+                            text,
+                        })
+                        .await;
+                    return target;
+                }
+                Err(_) => text,
+            },
+            None => text,
+        };
+        self.input(session, id, text, files).await
+    }
+
     /// The live (or resumed) actor for `session`, with the lookup error as the
     /// caller's `Err` string.
     async fn actor(&mut self, session: SessionId) -> Result<LiveActor, String> {
@@ -495,6 +544,21 @@ impl Message<AgentEvent> for Agents {
         match ev {
             AgentEvent::TurnStarted { session, .. } => {
                 self.running.insert(session);
+                // A follow-up turn (steer, peer message) has no permit or
+                // timer but still needs a start time for the picker.
+                if self
+                    .sessions
+                    .get(&session)
+                    .is_some_and(|l| l.parent.is_some())
+                {
+                    self.child_turns
+                        .entry(session)
+                        .or_insert_with(|| ChildTurn {
+                            _permit: None,
+                            timer: None,
+                            started_at: Utc::now(),
+                        });
+                }
             }
             AgentEvent::TurnFinished {
                 session,
@@ -502,13 +566,33 @@ impl Message<AgentEvent> for Agents {
                 ..
             } => {
                 self.running.remove(&session);
-                if let Some(ct) = self.child_turns.remove(&session) {
-                    ct.timer.abort();
+                if let Some(timer) = self.child_turns.remove(&session).and_then(|ct| ct.timer) {
+                    timer.abort();
                 }
+                self.last_stop
+                    .insert(session, (stop_reason.clone(), Utc::now()));
                 self.child_finished(session, &stop_reason).await;
             }
             _ => {}
         }
+    }
+}
+
+/// Approvals (design doc 19 §2.1): an unanswered request shows the session
+/// as `AgentState::Approval`.
+impl Message<ApprovalRequested> for Agents {
+    type Reply = ();
+
+    async fn handle(&mut self, ev: ApprovalRequested, _: &mut Context<Self, Self::Reply>) {
+        self.approvals.insert(ev.session, (ev.id, ev.tool));
+    }
+}
+
+impl Message<ApprovalResolved> for Agents {
+    type Reply = ();
+
+    async fn handle(&mut self, ev: ApprovalResolved, _: &mut Context<Self, Self::Reply>) {
+        self.approvals.retain(|_, (id, _)| *id != ev.id);
     }
 }
 
@@ -589,7 +673,7 @@ impl Message<SendInput> for Agents {
         m: SendInput,
         _: &mut Context<Self, Self::Reply>,
     ) -> Result<SessionId, kameo::error::Infallible> {
-        Ok(self.input(m.session, None, m.text, m.files).await)
+        Ok(self.human_input(m.session, None, m.text, m.files).await)
     }
 }
 
@@ -597,7 +681,7 @@ impl Message<Steer> for Agents {
     type Reply = ();
 
     async fn handle(&mut self, m: Steer, _: &mut Context<Self, Self::Reply>) {
-        self.input(Some(m.session), Some(m.id), m.text, m.files)
+        self.human_input(Some(m.session), Some(m.id), m.text, m.files)
             .await;
     }
 }
@@ -659,8 +743,9 @@ impl Message<Cancel> for Agents {
     type Reply = ();
 
     async fn handle(&mut self, m: Cancel, _: &mut Context<Self, Self::Reply>) {
-        let children = self.store.children(m.session).await.unwrap_or_default();
-        for id in std::iter::once(m.session).chain(children.into_iter().map(|c| c.id)) {
+        // Every running descendant, not one level (design doc 19 §2.3).
+        let tree = self.store.descendants(m.session).await.unwrap_or_default();
+        for id in std::iter::once(m.session).chain(tree.into_iter().map(|(_, s)| s.id)) {
             if let Some(live) = self
                 .sessions
                 .get(&id)
@@ -889,8 +974,9 @@ impl Message<StartChildTurn> for Agents {
         self.child_turns.insert(
             child,
             ChildTurn {
-                _permit: m.permit,
-                timer,
+                _permit: Some(m.permit),
+                timer: Some(timer),
+                started_at: Utc::now(),
             },
         );
     }
@@ -904,7 +990,10 @@ impl Message<ChildTimedOut> for Agents {
         ChildTimedOut(child): ChildTimedOut,
         _: &mut Context<Self, Self::Reply>,
     ) {
-        if self.child_turns.contains_key(&child)
+        if self
+            .child_turns
+            .get(&child)
+            .is_some_and(|ct| ct.timer.is_some())
             && let Some(live) = self.sessions.get(&child)
         {
             self.timed_out.insert(child);
@@ -983,25 +1072,110 @@ impl Message<PeerContext> for Agents {
     }
 }
 
+impl Agents {
+    /// [`AgentInfo`] for every descendant of `session`, store rows in
+    /// pre-order plus live state from this actor (design doc 19 §2.1).
+    async fn agents(&self, session: SessionId) -> Vec<AgentInfo> {
+        let rows = match self.store.descendants(session).await {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::error!(session = %session, "descendants: {e:#}");
+                return Vec::new();
+            }
+        };
+        let names: HashMap<SessionId, &str> = rows
+            .iter()
+            .filter_map(|(_, s)| Some((s.id, s.name.as_deref()?)))
+            .collect();
+        let mut out = Vec::with_capacity(rows.len());
+        for (depth, row) in &rows {
+            let id = row.id;
+            let parent = row.parent.unwrap_or(session);
+            let state = if let Some((_, tool)) = self.approvals.get(&id) {
+                AgentState::Approval { tool: tool.clone() }
+            } else if let Some((_, from)) = self.waiters.keys().find(|(w, _)| *w == id) {
+                let from = if *from == parent {
+                    "parent".to_owned()
+                } else {
+                    names
+                        .get(from)
+                        .map(|n| (*n).to_owned())
+                        .or_else(|| Some(self.sessions.get(from)?.parent.as_ref()?.1.clone()))
+                        .unwrap_or_else(|| from.to_string())
+                };
+                AgentState::Awaiting { from }
+            } else if self.running.contains(&id) {
+                AgentState::Running
+            } else {
+                match self.last_stop.get(&id).map(|(reason, _)| reason.as_str()) {
+                    Some("error") => AgentState::Error,
+                    Some("cancelled") => AgentState::Cancelled,
+                    _ => AgentState::Idle,
+                }
+            };
+            // ponytail: one message replay per row; a `last_text` column if the picker gets slow.
+            let last = self.store.last_turn_text(id).await.unwrap_or_else(|e| {
+                tracing::error!(session = %id, "last_turn_text: {e:#}");
+                String::new()
+            });
+            out.push(AgentInfo {
+                id,
+                name: row.name.clone().unwrap_or_default(),
+                parent,
+                depth: *depth,
+                agent: row.agent.clone(),
+                model: row.model.clone(),
+                state,
+                started_at: self.child_turns.get(&id).map(|ct| ct.started_at),
+                finished_at: self.last_stop.get(&id).map(|(_, at)| *at),
+                last: first_line(&last),
+            });
+        }
+        out
+    }
+}
+
+/// First non-empty line of `text`, trimmed, cut to 80 chars with `…`.
+fn first_line(text: &str) -> String {
+    let line = text
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or_default();
+    if line.chars().count() > 80 {
+        let mut s: String = line.chars().take(79).collect();
+        s.push('…');
+        s
+    } else {
+        line.to_owned()
+    }
+}
+
+impl Message<ListAgents> for Agents {
+    type Reply = Vec<AgentInfo>;
+
+    async fn handle(&mut self, m: ListAgents, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.agents(m.session).await
+    }
+}
+
 impl Message<Roster> for Agents {
     type Reply = String;
 
     async fn handle(&mut self, m: Roster, _: &mut Context<Self, Self::Reply>) -> String {
-        let children = self.store.children(m.session).await.unwrap_or_default();
-        if children.is_empty() {
+        let agents = self.agents(m.session).await;
+        if agents.is_empty() {
             return String::new();
         }
         let mut s = String::from("Subagents: ");
-        for (i, c) in children.iter().rev().enumerate() {
+        for (i, a) in agents.iter().enumerate() {
             if i > 0 {
                 s.push_str(", ");
             }
-            s.push_str(c.name.as_deref().unwrap_or("?"));
-            s.push_str(if self.running.contains(&c.id) {
-                " (running)"
-            } else {
-                " (idle)"
-            });
+            s.push_str(&a.name);
+            s.push_str(" (");
+            s.push_str(a.state.word());
+            s.push(')');
         }
         s
     }
@@ -1119,21 +1293,6 @@ impl Message<SyncSkills> for Agents {
     }
 }
 
-impl Message<ListChildren> for Agents {
-    type Reply = Vec<SessionSummary>;
-
-    async fn handle(
-        &mut self,
-        m: ListChildren,
-        _: &mut Context<Self, Self::Reply>,
-    ) -> Vec<SessionSummary> {
-        self.store.children(m.parent).await.unwrap_or_else(|e| {
-            tracing::error!(parent = %m.parent, "list children: {e:#}");
-            Vec::new()
-        })
-    }
-}
-
 impl Message<ListSessions> for Agents {
     type Reply = Vec<SessionSummary>;
 
@@ -1200,8 +1359,8 @@ impl Message<LoadSession> for Agents {
                 tracing::error!(session = %m.session, "hidden_turns: {e:#}");
                 0
             });
-        let (model, effort, agent) = row
-            .map(|r| (r.model, r.effort, r.agent))
+        let (model, effort, agent, name, parent) = row
+            .map(|r| (r.model, r.effort, r.agent, r.name, r.parent))
             .unwrap_or_default();
         Loaded {
             history,
@@ -1211,6 +1370,8 @@ impl Message<LoadSession> for Agents {
             queued,
             undone,
             agent,
+            name,
+            parent,
         }
     }
 }
@@ -1966,6 +2127,8 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             permits: Arc::new(Semaphore::new(cfg.subagents.max_concurrent.max(1))),
             child_turns: HashMap::new(),
             timed_out: HashSet::new(),
+            last_stop: HashMap::new(),
+            approvals: HashMap::new(),
             next_msg: 0,
         },
         runtime::subscriber_mailbox(),
@@ -1973,6 +2136,8 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
     agents.register(AGENT_ACTOR)?;
     rt.subscribe::<Agents, AgentEvent>(&agents).await;
     rt.subscribe::<Agents, JobEvent>(&agents).await;
+    rt.subscribe::<Agents, ApprovalRequested>(&agents).await;
+    rt.subscribe::<Agents, ApprovalResolved>(&agents).await;
 
     // First use of the registry (00 §4, 12 §2).
     let data_dir = rt.data_dir.clone();
@@ -2049,6 +2214,17 @@ mod tests {
         let w = job_result(&id, &long, &JobExit::Exited(1), 0, "");
         assert!(w.contains(&format!(" command=\"{}\" ", "a".repeat(120))));
         assert!(!w.contains(&"a".repeat(121)));
+    }
+
+    #[test]
+    fn first_line_skips_blanks_and_cuts_by_char() {
+        assert_eq!(first_line("\n  \n  hello world  \nmore"), "hello world");
+        assert_eq!(first_line(""), "");
+        let long = "é".repeat(100);
+        let cut = first_line(&long);
+        assert_eq!(cut.chars().count(), 80);
+        assert!(cut.ends_with('…'));
+        assert_eq!(first_line(&"x".repeat(80)), "x".repeat(80));
     }
 
     #[test]

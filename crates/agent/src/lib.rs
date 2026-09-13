@@ -4,7 +4,7 @@
 //!
 //! - commands on the `"agent"` actor ([`Agents`]): [`SendInput`], [`Steer`],
 //!   [`Withdraw`], [`ListQueued`], [`Undo`], [`Redo`], [`Cancel`], [`Compact`],
-//!   [`SetCompactStyle`], [`SetTitleModel`], [`GetTitleModel`], [`ListSessions`], [`LoadSession`], [`ListChildren`],
+//!   [`SetCompactStyle`], [`SetTitleModel`], [`GetTitleModel`], [`ListSessions`], [`LoadSession`], [`ListAgents`],
 //!   [`ListModels`], [`SetModel`], [`SetEffort`], [`ShowPrompt`], [`ListSkills`],
 //!   [`LoadSkill`], [`AddSkill`], [`RemoveSkill`], [`AddSkillRepo`],
 //!   [`RemoveSkillRepo`], [`SyncSkills`], [`ListLogins`], [`Login`], [`Logout`],
@@ -116,7 +116,8 @@ pub struct Redo {
     pub session: SessionId,
 }
 
-/// `ask` → `()`. Abort the in-flight turn; emits `TurnFinished { stop_reason: "cancelled" }`.
+/// `ask` → `()`. Abort the in-flight turn of `session` and of every running
+/// descendant (design doc 19 §2.3); each emits `TurnFinished { stop_reason: "cancelled" }`.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Cancel {
     /// Target session.
@@ -195,13 +196,85 @@ pub struct Loaded {
     pub undone: u32,
     /// External harness (`agents.yaml` key) when this is an ACP child (design doc 06).
     pub agent: Option<String>,
+    /// Peer name when this is a subagent; `None` for a top-level session.
+    pub name: Option<String>,
+    /// Parent session when this is a subagent (where `/parent` goes).
+    pub parent: Option<SessionId>,
 }
 
-/// `ask` → `Vec<SessionSummary>`: subagents of `parent` (with `name` set), newest first.
+/// `ask` → `Vec<AgentInfo>`: the subtree under `session` (children,
+/// grandchildren, …) in pre-order — parents before children, oldest first
+/// within a level — each with its live state (design doc 19 §2.1). Frontends
+/// sort (running first, …).
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-pub struct ListChildren {
+pub struct ListAgents {
+    /// Root of the subtree (not included itself).
+    pub session: SessionId,
+}
+
+/// One subagent in a session's subtree with its live state (design doc 19 §2.1).
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct AgentInfo {
+    /// Session id.
+    pub id: SessionId,
+    /// Peer name (unique per parent).
+    pub name: String,
     /// Owning session.
     pub parent: SessionId,
+    /// 1 = direct child of the asked session.
+    pub depth: u8,
+    /// External harness (`agents.yaml` key); `None` = wth.
+    pub agent: Option<String>,
+    /// Model used.
+    pub model: String,
+    /// Live state.
+    pub state: AgentState,
+    /// Start of the current turn; `None` when not running.
+    pub started_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Last `TurnFinished` seen in this process; `None` before one.
+    pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// First line of the last assistant text, ≤ 80 chars; `""` when none.
+    pub last: String,
+}
+
+/// Live state of one subagent (design doc 19 §2.1).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum AgentState {
+    /// Never ran, or the last turn finished normally.
+    Idle,
+    /// A turn is in flight.
+    Running,
+    /// Blocked in `send_message{await_reply}` on `from` (`"parent"` or a child name).
+    Awaiting {
+        /// Whose answer it waits for.
+        from: String,
+    },
+    /// An `ApprovalRequested` for this session is unanswered.
+    Approval {
+        /// Tool waiting on the human.
+        tool: String,
+    },
+    /// The last turn ended with `stop_reason = "error"`.
+    Error,
+    /// The last turn ended `"cancelled"` (incl. the `max_runtime` timeout).
+    Cancelled,
+}
+
+impl AgentState {
+    /// The state as one lowercase word: `idle|running|awaiting|approval|error|cancelled`.
+    pub fn word(&self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Running => "running",
+            Self::Awaiting { .. } => "awaiting",
+            Self::Approval { .. } => "approval",
+            Self::Error => "error",
+            Self::Cancelled => "cancelled",
+        }
+    }
 }
 
 /// `ask` → `Vec<ModelInfo>`: every catalog model whose provider is configured,

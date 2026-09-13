@@ -201,7 +201,7 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             UiEvent::TitleModel(msg(api.set_title_model(model).await)?)
         }
         Command::ListSessions => UiEvent::Sessions(msg(api.list_sessions().await)?),
-        Command::ListChildren(parent) => UiEvent::Children(msg(api.list_children(parent).await)?),
+        Command::ListAgents(session) => UiEvent::Agents(msg(api.list_agents(session).await)?),
         Command::Load(session) => UiEvent::History(session, msg(api.load_session(session).await)?),
         Command::ListModels => UiEvent::Models(msg(api.list_models().await)?),
         Command::SetModel { session, model } => {
@@ -579,15 +579,14 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         UiEvent::Sessions(list) => list
             .iter()
             .try_for_each(|s| writeln!(out, "{}  {}  {}", s.id, s.model, s.title)),
-        UiEvent::Children(list) => list.iter().try_for_each(|s| {
+        UiEvent::Agents(list) => list.iter().try_for_each(|a| {
             writeln!(
                 out,
-                "{}  {}{}",
-                s.name.as_deref().unwrap_or_default(),
-                s.id,
-                s.agent
-                    .as_deref()
-                    .map_or_else(String::new, |a| format!("  ({a})"))
+                "{}  {}  {}  {}",
+                a.name,
+                a.state.word(),
+                a.last,
+                model::short(a.id)
             )
         }),
         UiEvent::History(_, loaded) => loaded.history.iter().try_for_each(|h| match h {

@@ -11,7 +11,7 @@ use tools::{Decision, Risk};
 use crate::clip;
 use crate::model::{
     AcpRow, CardKind, Command, Entry, Level, Menu, MenuKey, Model, Row, Switch, UiEvent,
-    action_name, describe, gate_name, k, result_line, short, slash_matches, window,
+    action_name, agent_row, describe, gate_name, k, result_line, short, slash_matches, window,
 };
 
 /// Channels handed to the app through iocraft context (owned so the receiver
@@ -223,9 +223,6 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                     m.submit(&line, &commands);
                 }
                 KeyCode::Esc if m.prompt.is_some() => m.cancel_prompt(),
-                KeyCode::Esc if m.focus.is_some() && input.read().is_empty() => {
-                    m.focus("", &commands);
-                }
                 KeyCode::Esc => m.cancel(&commands),
                 _ => {}
             }
@@ -378,6 +375,14 @@ fn menu(m: &Model, input: &str, width: u16) -> Option<AnyElement<'static>> {
                         title
                     )
                 })
+                .collect(),
+            *cursor,
+        ),
+        Menu::Agents { items, cursor } => (
+            "agents  ⏎ open  esc close  (the one you leave keeps running)".to_owned(),
+            items
+                .iter()
+                .map(|a| agent_row(a, m.spinner(), width))
                 .collect(),
             *cursor,
         ),

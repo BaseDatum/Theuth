@@ -384,15 +384,38 @@ impl Store {
         rows.into_iter().map(SessionSummary::try_from).collect()
     }
 
-    /// Subagents of `parent`, newest first.
-    pub async fn children(&self, parent: SessionId) -> anyhow::Result<Vec<SessionSummary>> {
-        let rows: Vec<SessionRow> = sqlx::query_as(
-            "SELECT id, created_at, title, model, parent, name, effort, agent, cwd FROM sessions WHERE parent = ? ORDER BY created_at DESC, id DESC",
+    /// The subtree under `root` (children, grandchildren, …) with each row's
+    /// depth (1 = direct child), in pre-order: a parent right before its
+    /// children, siblings oldest first (design doc 19 §2.1).
+    pub async fn descendants(&self, root: SessionId) -> anyhow::Result<Vec<(u8, SessionSummary)>> {
+        #[derive(FromRow)]
+        struct TreeRow {
+            #[sqlx(flatten)]
+            row: SessionRow,
+            depth: i64,
+        }
+        // `path` = the created_at||id of every ancestor down to the row, so
+        // string order is pre-order with siblings by creation time.
+        let rows: Vec<TreeRow> = sqlx::query_as(
+            "WITH RECURSIVE tree(id, depth, path) AS ( \
+                 SELECT id, 1, created_at || id FROM sessions WHERE parent = ? \
+                 UNION ALL \
+                 SELECT s.id, t.depth + 1, t.path || '/' || s.created_at || s.id \
+                 FROM sessions s JOIN tree t ON s.parent = t.id) \
+             SELECT s.id, s.created_at, s.title, s.model, s.parent, s.name, s.effort, s.agent, s.cwd, t.depth \
+             FROM sessions s JOIN tree t ON s.id = t.id ORDER BY t.path",
         )
-        .bind(parent.to_string())
+        .bind(root.to_string())
         .fetch_all(&self.pool)
         .await?;
-        rows.into_iter().map(SessionSummary::try_from).collect()
+        rows.into_iter()
+            .map(|r| {
+                Ok((
+                    u8::try_from(r.depth).context("bad depth")?,
+                    SessionSummary::try_from(r.row)?,
+                ))
+            })
+            .collect()
     }
 
     /// The child of `parent` named `name`.
@@ -545,13 +568,13 @@ mod tests {
         assert_eq!(list[0].name.as_deref(), Some("kid"));
         assert_eq!(
             store
-                .children(id)
+                .descendants(id)
                 .await
                 .unwrap()
                 .iter()
-                .map(|s| s.id)
+                .map(|(d, s)| (*d, s.id))
                 .collect::<Vec<_>>(),
-            [child]
+            [(1, child)]
         );
         assert_eq!(store.child_by_name(id, "kid").await.unwrap(), Some(child));
         assert_eq!(store.child_by_name(id, "nope").await.unwrap(), None);
@@ -564,6 +587,54 @@ mod tests {
             "first words"
         );
         assert!(store.session(SessionId::new()).await.unwrap().is_none());
+
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn descendants_is_preorder_with_depth() {
+        let (store, root, dir) = fresh().await;
+        let a = SessionId::new();
+        let b = SessionId::new();
+        let a1 = SessionId::new();
+        let other = SessionId::new();
+        store
+            .create_session(a, "m", Some(root), Some("a"))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(2)).await;
+        store
+            .create_session(a1, "m", Some(a), Some("a1"))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(2)).await;
+        store
+            .create_session(b, "m", Some(root), Some("b"))
+            .await
+            .unwrap();
+        store.create_session(other, "m", None, None).await.unwrap();
+
+        let got: Vec<(u8, SessionId)> = store
+            .descendants(root)
+            .await
+            .unwrap()
+            .iter()
+            .map(|(d, s)| (*d, s.id))
+            .collect();
+        // a, then a's child a1 right under it, then b; `other` is not in the tree.
+        assert_eq!(got, [(1, a), (2, a1), (1, b)]);
+        assert_eq!(
+            store
+                .descendants(a)
+                .await
+                .unwrap()
+                .iter()
+                .map(|(d, s)| (*d, s.id))
+                .collect::<Vec<_>>(),
+            [(1, a1)]
+        );
+        assert!(store.descendants(b).await.unwrap().is_empty());
 
         drop(store);
         let _ = std::fs::remove_dir_all(&dir);

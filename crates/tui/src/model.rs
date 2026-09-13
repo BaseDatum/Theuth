@@ -1,7 +1,7 @@
 //! Pure UI state: bus events in, commands out. Shared by the fullscreen
 //! renderer and the non-TTY line printer; no I/O here.
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -9,8 +9,8 @@ use std::sync::Arc;
 use acp::EntryInfo;
 use acp::registry::RegistryAgent;
 use agent::{
-    AgentEvent, CompactStyle, HistoryEntry, Loaded, ModelInfo, ProviderInfo, QueuedInput,
-    SessionSummary, SkillBody, SkillMeta, Usage,
+    AgentEvent, AgentInfo, AgentState, CompactStyle, HistoryEntry, Loaded, ModelInfo, ProviderInfo,
+    QueuedInput, SessionSummary, SkillBody, SkillMeta, Usage,
 };
 use iocraft::KeyCode;
 use knowledge::{Change, HarvestResult, History, Meta};
@@ -36,8 +36,8 @@ pub enum UiEvent {
     Resolved(ApprovalResolved),
     /// Reply to [`Command::ListSessions`].
     Sessions(Vec<SessionSummary>),
-    /// Reply to [`Command::ListChildren`]: the focused root's subagents.
-    Children(Vec<SessionSummary>),
+    /// Reply to [`Command::ListAgents`]: the session's subtree with live state.
+    Agents(Vec<AgentInfo>),
     /// Reply to [`Command::Load`].
     History(SessionId, Loaded),
     /// Reply to [`Command::Send`]: the session the turn went to.
@@ -178,8 +178,8 @@ pub enum Command {
     SetTitleModel(Option<String>),
     /// `list_sessions`.
     ListSessions,
-    /// `list_children` of the root session.
-    ListChildren(SessionId),
+    /// `list_agents`: the subtree under a session.
+    ListAgents(SessionId),
     /// `load_session`.
     Load(SessionId),
     /// `resolve_approval`.
@@ -540,20 +540,6 @@ fn attr<'a>(open: &'a str, key: &str) -> Option<&'a str> {
     open.split_once(key).and_then(|(_, v)| v.split('"').next())
 }
 
-/// A subagent of the root session, known from `SubagentSpawned` or `/agents`.
-#[derive(Debug)]
-pub struct Child {
-    /// Peer name.
-    pub name: String,
-    /// Its session.
-    pub id: SessionId,
-    /// A turn is in flight.
-    pub running: bool,
-    /// External harness name (`agents.yaml` key) when it is an ACP child;
-    /// unknown at `SubagentSpawned`, filled by the next `/agents` reply.
-    pub agent: Option<String>,
-}
-
 /// Slash commands: name, argument hint (`<x>` required, `[x]` optional, `""` none), description.
 pub const COMMANDS: &[(&str, &str, &str)] = &[
     ("/model", "[id]", "switch model (picker without id)"),
@@ -594,13 +580,17 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     ("/logout", "<name>", "forget a login"),
     ("/prompt", "", "show the assembled system prompt"),
-    ("/agents", "", "list this session's subagents"),
+    (
+        "/agents",
+        "",
+        "subagents of this session (picker: ⏎ opens one)",
+    ),
     (
         "/jobs",
         "[kill <id>]",
         "list this session's background jobs",
     ),
-    ("/focus", "<name>", "show a subagent's transcript"),
+    ("/parent", "", "open the parent session (from a subagent)"),
     ("/sessions", "", "switch session (picker)"),
     ("/resume", "<id>", "open a session"),
     ("/new", "", "start a new session"),
@@ -738,6 +728,14 @@ pub enum Menu {
     Sessions {
         /// Top-level sessions, newest first.
         items: Vec<SessionSummary>,
+        /// Highlighted row.
+        cursor: usize,
+    },
+    /// `/agents` picker.
+    Agents {
+        /// The current session's subtree: running first, then awaiting /
+        /// approval, then the rest newest-finished first.
+        items: Vec<AgentInfo>,
         /// Highlighted row.
         cursor: usize,
     },
@@ -984,12 +982,18 @@ fn next_gate(g: Option<Gate>) -> Option<Gate> {
 /// UI state.
 #[derive(Debug, Default)]
 pub struct Model {
-    /// Root session (the one the human started or resumed).
+    /// Current session (the one the human started, resumed or opened).
     pub session: Option<SessionId>,
-    /// Child whose transcript is shown instead of the root's (`/focus`).
-    pub focus: Option<SessionId>,
-    /// Subagents under the root, in spawn order.
-    pub children: Vec<Child>,
+    /// Peer name when the current session is a subagent (`Loaded.name`).
+    pub session_name: Option<String>,
+    /// Parent when the current session is a subagent (`Loaded.parent`): where `/parent` goes.
+    pub session_parent: Option<SessionId>,
+    /// The current session's subtree, seeded by `list_agents` on open and
+    /// kept roughly live by `SubagentSpawned` / `TurnStarted` / `TurnFinished`.
+    pub agents: HashMap<SessionId, AgentInfo>,
+    /// `/agents` was typed; the next `UiEvent::Agents` opens the picker
+    /// (seeding replies on open only fill the map).
+    agents_picker_pending: bool,
     /// Multi-step `/provider add`; `None` when the input is a normal line.
     pub prompt: Option<Prompt>,
     /// A `Send { session: None }` is in flight; adopt the next `TurnStarted`.
@@ -1001,7 +1005,7 @@ pub struct Model {
     awaiting_acp: bool,
     /// Transcript of the shown session.
     pub entries: Vec<Entry>,
-    /// The root has a turn in flight.
+    /// The current session has a turn in flight.
     pub streaming: bool,
     /// Animation frame; advances while something is in flight.
     pub frame: usize,
@@ -1019,7 +1023,7 @@ pub struct Model {
     pub context: u32,
     /// Open menu.
     pub menu: Option<Menu>,
-    /// Pending approvals for the root or any child, oldest first; the front is shown.
+    /// Pending approvals for the current session or its subtree, oldest first; the front is shown.
     pub approvals: VecDeque<ApprovalRequested>,
     /// `tools.approvals` (global); false = never prompts.
     pub approvals_global: bool,
@@ -1081,11 +1085,6 @@ impl Model {
         self.approvals.front()
     }
 
-    /// The session whose transcript is shown: the focused child, else the root.
-    pub fn shown(&self) -> Option<SessionId> {
-        self.focus.or(self.session)
-    }
-
     /// The input box takes keys: no approval prompt and no modal menu
     /// (the slash popup rides on the box).
     pub fn input_focused(&self) -> bool {
@@ -1096,6 +1095,7 @@ impl Model {
                     Menu::Models { .. }
                         | Menu::Efforts { .. }
                         | Menu::Sessions { .. }
+                        | Menu::Agents { .. }
                         | Menu::Mcp { .. }
                         | Menu::Acp { .. }
                         | Menu::Skills { .. }
@@ -1200,14 +1200,6 @@ impl Model {
         self.entries.insert(at, e);
     }
 
-    /// Whether the shown session has a turn in flight.
-    fn shown_running(&self) -> bool {
-        match self.focus {
-            Some(id) => self.child(id).is_some_and(|c| c.running),
-            None => self.streaming,
-        }
-    }
-
     /// Expand or collapse the most recent card or finished tool call (Ctrl+O).
     pub fn toggle_card(&mut self) {
         let Some(e) = self.entries.iter_mut().rev().find(|e| {
@@ -1256,7 +1248,7 @@ impl Model {
     /// servers are connecting, or a compaction runs.
     pub fn animating(&self) -> bool {
         self.revealing()
-            || self.shown_running()
+            || self.streaming
             || self.mcp_connecting()
             || self.compacting
             || self.harvesting
@@ -1306,7 +1298,7 @@ impl Model {
         if self.harvesting {
             return Some("harvesting…".into());
         }
-        if !self.shown_running() {
+        if !self.streaming {
             return None;
         }
         // Parallel calls: a running card need not be the last entry.
@@ -1356,13 +1348,10 @@ impl Model {
         }
     }
 
-    fn child(&self, id: SessionId) -> Option<&Child> {
-        self.children.iter().find(|c| c.id == id)
-    }
-
-    /// Peer name of a child session; `None` for the root or strangers.
+    /// Peer name of a subagent in the current session's subtree; `None`
+    /// for the session itself or strangers.
     pub fn peer_name(&self, id: SessionId) -> Option<&str> {
-        self.child(id).map(|c| c.name.as_str())
+        self.agents.get(&id).map(|a| a.name.as_str())
     }
 
     /// Fold one event into the state.
@@ -1370,7 +1359,7 @@ impl Model {
         match ev {
             UiEvent::Agent(ev) => self.apply_agent(ev),
             UiEvent::Approval(req) => {
-                if self.session == Some(req.session) || self.child(req.session).is_some() {
+                if self.session == Some(req.session) || self.agents.contains_key(&req.session) {
                     self.approvals.push_back(req);
                 }
             }
@@ -1388,38 +1377,22 @@ impl Model {
                     self.menu = Some(Menu::Sessions { items, cursor });
                 }
             }
-            UiEvent::Children(list) => {
+            UiEvent::Agents(list) => {
+                self.agents = list.iter().map(|a| (a.id, a.clone())).collect();
+                if !std::mem::take(&mut self.agents_picker_pending) {
+                    return;
+                }
                 if list.is_empty() {
                     self.entries.push(Entry::Info("no subagents".into()));
-                }
-                for s in list {
-                    let name = s.name.unwrap_or_default();
-                    let agent = s
-                        .agent
-                        .as_deref()
-                        .map_or_else(String::new, |a| format!(" ({a})"));
-                    match self.children.iter_mut().find(|c| c.id == s.id) {
-                        Some(c) => c.agent = s.agent,
-                        None => self.children.push(Child {
-                            name: name.clone(),
-                            id: s.id,
-                            running: false,
-                            agent: s.agent,
-                        }),
-                    }
-                    let status = if self.child(s.id).is_some_and(|c| c.running) {
-                        "running"
-                    } else {
-                        "idle"
-                    };
-                    self.entries.push(Entry::Info(format!(
-                        "{name}  {status}{agent}  {}",
-                        short(s.id)
-                    )));
+                } else {
+                    self.menu = Some(Menu::Agents {
+                        items: sort_agents(list),
+                        cursor: 0,
+                    });
                 }
             }
             UiEvent::History(id, loaded) => {
-                if self.shown() == Some(id) {
+                if self.session == Some(id) {
                     self.entries = loaded.history.into_iter().flat_map(from_history).collect();
                     // The reload an undo/redo triggered shows its own notice
                     // instead of the generic depth line.
@@ -1434,11 +1407,9 @@ impl Model {
                     self.queued = loaded.queued;
                     self.model_id = loaded.model;
                     self.effort = loaded.effort;
-                    if self.session == Some(id) {
-                        self.streaming = loaded.running;
-                    } else if let Some(c) = self.children.iter_mut().find(|c| c.id == id) {
-                        c.running = loaded.running;
-                    }
+                    self.streaming = loaded.running;
+                    self.session_name = loaded.name;
+                    self.session_parent = loaded.parent;
                 }
             }
             UiEvent::SessionCreated(id) => {
@@ -1635,10 +1606,10 @@ impl Model {
             UiEvent::Info(t) => self.entries.push(Entry::Info(t)),
             UiEvent::Jobs(jobs) => self.entries.push(Entry::Info(tools::jobs::table(&jobs))),
             UiEvent::Job(ev) => match ev {
-                JobEvent::Started { session, id, .. } if self.shown() == Some(session) => {
+                JobEvent::Started { session, id, .. } if self.session == Some(session) => {
                     self.jobs.insert(id.0);
                 }
-                JobEvent::Finished { session, id, .. } if self.shown() == Some(session) => {
+                JobEvent::Finished { session, id, .. } if self.session == Some(session) => {
                     self.jobs.remove(&id.0);
                 }
                 _ => {}
@@ -1687,22 +1658,36 @@ impl Model {
             self.session = ev.session();
             self.awaiting_session = false;
         }
-        // Roster bookkeeping, independent of what is shown.
+        // Roster bookkeeping for the subtree, independent of what is shown.
         match &ev {
             AgentEvent::SubagentSpawned {
                 parent,
                 child,
                 name,
             } => {
-                if self.session == Some(*parent) || self.child(*parent).is_some() {
-                    self.children.push(Child {
-                        name: name.clone(),
-                        id: *child,
-                        running: false,
-                        agent: None,
-                    });
+                let depth = if self.session == Some(*parent) {
+                    Some(1)
+                } else {
+                    self.agents.get(parent).map(|p| p.depth + 1)
+                };
+                if let Some(depth) = depth {
+                    self.agents.insert(
+                        *child,
+                        AgentInfo {
+                            id: *child,
+                            name: name.clone(),
+                            parent: *parent,
+                            depth,
+                            agent: None,
+                            model: String::new(),
+                            state: AgentState::Running,
+                            started_at: Some(chrono::Utc::now()),
+                            finished_at: None,
+                            last: String::new(),
+                        },
+                    );
                 }
-                if self.shown() == Some(*parent) {
+                if self.session == Some(*parent) {
                     self.interject(Entry::Info(format!("↳ spawned {name}")));
                 }
                 return;
@@ -1712,7 +1697,7 @@ impl Model {
                 from,
                 text,
             } => {
-                if self.shown() == Some(*session) {
+                if self.session == Some(*session) {
                     let kind = if from.starts_with("job ") {
                         CardKind::Job
                     } else {
@@ -1724,7 +1709,7 @@ impl Model {
             }
             // Queue bookkeeping mid-stream must not finish the streaming tail below.
             AgentEvent::InputQueued { session, id, text } => {
-                if self.shown() == Some(*session) && !self.queued.iter().any(|q| q.id == *id) {
+                if self.session == Some(*session) && !self.queued.iter().any(|q| q.id == *id) {
                     self.queued.push(QueuedInput {
                         id: *id,
                         text: text.clone(),
@@ -1733,22 +1718,40 @@ impl Model {
                 return;
             }
             AgentEvent::InputWithdrawn { session, id } => {
-                if self.shown() == Some(*session) {
+                if self.session == Some(*session) {
                     self.queued.retain(|q| q.id != *id);
                 }
                 return;
             }
-            AgentEvent::TurnStarted { session, .. } | AgentEvent::TurnFinished { session, .. } => {
-                let running = matches!(ev, AgentEvent::TurnStarted { .. });
+            AgentEvent::TurnStarted { session, .. } => {
                 if self.session == Some(*session) {
-                    self.streaming = running;
-                } else if let Some(c) = self.children.iter_mut().find(|c| c.id == *session) {
-                    c.running = running;
+                    self.streaming = true;
+                } else if let Some(a) = self.agents.get_mut(session) {
+                    a.state = AgentState::Running;
+                    a.started_at = Some(chrono::Utc::now());
+                }
+            }
+            AgentEvent::TurnFinished {
+                session,
+                stop_reason,
+                ..
+            } => {
+                if self.session == Some(*session) {
+                    self.streaming = false;
+                } else if let Some(a) = self.agents.get_mut(session) {
+                    a.state = match stop_reason.as_str() {
+                        "error" => AgentState::Error,
+                        "cancelled" => AgentState::Cancelled,
+                        _ => AgentState::Idle,
+                    };
+                    a.started_at = None;
+                    a.finished_at = Some(chrono::Utc::now());
                 }
             }
             _ => {}
         }
-        if ev.session().is_none_or(|s| self.shown() != Some(s)) {
+        // A subagent's stream is not rendered here; open it to read it.
+        if ev.session().is_none_or(|s| self.session != Some(s)) {
             return;
         }
         if !matches!(ev, AgentEvent::ReasoningDelta { .. })
@@ -1967,7 +1970,7 @@ impl Model {
                 )),
             },
             "/skills" => self.skills_cmd(arg, tx),
-            "/prompt" => send(tx, Command::ShowPrompt(self.shown())),
+            "/prompt" => send(tx, Command::ShowPrompt(self.session)),
             "/knowledge" => self.knowledge_cmd(arg, tx),
             "/login" if arg.is_empty() => send(tx, Command::ListLogins),
             "/login" => send(tx, Command::Login(arg.to_owned())),
@@ -1976,10 +1979,19 @@ impl Model {
                 .push(Entry::Error("usage: /logout <name>".into())),
             "/logout" => send(tx, Command::Logout(arg.to_owned())),
             "/agents" => match self.session {
-                Some(root) => send(tx, Command::ListChildren(root)),
+                Some(session) => {
+                    self.agents_picker_pending = true;
+                    send(tx, Command::ListAgents(session));
+                }
                 None => self.entries.push(Entry::Info("no session".into())),
             },
-            "/jobs" => match (self.shown(), arg.split_once(' ')) {
+            "/parent" => match self.session_parent {
+                Some(parent) => self.resume(parent, tx),
+                None => self
+                    .entries
+                    .push(Entry::Info("this is the top-level session".into())),
+            },
+            "/jobs" => match (self.session, arg.split_once(' ')) {
                 (None, _) => self.entries.push(Entry::Info("no session".into())),
                 (Some(session), None) if arg.is_empty() => send(tx, Command::ListJobs(session)),
                 (Some(session), Some(("kill", id))) if !id.trim().is_empty() => send(
@@ -1993,14 +2005,13 @@ impl Model {
                     .entries
                     .push(Entry::Error("usage: /jobs [kill <id>]".into())),
             },
-            "/focus" => self.focus(arg, tx),
             "/compact" => self.compact_cmd(arg, tx),
             "/cancel" => {
-                if let Some(session) = self.shown() {
+                if let Some(session) = self.session {
                     send(tx, Command::Cancel(session));
                 }
             }
-            "/undo" | "/redo" => match self.shown() {
+            "/undo" | "/redo" => match self.session {
                 Some(session) if cmd == "/undo" => send(tx, Command::Undo(session)),
                 Some(session) => send(tx, Command::Redo(session)),
                 None => self.entries.push(Entry::Info("no session".into())),
@@ -2011,10 +2022,10 @@ impl Model {
                 .push(Entry::Error(format!("unknown command {c}"))),
             _ => {
                 let (text, files) = self.expand_pastes(line);
-                match self.shown() {
+                match self.session {
                     // Mid-turn: the card waits below the transcript until
                     // `InputInjected` says where in the conversation it landed.
-                    Some(session) if self.shown_running() => {
+                    Some(session) if self.streaming => {
                         let id = InputId::new();
                         self.queued.push(QueuedInput {
                             id,
@@ -2048,44 +2059,18 @@ impl Model {
         }
     }
 
-    /// Switch to `id` and ask for its history.
-    // ponytail: children spawned before a resume are unknown until `/agents`
-    // runs (their approvals are hidden until then); fetch ListChildren here
-    // silently if that bites.
+    /// Switch to `id`: ask for its history and its subtree (design doc 19
+    /// §3.5). `/resume`, `/sessions`, `/agents` and `/parent` all land here.
     pub fn resume(&mut self, id: SessionId, tx: &UnboundedSender<Command>) {
         self.reset();
         self.session = Some(id);
         send(tx, Command::Load(id));
+        send(tx, Command::ListAgents(id));
     }
 
-    /// `/focus <name>` shows that child's transcript; `/focus` (or Esc)
-    /// returns to the root. Either way the transcript is reloaded.
-    pub fn focus(&mut self, name: &str, tx: &UnboundedSender<Command>) {
-        let Some(root) = self.session else { return };
-        let target = if name.is_empty() {
-            root
-        } else {
-            match self.children.iter().find(|c| c.name == name) {
-                Some(c) => c.id,
-                None => {
-                    self.entries
-                        .push(Entry::Error(format!("no subagent named {name:?}")));
-                    return;
-                }
-            }
-        };
-        self.focus = (target != root).then_some(target);
-        self.entries.clear();
-        self.jobs.clear();
-        self.usage = None;
-        // `Loaded` carries the target's model and effort; the header flips on its reply.
-        self.context = 0;
-        send(tx, Command::Load(target));
-    }
-
-    /// Cancel the shown session's in-flight turn, if any.
+    /// Cancel the current session's in-flight turn, if any.
     pub fn cancel(&self, tx: &UnboundedSender<Command>) {
-        if let (Some(session), true) = (self.shown(), self.shown_running()) {
+        if let (Some(session), true) = (self.session, self.streaming) {
             send(tx, Command::Cancel(session));
         }
     }
@@ -2099,7 +2084,7 @@ impl Model {
             self.entries.push(Entry::Info("editor not empty".into()));
             return;
         }
-        if let Some(session) = self.shown() {
+        if let Some(session) = self.session {
             send(tx, Command::Withdraw { session, id: q.id });
         }
     }
@@ -2118,20 +2103,20 @@ impl Model {
         }
     }
 
-    /// One-line status: session, streaming state, last usage, focus, roster, queue.
+    /// One-line status: session, streaming state, last usage, roster, queue.
     pub fn status(&self) -> String {
-        let session = self.shown().map_or_else(|| "no session".to_owned(), short);
+        let session = self.session.map_or_else(|| "no session".to_owned(), short);
         let state = self
             .activity()
             .map_or_else(|| "idle".to_owned(), |a| format!("{} {a}", self.spinner()));
         let usage = self.usage.map_or_else(String::new, |u| {
             format!("  {}↑ {}↓", u.prompt, u.completion)
         });
-        let focus = self
-            .focus
-            .and_then(|id| self.peer_name(id))
-            .map_or_else(String::new, |n| format!("  ↳ {n}"));
-        let running = self.children.iter().filter(|c| c.running).count();
+        let running = self
+            .agents
+            .values()
+            .filter(|a| a.state == AgentState::Running)
+            .count();
         let agents = if running > 0 {
             format!("  agents: {running} running")
         } else {
@@ -2145,13 +2130,14 @@ impl Model {
             0 => String::new(),
             n => format!("  ·  {n} job(s)"),
         };
-        format!("{session}  {state}{usage}{focus}{agents}{queued}{jobs}")
+        format!("{session}  {state}{usage}{agents}{queued}{jobs}")
     }
 
     /// Line above the input: `model  ·  high  ·  ctx 12.3k / 200k (6%)  ·  cache 94%`
-    /// and its colour level. The effort segment is omitted while unset;
-    /// `cache` is the prefix-cache hit ratio of the last finished turn (design
-    /// doc 07 §7), omitted until one has reported usage.
+    /// and its colour level. In a subagent the model is headed by its peer
+    /// name: `↳ grep-logs  child · model  ·  …`. The effort segment is
+    /// omitted while unset; `cache` is the prefix-cache hit ratio of the last
+    /// finished turn (design doc 07 §7), omitted until one has reported usage.
     pub fn header(&self, catalog: &Catalog) -> (String, Level) {
         let used = k(self.context);
         let cache = match self.usage {
@@ -2167,6 +2153,10 @@ impl Model {
             .effort
             .as_deref()
             .map_or_else(String::new, |e| format!("  ·  {e}"));
+        let model = match &self.session_name {
+            Some(name) => format!("↳ {name}  child · {}", self.model_id),
+            None => self.model_id.clone(),
+        };
         match catalog.closest(&self.model_id).map(|m| m.limit.context) {
             Some(limit) if limit > 0 => {
                 let pct = u64::from(self.context) * 100 / u64::from(limit);
@@ -2177,8 +2167,7 @@ impl Model {
                 };
                 (
                     format!(
-                        "{}{effort}  ·  ctx {used} / {} ({pct}%){cache}{}",
-                        self.model_id,
+                        "{model}{effort}  ·  ctx {used} / {} ({pct}%){cache}{}",
                         k(limit),
                         self.approvals_tag()
                     ),
@@ -2187,8 +2176,7 @@ impl Model {
             }
             _ => (
                 format!(
-                    "{}{effort}  ·  ctx {used}{cache}{}",
-                    self.model_id,
+                    "{model}{effort}  ·  ctx {used}{cache}{}",
                     self.approvals_tag()
                 ),
                 Level::Normal,
@@ -2318,7 +2306,7 @@ impl Model {
                     },
                 );
             }
-            ("harvest", _) => match self.shown() {
+            ("harvest", _) => match self.session {
                 Some(session) => send(tx, Command::Harvest(session)),
                 None => self.entries.push(Entry::Info("no session".into())),
             },
@@ -2405,7 +2393,7 @@ impl Model {
             .split_once(char::is_whitespace)
             .map_or((arg, ""), |(s, r)| (s, r.trim()));
         match (sub, rest) {
-            ("", _) => match self.shown() {
+            ("", _) => match self.session {
                 Some(session) => send(
                     tx,
                     Command::Compact {
@@ -2417,7 +2405,7 @@ impl Model {
             },
             (token, _) if token.parse::<CompactStyle>().is_ok() => {
                 let style = token.parse().expect("guard");
-                match self.shown() {
+                match self.session {
                     Some(session) => send(
                         tx,
                         Command::Compact {
@@ -2530,6 +2518,7 @@ impl Model {
             Some(Menu::Models { .. }) => self.models_key(code, tx),
             Some(Menu::Efforts { .. }) => self.efforts_key(code, tx),
             Some(Menu::Sessions { .. }) => self.sessions_key(code, tx),
+            Some(Menu::Agents { .. }) => self.agents_key(code, tx),
             Some(Menu::Mcp { .. }) => self.mcp_key(code, tx),
             Some(Menu::Acp { .. }) => self.acp_key(code, tx),
             Some(Menu::Skills { .. }) => self.skills_key(code, tx),
@@ -2657,6 +2646,28 @@ impl Model {
                     Some(id) if Some(id) == self.session => {}
                     Some(id) => self.resume(id, tx),
                     None => {}
+                }
+            }
+            _ => {}
+        }
+        MenuKey::Consumed
+    }
+
+    /// `/agents`: Enter opens the highlighted subagent — a session switch,
+    /// the same path as `/sessions`; the one left keeps running.
+    fn agents_key(&mut self, code: KeyCode, tx: &UnboundedSender<Command>) -> MenuKey {
+        let Some(Menu::Agents { items, cursor }) = &mut self.menu else {
+            return MenuKey::Consumed;
+        };
+        match code {
+            KeyCode::Up => *cursor = cursor.saturating_sub(1),
+            KeyCode::Down => *cursor = (*cursor + 1).min(items.len().saturating_sub(1)),
+            KeyCode::Esc => self.menu = None,
+            KeyCode::Enter => {
+                let picked = items.get(*cursor).map(|a| a.id);
+                self.menu = None;
+                if let Some(id) = picked {
+                    self.resume(id, tx);
                 }
             }
             _ => {}
@@ -2997,6 +3008,75 @@ pub fn short(id: SessionId) -> String {
     s[s.len() - 8..].to_owned()
 }
 
+/// `/agents` picker order: running first (spawn order), then awaiting /
+/// approval, then the rest newest-finished first.
+pub fn sort_agents(mut list: Vec<AgentInfo>) -> Vec<AgentInfo> {
+    list.sort_by_key(|a| match a.state {
+        AgentState::Running => (0, None),
+        AgentState::Awaiting { .. } | AgentState::Approval { .. } => (1, None),
+        _ => (2, Some(std::cmp::Reverse(a.finished_at))),
+    });
+    list
+}
+
+/// One `/agents` picker row: `glyph name state detail age` (design doc 19
+/// §3.1). `spinner` is the running glyph; depth ≥ 2 indents the name under
+/// its parent; `width` (terminal columns) bounds the detail column.
+pub fn agent_row(a: &AgentInfo, spinner: &str, width: u16) -> String {
+    let glyph = match a.state {
+        AgentState::Running => spinner,
+        AgentState::Awaiting { .. } => "⏳",
+        AgentState::Approval { .. } => "⚠",
+        AgentState::Error => "✗",
+        AgentState::Cancelled => "∅",
+        AgentState::Idle => "·",
+    };
+    let name = match a.depth {
+        0 | 1 => a.name.clone(),
+        d => format!("{}↳ {}", " ".repeat(2 * usize::from(d - 1)), a.name),
+    };
+    let now = chrono::Utc::now();
+    let age = match (a.started_at, a.finished_at) {
+        (Some(t), _) if a.state == AgentState::Running => elapsed(now - t),
+        (_, Some(t)) => ago(now - t),
+        _ => String::new(),
+    };
+    // Glyph, name, state, gaps, age and the box take ~44 columns; the detail gets the rest.
+    let room = usize::from(width).saturating_sub(44).max(16);
+    let detail = match &a.state {
+        AgentState::Running => "running".to_owned(),
+        AgentState::Awaiting { from } => format!("awaiting {from}"),
+        AgentState::Approval { tool } => format!("approval {tool}"),
+        _ => a.last.clone(),
+    };
+    let detail: String = detail.chars().take(room).collect();
+    format!(
+        "{glyph} {name:<14} {:<9} {detail:<room$}  {age}",
+        a.state.word()
+    )
+}
+
+/// Running time: `48s`, `1m32s`, `2h05m`.
+fn elapsed(d: chrono::Duration) -> String {
+    let s = d.num_seconds().max(0);
+    match (s / 3600, s / 60 % 60, s % 60) {
+        (0, 0, s) => format!("{s}s"),
+        (0, m, s) => format!("{m}m{s:02}s"),
+        (h, m, _) => format!("{h}h{m:02}m"),
+    }
+}
+
+/// Time since a turn ended, coarse: `48s ago`, `3m ago`, `2h ago`, `3d ago`.
+fn ago(d: chrono::Duration) -> String {
+    let s = d.num_seconds().max(0);
+    match s {
+        0..60 => format!("{s}s ago"),
+        60..3600 => format!("{}m ago", s / 60),
+        3600..86_400 => format!("{}h ago", s / 3600),
+        _ => format!("{}d ago", s / 86_400),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3012,8 +3092,8 @@ mod tests {
             MenuKey::Input("/model ".into())
         );
         assert_eq!(
-            m.menu_key(KeyCode::Enter, "/foc", &tx),
-            MenuKey::Input("/focus ".into())
+            m.menu_key(KeyCode::Enter, "/res", &tx),
+            MenuKey::Input("/resume ".into())
         );
         assert!(rx.try_recv().is_err(), "nothing submitted yet");
         // `/q` has one match; Enter runs it and clears the input.
@@ -3024,6 +3104,77 @@ mod tests {
         assert!(m.quit && m.menu.is_none());
         assert_eq!(slash_matches("/").len(), COMMANDS.len());
         assert!(slash_matches("/zzz").is_empty());
+    }
+
+    #[test]
+    fn agents_picker_sorts_opens_and_parent_climbs() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        let root = SessionId::new();
+        m.session = Some(root);
+        let info = |name: &str, state: AgentState, finished: Option<i64>| AgentInfo {
+            id: SessionId::new(),
+            name: name.into(),
+            parent: root,
+            depth: 1,
+            agent: None,
+            model: "m".into(),
+            state,
+            started_at: None,
+            finished_at: finished.map(|s| chrono::Utc::now() - chrono::Duration::seconds(s)),
+            last: String::new(),
+        };
+        let list = vec![
+            info("old", AgentState::Idle, Some(600)),
+            info("new", AgentState::Error, Some(5)),
+            info(
+                "ask",
+                AgentState::Awaiting {
+                    from: "parent".into(),
+                },
+                None,
+            ),
+            info("run", AgentState::Running, None),
+        ];
+        // A seeding reply (open/resume) only fills the map.
+        m.apply(UiEvent::Agents(list.clone()));
+        assert!(m.menu.is_none() && m.agents.len() == 4);
+        // `/agents` opens the picker: running, awaiting, then newest-finished first.
+        m.submit("/agents", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::ListAgents(s)) if s == root));
+        m.apply(UiEvent::Agents(list));
+        let Some(Menu::Agents { items, .. }) = &m.menu else {
+            panic!("picker open");
+        };
+        let names: Vec<&str> = items.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, ["run", "ask", "new", "old"]);
+        let run = items[0].id;
+        assert!(agent_row(&items[2], "⠹", 80).starts_with("✗ new            error"));
+        // Enter is a session switch: load + reseed.
+        m.menu_key(KeyCode::Enter, "", &tx);
+        assert_eq!(m.session, Some(run));
+        assert!(matches!(rx.try_recv(), Ok(Command::Load(s)) if s == run));
+        assert!(matches!(rx.try_recv(), Ok(Command::ListAgents(s)) if s == run));
+        // `/parent` goes where `Loaded.parent` says; at the top it says so.
+        m.apply(UiEvent::History(
+            run,
+            Loaded {
+                name: Some("run".into()),
+                parent: Some(root),
+                ..Loaded::default()
+            },
+        ));
+        let catalog = Catalog::load(std::env::temp_dir().join("wth-tui-no-user-file").as_path());
+        assert!(m.header(&catalog).0.starts_with("↳ run  child · "));
+        m.submit("/parent", &tx);
+        assert_eq!(m.session, Some(root));
+        assert!(matches!(rx.try_recv(), Ok(Command::Load(s)) if s == root));
+        while rx.try_recv().is_ok() {}
+        m.submit("/parent", &tx);
+        assert!(rx.try_recv().is_err());
+        assert!(
+            matches!(m.entries.last(), Some(Entry::Info(t)) if t == "this is the top-level session")
+        );
     }
 
     #[test]
