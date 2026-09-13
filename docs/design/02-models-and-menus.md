@@ -44,7 +44,13 @@ providers is smaller still. Plain JSON in the binary; no compression dep.
 
 **User file.** `<data_dir>/models.json`, same shape, merged over the bundled
 catalog (user wins per model). This is how local models (`ollama`) and
-private gateways get context limits; no bundled entry needed.
+private gateways get context limits; no bundled entry needed. After the
+merge, any model with `limit.context == 0` (what `AddProvider` writes for a
+gateway's `/models` list) copies `limit`, `reasoning`, `image`, and
+`reasoning_options` from `Catalog::closest(model_id)` — the models.dev entry
+sharing the most name tokens (`Qwen/Qwen3.8-Flash-Next` → `qwen3.8-*`,
+`zai-org/GLM-5.3-Flash` → `glm-5.3-flash`). Zero-limit models are never
+matcher candidates. `id`, `name`, and `cost` stay as written.
 
 **Ids.** User-facing model ids are models.dev style: `provider/model`
 (`anthropic/claude-sonnet-4-5`, `openrouter/anthropic/claude-sonnet-4-5`).

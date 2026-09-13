@@ -687,6 +687,18 @@ fn messages(history: &[(i64, ChatMessage)]) -> Vec<ChatMessage> {
     history.iter().map(|(_, m)| m.clone()).collect()
 }
 
+/// chars/4 over a reply's content (tool calls live inside `captured_content`) plus reasoning.
+fn est_reply(end: &StreamEnd) -> u32 {
+    let reasoning = end
+        .captured_reasoning_content
+        .as_ref()
+        .map_or(0, |r| u32::try_from(r.len() / 4).unwrap_or(u32::MAX));
+    end.captured_content
+        .as_ref()
+        .map_or(0, compact::est_content)
+        .saturating_add(reasoning)
+}
+
 impl Turn {
     fn new(
         shared: Shared,
@@ -753,6 +765,20 @@ impl Turn {
             tracing::info!(session = %self.shared.id, model = %model.id, "context window unknown; auto-compaction off");
         }
         window
+    }
+
+    /// chars/4 over everything the last call sent (tools, system, head, history);
+    /// used only when the provider returned no `usage` (07 §7).
+    fn est_frame(&self) -> u32 {
+        let text = |n: usize| u32::try_from(n / 4).unwrap_or(u32::MAX);
+        let tools = serde_json::to_string(&self.tools).map_or(0, |s| text(s.len()));
+        self.state
+            .history
+            .iter()
+            .map(|(_, m)| compact::est(m))
+            .fold(text(self.state.baseline.len()), u32::saturating_add)
+            .saturating_add(tools)
+            .saturating_add(self.state.head.as_ref().map_or(0, compact::est))
     }
 
     /// Append to the store and the history (07 §2.2.1: the only way in).
@@ -1178,7 +1204,16 @@ impl Turn {
             }
         };
 
-        if let Some(u) = &end.captured_usage {
+        // Gateways (LiteLLM, ...) may strip `usage`: fall back to chars/4 over the
+        // whole frame plus the reply so the window gauge and auto-compaction still work.
+        let reported = end
+            .captured_usage
+            .as_ref()
+            .filter(|u| u.prompt_tokens.is_some_and(|p| p > 0));
+        if reported.is_none() {
+            self.state.used = self.est_frame().saturating_add(est_reply(&end));
+        }
+        if let Some(u) = reported {
             let prompt = u.prompt_tokens.unwrap_or(0).max(0) as u32;
             let completion = u.completion_tokens.unwrap_or(0).max(0) as u32;
             let cached = u
@@ -1796,6 +1831,24 @@ pub(crate) fn text_of(content: &MessageContent) -> String {
 mod tests {
     use super::*;
     use crate::skills;
+
+    #[test]
+    fn est_reply_counts_text_tool_calls_and_reasoning() {
+        let call = ToolCall {
+            call_id: "c1".into(),
+            fn_name: "read_file".into(),
+            fn_arguments: serde_json::json!({ "path": "x".repeat(400) }),
+            thought_signatures: None,
+        };
+        let end = StreamEnd {
+            captured_content: Some(genai::chat::MessageContent::from(vec![call])),
+            captured_reasoning_content: Some("r".repeat(400)),
+            ..StreamEnd::default()
+        };
+        let n = est_reply(&end);
+        assert!(n >= 200, "{n}: 400 chars of args + 400 of reasoning ≈ 200+ tokens");
+        assert_eq!(est_reply(&StreamEnd::default()), 0);
+    }
 
     #[test]
     fn hint_query_keeps_steering_and_tool_args_only() {

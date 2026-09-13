@@ -164,9 +164,11 @@ needs doing:
   same result, but now the model is *told* an image was there.
 - OpenAI/Gemini text-only models 400 on image parts; Anthropic non-vision
   models likewise. Stripping avoids the round-trip.
-- Gateway models (`providers.rs:203`) are written `image: false`, so a
-  vision model behind a named OpenAI-compatible gateway gets stripped too.
-  Ceiling; upgrade is an `image:` key per model in `providers.yaml`.
+- Gateway models (`providers.rs:203`) are written `image: false`; at
+  `Catalog::load` a zero-limit model inherits `image` (and limits, reasoning)
+  from its closest models.dev sibling by name, so a vision model behind a
+  named gateway is only stripped when no sibling exists. Override: edit the
+  model in `<data_dir>/models.json`.
 - `/model` from a vision model to a text-only one and back: history keeps
   the bytes, the frame decides per call. Nothing is lost.
 - Summary compaction (`loop_.rs:1480-1483`) builds its own request; it uses

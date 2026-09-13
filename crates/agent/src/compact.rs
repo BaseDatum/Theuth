@@ -3,7 +3,7 @@
 use std::fmt;
 use std::str::FromStr;
 
-use genai::chat::{ChatMessage, ChatRole, ContentPart};
+use genai::chat::{ChatMessage, ChatRole, ContentPart, MessageContent};
 use serde::{Deserialize, Serialize};
 
 /// Appended as one user message to the live frame; the summary replaces
@@ -42,8 +42,13 @@ pub const IMAGE_TOKENS: u32 = 1600;
 /// local estimate in the design; applied to appended slices, never the whole history.
 /// A binary part counts a flat `IMAGE_TOKENS` — providers bill images by pixels (17 §3.4).
 pub fn est(m: &ChatMessage) -> u32 {
+    est_content(&m.content)
+}
+
+/// [`est`] over bare content (a streamed reply before it becomes a message).
+pub fn est_content(c: &MessageContent) -> u32 {
     let chars = |n: usize| u32::try_from(n / 4).unwrap_or(u32::MAX);
-    m.content.iter().fold(0u32, |acc, part| {
+    c.iter().fold(0u32, |acc, part| {
         acc.saturating_add(match part {
             ContentPart::Text(t) => chars(t.len()),
             ContentPart::Binary(_) => IMAGE_TOKENS,

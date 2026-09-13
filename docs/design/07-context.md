@@ -411,6 +411,12 @@ formula. Smaller windows compact earlier in proportion.
 automatic compaction; the overflow path (§8.5) still compacts once on a
 provider error. Logged once per session at `info`.
 
+A response with no `usage` (or `prompt_tokens == 0`; LiteLLM and similar
+gateways strip it) sets `used` to chars/4 over the whole frame sent — tools
+JSON, system, head, history — plus the reply's content and reasoning
+(`Turn::est_frame`, `est_reply`). `Usage` totals stay at what the provider
+reported. Same estimator as appended slices; no tokenizer dependency.
+
 Also triggered by `/compact` (§8.6) and by overflow (§8.5), both with the
 threshold ignored.
 

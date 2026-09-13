@@ -219,6 +219,8 @@ static BUNDLED: LazyLock<BTreeMap<String, Provider>> = LazyLock::new(|| {
 impl Catalog {
     /// Bundled catalog merged with `<data_dir>/models.json` (same shape; user wins per model,
     /// and user provider metadata wins). A missing user file is normal; a broken one is logged and skipped.
+    /// Models with no context limit (gateway ids written by `AddProvider`) inherit limits,
+    /// reasoning, vision, and reasoning options from their closest models.dev sibling by name.
     pub fn load(data_dir: &Path) -> Catalog {
         let mut providers = BUNDLED.clone();
         let path = data_dir.join("models.json");
@@ -234,7 +236,26 @@ impl Catalog {
                 tracing::warn!(path = %path.display(), error = %e, "ignoring unreadable models.json")
             }
         }
-        Catalog { providers }
+        let mut cat = Catalog { providers };
+        let fills: Vec<(String, String, Model)> = cat
+            .providers
+            .iter()
+            .flat_map(|(pid, p)| p.models.values().map(move |m| (pid, m)))
+            .filter(|(_, m)| m.limit.context == 0)
+            .filter_map(|(pid, m)| {
+                cat.closest(&m.id)
+                    .map(|near| (pid.clone(), m.id.clone(), near.clone()))
+            })
+            .collect();
+        for (pid, mid, near) in fills {
+            let m = &mut cat.providers.get_mut(&pid).expect("from iteration").models;
+            let m = m.get_mut(&mid).expect("from iteration");
+            m.limit = near.limit;
+            m.reasoning = near.reasoning;
+            m.image = near.image;
+            m.reasoning_options = near.reasoning_options;
+        }
+        cat
     }
 
     /// genai adapter namespace for a models.dev provider id; unknown ids pass through unchanged,
@@ -273,8 +294,9 @@ impl Catalog {
     /// name tokens with the model part (`cursor/claude-4.6-sonnet-medium` →
     /// `claude-sonnet-4-6`). Effort/lane words (`low`, `xhigh`, `thinking`,
     /// `max`, ...) are ignored; the family token (`claude`, `gpt`) must agree.
-    /// Ties go to the larger context, then the lower provider id. For limits
-    /// only; never for what is sent to the provider.
+    /// Ties go to the larger context, then the lower provider id. Models with
+    /// no context limit are never candidates. For limits only; never for what
+    /// is sent to the provider.
     pub fn closest(&self, id: &str) -> Option<&Model> {
         if let Some((_, m)) = self.get(id) {
             return Some(m);
@@ -294,7 +316,9 @@ impl Catalog {
             .flat_map(|(pid, p)| p.models.values().map(move |m| (pid, m)))
             .filter_map(|(pid, m)| {
                 let have: Vec<&str> = tokens(&m.id).collect();
-                if !have.first().is_some_and(|h| h.eq_ignore_ascii_case(family)) {
+                if m.limit.context == 0
+                    || !have.first().is_some_and(|h| h.eq_ignore_ascii_case(family))
+                {
                     return None;
                 }
                 let shared = want
@@ -485,6 +509,35 @@ mod tests {
             c.get("openai/gpt-5").is_some(),
             "other bundled providers survive"
         );
+    }
+
+    #[test]
+    fn gateway_models_inherit_from_models_dev_sibling() {
+        let dir = std::env::temp_dir().join(format!("models-gw-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("models.json"),
+            r#"{"rwx":{"id":"rwx","name":"rwx","models":{
+                "zai-org/GLM-5.3-Flash":{"id":"zai-org/GLM-5.3-Flash","name":"zai-org/GLM-5.3-Flash","limit":{"context":0,"output":0}},
+                "Qwen/Qwen3.8-Flash-Next":{"id":"Qwen/Qwen3.8-Flash-Next","name":"Qwen/Qwen3.8-Flash-Next","limit":{"context":0,"output":0}},
+                "nonesuch-9":{"id":"nonesuch-9","name":"nonesuch-9","limit":{"context":0,"output":0}}}}}"#,
+        )
+        .unwrap();
+        let c = Catalog::load(&dir);
+        std::fs::remove_dir_all(&dir).unwrap();
+        let glm = c.get("rwx/zai-org/GLM-5.3-Flash").unwrap().1;
+        let sib = c.closest("glm-5.3-flash").unwrap();
+        assert!(sib.id.ends_with("glm-5.3-flash"), "{}", sib.id);
+        assert_eq!(glm.limit.context, sib.limit.context);
+        assert_eq!((glm.reasoning, glm.image), (sib.reasoning, sib.image));
+        assert!(glm.limit.context > 0);
+        let qwen = c.get("rwx/Qwen/Qwen3.8-Flash-Next").unwrap().1;
+        assert!(qwen.limit.context > 0, "qwen3.8 family sibling found");
+        assert_eq!(
+            qwen.name, "Qwen/Qwen3.8-Flash-Next",
+            "user-facing name kept"
+        );
+        assert_eq!(c.get("rwx/nonesuch-9").unwrap().1.limit.context, 0);
     }
 
     #[test]
