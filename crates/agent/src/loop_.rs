@@ -42,6 +42,7 @@ use crate::repl::{self, Repl, RunCx};
 use crate::snap;
 use crate::store::Store;
 use crate::supervisor::{Auth, PeerContext, Roster};
+use crate::title;
 use crate::{
     AGENT_ACTOR, AgentConfig, AgentEvent, Agents, CompactStyle, QueuedInput, Usage, compact, spill,
     todo,
@@ -150,6 +151,14 @@ pub struct SessionState {
     pub knowledge_read: BTreeSet<String>,
     /// Tool-using root turns since the last harvest (10 §5.2); in memory only.
     pub turns_since_harvest: u32,
+    /// A model-written title exists (07 §15); `false` → the first finished turn names the session.
+    pub title_model: bool,
+    /// Turns finished since the last title call.
+    pub title_turns: u32,
+    /// User-typed chars since the last title call ([`title::user_chars`]).
+    pub title_chars: usize,
+    /// Epoch at the last title call; a compaction since means the arc moved.
+    pub title_epoch: u32,
 }
 
 impl SessionState {
@@ -169,6 +178,10 @@ impl SessionState {
             knowledge_hinted_round: 0,
             knowledge_read: BTreeSet::new(),
             turns_since_harvest: 0,
+            title_model: false,
+            title_turns: 0,
+            title_chars: 0,
+            title_epoch: epoch,
         }
     }
 }
@@ -187,8 +200,6 @@ pub struct Session {
     /// Effort set while a turn ran (or between turns); applied when the next turn starts.
     pending_effort: Option<Option<ReasoningEffort>>,
 }
-
-/// Turn-invariant state; cheap to clone.
 #[derive(Clone)]
 struct Shared {
     id: SessionId,
@@ -199,6 +210,8 @@ struct Shared {
     cfg: Arc<AgentConfig>,
     /// Live default style; shared with the supervisor so [`crate::SetCompactStyle`] is in-process.
     compact_style: Arc<RwLock<CompactStyle>>,
+    /// Model for title calls (07 §15); `None` = the session's model. Shared with the supervisor.
+    title_model: Arc<RwLock<Option<Resolved>>>,
     store: Store,
     client: Client,
     auth: Auth,
@@ -259,6 +272,7 @@ impl Session {
         state: SessionState,
         cfg: Arc<AgentConfig>,
         compact_style: Arc<RwLock<CompactStyle>>,
+        title_model: Arc<RwLock<Option<Resolved>>>,
         store: Store,
         client: Client,
         auth: Auth,
@@ -277,6 +291,7 @@ impl Session {
                 model: Arc::new(Mutex::new(current)),
                 cfg,
                 compact_style,
+                title_model,
                 store,
                 client,
                 auth,
@@ -988,6 +1003,7 @@ impl Turn {
             .map(|i| i.text.as_str())
             .collect::<Vec<_>>()
             .join("\n");
+        self.state.title_chars += title::user_chars(inputs.iter().map(|i| i.text.as_str()));
         for input in inputs {
             self.persist(user_message(input)).await;
         }
@@ -1064,12 +1080,105 @@ impl Turn {
         self.publish(AgentEvent::TurnFinished {
             session: self.shared.id,
             turn,
-            stop_reason,
+            stop_reason: stop_reason.clone(),
             usage: self.usage,
             context: self.state.used,
         })
         .await;
+        if stop_reason != "cancelled" && stop_reason != "error" && self.shared.depth == 0 {
+            self.state.title_turns += 1;
+            self.maybe_title().await;
+        }
         self.state
+    }
+
+    /// 07 §15: when [`title::due`], name the session from a digest of this epoch
+    /// on a detached task, so the next turn is never delayed by it.
+    async fn maybe_title(&mut self) {
+        let epoch_changed = self.state.epoch != self.state.title_epoch;
+        if !title::due(
+            !self.state.title_model,
+            self.state.title_turns,
+            self.state.title_chars,
+            epoch_changed,
+        ) {
+            return;
+        }
+        let titler = self
+            .shared
+            .title_model
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        let (current, transport) = match titler {
+            Some(model) => {
+                let c = Current::new(model, None, &self.shared.client, &self.shared.auth);
+                match c.backend.transport(&c.model).await {
+                    Ok(t) => (c, t),
+                    Err(e) => {
+                        tracing::warn!(session = %self.shared.id, model = %c.model.id, "title model: {e}");
+                        return;
+                    }
+                }
+            }
+            None => match self.resolve().await {
+                Ok(x) => x,
+                Err(_) => return,
+            },
+        };
+        self.state.title_model = true;
+        self.state.title_turns = 0;
+        self.state.title_chars = 0;
+        self.state.title_epoch = self.state.epoch;
+        let session = self.shared.id;
+        let store = self.shared.store.clone();
+        let old = match store.session(session).await {
+            Ok(Some(s)) => s.title,
+            Ok(None) => return,
+            Err(e) => return tracing::warn!(session = %session, "title: {e:#}"),
+        };
+        let digest = ChatMessage::user(title::digest(
+            &old,
+            self.state.head.as_ref(),
+            &self.state.history,
+        ));
+        tokio::spawn(async move {
+            let frame = Frame {
+                tools: &[],
+                system: title::SYSTEM,
+                head: None,
+                history: std::slice::from_ref(&digest),
+                vision: false,
+            };
+            let (req, opts) = frame.request(transport, session, None);
+            let call = async {
+                let mut stream = current
+                    .backend
+                    .stream(&current.model, req, &opts, session)
+                    .await?;
+                while let Some(ev) = stream.next().await {
+                    if let ChatStreamEvent::End(end) = ev? {
+                        return Ok(end.captured_texts().map(|t| t.concat()).unwrap_or_default());
+                    }
+                }
+                Err::<String, String>("stream ended without End event".into())
+            };
+            let reply = match tokio::time::timeout(Duration::from_secs(45), call).await {
+                Ok(Ok(text)) => text,
+                Ok(Err(e)) => return tracing::warn!(session = %session, "title: {e}"),
+                Err(_) => return tracing::warn!(session = %session, "title: timed out"),
+            };
+            let Some(new) = title::clean(&reply) else {
+                return tracing::info!(session = %session, reply, "title: unusable reply");
+            };
+            if new == old {
+                return;
+            }
+            match store.set_title(session, &new).await {
+                Ok(()) => tracing::info!(session = %session, from = %old, to = %new, "title"),
+                Err(e) => tracing::warn!(session = %session, "set_title: {e:#}"),
+            }
+        });
     }
 
     /// One model call plus its tool batch. `round` counts calls made so far this turn.
@@ -1846,7 +1955,10 @@ mod tests {
             ..StreamEnd::default()
         };
         let n = est_reply(&end);
-        assert!(n >= 200, "{n}: 400 chars of args + 400 of reasoning ≈ 200+ tokens");
+        assert!(
+            n >= 200,
+            "{n}: 400 chars of args + 400 of reasoning ≈ 200+ tokens"
+        );
         assert_eq!(est_reply(&StreamEnd::default()), 0);
     }
 

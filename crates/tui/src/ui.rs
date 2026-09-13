@@ -364,8 +364,9 @@ fn menu(m: &Model, input: &str, width: u16) -> Option<AnyElement<'static>> {
             items
                 .iter()
                 .map(|s| {
-                    // ponytail: fixed 40-char title; pass the terminal width if it grates.
-                    let title: String = s.title.chars().take(32).collect();
+                    // Row prefix (mark, id, stamp, model, gaps, box) is ~52 columns; the title gets the rest.
+                    let room = usize::from(width).saturating_sub(52).max(16);
+                    let title: String = s.title.chars().take(room).collect();
                     format!(
                         "{} {}  {}  {:<20} {}",
                         if Some(s.id) == m.session { "●" } else { " " },

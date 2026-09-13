@@ -4,7 +4,7 @@
 //!
 //! - commands on the `"agent"` actor ([`Agents`]): [`SendInput`], [`Steer`],
 //!   [`Withdraw`], [`ListQueued`], [`Undo`], [`Redo`], [`Cancel`], [`Compact`],
-//!   [`SetCompactStyle`], [`ListSessions`], [`LoadSession`], [`ListChildren`],
+//!   [`SetCompactStyle`], [`SetTitleModel`], [`GetTitleModel`], [`ListSessions`], [`LoadSession`], [`ListChildren`],
 //!   [`ListModels`], [`SetModel`], [`SetEffort`], [`ShowPrompt`], [`ListSkills`],
 //!   [`LoadSkill`], [`AddSkill`], [`RemoveSkill`], [`AddSkillRepo`],
 //!   [`RemoveSkillRepo`], [`SyncSkills`], [`ListLogins`], [`Login`], [`Logout`],
@@ -30,6 +30,7 @@ pub mod snap;
 pub mod spill;
 pub mod store;
 pub mod supervisor;
+pub mod title;
 pub mod todo;
 
 pub use compact::CompactStyle;
@@ -144,6 +145,18 @@ pub struct SetCompactStyle {
 /// `ask` → [`CompactStyle`]: the live default style.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct GetCompactStyle;
+
+/// `ask` → `Result<Option<ModelInfo>, String>`: persist `agent.title_model` and
+/// use it for every session's next title call; `None` clears it (session model).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetTitleModel {
+    /// `provider/model`, bare id, or `None`.
+    pub model: Option<String>,
+}
+
+/// `ask` → `Option<ModelInfo>`: the live title model, if set.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct GetTitleModel;
 
 /// `ask` → `Result<knowledge::HarvestResult, String>`: harvest a session's
 /// finished frame now (design doc 10 §5.2). `Err("turn in flight")` while it runs.
@@ -464,7 +477,7 @@ pub struct SessionSummary {
     pub id: SessionId,
     /// Creation time.
     pub created_at: chrono::DateTime<chrono::Utc>,
-    /// First user message, truncated.
+    /// Model-written name of what the session is about now (07 §15); the first input, truncated, until then.
     pub title: String,
     /// Model used.
     pub model: String,
@@ -772,6 +785,8 @@ pub struct AgentConfig {
     /// How auto-compaction, overflow, and a bare `/compact` fold history:
     /// `summary` | `cut` | `snap`.
     pub compact_style: CompactStyle,
+    /// Model for session titles (07 §15), ideally cheap and fast; unset = the session's model.
+    pub title_model: Option<String>,
     /// How the loop uses the knowledge plugin (12 §9.2); the store itself is `knowledge.enabled`.
     pub knowledge: KnowledgeUse,
 }
@@ -786,6 +801,7 @@ impl Default for AgentConfig {
             subagents: SubagentsConfig::default(),
             compact_at: 0.8,
             compact_style: CompactStyle::Summary,
+            title_model: None,
             knowledge: KnowledgeUse::default(),
         }
     }

@@ -7,11 +7,12 @@ use std::path::PathBuf;
 
 use agent::{
     AddAcp, AddProvider, AddSkill, AddSkillRepo, Agents, Cancel, Compact, CompactStyle,
-    GetCompactStyle, Harvest, ListAcp, ListLogins, ListModels, ListProviders, ListQueued,
-    ListRegistry, ListSessions, ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginInfo,
-    Logout, ModelInfo, NewSession, ProviderInfo, QueuedInput, Redo, RemoveAcp, RemoveProvider,
-    RemoveSkill, RemoveSkillRepo, SendInput, SessionSummary, SetCompactStyle, SetEffort, SetModel,
-    ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo, Withdraw,
+    GetCompactStyle, GetTitleModel, Harvest, ListAcp, ListLogins, ListModels, ListProviders,
+    ListQueued, ListRegistry, ListSessions, ListSkills, LoadSession, LoadSkill, Loaded, Login,
+    LoginInfo, Logout, ModelInfo, NewSession, ProviderInfo, QueuedInput, Redo, RemoveAcp,
+    RemoveProvider, RemoveSkill, RemoveSkillRepo, SendInput, SessionSummary, SetCompactStyle,
+    SetEffort, SetModel, SetTitleModel, ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo,
+    Withdraw,
 };
 use jsonrpsee::core::{RpcResult, SubscriptionResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
@@ -102,6 +103,12 @@ pub trait Api {
     /// Persist `agent.compact_style` and update live sessions.
     #[method(name = "set_compact_style")]
     async fn set_compact_style(&self, style: CompactStyle) -> RpcResult<()>;
+    /// The live title model (`agent.title_model`), if set.
+    #[method(name = "title_model")]
+    async fn title_model(&self) -> RpcResult<Option<ModelInfo>>;
+    /// Persist `agent.title_model`; `None` clears it (titles use the session's model).
+    #[method(name = "set_title_model")]
+    async fn set_title_model(&self, model: Option<String>) -> RpcResult<Option<ModelInfo>>;
     /// Every session, newest first.
     #[method(name = "list_sessions")]
     async fn list_sessions(&self) -> RpcResult<Vec<SessionSummary>>;
@@ -451,6 +458,14 @@ impl ApiServer for Server {
 
     async fn set_compact_style(&self, style: CompactStyle) -> RpcResult<()> {
         ask::<Agents, _>(agent::AGENT_ACTOR, SetCompactStyle { style }).await
+    }
+
+    async fn title_model(&self) -> RpcResult<Option<ModelInfo>> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, GetTitleModel).await
+    }
+
+    async fn set_title_model(&self, model: Option<String>) -> RpcResult<Option<ModelInfo>> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, SetTitleModel { model }).await
     }
 
     async fn list_sessions(&self) -> RpcResult<Vec<SessionSummary>> {

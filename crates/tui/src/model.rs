@@ -86,6 +86,8 @@ pub enum UiEvent {
     Info(String),
     /// Reply to [`Command::GetCompactStyle`].
     CompactStyle(CompactStyle),
+    /// Reply to [`Command::GetTitleModel`] / [`Command::SetTitleModel`].
+    TitleModel(Option<ModelInfo>),
     /// A command failed (actor missing, ask error).
     Error(String),
     /// Reply to [`Command::ListLogins`]: providers and OAuth MCP servers.
@@ -170,6 +172,10 @@ pub enum Command {
     GetCompactStyle,
     /// `set_compact_style`.
     SetCompactStyle(CompactStyle),
+    /// `title_model`.
+    GetTitleModel,
+    /// `set_title_model`; `None` clears it.
+    SetTitleModel(Option<String>),
     /// `list_sessions`.
     ListSessions,
     /// `list_children` of the root session.
@@ -551,6 +557,11 @@ pub struct Child {
 /// Slash commands: name, argument hint (`<x>` required, `[x]` optional, `""` none), description.
 pub const COMMANDS: &[(&str, &str, &str)] = &[
     ("/model", "[id]", "switch model (picker without id)"),
+    (
+        "/title",
+        "[model|off]",
+        "model that names sessions in the history list (off = the session's model)",
+    ),
     (
         "/effort",
         "[level|clear]",
@@ -1635,6 +1646,7 @@ impl Model {
             UiEvent::CompactStyle(s) => self.entries.push(Entry::Info(format!(
                 "compact style: {s} (default)\n  summary  cache-hot LLM fold (07 §8.3)\n  cut      drop the folded span, keep the tail, no model call\n  snap     rasterize the folded span to images (vision model)"
             ))),
+            UiEvent::TitleModel(m) => self.entries.push(Entry::Info(title_model_line(m.as_ref()))),
             UiEvent::Providers(list) => {
                 if list.is_empty() {
                     self.entries.push(Entry::Info(
@@ -1918,6 +1930,11 @@ impl Model {
                     session: self.session,
                     model: arg.to_owned(),
                 },
+            ),
+            "/title" if arg.is_empty() => send(tx, Command::GetTitleModel),
+            "/title" => send(
+                tx,
+                Command::SetTitleModel((arg != "off" && arg != "clear").then(|| arg.to_owned())),
             ),
             "/effort" if arg.is_empty() => {
                 let items = self
@@ -2958,6 +2975,14 @@ fn on_off(b: bool) -> &'static str {
 /// One `/knowledge` row: `` `id` — title [type]: description `` (10 §6).
 pub fn meta_line(m: &Meta) -> String {
     format!("`{}` — {} [{}]: {}", m.id, m.title, m.type_, m.description)
+}
+
+/// The `/title` reply: the model naming sessions, or the fallback.
+pub fn title_model_line(m: Option<&ModelInfo>) -> String {
+    match m {
+        Some(m) => format!("title model: {} ({})", m.id, m.name),
+        None => "title model: off — each session names itself with its own model (/title <model> to set a cheap one)".into(),
+    }
 }
 
 fn send(tx: &UnboundedSender<Command>, cmd: Command) {

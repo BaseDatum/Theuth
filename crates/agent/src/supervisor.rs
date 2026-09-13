@@ -37,12 +37,12 @@ use crate::skills::{
 use crate::store::{Epoch, Store};
 use crate::{
     AGENT_ACTOR, AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentConfig, AgentEvent, Cancel,
-    Compact, CompactStyle, GetCompactStyle, Harvest, HistoryEntry, ListAcp, ListChildren,
-    ListLogins, ListModels, ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills,
-    LoadSession, LoadSkill, Loaded, Login, LoginFinished, LoginInfo, Logout, ModelInfo, NewSession,
-    ProviderInfo, QueuedInput, Redo, RemoveAcp, RemoveProvider, RemoveSkill, RemoveSkillRepo,
-    SendInput, SessionSummary, SetCompactStyle, SetEffort, SetModel, ShowPrompt, SkillBody,
-    SkillMeta, Steer, SyncSkills, Undo, Withdraw, effort_of,
+    Compact, CompactStyle, GetCompactStyle, GetTitleModel, Harvest, HistoryEntry, ListAcp,
+    ListChildren, ListLogins, ListModels, ListProviders, ListQueued, ListRegistry, ListSessions,
+    ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginFinished, LoginInfo, Logout, ModelInfo,
+    NewSession, ProviderInfo, QueuedInput, Redo, RemoveAcp, RemoveProvider, RemoveSkill,
+    RemoveSkillRepo, SendInput, SessionSummary, SetCompactStyle, SetEffort, SetModel,
+    SetTitleModel, ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo, Withdraw, effort_of,
 };
 use crate::{frame, repl, spill};
 
@@ -57,6 +57,8 @@ pub struct Agents {
     default_effort: Option<String>,
     /// Live default compaction style; cloned into each session so [`SetCompactStyle`] is in-process.
     compact_style: Arc<RwLock<CompactStyle>>,
+    /// Live title model (07 §15); `None` = each session's own model. Shared with every session.
+    title_model: Arc<RwLock<Option<Resolved>>>,
     catalog: Arc<Catalog>,
     /// Python runtime workers; `None` when the `monty` binary was not found (design doc 08 §9).
     pool: Option<Arc<monty_pool::Pool>>,
@@ -302,6 +304,7 @@ impl Agents {
             state,
             self.cfg.clone(),
             self.compact_style.clone(),
+            self.title_model.clone(),
             self.store.clone(),
             self.client.clone(),
             self.auth.clone(),
@@ -731,6 +734,45 @@ impl Message<GetCompactStyle> for Agents {
         _: &mut Context<Self, Self::Reply>,
     ) -> CompactStyle {
         *self.compact_style.read().unwrap_or_else(|p| p.into_inner())
+    }
+}
+
+impl Message<SetTitleModel> for Agents {
+    type Reply = Result<Option<ModelInfo>, String>;
+
+    async fn handle(
+        &mut self,
+        m: SetTitleModel,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<Option<ModelInfo>, String> {
+        let resolved = match &m.model {
+            Some(id) => Some(self.catalog.resolve(id, &*self.configured)?),
+            None => None,
+        };
+        let info = resolved.as_ref().map(ModelInfo::from);
+        *self.title_model.write().unwrap_or_else(|p| p.into_inner()) = resolved;
+        let path = self.rt.data_dir.join("config.yaml");
+        let value = info.as_ref().map(|i| i.id.as_str()).unwrap_or_default();
+        if let Err(e) = runtime::write_config_value(&path, "agent", "title_model", value) {
+            tracing::warn!("config.yaml: {e}");
+        }
+        Ok(info)
+    }
+}
+
+impl Message<GetTitleModel> for Agents {
+    type Reply = Option<ModelInfo>;
+
+    async fn handle(
+        &mut self,
+        _: GetTitleModel,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Option<ModelInfo> {
+        self.title_model
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .map(ModelInfo::from)
     }
 }
 
@@ -1895,6 +1937,15 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         &rt.data_dir.join("spill"),
         Duration::from_secs(7 * 24 * 3600),
     );
+    let catalog = Arc::new(Catalog::load(&rt.data_dir));
+    let configured = configured(auth.clone());
+    // Unresolvable → warn and fall back to the session model rather than fail every title.
+    let title_model = cfg.title_model.as_deref().and_then(|id| {
+        catalog
+            .resolve(id, &*configured)
+            .map_err(|e| tracing::warn!("agent.title_model: {e}"))
+            .ok()
+    });
     let agents = Agents::spawn_with_mailbox(
         Agents {
             rt: rt.clone(),
@@ -1902,9 +1953,10 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             default_model: cfg.model.clone(),
             default_effort: cfg.effort.clone(),
             compact_style: Arc::new(RwLock::new(cfg.compact_style)),
-            catalog: Arc::new(Catalog::load(&rt.data_dir)),
+            title_model: Arc::new(RwLock::new(title_model)),
+            catalog,
             pool,
-            configured: configured(auth.clone()),
+            configured,
             store,
             client: client(auth.clone())?,
             auth,

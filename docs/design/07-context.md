@@ -1043,3 +1043,55 @@ Each step left `wth` runnable.
   again. The budget is `limit / 8` with `limit = compact_at × window`.
 - **`todo` as a registry tool that `ask`s the supervisor** (the draft's
   §9). Loop-local dispatch owns the state where it lives; no actor hop.
+
+## 15. Session titles
+
+`sessions.title` is what the history list (`/sessions`, `list_sessions`,
+ACP `SessionInfo.title`, Signal `/sessions`) shows. Two writers:
+
+1. **Placeholder** — the first input, cut to 60 chars, written when the first
+   turn starts (`Session::titled`). The list is never blank.
+2. **Model title** (`agent::title`) — after a finished root turn (not
+   `cancelled`/`error`, depth 0), `Turn::maybe_title` asks a model for a
+   3–7 word name and writes it if it differs. The call runs on a detached
+   task: the next turn never waits on it.
+
+**When** (`title::due`): the first finished turn with any user text; then
+only when the user has typed ≥ `MIN_CHARS` (16) since the last title *and*
+either `EVERY` (4) turns passed or a compaction happened (the epoch moved:
+the arc has definitely changed). A run of "yes"/"ok"/"continue" never
+re-titles. Bookkeeping lives in `SessionState` (`title_model`,
+`title_turns`, `title_chars`, `title_epoch`), in memory only — a resumed
+session re-titles after its first finished turn, which is the refresh you
+want after coming back.
+
+**What the model sees** (`title::digest`): the current title, the epoch's
+`<context_summary>` head (folded history — the arc), the user's asks oldest →
+newest (each ≤ 240 chars; more than ten → first 2, "(… n more …)", last 8;
+harness wrappers starting with `<` skipped), and the latest assistant text
+(≤ 400 chars). No tools, no baseline: a cold ~1–2k-token call.
+
+**What it is told** (`title::SYSTEM`): name the concrete subject, never the
+activity or the words session/chat/conversation; the title says what the
+session is about *now* — a new task replaces the old one, an earlier subject
+stays only while it is still the theme; and **return the current title
+verbatim when it still fits**, so titles are stable rather than reworded
+every refresh. `title::clean` strips a `Title:` label, quotes, markdown and
+a trailing period, then caps at 60 chars on a word boundary; an unusable
+reply keeps the old title.
+
+**Which model**: `agent.title_model` (config; `/title <model|off>`;
+`title_model`/`set_title_model` RPC), meant for a cheap fast model; unset →
+the session's own model. The live value is an `Arc<RwLock<Option<Resolved>>>`
+shared by the supervisor and every session, like `compact_style`; `/title`
+writes `config.yaml` and applies to every session's next title call. The
+"separate utility model" rejection in §14 is about the cache-hot summariser;
+the title call is cold by construction, so a small model is the right default
+there.
+
+**Not done**: subagent sessions (depth > 0: their task text is the title);
+`wth -p` one-shot sessions (the process exits on `TurnFinished`, before the
+detached call returns); a `TitleChanged` event (pickers reload the list on
+open). Smoke 2026-09-13 (haiku titler): turn 1 "what is a Rust Arc<T>" →
+"Rust Arc<T> reference counting explained"; four nginx-gzip turns later →
+"Nginx gzip configuration and headers".

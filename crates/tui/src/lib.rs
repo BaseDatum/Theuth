@@ -196,6 +196,10 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             msg(api.set_compact_style(style).await)?;
             UiEvent::Info(format!("compact style: {style}"))
         }
+        Command::GetTitleModel => UiEvent::TitleModel(msg(api.title_model().await)?),
+        Command::SetTitleModel(model) => {
+            UiEvent::TitleModel(msg(api.set_title_model(model).await)?)
+        }
         Command::ListSessions => UiEvent::Sessions(msg(api.list_sessions().await)?),
         Command::ListChildren(parent) => UiEvent::Children(msg(api.list_children(parent).await)?),
         Command::Load(session) => UiEvent::History(session, msg(api.load_session(session).await)?),
@@ -489,6 +493,7 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             out,
             "compact style: {s} (default)\n  summary  cache-hot LLM fold (07 §8.3)\n  cut      drop the folded span, keep the tail, no model call\n  snap     rasterize the folded span to images (vision model)"
         ),
+        UiEvent::TitleModel(m) => writeln!(out, "{}", model::title_model_line(m.as_ref())),
         UiEvent::Skills(list) | UiEvent::SkillsAdded(list) => list.iter().try_for_each(|s| {
             writeln!(
                 out,
