@@ -46,7 +46,8 @@ pub struct Span {
 /// One visual line; the renderer never emits `\n` inside a span.
 pub type Line = Vec<Span>;
 
-/// Render one complete markdown block (or a whole document) to lines.
+/// Render one complete markdown block (or a whole document) to lines. Bare
+/// `http(s)://` URLs become links too (CommonMark only autolinks `<…>`).
 pub fn render(md: &str) -> Vec<Line> {
     use pulldown_cmark::Options as O;
     let opts =
@@ -55,7 +56,95 @@ pub fn render(md: &str) -> Vec<Line> {
     for ev in Parser::new_ext(md, opts) {
         r.event(ev);
     }
-    r.finish()
+    let mut lines = r.finish();
+    for l in &mut lines {
+        autolink(l);
+    }
+    lines
+}
+
+/// Byte ranges of bare `http://` / `https://` URLs in `text`: up to the
+/// next whitespace or `<>"'`, minus trailing punctuation and an unbalanced
+/// closing bracket (`(https://x.y/z).` links `https://x.y/z`).
+pub fn urls(text: &str) -> Vec<std::ops::Range<usize>> {
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(i) = text[from..].find("http").map(|i| from + i) {
+        let rest = &text[i..];
+        let Some(after) = rest
+            .strip_prefix("https://")
+            .or(rest.strip_prefix("http://"))
+        else {
+            from = i + 4;
+            continue;
+        };
+        let scheme = rest.len() - after.len();
+        let body_end = after
+            .find(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '"' | '\''))
+            .unwrap_or(after.len());
+        let mut body = &after[..body_end];
+        while let Some(last) = body.chars().last() {
+            let cut = match last {
+                '.' | ',' | ';' | ':' | '!' | '?' | '*' | '_' | '`' => true,
+                ')' => body.matches('(').count() < body.matches(')').count(),
+                ']' => body.matches('[').count() < body.matches(']').count(),
+                '}' => body.matches('{').count() < body.matches('}').count(),
+                _ => false,
+            };
+            if !cut {
+                break;
+            }
+            body = &body[..body.len() - last.len_utf8()];
+        }
+        // A bare scheme (`http://` alone) is not a link.
+        if !body.is_empty() {
+            out.push(i..i + scheme + body.len());
+        }
+        from = i + scheme + body.len().max(1);
+    }
+    out
+}
+
+/// Split spans that carry no link around the bare URLs they contain.
+pub fn autolink(line: &mut Line) {
+    if !line
+        .iter()
+        .any(|s| s.style.link.is_none() && s.text.contains("http"))
+    {
+        return;
+    }
+    let mut out: Line = Vec::with_capacity(line.len());
+    for span in line.drain(..) {
+        if span.style.link.is_some() {
+            out.push(span);
+            continue;
+        }
+        let mut at = 0;
+        for r in urls(&span.text) {
+            if r.start > at {
+                out.push(Span {
+                    text: span.text[at..r.start].to_owned(),
+                    style: span.style.clone(),
+                });
+            }
+            let url = &span.text[r.clone()];
+            out.push(Span {
+                text: url.to_owned(),
+                style: Style {
+                    link: Some(url.to_owned()),
+                    ..span.style.clone()
+                },
+            });
+            at = r.end;
+        }
+        if at < span.text.len() {
+            out.push(Span {
+                text: span.text[at..].to_owned(),
+                style: span.style,
+            });
+        }
+    }
+    *line = out;
 }
 
 /// A committed block and where its source ends in the raw buffer.
@@ -582,6 +671,35 @@ mod tests {
             .iter()
             .map(|l| l.iter().map(|s| s.text.as_str()).collect())
             .collect()
+    }
+
+    #[test]
+    fn bare_urls_become_links_with_tidy_edges() {
+        let t =
+            "see https://a.io/x_(y). or (http://b.io/q?z=1), not http:// alone; `https://c.io/d`";
+        let got: Vec<&str> = urls(t).into_iter().map(|r| &t[r]).collect();
+        assert_eq!(
+            got,
+            ["https://a.io/x_(y)", "http://b.io/q?z=1", "https://c.io/d"]
+        );
+        assert!(urls("httpx and https:// and http").is_empty());
+
+        // Through the renderer: the URL span carries the link, an explicit
+        // markdown link is left alone (its span already links elsewhere).
+        let lines = render("go to https://a.io/x now, or [here](https://b.io)");
+        let links: Vec<(&str, Option<&str>)> = lines[0]
+            .iter()
+            .map(|s| (s.text.as_str(), s.style.link.as_deref()))
+            .collect();
+        assert_eq!(
+            links,
+            [
+                ("go to ", None),
+                ("https://a.io/x", Some("https://a.io/x")),
+                (" now, or ", None),
+                ("here", Some("https://b.io")),
+            ]
+        );
     }
 
     #[test]

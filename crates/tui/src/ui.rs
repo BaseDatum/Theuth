@@ -629,7 +629,7 @@ fn entry(e: &Entry, spinner: &str, skip: usize) -> AnyElement<'static> {
         Entry::User(t) => element! {
             View(flex_direction: FlexDirection::Column, border_style: BorderStyle::Round, border_color: USER, padding_left: 1, padding_right: 1, margin_top: 1) {
                 Text(content: "◆ you", color: USER, weight: Weight::Bold)
-                Text(content: t.clone(), wrap: TextWrap::Wrap)
+                #(plain(t, TextWrap::Wrap, |c| c))
             }
         }
         .into_any(),
@@ -670,7 +670,7 @@ fn entry(e: &Entry, spinner: &str, skip: usize) -> AnyElement<'static> {
                 View(flex_direction: FlexDirection::Column) {
                     #(v.lines().skip(skip).map(line))
                     #((!v.plain.is_empty() && v.has_blocks()).then(|| element!(Text(content: " "))))
-                    #((!v.plain.is_empty()).then(|| element!(Text(content: v.plain.to_owned(), wrap: TextWrap::Wrap))))
+                    #((!v.plain.is_empty()).then(|| plain(v.plain, TextWrap::Wrap, |c| c)))
                 }
             }
             .into_any()
@@ -681,7 +681,7 @@ fn entry(e: &Entry, spinner: &str, skip: usize) -> AnyElement<'static> {
             } else {
                 text.clone()
             };
-            element!(Text(content: shown, color: Color::DarkGrey, italic: true, wrap: TextWrap::Wrap)).into_any()
+            plain(&shown, TextWrap::Wrap, |c| c.color(Color::DarkGrey).italic())
         }
         Entry::Pending { name, .. } => element! {
             View(margin_top: 1) {
@@ -753,9 +753,38 @@ fn entry(e: &Entry, spinner: &str, skip: usize) -> AnyElement<'static> {
             }
             .into_any()
         }
-        Entry::Info(t) => element!(Text(content: t.clone(), color: Color::DarkGrey)).into_any(),
-        Entry::Error(t) => element!(Text(content: t.clone(), color: Color::Red)).into_any(),
+        Entry::Info(t) => plain(t, TextWrap::Wrap, |c| c.color(Color::DarkGrey)),
+        Entry::Error(t) => plain(t, TextWrap::Wrap, |c| c.color(Color::Red)),
     }
+}
+
+/// Plain text as one `MixedText`; `paint` styles every run, and any bare
+/// `http(s)://` URL is also underlined and an OSC 8 link (clickable in
+/// terminals that support it).
+fn plain(
+    text: &str,
+    wrap: TextWrap,
+    paint: impl Fn(MixedTextContent) -> MixedTextContent,
+) -> AnyElement<'static> {
+    let urls = markdown::urls(text);
+    let mut contents = Vec::with_capacity(urls.len() * 2 + 1);
+    let mut at = 0;
+    for r in urls {
+        if r.start > at {
+            contents.push(paint(MixedTextContent::new(&text[at..r.start])));
+        }
+        let url = &text[r.clone()];
+        contents.push(
+            paint(MixedTextContent::new(url))
+                .decoration(TextDecoration::Underline)
+                .hyperlink(url),
+        );
+        at = r.end;
+    }
+    if at < text.len() {
+        contents.push(paint(MixedTextContent::new(&text[at..])));
+    }
+    element!(MixedText(contents, wrap)).into_any()
 }
 
 /// One rendered markdown line. `Style` is renderer-agnostic; this is the
