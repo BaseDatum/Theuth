@@ -426,33 +426,46 @@ fn card(kind: CardKind, title: String, text: &str) -> Entry {
     }
 }
 
+/// Rows a string of `chars` occupies at `width` columns (at least one).
+fn rows(chars: usize, width: usize) -> usize {
+    chars.div_ceil(width.max(1)).max(1)
+}
+
+/// Rows a rendered markdown line takes once the terminal wraps it.
+fn line_rows(line: &markdown::Line, width: usize) -> usize {
+    rows(line.iter().map(|s| s.text.chars().count()).sum(), width)
+}
+
+/// Rows a plain text takes once wrapped: one per line, more for long ones.
+fn text_rows(text: &str, width: usize) -> usize {
+    text.lines().map(|l| rows(l.chars().count(), width)).sum()
+}
+
 impl Entry {
-    /// Rows this entry draws before wrapping (borders and headers included).
-    fn height(&self) -> usize {
+    /// Rows this entry draws at `width` columns (borders, headers and
+    /// wrapping included; an estimate — the terminal's wrap is the truth).
+    fn height(&self, width: usize) -> usize {
+        // Bordered boxes have two columns of frame and padding each side.
+        let inner = width.saturating_sub(4);
+        let md = |t: &markdown::Text, width: usize| {
+            let v = t.view();
+            v.lines().map(|l| line_rows(l, width)).sum::<usize>() + text_rows(v.plain, width)
+        };
         match self {
-            Entry::User(t) => t.lines().count() + 4,
-            Entry::Assistant(t) => {
-                let v = t.view();
-                v.lines().count() + v.plain.lines().count()
-            }
-            Entry::Card { text, expanded, .. } => {
-                4 + if *expanded {
-                    text.view().lines().count()
-                } else {
-                    0
-                }
-            }
+            Entry::User(t) => text_rows(t, inner) + 4,
+            Entry::Assistant(t) => md(t, width),
+            Entry::Card { text, expanded, .. } => 4 + if *expanded { md(text, inner) } else { 0 },
             Entry::Reasoning { done: true, .. } | Entry::Info(_) | Entry::Error(_) => 1,
-            Entry::Reasoning { text, .. } => text.lines().count(),
+            Entry::Reasoning { text, .. } => text_rows(text, width),
             Entry::Pending { .. } => 2,
             Entry::Tool { args, expanded, .. } => {
-                5 + args.len() + expanded.as_ref().map_or(0, |t| t.view().lines().count())
+                5 + args.len() + expanded.as_ref().map_or(0, |t| md(t, inner))
             }
             Entry::Compacted {
                 summary, expanded, ..
             } => {
                 4 + match summary {
-                    Some(t) if *expanded => t.view().lines().count(),
+                    Some(t) if *expanded => md(t, inner),
                     _ => 0,
                 }
             }
@@ -1127,21 +1140,41 @@ impl Model {
             )
     }
 
-    /// Index of the first entry worth drawing: the tail whose height (before
-    /// wrapping, so a lower bound) reaches `lines`. Every frame lays out and
-    /// paints every child it is given, so the whole history made each frame
-    /// O(session); the screen can only ever show the tail anyway.
+    /// Where drawing starts: the first entry whose tail reaches `lines`
+    /// rows at `width`, and how many rendered markdown lines of it to skip
+    /// when that entry alone (a long reply) is taller than the window. Every
+    /// frame lays out and paints every child it is given, so the whole
+    /// history made each frame O(session); the screen can only ever show
+    /// the tail anyway.
     // ponytail: scroll-back stops at this window; render on demand from the
     // scroll offset if anyone wants to page further up.
-    pub fn tail(&self, lines: usize) -> usize {
+    pub fn tail(&self, lines: usize, width: usize) -> (usize, usize) {
         let mut total = 0;
         for (i, e) in self.entries.iter().enumerate().rev() {
-            total += e.height();
-            if total >= lines {
-                return i;
+            let h = e.height(width);
+            if total + h < lines {
+                total += h;
+                continue;
             }
+            // Only a rendered reply is skippable line by line; leave a full
+            // budget of its own rows, the plain tail always shows.
+            let Entry::Assistant(t) = e else {
+                return (i, 0);
+            };
+            let v = t.view();
+            let mut budget = (lines - total).saturating_sub(text_rows(v.plain, width));
+            let rendered: Vec<&markdown::Line> = v.lines().collect();
+            let mut skip = rendered.len();
+            for l in rendered.iter().rev() {
+                if budget == 0 {
+                    break;
+                }
+                budget = budget.saturating_sub(line_rows(l, width));
+                skip -= 1;
+            }
+            return (i, skip);
         }
-        0
+        (0, 0)
     }
 
     /// Take a paste: small ones come back verbatim for the input box; large
@@ -4187,9 +4220,25 @@ mod tests {
             m.entries.push(Entry::Info("x".into()));
             m.entries.push(Entry::User("a\nb".into()));
         }
-        assert_eq!(m.tail(1), 19);
-        assert_eq!(m.tail(7), 18, "Info 1 + User 6 rows");
-        assert_eq!(m.tail(1000), 0, "short histories draw whole");
+        assert_eq!(m.tail(1, 80), (19, 0));
+        assert_eq!(m.tail(7, 80), (18, 0), "Info 1 + User 6 rows");
+        assert_eq!(m.tail(1000, 80), (0, 0), "short histories draw whole");
+        // A long paragraph wraps: at 20 columns it fills the window alone.
+        m.entries.push(Entry::User("x".repeat(200)));
+        assert_eq!(m.tail(8, 20), (20, 0));
+        // A reply taller than the window draws only its last lines: 40
+        // one-row paragraphs (blank-separated → 79 rendered lines) plus a
+        // 2-row plain tail into a 10-row window keeps 8 rendered rows.
+        let mut t = markdown::Text::new();
+        for i in 0..40 {
+            t.push(&format!("paragraph {i}\n\n"));
+        }
+        t.push("tail one\ntail two");
+        t.reveal_all();
+        m.entries.push(Entry::Assistant(Box::new(t)));
+        let (from, skip) = m.tail(10, 80);
+        assert_eq!(from, 21);
+        assert_eq!(skip, 79 - 8);
     }
 
     #[test]

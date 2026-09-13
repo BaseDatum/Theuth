@@ -92,6 +92,12 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     // Runs once: the receiver is `Some` only on the first render.
     let events = links.events.take();
     let resume = links.resume.take();
+    // Events and animation share one 60 Hz loop. iocraft renders the whole
+    // tree on every `model.write()`, so applying events as they arrive made
+    // a streaming turn (and every streaming subagent) render per token —
+    // hundreds of frames a second, keys queued behind them. Now a frame
+    // drains everything pending under one write; idle frames touch nothing
+    // (`read` schedules no render).
     hooks.use_future({
         let commands = commands.clone();
         async move {
@@ -114,9 +120,28 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             let _ = commands.send(Command::McpStatus);
             // Skill names so `/<skill> [args]` resolves before `/skills` was ever opened.
             let _ = commands.send(Command::ListSkills);
-            while let Some(ev) = events.recv().await {
+            let mut frames = tokio::time::interval(std::time::Duration::from_millis(16));
+            frames.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let mut pending = Vec::new();
+            loop {
+                frames.tick().await;
+                loop {
+                    match events.try_recv() {
+                        Ok(ev) => pending.push(ev),
+                        Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
+                        Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => return,
+                    }
+                }
+                if pending.is_empty() && !model.read().animating() {
+                    continue;
+                }
                 let mut m = model.write();
-                m.apply(ev);
+                for ev in pending.drain(..) {
+                    m.apply(ev);
+                }
+                if m.animating() {
+                    m.tick();
+                }
                 // A withdrawn steer comes back into the (empty) editor.
                 if let Some(text) = m.recall.take() {
                     input.set(text);
@@ -124,17 +149,6 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 if std::mem::take(&mut m.refresh_mcp) {
                     let _ = commands.send(Command::ListMcp(m.session));
                 }
-            }
-        }
-    });
-
-    // Animation: `read` does not schedule a render, so idle frames are free.
-    hooks.use_future(async move {
-        let mut frames = tokio::time::interval(std::time::Duration::from_millis(16));
-        loop {
-            frames.tick().await;
-            if model.read().animating() {
-                model.write().tick();
             }
         }
     });
@@ -272,13 +286,13 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     };
 
     // Only the tail that can reach the screen is built; see `Model::tail`.
-    let from = m.tail(usize::from(height) * 8);
+    let (from, skip) = m.tail(usize::from(height) * 2, usize::from(width));
     element! {
         View(flex_direction: FlexDirection::Column, width, height) {
             View(flex_grow: 1.0, min_height: 0, flex_direction: FlexDirection::Column) {
                 ScrollView(auto_scroll: true, scrollbar: Some(false)) {
                     View(flex_direction: FlexDirection::Column, width: 100pct) {
-                        #(m.entries[from..].iter().map(|e| entry(e, m.spinner())))
+                        #(m.entries[from..].iter().enumerate().map(|(i, e)| entry(e, m.spinner(), if i == 0 { skip } else { 0 })))
                         #(m.waiting().then(|| element!(View(margin_top: 1) {
                             Text(content: format!("{} thinking…", m.spinner()), color: Color::DarkGrey, italic: true)
                         })))
@@ -607,7 +621,9 @@ fn queued_text(text: &str) -> String {
     }
 }
 
-fn entry(e: &Entry, spinner: &str) -> AnyElement<'static> {
+/// One transcript entry. `skip` drops that many leading rendered lines of a
+/// reply (`Model::tail`): the part that cannot reach the screen.
+fn entry(e: &Entry, spinner: &str, skip: usize) -> AnyElement<'static> {
     match e {
         // Human turns: the same card shape as tools and peers, own colour and glyph.
         Entry::User(t) => element! {
@@ -652,7 +668,7 @@ fn entry(e: &Entry, spinner: &str) -> AnyElement<'static> {
             let v = t.view();
             element! {
                 View(flex_direction: FlexDirection::Column) {
-                    #(v.lines().map(line))
+                    #(v.lines().skip(skip).map(line))
                     #((!v.plain.is_empty() && v.has_blocks()).then(|| element!(Text(content: " "))))
                     #((!v.plain.is_empty()).then(|| element!(Text(content: v.plain.to_owned(), wrap: TextWrap::Wrap))))
                 }
