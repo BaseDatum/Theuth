@@ -13,7 +13,7 @@ use agent::{
     Loaded, Login, LoginInfo, Logout, ModelInfo, NewSession, ProviderInfo, QueuedInput, Redo,
     RemoveAcp, RemoveProvider, RemoveSkill, RemoveSkillRepo, SendInput, SessionSummary,
     SetCompactStyle, SetEffort, SetModel, SetTitleModel, ShowPrompt, SkillBody, SkillMeta, Steer,
-    SyncSkills, Undo, Withdraw,
+    SyncSkills, Undo, UseSkill, Withdraw,
 };
 use jsonrpsee::core::{RpcResult, SubscriptionResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
@@ -181,6 +181,16 @@ pub trait Api {
     /// Body (and supporting files) of one skill.
     #[method(name = "load_skill")]
     async fn load_skill(&self, name: String) -> RpcResult<SkillBody>;
+    /// Hand a skill to the model as user input: its body wrapped in
+    /// `<skill name="…">`, then `args` (design doc 04 §2.4). New turn when
+    /// idle, steer when running; `None` session starts one.
+    #[method(name = "use_skill")]
+    async fn use_skill(
+        &self,
+        session: Option<SessionId>,
+        name: String,
+        args: String,
+    ) -> RpcResult<SessionId>;
     /// Write `skills/<name>.md`.
     #[method(name = "add_skill")]
     async fn add_skill(
@@ -564,6 +574,23 @@ impl ApiServer for Server {
 
     async fn load_skill(&self, name: String) -> RpcResult<SkillBody> {
         ask::<Agents, _>(agent::AGENT_ACTOR, LoadSkill { name }).await
+    }
+
+    async fn use_skill(
+        &self,
+        session: Option<SessionId>,
+        name: String,
+        args: String,
+    ) -> RpcResult<SessionId> {
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            UseSkill {
+                session,
+                name,
+                args,
+            },
+        )
+        .await
     }
 
     async fn add_skill(

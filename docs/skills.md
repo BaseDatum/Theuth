@@ -5,6 +5,14 @@ prompt lists every skill's name and one-line description; the model calls the
 `load_skill` tool with a name to receive the full body. Skills marked `always`
 are inlined into the prompt instead of listed.
 
+You can hand a skill to the model yourself: `/skills` then Enter, or
+`/<skill> [words]` (`/caveman lite`). The body goes in as your input — a
+collapsed `◇ caveman` card, then your words — starting a turn when the model
+is idle or steering the running one. Nothing is "enabled" permanently: a skill
+is in context until the next compaction or `/clear`. The status line lists the
+skills currently in context (`skills: caveman, ponytail`), whoever loaded them,
+and the `/skills` picker marks them `●`.
+
 ## Location
 
 `<data_dir>/skills/`, walked recursively on every model call (no restart, no
@@ -53,7 +61,7 @@ manifest. Its skills show `[repo-name]` in `/skills` and refuse `add_skill` /
 
 | TUI                  | tool                | does                                                          |
 |----------------------|---------------------|---------------------------------------------------------------|
-| `/skills`            | `load_skill`        | picker; Enter shows the body. The tool also returns the relative paths of supporting files next to `SKILL.md` for `read_file` |
+| `/skills`, `/<skill> [words]` | `load_skill` | picker: Enter hands the skill to the model, `s` shows the body. The tool also returns the relative paths of supporting files next to `SKILL.md` for `read_file` |
 |                      | `add_skill`         | writes `skills/<name>.md` with `name`/`description`/`always` front matter |
 | `/skills rm <name>`  | `remove_skill`      | deletes a local skill                                         |
 | `/skills add <url>`  | `add_skill_repo`    | `git clone --depth 1` into `skills/<name>` (default: repo basename); returns the skills found |
@@ -63,7 +71,7 @@ manifest. Its skills show `[repo-name]` in `/skills` and refuse `add_skill` /
 Names are `[a-z0-9][a-z0-9._-]*`. Git is the user's `git` binary; without it
 the repo operations report that and everything else works. Changes are live
 on the next model call. Same operations over RPC: `list_skills`, `load_skill`,
-`add_skill`, `remove_skill`, `add_skill_repo`, `remove_skill_repo`,
+`use_skill`, `add_skill`, `remove_skill`, `add_skill_repo`, `remove_skill_repo`,
 `sync_skills`.
 
 ## Example

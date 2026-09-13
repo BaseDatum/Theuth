@@ -269,7 +269,11 @@ writes it; UIs read via `ask(ListSessions)`/`ask(LoadSession)`). Tables:
 
 **Skills** (phase 2): markdown files with front matter (`gray_matter`) under
 `<data_dir>/skills`; the agent lists names+descriptions in the system prompt
-and loads a body on `ask(LoadSkill)` from the model via a builtin tool.
+and loads a body on `ask(LoadSkill)` from the model via a builtin tool. The
+human hands one over with `/skills` ⏎ or `/<skill> [words]` (`UseSkill`: the
+body as a `<skill name>`-wrapped user input); the set in the frame this
+epoch is `SkillsChanged` / `Loaded.skills`, shown as a status badge (04
+§2.4, added 2026-09-13).
 
 **Subagents**: detached — `spawn_subagent` returns at once, the child's result
 arrives in the parent as a new turn, peers talk via `send_message`. Design,

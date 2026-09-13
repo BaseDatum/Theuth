@@ -143,13 +143,63 @@ works on a machine with no `git` at all (`10-knowledge.md` §2.4).
 
 ### 2.3 Human surface
 
-- `/skills` — picker: `name  description  [repo-name]`, Enter shows the
-  body as a card (peer card shape, `◇ name` header, collapsed, Ctrl+O).
+- `/skills` — picker: `● name  description  [repo-name]  always`; `●`
+  marks skills in the model's context (§2.4). Enter hands the skill to the
+  model; `s` shows the body as a card first (peer card shape, `◇ name`
+  header, collapsed, Ctrl+O) for review.
+- `/<skill> [words]` — the same hand-off with the user's words attached
+  (`/caveman lite`). Commands win a name clash; the index is fetched at
+  start and by `/skills`.
 - `/skills add <url>`, `/skills rm <name>`, `/skills sync` — the tools
   above without the model in the loop.
-- RPC: `list_skills → Vec<SkillMeta>`, `load_skill`, `add_skill_repo`,
-  `remove_skill`, `remove_skill_repo`, `sync_skills`. Same actor messages
-  the tools use (`agent::skills::{ListSkills, …}` on the `"agent"` actor).
+- RPC: `list_skills → Vec<SkillMeta>`, `load_skill`, `use_skill`,
+  `add_skill_repo`, `remove_skill`, `remove_skill_repo`, `sync_skills`.
+  Same actor messages the tools use (`agent::skills::{ListSkills, …}` on
+  the `"agent"` actor).
+
+### 2.4 Handing a skill to the model (added 2026-09-13)
+
+What oh-my-pi's `/skill:<name> [args]` does: read the body, wrap it in a
+"[User invoked the X skill; follow its instructions]" template, submit it
+as a user-attributed message — steer while streaming, prompt when idle.
+Nothing sticks: the body lives in that turn. The system prompt keeps the
+index only; there is no "enabled skills" state in either harness. What
+omp does *not* have is a badge: nothing tells the user which skills the
+model has in front of it.
+
+Here `UseSkill { session, name, args }` (RPC `use_skill`) is the one
+writer: the agent reads the body `load_skill` would return, wraps it as
+
+```
+<skill name="caveman">
+…body…
+</skill>
+
+lite
+```
+
+and routes it as user input with an `InputId` (`InputQueued` →
+`InputInjected`, so a UI that did not type it still sees the queue chip
+and the card). The wrapper is the contract UIs card (`◇ caveman` +
+`you: lite`), the same way `<subagent_result>` and `<message>` are.
+Never a waiter's answer (19 §2.3): a skill body is not a reply.
+
+**The badge.** `SessionState.skills: BTreeSet<String>` — skills whose body
+is in the frame *this epoch*: added by a `<skill>` injection or a
+`load_skill` call that did not error, cleared by compaction (the body left
+the frame; a `summary` may mention it, the badge does not guess).
+Published as `AgentEvent::SkillsChanged { session, skills }` on every
+change; `Loaded.skills` carries it on resume, derived from the stored tail
+(`skills::in_frame`: user wrappers + `load_skill` calls paired with a
+non-`ERROR:` response). TUI: status line `skills: caveman, ponytail`,
+`●` in the `/skills` picker. Alternatives: a per-session "enabled" set
+rendered into the system prompt — breaks the prefix cache per session and
+duplicates `always: true`; tracking client-side from tool events — wrong
+after resume and per frontend.
+
+Not built: skills in the slash popup (`slash_matches` is a static table);
+Signal `/<skill>`; `skill://name/file` sub-reads (the file list plus
+`read_file` covers it).
 
 ## 3. MCP sources — packages and repos
 

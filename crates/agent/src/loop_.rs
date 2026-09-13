@@ -44,8 +44,8 @@ use crate::store::Store;
 use crate::supervisor::{Auth, PeerContext, Roster};
 use crate::title;
 use crate::{
-    AGENT_ACTOR, AgentConfig, AgentEvent, Agents, CompactStyle, QueuedInput, Usage, compact, spill,
-    todo,
+    AGENT_ACTOR, AgentConfig, AgentEvent, Agents, CompactStyle, QueuedInput, Usage, compact,
+    skills, spill, todo,
 };
 
 /// Characters of tool output shown in [`AgentEvent::ToolCallFinished`].
@@ -159,6 +159,9 @@ pub struct SessionState {
     pub title_chars: usize,
     /// Epoch at the last title call; a compaction since means the arc moved.
     pub title_epoch: u32,
+    /// Skills whose body is in the frame this epoch (04 §2.4): user
+    /// injections and successful `load_skill` calls; cleared by compaction.
+    pub skills: BTreeSet<String>,
 }
 
 impl SessionState {
@@ -167,6 +170,7 @@ impl SessionState {
         Self {
             epoch,
             head,
+            skills: skills::in_frame(&history),
             history,
             used: 0,
             baseline: String::new(),
@@ -996,6 +1000,29 @@ impl Turn {
         }
     }
 
+    /// Persist one input; a `<skill>` injection (04 §2.4) also marks the skill loaded.
+    async fn take_input(&mut self, input: Input) {
+        if let Some((name, _, _)) = skills::injected(&input.text) {
+            self.note_skill(name.to_owned()).await;
+        }
+        self.persist(user_message(input)).await;
+    }
+
+    /// A skill body entered the frame; publish the set when it grew.
+    async fn note_skill(&mut self, name: String) {
+        if self.state.skills.insert(name) {
+            self.publish_skills().await;
+        }
+    }
+
+    async fn publish_skills(&mut self) {
+        self.publish(AgentEvent::SkillsChanged {
+            session: self.shared.id,
+            skills: self.state.skills.iter().cloned().collect(),
+        })
+        .await;
+    }
+
     /// Runs to completion (or cancel/error) and returns the state to hand back.
     async fn run(mut self, turn: TurnId, inputs: Vec<Input>) -> SessionState {
         self.input_text = inputs
@@ -1005,7 +1032,7 @@ impl Turn {
             .join("\n");
         self.state.title_chars += title::user_chars(inputs.iter().map(|i| i.text.as_str()));
         for input in inputs {
-            self.persist(user_message(input)).await;
+            self.take_input(input).await;
         }
         let registry = ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR)
             .ok()
@@ -1033,7 +1060,7 @@ impl Turn {
                                 &mut *self.shared.steer.lock().unwrap_or_else(|p| p.into_inner()),
                             );
                             for (id, input) in queued {
-                                self.persist(user_message(input)).await;
+                                self.take_input(input).await;
                                 if let Some(id) = id {
                                     self.publish(AgentEvent::InputInjected {
                                         session: self.shared.id,
@@ -1448,6 +1475,11 @@ impl Turn {
             let content = if out.is_error {
                 format!("ERROR: {content}")
             } else {
+                if call.fn_name == skills::LOAD
+                    && let Some(name) = call.fn_arguments.get("name").and_then(|v| v.as_str())
+                {
+                    self.note_skill(name.to_owned()).await;
+                }
                 content
             };
             responses.push(ToolResponse::new(call.call_id.clone(), content));
@@ -1753,6 +1785,10 @@ impl Turn {
         self.state.pressure_sent = false;
         self.state.hinted.clear();
         self.state.knowledge_read.clear();
+        if !self.state.skills.is_empty() {
+            self.state.skills.clear();
+            self.publish_skills().await;
+        }
         self.reset_this_round = true;
         self.since = self.state.history.len();
         self.hint_since = self.hint_since.saturating_sub(keep_from);

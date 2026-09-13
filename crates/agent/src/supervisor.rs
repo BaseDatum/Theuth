@@ -44,7 +44,7 @@ use crate::{
     LoginInfo, Logout, ModelInfo, NewSession, ProviderInfo, QueuedInput, Redo, RemoveAcp,
     RemoveProvider, RemoveSkill, RemoveSkillRepo, SendInput, SessionSummary, SetCompactStyle,
     SetEffort, SetModel, SetTitleModel, ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo,
-    Withdraw, effort_of,
+    UseSkill, Withdraw, effort_of,
 };
 use crate::{frame, repl, spill};
 
@@ -674,6 +674,20 @@ impl Message<SendInput> for Agents {
         _: &mut Context<Self, Self::Reply>,
     ) -> Result<SessionId, kameo::error::Infallible> {
         Ok(self.human_input(m.session, None, m.text, m.files).await)
+    }
+}
+
+impl Message<UseSkill> for Agents {
+    type Reply = Result<SessionId, String>;
+
+    async fn handle(&mut self, m: UseSkill, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let text = skills::load_text(&self.skills_dir(), &m.name)?;
+        let text = skills::inject_text(&m.name, &text, &m.args);
+        // Routed, never a waiter's answer: a skill body is not a reply. The
+        // id makes the queue/inject lifecycle visible to UIs (they did not type it).
+        Ok(self
+            .input(m.session, Some(InputId::new()), text, Vec::new())
+            .await)
     }
 }
 
@@ -1324,8 +1338,12 @@ impl Message<LoadSession> for Agents {
             ))
         }
         .await;
-        let (row, history) = match loaded {
+        let (row, history, skills) = match loaded {
             Ok((row, messages, epochs)) => {
+                // The frame is the latest epoch's tail (07 §8.4); its skills are the badge (04 §2.4).
+                let from = epochs.last().map_or(0, |e| e.tail_from);
+                let at = messages.partition_point(|(seq, _)| *seq < from);
+                let skills = skills::in_frame(&messages[at..]).into_iter().collect();
                 // A boundary sits right after the last entry completed at or
                 // before `at_seq`, i.e. before the first entry past it.
                 let mut epochs = epochs.into_iter().peekable();
@@ -1337,11 +1355,11 @@ impl Message<LoadSession> for Agents {
                     out.push(entry);
                 }
                 out.extend(epochs.map(compacted));
-                (row, out)
+                (row, out, skills)
             }
             Err(e) => {
                 tracing::error!(session = %m.session, "load session: {e:#}");
-                (None, Vec::new())
+                (None, Vec::new(), Vec::new())
             }
         };
         let (running, queued) = match self.live(m.session) {
@@ -1375,6 +1393,7 @@ impl Message<LoadSession> for Agents {
             agent,
             name,
             parent,
+            skills,
         }
     }
 }

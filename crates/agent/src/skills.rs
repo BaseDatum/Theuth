@@ -8,14 +8,19 @@
 //! CHANGELOG/CONTRIBUTING; `.git/` is skipped. A skill inside a git clone
 //! directly under the dir has `repo = Some(<clone dir name>)`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
+use genai::chat::{ChatMessage, ChatRole};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tools::{Risk, Tool, ToolCx, ToolOutput};
 
+use crate::loop_::text_of;
 use crate::{AddSkill, SkillBody, SkillMeta};
+
+/// Name of the model-facing loader tool ([`LoadSkillTool`]).
+pub const LOAD: &str = "load_skill";
 
 const IGNORED_STEMS: [&str; 4] = ["readme", "license", "changelog", "contributing"];
 
@@ -175,8 +180,81 @@ pub fn find(dir: &Path, name: &str) -> Result<SkillMeta, String> {
 
 /// Body of the skill named `name`.
 pub fn load(dir: &Path, name: &str) -> Result<SkillBody, String> {
+    body(&find(dir, name)?).map_err(|e| format!("{name}: {e}"))
+}
+
+/// What the model gets for a skill: the body and, for `SKILL.md` skills,
+/// the paths of its other files. Shared by `load_skill` and [`UseSkill`](crate::UseSkill).
+pub fn load_text(dir: &Path, name: &str) -> Result<String, String> {
     let meta = find(dir, name)?;
-    body(&meta).map_err(|e| format!("{}: {e}", meta.path))
+    let b = body(&meta).map_err(|e| format!("{}: {e}", meta.path))?;
+    let mut s = b.body;
+    if !b.files.is_empty() {
+        let root = Path::new(&meta.path).parent().unwrap_or(dir);
+        s.push_str(&format!("\n\nfiles (under {}):\n", root.display()));
+        for f in &b.files {
+            s.push_str("- ");
+            s.push_str(f);
+            s.push('\n');
+        }
+    }
+    Ok(s)
+}
+
+/// A user-injected skill as one input (design doc 04 §2.4): the body in a
+/// `<skill name="…">` wrapper UIs card, then the user's words.
+pub fn inject_text(name: &str, text: &str, args: &str) -> String {
+    let mut s = format!("<skill name=\"{name}\">\n{}\n</skill>", text.trim());
+    if !args.trim().is_empty() {
+        s.push_str("\n\n");
+        s.push_str(args.trim());
+    }
+    s
+}
+
+/// Split an input made by [`inject_text`]: `(name, body, rest)`, `rest`
+/// being the user's words (possibly empty). `None` for anything else.
+pub fn injected(text: &str) -> Option<(&str, &str, &str)> {
+    let rest = text.trim_start().strip_prefix("<skill name=\"")?;
+    let (name, after) = rest.split_once("\">")?;
+    let (body, rest) = after.split_once("</skill>")?;
+    Some((name, body.trim(), rest.trim()))
+}
+
+/// Skills whose body is in these messages: user injections and `load_skill`
+/// calls that did not error. The badge's truth on resume.
+pub fn in_frame(messages: &[(i64, ChatMessage)]) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    let mut pending: HashMap<&str, &str> = HashMap::new();
+    for (_, m) in messages {
+        match m.role {
+            ChatRole::User => {
+                if let Some((name, _, _)) = injected(&text_of(&m.content)) {
+                    out.insert(name.to_owned());
+                }
+            }
+            ChatRole::Assistant => {
+                for c in m.content.tool_calls() {
+                    if c.fn_name == LOAD
+                        && let Some(name) = c.fn_arguments.get("name").and_then(|v| v.as_str())
+                    {
+                        pending.insert(&c.call_id, name);
+                    }
+                }
+            }
+            ChatRole::Tool => {
+                for r in m.content.tool_responses() {
+                    if let Some(name) = pending.remove(r.call_id.as_str())
+                        && !r.content.starts_with("ERROR: ")
+                    {
+                        out.insert(name.to_owned());
+                    }
+                }
+            }
+            ChatRole::System => {}
+        }
+    }
+    out
 }
 
 /// Text for the system prompt: one line per non-`always` skill, or empty when none.
@@ -312,7 +390,7 @@ pub struct LoadSkillTool {
 
 #[async_trait::async_trait]
 impl Tool for LoadSkillTool {
-    const NAME: &'static str = "load_skill";
+    const NAME: &'static str = LOAD;
     const RISK: Risk = Risk::ReadOnly;
     type Args = LoadSkillArgs;
 
@@ -321,20 +399,7 @@ impl Tool for LoadSkillTool {
     }
 
     async fn call(&self, args: LoadSkillArgs, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
-        out(find(&self.dir, &args.name).and_then(|meta| {
-            let b = body(&meta).map_err(|e| format!("{}: {e}", meta.path))?;
-            let mut s = b.body;
-            if !b.files.is_empty() {
-                let root = Path::new(&meta.path).parent().unwrap_or(&self.dir);
-                s.push_str(&format!("\n\nfiles (under {}):\n", root.display()));
-                for f in &b.files {
-                    s.push_str("- ");
-                    s.push_str(f);
-                    s.push('\n');
-                }
-            }
-            Ok(s)
-        }))
+        out(load_text(&self.dir, &args.name))
     }
 }
 
@@ -572,6 +637,54 @@ mod tests {
         assert!(skills.iter().all(|s| s.repo.is_none() && !s.always));
         assert_eq!(prompt_index(&index(&dir.join("missing"))), "");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn injection_round_trips_and_frame_finds_loaded_skills() {
+        use genai::chat::{ToolCall, ToolResponse};
+
+        // The wrapper survives a body with its own markup; words after it are the user's.
+        let text = inject_text("caveman", "# Caveman\nSpeak <b>short</b>.\n", "lite mode");
+        assert_eq!(
+            injected(&text),
+            Some(("caveman", "# Caveman\nSpeak <b>short</b>.", "lite mode"))
+        );
+        assert_eq!(
+            injected(&inject_text("x", "body", "  ")),
+            Some(("x", "body", ""))
+        );
+        assert_eq!(injected("<skill name=\"x\">unterminated"), None);
+        assert_eq!(injected("plain words"), None);
+
+        // A frame: one user injection, one `load_skill` that worked, one that
+        // errored, one unrelated tool call.
+        let call = |id: &str, name: &str, args: serde_json::Value| ToolCall {
+            call_id: id.into(),
+            fn_name: name.into(),
+            fn_arguments: args,
+            thought_signatures: None,
+        };
+        let messages = vec![
+            (1, ChatMessage::user(text)),
+            (
+                2,
+                ChatMessage::from(vec![
+                    call("c1", LOAD, serde_json::json!({"name": "ponytail"})),
+                    call("c2", LOAD, serde_json::json!({"name": "nonesuch"})),
+                    call("c3", "shell", serde_json::json!({"command": "ls"})),
+                ]),
+            ),
+            (
+                3,
+                ChatMessage::from(vec![
+                    ToolResponse::new("c1", "# Ponytail\n…"),
+                    ToolResponse::new("c2", "ERROR: unknown skill: nonesuch"),
+                    ToolResponse::new("c3", "a b"),
+                ]),
+            ),
+        ];
+        let got: Vec<String> = in_frame(&messages).into_iter().collect();
+        assert_eq!(got, ["caveman", "ponytail"]);
     }
 
     #[test]

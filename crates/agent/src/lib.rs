@@ -6,7 +6,7 @@
 //!   [`Withdraw`], [`ListQueued`], [`Undo`], [`Redo`], [`Cancel`], [`Compact`],
 //!   [`SetCompactStyle`], [`SetTitleModel`], [`GetTitleModel`], [`ListSessions`], [`LoadSession`], [`ListAgents`],
 //!   [`ListModels`], [`SetModel`], [`SetEffort`], [`ShowPrompt`], [`ListSkills`],
-//!   [`LoadSkill`], [`AddSkill`], [`RemoveSkill`], [`AddSkillRepo`],
+//!   [`LoadSkill`], [`UseSkill`], [`AddSkill`], [`RemoveSkill`], [`AddSkillRepo`],
 //!   [`RemoveSkillRepo`], [`SyncSkills`], [`ListLogins`], [`Login`], [`Logout`],
 //!   [`ListProviders`], [`AddProvider`], [`RemoveProvider`], [`NewSession`],
 //!   [`ListAcp`], [`AddAcp`], [`RemoveAcp`], [`ListRegistry`]
@@ -200,6 +200,8 @@ pub struct Loaded {
     pub name: Option<String>,
     /// Parent session when this is a subagent (where `/parent` goes).
     pub parent: Option<SessionId>,
+    /// Skills whose body is in the stored frame (design doc 04 §2.4), sorted.
+    pub skills: Vec<String>,
 }
 
 /// `ask` → `Vec<AgentInfo>`: the subtree under `session` (children,
@@ -358,6 +360,21 @@ pub struct ListSkills;
 pub struct LoadSkill {
     /// Skill name.
     pub name: String,
+}
+
+/// `ask` → `Result<SessionId, String>`: hand a skill to the model as user
+/// input (design doc 04 §2.4) — the body [`LoadSkill`] returns, wrapped in
+/// `<skill name="…">`, then `args` as the user's words. Same delivery as
+/// [`SendInput`]: a new turn when idle, a steer when one is running.
+/// `Err` names an unknown skill.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct UseSkill {
+    /// Existing session, or `None` for a new one.
+    pub session: Option<SessionId>,
+    /// Skill name.
+    pub name: String,
+    /// What the user wants done with it; may be empty.
+    pub args: String,
 }
 
 /// `ask` → `Result<SkillMeta, String>`: write `<skills>/<name>.md`.
@@ -807,6 +824,15 @@ pub enum AgentEvent {
         /// Concepts updated.
         updated: u32,
     },
+    /// The set of skills whose body is in the frame changed (design doc 04
+    /// §2.4): a user injection, a `load_skill` call, or a compaction that
+    /// dropped them all.
+    SkillsChanged {
+        /// Session.
+        session: SessionId,
+        /// Skill names, sorted; empty right after a compaction.
+        skills: Vec<String>,
+    },
 }
 
 impl AgentEvent {
@@ -830,6 +856,7 @@ impl AgentEvent {
             | Self::Compacted { session, .. }
             | Self::Harvesting { session, .. }
             | Self::Harvested { session, .. }
+            | Self::SkillsChanged { session, .. }
             | Self::Error { session, .. } => Some(*session),
             Self::SubagentSpawned { child, .. } => Some(*child),
         }

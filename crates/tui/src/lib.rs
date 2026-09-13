@@ -247,6 +247,11 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
         Command::ShowPrompt(session) => UiEvent::Prompt(msg(api.get_prompt(session).await)?),
         Command::ListSkills => UiEvent::Skills(msg(api.list_skills().await)?),
         Command::LoadSkill(name) => UiEvent::Skill(msg(api.load_skill(name).await)?),
+        Command::UseSkill {
+            session,
+            name,
+            args,
+        } => UiEvent::SessionCreated(msg(api.use_skill(session, name, args).await)?),
         Command::AddSkillRepo(url) => {
             UiEvent::SkillsAdded(msg(api.add_skill_repo(url, None).await)?)
         }

@@ -249,6 +249,15 @@ pub enum Command {
     RemoveSkill(String),
     /// `sync_skills`.
     SyncSkills,
+    /// `use_skill`: hand a skill to the model (04 §2.4).
+    UseSkill {
+        /// Shown session, or `None` to start one.
+        session: Option<SessionId>,
+        /// Skill name.
+        name: String,
+        /// The user's words after the name.
+        args: String,
+    },
     /// `knowledge_list` (first 50 by id).
     KnowledgeList,
     /// `knowledge_search`.
@@ -566,7 +575,7 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     (
         "/skills",
         "[add <url>|rm <name>|sync]",
-        "skills (picker without args)",
+        "skills: picker (⏎ hands one to the model, s shows it); `/<skill> [words]` does the same",
     ),
     (
         "/knowledge",
@@ -1064,6 +1073,14 @@ pub struct Model {
     pub harvesting: bool,
     /// The user asked to leave.
     pub quit: bool,
+    /// Skill index (`list_skills`), fetched at start and by `/skills`: names
+    /// resolve `/<skill> [args]`.
+    pub skills: Vec<SkillMeta>,
+    /// `/skills` was typed: the next index reply opens the picker.
+    skills_picker_pending: bool,
+    /// Skills whose body is in the shown session's frame (`SkillsChanged`,
+    /// `Loaded.skills`): the status-line badge.
+    pub loaded_skills: Vec<String>,
 }
 
 impl Model {
@@ -1076,11 +1093,12 @@ impl Model {
         }
     }
 
-    /// `Self::new` keeping the current model, effort and catalog: `/new` and `/resume`.
+    /// `Self::new` keeping the current model, effort, catalog and skill index: `/new` and `/resume`.
     fn reset(&mut self) {
         *self = Self {
             effort: self.effort.take(),
             catalog: self.catalog.take(),
+            skills: std::mem::take(&mut self.skills),
             ..Self::new(std::mem::take(&mut self.model_id), self.approvals_global)
         };
     }
@@ -1472,6 +1490,7 @@ impl Model {
                     self.streaming = loaded.running;
                     self.session_name = loaded.name;
                     self.session_parent = loaded.parent;
+                    self.loaded_skills = loaded.skills;
                 }
             }
             UiEvent::SessionCreated(id) => {
@@ -1568,6 +1587,10 @@ impl Model {
                 &format!("```\n{text}\n```"),
             )),
             UiEvent::Skills(items) => {
+                self.skills = items.clone();
+                if !std::mem::take(&mut self.skills_picker_pending) {
+                    return;
+                }
                 if items.is_empty() {
                     self.entries.push(Entry::Info("no skills".into()));
                 } else {
@@ -1819,17 +1842,20 @@ impl Model {
                     || self.last_injected_turn.take() == Some(turn)
                     || self.sent.take().as_deref() == Some(&*text);
                 if !shown {
-                    self.entries.push(Entry::User(text));
+                    self.entries.extend(user_entries(text));
                 }
             }
             // The steer enters the context now: its card moves from the queue
             // to the transcript, after everything the model said before it.
             AgentEvent::InputInjected { id, turn, .. } => {
                 if let Some(at) = self.queued.iter().position(|q| q.id == id) {
-                    self.entries.push(Entry::User(self.queued.remove(at).text));
+                    self.entries
+                        .extend(user_entries(self.queued.remove(at).text));
+                    self.last_injected_turn = Some(turn);
                 }
-                self.last_injected_turn = Some(turn);
             }
+            // `InputQueued` is handled above, before the streaming-tail bookkeeping.
+            AgentEvent::InputQueued { .. } => {}
             AgentEvent::TextDelta { text, .. } => match self.entries.last_mut() {
                 Some(Entry::Assistant(t)) if !t.is_done() => t.push(&text),
                 _ => {
@@ -1941,13 +1967,13 @@ impl Model {
             }
             AgentEvent::SubagentSpawned { .. }
             | AgentEvent::MessageDelivered { .. }
-            | AgentEvent::InputQueued { .. }
             | AgentEvent::InputWithdrawn { .. } => {}
             AgentEvent::Harvesting { .. } => self.harvesting = true,
             AgentEvent::Harvested { added, updated, .. } => {
                 self.harvesting = false;
                 self.interject(Entry::Info(format!("knowledge +{added} ~{updated}")))
             }
+            AgentEvent::SkillsChanged { skills, .. } => self.loaded_skills = skills,
         }
     }
 
@@ -2148,9 +2174,17 @@ impl Model {
                 None => self.entries.push(Entry::Info("no session".into())),
             },
             "/provider" => self.provider_cmd(arg, tx),
-            c if c.starts_with('/') => self
-                .entries
-                .push(Entry::Error(format!("unknown command {c}"))),
+            c if c.starts_with('/') => {
+                // `/<skill> [args]` hands the skill to the model (04 §2.4). Before
+                // the index has arrived the agent decides; it names an unknown skill.
+                let name = &c[1..];
+                if self.skills.is_empty() || self.skills.iter().any(|s| s.name == name) {
+                    self.use_skill(name.to_owned(), arg.to_owned(), tx);
+                } else {
+                    self.entries
+                        .push(Entry::Error(format!("unknown command {c}")));
+                }
+            }
             _ => {
                 let (text, files) = self.expand_pastes(line);
                 match self.session {
@@ -2262,7 +2296,11 @@ impl Model {
             0 => String::new(),
             n => format!("  ·  {n} job(s)"),
         };
-        format!("{session}  {state}{usage}{agents}{queued}{jobs}")
+        let skills = match self.loaded_skills.len() {
+            0 => String::new(),
+            _ => format!("  ·  skills: {}", self.loaded_skills.join(", ")),
+        };
+        format!("{session}  {state}{usage}{agents}{queued}{jobs}{skills}")
     }
 
     /// Line above the input: `model  ·  high  ·  ctx 12.3k / 200k (6%)  ·  cache 94%`
@@ -2402,7 +2440,10 @@ impl Model {
             .split_once(' ')
             .map_or((arg, ""), |(s, r)| (s, r.trim()));
         match (sub, rest) {
-            ("", _) => send(tx, Command::ListSkills),
+            ("", _) => {
+                self.skills_picker_pending = true;
+                send(tx, Command::ListSkills);
+            }
             ("sync", _) => send(tx, Command::SyncSkills),
             ("add", url) if !url.is_empty() => send(tx, Command::AddSkillRepo(url.to_owned())),
             ("rm", name) if !name.is_empty() => send(tx, Command::RemoveSkill(name.to_owned())),
@@ -2807,7 +2848,8 @@ impl Model {
         MenuKey::Consumed
     }
 
-    /// `/skills`: Enter shows the highlighted skill's body as a card.
+    /// `/skills`: Enter hands the highlighted skill to the model (04 §2.4);
+    /// `s` shows its body as a card to review first.
     fn skills_key(&mut self, code: KeyCode, tx: &UnboundedSender<Command>) -> MenuKey {
         let Some(Menu::Skills { items, cursor }) = &mut self.menu else {
             return MenuKey::Consumed;
@@ -2816,15 +2858,37 @@ impl Model {
             KeyCode::Up => *cursor = cursor.saturating_sub(1),
             KeyCode::Down => *cursor = (*cursor + 1).min(items.len().saturating_sub(1)),
             KeyCode::Esc => self.menu = None,
-            KeyCode::Enter => {
+            KeyCode::Char('s') => {
                 if let Some(s) = items.get(*cursor) {
                     send(tx, Command::LoadSkill(s.name.clone()));
                 }
                 self.menu = None;
             }
+            KeyCode::Enter => {
+                let name = items.get(*cursor).map(|s| s.name.clone());
+                self.menu = None;
+                if let Some(name) = name {
+                    self.use_skill(name, String::new(), tx);
+                }
+            }
             _ => {}
         }
         MenuKey::Consumed
+    }
+
+    /// Hand a skill to the model: the agent composes the input and delivers
+    /// it like typed text (turn when idle, steer when running); the cards
+    /// arrive with `TurnStarted` / `InputInjected`.
+    fn use_skill(&mut self, name: String, args: String, tx: &UnboundedSender<Command>) {
+        self.awaiting_session = self.session.is_none();
+        send(
+            tx,
+            Command::UseSkill {
+                session: self.session,
+                name,
+                args,
+            },
+        );
     }
 
     /// `/login`: Enter logs the highlighted row in.
@@ -3072,17 +3136,30 @@ pub fn mcp_entry(text: &str) -> Result<(String, serde_json::Value), String> {
     }
 }
 
-/// Transcript entries for one history record: an injected user turn holding
-/// several peer messages becomes one card each.
+/// Transcript entries for one user input: a skill injection (04 §2.4) is a
+/// collapsed `◇ name` card plus the user's words; an injected turn holding
+/// several peer messages becomes one card each; anything else is `you`.
+fn user_entries(text: String) -> Vec<Entry> {
+    if let Some((name, body, rest)) = agent::skills::injected(&text) {
+        let mut out = vec![card(CardKind::Skill, name.to_owned(), body)];
+        if !rest.is_empty() {
+            out.push(Entry::User(rest.to_owned()));
+        }
+        return out;
+    }
+    match injected(&text) {
+        None => vec![Entry::User(text)],
+        Some(cards) => cards
+            .into_iter()
+            .map(|(kind, title, body)| card(kind, title, &body))
+            .collect(),
+    }
+}
+
+/// Transcript entries for one history record.
 fn from_history(h: HistoryEntry) -> Vec<Entry> {
     match h {
-        HistoryEntry::User { text } => match injected(&text) {
-            None => vec![Entry::User(text)],
-            Some(cards) => cards
-                .into_iter()
-                .map(|(kind, title, body)| card(kind, title, &body))
-                .collect(),
-        },
+        HistoryEntry::User { text } => user_entries(text),
         HistoryEntry::Assistant { text } => {
             vec![Entry::Assistant(Box::new(markdown::Text::complete(&text)))]
         }
@@ -4180,6 +4257,77 @@ mod tests {
             id: other,
         });
         assert!(m.queued.is_empty());
+    }
+
+    #[test]
+    fn skills_inject_by_slash_and_picker_and_badge_tracks_the_frame() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::new("m".into(), true);
+        let s = SessionId::new();
+        m.session = Some(s);
+        let meta = |name: &str| SkillMeta {
+            name: name.into(),
+            description: format!("{name} skill"),
+            path: format!("/skills/{name}.md"),
+            always: false,
+            repo: None,
+        };
+        // The index arrives at start without opening the picker; names now resolve.
+        m.apply(UiEvent::Skills(vec![meta("caveman"), meta("ponytail")]));
+        assert!(m.menu.is_none());
+        m.submit("/caveman lite", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::UseSkill { session: Some(id), name, args }) if id == s && name == "caveman" && args == "lite"
+        ));
+        m.submit("/nonesuch", &tx);
+        assert!(
+            matches!(m.entries.last(), Some(Entry::Error(t)) if t == "unknown command /nonesuch")
+        );
+
+        // `/skills` opens the picker; Enter uses, `s` shows.
+        m.submit("/skills", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::ListSkills)));
+        m.apply(UiEvent::Skills(vec![meta("caveman"), meta("ponytail")]));
+        assert!(matches!(m.menu, Some(Menu::Skills { .. })));
+        m.menu_key(KeyCode::Down, "", &tx);
+        m.menu_key(KeyCode::Char('s'), "", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::LoadSkill(n)) if n == "ponytail"));
+        assert!(m.menu.is_none());
+        m.submit("/skills", &tx);
+        rx.try_recv().unwrap();
+        m.apply(UiEvent::Skills(vec![meta("caveman")]));
+        m.menu_key(KeyCode::Enter, "", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::UseSkill { name, args, .. }) if name == "caveman" && args.is_empty()
+        ));
+
+        // The injected turn renders as a skill card plus the user's words.
+        let text = agent::skills::inject_text("caveman", "# Caveman\nGrunt.", "lite");
+        m.apply_agent(AgentEvent::TurnStarted {
+            session: s,
+            turn: TurnId::new(),
+            text,
+            model: "m".into(),
+        });
+        let n = m.entries.len();
+        assert!(
+            matches!(&m.entries[n - 2], Entry::Card { kind: CardKind::Skill, title, .. } if title == "caveman")
+        );
+        assert!(matches!(&m.entries[n - 1], Entry::User(t) if t == "lite"));
+
+        // The badge follows the agent's set: grows on load, empties on compaction.
+        m.apply_agent(AgentEvent::SkillsChanged {
+            session: s,
+            skills: vec!["caveman".into(), "ponytail".into()],
+        });
+        assert!(m.status().ends_with("skills: caveman, ponytail"));
+        m.apply_agent(AgentEvent::SkillsChanged {
+            session: s,
+            skills: Vec::new(),
+        });
+        assert!(!m.status().contains("skills:"));
     }
 
     #[test]

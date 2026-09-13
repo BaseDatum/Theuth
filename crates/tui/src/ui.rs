@@ -112,6 +112,8 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             }
             // Servers started connecting before this UI subscribed.
             let _ = commands.send(Command::McpStatus);
+            // Skill names so `/<skill> [args]` resolves before `/skills` was ever opened.
+            let _ = commands.send(Command::ListSkills);
             while let Some(ev) = events.recv().await {
                 let mut m = model.write();
                 m.apply(ev);
@@ -285,7 +287,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                         #(m.queued.iter().map(|q| element! {
                             View(flex_direction: FlexDirection::Column, border_style: BorderStyle::Round, border_color: Color::DarkGrey, padding_left: 1, padding_right: 1, margin_top: 1) {
                                 Text(content: "◇ queued · ⌥↑ edit", color: Color::DarkGrey, weight: Weight::Bold)
-                                Text(content: q.text.clone(), color: Color::DarkGrey, wrap: TextWrap::Wrap)
+                                Text(content: queued_text(&q.text), color: Color::DarkGrey, wrap: TextWrap::Wrap)
                             }
                         }))
                     }
@@ -497,14 +499,15 @@ fn menu(m: &Model, input: &str, width: u16) -> Option<AnyElement<'static>> {
             *cursor,
         ),
         Menu::Skills { items, cursor } => (
-            "skills  ⏎ show  esc close".to_owned(),
+            "skills  ⏎ use  s show  esc close   ● in context".to_owned(),
             items
                 .iter()
                 .map(|s| {
                     // ponytail: fixed 48-char description; pass the terminal width if it grates.
                     let desc: String = s.description.chars().take(48).collect();
                     format!(
-                        "{:<20} {:<48} {:<16} {}",
+                        "{} {:<20} {:<48} {:<16} {}",
+                        if m.loaded_skills.contains(&s.name) { "●" } else { " " },
                         s.name,
                         desc,
                         s.repo
@@ -592,6 +595,16 @@ fn board(m: &Model, width: u16) -> Option<AnyElement<'static>> {
 /// Split after `n` chars (not bytes): `("⠹ ", rest)`.
 fn split_chars(s: &str, n: usize) -> (&str, &str) {
     s.split_at(s.char_indices().nth(n).map_or(s.len(), |(i, _)| i))
+}
+
+/// A queued input's chip text: a skill injection (04 §2.4) reads
+/// `◇ <name>  <words>` rather than the whole body.
+fn queued_text(text: &str) -> String {
+    match agent::skills::injected(text) {
+        Some((name, _, "")) => format!("◇ {name}"),
+        Some((name, _, rest)) => format!("◇ {name}  {rest}"),
+        None => text.to_owned(),
+    }
 }
 
 fn entry(e: &Entry, spinner: &str) -> AnyElement<'static> {
