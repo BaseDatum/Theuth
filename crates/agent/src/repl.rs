@@ -609,7 +609,11 @@ impl Repl {
     /// Never fails: a failed restore (or checkout) leaves a fresh/empty
     /// runtime and the first cell result says so.
     pub async fn open(pool: &Arc<Pool>, session: SessionId, data_dir: &Path, cx: RunCx) -> Repl {
-        let specs = cx.registry.ask(ListTools(Some(session))).await.unwrap_or_default();
+        let specs = cx
+            .registry
+            .ask(ListTools(Some(session)))
+            .await
+            .unwrap_or_default();
         let cfg = ReplConfig {
             limits: Some(ResourceLimits {
                 max_memory: Some(MAX_MEMORY),
@@ -984,15 +988,17 @@ impl Repl {
                             ))
                         }
                         "help" => match first_arg(&args, &kwargs, "name") {
-                            Some(MontyObject::String(name)) => match find_tool(&cx.registry, cx.session, &name)
-                                .await
-                            {
-                                Some(spec) => ResumeValue::Return(MontyObject::String(help(&spec))),
-                                None => ResumeValue::Error(MontyException::new(
-                                    ExcType::ValueError,
-                                    Some(format!("help: unknown tool {name:?}")),
-                                )),
-                            },
+                            Some(MontyObject::String(name)) => {
+                                match find_tool(&cx.registry, cx.session, &name).await {
+                                    Some(spec) => {
+                                        ResumeValue::Return(MontyObject::String(help(&spec)))
+                                    }
+                                    None => ResumeValue::Error(MontyException::new(
+                                        ExcType::ValueError,
+                                        Some(format!("help: unknown tool {name:?}")),
+                                    )),
+                                }
+                            }
                             _ => ResumeValue::Error(MontyException::new(
                                 ExcType::TypeError,
                                 Some("help(name: str) takes one string argument".into()),

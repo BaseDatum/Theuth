@@ -58,12 +58,31 @@ enum Transport {
     },
 }
 
-/// The entry's optional `oauth` object (design doc 05 §3.2).
-#[derive(Clone, Debug, PartialEq)]
+/// The entry's optional `oauth` object (design doc 05 §3.2). Every field is
+/// optional: `client_id` (+ `client_secret`) for servers offering neither DCR
+/// nor CIMD, `scopes`, and `redirect_uri` for servers that only accept a
+/// registered loopback URL (`http://localhost:8765/callback`).
+#[derive(Clone, Debug, Default, PartialEq)]
 struct OauthClient {
-    client_id: String,
+    client_id: Option<String>,
     client_secret: Option<String>,
     scopes: Vec<String>,
+    redirect_uri: Option<String>,
+}
+
+impl OauthClient {
+    /// Loopback port to listen on and the redirect URI to register: the
+    /// configured one, else an ephemeral `http://127.0.0.1:<port>/callback`.
+    fn redirect(&self) -> Result<(u16, Option<String>), String> {
+        let Some(uri) = &self.redirect_uri else {
+            return Ok((0, None));
+        };
+        let parsed = reqwest::Url::parse(uri).map_err(|e| format!("oauth.redirect_uri: {e}"))?;
+        let port = parsed
+            .port_or_known_default()
+            .ok_or_else(|| format!("oauth.redirect_uri `{uri}` has no port"))?;
+        Ok((port, Some(uri.clone())))
+    }
 }
 
 /// One desired server. Equality is what "changed" means for reconcile.
@@ -116,16 +135,16 @@ fn entry(v: &Value, dir: &Path) -> Option<ServerSpec> {
     }
     if let Some(url) = v.get("url").and_then(Value::as_str) {
         // `type` (http/sse/remote/streamable-http) is not consulted: everything is streamable HTTP.
-        let oauth = v.get("oauth").and_then(|o| {
-            Some(OauthClient {
-                client_id: o.get("client_id")?.as_str()?.to_owned(),
-                client_secret: o
-                    .get("client_secret")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
+        let str_of = |o: &Value, k: &str| o.get(k).and_then(Value::as_str).map(str::to_owned);
+        let oauth = v
+            .get("oauth")
+            .filter(|o| o.is_object())
+            .map(|o| OauthClient {
+                client_id: str_of(o, "client_id"),
+                client_secret: str_of(o, "client_secret"),
                 scopes: strings(o.get("scopes")),
-            })
-        });
+                redirect_uri: str_of(o, "redirect_uri"),
+            });
         return Some(ServerSpec {
             transport: Transport::Http {
                 url: url.to_owned(),
@@ -584,7 +603,12 @@ impl Message<Reconcile> for Mcp {
 impl Mcp {
     /// One [`McpServer`] from the current state; `spec` is the file's entry
     /// when the server is not running; `hidden` is the session's hide set.
-    fn server(&self, name: String, spec: Option<&ServerSpec>, hidden: &HashSet<String>) -> McpServer {
+    fn server(
+        &self,
+        name: String,
+        spec: Option<&ServerSpec>,
+        hidden: &HashSet<String>,
+    ) -> McpServer {
         let state = &self.state;
         let running = state.running.get(&name);
         let mut tools: Vec<McpToolInfo> = running
@@ -739,7 +763,11 @@ impl Message<McpLogin> for Mcp {
         let Transport::Http { url, oauth, .. } = spec.transport else {
             return Err(format!("{name} is a stdio server; nothing to log in to"));
         };
-        let (port, back) = ::oauth::callback(0).await.map_err(|e| e.to_string())?;
+        let oauth = oauth.unwrap_or_default();
+        let (want_port, redirect) = oauth.redirect()?;
+        let (port, back) = ::oauth::callback(want_port)
+            .await
+            .map_err(|e| format!("callback listener on 127.0.0.1:{want_port}: {e}"))?;
         let mut manager = AuthorizationManager::new(url.as_str())
             .await
             .map_err(|e| e.to_string())?;
@@ -750,16 +778,16 @@ impl Message<McpLogin> for Mcp {
             .await
             .map_err(|e| e.to_string())?;
         manager.set_metadata(resolved.metadata);
-        let mut req = AuthorizationRequest::new(format!("http://127.0.0.1:{port}/callback"))
-            .with_client_name("wth");
-        if let Some(o) = oauth {
-            req = req.with_preregistered_client(o.client_id);
-            if let Some(s) = o.client_secret {
+        let redirect = redirect.unwrap_or_else(|| format!("http://127.0.0.1:{port}/callback"));
+        let mut req = AuthorizationRequest::new(redirect).with_client_name("wth");
+        if let Some(id) = oauth.client_id {
+            req = req.with_preregistered_client(id);
+            if let Some(s) = oauth.client_secret {
                 req = req.with_client_secret(s);
             }
-            if !o.scopes.is_empty() {
-                req = req.with_scopes(o.scopes);
-            }
+        }
+        if !oauth.scopes.is_empty() {
+            req = req.with_scopes(oauth.scopes);
         }
         let session = AuthorizationSession::new(manager, req)
             .await
@@ -1671,7 +1699,7 @@ mod tests {
     fn remote_url_with_headers_and_oauth() {
         let json = serde_json::json!({"mcpServers": {
             "api": {"type": "sse", "url": "https://x.example/mcp", "headers": {"Authorization": "Bearer t"}},
-            "slack": {"url": "https://s.example/mcp", "oauth": {"client_id": "id", "scopes": ["a"]}},
+            "slack": {"url": "https://s.example/mcp", "oauth": {"client_id": "id", "scopes": ["a"], "redirect_uri": "http://localhost:8765/cb"}},
             "bad": {"url": "https://b.example/mcp", "oauth": {"client_secret": "no id"}}
         }});
         let http = |url: &str, headers: &[(&str, &str)], oauth| ServerSpec {
@@ -1698,21 +1726,47 @@ mod tests {
                         None
                     )
                 ),
-                ("bad".into(), http("https://b.example/mcp", &[], None)),
+                (
+                    "bad".into(),
+                    http(
+                        "https://b.example/mcp",
+                        &[],
+                        Some(OauthClient {
+                            client_secret: Some("no id".into()),
+                            ..OauthClient::default()
+                        })
+                    )
+                ),
                 (
                     "slack".into(),
                     http(
                         "https://s.example/mcp",
                         &[],
                         Some(OauthClient {
-                            client_id: "id".into(),
+                            client_id: Some("id".into()),
                             client_secret: None,
                             scopes: vec!["a".into()],
+                            redirect_uri: Some("http://localhost:8765/cb".into()),
                         })
                     )
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn oauth_redirect_port_comes_from_the_uri() {
+        let c = |uri: &str| OauthClient {
+            redirect_uri: Some(uri.into()),
+            ..OauthClient::default()
+        };
+        assert_eq!(OauthClient::default().redirect(), Ok((0, None)));
+        assert_eq!(
+            c("http://localhost:8765/callback").redirect(),
+            Ok((8765, Some("http://localhost:8765/callback".into())))
+        );
+        assert_eq!(c("http://127.0.0.1/cb").redirect().map(|(p, _)| p), Ok(80));
+        assert!(c("not a url").redirect().is_err());
     }
 
     #[test]

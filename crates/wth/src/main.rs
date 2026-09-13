@@ -128,10 +128,21 @@ const DEFAULT_AGENTS: &str =
 #   args: [-y, \"@agentclientprotocol/codex-acp\"]
 ";
 
-/// Creates the data-dir skeleton on first run. Existing files are never overwritten.
+/// The bundled `harness` skill (design doc 07 §4): what the agent needs to
+/// operate its own harness, loaded on demand through the skills index.
+const HARNESS_SKILL: &str = include_str!("../harness.md");
+
+/// Creates the data-dir skeleton on first run. Existing files are never
+/// overwritten, except `skills/harness.md`, which the binary owns and rewrites
+/// so it always describes the running version.
 fn first_run(data_dir: &Path, config_path: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(data_dir.join("mcp"))?;
     std::fs::create_dir_all(data_dir.join("acp"))?;
+    std::fs::create_dir_all(data_dir.join("skills"))?;
+    let harness = data_dir.join("skills").join("harness.md");
+    if std::fs::read_to_string(&harness).ok().as_deref() != Some(HARNESS_SKILL) {
+        std::fs::write(harness, HARNESS_SKILL)?;
+    }
     let agents = data_dir.join("acp").join("agents.yaml");
     if !agents.exists() {
         std::fs::write(agents, DEFAULT_AGENTS)?;

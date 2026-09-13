@@ -235,13 +235,21 @@ skipped:
 4. always-skill bodies, name order
 5. skills index
 6. peer line: `PeerContext { session }` → "## Peers\nYou are `x`, a subagent of session …" for children, else ""
-7. plugin prompt blocks: `ask(ListPrompts)` on the tool registry, sorted by plugin name, joined by blank lines (00 §4); "" when none
+7. plugin prompt blocks: `ask(ListPrompts)` on the tool registry, sorted by plugin name, joined by blank lines (00 §4); "" when none. Registered today: `agent` (data dir path, what each file is, "load the `harness` skill before editing", what is read at startup vs live), `knowledge` (when to use the store), `tools` (`mcp/` layout, shell expansion, `mcp/config.yaml` gate schema, `<server>__<tool>` naming, what `tools.policy` does and that the model cannot approve or log in). Each is a function of config only.
 8. GUIDANCE const: the todo sentence (§9) + spawn_subagent / send_message / <subagent_result> text
 ```
 
 `Turn::rebase` then appends `repl::prompt_block(ListTools)` (`08 §3.2`) when
 the runtime pool is on. Parts 7 and 8 are static text within a process;
 everything the roster used to contribute per turn is gone.
+
+The long tail of harness knowledge - every `config.yaml` key, the MCP entry
+shapes, what only the user can do - is the bundled `harness` skill
+(`crates/wth/harness.md`, written to `<data_dir>/skills/harness.md` on every
+start so it matches the binary): one index line in part 5, body on
+`load_skill`. Rejected: putting it all in prompt blocks (~1.5k tokens on
+every call for text needed in maybe one turn in fifty) and a `wth_help` tool
+(a skill already is that).
 
 `SessionState` keeps `baseline: String` across turns. At turn start the new
 render is compared with it; on inequality (and a non-empty previous value):

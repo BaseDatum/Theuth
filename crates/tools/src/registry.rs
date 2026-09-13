@@ -566,7 +566,10 @@ mod tests {
         .await
         .unwrap();
         assert!(names(reg.ask(ListTools(Some(child))).await.unwrap()).is_empty());
-        assert_eq!(names(reg.ask(ListTools(Some(other))).await.unwrap()), ["echo"]);
+        assert_eq!(
+            names(reg.ask(ListTools(Some(other))).await.unwrap()),
+            ["echo"]
+        );
         assert_eq!(names(reg.ask(ListTools(None)).await.unwrap()), ["echo"]);
         assert!(reg.ask(Invoke(call(child))).await.unwrap().is_error);
         assert!(!reg.ask(Invoke(call(other))).await.unwrap().is_error);
@@ -582,7 +585,10 @@ mod tests {
         })
         .await
         .unwrap();
-        assert_eq!(names(reg.ask(ListTools(Some(child))).await.unwrap()), ["echo"]);
+        assert_eq!(
+            names(reg.ask(ListTools(Some(child))).await.unwrap()),
+            ["echo"]
+        );
         assert!(!reg.ask(Invoke(call(child))).await.unwrap().is_error);
     }
 }

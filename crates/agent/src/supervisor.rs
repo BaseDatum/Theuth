@@ -20,8 +20,8 @@ use runtime::{InputId, Runtime, SessionId};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, oneshot};
 use tokio::task::AbortHandle;
 use tools::{
-    JobEvent, JobExit, JobId, ListPrompts, ListTools, REGISTRY_ACTOR, RegisterTool, SetParent,
-    ToolRegistry,
+    JobEvent, JobExit, JobId, ListPrompts, ListTools, REGISTRY_ACTOR, RegisterPrompt, RegisterTool,
+    SetParent, ToolRegistry,
 };
 
 use crate::acp_child::AcpChild;
@@ -1929,6 +1929,21 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         let Some(reg) = rt.lookup_when::<ToolRegistry>(REGISTRY_ACTOR).await else {
             return;
         };
+        let _ = reg
+            .ask(RegisterPrompt {
+                plugin: "agent",
+                text: format!(
+                    "This harness is `wth`; its state is under {d}: config.yaml (every plugin's section: \
+                     `agent.model` = default `provider/model`, `tools.policy`, `rpc`, `web`, `knowledge`, `signal`), \
+                     credentials.yaml (provider -> API key, mode 0600), prompt.md (standing instructions, read every call), \
+                     skills/ (markdown skills; this index), knowledge/, sessions.sqlite, logs/wth.log.<date>. \
+                     Load the `harness` skill before editing any of them; it has the full layout and every key. \
+                     config.yaml and credentials.yaml are read once at startup (mcp/, skills/ and prompt.md are live); \
+                     the user switches the running model with /model.",
+                    d = data_dir.display()
+                ),
+            })
+            .await;
         let dir = skills::dir(&data_dir);
         let _ = reg
             .ask(RegisterTool(Arc::new(LoadSkillTool { dir: dir.clone() })))

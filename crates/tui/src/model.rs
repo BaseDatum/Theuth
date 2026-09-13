@@ -864,7 +864,11 @@ impl Row<'_> {
     /// `<server>__<name>`, so this only ever touches this server's own slots).
     fn tool_names(&self) -> Vec<String> {
         match self {
-            Row::Server(s) => s.tools.iter().filter_map(|t| t.registered.clone()).collect(),
+            Row::Server(s) => s
+                .tools
+                .iter()
+                .filter_map(|t| t.registered.clone())
+                .collect(),
             Row::Tool(_, t) => t.registered.clone().into_iter().collect(),
         }
     }
@@ -1505,10 +1509,10 @@ impl Model {
                 )));
             }
             UiEvent::McpProgress(p) => {
-                if p.connecting.is_empty()
-                    && self.mcp.as_ref() != Some(&p)
-                    && matches!(self.menu, Some(Menu::Mcp { .. }))
-                {
+                // Any change while the menu is open (a login settled, a server
+                // (dis)connected) re-lists; waiting for `connecting` to drain
+                // left a finished login unshown while a slow server reconnected.
+                if self.mcp.as_ref() != Some(&p) && matches!(self.menu, Some(Menu::Mcp { .. })) {
                     self.refresh_mcp = true;
                 }
                 self.mcp = Some(p);
@@ -3068,7 +3072,11 @@ mod tests {
         assert!(m.menu.is_none());
         m.submit("/mcp", &tx);
         assert!(matches!(rx.try_recv(), Ok(Command::ListMcp(Some(s))) if s == sid));
-        m.apply(UiEvent::Mcp(vec![fresh(Some(Gate::Destructive), None, false)]));
+        m.apply(UiEvent::Mcp(vec![fresh(
+            Some(Gate::Destructive),
+            None,
+            false,
+        )]));
 
         // Space never reaches `off`: destructive wraps to annotations.
         m.menu_key(KeyCode::Char(' '), "", &tx);
@@ -3080,7 +3088,10 @@ mod tests {
         // ⏎ on an `on` server asks for the scope; `s` hides its tools for the session.
         m.menu_key(KeyCode::Enter, "", &tx);
         assert!(matches!(&m.menu, Some(Menu::Mcp { pending: Some(t), .. }) if t.server == "fs"));
-        assert!(rx.try_recv().is_err(), "nothing sent until the scope is chosen");
+        assert!(
+            rx.try_recv().is_err(),
+            "nothing sent until the scope is chosen"
+        );
         m.menu_key(KeyCode::Char('s'), "", &tx);
         assert!(matches!(
             rx.try_recv(),
@@ -3103,16 +3114,27 @@ mod tests {
         m.menu_key(KeyCode::Char('a'), "", &tx);
         assert!(matches!(
             rx.try_recv(),
-            Ok(Command::SetGate { tool: None, gate: Some(Gate::Off), .. })
+            Ok(Command::SetGate {
+                tool: None,
+                gate: Some(Gate::Off),
+                ..
+            })
         ));
         m.apply(UiEvent::Mcp(vec![fresh(Some(Gate::Off), None, false)]));
         assert_eq!(m.mcp_rows()[0].switch(), Switch::OffAlways);
         m.menu_key(KeyCode::Char(' '), "", &tx);
-        assert!(rx.try_recv().is_err(), "risk cycling on an off server does nothing");
+        assert!(
+            rx.try_recv().is_err(),
+            "risk cycling on an off server does nothing"
+        );
         m.menu_key(KeyCode::Enter, "", &tx);
         assert!(matches!(
             rx.try_recv(),
-            Ok(Command::SetGate { tool: None, gate: None, .. })
+            Ok(Command::SetGate {
+                tool: None,
+                gate: None,
+                ..
+            })
         ));
 
         // Esc in the scope prompt cancels the prompt, not the menu.
@@ -3134,7 +3156,11 @@ mod tests {
         m.menu_key(KeyCode::Backspace, "", &tx);
         assert!(matches!(
             rx.try_recv(),
-            Ok(Command::SetGate { tool: Some(_), gate: None, .. })
+            Ok(Command::SetGate {
+                tool: Some(_),
+                gate: None,
+                ..
+            })
         ));
         m.menu_key(KeyCode::Enter, "", &tx);
         m.menu_key(KeyCode::Char('a'), "", &tx);
@@ -3149,11 +3175,21 @@ mod tests {
         // Without a session the prompt still shows; `s` asks for one to be created.
         m.session = None;
         m.menu_key(KeyCode::Enter, "", &tx);
-        assert!(matches!(&m.menu, Some(Menu::Mcp { pending: Some(_), .. })));
+        assert!(matches!(
+            &m.menu,
+            Some(Menu::Mcp {
+                pending: Some(_),
+                ..
+            })
+        ));
         m.menu_key(KeyCode::Char('s'), "", &tx);
         assert!(matches!(
             rx.try_recv(),
-            Ok(Command::SetHidden { session: None, hidden: true, .. })
+            Ok(Command::SetHidden {
+                session: None,
+                hidden: true,
+                ..
+            })
         ));
     }
 

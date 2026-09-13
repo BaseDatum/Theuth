@@ -252,14 +252,23 @@ spawns: await the callback (5 min) → `session.handle_callback_url(url)` (rmcp
 exchanges the code and **saves through our store**) → `tell Restart(name)`.
 Failure → `state.errors[name] = "login failed: …"` + progress publish.
 
-Optional entry fields, read by `entry()` and ignored by everything else:
+Optional entry fields, read by `entry()` and ignored by everything else;
+each is independent:
 
 ```json
 { "url": "https://mcp.example.com/mcp",
-  "oauth": { "client_id": "…", "client_secret": "…", "scopes": ["…"] } }
+  "oauth": { "client_id": "…", "client_secret": "…", "scopes": ["…"],
+             "redirect_uri": "http://localhost:8765/callback" } }
 ```
 
-for servers that offer neither DCR nor CIMD (Slack-style pre-registration).
+`client_id` (+ `client_secret`) for servers that offer neither DCR nor CIMD
+(Slack-style pre-registration); `redirect_uri` for servers that only accept a
+registered loopback URL: `McpLogin` listens on its port (`oauth::callback(port)`,
+bound on 127.0.0.1, so the host may be `localhost` or `127.0.0.1`) and sends the
+URI verbatim as `redirect_uri`. Without it the listener is ephemeral and the
+URI `http://127.0.0.1:<port>/callback`. A busy port fails the login with the
+bind error rather than falling back, since the fallback URI would be rejected
+anyway.
 
 `McpLogout`: unlink the file, `Restart(name)` (the next connect is plain and
 gets the 401 again → `login required`).

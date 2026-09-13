@@ -313,6 +313,30 @@ impl runtime::Plugin for ToolsPlugin {
 
     async fn start(self: Box<Self>, rt: &runtime::Runtime) -> anyhow::Result<()> {
         let registry = registry::start(rt).await?;
+        let _ = registry
+            .ask(RegisterPrompt {
+                plugin: "tools",
+                text: prompt_block(&rt.data_dir),
+            })
+            .await;
         mcp::start(rt, registry, registry::config(rt)?.policy).await
     }
+}
+
+/// The plugin's system-prompt block (07 §4 part 7): where MCP servers and the
+/// tool policy live and what an approval means. A function of the data dir
+/// only, so it never busts the system cache.
+fn prompt_block(data_dir: &std::path::Path) -> String {
+    let d = data_dir.display();
+    format!(
+        "MCP servers are JSON files in {d}/mcp/ (any `mcp.json` shape, one or many servers per file; \
+         `$VAR` and `$(cmd)` in command/args/env/url/headers expand through the user's shell). \
+         Edit or drop a file and the tools appear or vanish within a second; add_mcp_server and \
+         remove_mcp_server do the same from a tool call. {d}/mcp/config.yaml gates risk per server or tool \
+         (`servers.<name>.risk` / `servers.<name>.tools.<tool>`: read_only | mutating | destructive | off); \
+         a tool named `<server>__<tool>` is one that two servers both offer. \
+         Each tool call is allowed, asked of the user, or denied by `tools.policy` in {d}/config.yaml \
+         according to its risk; you cannot approve your own calls, and a `denied by policy` result is final. \
+         Remote servers that answer 401 need the user to log in (`l` on the server in /mcp); you cannot."
+    )
 }
