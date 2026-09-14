@@ -173,7 +173,7 @@ async fn run(cx: &mut Cx<'_>, name: &'static str, arg: &str) -> anyhow::Result<R
                 rows.iter()
                     .filter(|s| s.parent.is_none())
                     .take(10)
-                    .map(|s| vec![short(s.id), s.title.clone(), age(s.created_at)]),
+                    .map(|s| vec![short(s.id), s.title.clone(), age(s.updated_at)]),
             ))
         }
         "/resume" => {

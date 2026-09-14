@@ -130,7 +130,7 @@ async fn connect(relay: ActorRef<Relay>, data_dir: PathBuf) -> Result<(), Error>
                         let cwd = s.cwd.map_or_else(|| here.clone(), PathBuf::from);
                         SessionInfo::new(s.id.to_string(), cwd)
                             .title(s.title)
-                            .updated_at(s.created_at.to_rfc3339())
+                            .updated_at(s.updated_at.to_rfc3339())
                     })
                     .filter(|s| req.cwd.as_ref().is_none_or(|want| *want == s.cwd))
                     .collect();

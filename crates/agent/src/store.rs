@@ -39,6 +39,7 @@ pub struct Epoch {
 struct SessionRow {
     id: String,
     created_at: String,
+    updated_at: String,
     title: String,
     model: String,
     parent: Option<String>,
@@ -55,6 +56,7 @@ impl TryFrom<SessionRow> for SessionSummary {
         Ok(Self {
             id: r.id.parse().context("bad session id")?,
             created_at: r.created_at.parse().context("bad created_at")?,
+            updated_at: r.updated_at.parse().context("bad updated_at")?,
             title: r.title,
             model: r.model,
             parent: r
@@ -99,11 +101,13 @@ impl Store {
         parent: Option<SessionId>,
         name: Option<&str>,
     ) -> anyhow::Result<()> {
+        let now = chrono::Utc::now().to_rfc3339();
         sqlx::query(
-            "INSERT INTO sessions (id, created_at, title, model, parent, name) VALUES (?, ?, '', ?, ?, ?)",
+            "INSERT INTO sessions (id, created_at, updated_at, title, model, parent, name) VALUES (?, ?, ?, '', ?, ?, ?)",
         )
         .bind(id.to_string())
-        .bind(chrono::Utc::now().to_rfc3339())
+        .bind(&now)
+        .bind(&now)
         .bind(model)
         .bind(parent.map(|p| p.to_string()))
         .bind(name)
@@ -190,6 +194,7 @@ impl Store {
     }
 
     /// Append one message; returns its `seq` (max+1 within the session).
+    /// Bumps `sessions.updated_at` (the list order).
     pub async fn append(&self, id: SessionId, message: &ChatMessage) -> anyhow::Result<i64> {
         let body = serde_json::to_string(message)?;
         let (seq,): (i64,) = sqlx::query_as(
@@ -201,6 +206,11 @@ impl Store {
         .bind(body)
         .fetch_one(&self.pool)
         .await?;
+        sqlx::query("UPDATE sessions SET updated_at = ? WHERE id = ?")
+            .bind(chrono::Utc::now().to_rfc3339())
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
         Ok(seq)
     }
 
@@ -366,7 +376,7 @@ impl Store {
     /// One session, if it exists.
     pub async fn session(&self, id: SessionId) -> anyhow::Result<Option<SessionSummary>> {
         let row: Option<SessionRow> = sqlx::query_as(
-            "SELECT id, created_at, title, model, parent, name, effort, agent, cwd FROM sessions WHERE id = ?",
+            "SELECT id, created_at, updated_at, title, model, parent, name, effort, agent, cwd FROM sessions WHERE id = ?",
         )
         .bind(id.to_string())
         .fetch_optional(&self.pool)
@@ -374,10 +384,10 @@ impl Store {
         row.map(SessionSummary::try_from).transpose()
     }
 
-    /// Every session, newest first.
+    /// Every session, most recently active first.
     pub async fn list_sessions(&self) -> anyhow::Result<Vec<SessionSummary>> {
         let rows: Vec<SessionRow> = sqlx::query_as(
-            "SELECT id, created_at, title, model, parent, name, effort, agent, cwd FROM sessions ORDER BY created_at DESC, id DESC",
+            "SELECT id, created_at, updated_at, title, model, parent, name, effort, agent, cwd FROM sessions ORDER BY updated_at DESC, id DESC",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -402,7 +412,7 @@ impl Store {
                  UNION ALL \
                  SELECT s.id, t.depth + 1, t.path || '/' || s.created_at || s.id \
                  FROM sessions s JOIN tree t ON s.parent = t.id) \
-             SELECT s.id, s.created_at, s.title, s.model, s.parent, s.name, s.effort, s.agent, s.cwd, t.depth \
+             SELECT s.id, s.created_at, s.updated_at, s.title, s.model, s.parent, s.name, s.effort, s.agent, s.cwd, t.depth \
              FROM sessions s JOIN tree t ON s.id = t.id ORDER BY t.path",
         )
         .bind(root.to_string())
@@ -566,6 +576,12 @@ mod tests {
         assert_eq!(list.iter().map(|s| s.id).collect::<Vec<_>>(), [child, id]);
         assert_eq!(list[0].parent, Some(id));
         assert_eq!(list[0].name.as_deref(), Some("kid"));
+        // Activity, not creation, orders the list: a message in the older session moves it to the top.
+        tokio::time::sleep(Duration::from_millis(2)).await;
+        store.append(id, &ChatMessage::user("again")).await.unwrap();
+        let list = store.list_sessions().await.unwrap();
+        assert_eq!(list.iter().map(|s| s.id).collect::<Vec<_>>(), [id, child]);
+        assert!(list[0].updated_at > list[0].created_at);
         assert_eq!(
             store
                 .descendants(id)

@@ -426,7 +426,7 @@ fn menu(m: &Model, input: &str, width: u16) -> Option<AnyElement<'static>> {
                         "{} {}  {}  {:<20} {}",
                         if Some(s.id) == m.session { "●" } else { " " },
                         short(s.id),
-                        s.created_at
+                        s.updated_at
                             .with_timezone(&chrono::Local)
                             .format("%m-%d %H:%M"),
                         s.model.rsplit('/').next().unwrap_or(&s.model),

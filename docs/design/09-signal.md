@@ -334,7 +334,7 @@ Commands never reach the model.
 | `/help` | this table, one line each, in a fence | – |
 | `/status` | `/signal status` block + `session: <last 8>` / `model` / `turn: running\|idle` (no context %; `turn` is `LoadSession.running`) | `Status`, `ListSessions`, `LoadSession` |
 | `/new` | unbind thread (§6); replies `new thread; next message starts a session` | – |
-| `/sessions` | 10 newest top-level sessions: last-8 id · title · age | `ListSessions` |
+| `/sessions` | 10 most recently active top-level sessions: last-8 id · title · age since last activity | `ListSessions` |
 | `/resume <id>` | bind thread to session; full id, unique prefix or unique suffix; replies `resumed <id>` | `ListSessions` |
 | `/cancel` | abort the turn | `Cancel` |
 | `/compact` | fold; replies `compacted → epoch n` | `Compact` |

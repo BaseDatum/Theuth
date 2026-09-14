@@ -262,7 +262,8 @@ flowchart LR
 
 **Session store**: `sqlx` 0.9 sqlite, inside the agent crate (only the agent
 writes it; UIs read via `ask(ListSessions)`/`ask(LoadSession)`). Tables:
-`sessions(id, created_at, title, model)`,
+`sessions(id, created_at, updated_at, title, model, …)` (`updated_at` = last
+append; `list_sessions` orders by it),
 `messages(session_id, seq, role, body_json)`,
 `epochs(session_id, n, at_seq, tail_from, head, created_at)` (`07 §8.4`).
 `sqlx::migrate!`.

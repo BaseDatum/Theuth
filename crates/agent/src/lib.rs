@@ -567,6 +567,8 @@ pub struct SessionSummary {
     pub id: SessionId,
     /// Creation time.
     pub created_at: chrono::DateTime<chrono::Utc>,
+    /// Last activity: creation or the last appended message. The list order.
+    pub updated_at: chrono::DateTime<chrono::Utc>,
     /// Model-written name of what the session is about now (07 §15); the first input, truncated, until then.
     pub title: String,
     /// Model used.

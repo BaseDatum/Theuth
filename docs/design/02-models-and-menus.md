@@ -287,7 +287,9 @@ skips the picker.
 call itself changes only from the next turn (§2.1).
 
 **`/sessions` picker.** `Command::ListSessions` → picker over top-level
-sessions, newest first (`● id  mm-dd hh:mm  model  title`, ● = shown); Enter
+sessions, most recently active first (`sessions.updated_at`: creation or the
+last appended message; `● id  mm-dd hh:mm  model  title`, stamp = that
+activity, ● = shown); Enter
 → `resume(id)`, which is `Command::Load`. Switching never touches the agent:
 the session left behind keeps its turn running in its actor and its events
 keep flowing; the TUI only changes which session it renders. `LoadSession`
