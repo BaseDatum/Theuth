@@ -1,0 +1,34 @@
+[package]
+name = "desktop"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "macOS menubar app: Tauri shell that launches the `wth` sidecar on a pty and hosts the RPC webview"
+
+[[bin]]
+name = "wth-desktop"
+path = "src/main.rs"
+
+[dependencies]
+tauri = { workspace = true }
+tauri-plugin-opener = { workspace = true }
+tauri-plugin-notification = { workspace = true }
+tauri-plugin-global-shortcut = { workspace = true }
+tauri-plugin-autostart = { workspace = true }
+tauri-plugin-positioner = { workspace = true }
+tauri-plugin-window-state = { workspace = true }
+tauri-plugin-dialog = { workspace = true }
+portable-pty = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+sha2 = { workspace = true }
+dirs = { workspace = true }
+
+[build-dependencies]
+tauri-build = { workspace = true }
+
+[lints]
+workspace = true

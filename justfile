@@ -52,13 +52,14 @@ desktop: ts-desktop
     cd crates/desktop/ui && bun install
     cd crates/desktop && WTH_BIN="${WTH_BIN:-$PWD/../../target/debug/wth}" cargo tauri dev
 
-# `wth.app` + dmg with the release `wth` bundled as the sidecar (25 §5, 18).
+# `wth.app` + dmg with the release `wth` bundled as the sidecar (25 §5, 18). `externalBin`
+# lives in tauri.bundle.conf.json so a plain `cargo check` does not need the binary present.
 desktop-bundle target="aarch64-apple-darwin": ts-desktop
     cargo build --release -p wth
     mkdir -p crates/desktop/binaries
     cp target/release/wth crates/desktop/binaries/wth-{{target}}
     cd crates/desktop/ui && bun install && bun run build
-    cd crates/desktop && cargo tauri build
+    cd crates/desktop && cargo tauri build --config tauri.bundle.conf.json
 
 # Desktop UI gates: types, unit tests.
 desktop-check:

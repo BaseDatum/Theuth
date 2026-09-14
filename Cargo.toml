@@ -129,6 +129,18 @@ iana-time-zone = "0.1"
 # dropping rusqlite 0.40→0.38 so its libsqlite3-sys is 0.36, the version presage
 # and sqlx already link (Cargo allows only one `links = "sqlite3"`).
 unjar = { git = "https://github.com/skymoore/unjar", branch = "main", default-features = false }
+# Desktop menubar app (design doc 25): Tauri 2 shell around the RPC client; the daemon is the
+# bundled `wth` sidecar started on a pty (design doc 18). Plugins replace hand-written
+# NSStatusItem / LaunchServices / NSUserNotification glue.
+tauri = { version = "2", features = ["tray-icon", "image-png", "protocol-asset"] }
+tauri-build = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-positioner = { version = "2", features = ["tray-icon"] }
+tauri-plugin-window-state = "2"
+tauri-plugin-dialog = "2"
 
 [workspace.lints.rust]
 missing_docs = "warn"
