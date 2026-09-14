@@ -14,6 +14,7 @@ just run -- --resume <id>  # reopen a session
 just run -- -p "prompt"    # print mode: stream the reply, exit when the turn ends
 echo "prompt" | just run -- -p   # same, prompt from stdin
 just run -- --link-signal --owner +15551234567   # pair as a Signal linked device (one-shot QR), then run --headless
+just run -- --slack-manifest   # print the Slack app manifest; create the app from it, tokens into credentials.yaml, then run --headless
 just run -- --acp          # Agent Client Protocol on stdio: use wth from Zed/editors (agent_servers: {"wth": {"command": "wth", "args": ["--acp"]}})
 just ts                    # TypeScript bindings for the wire types → bindings/
 ```
@@ -36,12 +37,12 @@ merged by RRF with SERP features — [`docs/design/16-web.md`](docs/design/16-we
 over the bus), `acp` (external
 harnesses over the Agent Client Protocol: agents.yaml, registry, harness
 connection), `signal` (phone frontend
-over Signal messenger), `rpc` (jsonrpsee), `tui` (iocraft), `wth` (binary).
+over Signal messenger), `slack` (Slack frontend over Socket Mode), `rpc` (jsonrpsee), `tui` (iocraft), `wth` (binary).
 
 Config (`~/.wth/`, created on first run; details in
 [`docs/design/01-config-and-subagents.md`](docs/design/01-config-and-subagents.md) §1):
 
-- `config.yaml` — every plugin reads its own section; `WTH_<SECTION>__<KEY>` env overrides. `agent.model` is a models.dev id (`anthropic/claude-sonnet-4-5`); `/model` rewrites that one line in place. The `agent`, `knowledge`, `web` and `search_providers` sections with their defaults:
+- `config.yaml` — every plugin reads its own section; `WTH_<SECTION>__<KEY>` env overrides. `agent.model` is a models.dev id (`anthropic/claude-sonnet-4-5`); `/model` rewrites that one line in place. The `agent`, `knowledge`, `web`, `search_providers` and `slack` sections with their defaults:
 
   ```yaml
   agent:
@@ -63,10 +64,17 @@ Config (`~/.wth/`, created on first run; details in
     # searxng: { base_url: http://127.0.0.1:8080 }
     # openserp: { base_url: http://127.0.0.1:7000 }
     # brave: {}                    # key `brave` in credentials.yaml
+  slack:
+    # owner: U0123456789           # owner-only commands, may click any approval, receives unbound approvals
+    allowed: []                    # more user ids; each owns their threads
+    channels: []                   # channel ids where @wth is honoured; empty = DMs only
+    tools: all                     # all | errors | none — task cards per tool call
+    reasoning: true                # the quoted reasoning message
+    approvals: all                 # all | threads — where approvals for non-Slack sessions go
   ```
 
   The Python runtime is always on: the worker is the `wth` binary itself (`wth subprocess`, nothing to install); every tool is an `async` function inside the sandbox and state persists across turns.
-- `credentials.yaml` — `provider: key` (genai adapter names), mode 0600; beats env vars. A provider with a key, a login, or its env var is "configured": `/model` lists only those. Named OpenAI-compatible gateways (`/provider add`) store their key here under the gateway name. Web search keys (`firecrawl`, `brave`, optional `github`) live here too.
+- `credentials.yaml` — `provider: key` (genai adapter names), mode 0600; beats env vars. A provider with a key, a login, or its env var is "configured": `/model` lists only those. Named OpenAI-compatible gateways (`/provider add`) store their key here under the gateway name. Web search keys (`firecrawl`, `brave`, optional `github`) and the Slack tokens (`slack_bot`, `slack_app`) live here too.
 - `providers.yaml` — named OpenAI-compatible gateways (`name: { base_url }`); keys live in `credentials.yaml`. `/provider add` writes both and fetches `GET {base}models` into `models.json`.
 - `models.json` — optional, same shape as the bundled catalog; adds or overrides models (local `ollama/...`, private gateways). Refresh the bundled data with `just models`. `/provider add` writes the fetched model list here.
 - `oauth/` — tokens from `/login` (`openai.json` = ChatGPT subscription via the Codex client, `anthropic.json` = Claude Pro/Max via the Claude Code client, `cursor.json` = Cursor subscription, `xai.json` = SuperGrok via the Grok CLI client; `mcp/<server>.json` = MCP servers that answered 401), mode 0600; `/logout <name>` deletes one. See [`docs/design/05-oauth.md`](docs/design/05-oauth.md).
@@ -134,3 +142,29 @@ commands mirror the TUI (`/status`, `/new`, `/sessions`, `/resume <id>`,
 message you answer with 👍/👎 or `/approve <code>`. Inbound files land in
 `~/.wth/signal/inbox/`. See
 [`docs/design/09-signal.md`](docs/design/09-signal.md).
+
+Slack: a workspace-side frontend that runs only in the daemon. `wth
+--slack-manifest` prints the app manifest; create the app from it at
+api.slack.com/apps, install it to the workspace, put the two tokens in
+`credentials.yaml` as `slack_bot: xoxb-…` and `slack_app: xapp-…`, set
+`slack.owner` to your user id (`U…`) in `config.yaml`, then `wth
+--headless`. Each top-level message in the bot's DM (or an `@wth` mention in
+a `slack.channels` channel) opens a session whose replies stream live into
+the thread — one message per turn with task cards for tool calls, a quoted
+reasoning message when `slack.reasoning` is on, and a footer with model,
+tokens and elapsed time; a reply in the thread steers a running turn or
+starts the next one. Tool approvals arrive as a card with Allow/Deny
+buttons (in the session's thread, or in the owner's DM for sessions started
+elsewhere when `slack.approvals: all`). Every subagent gets its own thread
+with a live board of descendants in the parent thread. The `/wth` slash
+command carries the sub-commands (replies are ephemeral): `help` — the
+list; `status` — daemon and session state; `sessions` — recent sessions;
+`resume <id>` — bind a new thread to a session; `cancel [id]` — stop the
+turn; `compact [id]` — compact the context; `model [id]` — list or set the
+model; `agents` — the subagent tree; `prompt` — the system prompt; `skills
+[add <url>|rm <name>|sync]`; `mcp [add <url|json>|sync]`; `login [name]` /
+`logout [name]` — MCP OAuth; `approvals on|off [always]` (owner); `slack
+[status|allow <U>|rm <U>|channel add <C>|channel rm <C>]` (owner). The
+native stop button needs the `agent_session_stopped` event in the app's
+Event Subscriptions (the manifest includes it). See
+[`docs/design/21-slack.md`](docs/design/21-slack.md).

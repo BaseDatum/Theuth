@@ -13,6 +13,7 @@ use knowledge::KnowledgeChanged;
 use runtime::Runtime;
 use serde::Serialize;
 use signal::SignalEvent;
+use slack::SlackEvent;
 use tokio::sync::broadcast;
 use tools::{ApprovalRequested, ApprovalResolved, JobEvent, McpProgress};
 
@@ -64,6 +65,7 @@ forward!(
     McpProgress,
     JobEvent,
     SignalEvent,
+    SlackEvent,
     KnowledgeChanged
 );
 
@@ -79,6 +81,7 @@ pub async fn start(rt: &Runtime) -> broadcast::Sender<Event> {
     rt.subscribe::<Bridge, McpProgress>(&actor).await;
     rt.subscribe::<Bridge, JobEvent>(&actor).await;
     rt.subscribe::<Bridge, SignalEvent>(&actor).await;
+    rt.subscribe::<Bridge, SlackEvent>(&actor).await;
     rt.subscribe::<Bridge, KnowledgeChanged>(&actor).await;
     tx
 }

@@ -54,6 +54,8 @@ fn export_bindings() {
         runtime::TurnId,
         runtime::InputId,
         signal::SignalEvent,
-        signal::SignalStatus
+        signal::SignalStatus,
+        slack::SlackEvent,
+        slack::SlackStatus
     );
 }

@@ -51,6 +51,9 @@ struct Cli {
     /// Device name shown in the phone's Linked devices list (default: config `signal.device_name`).
     #[arg(long, requires = "link_signal")]
     device_name: Option<String>,
+    /// Print the Slack app manifest (paste into api.slack.com/apps → Create from manifest) and exit.
+    #[arg(long, conflicts_with_all = ["headless", "serve", "acp", "link_signal"])]
+    slack_manifest: bool,
 }
 
 const DEFAULT_CONFIG: &str = "# wth configuration. Every plugin reads its own section.
@@ -104,6 +107,16 @@ rpc:
 #   device_name: wth        # shown in the phone's Linked devices list
 #   owner: \"+15551234567\"   # set by --link-signal / signal_link; owner-only commands
 #   allowed: []             # more E.164s; each gets its own thread
+
+# slack:                    # Slack frontend; runs in `wth --headless`. `wth --slack-manifest` prints the app manifest;
+#                           # tokens go in credentials.yaml as slack_bot / slack_app.
+#   enabled: true           # daemon opens the socket when tokens are present
+#   owner: U0123456789      # owner-only commands; may click any approval; receives unbound approvals
+#   allowed: []             # more user ids; each owns their threads
+#   channels: []            # channel ids where @wth is honoured; empty = DMs only
+#   tools: all              # all | errors | none — task cards per tool call
+#   reasoning: true         # post the quoted reasoning message
+#   approvals: all          # all | threads — approvals for sessions not bound to a thread go to the owner DM (all) or nowhere (threads)
 ";
 
 const DEFAULT_CREDENTIALS: &str =
@@ -114,6 +127,8 @@ const DEFAULT_CREDENTIALS: &str =
 # groq: gsk_...
 # firecrawl: fc-...        # web search + rendered fetch; free tier at firecrawl.dev
 # brave: BSA...            # Brave Search API
+# slack_bot: xoxb-...       # Slack bot token (wth --slack-manifest → create app → install)
+# slack_app: xapp-...       # Slack app-level token with connections:write (Socket Mode)
 # ollama needs no key.
 ";
 
@@ -188,6 +203,10 @@ fn main() -> anyhow::Result<()> {
 
 async fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    if cli.slack_manifest {
+        print!("{}", slack::MANIFEST);
+        return Ok(());
+    }
 
     let data_dir = cli
         .data_dir
@@ -244,6 +263,7 @@ async fn run() -> anyhow::Result<()> {
                 channel: false,
                 link: None,
             }),
+            Box::new(slack::SlackPlugin { channel: false }),
             Box::new(rpc::AcpPlugin),
         ]
     } else {
@@ -256,6 +276,9 @@ async fn run() -> anyhow::Result<()> {
             Box::new(signal::SignalPlugin {
                 channel: cli.headless,
                 link: None,
+            }),
+            Box::new(slack::SlackPlugin {
+                channel: cli.headless,
             }),
         ];
         if cli.serve || cli.headless {

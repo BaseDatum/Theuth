@@ -134,7 +134,7 @@ Shared crate `runtime` contains exactly `Plugin`, `Runtime` (+ the three
 helpers above), `SessionId`, `TurnId`. Nothing else. The tool and approval
 contracts live in `tools`; the agent's commands and its `AgentEvent` live in
 `agent`. Plugins depend on each other's crates for those types along the
-acyclic order `runtime ← tools ← knowledge ← agent ← {tui, rpc, signal} ← wth`
+acyclic order `runtime ← tools ← knowledge ← agent ← {tui, rpc, signal, slack} ← wth`
 (`knowledge` joins the chain in 12 §9). This keeps the shared crate under
 its 400-line ceiling and puts each contract next to the code that enforces
 it. (Earlier draft put the tool contract in `runtime`; dropped once the
@@ -485,6 +485,7 @@ crates/
   web/                plugin: search_web / read_url, SSRF-guarded fetcher, RRF aggregator, keyless engines (16)
   search-providers/   plugin: Firecrawl, SearXNG, OpenSERP, Brave registered with web over the bus (16)
   signal/             plugin: Signal channel and device pairing (added in 09)
+  slack/              plugin: Slack channel over Socket Mode (added in 21)
   rpc/                plugin: jsonrpsee server, event subscription bridge (§7)
   tui/                plugin: iocraft frontend (§8)
   wth/                bin: config load, plugin list from CLI flags, run (§2)
@@ -521,6 +522,7 @@ Workspace dependencies (versions verified 2026-09-09 via `cargo info`):
 | clap | 4 | CLI |
 | agent-client-protocol | 2.1 (pinned) | ACP client + agent (acp, agent, rpc) |
 | html-to-markdown-rs | 3.12 | HTML → markdown/text (web) |
+| slack-morphism | 2.28 (patched, 21 §2.1) | Slack Socket Mode + Web API |
 | wiremock | 0.6 dev | provider contract tests |
 
 Lints: `missing_docs = warn`, `clippy::all = warn` while the crates are being
@@ -634,4 +636,5 @@ verified only against documented response shapes, not live.
   | Was | Now | As | Doc |
   |---|---|---|---|
   | signal | `signal` crate: channel + pairing | plugin | 09 (in-agent module rejected: only plugins may return) |
+  | slack | `slack` crate: Socket Mode channel, streamed threads, approvals, subagent threads | plugin | 21 |
   | okf | `knowledge` crate: store, FTS index, gix history, `knowledge_*` tools | plugin | 10, 12 §9 (the harvest *model call* stays in `agent`: it is a continuation of the live frame, 07; keep-it-all-in-agent rejected by the user) |

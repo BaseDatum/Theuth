@@ -30,6 +30,7 @@ use knowledge::{
 };
 use runtime::{InputId, Runtime, SessionId};
 use signal::{Allow, Link, RemoveAllowed, SIGNAL_ACTOR, Signal, SignalStatus, Status, Unlink};
+use slack::{SLACK_ACTOR, Slack, SlackStatus};
 use tokio::sync::broadcast;
 use tools::git::SyncResult;
 use tools::{
@@ -312,6 +313,21 @@ pub trait Api {
     /// Drop the Signal registration (`presage.db`) and return to linking; threads are kept.
     #[method(name = "signal_unlink")]
     async fn signal_unlink(&self) -> RpcResult<()>;
+    /// Slack connection state, trust lists, channels and bound threads.
+    #[method(name = "slack_status")]
+    async fn slack_status(&self) -> RpcResult<SlackStatus>;
+    /// Add a user id (`U…`) to `slack.allowed` (live and in the config file).
+    #[method(name = "slack_allow")]
+    async fn slack_allow(&self, user: String) -> RpcResult<()>;
+    /// Remove a user id from `slack.allowed`.
+    #[method(name = "slack_remove_allowed")]
+    async fn slack_remove_allowed(&self, user: String) -> RpcResult<()>;
+    /// Add a channel id (`C…`) to `slack.channels` (live and in the config file).
+    #[method(name = "slack_allow_channel")]
+    async fn slack_allow_channel(&self, channel: String) -> RpcResult<()>;
+    /// Remove a channel id from `slack.channels`.
+    #[method(name = "slack_remove_channel")]
+    async fn slack_remove_channel(&self, channel: String) -> RpcResult<()>;
     /// Stop the whole process.
     #[method(name = "shutdown")]
     async fn shutdown(&self) -> RpcResult<()>;
@@ -781,6 +797,26 @@ impl ApiServer for Server {
 
     async fn signal_unlink(&self) -> RpcResult<()> {
         ask::<Signal, _>(SIGNAL_ACTOR, Unlink).await
+    }
+
+    async fn slack_status(&self) -> RpcResult<SlackStatus> {
+        ask::<Slack, _>(SLACK_ACTOR, slack::Status).await
+    }
+
+    async fn slack_allow(&self, user: String) -> RpcResult<()> {
+        ask::<Slack, _>(SLACK_ACTOR, slack::Allow(user)).await
+    }
+
+    async fn slack_remove_allowed(&self, user: String) -> RpcResult<()> {
+        ask::<Slack, _>(SLACK_ACTOR, slack::RemoveAllowed(user)).await
+    }
+
+    async fn slack_allow_channel(&self, channel: String) -> RpcResult<()> {
+        ask::<Slack, _>(SLACK_ACTOR, slack::AllowChannel(channel)).await
+    }
+
+    async fn slack_remove_channel(&self, channel: String) -> RpcResult<()> {
+        ask::<Slack, _>(SLACK_ACTOR, slack::RemoveChannel(channel)).await
     }
 
     async fn shutdown(&self) -> RpcResult<()> {

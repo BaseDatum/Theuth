@@ -298,6 +298,12 @@ impl Text {
         self.stream.buffer()
     }
 
+    /// Byte offset in [`Text::raw`] up to which blocks are committed (will
+    /// never change again). Everything after it is the pending tail.
+    pub fn committed(&self) -> usize {
+        self.mapped
+    }
+
     /// `finish` was called.
     pub fn is_done(&self) -> bool {
         self.done

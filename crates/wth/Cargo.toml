@@ -18,6 +18,7 @@ search-providers = { workspace = true }
 agent = { workspace = true }
 rpc = { workspace = true }
 signal = { workspace = true }
+slack = { workspace = true }
 tui = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }

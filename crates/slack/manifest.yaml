@@ -1,0 +1,50 @@
+# Slack app manifest for wth (design doc 21 §10.3). Create the app from this at
+# https://api.slack.com/apps → "From a manifest", install it, then put the bot
+# token (xoxb-…) as `slack_bot` and an app-level token with `connections:write`
+# (xapp-…) as `slack_app` in ~/.wth/credentials.yaml.
+display_information:
+  name: wth
+  description: the wth agent, in your workspace
+  background_color: "#1f1f1f"
+features:
+  bot_user:
+    display_name: wth
+    always_online: true
+  agent_view:
+    agent_description: Talks to the wth daemon; streams answers, tool calls and approvals into a thread per session.
+    suggested_prompts:
+      - title: What can you do here?
+        message: What can you do here?
+      - title: Summarise my last session
+        message: Summarise my last session
+      - title: Show running agents
+        message: Show running agents
+  slash_commands:
+    - command: /wth
+      description: wth commands (help, status, sessions, resume, cancel, …)
+      usage_hint: help
+      should_escape: false
+oauth_config:
+  scopes:
+    bot:
+      - chat:write
+      - im:history
+      - im:write
+      - app_mentions:read
+      - reactions:write
+      - files:read
+      - files:write
+      - commands
+      - assistant:write
+settings:
+  event_subscriptions:
+    bot_events:
+      - message.im
+      - app_mention
+      - agent_session_stopped
+      - agent_session_title_changed
+  interactivity:
+    is_enabled: true
+  org_deploy_enabled: false
+  socket_mode_enabled: true
+  token_rotation_enabled: false
