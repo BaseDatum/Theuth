@@ -30,6 +30,9 @@ ignore = { workspace = true }
 grep-regex = { workspace = true }
 grep-searcher = { workspace = true }
 anydoc = { workspace = true }
+regex = { workspace = true }
+portable-pty = { workspace = true }
+vt100 = { workspace = true }
 
 [features]
 ts = ["dep:ts-rs", "runtime/ts"]

@@ -37,8 +37,8 @@ const TAIL: usize = 8 * 1024;
 const STUB_TAIL: usize = 2 * 1024;
 /// Finished rows kept per session before the oldest go.
 const MAX_ROWS: usize = 32;
-/// Minimum spacing of [`JobEvent::Output`] per job.
-const OUTPUT_EVERY: Duration = Duration::from_millis(500);
+/// Minimum spacing of [`JobEvent::Output`] / [`JobEvent::Screen`] per job.
+pub(crate) const OUTPUT_EVERY: Duration = Duration::from_millis(500);
 
 /// `j{n}`, `n` per session starting at 1.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
@@ -77,9 +77,10 @@ impl std::fmt::Display for JobExit {
 }
 
 /// Bus events. `Output` is coalesced to one per [`OUTPUT_EVERY`] per job and
-/// lossy under a flood; the log file is the truth. Wire tags are `JobStarted`
-/// | `JobOutput` | `JobFinished` so they read unambiguously on the shared
-/// RPC event stream.
+/// lossy under a flood; the log file is the truth. PTY jobs (22 §4.8) publish
+/// `Screen` (coalesced the same way) instead of `Output`. Wire tags are
+/// `JobStarted` | `JobOutput` | `JobScreen` | `JobFinished` so they read
+/// unambiguously on the shared RPC event stream.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(tag = "type")]
@@ -108,6 +109,19 @@ pub enum JobEvent {
         /// Lossy UTF-8 of the new bytes.
         chunk: String,
     },
+    /// A PTY job's rendered screen (22 §4.3): blank trailing rows dropped,
+    /// rows right-trimmed. Not published for pipe jobs.
+    #[serde(rename = "JobScreen")]
+    Screen {
+        /// Owning session.
+        session: SessionId,
+        /// Job.
+        id: JobId,
+        /// Non-blank prefix of the 40 screen rows.
+        rows: Vec<String>,
+        /// `(row, col)`, zero-based.
+        cursor: (u16, u16),
+    },
     /// The job ended; the agent injects this as `<job_result>` unless `inline`.
     #[serde(rename = "JobFinished")]
     Finished {
@@ -121,11 +135,14 @@ pub enum JobEvent {
         exit: JobExit,
         /// Wall time from spawn to exit.
         secs: u64,
-        /// stdout+stderr, truncated to 64 KiB; the agent applies spill.
+        /// stdout+stderr, truncated to 64 KiB; the agent applies spill. For
+        /// a PTY job the final screen text (22 §2.2).
         output: String,
         /// The tool call already returned this result (exited within the
         /// grace window); UIs still count it, the agent must not inject it.
         inline: bool,
+        /// Ran on a pseudo-terminal (22): `output` is a screen, not a log.
+        pty: bool,
     },
 }
 
@@ -143,8 +160,12 @@ pub struct JobView {
     pub secs: u64,
     /// Log file.
     pub log: PathBuf,
-    /// Last ≤ 8 KiB of output.
+    /// Last ≤ 8 KiB of output; for a PTY job the current screen text.
     pub tail: String,
+    /// `start`'s `name` label (22 §2.1), PTY jobs only.
+    pub name: Option<String>,
+    /// Runs on a pseudo-terminal (22).
+    pub pty: bool,
 }
 
 /// Receives a finished job's shell (14 §0.5: last finished wins).
@@ -197,11 +218,11 @@ pub struct CancelJob {
 }
 
 /// `tell` from a job task: record how it ended.
-struct Finished {
-    session: SessionId,
-    id: JobId,
-    exit: JobExit,
-    secs: u64,
+pub(crate) struct Finished {
+    pub(crate) session: SessionId,
+    pub(crate) id: JobId,
+    pub(crate) exit: JobExit,
+    pub(crate) secs: u64,
 }
 
 /// `tell` on `rt.shutdown`: kill every running job's process groups.
@@ -209,14 +230,22 @@ struct KillAll;
 
 /// Output as it arrives: appended to the log file, the last [`TAIL`] bytes
 /// kept, and the bytes since the last [`JobEvent::Output`] (capped the same way).
-struct Log {
+pub(crate) struct Log {
     file: std::fs::File,
     tail: VecDeque<u8>,
     pending: VecDeque<u8>,
 }
 
 impl Log {
-    fn push(&mut self, chunk: &[u8]) {
+    pub(crate) fn new(file: std::fs::File) -> Self {
+        Self {
+            file,
+            tail: VecDeque::with_capacity(TAIL),
+            pending: VecDeque::new(),
+        }
+    }
+
+    pub(crate) fn push(&mut self, chunk: &[u8]) {
         let _ = self.file.write_all(chunk);
         keep_last(&mut self.tail, chunk);
         keep_last(&mut self.pending, chunk);
@@ -239,19 +268,23 @@ fn keep_last(buf: &mut VecDeque<u8>, chunk: &[u8]) {
     buf.extend(&chunk[chunk.len().saturating_sub(TAIL)..]);
 }
 
-struct Job {
-    id: JobId,
-    command: String,
-    started: Instant,
+pub(crate) struct Job {
+    pub(crate) id: JobId,
+    pub(crate) command: String,
+    pub(crate) started: Instant,
     /// `None` while running.
-    exit: Option<JobExit>,
+    pub(crate) exit: Option<JobExit>,
     /// Total seconds once finished.
-    secs: u64,
-    log_path: PathBuf,
-    log: Arc<Mutex<Log>>,
-    pgids: Arc<Mutex<Vec<i32>>>,
-    cancel: Arc<Notify>,
-    task: AbortHandle,
+    pub(crate) secs: u64,
+    pub(crate) log_path: PathBuf,
+    pub(crate) log: Arc<Mutex<Log>>,
+    pub(crate) pgids: Arc<Mutex<Vec<i32>>>,
+    pub(crate) cancel: Arc<Notify>,
+    pub(crate) task: AbortHandle,
+    /// `start`'s label (22 §2.1); PTY jobs only.
+    pub(crate) name: Option<String>,
+    /// The pseudo-terminal, for PTY jobs (22 §4.8).
+    pub(crate) pty: Option<Arc<crate::pty::PtyHandle>>,
 }
 
 impl Job {
@@ -273,24 +306,44 @@ impl Job {
                 .map_or_else(|| "running".to_owned(), ToString::to_string),
             secs: self.secs(),
             log: self.log_path.clone(),
-            tail: lock(&self.log).tail_text(TAIL),
+            tail: match &self.pty {
+                Some(pty) => pty.screen().0.join("\n"),
+                None => lock(&self.log).tail_text(TAIL),
+            },
+            name: self.name.clone(),
+            pty: self.pty.is_some(),
         }
     }
 }
 
 #[derive(Default)]
-struct SessionJobs {
-    next: u32,
-    jobs: Vec<Job>,
+pub(crate) struct SessionJobs {
+    pub(crate) next: u32,
+    pub(crate) jobs: Vec<Job>,
+}
+
+impl SessionJobs {
+    /// Append a row, dropping the oldest finished ones past [`MAX_ROWS`].
+    pub(crate) fn push(&mut self, job: Job) {
+        self.jobs.push(job);
+        while self.jobs.len() > MAX_ROWS {
+            match self.jobs.iter().position(|j| j.exit.is_some()) {
+                Some(i) => {
+                    self.jobs.remove(i);
+                }
+                None => break,
+            }
+        }
+    }
 }
 
 /// The jobs actor. Look up with `ActorRef::<Jobs>::lookup(JOBS_ACTOR)`.
 #[derive(kameo::Actor)]
 pub struct Jobs {
-    rt: Runtime,
-    grace: Duration,
+    pub(crate) rt: Runtime,
+    pub(crate) grace: Duration,
     timeout: Duration,
-    sessions: HashMap<SessionId, SessionJobs>,
+    pub(crate) sessions: HashMap<SessionId, SessionJobs>,
 }
 
 impl Jobs {
@@ -352,11 +405,7 @@ impl Message<Start> for Jobs {
                 return reply;
             }
         };
-        let log = Arc::new(Mutex::new(Log {
-            file,
-            tail: VecDeque::with_capacity(TAIL),
-            pending: VecDeque::new(),
-        }));
+        let log = Arc::new(Mutex::new(Log::new(file)));
         let cancel = Arc::new(Notify::new());
         let (done_tx, mut done_rx) = oneshot::channel();
         // Whoever swaps this first owns the result: the grace waiter (reply
@@ -386,7 +435,7 @@ impl Message<Start> for Jobs {
             done: done_tx,
         }))
         .abort_handle();
-        sj.jobs.push(Job {
+        sj.push(Job {
             id: id.clone(),
             command: m.command,
             started,
@@ -397,15 +446,9 @@ impl Message<Start> for Jobs {
             pgids,
             cancel,
             task,
+            name: None,
+            pty: None,
         });
-        while sj.jobs.len() > MAX_ROWS {
-            match sj.jobs.iter().position(|j| j.exit.is_some()) {
-                Some(i) => {
-                    sj.jobs.remove(i);
-                }
-                None => break,
-            }
-        }
         // The grace wait leaves the mailbox so `ListJobs` / `CancelJob` stay live.
         let grace = self.grace;
         tokio::spawn(async move {
@@ -487,7 +530,7 @@ impl Message<KillAll> for Jobs {
 }
 
 /// SIGKILL every recorded group once and forget them.
-fn kill(pgids: &Mutex<Vec<i32>>) {
+pub(crate) fn kill(pgids: &Mutex<Vec<i32>>) {
     let mut pgids = std::mem::take(&mut *lock(pgids));
     pgids.sort_unstable();
     pgids.dedup(); // pipeline members share the first member's group
@@ -697,12 +740,13 @@ async fn run(mut j: Run) {
         secs,
         output,
         inline,
+        pty: false,
     })
     .await;
     let _ = j.done.send(out);
 }
 
-fn sep(body: &str) -> &'static str {
+pub(crate) fn sep(body: &str) -> &'static str {
     if body.is_empty() || body.ends_with('\n') {
         ""
     } else {
@@ -735,7 +779,8 @@ fn render(stdout: &[u8], stderr: &[u8]) -> String {
 
 /// The `/jobs` listing shared by the `jobs` tool, the TUI and Signal: one
 /// line per job — `id  state  secs  command (≤60 chars)  | last output line`
-/// — or `no jobs`.
+/// — or `no jobs`. A PTY job's command is prefixed `pty ` (and `name: ` when
+/// named) and its last line is the last non-blank screen row (22 §2.3).
 pub fn table(jobs: &[JobView]) -> String {
     if jobs.is_empty() {
         return "no jobs".into();
@@ -752,6 +797,13 @@ pub fn table(jobs: &[JobView]) -> String {
             let mut command = j.command.chars().take(60).collect::<String>();
             if j.command.chars().count() > 60 {
                 command.push('…');
+            }
+            if j.pty {
+                let name = j
+                    .name
+                    .as_deref()
+                    .map_or(String::new(), |n| format!("{n}: "));
+                command = format!("pty {name}{command}");
             }
             format!(
                 "{}  {:<9} {:>5}s  {command}  | {last}",
@@ -831,16 +883,16 @@ impl Tool for CancelJobTool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::shell::ShellTool;
 
-    struct Fx {
-        jobs: ActorRef<Jobs>,
-        session: SessionId,
-        dir: PathBuf,
+    pub(crate) struct Fx {
+        pub(crate) jobs: ActorRef<Jobs>,
+        pub(crate) session: SessionId,
+        pub(crate) dir: PathBuf,
         /// Every [`JobEvent`] published on this fixture's bus.
-        events: Arc<Mutex<Vec<JobEvent>>>,
+        pub(crate) events: Arc<Mutex<Vec<JobEvent>>>,
     }
 
     #[derive(kameo::Actor)]
@@ -853,7 +905,7 @@ mod tests {
         }
     }
 
-    async fn fixture(grace: Duration, timeout: Duration) -> Fx {
+    pub(crate) async fn fixture(grace: Duration, timeout: Duration) -> Fx {
         let dir = std::env::temp_dir().join(format!("wth-jobs-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let rt = Runtime::new(figment::Figment::new(), dir.clone());
@@ -874,7 +926,7 @@ mod tests {
     }
 
     /// `(exit, output, inline)` of the first `Finished` event, once published.
-    async fn finished(fx: &Fx) -> (JobExit, String, bool) {
+    pub(crate) async fn finished(fx: &Fx) -> (JobExit, String, bool) {
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
             let hit = lock(&fx.events).iter().find_map(|e| match e {
@@ -907,12 +959,12 @@ mod tests {
             .unwrap()
     }
 
-    async fn list(fx: &Fx) -> Vec<JobView> {
+    pub(crate) async fn list(fx: &Fx) -> Vec<JobView> {
         fx.jobs.ask(ListJobs(fx.session)).await.unwrap()
     }
 
     /// Polls until the only job's state leaves `running`.
-    async fn settled(fx: &Fx, within: Duration) -> JobView {
+    pub(crate) async fn settled(fx: &Fx, within: Duration) -> JobView {
         let deadline = Instant::now() + within;
         loop {
             let v = list(fx).await.pop().unwrap();

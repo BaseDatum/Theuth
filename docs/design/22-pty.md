@@ -1,8 +1,10 @@
 # 22 — PTY jobs: interactive processes the model can drive
 
-Status: draft v0 · 2026-09-14 · extends `14-jobs.md` (jobs actor, log
+Status: as-built v0 · 2026-09-14 · extends `14-jobs.md` (jobs actor, log
 files, `<job_result>`), `00-architecture.md` §6 (tools). Where this doc
-disagrees with 14 it says so and wins; §10 lists the edits. Not started.
+disagrees with 14 it says so and wins; §10 lists the edits. §11 records
+what shipped, where it deviates from the sections below, and what was
+not exercised.
 
 ## 0. The problem
 
@@ -408,3 +410,51 @@ Each step leaves `wth` green.
   (the 22 versions are bounded and screen-returning, not foregrounding).
 - **README.** Tools list: the four tools, one line; config key.
 - **`harness.md` skill.** One bullet on when to use `start` vs `shell`.
+
+## 11. Status (as-built, 2026-09-14)
+
+Shipped: `crates/tools/src/pty.rs` (~1 100 lines + ~330 of tests),
+registered as `start`/`send`/`screen`/`wait` next to `shell`; `jobs.rs`
+gained `Job.name`, `Job.pty`, `JobEvent::Screen` (wire tag `JobScreen`),
+`JobEvent::Finished.pty`, `JobView.name/pty`, the §2.3 table row; agent
+wrapper `pty="true"`; TUI live block from `Screen` rows and ` · pty` card
+title; `tools.pty_ready_timeout_secs`. Deps `portable-pty 0.9`, `vt100
+0.16`, `regex` in `tools`. Tests: 22 §7 items 1–6 (`cargo test -p tools`
+33), agent wrapper, TUI `screen_event_replaces_tail`.
+
+Deviations from the sections above (the code wins):
+
+- The actor message is `SendInput`, not `Send` (a struct named `Send`
+  shadows the auto-trait in every `dyn … + Send` bound).
+- `StartPty` replies a finished `ToolOutput`, not 14's `StartReply`:
+  `Running { id, log, tail }` has no room for the §2.2 screen and ready
+  text. The inline/event `claimable` rule is unchanged.
+- `send` appends `\r` only when `text` is given; `send { keys: [ctrl_d] }`
+  sends exactly ctrl-d. §4.5's literal "text + enter + keys" would press
+  Enter before bare keys, which is wrong for a REPL.
+- `wait` matches over bytes appended to the **log file** since the call
+  started (the in-memory `Log` keeps only an 8 KiB tail).
+- Screen rows are right-trimmed, so a bare prompt row reads `>>>`; the
+  `ready`/`wait` regex runs over the raw bytes, where `>>> ` still matches.
+- One final `Screen` event is published just before `Finished` so a UI's
+  last frame is the final screen.
+- `ponytail:` the reader thread's dup of the master fd keeps the pty open
+  until every slave holder exits, so a `setsid` escapee delays the
+  drop-master `SIGHUP` (§2.4) and parks that thread; `poll(2)` + a stop
+  flag if it ever matters.
+
+Smoke (§7.8, headless, claude-sonnet-4-5, `/tmp/wth-title`): "start a
+python3 REPL … 2**100 … quit" → exactly three tool calls (`start {command:
+"python3 -q", name: "py", ready: {log: ">>> "}}`, `send {id: "py", text:
+"2**100"}`, `send {id: "py", keys: ["ctrl_d"]}`), the reply carried
+`1267650600228229401496703205376`, 9 `JobScreen` events, one `JobFinished
+{exit: 0, pty: true}`. Then "run `./target/debug/wth --data-dir …` and tell
+me the bottom line of the screen" → `start` (cwd set), `wait {pattern:
+".", timeout: 3}`, `screen`, `cancel_job`; the reply was `no session
+idle` — the harness read its own TUI's status line off a pty — and
+`list_jobs` showed `j2 · killed`. No leftover processes.
+
+Not exercised: the TUI live block on a real terminal (unit test only),
+`ready.port` against a real dev server (unit test uses `http.server`),
+Signal/Slack `/jobs` rows with a pty job, the query responder against a
+curses program (unit test uses a shell script).

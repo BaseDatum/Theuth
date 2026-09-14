@@ -93,6 +93,9 @@ monty-fs = "0.0.23"
 monty-proto = { version = "0.0.23", features = ["worker"] }
 monty-alloc = { version = "0.0.23", features = ["exit-code"] }
 regex = "1"
+# PTY jobs (design doc 22): wezterm's pty layer and a vt100 screen for the model.
+portable-pty = "0.9"
+vt100 = "0.16"
 # grep tool (12 §10): ripgrep's walker and matcher crates
 ignore = "0.4.33"
 grep-regex = "0.1.14"

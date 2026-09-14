@@ -24,6 +24,7 @@ pub mod fs;
 pub mod git;
 pub mod jobs;
 pub mod mcp;
+pub mod pty;
 pub mod registry;
 pub mod shell;
 
@@ -254,6 +255,8 @@ pub struct ToolsConfig {
     pub job_grace_secs: u64,
     /// Seconds a job may run before its process group is killed.
     pub job_timeout_secs: u64,
+    /// `start`'s readiness deadline when `ready` gives no `timeout` (22 §6).
+    pub pty_ready_timeout_secs: u64,
 }
 
 impl Default for ToolsConfig {
@@ -264,6 +267,7 @@ impl Default for ToolsConfig {
             approval_timeout_secs: 300,
             job_grace_secs: 3,
             job_timeout_secs: 1800,
+            pty_ready_timeout_secs: 30,
         }
     }
 }

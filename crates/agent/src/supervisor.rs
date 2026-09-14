@@ -625,6 +625,7 @@ impl Message<JobEvent> for Agents {
             secs,
             output,
             inline,
+            pty,
         } = ev
         else {
             return;
@@ -642,20 +643,22 @@ impl Message<JobEvent> for Agents {
             self.cfg.max_tool_output_chars,
             &self.rt.data_dir.join("spill"),
         );
-        let wrapped = job_result(&id, &command, &exit, secs, &text);
+        let wrapped = job_result(&id, &command, &exit, secs, &text, pty);
         self.inject(session, &format!("job {id}"), text, wrapped)
             .await;
     }
 }
 
 /// The `<job_result>` wrapper (14 §1.2): `command` cut to 120 chars and
-/// attribute-escaped; `exit` is the code, `timeout` or `killed`.
+/// attribute-escaped; `exit` is the code, `timeout` or `killed`. PTY jobs
+/// (22 §2.2) carry ` pty="true"` and `text` is the final screen.
 pub(crate) fn job_result(
     id: &JobId,
     command: &str,
     exit: &JobExit,
     secs: u64,
     text: &str,
+    pty: bool,
 ) -> String {
     let cmd: String = command.chars().take(120).collect();
     let exit = match exit {
@@ -663,8 +666,9 @@ pub(crate) fn job_result(
         JobExit::Timeout => "timeout".into(),
         JobExit::Killed => "killed".into(),
     };
+    let pty = if pty { " pty=\"true\"" } else { "" };
     format!(
-        "<job_result id=\"{id}\" command=\"{}\" exit=\"{exit}\" secs=\"{secs}\">\n{text}\n</job_result>",
+        "<job_result id=\"{id}\" command=\"{}\" exit=\"{exit}\" secs=\"{secs}\"{pty}>\n{text}\n</job_result>",
         attr(&cmd)
     )
 }
@@ -2315,17 +2319,23 @@ mod tests {
     #[test]
     fn job_result_wrapper_escapes_and_names_exit() {
         let id = JobId("j3".into());
-        let w = job_result(&id, "echo \"a\" <b>", &JobExit::Exited(0), 7, "out");
+        let w = job_result(&id, "echo \"a\" <b>", &JobExit::Exited(0), 7, "out", false);
         assert_eq!(
             w,
             "<job_result id=\"j3\" command=\"echo &quot;a&quot; &lt;b&gt;\" exit=\"0\" secs=\"7\">\nout\n</job_result>"
         );
-        let w = job_result(&id, "sleep 9", &JobExit::Timeout, 1800, "");
+        assert!(!w.contains("pty"));
+        let w = job_result(&id, "python3 -q", &JobExit::Exited(0), 41, ">>> ", true);
+        assert_eq!(
+            w,
+            "<job_result id=\"j3\" command=\"python3 -q\" exit=\"0\" secs=\"41\" pty=\"true\">\n>>> \n</job_result>"
+        );
+        let w = job_result(&id, "sleep 9", &JobExit::Timeout, 1800, "", false);
         assert!(w.contains(" exit=\"timeout\" "));
-        let w = job_result(&id, "x", &JobExit::Killed, 1, "");
+        let w = job_result(&id, "x", &JobExit::Killed, 1, "", false);
         assert!(w.contains(" exit=\"killed\" "));
         let long = "a".repeat(200);
-        let w = job_result(&id, &long, &JobExit::Exited(1), 0, "");
+        let w = job_result(&id, &long, &JobExit::Exited(1), 0, "", false);
         assert!(w.contains(&format!(" command=\"{}\" ", "a".repeat(120))));
         assert!(!w.contains(&"a".repeat(121)));
     }

@@ -93,7 +93,8 @@ ends") has its delivery half built and its execution half missing.
 8. **Only processes are jobs.** `shell` today; any future tool that spawns
    a process goes through `Jobs`. MCP calls (request/response, no pgid)
    and Python cells (heap-dump model) stay synchronous. Subagents are
-   already detached (01 §2) and keep their own wrapper.
+   already detached (01 §2) and keep their own wrapper. PTY jobs (22) are
+   jobs with stdin and a rendered screen; same actor, no deadline.
 
 ## 1. Model-facing contract
 
@@ -351,7 +352,9 @@ else in the design changes.
   model does not choose. omp's `bash` has both and its docs spend two
   pages on when the harness overrides them.
 - **A `wait_job` tool.** Foregrounding by another name. Ending the turn *is*
-  the wait; the wake-up is free.
+  the wait; the wake-up is free. Revisited in 22 (§1, §4.6): the 22
+  versions are bounded, return the screen, and are for prompts and
+  readiness, not for foregrounding a finishing job.
 - **Backgrounding MCP calls.** No process to own; an MCP server that takes
   minutes should be exposed as a shell job by its author. A per-call MCP
   timeout is a separate, smaller fix (00 §12 gap).
@@ -362,7 +365,9 @@ else in the design changes.
 - **A `services`/`start` concept (omp `hub start`) for never-exiting
   processes.** A job with a 30-minute deadline and `cancel_job` covers dev
   servers and watchers for one session. Readiness probes, restart
-  policies and cross-session names are a plugin if ever needed.
+  policies and cross-session names are a plugin if ever needed. Revisited
+  in 22 (§1, §4.6): the 22 versions are bounded, return the screen, and
+  are for prompts and readiness, not for foregrounding a finishing job.
 - **Streaming job output into the model mid-turn.** A user message per
   chunk would bust the prefix every round. `read_file` on the log is
   explicit and cache-safe.

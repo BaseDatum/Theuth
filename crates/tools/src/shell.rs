@@ -46,6 +46,12 @@ impl ShellTool {
         }
     }
 
+    /// The per-session shells, shared so `start` (22 §1.5) can default a PTY
+    /// job's cwd to the session shell's.
+    pub fn shells(&self) -> Arc<Mutex<HashMap<SessionId, Shell>>> {
+        Arc::clone(&self.sessions)
+    }
+
     pub(crate) async fn build_shell() -> anyhow::Result<Shell> {
         let builtins = brush_builtins::default_builtins(brush_builtins::BuiltinSet::BashMode)
             .into_iter()

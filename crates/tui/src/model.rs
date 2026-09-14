@@ -332,8 +332,9 @@ pub const JOB_LINES: usize = 10;
 
 /// The tail of a background job's output as it arrives (`JobEvent::Output`,
 /// coalesced upstream to one chunk per half second per job): the last
-/// [`JOB_LINES`] lines, frozen with how it ended. Bounded, so any number of
-/// jobs costs the same; the log file is the whole story.
+/// [`JOB_LINES`] lines, frozen with how it ended. A PTY job (22 §5) instead
+/// shows the last non-blank rows of its latest `JobEvent::Screen`. Bounded,
+/// so any number of jobs costs the same; the log file is the whole story.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct JobTail {
     /// Job id (`j3`).
@@ -393,6 +394,22 @@ impl JobTail {
                 c if c.is_control() => {}
                 c => self.partial.push(c),
             }
+        }
+    }
+
+    /// Replace the tail with the last [`JOB_LINES`] non-blank rows of a PTY
+    /// job's screen (22 §5). The screen is a whole, not a stream: nothing
+    /// carried over from before.
+    pub fn set_screen(&mut self, rows: &[String]) {
+        self.partial.clear();
+        self.lines.clear();
+        for r in rows
+            .iter()
+            .rev()
+            .filter(|r| !r.trim().is_empty())
+            .take(JOB_LINES)
+        {
+            self.lines.push_front(r.clone());
         }
     }
 
@@ -649,9 +666,15 @@ pub fn injected(text: &str) -> Option<Vec<(CardKind, String, String)>> {
                     .replace("&amp;", "&");
                 let exit = attr(open, "exit=\"").unwrap_or_default();
                 let secs = attr(open, "secs=\"").unwrap_or_default();
+                // 22 §5: a PTY job's card says so.
+                let pty = if attr(open, "pty=\"") == Some("true") {
+                    " · pty"
+                } else {
+                    ""
+                };
                 (
                     CardKind::Job,
-                    format!("{from} · {command} · exit {exit} · {secs}s"),
+                    format!("{from} · {command} · exit {exit} · {secs}s{pty}"),
                 )
             } else {
                 (CardKind::Peer, from.to_owned())
@@ -1963,6 +1986,13 @@ impl Model {
                 JobEvent::Output { session, id, chunk } if self.session == Some(session) => {
                     if let Some(j) = self.job_mut(&id.0) {
                         j.push(&chunk);
+                    }
+                }
+                JobEvent::Screen {
+                    session, id, rows, ..
+                } if self.session == Some(session) => {
+                    if let Some(j) = self.job_mut(&id.0) {
+                        j.set_screen(&rows);
                     }
                 }
                 JobEvent::Finished {
@@ -4171,6 +4201,73 @@ mod tests {
                 String::new()
             )])
         );
+        // 22 §5: a PTY job's card says so.
+        assert_eq!(
+            injected(
+                "<job_result id=\"j4\" command=\"python3 -q\" exit=\"0\" secs=\"41\" pty=\"true\">\n>>> \n</job_result>"
+            ),
+            Some(vec![(
+                CardKind::Job,
+                "j4 · python3 -q · exit 0 · 41s · pty".to_owned(),
+                ">>>".to_owned()
+            )])
+        );
+    }
+
+    #[test]
+    fn screen_event_replaces_tail() {
+        let mut m = Model::default();
+        let s = SessionId::new();
+        m.session = Some(s);
+        m.apply_agent(AgentEvent::ToolCallStarted {
+            session: s,
+            turn: TurnId::new(),
+            call_id: "c1".into(),
+            name: "start".into(),
+            args: serde_json::json!({ "command": "python3 -q" }),
+        });
+        m.apply(UiEvent::Job(JobEvent::Started {
+            session: s,
+            id: tools::JobId("j1".into()),
+            command: "python3 -q".into(),
+            call_id: "c1".into(),
+            log: "/tmp/j.log".into(),
+        }));
+        let screen = |rows: &[&str]| {
+            UiEvent::Job(JobEvent::Screen {
+                session: s,
+                id: tools::JobId("j1".into()),
+                rows: rows.iter().map(|r| (*r).to_owned()).collect(),
+                cursor: (0, 0),
+            })
+        };
+        let rows = |m: &Model| -> Vec<String> {
+            m.entries
+                .iter()
+                .find_map(|e| match e {
+                    Entry::Tool { job: Some(j), .. } => Some(j.rows().map(str::to_owned).collect()),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        m.apply(screen(&["Python 3.12", ">>> ", "", "   "]));
+        assert_eq!(rows(&m), ["Python 3.12", ">>> "], "blank rows dropped");
+        // The next screen replaces, never appends; capped at JOB_LINES from the end.
+        let many: Vec<String> = (0..24).map(|i| format!("row {i}")).collect();
+        let many: Vec<&str> = many.iter().map(String::as_str).collect();
+        m.apply(screen(&many));
+        let got = rows(&m);
+        assert_eq!(got.len(), JOB_LINES);
+        assert_eq!(got[0], "row 14");
+        assert_eq!(got[JOB_LINES - 1], "row 23");
+        // Another session's screen is not ours.
+        m.apply(UiEvent::Job(JobEvent::Screen {
+            session: SessionId::new(),
+            id: tools::JobId("j1".into()),
+            rows: vec!["nope".into()],
+            cursor: (0, 0),
+        }));
+        assert_eq!(rows(&m)[0], "row 14");
     }
 
     #[test]
@@ -4219,6 +4316,7 @@ mod tests {
             secs: 2,
             output: String::new(),
             inline: false,
+            pty: false,
         }));
         assert!(m.status().ends_with("1 job(s)"), "{}", m.status());
         m.apply_agent(AgentEvent::MessageDelivered {
@@ -4318,6 +4416,7 @@ mod tests {
                 secs: 47,
                 output: String::new(),
                 inline,
+                pty: false,
             })
         };
         m.apply(finished("j1", true));

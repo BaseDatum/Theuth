@@ -26,7 +26,10 @@ Crates: `runtime` (plugin trait), `models` (bundled models.dev catalog),
 gate, shell via brush, fs (read, write, list, grep, edit), MCP; shell commands
 run as background jobs: output within 3 s comes back inline, otherwise the
 model gets a job id and is woken with `<job_result>` when it exits —
-[`docs/design/14-jobs.md`](docs/design/14-jobs.md)), `knowledge`
+[`docs/design/14-jobs.md`](docs/design/14-jobs.md); `start` / `send` /
+`screen` / `wait` run a command on a pseudo-terminal (REPL, server, TUI) and
+drive it: type, read the rendered 120×40 screen, wait for a prompt or a port —
+[`docs/design/22-pty.md`](docs/design/22-pty.md)), `knowledge`
 (OKF bundle, FTS index, gix history, `knowledge_*` tools —
 [`docs/design/10-knowledge.md`](docs/design/10-knowledge.md)), `agent` (genai
 loop, sqlite sessions with compaction epochs, skills, subagents, persistent
@@ -43,7 +46,7 @@ over Signal messenger), `slack` (Slack frontend over Socket Mode), `rpc` (jsonrp
 Config (`~/.wth/`, created on first run; details in
 [`docs/design/01-config-and-subagents.md`](docs/design/01-config-and-subagents.md) §1):
 
-- `config.yaml` — every plugin reads its own section; `WTH_<SECTION>__<KEY>` env overrides. `agent.model` is a models.dev id (`anthropic/claude-sonnet-4-5`); `/model` rewrites that one line in place. The `agent`, `knowledge`, `web`, `search_providers` and `slack` sections with their defaults:
+- `config.yaml` — every plugin reads its own section; `WTH_<SECTION>__<KEY>` env overrides. `agent.model` is a models.dev id (`anthropic/claude-sonnet-4-5`); `/model` rewrites that one line in place. The `agent`, `tools`, `knowledge`, `web`, `search_providers` and `slack` sections with their defaults:
 
   ```yaml
   agent:
@@ -56,6 +59,10 @@ Config (`~/.wth/`, created on first run; details in
       hint_rounds: 4       # mid-turn hint cadence in tool rounds
       harvest_every: 3     # tool-using turns per harvest; 0 disables harvest
       harvest_max: 8       # concepts accepted per harvest
+  tools:
+    job_grace_secs: 3      # inline `shell` reply if the job exits within this; 0 = always a stub
+    job_timeout_secs: 1800 # kill the process group after this; result exit="timeout"
+    pty_ready_timeout_secs: 30   # `start` readiness wait when `ready` gives no timeout
   knowledge:
     enabled: true          # false: no store, no knowledge_* tools, no hints, no harvest
   web:

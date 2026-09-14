@@ -129,6 +129,9 @@ cloned repos (read-only). This file is one; it is rewritten on every start.
   name.
 - The shell tool returns within a few seconds or hands back a job id;
   `<job_result>` arrives when it ends. `jobs` lists, `cancel_job` kills.
+- `start{command, name?, ready?}` runs on a pseudo-terminal; `send`/`screen`/
+  `wait` drive it; use it for REPLs, servers, TUIs and prompts — `shell` for
+  anything that runs and exits (22).
 - Durable facts go through `knowledge_put`; `<knowledge>` notes in your
   context are hints from that store. The bundle is plain markdown under
   `knowledge/` with git history (`/knowledge` in the UI).

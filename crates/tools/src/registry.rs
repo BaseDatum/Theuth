@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use crate::approval::{Approval, Decision, RequestApproval};
 use crate::{
     APPROVAL_ACTOR, DynTool, Policy, PolicyAction, REGISTRY_ACTOR, Risk, ToolCall, ToolCx,
-    ToolOutput, ToolSpec, ToolsConfig, fs, jobs, shell,
+    ToolOutput, ToolSpec, ToolsConfig, fs, jobs, pty, shell,
 };
 
 /// The registry actor. Look up with `ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR)`.
@@ -482,8 +482,18 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
         Duration::from_secs(cfg.job_timeout_secs),
     )?;
 
-    let builtins: [DynTool; 8] = [
-        Arc::new(shell::ShellTool::new(jobs.clone())),
+    let shell = shell::ShellTool::new(jobs.clone());
+    let shells = shell.shells();
+    let builtins: [DynTool; 12] = [
+        Arc::new(shell),
+        Arc::new(pty::StartTool::new(
+            jobs.clone(),
+            shells,
+            Duration::from_secs(cfg.pty_ready_timeout_secs),
+        )),
+        Arc::new(pty::SendTool(jobs.clone())),
+        Arc::new(pty::ScreenTool(jobs.clone())),
+        Arc::new(pty::WaitTool(jobs.clone())),
         Arc::new(jobs::JobsTool(jobs.clone())),
         Arc::new(jobs::CancelJobTool(jobs)),
         Arc::new(fs::ReadFile),
