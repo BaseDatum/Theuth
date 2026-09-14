@@ -227,6 +227,7 @@ pub struct Loaded {
     /// Skills whose body is in the stored frame (design doc 04 §2.4), sorted.
     pub skills: Vec<String>,
     /// Seq of the oldest entry in `history` (pass as `before` for the previous page); `None` when empty.
+    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
     pub first_seq: Option<i64>,
     /// Older entries exist beyond `history` (only with a `limit`).
     pub more: bool,

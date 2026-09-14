@@ -1,0 +1,210 @@
+import type { EntryInfo } from '@/rpc/bindings/EntryInfo'
+import type { ApprovalId } from '@/rpc/bindings/ApprovalId'
+import type { ApprovalsState } from '@/rpc/bindings/ApprovalsState'
+import type { Change } from '@/rpc/bindings/Change'
+import type { CompactStyle } from '@/rpc/bindings/CompactStyle'
+import type { Concept } from '@/rpc/bindings/Concept'
+import type { Decision } from '@/rpc/bindings/Decision'
+import type { Gate } from '@/rpc/bindings/Gate'
+import type { HarvestResult } from '@/rpc/bindings/HarvestResult'
+import type { History } from '@/rpc/bindings/History'
+import type { Hit } from '@/rpc/bindings/Hit'
+import type { InputId } from '@/rpc/bindings/InputId'
+import type { JobId } from '@/rpc/bindings/JobId'
+import type { JobView } from '@/rpc/bindings/JobView'
+import type { McpProgress } from '@/rpc/bindings/McpProgress'
+import type { McpServer } from '@/rpc/bindings/McpServer'
+import type { Meta } from '@/rpc/bindings/Meta'
+import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
+import type { Put } from '@/rpc/bindings/Put'
+import type { QueuedInput } from '@/rpc/bindings/QueuedInput'
+import type { RegistryAgent } from '@/rpc/bindings/RegistryAgent'
+import type { RepoInfo } from '@/rpc/bindings/RepoInfo'
+import type { SessionId } from '@/rpc/bindings/SessionId'
+import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
+import type { SignalStatus } from '@/rpc/bindings/SignalStatus'
+import type { SkillBody } from '@/rpc/bindings/SkillBody'
+import type { SkillMeta } from '@/rpc/bindings/SkillMeta'
+import type { SlackStatus } from '@/rpc/bindings/SlackStatus'
+import type { Sync } from '@/rpc/bindings/Sync'
+import type { SyncResult } from '@/rpc/bindings/SyncResult'
+import type { ToolSpec } from '@/rpc/bindings/ToolSpec'
+import type { JsonValue } from '@/rpc/bindings/serde_json/JsonValue'
+import type { RpcClient } from '@/rpc/client'
+import type { AgentInfo, Info, LoadedPage, LoginInfo, ProviderInfo } from '@/rpc/extra'
+
+/**
+ * `rpc::Api` (`crates/rpc/src/api.rs`) plus the 25 §7 additions, one method
+ * per request; params positional, in trait order. `subscribe_events` is
+ * `RpcClient.subscribe`.
+ */
+export interface Api {
+  add_acp(id: string): Promise<EntryInfo>
+  add_mcp_repo(url: string, name: string | null): Promise<RepoInfo>
+  add_mcp_server(name: string, entry: JsonValue): Promise<McpServer>
+  add_provider(name: string, base_url: string, key: string): Promise<ProviderInfo>
+  add_skill(name: string, description: string, body: string, always: boolean): Promise<SkillMeta>
+  add_skill_repo(url: string, name: string | null): Promise<SkillMeta[]>
+  cancel(session: SessionId): Promise<null>
+  cancel_job(session: SessionId, id: JobId): Promise<null>
+  compact(session: SessionId, style: CompactStyle | null): Promise<number>
+  compact_style(): Promise<CompactStyle>
+  get_prompt(session: SessionId | null): Promise<string>
+  info(): Promise<Info>
+  knowledge_delete(id: string): Promise<null>
+  knowledge_get(id: string): Promise<Concept>
+  knowledge_harvest(session: SessionId): Promise<HarvestResult>
+  knowledge_history(id: string | null, limit: number | null): Promise<History>
+  knowledge_list(
+    prefix: string | null,
+    type: string | null,
+    tag: string | null,
+    limit: number | null,
+  ): Promise<Meta[]>
+  knowledge_put(put: Put): Promise<Meta>
+  knowledge_restore(id: string, commit: string | null): Promise<Change>
+  knowledge_search(query: string, limit: number | null): Promise<Hit[]>
+  knowledge_sync(): Promise<Sync>
+  knowledge_write(id: string, text: string): Promise<Meta>
+  list_acp(probe: boolean): Promise<EntryInfo[]>
+  list_acp_registry(): Promise<RegistryAgent[]>
+  list_agents(session: SessionId): Promise<AgentInfo[]>
+  list_jobs(session: SessionId): Promise<JobView[]>
+  list_logins(): Promise<LoginInfo[]>
+  list_mcp(session: SessionId | null): Promise<McpServer[]>
+  list_models(): Promise<ModelInfo[]>
+  list_providers(): Promise<ProviderInfo[]>
+  list_queued(session: SessionId): Promise<QueuedInput[]>
+  list_sessions(): Promise<SessionSummary[]>
+  list_skills(): Promise<SkillMeta[]>
+  list_tools(): Promise<ToolSpec[]>
+  load_session(session: SessionId, before: number | null, limit: number | null): Promise<LoadedPage>
+  load_skill(name: string): Promise<SkillBody>
+  login(provider: string): Promise<string>
+  logout(provider: string): Promise<null>
+  mcp_login(server: string): Promise<string>
+  mcp_logout(server: string): Promise<null>
+  mcp_status(): Promise<McpProgress>
+  new_session(): Promise<SessionId>
+  redo(session: SessionId): Promise<string>
+  remove_acp(name: string): Promise<null>
+  remove_mcp_server(name: string): Promise<null>
+  remove_provider(name: string): Promise<null>
+  remove_skill(name: string): Promise<null>
+  remove_skill_repo(name: string): Promise<null>
+  rename_session(session: SessionId, title: string): Promise<null>
+  resolve_approval(id: ApprovalId, decision: Decision): Promise<boolean>
+  send_input(session: SessionId | null, text: string, files: string[]): Promise<SessionId>
+  set_approvals(session: SessionId | null, enabled: boolean): Promise<ApprovalsState>
+  set_compact_style(style: CompactStyle): Promise<null>
+  set_effort(session: SessionId | null, effort: string | null): Promise<null>
+  set_mcp_gate(server: string, tool: string | null, gate: Gate | null): Promise<null>
+  set_mcp_hidden(session: SessionId, tools: string[], hidden: boolean): Promise<null>
+  set_model(session: SessionId | null, model: string): Promise<ModelInfo>
+  set_title_model(model: string | null): Promise<ModelInfo | null>
+  shutdown(): Promise<null>
+  signal_allow(number: string): Promise<null>
+  signal_link(): Promise<string>
+  signal_remove_allowed(number: string): Promise<null>
+  signal_status(): Promise<SignalStatus>
+  signal_unlink(): Promise<null>
+  slack_allow(user: string): Promise<null>
+  slack_allow_channel(channel: string): Promise<null>
+  slack_remove_allowed(user: string): Promise<null>
+  slack_remove_channel(channel: string): Promise<null>
+  slack_status(): Promise<SlackStatus>
+  steer(session: SessionId, text: string, id: InputId | null, files: string[]): Promise<InputId>
+  sync_mcp(): Promise<SyncResult[]>
+  sync_skills(): Promise<SyncResult[]>
+  title_model(): Promise<ModelInfo | null>
+  undo(session: SessionId): Promise<string>
+  use_skill(session: SessionId | null, name: string, args: string): Promise<SessionId>
+  withdraw(session: SessionId, id: InputId): Promise<string>
+}
+
+/** Every request method name, sorted; `api.test.ts` checks it against `bindings/methods.json`. */
+export const METHODS = [
+  'add_acp',
+  'add_mcp_repo',
+  'add_mcp_server',
+  'add_provider',
+  'add_skill',
+  'add_skill_repo',
+  'cancel',
+  'cancel_job',
+  'compact',
+  'compact_style',
+  'get_prompt',
+  'info',
+  'knowledge_delete',
+  'knowledge_get',
+  'knowledge_harvest',
+  'knowledge_history',
+  'knowledge_list',
+  'knowledge_put',
+  'knowledge_restore',
+  'knowledge_search',
+  'knowledge_sync',
+  'knowledge_write',
+  'list_acp',
+  'list_acp_registry',
+  'list_agents',
+  'list_jobs',
+  'list_logins',
+  'list_mcp',
+  'list_models',
+  'list_providers',
+  'list_queued',
+  'list_sessions',
+  'list_skills',
+  'list_tools',
+  'load_session',
+  'load_skill',
+  'login',
+  'logout',
+  'mcp_login',
+  'mcp_logout',
+  'mcp_status',
+  'new_session',
+  'redo',
+  'remove_acp',
+  'remove_mcp_server',
+  'remove_provider',
+  'remove_skill',
+  'remove_skill_repo',
+  'rename_session',
+  'resolve_approval',
+  'send_input',
+  'set_approvals',
+  'set_compact_style',
+  'set_effort',
+  'set_mcp_gate',
+  'set_mcp_hidden',
+  'set_model',
+  'set_title_model',
+  'shutdown',
+  'signal_allow',
+  'signal_link',
+  'signal_remove_allowed',
+  'signal_status',
+  'signal_unlink',
+  'slack_allow',
+  'slack_allow_channel',
+  'slack_remove_allowed',
+  'slack_remove_channel',
+  'slack_status',
+  'steer',
+  'sync_mcp',
+  'sync_skills',
+  'title_model',
+  'undo',
+  'use_skill',
+  'withdraw',
+] as const satisfies readonly (keyof Api)[]
+
+/** Bind every method to `client.call(name, args)`. */
+export function makeApi(client: RpcClient): Api {
+  const api: Partial<Record<keyof Api, (...args: unknown[]) => Promise<unknown>>> = {}
+  for (const name of METHODS) api[name] = (...args) => client.call(name, args)
+  return api as Api
+}

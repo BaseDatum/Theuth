@@ -757,19 +757,18 @@ impl Tool for ImportCookiesTool {
     async fn call(&self, a: ImportCookiesArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
         let ctx = &self.0;
         let browser = a.browser;
-        let cookies = match tokio::task::spawn_blocking(move || {
-            load_cookies(browser, a.profile, a.domains)
-        })
-        .await?
-        {
-            Ok(c) => c,
-            Err(e) => {
-                return Ok(ToolOutput::err(format!(
-                    "reading {} cookies failed: {e}",
-                    browser.to_unjar()
-                )));
-            }
-        };
+        let cookies =
+            match tokio::task::spawn_blocking(move || load_cookies(browser, a.profile, a.domains))
+                .await?
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    return Ok(ToolOutput::err(format!(
+                        "reading {} cookies failed: {e}",
+                        browser.to_unjar()
+                    )));
+                }
+            };
         if cookies.is_empty() {
             return Ok(ToolOutput::ok(format!(
                 "No matching cookies found in {}.",

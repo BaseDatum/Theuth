@@ -1,0 +1,176 @@
+@import "tailwindcss";
+@source "../node_modules/streamdown/dist/*.js";
+@source "../node_modules/@streamdown/code/dist/*.js";
+
+@custom-variant dark (&:is(.dark *));
+
+/* Measured chatgpt.com tokens (docs/design/25-desktop.md §2.4, assets/25-chatgpt-tokens.md). */
+:root {
+  --bg-page: #fff;
+  --bg-layer-1: #fff;
+  --bg-layer-2: #f3f3f3;
+  --bg-layer-3: #e8e8e8;
+  --bg-elevated: #fff;
+  --fg-primary: #0d0d0d;
+  --fg-secondary: #5d5d5d;
+  --fg-tertiary: #8f8f8f;
+  --fg-inverse: #fff;
+  --fg-accent: oklch(62.6176% 0.205304 254.998);
+  --border-subtle: #0000000d;
+  --border-default: #0000001a;
+  --border-strong: #0003;
+  --status-danger-bg: #fbe9e8;
+  --status-danger-border: oklch(65.2741% 0.241466 26.767);
+  --status-danger-fg: #b3261e;
+  --status-info-bg: #e6f0fd;
+  --status-info-border: oklch(62.6176% 0.205304 254.998);
+  --status-info-fg: #1b5cc7;
+  --status-success-bg: #e6f4eb;
+  --status-success-border: oklch(68.2472% 0.195111 148.214);
+  --status-success-fg: #0f7a3d;
+  --status-warning-bg: #fdf2dc;
+  --status-warning-border: oklch(75.1371% 0.156458 78.7733);
+  --status-warning-fg: #9a5b00;
+  --sidebar: #f9f9f9;
+}
+
+.dark {
+  --bg-page: #000;
+  --bg-layer-1: #212121;
+  --bg-layer-2: #303030;
+  --bg-layer-3: #414141;
+  --bg-elevated: #303030;
+  --fg-primary: #fff;
+  --fg-secondary: #cdcdcd;
+  --fg-tertiary: #afafaf;
+  --fg-inverse: #0d0d0d;
+  --fg-accent: oklch(71.8574% 0.153638 247.945);
+  --border-subtle: #ffffff1a;
+  --border-default: #ffffff26;
+  --border-strong: #fff3;
+  --status-danger-bg: #421a19;
+  --status-danger-border: oklch(65.2741% 0.241466 26.767);
+  --status-danger-fg: #ff9b97;
+  --status-info-bg: #102a4d;
+  --status-info-border: oklch(62.6176% 0.205304 254.998);
+  --status-info-fg: #8ec5ff;
+  --status-success-bg: #123321;
+  --status-success-border: oklch(68.2472% 0.195111 148.214);
+  --status-success-fg: #76d89c;
+  --status-warning-bg: oklch(34.6399% 0.0799531 61.3069);
+  --status-warning-border: oklch(75.1371% 0.156458 78.7733);
+  --status-warning-fg: #ffd15c;
+  --sidebar: #171717;
+}
+
+/* shadcn variables, aliased onto the tokens; no component hard-codes a colour. */
+:root {
+  --radius: 0.75rem;
+  --background: var(--bg-page);
+  --foreground: var(--fg-primary);
+  --card: var(--bg-elevated);
+  --card-foreground: var(--fg-primary);
+  --popover: var(--bg-elevated);
+  --popover-foreground: var(--fg-primary);
+  --primary: var(--fg-primary);
+  --primary-foreground: var(--fg-inverse);
+  --secondary: var(--bg-layer-2);
+  --secondary-foreground: var(--fg-primary);
+  --muted: var(--bg-layer-2);
+  --muted-foreground: var(--fg-secondary);
+  --accent: var(--bg-layer-2);
+  --accent-foreground: var(--fg-primary);
+  --destructive: var(--status-danger-fg);
+  --border: var(--border-default);
+  --input: var(--border-default);
+  --ring: var(--fg-accent);
+  --sidebar-foreground: var(--fg-primary);
+  --sidebar-primary: var(--fg-primary);
+  --sidebar-primary-foreground: var(--fg-inverse);
+  --sidebar-accent: var(--bg-layer-3);
+  --sidebar-accent-foreground: var(--fg-primary);
+  --sidebar-border: var(--border-subtle);
+  --sidebar-ring: var(--fg-accent);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-layer-1: var(--bg-layer-1);
+  --color-layer-2: var(--bg-layer-2);
+  --color-layer-3: var(--bg-layer-3);
+  --color-elevated: var(--bg-elevated);
+  --color-fg-secondary: var(--fg-secondary);
+  --color-fg-tertiary: var(--fg-tertiary);
+  --color-fg-accent: var(--fg-accent);
+  --color-border-subtle: var(--border-subtle);
+  --color-border-strong: var(--border-strong);
+  --color-danger: var(--status-danger-fg);
+  --color-danger-bg: var(--status-danger-bg);
+  --color-danger-border: var(--status-danger-border);
+  --color-info: var(--status-info-fg);
+  --color-info-bg: var(--status-info-bg);
+  --color-info-border: var(--status-info-border);
+  --color-success: var(--status-success-fg);
+  --color-success-bg: var(--status-success-bg);
+  --color-success-border: var(--status-success-border);
+  --color-warning: var(--status-warning-fg);
+  --color-warning-bg: var(--status-warning-bg);
+  --color-warning-border: var(--status-warning-border);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --font-sans: -apple-system-body, ui-sans-serif, -apple-system, system-ui, "Segoe UI", Helvetica, Arial, sans-serif;
+}
+
+@layer base {
+  html,
+  body {
+    overscroll-behavior: none;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    font-size: 16px;
+    line-height: 24px;
+    -webkit-font-smoothing: antialiased;
+    cursor: default;
+    @apply bg-background text-foreground;
+  }
+
+  /* Chrome shows the arrow; editable areas keep the native cursor. */
+  input,
+  textarea,
+  [contenteditable] {
+    cursor: auto;
+  }
+
+  * {
+    @apply border-border outline-ring/50;
+  }
+}
