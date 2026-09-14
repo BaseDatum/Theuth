@@ -294,8 +294,10 @@ activity, ● = shown); Enter
 the session left behind keeps its turn running in its actor and its events
 keep flowing; the TUI only changes which session it renders. `LoadSession`
 replies `Loaded { history, running }` so the status line shows `streaming…`
-on return; a tool call in flight at switch time is not in the store yet, so
-only its result line appears when it finishes. Ids display as their last 8
+on return; a tool call in flight at switch time is in the store (the
+assistant message is persisted before dispatch) and comes back as a
+`HistoryEntry::Tool { result: None }` card that its `ToolCallFinished`
+completes by `call_id`. Ids display as their last 8
 chars (UUIDv7's first 8 are the timestamp and collide).
 
 **`/mcp` menu.** `Command::ListMcp(session)` → `UiEvent::Mcp(Vec<McpServer>)` → menu:

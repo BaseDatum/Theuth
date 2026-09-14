@@ -1876,10 +1876,13 @@ impl From<&Resolved> for ModelInfo {
 
 /// Collapse stored messages into UI entries tagged with the seq of the
 /// message that completed them; a tool call and its response become one
-/// `Tool` entry (tagged with the response's seq).
+/// `Tool` entry (tagged with the response's seq). Calls without a response
+/// yet — the round running when the session was loaded — come last, in
+/// call order, with `result: None`.
 fn render(messages: &[(i64, ChatMessage)]) -> Vec<(i64, HistoryEntry)> {
     let mut out = Vec::new();
-    let mut pending: HashMap<&str, (&str, &serde_json::Value)> = HashMap::new();
+    // ponytail: linear scan; one round's calls, never more than a handful.
+    let mut pending: Vec<(i64, &genai::chat::ToolCall)> = Vec::new();
     for (seq, m) in messages {
         match m.role {
             ChatRole::User => out.push((
@@ -1893,22 +1896,24 @@ fn render(messages: &[(i64, ChatMessage)]) -> Vec<(i64, HistoryEntry)> {
                 if !text.is_empty() {
                     out.push((*seq, HistoryEntry::Assistant { text }));
                 }
-                for c in m.content.tool_calls() {
-                    pending.insert(&c.call_id, (&c.fn_name, &c.fn_arguments));
-                }
+                pending.extend(m.content.tool_calls().into_iter().map(|c| (*seq, c)));
             }
             ChatRole::Tool => {
                 for r in m.content.tool_responses() {
-                    let (name, args) = pending
-                        .remove(r.call_id.as_str())
-                        .unwrap_or(("?", &serde_json::Value::Null));
+                    let call = pending
+                        .iter()
+                        .position(|(_, c)| c.call_id == r.call_id)
+                        .map(|i| pending.remove(i).1);
+                    let (name, args) = call.map_or(("?", &serde_json::Value::Null), |c| {
+                        (c.fn_name.as_str(), &c.fn_arguments)
+                    });
                     out.push((
                         *seq,
                         HistoryEntry::Tool {
+                            call_id: r.call_id.clone(),
                             name: name.to_string(),
                             args: args.clone(),
-                            is_error: r.content.starts_with("ERROR: "),
-                            output: r.content.clone(),
+                            result: Some((r.content.clone(), r.content.starts_with("ERROR: "))),
                         },
                     ));
                 }
@@ -1916,6 +1921,17 @@ fn render(messages: &[(i64, ChatMessage)]) -> Vec<(i64, HistoryEntry)> {
             ChatRole::System => {}
         }
     }
+    out.extend(pending.into_iter().map(|(seq, c)| {
+        (
+            seq,
+            HistoryEntry::Tool {
+                call_id: c.call_id.clone(),
+                name: c.fn_name.clone(),
+                args: c.fn_arguments.clone(),
+                result: None,
+            },
+        )
+    }));
     out
 }
 
@@ -2219,6 +2235,37 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A session loaded mid-round: the call with a response is complete, the
+    /// one still running is rendered with `result: None` (not dropped), so the
+    /// TUI card survives a switch away and back and `ToolCallFinished` lands on it.
+    #[test]
+    fn render_keeps_in_flight_tool_calls() {
+        use genai::chat::{ToolCall, ToolResponse};
+        let call = |id: &str| ToolCall {
+            thought_signatures: None,
+            call_id: id.into(),
+            fn_name: "shell".into(),
+            fn_arguments: serde_json::json!({ "cmd": id }),
+        };
+        let messages = vec![
+            (0, ChatMessage::user("go")),
+            (1, ChatMessage::from(vec![call("c1"), call("c2")])),
+            (2, ChatMessage::from(vec![ToolResponse::new("c1", "ok")])),
+        ];
+        let got = render(&messages);
+        assert_eq!(got.len(), 3);
+        assert!(matches!(
+            &got[1],
+            (2, HistoryEntry::Tool { call_id, result: Some((out, false)), .. })
+                if call_id == "c1" && out == "ok"
+        ));
+        assert!(matches!(
+            &got[2],
+            (1, HistoryEntry::Tool { call_id, name, result: None, .. })
+                if call_id == "c2" && name == "shell"
+        ));
+    }
 
     #[test]
     fn job_result_wrapper_escapes_and_names_exit() {

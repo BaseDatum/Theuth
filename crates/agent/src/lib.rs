@@ -600,16 +600,18 @@ pub enum HistoryEntry {
         /// Text.
         text: String,
     },
-    /// A tool call and its result.
+    /// A tool call and its result; `result` is `None` while the call is
+    /// still running (a session loaded mid-turn), and `ToolCallFinished`
+    /// with the same `call_id` completes it.
     Tool {
+        /// Provider call id (matches `ToolCallFinished`).
+        call_id: String,
         /// Tool name.
         name: String,
         /// Raw arguments.
         args: serde_json::Value,
-        /// Output, possibly truncated.
-        output: String,
-        /// Whether it failed.
-        is_error: bool,
+        /// `(output, is_error)` once finished; output possibly truncated.
+        result: Option<(String, bool)>,
     },
     /// A compaction boundary: everything before it was folded into `summary`
     /// (design doc 07 §8.4).

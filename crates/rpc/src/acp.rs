@@ -272,21 +272,22 @@ fn replay(i: usize, entry: HistoryEntry) -> SessionUpdate {
             SessionUpdate::AgentMessageChunk(ContentChunk::new(text.into()))
         }
         HistoryEntry::Tool {
-            name,
-            args,
-            output,
-            is_error,
-        } => SessionUpdate::ToolCall(
-            ToolCall::new(format!("h{i}"), name.clone())
+            name, args, result, ..
+        } => {
+            let (status, output) = match result {
+                Some((out, true)) => (ToolCallStatus::Failed, Some(out)),
+                Some((out, false)) => (ToolCallStatus::Completed, Some(out)),
+                None => (ToolCallStatus::InProgress, None),
+            };
+            let call = ToolCall::new(format!("h{i}"), name.clone())
                 .kind(acp::kind(&name, Risk::Mutating))
-                .status(if is_error {
-                    ToolCallStatus::Failed
-                } else {
-                    ToolCallStatus::Completed
-                })
-                .raw_input(args)
-                .raw_output(serde_json::Value::String(output)),
-        ),
+                .status(status)
+                .raw_input(args);
+            SessionUpdate::ToolCall(match output {
+                Some(out) => call.raw_output(serde_json::Value::String(out)),
+                None => call,
+            })
+        }
         HistoryEntry::Compacted { summary, .. } => SessionUpdate::AgentMessageChunk(
             ContentChunk::new(format!("[compacted] {summary}").into()),
         ),

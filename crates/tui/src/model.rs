@@ -3453,16 +3453,17 @@ fn from_history(h: HistoryEntry) -> Vec<Entry> {
             vec![Entry::Assistant(Box::new(markdown::Text::complete(&text)))]
         }
         HistoryEntry::Tool {
+            call_id,
             name,
             args,
-            output,
-            is_error,
+            result,
         } => vec![Entry::Tool {
-            call_id: String::new(),
             args: describe(&name, &args),
+            // `.` marks a call from inside a `python` cell (08 §4.1), as live.
+            name: if call_id.contains('.') { format!("↳ {name}") } else { name },
+            call_id,
             job: None,
-            name,
-            result: Some((output, is_error)),
+            result,
             expanded: None,
         }],
         HistoryEntry::Compacted {

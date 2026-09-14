@@ -81,8 +81,13 @@ impl runtime::Plugin for TuiPlugin {
                     resume,
                     data_dir,
                 };
-                if let Err(e) = ui::run(links).await {
-                    tracing::error!("tui render loop failed: {e}");
+                // Own task so a panic in the render loop lands here (JoinError)
+                // instead of skipping `shutdown.cancel()` and leaving a live
+                // process with a dead screen.
+                match tokio::spawn(ui::run(links)).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => tracing::error!("tui render loop failed: {e}"),
+                    Err(e) => tracing::error!("tui render loop panicked: {e}"),
                 }
             } else {
                 if prompt.is_none() {
@@ -600,16 +605,19 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             agent::HistoryEntry::User { text } => writeln!(out, "> {text}"),
             agent::HistoryEntry::Assistant { text } => writeln!(out, "{text}"),
             agent::HistoryEntry::Tool {
-                name,
-                args,
-                output,
-                is_error,
+                name, args, result, ..
             } => writeln!(
                 out,
-                "⚙ {name}\n{}\n{} {}",
+                "⚙ {name}\n{}\n{}",
                 model::describe(name, args).join("\n"),
-                if *is_error { "✗" } else { "✓" },
-                model::result_line(output)
+                match result {
+                    Some((output, is_error)) => format!(
+                        "{} {}",
+                        if *is_error { "✗" } else { "✓" },
+                        model::result_line(output)
+                    ),
+                    None => "… running".to_owned(),
+                }
             ),
             agent::HistoryEntry::Compacted {
                 epoch,

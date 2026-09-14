@@ -212,6 +212,12 @@ async fn run() -> anyhow::Result<()> {
         .with_writer(writer)
         .with_ansi(false)
         .init();
+    // A panic's message goes to stderr, which the TUI owns in raw mode: log it too.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        tracing::error!("panic: {info}");
+        default_hook(info);
+    }));
 
     let rt = Runtime::new(config, data_dir);
 
