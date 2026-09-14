@@ -202,7 +202,10 @@ async fn drives_fixture_page() {
     let h = u32::from_be_bytes([png[20], png[21], png[22], png[23]]);
     assert_eq!(
         shot.content,
-        format!("screenshot {w}\u{d7}{h} attached"),
+        format!(
+            "screenshot {w}\u{d7}{h} saved to {}",
+            shot.files[0].display()
+        ),
         "size line"
     );
     assert!(shot.files[0].starts_with(&data_dir));

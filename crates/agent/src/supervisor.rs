@@ -36,15 +36,16 @@ use crate::skills::{
     SyncSkillsTool,
 };
 use crate::store::{Epoch, Store};
+use crate::user::{MessageUserTool, USER_ACTOR, UserChannels};
 use crate::{
     AGENT_ACTOR, AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentConfig, AgentEvent, AgentInfo,
-    AgentState, Cancel, Compact, CompactStyle, GetCompactStyle, GetTitleModel, Harvest,
-    HistoryEntry, ListAcp, ListAgents, ListLogins, ListModels, ListProviders, ListQueued,
-    ListRegistry, ListSessions, ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginFinished,
-    LoginInfo, Logout, ModelInfo, NewSession, ProviderInfo, QueuedInput, Redo, RemoveAcp,
-    RemoveProvider, RemoveSkill, RemoveSkillRepo, SendInput, SessionSummary, SetCompactStyle,
-    SetEffort, SetModel, SetTitleModel, ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo,
-    UseSkill, Withdraw, effort_of,
+    AgentState, AncestorInfo, Ancestors, Cancel, Compact, CompactStyle, GetCompactStyle,
+    GetTitleModel, Harvest, HistoryEntry, ListAcp, ListAgents, ListLogins, ListModels,
+    ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills, LoadSession, LoadSkill,
+    Loaded, Login, LoginFinished, LoginInfo, Logout, ModelInfo, NewSession, ProviderInfo,
+    QueuedInput, Redo, RemoveAcp, RemoveProvider, RemoveSkill, RemoveSkillRepo, SendInput,
+    SessionSummary, SetCompactStyle, SetEffort, SetModel, SetTitleModel, ShowPrompt, SkillBody,
+    SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw, effort_of,
 };
 use crate::{frame, repl, spill};
 
@@ -1365,6 +1366,43 @@ impl Message<ListSessions> for Agents {
     }
 }
 
+impl Message<Ancestors> for Agents {
+    type Reply = Vec<AncestorInfo>;
+
+    async fn handle(
+        &mut self,
+        m: Ancestors,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Vec<AncestorInfo> {
+        let mut chain = Vec::new();
+        let mut id = m.session;
+        loop {
+            let parent = self.sessions.get(&id).and_then(|l| l.parent.clone());
+            chain.push(AncestorInfo {
+                id,
+                title: None,
+                name: parent.as_ref().map(|(_, n)| n.clone()),
+            });
+            match parent {
+                Some((p, _)) if chain.len() < 32 => id = p,
+                _ => break,
+            }
+        }
+        // Titles live in sqlite only; one read for the root, the conversation the user knows.
+        if let Some(root) = chain.last_mut() {
+            root.title = self
+                .store
+                .session(root.id)
+                .await
+                .ok()
+                .flatten()
+                .map(|s| s.title)
+                .filter(|t| !t.trim().is_empty());
+        }
+        chain
+    }
+}
+
 impl Message<LoadSession> for Agents {
     type Reply = Loaded;
 
@@ -2227,6 +2265,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         runtime::subscriber_mailbox(),
     );
     agents.register(AGENT_ACTOR)?;
+    UserChannels::spawn(UserChannels::default()).register(USER_ACTOR)?;
     rt.subscribe::<Agents, AgentEvent>(&agents).await;
     rt.subscribe::<Agents, JobEvent>(&agents).await;
     rt.subscribe::<Agents, ApprovalRequested>(&agents).await;
@@ -2283,6 +2322,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         let _ = reg
             .ask(RegisterTool(Arc::new(SendMessageTool { cfg })))
             .await;
+        let _ = reg.ask(RegisterTool(Arc::new(MessageUserTool))).await;
         let _ = reg.ask(RegisterTool(Arc::new(ListModelsTool))).await;
     });
     Ok(())

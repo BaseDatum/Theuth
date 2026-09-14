@@ -578,9 +578,10 @@ browser_tool!(
             .find(|p| !p.exists())
             .ok_or_else(|| anyhow::anyhow!("no free screenshot name"))?;
         tokio::fs::write(&path, &png).await?;
+        let content = format!("screenshot {w}\u{d7}{h} saved to {}", path.display());
         Ok(ToolOutput {
             files: vec![path],
-            ..ToolOutput::ok(format!("screenshot {w}\u{d7}{h} attached"))
+            ..ToolOutput::ok(content)
         })
     }
 );

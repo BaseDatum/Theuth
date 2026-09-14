@@ -4,7 +4,8 @@
 //! [`mock`]) is copied from jarvis and frozen (09 §2.1–2.2). Everything else
 //! is wth glue: [`channel`] supervises link/connect and turns envelopes into
 //! agent asks; [`commands`] answers slash commands; [`approvals`] routes
-//! approval requests to the phone and reactions back.
+//! approval requests to the phone and reactions back; [`user`] delivers
+//! `message_user` text and files (24 §6).
 //!
 //! - commands on the `"signal"` actor: [`Link`], [`Status`], [`Allow`],
 //!   [`RemoveAllowed`], [`Unlink`]
@@ -32,6 +33,7 @@ pub mod mock;
 pub mod presage;
 pub mod text;
 pub mod transport;
+pub mod user;
 
 /// Registry name of the plugin's actor.
 pub const SIGNAL_ACTOR: &str = "signal";
@@ -325,6 +327,7 @@ impl runtime::Plugin for SignalPlugin {
             channel::spawn(transport, cfg.clone(), rt.clone())
         });
         let cfg_for_tool = cfg.clone();
+        let sink = handle.clone();
         let actor = Signal::spawn(Signal {
             handle,
             cfg,
@@ -355,6 +358,14 @@ impl runtime::Plugin for SignalPlugin {
             let _ = reg
                 .ask(tools::RegisterTool(Arc::new(SignalStatusTool)))
                 .await;
+            // Outbound user channel for `message_user` (24 §6).
+            if let Some(sink) = sink
+                && let Some(user) = rt
+                    .lookup_when::<agent::UserChannels>(agent::USER_ACTOR)
+                    .await
+            {
+                let _ = user.ask(agent::RegisterUserSink(Arc::new(sink))).await;
+            }
         });
         Ok(())
     }

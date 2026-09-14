@@ -40,6 +40,8 @@ pub enum SentItem {
         mime: String,
         /// Attachment bytes.
         bytes: Vec<u8>,
+        /// Optional file name (wth 09 §2.2 edit 3).
+        file_name: Option<String>,
         /// Optional caption.
         caption: Option<String>,
     },
@@ -311,12 +313,14 @@ impl SignalTransport for MockTransport {
         to: &Recipient,
         bytes: &[u8],
         mime: &str,
+        file_name: Option<&str>,
         caption: Option<&str>,
     ) -> Result<()> {
         lock(&self.inner.sent).push(SentItem::Attachment {
             to: to.number.clone(),
             mime: mime.to_string(),
             bytes: bytes.to_vec(),
+            file_name: file_name.map(str::to_string),
             caption: caption.map(str::to_string),
         });
         Ok(())

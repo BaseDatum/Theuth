@@ -120,6 +120,7 @@ enum Command {
         to: Recipient,
         bytes: Vec<u8>,
         mime: String,
+        file_name: Option<String>,
         caption: Option<String>,
         reply: oneshot::Sender<Result<()>>,
     },
@@ -239,14 +240,17 @@ impl SignalTransport for PresageTransport {
         to: &Recipient,
         bytes: &[u8],
         mime: &str,
+        file_name: Option<&str>,
         caption: Option<&str>,
     ) -> Result<()> {
         let (to, bytes, mime) = (to.clone(), bytes.to_vec(), mime.to_owned());
+        let file_name = file_name.map(str::to_owned);
         let caption = caption.map(str::to_owned);
         self.request(|reply| Command::SendAttachment {
             to,
             bytes,
             mime,
+            file_name,
             caption,
             reply,
         })
@@ -504,10 +508,14 @@ impl Actor {
                 to,
                 bytes,
                 mime,
+                file_name,
                 caption,
                 reply,
             } => {
-                let _ = reply.send(self.send_attachment(&to, bytes, &mime, caption).await);
+                let _ = reply.send(
+                    self.send_attachment(&to, bytes, &mime, file_name, caption)
+                        .await,
+                );
             }
             Command::SendTyping { to, active, reply } => {
                 let _ = reply.send(self.send_typing(&to, active).await);
@@ -615,6 +623,7 @@ impl Actor {
         to: &Recipient,
         bytes: Vec<u8>,
         mime: &str,
+        file_name: Option<String>,
         caption: Option<String>,
     ) -> Result<()> {
         let manager = self.manager_mut()?;
@@ -622,7 +631,7 @@ impl Actor {
         let spec = AttachmentSpec {
             content_type: mime.to_owned(),
             length: bytes.len(),
-            file_name: None,
+            file_name,
             preview: None,
             voice_note: Some(mime.starts_with("audio/")),
             borderless: None,
@@ -1061,7 +1070,7 @@ mod tests {
         ));
         assert!(matches!(
             transport
-                .send_attachment(&to, b"x", "image/png", None)
+                .send_attachment(&to, b"x", "image/png", None, None)
                 .await,
             Err(SignalError::NotRegistered)
         ));

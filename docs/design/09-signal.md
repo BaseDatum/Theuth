@@ -8,7 +8,7 @@ Signal is a frontend, like the terminal UI: it sends `SendInput`/`Steer`/
 `Cancel`/`Resolve` and renders `AgentEvent`s. It runs **only in the daemon**
 (`wth --headless`). It is also the only frontend whose transport code is
 *imported*, not written: the presage layer jarvis spent weeks debugging is
-copied byte-for-byte and never edited beyond two additive lines (§2.2).
+copied byte-for-byte and never edited beyond three additive hunks (§2.2).
 
 ## 1. Goal, and what is not one
 
@@ -73,10 +73,10 @@ Their unit tests come with them (`presage.rs` tests need `tempfile`).
 `cargo test -p signal` therefore proves the copy still compiles against the
 pinned presage rev and behaves as it did in jarvis.
 
-### 2.2 The two additive edits
+### 2.2 The three additive edits
 
-Both are needed for reaction-based approvals (§10) and nothing else. Both add;
-neither changes an existing branch.
+The first two are needed for reaction-based approvals (§10) and nothing else;
+the third for `message_user` (24 §6). All add; none changes an existing branch.
 
 1. **Surface inbound reactions.** `content_to_envelope` (jarvis `presage.rs:896`)
    returns `None` for a `DataMessage` with no body and no attachments. Before
@@ -90,6 +90,11 @@ neither changes an existing branch.
    `now_timestamp_millis()` (`presage.rs:602`) and returns it. The mock echoes
    its own clock. A reaction targets `(author, sent_timestamp)`; without this
    the channel cannot tell which of its own messages was reacted to.
+3. **`send_attachment` takes a `file_name: Option<&str>`** (before `caption`;
+   trait, presage, mock, the presage unit test). presage's `AttachmentSpec`
+   already has the field; jarvis never sent files and hard-coded `None`. A
+   nameless PDF is unusable on the phone, so the wth outbound path (§8.4)
+   passes the file's name through. Images and audio ignore it.
 
 Everything else that touches the wire — linking, receive pump, resolution,
 CDSI/PNI handling, contact-sync requests, `OnNewIdentity::Trust`, the
@@ -319,6 +324,19 @@ transport method already exists.
 then a spawned task re-sends it every `TYPING_REFRESH_INTERVAL = 10 s`;
 `TurnFinished` → Stopped. Per-session `AbortHandle` in `Turn.typing`,
 aborted on finish or when a new `TurnStarted` replaces it.
+
+### 8.4 `message_user`
+
+The agent's `message_user` tool (24) reaches the phone through
+`impl agent::UserSink for channel::Handle` (`user.rs`), registered with the
+`"user"` actor at start when the channel runs. Bound pass: the first session
+of the tool's ancestor chain with a thread (`threads.number_for`, §6); fallback
+pass: `signal.owner`, with the `session <last 8> · <title>` origin line as the
+first line of the text. The text goes through `markdown_to_plain` + the §8.1
+chunker with retry, then one `send_attachment` per file with its file name and
+no caption (`Channel::send_attachment`, same `SEND_RETRIES` loop). Result
+string: `signal: <number>`. It arrives before the turn's own §8.1 text — out
+of band, by design (24 §6).
 
 ## 9. Slash commands
 

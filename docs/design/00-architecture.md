@@ -255,7 +255,10 @@ flowchart LR
   pseudo-terminal with a rendered 120×40 screen the model reads instead of
   the bytes; same `Jobs` actor, stdin, no deadline. Browser (23): fifteen
   `browser_*` tools drive an embedded obscura isolate per session;
-  screenshots return as image parts of the tool result. `todo` and
+  screenshots return as image parts of the tool result. `message_user`
+  (24, added 2026-09-14): text plus files to the user on Slack or Signal,
+  out of band; the session's bound thread, else every channel's owner,
+  via a `UserSink` registry the two plugins fill at start. `todo` and
   `python` are loop-local (dispatched by the turn, not the registry;
   `07 §5`).
 - Every `ChatMessage` is appended to the session store before the next
@@ -627,6 +630,7 @@ Each phase ends with a runnable check, not a test suite.
 | 12 | Slack (21) | Socket Mode channel, streamed threads, approvals, subagent threads | done 2026-09-14 (21 §19) |
 | 13 | PTY jobs (22) | `start` a REPL with `ready`, `send` an expression, read the answer off the screen; the harness drives its own TUI | done 2026-09-14 (3 tool calls for the REPL, `pty="true"` result; the harness read `no session · idle` off its own TUI; 22 §11) |
 | 14 | browser (23) | `browser_open` reads HN; a screenshot of a local dev server is described from the image; `read_url rendered` keyless | done 2026-09-14 (one `browser_open` names the top story; colours of a fixture page read off the screenshot, not the text; `read_url rendered: true` without Firecrawl; 23 §13) |
+| 15 | message_user (24) | a bound Slack session receives a screenshot in its thread; an unbound RPC session lands in the owner DM and on the phone with the `session …` line | done 2026-09-14 (owner DM with the screenshot, three tool calls; bound thread and Signal unit-tested only; 24 §9) |
 
 Known gaps carried forward: cancel/error paths in the loop are code-reviewed,
 not smoke-tested; the `Jobs` actor kills every process group on shutdown

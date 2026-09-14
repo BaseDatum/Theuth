@@ -274,20 +274,20 @@ struct Turn {
     typing: Option<AbortHandle>,
 }
 
-struct State {
+pub(crate) struct State {
     allowed: Vec<String>,
-    threads: Threads,
+    pub(crate) threads: Threads,
     aci: AciDirectory,
     turns: HashMap<SessionId, Turn>,
     last_event: Option<SignalEvent>,
     link_url: Option<String>,
 }
 
-struct Channel {
-    transport: Arc<dyn SignalTransport>,
+pub(crate) struct Channel {
+    pub(crate) transport: Arc<dyn SignalTransport>,
     port: Arc<dyn Port>,
     rt: Runtime,
-    owner: String,
+    pub(crate) owner: String,
     device_name: String,
     control: mpsc::UnboundedSender<Control>,
     // ponytail: one std mutex for all state, never held across an await; split if it ever contends.
@@ -299,7 +299,7 @@ struct Channel {
 /// Control handle the `"signal"` actor uses. Cheap to clone.
 #[derive(Clone)]
 pub struct Handle {
-    chan: Arc<Channel>,
+    pub(crate) chan: Arc<Channel>,
 }
 
 impl Handle {
@@ -364,6 +364,20 @@ fn spawn_with(
     let chan = Arc::new(Channel::new(transport, cfg, rt, port, tx));
     tokio::spawn(run(Arc::clone(&chan), rx));
     Handle { chan }
+}
+
+/// An unstarted channel over `transport` (no supervisor task); for the
+/// outbound tests in `user.rs`.
+#[cfg(test)]
+pub(crate) fn unstarted(
+    transport: Arc<dyn SignalTransport>,
+    cfg: SignalConfig,
+    rt: Runtime,
+) -> Handle {
+    let (tx, _rx) = mpsc::unbounded_channel();
+    Handle {
+        chan: Arc::new(Channel::new(transport, cfg, rt, Arc::new(Actors), tx)),
+    }
 }
 
 /// Epoch milliseconds (URL expiry stamps).
@@ -447,7 +461,7 @@ impl Channel {
         }
     }
 
-    fn lock(&self) -> MutexGuard<'_, State> {
+    pub(crate) fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -810,8 +824,34 @@ impl Channel {
         None
     }
 
+    /// `send_attachment` with [`SEND_RETRIES`]; `true` on success (24 §6).
+    pub(crate) async fn send_attachment(
+        &self,
+        to: &Recipient,
+        bytes: &[u8],
+        mime: &str,
+        file_name: Option<&str>,
+    ) -> bool {
+        for attempt in 0..=SEND_RETRIES {
+            match self
+                .transport
+                .send_attachment(to, bytes, mime, file_name, None)
+                .await
+            {
+                Ok(()) => return true,
+                Err(e) => {
+                    tracing::warn!(to = %to.number, attempt, error = %e, "signal attachment send failed");
+                    if attempt < SEND_RETRIES {
+                        tokio::time::sleep(RETRY_DELAY).await;
+                    }
+                }
+            }
+        }
+        false
+    }
+
     /// Chunks and sends plain text; the last chunk's timestamp.
-    async fn send_chunks(&self, to: &Recipient, plain: &str) -> Option<u64> {
+    pub(crate) async fn send_chunks(&self, to: &Recipient, plain: &str) -> Option<u64> {
         let mut last = None;
         for chunk in text::chunk_text(plain, text::MAX_CHUNK_CHARS) {
             last = self.send_text(to, &chunk).await;

@@ -242,10 +242,10 @@ enum Out {
 }
 
 /// `auth.test` identity plus the owner DM (21 §11).
-struct Identity {
+pub(crate) struct Identity {
     bot_user: String,
     team: String,
-    owner_dm: Option<String>,
+    pub(crate) owner_dm: Option<String>,
 }
 
 /// A pending approval card (21 §10.1): who may click it and, for owner-DM
@@ -281,7 +281,7 @@ struct State {
 /// Everything shared by the listener callbacks, the inbound worker, the
 /// router and the per-thread workers.
 pub struct Channel {
-    api: Arc<dyn SlackApi>,
+    pub(crate) api: Arc<dyn SlackApi>,
     /// The live façade, for call counters; `None` under a fake.
     live: Option<Arc<Api>>,
     port: Arc<dyn Port>,
@@ -290,7 +290,7 @@ pub struct Channel {
     tools: ToolCards,
     reasoning: bool,
     approvals: ApprovalsScope,
-    identity: OnceLock<Identity>,
+    pub(crate) identity: OnceLock<Identity>,
     // ponytail: one std mutex for all state, never held across an await; split if it ever contends.
     state: Mutex<State>,
     inbound_tx: mpsc::UnboundedSender<Inbound>,
@@ -299,7 +299,7 @@ pub struct Channel {
 /// Control handle the `"slack"` actor uses. Cheap to clone.
 #[derive(Clone)]
 pub struct Handle {
-    chan: Arc<Channel>,
+    pub(crate) chan: Arc<Channel>,
 }
 
 impl Handle {
@@ -1137,7 +1137,7 @@ impl Channel {
     }
 
     /// The thread rendering `session`, cloned out of the lock.
-    fn bound(&self, session: SessionId) -> Option<(ThreadKey, Thread)> {
+    pub(crate) fn bound(&self, session: SessionId) -> Option<(ThreadKey, Thread)> {
         self.lock()
             .threads
             .by_session(session)
@@ -1308,7 +1308,7 @@ impl Channel {
 }
 
 /// `"C…:ts"` → `(channel, ts)`.
-fn split_key(key: &str) -> (&str, &str) {
+pub(crate) fn split_key(key: &str) -> (&str, &str) {
     key.split_once(':').map_or((key, ""), |(c, t)| (c, t))
 }
 
@@ -1804,7 +1804,7 @@ fn strip_mentions(s: &str) -> String {
 }
 
 /// `s` cut to `max` chars with an `… (n more chars)` tail when it was longer.
-fn clip(s: &str, max: usize) -> String {
+pub(crate) fn clip(s: &str, max: usize) -> String {
     let n = s.chars().count();
     if n <= max {
         return s.to_owned();
@@ -1827,7 +1827,7 @@ fn fmt_size(bytes: usize) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::time::Duration;
 
     use runtime::TurnId;
@@ -1835,12 +1835,12 @@ mod tests {
 
     use super::*;
 
-    const OWNER: &str = "U0WNER";
+    pub(crate) const OWNER: &str = "U0WNER";
     const FRIEND: &str = "U0FRIEND";
     const STRANGER: &str = "U5TRANGER";
-    const DM: &str = "D0001";
+    pub(crate) const DM: &str = "D0001";
     const LISTED: &str = "C0LISTED";
-    const OWNER_DM: &str = "D0WNER";
+    pub(crate) const OWNER_DM: &str = "D0WNER";
 
     #[derive(Debug, PartialEq)]
     enum Call {
@@ -1850,8 +1850,8 @@ mod tests {
         Resolve(ApprovalId, Decision),
     }
 
-    struct Stub {
-        session: SessionId,
+    pub(crate) struct Stub {
+        pub(crate) session: SessionId,
         calls: Mutex<Vec<Call>>,
     }
 
@@ -1903,12 +1903,12 @@ mod tests {
 
     /// Records every call as one line, e.g. `react D0001 1.1 eyes`.
     #[derive(Default)]
-    struct FakeApi {
+    pub(crate) struct FakeApi {
         calls: Mutex<Vec<String>>,
     }
 
     impl FakeApi {
-        fn calls(&self) -> Vec<String> {
+        pub(crate) fn calls(&self) -> Vec<String> {
             self.calls.lock().unwrap().clone()
         }
         fn record(&self, line: String) {
@@ -2013,6 +2013,22 @@ mod tests {
             self.record(format!("rename_session {channel} {thread_ts} {title}"));
             Ok(())
         }
+        async fn upload_file(
+            &self,
+            channel: &str,
+            thread_ts: Option<&str>,
+            files: &[crate::api::UploadFile],
+            comment: Option<&str>,
+        ) -> Result<String, ApiError> {
+            let names: Vec<&str> = files.iter().map(|f| f.name.as_str()).collect();
+            self.record(format!(
+                "upload_file {channel} {} [{}] {}",
+                thread_ts.unwrap_or("-"),
+                names.join(","),
+                comment.unwrap_or("-")
+            ));
+            Ok("https://files.example/1".into())
+        }
         async fn upload_text(
             &self,
             channel: &str,
@@ -2061,10 +2077,10 @@ mod tests {
         }
     }
 
-    struct Fixture {
-        api: Arc<FakeApi>,
-        stub: Arc<Stub>,
-        chan: Arc<Channel>,
+    pub(crate) struct Fixture {
+        pub(crate) api: Arc<FakeApi>,
+        pub(crate) stub: Arc<Stub>,
+        pub(crate) chan: Arc<Channel>,
         _dir: tempfile::TempDir,
     }
 
@@ -2081,7 +2097,7 @@ mod tests {
         }
     }
 
-    fn fixture() -> Fixture {
+    pub(crate) fn fixture() -> Fixture {
         fixture_with(SlackConfig::default())
     }
 
@@ -2123,7 +2139,7 @@ mod tests {
 
     impl Fixture {
         /// Binds `DM:100.1` to the stub's session for `user`.
-        fn bind(&self, user: &str) -> ThreadKey {
+        pub(crate) fn bind(&self, user: &str) -> ThreadKey {
             let key = thread_key(DM, "100.1");
             self.chan.lock().threads.bind(
                 key.clone(),

@@ -4,7 +4,7 @@
 //! [`channel`] routes inbound messages to agent asks and agent events into
 //! per-thread workers, [`bubble`] renders one streamed message per turn,
 //! [`threads`] persists thread ↔ session bindings, [`commands`] answers
-//! `/wth`.
+//! `/wth`, [`user`] delivers `message_user` (24 §5).
 //!
 //! - commands on the `"slack"` actor: [`Status`], [`Allow`], [`RemoveAllowed`],
 //!   [`AllowChannel`], [`RemoveChannel`]
@@ -31,6 +31,7 @@ pub mod setup;
 pub mod socket;
 pub mod threads;
 pub mod ui;
+pub mod user;
 
 /// Registry name of the plugin's actor.
 pub const SLACK_ACTOR: &str = "slack";
@@ -371,6 +372,7 @@ impl runtime::Plugin for SlackPlugin {
             Some(tokens) if self.channel => Some(channel::spawn(cfg.clone(), tokens, rt.clone())?),
             _ => None,
         };
+        let sink = handle.clone();
         let actor = Slack::spawn(Slack {
             handle,
             cfg,
@@ -382,7 +384,7 @@ impl runtime::Plugin for SlackPlugin {
             rt.publish(SlackEvent::Unconfigured).await;
         }
 
-        // First use of the registry (00 §4, 12 §2).
+        // First use of the registry (00 §4, 12 §2); then the user sink (24 §5).
         let rt = rt.clone();
         tokio::spawn(async move {
             let Some(reg) = rt
@@ -394,6 +396,15 @@ impl runtime::Plugin for SlackPlugin {
             let _ = reg
                 .ask(tools::RegisterTool(Arc::new(SlackStatusTool)))
                 .await;
+            let Some(sink) = sink else {
+                return;
+            };
+            if let Some(users) = rt
+                .lookup_when::<agent::UserChannels>(agent::USER_ACTOR)
+                .await
+            {
+                let _ = users.ask(agent::RegisterUserSink(Arc::new(sink))).await;
+            }
         });
         Ok(())
     }

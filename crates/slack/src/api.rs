@@ -138,6 +138,17 @@ fn chunks(v: Vec<Chunk>) -> Option<Vec<SlackStreamChunk>> {
     (!v.is_empty()).then(|| v.into_iter().map(Into::into).collect())
 }
 
+/// One file for [`SlackApi::upload_file`] (24 §5).
+#[derive(Debug, Clone)]
+pub struct UploadFile {
+    /// File name shown in Slack (also the `title`).
+    pub name: String,
+    /// Content type sent with the upload PUT.
+    pub mime: String,
+    /// The file's contents.
+    pub bytes: Vec<u8>,
+}
+
 /// What `bubble.rs` and `channel.rs` need from Slack. [`Api`] implements it
 /// over slack-morphism; tests use a fake.
 #[async_trait::async_trait]
@@ -214,14 +225,33 @@ pub trait SlackApi: Send + Sync {
         thread_ts: &str,
         title: &str,
     ) -> Result<(), ApiError>;
-    /// files v2 three-step upload of a text snippet; returns the file permalink.
+    /// files v2 upload (24 §5): one `files.getUploadURLExternal` + PUT per
+    /// file, then one `files.completeUploadExternal` sharing all of them
+    /// into `channel` (top level when `thread_ts` is `None`) with
+    /// `comment` as the mrkdwn `initial_comment`; the first file's permalink.
+    async fn upload_file(
+        &self,
+        channel: &str,
+        thread_ts: Option<&str>,
+        files: &[UploadFile],
+        comment: Option<&str>,
+    ) -> Result<String, ApiError>;
+    /// A text snippet as one `<title>.txt` file in a thread (21 §8.3); the permalink.
     async fn upload_text(
         &self,
         channel: &str,
         thread_ts: &str,
         title: &str,
         text: &str,
-    ) -> Result<String, ApiError>;
+    ) -> Result<String, ApiError> {
+        let file = UploadFile {
+            name: format!("{title}.txt"),
+            mime: "text/plain; charset=utf-8".into(),
+            bytes: text.as_bytes().to_vec(),
+        };
+        self.upload_file(channel, Some(thread_ts), std::slice::from_ref(&file), None)
+            .await
+    }
     /// `chat.getPermalink`.
     async fn permalink(&self, channel: &str, ts: &str) -> Result<String, ApiError>;
     /// GET `url_private_download` with the bot token.
@@ -623,46 +653,51 @@ impl SlackApi for Api {
         .map(|_| ())
     }
 
-    async fn upload_text(
+    async fn upload_file(
         &self,
         channel: &str,
-        thread_ts: &str,
-        title: &str,
-        text: &str,
+        thread_ts: Option<&str>,
+        files: &[UploadFile],
+        comment: Option<&str>,
     ) -> Result<String, ApiError> {
-        let bytes = text.as_bytes();
-        let get =
-            SlackApiFilesGetUploadUrlExternalRequest::new(format!("{title}.txt"), bytes.len());
-        let slot = self
-            .run("files.getUploadURLExternal", async {
+        let mut done = Vec::with_capacity(files.len());
+        for f in files {
+            let get = SlackApiFilesGetUploadUrlExternalRequest::new(f.name.clone(), f.bytes.len());
+            let slot = self
+                .run("files.getUploadURLExternal", async {
+                    self.client
+                        .open_session(&self.bot)
+                        .get_upload_url_external(&get)
+                        .await
+                })
+                .await?;
+            let put = SlackApiFilesUploadViaUrlRequest::new(
+                slot.upload_url,
+                f.bytes.clone(),
+                f.mime.clone(),
+            );
+            self.run("files.upload", async {
                 self.client
                     .open_session(&self.bot)
-                    .get_upload_url_external(&get)
+                    .files_upload_via_url(&put)
                     .await
             })
             .await?;
-        let put = SlackApiFilesUploadViaUrlRequest::new(
-            slot.upload_url,
-            bytes.to_vec(),
-            "text/plain; charset=utf-8".into(),
-        );
-        self.run("files.upload", async {
-            self.client
-                .open_session(&self.bot)
-                .files_upload_via_url(&put)
-                .await
-        })
-        .await?;
-        let done = SlackApiFilesCompleteUploadExternalRequest::new(vec![
-            SlackApiFilesComplete::new(slot.file_id).with_title(title.to_owned()),
-        ])
-        .with_channel_id(channel.into())
-        .with_thread_ts(thread_ts.into());
+            done.push(SlackApiFilesComplete::new(slot.file_id).with_title(f.name.clone()));
+        }
+        let mut req =
+            SlackApiFilesCompleteUploadExternalRequest::new(done).with_channel_id(channel.into());
+        if let Some(ts) = thread_ts {
+            req = req.with_thread_ts(ts.into());
+        }
+        if let Some(c) = comment {
+            req = req.with_initial_comment(c.to_owned());
+        }
         let r = self
             .run("files.completeUploadExternal", async {
                 self.client
                     .open_session(&self.bot)
-                    .files_complete_upload_external(&done)
+                    .files_complete_upload_external(&req)
                     .await
             })
             .await?;

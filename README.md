@@ -44,7 +44,9 @@ tool result — [`docs/design/23-browser.md`](docs/design/23-browser.md)), `know
 [`docs/design/10-knowledge.md`](docs/design/10-knowledge.md)), `agent` (genai
 loop, sqlite sessions with compaction epochs, skills, subagents, persistent
 Python runtime over monty worker subprocesses —
-[`docs/design/08-repl.md`](docs/design/08-repl.md)), `web` (`search_web` and
+[`docs/design/08-repl.md`](docs/design/08-repl.md); `message_user` sends text
+and files to the user on Slack or Signal out of band —
+[`docs/design/24-message-user.md`](docs/design/24-message-user.md)), `web` (`search_web` and
 `read_url`: SSRF-guarded fetch, keyless duckduckgo/wikipedia/arxiv/github
 merged by RRF with SERP features — [`docs/design/16-web.md`](docs/design/16-web.md)),
 `search-providers` (Firecrawl, SearXNG, OpenSERP, Brave; registered with `web`

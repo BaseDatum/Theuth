@@ -516,6 +516,13 @@ line`.
 | `SubagentSpawned` | §9 |
 | `ModelChanged`, `EffortChanged`, `SkillsChanged`, `Harvest*`, `Compacting`, `Input{Injected,Withdrawn}` | nothing |
 
+- `message_user` (24 §5): a separate `chat.postMessage` (`markdown_text`)
+  below the live bubble in the bound thread, or one
+  `files.completeUploadExternal` with `initial_comment` when files ride
+  along; unbound sessions land in the owner DM prefixed `_session <last 8>
+  · <title>_`. `user.rs`; `SlackApi::upload_file`, of which `upload_text`
+  (§8.3) is now a wrapper.
+
 ## 9. Subagents
 
 19 §1: a subagent is a session. So a child gets what a session gets — a

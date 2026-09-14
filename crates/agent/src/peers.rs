@@ -57,7 +57,7 @@ fn harnesses(data_dir: &std::path::Path) -> std::collections::BTreeMap<String, a
 }
 
 /// The supervisor, or the text the model reads when it is not running.
-fn supervisor() -> Result<ActorRef<Agents>, &'static str> {
+pub(crate) fn supervisor() -> Result<ActorRef<Agents>, &'static str> {
     ActorRef::<Agents>::lookup(AGENT_ACTOR)
         .ok()
         .flatten()

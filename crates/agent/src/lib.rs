@@ -9,7 +9,8 @@
 //!   [`LoadSkill`], [`UseSkill`], [`AddSkill`], [`RemoveSkill`], [`AddSkillRepo`],
 //!   [`RemoveSkillRepo`], [`SyncSkills`], [`ListLogins`], [`Login`], [`Logout`],
 //!   [`ListProviders`], [`AddProvider`], [`RemoveProvider`], [`NewSession`],
-//!   [`ListAcp`], [`AddAcp`], [`RemoveAcp`], [`ListRegistry`]
+//!   [`ListAcp`], [`AddAcp`], [`RemoveAcp`], [`ListRegistry`], [`Ancestors`]
+//! - the `"user"` actor ([`UserChannels`]) and the `message_user` tool (design doc 24) in [`user`].
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -32,9 +33,14 @@ pub mod store;
 pub mod supervisor;
 pub mod title;
 pub mod todo;
+pub mod user;
 
 pub use compact::CompactStyle;
 pub use supervisor::Agents;
+pub use user::{
+    Deliver, MessageUserTool, Outbound, OutboundFile, RegisterUserSink, USER_ACTOR, UserChannels,
+    UserSink,
+};
 
 /// Registry name of the [`Agents`] supervisor actor.
 pub const AGENT_ACTOR: &str = "agent";
@@ -212,6 +218,26 @@ pub struct Loaded {
 pub struct ListAgents {
     /// Root of the subtree (not included itself).
     pub session: SessionId,
+}
+
+/// `ask` → `Vec<AncestorInfo>`: `session` first, then its parent, …, the root
+/// last (design doc 24 §2), walked over live sessions. Only the root carries a
+/// title. An unknown session is returned alone.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct Ancestors {
+    /// Where to start.
+    pub session: SessionId,
+}
+
+/// One link of an [`Ancestors`] chain.
+#[derive(Clone, Debug, Serialize, Deserialize, kameo::Reply)]
+pub struct AncestorInfo {
+    /// Session id.
+    pub id: SessionId,
+    /// The session's title, non-empty; loaded for the root only.
+    pub title: Option<String>,
+    /// Peer name when this is a subagent.
+    pub name: Option<String>,
 }
 
 /// One subagent in a session's subtree with its live state (design doc 19 §2.1).

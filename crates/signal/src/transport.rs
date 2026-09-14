@@ -161,12 +161,14 @@ pub trait SignalTransport: Send + Sync {
     /// any later reaction to it (wth 09 §2.2 edit 2).
     async fn send_text(&self, to: &Recipient, text: &str) -> Result<u64>;
 
-    /// Sends an attachment with an optional caption.
+    /// Sends an attachment with an optional file name (shown for non-media
+    /// types; wth 09 §2.2 edit 3) and an optional caption.
     async fn send_attachment(
         &self,
         to: &Recipient,
         bytes: &[u8],
         mime: &str,
+        file_name: Option<&str>,
         caption: Option<&str>,
     ) -> Result<()>;
 

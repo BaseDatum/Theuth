@@ -127,6 +127,11 @@ cloned repos (read-only). This file is one; it is rewritten on every start.
   the ids; unset = `agent.subagents.model`/`effort`, then `agent.model`).
   `send_message{to, message, await_reply}` talks to `parent` or a child by
   name.
+- `message_user{text, files?, via?}` reaches the user on Slack or Signal
+  right now, with files or images attached (absolute paths). Your reply
+  already reaches them; use it to hand over a file, or to report progress
+  when asked. Unbound sessions (TUI, subagents without a thread) go to the
+  owner on every channel; `via` picks one.
 - The shell tool returns within a few seconds or hands back a job id;
   `<job_result>` arrives when it ends. `jobs` lists, `cancel_job` kills.
 - `start{command, name?, ready?}` runs on a pseudo-terminal; `send`/`screen`/

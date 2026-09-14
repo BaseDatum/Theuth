@@ -1376,6 +1376,15 @@ mod tests {
         ) -> Result<(), ApiError> {
             unimplemented!()
         }
+        async fn upload_file(
+            &self,
+            _channel: &str,
+            _thread_ts: Option<&str>,
+            _files: &[crate::api::UploadFile],
+            _comment: Option<&str>,
+        ) -> Result<String, ApiError> {
+            unimplemented!()
+        }
         async fn upload_text(
             &self,
             _channel: &str,
