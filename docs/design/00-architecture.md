@@ -250,7 +250,10 @@ flowchart LR
 - Tool calls in one assistant message run concurrently (`join_all` on
   `ask(Invoke)`); results appended as one tool-response message. `shell`
   returns within `tools.job_grace_secs`; the process continues as a job and
-  its result arrives as a `<job_result>` input (14). `todo` and
+  its result arrives as a `<job_result>` input (14). PTY jobs (22, planned
+  2026-09-14): `start`/`send`/`screen`/`wait` run a command on a
+  pseudo-terminal with a rendered 120×40 screen the model reads instead of
+  the bytes; same `Jobs` actor, stdin, no deadline. `todo` and
   `python` are loop-local (dispatched by the turn, not the registry;
   `07 §5`).
 - Every `ChatMessage` is appended to the session store before the next
@@ -523,6 +526,8 @@ Workspace dependencies (versions verified 2026-09-09 via `cargo info`):
 | agent-client-protocol | 2.1 (pinned) | ACP client + agent (acp, agent, rpc) |
 | html-to-markdown-rs | 3.12 | HTML → markdown/text (web) |
 | slack-morphism | 2.28 (patched, 21 §2.1) | Slack Socket Mode + Web API |
+| portable-pty | 0.9 | pty open/spawn/read/write for PTY jobs (22; planned) |
+| vt100 | 0.16 | rendered screen of a PTY job (22; planned) |
 | wiremock | 0.6 dev | provider contract tests |
 
 Lints: `missing_docs = warn`, `clippy::all = warn` while the crates are being
@@ -609,6 +614,8 @@ Each phase ends with a runnable check, not a test suite.
 | 9 | ACP (06): external harnesses as subagents, `wth --acp` | opencode child streams, approval relayed, result delivered, resume via session/load; stdio client runs prompt/deny/cancel/load | done 2026-09-12 |
 | 10 | server configuration (15): owners, per-user sandboxed workers (Landlock/Seatbelt), postgres later | — | shelved 2026-09-12; preconditions in 15 §9 |
 | 11 | web (16): `search_web`/`read_url` plugin + `search-providers` plugin (Firecrawl, SearXNG, OpenSERP, Brave) | keyless search merges engines with SERP features; SSRF matrix rejects; rendered fetch via a provider | done 2026-09-12 (search_web merges duckduckgo+wikipedia with a knowledge panel; SSRF refusals; rendered errors without a provider; firecrawl default-on, key-gated) |
+| 12 | Slack (21) | Socket Mode channel, streamed threads, approvals, subagent threads | done 2026-09-14 (21 §19) |
+| 13 | PTY jobs (22) | `start` a REPL with `ready`, `send` an expression, read the answer off the screen; the harness drives its own TUI | not started |
 
 Known gaps carried forward: cancel/error paths in the loop are code-reviewed,
 not smoke-tested; the `Jobs` actor kills every process group on shutdown
