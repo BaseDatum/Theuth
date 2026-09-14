@@ -697,6 +697,7 @@ async fn run(mut j: Run) {
                 content: format!("{body}{}exit code: {code}", sep(&body)),
                 is_error: *code != 0,
                 structured: Some(serde_json::Value::String(body.clone())),
+                files: Vec::new(),
             };
             (body, out)
         }

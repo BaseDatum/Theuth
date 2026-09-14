@@ -441,6 +441,7 @@ impl Message<StartPty> for Jobs {
                     structured: Some(serde_json::json!({
                         "job": id, "log": log_path, "pid": pty.pid, "rows": rows, "cursor": cursor,
                     })),
+                    files: Vec::new(),
                 }
             }));
         });
@@ -654,6 +655,7 @@ async fn run(mut j: Run) {
             content: format!("{screen}{}exit code: {code}", sep(&screen)),
             is_error: *code != 0,
             structured: Some(serde_json::Value::String(screen.clone())),
+            files: Vec::new(),
         },
         JobExit::Timeout | JobExit::Killed => {
             ToolOutput::err(format!("{screen}{}killed", sep(&screen)))
@@ -1016,6 +1018,7 @@ fn reply(live: &Live, note: Option<&str>, matched: Option<&str>) -> ToolOutput {
         structured: Some(serde_json::json!({
             "job": live.id, "rows": rows, "cursor": cursor, "matched": matched,
         })),
+        files: Vec::new(),
     }
 }
 

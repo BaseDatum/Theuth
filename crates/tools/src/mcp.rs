@@ -373,6 +373,7 @@ impl ErasedTool for McpTool {
                 content,
                 is_error: result.is_error.unwrap_or(false),
                 structured: result.structured_content,
+                files: Vec::new(),
             })
         })
     }

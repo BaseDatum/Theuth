@@ -117,6 +117,7 @@ impl Tool for ShellTool {
                 ),
                 is_error: false,
                 structured: Some(serde_json::json!({ "job": id, "log": log })),
+                files: Vec::new(),
             },
         })
     }

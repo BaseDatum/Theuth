@@ -105,6 +105,10 @@ pub struct ToolOutput {
     pub is_error: bool,
     /// Machine-readable result (MCP `structuredContent`); `None` for text-only tools.
     pub structured: Option<serde_json::Value>,
+    /// Files handed to the model as image parts of the tool result (23 §5):
+    /// paths, not bytes, like `files` on inputs (17 §2). Empty for most tools.
+    #[serde(default)]
+    pub files: Vec<std::path::PathBuf>,
 }
 
 impl ToolOutput {
@@ -114,6 +118,7 @@ impl ToolOutput {
             content: content.into(),
             is_error: false,
             structured: None,
+            files: Vec::new(),
         }
     }
     /// Failed output the model should read.
@@ -122,6 +127,7 @@ impl ToolOutput {
             content: content.into(),
             is_error: true,
             structured: None,
+            files: Vec::new(),
         }
     }
 }
