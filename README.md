@@ -87,14 +87,16 @@ to; `/provider add` prompts for name, base url, then API key (an OpenAI-compatib
 gateway such as `https://api.ai.rwx.dev/v1`); `/provider` lists them, `/provider rm <name>`
 forgets one; `/skills` lists skills (⏎ hands one to the model, `s` shows it; `/<skill> [words]` does the same; the status line names the skills in context); `/prompt` shows the system prompt; `/compact` folds into a summary by default; `/compact cut` drops the folded span with no model call; `/compact style` lists/sets the default; `/clear` drops the conversation and keeps the session (id, title, model, settings; the history is still there on `/resume`);
 `/undo` drops the last turn (yours and the reply), `/redo` restores it; URLs in the transcript are OSC 8 hyperlinks (click them in a terminal that supports it, e.g. ghostty/iTerm2/kitty/WezTerm);
-`/jobs` lists the session's shell jobs, `/jobs kill <id>` stops one;
+`/jobs` lists the session's shell jobs, `/jobs kill <id>` stops one (a running job's card shows its last 10 output lines live);
 `/acp` manages external ACP harnesses;
 `/knowledge` browses the knowledge base (below); `/approvals off` stops
 approval prompts for this session, `/approvals off always` for good
 (`tools.approvals` in config.yaml). Typing while the model works queues the
 message: it is shown under the response until it enters the context (after
 the current tool batch or when the turn ends), and `⌥↑` pulls the newest one
-back into the editor. Shift+Enter inserts a newline; select
+back into the editor. Shift+Enter inserts a newline; PgUp/PgDn (or the
+wheel, ↑/↓) scroll the whole history — what you are reading stays put while
+a reply streams, PgDn to the bottom follows again; select
 text with the mouse to copy it (terminal-native). Images: **Ctrl+V** (not
 ⌘V — the terminal's paste sends text only, so a screenshot on the clipboard
 pastes nothing) attaches the clipboard image as `[⎘ image 1: W×H]`; dropping

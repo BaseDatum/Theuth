@@ -327,6 +327,94 @@ pub struct LoginRow {
     pub status: String,
 }
 
+/// Rows of live output a `shell` card shows for its background job.
+pub const JOB_LINES: usize = 10;
+
+/// The tail of a background job's output as it arrives (`JobEvent::Output`,
+/// coalesced upstream to one chunk per half second per job): the last
+/// [`JOB_LINES`] lines, frozen with how it ended. Bounded, so any number of
+/// jobs costs the same; the log file is the whole story.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct JobTail {
+    /// Job id (`j3`).
+    pub id: String,
+    /// Complete lines, oldest first, at most [`JOB_LINES`].
+    lines: VecDeque<String>,
+    /// Bytes after the last newline (a progress bar's current state).
+    partial: String,
+    /// `exited 0 · 47s` and the like once finished.
+    pub exit: Option<String>,
+}
+
+impl JobTail {
+    /// An empty tail for job `id`.
+    pub fn new(id: String) -> Self {
+        Self {
+            id,
+            ..Self::default()
+        }
+    }
+
+    /// Append raw output. Escape sequences are dropped, `\r` rewinds the
+    /// current line (progress bars), tabs become spaces.
+    pub fn push(&mut self, chunk: &str) {
+        let mut chars = chunk.chars();
+        while let Some(c) = chars.next() {
+            match c {
+                '\n' => {
+                    if self.lines.len() == JOB_LINES {
+                        self.lines.pop_front();
+                    }
+                    self.lines.push_back(std::mem::take(&mut self.partial));
+                }
+                '\r' => self.partial.clear(),
+                '\t' => self.partial.push_str("    "),
+                '\x1b' => match chars.next() {
+                    // CSI: parameters, then one final byte in `@`..`~`.
+                    Some('[') => {
+                        for c in chars.by_ref() {
+                            if ('@'..='~').contains(&c) {
+                                break;
+                            }
+                        }
+                    }
+                    // OSC: to BEL or ST.
+                    Some(']') => {
+                        let mut prev = '\0';
+                        for c in chars.by_ref() {
+                            if c == '\x07' || (prev == '\x1b' && c == '\\') {
+                                break;
+                            }
+                            prev = c;
+                        }
+                    }
+                    _ => {}
+                },
+                c if c.is_control() => {}
+                c => self.partial.push(c),
+            }
+        }
+    }
+
+    /// The rows to draw, oldest first: complete lines and the partial one.
+    pub fn rows(&self) -> impl Iterator<Item = &str> {
+        let extra = usize::from(!self.partial.is_empty());
+        self.lines
+            .iter()
+            .map(String::as_str)
+            .skip((self.lines.len() + extra).saturating_sub(JOB_LINES))
+            .chain((!self.partial.is_empty()).then_some(self.partial.as_str()))
+    }
+
+    /// Header row: `j3 · running` until it ends.
+    pub fn header(&self) -> String {
+        match &self.exit {
+            Some(e) => format!("{} · {e}", self.id),
+            None => format!("{} · running", self.id),
+        }
+    }
+}
+
 /// One transcript row.
 #[derive(Debug)]
 pub enum Entry {
@@ -372,6 +460,10 @@ pub enum Entry {
         result: Option<(String, bool)>,
         /// Full output shown (Ctrl+O); built on first expand.
         expanded: Option<Box<markdown::Text>>,
+        /// Live output of the background job a `shell` call started
+        /// (design doc 14); `None` for other tools and jobs that finished
+        /// within the grace window (their result carries the output).
+        job: Option<JobTail>,
     },
     /// A compaction boundary (design doc 07 §8.4): a divider, expandable with
     /// Ctrl+O to the summary when loaded from history (the live event has none).
@@ -458,8 +550,15 @@ impl Entry {
             Entry::Reasoning { done: true, .. } | Entry::Info(_) | Entry::Error(_) => 1,
             Entry::Reasoning { text, .. } => text_rows(text, width),
             Entry::Pending { .. } => 2,
-            Entry::Tool { args, expanded, .. } => {
-                5 + args.len() + expanded.as_ref().map_or(0, |t| md(t, inner))
+            Entry::Tool {
+                args,
+                expanded,
+                job,
+                ..
+            } => {
+                5 + args.len()
+                    + expanded.as_ref().map_or(0, |t| md(t, inner))
+                    + job.as_ref().map_or(0, |j| 1 + j.rows().count())
             }
             Entry::Compacted {
                 summary, expanded, ..
@@ -1399,6 +1498,14 @@ impl Model {
         }
     }
 
+    /// The live block of job `id`, if a card on screen or off has one.
+    fn job_mut(&mut self, id: &str) -> Option<&mut JobTail> {
+        self.entries.iter_mut().rev().find_map(|e| match e {
+            Entry::Tool { job: Some(j), .. } if j.id == id => Some(j),
+            _ => None,
+        })
+    }
+
     /// Some assistant text is still typing out.
     pub fn revealing(&self) -> bool {
         self.entries
@@ -1832,10 +1939,42 @@ impl Model {
             UiEvent::Info(t) => self.entries.push(Entry::Info(t)),
             UiEvent::Jobs(jobs) => self.entries.push(Entry::Info(tools::jobs::table(&jobs))),
             UiEvent::Job(ev) => match ev {
-                JobEvent::Started { session, id, .. } if self.session == Some(session) => {
+                JobEvent::Started {
+                    session,
+                    id,
+                    call_id,
+                    ..
+                } if self.session == Some(session) => {
+                    if let Some(Entry::Tool { job, .. }) = self.entries.iter_mut().rev().find(
+                        |e| matches!(e, Entry::Tool { call_id: c, .. } if *c == call_id),
+                    ) {
+                        *job = Some(JobTail::new(id.0.clone()));
+                    }
                     self.jobs.insert(id.0);
                 }
-                JobEvent::Finished { session, id, .. } if self.session == Some(session) => {
+                JobEvent::Output { session, id, chunk } if self.session == Some(session) => {
+                    if let Some(j) = self.job_mut(&id.0) {
+                        j.push(&chunk);
+                    }
+                }
+                JobEvent::Finished {
+                    session,
+                    id,
+                    exit,
+                    secs,
+                    inline,
+                    ..
+                } if self.session == Some(session) => {
+                    match self.entries.iter_mut().rev().find(
+                        |e| matches!(e, Entry::Tool { job: Some(j), .. } if j.id == id.0),
+                    ) {
+                        // Within grace: the result carries the output.
+                        Some(Entry::Tool { job, .. }) if inline => *job = None,
+                        Some(Entry::Tool { job: Some(j), .. }) => {
+                            j.exit = Some(format!("{exit} · {secs}s"));
+                        }
+                        _ => {}
+                    }
                     self.jobs.remove(&id.0);
                 }
                 _ => {}
@@ -2033,6 +2172,7 @@ impl Model {
                     name: if inner { format!("↳ {name}") } else { name },
                     result: None,
                     expanded: None,
+                    job: None,
                 };
                 match self
                     .entries
@@ -3320,6 +3460,7 @@ fn from_history(h: HistoryEntry) -> Vec<Entry> {
         } => vec![Entry::Tool {
             call_id: String::new(),
             args: describe(&name, &args),
+            job: None,
             name,
             result: Some((output, is_error)),
             expanded: None,
@@ -4049,6 +4190,7 @@ mod tests {
             session,
             id: tools::JobId(id.into()),
             command: "sleep 9".into(),
+            call_id: String::new(),
             log: "/tmp/j.log".into(),
         };
         m.apply(UiEvent::Job(started(s, "j1")));
@@ -4075,6 +4217,102 @@ mod tests {
             m.entries.last(),
             Some(Entry::Card { kind: CardKind::Job, title, .. }) if title == "job j1"
         ));
+    }
+
+    #[test]
+    fn shell_card_shows_the_job_tail_until_its_result_lands() {
+        let mut m = Model::default();
+        let s = SessionId::new();
+        m.session = Some(s);
+        let turn = TurnId::new();
+        for c in ["c1", "c2"] {
+            m.apply_agent(AgentEvent::ToolCallStarted {
+                session: s,
+                turn,
+                call_id: c.into(),
+                name: "shell".into(),
+                args: serde_json::json!({ "command": "make" }),
+            });
+        }
+        let job = |m: &Model, c: &str| {
+            m.entries
+                .iter()
+                .find_map(|e| match e {
+                    Entry::Tool { call_id, job, .. } if call_id == c => Some(job.clone()),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let started = |id: &str, call: &str| {
+            UiEvent::Job(JobEvent::Started {
+                session: s,
+                id: tools::JobId(id.into()),
+                command: "make".into(),
+                call_id: call.into(),
+                log: "/tmp/j.log".into(),
+            })
+        };
+        m.apply(started("j1", "c1"));
+        m.apply(started("j2", "c2"));
+        // Identical commands: the call id, not the command, picks the card.
+        assert_eq!(job(&m, "c1").unwrap().id, "j1");
+        assert_eq!(job(&m, "c2").unwrap().id, "j2");
+
+        // Output: colours dropped, `\r` rewinds, only the last 10 lines kept.
+        let chunk = (0..12).fold(String::new(), |mut acc, i| {
+            acc.push_str(&format!("\x1b[32mline {i}\x1b[0m\n"));
+            acc
+        });
+        m.apply(UiEvent::Job(JobEvent::Output {
+            session: s,
+            id: tools::JobId("j2".into()),
+            chunk: format!("{chunk}10%\r55%"),
+        }));
+        let j2 = job(&m, "c2").unwrap();
+        let rows: Vec<&str> = j2.rows().collect();
+        assert_eq!(rows.len(), 10);
+        assert_eq!(rows[0], "line 3");
+        assert_eq!(
+            rows[9], "55%",
+            "partial line shows, oldest complete line goes"
+        );
+        assert_eq!(j2.header(), "j2 · running");
+        assert!(job(&m, "c1").unwrap().rows().next().is_none());
+        // The card grows by the header and the rows, never past 11.
+        let base = Entry::Tool {
+            call_id: String::new(),
+            name: "shell".into(),
+            args: vec!["make".into()],
+            result: None,
+            expanded: None,
+            job: None,
+        }
+        .height(80);
+        let tool = m
+            .entries
+            .iter()
+            .find(|e| matches!(e, Entry::Tool { call_id, .. } if call_id == "c2"))
+            .unwrap();
+        assert_eq!(tool.height(80), base + 1 + 10);
+
+        // Finished within grace: the result carries the output, the block goes.
+        let finished = |id: &str, inline: bool| {
+            UiEvent::Job(JobEvent::Finished {
+                session: s,
+                id: tools::JobId(id.into()),
+                command: "make".into(),
+                exit: tools::JobExit::Exited(0),
+                secs: 47,
+                output: String::new(),
+                inline,
+            })
+        };
+        m.apply(finished("j1", true));
+        assert_eq!(job(&m, "c1"), None);
+        // Backgrounded: the block freezes with how it ended.
+        m.apply(finished("j2", false));
+        assert_eq!(job(&m, "c2").unwrap().header(), "j2 · exited 0 · 47s");
+        assert_eq!(job(&m, "c2").unwrap().rows().count(), 10);
     }
 
     #[test]

@@ -383,8 +383,10 @@ protocol, so the app pushes `DISAMBIGUATE_ESCAPE_CODES` after iocraft enters
 the alternate screen and pops it on quit; Ctrl+C is routed through the app
 (`ignore_ctrl_c`) so that teardown always runs. Mouse capture is off
 (`disable_mouse_capture`): the terminal's own selection works, and Ghostty's
-copy-on-select copies on release without any code here. The cost is no
-wheel scrolling of the transcript (never implemented). The box auto-grows
+copy-on-select copies on release without any code here. The wheel still
+scrolls: without mouse capture the terminal sends ↑/↓ for it (alternate
+scroll mode), which the transcript takes while the editor is one line;
+PgUp/PgDn page. The box auto-grows
 with `flex_shrink: 0`, otherwise a full transcript squeezes it back to three
 rows. Bracketed paste is on (second iocraft patch: `TerminalEvent::Paste`):
 a paste lands at the cursor in one piece with `\r` normalised to `\n`; one
@@ -392,11 +394,19 @@ over five lines or 400 chars is held in `Model::pastes` and the box shows
 `[⎘ paste 1: 69 lines]` instead. `submit` swaps the tokens back before
 sending; the `◆ you` card keeps the token.
 
-Only the tail of the transcript is built each frame (`Model::tail`: entries
-from the end until their pre-wrap height reaches eight screens). iocraft lays
+Only a window of the transcript is built each frame (`Model::window`, one
+60 Hz loop applying every pending event under a single write). iocraft lays
 out and paints every child it is given, so the whole history made a frame
 O(session) — 27 ms at 150 turns, against a 16 ms tick — and typing during a
-stream lagged. Scroll-back (PageUp) stops at that window.
+stream lagged (1.2 s key echo at 300 messages; 30 ms after). Scrolling is
+ours, not iocraft's `ScrollView` (which can only reach what was built):
+`Model.anchor = (entry, rows into it)` is the first visible row, `None`
+follows the tail. Two views' worth from the anchor is built and drawn from
+`top: -rows`; pinned, the tail is drawn bottom-aligned. Anchoring to an
+entry rather than to a row count from the bottom keeps what you are reading
+still while a reply streams in below. Reaching the bottom or sending
+re-pins. Heights are pre-wrap estimates (`Entry::height`); a row off moves
+the first scroll step, never the pinned bottom.
 
 Transcript shapes, so a glance tells the kinds apart: every input and event
 is a rounded card with a glyph header in its own colour (text glyphs, never

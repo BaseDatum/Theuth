@@ -93,6 +93,8 @@ pub enum JobEvent {
         id: JobId,
         /// Command line.
         command: String,
+        /// The `shell` call that started it: UIs attach live output to its card.
+        call_id: String,
         /// Log file receiving stdout+stderr as they arrive.
         log: PathBuf,
     },
@@ -155,6 +157,8 @@ pub struct Start {
     pub session: SessionId,
     /// Bash command line.
     pub command: String,
+    /// Provider call id of the `shell` call (carried on `JobEvent::Started`).
+    pub call_id: String,
     /// A clone of the session shell; the job owns it and hands it to
     /// `put_back` when it exits normally (not when killed or timed out).
     pub shell: Shell,
@@ -366,6 +370,7 @@ impl Message<Start> for Jobs {
             session: m.session,
             id: id.clone(),
             command: m.command.clone(),
+            call_id: m.call_id,
             shell: m.shell,
             put_back: m.put_back,
             params,
@@ -537,6 +542,7 @@ struct Run {
     session: SessionId,
     id: JobId,
     command: String,
+    call_id: String,
     shell: Shell,
     put_back: PutBack,
     params: ExecutionParameters,
@@ -593,6 +599,7 @@ async fn run(mut j: Run) {
         session: j.session,
         id: j.id.clone(),
         command: j.command.clone(),
+        call_id: j.call_id,
         log: j.log_path,
     })
     .await;
@@ -892,6 +899,7 @@ mod tests {
             .ask(Start {
                 session: fx.session,
                 command: command.into(),
+                call_id: String::new(),
                 shell: ShellTool::build_shell().await.unwrap(),
                 put_back: Arc::new(|_| {}),
             })

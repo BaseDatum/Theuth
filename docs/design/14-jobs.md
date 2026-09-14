@@ -177,12 +177,12 @@ pub struct Job {
 }
 
 // messages
-struct Start { session, command, shell: Shell, grace: Duration }   // ask → StartReply::{Done(ToolOutput), Running(Job summary)}
+struct Start { session, command, call_id, shell: Shell, put_back }   // ask → StartReply::{Done(ToolOutput), Running { id, log, tail }}
 struct List(SessionId)                     // ask → Vec<JobView>
 struct Cancel { session, id }              // ask → Result<(), String>
 // events (bus, Clone + Serialize, ts-exported)
 pub enum JobEvent {
-    Started  { session, id, command, log },
+    Started  { session, id, command, call_id, log },   // call_id: the `shell` call, so a UI can find its card
     Output   { session, id, chunk: String },          // coalesced ≥ 500 ms apart
     Finished { session, id, command, exit: JobExit, secs: u64, output: String /* spill-capped */,
                inline: bool /* the tool call already returned this result (exited within grace) */ },
@@ -252,8 +252,17 @@ other. Redo restores it. The job row is unaffected.
 ### 4.1 TUI
 
 - `shell` tool card: result text is the stub or the output, unchanged
-  widget. A running job's card shows `→ j3 running` in the result line and
-  the card is *not* re-rendered on `Output` (no live tail widget in v0).
+  widget. Below it a live block (added 2026-09-14; v0 had none): `j3 ·
+  running` and the last 10 output lines, fed by `Output` (colours stripped,
+  `\r` rewinds the line, rows clipped not wrapped so the block never grows
+  past 11 rows). `Started.call_id` picks the card, so two identical
+  commands in one batch each get their own. A job that exits within grace
+  loses the block (`Finished.inline`: the result carries the output); a
+  backgrounded one freezes it with `j3 · exited 0 · 47s`, and the
+  `<job_result>` card follows when the model gets it. Bounded per job and
+  built only while the card is in the drawn window, so a session with many
+  jobs costs no more per frame. Not restored on `--resume` (the log file
+  and the result card are).
 - Status line gains `· 2 jobs` while any job of the shown session runs
   (`JobEvent::Started/Finished` keep the count).
 - `/jobs` → `Entry::Info` table (same text as the tool). `/jobs kill j3` →

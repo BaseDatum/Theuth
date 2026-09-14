@@ -307,7 +307,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     let entries = m.entries[win.from..win.to]
         .iter()
         .enumerate()
-        .map(|(i, e)| entry(e, m.spinner(), if i == 0 { win.skip } else { 0 }));
+        .map(|(i, e)| entry(e, m.spinner(), if i == 0 { win.skip } else { 0 }, width));
     let transcript = if m.anchor.is_some() {
         // Anchored: the first `top` rows of the first entry sit above the fold.
         element! {
@@ -677,8 +677,8 @@ fn queued_text(text: &str) -> String {
 }
 
 /// One transcript entry. `skip` drops that many leading rendered lines of a
-/// reply (`Model::tail`): the part that cannot reach the screen.
-fn entry(e: &Entry, spinner: &str, skip: usize) -> AnyElement<'static> {
+/// reply (`Model::window`): the part that cannot reach the screen.
+fn entry(e: &Entry, spinner: &str, skip: usize, width: u16) -> AnyElement<'static> {
     match e {
         // Human turns: the same card shape as tools and peers, own colour and glyph.
         Entry::User(t) => element! {
@@ -750,8 +750,20 @@ fn entry(e: &Entry, spinner: &str, skip: usize) -> AnyElement<'static> {
             args,
             result,
             expanded,
+            job,
             ..
         } => {
+            // Live job output: rows clipped, not wrapped, so the block never
+            // grows past `JOB_LINES` (border 2 + padding 2, then one less).
+            let fit = usize::from(width).saturating_sub(5);
+            let job = job.as_ref().map(|j| {
+                element! {
+                    View(flex_direction: FlexDirection::Column, margin_top: 1) {
+                        Text(content: j.header(), color: Color::DarkGrey, italic: true, wrap: TextWrap::NoWrap)
+                        #(j.rows().map(|l| element!(Text(content: l.chars().take(fit).collect::<String>(), color: Color::Grey, wrap: TextWrap::NoWrap))))
+                    }
+                }
+            });
             let summary = match result {
                 None => (format!("{spinner} running…"), Color::DarkGrey),
                 Some((output, is_error)) => {
@@ -775,6 +787,7 @@ fn entry(e: &Entry, spinner: &str, skip: usize) -> AnyElement<'static> {
                     #(expanded.as_ref().map(|t| element!(View(flex_direction: FlexDirection::Column, margin_top: 1) {
                         #(t.view().lines().map(line))
                     })))
+                    #(job)
                 }
             }
             .into_any()
