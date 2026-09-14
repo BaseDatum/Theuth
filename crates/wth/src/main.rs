@@ -249,6 +249,14 @@ async fn run() -> anyhow::Result<()> {
         default_hook(info);
     }));
 
+    // V8's one-time setup must happen on the main thread before any plugin
+    // thread builds an isolate, and the env knobs are exported while the
+    // process is still effectively single-threaded (23 §3.1).
+    let browser_cfg = config
+        .extract_inner::<browser::BrowserConfig>("browser")
+        .unwrap_or_default();
+    browser::warmup(&browser_cfg);
+
     let rt = Runtime::new(config, data_dir);
 
     // Pairing needs no TUI, agent or tools; the plugin cancels `shutdown`
@@ -268,6 +276,7 @@ async fn run() -> anyhow::Result<()> {
             Box::new(tools::ToolsPlugin),
             Box::new(knowledge::KnowledgePlugin),
             Box::new(web::WebPlugin),
+            Box::new(browser::BrowserPlugin),
             Box::new(search_providers::SearchProvidersPlugin),
             Box::new(agent::AgentPlugin),
             Box::new(signal::SignalPlugin {
@@ -282,6 +291,7 @@ async fn run() -> anyhow::Result<()> {
             Box::new(tools::ToolsPlugin),
             Box::new(knowledge::KnowledgePlugin),
             Box::new(web::WebPlugin),
+            Box::new(browser::BrowserPlugin),
             Box::new(search_providers::SearchProvidersPlugin),
             Box::new(agent::AgentPlugin),
             Box::new(signal::SignalPlugin {

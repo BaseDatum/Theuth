@@ -1,6 +1,6 @@
 # 23 — Browser: an embedded headless browser the model can drive
 
-Status: draft v0 · 2026-09-14 · extends `00-architecture.md` §1 (single
+Status: as-built v0 · 2026-09-14 (draft same day) · extends `00-architecture.md` §1 (single
 binary), §4 (tools), §6; `16-web.md` §5 (rendered fetch); `17-images.md`
 (images now flow out of tools, not only in from users). §13 records what
 shipped and what was not exercised.
@@ -323,11 +323,42 @@ taffy = { git = "https://github.com/skymoore/obscura", branch = "main" }
 cosmic-text = { git = "https://github.com/skymoore/obscura", branch = "main" }
 # genai: `ToolResponse.images` so screenshots ride inside tool results (23 §5).
 genai = { git = "https://github.com/skymoore/rust-genai", branch = "main" }
+# btls-sys: wreq's BoringSSL renamed `links = "btls"` and symbol-prefixed on macOS too (§9.1).
+btls-sys = { git = "https://github.com/skymoore/btls", branch = "main" }
 ```
 
-Prerequisites documented in README: `cmake`, `clang` + `libclang`
-(`brew install cmake llvm` / `apt install cmake clang libclang-dev`),
-network on first build. `justfile` unchanged. CI installs them.
+Prerequisites documented in README: `cmake`, `clang` + `libclang`,
+`llvm-objcopy` + `llvm-nm` (`brew install cmake llvm` / `apt install cmake
+clang libclang-dev llvm`), network on first build. `justfile` unchanged.
+CI installs them.
+
+### 9.1 Two BoringSSLs in one binary (found at first `cargo check`)
+
+Stealth means `wreq`, whose TLS is `btls-sys` — a BoringSSL build with
+`links = "boringssl"`. The Signal channel (09) already links libsignal's
+`boring-sys`, also `links = "boringssl"`. Cargo refuses two packages with
+one `links` value, and even past that the two static archives would collide
+on every `SSL_*` symbol at link time. Three ways out, in the order they were
+rejected: drop stealth (the user's requirement), a cargo feature swapping
+Signal for stealth (§10: two binaries by another name), and the one taken:
+
+- **Fork `btls-sys`** (`github.com/skymoore/btls`, `main` = 0.5.6 + one
+  commit): `links = "btls"`; the existing `prefix-symbols` feature (rename
+  every export to `btls_sys_*` with `nm` + `objcopy --redefine-syms`, bindgen
+  `link_name` overrides to match) now runs on macOS/iOS via `llvm-nm` /
+  `llvm-objcopy` (Mach-O carries a leading `_`, and bindgen's override is
+  emitted pre-mangled, so the callback prefixes `_btls_sys_` there). Upstream
+  skipped Apple targets with a warning; nothing in the repo read
+  `DEP_BORINGSSL_*`.
+- **Obscura fork commit 2**: `obscura-net` enables wreq's `prefix-symbols`
+  on every platform (upstream: Linux/Android only, issue #39 — the very
+  Apple gap the btls fork closes).
+
+Proof: a scratch binary linking both `btls-sys` (prefixed) and Signal's
+`boring-sys` (`signal-v5.0.2`, the rev wth locks) built with no `links`
+conflict and no duplicate symbols; `nm` shows `_btls_sys_SSL_CTX_new` and
+`_SSL_CTX_new` once each; the stealth path fetched example.com and the
+boring path created an `SSL_CTX`. Then the whole workspace built.
 
 ## 10. Rejected
 
@@ -398,6 +429,57 @@ Firecrawl.
 - **`harness.md`.** When to use `browser_*` vs `read_url` (JS, forms,
   visual check); refs go stale; click the submit button.
 
-## 13. Status
+## 13. Status (as-built, 2026-09-14)
 
-Draft. §13 becomes the as-built record on landing.
+Shipped: `crates/browser` (`lib.rs` 282 lines: config, `Browsers` actor with
+`DelegatedReply` so one slow page never blocks another session, sweeper,
+`warmup`; `session.rs` 128; `tools.rs` 762: fifteen tools via a
+`browser_tool!` macro over a shared `Ctx`, `tidy`, screenshot files;
+`render.rs` 163: `ObscuraRender` behind a mutex on one fixed render isolate);
+`tests/live.rs` (§11's fixture test, 0.24 s after warmup); the two obscura
+fork commits, the genai fork commit, the btls fork commit (§9.1); agent
+loop changes (§5 layer 3, with `binary_tag` shared by `text_of`, `snap.rs`
+and the history reader); `tools::ToolOutput.files`; `wth/src/main.rs`
+warmup on the main thread (measured 11 ms). Docs per §12.
+
+Deviations from the sections above (the code wins):
+
+- `browser_select` maps `ref` to `[data-obscura-ref="eN"]` locally: obscura's
+  `browser_select_option` takes only `selector` + `value`.
+- Every pass-through argument object is built with `null` members stripped:
+  obscura's `browser_screenshot` rejects unknown keys and nulls.
+- `Browsers` also carries `Sweep`/`CloseAll` internal messages; `Call` runs
+  off the mailbox (`tokio::spawn` + `DelegatedReply`), like `web`'s `Search`.
+- Gemini also emits `file_data` for URL-sourced images rather than dropping
+  them; the fork's merge of consecutive functionResponse turns accepts image
+  parts so multi-tool turns still merge.
+- `text_of` now renders a `ToolResponse`'s content even without images
+  (previously skipped); only the store's undo/redo path reads Tool-role text.
+- `warmup` ran on a libtest thread in `tests/live.rs` without incident,
+  consistent with §2; main-thread placement in `wth` is kept regardless.
+
+Smoke (headless, `claude-sonnet-4-5`, `/tmp/wth-title`,
+`browser.allow_private_network: true`): "open news.ycombinator.com and give
+me the top story" → exactly one `browser_open`, the reply named the top
+story. "Serve /tmp with `python3 -m http.server`, open a fixture page,
+screenshot it, answer from the image only: background colour and the colour
+of the rounded rectangle" → `shell` (job), `browser_open`,
+`browser_screenshot` (`screenshot 1280×720 attached`), `cancel_job`; reply
+"dark navy blue … bright green" for `#1a1a2e` / `#2ecc71` — neither colour
+appears in the page text, so the model read the PNG. The persisted tool
+message carries `images: [{content_type: image/png, source: Base64 …}]`.
+`read_url { rendered: true }` on example.com returned the markdown with no
+Firecrawl configured. No orphan processes after `cancel_job`.
+
+Gates: fmt, clippy `-D warnings` (two `result_large_err` hits fixed by
+shrinking two helpers' error type to `&'static str`), workspace tests, debug
+and release builds of `wth` (release binary 227 MiB unstripped, up from the pre-browser build).
+
+Not exercised: Linux build (the ELF prefixing path is upstream's, unchanged
+in behaviour except the prefix string `btls_sys_` instead of
+`build_script_main_`), Windows (btls skips prefixing there; the clash would
+return), Gemini/OpenAI image paths live (fork unit tests only), the idle
+sweeper and `Close` on a real session end, a proxy, `browser_tabs`,
+`browser_scroll`, `browser_select`, `browser_type`, `browser_press` on a
+real site (unit-tested mappings only), obscura's isolate panic → "browser
+restarted" path.

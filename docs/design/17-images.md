@@ -407,3 +407,15 @@ ACP: the throwaway Bun client from 06 sends `session/prompt` with an
 - **Deps**: `arboard 3.6` (`image-data`) pulls `image 0.25` and a second
   `png 0.18` transitively; our own encode stays on `png 0.17`. `mime_guess`
   added to `agent`; `sha2`/`base64` to `rpc`; `png`/`sha2` to `tui`.
+
+## 10. Images out of tools (added in 23)
+
+This doc brought images *in* from users; `browser_screenshot` (23 §5) is the
+first tool that hands one *back*. `tools::ToolOutput.files: Vec<PathBuf>`
+(`#[serde(default)]`, paths like §2) names the files; the loop turns them into
+`genai::Binary` on `genai::chat::ToolResponse.images` (genai fork,
+`with_images`), so Anthropic gets `tool_result.content: [text, image]`,
+OpenAI-compatible a following user turn with the image, Gemini `inline_data`
+parts. `frame::strip_images` covers the Tool role too (images dropped,
+`[screenshot omitted: model is text-only]` appended), and `est` counts each
+tool image as `IMAGE_TOKENS` instead of serialising the base64.

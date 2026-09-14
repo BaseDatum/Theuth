@@ -148,11 +148,12 @@ pub fn serialise(head: Option<&ChatMessage>, folded: &[ChatMessage], cols: usize
                         .copied()
                         .or(r.fn_name.as_deref())
                         .unwrap_or("?");
-                    wrap(
-                        &format!("[tool {name}] {}", elide(&r.content)),
-                        cols,
-                        &mut out,
-                    );
+                    let mut line = format!("[tool {name}] {}", elide(&r.content));
+                    for b in &r.images {
+                        line.push(' ');
+                        crate::loop_::binary_tag(&mut line, b);
+                    }
+                    wrap(&line, cols, &mut out);
                 }
                 // Empty text, reasoning, thought signatures, custom parts: never re-sent.
                 _ => {}

@@ -27,6 +27,7 @@ slack = { path = "crates/slack" }
 acp = { path = "crates/acp" }
 web = { path = "crates/web" }
 search-providers = { path = "crates/search-providers" }
+browser = { path = "crates/browser" }
 
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "fs", "time", "io-util", "process", "signal"] }
 tokio-util = { version = "0.7", features = ["rt"] }
@@ -115,6 +116,13 @@ agent-client-protocol = "=2.1.0"
 arboard = { version = "3.6", default-features = false, features = ["image-data"] }
 # Attachment mime check (17 §3.1); already in the tree via genai.
 mime_guess = "2"
+# Embedded headless browser (design doc 23 §3.3, §9): obscura's agent tool layer, in-process.
+# Fork `main` = tag v0.2.2 + one commit exposing `tools()`/`call_tool()`; `run()` upstream is
+# stdio-bound. `stealth` = wreq/BoringSSL TLS fingerprint (needs cmake + clang to build);
+# `render` = layout/paint for `browser_screenshot`. obscura-js only for the main-thread warmup.
+obscura-mcp = { git = "https://github.com/skymoore/obscura", branch = "main", features = ["stealth", "render"] }
+obscura-js = { git = "https://github.com/skymoore/obscura", branch = "main", features = ["stealth", "render"] }
+iana-time-zone = "0.1"
 
 [workspace.lints.rust]
 missing_docs = "warn"
@@ -153,3 +161,15 @@ pdf-inspector = { git = "https://github.com/firecrawl/pdf-inspector", tag = "v1.
 # = v2.28.0 + four commits (also branch `wth-agent-2.28`); the same commits are PR
 # https://github.com/abdolence/slack-morphism-rust/pull/388 upstream (design doc 21 §2.1).
 slack-morphism = { git = "https://github.com/skymoore/slack-morphism-rust", branch = "master" }
+# obscura vendors corrected taffy/cosmic-text under `vendor/` and patches them in its own
+# workspace; a git dependency's patches do not propagate, so we point at the same copies (23 §2).
+taffy = { git = "https://github.com/skymoore/obscura", branch = "main" }
+cosmic-text = { git = "https://github.com/skymoore/obscura", branch = "main" }
+# genai: `ToolResponse.images` so screenshots ride inside tool results (Anthropic tool_result
+# content array; OpenAI trailing user turn; Gemini inline_data). Fork `main` = v0.7.0-beta.23 + one commit (23 §5).
+genai = { git = "https://github.com/skymoore/rust-genai", branch = "main" }
+# btls-sys (wreq's BoringSSL, under obscura's stealth): `links = "btls"` instead of "boringssl" so
+# it can coexist with libsignal's boring-sys, and `prefix-symbols` (every export renamed
+# `btls_sys_*`) now works on macOS/iOS via llvm-objcopy, not only on ELF. Fork `main` = 0.5.6 +
+# one commit (23 §9). Build needs `llvm-nm`/`llvm-objcopy` (brew llvm) on macOS.
+btls-sys = { git = "https://github.com/skymoore/btls", branch = "main" }

@@ -12,11 +12,12 @@ use serde_json::{Map, Value};
 use super::{AddRepo, AddServer, Mcp, RemoveServer, SyncMcp};
 use crate::{MCP_ACTOR, Risk, Tool, ToolCx, ToolOutput};
 
-fn mcp() -> Result<ActorRef<Mcp>, ToolOutput> {
+/// The actor, or the text the model reads when it is not running.
+fn mcp() -> Result<ActorRef<Mcp>, &'static str> {
     ActorRef::<Mcp>::lookup(MCP_ACTOR)
         .ok()
         .flatten()
-        .ok_or_else(|| ToolOutput::err("mcp actor not running"))
+        .ok_or("mcp actor not running")
 }
 
 /// Handler `Err(String)` and transport failures both become model-readable text.
@@ -74,7 +75,7 @@ impl Tool for AddMcpServer {
     async fn call(&self, a: AddMcpServerArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
         let mcp = match mcp() {
             Ok(m) => m,
-            Err(out) => return Ok(out),
+            Err(out) => return Ok(ToolOutput::err(out)),
         };
         if a.command.is_some() == a.url.is_some() {
             return Ok(ToolOutput::err("give exactly one of `command` or `url`"));
@@ -152,7 +153,7 @@ impl Tool for RemoveMcpServer {
     async fn call(&self, a: RemoveMcpServerArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
         let mcp = match mcp() {
             Ok(m) => m,
-            Err(out) => return Ok(out),
+            Err(out) => return Ok(ToolOutput::err(out)),
         };
         Ok(
             match flat(
@@ -196,7 +197,7 @@ impl Tool for AddMcpRepo {
     async fn call(&self, a: AddMcpRepoArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
         let mcp = match mcp() {
             Ok(m) => m,
-            Err(out) => return Ok(out),
+            Err(out) => return Ok(ToolOutput::err(out)),
         };
         Ok(
             match flat(
@@ -248,7 +249,7 @@ impl Tool for SyncMcpRepos {
     async fn call(&self, _: SyncMcpArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
         let mcp = match mcp() {
             Ok(m) => m,
-            Err(out) => return Ok(out),
+            Err(out) => return Ok(ToolOutput::err(out)),
         };
         let results = match mcp.ask(SyncMcp).await {
             Ok(r) => r,

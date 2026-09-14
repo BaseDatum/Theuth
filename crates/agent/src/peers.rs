@@ -56,11 +56,12 @@ fn harnesses(data_dir: &std::path::Path) -> std::collections::BTreeMap<String, a
     })
 }
 
-fn supervisor() -> Result<ActorRef<Agents>, ToolOutput> {
+/// The supervisor, or the text the model reads when it is not running.
+fn supervisor() -> Result<ActorRef<Agents>, &'static str> {
     ActorRef::<Agents>::lookup(AGENT_ACTOR)
         .ok()
         .flatten()
-        .ok_or_else(|| ToolOutput::err("agent supervisor not running"))
+        .ok_or("agent supervisor not running")
 }
 
 #[async_trait::async_trait]
@@ -87,7 +88,7 @@ impl Tool for SpawnSubagentTool {
     async fn call(&self, args: SpawnSubagentArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
         let agents = match supervisor() {
             Ok(a) => a,
-            Err(out) => return Ok(out),
+            Err(out) => return Ok(ToolOutput::err(out)),
         };
         if let Some(agent) = &args.agent {
             let known = harnesses(&self.data_dir);
@@ -155,7 +156,7 @@ impl Tool for SendMessageTool {
     async fn call(&self, args: SendMessageArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
         let agents = match supervisor() {
             Ok(a) => a,
-            Err(out) => return Ok(out),
+            Err(out) => return Ok(ToolOutput::err(out)),
         };
         let to = args.to;
         let rx = match agents
@@ -207,7 +208,7 @@ impl Tool for ListModelsTool {
     async fn call(&self, _: ListModelsArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
         let agents = match supervisor() {
             Ok(a) => a,
-            Err(out) => return Ok(out),
+            Err(out) => return Ok(ToolOutput::err(out)),
         };
         let models = agents
             .ask(ListModels)

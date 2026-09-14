@@ -1,0 +1,762 @@
+//! The fifteen `browser_*` tools (design doc 23 §4): our names and static
+//! descriptions over obscura-mcp's tool dispatch. Each tool sends one
+//! [`Call`] to the [`Browsers`] actor, passes obscura's arguments through
+//! unchanged unless the §4 table says otherwise, and tidies the text reply
+//! ([`tidy`]). `browser_screenshot` writes the PNG under the data dir and
+//! hands it back as `ToolOutput.files` (23 §5).
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use kameo::actor::ActorRef;
+use kameo::error::SendError;
+use runtime::SessionId;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use tools::{DynTool, Risk, Tool, ToolCx, ToolOutput};
+
+use crate::{BrowserConfig, Browsers, Call};
+
+/// What every tool holds: the actor, the config and where screenshots go.
+pub struct Ctx {
+    /// Per-session isolates (23 §3.2).
+    pub actor: ActorRef<Browsers>,
+    /// `browser:` config; `max_chars` caps `browser_open` / `browser_read` replies.
+    pub cfg: BrowserConfig,
+    /// Screenshots land under `<data_dir>/browser/<session>/`.
+    pub data_dir: PathBuf,
+}
+
+impl Ctx {
+    /// One obscura tool call. `Ok(Ok(result))` is the MCP result object,
+    /// `Ok(Err(text))` the actor's "browser unavailable / restarted" text
+    /// (23 §4), `Err` a dead actor.
+    async fn raw(
+        &self,
+        session: SessionId,
+        name: &str,
+        args: Value,
+    ) -> anyhow::Result<Result<Value, String>> {
+        match self
+            .actor
+            .ask(Call {
+                session,
+                name: name.to_owned(),
+                args,
+            })
+            .await
+        {
+            Ok(v) => Ok(Ok(v)),
+            Err(SendError::HandlerError(e)) => Ok(Err(e)),
+            Err(e) => anyhow::bail!("browser actor unavailable: {e}"),
+        }
+    }
+
+    /// [`Self::raw`] flattened to a [`ToolOutput`]: text blocks joined with
+    /// newlines, `isError` → [`ToolOutput::err`].
+    async fn call(
+        &self,
+        session: SessionId,
+        name: &str,
+        args: Value,
+    ) -> anyhow::Result<ToolOutput> {
+        Ok(match self.raw(session, name, args).await? {
+            Ok(v) => {
+                let (text, is_error) = text_of(&v);
+                if is_error {
+                    ToolOutput::err(text)
+                } else {
+                    ToolOutput::ok(text)
+                }
+            }
+            Err(e) => ToolOutput::err(e),
+        })
+    }
+
+    /// [`Self::call`], then a tidied `browser_snapshot` after a blank line so
+    /// one call both acts and reads the page (23 §4 `browser_open` / `browser_click`).
+    async fn call_then_snapshot(
+        &self,
+        session: SessionId,
+        name: &str,
+        args: Value,
+    ) -> anyhow::Result<ToolOutput> {
+        let mut out = self.call(session, name, args).await?;
+        if out.is_error {
+            return Ok(out);
+        }
+        let max = self.cfg.max_chars;
+        let snap = self
+            .call(session, "browser_snapshot", json!({ "max_chars": max }))
+            .await?;
+        out.content.push_str("\n\n");
+        out.content.push_str(&tidy(&snap.content, max));
+        Ok(out)
+    }
+}
+
+/// Text blocks of an MCP result joined with `\n`, and its `isError` flag.
+fn text_of(result: &Value) -> (String, bool) {
+    let text = result
+        .get("content")
+        .and_then(Value::as_array)
+        .map(|blocks| {
+            blocks
+                .iter()
+                .filter_map(|b| b.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
+    let is_error = result
+        .get("isError")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    (text, is_error)
+}
+
+/// Drop `null` members so optional arguments the model omitted are absent
+/// rather than `null` (obscura's `browser_screenshot` rejects `null` numbers).
+fn compact(mut v: Value) -> Value {
+    if let Value::Object(m) = &mut v {
+        m.retain(|_, v| !v.is_null());
+    }
+    v
+}
+
+/// The CSS selector obscura stamps for a ref (`data-obscura-ref="eN"`), for
+/// the one obscura tool that takes only `selector` (`browser_select_option`).
+fn ref_selector(r: &str) -> String {
+    format!("[data-obscura-ref=\"{r}\"]")
+}
+
+/// Tidy a page text for the model (23 §4): trailing whitespace off every line,
+/// runs of two or more blank lines collapsed to one, ends trimmed, then cut at
+/// `max_chars` characters with `…(truncated, N more chars)`.
+#[must_use]
+pub fn tidy(text: &str, max_chars: usize) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut blank = 0usize;
+    for line in text.lines() {
+        let line = line.trim_end();
+        if line.is_empty() {
+            blank += 1;
+            if blank > 1 {
+                continue;
+            }
+        } else {
+            blank = 0;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    let trimmed = out.trim();
+    let total = trimmed.chars().count();
+    if total <= max_chars {
+        return trimmed.to_owned();
+    }
+    let head: String = trimmed.chars().take(max_chars).collect();
+    format!("{head}\n…(truncated, {} more chars)", total - max_chars)
+}
+
+/// `(width, height)` from a PNG's IHDR chunk (bytes 16..24, big-endian), or
+/// `None` when the bytes are not a PNG.
+#[must_use]
+pub fn png_size(png: &[u8]) -> Option<(u32, u32)> {
+    const SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+    if png.len() < 24 || &png[..8] != SIGNATURE || &png[12..16] != b"IHDR" {
+        return None;
+    }
+    let be = |at: usize| u32::from_be_bytes([png[at], png[at + 1], png[at + 2], png[at + 3]]);
+    Some((be(16), be(20)))
+}
+
+/// One `browser_*` tool: a struct over [`Ctx`] plus its `Tool` impl.
+macro_rules! browser_tool {
+    ($(#[$doc:meta])* $ty:ident, $name:literal, $args:ty, $desc:expr,
+     |$ctx:ident, $a:ident, $cx:ident| $body:expr) => {
+        $(#[$doc])*
+        pub struct $ty(Arc<Ctx>);
+
+        #[async_trait::async_trait]
+        impl Tool for $ty {
+            const NAME: &'static str = $name;
+            const RISK: Risk = Risk::ReadOnly;
+            type Args = $args;
+
+            fn description(&self) -> String {
+                $desc.to_owned()
+            }
+
+            async fn call(&self, $a: $args, $cx: ToolCx) -> anyhow::Result<ToolOutput> {
+                let $ctx = &self.0;
+                $body
+            }
+        }
+    };
+}
+
+/// No arguments.
+#[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct NoArgs {}
+
+/// Navigation wait condition (obscura `waitUntil`).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum WaitUntil {
+    /// The `load` event fired (default).
+    Load,
+    /// `DOMContentLoaded` fired.
+    Domcontentloaded,
+    /// No network requests in flight.
+    Networkidle0,
+}
+
+/// Arguments for [`OpenTool`].
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct OpenArgs {
+    /// Absolute http(s) URL.
+    pub url: String,
+    /// When navigation counts as done: `load` (default), `domcontentloaded`, `networkidle0` (SPAs).
+    #[serde(default)]
+    pub wait: Option<WaitUntil>,
+}
+
+browser_tool!(
+    /// `browser_open` → `browser_navigate` + snapshot.
+    OpenTool, "browser_open", OpenArgs,
+    concat!(
+        "Open a URL in this session's headless browser (JavaScript runs, cookies persist for the session) and return the page: URL, title, readable text with element refs, and how many interactive elements were found. ",
+        "Use `read_url` for plain articles; use this when the page needs JavaScript, a form, or clicking through.",
+        " Element refs like `e3` come from `browser_read` or `browser_elements` and go stale after any navigation or click: re-read before reusing one.",
+    ),
+    |ctx, a, cx| {
+        let args = compact(json!({ "url": a.url, "waitUntil": a.wait }));
+        ctx.call_then_snapshot(cx.session, "browser_navigate", args).await
+    }
+);
+
+/// Output shape of [`ReadTool`].
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ReadFormat {
+    /// Readable body text plus the interactive element count (default).
+    #[default]
+    Text,
+    /// Markdown keeping headings, links and code blocks.
+    Markdown,
+}
+
+/// Arguments for [`ReadTool`].
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ReadArgs {
+    /// `text` (default; readable body and ref count) or `markdown` (keeps links).
+    #[serde(default)]
+    pub format: Option<ReadFormat>,
+    /// Character cap (default from config, 4000).
+    #[serde(default)]
+    pub max_chars: Option<u32>,
+}
+
+browser_tool!(
+    /// `browser_read` → `browser_snapshot` or `browser_markdown`.
+    ReadTool, "browser_read", ReadArgs,
+    concat!(
+        "Read the current page of the headless browser without navigating: `text` gives the readable body and refreshes element refs; `markdown` keeps headings and links. ",
+        "Call it after a page changed (a click, a wait, a script) to see the result.",
+        " Element refs like `e3` come from `browser_read` or `browser_elements` and go stale after any navigation or click: re-read before reusing one.",
+    ),
+    |ctx, a, cx| {
+        let max = a.max_chars.map_or(ctx.cfg.max_chars, |n| n as usize);
+        let name = match a.format.unwrap_or_default() {
+            ReadFormat::Text => "browser_snapshot",
+            ReadFormat::Markdown => "browser_markdown",
+        };
+        let mut out = ctx.call(cx.session, name, json!({ "max_chars": max })).await?;
+        if !out.is_error {
+            out.content = tidy(&out.content, max);
+        }
+        Ok(out)
+    }
+);
+
+browser_tool!(
+    /// `browser_elements` → `browser_interactive_elements`.
+    ElementsTool, "browser_elements", NoArgs,
+    concat!(
+        "List every clickable or typeable element on the current page, one per line: `ref=e3 button \"Sign in\"`. ",
+        "Pass the ref to `browser_click`, `browser_fill`, `browser_type`, `browser_select` or `browser_scroll` instead of guessing a CSS selector.",
+        " Element refs like `e3` come from `browser_read` or `browser_elements` and go stale after any navigation or click: re-read before reusing one.",
+    ),
+    |ctx, _a, cx| ctx.call(cx.session, "browser_interactive_elements", json!({})).await
+);
+
+/// Element target: `ref` (preferred) or a CSS `selector`.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct TargetArgs {
+    /// Element ref from `browser_read` / `browser_elements`, e.g. `e3`.
+    #[serde(default, rename = "ref")]
+    pub ref_: Option<String>,
+    /// CSS selector, when no ref fits.
+    #[serde(default)]
+    pub selector: Option<String>,
+}
+
+browser_tool!(
+    /// `browser_click` → `browser_click` + snapshot.
+    ClickTool, "browser_click", TargetArgs,
+    concat!(
+        "Click an element by `ref` (preferred) or CSS `selector`, wait for any navigation it triggers, and return the resulting page. ",
+        "This is how forms are submitted: click their submit button (pressing Enter does not submit).",
+        " Element refs like `e3` come from `browser_read` or `browser_elements` and go stale after any navigation or click: re-read before reusing one.",
+    ),
+    |ctx, a, cx| {
+        let args = compact(json!({ "ref": a.ref_, "selector": a.selector }));
+        ctx.call_then_snapshot(cx.session, "browser_click", args).await
+    }
+);
+
+/// Arguments for [`FillTool`] and [`SelectTool`].
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ValueArgs {
+    /// Element ref from `browser_read` / `browser_elements`, e.g. `e3`.
+    #[serde(default, rename = "ref")]
+    pub ref_: Option<String>,
+    /// CSS selector, when no ref fits.
+    #[serde(default)]
+    pub selector: Option<String>,
+    /// The value.
+    pub value: String,
+}
+
+browser_tool!(
+    /// `browser_fill` → `browser_fill`.
+    FillTool, "browser_fill", ValueArgs,
+    concat!(
+        "Set an input or textarea to `value` (replacing what was there) and fire its input/change events. Target by `ref` (preferred) or CSS `selector`. ",
+        "Then click the form's submit button with `browser_click`; Enter does not submit.",
+        " Element refs like `e3` come from `browser_read` or `browser_elements` and go stale after any navigation or click: re-read before reusing one.",
+    ),
+    |ctx, a, cx| {
+        let args = compact(json!({ "ref": a.ref_, "selector": a.selector, "value": a.value }));
+        ctx.call(cx.session, "browser_fill", args).await
+    }
+);
+
+/// Arguments for [`TypeTool`].
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct TypeArgs {
+    /// Element ref from `browser_read` / `browser_elements`, e.g. `e3`.
+    #[serde(default, rename = "ref")]
+    pub ref_: Option<String>,
+    /// CSS selector, when no ref fits.
+    #[serde(default)]
+    pub selector: Option<String>,
+    /// Text to type.
+    pub text: String,
+}
+
+browser_tool!(
+    /// `browser_type` → `browser_type`.
+    TypeTool, "browser_type", TypeArgs,
+    concat!(
+        "Type `text` into an element keystroke by keystroke, appending to its current value (for autocomplete and key handlers; `browser_fill` is faster for plain inputs). Target by `ref` (preferred) or CSS `selector`.",
+        " Element refs like `e3` come from `browser_read` or `browser_elements` and go stale after any navigation or click: re-read before reusing one.",
+    ),
+    |ctx, a, cx| {
+        let args = compact(json!({ "ref": a.ref_, "selector": a.selector, "text": a.text }));
+        ctx.call(cx.session, "browser_type", args).await
+    }
+);
+
+/// Arguments for [`PressTool`].
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct PressArgs {
+    /// Key name: `Enter`, `Tab`, `Escape`, `ArrowDown`, `a`, ...
+    pub key: String,
+    /// CSS selector of the element to receive the key (default: the document).
+    #[serde(default)]
+    pub selector: Option<String>,
+}
+
+browser_tool!(
+    /// `browser_press` → `browser_press_key`.
+    PressTool, "browser_press", PressArgs,
+    concat!(
+        "Dispatch a keyboard event (`key` such as `Enter`, `Tab`, `Escape`, `ArrowDown`) on an element by CSS `selector`, or on the document. ",
+        "For key handlers, menus and shortcuts only: to submit a form click its submit button with `browser_click`, Enter does not submit.",
+    ),
+    |ctx, a, cx| {
+        let args = compact(json!({ "key": a.key, "selector": a.selector }));
+        ctx.call(cx.session, "browser_press_key", args).await
+    }
+);
+
+browser_tool!(
+    /// `browser_select` → `browser_select_option` (a ref becomes its
+    /// `[data-obscura-ref]` selector, the one obscura tool without `ref`).
+    SelectTool, "browser_select", ValueArgs,
+    concat!(
+        "Choose an option of a `<select>` element by option value or visible text, then fire its change event. Target by `ref` (preferred) or CSS `selector`.",
+        " Element refs like `e3` come from `browser_read` or `browser_elements` and go stale after any navigation or click: re-read before reusing one.",
+    ),
+    |ctx, a, cx| {
+        let Some(selector) = a.ref_.as_deref().map(ref_selector).or(a.selector) else {
+            return Ok(ToolOutput::err("pass `ref` or `selector`"));
+        };
+        ctx.call(cx.session, "browser_select_option", json!({ "selector": selector, "value": a.value })).await
+    }
+);
+
+/// Scroll direction.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Direction {
+    /// To the top of the page.
+    Top,
+    /// To the bottom (triggers infinite-scroll loaders).
+    Bottom,
+    /// Up by `amount`.
+    Up,
+    /// Down by `amount` (default).
+    Down,
+    /// Left by `amount`.
+    Left,
+    /// Right by `amount`.
+    Right,
+}
+
+/// Arguments for [`ScrollTool`].
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ScrollArgs {
+    /// `down` (default), `up`, `left`, `right`, `top` or `bottom`.
+    #[serde(default)]
+    pub direction: Option<Direction>,
+    /// Pixels (default: one viewport).
+    #[serde(default)]
+    pub amount: Option<u32>,
+    /// Scroll this element into view instead (ref from `browser_read` / `browser_elements`).
+    #[serde(default, rename = "ref")]
+    pub ref_: Option<String>,
+    /// CSS selector of the element to scroll into view.
+    #[serde(default)]
+    pub selector: Option<String>,
+}
+
+browser_tool!(
+    /// `browser_scroll` → `browser_scroll`.
+    ScrollTool, "browser_scroll", ScrollArgs,
+    concat!(
+        "Scroll the page by `direction` and `amount` pixels (default: down one viewport), jump to `top` / `bottom` (`bottom` triggers infinite-scroll loaders), or scroll an element into view by `ref` or `selector`. Returns the new scroll position; `browser_read` afterwards to see what loaded.",
+        " Element refs like `e3` come from `browser_read` or `browser_elements` and go stale after any navigation or click: re-read before reusing one.",
+    ),
+    |ctx, a, cx| {
+        let args = compact(json!({
+            "direction": a.direction, "amount": a.amount, "ref": a.ref_, "selector": a.selector,
+        }));
+        ctx.call(cx.session, "browser_scroll", args).await
+    }
+);
+
+/// Arguments for [`WaitTool`].
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct WaitArgs {
+    /// CSS selector that must appear in the DOM.
+    #[serde(default)]
+    pub selector: Option<String>,
+    /// Substring that must appear in the page text.
+    #[serde(default)]
+    pub text: Option<String>,
+    /// Seconds to wait, at most 60 (default 30).
+    #[serde(default)]
+    pub timeout: Option<u32>,
+}
+
+/// Longest `browser_wait` (23 §4).
+pub const MAX_WAIT_SECS: u32 = 60;
+
+/// Resolve `browser_wait` arguments to the obscura tool and its arguments:
+/// exactly one of `selector` / `text`, `timeout` capped at [`MAX_WAIT_SECS`].
+pub fn wait_call(a: &WaitArgs) -> Result<(&'static str, Value), String> {
+    let timeout = a.timeout.unwrap_or(30).min(MAX_WAIT_SECS);
+    match (&a.selector, &a.text) {
+        (Some(s), None) => Ok((
+            "browser_wait_for",
+            json!({ "selector": s, "timeout": timeout }),
+        )),
+        (None, Some(t)) => Ok((
+            "browser_wait_for_text",
+            json!({ "text": t, "timeout": timeout }),
+        )),
+        _ => Err("pass exactly one of `selector` or `text`".to_owned()),
+    }
+}
+
+browser_tool!(
+    /// `browser_wait` → `browser_wait_for` / `browser_wait_for_text`.
+    WaitTool, "browser_wait", WaitArgs,
+    "Wait until a CSS `selector` exists in the DOM or a `text` substring appears in the page (exactly one of the two), up to `timeout` seconds (default 30, max 60). Use after an action that loads content asynchronously, then `browser_read`.",
+    |ctx, a, cx| match wait_call(&a) {
+        Ok((name, args)) => ctx.call(cx.session, name, args).await,
+        Err(e) => Ok(ToolOutput::err(e)),
+    }
+);
+
+/// Arguments for [`EvalTool`].
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct EvalArgs {
+    /// JavaScript expression evaluated in the page; its value is returned.
+    pub expression: String,
+}
+
+browser_tool!(
+    /// `browser_eval` → `browser_evaluate`.
+    EvalTool, "browser_eval", EvalArgs,
+    "Evaluate a JavaScript expression inside the current page and return its value as JSON (strings verbatim, `null` for undefined). It is a single expression: wrap several statements in an IIFE, `(() => { ...; return x; })()`. Runs in the page sandbox with access to its DOM, cookies and globals, not to the machine.",
+    |ctx, a, cx| ctx.call(cx.session, "browser_evaluate", json!({ "expression": a.expression })).await
+);
+
+browser_tool!(
+    /// `browser_back` → `browser_back`.
+    BackTool, "browser_back", NoArgs,
+    "Go back one page in this tab's history, like the browser back button. Refs from the previous page are stale afterwards: `browser_read` to get new ones.",
+    |ctx, _a, cx| ctx.call(cx.session, "browser_back", json!({})).await
+);
+
+/// Arguments for [`ScreenshotTool`].
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ScreenshotArgs {
+    /// Capture width in CSS pixels (default: the current viewport).
+    #[serde(default)]
+    pub width: Option<u32>,
+    /// Capture height in CSS pixels (default: the current viewport).
+    #[serde(default)]
+    pub height: Option<u32>,
+}
+
+browser_tool!(
+    /// `browser_screenshot` → `browser_screenshot`; the PNG is written to
+    /// `<data_dir>/browser/<session>/shot-<n>.png` and attached (23 §5).
+    ScreenshotTool, "browser_screenshot", ScreenshotArgs,
+    "Render the current page to a PNG and attach it to this result as an image you can look at: use it to check layout, styling or anything text cannot show. Optional `width` / `height` in CSS pixels override the viewport. Text-only models receive a note instead of the image.",
+    |ctx, a, cx| {
+        let args = compact(json!({ "width": a.width, "height": a.height }));
+        let result = match ctx.raw(cx.session, "browser_screenshot", args).await? {
+            Ok(v) => v,
+            Err(e) => return Ok(ToolOutput::err(e)),
+        };
+        let (text, is_error) = text_of(&result);
+        if is_error {
+            return Ok(ToolOutput::err(text));
+        }
+        let image = result
+            .get("content")
+            .and_then(Value::as_array)
+            .and_then(|blocks| {
+                blocks.iter().find(|b| b.get("type").and_then(Value::as_str) == Some("image"))
+            })
+            .and_then(|b| b.get("data").and_then(Value::as_str));
+        let Some(data) = image else {
+            return Ok(ToolOutput::err(format!("no image in reply: {text}")));
+        };
+        let png = match BASE64.decode(data) {
+            Ok(png) => png,
+            Err(e) => return Ok(ToolOutput::err(format!("screenshot is not base64: {e}"))),
+        };
+        let Some((w, h)) = png_size(&png) else {
+            return Ok(ToolOutput::err("screenshot is not a PNG"));
+        };
+        let dir = ctx.data_dir.join("browser").join(cx.session.to_string());
+        tokio::fs::create_dir_all(&dir).await?;
+        // ponytail: linear probe for the next free shot-<n>.png; survives restarts,
+        // tens of shots per session at most.
+        let path = (1u32..)
+            .map(|n| dir.join(format!("shot-{n}.png")))
+            .find(|p| !p.exists())
+            .ok_or_else(|| anyhow::anyhow!("no free screenshot name"))?;
+        tokio::fs::write(&path, &png).await?;
+        Ok(ToolOutput {
+            files: vec![path],
+            ..ToolOutput::ok(format!("screenshot {w}\u{d7}{h} attached"))
+        })
+    }
+);
+
+/// `browser_tabs` action.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum TabAction {
+    /// List tabs with id, URL, title and which is active.
+    List,
+    /// Open a tab (optionally at `url`) and make it active.
+    New,
+    /// Make `tab_id` the active tab.
+    Switch,
+    /// Close `tab_id` (default: the active tab).
+    Close,
+}
+
+impl TabAction {
+    /// The obscura tool behind the action.
+    #[must_use]
+    pub fn tool(self) -> &'static str {
+        match self {
+            Self::List => "browser_tab_list",
+            Self::New => "browser_tab_new",
+            Self::Switch => "browser_tab_switch",
+            Self::Close => "browser_tab_close",
+        }
+    }
+}
+
+/// Arguments for [`TabsTool`].
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct TabsArgs {
+    /// `list`, `new`, `switch` or `close`.
+    pub action: TabAction,
+    /// Tab id for `switch` (required) and `close` (default: the active tab).
+    #[serde(default)]
+    pub tab_id: Option<String>,
+    /// URL to open in the new tab (`new` only).
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
+browser_tool!(
+    /// `browser_tabs` → `browser_tab_list` / `_new` / `_switch` / `_close`.
+    TabsTool, "browser_tabs", TabsArgs,
+    "Manage this session's browser tabs: `list` them, open a `new` one (optionally at `url`), `switch` to `tab_id`, or `close` one (default: the active tab). Every other browser tool acts on the active tab; each tab has its own refs.",
+    |ctx, a, cx| {
+        let args = compact(json!({ "tab_id": a.tab_id, "url": a.url }));
+        ctx.call(cx.session, a.action.tool(), args).await
+    }
+);
+
+browser_tool!(
+    /// `browser_close` → `browser_close`.
+    CloseTool, "browser_close", NoArgs,
+    "Close every tab of this session's browser and forget its page state (cookies stay until the session ends). The next `browser_open` starts on a blank page.",
+    |ctx, _a, cx| ctx.call(cx.session, "browser_close", json!({})).await
+);
+
+/// The fifteen tools of 23 §4, ready for the registry.
+#[must_use]
+pub fn all(actor: ActorRef<Browsers>, cfg: BrowserConfig, data_dir: PathBuf) -> Vec<DynTool> {
+    let ctx = Arc::new(Ctx {
+        actor,
+        cfg,
+        data_dir,
+    });
+    vec![
+        Arc::new(OpenTool(Arc::clone(&ctx))),
+        Arc::new(ReadTool(Arc::clone(&ctx))),
+        Arc::new(ElementsTool(Arc::clone(&ctx))),
+        Arc::new(ClickTool(Arc::clone(&ctx))),
+        Arc::new(FillTool(Arc::clone(&ctx))),
+        Arc::new(TypeTool(Arc::clone(&ctx))),
+        Arc::new(PressTool(Arc::clone(&ctx))),
+        Arc::new(SelectTool(Arc::clone(&ctx))),
+        Arc::new(ScrollTool(Arc::clone(&ctx))),
+        Arc::new(WaitTool(Arc::clone(&ctx))),
+        Arc::new(EvalTool(Arc::clone(&ctx))),
+        Arc::new(BackTool(Arc::clone(&ctx))),
+        Arc::new(ScreenshotTool(Arc::clone(&ctx))),
+        Arc::new(TabsTool(Arc::clone(&ctx))),
+        Arc::new(CloseTool(ctx)),
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tidy_collapses_blank_runs_and_trailing_space() {
+        assert_eq!(tidy("a\n\n\n\nb", 100), "a\n\nb");
+        assert_eq!(tidy("a   \n\nb \t\n\n\n", 100), "a\n\nb");
+    }
+
+    #[test]
+    fn tidy_cuts_with_marker_and_remaining_count() {
+        assert_eq!(
+            tidy("abcdefghij", 4),
+            "abcd\n\u{2026}(truncated, 6 more chars)"
+        );
+        assert_eq!(tidy("abcd", 4), "abcd");
+    }
+
+    #[test]
+    fn tabs_actions_map_to_obscura_tools() {
+        assert_eq!(TabAction::List.tool(), "browser_tab_list");
+        assert_eq!(TabAction::New.tool(), "browser_tab_new");
+        assert_eq!(TabAction::Switch.tool(), "browser_tab_switch");
+        assert_eq!(TabAction::Close.tool(), "browser_tab_close");
+    }
+
+    #[test]
+    fn wait_requires_exactly_one_target_and_caps_timeout() {
+        let both = WaitArgs {
+            selector: Some("#x".into()),
+            text: Some("done".into()),
+            timeout: None,
+        };
+        assert!(wait_call(&both).is_err());
+        let neither = WaitArgs {
+            selector: None,
+            text: None,
+            timeout: None,
+        };
+        assert!(wait_call(&neither).is_err());
+
+        let sel = WaitArgs {
+            selector: Some("#x".into()),
+            text: None,
+            timeout: Some(500),
+        };
+        let (name, args) = wait_call(&sel).expect("selector");
+        assert_eq!(name, "browser_wait_for");
+        assert_eq!(args, json!({ "selector": "#x", "timeout": 60 }));
+
+        let txt = WaitArgs {
+            selector: None,
+            text: Some("done".into()),
+            timeout: None,
+        };
+        let (name, args) = wait_call(&txt).expect("text");
+        assert_eq!(name, "browser_wait_for_text");
+        assert_eq!(args, json!({ "text": "done", "timeout": 30 }));
+    }
+
+    #[test]
+    fn png_size_reads_ihdr() {
+        let mut png = Vec::new();
+        png.extend_from_slice(b"\x89PNG\r\n\x1a\n");
+        png.extend_from_slice(&13u32.to_be_bytes());
+        png.extend_from_slice(b"IHDR");
+        png.extend_from_slice(&1280u32.to_be_bytes());
+        png.extend_from_slice(&720u32.to_be_bytes());
+        assert_eq!(png_size(&png), Some((1280, 720)));
+        assert_eq!(png_size(b"not a png at all, definitely not"), None);
+        assert_eq!(png_size(&png[..20]), None);
+    }
+
+    #[test]
+    fn text_of_joins_blocks_and_reads_is_error() {
+        let ok = json!({ "content": [{ "type": "text", "text": "a" }, { "type": "text", "text": "b" }] });
+        assert_eq!(text_of(&ok), ("a\nb".to_owned(), false));
+        let err = json!({ "content": [{ "type": "text", "text": "Error: x" }], "isError": true });
+        assert_eq!(text_of(&err), ("Error: x".to_owned(), true));
+    }
+
+    #[test]
+    fn compact_drops_nulls_only() {
+        assert_eq!(
+            compact(json!({ "url": "u", "waitUntil": null })),
+            json!({ "url": "u" })
+        );
+        assert_eq!(ref_selector("e3"), "[data-obscura-ref=\"e3\"]");
+    }
+}

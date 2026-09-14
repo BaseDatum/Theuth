@@ -20,6 +20,11 @@ just run -- --acp          # Agent Client Protocol on stdio: use wth from Zed/ed
 just ts                    # TypeScript bindings for the wire types → bindings/
 ```
 
+Build prerequisites: `cmake`, `clang`/`libclang` and `llvm-objcopy`/`llvm-nm` for the embedded browser's
+BoringSSL (`brew install cmake llvm` / `apt install cmake clang libclang-dev`),
+and network on the first build for the prebuilt V8 archive (set
+`RUSTY_V8_ARCHIVE` to a local copy to build offline).
+
 Crates: `runtime` (plugin trait), `models` (bundled models.dev catalog),
 `markdown` (streaming markdown: raw tail, blocks rendered once), `oauth`
 (loopback callback, PKCE, provider token store), `tools` (registry, approval
@@ -29,7 +34,12 @@ model gets a job id and is woken with `<job_result>` when it exits —
 [`docs/design/14-jobs.md`](docs/design/14-jobs.md); `start` / `send` /
 `screen` / `wait` run a command on a pseudo-terminal (REPL, server, TUI) and
 drive it: type, read the rendered 120×40 screen, wait for a prompt or a port —
-[`docs/design/22-pty.md`](docs/design/22-pty.md)), `knowledge`
+[`docs/design/22-pty.md`](docs/design/22-pty.md)), `browser` (fifteen
+`browser_*` tools: an embedded headless browser (obscura) with screenshots —
+`browser_open`, `_read`, `_elements`, `_click`, `_fill`, `_type`, `_press`,
+`_select`, `_scroll`, `_wait`, `_eval`, `_back`, `_screenshot`, `_tabs`,
+`_close`; one isolate per session, screenshots come back as images in the
+tool result — [`docs/design/23-browser.md`](docs/design/23-browser.md)), `knowledge`
 (OKF bundle, FTS index, gix history, `knowledge_*` tools —
 [`docs/design/10-knowledge.md`](docs/design/10-knowledge.md)), `agent` (genai
 loop, sqlite sessions with compaction epochs, skills, subagents, persistent
@@ -46,7 +56,7 @@ over Signal messenger), `slack` (Slack frontend over Socket Mode), `rpc` (jsonrp
 Config (`~/.wth/`, created on first run; details in
 [`docs/design/01-config-and-subagents.md`](docs/design/01-config-and-subagents.md) §1):
 
-- `config.yaml` — every plugin reads its own section; `WTH_<SECTION>__<KEY>` env overrides. `agent.model` is a models.dev id (`anthropic/claude-sonnet-4-5`); `/model` rewrites that one line in place. The `agent`, `tools`, `knowledge`, `web`, `search_providers` and `slack` sections with their defaults:
+- `config.yaml` — every plugin reads its own section; `WTH_<SECTION>__<KEY>` env overrides. `agent.model` is a models.dev id (`anthropic/claude-sonnet-4-5`); `/model` rewrites that one line in place. The `agent`, `tools`, `knowledge`, `web`, `search_providers`, `browser` and `slack` sections with their defaults:
 
   ```yaml
   agent:
@@ -72,6 +82,17 @@ Config (`~/.wth/`, created on first run; details in
     # searxng: { base_url: http://127.0.0.1:8080 }
     # openserp: { base_url: http://127.0.0.1:7000 }
     # brave: {}                    # key `brave` in credentials.yaml
+  browser:                        # design doc 23
+    enabled: true
+    stealth: true                 # wreq TLS fingerprint + tracker blocklist (§0.4)
+    proxy: null                   # http://user:pass@host:port | socks5://host:port
+    user_agent: null              # default: obscura's current-Chrome UA for the platform
+    timezone: null                # IANA zone; null = the host's zone (not obscura's Europe/Berlin)
+    geolocation: null             # "lat,lon"
+    allow_private_network: false  # §0.8
+    idle_secs: 300                # isolate teardown after inactivity
+    max_chars: 4000               # default cap of browser_read / browser_open replies
+    script_deadline_ms: 30000     # OBSCURA_SCRIPT_DEADLINE_MS for heavy SPAs
   slack:
     # owner: U0123456789           # owner-only commands, may click any approval, receives unbound approvals
     allowed: []                    # more user ids; each owns their threads

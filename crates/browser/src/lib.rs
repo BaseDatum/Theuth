@@ -1,0 +1,282 @@
+//! Embedded obscura headless browser (design doc 23). One V8 isolate per
+//! session on its own thread ([`session`]), the [`Browsers`] actor mapping
+//! `SessionId → Handle` behind [`BROWSER_ACTOR`], fifteen `browser_*` tools
+//! ([`tools`]) and a rendering `web::Provider` ([`render`]) so `read_url
+//! rendered: true` works keyless. [`warmup`] runs on the main thread before
+//! plugins start (23 §3.1).
+
+pub mod render;
+pub mod session;
+pub mod tools;
+
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
+
+use ::tools::{REGISTRY_ACTOR, RegisterTool, ToolRegistry};
+use kameo::actor::Spawn;
+use kameo::message::{Context, Message};
+use kameo::reply::DelegatedReply;
+use runtime::{Runtime, SessionId};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+/// Registry name of the [`Browsers`] actor (23 §3.1).
+pub const BROWSER_ACTOR: &str = "browser";
+
+/// How often the actor drops isolates idle longer than `idle_secs` (23 §3.2).
+const SWEEP_EVERY: Duration = Duration::from_secs(30);
+
+/// `browser:` config section (23 §6). Every field has a default; the section
+/// may be absent.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BrowserConfig {
+    /// `false`: no warmup, no actor, no tools, no render provider.
+    pub enabled: bool,
+    /// wreq TLS fingerprint + tracker blocklist (23 §0.4).
+    pub stealth: bool,
+    /// `http://user:pass@host:port` or `socks5://host:port`.
+    pub proxy: Option<String>,
+    /// Default: obscura's current-Chrome UA for the platform.
+    pub user_agent: Option<String>,
+    /// IANA zone; `None` = the host's zone (not obscura's `Europe/Berlin`).
+    pub timezone: Option<String>,
+    /// `"lat,lon"`.
+    pub geolocation: Option<String>,
+    /// Let pages reach loopback / RFC1918 / link-local (23 §0.8).
+    pub allow_private_network: bool,
+    /// Isolate teardown after this much inactivity.
+    pub idle_secs: u64,
+    /// Default cap of `browser_read` / `browser_open` replies.
+    pub max_chars: usize,
+    /// `OBSCURA_SCRIPT_DEADLINE_MS` for heavy SPAs.
+    pub script_deadline_ms: u64,
+}
+
+impl Default for BrowserConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            stealth: true,
+            proxy: None,
+            user_agent: None,
+            timezone: None,
+            geolocation: None,
+            allow_private_network: false,
+            idle_secs: 300,
+            max_chars: 4000,
+            script_deadline_ms: 30_000,
+        }
+    }
+}
+
+/// One-time V8 setup, **on the main thread, before any plugin starts**
+/// (23 §2, §3.1): exports obscura's environment knobs from config while the
+/// process is still effectively single-threaded (the only place `set_var`
+/// is safe), then builds and drops one `ObscuraJsRuntime` exactly as
+/// `obscura-cdp` does, because the first isolate built off-main once
+/// segfaulted in `InitializeBuiltinJSDispatchTable`. No-op when disabled.
+pub fn warmup(cfg: &BrowserConfig) {
+    if !cfg.enabled {
+        return;
+    }
+    let timezone = cfg
+        .timezone
+        .clone()
+        .or_else(|| match iana_time_zone::get_timezone() {
+            Ok(tz) => Some(tz),
+            Err(e) => {
+                tracing::debug!("host timezone unknown, keeping obscura's default: {e}");
+                None
+            }
+        });
+    let knobs = [
+        (
+            "OBSCURA_ALLOW_PRIVATE_NETWORK",
+            cfg.allow_private_network.then(|| "1".to_owned()),
+        ),
+        ("OBSCURA_TIMEZONE", timezone),
+        ("OBSCURA_GEOLOCATION", cfg.geolocation.clone()),
+        (
+            "OBSCURA_SCRIPT_DEADLINE_MS",
+            Some(cfg.script_deadline_ms.to_string()),
+        ),
+    ];
+    for (key, value) in knobs {
+        if let Some(value) = value {
+            // SAFETY: called from `main` before plugins spawn any thread that
+            // reads the environment; obscura reads these lazily per isolate.
+            unsafe { std::env::set_var(key, value) };
+        }
+    }
+    let started = Instant::now();
+    drop(obscura_js::runtime::ObscuraJsRuntime::new());
+    tracing::info!(ms = started.elapsed().as_millis(), "browser warmup done");
+}
+
+/// The per-session isolate map, registered as [`BROWSER_ACTOR`] (23 §3.2).
+/// `Call` creates the handle on first use; a sweeper drops handles idle
+/// longer than `idle_secs`; `Close` drops one now; `rt.shutdown` drops all.
+#[derive(kameo::Actor)]
+pub struct Browsers {
+    cfg: BrowserConfig,
+    sessions: HashMap<SessionId, (session::Handle, Instant)>,
+}
+
+impl Browsers {
+    /// Empty map with the config the isolates are spawned from.
+    pub fn new(cfg: BrowserConfig) -> Self {
+        Self {
+            cfg,
+            sessions: HashMap::new(),
+        }
+    }
+
+    /// Live handle for `session`, spawning a thread on first use or after the
+    /// previous one died; stamps `last_used`.
+    fn handle(&mut self, session: SessionId) -> session::Handle {
+        let cfg = &self.cfg;
+        let (handle, last_used) = self
+            .sessions
+            .entry(session)
+            .or_insert_with(|| (session::spawn(cfg), Instant::now()));
+        if handle.is_closed() {
+            tracing::warn!(%session, "browser thread gone, spawning a fresh one");
+            *handle = session::spawn(cfg);
+        }
+        *last_used = Instant::now();
+        handle.clone()
+    }
+}
+
+/// `ask` → `Result<Value, String>`: `Ok` is obscura-mcp's `result` object
+/// (`{ content, isError }`, 23 §3.3); `Err` is `browser restarted: <reason>`
+/// when the session's thread died under this call. Runs off the mailbox so a
+/// slow page never blocks another session.
+#[derive(Clone, Debug)]
+pub struct Call {
+    /// Owning session; subagents are sessions, so they get their own isolate.
+    pub session: SessionId,
+    /// obscura-mcp tool name (`browser_navigate`, ...).
+    pub name: String,
+    /// obscura-mcp tool arguments, passed through unchanged.
+    pub args: Value,
+}
+
+/// `tell`/`ask` → `()`: drop the session's isolate now.
+#[derive(Clone, Copy, Debug)]
+pub struct Close {
+    /// Session whose thread ends.
+    pub session: SessionId,
+}
+
+/// Internal tick: drop handles idle longer than `idle_secs`.
+#[derive(Clone, Copy, Debug)]
+struct Sweep;
+
+/// Internal: `rt.shutdown` fired, drop every isolate.
+#[derive(Clone, Copy, Debug)]
+struct CloseAll;
+
+impl Message<Call> for Browsers {
+    type Reply = DelegatedReply<Result<Value, String>>;
+
+    async fn handle(&mut self, m: Call, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let handle = self.handle(m.session);
+        tokio::spawn(async move {
+            let out = handle
+                .call(&m.name, m.args)
+                .await
+                .map_err(|reason| format!("browser restarted: {reason}"));
+            tx.send(out);
+        });
+        reply
+    }
+}
+
+impl Message<Close> for Browsers {
+    type Reply = ();
+
+    async fn handle(&mut self, m: Close, _: &mut Context<Self, Self::Reply>) {
+        self.sessions.remove(&m.session);
+    }
+}
+
+impl Message<Sweep> for Browsers {
+    type Reply = ();
+
+    async fn handle(&mut self, _: Sweep, _: &mut Context<Self, Self::Reply>) {
+        let idle = Duration::from_secs(self.cfg.idle_secs);
+        self.sessions.retain(|session, (_, last_used)| {
+            let keep = last_used.elapsed() < idle;
+            if !keep {
+                tracing::info!(%session, "browser isolate idle, dropping");
+            }
+            keep
+        });
+    }
+}
+
+impl Message<CloseAll> for Browsers {
+    type Reply = ();
+
+    async fn handle(&mut self, _: CloseAll, _: &mut Context<Self, Self::Reply>) {
+        self.sessions.clear();
+    }
+}
+
+/// The plugin (23 §3.1): reads `browser`, runs the sweeper, spawns
+/// [`Browsers`] as [`BROWSER_ACTOR`], registers the tools once the registry
+/// is up and the render provider once `web` is up.
+pub struct BrowserPlugin;
+
+#[async_trait::async_trait]
+impl runtime::Plugin for BrowserPlugin {
+    fn name(&self) -> &'static str {
+        "browser"
+    }
+
+    async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()> {
+        let cfg: BrowserConfig = rt.section("browser").unwrap_or_else(|e| {
+            tracing::debug!("no [browser] config section, using defaults: {e}");
+            BrowserConfig::default()
+        });
+        if !cfg.enabled {
+            tracing::info!("browser disabled by config");
+            return Ok(());
+        }
+        let actor = Browsers::spawn(Browsers::new(cfg.clone()));
+        actor.register(BROWSER_ACTOR)?;
+
+        let sweeper = actor.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(SWEEP_EVERY);
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                if sweeper.tell(Sweep).await.is_err() {
+                    break;
+                }
+            }
+        });
+        let shutdown = rt.shutdown.clone();
+        let me = actor.clone();
+        tokio::spawn(async move {
+            shutdown.cancelled().await;
+            let _ = me.tell(CloseAll).await;
+        });
+
+        tokio::spawn(render::register(rt.clone(), actor.clone()));
+        let rt = rt.clone();
+        tokio::spawn(async move {
+            if let Some(reg) = rt.lookup_when::<ToolRegistry>(REGISTRY_ACTOR).await {
+                for tool in tools::all(actor, cfg, rt.data_dir.clone()) {
+                    let _ = reg.ask(RegisterTool(tool)).await;
+                }
+            }
+        });
+        Ok(())
+    }
+}

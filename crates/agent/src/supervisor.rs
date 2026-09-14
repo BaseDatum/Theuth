@@ -1947,13 +1947,20 @@ fn render(messages: &[(i64, ChatMessage)]) -> Vec<(i64, HistoryEntry)> {
                     let (name, args) = call.map_or(("?", &serde_json::Value::Null), |c| {
                         (c.fn_name.as_str(), &c.fn_arguments)
                     });
+                    // 23 §5: same `[image: …]` lines the live `ToolCallFinished` showed.
+                    let mut text = r.content.clone();
+                    for b in &r.images {
+                        text.push('\n');
+                        crate::loop_::binary_tag(&mut text, b);
+                    }
+                    let is_error = text.starts_with("ERROR: ");
                     out.push((
                         *seq,
                         HistoryEntry::Tool {
                             call_id: r.call_id.clone(),
                             name: name.to_string(),
                             args: args.clone(),
-                            result: Some((r.content.clone(), r.content.starts_with("ERROR: "))),
+                            result: Some((text, is_error)),
                         },
                     ));
                 }

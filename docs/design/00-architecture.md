@@ -253,7 +253,9 @@ flowchart LR
   its result arrives as a `<job_result>` input (14). PTY jobs (22, added
   2026-09-14): `start`/`send`/`screen`/`wait` run a command on a
   pseudo-terminal with a rendered 120×40 screen the model reads instead of
-  the bytes; same `Jobs` actor, stdin, no deadline. `todo` and
+  the bytes; same `Jobs` actor, stdin, no deadline. Browser (23): fifteen
+  `browser_*` tools drive an embedded obscura isolate per session;
+  screenshots return as image parts of the tool result. `todo` and
   `python` are loop-local (dispatched by the turn, not the registry;
   `07 §5`).
 - Every `ChatMessage` is appended to the session store before the next
@@ -509,7 +511,7 @@ Workspace dependencies (versions verified 2026-09-09 via `cargo info`):
 |---|---|---|
 | tokio | 1.53 | runtime |
 | kameo / kameo_actors | 0.22 / 0.8 | bus, actors, supervision |
-| genai | 0.7.0-beta.23 → 0.7 | LLM |
+| genai | 0.7.0-beta.23 → 0.7 (patched, 23 §5: `ToolResponse.images`) | LLM |
 | brush-core / brush-builtins | 0.5 / 0.2 | shell (core has no builtins) |
 | rmcp | 3.2 | MCP client |
 | sqlx (sqlite, runtime-tokio, migrate) | 0.9 | session store |
@@ -528,7 +530,15 @@ Workspace dependencies (versions verified 2026-09-09 via `cargo info`):
 | slack-morphism | 2.28 (patched, 21 §2.1) | Slack Socket Mode + Web API |
 | portable-pty | 0.9 | pty open/spawn/read/write for PTY jobs (22) |
 | vt100 | 0.16 | rendered screen of a PTY job (22) |
+| obscura-mcp | git v0.2.2 (fork, 23 §3.3) | embedded headless browser: per-session isolates, agent tool layer (stealth + render) |
+| taffy / cosmic-text | obscura's vendored copies via `[patch]` (23 §2) | render layer |
+| btls-sys | 0.5.6 (fork, 23 §9) | wreq's BoringSSL: `links = "btls"` + symbol prefixing on macOS so it coexists with libsignal's boring-sys |
 | wiremock | 0.6 dev | provider contract tests |
+
+Build prerequisites (23 §9): `cmake`, `clang`/`libclang` and `llvm-objcopy`/`llvm-nm` (brew `llvm`) for BoringSSL
+(obscura's stealth TLS); network on the first build for the prebuilt V8
+archive (`RUSTY_V8_ARCHIVE` for offline). `panic = "unwind"` stays: obscura's
+`catch_unwind` around DOM ops needs it.
 
 Lints: `missing_docs = warn`, `clippy::all = warn` while the crates are being
 built out in parallel; flips to `deny` once phase 3 lands and the workspace is
@@ -616,6 +626,7 @@ Each phase ends with a runnable check, not a test suite.
 | 11 | web (16): `search_web`/`read_url` plugin + `search-providers` plugin (Firecrawl, SearXNG, OpenSERP, Brave) | keyless search merges engines with SERP features; SSRF matrix rejects; rendered fetch via a provider | done 2026-09-12 (search_web merges duckduckgo+wikipedia with a knowledge panel; SSRF refusals; rendered errors without a provider; firecrawl default-on, key-gated) |
 | 12 | Slack (21) | Socket Mode channel, streamed threads, approvals, subagent threads | done 2026-09-14 (21 §19) |
 | 13 | PTY jobs (22) | `start` a REPL with `ready`, `send` an expression, read the answer off the screen; the harness drives its own TUI | done 2026-09-14 (3 tool calls for the REPL, `pty="true"` result; the harness read `no session · idle` off its own TUI; 22 §11) |
+| 14 | browser (23) | `browser_open` reads HN; a screenshot of a local dev server is described from the image; `read_url rendered` keyless | done 2026-09-14 (one `browser_open` names the top story; colours of a fixture page read off the screenshot, not the text; `read_url rendered: true` without Firecrawl; 23 §13) |
 
 Known gaps carried forward: cancel/error paths in the loop are code-reviewed,
 not smoke-tested; the `Jobs` actor kills every process group on shutdown

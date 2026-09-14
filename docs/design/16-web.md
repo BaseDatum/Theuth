@@ -258,11 +258,16 @@ are the best-tested part of the crate. `fetch/clean.rs` is replaced by
   links and emphasis stripped), not a second parse. Agents get links
   (markdown) or token-cheap prose (text) from one tree.
 - `rendered: true` → the first registered provider whose `meta().renders`
-  is true (Firecrawl `/v2/scrape` with `formats: ["markdown"]`, else
-  OpenSERP extract), in the order `search-providers` registered them. The
-  SSRF check still runs on the URL before it is sent anywhere. With none
-  registered: `Err("rendered fetch needs a rendering provider: configure
-  firecrawl or openserp under search_providers")`.
+  is true, in registration order. `browser` (23) registers one at start —
+  the embedded obscura isolate: `browser_navigate` → `browser_markdown` →
+  `browser_close` — so rendered fetches work keyless; Firecrawl (`/v2/scrape`
+  with `formats: ["markdown"]`) and OpenSERP extract remain as alternatives
+  when `search-providers` registers them. The SSRF check still runs on the
+  URL before it is sent anywhere; the browser's own private-network guard is
+  a separate setting (`browser.allow_private_network`, 23 §0.8) and does not
+  loosen this fetcher's. With none registered: `Err("rendered fetch needs a
+  rendering provider: configure firecrawl or openserp under
+  search_providers")`.
 - `fetch_top` on search reuses the same path for the top N ranked URLs,
   concurrently, each capped at `fetch_top_chars` (default 1500).
 

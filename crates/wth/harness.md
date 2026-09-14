@@ -132,6 +132,14 @@ cloned repos (read-only). This file is one; it is rewritten on every start.
 - `start{command, name?, ready?}` runs on a pseudo-terminal; `send`/`screen`/
   `wait` drive it; use it for REPLs, servers, TUIs and prompts — `shell` for
   anything that runs and exits (22).
+- `browser_*` (23) when a page needs JavaScript, a form, clicking through,
+  or a visual check; `read_url` for plain pages. `browser_open{url}` returns
+  the readable text and element refs (`ref=eN`); refs go stale after
+  navigation or interaction, so call `browser_read` / `browser_elements`
+  again before reusing one. Submit forms by clicking the submit button
+  (`browser_click`); Enter in a field does not submit. `browser_screenshot`
+  returns an image you can look at. `localhost` and private addresses are
+  blocked unless `browser.allow_private_network` is set in config.
 - Durable facts go through `knowledge_put`; `<knowledge>` notes in your
   context are hints from that store. The bundle is plain markdown under
   `knowledge/` with git history (`/knowledge` in the UI).

@@ -137,16 +137,32 @@ impl Frame<'_> {
 
 /// Replaces every `ContentPart::Binary` in a user-role message with
 /// `Text("[image omitted: model is text-only]")` — `document` for a PDF
-/// (17 §3.3, 20 §2.5). Other roles untouched.
+/// (17 §3.3, 20 §2.5). In a tool-role message the images of each
+/// `ToolResponse` are dropped and one `[screenshot omitted: …]` line per
+/// image is appended to its content (23 §5). Other roles untouched.
 pub fn strip_images(m: &mut ChatMessage) {
-    if m.role != ChatRole::User {
-        return;
-    }
-    for part in &mut m.content {
-        if part.is_binary() {
-            let kind = if part.is_pdf() { "document" } else { "image" };
-            *part = ContentPart::Text(format!("[{kind} omitted: model is text-only]"));
+    match m.role {
+        ChatRole::User => {
+            for part in &mut m.content {
+                if part.is_binary() {
+                    let kind = if part.is_pdf() { "document" } else { "image" };
+                    *part = ContentPart::Text(format!("[{kind} omitted: model is text-only]"));
+                }
+            }
         }
+        ChatRole::Tool => {
+            for part in &mut m.content {
+                let ContentPart::ToolResponse(r) = part else {
+                    continue;
+                };
+                for b in std::mem::take(&mut r.images) {
+                    let kind = if b.is_pdf() { "document" } else { "screenshot" };
+                    r.content
+                        .push_str(&format!("\n[{kind} omitted: model is text-only]"));
+                }
+            }
+        }
+        _ => {}
     }
 }
 
@@ -408,5 +424,38 @@ mod tests {
 
         let (req, _) = frame(true).request(Transport::Plain, session, None);
         assert!(req.messages[0].content.iter().any(ContentPart::is_binary));
+    }
+
+    #[test]
+    fn text_only_model_strips_tool_response_images() {
+        let shot =
+            || genai::chat::Binary::from_base64("image/png", "AAAA", Some("shot-1.png".into()));
+        let mut m = ChatMessage::from(vec![
+            ToolResponse::new("c1", "screenshot 800×600 attached")
+                .with_images(vec![shot(), shot()]),
+            ToolResponse::new("c2", "plain"),
+        ]);
+        strip_images(&mut m);
+        let rs = m.content.tool_responses();
+        assert!(rs.iter().all(|r| r.images.is_empty()));
+        assert_eq!(
+            rs[0].content,
+            "screenshot 800×600 attached\n[screenshot omitted: model is text-only]\n[screenshot omitted: model is text-only]"
+        );
+        assert_eq!(rs[1].content, "plain");
+
+        // Vision models keep them.
+        let history = [ChatMessage::from(vec![
+            ToolResponse::new("c1", "s").with_images(vec![shot()]),
+        ])];
+        let (req, _) = Frame {
+            tools: &[],
+            system: "sys",
+            head: None,
+            history: &history,
+            vision: true,
+        }
+        .request(Transport::Plain, SessionId::new(), None);
+        assert_eq!(req.messages[0].content.tool_responses()[0].images.len(), 1);
     }
 }

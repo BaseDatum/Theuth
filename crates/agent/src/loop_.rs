@@ -1456,11 +1456,17 @@ impl Turn {
         let mut responses = Vec::with_capacity(calls.len());
         for (call, out) in calls.iter().zip(outputs) {
             let out = out.unwrap_or_else(|| ToolOutput::err("cancelled by user"));
+            let mut display = frame::truncate(&out.content, DISPLAY_OUTPUT_CHARS);
+            for f in &out.files {
+                display.push_str("\n[image: ");
+                display.push_str(&f.file_name().unwrap_or(f.as_os_str()).to_string_lossy());
+                display.push(']');
+            }
             self.publish(AgentEvent::ToolCallFinished {
                 session,
                 turn,
                 call_id: call.call_id.clone(),
-                output: frame::truncate(&out.content, DISPLAY_OUTPUT_CHARS),
+                output: display,
                 is_error: out.is_error,
             })
             .await;
@@ -1472,7 +1478,7 @@ impl Turn {
                 self.shared.cfg.max_tool_output_chars,
                 &self.shared.spill_dir,
             );
-            let content = if out.is_error {
+            let mut content = if out.is_error {
                 format!("ERROR: {content}")
             } else {
                 if call.fn_name == skills::LOAD
@@ -1482,7 +1488,18 @@ impl Turn {
                 }
                 content
             };
-            responses.push(ToolResponse::new(call.call_id.clone(), content));
+            // 23 §5: files the tool produced ride as image parts of the response;
+            // an unreadable one becomes a text note, like user attachments.
+            let mut images = Vec::with_capacity(out.files.len());
+            for f in &out.files {
+                match Binary::from_file(f) {
+                    Ok(b) => images.push(b),
+                    Err(e) => {
+                        content.push_str(&format!("\n[file {} unreadable: {e}]", f.display()));
+                    }
+                }
+            }
+            responses.push(ToolResponse::new(call.call_id.clone(), content).with_images(images));
         }
         // One tool message carrying every response (genai: `ChatMessage::from(Vec<ToolResponse>)`).
         self.persist(ChatMessage::from(responses)).await;
@@ -1973,25 +1990,37 @@ fn user_message(Input { text, files }: Input) -> ChatMessage {
 }
 
 /// Text parts of a message joined, for history rendering; a binary part
-/// renders as `[image: <name>]` or `[document: <name>]` (17 §3.5).
+/// renders as `[image: <name>]` or `[document: <name>]` (17 §3.5); a tool
+/// response renders as its content followed by one tag per image (23 §5).
 pub(crate) fn text_of(content: &MessageContent) -> String {
     let mut out = String::new();
     for part in content.iter() {
         match part {
             ContentPart::Text(t) => out.push_str(t),
-            ContentPart::Binary(b) => {
-                out.push_str(if b.is_pdf() {
-                    "[document: "
-                } else {
-                    "[image: "
-                });
-                out.push_str(b.name.as_deref().unwrap_or(&b.content_type));
-                out.push(']');
+            ContentPart::Binary(b) => binary_tag(&mut out, b),
+            ContentPart::ToolResponse(r) => {
+                out.push_str(&r.content);
+                for b in &r.images {
+                    out.push(' ');
+                    binary_tag(&mut out, b);
+                }
             }
             _ => {}
         }
     }
     out
+}
+
+/// Appends `[image: <name>]` — `document` for a PDF — naming a binary part by
+/// its file name, falling back to the MIME type (17 §3.5).
+pub(crate) fn binary_tag(out: &mut String, b: &Binary) {
+    out.push_str(if b.is_pdf() {
+        "[document: "
+    } else {
+        "[image: "
+    });
+    out.push_str(b.name.as_deref().unwrap_or(&b.content_type));
+    out.push(']');
 }
 
 #[cfg(test)]

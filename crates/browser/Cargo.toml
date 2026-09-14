@@ -1,0 +1,30 @@
+[package]
+name = "browser"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Embedded obscura headless browser: per-session isolates, browser_* tools, render provider (23)"
+
+[dependencies]
+obscura-mcp = { workspace = true }
+obscura-js = { workspace = true }
+runtime = { workspace = true }
+tools = { workspace = true }
+web = { workspace = true }
+kameo = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+base64 = { workspace = true }
+async-trait = { workspace = true }
+reqwest = { workspace = true }
+futures = { workspace = true }
+uuid = { workspace = true }
+url = { workspace = true }
+iana-time-zone = { workspace = true }
+
+[lints]
+workspace = true

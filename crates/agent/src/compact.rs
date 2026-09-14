@@ -52,6 +52,8 @@ pub fn est(m: &ChatMessage) -> u32 {
 }
 
 /// [`est`] over bare content (a streamed reply before it becomes a message).
+/// A tool response counts its text plus `IMAGE_TOKENS` per attached image
+/// (23 §5) rather than the serialised base64.
 pub fn est_content(c: &MessageContent) -> u32 {
     let chars = |n: usize| u32::try_from(n / 4).unwrap_or(u32::MAX);
     c.iter().fold(0u32, |acc, part| {
@@ -59,6 +61,8 @@ pub fn est_content(c: &MessageContent) -> u32 {
             ContentPart::Text(t) => chars(t.len()),
             ContentPart::Binary(b) if b.is_pdf() => pdf_pages(b).saturating_mul(PDF_PAGE_TOKENS),
             ContentPart::Binary(_) => IMAGE_TOKENS,
+            ContentPart::ToolResponse(r) => chars(r.content.len())
+                .saturating_add((r.images.len() as u32).saturating_mul(IMAGE_TOKENS)),
             other => chars(serde_json::to_string(other).map_or(0, |s| s.len())),
         })
     })
@@ -298,6 +302,22 @@ mod tests {
             ),
         ]));
         assert_eq!(est(&doc), 3 * PDF_PAGE_TOKENS);
+    }
+
+    #[test]
+    fn est_charges_tool_response_images_flat() {
+        let content = "screenshot 800×600 attached";
+        let m = ChatMessage::from(vec![ToolResponse::new("c1", content).with_images(vec![
+            Binary::from_base64(
+                "image/png",
+                "A".repeat(200 * 1024),
+                Some("shot-1.png".into()),
+            ),
+        ])]);
+        assert_eq!(m.role, ChatRole::Tool);
+        let n = est(&m);
+        assert!(n <= IMAGE_TOKENS + (content.len() / 4) as u32 + 64, "{n}");
+        assert!(n >= IMAGE_TOKENS, "{n}");
     }
 
     #[test]
