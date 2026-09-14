@@ -100,7 +100,8 @@ pub fn urls(text: &str) -> Vec<std::ops::Range<usize>> {
         if !body.is_empty() {
             out.push(i..i + scheme + body.len());
         }
-        from = i + scheme + body.len().max(1);
+        // `scheme > 0`, so this always advances and stays on a char boundary.
+        from = i + scheme + body.len();
     }
     out
 }
@@ -689,6 +690,14 @@ mod tests {
             ["https://a.io/x_(y)", "http://b.io/q?z=1", "https://c.io/d"]
         );
         assert!(urls("httpx and https:// and http").is_empty());
+        // A bare scheme at the very end, or followed by a multibyte space,
+        // used to advance past the end / into a char (index out of bounds).
+        assert!(urls("trailing http://").is_empty());
+        assert_eq!(
+            urls("http://\u{a0}https://z.io").len(),
+            1,
+            "the second URL is still found"
+        );
 
         // Through the renderer: the URL span carries the link, an explicit
         // markdown link is left alone (its span already links elsewhere).
