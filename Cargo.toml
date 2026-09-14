@@ -123,6 +123,12 @@ mime_guess = "2"
 obscura-mcp = { git = "https://github.com/skymoore/obscura", branch = "main", features = ["stealth", "render"] }
 obscura-js = { git = "https://github.com/skymoore/obscura", branch = "main", features = ["stealth", "render"] }
 iana-time-zone = "0.1"
+# unjar (design doc 23 §7): read the user's real cookies from local browser
+# profiles (Chrome/Firefox/Edge/Brave/Chromium/Safari) so the agent can act as
+# the signed-in user. Library only (no CLI). Fork `main` = upstream + one commit
+# dropping rusqlite 0.40→0.38 so its libsqlite3-sys is 0.36, the version presage
+# and sqlx already link (Cargo allows only one `links = "sqlite3"`).
+unjar = { git = "https://github.com/skymoore/unjar", branch = "main", default-features = false }
 
 [workspace.lints.rust]
 missing_docs = "warn"

@@ -39,10 +39,14 @@ shipped and what was not exercised.
    following user turn with the image, Gemini gets `inline_data` parts.
    Text-only models get `[screenshot omitted]` via the existing `Frame.vision`
    strip (17 §3.3).
-7. **Every browser tool is `Risk::ReadOnly`.** The profile is ephemeral:
-   fresh cookie jar per session, nothing outlives it, no user credentials.
-   Persistent storage (cookies/`storage_state`) is v1 and flips the
-   interaction tools to `Mutating` when it lands.
+7. **Browser tools are `Risk::ReadOnly`, except cookie import.** The profile
+   is ephemeral: fresh cookie jar per session, nothing outlives it, no user
+   credentials — *unless* `browser.import_cookies` is on, which adds two agent
+   tools: `browser_list_profiles` (`ReadOnly`, discover local profiles) and
+   `browser_import_cookies` (`Mutating`), which copies the user's real browser
+   cookies (via `unjar`) into a session so the agent acts as the signed-in
+   user (§7). Off by default; not registered when off. Broader persistent
+   storage (`storage_state`) is still v1.
 8. **Private networks stay blocked by default**
    (`browser.allow_private_network: false`), flipped per installation. This
    deviates from 16 §5's "not configurable off" on purpose: verifying a dev
@@ -200,9 +204,12 @@ submitted by clicking their submit button** (Enter does not submit, §2).
 | `browser_screenshot` | `browser_screenshot` | `width?`, `height?` (CSS px) | PNG written to `<data_dir>/browser/<session>/shot-<n>.png`; `ToolOutput.files = [path]`; text `screenshot <w>×<h> attached` |
 | `browser_tabs` | `browser_tab_list` / `_new` / `_switch` / `_close` | `action: list\|new\|switch\|close`, `tab_id?`, `url?` | one tool, four actions |
 | `browser_close` | `browser_close` | — | closes every tab; the isolate stays until idle |
+| `browser_list_profiles` | — (`unjar`) | — | `ReadOnly`; registered only when `browser.import_cookies`. Lists local browser profiles (`browser  id  path`) so the agent picks one to import |
+| `browser_import_cookies` | `browser_set_storage_state` | `browser?`, `domains?`, `profile?` | `Mutating`; registered only when `browser.import_cookies`. Reads local profile cookies via `unjar`, maps them (session cookie `expires 0` → no-expiry, not delete), applies in one call |
 
-Every tool is `Risk::ReadOnly` (§0.7). Not exposed in v0: cookies,
-`storage_state`, PDF, `network_requests`, `console_messages`, `links`,
+Every tool is `Risk::ReadOnly` (§0.7) except `browser_import_cookies`
+(`Mutating`). Not exposed: cookie export (`browser_storage_state`), per-cookie
+`get`/`set`/`clear`, PDF, `network_requests`, `console_messages`, `links`,
 `extract`, `detect_forms`, `fill_form`, `get_attribute`, `count`, `search`,
 `forward`, `reload`. They are one table row each when wanted.
 
@@ -266,6 +273,7 @@ browser:                        # design doc 23
   timezone: null                # IANA zone; null = the host's zone (not obscura's Europe/Berlin)
   geolocation: null             # "lat,lon"
   allow_private_network: false  # §0.8
+  import_cookies: false         # add browser_import_cookies: load the user's real cookies (§7)
   idle_secs: 300                # isolate teardown after inactivity
   max_chars: 4000               # default cap of browser_read / browser_open replies
   script_deadline_ms: 30000     # OBSCURA_SCRIPT_DEADLINE_MS for heavy SPAs
@@ -283,8 +291,13 @@ home user; a proxy user sets it to the exit region per obscura's guide.
 - The isolate is the sandbox for page JavaScript; `browser_eval` runs the
   model's JS inside the page, not in wth. It can read the page, not the
   machine.
-- No persistent profile: nothing the model logs into survives the session;
-  no user cookies are ever loaded. That is what makes `ReadOnly` honest.
+- No persistent profile: nothing the model logs into survives the session.
+  With `import_cookies` off (default) no user cookies are ever loaded, which
+  is what makes `ReadOnly` honest. Turning it on is an explicit, per-install
+  decision to hand the agent the user's real sessions: the one tool it adds is
+  `Mutating` (approval-gated), reads cookies through `unjar` from the local
+  profile (Chrome/Edge/Brave decryption may prompt the OS keychain), and loads
+  them into an ephemeral jar that still dies with the session.
 - Heap and script deadlines are obscura's (`OBSCURA_SCRIPT_DEADLINE_MS`,
   watchdog termination); a runaway page kills its isolate, not wth
   (`catch_unwind` on ops, `panic = "unwind"` kept).

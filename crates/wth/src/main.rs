@@ -100,6 +100,12 @@ agent:
 #     engines: [google, bing]
 #   brave: {}                # needs `brave:` in credentials.yaml
 
+# browser:                   # embedded headless browser, browser_* tools (design doc 23)
+#   enabled: true
+#   allow_private_network: false   # let the browser reach localhost / private IPs
+#   import_cookies: false    # adds browser_list_profiles + browser_import_cookies:
+#                            # the agent loads the user's real browser cookies and acts as them (§7)
+
 tools:
   policy:
     read_only: allow

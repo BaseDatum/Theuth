@@ -38,7 +38,10 @@ drive it: type, read the rendered 120×40 screen, wait for a prompt or a port �
 `browser_*` tools: an embedded headless browser (obscura) with screenshots —
 `browser_open`, `_read`, `_elements`, `_click`, `_fill`, `_type`, `_press`,
 `_select`, `_scroll`, `_wait`, `_eval`, `_back`, `_screenshot`, `_tabs`,
-`_close`; one isolate per session, screenshots come back as images in the
+`_close` (plus `browser_list_profiles` + `browser_import_cookies` when
+`import_cookies` is on: discover local browser profiles and load the user's
+real cookies so the agent acts as the signed-in user); one
+isolate per session, screenshots come back as images in the
 tool result — [`docs/design/23-browser.md`](docs/design/23-browser.md)), `knowledge`
 (OKF bundle, FTS index, gix history, `knowledge_*` tools —
 [`docs/design/10-knowledge.md`](docs/design/10-knowledge.md)), `agent` (genai
@@ -92,6 +95,7 @@ Config (`~/.wth/`, created on first run; details in
     timezone: null                # IANA zone; null = the host's zone (not obscura's Europe/Berlin)
     geolocation: null             # "lat,lon"
     allow_private_network: false  # §0.8
+    import_cookies: false         # let browser_import_cookies load the user's real cookies (§7)
     idle_secs: 300                # isolate teardown after inactivity
     max_chars: 4000               # default cap of browser_read / browser_open replies
     script_deadline_ms: 30000     # OBSCURA_SCRIPT_DEADLINE_MS for heavy SPAs

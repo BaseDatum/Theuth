@@ -231,7 +231,7 @@ browser_tool!(
     concat!(
         "Open a URL in this session's headless browser (JavaScript runs, cookies persist for the session) and return the page: URL, title, readable text with element refs, and how many interactive elements were found. ",
         "Use `read_url` for plain articles; use this when the page needs JavaScript, a form, or clicking through.",
-        " Element refs like `e3` come from `browser_read` or `browser_elements` and go stale after any navigation or click: re-read before reusing one.",
+        " Refs like `e3` (from `browser_read` / `browser_elements`) go stale after ANY navigation or click, including the click you just made. Re-run `browser_elements` before the next ref, and never reuse a ref for a second action in the same batch (it fails with `unknown ref`). Batched fills that share one listing are fine; clicks must be sequential: click, then re-read, then click.",
     ),
     |ctx, a, cx| {
         let args = compact(json!({ "url": a.url, "waitUntil": a.wait }));
@@ -267,7 +267,7 @@ browser_tool!(
     concat!(
         "Read the current page of the headless browser without navigating: `text` gives the readable body and refreshes element refs; `markdown` keeps headings and links. ",
         "Call it after a page changed (a click, a wait, a script) to see the result.",
-        " Element refs like `e3` come from `browser_read` or `browser_elements` and go stale after any navigation or click: re-read before reusing one.",
+        " Refs like `e3` (from `browser_read` / `browser_elements`) go stale after ANY navigation or click, including the click you just made. Re-run `browser_elements` before the next ref, and never reuse a ref for a second action in the same batch (it fails with `unknown ref`). Batched fills that share one listing are fine; clicks must be sequential: click, then re-read, then click.",
     ),
     |ctx, a, cx| {
         let max = a.max_chars.map_or(ctx.cfg.max_chars, |n| n as usize);
@@ -289,7 +289,7 @@ browser_tool!(
     concat!(
         "List every clickable or typeable element on the current page, one per line: `ref=e3 button \"Sign in\"`. ",
         "Pass the ref to `browser_click`, `browser_fill`, `browser_type`, `browser_select` or `browser_scroll` instead of guessing a CSS selector.",
-        " Element refs like `e3` come from `browser_read` or `browser_elements` and go stale after any navigation or click: re-read before reusing one.",
+        " Refs like `e3` (from `browser_read` / `browser_elements`) go stale after ANY navigation or click, including the click you just made. Re-run `browser_elements` before the next ref, and never reuse a ref for a second action in the same batch (it fails with `unknown ref`). Batched fills that share one listing are fine; clicks must be sequential: click, then re-read, then click.",
     ),
     |ctx, _a, cx| ctx.call(cx.session, "browser_interactive_elements", json!({})).await
 );
@@ -311,7 +311,7 @@ browser_tool!(
     concat!(
         "Click an element by `ref` (preferred) or CSS `selector`, wait for any navigation it triggers, and return the resulting page. ",
         "This is how forms are submitted: click their submit button (pressing Enter does not submit).",
-        " Element refs like `e3` come from `browser_read` or `browser_elements` and go stale after any navigation or click: re-read before reusing one.",
+        " Refs like `e3` (from `browser_read` / `browser_elements`) go stale after ANY navigation or click, including the click you just made. Re-run `browser_elements` before the next ref, and never reuse a ref for a second action in the same batch (it fails with `unknown ref`). Batched fills that share one listing are fine; clicks must be sequential: click, then re-read, then click.",
     ),
     |ctx, a, cx| {
         let args = compact(json!({ "ref": a.ref_, "selector": a.selector }));
@@ -338,7 +338,7 @@ browser_tool!(
     concat!(
         "Set an input or textarea to `value` (replacing what was there) and fire its input/change events. Target by `ref` (preferred) or CSS `selector`. ",
         "Then click the form's submit button with `browser_click`; Enter does not submit.",
-        " Element refs like `e3` come from `browser_read` or `browser_elements` and go stale after any navigation or click: re-read before reusing one.",
+        " Refs like `e3` (from `browser_read` / `browser_elements`) go stale after ANY navigation or click, including the click you just made. Re-run `browser_elements` before the next ref, and never reuse a ref for a second action in the same batch (it fails with `unknown ref`). Batched fills that share one listing are fine; clicks must be sequential: click, then re-read, then click.",
     ),
     |ctx, a, cx| {
         let args = compact(json!({ "ref": a.ref_, "selector": a.selector, "value": a.value }));
@@ -643,7 +643,206 @@ browser_tool!(
     |ctx, _a, cx| ctx.call(cx.session, "browser_close", json!({})).await
 );
 
-/// The fifteen tools of 23 §4, ready for the registry.
+/// Local browser [`ImportCookiesTool`] reads cookies from.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum SourceBrowser {
+    /// Google Chrome (default).
+    #[default]
+    Chrome,
+    /// Chromium.
+    Chromium,
+    /// Microsoft Edge.
+    Edge,
+    /// Brave.
+    Brave,
+    /// Mozilla Firefox.
+    Firefox,
+    /// Apple Safari (macOS).
+    Safari,
+}
+
+impl SourceBrowser {
+    /// The matching `unjar` browser.
+    fn to_unjar(self) -> unjar::Browser {
+        match self {
+            Self::Chrome => unjar::Browser::Chrome,
+            Self::Chromium => unjar::Browser::Chromium,
+            Self::Edge => unjar::Browser::Edge,
+            Self::Brave => unjar::Browser::Brave,
+            Self::Firefox => unjar::Browser::Firefox,
+            Self::Safari => unjar::Browser::Safari,
+        }
+    }
+}
+
+/// Arguments for [`ImportCookiesTool`].
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ImportCookiesArgs {
+    /// Which locally installed browser to read cookies from (default `chrome`).
+    #[serde(default)]
+    pub browser: SourceBrowser,
+    /// Hostnames whose cookies to copy, e.g. `["github.com"]`. Empty copies every cookie in the profile.
+    #[serde(default)]
+    pub domains: Vec<String>,
+    /// A non-default profile by id, name or path (default: the browser's default profile).
+    #[serde(default)]
+    pub profile: Option<String>,
+}
+
+/// Map unjar's session-cookie sentinel (`expires == 0`) to obscura's "no
+/// expiry" (`None`). obscura's `set_cookies_from_cdp` treats `Some(0)` as a
+/// *delete*, so passing unjar's 0 through would silently drop every session
+/// cookie — exactly the auth cookies worth importing.
+fn import_expires(expires: i64) -> Option<i64> {
+    (expires > 0).then_some(expires)
+}
+
+/// Read cookies from a local browser profile and shape them for
+/// `browser_set_storage_state`. Blocking (SQLite read + OS keychain on
+/// Chromium/macOS), so callers run it on a blocking thread.
+fn load_cookies(
+    browser: SourceBrowser,
+    profile: Option<String>,
+    domains: Vec<String>,
+) -> Result<Vec<Value>, String> {
+    let b = browser.to_unjar();
+    let jar = match profile {
+        Some(p) => b.find_profile(&p).and_then(|pr| pr.cookies()),
+        None => b.cookies(),
+    }
+    .map_err(|e| e.to_string())?;
+    let jar = if domains.is_empty() {
+        jar
+    } else {
+        let hosts: Vec<&str> = domains.iter().map(String::as_str).collect();
+        jar.domains(&hosts)
+    };
+    Ok(jar
+        .iter()
+        .map(|c| {
+            json!({
+                "name": c.name,
+                "value": c.value,
+                "domain": c.domain,
+                "path": c.path,
+                "secure": c.secure,
+                "http_only": c.http_only,
+                "expires": import_expires(c.expires),
+            })
+        })
+        .collect())
+}
+
+/// `browser_import_cookies`: the user's real browser cookies → this session's
+/// jar. `Mutating`, and only registered when `browser.import_cookies` is on
+/// (23 §7) — it hands real credentials to the model.
+pub struct ImportCookiesTool(Arc<Ctx>);
+
+#[async_trait::async_trait]
+impl Tool for ImportCookiesTool {
+    const NAME: &'static str = "browser_import_cookies";
+    const RISK: Risk = Risk::Mutating;
+    type Args = ImportCookiesArgs;
+
+    fn description(&self) -> String {
+        concat!(
+            "Load the real cookies from a locally installed browser (chrome, chromium, edge, brave, firefox, safari) into this session's browser so you act as the signed-in user and skip logins. ",
+            "`domains` limits which sites are copied, e.g. [\"github.com\"]; empty copies every cookie in the profile. `profile` picks a non-default profile by id, name or path. ",
+            "Cookies apply to later requests: open or reload the target site afterward. Reading Chrome/Edge/Brave cookies may prompt the OS keychain once.",
+        )
+        .to_owned()
+    }
+
+    async fn call(&self, a: ImportCookiesArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        let ctx = &self.0;
+        let browser = a.browser;
+        let cookies = match tokio::task::spawn_blocking(move || {
+            load_cookies(browser, a.profile, a.domains)
+        })
+        .await?
+        {
+            Ok(c) => c,
+            Err(e) => {
+                return Ok(ToolOutput::err(format!(
+                    "reading {} cookies failed: {e}",
+                    browser.to_unjar()
+                )));
+            }
+        };
+        if cookies.is_empty() {
+            return Ok(ToolOutput::ok(format!(
+                "No matching cookies found in {}.",
+                browser.to_unjar()
+            )));
+        }
+        let count = cookies.len();
+        let out = ctx
+            .call(
+                cx.session,
+                "browser_set_storage_state",
+                json!({ "state": { "cookies": cookies } }),
+            )
+            .await?;
+        if out.is_error {
+            return Ok(out);
+        }
+        Ok(ToolOutput::ok(format!(
+            "Imported {count} cookies from {} into this session's browser. Open or reload the target site to use them.",
+            browser.to_unjar()
+        )))
+    }
+}
+
+/// Discovered local browser profiles as `browser  id ["name"] [(default)]
+/// path` lines. Blocking (filesystem scan), so callers run it on a blocking
+/// thread.
+fn list_profiles() -> Vec<String> {
+    unjar::profiles()
+        .iter()
+        .map(|p| {
+            let default = if p.is_default() { " (default)" } else { "" };
+            let name = if p.name() == p.id() {
+                p.id().to_owned()
+            } else {
+                format!("{} \"{}\"", p.id(), p.name())
+            };
+            format!("{}  {name}{default}  {}", p.browser(), p.path().display())
+        })
+        .collect()
+}
+
+/// `browser_list_profiles`: discover the local browser profiles
+/// `browser_import_cookies` can read from. `ReadOnly`, gated with import (§7).
+pub struct ProfilesTool;
+
+#[async_trait::async_trait]
+impl Tool for ProfilesTool {
+    const NAME: &'static str = "browser_list_profiles";
+    const RISK: Risk = Risk::ReadOnly;
+    type Args = NoArgs;
+
+    fn description(&self) -> String {
+        concat!(
+            "List the locally installed browser profiles you can pull cookies from with `browser_import_cookies`, one per line: `chrome  Default (default)  <path>`. ",
+            "Use the browser name plus the profile id/name to target a specific signed-in profile.",
+        )
+        .to_owned()
+    }
+
+    async fn call(&self, _a: NoArgs, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        let profiles = tokio::task::spawn_blocking(list_profiles).await?;
+        Ok(if profiles.is_empty() {
+            ToolOutput::ok("No local browser profiles found.".to_owned())
+        } else {
+            ToolOutput::ok(profiles.join("\n"))
+        })
+    }
+}
+
+/// The `browser_*` tools of 23 §4, ready for the registry. When
+/// `browser.import_cookies` is on, `browser_list_profiles` and
+/// `browser_import_cookies` are added (23 §7).
 #[must_use]
 pub fn all(actor: ActorRef<Browsers>, cfg: BrowserConfig, data_dir: PathBuf) -> Vec<DynTool> {
     let ctx = Arc::new(Ctx {
@@ -651,7 +850,7 @@ pub fn all(actor: ActorRef<Browsers>, cfg: BrowserConfig, data_dir: PathBuf) -> 
         cfg,
         data_dir,
     });
-    vec![
+    let mut all: Vec<DynTool> = vec![
         Arc::new(OpenTool(Arc::clone(&ctx))),
         Arc::new(ReadTool(Arc::clone(&ctx))),
         Arc::new(ElementsTool(Arc::clone(&ctx))),
@@ -666,8 +865,13 @@ pub fn all(actor: ActorRef<Browsers>, cfg: BrowserConfig, data_dir: PathBuf) -> 
         Arc::new(BackTool(Arc::clone(&ctx))),
         Arc::new(ScreenshotTool(Arc::clone(&ctx))),
         Arc::new(TabsTool(Arc::clone(&ctx))),
-        Arc::new(CloseTool(ctx)),
-    ]
+        Arc::new(CloseTool(Arc::clone(&ctx))),
+    ];
+    if ctx.cfg.import_cookies {
+        all.push(Arc::new(ProfilesTool));
+        all.push(Arc::new(ImportCookiesTool(Arc::clone(&ctx))));
+    }
+    all
 }
 
 #[cfg(test)]
@@ -695,6 +899,15 @@ mod tests {
         assert_eq!(TabAction::New.tool(), "browser_tab_new");
         assert_eq!(TabAction::Switch.tool(), "browser_tab_switch");
         assert_eq!(TabAction::Close.tool(), "browser_tab_close");
+    }
+
+    #[test]
+    fn import_expires_treats_zero_as_session_not_delete() {
+        // unjar's 0 = session cookie; obscura deletes on Some(0), so it MUST
+        // become None. Real expiries pass through; a stray negative is dropped.
+        assert_eq!(import_expires(0), None);
+        assert_eq!(import_expires(1_700_000_000), Some(1_700_000_000));
+        assert_eq!(import_expires(-1), None);
     }
 
     #[test]

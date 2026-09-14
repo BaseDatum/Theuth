@@ -139,12 +139,22 @@ cloned repos (read-only). This file is one; it is rewritten on every start.
   anything that runs and exits (22).
 - `browser_*` (23) when a page needs JavaScript, a form, clicking through,
   or a visual check; `read_url` for plain pages. `browser_open{url}` returns
-  the readable text and element refs (`ref=eN`); refs go stale after
-  navigation or interaction, so call `browser_read` / `browser_elements`
-  again before reusing one. Submit forms by clicking the submit button
-  (`browser_click`); Enter in a field does not submit. `browser_screenshot`
-  returns an image you can look at. `localhost` and private addresses are
-  blocked unless `browser.allow_private_network` is set in config.
+  the readable text and element refs (`ref=eN`). Refs go stale after ANY
+  navigation or click, including the one you just made: re-run
+  `browser_elements` before the next ref, and never reuse a ref for a second
+  action in the same batch (it fails with `unknown ref`) — batched fills that
+  share one listing are fine, but clicks must go click, then re-read, then
+  click. Submit forms by clicking the submit button (`browser_click`); Enter
+  in a field does not submit. `browser_screenshot` returns an image you can
+  look at. `localhost` and private addresses are blocked unless
+  `browser.allow_private_network` is set in config.
+- You can act as the signed-in user on the web. When `browser.import_cookies`
+  is on, `browser_list_profiles` shows the user's local browser profiles and
+  `browser_import_cookies{browser?, domains?, profile?}` loads their real
+  cookies (Chrome/Firefox/Edge/Brave/Chromium/Safari) into the session, so
+  the next `browser_open` is already logged in. If the user asks for this and
+  those tools are absent, it is off: tell them to set `browser.import_cookies:
+  true` in `config.yaml` (or do it for them if you can edit the file).
 - Durable facts go through `knowledge_put`; `<knowledge>` notes in your
   context are hints from that store. The bundle is plain markdown under
   `knowledge/` with git history (`/knowledge` in the UI).

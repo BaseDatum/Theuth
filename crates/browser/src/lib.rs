@@ -45,6 +45,10 @@ pub struct BrowserConfig {
     pub geolocation: Option<String>,
     /// Let pages reach loopback / RFC1918 / link-local (23 §0.8).
     pub allow_private_network: bool,
+    /// Let `browser_import_cookies` copy the user's real browser cookies into
+    /// a session so the agent acts as the signed-in user (23 §7). Off by
+    /// default: it hands real credentials to the model.
+    pub import_cookies: bool,
     /// Isolate teardown after this much inactivity.
     pub idle_secs: u64,
     /// Default cap of `browser_read` / `browser_open` replies.
@@ -63,6 +67,7 @@ impl Default for BrowserConfig {
             timezone: None,
             geolocation: None,
             allow_private_network: false,
+            import_cookies: false,
             idle_secs: 300,
             max_chars: 4000,
             script_deadline_ms: 30_000,
