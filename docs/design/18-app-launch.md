@@ -1,8 +1,10 @@
 # 18 — App launch: a GUI starts the daemon with the terminal's environment
 
-Status: draft v0 · 2026-09-13 · extends `00-architecture.md` §2, §7, §12 row 4
+Status: verified in the app · 2026-09-15 (draft 2026-09-13) · extends `00-architecture.md` §2, §7, §12 row 4
 (Tauri frontend); `01-config-and-subagents.md` §1.4 (MCP shell expansion).
-Mechanism verified on this machine (§6); no app code exists yet.
+Mechanism verified on this machine (§6) and then through `crates/desktop`
+(25 §12: the daemon spawned by the `.app` under launchd's environment saw
+the `~/.zshrc` exports and `PATH`).
 
 ## 0. The question in one screen
 

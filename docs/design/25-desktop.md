@@ -1,11 +1,11 @@
 # 25 — Desktop: a macOS menubar app over RPC
 
-Status: draft v0 · 2026-09-14 · extends `00-architecture.md` §2 (daemon
+Status: as-built v0 · 2026-09-15 (draft 2026-09-14) · extends `00-architecture.md` §2 (daemon
 launch), §7 (RPC), §8 (one command list), §10, §12 row 4; `18-app-launch.md`
 (the launch mechanism, unchanged, made concrete for packaging); `10-knowledge.md`
 §8 (two RPC additions); `19-subagent-board.md` §5 (the GUI tree). Where 18
 and this doc disagree on launch, 18 wins; §5 here only adds packaging.
-No app code exists yet. Recon: TUI inventory, RPC inventory, knowledge
+§12 is the as-built record. Recon: TUI inventory, RPC inventory, knowledge
 inventory and the measured ChatGPT tokens are recorded in §2.
 
 ## 0. Decisions in one screen
@@ -599,11 +599,70 @@ demux, the `methods.json` consistency test. No component snapshot tests.
   getter the TUI may also switch to later so it stops reading config
   in-process (not required by this doc).
 
-## 12. Status
+## 12. Status (as-built v0, 2026-09-15)
 
-Draft. Nothing built. Recon complete (§2). Open items to verify at build
-time: the authenticated chatgpt.com sidebar backgrounds (`#f9f9f9`/`#171717`
-from memory, not measured - the unauthenticated shell rendered the sidebar
-transparent); `streamdown` table/GFM defaults under Tailwind v4 `@source`;
-Tauri 2 `titleBarStyle: Overlay` with `ActivationPolicy::Accessory` (both
-documented, not exercised together here).
+Shipped in four commits: `9931c14` (server §7), `3bc520d` (`crates/desktop`
+shell), `e44ac60` (UI), this doc. `crates/desktop/` holds the Tauri crate and
+`ui/` the Vite app; `just desktop`, `just desktop-bundle`, `just
+desktop-check`, `just ts-desktop` are the recipes.
+
+Deviations from the sections above:
+
+- **`externalBin` lives in `tauri.bundle.conf.json`**, not `tauri.conf.json`:
+  tauri-build fails `cargo check --workspace` when the sidecar file is
+  absent. `just desktop-bundle` passes `--config tauri.bundle.conf.json`.
+- **`knowledge_write` stamps `source: user` and a fresh `timestamp`** (§7 said
+  timestamp untouched); it mirrors `knowledge_put` and preserves every other
+  frontmatter key, which was the point.
+- **`Loaded.first_seq` is typed `number | null` in TS** via `ts(type = …)`;
+  ts-rs maps `i64` to `bigint`, which JSON never carries.
+- **`load_session` paging also drops in-flight tool entries** (`result:
+  None`) from older pages so the live tail is never repeated.
+- **⌥Space is fixed**, not rebindable (§4.5): add the setting when asked.
+- **The slash popup is a hand-rolled list** styled like cmdk, not a `Command`
+  (forwarding synthetic key events from the textarea into cmdk was worse).
+- **`api.ts` has 72 request methods + the 4 additions** (the recon's 77
+  counted subscription plumbing); `methods.json` is the source of truth and
+  the vitest compares against it.
+- **Vite dev**: `optimizeDeps.entries` scans every module so code-split routes
+  do not trigger a mid-session full reload (dev only; the bundle is static).
+
+Verified (2026-09-15, browser-mode UI at `localhost:1420` against
+`/tmp/wth-title`, then the real Tauri binary):
+
+- Gates: `cargo clippy --workspace --all-targets -D warnings`, `cargo test
+  --workspace` (incl. `desktop`'s pty env test), `tsc -b`, vitest 47/47
+  (reducer, resolveLink, describe, injected, pastes, jobTail, mcpEntry,
+  frontmatter, `api.ts` ⟷ `methods.json`).
+- Chat: history session opens paged (`limit 60`); a new chat streams a turn
+  with a `shell` tool call, a GFM table and a highlighted Rust block; the
+  sidebar title updates live from `TitleChanged`; the context meter and cache
+  % fill from `TurnFinished`.
+- Knowledge: tree from two seeded docs; absolute `/projects/desktop.md` and
+  relative `../facts/smoke.md` links navigate; the missing link renders in
+  the danger colour with `→ missing` in the rail; Edit → CodeMirror → ⌘S
+  writes through `knowledge_write` — `extra: keep` survives, `source: user`
+  stamped, `log.md` gains `put projects/desktop`.
+- Settings: all eight tabs render against the live daemon (MCP empty, four
+  provider accounts, Signal link URL, ACP registry); Escape closes back to
+  the previous route.
+- **Performance (§6.3)**: `crates/desktop/perf_fixture.ts` drove 50 sessions
+  streaming at once (~11 000 events in 18 s, peak ≈ 700 `TextDelta`/s) with
+  one open in the UI: 959 frames in 16 s = **59.9 fps, worst frame gap 25
+  ms, zero long tasks, heap 81 MB**. The budget in §6 holds with margin.
+- **Launch (18)**: `wth-desktop` started under `env -i HOME USER SHELL TMPDIR
+  PATH=/usr/bin:/bin:/usr/sbin:/sbin` spawned `wth --headless` on a pty via
+  `zsh -l -i -c exec …`; a `shell` tool call inside that daemon printed
+  `WTH_DESKTOP_MARK=rc-was-sourced` (a marker exported from `~/.zshrc`),
+  `WTH_LAUNCH=1`, `TERM=xterm-256color` and the rc-file `PATH` (rbenv, atuin,
+  homebrew). The webview connected (two established sockets). `SIGTERM` to
+  the app left no daemon behind.
+
+Not exercised: the `.app` bundle itself (`just desktop-bundle`, signing,
+DMG); tray click / ⌥Space / notifications / autostart in the native window
+(the webview was verified in Chromium, the Tauri window only through its
+daemon); approvals inline card with a real `ApprovalRequested` (approvals
+are off in the smoke config); Signal/Slack tabs beyond rendering status;
+the §4.4 side-by-side screenshot against the authenticated chatgpt.com
+(sidebar `#f9f9f9`/`#171717` still the design's guess); bash/fish as
+`$SHELL`; the blocking-rc timeout screen.

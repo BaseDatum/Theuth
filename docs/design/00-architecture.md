@@ -621,7 +621,7 @@ Each phase ends with a runnable check, not a test suite.
 | 2 | rpc plugin, `--serve`; ts-rs bindings emitted | subscribe + send_input round trip over WS | done; headless e2e: shell + write/read + list/load sessions + shutdown, all over the wire |
 | 2 | skills | skill body appears in prompt on load | done (`docs/skills.md`) |
 | 3 | subagents, steering polish | parent receives child result as tool output | superseded by 01 §2 (detached) |
-| 4 | desktop app over rpc (25) | 25 §9 steps 1–9 | designed 2026-09-14 (25); not started; command surface ready (§8); `just ts` emits `bindings/*.ts`; daemon launch decided (18, mechanism verified 2026-09-13) |
+| 4 | desktop app over rpc (25) | 25 §9 steps 1–9 | done 2026-09-15 (chat/settings/knowledge smoked in the webview; 50 streaming sessions at 59.9 fps, 0 long tasks; `.app` launched under launchd's env, daemon inherited `~/.zshrc`; bundle/signing not exercised; 25 §12) |
 | 5 | course correction (12) | docs and tree agree | done 2026-09-11 (12 §8 lib.rs re-exports stays opportunistic) |
 | 6 | steering ids + undo/redo | 01 §2.3, 07 §8.8 | done 2026-09-11 |
 | 7 | snap compaction (13) | `/compact snap` on a vision model; a fact only in the archive is recalled | done 2026-09-11 (4 frames, 10/10 offsets recalled without tools; ~4.5k tokens/frame measured) |

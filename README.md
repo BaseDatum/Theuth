@@ -18,6 +18,8 @@ just run -- --slack-setup      # create the Slack app from the manifest, verify 
 just run -- --slack-manifest   # manual path: print the Slack app manifest for api.slack.com/apps → From a manifest
 just run -- --acp          # Agent Client Protocol on stdio: use wth from Zed/editors (agent_servers: {"wth": {"command": "wth", "args": ["--acp"]}})
 just ts                    # TypeScript bindings for the wire types → bindings/
+just desktop               # macOS menubar app in dev mode (Tauri + Vite); starts the daemon itself
+just desktop-bundle        # wth.app + dmg with the release wth bundled as the sidecar
 ```
 
 Build prerequisites: `cmake`, `clang`/`libclang` and `llvm-objcopy`/`llvm-nm` for the embedded browser's
@@ -210,3 +212,17 @@ model; `agents` — the subagent tree; `prompt` — the system prompt; `skills
 native stop button needs the `agent_session_stopped` event in the app's
 Event Subscriptions (the manifest includes it). See
 [`docs/design/21-slack.md`](docs/design/21-slack.md).
+
+Desktop: a macOS menubar app (`crates/desktop`, Tauri 2) that looks like
+chatgpt.com and does everything the TUI does over the JSON-RPC socket —
+sessions in a sidebar with the subagent tree under the open one, streamed
+markdown with tool cards, inline approvals, steering chips, attachments,
+the same slash commands, a settings dialog for models, approvals, MCP,
+skills, harnesses, logins, gateways and channels, and a knowledge explorer
+with working links and a raw editor. It has no Dock icon; the tray icon or
+⌥Space toggles the window. On launch it reuses a running `wth --serve` on
+the configured port, otherwise it starts the bundled `wth --headless` on a
+pseudo-terminal through your login shell so the daemon has exactly the
+environment a terminal would (design doc 18). `just desktop` runs it
+against `target/debug/wth`; `just desktop-bundle` produces `wth.app`. See
+[`docs/design/25-desktop.md`](docs/design/25-desktop.md).
