@@ -1006,6 +1006,19 @@ fn next_gate(g: Option<Gate>) -> Option<Gate> {
     }
 }
 
+/// What `Model::window` hands the renderer; see there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Window {
+    /// First entry built.
+    pub from: usize,
+    /// One past the last entry built.
+    pub to: usize,
+    /// Pinned: rendered lines of `from` to drop.
+    pub skip: usize,
+    /// Anchored: rows of `from` above the fold.
+    pub top: usize,
+}
+
 /// UI state.
 #[derive(Debug, Default)]
 pub struct Model {
@@ -1094,6 +1107,11 @@ pub struct Model {
     /// Skills whose body is in the shown session's frame (`SkillsChanged`,
     /// `Loaded.skills`): the status-line badge.
     pub loaded_skills: Vec<String>,
+    /// First visible transcript row while scrolled up: `(entry, rows into
+    /// it)`. `None` follows the tail. Anchored to an entry rather than to a
+    /// row count from the bottom so what you are reading stays put while a
+    /// reply streams in below.
+    pub anchor: Option<(usize, usize)>,
 }
 
 impl Model {
@@ -1140,15 +1158,43 @@ impl Model {
             )
     }
 
-    /// Where drawing starts: the first entry whose tail reaches `lines`
+    /// The slice of the transcript worth building this frame. Every frame
+    /// lays out and paints every child it is given, so building the whole
+    /// history made each frame O(session); the screen shows `view` rows.
+    ///
+    /// Pinned (`anchor == None`): `[from, len)` drawn bottom-aligned, with
+    /// `skip` leading rendered lines of `from` dropped when that one entry
+    /// (a long reply) is taller than the window. Anchored: `[from, to)` drawn
+    /// from the top with the first `top` rows of `from` above the fold.
+    pub fn window(&self, view: usize, width: usize) -> Window {
+        let budget = view * 2;
+        if let Some((i, r)) = self.anchor.filter(|(i, _)| *i < self.entries.len()) {
+            let mut total = self.entries[i].height(width).saturating_sub(r);
+            let mut to = i + 1;
+            while total < budget && to < self.entries.len() {
+                total += self.entries[to].height(width);
+                to += 1;
+            }
+            return Window {
+                from: i,
+                to,
+                skip: 0,
+                top: r,
+            };
+        }
+        let (from, skip) = self.tail(budget, width);
+        Window {
+            from,
+            to: self.entries.len(),
+            skip,
+            top: 0,
+        }
+    }
+
+    /// The pinned window's start: the first entry whose tail reaches `lines`
     /// rows at `width`, and how many rendered markdown lines of it to skip
-    /// when that entry alone (a long reply) is taller than the window. Every
-    /// frame lays out and paints every child it is given, so the whole
-    /// history made each frame O(session); the screen can only ever show
-    /// the tail anyway.
-    // ponytail: scroll-back stops at this window; render on demand from the
-    // scroll offset if anyone wants to page further up.
-    pub fn tail(&self, lines: usize, width: usize) -> (usize, usize) {
+    /// when that entry alone is taller than the window.
+    fn tail(&self, lines: usize, width: usize) -> (usize, usize) {
         let mut total = 0;
         for (i, e) in self.entries.iter().enumerate().rev() {
             let h = e.height(width);
@@ -1175,6 +1221,67 @@ impl Model {
             return (i, skip);
         }
         (0, 0)
+    }
+
+    /// Move the transcript by `delta` rows (negative = up) in a `view`-row
+    /// window at `width`. Heights are the same estimates `window` draws by.
+    /// Reaching the bottom re-pins; the top stops at the first entry.
+    pub fn scroll(&mut self, delta: isize, view: usize, width: usize) {
+        let h = |i: usize| self.entries[i].height(width);
+        let len = self.entries.len();
+        let (mut i, mut r) = match self.anchor.filter(|(i, _)| *i < len) {
+            Some(a) => a,
+            None => {
+                // The pinned window's first row: `view` rows up from the end.
+                let mut left = view;
+                let mut i = len;
+                loop {
+                    if i == 0 {
+                        return; // shorter than the window: nothing to scroll
+                    }
+                    i -= 1;
+                    let hi = h(i);
+                    if hi > left {
+                        break (i, hi - left);
+                    }
+                    left -= hi;
+                }
+            }
+        };
+        if delta < 0 {
+            let mut d = delta.unsigned_abs();
+            loop {
+                if r >= d {
+                    r -= d;
+                    break;
+                }
+                d -= r;
+                if i == 0 {
+                    r = 0;
+                    break;
+                }
+                i -= 1;
+                r = h(i);
+            }
+        } else {
+            r += delta.unsigned_abs();
+            while r >= h(i) {
+                r -= h(i);
+                i += 1;
+                if i == len {
+                    self.anchor = None;
+                    return;
+                }
+            }
+        }
+        // Less than a window left below the anchor: follow the tail again.
+        let mut below = h(i) - r;
+        let mut j = i + 1;
+        while below <= view && j < len {
+            below += h(j);
+            j += 1;
+        }
+        self.anchor = (below > view).then_some((i, r));
     }
 
     /// Take a paste: small ones come back verbatim for the input box; large
@@ -1507,6 +1614,7 @@ impl Model {
             UiEvent::History(id, loaded) => {
                 if self.session == Some(id) {
                     self.entries = loaded.history.into_iter().flat_map(from_history).collect();
+                    self.anchor = None;
                     // The reload an undo/redo triggered shows its own notice
                     // instead of the generic depth line.
                     match self.notice.take() {
@@ -1982,6 +2090,7 @@ impl Model {
                     // A clean slate on screen too; `/resume` still shows everything.
                     // Compaction only runs between turns, so nothing is streaming.
                     self.entries.clear();
+                    self.anchor = None;
                     self.entries
                         .push(Entry::Info(format!("context cleared (epoch {epoch})")));
                 } else {
@@ -2086,6 +2195,8 @@ impl Model {
         if line.is_empty() {
             return;
         }
+        // Anything you send is what you want to see land.
+        self.anchor = None;
         if self.prompt.is_some() {
             self.prompt_submit(line, tx);
             return;
@@ -2333,7 +2444,12 @@ impl Model {
             0 => String::new(),
             _ => format!("  ·  skills: {}", self.loaded_skills.join(", ")),
         };
-        format!("{session}  {state}{usage}{agents}{queued}{jobs}{skills}")
+        let scrolled = if self.anchor.is_some() {
+            "  ·  ↑ history · PgDn follows"
+        } else {
+            ""
+        };
+        format!("{session}  {state}{usage}{agents}{queued}{jobs}{skills}{scrolled}")
     }
 
     /// Line above the input: `model  ·  high  ·  ctx 12.3k / 200k (6%)  ·  cache 94%`
@@ -4239,6 +4355,51 @@ mod tests {
         let (from, skip) = m.tail(10, 80);
         assert_eq!(from, 21);
         assert_eq!(skip, 79 - 8);
+    }
+
+    #[test]
+    fn scroll_anchors_to_an_entry_and_repins_at_the_bottom() {
+        let mut m = Model::default();
+        // 20 user cards of 6 rows each (2 text rows + border and title).
+        for i in 0..20 {
+            m.entries.push(Entry::User(format!("{i}\n{i}")));
+        }
+        // 120 rows of history, a 10-row view. Short histories cannot scroll.
+        let mut short = Model::default();
+        short.entries.push(Entry::Info("x".into()));
+        short.scroll(-5, 10, 80);
+        assert_eq!(short.anchor, None);
+
+        // Pinned window's first row is 10 rows up: entry 18, 2 rows in.
+        m.scroll(-1, 10, 80);
+        assert_eq!(m.anchor, Some((18, 1)));
+        // A page up crosses entries.
+        m.scroll(-10, 10, 80);
+        assert_eq!(m.anchor, Some((16, 3)));
+        // The top stops at the first entry.
+        m.scroll(-1000, 10, 80);
+        assert_eq!(m.anchor, Some((0, 0)));
+        let w = m.window(10, 80);
+        assert_eq!((w.from, w.top, w.skip), (0, 0, 0));
+        assert_eq!(w.to, 4, "two views' worth of 6-row entries");
+        // Scrolling down until less than a view remains below re-pins.
+        m.scroll(109, 10, 80);
+        assert_eq!(m.anchor, Some((18, 1)));
+        m.scroll(1, 10, 80);
+        assert_eq!(m.anchor, None);
+        // An anchor at an entry's first row with exactly one more view below
+        // it is not the bottom yet (the entry itself is still above).
+        m.scroll(-1000, 12, 80);
+        m.scroll(102, 12, 80);
+        assert_eq!(m.anchor, Some((17, 0)));
+        // Growth below an anchor leaves it where it was.
+        m.scroll(-30, 10, 80);
+        let before = m.anchor;
+        m.entries.push(Entry::User("new".into()));
+        assert_eq!(m.anchor, before);
+        // Reloading the transcript follows the tail again.
+        m.entries.clear();
+        assert_eq!(m.window(10, 80).to, 0);
     }
 
     #[test]

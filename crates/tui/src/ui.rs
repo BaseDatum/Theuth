@@ -153,6 +153,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
         }
     });
 
+    let terminal_size = hooks.use_terminal_size();
     hooks.use_terminal_events({
         let commands = commands.clone();
         move |event| {
@@ -239,6 +240,21 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 }
                 return;
             }
+            // Transcript scrolling. ↑/↓ are the editor's while it spans
+            // lines; terminals without mouse capture send them for the wheel.
+            let (w, h) = terminal_size;
+            let view = view_rows(&m, h, &input.read());
+            let step = match code {
+                KeyCode::PageUp => Some(-(view as isize)),
+                KeyCode::PageDown => Some(view as isize),
+                KeyCode::Up if !input.read().contains('\n') => Some(-1),
+                KeyCode::Down if !input.read().contains('\n') => Some(1),
+                _ => None,
+            };
+            if let Some(step) = step {
+                m.scroll(step, view, usize::from(w));
+                return;
+            }
             match code {
                 KeyCode::Enter => {
                     let line = std::mem::take(&mut *input.write());
@@ -275,7 +291,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
         .into_any()
     });
     // Approval on top; otherwise whichever menu is open.
-    let (width, height) = hooks.use_terminal_size();
+    let (width, height) = terminal_size;
     let modal = modal.or_else(|| menu(&m, &input.read(), width));
     let has_focus = m.input_focused();
     let (header, level) = m.header(&catalog);
@@ -285,28 +301,46 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
         Level::Danger => Color::Red,
     };
 
-    // Only the tail that can reach the screen is built; see `Model::tail`.
-    let (from, skip) = m.tail(usize::from(height) * 2, usize::from(width));
+    // Only the slice that can reach the screen is built; see `Model::window`.
+    let view = view_rows(&m, height, &input.read());
+    let win = m.window(view, usize::from(width));
+    let entries = m.entries[win.from..win.to]
+        .iter()
+        .enumerate()
+        .map(|(i, e)| entry(e, m.spinner(), if i == 0 { win.skip } else { 0 }));
+    let transcript = if m.anchor.is_some() {
+        // Anchored: the first `top` rows of the first entry sit above the fold.
+        element! {
+            View(overflow: Overflow::Hidden, width: 100pct, height: 100pct) {
+                View(position: Position::Absolute, top: -(win.top as i32), width: 100pct, flex_direction: FlexDirection::Column) {
+                    #(entries)
+                }
+            }
+        }
+    } else {
+        // Pinned: bottom-aligned, so an over-tall slice is clipped at the top.
+        element! {
+            View(overflow: Overflow::Hidden, width: 100pct, height: 100pct, flex_direction: FlexDirection::Column, justify_content: JustifyContent::FlexEnd) {
+                #(entries)
+            }
+        }
+    };
     element! {
         View(flex_direction: FlexDirection::Column, width, height) {
             View(flex_grow: 1.0, min_height: 0, flex_direction: FlexDirection::Column) {
-                ScrollView(auto_scroll: true, scrollbar: Some(false)) {
-                    View(flex_direction: FlexDirection::Column, width: 100pct) {
-                        #(m.entries[from..].iter().enumerate().map(|(i, e)| entry(e, m.spinner(), if i == 0 { skip } else { 0 })))
-                        #(m.waiting().then(|| element!(View(margin_top: 1) {
-                            Text(content: format!("{} thinking…", m.spinner()), color: Color::DarkGrey, italic: true)
-                        })))
-                        // Steers not yet in the context: below the transcript,
-                        // never among its entries, until `InputInjected`.
-                        #(m.queued.iter().map(|q| element! {
-                            View(flex_direction: FlexDirection::Column, border_style: BorderStyle::Round, border_color: Color::DarkGrey, padding_left: 1, padding_right: 1, margin_top: 1) {
-                                Text(content: "◇ queued · ⌥↑ edit", color: Color::DarkGrey, weight: Weight::Bold)
-                                Text(content: queued_text(&q.text), color: Color::DarkGrey, wrap: TextWrap::Wrap)
-                            }
-                        }))
-                    }
-                }
+                #(transcript)
             }
+            // Activity and steers not yet in the context sit under the
+            // transcript, in view whatever you scrolled to.
+            #(m.waiting().then(|| element!(View(margin_top: 1) {
+                Text(content: format!("{} thinking…", m.spinner()), color: Color::DarkGrey, italic: true)
+            })))
+            #(m.queued.iter().map(|q| element! {
+                View(flex_direction: FlexDirection::Column, border_style: BorderStyle::Round, border_color: Color::DarkGrey, padding_left: 1, padding_right: 1, margin_top: 1) {
+                    Text(content: "◇ queued · ⌥↑ edit", color: Color::DarkGrey, weight: Weight::Bold)
+                    Text(content: queued_text(&q.text), color: Color::DarkGrey, wrap: TextWrap::Wrap)
+                }
+            }))
             #(board(&m, width))
             #(modal)
             #(m.prompt.as_ref().map(|p| {
@@ -570,6 +604,27 @@ fn menu(m: &Model, input: &str, width: u16) -> Option<AnyElement<'static>> {
         }
         .into_any(),
     )
+}
+
+/// Rows the transcript pane gets: the terminal minus everything drawn
+/// around it (header, status, editor box, prompt line, activity row, queued
+/// chips, board). An estimate by the same rules the layout follows; a row or
+/// two off only moves the first scroll step, never the pinned bottom.
+fn view_rows(m: &Model, height: u16, input: &str) -> usize {
+    let editor = 2 + input.lines().count().max(1);
+    let activity = if m.waiting() { 2 } else { 0 };
+    let queued: usize = m
+        .queued
+        .iter()
+        .map(|q| 4 + queued_text(&q.text).lines().count())
+        .sum();
+    let board = match m.board().len() {
+        0 => 0,
+        n => 3 + n.min(BOARD_ROWS) + usize::from(n > BOARD_ROWS),
+    };
+    usize::from(height)
+        .saturating_sub(2 + editor + usize::from(m.prompt.is_some()) + activity + queued + board)
+        .max(1)
 }
 
 /// The subagent board (design doc 19 §3.3): the live rows of the current
