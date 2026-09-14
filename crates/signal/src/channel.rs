@@ -978,7 +978,8 @@ impl Channel {
 
     /// Writes attachments to `<data_dir>/signal/inbox/<ts>-<n>.<ext>` and
     /// returns one `[attachment: …]` line each (09 §7.4) plus the paths of
-    /// the `image/*` ones, which ride along as model input (17 §5).
+    /// the `image/*` ones and PDFs up to 32 MB, which ride along as model
+    /// input (17 §5, 20 §2.5).
     async fn save_attachments(
         &self,
         ts: u64,
@@ -1009,7 +1010,9 @@ impl Channel {
                 }
             }
             lines.push(format!("[attachment: {} ({detail})]", path.display()));
-            if mime.starts_with("image/") {
+            if mime.starts_with("image/")
+                || (mime == "application/pdf" && a.bytes.len() <= 32 * 1024 * 1024)
+            {
                 images.push(path);
             }
         }

@@ -1954,9 +1954,9 @@ impl Turn {
     }
 }
 
-/// The user message for one input: text, then one `Binary` part per file (17 §3.2).
-/// A file that vanished since `check_files` becomes a placeholder rather than
-/// aborting the turn.
+/// The user message for one input: text, then one `Binary` part per file
+/// (17 §3.2; a PDF rides as a native document part, 20 §2.5). A file that
+/// vanished since `check_files` becomes a placeholder rather than aborting the turn.
 fn user_message(Input { text, files }: Input) -> ChatMessage {
     if files.is_empty() {
         return ChatMessage::user(text);
@@ -1966,21 +1966,21 @@ fn user_message(Input { text, files }: Input) -> ChatMessage {
     for f in files {
         parts.push(match Binary::from_file(&f) {
             Ok(b) => ContentPart::Binary(b),
-            Err(e) => ContentPart::Text(format!("[image {} unreadable: {e}]", f.display())),
+            Err(e) => ContentPart::Text(format!("[file {} unreadable: {e}]", f.display())),
         });
     }
     ChatMessage::user(MessageContent::from_parts(parts))
 }
 
 /// Text parts of a message joined, for history rendering; a binary part
-/// renders as `[image: <name>]` (17 §3.5).
+/// renders as `[image: <name>]` or `[document: <name>]` (17 §3.5).
 pub(crate) fn text_of(content: &MessageContent) -> String {
     let mut out = String::new();
     for part in content.iter() {
         match part {
             ContentPart::Text(t) => out.push_str(t),
             ContentPart::Binary(b) => {
-                out.push_str("[image: ");
+                out.push_str(if b.is_pdf() { "[document: " } else { "[image: " });
                 out.push_str(b.name.as_deref().unwrap_or(&b.content_type));
                 out.push(']');
             }

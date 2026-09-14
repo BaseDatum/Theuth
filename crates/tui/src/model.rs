@@ -583,7 +583,7 @@ pub enum Paste {
 
 /// What the input box shows for a held paste: `[⎘ paste 1: 69 lines]`
 /// (`chars` for a single long line), `[⎘ image 2: 1440×900]` (file name
-/// when the size is unknown). `i` is the index into `Model::pastes`.
+/// when the size is unknown; `file` for a PDF). `i` is the index into `Model::pastes`.
 pub fn paste_token(i: usize, p: &Paste) -> String {
     match p {
         Paste::Text(text) => {
@@ -596,11 +596,15 @@ pub fn paste_token(i: usize, p: &Paste) -> String {
             format!("[⎘ paste {}: {size}]", i + 1)
         }
         Paste::Image(img) if img.w > 0 => format!("[⎘ image {}: {}×{}]", i + 1, img.w, img.h),
-        Paste::Image(img) => format!(
-            "[⎘ image {}: {}]",
-            i + 1,
-            img.path.file_name().unwrap_or_default().to_string_lossy()
-        ),
+        Paste::Image(img) => {
+            let name = img.path.file_name().unwrap_or_default().to_string_lossy();
+            let kind = if img.path.extension().is_some_and(|e| e.eq_ignore_ascii_case("pdf")) {
+                "file"
+            } else {
+                "image"
+            };
+            format!("[⎘ {kind} {}: {name}]", i + 1)
+        }
     }
 }
 

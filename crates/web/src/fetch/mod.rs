@@ -223,6 +223,27 @@ impl Fetcher {
                 break;
             }
         }
+        // A document body (PDF, Office, …) is rendered with anydoc (20 §2.3);
+        // a truncated container is unparseable, so it is refused, not half-read.
+        if let Some(fmt) = tools::doc::format(&raw) {
+            if body_truncated {
+                return Err(FetchError::Failed(format!(
+                    "{fmt:?} larger than max_fetch_bytes ({}); not converted",
+                    self.max_bytes
+                )));
+            }
+            let md = tools::doc::to_markdown(raw, fmt)
+                .await
+                .map_err(|e| FetchError::Failed(format!("{fmt:?}: {e}")))?;
+            let (content, cut) = hard_truncate(&md, max_chars);
+            return Ok(FetchResponse {
+                url: url.to_string(),
+                title: text::first_heading(&md),
+                content,
+                truncated: cut,
+                took_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            });
+        }
         let body = String::from_utf8_lossy(&raw);
         let is_html = is_html_type(ct) || (!is_plain_type(ct) && looks_like_html(&body));
         let (title, content) = if is_html {
@@ -281,7 +302,7 @@ fn is_binary(ct: Option<&str>) -> bool {
         .any(|p| ct.starts_with(p))
         || matches!(
             ct,
-            "application/octet-stream" | "application/pdf" | "application/zip" | "application/gzip"
+            "application/octet-stream" | "application/zip" | "application/gzip"
         )
 }
 

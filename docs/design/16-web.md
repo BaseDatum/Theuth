@@ -249,7 +249,9 @@ are the best-tested part of the crate. `fetch/clean.rs` is replaced by
   redirect hop (redirects are followed manually). Not configurable off.
   jarvis's TOCTOU (`ssrf.rs:4-6`) does not exist here (§13).
 - Limits: 8 s total, 2 s connect, 2 MiB body, 5 redirects, binary
-  content-types rejected (`fetch/mod.rs:29-33,189-193,225-259`).
+  content-types rejected — except documents (PDF, Office, …), which are
+  sniffed from the body and rendered as Markdown (20 §2.3)
+  (`fetch/mod.rs:29-33,189-193,225-259`).
 - One HTML parser: `format: markdown` = `html-to-markdown-rs` 3.12
   (default features off), keeping headings and links so the model can
   follow up; `format: text` is a projection of that markdown (headings,

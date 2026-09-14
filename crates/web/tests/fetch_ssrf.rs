@@ -170,7 +170,16 @@ async fn plain_text_and_binary_bodies() {
         .await;
     Mock::given(method("GET"))
         .and(path("/bin"))
-        .respond_with(ResponseTemplate::new(200).set_body_raw(vec![0u8; 16], "application/pdf"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(vec![0u8; 16], "application/zip"))
+        .mount(&server)
+        .await;
+    // A PDF is converted, not rejected; a broken one fails with the converter's reason.
+    Mock::given(method("GET"))
+        .and(path("/doc.pdf"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw(b"%PDF-1.7\n%garbage".to_vec(), "application/pdf"),
+        )
         .mount(&server)
         .await;
     let fetcher = fetcher(&server);
@@ -193,4 +202,16 @@ async fn plain_text_and_binary_bodies() {
         .await
         .unwrap_err();
     assert!(matches!(err, FetchError::Failed(_)), "{err}");
+    let err = fetcher
+        .fetch(
+            &format!("{}/doc.pdf", server.uri()),
+            FetchFormat::Markdown,
+            4000,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, FetchError::Failed(m) if m.starts_with("Pdf:")),
+        "{err}"
+    );
 }

@@ -1978,11 +1978,14 @@ impl Auth {
     }
 }
 
-/// Largest attachment a provider accepts (17 §1: Anthropic's 5 MB is the binding cap).
+/// Largest image a provider accepts (17 §1: Anthropic's 5 MB is the binding cap).
 const MAX_ATTACHMENT: u64 = 5 * 1024 * 1024;
+/// Largest PDF sent as a native document part (20 §2.5: Anthropic's 32 MB;
+/// its 100-page cap is left to the provider's error).
+const MAX_PDF: u64 = 32 * 1024 * 1024;
 
-/// Rejects what a provider would (17 §3.1): missing/non-regular file,
-/// non-`image/*` mime, over 5 MB.
+/// Rejects what a provider would (17 §3.1, 20 §2.5): missing/non-regular
+/// file, a mime that is neither `image/*` nor `application/pdf`, over the cap.
 fn check_files(files: &[PathBuf]) -> Result<(), String> {
     for f in files {
         let name = f.file_name().unwrap_or(f.as_os_str()).to_string_lossy();
@@ -1995,13 +1998,18 @@ fn check_files(files: &[PathBuf]) -> Result<(), String> {
             Err(e) => return Err(format!("attachment {name}: {e}")),
         };
         let mime = mime_guess::from_path(f).first_or_octet_stream();
-        if mime.type_() != mime_guess::mime::IMAGE {
-            return Err(format!("attachment {name}: {mime} is not an image"));
-        }
-        if meta.len() > MAX_ATTACHMENT {
+        let cap = if mime.type_() == mime_guess::mime::IMAGE {
+            MAX_ATTACHMENT
+        } else if mime == mime_guess::mime::APPLICATION_PDF {
+            MAX_PDF
+        } else {
+            return Err(format!("attachment {name}: {mime} is not an image or PDF"));
+        };
+        if meta.len() > cap {
             return Err(format!(
-                "attachment {name}: {:.1} MB exceeds 5 MB",
-                meta.len() as f64 / (1024.0 * 1024.0)
+                "attachment {name}: {:.1} MB exceeds {} MB",
+                meta.len() as f64 / (1024.0 * 1024.0),
+                cap >> 20
             ));
         }
     }
@@ -2304,6 +2312,13 @@ mod tests {
         std::fs::write(&png, b"\x89PNG").unwrap();
         let txt = dir.join("notes.txt");
         std::fs::write(&txt, b"hi").unwrap();
+        let pdf = dir.join("scan.pdf");
+        std::fs::write(&pdf, b"%PDF-1.7").unwrap();
+        let big_pdf = dir.join("big.pdf");
+        std::fs::File::create(&big_pdf)
+            .unwrap()
+            .set_len(MAX_PDF + 1)
+            .unwrap();
         let big = dir.join("big.jpg");
         std::fs::File::create(&big)
             .unwrap()
@@ -2312,9 +2327,15 @@ mod tests {
 
         assert_eq!(check_files(&[]), Ok(()));
         assert_eq!(check_files(std::slice::from_ref(&png)), Ok(()));
+        // A PDF rides as a native document part, with its own (larger) cap.
+        assert_eq!(check_files(std::slice::from_ref(&pdf)), Ok(()));
+        assert_eq!(
+            check_files(&[big_pdf]).unwrap_err(),
+            "attachment big.pdf: 32.0 MB exceeds 32 MB"
+        );
         assert_eq!(
             check_files(&[png, txt]).unwrap_err(),
-            "attachment notes.txt: text/plain is not an image"
+            "attachment notes.txt: text/plain is not an image or PDF"
         );
         assert_eq!(
             check_files(&[dir.join("gone.png")]).unwrap_err(),

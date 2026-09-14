@@ -1,5 +1,5 @@
 //! `read_file`, `write_file`, `list_dir`, `grep`, `edit` over `tokio::fs`
-//! (12 §10).
+//! (12 §10). `read_file` renders documents as Markdown (20 §2.2).
 //!
 //! Paths are resolved against the process cwd; `~` is not expanded.
 
@@ -26,7 +26,7 @@ pub struct ReadFileArgs {
     pub limit: Option<usize>,
 }
 
-/// Read a text file.
+/// Read a text file, or a document rendered as Markdown.
 pub struct ReadFile;
 
 #[async_trait::async_trait]
@@ -36,16 +36,29 @@ impl Tool for ReadFile {
     type Args = ReadFileArgs;
 
     fn description(&self) -> String {
-        "Read a text file. Optional 1-based `offset` line and `limit` line count. Output is capped at 64 KiB. Paths are relative to the process cwd; `~` is not expanded.".into()
+        "Read a text file, or a PDF / Word / PowerPoint / Excel / ODF / RTF / EPUB document rendered as Markdown. Optional 1-based `offset` line and `limit` line count. Output is capped at 64 KiB. Paths are relative to the process cwd; `~` is not expanded.".into()
     }
 
     async fn call(&self, a: ReadFileArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
         let bytes = tokio::fs::read(&a.path)
             .await
             .map_err(|e| anyhow::anyhow!("{}: {e}", a.path.display()))?;
-        let text = String::from_utf8_lossy(&bytes);
+        // A detected document that fails to convert is an error the model can
+        // act on, never 64 KiB of object streams; undetected bytes stay text.
+        let text: String = match crate::doc::format(&bytes) {
+            Some(fmt) => {
+                let md = crate::doc::to_markdown(bytes, fmt)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{}: {e}", a.path.display()))?;
+                format!(
+                    "[{}: {fmt:?} rendered as Markdown; offset/limit count Markdown lines]\n{md}",
+                    a.path.display()
+                )
+            }
+            None => String::from_utf8_lossy(&bytes).into_owned(),
+        };
         let mut out: String = match (a.offset, a.limit) {
-            (None, None) => text.into_owned(),
+            (None, None) => text,
             (offset, limit) => text
                 .lines()
                 .skip(offset.unwrap_or(1).saturating_sub(1))

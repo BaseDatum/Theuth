@@ -277,8 +277,10 @@ appended to the user text:
 [attachment: /Users/x/.wth/signal/inbox/1757500000000-0.png (image/png, 82 KiB)]
 ```
 
-The model reads it with `read_file` if it wants to. Voice notes get the same
-line with `, voice note, 12 s` appended. Nothing is transcribed.
+The model reads it with `read_file` if it wants to (a PDF or Office file
+comes back as Markdown, 20 §2.2). Images, and PDFs up to 32 MB, also ride
+along in `files` as native model input (17 §5, 20 §2.5). Voice notes get
+the same line with `, voice note, 12 s` appended. Nothing is transcribed.
 
 ## 8. Outbound
 

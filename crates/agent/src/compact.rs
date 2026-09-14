@@ -3,7 +3,9 @@
 use std::fmt;
 use std::str::FromStr;
 
-use genai::chat::{ChatMessage, ChatRole, ContentPart, MessageContent};
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use genai::chat::{Binary, BinarySource, ChatMessage, ChatRole, ContentPart, MessageContent};
 use serde::{Deserialize, Serialize};
 
 /// Appended as one user message to the live frame; the summary replaces
@@ -35,12 +37,16 @@ const OVERFLOW_NEEDLES: [&str; 8] = [
     "too many tokens",
 ];
 
-/// Flat token charge for one binary part in [`est`] (17 §3.4): a ≤1568 px PNG lands near this.
+/// Flat token charge for one image part in [`est`] (17 §3.4): a ≤1568 px PNG lands near this.
 pub const IMAGE_TOKENS: u32 = 1600;
+/// Token charge per PDF page (20 §2.5): Anthropic bills text plus a rendered
+/// image of each page, 1.5–3k tokens.
+pub const PDF_PAGE_TOKENS: u32 = 2000;
 
 /// Token estimate of one message: serialised chars / 4 (07 §7). The only
 /// local estimate in the design; applied to appended slices, never the whole history.
-/// A binary part counts a flat `IMAGE_TOKENS` — providers bill images by pixels (17 §3.4).
+/// An image part counts a flat `IMAGE_TOKENS` — providers bill images by pixels
+/// (17 §3.4); a PDF part counts `PDF_PAGE_TOKENS` per page.
 pub fn est(m: &ChatMessage) -> u32 {
     est_content(&m.content)
 }
@@ -51,10 +57,33 @@ pub fn est_content(c: &MessageContent) -> u32 {
     c.iter().fold(0u32, |acc, part| {
         acc.saturating_add(match part {
             ContentPart::Text(t) => chars(t.len()),
+            ContentPart::Binary(b) if b.is_pdf() => pdf_pages(b).saturating_mul(PDF_PAGE_TOKENS),
             ContentPart::Binary(_) => IMAGE_TOKENS,
             other => chars(serde_json::to_string(other).map_or(0, |s| s.len())),
         })
     })
+}
+
+/// Page count of a base64 PDF part: `/Type /Page` objects (not `/Pages`), minimum 1.
+// ponytail: byte scan, not a parse; object streams hide page objects in
+// some PDFs, so this undercounts them. lopdf if compaction ever cares.
+fn pdf_pages(b: &Binary) -> u32 {
+    let BinarySource::Base64(data) = &b.source else {
+        return 1;
+    };
+    let Ok(bytes) = BASE64.decode(data.as_bytes()) else {
+        return 1;
+    };
+    let n: usize = [&b"/Type/Page"[..], b"/Type /Page"]
+        .into_iter()
+        .map(|needle| {
+            bytes
+                .windows(needle.len() + 1)
+                .filter(|w| w.starts_with(needle) && w[needle.len()] != b's')
+                .count()
+        })
+        .sum();
+    u32::try_from(n).unwrap_or(u32::MAX).max(1)
 }
 
 /// Index of the first message kept verbatim (07 §8.2). `limit` is the token
@@ -253,12 +282,18 @@ mod tests {
     }
 
     #[test]
-    fn est_charges_images_flat() {
+    fn est_charges_images_flat_and_pdfs_per_page() {
         let img = ChatMessage::user(MessageContent::from_parts(vec![
             ContentPart::from_binary_base64("image/png", "A".repeat(1024 * 1024), None),
         ]));
         assert!(est(&img) <= IMAGE_TOKENS + 64, "{}", est(&img));
         assert_eq!(est(&ChatMessage::user("x".repeat(400))), 100);
+        // Three page objects, one page tree node; both spellings.
+        let pdf = b"%PDF-1.4\n1 0 obj<</Type /Pages/Kids[]>>endobj\n2 0 obj<</Type /Page>>endobj\n3 0 obj<</Type/Page/Parent 1 0 R>>endobj\n4 0 obj<</Type /Page /Parent 1 0 R>>endobj\n";
+        let doc = ChatMessage::user(MessageContent::from_parts(vec![
+            ContentPart::from_binary_base64("application/pdf", BASE64.encode(pdf), Some("a.pdf".into())),
+        ]));
+        assert_eq!(est(&doc), 3 * PDF_PAGE_TOKENS);
     }
 
     #[test]

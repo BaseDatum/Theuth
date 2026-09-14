@@ -129,6 +129,10 @@ with `Error { message: "attachment shot.png: 7.2 MB exceeds 5 MB" }` — the
 same outcome as a bad session id today. The TUI pre-checks extension and size
 at attach time (§4) so this path is for RPC/ACP callers, the trust boundary.
 
+Widened 2026-09-14 (20 §2.5): `application/pdf` is accepted too, capped at
+32 MB, and rides as a provider document part; `strip_images` writes
+`[document omitted: …]` and `text_of` `[document: name]` for it.
+
 ### 3.2 The message
 
 `Turn::run` (`loop_.rs:935-939`) and the steer injection (`965-966`):

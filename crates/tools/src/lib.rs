@@ -19,6 +19,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 pub mod approval;
+pub mod doc;
 pub mod fs;
 pub mod git;
 pub mod jobs;

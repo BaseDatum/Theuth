@@ -29,6 +29,7 @@ notify = { workspace = true }
 ignore = { workspace = true }
 grep-regex = { workspace = true }
 grep-searcher = { workspace = true }
+anydoc = { workspace = true }
 
 [features]
 ts = ["dep:ts-rs", "runtime/ts"]

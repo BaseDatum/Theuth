@@ -194,8 +194,9 @@ fn parse_session(id: &AcpSessionId) -> Result<SessionId, Error> {
 }
 
 /// `session/prompt` content as one user message: text verbatim, embedded text
-/// resources fenced with their uri, links as their uri; image blocks decoded to
-/// files under `<data_dir>/attachments/` and returned as paths (17 §5).
+/// resources fenced with their uri, links as their uri; image blocks and PDF
+/// blob resources decoded to files under `<data_dir>/attachments/` and
+/// returned as paths (17 §5, 20 §2.5).
 fn prompt_parts(blocks: &[ContentBlock], data_dir: &Path) -> (String, Vec<PathBuf>) {
     let mut out = String::new();
     let mut files = Vec::new();
@@ -211,11 +212,22 @@ fn prompt_parts(blocks: &[ContentBlock], data_dir: &Path) -> (String, Vec<PathBu
                     let _ = write!(out, "```{}\n{}\n```", t.uri, t.text);
                 }
                 EmbeddedResourceResource::BlobResourceContents(b) => {
-                    let _ = write!(out, "[binary resource {}]", b.uri);
+                    match save_blob(&b.blob, b.mime_type.as_deref().unwrap_or(""), data_dir) {
+                        Ok(Some(path)) => {
+                            out.pop();
+                            files.push(path);
+                        }
+                        Ok(None) => {
+                            let _ = write!(out, "[binary resource {}]", b.uri);
+                        }
+                        Err(e) => {
+                            let _ = write!(out, "[binary resource {}: {e}]", b.uri);
+                        }
+                    }
                 }
                 _ => out.push_str("[resource]"),
             },
-            ContentBlock::Image(img) => match save_image(&img.data, &img.mime_type, data_dir) {
+            ContentBlock::Image(img) => match save_blob(&img.data, &img.mime_type, data_dir) {
                 Ok(Some(path)) => {
                     // No text for this block: drop the separator pushed above.
                     out.pop();
@@ -235,14 +247,16 @@ fn prompt_parts(blocks: &[ContentBlock], data_dir: &Path) -> (String, Vec<PathBu
     (out, files)
 }
 
-/// Decodes a base64 image block into `<data_dir>/attachments/<sha256[..16]>.<ext>`;
-/// `None` for a mime type outside png/jpeg/gif/webp. An existing file is not rewritten.
-fn save_image(data: &str, mime: &str, data_dir: &Path) -> anyhow::Result<Option<PathBuf>> {
+/// Decodes a base64 image block or PDF blob into
+/// `<data_dir>/attachments/<sha256[..16]>.<ext>`; `None` for a mime type
+/// outside png/jpeg/gif/webp/pdf. An existing file is not rewritten.
+fn save_blob(data: &str, mime: &str, data_dir: &Path) -> anyhow::Result<Option<PathBuf>> {
     let ext = match mime {
         "image/png" => "png",
         "image/jpeg" => "jpg",
         "image/gif" => "gif",
         "image/webp" => "webp",
+        "application/pdf" => "pdf",
         _ => return Ok(None),
     };
     let bytes = base64::engine::general_purpose::STANDARD.decode(data)?;
@@ -462,7 +476,9 @@ impl Message<ApprovalRequested> for Relay {
 
 #[cfg(test)]
 mod tests {
-    use agent_client_protocol::schema::v1::{ImageContent, TextContent};
+    use agent_client_protocol::schema::v1::{
+        BlobResourceContents, EmbeddedResource, ImageContent, TextContent,
+    };
 
     use super::*;
 
@@ -471,23 +487,40 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("wth-acp-{}", uuid::Uuid::new_v4()));
         let bytes = b"\x89PNG\r\n\x1a\nnot really a png";
         let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+        let pdf = b"%PDF-1.7 not really";
+        let pdf_b64 = base64::engine::general_purpose::STANDARD.encode(pdf);
+        let blob = |b64: &str, mime: &str, uri: &str| {
+            let mut r = BlobResourceContents::new(b64, uri);
+            r.mime_type = Some(mime.to_owned());
+            ContentBlock::Resource(EmbeddedResource::new(
+                EmbeddedResourceResource::BlobResourceContents(r),
+            ))
+        };
         let blocks = [
             ContentBlock::Text(TextContent::new("look")),
             ContentBlock::Image(ImageContent::new(b64, "image/png")),
             ContentBlock::Image(ImageContent::new("AAAA", "image/tiff")),
             ContentBlock::Image(ImageContent::new("not base64!", "image/png")),
+            blob(&pdf_b64, "application/pdf", "file:///r.pdf"),
+            blob("AAAA", "application/zip", "file:///r.zip"),
         ];
         let (text, files) = prompt_parts(&blocks, &dir);
         let hex = format!("{:x}", Sha256::digest(bytes));
+        let pdf_hex = format!("{:x}", Sha256::digest(pdf));
         assert_eq!(
             files,
-            [dir.join("attachments").join(format!("{}.png", &hex[..16]))]
+            [
+                dir.join("attachments").join(format!("{}.png", &hex[..16])),
+                dir.join("attachments").join(format!("{}.pdf", &pdf_hex[..16])),
+            ]
         );
         assert_eq!(std::fs::read(&files[0]).unwrap(), bytes);
+        assert_eq!(std::fs::read(&files[1]).unwrap(), pdf);
         assert!(
             text.starts_with("look\n[image: unsupported image/tiff]\n[image: "),
             "{text}"
         );
+        assert!(text.ends_with("\n[binary resource file:///r.zip]"), "{text}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

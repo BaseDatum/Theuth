@@ -119,14 +119,16 @@ impl Frame<'_> {
 }
 
 /// Replaces every `ContentPart::Binary` in a user-role message with
-/// `Text("[image omitted: model is text-only]")` (17 §3.3). Other roles untouched.
+/// `Text("[image omitted: model is text-only]")` — `document` for a PDF
+/// (17 §3.3, 20 §2.5). Other roles untouched.
 pub fn strip_images(m: &mut ChatMessage) {
     if m.role != ChatRole::User {
         return;
     }
     for part in &mut m.content {
         if part.is_binary() {
-            *part = ContentPart::Text("[image omitted: model is text-only]".into());
+            let kind = if part.is_pdf() { "document" } else { "image" };
+            *part = ContentPart::Text(format!("[{kind} omitted: model is text-only]"));
         }
     }
 }

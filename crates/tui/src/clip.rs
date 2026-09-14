@@ -1,12 +1,13 @@
-//! Image attachments for the input box (design doc 17 §4): the OS clipboard
-//! image behind Ctrl+V, and a dropped image path pasted as text. The I/O
-//! half of what [`crate::model::Paste::Image`] holds; `model.rs` stays pure.
+//! Image and document attachments for the input box (design doc 17 §4, 20
+//! §2.5): the OS clipboard image behind Ctrl+V, and a dropped image or PDF
+//! path pasted as text. The I/O half of what [`crate::model::Paste::Image`]
+//! holds; `model.rs` stays pure.
 
 use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
-/// A pasted image on disk and its pixel size (0×0 when not decoded, i.e. a dropped file).
+/// A pasted image or PDF on disk and its pixel size (0×0 when not decoded, i.e. a dropped file).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Image {
     /// Where the bytes live; sent to the agent as-is.
@@ -20,8 +21,10 @@ pub struct Image {
 /// Long edge a pasted image is downscaled to (Anthropic's recommendation; larger is downscaled server-side).
 pub const MAX_EDGE: u32 = 1568;
 
-/// Largest file attached from disk (the binding provider cap, 17 §1).
+/// Largest image attached from disk (the binding provider cap, 17 §1).
 const MAX_BYTES: u64 = 5 * 1024 * 1024;
+/// Largest PDF attached from disk (Anthropic's document cap, 20 §2.5).
+const MAX_PDF_BYTES: u64 = 32 * 1024 * 1024;
 
 /// Extensions taken as an image when pasted as a path.
 const IMAGE_EXT: [&str; 5] = ["png", "jpg", "jpeg", "gif", "webp"];
@@ -92,9 +95,10 @@ fn encode_png(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
     out
 }
 
-/// `text` as a dropped image file: one line, shell quotes / backslash-escaped
+/// `text` as a dropped file: one line, shell quotes / backslash-escaped
 /// spaces removed, an existing regular file with a png/jpg/jpeg/gif/webp
-/// extension (case-insensitive) of at most 5 MB. `None` otherwise.
+/// extension (case-insensitive) of at most 5 MB, or a pdf of at most 32 MB.
+/// `None` otherwise.
 pub fn dropped_file(text: &str) -> Option<Image> {
     let line = text.trim();
     if line.is_empty() || line.contains(['\n', '\r']) {
@@ -108,11 +112,15 @@ pub fn dropped_file(text: &str) -> Option<Image> {
         .replace("\\ ", " ");
     let path = PathBuf::from(unquoted);
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
-    if !IMAGE_EXT.contains(&ext.as_str()) {
+    let cap = if IMAGE_EXT.contains(&ext.as_str()) {
+        MAX_BYTES
+    } else if ext == "pdf" {
+        MAX_PDF_BYTES
+    } else {
         return None;
-    }
+    };
     let meta = std::fs::metadata(&path).ok()?;
-    if !meta.is_file() || meta.len() > MAX_BYTES {
+    if !meta.is_file() || meta.len() > cap {
         return None;
     }
     Some(Image { path, w: 0, h: 0 })
