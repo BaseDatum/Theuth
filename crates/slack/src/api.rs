@@ -84,6 +84,8 @@ pub enum Chunk {
         status: TaskStatus,
         /// One line under the title.
         details: Option<String>,
+        /// Card body (reasoning text, 21 §8.5); no server-side cap seen up to 40 000.
+        output: Option<String>,
         /// Links.
         sources: Vec<Source>,
     },
@@ -98,13 +100,14 @@ impl From<Chunk> for SlackStreamChunk {
                 title,
                 status,
                 details,
+                output,
                 sources,
             } => SlackStreamChunk::TaskUpdate {
                 id,
                 title,
                 status: status.wire(),
                 details,
-                output: None,
+                output,
                 sources: (!sources.is_empty()).then(|| {
                     sources
                         .into_iter()
@@ -215,6 +218,23 @@ pub trait SlackApi: Send + Sync {
         Err(ApiError::Transport(
             "response_url posting is not supported".into(),
         ))
+    }
+    /// POST `{"response_type":"ephemeral","text","blocks","replace_original"}`
+    /// to a slash command's or click's `response_url` (21 §10.2).
+    async fn respond_blocks(
+        &self,
+        url: &str,
+        text: &str,
+        blocks: serde_json::Value,
+        replace_original: bool,
+    ) -> Result<(), ApiError> {
+        let _ = (url, text, blocks, replace_original);
+        Err(ApiError::Transport("unsupported".into()))
+    }
+    /// `views.open` with a click's `trigger_id`; `view` is a serde_json modal.
+    async fn views_open(&self, trigger_id: &str, view: serde_json::Value) -> Result<(), ApiError> {
+        let _ = (trigger_id, view);
+        Err(ApiError::Transport("unsupported".into()))
     }
 }
 
@@ -375,9 +395,31 @@ impl Api {
             .map(|_| ())
         }
     }
+
+    /// POSTs `body` to a `response_url`; counted under `response_url`.
+    async fn response_url(&self, url: &str, body: serde_json::Value) -> Result<(), ApiError> {
+        let r = self
+            .http
+            .post(url)
+            .json(&body)
+            .send()
+            .await
+            .and_then(reqwest::Response::error_for_status)
+            .map(|_| ())
+            .map_err(|e| ApiError::Transport(e.to_string()));
+        let mut calls = lock(&self.calls);
+        let c = calls.entry("response_url").or_default();
+        if r.is_ok() {
+            c.ok += 1;
+        } else {
+            c.err += 1;
+        }
+        r
+    }
 }
 
-fn blocks(v: serde_json::Value) -> Result<Vec<SlackBlock>, ApiError> {
+/// Our serde_json blocks as morphism's typed blocks.
+pub(crate) fn blocks(v: serde_json::Value) -> Result<Vec<SlackBlock>, ApiError> {
     serde_json::from_value(v).map_err(|e| ApiError::Transport(format!("blocks: {e}")))
 }
 
@@ -661,23 +703,41 @@ impl SlackApi for Api {
     }
 
     async fn respond(&self, url: &str, text: &str) -> Result<(), ApiError> {
-        let r = self
-            .http
-            .post(url)
-            .json(&serde_json::json!({ "response_type": "ephemeral", "text": text }))
-            .send()
-            .await
-            .and_then(reqwest::Response::error_for_status)
-            .map(|_| ())
-            .map_err(|e| ApiError::Transport(e.to_string()));
-        let mut calls = lock(&self.calls);
-        let c = calls.entry("response_url").or_default();
-        if r.is_ok() {
-            c.ok += 1;
-        } else {
-            c.err += 1;
-        }
-        r
+        self.response_url(
+            url,
+            serde_json::json!({ "response_type": "ephemeral", "text": text }),
+        )
+        .await
+    }
+
+    async fn respond_blocks(
+        &self,
+        url: &str,
+        text: &str,
+        blocks: serde_json::Value,
+        replace_original: bool,
+    ) -> Result<(), ApiError> {
+        self.response_url(
+            url,
+            serde_json::json!({
+                "response_type": "ephemeral",
+                "text": text,
+                "blocks": blocks,
+                "replace_original": replace_original,
+            }),
+        )
+        .await
+    }
+
+    async fn views_open(&self, trigger_id: &str, view: serde_json::Value) -> Result<(), ApiError> {
+        let view: SlackView =
+            serde_json::from_value(view).map_err(|e| ApiError::Transport(format!("view: {e}")))?;
+        let req = SlackApiViewsOpenRequest::new(trigger_id.into(), view);
+        self.run("views.open", async {
+            self.client.open_session(&self.bot).views_open(&req).await
+        })
+        .await
+        .map(|_| ())
     }
 }
 
@@ -712,6 +772,7 @@ mod tests {
             title: "shell".into(),
             status: TaskStatus::Complete,
             details: None,
+            output: None,
             sources: vec![],
         })
         else {

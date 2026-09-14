@@ -54,6 +54,14 @@ struct Cli {
     /// Print the Slack app manifest (paste into api.slack.com/apps → Create from manifest) and exit.
     #[arg(long, conflicts_with_all = ["headless", "serve", "acp", "link_signal"])]
     slack_manifest: bool,
+    /// Interactive Slack setup: create the app from the manifest (or update
+    /// `--app`), verify the bot and app-level tokens, set the owner, write
+    /// credentials.yaml and config.yaml, exit.
+    #[arg(long, conflicts_with_all = ["headless", "serve", "acp", "link_signal", "slack_manifest", "prompt"])]
+    slack_setup: bool,
+    /// Existing Slack app id (`A…`) that --slack-setup updates to the manifest instead of creating one.
+    #[arg(long, requires = "slack_setup")]
+    app: Option<String>,
 }
 
 const DEFAULT_CONFIG: &str = "# wth configuration. Every plugin reads its own section.
@@ -108,8 +116,8 @@ rpc:
 #   owner: \"+15551234567\"   # set by --link-signal / signal_link; owner-only commands
 #   allowed: []             # more E.164s; each gets its own thread
 
-# slack:                    # Slack frontend; runs in `wth --headless`. `wth --slack-manifest` prints the app manifest;
-#                           # tokens go in credentials.yaml as slack_bot / slack_app.
+# slack:                    # Slack frontend; runs in `wth --headless`. `wth --slack-setup` creates the app and fills
+#                           # this in; `wth --slack-manifest` prints the manifest for the manual path (tokens → credentials.yaml).
 #   enabled: true           # daemon opens the socket when tokens are present
 #   owner: U0123456789      # owner-only commands; may click any approval; receives unbound approvals
 #   allowed: []             # more user ids; each owns their threads
@@ -215,6 +223,9 @@ async fn run() -> anyhow::Result<()> {
 
     let config_path = cli.config.unwrap_or_else(|| data_dir.join("config.yaml"));
     first_run(&data_dir, &config_path)?;
+    if cli.slack_setup {
+        return slack::setup::run(&data_dir, cli.app, &mut slack::setup::Terminal).await;
+    }
     let config = Figment::new()
         .merge(Yaml::file(&config_path))
         .merge(Env::prefixed("WTH_").split("__"));

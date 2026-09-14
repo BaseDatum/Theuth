@@ -1,6 +1,6 @@
 # 21 – Slack: a workspace-side frontend for the daemon
 
-Status: draft v1 · 2026-09-14 · extends `00-architecture.md` §4, §7, §13;
+Status: as-built v1 · 2026-09-14 (§19) · extends `00-architecture.md` §4, §7, §13;
 `09-signal.md` (sibling frontend; trust, threads, reactions and command
 shapes are reused by reference); `19-subagent-board.md` §1–2 (subagents are
 sessions; `list_agents`); `03-streaming-markdown.md` §2 (`markdown::Text`).
@@ -462,13 +462,24 @@ complete and the repair is a full rewrite of one message.
 
 ### 8.5 Reasoning
 
-`ReasoningDelta` streams into `Turn.reasoning: Segment` — a separate
-message posted **before** the bubble in the thread on the first delta
-(`_thinking…_`), edited on the tick in update mode (§8.2 text rule) as a
-`> ` blockquote of the committed text, capped at 12 000 chars (`… n more`),
-finished on the first non-reasoning event. Slack collapses long messages
-behind "Show more", which is the collapse we want. `slack.reasoning: on |
-off`, default `on`. Providers that expose no reasoning post nothing.
+In stream mode reasoning is a **timeline task card**, so it sits exactly
+where it happened between the tool cards: on the first `ReasoningDelta` of
+a reasoning run `Task { id: "reasoning-<n>", title: "thinking", status:
+in_progress }`; on every tick while it runs the same id is re-sent with
+`output` = the committed reasoning text so far (the spike showed `output`
+accepts 40 000 chars and an identical id replaces the card); the first
+non-reasoning event completes it (`status: complete`, `details` = first
+line, `output` = the whole text ≤ 12 000). In update mode (no stream) it
+is a separate quoted message (`_thinking…_` then a `> ` blockquote, edited
+at block boundaries) — there every card is its own message anyway, so
+post order is event order. `slack.reasoning: true | false`, default
+`true`. Providers that expose no reasoning emit nothing.
+
+As-built v1 posted the quoted message in stream mode too and it sorted
+**below** the bubble whenever reasoning happened mid-turn: the bubble is
+one message created at turn start and Slack orders a thread by post time.
+Not an edit race; a consequence of one bubble per turn, fixed by putting
+reasoning inside it.
 
 ### 8.6 Status: reactions, session status, title
 
@@ -516,8 +527,9 @@ thread gets a board, the way the TUI gets one under its transcript.
 `SubagentSpawned { parent, child, name }`, `parent` bound → post in the
 parent's channel a **new top-level message** `↳ **grep-logs** · child of
 <parent permalink|this thread>` and bind `child` to `channel:<its ts>`.
-Permalinks are built, not fetched: `<team url>archives/<channel>/p<ts
-without the dot>` from `auth.test`'s `url`. The child's first
+Permalinks come from `chat.getPermalink`, cached per thread (Enterprise
+Grid workspaces serve a different host than `auth.test`'s `url`, so the
+URL cannot be built; the built form is the fallback). The child's first
 `TurnStarted.text` (the task) is posted into the child thread as `▸
 **task**` + text (≤ 3 000); then the child's turns render there through
 the same worker code — nothing is special-cased by depth. In the
@@ -611,36 +623,95 @@ message is new), `approve/deny` (buttons), `signal`. Added: `slack status`
 (the §13 snapshot).
 
 Ack within 3 s: morphism's command callback returns the response; answers
-that are pure formatting of one fast ask (`help`, `status`, `sessions`,
-`model` list) return `{ response_type: ephemeral, text }` directly; the
-rest return an empty ack and post through `response_url` (5 uses / 30 min;
-we use one) when the ask finishes — `compact` and `resume` take seconds.
+that are pure formatting of one fast ask return blocks directly; the rest
+return an empty ack and post through `response_url` (5 uses / 30 min) when
+the ask finishes — `compact` and `resume` take seconds.
 
 Slash payloads carry `channel_id` and `user_id` but no thread. A
 session-scoped sub-command (`cancel`, `compact`, `agents`, `model <id>`,
 `prompt`) resolves the session as **the invoking user's most recently
-active thread in that channel**; none → `no active thread here; run it in
-a DM with the bot or /wth resume <id>`. Explicit `… <session-prefix>`
-overrides. Replies are ephemeral, so a channel stays clean.
+active thread in that channel**; none → the reply says so and offers the
+session picker. Explicit `… <session-prefix>` overrides. Replies are
+ephemeral, so a channel stays clean.
 
-### 10.3 Manifest
+**Replies are Block Kit, not fenced text.** Slack has selects, buttons,
+overflow menus and `replace_original`; a phone user should tap, not type
+ids. v1 rendered every reply as a code block and this section replaces
+that. `ui.rs` builds the blocks; `commands::handle` returns `Reply {
+text: String /* notification fallback */, blocks: Option<Value> }`; button
+and select clicks arrive as `block_actions` with `action_id` prefixed
+`cmd:` and are routed by `channel::handle_inbound` next to the approval
+clicks, answering through the click's `response_url` with
+`replace_original: true` so the panel updates in place.
 
-`crates/slack/manifest.yaml`, printed by `wth --slack-manifest`; the user
-creates the app from it at api.slack.com/apps, installs it, copies `xoxb-`
-and `xapp-` into `credentials.yaml`. Contents: `settings.socket_mode_enabled:
-true`, `interactivity.is_enabled: true`, `features.agent_view {
-agent_description, suggested_prompts: ["What can you do here?", "Summarise
-my last session", "Show running agents"] }` (new apps must use
-`agent_view`; `assistant_view` closed to new apps since 2026-06-30; prompts
-are static manifest data, no code), `features.slash_commands: [/wth]`,
-`bot_user { display_name: wth, always_online: true }`,
-`event_subscriptions.bot_events: [message.im, app_mention,
-agent_session_stopped, agent_session_title_changed]`,
+| command | blocks | actions (`action_id` → effect) |
+|---|---|---|
+| `/wth` (bare) / `help` | header `wth`, one `section` per group (session · harness · setup) with `mrkdwn` one-liners, an `actions` row of the common buttons: Sessions · Agents · Models · Status | `cmd:sessions`, `cmd:agents`, `cmd:models`, `cmd:status` re-render that panel in place |
+| `status` | `section` with `fields` (connection · bot · team · threads · open streams · session · model · turn) + `context` of per-method call counts | `cmd:refresh` |
+| `sessions` | header + one `section` per session (title bold, `last-8 · model · age` as context) with an `overflow` menu: Resume here · Cancel · Compact | `cmd:resume:<id>` posts the root message and binds (as §6), `cmd:cancel:<id>`, `cmd:compact:<id>` |
+| `agents` | one `section` per row of `list_agents` (glyph, name, state, detail, age) with a Cancel button while running and an Open-thread link when bound | `cmd:cancel:<id>` |
+| `model [id]` | `section` "current: …" + `static_select` of `list_models` grouped by provider (`option_groups`), initial option = current | `cmd:model` (select) → `set_model` on the resolved session, confirmation replaces the panel |
+| `compact`, `cancel`, `prompt` | `section` result text (`prompt` in a fence; it is text) | – |
+| `skills`, `mcp` | one `section` per entry with `context` (source · count) and an `actions` row: Sync · Add… | `cmd:skills:sync`, `cmd:mcp:sync`; Add opens a **modal** (`views.open` with the click's `trigger_id`) with one `plain_text_input` (URL or JSON), submitted as `view_submission` → the existing add ask |
+| `login`, `logout` | one `section` per provider with its state and a Log in / Log out button; `login` replies with a `section` holding the URL as a link button | `cmd:login:<name>`, `cmd:logout:<name>` |
+| `approvals` | `section` + `radio_buttons` (ask · off this session · off always) | `cmd:approvals` |
+| `slack …` | `status` panel + `context` of allowed users / channels; Allow/Remove keep their text form (ids are pasted, not picked) | – |
+
+Rules: the `text` fallback is one line (`sessions: 4`), never the whole
+table; `section.text` ≤ 3 000 and ≤ 50 blocks per message (paginate at 20
+entries with a `More…` button `cmd:<panel>:page:<n>`); every `action_id`
+is unique within a message (Slack rejects duplicates, jarvis C:5700); a
+click by a user who is neither owner nor allowed gets `not allowed` and no
+effect; owner-only panels (`approvals`, `slack`) reject non-owner clicks
+the same way. Modals need `trigger_id` within 3 s of the click, so the
+`views.open` happens in the click handler before any ask.
+
+### 10.3 Manifest and setup
+
+`crates/slack/manifest.yaml` is in git and compiled in (`slack::MANIFEST`);
+`wth --slack-manifest` prints it for the paste-into-api.slack.com path.
+Contents: `settings.socket_mode_enabled: true`, `interactivity.is_enabled:
+true`, `features.agent_view { agent_description, suggested_prompts }` (new
+apps must use `agent_view`; prompts are static manifest data),
+`features.slash_commands: [/wth]`, `bot_user { display_name: wth,
+always_online: true }`, `event_subscriptions.bot_events: [message.im,
+app_mention, agent_session_stopped, agent_session_title_changed]`,
 `oauth_config.scopes.bot: [chat:write, im:history, im:write,
 app_mentions:read, reactions:write, files:read, files:write, commands,
 assistant:write]`. The app-level token needs `connections:write`.
-Rejected: `apps.manifest.create` (a third, per-user configuration token
-for a one-time action).
+
+**`wth --slack-setup`** drives as much of the rest as Slack's API allows,
+one interactive terminal session, no daemon running:
+
+1. Asks for an **app configuration token** (`xoxe.xoxp-…`, from
+   api.slack.com/apps → "Your App Configuration Tokens", 12 h lifetime;
+   the prompt prints that URL). `apps.manifest.create { manifest }` with it
+   → `app_id`, `credentials`, `oauth_authorize_url`. An existing app can be
+   updated instead: `--slack-setup --app <A…>` runs `apps.manifest.update`
+   (how an installed jarvis-era app is brought to this manifest without
+   recreating it).
+2. Prints the install URL (`oauth_authorize_url`, or
+   `https://api.slack.com/apps/<app_id>/install-on-team` for an update)
+   and waits for the user to paste the **bot token** (`xoxb-`) the app page
+   shows after install. Verified with `auth.test`; the bot user and team
+   are printed.
+3. Prints `https://api.slack.com/apps/<app_id>/general` and asks for an
+   **app-level token** with `connections:write` (`xapp-`); Slack has no API
+   that mints one. Verified with `apps.connections.open`.
+4. Asks for the **owner**: an `@handle` or `U…` id; a handle is resolved
+   with `users.lookupByEmail`/`users.list` only if `users:read` is granted
+   (it is not in the manifest), so the prompt says how to copy the id from
+   a Slack profile ("Copy member ID") and accepts `U…` only.
+5. Writes `slack_bot` / `slack_app` into `credentials.yaml` (0600) and
+   `slack.owner` / `slack.enabled: true` into `config.yaml`
+   (`write_config_value`), prints `run wth --headless and DM the bot`.
+
+Every step is idempotent and re-runnable; a step whose input is already
+present (a token in `credentials.yaml` that passes `auth.test`) is
+skipped with a line saying so. The Slack CLI (`slack` from slack.dev/cli)
+was considered and rejected: it targets its own project layout and calls
+the same `apps.manifest.*` methods underneath; a binary dependency for two
+HTTP calls.
 
 ## 11. State, restart, and what is truth
 
@@ -668,7 +739,7 @@ slack:
   allowed: []              # more user ids; each owns their threads
   channels: []             # channels where @wth is honoured; empty = DMs only
   tools: all               # all | errors | none — task cards
-  reasoning: on            # on | off — the quoted reasoning message
+  reasoning: true          # reasoning as a timeline card (stream) or quoted message (update)
   approvals: all           # all | threads — where approvals for non-Slack sessions go (§10.1)
 ```
 
@@ -868,3 +939,47 @@ Each step leaves `wth` runnable; formatters and the suite once per step.
    channel over Socket Mode (added in 21)`, 00 §13 row `slack → slack crate
    → plugin → 21`, 00 §1.3 patch list gains the morphism fork; this doc to
    as-built with the §15 item 7 record and what was not exercised.
+
+## 19. Status (as-built, 2026-09-14)
+
+Shipped: `crates/slack` (`lib`, `api`, `socket`, `channel`, `bubble`,
+`threads`, `commands`, `ui`, `approvals`, `board`, `setup`; `manifest.yaml`),
+the slack-morphism fork (`skymoore/slack-morphism-rust` master = v2.28.0 +
+four commits, upstream PR #388), `markdown::Text::committed()`, `rpc`
+methods/bridge/export, `wth --slack-manifest` / `--slack-setup`, README and
+00 amendments. Steps 1–7 of §18 done; §16 spikes 1–7 answered (facts in
+§8.3–8.5 and `local` notes: stream dies at ~5 min wall, 45 s idle survives,
+`chat.update` on a live stream → `streaming_state_conflict`, on a dead one
+repairs, `task_update.output` unbounded, `markdown_text` 12 000 enforced,
+files v2 into a thread works, `getUploadURLExternal` is form-encoded,
+permalinks need `chat.getPermalink` on Enterprise Grid).
+
+Exercised: `cargo clippy --workspace -D warnings`, `cargo test --workspace`
+(slack: 73 tests — socket dedup, pacer spacing, bubble open/flush/keepalive/
+rotation/repair/update-mode, reasoning card and quoted fallback, task cards
+and snippet source, routing/trust/steer, approvals in thread and owner DM
+with clicks, child threads and board, `/wth` panels and `cmd:*` clicks,
+setup create/update/skip/re-prompt, threads round-trip), `cargo check -p rpc
+--features ts`; the real workspace: `auth.test`, owner DM, boot-time
+stream cleanup, two Socket Mode connections, `slack_status` over RPC; the
+user's first pass (streamed reply in a thread, tables, tool timeline cards
+with approval buttons, subagent thread + board + result card, `/jarvis`
+text replies) reported good, with one finding — mid-turn reasoning sorted
+below the bubble — fixed by §8.5's card.
+
+Not exercised end-to-end yet (next user pass): reasoning as a timeline card
+with a real provider; the Block Kit panels, overflow/select/radio clicks
+and the two modals; `wth --slack-setup --app` against the live app; the
+native stop button (needs the two `agent_session_*` events on the app,
+§10.3); a > 5 min turn rotating with cards carried over; daemon restart
+mid-stream (boot cleanup ran against an empty list only); `update` mode
+(every stream in this workspace opened); rate-limit paths (no 429 seen).
+
+Deviations from the draft, recorded: config `reasoning` is a bool, not
+`on|off`; `Identity.url` dropped (permalinks fetched); approval cards are
+tracked in one Channel-level map; child events fan out to every bound
+ancestor so a top-level board shows grandchildren; `Segment` is private to
+`bubble.rs`; `SlackApi` gained `respond`, `respond_blocks`, `views_open`;
+`Port` gained `resolve`, `list_agents`; `cancel`/`compact` take an explicit
+session prefix; `Api::new` installs the aws-lc-rs rustls provider (the §2.1
+prediction came true: both `ring` and `aws-lc-rs` link).

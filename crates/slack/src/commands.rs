@@ -1,17 +1,20 @@
 //! `/wth <sub-command>` (design doc 21 §10.2): the 09 §9 table as
-//! sub-commands, each one ask plus a formatter, like `signal::commands`.
+//! sub-commands, each one ask plus a Block Kit panel from [`crate::ui`].
 //! The channel classifies the payload's `text`, decides ack-now vs
-//! `response_url` with [`is_instant`], and acts on [`Outcome`] side effects.
+//! `response_url` with [`is_instant`], routes `cmd:*` clicks through
+//! [`action`] and modal submits through [`view_submission`], and acts on
+//! [`Outcome`] side effects.
 
+use std::collections::HashMap;
 use std::fmt::Display;
 
 use agent::{AGENT_ACTOR, Agents};
 use anyhow::Context as _;
-use chrono::{DateTime, Utc};
 use kameo::actor::ActorRef;
 use runtime::SessionId;
-use tools::McpAuth;
 
+pub use crate::ui::Reply;
+use crate::ui::{self, short};
 use crate::{SLACK_ACTOR, SlackStatus};
 
 /// A parsed `/wth` sub-command.
@@ -54,23 +57,23 @@ pub enum Cmd {
 /// What the channel does after a command.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Outcome {
-    /// Reply with this text.
-    Text(String),
-    /// `resume`: bind a new thread to `session`, rooted at a message with `text`.
+    /// Send this reply.
+    Text(Reply),
+    /// `resume`: bind a new thread to `session`, rooted at a message with the reply text.
     Resume {
         /// The resolved session.
         session: SessionId,
         /// Its current title.
         title: String,
         /// `resumed <id> · <title>`.
-        text: String,
+        reply: Reply,
     },
     /// `cancel`: the turn was cancelled; the channel updates its thread.
     Cancelled {
         /// The cancelled session.
         session: SessionId,
         /// `cancelled <id>`.
-        text: String,
+        reply: Reply,
     },
 }
 
@@ -86,10 +89,14 @@ pub struct CommandCx<'a> {
     pub session: Option<SessionId>,
     /// Snapshot for `status` and `slack status`.
     pub status: SlackStatus,
+    /// Page of a list panel: 0 from the slash command, `n` from a `More…` click.
+    pub page: usize,
+    /// Thread permalinks of bound sessions, for the `agents` panel's links.
+    pub links: HashMap<SessionId, String>,
 }
 
 /// Name, argument hint, one-line description (09 §9 table, 21 §10.2).
-const COMMANDS: &[(&str, &str, &str)] = &[
+pub(crate) const COMMANDS: &[(&str, &str, &str)] = &[
     ("help", "", "this list"),
     ("status", "", "connection, session, model, turn"),
     ("sessions", "", "10 newest sessions"),
@@ -125,18 +132,8 @@ const COMMANDS: &[(&str, &str, &str)] = &[
 
 const OWNER_MSG: &str = "This command is restricted to the owner.";
 const NO_SESSION: &str = "no active thread here; run it in a DM with the bot or /wth resume <id>";
-/// `prompt` body cap so the fenced reply stays under Slack's 12 000-char message limit.
+/// `prompt` body cap: at most four ≤ 3 000-char sections.
 const PROMPT_MAX: usize = 11_900;
-
-/// The help text: one line per sub-command inside a fence.
-#[must_use]
-pub fn help() -> String {
-    table(
-        COMMANDS
-            .iter()
-            .map(|(n, a, d)| vec![(*n).to_owned(), (*a).to_owned(), (*d).to_owned()]),
-    )
-}
 
 /// The sub-command in a slash payload's `text`: first word lowercased,
 /// exact name else the unique name it prefixes; empty is `help`.
@@ -218,31 +215,99 @@ fn session_scoped(cmd: &Cmd) -> bool {
 /// any actor is asked; ask failures become `error: …` text.
 pub async fn handle(cmd: Cmd, cx: CommandCx<'_>) -> Outcome {
     if owner_only(&cmd) && cx.user != cx.owner {
-        return Outcome::Text(OWNER_MSG.to_owned());
+        return Outcome::Text(Reply::text(OWNER_MSG));
     }
     if session_scoped(&cmd) && cx.session.is_none() {
-        return Outcome::Text(NO_SESSION.to_owned());
+        return Outcome::Text(Reply::text(NO_SESSION));
     }
     match run(cmd, &cx).await {
         Ok(out) => out,
-        Err(e) => Outcome::Text(format!("error: {e:#}")),
+        Err(e) => Outcome::Text(Reply::text(format!("error: {e:#}"))),
+    }
+}
+
+/// A `cmd:*` click (21 §10.2 table) as the command it stands for, run
+/// through [`handle`] so the same gates apply. `value` is a button's
+/// `value` or a select's chosen option; `cmd:<panel>:page:<n>` re-renders
+/// page `n`. An unknown id answers `unknown action`.
+pub async fn action(action_id: &str, value: Option<&str>, mut cx: CommandCx<'_>) -> Outcome {
+    let unknown = || Outcome::Text(Reply::text(format!("unknown action {action_id:?}")));
+    let Some(rest) = action_id.strip_prefix("cmd:") else {
+        return unknown();
+    };
+    let parts: Vec<&str> = rest.split(':').collect();
+    let words = |v: &[&str]| v.iter().map(|s| (*s).to_owned()).collect();
+    let cmd = match parts.as_slice() {
+        ["sessions"] => Cmd::Sessions,
+        ["agents"] => Cmd::Agents,
+        ["models"] => Cmd::Model(None),
+        ["status" | "refresh"] => Cmd::Status,
+        ["resume", id] => Cmd::Resume((*id).to_owned()),
+        ["cancel", id] => Cmd::Cancel(Some((*id).to_owned())),
+        ["compact", id] => Cmd::Compact(Some((*id).to_owned())),
+        ["model"] => match value {
+            Some(model) => Cmd::Model(Some(model.to_owned())),
+            None => return unknown(),
+        },
+        ["skills", "sync"] => Cmd::Skills(words(&["sync"])),
+        ["mcp", "sync"] => Cmd::Mcp(words(&["sync"])),
+        ["login", name] => Cmd::Login(Some((*name).to_owned())),
+        ["logout", name] => Cmd::Logout(Some((*name).to_owned())),
+        ["approvals"] => match value {
+            Some("ask") => Cmd::Approvals(words(&["on"])),
+            Some("off_session") => Cmd::Approvals(words(&["off"])),
+            Some("off_always") => Cmd::Approvals(words(&["off", "always"])),
+            _ => return unknown(),
+        },
+        [panel, "page", n] => {
+            let Ok(page) = n.parse() else {
+                return unknown();
+            };
+            cx.page = page;
+            match *panel {
+                "sessions" => Cmd::Sessions,
+                "skills" => Cmd::Skills(Vec::new()),
+                "mcp" => Cmd::Mcp(Vec::new()),
+                _ => return unknown(),
+            }
+        }
+        _ => return unknown(),
+    };
+    handle(cmd, cx).await
+}
+
+/// A submitted Add… modal ([`ui::modal_add`]) as the command it stands
+/// for: `cmd:skills:add` → `skills add <input>`, `cmd:mcp:add` → `mcp add <input>`.
+#[must_use]
+pub fn view_submission(callback_id: &str, input: &str) -> Cmd {
+    let add = || vec!["add".to_owned(), input.trim().to_owned()];
+    match callback_id {
+        "cmd:skills:add" => Cmd::Skills(add()),
+        "cmd:mcp:add" => Cmd::Mcp(add()),
+        _ => Cmd::Unknown(callback_id.to_owned()),
     }
 }
 
 async fn run(cmd: Cmd, cx: &CommandCx<'_>) -> anyhow::Result<Outcome> {
-    let text = |s: String| Ok(Outcome::Text(s));
+    let text = |s: String| Ok(Outcome::Text(ui::result(&s)));
+    let panel = |r: Reply| Ok(Outcome::Text(r));
     match cmd {
-        Cmd::Help => text(help()),
-        Cmd::Unknown(word) => text(format!("unknown sub-command {word:?}\n{}", help())),
-        Cmd::Status => text(status(cx).await?),
+        Cmd::Help => panel(ui::help()),
+        Cmd::Unknown(word) => {
+            let mut r = ui::help();
+            r.text = format!("unknown sub-command {word:?}");
+            panel(r)
+        }
+        Cmd::Status => panel(status(cx).await?),
         Cmd::Sessions => {
-            let rows = agent()?.ask(agent::ListSessions).await.map_err(err)?;
-            text(table(
-                rows.iter()
-                    .filter(|s| s.parent.is_none())
-                    .take(10)
-                    .map(|s| vec![short(s.id), s.title.clone(), age(s.updated_at)]),
-            ))
+            let rows: Vec<_> = agent()?
+                .ask(agent::ListSessions)
+                .await
+                .map_err(err)?
+                .into_iter()
+                .filter(|s| s.parent.is_none())
+                .collect();
+            panel(ui::sessions(&rows, cx.page))
         }
         Cmd::Resume(id) => {
             if id.is_empty() {
@@ -251,7 +316,7 @@ async fn run(cmd: Cmd, cx: &CommandCx<'_>) -> anyhow::Result<Outcome> {
             match resolve(&id).await? {
                 Ok(s) => Ok(Outcome::Resume {
                     session: s.id,
-                    text: format!("resumed {} · {}", short(s.id), s.title),
+                    reply: ui::result(&format!("resumed {} · {}", short(s.id), s.title)),
                     title: s.title,
                 }),
                 Err(msg) => text(msg),
@@ -265,7 +330,7 @@ async fn run(cmd: Cmd, cx: &CommandCx<'_>) -> anyhow::Result<Outcome> {
             agent()?.ask(agent::Cancel { session }).await.map_err(err)?;
             Ok(Outcome::Cancelled {
                 session,
-                text: format!("cancelled {}", short(session)),
+                reply: ui::result(&format!("cancelled {}", short(session))),
             })
         }
         Cmd::Compact(id) => {
@@ -283,20 +348,20 @@ async fn run(cmd: Cmd, cx: &CommandCx<'_>) -> anyhow::Result<Outcome> {
             text(format!("compacted → epoch {epoch}"))
         }
         Cmd::Model(None) => {
-            let models = agent()?.ask(agent::ListModels).await.map_err(err)?;
-            let mut out = table(models.iter().take(20).map(|m| {
-                vec![
-                    m.id.clone(),
-                    format!("{}{}", k(m.context), if m.image { " · vision" } else { "" }),
-                ]
-            }));
-            if models.len() > 20 {
-                out.push_str(&format!(
-                    "\n{} more; /wth model <id> to set",
-                    models.len() - 20
-                ));
-            }
-            text(out)
+            let agent = agent()?;
+            let models = agent.ask(agent::ListModels).await.map_err(err)?;
+            let current = match cx.session {
+                Some(session) => agent
+                    .ask(agent::ListSessions)
+                    .await
+                    .map_err(err)?
+                    .into_iter()
+                    .find(|s| s.id == session)
+                    .map(|s| s.model)
+                    .unwrap_or_default(),
+                None => String::new(),
+            };
+            panel(ui::models(&models, &current))
         }
         Cmd::Model(Some(model)) => {
             let info = agent()?
@@ -314,22 +379,7 @@ async fn run(cmd: Cmd, cx: &CommandCx<'_>) -> anyhow::Result<Outcome> {
                 .ask(agent::ListAgents { session })
                 .await
                 .map_err(err)?;
-            if rows.is_empty() {
-                return text("no subagents".to_owned());
-            }
-            text(table(rows.iter().map(|a| {
-                let since = if a.state == agent::AgentState::Running {
-                    a.started_at
-                } else {
-                    a.finished_at
-                };
-                vec![
-                    path(a, &rows),
-                    a.state.word().to_owned(),
-                    a.last.chars().take(40).collect(),
-                    since.map_or_else(String::new, age),
-                ]
-            })))
+            panel(ui::agents(&rows, &cx.links))
         }
         Cmd::Prompt => {
             let prompt = agent()?
@@ -342,24 +392,28 @@ async fn run(cmd: Cmd, cx: &CommandCx<'_>) -> anyhow::Result<Outcome> {
             if body.len() < prompt.len() {
                 body.push_str("\n…");
             }
-            text(format!("```\n{body}\n```"))
+            panel(ui::code(&body))
         }
-        Cmd::Skills(args) => skills(&args).await,
-        Cmd::Mcp(args) => mcp_cmd(&args).await,
+        Cmd::Skills(args) => skills(&args, cx.page).await,
+        Cmd::Mcp(args) => mcp_cmd(&args, cx.page).await,
         Cmd::Login(None) => logins().await,
         Cmd::Login(Some(name)) => {
             let url = if is_provider(&name).await? {
                 agent()?
-                    .ask(agent::Login { provider: name })
+                    .ask(agent::Login {
+                        provider: name.clone(),
+                    })
                     .await
                     .map_err(err)?
             } else {
                 mcp()?
-                    .ask(tools::McpLogin { server: name })
+                    .ask(tools::McpLogin {
+                        server: name.clone(),
+                    })
                     .await
                     .map_err(err)?
             };
-            text(format!("login: open {url}"))
+            panel(ui::login_url(&name, &url))
         }
         Cmd::Logout(None) => text("usage: /wth logout <name>".into()),
         Cmd::Logout(Some(name)) => {
@@ -411,11 +465,9 @@ async fn resolve(id: &str) -> anyhow::Result<Result<agent::SessionSummary, Strin
 }
 
 /// `status`: the channel snapshot plus the bound session's model and turn.
-async fn status(cx: &CommandCx<'_>) -> anyhow::Result<String> {
-    let mut out = crate::render_status(&cx.status);
+async fn status(cx: &CommandCx<'_>) -> anyhow::Result<Reply> {
     let Some(session) = cx.session else {
-        out.push_str("\nsession: none");
-        return Ok(out);
+        return Ok(ui::status(&cx.status, None));
     };
     // ponytail: LoadSession renders the whole history just for `running`
     // and `model`; ask the worker for its TurnStarted flag if this shows.
@@ -424,28 +476,18 @@ async fn status(cx: &CommandCx<'_>) -> anyhow::Result<String> {
         .await
         .map_err(err)?;
     let turn = if loaded.running { "running" } else { "idle" };
-    out.push_str(&format!(
-        "\nsession: {} · {} · turn: {turn}",
-        short(session),
-        loaded.model
-    ));
-    Ok(out)
+    let line = format!("{} · {} · turn: {turn}", short(session), loaded.model);
+    Ok(ui::status(&cx.status, Some(&line)))
 }
 
 /// `skills [add <url> | rm <name> | sync]`.
-async fn skills(args: &[String]) -> anyhow::Result<Outcome> {
+async fn skills(args: &[String], page: usize) -> anyhow::Result<Outcome> {
     let (sub, rest) = split(args);
     let agent = agent()?;
     let out = match (sub, rest.as_str()) {
         ("", _) => {
             let rows = agent.ask(agent::ListSkills).await.map_err(err)?;
-            table(rows.iter().map(|s| {
-                vec![
-                    s.name.clone(),
-                    if s.always { "always" } else { "" }.to_owned(),
-                    s.description.clone(),
-                ]
-            }))
+            return Ok(Outcome::Text(ui::skills(&rows, page)));
         }
         ("sync", _) => synced(agent.ask(agent::SyncSkills).await.map_err(err)?),
         ("add", url) if !url.is_empty() => {
@@ -485,11 +527,11 @@ async fn skills(args: &[String]) -> anyhow::Result<Outcome> {
         }
         _ => "usage: /wth skills [add <url> | rm <name> | sync]".to_owned(),
     };
-    Ok(Outcome::Text(out))
+    Ok(Outcome::Text(ui::result(&out)))
 }
 
 /// `mcp [add <url|json> | sync]`.
-async fn mcp_cmd(args: &[String]) -> anyhow::Result<Outcome> {
+async fn mcp_cmd(args: &[String], page: usize) -> anyhow::Result<Outcome> {
     // ponytail: the JSON came in as words and is rejoined with single
     // spaces; only string values with runs of spaces notice.
     let (sub, rest) = split(args);
@@ -497,19 +539,7 @@ async fn mcp_cmd(args: &[String]) -> anyhow::Result<Outcome> {
     let out = match (sub, rest.as_str()) {
         ("", _) => {
             let rows = mcp.ask(tools::ListServers::default()).await.map_err(err)?;
-            table(rows.iter().map(|s| {
-                vec![
-                    s.name.clone(),
-                    if s.connected { "connected" } else { "off" }.to_owned(),
-                    format!("{} tools", s.tools.len()),
-                    match s.auth {
-                        McpAuth::None => "",
-                        McpAuth::Required => "login required",
-                        McpAuth::LoggedIn => "logged in",
-                    }
-                    .to_owned(),
-                ]
-            }))
+            return Ok(Outcome::Text(ui::mcp(&rows, page)));
         }
         ("sync", _) => synced(mcp.ask(tools::SyncMcp).await.map_err(err)?),
         ("add", src) if git_url(src) => {
@@ -532,42 +562,17 @@ async fn mcp_cmd(args: &[String]) -> anyhow::Result<Outcome> {
         }
         _ => "usage: /wth mcp [add <url|json> | sync]".to_owned(),
     };
-    Ok(Outcome::Text(out))
+    Ok(Outcome::Text(ui::result(&out)))
 }
 
 /// `login`: providers, then MCP servers that use OAuth.
 async fn logins() -> anyhow::Result<Outcome> {
-    let mut rows: Vec<Vec<String>> = agent()?
-        .ask(agent::ListLogins)
+    let providers = agent()?.ask(agent::ListLogins).await.map_err(err)?;
+    let servers = mcp()?
+        .ask(tools::ListServers::default())
         .await
-        .map_err(err)?
-        .into_iter()
-        .map(|l| {
-            let status = match (l.logged_in, l.account) {
-                (false, _) => "not logged in".to_owned(),
-                (true, Some(a)) => format!("logged in ({a})"),
-                (true, None) => "logged in".to_owned(),
-            };
-            vec![l.name, status]
-        })
-        .collect();
-    rows.extend(
-        mcp()?
-            .ask(tools::ListServers::default())
-            .await
-            .map_err(err)?
-            .into_iter()
-            .filter(|s| s.auth != McpAuth::None)
-            .map(|s| {
-                let status = if s.auth == McpAuth::LoggedIn {
-                    "logged in (mcp)"
-                } else {
-                    "login required (mcp)"
-                };
-                vec![s.name, status.to_owned()]
-            }),
-    );
-    Ok(Outcome::Text(table(rows)))
+        .map_err(err)?;
+    Ok(Outcome::Text(ui::logins(&providers, &servers)))
 }
 
 /// `name` is an OAuth provider (else it is taken as an MCP server).
@@ -580,16 +585,18 @@ async fn is_provider(name: &str) -> anyhow::Result<bool> {
         .any(|l| l.name == name))
 }
 
-/// `approvals on|off [always]`: `always` switches the persisted default.
+/// `approvals [on|off [always]]`: bare shows the radio panel; `always`
+/// switches the persisted default.
 async fn approvals_cmd(session: Option<SessionId>, args: &[String]) -> anyhow::Result<Outcome> {
     let mut words = args.iter().map(String::as_str);
     let enabled = match words.next() {
+        None => return Ok(Outcome::Text(ui::approvals(None))),
         Some("on") => true,
         Some("off") => false,
-        _ => {
-            return Ok(Outcome::Text(
-                "usage: /wth approvals on|off [always]".into(),
-            ));
+        Some(_) => {
+            return Ok(Outcome::Text(Reply::text(
+                "usage: /wth approvals on|off [always]",
+            )));
         }
     };
     let session = match words.next() {
@@ -598,9 +605,9 @@ async fn approvals_cmd(session: Option<SessionId>, args: &[String]) -> anyhow::R
             "no active thread here; run it in a DM with the bot, or use `/wth approvals off always`",
         )?),
         Some(w) => {
-            return Ok(Outcome::Text(format!(
+            return Ok(Outcome::Text(Reply::text(format!(
                 "approvals: expected `always`, got {w:?}"
-            )));
+            ))));
         }
     };
     let state = ActorRef::<tools::ToolRegistry>::lookup(tools::REGISTRY_ACTOR)?
@@ -608,19 +615,26 @@ async fn approvals_cmd(session: Option<SessionId>, args: &[String]) -> anyhow::R
         .ask(tools::SetApprovals { session, enabled })
         .await
         .map_err(err)?;
-    Ok(Outcome::Text(format!(
+    let current = match (state.global, state.session) {
+        (false, _) => "off_always",
+        (true, false) => "off_session",
+        (true, true) => "ask",
+    };
+    let mut r = ui::approvals(Some(current));
+    r.text = format!(
         "approvals: {} (this session), {} (default)",
         on_off(state.session),
         on_off(state.global)
-    )))
+    );
+    Ok(Outcome::Text(r))
 }
 
 /// `slack [status | allow <U> | rm <U> | channel add <C> | channel rm <C>]`.
 async fn slack_cmd(cx: &CommandCx<'_>, args: &[String]) -> anyhow::Result<Outcome> {
-    let text = |s: String| Ok(Outcome::Text(s));
+    let text = |s: String| Ok(Outcome::Text(ui::result(&s)));
     let words: Vec<&str> = args.iter().map(String::as_str).collect();
     match words.as_slice() {
-        [] | ["status"] => text(crate::render_status(&cx.status)),
+        [] | ["status"] => Ok(Outcome::Text(ui::slack_panel(&cx.status))),
         ["allow", u] => {
             ask_slack(crate::Allow((*u).to_owned())).await?;
             text(format!("allowed {u}"))
@@ -678,42 +692,6 @@ fn split(args: &[String]) -> (&str, String) {
     match args.split_first() {
         Some((sub, rest)) => (sub.as_str(), rest.join(" ")),
         None => ("", String::new()),
-    }
-}
-
-/// Last 8 hex chars, as the TUI shows ids; `resume` accepts them.
-fn short(id: SessionId) -> String {
-    let s = id.to_string();
-    s[s.len() - 8..].to_owned()
-}
-
-/// `12.3k`, `200k`, `1.0M`; `?` for 0.
-fn k(n: u32) -> String {
-    match n {
-        0 => "?".to_owned(),
-        1..1000 => n.to_string(),
-        1000..1_000_000 => format!("{:.1}k", f64::from(n) / 1000.0),
-        _ => format!("{:.1}M", f64::from(n) / 1_000_000.0),
-    }
-}
-
-/// `5s`, `12m`, `3h`, `2d` since `t`.
-fn age(t: DateTime<Utc>) -> String {
-    let s = (Utc::now() - t).num_seconds().max(0);
-    match s {
-        ..60 => format!("{s}s"),
-        60..3600 => format!("{}m", s / 60),
-        3600..86400 => format!("{}h", s / 3600),
-        _ => format!("{}d", s / 86400),
-    }
-}
-
-/// `parent/name` from the asked session down: a depth-1 child is its bare
-/// name, a grandchild `parent/name`.
-fn path(a: &agent::AgentInfo, rows: &[agent::AgentInfo]) -> String {
-    match rows.iter().find(|p| p.id == a.parent) {
-        Some(p) => format!("{}/{}", path(p, rows), a.name),
-        None => a.name.clone(),
     }
 }
 
@@ -811,7 +789,13 @@ mod tests {
             channel: "C1",
             session,
             status: status(),
+            page: 0,
+            links: HashMap::new(),
         }
+    }
+
+    fn text(s: &str) -> Outcome {
+        Outcome::Text(Reply::text(s))
     }
 
     #[test]
@@ -836,12 +820,11 @@ mod tests {
     }
 
     #[test]
-    fn help_lists_every_command_once() {
-        let h = help();
+    fn help_panel_lists_every_command_once() {
+        let h = serde_json::to_string(&ui::help().blocks).unwrap();
         for (name, _, _) in COMMANDS {
-            assert_eq!(h.matches(&format!("\n{name} ")).count(), 1, "{name}");
+            assert_eq!(h.matches(&format!("`/wth {name}")).count(), 1, "{name}");
         }
-        assert!(h.starts_with("```\n") && h.ends_with("\n```"));
     }
 
     #[tokio::test]
@@ -855,13 +838,13 @@ mod tests {
         ] {
             assert_eq!(
                 handle(cmd.clone(), cx("U5TRANGER", None)).await,
-                Outcome::Text(OWNER_MSG.into()),
+                text(OWNER_MSG),
                 "{cmd:?}"
             );
         }
         // The owner passes the gate; `slack status` needs no actor at all.
         let out = handle(Cmd::Slack(vec!["status".into()]), cx("U0WNER", None)).await;
-        assert_ne!(out, Outcome::Text(OWNER_MSG.into()));
+        assert_ne!(out, text(OWNER_MSG));
     }
 
     #[tokio::test]
@@ -875,14 +858,14 @@ mod tests {
         ] {
             assert_eq!(
                 handle(cmd.clone(), cx("U1", None)).await,
-                Outcome::Text(NO_SESSION.into()),
+                text(NO_SESSION),
                 "{cmd:?}"
             );
         }
         // Help never needs a session.
         assert_eq!(
             handle(Cmd::Help, cx("U1", None)).await,
-            Outcome::Text(help())
+            Outcome::Text(ui::help())
         );
     }
 
@@ -894,5 +877,53 @@ mod tests {
         assert!(!is_instant(&Cmd::Model(Some("x".into()))));
         assert!(!is_instant(&Cmd::Compact(None)));
         assert!(!is_instant(&Cmd::Resume("a".into())));
+    }
+
+    #[tokio::test]
+    async fn actions_map_to_commands_with_the_same_gates() {
+        // Session-scoped select without a thread: gate answers before any ask.
+        assert_eq!(
+            action("cmd:model", Some("openai/gpt-5"), cx("U1", None)).await,
+            text(NO_SESSION)
+        );
+        // With a thread the SetModel ask goes out (and fails: no actor here).
+        let Outcome::Text(r) =
+            action("cmd:model", Some("x"), cx("U1", Some(SessionId::new()))).await
+        else {
+            panic!()
+        };
+        assert!(r.text.starts_with("error: agent actor"), "{}", r.text);
+        // Owner-only radio from a stranger.
+        assert_eq!(
+            action("cmd:approvals", Some("off_always"), cx("U5TRANGER", None)).await,
+            text(OWNER_MSG)
+        );
+        // Ids the panels never emit.
+        assert_eq!(
+            action("cmd:nope", None, cx("U1", None)).await,
+            text("unknown action \"cmd:nope\"")
+        );
+        assert_eq!(
+            action("approve", None, cx("U1", None)).await,
+            text("unknown action \"approve\"")
+        );
+        // Help-panel buttons render panels without a session.
+        assert_eq!(
+            action("cmd:status", None, cx("U1", None)).await,
+            Outcome::Text(ui::status(&status(), None))
+        );
+    }
+
+    #[test]
+    fn modal_submits_become_add_commands() {
+        assert_eq!(
+            view_submission("cmd:skills:add", " https://x/y.git "),
+            Cmd::Skills(vec!["add".into(), "https://x/y.git".into()])
+        );
+        assert_eq!(
+            view_submission("cmd:mcp:add", "{\"a\": {\"command\": \"x y\"}}"),
+            Cmd::Mcp(vec!["add".into(), "{\"a\": {\"command\": \"x y\"}}".into()])
+        );
+        assert_eq!(view_submission("other", "x"), Cmd::Unknown("other".into()));
     }
 }

@@ -1,9 +1,9 @@
 //! One streamed message per turn (design doc 21 §8.1–8.5): a [`Turn`] owns
 //! the current bubble (`chat.startStream` or, when a stream cannot be opened,
-//! a `chat.postMessage` edited in place), the tool task cards, rotation at
-//! block boundaries and repair of dead streams. [`Segment`] is the update-mode
-//! message used for reasoning. `markdown::Text::raw()` is the only truth about
-//! the text; a bubble that fails is rewritten from it.
+//! a `chat.postMessage` edited in place), the tool task cards, the reasoning
+//! card, rotation at block boundaries and repair of dead streams.
+//! `markdown::Text::raw()` is the only truth about the text; a bubble that
+//! fails is rewritten from it.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -133,7 +133,7 @@ impl Bubble {
     }
 }
 
-/// One tool call of the turn.
+/// One timeline card of the turn: a tool call, or a reasoning run.
 struct Task {
     name: String,
     title: String,
@@ -153,10 +153,19 @@ struct Queued {
     card: String,
 }
 
+/// Stream-mode reasoning run: the `reasoning-<n>` card (21 §8.5).
+struct ReasoningRun {
+    id: String,
+    text: markdown::Text,
+    /// Bytes of `text.raw()` sent as the card's `output`.
+    sent: usize,
+}
+
 /// One turn's streamed output in a thread (21 §8.1–8.4).
 pub struct Turn {
     target: Target,
     tools_mode: ToolCards,
+    reasoning: bool,
     api: Arc<dyn SlackApi>,
     rt: Runtime,
     session: SessionId,
@@ -164,6 +173,12 @@ pub struct Turn {
     queue: Vec<Queued>,
     tasks: HashMap<String, Task>,
     tools: u32,
+    /// Reasoning runs started so far; the next one is `reasoning-<runs + 1>`.
+    reasoning_runs: u32,
+    /// Open stream-mode reasoning card.
+    reasoning_run: Option<ReasoningRun>,
+    /// Open update-mode quoted reasoning message.
+    reasoning_segment: Option<Segment>,
     /// Streams cannot be opened in this thread: bubbles go straight to update mode.
     stream_unsupported: bool,
     open_failures: u8,
@@ -176,6 +191,7 @@ impl Turn {
     pub fn new(
         target: Target,
         tools_mode: ToolCards,
+        reasoning: bool,
         api: Arc<dyn SlackApi>,
         rt: Runtime,
         session: SessionId,
@@ -183,6 +199,7 @@ impl Turn {
         Self {
             target,
             tools_mode,
+            reasoning,
             api,
             rt,
             session,
@@ -190,6 +207,9 @@ impl Turn {
             queue: Vec::new(),
             tasks: HashMap::new(),
             tools: 0,
+            reasoning_runs: 0,
+            reasoning_run: None,
+            reasoning_segment: None,
             stream_unsupported: false,
             open_failures: 0,
             fallback_published: false,
@@ -198,11 +218,126 @@ impl Turn {
 
     /// `TextDelta`: buffered; the next flush opens a bubble if none is open.
     pub async fn text(&mut self, delta: &str) {
+        self.end_reasoning().await;
         self.bubble.get_or_insert_with(Bubble::new).text.push(delta);
+    }
+
+    /// `ReasoningDelta` (21 §8.5). Stream mode: a `reasoning-<n>` timeline
+    /// card whose `output` grows each tick; update mode: a quoted message
+    /// posted before the bubble. A run ends at the next non-reasoning event.
+    pub async fn reasoning(&mut self, delta: &str) {
+        if !self.reasoning {
+            return;
+        }
+        if self.stream_unsupported {
+            self.segment().push(delta).await;
+            return;
+        }
+        if self.reasoning_run.is_none() {
+            self.reasoning_runs += 1;
+            let id = format!("reasoning-{}", self.reasoning_runs);
+            self.tasks.insert(
+                id.clone(),
+                Task {
+                    name: "thinking".to_owned(),
+                    title: "thinking".to_owned(),
+                    describe: String::new(),
+                    status: TaskStatus::InProgress,
+                    started: Instant::now(),
+                    card_ts: None,
+                    chunk: None,
+                },
+            );
+            self.queue_task(
+                &id,
+                TaskStatus::InProgress,
+                None,
+                None,
+                Vec::new(),
+                "_thinking…_".to_owned(),
+            );
+            self.reasoning_run = Some(ReasoningRun {
+                id,
+                text: markdown::Text::new(),
+                sent: 0,
+            });
+        }
+        if let Some(run) = &mut self.reasoning_run {
+            run.text.push(delta);
+        }
+    }
+
+    fn segment(&mut self) -> &mut Segment {
+        let t = &self.target;
+        self.reasoning_segment.get_or_insert_with(|| {
+            Segment::new(
+                t.channel.clone(),
+                t.thread_ts.clone(),
+                Arc::clone(&self.api),
+                Some("> "),
+            )
+        })
+    }
+
+    /// A non-reasoning event: complete the open reasoning run, if any.
+    async fn end_reasoning(&mut self) {
+        if let Some(mut s) = self.reasoning_segment.take() {
+            s.finish().await;
+        }
+        let Some(run) = self.reasoning_run.take() else {
+            return;
+        };
+        let raw = run.text.raw();
+        if let Some(t) = self.tasks.get_mut(&run.id) {
+            t.status = TaskStatus::Complete;
+        }
+        self.queue_task(
+            &run.id,
+            TaskStatus::Complete,
+            first_line(raw),
+            Some(truncate_chars(raw, MARKDOWN_TEXT_MAX)),
+            Vec::new(),
+            Segment::quote(raw),
+        );
+    }
+
+    /// Stream mode falling back to update mode with a reasoning card open:
+    /// the card becomes the quoted message it would have been (21 §8.2).
+    async fn demote_reasoning(&mut self) {
+        let Some(run) = self.reasoning_run.take() else {
+            return;
+        };
+        self.tasks.remove(&run.id);
+        self.queue.retain(|q| q.call_id != run.id);
+        self.segment().text = run.text;
+        self.segment().tick().await;
+    }
+
+    /// Re-send the open reasoning card when its text grew since the last tick.
+    fn tick_reasoning(&mut self) {
+        let Some(run) = &mut self.reasoning_run else {
+            return;
+        };
+        let raw = run.text.raw();
+        if raw.len() <= run.sent {
+            return;
+        }
+        run.sent = raw.len();
+        let id = run.id.clone();
+        let output = truncate_chars(raw, MARKDOWN_TEXT_MAX);
+        self.queue_task(
+            &id,
+            TaskStatus::InProgress,
+            None,
+            Some(output),
+            Vec::new(),
+            String::new(),
+        );
     }
 
     /// `ToolCallPending`.
     pub async fn tool_pending(&mut self, call_id: &str, name: &str) {
+        self.end_reasoning().await;
         self.tasks.insert(
             call_id.to_owned(),
             Task {
@@ -220,6 +355,7 @@ impl Turn {
                 call_id,
                 TaskStatus::Pending,
                 None,
+                None,
                 Vec::new(),
                 String::new(),
             );
@@ -228,6 +364,7 @@ impl Turn {
 
     /// `ToolCallStarted`.
     pub async fn tool_started(&mut self, call_id: &str, name: &str, args: &serde_json::Value) {
+        self.end_reasoning().await;
         self.tools += 1;
         let describe = describe(name, args);
         let title = truncate_chars(
@@ -255,7 +392,14 @@ impl Turn {
         task.started = Instant::now();
         task.status = TaskStatus::InProgress;
         if self.tools_mode == ToolCards::All {
-            self.queue_task(call_id, TaskStatus::InProgress, None, Vec::new(), card);
+            self.queue_task(
+                call_id,
+                TaskStatus::InProgress,
+                None,
+                None,
+                Vec::new(),
+                card,
+            );
         }
     }
 
@@ -263,6 +407,7 @@ impl Turn {
     /// are up to 3 URLs from the output plus the uploaded full output when
     /// it is long (21 §8.3).
     pub async fn tool_finished(&mut self, call_id: &str, output: &str, is_error: bool) {
+        self.end_reasoning().await;
         let status = if is_error {
             TaskStatus::Error
         } else {
@@ -316,11 +461,7 @@ impl Turn {
                 Err(e) => tracing::warn!(error = %e, tool = %name, "tool output upload failed"),
             }
         }
-        let details = output
-            .lines()
-            .map(str::trim)
-            .find(|l| !l.is_empty())
-            .map(|l| truncate_chars(l, DETAILS_MAX));
+        let details = first_line(output);
         let glyph = if is_error { "✗" } else { "✓" };
         let mut body = shown.to_owned();
         if more > 0 {
@@ -330,20 +471,24 @@ impl Turn {
             "{glyph} **{name}**  {}\n```\n{body}\n```{link}",
             fmt_elapsed(elapsed)
         );
-        self.queue_task(call_id, status, details, sources, card);
+        self.queue_task(call_id, status, details, None, sources, card);
     }
 
-    /// Tool calls started so far (for [`Footer::tools`]).
+    /// Tool calls started so far (for [`Footer::tools`]); reasoning cards
+    /// do not count.
     #[must_use]
     pub fn tool_count(&self) -> u32 {
         self.tools
     }
 
+    /// Queue a card chunk; a chunk already queued for the same id is
+    /// replaced in place, so one flush carries one card per id.
     fn queue_task(
         &mut self,
         call_id: &str,
         status: TaskStatus,
         details: Option<String>,
+        output: Option<String>,
         sources: Vec<Source>,
         card: String,
     ) {
@@ -355,19 +500,31 @@ impl Turn {
             title: task.title.clone(),
             status,
             details,
+            output,
             sources,
         };
         task.chunk = Some(chunk.clone());
         self.bubble.get_or_insert_with(Bubble::new);
-        self.queue.push(Queued {
-            call_id: call_id.to_owned(),
-            chunk,
-            card,
-        });
+        match self.queue.iter_mut().find(|q| q.call_id == call_id) {
+            Some(q) => {
+                q.chunk = chunk;
+                q.card = card;
+            }
+            None => self.queue.push(Queued {
+                call_id: call_id.to_owned(),
+                chunk,
+                card,
+            }),
+        }
     }
 
-    /// Called every [`TICK`] by the worker: rotation, flush, keepalive.
+    /// Called every [`TICK`] by the worker: reasoning, rotation, flush,
+    /// keepalive.
     pub async fn tick(&mut self) {
+        if let Some(s) = &mut self.reasoning_segment {
+            s.tick().await;
+        }
+        self.tick_reasoning();
         if self.bubble.is_none() {
             return;
         }
@@ -380,6 +537,7 @@ impl Turn {
     /// `TurnFinished`: final flush and close. A turn that opened nothing
     /// makes no call.
     pub async fn finish(&mut self, footer: Footer) {
+        self.end_reasoning().await;
         let Some(b) = self.bubble.as_mut() else {
             return;
         };
@@ -402,11 +560,11 @@ impl Turn {
                 tracing::warn!("turn finished before its bubble could be opened; text dropped");
             }
             Mode::Stream(ts) => {
-                let mut chunks = Vec::new();
+                // Cards first: they completed before the text that follows them.
+                let mut chunks: Vec<Chunk> = self.queue.drain(..).map(|q| q.chunk).collect();
                 if b.sent < raw.len() {
                     chunks.push(Chunk::Text(raw[b.sent..].to_owned()));
                 }
-                chunks.extend(self.queue.drain(..).map(|q| q.chunk));
                 let stopped = self
                     .api
                     .stop_stream(
@@ -601,6 +759,10 @@ impl Turn {
                 Err(Some(reason)) => {
                     self.stream_unsupported = true;
                     self.publish_fallback(reason).await;
+                    self.demote_reasoning().await;
+                    if !self.has_work() {
+                        return;
+                    }
                 }
             }
         }
@@ -637,11 +799,10 @@ impl Turn {
             return Err(None);
         };
         let raw = b.text.raw();
-        let mut chunks = Vec::new();
+        let mut chunks: Vec<Chunk> = self.queue.iter().map(|q| q.chunk.clone()).collect();
         if !raw.is_empty() {
             chunks.push(Chunk::Text(raw.to_owned()));
         }
-        chunks.extend(self.queue.iter().map(|q| q.chunk.clone()));
         let t = &self.target;
         match self
             .api
@@ -680,11 +841,10 @@ impl Turn {
         };
         let Mode::Stream(ts) = &b.mode else { return };
         let raw = b.text.raw();
-        let mut chunks = Vec::new();
+        let mut chunks: Vec<Chunk> = self.queue.iter().map(|q| q.chunk.clone()).collect();
         if b.sent < raw.len() {
             chunks.push(Chunk::Text(raw[b.sent..].to_owned()));
         }
-        chunks.extend(self.queue.iter().map(|q| q.chunk.clone()));
         if chunks.is_empty() {
             if b.last_append.elapsed() < KEEPALIVE {
                 return;
@@ -762,13 +922,13 @@ impl Turn {
                 (_, Some(card_ts)) => self.api.update_markdown(&t.channel, card_ts, &q.card).await,
                 (_, None) => {
                     let combined = match q.card.find('\n') {
-                        Some(i) => format!(
+                        Some(i) if !task.describe.is_empty() => format!(
                             "{}\n```\n{}\n```{}",
                             &q.card[..i],
                             task.describe,
                             &q.card[i..]
                         ),
-                        None => q.card.clone(),
+                        _ => q.card.clone(),
                     };
                     self.api
                         .post_markdown(&t.channel, Some(&t.thread_ts), &combined)
@@ -793,7 +953,7 @@ fn is_dead(e: &ApiError) -> bool {
 
 /// Update-mode text segment used for reasoning (21 §8.5): one message posted
 /// on the first tick, `chat.update`d when a block completes.
-pub struct Segment {
+struct Segment {
     channel: String,
     thread_ts: String,
     api: Arc<dyn SlackApi>,
@@ -806,8 +966,7 @@ pub struct Segment {
 
 impl Segment {
     /// `prefix_each_line`: `Some("> ")` renders as a blockquote.
-    #[must_use]
-    pub fn new(
+    fn new(
         target_channel: String,
         thread_ts: String,
         api: Arc<dyn SlackApi>,
@@ -825,12 +984,12 @@ impl Segment {
     }
 
     /// Buffer a delta.
-    pub async fn push(&mut self, delta: &str) {
+    async fn push(&mut self, delta: &str) {
         self.text.push(delta);
     }
 
     /// Post the placeholder once; update when `committed()` grew.
-    pub async fn tick(&mut self) {
+    async fn tick(&mut self) {
         if self.ts.is_none() {
             if self.text.raw().is_empty() {
                 return;
@@ -860,26 +1019,16 @@ impl Segment {
     }
 
     /// Final update with everything.
-    pub async fn finish(&mut self) {
+    async fn finish(&mut self) {
         self.text.finish();
         self.tick().await;
     }
 
     fn body(&self, upto: usize) -> String {
-        let raw = self.text.raw()[..upto].trim();
+        let raw = &self.text.raw()[..upto];
         let prefixed = match self.prefix {
-            Some(p) => raw
-                .lines()
-                .map(|l| {
-                    if l.is_empty() {
-                        p.trim_end().to_owned()
-                    } else {
-                        format!("{p}{l}")
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("\n"),
-            None => raw.to_owned(),
+            Some(p) => Self::prefixed(raw, p),
+            None => raw.trim().to_owned(),
         };
         let (head, more) = head_chars(&prefixed, MARKDOWN_TEXT_MAX - 32);
         if more == 0 {
@@ -888,6 +1037,33 @@ impl Segment {
             format!("{head}\n… ({more} more chars)")
         }
     }
+
+    /// `raw` as a `> ` blockquote (the update-mode reasoning card).
+    fn quote(raw: &str) -> String {
+        Self::prefixed(raw, "> ")
+    }
+
+    fn prefixed(raw: &str, p: &str) -> String {
+        raw.trim()
+            .lines()
+            .map(|l| {
+                if l.is_empty() {
+                    p.trim_end().to_owned()
+                } else {
+                    format!("{p}{l}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+/// The first non-empty line of `s`, trimmed and capped at [`DETAILS_MAX`].
+fn first_line(s: &str) -> Option<String> {
+    s.lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .map(|l| truncate_chars(l, DETAILS_MAX))
 }
 
 /// TUI-style argument description (00 §4): `shell` shows its command;
@@ -1222,6 +1398,10 @@ mod tests {
     }
 
     fn turn(api: &Arc<FakeApi>, mode: ToolCards) -> Turn {
+        turn_with(api, mode, true)
+    }
+
+    fn turn_with(api: &Arc<FakeApi>, mode: ToolCards, reasoning: bool) -> Turn {
         let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
         let target = Target {
             channel: "C1".into(),
@@ -1229,7 +1409,7 @@ mod tests {
             user: "U1".into(),
             team: "T1".into(),
         };
-        Turn::new(target, mode, api.clone(), rt, SessionId::new())
+        Turn::new(target, mode, reasoning, api.clone(), rt, SessionId::new())
     }
 
     fn footer() -> Footer {
@@ -1574,6 +1754,149 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    fn task_of(chunks: &[Chunk], want: &str) -> Vec<(TaskStatus, Option<String>, Option<String>)> {
+        chunks
+            .iter()
+            .filter_map(|c| match c {
+                Chunk::Task {
+                    id,
+                    status,
+                    details,
+                    output,
+                    ..
+                } if id == want => Some((status.clone(), details.clone(), output.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn reasoning_is_a_growing_card_completed_by_text() {
+        let api = FakeApi::new();
+        let mut t = turn(&api, ToolCards::All);
+        t.reasoning("first idea\n").await;
+        t.reasoning("second").await;
+        t.tick().await;
+        let starts = api.starts();
+        assert_eq!(starts.len(), 1);
+        assert_eq!(
+            task_of(&starts[0], "reasoning-1"),
+            vec![(
+                TaskStatus::InProgress,
+                None,
+                Some("first idea\nsecond".into())
+            )],
+            "{:?}",
+            starts[0]
+        );
+        t.reasoning(" thought").await;
+        t.tick().await;
+        t.text("answer").await;
+        t.tick().await;
+        let calls = api.calls();
+        let Call::Append { chunks, .. } = calls.last().unwrap() else {
+            panic!("{calls:?}")
+        };
+        assert_eq!(
+            chunks,
+            &vec![
+                Chunk::Task {
+                    id: "reasoning-1".into(),
+                    title: "thinking".into(),
+                    status: TaskStatus::Complete,
+                    details: Some("first idea".into()),
+                    output: Some("first idea\nsecond thought".into()),
+                    sources: Vec::new(),
+                },
+                Chunk::Text("answer".into()),
+            ]
+        );
+        // A run after a tool call is a new card.
+        t.tool_started("c1", "shell", &serde_json::json!({"command": "ls"}))
+            .await;
+        t.reasoning("again").await;
+        t.tick().await;
+        let ids: Vec<_> = api
+            .task_chunks()
+            .into_iter()
+            .filter_map(|c| match c {
+                Chunk::Task { id, .. } => Some(id),
+                Chunk::Text(_) => None,
+            })
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                "reasoning-1",
+                "reasoning-1",
+                "reasoning-1",
+                "c1",
+                "reasoning-2"
+            ]
+        );
+        assert_eq!(t.tool_count(), 1);
+        t.finish(footer()).await;
+        let calls = api.calls();
+        let Call::Stop { chunks, .. } = calls.last().unwrap() else {
+            panic!("{calls:?}")
+        };
+        assert_eq!(
+            task_of(chunks, "reasoning-2"),
+            vec![(
+                TaskStatus::Complete,
+                Some("again".into()),
+                Some("again".into())
+            )]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn reasoning_off_emits_nothing() {
+        let api = FakeApi::new();
+        let mut t = turn_with(&api, ToolCards::All, false);
+        t.reasoning("hidden").await;
+        t.tick().await;
+        assert!(api.calls().is_empty());
+        t.text("x").await;
+        t.tick().await;
+        assert!(api.task_chunks().is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn reasoning_in_update_mode_is_a_quoted_message_before_the_bubble() {
+        let api = FakeApi::new();
+        let mut t = turn(&api, ToolCards::All);
+        api.fail("start", "channel_type_not_supported");
+        t.reasoning("why\n\nbecause").await;
+        t.tick().await;
+        let calls = api.calls();
+        assert!(
+            matches!(&calls[0], Call::Post { md } if md == "_thinking…_"),
+            "{calls:?}"
+        );
+        assert!(
+            matches!(&calls[1], Call::Update { ts, md } if ts == "ts0" && md == "> why"),
+            "{calls:?}"
+        );
+        assert_eq!(calls.len(), 2, "no bubble yet: {calls:?}");
+        t.text("reply").await;
+        t.tick().await;
+        let calls = api.calls();
+        assert!(
+            matches!(&calls[2], Call::Update { ts, md } if ts == "ts0" && md == "> why\n>\n> because"),
+            "{calls:?}"
+        );
+        assert!(
+            matches!(&calls[3], Call::Post { md } if md == "…"),
+            "{calls:?}"
+        );
+        assert!(api.task_chunks().is_empty());
+        // Later runs in the same thread go straight to a new quoted message.
+        t.reasoning("more").await;
+        t.tick().await;
+        assert!(matches!(api.calls().last().unwrap(), Call::Post { md } if md == "_thinking…_"));
     }
 
     #[test]

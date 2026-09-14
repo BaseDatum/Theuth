@@ -14,7 +14,8 @@ just run -- --resume <id>  # reopen a session
 just run -- -p "prompt"    # print mode: stream the reply, exit when the turn ends
 echo "prompt" | just run -- -p   # same, prompt from stdin
 just run -- --link-signal --owner +15551234567   # pair as a Signal linked device (one-shot QR), then run --headless
-just run -- --slack-manifest   # print the Slack app manifest; create the app from it, tokens into credentials.yaml, then run --headless
+just run -- --slack-setup      # create the Slack app from the manifest, verify tokens, write config; then run --headless
+just run -- --slack-manifest   # manual path: print the Slack app manifest for api.slack.com/apps → From a manifest
 just run -- --acp          # Agent Client Protocol on stdio: use wth from Zed/editors (agent_servers: {"wth": {"command": "wth", "args": ["--acp"]}})
 just ts                    # TypeScript bindings for the wire types → bindings/
 ```
@@ -144,11 +145,18 @@ message you answer with 👍/👎 or `/approve <code>`. Inbound files land in
 [`docs/design/09-signal.md`](docs/design/09-signal.md).
 
 Slack: a workspace-side frontend that runs only in the daemon. `wth
---slack-manifest` prints the app manifest; create the app from it at
-api.slack.com/apps, install it to the workspace, put the two tokens in
-`credentials.yaml` as `slack_bot: xoxb-…` and `slack_app: xapp-…`, set
-`slack.owner` to your user id (`U…`) in `config.yaml`, then `wth
---headless`. Each top-level message in the bot's DM (or an `@wth` mention in
+--slack-setup` walks through it in one terminal session: it asks for an
+app configuration token (api.slack.com/apps → Your App Configuration
+Tokens), creates the app from the bundled manifest (`--app <A…>` updates an
+existing one instead), prints the install URL, verifies the bot token
+(`xoxb-`) with `auth.test` and the app-level token (`xapp-`,
+`connections:write`) with `apps.connections.open`, asks for your member id
+(`U…`), and writes `slack_bot`/`slack_app` into `credentials.yaml` and
+`slack.owner`/`slack.enabled` into `config.yaml`; re-running skips every
+step whose token still verifies. The manual path is `wth --slack-manifest`:
+create the app from the printed manifest at api.slack.com/apps, install it,
+put the two tokens in `credentials.yaml` and set `slack.owner` yourself.
+Then `wth --headless`. Each top-level message in the bot's DM (or an `@wth` mention in
 a `slack.channels` channel) opens a session whose replies stream live into
 the thread — one message per turn with task cards for tool calls, a quoted
 reasoning message when `slack.reasoning` is on, and a footer with model,

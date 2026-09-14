@@ -30,9 +30,10 @@ use tools::{
 };
 
 use crate::api::{Api, ApiError, MARKDOWN_TEXT_MAX, SlackApi};
-use crate::bubble::{self, Footer, Segment, Target, Turn};
-use crate::commands::{self, CommandCx, Outcome};
+use crate::bubble::{self, Footer, Target, Turn};
+use crate::commands::{self, CommandCx, Outcome, Reply};
 use crate::threads::{Thread, ThreadKey, Threads, thread_key};
+use crate::ui;
 use crate::{
     ApprovalsScope, SlackConfig, SlackEvent, SlackStatus, ToolCards, approvals, board, socket,
 };
@@ -565,54 +566,58 @@ impl Channel {
         let text = ev.text.unwrap_or_default();
         tracing::debug!(%user, %channel, %text, "slack command received");
         if !self.is_allowed(&user) {
-            return ephemeral("not allowed");
+            return ack(Reply::text("not allowed"));
         }
         let cmd = commands::classify(&text);
-        let session = self
-            .lock()
-            .threads
-            .latest_for(&channel, &user)
-            .map(|(_, t)| t.session);
         if commands::is_instant(&cmd) {
-            let cx = CommandCx {
-                user: &user,
-                owner: &self.owner,
-                channel: &channel,
-                session,
-                status: self.status(),
-            };
+            let cx = self.command_cx(&user, &channel);
             if let Ok(out) =
                 tokio::time::timeout(ACK_BUDGET, commands::handle(cmd.clone(), cx)).await
             {
-                return ephemeral(&self.after_command(out, &channel, &user, &team).await);
+                return ack(self.after_command(out, &channel, &user, &team).await);
             }
         }
         let chan = Arc::clone(self);
         let url = ev.response_url.0.to_string();
         tokio::spawn(async move {
-            let cx = CommandCx {
-                user: &user,
-                owner: &chan.owner,
-                channel: &channel,
-                session,
-                status: chan.status(),
-            };
-            let out = commands::handle(cmd, cx).await;
-            let text = chan.after_command(out, &channel, &user, &team).await;
-            if let Err(e) = chan.api.respond(&url, &text).await {
-                tracing::warn!(error = %e, "slack response_url post failed");
-            }
+            let out = commands::handle(cmd, chan.command_cx(&user, &channel)).await;
+            let reply = chan.after_command(out, &channel, &user, &team).await;
+            chan.respond(&url, reply, false).await;
         });
         SlackCommandEventResponse::new(SlackMessageContent::new())
     }
 
-    /// Side effects of a command outcome; the reply text.
-    async fn after_command(&self, out: Outcome, channel: &str, user: &str, team: &str) -> String {
+    /// What a command or click by `user` in `channel` runs against: the
+    /// user's latest thread here and the permalinks of bound threads.
+    fn command_cx<'a>(&'a self, user: &'a str, channel: &'a str) -> CommandCx<'a> {
+        let (session, links) = {
+            let s = self.lock();
+            let session = s.threads.latest_for(channel, user).map(|(_, t)| t.session);
+            let links = s
+                .permalinks
+                .iter()
+                .filter_map(|(k, url)| s.threads.get(k).map(|t| (t.session, url.clone())))
+                .collect();
+            (session, links)
+        };
+        CommandCx {
+            user,
+            owner: &self.owner,
+            channel,
+            session,
+            status: self.status(),
+            page: 0,
+            links,
+        }
+    }
+
+    /// Side effects of a command outcome; the reply to send.
+    async fn after_command(&self, out: Outcome, channel: &str, user: &str, team: &str) -> Reply {
         match out {
-            Outcome::Text(text) | Outcome::Cancelled { text, .. } => text,
-            Outcome::Resume { session, text, .. } => {
+            Outcome::Text(reply) | Outcome::Cancelled { reply, .. } => reply,
+            Outcome::Resume { session, reply, .. } => {
                 // A fresh root message in this channel becomes the session's thread.
-                match self.api.post_markdown(channel, None, &text).await {
+                match self.api.post_markdown(channel, None, &reply.text).await {
                     Ok(ts) => self.lock().threads.bind(
                         thread_key(channel, &ts),
                         Thread {
@@ -625,8 +630,27 @@ impl Channel {
                     ),
                     Err(e) => tracing::warn!(error = %e, "slack resume root post failed"),
                 }
-                text
+                reply
             }
+        }
+    }
+
+    /// Posts `reply` to a `response_url`; `replace` updates the clicked
+    /// panel in place (21 §10.2), which needs blocks, so text-only replies
+    /// become one section there.
+    async fn respond(&self, url: &str, reply: Reply, replace: bool) {
+        let r = match (reply.blocks, replace) {
+            (None, false) => self.api.respond(url, &reply.text).await,
+            (blocks, replace) => {
+                let blocks =
+                    blocks.unwrap_or_else(|| ui::result(&reply.text).blocks.unwrap_or_default());
+                self.api
+                    .respond_blocks(url, &reply.text, blocks, replace)
+                    .await
+            }
+        };
+        if let Err(e) = r {
+            tracing::warn!(error = %e, "slack response_url post failed");
         }
     }
 
@@ -665,13 +689,127 @@ impl Channel {
     async fn handle_inbound(self: &Arc<Self>, ev: Inbound) {
         match ev {
             Inbound::Push(ev) => self.handle_push(*ev).await,
-            Inbound::Action(ev) => match approvals::click(&ev) {
-                Some(click) => self.handle_click(click).await,
-                None => {
-                    tracing::debug!(kind = ?std::mem::discriminant(&*ev), "slack interaction ignored")
+            Inbound::Action(ev) => {
+                if let Some(click) = approvals::click(&ev) {
+                    return self.handle_click(click).await;
                 }
-            },
+                match *ev {
+                    SlackInteractionEvent::BlockActions(ev) => self.handle_cmd_click(ev).await,
+                    SlackInteractionEvent::ViewSubmission(ev) => self.handle_view(ev).await,
+                    other => {
+                        tracing::debug!(kind = ?std::mem::discriminant(&other), "slack interaction ignored")
+                    }
+                }
+            }
         }
+    }
+
+    /// A `cmd:*` click (21 §10.2): trust check, then Add… buttons open
+    /// their modal at once (the `trigger_id` lives 3 s) and everything else
+    /// runs as the command it stands for, answering through the click's
+    /// `response_url` with `replace_original`.
+    async fn handle_cmd_click(self: &Arc<Self>, ev: SlackInteractionBlockActionsEvent) {
+        let Some(a) = ev
+            .actions
+            .as_deref()
+            .and_then(|a| a.iter().find(|a| a.action_id.0.starts_with("cmd:")))
+        else {
+            tracing::debug!("slack block_actions without a cmd action ignored");
+            return;
+        };
+        // Overflow menus carry the command in the chosen option; selects
+        // and radios carry the chosen value; buttons their `value`.
+        let (action, value) = match &a.selected_option {
+            Some(o) if o.value.starts_with("cmd:") => (o.value.clone(), None),
+            Some(o) => (a.action_id.0.clone(), Some(o.value.clone())),
+            None => (a.action_id.0.clone(), a.value.clone()),
+        };
+        let Some(user) = ev.user.map(|u| u.id.0) else {
+            return;
+        };
+        let container_channel = match &ev.container {
+            SlackInteractionActionContainer::Message(m) => m.channel_id.clone(),
+            SlackInteractionActionContainer::MessageAttachment(m) => m.channel_id.clone(),
+            SlackInteractionActionContainer::View(_) => None,
+        };
+        let channel = ev
+            .channel
+            .map(|c| c.id)
+            .or(container_channel)
+            .map(|c| c.0)
+            .unwrap_or_default();
+        if !self.is_allowed(&user) {
+            tracing::warn!(%user, %action, "slack cmd click from a user who is not allowed");
+            if !channel.is_empty() {
+                self.ephemeral(&channel, &user, "not allowed").await;
+            }
+            return;
+        }
+        if action == "cmd:link" {
+            return;
+        }
+        if let Some(kind @ ("skills" | "mcp")) = action
+            .strip_prefix("cmd:")
+            .and_then(|r| r.strip_suffix(":add"))
+        {
+            let view = ui::modal_add(kind, &channel);
+            if let Err(e) = self.api.views_open(&ev.trigger_id.0, view).await {
+                tracing::warn!(error = %e, "slack views.open failed");
+            }
+            return;
+        }
+        let Some(url) = ev.response_url.map(|u| u.0.to_string()) else {
+            tracing::debug!(%action, "slack cmd click without response_url ignored");
+            return;
+        };
+        let team = ev.team.id.0;
+        let chan = Arc::clone(self);
+        tokio::spawn(async move {
+            let cx = chan.command_cx(&user, &channel);
+            let out = commands::action(&action, value.as_deref(), cx).await;
+            let reply = chan.after_command(out, &channel, &user, &team).await;
+            chan.respond(&url, reply, true).await;
+        });
+    }
+
+    /// A submitted Add… modal ([`ui::modal_add`]): the `url` input runs as
+    /// `skills add` / `mcp add`; the answer is an ephemeral in the channel
+    /// the modal was opened from (its `private_metadata`).
+    async fn handle_view(self: &Arc<Self>, ev: SlackInteractionViewSubmissionEvent) {
+        let SlackView::Modal(view) = ev.view.view else {
+            return;
+        };
+        let callback = view.callback_id.map(|c| c.0).unwrap_or_default();
+        let channel = view.private_metadata.unwrap_or_default();
+        let input = ev
+            .view
+            .state_params
+            .state
+            .and_then(|s| {
+                s.values
+                    .get(&"url".into())?
+                    .get(&"url".into())?
+                    .value
+                    .clone()
+            })
+            .unwrap_or_default();
+        let user = ev.user.id.0;
+        if channel.is_empty() {
+            tracing::warn!(%callback, "slack view_submission without a channel ignored");
+            return;
+        }
+        if !self.is_allowed(&user) {
+            self.ephemeral(&channel, &user, "not allowed").await;
+            return;
+        }
+        let team = ev.team.id.0;
+        let cmd = commands::view_submission(&callback, &input);
+        let chan = Arc::clone(self);
+        tokio::spawn(async move {
+            let out = commands::handle(cmd, chan.command_cx(&user, &channel)).await;
+            let reply = chan.after_command(out, &channel, &user, &team).await;
+            chan.ephemeral(&channel, &user, &reply.text).await;
+        });
     }
 
     /// An Allow/Deny click (21 §10.1): owner or the card's thread user may
@@ -1151,7 +1289,6 @@ impl Channel {
             turn: None,
             started: Instant::now(),
             model: String::new(),
-            reasoning: None,
             marks: Vec::new(),
             status_supported: true,
             title_sent: None,
@@ -1172,10 +1309,22 @@ fn split_key(key: &str) -> (&str, &str) {
     key.split_once(':').map_or((key, ""), |(c, t)| (c, t))
 }
 
-/// An ephemeral slash-command ack.
-fn ephemeral(text: &str) -> SlackCommandEventResponse {
-    SlackCommandEventResponse::new(SlackMessageContent::new().with_text(text.to_owned()))
-        .with_response_type(SlackMessageResponseType::Ephemeral)
+/// An ephemeral slash-command ack; blocks that morphism cannot type are
+/// dropped for the text (logged).
+fn ack(reply: Reply) -> SlackCommandEventResponse {
+    let blocks = reply.blocks.and_then(|b| match crate::api::blocks(b) {
+        Ok(b) => Some(b),
+        Err(e) => {
+            tracing::warn!(error = %e, "slack ack blocks dropped");
+            None
+        }
+    });
+    SlackCommandEventResponse::new(
+        SlackMessageContent::new()
+            .with_text(reply.text)
+            .opt_blocks(blocks),
+    )
+    .with_response_type(SlackMessageResponseType::Ephemeral)
 }
 
 /// A user message after trust and type checks.
@@ -1202,8 +1351,6 @@ struct Worker {
     turn: Option<Turn>,
     started: Instant,
     model: String,
-    /// The quoted reasoning message (21 §8.5).
-    reasoning: Option<Segment>,
     /// User message ts awaiting ✅ / 🛑 / ❌.
     marks: Vec<String>,
     /// Cleared once `agents.sessions.setStatus` says the app is not an agent.
@@ -1291,9 +1438,6 @@ impl Worker {
             t.tick().await;
         }
         self.sync_stream();
-        if let Some(r) = &mut self.reasoning {
-            r.tick().await;
-        }
         if self.rows_dirty
             && (self.board.is_some() || board::any_live(&self.rows))
             && self
@@ -1428,11 +1572,6 @@ impl Worker {
         if let Some(session) = ev.session() {
             self.session = session;
         }
-        if !matches!(ev, AgentEvent::ReasoningDelta { .. })
-            && let Some(mut r) = self.reasoning.take()
-        {
-            r.finish().await;
-        }
         match ev {
             AgentEvent::TurnStarted {
                 session,
@@ -1459,6 +1598,7 @@ impl Worker {
                         team: self.team.clone(),
                     },
                     self.chan.tools,
+                    self.chan.reasoning,
                     Arc::clone(&self.chan.api),
                     self.chan.rt.clone(),
                     session,
@@ -1471,19 +1611,8 @@ impl Worker {
                 }
             }
             AgentEvent::ReasoningDelta { text, .. } => {
-                if self.chan.reasoning {
-                    let api = Arc::clone(&self.chan.api);
-                    self.reasoning
-                        .get_or_insert_with(|| {
-                            Segment::new(
-                                self.channel.clone(),
-                                self.thread_ts.clone(),
-                                api,
-                                Some("> "),
-                            )
-                        })
-                        .push(&text)
-                        .await;
+                if let Some(t) = &mut self.turn {
+                    t.reasoning(&text).await;
                 }
             }
             AgentEvent::ToolCallPending { call_id, name, .. } => {
@@ -1905,6 +2034,28 @@ mod tests {
             self.record(format!("respond {url} {text}"));
             Ok(())
         }
+        async fn respond_blocks(
+            &self,
+            url: &str,
+            _: &str,
+            blocks: serde_json::Value,
+            replace_original: bool,
+        ) -> Result<(), ApiError> {
+            let n = blocks.as_array().map_or(0, Vec::len);
+            self.record(format!("respond_blocks {url} {replace_original} {n}"));
+            Ok(())
+        }
+        async fn views_open(
+            &self,
+            trigger_id: &str,
+            view: serde_json::Value,
+        ) -> Result<(), ApiError> {
+            self.record(format!(
+                "views_open {trigger_id} {}",
+                view["callback_id"].as_str().unwrap_or("-")
+            ));
+            Ok(())
+        }
     }
 
     struct Fixture {
@@ -2006,6 +2157,30 @@ mod tests {
             "channel": { "id": DM, "name": "dm" },
             "response_url": "https://hooks.slack.com/actions/T1/1/x",
             "actions": [{ "type": "button", "action_id": action, "value": id.0.to_string() }],
+        }))
+        .unwrap();
+        Inbound::Action(Box::new(ev))
+    }
+
+    /// A `cmd:*` click: a button when `value` is `None`, else a select/overflow
+    /// whose chosen option has that `value`.
+    fn cmd_click(user: &str, action_id: &str, value: Option<&str>) -> Inbound {
+        let mut a = json!({ "type": "button", "action_id": action_id });
+        if let Some(v) = value {
+            a["type"] = json!("overflow");
+            a["selected_option"] =
+                json!({ "text": { "type": "plain_text", "text": "x" }, "value": v });
+        }
+        let ev: SlackInteractionEvent = serde_json::from_value(json!({
+            "type": "block_actions",
+            "team": { "id": "T1" },
+            "user": { "id": user },
+            "api_app_id": "A1",
+            "container": { "type": "message", "message_ts": "7.7", "channel_id": DM, "is_ephemeral": true },
+            "trigger_id": "tr9",
+            "channel": { "id": DM, "name": "dm" },
+            "response_url": "https://hooks.slack.com/actions/T1/9/x",
+            "actions": [a],
         }))
         .unwrap();
         Inbound::Action(Box::new(ev))
@@ -2370,7 +2545,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn wth_help_answers_in_the_ack() {
+    async fn wth_help_answers_in_the_ack_with_blocks() {
         let f = fixture();
         let ev: SlackCommandEvent = serde_json::from_value(json!({
             "team_id": "T1", "channel_id": DM, "user_id": OWNER, "command": "/wth",
@@ -2379,10 +2554,132 @@ mod tests {
         .unwrap();
         let r = f.chan.command(ev).await;
         assert_eq!(r.response_type, Some(SlackMessageResponseType::Ephemeral));
-        assert_eq!(r.content.text.as_deref(), Some(commands::help().as_str()));
+        let help = ui::help();
+        assert_eq!(r.content.text.as_deref(), Some(help.text.as_str()));
+        let sent = r.content.blocks.expect("blocks in the ack");
+        assert_eq!(sent.len(), help.blocks.unwrap().as_array().unwrap().len());
+        assert!(matches!(sent[0], SlackBlock::Header(_)));
         assert!(
             f.api.calls().is_empty(),
             "instant answers do not use response_url"
         );
+    }
+
+    #[tokio::test]
+    async fn cmd_click_by_an_allowed_user_replaces_the_panel_in_place() {
+        let f = fixture();
+        // An overflow "Resume here" pick: the command is the option value.
+        // Resolving the id asks the agent actor, absent here, so the reply
+        // is the error text — the routing, gate and reply path are what this checks.
+        f.chan
+            .handle_inbound(cmd_click(FRIEND, "cmd:menu:0", Some("cmd:resume:abcd1234")))
+            .await;
+        f.until(|calls| {
+            calls.iter().any(|c| {
+                c.starts_with("respond_blocks https://hooks.slack.com/actions/T1/9/x true ")
+            })
+        })
+        .await;
+        assert!(f.api.calls().iter().all(|c| !c.starts_with("ephemeral")));
+    }
+
+    #[tokio::test]
+    async fn resume_outcome_posts_the_root_and_binds_the_thread() {
+        let f = fixture();
+        let session = SessionId::new();
+        let reply = f
+            .chan
+            .after_command(
+                Outcome::Resume {
+                    session,
+                    title: "t".into(),
+                    reply: Reply::text("resumed abcd1234 · t"),
+                },
+                DM,
+                FRIEND,
+                "T1",
+            )
+            .await;
+        assert_eq!(reply.text, "resumed abcd1234 · t");
+        assert_eq!(
+            f.api.calls(),
+            [format!("post_markdown {DM} - resumed abcd1234 · t")]
+        );
+        let s = f.chan.lock();
+        let (key, t) = s.threads.by_session(session).expect("bound");
+        assert_eq!(
+            (key.as_str(), t.user.as_str()),
+            (format!("{DM}:8.8").as_str(), FRIEND)
+        );
+    }
+
+    #[tokio::test]
+    async fn cmd_click_by_a_stranger_is_refused_without_effect() {
+        let f = fixture();
+        f.chan
+            .handle_inbound(cmd_click(
+                STRANGER,
+                "cmd:menu:0",
+                Some("cmd:cancel:abcd1234"),
+            ))
+            .await;
+        f.chan
+            .handle_inbound(cmd_click(STRANGER, "cmd:skills:add", None))
+            .await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            f.api.calls(),
+            [
+                format!("ephemeral {DM} {STRANGER} not allowed"),
+                format!("ephemeral {DM} {STRANGER} not allowed")
+            ]
+        );
+        assert!(f.stub.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn add_button_opens_the_modal_before_anything_else() {
+        let f = fixture();
+        f.chan
+            .handle_inbound(cmd_click(OWNER, "cmd:skills:add", None))
+            .await;
+        f.chan
+            .handle_inbound(cmd_click(OWNER, "cmd:mcp:add", None))
+            .await;
+        assert_eq!(
+            f.api.calls(),
+            [
+                "views_open tr9 cmd:skills:add",
+                "views_open tr9 cmd:mcp:add"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn modal_submit_runs_the_add_and_answers_in_its_channel() {
+        let f = fixture();
+        let ev: SlackInteractionEvent = serde_json::from_value(json!({
+            "type": "view_submission",
+            "team": { "id": "T1" },
+            "user": { "id": OWNER },
+            "view": {
+                "id": "V1", "team_id": "T1", "hash": "h",
+                "type": "modal",
+                "callback_id": "cmd:skills:add",
+                "private_metadata": DM,
+                "title": { "type": "plain_text", "text": "Add skills" },
+                "blocks": [],
+                "state": { "values": { "url": { "url": { "type": "plain_text_input", "value": "https://x/y.git" } } } },
+            },
+        }))
+        .unwrap();
+        f.chan.handle_inbound(Inbound::Action(Box::new(ev))).await;
+        // No agent actor: the add fails, and the failure comes back as an ephemeral there.
+        f.until(|calls| {
+            calls
+                .iter()
+                .any(|c| c.starts_with(&format!("ephemeral {DM} {OWNER} error: agent actor")))
+        })
+        .await;
     }
 }

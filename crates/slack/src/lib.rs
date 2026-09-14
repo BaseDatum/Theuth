@@ -27,8 +27,10 @@ pub mod board;
 pub mod bubble;
 pub mod channel;
 pub mod commands;
+pub mod setup;
 pub mod socket;
 pub mod threads;
+pub mod ui;
 
 /// Registry name of the plugin's actor.
 pub const SLACK_ACTOR: &str = "slack";
