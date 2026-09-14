@@ -50,13 +50,26 @@ pub enum TaskStatus {
 }
 
 impl TaskStatus {
-    fn wire(&self) -> String {
+    fn wire(&self) -> SlackStreamTaskStatus {
         match self {
-            Self::Pending => "pending".into(),
-            Self::InProgress => "in_progress".into(),
-            Self::Complete => "complete".into(),
-            Self::Error => "error".into(),
+            Self::Pending => SlackStreamTaskStatus::Pending,
+            Self::InProgress => SlackStreamTaskStatus::InProgress,
+            Self::Complete => SlackStreamTaskStatus::Complete,
+            Self::Error => SlackStreamTaskStatus::Error,
         }
+    }
+}
+
+/// `agents.sessions.setStatus` / `chat.stopStream` `session_status` from its wire name.
+fn session_status(s: &str) -> Result<SlackAgentSessionStatus, ApiError> {
+    match s {
+        "active" => Ok(SlackAgentSessionStatus::Active),
+        "processing" => Ok(SlackAgentSessionStatus::Processing),
+        "suspended" => Ok(SlackAgentSessionStatus::Suspended),
+        "closed" => Ok(SlackAgentSessionStatus::Closed),
+        other => Err(ApiError::Transport(format!(
+            "unknown session status {other:?}"
+        ))),
     }
 }
 
@@ -105,13 +118,15 @@ impl From<Chunk> for SlackStreamChunk {
             } => SlackStreamChunk::TaskUpdate {
                 id,
                 title,
+                hide_title: None,
+                icon: None,
                 status: status.wire(),
                 details,
                 output,
                 sources: (!sources.is_empty()).then(|| {
                     sources
                         .into_iter()
-                        .map(|s| SlackStreamSource::new("url".into(), s.url).with_text(s.text))
+                        .map(|s| SlackStreamSource::new("url".into(), s.url, s.text))
                         .collect()
                 }),
             },
@@ -441,7 +456,7 @@ impl SlackApi for Api {
             .with_thread_ts(thread_ts.into())
             .with_recipient_user_id(user.into())
             .with_recipient_team_id(team.into())
-            .with_task_display_mode("timeline".into())
+            .with_task_display_mode(SlackStreamTaskDisplayMode::Timeline)
             .opt_chunks(chunks(first));
         self.run("chat.startStream", async {
             self.client
@@ -475,6 +490,7 @@ impl SlackApi for Api {
         footer: Option<String>,
         session_status: Option<&str>,
     ) -> Result<(), ApiError> {
+        let session_status = session_status.map(self::session_status).transpose()?;
         let req = SlackApiChatStopStreamRequest::new(channel.into(), ts.into())
             .opt_chunks(chunks(c))
             .opt_blocks(footer.map(|f| {
@@ -482,7 +498,7 @@ impl SlackApi for Api {
                     SlackContextBlockElement::MarkDown(SlackBlockMarkDownText::new(f)),
                 ]))]
             }))
-            .opt_session_status(session_status.map(str::to_owned));
+            .opt_session_status(session_status);
         self.run("chat.stopStream", async {
             self.client
                 .open_session(&self.bot)
@@ -575,7 +591,7 @@ impl SlackApi for Api {
         thread_ts: &str,
         status: &str,
     ) -> Result<(), ApiError> {
-        let req = SlackApiAgentsSessionsSetStatusRequest::new(status.to_owned())
+        let req = SlackApiAgentsSessionsSetStatusRequest::new(session_status(status)?)
             .with_channel_id(channel.into())
             .with_thread_ts(thread_ts.into());
         self.run("agents.sessions.setStatus", async {
@@ -594,11 +610,9 @@ impl SlackApi for Api {
         thread_ts: &str,
         title: &str,
     ) -> Result<(), ApiError> {
-        let req = SlackApiAgentsSessionsRenameRequest::new(
-            channel.into(),
-            thread_ts.into(),
-            title.to_owned(),
-        );
+        let req = SlackApiAgentsSessionsRenameRequest::new(title.to_owned())
+            .with_channel_id(channel.into())
+            .with_thread_ts(thread_ts.into());
         self.run("agents.sessions.rename", async {
             self.client
                 .open_session(&self.bot)
@@ -778,7 +792,7 @@ mod tests {
         else {
             panic!("task chunk")
         };
-        assert_eq!(status, "complete");
+        assert_eq!(status, SlackStreamTaskStatus::Complete);
         assert!(sources.is_none());
     }
 }
