@@ -353,17 +353,20 @@ impl Session {
         self.inflight = Some(cancel.clone());
         if !self.titled {
             self.titled = true;
-            if let Some((_, first)) = inputs.first()
-                && let Err(e) = self
-                    .shared
-                    .store
-                    .set_title(
-                        self.shared.id,
-                        &first.text.trim().chars().take(60).collect::<String>(),
-                    )
-                    .await
-            {
-                tracing::warn!(session = %self.shared.id, "set_title: {e:#}");
+            if let Some((_, first)) = inputs.first() {
+                let title: String = first.text.trim().chars().take(60).collect();
+                match self.shared.store.set_title(self.shared.id, &title).await {
+                    Ok(()) => {
+                        self.shared
+                            .rt
+                            .publish(AgentEvent::TitleChanged {
+                                session: self.shared.id,
+                                title,
+                            })
+                            .await;
+                    }
+                    Err(e) => tracing::warn!(session = %self.shared.id, "set_title: {e:#}"),
+                }
             }
         }
         let model = {
@@ -1159,6 +1162,7 @@ impl Turn {
         self.state.title_epoch = self.state.epoch;
         let session = self.shared.id;
         let store = self.shared.store.clone();
+        let rt = self.shared.rt.clone();
         let old = match store.session(session).await {
             Ok(Some(s)) => s.title,
             Ok(None) => return,
@@ -1202,7 +1206,14 @@ impl Turn {
                 return;
             }
             match store.set_title(session, &new).await {
-                Ok(()) => tracing::info!(session = %session, from = %old, to = %new, "title"),
+                Ok(()) => {
+                    tracing::info!(session = %session, from = %old, to = %new, "title");
+                    rt.publish(AgentEvent::TitleChanged {
+                        session,
+                        title: new,
+                    })
+                    .await;
+                }
                 Err(e) => tracing::warn!(session = %session, "set_title: {e:#}"),
             }
         });
@@ -1468,6 +1479,7 @@ impl Turn {
                 call_id: call.call_id.clone(),
                 output: display,
                 is_error: out.is_error,
+                files: out.files.clone(),
             })
             .await;
             // 07 §6: bounded once, here, with the full text spilled to disk.

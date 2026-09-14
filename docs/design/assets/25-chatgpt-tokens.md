@@ -1,0 +1,92 @@
+# chatgpt.com computed :root custom properties (dark | light)
+
+--background-color-elevated: #303030
+--background-color-layer-1: #212121
+--background-color-layer-2: #303030
+--background-color-layer-3: #414141
+--background-color-page: #000
+--border-color-default: #ffffff26
+--border-color-strong: #fff3
+--border-color-subtle: #ffffff1a
+--bottom-sheet-backdrop-opacity: 0
+--bottom-sheet-compact-height: 
+--bottom-sheet-content-chrome-height: 0px
+--bottom-sheet-input-viewport-bottom: 0px
+--bottom-sheet-input-viewport-height: 100dvb
+--bottom-sheet-input-viewport-top: 0px
+--bottom-sheet-natural-height: 
+--bottom-sheet-open-height: 
+--button-primary-background-color-disabled: #5d5d5d
+--button-primary-background-color-hover: #e8e8e8
+--button-primary-background-color-pressed: #cdcdcd
+--canonical-dil-chart-inline-size: 0px
+--content-color-accent: oklch(71.8574% .153638 247.945)
+--content-color-inverse: #0d0d0d
+--content-color-primary: #fff
+--content-color-secondary: #cdcdcd
+--content-color-tertiary: #afafaf
+--dil-clock-angle: 0deg
+--dil-progress: 0%
+--fallback-shell-base-composer-reserve: 
+--fallback-shell-base-disclosure-clearance: 
+--fallback-shell-base-disclosure-offset: 
+--fallback-shell-base-mask-size: 
+--fallback-shell-detail-open-shift: 
+--fallback-shell-sidebar-width: 
+--focus-focus-ring-width: .125rem
+--interactive-bg-secondary-hover: #ffffff1a
+--lightningcss-dark: 
+--lightningcss-light: 
+--mobile-footer-safe-area-bottom: 0px
+--mobile-scroll-mask-bottom-size: 
+--mobile-shell-visual-viewport-height: 
+--mobile-thread-composer-reserve: 
+--mobile-thread-content-margin-inline: 1rem
+--mobile-thread-disclosure-fade-clearance: 
+--mobile-thread-disclosure-sticky-offset: 
+--mobile-thread-overlay-reserve: calc(0px + 9rem)
+--mobile-thread-scroll-mask-top-size: 0px
+--mobile-thread-viewport-height: 100dvb
+--page-margin-bottom: calc(0px + .5rem)
+--page-margin-inline: 1rem
+--page-margin-top: max(1rem, 0px)
+--status-danger-background-color: #421a19
+--status-danger-border-color: oklch(65.2741% .241466 26.767)
+--status-danger-content-color: #ff9b97
+--status-info-background-color: #102a4d
+--status-info-border-color: oklch(62.6176% .205304 254.998)
+--status-info-content-color: #8ec5ff
+--status-success-background-color: #123321
+--status-success-border-color: oklch(68.2472% .195111 148.214)
+--status-success-content-color: #76d89c
+--status-warning-background-color: oklch(34.6399% .0799531 61.3069)
+--status-warning-border-color: oklch(75.1371% .156458 78.7733)
+--status-warning-content-color: #ffd15c
+--stream-accent-color: 
+--stream-block-delay: 
+--stream-border-accent-color: 
+--stream-content-reference-delay: 
+--stream-entry-opacity: 0
+--stream-list-marker-delay: 
+--stream-rule-delay: 
+--stream-word-accent-percent: 
+--stream-word-delay: 
+--swipable-layout-browser-chrome-runway: 
+--swipable-layout-document-scroll-height: 
+--swipable-layout-document-scroll-start: 
+--swipable-layout-gesture-width: 
+--swipable-layout-sidebar-width: 
+--swipable-layout-vertical-gesture-track-size: 
+--x10hdnfn: 50%
+--x1240wuo: linear
+--x13mh34a: 260px
+--x16fj5zb: 0px
+--x16x201: 100dvb
+--x1c15yk0: 100dvb
+--x1hmpd8: 100%
+--x1hovohs: 0px
+--x1motuqe: 50%
+--x1u1eqmy: linear(1, 1)
+--xqkix7d: 1
+--xryrkgm: 0%
+--xyvjedx: 0 7.5px 0 0

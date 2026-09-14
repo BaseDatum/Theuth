@@ -149,12 +149,18 @@ impl AcpChild {
         self.titled = true;
         if let Ok(Some(row)) = self.store.session(self.id).await
             && row.title.is_empty()
-            && let Err(e) = self
-                .store
-                .set_title(self.id, &text.trim().chars().take(60).collect::<String>())
-                .await
         {
-            tracing::warn!(session = %self.id, "set_title: {e:#}");
+            let title: String = text.trim().chars().take(60).collect();
+            match self.store.set_title(self.id, &title).await {
+                Ok(()) => {
+                    self.publish(AgentEvent::TitleChanged {
+                        session: self.id,
+                        title,
+                    })
+                    .await;
+                }
+                Err(e) => tracing::warn!(session = %self.id, "set_title: {e:#}"),
+            }
         }
     }
 
@@ -378,6 +384,7 @@ pub(crate) fn translate(update: SessionUpdate, turn: &mut Turn) -> Vec<AgentEven
                     call_id,
                     output,
                     is_error,
+                    files: Vec::new(),
                 });
             }
             out
@@ -395,6 +402,7 @@ pub(crate) fn translate(update: SessionUpdate, turn: &mut Turn) -> Vec<AgentEven
                     call_id: u.tool_call_id.0.to_string(),
                     output,
                     is_error,
+                    files: Vec::new(),
                 }]
             }
             // Pending / in-progress / partial content: the card already shows the call.

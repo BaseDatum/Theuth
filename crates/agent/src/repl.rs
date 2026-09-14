@@ -1060,6 +1060,7 @@ impl Repl {
                                 call_id: call.id,
                                 output: crate::frame::truncate(&out.content, DISPLAY_CHARS),
                                 is_error: out.is_error,
+                                files: out.files.clone(),
                             })
                             .await;
                         results.push((fid, tool_result(&call.name, out)));

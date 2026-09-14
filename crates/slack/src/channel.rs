@@ -1695,7 +1695,8 @@ impl Worker {
             | AgentEvent::Compacting { .. }
             | AgentEvent::Harvesting { .. }
             | AgentEvent::Harvested { .. }
-            | AgentEvent::SkillsChanged { .. } => {}
+            | AgentEvent::SkillsChanged { .. }
+            | AgentEvent::TitleChanged { .. } => {}
         }
     }
 

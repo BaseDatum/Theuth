@@ -10,7 +10,8 @@
 //!
 //! Public surface consumed by other plugins:
 //! - commands on the [`KNOWLEDGE_ACTOR`] actor ([`KnowledgeActor`]): [`Handle`],
-//!   [`Search`], [`Get`], [`List`], [`PutConcept`], [`Delete`], [`HistoryOf`], [`Restore`]
+//!   [`Search`], [`Get`], [`List`], [`PutConcept`], [`Write`], [`Delete`], [`HistoryOf`],
+//!   [`Restore`], [`SyncNow`]
 //! - event: [`KnowledgeChanged`], published by the store after every write
 
 use std::sync::Arc;
@@ -123,6 +124,17 @@ pub struct PutConcept {
     pub source: Source,
 }
 
+/// `ask` → `Result<Meta, String>`: create or update a concept from raw OKF
+/// text (the editor path). Frontmatter is kept as given plus `source: user`
+/// and a fresh `timestamp`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Write {
+    /// Concept id.
+    pub id: String,
+    /// The whole document: frontmatter and body.
+    pub text: String,
+}
+
 /// `ask` → `Result<(), String>`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Delete {
@@ -147,6 +159,10 @@ pub struct Restore {
     /// Abbreviated commit id; default: the commit before the latest change.
     pub commit: Option<String>,
 }
+
+/// `ask` → `Result<Sync, String>`: reconcile the index with the files now (10 §3.2).
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct SyncNow;
 
 impl Message<Handle> for KnowledgeActor {
     type Reply = Arc<Knowledge>;
@@ -204,6 +220,17 @@ impl Message<PutConcept> for KnowledgeActor {
     }
 }
 
+impl Message<Write> for KnowledgeActor {
+    type Reply = Result<Meta, String>;
+
+    async fn handle(&mut self, m: Write, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.k
+            .write(&m.id, &m.text)
+            .await
+            .map_err(|e| format!("{e:#}"))
+    }
+}
+
 impl Message<Delete> for KnowledgeActor {
     type Reply = Result<(), String>;
 
@@ -231,6 +258,14 @@ impl Message<Restore> for KnowledgeActor {
             .restore(&m.id, m.commit.as_deref())
             .await
             .map_err(|e| format!("{e:#}"))
+    }
+}
+
+impl Message<SyncNow> for KnowledgeActor {
+    type Reply = Result<Sync, String>;
+
+    async fn handle(&mut self, _: SyncNow, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.k.sync().await.map_err(|e| format!("{e:#}"))
     }
 }
 

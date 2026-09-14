@@ -1,15 +1,18 @@
 //! `just ts`: `cargo test -p rpc --features ts export_bindings` writes
-//! `bindings/*.ts` for every wire type.
+//! `bindings/*.ts` for every wire type and `bindings/methods.json`, the sorted
+//! list of every registered method name (25 §7).
 
 #[cfg(feature = "ts")]
-#[test]
-fn export_bindings() {
+#[tokio::test]
+async fn export_bindings() {
     use ts_rs::TS;
-    let cfg = ts_rs::Config::new().with_out_dir("../../bindings");
+    let out = "../../bindings";
+    let cfg = ts_rs::Config::new().with_out_dir(out);
     macro_rules! export {
         ($($t:ty),*) => {$( <$t>::export_all(&cfg).expect(stringify!($t)); )*};
     }
     export!(
+        crate::api::Info,
         agent::AgentEvent,
         agent::SessionSummary,
         agent::HistoryEntry,
@@ -19,6 +22,11 @@ fn export_bindings() {
         agent::ModelInfo,
         agent::SkillMeta,
         agent::SkillBody,
+        agent::LoginInfo,
+        agent::LoginFinished,
+        agent::ProviderInfo,
+        agent::AgentInfo,
+        agent::AgentState,
         acp::EntryInfo,
         acp::registry::RegistryAgent,
         knowledge::Meta,
@@ -58,4 +66,15 @@ fn export_bindings() {
         slack::SlackEvent,
         slack::SlackStatus
     );
+
+    use crate::ApiServer;
+    let rt = runtime::Runtime::new(figment::Figment::new(), std::env::temp_dir());
+    let module = crate::api::Server::new(rt).into_rpc();
+    let mut names: Vec<&str> = module.method_names().collect();
+    names.sort_unstable();
+    std::fs::write(
+        format!("{out}/methods.json"),
+        serde_json::to_string_pretty(&names).expect("methods.json"),
+    )
+    .expect("write methods.json");
 }

@@ -4,7 +4,7 @@
 //!
 //! - commands on the `"agent"` actor ([`Agents`]): [`SendInput`], [`Steer`],
 //!   [`Withdraw`], [`ListQueued`], [`Undo`], [`Redo`], [`Cancel`], [`Compact`],
-//!   [`SetCompactStyle`], [`SetTitleModel`], [`GetTitleModel`], [`ListSessions`], [`LoadSession`], [`ListAgents`],
+//!   [`SetCompactStyle`], [`SetTitleModel`], [`GetTitleModel`], [`ListSessions`], [`LoadSession`], [`RenameSession`], [`ListAgents`],
 //!   [`ListModels`], [`SetModel`], [`SetEffort`], [`ShowPrompt`], [`ListSkills`],
 //!   [`LoadSkill`], [`UseSkill`], [`AddSkill`], [`RemoveSkill`], [`AddSkillRepo`],
 //!   [`RemoveSkillRepo`], [`SyncSkills`], [`ListLogins`], [`Login`], [`Logout`],
@@ -177,11 +177,29 @@ pub struct Harvest {
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct ListSessions;
 
-/// `ask` → [`Loaded`] for rendering a resumed session.
+/// `ask` → [`Loaded`] for rendering a resumed session. `before`/`limit` page
+/// the rendered entries (design doc 25 §7): entries with `seq < before`, the
+/// last `limit` of them; both `None` = everything.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct LoadSession {
     /// Target session.
     pub session: SessionId,
+    /// Only entries older than this seq (a previous page's `first_seq`).
+    #[serde(default)]
+    pub before: Option<i64>,
+    /// At most this many entries, the newest of the range.
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+/// `ask` → `Result<(), String>`: set a session's title by hand and announce it
+/// as [`AgentEvent::TitleChanged`]. Trimmed, cut at 200 chars; `Err("empty title")`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RenameSession {
+    /// Target session.
+    pub session: SessionId,
+    /// New title.
+    pub title: String,
 }
 
 /// Reply to [`LoadSession`].
@@ -208,6 +226,10 @@ pub struct Loaded {
     pub parent: Option<SessionId>,
     /// Skills whose body is in the stored frame (design doc 04 §2.4), sorted.
     pub skills: Vec<String>,
+    /// Seq of the oldest entry in `history` (pass as `before` for the previous page); `None` when empty.
+    pub first_seq: Option<i64>,
+    /// Older entries exist beyond `history` (only with a `limit`).
+    pub more: bool,
 }
 
 /// `ask` → `Vec<AgentInfo>`: the subtree under `session` (children,
@@ -736,6 +758,9 @@ pub enum AgentEvent {
         output: String,
         /// Whether it failed.
         is_error: bool,
+        /// Files the tool produced (screenshots, generated images); absolute paths on this machine.
+        #[serde(default)]
+        files: Vec<PathBuf>,
     },
     /// The turn ended (model finished, was cancelled, or errored).
     TurnFinished {
@@ -863,6 +888,14 @@ pub enum AgentEvent {
         /// Skill names, sorted; empty right after a compaction.
         skills: Vec<String>,
     },
+    /// The session's title was set: first words of the first input, the
+    /// titler's rewrite (07 §15), or [`RenameSession`].
+    TitleChanged {
+        /// Session.
+        session: SessionId,
+        /// New title, non-empty.
+        title: String,
+    },
 }
 
 impl AgentEvent {
@@ -887,6 +920,7 @@ impl AgentEvent {
             | Self::Harvesting { session, .. }
             | Self::Harvested { session, .. }
             | Self::SkillsChanged { session, .. }
+            | Self::TitleChanged { session, .. }
             | Self::Error { session, .. } => Some(*session),
             Self::SubagentSpawned { child, .. } => Some(*child),
         }

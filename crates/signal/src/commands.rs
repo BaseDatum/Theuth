@@ -444,7 +444,11 @@ async fn status(cx: &Cx<'_>) -> anyhow::Result<String> {
     // ponytail: LoadSession renders the whole history just for `running`;
     // have the channel pass its TurnStarted/TurnFinished flag if this shows.
     let loaded = agent
-        .ask(agent::LoadSession { session })
+        .ask(agent::LoadSession {
+            session,
+            before: None,
+            limit: None,
+        })
         .await
         .map_err(err)?;
     let turn = if loaded.running { "running" } else { "idle" };

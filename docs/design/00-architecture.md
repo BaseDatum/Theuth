@@ -5,7 +5,7 @@ marked "added in NN")
 
 A single-process Rust harness that does things for the user. Plugins are
 in-process crates that talk to each other only through a typed message bus.
-Any frontend (terminal now, Tauri later) attaches over JSON-RPC.
+Any frontend (terminal, desktop app, editors over ACP) attaches over JSON-RPC.
 
 Decisions below are final unless a spike in §9 falsifies them. Every decision
 names the alternative it beat and why.
@@ -52,7 +52,8 @@ interaction through serialization before there is a second UI.
 launchd's environment, not the shell's. It opens a pty and runs
 `$SHELL -l -i -c 'exec wth --headless'` on it - a terminal for one command,
 no window - so the daemon is exactly the process a terminal would have
-produced. Design doc 18.
+produced. Design doc 18; the bundle around it (sidecar, signing, tray) is
+25 §5.
 
 ## 3. Message bus: kameo
 
@@ -496,6 +497,7 @@ crates/
   slack/              plugin: Slack channel over Socket Mode (added in 21)
   rpc/                plugin: jsonrpsee server, event subscription bridge (§7)
   tui/                plugin: iocraft frontend (§8)
+  desktop/            app: Tauri menubar frontend, RPC client of `Api` - not a plugin (designed in 25)
   wth/                bin: config load, plugin list from CLI flags, run (§2)
 docs/design/          this file and per-plugin decisions
 ```
@@ -619,7 +621,7 @@ Each phase ends with a runnable check, not a test suite.
 | 2 | rpc plugin, `--serve`; ts-rs bindings emitted | subscribe + send_input round trip over WS | done; headless e2e: shell + write/read + list/load sessions + shutdown, all over the wire |
 | 2 | skills | skill body appears in prompt on load | done (`docs/skills.md`) |
 | 3 | subagents, steering polish | parent receives child result as tool output | superseded by 01 §2 (detached) |
-| 4 | Tauri frontend over rpc | out of scope for this doc | not started; command surface ready (§8); `just ts` emits `bindings/*.ts`; daemon launch decided (18, mechanism verified 2026-09-13) |
+| 4 | desktop app over rpc (25) | 25 §9 steps 1–9 | designed 2026-09-14 (25); not started; command surface ready (§8); `just ts` emits `bindings/*.ts`; daemon launch decided (18, mechanism verified 2026-09-13) |
 | 5 | course correction (12) | docs and tree agree | done 2026-09-11 (12 §8 lib.rs re-exports stays opportunistic) |
 | 6 | steering ids + undo/redo | 01 §2.3, 07 §8.8 | done 2026-09-11 |
 | 7 | snap compaction (13) | `/compact snap` on a vision model; a fact only in the archive is recalled | done 2026-09-11 (4 frames, 10/10 offsets recalled without tools; ~4.5k tokens/frame measured) |

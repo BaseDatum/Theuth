@@ -188,6 +188,25 @@ fn concept_id(raw: &str) -> anyhow::Result<ConceptId> {
     Ok(cid)
 }
 
+/// `put` body cap (10 §2.2).
+fn body_within_limit(len: usize) -> anyhow::Result<()> {
+    if len > BODY_MAX {
+        bail!(
+            "body is {len} bytes; the limit is {BODY_MAX} — link to other concepts instead of pasting"
+        );
+    }
+    Ok(())
+}
+
+/// Set the writer and the write time (10 §2.3).
+fn stamp(fm: &mut okf::Frontmatter, source: Source) {
+    fm.set("source", Value::String(source.as_str().to_owned()));
+    fm.set(
+        "timestamp",
+        Value::String(chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()),
+    );
+}
+
 /// `tmp` + rename; parents created.
 fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
@@ -558,12 +577,7 @@ impl Knowledge {
         if type_.is_empty() {
             bail!("type must not be empty");
         }
-        if p.body.len() > BODY_MAX {
-            bail!(
-                "body is {} bytes; the limit is {BODY_MAX} — link to other concepts instead of pasting",
-                p.body.len()
-            );
-        }
+        body_within_limit(p.body.len())?;
         let title = p.title.trim();
         let title = if title.is_empty() { id.as_str() } else { title };
         let description = p
@@ -590,11 +604,7 @@ impl Knowledge {
         if let Some(scope) = &p.scope {
             fm.set("scope", Value::String(scope.to_string_lossy().into_owned()));
         }
-        fm.set("source", Value::String(source.as_str().to_owned()));
-        fm.set(
-            "timestamp",
-            Value::String(chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()),
-        );
+        stamp(&mut fm, source);
         let text = Document::new(fm, p.body).serialize();
 
         let _g = self.write.lock().await;
@@ -608,6 +618,31 @@ impl Knowledge {
             })
             .await;
         Ok((w.meta, w.created))
+    }
+
+    /// Write a concept from raw OKF text (the editor path, 10 §2.3): the
+    /// frontmatter is kept as given — unknown keys included — plus `source:
+    /// user` and a fresh `timestamp`; the body is capped like `put`.
+    pub async fn write(&self, id: &str, text: &str) -> anyhow::Result<Meta> {
+        let cid = concept_id(id)?;
+        let id = cid.to_string();
+        let mut doc = Document::parse(text)?;
+        body_within_limit(doc.body.len())?;
+        stamp(&mut doc.frontmatter, Source::User);
+        let text = doc.serialize();
+
+        let _g = self.write.lock().await;
+        let w = self
+            .write_concept(&cid, text, &format!("put {id}"), &format!("write {id}"))
+            .await?;
+        self.rt
+            .publish(KnowledgeChanged {
+                id,
+                op: KnowledgeOp::Put,
+                source: Source::User,
+            })
+            .await;
+        Ok(w.meta)
     }
 
     /// Remove the file, its rows, `index.md`, `log.md`, commit.
@@ -1145,6 +1180,36 @@ mod tests {
                 .0
                 .id
                 == "facts/upper"
+        );
+    }
+
+    #[tokio::test]
+    async fn write_keeps_unknown_frontmatter_and_stamps_user() {
+        let (k, _dir) = open().await;
+        let meta = k
+            .write(
+                "Facts/Raw.md",
+                "---\ntype: fact\ntitle: t\nextra: keep\n---\nbody\n",
+            )
+            .await
+            .unwrap();
+        assert_eq!(meta.id, "facts/raw");
+        assert_eq!(meta.source, Some(Source::User));
+        let c = k.get("facts/raw").await.unwrap();
+        assert!(c.text.contains("extra: keep"), "{}", c.text);
+        assert!(c.text.contains("source: user"), "{}", c.text);
+        assert!(
+            k.write("facts/raw", "---\ntitle: no type\n---\n")
+                .await
+                .is_err()
+        );
+        assert!(
+            k.write(
+                "facts/raw",
+                &format!("---\ntype: fact\n---\n{}", "x".repeat(BODY_MAX + 1))
+            )
+            .await
+            .is_err()
         );
     }
 

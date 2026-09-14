@@ -105,9 +105,16 @@ async fn connect(relay: ActorRef<Relay>, data_dir: PathBuf) -> Result<(), Error>
         .on_receive_request(
             async move |req: LoadSessionRequest, responder, cx| {
                 let session = parse_session(&req.session_id)?;
-                let loaded = api::ask::<Agents, _>(agent::AGENT_ACTOR, LoadSession { session })
-                    .await
-                    .map_err(rpc_error)?;
+                let loaded = api::ask::<Agents, _>(
+                    agent::AGENT_ACTOR,
+                    LoadSession {
+                        session,
+                        before: None,
+                        limit: None,
+                    },
+                )
+                .await
+                .map_err(rpc_error)?;
                 for (i, entry) in loaded.history.into_iter().enumerate() {
                     cx.send_notification(SessionNotification::new(
                         req.session_id.clone(),

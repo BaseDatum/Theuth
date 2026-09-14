@@ -2126,6 +2126,9 @@ impl Model {
                 }
                 return;
             }
+            // The sidebar of another frontend; nothing on screen changes and
+            // a mid-stream arrival must not finish the streaming tail below.
+            AgentEvent::TitleChanged { .. } => return,
             AgentEvent::TurnStarted { session, .. } if self.session == Some(*session) => {
                 self.streaming = true;
             }
@@ -2287,7 +2290,8 @@ impl Model {
             }
             AgentEvent::SubagentSpawned { .. }
             | AgentEvent::MessageDelivered { .. }
-            | AgentEvent::InputWithdrawn { .. } => {}
+            | AgentEvent::InputWithdrawn { .. }
+            | AgentEvent::TitleChanged { .. } => {}
             AgentEvent::Harvesting { .. } => self.harvesting = true,
             AgentEvent::Harvested { added, updated, .. } => {
                 self.harvesting = false;
@@ -3837,6 +3841,7 @@ mod tests {
             call_id: "c1".into(),
             output: "teal".into(),
             is_error: false,
+            files: Vec::new(),
         });
         assert_eq!(m.agents[&a].info.state, AgentState::Running);
         assert!(agent_row(&m.agents[&a], "⠹", 80).contains("streaming"));

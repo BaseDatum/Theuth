@@ -35,9 +35,9 @@ pub use mcp::{
     McpToolInfo, Progress, RemoveServer, RepoInfo, Restart, SetGate, SyncMcp,
 };
 pub use registry::{
-    ApprovalsState, ExternalApproval, HiddenTools, Invoke, ListPrompts, ListTools, RegisterPrompt,
-    RegisterTool, SetApprovals, SetHidden, SetParent, ToolRegistry, UnregisterPrompt,
-    UnregisterTool,
+    ApprovalsState, ExternalApproval, GetApprovals, HiddenTools, Invoke, ListPrompts, ListTools,
+    RegisterPrompt, RegisterTool, SetApprovals, SetHidden, SetParent, ToolRegistry,
+    UnregisterPrompt, UnregisterTool,
 };
 
 /// Registry name of the [`ToolRegistry`] actor.

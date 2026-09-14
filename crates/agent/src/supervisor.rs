@@ -43,9 +43,9 @@ use crate::{
     GetTitleModel, Harvest, HistoryEntry, ListAcp, ListAgents, ListLogins, ListModels,
     ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills, LoadSession, LoadSkill,
     Loaded, Login, LoginFinished, LoginInfo, Logout, ModelInfo, NewSession, ProviderInfo,
-    QueuedInput, Redo, RemoveAcp, RemoveProvider, RemoveSkill, RemoveSkillRepo, SendInput,
-    SessionSummary, SetCompactStyle, SetEffort, SetModel, SetTitleModel, ShowPrompt, SkillBody,
-    SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw, effort_of,
+    QueuedInput, Redo, RemoveAcp, RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession,
+    SendInput, SessionSummary, SetCompactStyle, SetEffort, SetModel, SetTitleModel, ShowPrompt,
+    SkillBody, SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw, effort_of,
 };
 use crate::{frame, repl, spill};
 
@@ -1416,7 +1416,9 @@ impl Message<LoadSession> for Agents {
             ))
         }
         .await;
-        let (row, history, skills) = match loaded {
+        // ponytail: every row is read and rendered per page; a seq-ranged
+        // query is the upgrade if a measured session makes this slow.
+        let (row, history, first_seq, more, skills) = match loaded {
             Ok((row, messages, epochs)) => {
                 // The frame is the latest epoch's tail (07 §8.4); its skills are the badge (04 §2.4).
                 let from = epochs.last().map_or(0, |e| e.tail_from);
@@ -1428,16 +1430,17 @@ impl Message<LoadSession> for Agents {
                 let mut out = Vec::new();
                 for (seq, entry) in render(&messages) {
                     while let Some(e) = epochs.next_if(|e| e.at_seq < seq) {
-                        out.push(compacted(e));
+                        out.push((e.at_seq, compacted(e)));
                     }
-                    out.push(entry);
+                    out.push((seq, entry));
                 }
-                out.extend(epochs.map(compacted));
-                (row, out, skills)
+                out.extend(epochs.map(|e| (e.at_seq, compacted(e))));
+                let (history, first_seq, more) = page(out, m.before, m.limit);
+                (row, history, first_seq, more, skills)
             }
             Err(e) => {
                 tracing::error!(session = %m.session, "load session: {e:#}");
-                (None, Vec::new(), Vec::new())
+                (None, Vec::new(), None, false, Vec::new())
             }
         };
         let (running, queued) = match self.live(m.session) {
@@ -1472,7 +1475,62 @@ impl Message<LoadSession> for Agents {
             name,
             parent,
             skills,
+            first_seq,
+            more,
         }
+    }
+}
+
+/// [`LoadSession`] paging over seq-tagged entries: keep `seq < before`, then
+/// the last `limit`. Returns `(history, first_seq, more)`.
+fn page(
+    mut entries: Vec<(i64, HistoryEntry)>,
+    before: Option<i64>,
+    limit: Option<u32>,
+) -> (Vec<HistoryEntry>, Option<i64>, bool) {
+    if let Some(before) = before {
+        // Calls still running come last with their call's seq (see `render`);
+        // they belong to the live tail, never to an older page.
+        entries.retain(|(seq, e)| {
+            *seq < before && !matches!(e, HistoryEntry::Tool { result: None, .. })
+        });
+    }
+    let keep = limit.map_or(entries.len(), |l| l as usize);
+    let more = entries.len() > keep;
+    if more {
+        entries.drain(..entries.len() - keep);
+    }
+    let first_seq = entries.first().map(|(seq, _)| *seq);
+    (
+        entries.into_iter().map(|(_, e)| e).collect(),
+        first_seq,
+        more,
+    )
+}
+
+impl Message<RenameSession> for Agents {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        m: RenameSession,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<(), String> {
+        let title: String = m.title.trim().chars().take(200).collect();
+        if title.is_empty() {
+            return Err("empty title".into());
+        }
+        self.store
+            .set_title(m.session, &title)
+            .await
+            .map_err(|e| e.to_string())?;
+        self.rt
+            .publish(AgentEvent::TitleChanged {
+                session: m.session,
+                title,
+            })
+            .await;
+        Ok(())
     }
 }
 
@@ -2361,6 +2419,51 @@ mod tests {
             (1, HistoryEntry::Tool { call_id, name, result: None, .. })
                 if call_id == "c2" && name == "shell"
         ));
+    }
+
+    /// Paging walks back from the tail: the newest `limit`, then everything
+    /// older than the page's `first_seq`; a call still running is never
+    /// repeated on an older page.
+    #[test]
+    fn page_walks_back_by_seq() {
+        let user = |s: &str| HistoryEntry::User { text: s.into() };
+        let tool = |id: &str, result| HistoryEntry::Tool {
+            call_id: id.into(),
+            name: "shell".into(),
+            args: serde_json::Value::Null,
+            result,
+        };
+        let all = || {
+            vec![
+                (0, user("a")),
+                (1, user("b")),
+                (2, user("c")),
+                (4, tool("c1", Some(("ok".into(), false)))),
+                (3, tool("c2", None)),
+            ]
+        };
+        let (h, first, more) = page(all(), None, Some(2));
+        assert_eq!(h.len(), 2);
+        assert!(more);
+        assert_eq!(first, Some(4));
+        assert!(matches!(&h[1], HistoryEntry::Tool { result: None, .. }));
+
+        let (h, first, more) = page(all(), first, Some(100));
+        assert_eq!(first, Some(0));
+        assert!(!more);
+        assert!(matches!(
+            &h[..],
+            [
+                HistoryEntry::User { .. },
+                HistoryEntry::User { .. },
+                HistoryEntry::User { .. }
+            ]
+        ));
+
+        let (h, first, more) = page(all(), None, None);
+        assert_eq!((h.len(), first, more), (5, Some(0), false));
+        let (h, first, more) = page(Vec::new(), None, Some(3));
+        assert_eq!((h.len(), first, more), (0, None, false));
     }
 
     #[test]

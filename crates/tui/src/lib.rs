@@ -174,11 +174,11 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
         // concurrently and the notice must land before the new history.
         Command::Undo(session) => {
             let _ = tx.send(UiEvent::Undone(msg(api.undo(session).await)?));
-            UiEvent::History(session, msg(api.load_session(session).await)?)
+            UiEvent::History(session, msg(api.load_session(session, None, None).await)?)
         }
         Command::Redo(session) => {
             let _ = tx.send(UiEvent::Redone(msg(api.redo(session).await)?));
-            UiEvent::History(session, msg(api.load_session(session).await)?)
+            UiEvent::History(session, msg(api.load_session(session, None, None).await)?)
         }
         Command::Cancel(session) => {
             msg(api.cancel(session).await)?;
@@ -209,7 +209,9 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
         }
         Command::ListSessions => UiEvent::Sessions(msg(api.list_sessions().await)?),
         Command::ListAgents(session) => UiEvent::Agents(msg(api.list_agents(session).await)?),
-        Command::Load(session) => UiEvent::History(session, msg(api.load_session(session).await)?),
+        Command::Load(session) => {
+            UiEvent::History(session, msg(api.load_session(session, None, None).await)?)
+        }
         Command::ListModels => UiEvent::Models(msg(api.list_models().await)?),
         Command::SetModel { session, model } => {
             UiEvent::ModelSet(msg(api.set_model(session, model).await)?)

@@ -472,7 +472,11 @@ async fn status(cx: &CommandCx<'_>) -> anyhow::Result<Reply> {
     // ponytail: LoadSession renders the whole history just for `running`
     // and `model`; ask the worker for its TurnStarted flag if this shows.
     let loaded = agent()?
-        .ask(agent::LoadSession { session })
+        .ask(agent::LoadSession {
+            session,
+            before: None,
+            limit: None,
+        })
         .await
         .map_err(err)?;
     let turn = if loaded.running { "running" } else { "idle" };

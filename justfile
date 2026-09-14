@@ -41,6 +41,29 @@ install:
 ts:
     cargo test -p rpc --features ts --quiet export_bindings
 
+# Bindings for the desktop UI: `just ts` plus a copy into the Vite tree (25 §5).
+ts-desktop: ts
+    mkdir -p crates/desktop/ui/src/rpc/bindings
+    cp bindings/*.ts bindings/methods.json crates/desktop/ui/src/rpc/bindings/
+
+# Desktop app in dev mode against `target/debug/wth` (or `$WTH_BIN`); `WTH_DATA_DIR` overrides ~/.wth.
+desktop: ts-desktop
+    cargo build -p wth
+    cd crates/desktop/ui && bun install
+    cd crates/desktop && WTH_BIN="${WTH_BIN:-$PWD/../../target/debug/wth}" cargo tauri dev
+
+# `wth.app` + dmg with the release `wth` bundled as the sidecar (25 §5, 18).
+desktop-bundle target="aarch64-apple-darwin": ts-desktop
+    cargo build --release -p wth
+    mkdir -p crates/desktop/binaries
+    cp target/release/wth crates/desktop/binaries/wth-{{target}}
+    cd crates/desktop/ui && bun install && bun run build
+    cd crates/desktop && cargo tauri build
+
+# Desktop UI gates: types, unit tests.
+desktop-check:
+    cd crates/desktop/ui && bun run check && bun run test
+
 # Refresh the bundled model catalog: models.dev api.json trimmed to `models::ROUTABLE`
 # providers and re-emitted through the crate's own types, so the field list lives in
 # `crates/models/src/lib.rs` (`Model`), not here (design doc 02 §1).

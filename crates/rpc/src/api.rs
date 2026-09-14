@@ -7,13 +7,13 @@ use std::fmt::Display;
 use std::path::PathBuf;
 
 use agent::{
-    AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentInfo, Agents, Cancel, Compact, CompactStyle,
-    GetCompactStyle, GetTitleModel, Harvest, ListAcp, ListAgents, ListLogins, ListModels,
-    ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills, LoadSession, LoadSkill,
-    Loaded, Login, LoginInfo, Logout, ModelInfo, NewSession, ProviderInfo, QueuedInput, Redo,
-    RemoveAcp, RemoveProvider, RemoveSkill, RemoveSkillRepo, SendInput, SessionSummary,
-    SetCompactStyle, SetEffort, SetModel, SetTitleModel, ShowPrompt, SkillBody, SkillMeta, Steer,
-    SyncSkills, Undo, UseSkill, Withdraw,
+    AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentConfig, AgentInfo, Agents, Cancel, Compact,
+    CompactStyle, GetCompactStyle, GetTitleModel, Harvest, ListAcp, ListAgents, ListLogins,
+    ListModels, ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills, LoadSession,
+    LoadSkill, Loaded, Login, LoginInfo, Logout, ModelInfo, NewSession, ProviderInfo, QueuedInput,
+    Redo, RemoveAcp, RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession, SendInput,
+    SessionSummary, SetCompactStyle, SetEffort, SetModel, SetTitleModel, ShowPrompt, SkillBody,
+    SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw,
 };
 use jsonrpsee::core::{RpcResult, SubscriptionResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
@@ -26,18 +26,19 @@ use kameo::message::Message;
 use kameo::reply::Reply;
 use knowledge::{
     Change, Concept, Delete, Get, HarvestResult, History, HistoryOf, Hit, KNOWLEDGE_ACTOR,
-    KnowledgeActor, List, Meta, Put, PutConcept, Restore, Search, Source,
+    KnowledgeActor, List, Meta, Put, PutConcept, Restore, Search, Source, SyncNow, Write,
 };
 use runtime::{InputId, Runtime, SessionId};
+use serde::{Deserialize, Serialize};
 use signal::{Allow, Link, RemoveAllowed, SIGNAL_ACTOR, Signal, SignalStatus, Status, Unlink};
 use slack::{SLACK_ACTOR, Slack, SlackStatus};
 use tokio::sync::broadcast;
 use tools::git::SyncResult;
 use tools::{
     AddRepo, AddServer, Approval, ApprovalId, ApprovalsState, CancelJob, Decision, Gate,
-    JOBS_ACTOR, JobId, JobView, Jobs, ListJobs, ListServers, ListTools, Mcp, McpLogin, McpLogout,
-    McpProgress, McpServer, Progress, RemoveServer, RepoInfo, Resolve, SetApprovals, SetGate,
-    SetHidden, SyncMcp, ToolRegistry, ToolSpec,
+    GetApprovals, JOBS_ACTOR, JobId, JobView, Jobs, ListJobs, ListServers, ListTools, Mcp,
+    McpLogin, McpLogout, McpProgress, McpServer, Progress, RemoveServer, RepoInfo, Resolve,
+    SetApprovals, SetGate, SetHidden, SyncMcp, ToolRegistry, ToolSpec,
 };
 
 use crate::bridge::Event;
@@ -47,9 +48,30 @@ const ASK_FAILED: i32 = -32000;
 /// The named actor is not registered.
 const NOT_RUNNING: i32 = -32001;
 
+/// Reply to `info`: what a client needs before its first session (25 §7);
+/// the in-process TUI reads the same things off the [`Runtime`] directly.
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct Info {
+    /// Harness version (`CARGO_PKG_VERSION`).
+    pub version: String,
+    /// `<data_dir>`: config, sqlite, logs, attachments.
+    pub data_dir: String,
+    /// `agent.model`: the model new sessions start on.
+    pub default_model: String,
+    /// The global approval switch (`tools.approvals`).
+    pub approvals: ApprovalsState,
+    /// `agent.compact_style`.
+    pub compact_style: CompactStyle,
+}
+
 /// The wire API. `#[rpc(server)]` generates `ApiServer` (+ `into_rpc()`).
 #[rpc(server)]
 pub trait Api {
+    /// Version, data dir, default model, approvals and compaction style in one
+    /// call: the client's startup snapshot.
+    #[method(name = "info")]
+    async fn info(&self) -> RpcResult<Info>;
     /// Create an idle session (no turn) so per-session state can be set before
     /// the first message; `send_input` to it afterwards.
     #[method(name = "new_session")]
@@ -119,8 +141,18 @@ pub trait Api {
     #[method(name = "list_agents")]
     async fn list_agents(&self, session: SessionId) -> RpcResult<Vec<AgentInfo>>;
     /// Rendered history of one session plus whether a turn is in flight.
+    /// `before`/`limit` page the entries (25 §7): those with `seq < before`,
+    /// the last `limit` of them; both omitted = everything.
     #[method(name = "load_session")]
-    async fn load_session(&self, session: SessionId) -> RpcResult<Loaded>;
+    async fn load_session(
+        &self,
+        session: SessionId,
+        before: Option<i64>,
+        limit: Option<u32>,
+    ) -> RpcResult<Loaded>;
+    /// Set a session's title by hand; `TitleChanged` follows on the stream.
+    #[method(name = "rename_session")]
+    async fn rename_session(&self, session: SessionId, title: String) -> RpcResult<()>;
     /// Every registered tool.
     #[method(name = "list_tools")]
     async fn list_tools(&self) -> RpcResult<Vec<ToolSpec>>;
@@ -234,6 +266,13 @@ pub trait Api {
     /// Delete a concept (restorable through `knowledge_restore`).
     #[method(name = "knowledge_delete")]
     async fn knowledge_delete(&self, id: String) -> RpcResult<()>;
+    /// Create or update a concept from its raw text (frontmatter and body) as
+    /// `source: user`; unknown frontmatter keys survive, unlike `knowledge_put`.
+    #[method(name = "knowledge_write")]
+    async fn knowledge_write(&self, id: String, text: String) -> RpcResult<Meta>;
+    /// Reconcile the index with the files on disk now.
+    #[method(name = "knowledge_sync")]
+    async fn knowledge_sync(&self) -> RpcResult<knowledge::Sync>;
     /// Commits touching `id` (the whole bundle when absent), newest first; `limit` defaults to 20.
     #[method(name = "knowledge_history")]
     async fn knowledge_history(&self, id: Option<String>, limit: Option<u32>)
@@ -412,6 +451,24 @@ fn knowledge() -> RpcResult<ActorRef<KnowledgeActor>> {
 
 #[async_trait]
 impl ApiServer for Server {
+    async fn info(&self) -> RpcResult<Info> {
+        let default_model = self
+            .rt
+            .section::<AgentConfig>("agent")
+            .unwrap_or_default()
+            .model;
+        let approvals =
+            ask::<ToolRegistry, _>(tools::REGISTRY_ACTOR, GetApprovals { session: None }).await?;
+        let compact_style = ask::<Agents, _>(agent::AGENT_ACTOR, GetCompactStyle).await?;
+        Ok(Info {
+            version: env!("CARGO_PKG_VERSION").into(),
+            data_dir: self.rt.data_dir.display().to_string(),
+            default_model,
+            approvals,
+            compact_style,
+        })
+    }
+
     async fn new_session(&self) -> RpcResult<SessionId> {
         ask::<Agents, _>(agent::AGENT_ACTOR, NewSession::default()).await
     }
@@ -510,8 +567,25 @@ impl ApiServer for Server {
         ask::<Agents, _>(agent::AGENT_ACTOR, ListAgents { session }).await
     }
 
-    async fn load_session(&self, session: SessionId) -> RpcResult<Loaded> {
-        ask::<Agents, _>(agent::AGENT_ACTOR, LoadSession { session }).await
+    async fn load_session(
+        &self,
+        session: SessionId,
+        before: Option<i64>,
+        limit: Option<u32>,
+    ) -> RpcResult<Loaded> {
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            LoadSession {
+                session,
+                before,
+                limit,
+            },
+        )
+        .await
+    }
+
+    async fn rename_session(&self, session: SessionId, title: String) -> RpcResult<()> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, RenameSession { session, title }).await
     }
 
     async fn list_tools(&self) -> RpcResult<Vec<ToolSpec>> {
@@ -684,6 +758,14 @@ impl ApiServer for Server {
 
     async fn knowledge_delete(&self, id: String) -> RpcResult<()> {
         send(&knowledge()?, Delete { id }).await
+    }
+
+    async fn knowledge_write(&self, id: String, text: String) -> RpcResult<Meta> {
+        send(&knowledge()?, Write { id, text }).await
+    }
+
+    async fn knowledge_sync(&self) -> RpcResult<knowledge::Sync> {
+        send(&knowledge()?, SyncNow).await
     }
 
     async fn knowledge_history(

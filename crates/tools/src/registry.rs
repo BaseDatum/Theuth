@@ -122,6 +122,14 @@ pub struct SetApprovals {
     pub enabled: bool,
 }
 
+/// `ask` → [`ApprovalsState`]: the switches as they stand, for the global
+/// default (`session: None`) or one session, without changing anything.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct GetApprovals {
+    /// Session to read; `None` reads the global default alone.
+    pub session: Option<SessionId>,
+}
+
 /// `tell`: record that `session` is a subagent of `parent`, so it inherits
 /// the parent's approval switch.
 #[derive(Clone, Copy, Debug)]
@@ -177,14 +185,31 @@ impl Message<SetApprovals> for ToolRegistry {
                 }
             }
         }
-        ApprovalsState {
-            global: self.approvals,
-            session: m.session.is_none_or(|id| !self.bypassed(id)),
-        }
+        self.approvals_state(m.session)
+    }
+}
+
+impl Message<GetApprovals> for ToolRegistry {
+    type Reply = ApprovalsState;
+
+    async fn handle(
+        &mut self,
+        m: GetApprovals,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> ApprovalsState {
+        self.approvals_state(m.session)
     }
 }
 
 impl ToolRegistry {
+    /// The global switch and, for a session, whether it (or an ancestor) opted out.
+    fn approvals_state(&self, session: Option<SessionId>) -> ApprovalsState {
+        ApprovalsState {
+            global: self.approvals,
+            session: session.is_none_or(|id| !self.bypassed(id)),
+        }
+    }
+
     /// The session or any ancestor opted out of prompts.
     fn bypassed(&self, mut id: SessionId) -> bool {
         // ponytail: linear walk per invoke; depth is capped by `max_depth`.
