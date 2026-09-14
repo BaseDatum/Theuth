@@ -291,7 +291,11 @@ mod tests {
         // Three page objects, one page tree node; both spellings.
         let pdf = b"%PDF-1.4\n1 0 obj<</Type /Pages/Kids[]>>endobj\n2 0 obj<</Type /Page>>endobj\n3 0 obj<</Type/Page/Parent 1 0 R>>endobj\n4 0 obj<</Type /Page /Parent 1 0 R>>endobj\n";
         let doc = ChatMessage::user(MessageContent::from_parts(vec![
-            ContentPart::from_binary_base64("application/pdf", BASE64.encode(pdf), Some("a.pdf".into())),
+            ContentPart::from_binary_base64(
+                "application/pdf",
+                BASE64.encode(pdf),
+                Some("a.pdf".into()),
+            ),
         ]));
         assert_eq!(est(&doc), 3 * PDF_PAGE_TOKENS);
     }

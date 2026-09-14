@@ -598,7 +598,11 @@ pub fn paste_token(i: usize, p: &Paste) -> String {
         Paste::Image(img) if img.w > 0 => format!("[⎘ image {}: {}×{}]", i + 1, img.w, img.h),
         Paste::Image(img) => {
             let name = img.path.file_name().unwrap_or_default().to_string_lossy();
-            let kind = if img.path.extension().is_some_and(|e| e.eq_ignore_ascii_case("pdf")) {
+            let kind = if img
+                .path
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
+            {
                 "file"
             } else {
                 "image"
@@ -3464,7 +3468,11 @@ fn from_history(h: HistoryEntry) -> Vec<Entry> {
         } => vec![Entry::Tool {
             args: describe(&name, &args),
             // `.` marks a call from inside a `python` cell (08 §4.1), as live.
-            name: if call_id.contains('.') { format!("↳ {name}") } else { name },
+            name: if call_id.contains('.') {
+                format!("↳ {name}")
+            } else {
+                name
+            },
             call_id,
             job: None,
             result,

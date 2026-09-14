@@ -1980,7 +1980,11 @@ pub(crate) fn text_of(content: &MessageContent) -> String {
         match part {
             ContentPart::Text(t) => out.push_str(t),
             ContentPart::Binary(b) => {
-                out.push_str(if b.is_pdf() { "[document: " } else { "[image: " });
+                out.push_str(if b.is_pdf() {
+                    "[document: "
+                } else {
+                    "[image: "
+                });
                 out.push_str(b.name.as_deref().unwrap_or(&b.content_type));
                 out.push(']');
             }
@@ -2053,7 +2057,7 @@ mod tests {
         let skills_dir = skills::dir(&data_dir);
         std::fs::create_dir_all(&skills_dir).unwrap();
         let bare = frame::baseline(&data_dir, "", "", false);
-        assert!(bare.starts_with("You are a fast"));
+        assert!(bare.starts_with("You are wth, a meta-harness"));
         assert!(!bare.contains("## Skills"));
 
         std::fs::write(data_dir.join("prompt.md"), "Standing rule.\n\n").unwrap();

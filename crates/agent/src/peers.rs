@@ -1,6 +1,7 @@
 //! Peer tools (design doc 01 §2.4): `spawn_subagent` returns immediately;
-//! `send_message` routes text between a session and its parent/children.
-//! Both are `Risk::ReadOnly`: nothing outside the harness changes.
+//! `send_message` routes text between a session and its parent/children;
+//! `list_models` shows what a parent may pick for a child.
+//! All are `Risk::ReadOnly`: nothing outside the harness changes.
 //!
 //! ponytail: the registry is global, so both tools are visible to every
 //! session and depth/peer availability is enforced at call time; per-session
@@ -17,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use tools::{Risk, Tool, ToolCx, ToolOutput};
 
 use crate::supervisor::{Deliver, SpawnChild};
-use crate::{AGENT_ACTOR, AgentConfig, Agents};
+use crate::{AGENT_ACTOR, AgentConfig, Agents, ListModels};
 
 /// Arguments for [`SpawnSubagentTool`].
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -33,6 +34,12 @@ pub struct SpawnSubagentArgs {
     /// Absolute working directory for an external harness; default: wth's cwd.
     #[serde(default)]
     pub cwd: Option<PathBuf>,
+    /// Model for a wth subagent as `provider/model` (see list_models); default: the configured subagent model. Not for external harnesses.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Reasoning effort for a wth subagent: low|medium|high|off|default or a token budget; default: the configured one.
+    #[serde(default)]
+    pub effort: Option<String>,
 }
 
 /// Non-blocking delegation to a child session.
@@ -66,7 +73,8 @@ impl Tool for SpawnSubagentTool {
         let mut s = String::from(
             "Delegate a complete, self-contained task to a subagent running in its own session while you continue. \
              Returns immediately with its name; its final message arrives later as a <subagent_result> input, so do not poll. \
-             Several calls in one message run concurrently. Message it with send_message.",
+             Several calls in one message run concurrently. Message it with send_message. \
+             For a wth subagent you choose `model` and `effort`; pick a little more capability than the task seems to need.",
         );
         let line = acp::describe(&harnesses(&self.data_dir));
         if !line.is_empty() {
@@ -95,6 +103,8 @@ impl Tool for SpawnSubagentTool {
                     task: args.task,
                     agent: args.agent,
                     cwd: args.cwd,
+                    model: args.model,
+                    effort: args.effort,
                 })
                 .await
             {
@@ -172,6 +182,61 @@ impl Tool for SendMessageTool {
                 _ => ToolOutput::ok(format!("no reply from {to} within {secs}s")),
             },
         )
+    }
+}
+
+/// Arguments for [`ListModelsTool`]: none.
+#[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct ListModelsArgs {}
+
+/// The models a parent may give a wth subagent.
+pub struct ListModelsTool;
+
+#[async_trait::async_trait]
+impl Tool for ListModelsTool {
+    const NAME: &'static str = "list_models";
+    const RISK: Risk = Risk::ReadOnly;
+    type Args = ListModelsArgs;
+
+    fn description(&self) -> String {
+        "List the models available to this harness (providers with credentials), one per line: \
+         `provider/model · context · reasoning efforts · vision`. Use an id as spawn_subagent's `model`."
+            .into()
+    }
+
+    async fn call(&self, _: ListModelsArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
+        let agents = match supervisor() {
+            Ok(a) => a,
+            Err(out) => return Ok(out),
+        };
+        let models = agents
+            .ask(ListModels)
+            .await
+            .map_err(|e| anyhow::anyhow!("agent supervisor: {e}"))?;
+        if models.is_empty() {
+            return Ok(ToolOutput::ok("no providers have credentials"));
+        }
+        let lines: Vec<String> = models
+            .iter()
+            .map(|m| {
+                let mut line = m.id.clone();
+                if m.context > 0 {
+                    line.push_str(&format!(" · {}k", m.context / 1000));
+                }
+                if m.reasoning {
+                    line.push_str(" · reasoning");
+                    if !m.efforts.is_empty() {
+                        line.push(' ');
+                        line.push_str(&m.efforts.join("|"));
+                    }
+                }
+                if m.image {
+                    line.push_str(" · vision");
+                }
+                line
+            })
+            .collect();
+        Ok(ToolOutput::ok(lines.join("\n")))
     }
 }
 

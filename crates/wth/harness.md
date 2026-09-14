@@ -119,10 +119,14 @@ cloned repos (read-only). This file is one; it is rewritten on every start.
 
 - History lives in `sessions.sqlite`; compaction folds it per
   `agent.compact_style`; `/compact` does it on demand.
-- `spawn_subagent{task, name?, agent?}` returns immediately; the result comes
-  back as a `<subagent_result>` message when the child finishes. Children see
-  only `task`. `send_message{to, message, await_reply}` talks to `parent` or a
-  child by name. `agent: <name>` runs an ACP harness from `acp/agents.yaml`.
+- `spawn_subagent{task, name?, agent?, cwd?, model?, effort?}` returns
+  immediately; the result comes back as a `<subagent_result>` message when the
+  child finishes. Children see only `task`. `agent: <name>` runs an ACP
+  harness from `acp/agents.yaml` in `cwd` (it picks its own model); without
+  it a wth subagent runs on `model`/`effort` you choose (`list_models` shows
+  the ids; unset = `agent.subagents.model`/`effort`, then `agent.model`).
+  `send_message{to, message, await_reply}` talks to `parent` or a child by
+  name.
 - The shell tool returns within a few seconds or hands back a job id;
   `<job_result>` arrives when it ends. `jobs` lists, `cancel_job` kills.
 - Durable facts go through `knowledge_put`; `<knowledge>` notes in your

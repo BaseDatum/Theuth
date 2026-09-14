@@ -30,8 +30,7 @@ pub async fn to_markdown(bytes: Vec<u8>, format: Format) -> anyhow::Result<Strin
         bytes.len() as f64 / (1024.0 * 1024.0),
         MAX_BYTES >> 20
     );
-    let work =
-        tokio::task::spawn_blocking(move || anydoc::to_markdown_bytes(&bytes, Some(format)));
+    let work = tokio::task::spawn_blocking(move || anydoc::to_markdown_bytes(&bytes, Some(format)));
     match tokio::time::timeout(DEADLINE, work).await {
         Ok(Ok(Ok(md))) => Ok(md),
         Ok(Ok(Err(e))) => Err(describe(e)),
@@ -49,7 +48,11 @@ fn describe(e: anydoc::ConvertError) -> anyhow::Error {
     match e {
         anydoc::ConvertError::NeedsOcr { pages, page_count } => anyhow::anyhow!(
             "pages {} of {page_count} are scanned (need OCR); ask for the file as an attachment — a vision model reads the pages itself",
-            pages.iter().map(u32::to_string).collect::<Vec<_>>().join(", ")
+            pages
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
         ),
         other => anyhow::anyhow!("{other}"),
     }

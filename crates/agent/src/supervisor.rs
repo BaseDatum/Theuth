@@ -30,7 +30,7 @@ use crate::loop_::{
     CancelTurn, CompactNow, HarvestNow, IsRunning, QueuedInputs, RedoTurn, Session, SessionState,
     SetPendingEffort, SwitchModel, UndoTurn, UserInput, WithdrawInput, text_of,
 };
-use crate::peers::{SendMessageTool, SpawnSubagentTool};
+use crate::peers::{ListModelsTool, SendMessageTool, SpawnSubagentTool};
 use crate::skills::{
     self, AddSkillRepoTool, AddSkillTool, LoadSkillTool, RemoveSkillRepoTool, RemoveSkillTool,
     SyncSkillsTool,
@@ -177,6 +177,10 @@ pub struct SpawnChild {
     pub agent: Option<String>,
     /// Working directory for an external harness's `session/new`; default: wth's cwd.
     pub cwd: Option<PathBuf>,
+    /// Child model (`provider/model`); default `agent.subagents.model`, then `agent.model`.
+    pub model: Option<String>,
+    /// Child reasoning effort; default `agent.subagents.effort`, then `agent.effort`.
+    pub effort: Option<String>,
 }
 
 /// `ask` → `Result<Option<oneshot::Receiver<String>>, String>`: route a peer
@@ -250,11 +254,14 @@ impl Agents {
     /// Live actor for `id`, resuming from the store (or creating the row) when
     /// needed. `acp` = `(harness, cwd)` runs a new child on an external harness
     /// (design doc 06 §3.2); a row whose `agent` column is set resumes on one.
+    /// `pick` = `(model, effort)` chosen by the spawning parent for a new child
+    /// (01 §2.4); `None` entries fall back to the subagent config.
     async fn session(
         &mut self,
         id: Option<SessionId>,
         parent: Option<(SessionId, &str)>,
         acp: Option<(String, Option<PathBuf>)>,
+        pick: (Option<&str>, Option<&str>),
     ) -> anyhow::Result<(SessionId, LiveActor)> {
         let id = id.unwrap_or_default();
         if let Some(live) = self.sessions.get(&id).filter(|l| l.actor.is_alive()) {
@@ -285,8 +292,13 @@ impl Agents {
                 let sub = &self.cfg.subagents;
                 let (model, effort) = match parent {
                     Some(_) => (
-                        sub.model.as_deref().unwrap_or(&self.default_model),
-                        sub.effort.clone().or_else(|| self.default_effort.clone()),
+                        pick.0
+                            .or(sub.model.as_deref())
+                            .unwrap_or(&self.default_model),
+                        pick.1
+                            .map(str::to_owned)
+                            .or_else(|| sub.effort.clone())
+                            .or_else(|| self.default_effort.clone()),
                     ),
                     None => (self.default_model.as_str(), self.default_effort.clone()),
                 };
@@ -411,7 +423,7 @@ impl Agents {
         files: Vec<PathBuf>,
     ) -> SessionId {
         let routed = match check_files(&files) {
-            Ok(()) => self.session(session, None, None).await,
+            Ok(()) => self.session(session, None, None, (None, None)).await,
             Err(e) => Err(anyhow::anyhow!(e)),
         };
         match routed {
@@ -474,7 +486,7 @@ impl Agents {
     /// The live (or resumed) actor for `session`, with the lookup error as the
     /// caller's `Err` string.
     async fn actor(&mut self, session: SessionId) -> Result<LiveActor, String> {
-        self.session(Some(session), None, None)
+        self.session(Some(session), None, None, (None, None))
             .await
             .map(|(_, actor)| actor)
             .map_err(|e| format!("{e:#}"))
@@ -921,6 +933,29 @@ impl Message<SpawnChild> for Agents {
         if depth >= sub.max_depth {
             return Err(format!("subagents are not available at depth {depth}"));
         }
+        if m.agent.is_some() && (m.model.is_some() || m.effort.is_some()) {
+            return Err(
+                "`model`/`effort` do not apply to an external harness; it picks its own".into(),
+            );
+        }
+        if let Some(model) = &m.model {
+            let r = self.catalog.resolve(model, &*self.configured)?;
+            if let Some(p) = &r.provider
+                && !(self.configured)(Catalog::adapter(p))
+            {
+                return Err(format!(
+                    "provider `{p}` has no credentials; list_models shows what is available"
+                ));
+            }
+        }
+        if let Some(e) = &m.effort
+            && e != "default"
+            && effort_of(e).is_none()
+        {
+            return Err(format!(
+                "unknown effort `{e}`; use low|medium|high|off|default or a token budget"
+            ));
+        }
         let id = SessionId::new();
         let base = m.name.filter(|n| !n.trim().is_empty()).unwrap_or_else(|| {
             let b = id.0.as_bytes();
@@ -946,6 +981,7 @@ impl Message<SpawnChild> for Agents {
             Some(id),
             Some((m.parent, &name)),
             m.agent.map(|a| (a, m.cwd)),
+            (m.model.as_deref(), m.effort.as_deref()),
         )
         .await
         .map_err(|e| format!("{e:#}"))?;
@@ -1706,7 +1742,7 @@ impl Message<NewSession> for Agents {
 
     async fn handle(&mut self, m: NewSession, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (id, _) = self
-            .session(None, None, None)
+            .session(None, None, None, (None, None))
             .await
             .map_err(|e| format!("{e:#}"))?;
         if let Some(cwd) = &m.cwd {
@@ -2236,6 +2272,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         let _ = reg
             .ask(RegisterTool(Arc::new(SendMessageTool { cfg })))
             .await;
+        let _ = reg.ask(RegisterTool(Arc::new(ListModelsTool))).await;
     });
     Ok(())
 }

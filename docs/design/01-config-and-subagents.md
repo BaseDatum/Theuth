@@ -339,7 +339,7 @@ is the earliest honest point).
 
 ### 2.4 Tools
 
-All in `crates/agent/src/peers.rs` (replaces `subagent.rs`). Both are
+All in `crates/agent/src/peers.rs` (replaces `subagent.rs`). All are
 `Risk::ReadOnly`: a child's own actions are gated tool by tool, and messaging
 mutates nothing outside the harness.
 
@@ -350,6 +350,8 @@ struct SpawnSubagentArgs {
     name: Option<String>,     // stable peer id; default generated (adjective-noun)
     agent: Option<String>,    // an external harness from acp/agents.yaml; default: a wth subagent
     cwd: Option<PathBuf>,
+    model: Option<String>,    // wth child only: `provider/model`; default subagents.model, then agent.model
+    effort: Option<String>,   // wth child only: low|medium|high|off|default|<budget>; default subagents.effort, then agent.effort
 }
 // -> "Spawned `grep-logs` (session 01a0…). Its result will arrive as a
 //     <subagent_result> when it finishes; message it with send_message."
@@ -362,10 +364,25 @@ struct SendMessageArgs {
     reply_to: Option<String>, // id of the message being answered
 }
 // -> "delivered" | "<reply text>" | "no reply from X within Ns"
+
+// list_models — no arguments
+// -> one line per model of every provider with credentials:
+//    "anthropic/claude-opus-4-8 · 200k · reasoning low|medium|high · vision"
 ```
 
 The tool description appends the configured harness names and descriptions;
 an unknown name is a tool error listing them.
+
+**The parent picks the child's model** (added 2026-09-14). `model`/`effort`
+are validated at spawn: an ambiguous bare id, a provider without
+credentials, or an unknown effort keyword is a tool error naming
+`list_models`; both are an error with `agent` set (an external harness has
+its own model). Unset, the `subagents.model`/`effort` config applies as
+before. The guidance text tells the model to match the model to the task
+and to err towards more capability. Rejected: a fixed tier map
+(`fast`/`smart` → ids) in config - the model already knows model names,
+and the list is one tool call away; a static list in the system prompt -
+it changes with logins and would be hundreds of lines for gateway providers.
 
 Why one symmetric tool instead of `ask_parent` / `steer_subagent`: same
 schema, same routing table, same rendering; the direction is just `to`.
@@ -399,9 +416,10 @@ between turns and busted the parent's system-prompt cache every time a
 child finished (`07-context.md` §10). The parent learns names from
 `spawn_subagent`'s output and completion from `<subagent_result>`; after a
 compaction the head carries `Subagents: grep-logs (running), fix-tests
-(idle)` (`Roster`, `07 §8.4`). The how-to (spawn with `spawn_subagent`;
-steer or ask with `send_message`; results arrive as `<subagent_result>`
-messages) is static text in `frame::baseline`'s `GUIDANCE`.
+(idle)` (`Roster`, `07 §8.4`). The how-to (delegate by default, choose
+between an external harness and a wth subagent, choose the child's model,
+write a complete brief, verify before reporting) is static text in
+`frame::baseline`'s `GUIDANCE` (07 §4).
 
 Children get no `yield` tool (oh-my-pi's) — our turn end *is* the yield.
 
@@ -413,7 +431,7 @@ Children get no `yield` tool (oh-my-pi's) — our turn end *is* the yield.
 | `max_concurrent` | 8 | `tokio::sync::Semaphore` in the supervisor around the child turn started by `spawn_subagent`; a spawn beyond the cap starts when a permit frees, transparently (the parent is not told). Follow-up turns started by `send_message`/human input are not permit-gated |
 | `max_runtime_secs` | 600 | per spawn turn (same scope as the permit); on expiry the turn is cancelled and the parent receives `<subagent_result stop="cancelled">` prefixed `[timed out after Ns]` |
 | `reply_timeout_secs` | 120 | `await_reply` bound |
-| `model` | `null` | child model; falls back to `agent.model` |
+| `model` / `effort` | `null` | child defaults when `spawn_subagent` names none; fall back to `agent.model` / `agent.effort` |
 
 ### 2.7 Events, store, UI
 

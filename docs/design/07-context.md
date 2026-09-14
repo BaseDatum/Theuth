@@ -230,13 +230,13 @@ skipped:
 
 ```
 1. [Claude Code identity line, when the anthropic login is used]   (05 §2.3)
-2. identity, working directory, date                              (unchanged)
+2. identity (wth as a meta-harness that delegates, checks and reports; rewritten 2026-09-14), working directory, date
 3. <data_dir>/prompt.md
 4. always-skill bodies, name order
 5. skills index
 6. peer line: `PeerContext { session }` → "## Peers\nYou are `x`, a subagent of session …" for children, else ""
 7. plugin prompt blocks: `ask(ListPrompts)` on the tool registry, sorted by plugin name, joined by blank lines (00 §4); "" when none. Registered today: `agent` (data dir path, what each file is, "load the `harness` skill before editing", what is read at startup vs live), `knowledge` (when to use the store), `tools` (`mcp/` layout, shell expansion, `mcp/config.yaml` gate schema, `<server>__<tool>` naming, what `tools.policy` does and that the model cannot approve or log in). Each is a function of config only.
-8. GUIDANCE const: the todo sentence (§9) + spawn_subagent / send_message / <subagent_result> text
+8. GUIDANCE const (rewritten 2026-09-14 for the meta-harness role): delegate by default; external harness (`agent`, `cwd`) for repository work vs wth subagent (with `model`/`effort` the parent picks, erring towards more capability; `list_models`) for research and fan-out; `task` as a complete brief; results as <subagent_result>, steer with send_message, approvals go to the user; verify before reporting; the todo sentence (§9). Static: the configured harness names stay in `spawn_subagent`'s description.
 ```
 
 `Turn::rebase` then appends `repl::prompt_block(ListTools)` (`08 §3.2`) when

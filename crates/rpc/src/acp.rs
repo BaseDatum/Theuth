@@ -511,7 +511,8 @@ mod tests {
             files,
             [
                 dir.join("attachments").join(format!("{}.png", &hex[..16])),
-                dir.join("attachments").join(format!("{}.pdf", &pdf_hex[..16])),
+                dir.join("attachments")
+                    .join(format!("{}.pdf", &pdf_hex[..16])),
             ]
         );
         assert_eq!(std::fs::read(&files[0]).unwrap(), bytes);
@@ -520,7 +521,10 @@ mod tests {
             text.starts_with("look\n[image: unsupported image/tiff]\n[image: "),
             "{text}"
         );
-        assert!(text.ends_with("\n[binary resource file:///r.zip]"), "{text}");
+        assert!(
+            text.ends_with("\n[binary resource file:///r.zip]"),
+            "{text}"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

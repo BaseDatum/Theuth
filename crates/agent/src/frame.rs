@@ -17,13 +17,30 @@ use crate::skills;
 /// Identity line the Claude Code login requires first in the system prompt (design doc 05 §2.3).
 const CLAUDE_CODE_IDENTITY: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
 
-/// Static todo/peer guidance (design doc 07 §4 part 8, §9): never changes, so it
-/// never busts the system cache. The live roster is deliberately absent (§10);
-/// plugin usage text arrives as prompt blocks (`ListPrompts`), not here.
+/// Static working guidance (design doc 07 §4 part 8, §9, §10): never changes,
+/// so it never busts the system cache. The live roster is deliberately absent
+/// (§10); the configured external harnesses are named in `spawn_subagent`'s
+/// description, not here; plugin usage text arrives as prompt blocks
+/// (`ListPrompts`).
 const GUIDANCE: &str = "## Guidance\n\
-For work with three or more steps, keep a `todo` list and mark items as you go.\n\
-Spawn with spawn_subagent (put all shared background in `task`; the subagent sees nothing else); \
-steer or ask with send_message. Results arrive as <subagent_result> messages; you do not need to poll.";
+Delegate by default. Do a thing yourself only when it is a couple of tool calls: read a file, run a command, \
+answer from what you know. Anything larger - code changes, investigations, multi-file edits, long shell work - \
+goes to a subagent, so your own context stays short and independent work runs in parallel.\n\
+Pick the worker. spawn_subagent with `agent` runs an external harness (Claude Code, Codex, OpenCode, ...; \
+the tool description lists what is configured) as a child: it brings its own model, tools, login and conventions \
+and is the right choice for any work inside a code repository - set `cwd` to that repository. \
+Without `agent` you get a wth subagent with your tools: research, fan-out, non-code work. You choose its \
+`model` and `effort` (list_models shows what is available): match the model to the task - a small fast one for \
+mechanical collection or edits, a frontier one for design, debugging and judgement - and when in doubt pick \
+a little more capability than the task seems to need; a wrong answer costs more than the tokens.\n\
+Write `task` as a complete brief: goal, paths, constraints, what done looks like. The child sees nothing of \
+this conversation and an external harness cannot ask you questions, so every decision goes in the brief. \
+Independent tasks go out in one message and run concurrently; give each a `name`.\n\
+Results arrive as <subagent_result> messages; do not poll. send_message steers a running wth subagent or \
+gives any child follow-up work in its existing context. Approvals a child asks for go to the user, not you.\n\
+You own the outcome: verify a child's claims (read the diff, run the check) before passing them on, \
+integrate the pieces, report in your own words. For work with three or more steps keep a `todo` list \
+and mark items as you go.";
 
 /// How cache marks are placed for a provider family (design doc 07 §3 table).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -148,7 +165,9 @@ pub fn baseline(
         .map(|p| p.display().to_string())
         .unwrap_or_default();
     let header = format!(
-        "You are a fast, direct assistant that does things for the user on their machine.\nWorking directory: {cwd}\nDate: {}",
+        "You are wth, a meta-harness on the user's machine: an orchestrator that gets work done by delegating it \
+         to subagents and to other AI harnesses, then checking and reporting the result. Your own tools are for \
+         small direct actions and for verifying what others did.\nWorking directory: {cwd}\nDate: {}",
         chrono::Local::now().format("%Y-%m-%d")
     );
     let standing = std::fs::read_to_string(data_dir.join("prompt.md")).unwrap_or_default();
