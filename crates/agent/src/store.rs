@@ -428,6 +428,37 @@ impl Store {
             .collect()
     }
 
+    /// Delete `root` and every descendant with their messages and epochs.
+    /// Returns the removed ids, children before parents.
+    pub async fn delete_session(&self, root: SessionId) -> anyhow::Result<Vec<SessionId>> {
+        let mut ids: Vec<SessionId> = self
+            .descendants(root)
+            .await?
+            .into_iter()
+            .rev() // reverse pre-order: every child precedes its parent
+            .map(|(_, s)| s.id)
+            .collect();
+        ids.push(root);
+        let mut tx = self.pool.begin().await?;
+        for id in &ids {
+            let sid = id.to_string();
+            sqlx::query("DELETE FROM messages WHERE session_id = ?")
+                .bind(&sid)
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("DELETE FROM epochs WHERE session_id = ?")
+                .bind(&sid)
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("DELETE FROM sessions WHERE id = ?")
+                .bind(&sid)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(ids)
+    }
+
     /// The child of `parent` named `name`.
     pub async fn child_by_name(
         &self,

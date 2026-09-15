@@ -39,13 +39,13 @@ use crate::store::{Epoch, Store};
 use crate::user::{MessageUserTool, USER_ACTOR, UserChannels};
 use crate::{
     AGENT_ACTOR, AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentConfig, AgentEvent, AgentInfo,
-    AgentState, AncestorInfo, Ancestors, Cancel, Compact, CompactStyle, GetCompactStyle,
-    GetTitleModel, Harvest, HistoryEntry, ListAcp, ListAgents, ListLogins, ListModels,
-    ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills, LoadSession, LoadSkill,
-    Loaded, Login, LoginFinished, LoginInfo, Logout, ModelInfo, NewSession, ProviderInfo,
-    QueuedInput, Redo, RemoveAcp, RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession,
-    SendInput, SessionSummary, SetCompactStyle, SetEffort, SetModel, SetTitleModel, ShowPrompt,
-    SkillBody, SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw, effort_of,
+    AgentState, AncestorInfo, Ancestors, Cancel, Compact, CompactStyle, DeleteSession,
+    GetCompactStyle, GetTitleModel, Harvest, HistoryEntry, ListAcp, ListAgents, ListLogins,
+    ListModels, ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills, LoadSession,
+    LoadSkill, Loaded, Login, LoginFinished, LoginInfo, Logout, ModelInfo, NewSession,
+    ProviderInfo, QueuedInput, Redo, RemoveAcp, RemoveProvider, RemoveSkill, RemoveSkillRepo,
+    RenameSession, SendInput, SessionSummary, SetCompactStyle, SetEffort, SetModel, SetTitleModel,
+    ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw, effort_of,
 };
 use crate::{frame, repl, spill};
 
@@ -134,6 +134,13 @@ impl LiveActor {
             Self::Acp(a) => {
                 let _ = a.tell(CancelTurn).await;
             }
+        }
+    }
+
+    async fn kill(&self) {
+        match self {
+            Self::Native(a) => a.kill(),
+            Self::Acp(a) => a.kill(),
         }
     }
 
@@ -1530,6 +1537,44 @@ impl Message<RenameSession> for Agents {
                 title,
             })
             .await;
+        Ok(())
+    }
+}
+
+impl Message<DeleteSession> for Agents {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        m: DeleteSession,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<(), String> {
+        let tree = self
+            .store
+            .descendants(m.session)
+            .await
+            .map_err(|e| e.to_string())?;
+        let ids: Vec<SessionId> = std::iter::once(m.session)
+            .chain(tree.into_iter().map(|(_, s)| s.id))
+            .collect();
+        if ids.iter().any(|id| self.running.contains(id)) {
+            return Err("a turn is running; stop it first".into());
+        }
+        for id in &ids {
+            if let Some(live) = self.sessions.remove(id) {
+                live.actor.kill().await;
+            }
+        }
+        let removed = self
+            .store
+            .delete_session(m.session)
+            .await
+            .map_err(|e| e.to_string())?;
+        for session in removed {
+            self.rt
+                .publish(AgentEvent::SessionDeleted { session })
+                .await;
+        }
         Ok(())
     }
 }

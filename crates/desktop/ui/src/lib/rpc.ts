@@ -50,6 +50,7 @@ export function useInvalidateOn(): void {
       on('TurnFinished', sessions),
       on('SubagentSpawned', sessions),
       on('TitleChanged', sessions),
+      on('SessionDeleted', () => void qc.invalidateQueries({ queryKey: queryKeys.sessions })),
       on('McpProgress', () => void qc.invalidateQueries({ queryKey: ['mcp'] })),
       on('LoginFinished', () => void qc.invalidateQueries({ queryKey: queryKeys.logins })),
       on('KnowledgeChanged', (e) => {

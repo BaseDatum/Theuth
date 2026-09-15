@@ -1,8 +1,18 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { Link } from '@tanstack/react-router'
+import { Link, useNavigate } from '@tanstack/react-router'
 import { MoreHorizontal } from 'lucide-react'
 import { memo, useState } from 'react'
 import { toast } from 'sonner'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -14,13 +24,24 @@ import { SidebarMenuAction, SidebarMenuButton } from '@/components/ui/sidebar'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { useSessionField } from '@/store/sessions'
 
-/** One chat in the list: title (live from `TitleChanged`), active highlight, hover `…` menu with inline rename. */
+/** One chat in the list: title (live from `TitleChanged`), active highlight, hover `…` menu with inline rename and delete. */
 export const SessionItem = memo(function SessionItem({ id, title, active }: { id: string; title: string; active: boolean }) {
   const api = useApi()
   const qc = useQueryClient()
+  const navigate = useNavigate()
   const live = useSessionField(id, 'title')
   const shown = live || title || id.slice(0, 8)
   const [editing, setEditing] = useState<string | null>(null)
+  const [confirming, setConfirming] = useState(false)
+
+  const remove = async () => {
+    try {
+      await api.delete_session(id)
+      if (active) void navigate({ to: '/' })
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e))
+    }
+  }
 
   const rename = async (value: string) => {
     setEditing(null)
@@ -63,12 +84,25 @@ export const SessionItem = memo(function SessionItem({ id, title, active }: { id
             <DropdownMenuContent side="right" align="start" className="w-48">
               <DropdownMenuItem onSelect={() => setEditing(shown)}>Rename</DropdownMenuItem>
               <DropdownMenuItem onSelect={() => void navigator.clipboard.writeText(id)}>Copy id</DropdownMenuItem>
-              <DropdownMenuItem disabled>
+              <DropdownMenuItem variant="destructive" onSelect={() => setConfirming(true)}>
                 Delete
-                <span className="ml-auto text-xs text-fg-tertiary">Not available yet</span>
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+          <AlertDialog open={confirming} onOpenChange={setConfirming}>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Delete chat?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  “{shown}” and any subagent chats under it are removed for good.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction onClick={() => void remove()}>Delete</AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         </>
       )}
     </div>

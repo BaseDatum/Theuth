@@ -350,6 +350,15 @@ export function route(draft: Record<string, SessionSlice>, e: WireEvent, ctx: Ct
     }
     return true
   }
+  if (e.type === 'SessionDeleted') {
+    delete draft[e.session]
+    for (const s of Object.values(draft)) {
+      if (!(e.session in s.children)) continue
+      const { [e.session]: _gone, ...children } = s.children
+      draft[s.id] = { ...s, children }
+    }
+    return true
+  }
   if (!('session' in e)) return false
   const cur = draft[e.session] ?? empty(e.session)
   const next = apply(cur, e, ctx)

@@ -68,11 +68,12 @@ function SessionRoute() {
     }
   }, [session])
 
+  // Keyed so refs/drafts reset per session; the keys must differ between siblings.
   return (
     <>
       <Header session={session} />
-      <Transcript key={session} session={session} />
-      <Composer key={session} session={session} />
+      <Transcript key={`t:${session}`} session={session} />
+      <Composer key={`c:${session}`} session={session} />
     </>
   )
 }

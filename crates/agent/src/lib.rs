@@ -202,6 +202,15 @@ pub struct RenameSession {
     pub title: String,
 }
 
+/// `ask` → `Result<(), String>`: delete a session and every descendant — rows,
+/// messages, epochs — and drop their actors; one [`AgentEvent::SessionDeleted`]
+/// per removed session. `Err` while any of them has a turn in flight.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DeleteSession {
+    /// Root of the subtree to delete.
+    pub session: SessionId,
+}
+
 /// Reply to [`LoadSession`].
 #[derive(Clone, Debug, Default, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -897,6 +906,11 @@ pub enum AgentEvent {
         /// New title, non-empty.
         title: String,
     },
+    /// The session's rows are gone ([`DeleteSession`]); lists drop it.
+    SessionDeleted {
+        /// Session.
+        session: SessionId,
+    },
 }
 
 impl AgentEvent {
@@ -922,6 +936,7 @@ impl AgentEvent {
             | Self::Harvested { session, .. }
             | Self::SkillsChanged { session, .. }
             | Self::TitleChanged { session, .. }
+            | Self::SessionDeleted { session }
             | Self::Error { session, .. } => Some(*session),
             Self::SubagentSpawned { child, .. } => Some(*child),
         }

@@ -1696,7 +1696,8 @@ impl Worker {
             | AgentEvent::Harvesting { .. }
             | AgentEvent::Harvested { .. }
             | AgentEvent::SkillsChanged { .. }
-            | AgentEvent::TitleChanged { .. } => {}
+            | AgentEvent::TitleChanged { .. }
+            | AgentEvent::SessionDeleted { .. } => {}
         }
     }
 

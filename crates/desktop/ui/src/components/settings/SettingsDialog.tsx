@@ -19,7 +19,6 @@ import { Shortcuts } from '@/components/settings/Shortcuts'
 import { Skills } from '@/components/settings/Skills'
 import { Tools } from '@/components/settings/Tools'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
-import { ScrollArea } from '@/components/ui/scroll-area'
 
 const TABS = [
   ['general', 'General', Settings2],
@@ -52,7 +51,7 @@ export function SettingsDialog({ tab, session, onTab, onClose }: Props) {
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent
         onOpenAutoFocus={(e) => e.preventDefault()}
-        className="flex h-[640px] max-w-[880px] flex-row gap-0 overflow-hidden bg-sidebar p-0 sm:max-w-[880px]"
+        className="flex h-[640px] max-w-[880px] flex-row gap-0 overflow-hidden bg-elevated p-0 sm:max-w-[880px]"
       >
         <DialogTitle className="sr-only">Settings</DialogTitle>
         <nav className="flex w-[220px] shrink-0 flex-col gap-0.5 border-r border-border-subtle px-3 pt-5 pb-3">
@@ -64,7 +63,7 @@ export function SettingsDialog({ tab, session, onTab, onClose }: Props) {
               onClick={() => onTab(id)}
               className={cn(
                 'flex h-9 items-center gap-2.5 rounded-[10px] px-2.5 text-sm',
-                id === tab ? 'bg-sidebar-accent' : 'hover:bg-sidebar-accent/60',
+                id === tab ? 'bg-layer-3' : 'hover:bg-layer-3/60',
               )}
             >
               <Icon className="size-4 text-fg-secondary" />
@@ -72,7 +71,8 @@ export function SettingsDialog({ tab, session, onTab, onClose }: Props) {
             </button>
           ))}
         </nav>
-        <ScrollArea className="min-w-0 flex-1">
+        {/* Not ScrollArea: Radix wraps the viewport in `display: table`, which never shrinks, so rows overflowed. */}
+        <div className="min-w-0 flex-1 overflow-y-auto">
           <div className="px-8 pt-6 pb-8">
             {tab === 'general' && <General />}
             {tab === 'approvals' && <Approvals session={session} onClose={onClose} />}
@@ -83,7 +83,7 @@ export function SettingsDialog({ tab, session, onTab, onClose }: Props) {
             {tab === 'channels' && <Channels />}
             {tab === 'shortcuts' && <Shortcuts />}
           </div>
-        </ScrollArea>
+        </div>
       </DialogContent>
     </Dialog>
   )

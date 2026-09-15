@@ -75,3 +75,9 @@ export type TitleChanged = {
   session: SessionId
   title: string
 }
+
+/** `AgentEvent::SessionDeleted`: `delete_session` removed the rows; drop it from every list. */
+export type SessionDeleted = {
+  type: 'SessionDeleted'
+  session: SessionId
+}

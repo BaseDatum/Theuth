@@ -8,12 +8,12 @@ use std::path::PathBuf;
 
 use agent::{
     AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentConfig, AgentInfo, Agents, Cancel, Compact,
-    CompactStyle, GetCompactStyle, GetTitleModel, Harvest, ListAcp, ListAgents, ListLogins,
-    ListModels, ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills, LoadSession,
-    LoadSkill, Loaded, Login, LoginInfo, Logout, ModelInfo, NewSession, ProviderInfo, QueuedInput,
-    Redo, RemoveAcp, RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession, SendInput,
-    SessionSummary, SetCompactStyle, SetEffort, SetModel, SetTitleModel, ShowPrompt, SkillBody,
-    SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw,
+    CompactStyle, DeleteSession, GetCompactStyle, GetTitleModel, Harvest, ListAcp, ListAgents,
+    ListLogins, ListModels, ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills,
+    LoadSession, LoadSkill, Loaded, Login, LoginInfo, Logout, ModelInfo, NewSession, ProviderInfo,
+    QueuedInput, Redo, RemoveAcp, RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession,
+    SendInput, SessionSummary, SetCompactStyle, SetEffort, SetModel, SetTitleModel, ShowPrompt,
+    SkillBody, SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw,
 };
 use jsonrpsee::core::{RpcResult, SubscriptionResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
@@ -153,6 +153,10 @@ pub trait Api {
     /// Set a session's title by hand; `TitleChanged` follows on the stream.
     #[method(name = "rename_session")]
     async fn rename_session(&self, session: SessionId, title: String) -> RpcResult<()>;
+    /// Delete a session and its subagents for good; a `SessionDeleted` per removed session
+    /// follows on the stream. Refused while any of them is mid-turn.
+    #[method(name = "delete_session")]
+    async fn delete_session(&self, session: SessionId) -> RpcResult<()>;
     /// Every registered tool.
     #[method(name = "list_tools")]
     async fn list_tools(&self) -> RpcResult<Vec<ToolSpec>>;
@@ -586,6 +590,10 @@ impl ApiServer for Server {
 
     async fn rename_session(&self, session: SessionId, title: String) -> RpcResult<()> {
         ask::<Agents, _>(agent::AGENT_ACTOR, RenameSession { session, title }).await
+    }
+
+    async fn delete_session(&self, session: SessionId) -> RpcResult<()> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, DeleteSession { session }).await
     }
 
     async fn list_tools(&self) -> RpcResult<Vec<ToolSpec>> {

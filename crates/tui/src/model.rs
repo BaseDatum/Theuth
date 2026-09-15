@@ -2128,7 +2128,7 @@ impl Model {
             }
             // The sidebar of another frontend; nothing on screen changes and
             // a mid-stream arrival must not finish the streaming tail below.
-            AgentEvent::TitleChanged { .. } => return,
+            AgentEvent::TitleChanged { .. } | AgentEvent::SessionDeleted { .. } => return,
             AgentEvent::TurnStarted { session, .. } if self.session == Some(*session) => {
                 self.streaming = true;
             }
@@ -2291,7 +2291,8 @@ impl Model {
             AgentEvent::SubagentSpawned { .. }
             | AgentEvent::MessageDelivered { .. }
             | AgentEvent::InputWithdrawn { .. }
-            | AgentEvent::TitleChanged { .. } => {}
+            | AgentEvent::TitleChanged { .. }
+            | AgentEvent::SessionDeleted { .. } => {}
             AgentEvent::Harvesting { .. } => self.harvesting = true,
             AgentEvent::Harvested { added, updated, .. } => {
                 self.harvesting = false;

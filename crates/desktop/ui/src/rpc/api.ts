@@ -93,6 +93,8 @@ export interface Api {
   remove_skill(name: string): Promise<null>
   remove_skill_repo(name: string): Promise<null>
   rename_session(session: SessionId, title: string): Promise<null>
+  /** Delete a session and its subagents; `SessionDeleted` per removed id follows. Refused mid-turn. */
+  delete_session(session: SessionId): Promise<null>
   resolve_approval(id: ApprovalId, decision: Decision): Promise<boolean>
   send_input(session: SessionId | null, text: string, files: string[]): Promise<SessionId>
   set_approvals(session: SessionId | null, enabled: boolean): Promise<ApprovalsState>
@@ -134,6 +136,7 @@ export const METHODS = [
   'cancel_job',
   'compact',
   'compact_style',
+  'delete_session',
   'get_prompt',
   'info',
   'knowledge_delete',

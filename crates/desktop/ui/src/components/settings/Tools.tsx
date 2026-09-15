@@ -187,7 +187,7 @@ function ServerRow({ server: s, session, act }: { server: McpServer; session: st
   const sessionHint = !session ? 'Open a chat first' : !live ? 'Not connected' : undefined
   return (
     <Collapsible open={open} onOpenChange={setOpen} className="border-b border-border-subtle py-3 last:border-0">
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <CollapsibleTrigger asChild>
           <button type="button" className="flex min-w-0 flex-1 items-center gap-2 text-left" disabled={s.tools.length === 0}>
             <ChevronRight className={`size-4 shrink-0 text-fg-tertiary transition-transform ${open ? 'rotate-90' : ''}`} />
@@ -282,9 +282,7 @@ function ToolRow({
             <span className="shrink-0 text-[13px] text-fg-tertiary">as {t.registered}</span>
           )}
         </div>
-        <div className="truncate text-[13px] text-fg-secondary" title={t.description}>
-          {t.description}
-        </div>
+        <div className="text-[13px] wrap-break-word text-fg-secondary">{t.description}</div>
       </div>
       <span className="shrink-0 text-[13px] text-fg-tertiary">{risk}</span>
       <GateSelect value={t.gate} off onChange={(gate) => act.gate.mutate({ server, tool: t.name, gate })} />

@@ -6,17 +6,18 @@ import type { KnowledgeChanged } from '@/rpc/bindings/KnowledgeChanged'
 import type { McpProgress } from '@/rpc/bindings/McpProgress'
 import type { SignalEvent } from '@/rpc/bindings/SignalEvent'
 import type { SlackEvent } from '@/rpc/bindings/SlackEvent'
-import type { LoginFinished, TitleChanged } from '@/rpc/extra'
+import type { LoginFinished, SessionDeleted, TitleChanged } from '@/rpc/extra'
 
 /**
  * `AgentEvent` with the 25 §7 additions the bindings do not carry yet:
- * `TitleChanged` and `ToolCallFinished.files` (paths of files the tool
- * produced, `[]` when none).
+ * `TitleChanged`, `SessionDeleted` and `ToolCallFinished.files` (paths of
+ * files the tool produced, `[]` when none).
  */
 export type AgentEvent =
   | Exclude<Bound, { type: 'ToolCallFinished' }>
   | (Extract<Bound, { type: 'ToolCallFinished' }> & { files: string[] })
   | TitleChanged
+  | SessionDeleted
 
 /** The server dropped `count` events for this subscriber; the gap is unrecoverable. */
 export type Lagged = { type: 'Lagged'; count: number }
