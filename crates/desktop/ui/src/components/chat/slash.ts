@@ -54,7 +54,16 @@ export function surfaceOf(e: Event): Surface | null {
   return d === 'model' || d === 'prompt' || d === 'jobs' ? d : null
 }
 
-export type SettingsTab = 'general' | 'approvals' | 'tools' | 'skills' | 'harnesses' | 'connections' | 'channels' | 'shortcuts'
+export type SettingsTab =
+  | 'general'
+  | 'approvals'
+  | 'tools'
+  | 'computer'
+  | 'skills'
+  | 'harnesses'
+  | 'connections'
+  | 'channels'
+  | 'shortcuts'
 
 type Navigate = UseNavigateResult<string>
 

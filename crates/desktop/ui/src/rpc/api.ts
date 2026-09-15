@@ -34,6 +34,14 @@ import type { JsonValue } from '@/rpc/bindings/serde_json/JsonValue'
 import type { RpcClient } from '@/rpc/client'
 import type { AgentInfo, Info, LoadedPage, LoginInfo, ProviderInfo } from '@/rpc/extra'
 
+/** `computer::PermissionStatus` (27 §6); hand-written until the bindings are regenerated. */
+export type PermissionStatus = {
+  accessibility: boolean
+  screen_recording: boolean
+  displays: { index: number; name: string; main: boolean; width: number; height: number; scale: number }[]
+  note: string
+}
+
 /**
  * `rpc::Api` (`crates/rpc/src/api.rs`) plus the 25 §7 additions, one method
  * per request; params positional, in trait order. `subscribe_events` is
@@ -52,6 +60,8 @@ export interface Api {
   cancel_job(session: SessionId, id: JobId): Promise<null>
   compact(session: SessionId, style: CompactStyle | null): Promise<number>
   compact_style(): Promise<CompactStyle>
+  /** Computer-control permissions and attached displays (27 §6); rejects when the plugin is disabled. */
+  computer_permissions(): Promise<PermissionStatus>
   get_prompt(session: SessionId | null): Promise<string>
   info(): Promise<Info>
   knowledge_delete(id: string): Promise<null>
@@ -142,6 +152,7 @@ export const METHODS = [
   'cancel_job',
   'compact',
   'compact_style',
+  'computer_permissions',
   'delete_session',
   'get_prompt',
   'info',

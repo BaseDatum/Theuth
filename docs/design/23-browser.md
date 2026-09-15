@@ -243,8 +243,9 @@ as `browser restarted: <reason>` and the next call spawns a fresh one.
 first tool that hands one *back*. Three layers, each one field:
 
 1. **`tools::ToolOutput.files: Vec<PathBuf>`** (`#[serde(default)]`). Paths,
-   not bytes, like `files` on inputs (17 §2). Only `browser_screenshot`
-   fills it today.
+   not bytes, like `files` on inputs (17 §2). `browser_screenshot` filled
+   it first; `computer_screenshot` (27) is the second tool filling
+   `ToolOutput.files`.
 2. **`genai::chat::ToolResponse.images: Vec<Binary>`** (fork
    `github.com/skymoore/rust-genai`, `main` = tag `v0.7.0-beta.23` +
    one commit, applied under `[patch.crates-io]`), with

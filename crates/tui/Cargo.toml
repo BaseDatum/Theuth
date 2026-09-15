@@ -12,6 +12,7 @@ agent = { workspace = true }
 knowledge = { workspace = true }
 rpc = { workspace = true }
 acp = { workspace = true }
+computer = { workspace = true }
 jsonrpsee = { workspace = true }
 chrono = { workspace = true }
 models = { workspace = true }

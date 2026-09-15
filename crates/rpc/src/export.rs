@@ -66,7 +66,9 @@ async fn export_bindings() {
         signal::SignalStatus,
         slack::SlackEvent,
         slack::SlackStatus,
-        browser::BrowserEvent
+        browser::BrowserEvent,
+        computer::PermissionStatus,
+        computer::DisplayInfo
     );
 
     use crate::ApiServer;

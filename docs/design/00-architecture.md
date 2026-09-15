@@ -259,7 +259,10 @@ flowchart LR
   screenshots return as image parts of the tool result. `message_user`
   (24, added 2026-09-14): text plus files to the user on Slack or Signal,
   out of band; the session's bound thread, else every channel's owner,
-  via a `UserSink` registry the two plugins fill at start. `todo` and
+  via a `UserSink` registry the two plugins fill at start. Computer (27):
+  eight `computer_*` tools see and drive the user's desktop — one composite
+  screenshot of every display as an image part, enigo input on one
+  thread, `Risk` as the only gate. `todo` and
   `python` are loop-local (dispatched by the turn, not the registry;
   `07 §5`).
 - Every `ChatMessage` is appended to the session store before the next
@@ -495,6 +498,7 @@ crates/
   search-providers/   plugin: Firecrawl, SearXNG, OpenSERP, Brave registered with web over the bus (16)
   signal/             plugin: Signal channel and device pairing (added in 09)
   slack/              plugin: Slack channel over Socket Mode (added in 21)
+  computer/           plugin: screenshot + pointer/keyboard tools (27)
   rpc/                plugin: jsonrpsee server, event subscription bridge (§7)
   tui/                plugin: iocraft frontend (§8)
   desktop/            app: Tauri menubar frontend, RPC client of `Api` - not a plugin (designed in 25)
@@ -538,6 +542,9 @@ Workspace dependencies (versions verified 2026-09-09 via `cargo info`):
 | obscura-mcp | git v0.2.2 (fork, 23 §3.3) | embedded headless browser: per-session isolates, agent tool layer (stealth + render) |
 | taffy / cosmic-text | obscura's vendored copies via `[patch]` (23 §2) | render layer |
 | btls-sys | 0.5.6 (fork, 23 §9) | wreq's BoringSSL: `links = "btls"` + symbol prefixing on macOS so it coexists with libsignal's boring-sys |
+| xcap | 0.9 (no default features) | display enumeration; capture off-macOS (27) |
+| enigo | 0.6 | mouse/keyboard simulation (27) |
+| image | 0.25 (png) | resize + PNG for screenshots (27; ends 13 §0.4's avoidance) |
 | wiremock | 0.6 dev | provider contract tests |
 
 Build prerequisites (23 §9): `cmake`, `clang`/`libclang` and `llvm-objcopy`/`llvm-nm` (brew `llvm`) for BoringSSL
@@ -634,6 +641,7 @@ Each phase ends with a runnable check, not a test suite.
 | 14 | browser (23) | `browser_open` reads HN; a screenshot of a local dev server is described from the image; `read_url rendered` keyless | done 2026-09-14 (one `browser_open` names the top story; colours of a fixture page read off the screenshot, not the text; `read_url rendered: true` without Firecrawl; 23 §13) |
 | 15 | message_user (24) | a bound Slack session receives a screenshot in its thread; an unbound RPC session lands in the owner DM and on the phone with the `session …` line | done 2026-09-14 (owner DM with the screenshot, three tool calls; bound thread and Signal unit-tested only; 24 §9) |
 | 16 | session search (26) | `search_sessions` over a real store ranks the expected session first with a highlighted snippet; ⌘K and `/search` show it | done 2026-09-15 (26 §8) |
+| 17 | computer (27) | composite screenshot of two displays described; TextEdit typed into and verified from the PNG; a click on display 2 lands | done 2026-09-15 (screenshot + open/key/type/refusal smoked on two displays; live click aborted by the user mid-turn, mapping unit-tested only; 27 §13) |
 
 Known gaps carried forward: cancel/error paths in the loop are code-reviewed,
 not smoke-tested; the `Jobs` actor kills every process group on shutdown
@@ -663,3 +671,4 @@ verified only against documented response shapes, not live.
   | signal | `signal` crate: channel + pairing | plugin | 09 (in-agent module rejected: only plugins may return) |
   | slack | `slack` crate: Socket Mode channel, streamed threads, approvals, subagent threads | plugin | 21 |
   | okf | `knowledge` crate: store, FTS index, gix history, `knowledge_*` tools | plugin | 10, 12 §9 (the harvest *model call* stays in `agent`: it is a continuation of the live frame, 07; keep-it-all-in-agent rejected by the user) |
+  | control | `computer` crate | plugin | 27 (safety engine not ported: `Risk` covers it) |

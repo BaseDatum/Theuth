@@ -34,6 +34,7 @@ export const queryKeys = {
   titleModel: ['title-model'] as const,
   signal: ['signal'] as const,
   slack: ['slack'] as const,
+  computer: ['computer'] as const,
 }
 
 const SESSIONS_DEBOUNCE_MS = 500

@@ -31,6 +31,7 @@ declare module '@tanstack/react-router' {
 /** rAF is paused while the window is hidden; a timer keeps events (and notifications) flowing then. */
 const HIDDEN_DRAIN_MS = 250
 const TOGGLE_SHORTCUT = 'Alt+Space'
+const CANCEL_SHORTCUT = 'Alt+Escape'
 
 /** Set by `bootstrap`: 18 §3 — quitting `shutdown`s a daemon we started, not one we reused. */
 let owned = false
@@ -117,7 +118,16 @@ function bootstrap(get: () => Promise<Connection>, qc: QueryClient, signal: Abor
   })()
 }
 
-/** Tray / menu navigation, the quit handshake, ⌥Space and the tray badge; mounted once. */
+/** ⌥Esc: `cancel` every session with a turn in flight, one toast for the lot. */
+async function cancelAll(): Promise<void> {
+  const api = useConnection.getState().api
+  if (!api) return
+  const running = Object.values(useSessions.getState().sessions).filter((s) => s.running)
+  await Promise.all(running.map((s) => api.cancel(s.id).catch(() => undefined)))
+  if (running.length) toast(`cancelled ${running.length} sessions`)
+}
+
+/** Tray / menu navigation, the quit handshake, ⌥Space, ⌥Esc and the tray badge; mounted once. */
 function useTauri(): void {
   useEffect(() => {
     const unlistens = [onNavigate((path) => router.history.push(path)), onQuitRequested(() => void quit())]
@@ -133,6 +143,9 @@ function useTauri(): void {
           await win.setFocus()
         }
       }).catch(() => toast.error(`Could not register ${TOGGLE_SHORTCUT}; another app holds it`))
+      void register(CANCEL_SHORTCUT, (e) => {
+        if (e.state === 'Pressed') void cancelAll()
+      }).catch(() => toast.error(`Could not register ${CANCEL_SHORTCUT}; another app holds it`))
     }
     const offBadge = useApprovals.subscribe((s, prev) => {
       if (!isTauri() || s.pending.length === prev.pending.length) return
@@ -141,7 +154,7 @@ function useTauri(): void {
     return () => {
       for (const u of unlistens) void u.then((f) => f())
       window.removeEventListener('wth:quit', onQuit)
-      if (isTauri()) void unregister(TOGGLE_SHORTCUT)
+      if (isTauri()) void unregister([TOGGLE_SHORTCUT, CANCEL_SHORTCUT])
       offBadge()
     }
   }, [])

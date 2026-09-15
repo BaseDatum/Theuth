@@ -28,6 +28,7 @@ acp = { path = "crates/acp" }
 web = { path = "crates/web" }
 search-providers = { path = "crates/search-providers" }
 browser = { path = "crates/browser" }
+computer = { path = "crates/computer" }
 
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "fs", "time", "io-util", "process", "signal"] }
 tokio-util = { version = "0.7", features = ["rt"] }
@@ -130,6 +131,13 @@ iana-time-zone = "0.1"
 # dropping rusqlite 0.40→0.38 so its libsqlite3-sys is 0.36, the version presage
 # and sqlx already link (Cargo allows only one `links = "sqlite3"`).
 unjar = { git = "https://github.com/skymoore/unjar", branch = "main", default-features = false }
+# Computer control (design doc 27): xcap enumerates displays (and captures off-macOS;
+# macOS uses `/usr/sbin/screencapture`, 27 §0.4); enigo simulates input on one thread;
+# `image` is xcap's dependency, used for resize + PNG (ends 13 §0.4's avoidance).
+xcap = { version = "0.9", default-features = false }
+enigo = "0.6"
+image = { version = "0.25", default-features = false, features = ["png"] }
+objc2-core-graphics = { version = "0.3", features = ["CGWindow"] }
 # Desktop menubar app (design doc 25): Tauri 2 shell around the RPC client; the daemon is the
 # bundled `wth` sidecar started on a pty (design doc 18). Plugins replace hand-written
 # NSStatusItem / LaunchServices / NSUserNotification glue.

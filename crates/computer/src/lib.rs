@@ -1,0 +1,179 @@
+//! Computer plugin (design doc 27): the model sees and drives the user's
+//! desktop through eight `computer_*` tools — one composite screenshot of
+//! every display as an image part ([`screen`], [`frame`]), enigo pointer and
+//! keyboard input on one thread ([`input`]), `Risk` as the only gate
+//! ([`tools`]). The [`Computer`] actor exists so RPC has a lookup target.
+//!
+//! Public surface consumed by other plugins:
+//! - commands on the [`COMPUTER_ACTOR`] actor ([`Computer`]): [`Permissions`]
+
+pub mod frame;
+pub mod input;
+pub mod screen;
+pub mod tools;
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+use ::tools::{REGISTRY_ACTOR, RegisterPrompt, RegisterTool, ToolRegistry};
+use kameo::actor::Spawn;
+use kameo::message::{Context, Message};
+use runtime::Runtime;
+use serde::{Deserialize, Serialize};
+
+/// Registry name of the [`Computer`] actor (27 §3.5).
+pub const COMPUTER_ACTOR: &str = "computer";
+
+/// `computer:` config section (27 §5). Every field has a default; the section
+/// may be absent.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ComputerConfig {
+    /// `false`: no actor, no tools, no prompt block, no input thread.
+    pub enabled: bool,
+    /// Long edge of a screenshot after logical scaling (17 §1; ~1280 for
+    /// Anthropic click accuracy).
+    pub max_edge: u32,
+}
+
+impl Default for ComputerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_edge: 1568,
+        }
+    }
+}
+
+/// One display as shown by `/computer` and Settings › Computer.
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct DisplayInfo {
+    /// 1-based; what `computer_screenshot { display }` accepts.
+    pub index: u32,
+    /// OS display name.
+    pub name: String,
+    /// The primary display.
+    pub main: bool,
+    /// Logical width.
+    pub width: u32,
+    /// Logical height.
+    pub height: u32,
+    /// Physical pixels per logical point.
+    pub scale: f32,
+}
+
+/// Reply to [`Permissions`]: the two TCC booleans (both `true` off macOS),
+/// the attached displays and a note naming the pane and the responsible app.
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct PermissionStatus {
+    /// `AXIsProcessTrusted`: input events will be delivered.
+    pub accessibility: bool,
+    /// `CGPreflightScreenCaptureAccess`: screenshots will show content.
+    pub screen_recording: bool,
+    /// Main first, then by position.
+    pub displays: Vec<DisplayInfo>,
+    /// Where to grant and to which app; empty off macOS.
+    pub note: String,
+}
+
+/// `ask` → [`PermissionStatus`]. Non-prompting probes (27 §0.8).
+#[derive(Clone, Copy, Debug)]
+pub struct Permissions;
+
+/// The [`COMPUTER_ACTOR`] actor. Tools hold [`tools::Ctx`] directly; the
+/// actor answers [`Permissions`] and keeps the shared state (and with it the
+/// input thread) alive for the process.
+#[derive(kameo::Actor)]
+pub struct Computer {
+    /// Shared tool state.
+    pub ctx: Arc<tools::Ctx>,
+}
+
+impl Message<Permissions> for Computer {
+    type Reply = PermissionStatus;
+
+    async fn handle(&mut self, _: Permissions, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let displays = match tokio::task::spawn_blocking(screen::displays).await {
+            Ok(Ok(ds)) => ds,
+            Ok(Err(e)) => {
+                tracing::warn!("display enumeration failed: {e:#}");
+                Vec::new()
+            }
+            Err(e) => {
+                tracing::warn!("display enumeration panicked: {e}");
+                Vec::new()
+            }
+        };
+        PermissionStatus {
+            accessibility: input::accessibility_granted(),
+            screen_recording: screen::screen_recording_granted(),
+            displays: displays
+                .into_iter()
+                .map(|d| DisplayInfo {
+                    index: d.index,
+                    name: d.name,
+                    main: d.main,
+                    width: d.width,
+                    height: d.height,
+                    scale: d.scale,
+                })
+                .collect(),
+            note: if cfg!(target_os = "macos") {
+                "Grant in System Settings › Privacy & Security to the app that launched wth (your terminal, or wth.app). \
+                 Screen Recording takes effect after wth restarts."
+                    .to_owned()
+            } else {
+                String::new()
+            },
+        }
+    }
+}
+
+/// The plugin (27 §3.1): reads `computer`, spawns [`Computer`] as
+/// [`COMPUTER_ACTOR`], registers the tools and the prompt block once the
+/// registry is up.
+pub struct ComputerPlugin;
+
+#[async_trait::async_trait]
+impl runtime::Plugin for ComputerPlugin {
+    fn name(&self) -> &'static str {
+        "computer"
+    }
+
+    async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()> {
+        let cfg: ComputerConfig = rt.section("computer").unwrap_or_else(|e| {
+            tracing::debug!("no [computer] config section, using defaults: {e}");
+            ComputerConfig::default()
+        });
+        if !cfg.enabled {
+            tracing::info!("computer disabled by config");
+            return Ok(());
+        }
+        let ctx = Arc::new(tools::Ctx {
+            cfg,
+            rt: rt.clone(),
+            input: input::spawn(),
+            frames: Mutex::new(HashMap::new()),
+        });
+        let actor = Computer::spawn(Computer { ctx: ctx.clone() });
+        actor.register(COMPUTER_ACTOR)?;
+
+        let rt = rt.clone();
+        tokio::spawn(async move {
+            if let Some(reg) = rt.lookup_when::<ToolRegistry>(REGISTRY_ACTOR).await {
+                for tool in tools::all(ctx.clone()) {
+                    let _ = reg.ask(RegisterTool(tool)).await;
+                }
+                let _ = reg
+                    .ask(RegisterPrompt {
+                        plugin: "computer",
+                        text: tools::PROMPT.to_owned(),
+                    })
+                    .await;
+            }
+        });
+        Ok(())
+    }
+}

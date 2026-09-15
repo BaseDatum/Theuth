@@ -295,4 +295,6 @@ Verify
 
 **`signal`** (09): a frontend plugin. Subscribes to `AgentEvent`/`ApprovalRequested`, sends `SendInput`/`Resolve` by ask, owns its own `SignalEvent`, registers two tools, and owns the `--link-signal` pairing flow inside `start` (`LinkOpts`) — the binary knows only the plugin type.
 
+**`computer`** (27): the plugin whose tools hold `Arc<Ctx>` directly (screen capture and the enigo input thread need no actor turn) and whose `Computer` actor exists only so RPC has a lookup target for `computer_permissions`.
+
 **Not plugins, deliberately**: `models` (a data file and a resolver), `markdown` (a renderer), `oauth` (PKCE + token store), `cursor` (a protocol client behind `agent::backend`). No actors, no config sections, no events. Listed in 00 §10 as libraries. If one of them grows an actor, it becomes a plugin and gets a doc.

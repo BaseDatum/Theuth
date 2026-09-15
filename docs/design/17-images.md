@@ -419,3 +419,4 @@ OpenAI-compatible a following user turn with the image, Gemini `inline_data`
 parts. `frame::strip_images` covers the Tool role too (images dropped,
 `[screenshot omitted: model is text-only]` appended), and `est` counts each
 tool image as `IMAGE_TOKENS` instead of serialising the base64.
+`computer_screenshot` (27) is the second tool filling `ToolOutput.files`.

@@ -5,6 +5,7 @@ import {
   Keyboard,
   type LucideIcon,
   MessageSquare,
+  Monitor,
   Settings2,
   ShieldCheck,
   Sparkles,
@@ -12,6 +13,7 @@ import {
 } from 'lucide-react'
 import { Approvals } from '@/components/settings/Approvals'
 import { Channels } from '@/components/settings/Channels'
+import { Computer } from '@/components/settings/Computer'
 import { Connections } from '@/components/settings/Connections'
 import { General } from '@/components/settings/General'
 import { Harnesses } from '@/components/settings/Harnesses'
@@ -24,6 +26,7 @@ const TABS = [
   ['general', 'General', Settings2],
   ['approvals', 'Approvals', ShieldCheck],
   ['tools', 'Tools', Wrench],
+  ['computer', 'Computer', Monitor],
   ['skills', 'Skills', Sparkles],
   ['harnesses', 'Harnesses', Bot],
   ['connections', 'Connections', KeyRound],
@@ -77,6 +80,7 @@ export function SettingsDialog({ tab, session, onTab, onClose }: Props) {
             {tab === 'general' && <General />}
             {tab === 'approvals' && <Approvals session={session} onClose={onClose} />}
             {tab === 'tools' && <Tools session={session} />}
+            {tab === 'computer' && <Computer />}
             {tab === 'skills' && <Skills session={session} />}
             {tab === 'harnesses' && <Harnesses />}
             {tab === 'connections' && <Connections />}

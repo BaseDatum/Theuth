@@ -185,6 +185,7 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             return Ok(());
         }
         Command::ListJobs(session) => UiEvent::Jobs(msg(api.list_jobs(session).await)?),
+        Command::ComputerStatus => UiEvent::Computer(msg(api.computer_permissions().await)?),
         Command::CancelJob { session, id } => {
             msg(api.cancel_job(session, tools::JobId(id.clone())).await)?;
             UiEvent::Info(format!("killed {id}"))
@@ -503,6 +504,7 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         },
         UiEvent::Prompt(text) | UiEvent::Info(text) => writeln!(out, "{text}"),
         UiEvent::Jobs(jobs) => writeln!(out, "{}", tools::jobs::table(jobs)),
+        UiEvent::Computer(status) => writeln!(out, "{}", model::computer_line(status)),
         UiEvent::Job(_) => Ok(()),
         UiEvent::Withdrawn { text, .. } => writeln!(out, "withdrawn: {text}"),
         UiEvent::Undone(text) => writeln!(out, "undone: {text} — /redo restores"),

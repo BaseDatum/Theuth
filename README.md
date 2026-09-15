@@ -28,6 +28,12 @@ BoringSSL (`brew install cmake llvm` / `apt install cmake clang libclang-dev`),
 and network on the first build for the prebuilt V8 archive (set
 `RUSTY_V8_ARCHIVE` to a local copy to build offline).
 
+macOS permissions: `computer_*` needs Screen Recording and Accessibility
+granted to the app that launched wth — your terminal (Ghostty, iTerm,
+Terminal) or wth.app — in System Settings › Privacy & Security. Screen
+Recording takes effect only after restarting that app; Accessibility is
+immediate. `/computer` shows what is granted.
+
 Crates: `runtime` (plugin trait), `models` (bundled models.dev catalog),
 `markdown` (streaming markdown: raw tail, blocks rendered once), `oauth`
 (loopback callback, PKCE, provider token store), `tools` (registry, approval
@@ -46,7 +52,11 @@ drive it: type, read the rendered 120×40 screen, wait for a prompt or a port �
 real cookies so the agent acts as the signed-in user; `browser_show` opens a
 live view of the session's browser in the desktop app); one
 isolate per session, screenshots come back as images in the
-tool result — [`docs/design/23-browser.md`](docs/design/23-browser.md)), `knowledge`
+tool result — [`docs/design/23-browser.md`](docs/design/23-browser.md)), `computer`
+(eight `computer_*` tools: `computer_screenshot`, `_move`, `_click`, `_drag`,
+`_scroll`, `_type`, `_key`, `_open` — one composite screenshot of every
+display as an image, then native mouse and keyboard on the user's own desktop —
+[`docs/design/27-computer.md`](docs/design/27-computer.md)), `knowledge`
 (OKF bundle, FTS index, gix history, `knowledge_*` tools —
 [`docs/design/10-knowledge.md`](docs/design/10-knowledge.md)), `agent` (genai
 loop, sqlite sessions with compaction epochs, skills, subagents, persistent
@@ -65,7 +75,7 @@ over Signal messenger), `slack` (Slack frontend over Socket Mode), `rpc` (jsonrp
 Config (`~/.wth/`, created on first run; details in
 [`docs/design/01-config-and-subagents.md`](docs/design/01-config-and-subagents.md) §1):
 
-- `config.yaml` — every plugin reads its own section; `WTH_<SECTION>__<KEY>` env overrides. `agent.model` is a models.dev id (`anthropic/claude-sonnet-4-5`); `/model` rewrites that one line in place. The `agent`, `tools`, `knowledge`, `web`, `search_providers`, `browser` and `slack` sections with their defaults:
+- `config.yaml` — every plugin reads its own section; `WTH_<SECTION>__<KEY>` env overrides. `agent.model` is a models.dev id (`anthropic/claude-sonnet-4-5`); `/model` rewrites that one line in place. The `agent`, `tools`, `knowledge`, `web`, `search_providers`, `browser`, `computer` and `slack` sections with their defaults:
 
   ```yaml
   agent:
@@ -103,6 +113,9 @@ Config (`~/.wth/`, created on first run; details in
     idle_secs: 300                # isolate teardown after inactivity
     max_chars: 4000               # default cap of browser_read / browser_open replies
     script_deadline_ms: 30000     # OBSCURA_SCRIPT_DEADLINE_MS for heavy SPAs
+  computer:                       # design doc 27
+    enabled: true                 # the OS permission prompts are the consent; actions still ask (tools.policy)
+    max_edge: 1568                # long edge of a screenshot after logical scaling (17 §1; ~1280 for Anthropic click accuracy)
   slack:
     # owner: U0123456789           # owner-only commands, may click any approval, receives unbound approvals
     allowed: []                    # more user ids; each owns their threads

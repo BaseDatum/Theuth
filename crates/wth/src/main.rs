@@ -106,6 +106,10 @@ agent:
 #   import_cookies: false    # adds browser_list_profiles + browser_import_cookies:
 #                            # the agent loads the user's real browser cookies and acts as them (§7)
 
+# computer:                  # see and drive this desktop, computer_* tools (design doc 27)
+#   enabled: true            # the OS permission prompts are the consent; actions still ask
+#   max_edge: 1568           # screenshot long edge after logical scaling (~1280 for Anthropic click accuracy)
+
 tools:
   policy:
     read_only: allow
@@ -283,6 +287,7 @@ async fn run() -> anyhow::Result<()> {
             Box::new(knowledge::KnowledgePlugin),
             Box::new(web::WebPlugin),
             Box::new(browser::BrowserPlugin),
+            Box::new(computer::ComputerPlugin),
             Box::new(search_providers::SearchProvidersPlugin),
             Box::new(agent::AgentPlugin),
             Box::new(signal::SignalPlugin {
@@ -298,6 +303,7 @@ async fn run() -> anyhow::Result<()> {
             Box::new(knowledge::KnowledgePlugin),
             Box::new(web::WebPlugin),
             Box::new(browser::BrowserPlugin),
+            Box::new(computer::ComputerPlugin),
             Box::new(search_providers::SearchProvidersPlugin),
             Box::new(agent::AgentPlugin),
             Box::new(signal::SignalPlugin {

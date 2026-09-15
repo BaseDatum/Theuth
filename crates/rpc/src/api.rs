@@ -16,6 +16,7 @@ use agent::{
     ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw,
 };
 use browser::{BROWSER_ACTOR, Browsers, Screenshot};
+use computer::{COMPUTER_ACTOR, Computer, Permissions};
 use jsonrpsee::core::{RpcResult, SubscriptionResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
 use jsonrpsee::server::{PendingSubscriptionSink, SubscriptionMessage};
@@ -116,6 +117,10 @@ pub trait Api {
     /// page. Polling never spawns an isolate.
     #[method(name = "browser_screenshot")]
     async fn browser_screenshot(&self, session: SessionId) -> RpcResult<Option<String>>;
+    /// Computer-control permissions and attached displays (design doc 27 §6);
+    /// errors with "actor not running" when `computer.enabled` is false.
+    #[method(name = "computer_permissions")]
+    async fn computer_permissions(&self) -> RpcResult<computer::PermissionStatus>;
     /// Fold the conversation now (design doc 07 §8.6 / 11 §4.2); returns the
     /// new epoch. `style: None` uses the configured default. Refused while a
     /// turn is running.
@@ -552,6 +557,10 @@ impl ApiServer for Server {
 
     async fn browser_screenshot(&self, session: SessionId) -> RpcResult<Option<String>> {
         ask::<Browsers, _>(BROWSER_ACTOR, Screenshot { session }).await
+    }
+
+    async fn computer_permissions(&self) -> RpcResult<computer::PermissionStatus> {
+        ask::<Computer, _>(COMPUTER_ACTOR, Permissions).await
     }
 
     async fn compact(&self, session: SessionId, style: Option<CompactStyle>) -> RpcResult<u32> {

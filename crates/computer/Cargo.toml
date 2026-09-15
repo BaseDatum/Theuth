@@ -1,0 +1,34 @@
+[package]
+name = "computer"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Screenshot and pointer/keyboard tools over the user's desktop (design doc 27)"
+
+[dependencies]
+runtime = { workspace = true }
+tools = { workspace = true }
+kameo = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+tracing = { workspace = true }
+xcap = { workspace = true }
+enigo = { workspace = true }
+image = { workspace = true }
+ts-rs = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-graphics = { workspace = true }
+
+[dev-dependencies]
+figment = { workspace = true }
+
+[features]
+ts = ["dep:ts-rs", "runtime/ts", "tools/ts"]
+
+[lints]
+workspace = true

@@ -14,6 +14,7 @@ const SHORTCUTS: [string, string][] = [
   ['Withdraw last queued message', '⌥↑'],
   ['Stop the running turn', 'Esc'],
   ['Show or hide the window', '⌥Space'],
+  ['Cancel every running session', '⌥Esc'],
 ]
 
 export function Shortcuts() {

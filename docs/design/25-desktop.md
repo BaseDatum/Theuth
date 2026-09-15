@@ -182,6 +182,8 @@ Every row is an `Api` call already present unless marked **new** (§7).
 | `◆ you` echo rules (skip own send, injected, harness wrappers) | same `injected()` classifier in TS; `<skill name>` → skill chip + words |
 | header `model · effort · ctx used/limit (pct) · cache % · approvals off` | model dropdown (ChatGPT's header slot) shows model; right side: context meter pill (colour steps 70/90 %), cache %, `approvals off` badge |
 | — (**new**) live browser view | globe button in the header, shown when the session slice's `browser` flag is set (any `browser_*` tool call seen live or in loaded history); opens `BrowserLive` (Dialog, `max-w-[90vw]`) which polls `browser_screenshot` (§7) |
+| `/computer` (**new**) | Settings › Computer: the two permission rows (accessibility, screen recording) with ✓/✗ and "Open System Settings" (opener plugin on 27 §2.2's deep links), the display list, the `note`; from `computer_permissions` (§7) |
+| — (**new**) stop the desktop being driven | global shortcut ⌥Esc → `cancel` on every session the store shows streaming; toast "cancelled N sessions"; rebindable beside ⌥Space (27 §6) |
 | status line spinner states (`thinking…`, `running tool…`, `streaming…`, `compacting…`, `harvesting…`) | the ChatGPT pulsing dot under the last message + the same words in the composer placeholder area; window title suffix `·` while any session streams |
 | `/model`, `/model <id>` | header dropdown (cmdk list from `list_models`, typed filter) → `set_model` |
 | `/effort`, `/effort <lvl>` | second column in the same dropdown, from `ModelInfo.efforts` (**not** the catalog - `list_models` already carries `efforts`, `context`, `image`) → `set_effort` |
@@ -478,6 +480,7 @@ behaviour.
 | `knowledge_sync() → Sync` | exposes `Knowledge::sync()` | explorer calls it on focus so files edited in another editor appear without waiting for a turn |
 | `browser_screenshot(session) → Option<String>` | `browser::Screenshot` (23 §3.2): base64 PNG of the session's current page, `None` without an isolate or open page | the `BrowserLive` dialog polls it at 500 ms while open |
 | `BrowserEvent::BrowserShowLive { session }` | published by `browser_show` (23 §4); the bridge forwards it and `export.rs` emits the binding | the reducer sets `browser` + `browserLive` on the slice, `App` navigates to the session and the dialog opens |
+| `computer_permissions() → PermissionStatus` | `computer::Permissions` (27 §6): `accessibility`, `screen_recording`, `displays`, `note`; the plugin-disabled case is the existing "actor not running" error | Settings › Computer reads it on open |
 | `export.rs` list | add `LoginInfo`, `ProviderInfo`, `AgentInfo`, `AgentState`, `LoginFinished`, `Info`, `TitleChanged` (via `AgentEvent`) | bindings were incomplete |
 | `bindings/methods.json` | `export_bindings` also writes `Server::into_rpc().method_names()` sorted | a vitest asserts `api.ts` keys == this list, both directions; the only drift check we need (no method-signature codegen) |
 

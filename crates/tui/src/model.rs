@@ -116,6 +116,8 @@ pub enum UiEvent {
     Jobs(Vec<JobView>),
     /// A background job started, wrote output or ended (bus event).
     Job(JobEvent),
+    /// Reply to [`Command::ComputerStatus`].
+    Computer(computer::PermissionStatus),
 }
 
 /// Everything the UI can ask of the rest of the process. One task turns
@@ -164,6 +166,8 @@ pub enum Command {
         /// Job id, e.g. `j3`.
         id: String,
     },
+    /// `computer_permissions`.
+    ComputerStatus,
     /// `compact`.
     Compact {
         /// Target.
@@ -746,6 +750,11 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "/jobs",
         "[kill <id>]",
         "list this session's background jobs",
+    ),
+    (
+        "/computer",
+        "",
+        "computer control: permissions and displays",
     ),
     ("/parent", "", "open the parent session (from a subagent)"),
     ("/sessions", "", "switch session (picker)"),
@@ -1996,6 +2005,7 @@ impl Model {
             ))),
             UiEvent::Info(t) => self.entries.push(Entry::Info(t)),
             UiEvent::Jobs(jobs) => self.entries.push(Entry::Info(tools::jobs::table(&jobs))),
+            UiEvent::Computer(status) => self.entries.push(Entry::Info(computer_line(&status))),
             UiEvent::Job(ev) => match ev {
                 JobEvent::Started {
                     session,
@@ -2510,6 +2520,7 @@ impl Model {
                     .entries
                     .push(Entry::Error("usage: /jobs [kill <id>]".into())),
             },
+            "/computer" => send(tx, Command::ComputerStatus),
             "/compact" => self.compact_cmd(arg, tx),
             "/clear" => match self.session {
                 Some(session) => send(
@@ -3600,6 +3611,38 @@ pub fn title_model_line(m: Option<&ModelInfo>) -> String {
     }
 }
 
+/// The `/computer` reply: permission ticks and the attached displays on one
+/// line, then the status note on a second line when there is one.
+pub fn computer_line(s: &computer::PermissionStatus) -> String {
+    let tick = |ok: bool| if ok { "✓" } else { "✗" };
+    let displays: Vec<String> = s
+        .displays
+        .iter()
+        .map(|d| {
+            format!(
+                "{}{} {}×{} @{}×",
+                d.index,
+                if d.main { " main" } else { "" },
+                d.width,
+                d.height,
+                d.scale
+            )
+        })
+        .collect();
+    let mut line = format!(
+        "accessibility {} · screen recording {} · {} displays: {}",
+        tick(s.accessibility),
+        tick(s.screen_recording),
+        s.displays.len(),
+        displays.join(", ")
+    );
+    if !s.note.is_empty() {
+        line.push('\n');
+        line.push_str(&s.note);
+    }
+    line
+}
+
 fn send(tx: &UnboundedSender<Command>, cmd: Command) {
     // The receiver lives as long as the UI; a closed channel means shutdown.
     let _ = tx.send(cmd);
@@ -4368,6 +4411,46 @@ mod tests {
             cursor: (0, 0),
         }));
         assert_eq!(rows(&m)[0], "row 14");
+    }
+
+    #[test]
+    fn computer_slash_submits_status_and_renders() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        m.submit("/computer", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::ComputerStatus)));
+
+        let status = computer::PermissionStatus {
+            accessibility: true,
+            screen_recording: false,
+            displays: vec![
+                computer::DisplayInfo {
+                    index: 1,
+                    name: "Built-in".into(),
+                    main: true,
+                    width: 1512,
+                    height: 982,
+                    scale: 2.0,
+                },
+                computer::DisplayInfo {
+                    index: 2,
+                    name: "Ext".into(),
+                    main: false,
+                    width: 2560,
+                    height: 1440,
+                    scale: 1.0,
+                },
+            ],
+            note: "grant screen recording".into(),
+        };
+        assert_eq!(
+            computer_line(&status),
+            "accessibility ✓ · screen recording ✗ · 2 displays: 1 main 1512×982 @2×, 2 2560×1440 @1×\ngrant screen recording"
+        );
+        m.apply(UiEvent::Computer(status));
+        assert!(
+            matches!(m.entries.last(), Some(Entry::Info(t)) if t.starts_with("accessibility ✓"))
+        );
     }
 
     #[test]
