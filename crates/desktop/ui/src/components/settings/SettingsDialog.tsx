@@ -50,9 +50,12 @@ type Props = {
 export function SettingsDialog({ tab, session, onTab, onClose }: Props) {
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="flex h-[640px] max-w-[880px] flex-row gap-0 overflow-hidden bg-elevated p-0 sm:max-w-[880px]">
+      <DialogContent
+        onOpenAutoFocus={(e) => e.preventDefault()}
+        className="flex h-[640px] max-w-[880px] flex-row gap-0 overflow-hidden bg-sidebar p-0 sm:max-w-[880px]"
+      >
         <DialogTitle className="sr-only">Settings</DialogTitle>
-        <nav className="flex w-[220px] shrink-0 flex-col gap-0.5 border-r border-border-subtle bg-layer-2 px-3 pt-5 pb-3">
+        <nav className="flex w-[220px] shrink-0 flex-col gap-0.5 border-r border-border-subtle px-3 pt-5 pb-3">
           <h2 className="mb-3 px-2.5 text-lg font-semibold">Settings</h2>
           {TABS.map(([id, label, Icon]) => (
             <button
@@ -61,7 +64,7 @@ export function SettingsDialog({ tab, session, onTab, onClose }: Props) {
               onClick={() => onTab(id)}
               className={cn(
                 'flex h-9 items-center gap-2.5 rounded-[10px] px-2.5 text-sm',
-                id === tab ? 'bg-layer-3' : 'hover:bg-layer-3/60',
+                id === tab ? 'bg-sidebar-accent' : 'hover:bg-sidebar-accent/60',
               )}
             >
               <Icon className="size-4 text-fg-secondary" />

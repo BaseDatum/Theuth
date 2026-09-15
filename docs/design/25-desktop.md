@@ -324,6 +324,10 @@ sequenceDiagram
 - Composer: `rounded-[28px] p-[7px_8px] bg-elevated border border-subtle`,
   `+` popover (attach file, browse…), trailing send/stop circle; grows to 8
   lines then scrolls.
+- Settings dialog: both panes on `--sidebar` (`#f9f9f9`/`#171717`), the
+  same surface as the sidebar — chatgpt.com uses one near-black for both,
+  not the `#303030` elevated grey (corrected 2026-09-15 against the
+  authenticated app).
 - Build step: side-by-side screenshots of the authenticated chatgpt.com
   thread (the user's Firefox) and the app at the same viewport, for the
   empty state, a thread with the markdown sample of §2.4, the settings
