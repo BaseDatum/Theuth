@@ -325,9 +325,9 @@ sequenceDiagram
   `+` popover (attach file, browse…), trailing send/stop circle; grows to 8
   lines then scrolls.
 - Sidebar and settings dialog (both panes) share `--sidebar`: `#f9f9f9`
-  light, `#0d0d0d` dark — near-black against the `#000` page, as the
-  authenticated chatgpt.com reads (user-verified 2026-09-15; the `#171717`
-  guess read grey, `#303030` for settings was wrong).
+  light, `#000` dark — the same black as the page, separated only by
+  `border-subtle` (user-verified 2026-09-15 against the authenticated
+  chatgpt.com; the `#171717` / `#303030` guesses were wrong).
 - Build step: side-by-side screenshots of the authenticated chatgpt.com
   thread (the user's Firefox) and the app at the same viewport, for the
   empty state, a thread with the markdown sample of §2.4, the settings

@@ -60,7 +60,7 @@
   --status-warning-bg: oklch(34.6399% 0.0799531 61.3069);
   --status-warning-border: oklch(75.1371% 0.156458 78.7733);
   --status-warning-fg: #ffd15c;
-  --sidebar: #0d0d0d;
+  --sidebar: #000;
 }
 
 /* shadcn variables, aliased onto the tokens; no component hard-codes a colour. */
