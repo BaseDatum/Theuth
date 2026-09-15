@@ -4,7 +4,7 @@
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::ops::Range;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use acp::EntryInfo;
 use acp::registry::RegistryAgent;
@@ -571,6 +571,8 @@ impl Entry {
         };
         match self {
             Entry::User(t) => text_rows(t, inner) + 4,
+            // Rendered fences (diagrams, surfaces) never exceed the construction
+            // width, so they count one row per line like everything else.
             Entry::Assistant(t) => md(t, width),
             Entry::Card { text, expanded, .. } => 4 + if *expanded { md(text, inner) } else { 0 },
             Entry::Reasoning { done: true, .. } | Entry::Info(_) | Entry::Error(_) => 1,
@@ -1270,6 +1272,10 @@ pub struct Model {
     /// row count from the bottom so what you are reading stays put while a
     /// reply streams in below.
     pub anchor: Option<(usize, usize)>,
+    /// Terminal columns, set by the fullscreen UI before events apply; `0`
+    /// (tests, line printer) = unbounded. Assistant text renders at this
+    /// width when constructed; resize does not re-render (design doc 30 §7).
+    pub width: usize,
 }
 
 impl Model {
@@ -1288,8 +1294,22 @@ impl Model {
             effort: self.effort.take(),
             catalog: self.catalog.take(),
             skills: std::mem::take(&mut self.skills),
+            width: self.width,
             ..Self::new(std::mem::take(&mut self.model_id), self.approvals_global)
         };
+    }
+
+    /// Markdown options for assistant text: the terminal width less the
+    /// card padding, `surface::fence` for `mermaid`/`json-render` fences.
+    fn assistant_options(&self) -> markdown::Options {
+        markdown::Options {
+            width: if self.width == 0 {
+                0
+            } else {
+                self.width.saturating_sub(2).max(20)
+            },
+            fence: Some(FENCE.clone()),
+        }
     }
 
     /// The approval currently shown, if any.
@@ -1787,7 +1807,12 @@ impl Model {
             }
             UiEvent::History(id, loaded) => {
                 if self.session == Some(id) {
-                    self.entries = loaded.history.into_iter().flat_map(from_history).collect();
+                    let opts = self.assistant_options();
+                    self.entries = loaded
+                        .history
+                        .into_iter()
+                        .flat_map(|h| from_history(h, &opts))
+                        .collect();
                     self.anchor = None;
                     // The reload an undo/redo triggered shows its own notice
                     // instead of the generic depth line.
@@ -2217,7 +2242,7 @@ impl Model {
             AgentEvent::TextDelta { text, .. } => match self.entries.last_mut() {
                 Some(Entry::Assistant(t)) if !t.is_done() => t.push(&text),
                 _ => {
-                    let mut t = markdown::Text::new();
+                    let mut t = markdown::Text::with(self.assistant_options());
                     t.push(&text);
                     self.entries.push(Entry::Assistant(Box::new(t)));
                 }
@@ -3555,12 +3580,20 @@ fn user_entries(text: String) -> Vec<Entry> {
     }
 }
 
-/// Transcript entries for one history record.
-fn from_history(h: HistoryEntry) -> Vec<Entry> {
+/// The fence hook every assistant entry renders through; one allocation for the process.
+static FENCE: LazyLock<markdown::FenceHook> = LazyLock::new(|| Arc::new(surface::fence));
+
+/// Transcript entries for one history record; assistant text renders with
+/// `opts` so replayed history looks like it did live.
+fn from_history(h: HistoryEntry, opts: &markdown::Options) -> Vec<Entry> {
     match h {
         HistoryEntry::User { text } => user_entries(text),
         HistoryEntry::Assistant { text } => {
-            vec![Entry::Assistant(Box::new(markdown::Text::complete(&text)))]
+            let mut t = markdown::Text::with(opts.clone());
+            t.push(&text);
+            t.finish();
+            t.reveal_all();
+            vec![Entry::Assistant(Box::new(t))]
         }
         HistoryEntry::Tool {
             call_id,
@@ -4696,6 +4729,66 @@ mod tests {
             panic!("text not kept as one entry");
         };
         assert_eq!(t.raw(), "| a | b |\n|---|---|\n| 1 | 2 |\n");
+    }
+
+    /// Rendered lines of the last (assistant) entry once finished and revealed.
+    fn assistant_lines(m: &mut Model) -> Vec<String> {
+        let Some(Entry::Assistant(t)) = m.entries.last_mut() else {
+            panic!("assistant entry");
+        };
+        t.finish();
+        t.reveal_all();
+        t.view()
+            .lines()
+            .map(|l| l.iter().map(|s| s.text.as_str()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn assistant_json_render_fence_becomes_surface() {
+        let mut m = Model::new("m".into(), true);
+        let s = SessionId::new();
+        m.session = Some(s);
+        m.width = 80;
+        let spec = r#"{"root":"c","elements":{
+  "c":{"type":"Card","props":{"title":"Rollout"},"children":["l"]},
+  "l":{"type":"Checklist","props":{"items":[{"text":"schema","done":true},{"text":"traffic","done":false}]}}}}"#;
+        let md = format!("Status:\n\n```json-render\n{spec}\n```\n\nDone.\n");
+        m.apply_agent(AgentEvent::TextDelta {
+            session: s,
+            turn: TurnId::new(),
+            text: md.as_str().into(),
+        });
+        let lines = assistant_lines(&mut m);
+        assert!(
+            lines.iter().any(|l| l.starts_with("╭─ Rollout")),
+            "{lines:?}"
+        );
+        assert!(lines.iter().any(|l| l.contains("[x] schema")), "{lines:?}");
+        assert!(!lines.iter().any(|l| l.contains("\"type\"")), "{lines:?}");
+        assert_eq!(lines.first().map(String::as_str), Some("Status:"));
+        assert_eq!(lines.last().map(String::as_str), Some("Done."));
+        // Replayed history renders the same way.
+        let live = lines;
+        let replayed = from_history(HistoryEntry::Assistant { text: md }, &m.assistant_options());
+        m.entries = replayed;
+        assert_eq!(assistant_lines(&mut m), live);
+    }
+
+    #[test]
+    fn assistant_other_fences_keep_code_block() {
+        let mut m = Model::new("m".into(), true);
+        let s = SessionId::new();
+        m.session = Some(s);
+        m.width = 80;
+        m.apply_agent(AgentEvent::TextDelta {
+            session: s,
+            turn: TurnId::new(),
+            text: "```rust\nlet x = 1;\n```\n".into(),
+        });
+        let lines = assistant_lines(&mut m);
+        assert_eq!(lines[0], "╭ rust", "{lines:?}");
+        assert!(lines.iter().any(|l| l == "let x = 1;"), "{lines:?}");
     }
 
     #[test]

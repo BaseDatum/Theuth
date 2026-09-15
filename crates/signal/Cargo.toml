@@ -9,6 +9,7 @@ description = "Signal messenger frontend for the daemon (design doc 09)"
 runtime = { workspace = true }
 agent = { workspace = true }
 tools = { workspace = true }
+surface = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 futures = { workspace = true }

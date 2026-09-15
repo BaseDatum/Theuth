@@ -1201,7 +1201,9 @@ impl Channel {
                 }
                 let Some(to) = to else { return };
                 self.typing(&to, false).await;
-                let plain = text::markdown_to_plain(&turn.text);
+                // 30 §9: json-render fences as their rendering; `markdown_to_plain`
+                // keeps the ``` lines, so the box arrives monospace-readable.
+                let plain = text::markdown_to_plain(&surface::flatten(&turn.text, 60));
                 if !plain.trim().is_empty() {
                     self.send_chunks(&to, &plain).await;
                 }
@@ -1824,6 +1826,40 @@ mod tests {
         assert!(
             matches!(f.transport.sent().last(), Some(SentItem::Reaction { emoji, target_ts: 12, .. }) if emoji == "🛑")
         );
+    }
+
+    /// 30 §9: a `json-render` fence arrives as a monospace block of its
+    /// rendering, not its JSON.
+    #[tokio::test]
+    async fn json_render_fence_arrives_flattened() {
+        let f = fixture().await;
+        let session = f.stub.session;
+        f.chan.handle_envelope(env(OWNER, 10, "status?")).await;
+        f.chan.handle_event(Event::Agent(started(session))).await;
+        let reply = "Status:\n\n```json-render\n{\"root\":\"c\",\"elements\":{\
+            \"c\":{\"type\":\"Card\",\"props\":{\"title\":\"Rollout\"},\"children\":[\"l\"]},\
+            \"l\":{\"type\":\"Checklist\",\"props\":{\"items\":[{\"text\":\"schema migration\",\"done\":true}]}}}}\n```\n";
+        f.chan
+            .handle_event(Event::Agent(AgentEvent::TextDelta {
+                session,
+                turn: runtime::TurnId(Uuid::nil()),
+                text: reply.into(),
+            }))
+            .await;
+        f.chan
+            .handle_event(Event::Agent(finished(session, "end_turn")))
+            .await;
+        let sent = f.transport.sent();
+        let text = sent
+            .iter()
+            .find_map(|s| match s {
+                SentItem::Text { text, .. } if text.starts_with("Status:") => Some(text),
+                _ => None,
+            })
+            .expect("reply sent");
+        assert!(text.contains("```\n╭"), "{text}");
+        assert!(text.contains("[x] schema migration"), "{text}");
+        assert!(!text.contains("\"type\""), "{text}");
     }
 
     /// Every send driven by a bus event carries the ACI the inbound envelope

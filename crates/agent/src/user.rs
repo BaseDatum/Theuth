@@ -204,7 +204,8 @@ impl Tool for MessageUserTool {
         let m = Outbound {
             sessions: chain.iter().map(|a| a.id).collect(),
             origin,
-            text: args.text,
+            // 30 §9: json-render fences as their text rendering on chat channels.
+            text: surface::flatten(&args.text, 60),
             files,
         };
         Ok(match channels.ask(Deliver { m, via: args.via }).await {
@@ -259,12 +260,14 @@ mod tests {
 
     use super::*;
 
-    /// Records every `(fallback)` call; delivers on the bound pass when `bound`.
+    /// Records every `(fallback)` call and the text delivered; delivers on
+    /// the bound pass when `bound`.
     struct Fake {
         name: &'static str,
         bound: bool,
         fail: bool,
         calls: Mutex<Vec<bool>>,
+        texts: Mutex<Vec<String>>,
     }
 
     impl Fake {
@@ -274,6 +277,7 @@ mod tests {
                 bound,
                 fail,
                 calls: Mutex::new(Vec::new()),
+                texts: Mutex::new(Vec::new()),
             })
         }
         fn calls(&self) -> Vec<bool> {
@@ -286,11 +290,15 @@ mod tests {
         fn name(&self) -> &'static str {
             self.name
         }
-        async fn deliver(&self, _: &Outbound, fallback: bool) -> Result<Option<String>, String> {
+        async fn deliver(&self, m: &Outbound, fallback: bool) -> Result<Option<String>, String> {
             self.calls
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .push(fallback);
+            self.texts
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(m.text.clone());
             if self.fail {
                 return Err("down".into());
             }
@@ -438,5 +446,38 @@ mod tests {
             .unwrap();
         assert!(out.is_error);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// 30 §9: the delivered body carries a `json-render` fence as its
+    /// rendering, not its JSON.
+    #[tokio::test]
+    async fn message_user_text_is_flattened() {
+        let a = Fake::new("slack", true, false);
+        channels(std::slice::from_ref(&a))
+            .await
+            .register(USER_ACTOR)
+            .unwrap();
+        let out = MessageUserTool
+            .call(
+                MessageUserArgs {
+                    text: "Status:\n\n```json-render\n{\"root\":\"c\",\"elements\":{\
+                        \"c\":{\"type\":\"Card\",\"props\":{\"title\":\"Rollout\"},\"children\":[\"l\"]},\
+                        \"l\":{\"type\":\"Checklist\",\"props\":{\"items\":[{\"text\":\"schema migration\",\"done\":true}]}}}}\n```\n"
+                        .into(),
+                    files: Vec::new(),
+                    via: None,
+                },
+                ToolCx {
+                    session: SessionId::new(),
+                    call_id: "c".into(),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let texts = a.texts.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        assert!(texts[0].starts_with("Status:\n\n```\n╭"), "{}", texts[0]);
+        assert!(texts[0].contains("[x] schema migration"), "{}", texts[0]);
+        assert!(!texts[0].contains("\"type\""), "{}", texts[0]);
     }
 }
