@@ -43,8 +43,9 @@ ts:
 
 # Bindings for the desktop UI: `just ts` plus a copy into the Vite tree (25 §5).
 ts-desktop: ts
+    rm -rf crates/desktop/ui/src/rpc/bindings
     mkdir -p crates/desktop/ui/src/rpc/bindings
-    cp bindings/*.ts bindings/methods.json crates/desktop/ui/src/rpc/bindings/
+    cp -R bindings/. crates/desktop/ui/src/rpc/bindings/
 
 # Desktop app in dev mode against `target/debug/wth` (or `$WTH_BIN`); `WTH_DATA_DIR` overrides ~/.wth.
 # `TAURI_FRONTEND_PATH`: the UI lives inside the crate (not beside it as Tauri assumes), so the
@@ -54,14 +55,22 @@ desktop: ts-desktop
     cd crates/desktop/ui && bun install
     cd crates/desktop && TAURI_FRONTEND_PATH=ui WTH_BIN="${WTH_BIN:-$PWD/../../target/debug/wth}" cargo tauri dev
 
-# `wth.app` + dmg with the release `wth` bundled as the sidecar (25 §5, 18). `externalBin`
-# lives in tauri.bundle.conf.json so a plain `cargo check` does not need the binary present.
-desktop-bundle target="aarch64-apple-darwin": ts-desktop
-    cargo build --release -p wth
-    mkdir -p crates/desktop/binaries
-    cp target/release/wth crates/desktop/binaries/wth-{{target}}
-    cd crates/desktop/ui && bun install
-    cd crates/desktop && TAURI_FRONTEND_PATH=ui cargo tauri build --config tauri.bundle.conf.json
+# `wth.app` + DMG: release sidecar, codesign, hdiutil (scripts/package-macos.sh).
+# `externalBin` lives in tauri.bundle.conf.json so `cargo check` does not need the binary.
+# Signing: $WTH_SIGN_IDENTITY or .env.signing, else ad-hoc.
+package-macos:
+    ./scripts/package-macos.sh
+
+# Install/overwrite /Applications/wth.app from the last package (or $WTH_APP).
+install-macos:
+    ./scripts/install-macos.sh
+
+# Submit the packaged DMG to notarytool (needs WTH_NOTARY_* or .env.signing).
+notarize-macos:
+    ./scripts/notarize-macos.sh
+
+# Alias of package-macos.
+desktop-bundle: package-macos
 
 # Desktop UI gates: types, unit tests.
 desktop-check:

@@ -1,6 +1,11 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "bundle": {
-    "externalBin": ["binaries/wth"]
+    "targets": ["app"],
+    "externalBin": ["binaries/wth"],
+    "macOS": {
+      "hardenedRuntime": true,
+      "entitlements": "./entitlements.plist"
+    }
   }
 }

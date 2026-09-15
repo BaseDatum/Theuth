@@ -19,7 +19,8 @@ just run -- --slack-manifest   # manual path: print the Slack app manifest for a
 just run -- --acp          # Agent Client Protocol on stdio: use wth from Zed/editors (agent_servers: {"wth": {"command": "wth", "args": ["--acp"]}})
 just ts                    # TypeScript bindings for the wire types → bindings/
 just desktop               # macOS menubar app in dev mode (Tauri + Vite); starts the daemon itself
-just desktop-bundle        # wth.app + dmg with the release wth bundled as the sidecar
+just package-macos         # wth.app + dmg; ad-hoc unless WTH_SIGN_IDENTITY / .env.signing
+just install-macos         # copy the packaged app to /Applications
 ```
 
 Build prerequisites: `cmake`, `clang`/`libclang` and `llvm-objcopy`/`llvm-nm` for the embedded browser's
@@ -224,5 +225,5 @@ with working links and a raw editor. It has no Dock icon; the tray icon or
 the configured port, otherwise it starts the bundled `wth --headless` on a
 pseudo-terminal through your login shell so the daemon has exactly the
 environment a terminal would (design doc 18). `just desktop` runs it
-against `target/debug/wth`; `just desktop-bundle` produces `wth.app`. See
+against `target/debug/wth`; `just package-macos` produces `wth.app`. See
 [`docs/design/25-desktop.md`](docs/design/25-desktop.md).

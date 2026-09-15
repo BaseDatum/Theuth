@@ -358,45 +358,40 @@ sequenceDiagram
 18 decided how a `.app` starts the daemon and verified the mechanism with a
 Python stand-in. This section is the bundle around it.
 
-- **Sidecar.** `bundle.externalBin: ["binaries/wth"]`; `just desktop-bundle`
-  runs `cargo build --release -p wth` and copies `target/release/wth` to
-  `crates/desktop/binaries/wth-aarch64-apple-darwin`. Tauri places it at
-  `Contents/MacOS/wth`; `launch.rs` resolves it as a sibling of
-  `current_exe()`. The exec line in 18 §2 becomes
+- **Sidecar.** `bundle.externalBin: ["binaries/wth"]` in
+  `tauri.bundle.conf.json` (not `tauri.conf.json`: tauri-build fails
+  `cargo check` when the sidecar file is absent). `just package-macos`
+  copies `target/release/wth` to `crates/desktop/binaries/wth-<host-triple>`.
+  Tauri places it at `Contents/MacOS/wth`; `launch.rs` resolves it as a
+  sibling of `current_exe()`. The exec line in 18 §2 becomes
   `exec '<that path>' --headless --data-dir <dir>`; nothing else changes.
 - **Names.** `productName: "wth"` (the `.app` name, 00 §1.1: the only
   product name is the binary's), `mainBinaryName: "wth-desktop"` so the
   Tauri executable and the sidecar do not both want `Contents/MacOS/wth`.
-  Identifier `wth.desktop` (Tauri requires reverse-DNS-ish; no domain
-  implied).
+  Identifier `wth.rwx.dev`.
 - **Version lock.** The sidecar is built from the same commit as the UI;
   the terminal's `~/.cargo/bin/wth` from `just install` may differ. Both
   read `~/.wth`; `sessions.sqlite` is WAL and the schema is additive so far.
   Settings › General shows the daemon version from `info()` (version string
   only; no name).
-- **Signing / notarization.** Tauri signs the bundle including
-  `externalBin` when `APPLE_SIGNING_IDENTITY` is set and notarizes with
-  `APPLE_ID`/`APPLE_PASSWORD`/`APPLE_TEAM_ID` (or an API key). Unsigned local
-  builds run ad-hoc signed. The sidecar's V8 archive and stealth TLS
-  (23 §9) are plain Mach-O code, nothing that needs entitlements beyond the
-  default. Hardened runtime is on by default; the daemon spawns the user's
-  shell and tools, which hardened runtime permits (no library validation
-  issue - no plugins are dlopen'd).
-- **Targets.** `bundle.targets: ["app", "dmg"]`, `macOS.minimumSystemVersion`
-  the Tauri default; arm64 only in v0 (`x86_64-apple-darwin` needs the
-  sidecar built for it; the recipe accepts a target triple when wanted).
+- **Signing / notarization.** `scripts/package-macos.sh` codesigns
+  inside-out (sidecar `wth.rwx.dev.wth`, then the `.app`) with hardened
+  runtime after Tauri bundles, then `hdiutil` builds the DMG so the
+  snapshot includes the signatures. `WTH_SIGN_IDENTITY` or `.env.signing`;
+  unset → ad-hoc (`-`). `just notarize-macos` is a separate notarytool
+  submit + staple. Entitlement: `cs.allow-jit` (V8 / obscura under the
+  hardened runtime). Nested helpers keep the `wth.rwx.dev.*` identifier
+  prefix so macOS 15+ Local Network Privacy attributes to the app.
+- **Targets.** Overlay `bundle.targets: ["app"]` (DMG is hdiutil);
+  `macOS.minimumSystemVersion` 12.0; arm64 host-only in v0.
 - **Data dir.** `~/.wth` by default (18: same as the terminal). The app
   never writes outside it except its own window state
-  (`~/Library/Application Support/wth.desktop/`, Tauri's default).
+  (`~/Library/Application Support/wth.rwx.dev/`, Tauri's default).
 - **Updater.** Not in v0 (no channel to serve from). `tauri-plugin-updater`
   is the one-line add when there is one.
-- **just recipes.**
-  ```
-  ts-desktop:        just ts && cp bindings/*.ts crates/desktop/ui/src/rpc/bindings/
-  desktop:           just ts-desktop && cd crates/desktop/ui && bun install && cd .. && cargo tauri dev
-  desktop-bundle:    cargo build --release -p wth && mkdir -p crates/desktop/binaries && cp target/release/wth crates/desktop/binaries/wth-aarch64-apple-darwin && just ts-desktop && cd crates/desktop/ui && bun install && bun run build && cd .. && cargo tauri build
-  ```
-  `cargo-tauri` is a `just setup` addition (`cargo install tauri-cli --locked`).
+- **just recipes.** `package-macos` / `install-macos` / `notarize-macos`;
+  `desktop-bundle` is an alias of `package-macos`. `cargo-tauri` is a
+  `just setup` addition (`cargo install tauri-cli --locked`).
 - **What 18 left unexercised** and this phase must: the sidecar bundling
   itself, `bash`/`fish` as `$SHELL`, the blocking-rc timeout path.
 
