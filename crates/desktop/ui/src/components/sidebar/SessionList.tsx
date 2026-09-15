@@ -135,6 +135,7 @@ export function SessionList({ scrollRef, active }: { scrollRef: RefObject<HTMLDi
                   title={row.session.title}
                   active={row.session.id === active}
                   selected={selected.has(row.session.id)}
+                  selecting={selected.size > 0}
                   select={select}
                 />
               ) : (

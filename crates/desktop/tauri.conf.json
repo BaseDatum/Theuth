@@ -33,8 +33,7 @@
     "security": {
       "csp": "default-src 'self' ipc: http://ipc.localhost; connect-src 'self' ipc: http://ipc.localhost ws://127.0.0.1:* ws://localhost:*; img-src 'self' asset: http://asset.localhost data: blob:; style-src 'self' 'unsafe-inline'",
       "assetProtocol": {
-        "enable": true,
-        "scope": ["$HOME/.wth/attachments/**"]
+        "enable": true
       }
     }
   },

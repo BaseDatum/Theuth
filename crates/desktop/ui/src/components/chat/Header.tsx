@@ -28,7 +28,15 @@ function Parent({ id }: { id: string }) {
 }
 
 /** 52 px bar over the column: model on the left, context / approvals / session menu on the right. Draggable window region. */
-export function Header({ session }: { session: string | null }) {
+export function Header({
+  session,
+  draftEffort,
+  onDraftEffort,
+}: {
+  session: string | null
+  draftEffort?: string | null
+  onDraftEffort?(effort: string | null): void
+}) {
   const { open } = useSidebar()
   const info = useConnection((s) => s.info)
   const pending = useApprovals((s) => s.pending.length)
@@ -41,7 +49,7 @@ export function Header({ session }: { session: string | null }) {
       className={cn('flex h-[52px] shrink-0 items-center gap-2 px-3', !open && 'pl-20')}
     >
       {!open && <SidebarToggle />}
-      <ModelMenu session={session} />
+      <ModelMenu session={session} draftEffort={draftEffort} onDraftEffort={onDraftEffort} />
       {parent && <Parent id={parent} />}
       <div className="flex-1" data-tauri-drag-region />
       {session && <ContextMeter session={session} />}

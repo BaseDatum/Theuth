@@ -4,7 +4,7 @@
 //! (14 §3) are injected as [`UserInput`] into the addressee.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -2123,11 +2123,18 @@ fn render(messages: &[(i64, ChatMessage)]) -> Vec<(i64, HistoryEntry)> {
                     let (name, args) = call.map_or(("?", &serde_json::Value::Null), |c| {
                         (c.fn_name.as_str(), &c.fn_arguments)
                     });
-                    // 23 §5: same `[image: …]` lines the live `ToolCallFinished` showed.
+                    // 23 §5: same `[image: …]` lines the live `ToolCallFinished` showed;
+                    // a part named by full path is a file the tool produced.
                     let mut text = r.content.clone();
+                    let mut files = Vec::new();
                     for b in &r.images {
                         text.push('\n');
                         crate::loop_::binary_tag(&mut text, b);
+                        if let Some(p) =
+                            b.name.as_deref().map(Path::new).filter(|p| p.is_absolute())
+                        {
+                            files.push(p.to_path_buf());
+                        }
                     }
                     let is_error = text.starts_with("ERROR: ");
                     out.push((
@@ -2137,6 +2144,7 @@ fn render(messages: &[(i64, ChatMessage)]) -> Vec<(i64, HistoryEntry)> {
                             name: name.to_string(),
                             args: args.clone(),
                             result: Some((text, is_error)),
+                            files,
                         },
                     ));
                 }
@@ -2152,6 +2160,7 @@ fn render(messages: &[(i64, ChatMessage)]) -> Vec<(i64, HistoryEntry)> {
                 name: c.fn_name.clone(),
                 args: c.fn_arguments.clone(),
                 result: None,
+                files: Vec::new(),
             },
         )
     }));
@@ -2502,6 +2511,40 @@ mod tests {
         ));
     }
 
+    /// A tool response's binary parts carry the produced files' paths in `name`
+    /// (`loop_::round`); the history entry lists them so a reloaded transcript
+    /// shows the same thumbnails the live `ToolCallFinished` did.
+    #[test]
+    fn render_replays_tool_files() {
+        use genai::chat::{Binary, BinarySource, ToolCall, ToolResponse};
+        let call = ToolCall {
+            thought_signatures: None,
+            call_id: "c1".into(),
+            fn_name: "browser_screenshot".into(),
+            fn_arguments: serde_json::json!({}),
+        };
+        let shot = Binary {
+            content_type: "image/png".into(),
+            source: BinarySource::Base64("".into()),
+            name: Some("/data/browser/s/shot-1.png".into()),
+        };
+        let messages = vec![
+            (0, ChatMessage::from(vec![call])),
+            (
+                1,
+                ChatMessage::from(vec![
+                    ToolResponse::new("c1", "saved").with_images(vec![shot]),
+                ]),
+            ),
+        ];
+        let got = render(&messages);
+        assert!(matches!(
+            &got[0],
+            (1, HistoryEntry::Tool { result: Some((out, false)), files, .. })
+                if out == "saved\n[image: shot-1.png]" && files == &[PathBuf::from("/data/browser/s/shot-1.png")]
+        ));
+    }
+
     /// Paging walks back from the tail: the newest `limit`, then everything
     /// older than the page's `first_seq`; a call still running is never
     /// repeated on an older page.
@@ -2513,6 +2556,7 @@ mod tests {
             name: "shell".into(),
             args: serde_json::Value::Null,
             result,
+            files: Vec::new(),
         };
         let all = || {
             vec![

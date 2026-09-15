@@ -682,6 +682,9 @@ pub enum HistoryEntry {
         args: serde_json::Value,
         /// `(output, is_error)` once finished; output possibly truncated.
         result: Option<(String, bool)>,
+        /// Files the tool produced (23 §5), for UIs that render them inline.
+        #[serde(default)]
+        files: Vec<PathBuf>,
     },
     /// A compaction boundary: everything before it was folded into `summary`
     /// (design doc 07 §8.4).

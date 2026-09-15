@@ -48,7 +48,7 @@ function SlashList({ word, selected, onPick }: { word: string; selected: number;
  * `[⎘ …]` tokens (`lib/pastes`) expanded on submit. `/` at column 0 opens
  * the command list; other `/x` runs `use_skill`.
  */
-export function Composer({ session }: { session: string | null }) {
+export function Composer({ session, draftEffort }: { session: string | null; draftEffort?: string | null }) {
   const api = useApi()
   const navigate = useNavigate()
   const running = useSessionField(session ?? '', 'running') ?? false
@@ -169,10 +169,17 @@ export function Composer({ session }: { session: string | null }) {
         markSent(session, body, files)
         await api.send_input(session, body, files)
       } else {
-        const id = await api.send_input(null, body, files)
+        let id: string
+        if (draftEffort === undefined) {
+          id = await api.send_input(null, body, files)
+        } else {
+          id = await api.new_session()
+          await api.set_effort(id, draftEffort)
+          await api.send_input(id, body, files)
+        }
         // A fresh session has nothing stored yet: mark it loaded so the route does not
         // re-fetch and drop the bubble below (its echo is skipped via `markSent`).
-        loadHistory(id, { ...FRESH, model: defaultModel ?? '' }, 'replace')
+        loadHistory(id, { ...FRESH, model: defaultModel ?? '', effort: draftEffort ?? null }, 'replace')
         markSent(id, body, files)
         await navigate({ to: '/c/$session', params: { session: id } })
       }
@@ -273,7 +280,7 @@ export function Composer({ session }: { session: string | null }) {
             rows={1}
             placeholder={running ? 'Send to steer…' : 'Ask anything'}
             // ponytail: `field-sizing: content` grows the box (8 lines then scrolls); older WebKit keeps one line.
-            className="max-h-[200px] min-h-10 resize-none border-0 bg-transparent px-2 py-2 text-[17px] leading-6 shadow-none focus-visible:ring-0 md:text-[17px]"
+            className="max-h-[200px] min-h-10 min-w-0 flex-1 resize-none border-0 bg-transparent px-2 py-2 text-[17px] leading-6 shadow-none focus-visible:ring-0 md:text-[17px] dark:bg-transparent"
           />
           {running && session ? (
             <Button className="size-9 shrink-0 rounded-full" aria-label="Stop" onClick={() => void api.cancel(session)}>

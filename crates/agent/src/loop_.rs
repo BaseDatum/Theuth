@@ -13,7 +13,7 @@
 //! write afterwards (`Session::claim`) commits it.
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
@@ -1501,11 +1501,15 @@ impl Turn {
                 content
             };
             // 23 §5: files the tool produced ride as image parts of the response;
-            // an unreadable one becomes a text note, like user attachments.
+            // an unreadable one becomes a text note, like user attachments. The
+            // part's `name` keeps the full path so `load_session` can replay it.
             let mut images = Vec::with_capacity(out.files.len());
             for f in &out.files {
                 match Binary::from_file(f) {
-                    Ok(b) => images.push(b),
+                    Ok(b) => images.push(Binary {
+                        name: Some(f.to_string_lossy().into_owned()),
+                        ..b
+                    }),
                     Err(e) => {
                         content.push_str(&format!("\n[file {} unreadable: {e}]", f.display()));
                     }
@@ -2023,15 +2027,21 @@ pub(crate) fn text_of(content: &MessageContent) -> String {
     out
 }
 
-/// Appends `[image: <name>]` — `document` for a PDF — naming a binary part by
-/// its file name, falling back to the MIME type (17 §3.5).
+/// `[image: name]` / `[document: name]` for a binary part: its file name,
+/// falling back to the MIME type (17 §3.5).
 pub(crate) fn binary_tag(out: &mut String, b: &Binary) {
     out.push_str(if b.is_pdf() {
         "[document: "
     } else {
         "[image: "
     });
-    out.push_str(b.name.as_deref().unwrap_or(&b.content_type));
+    let name = b.name.as_deref().unwrap_or(&b.content_type);
+    out.push_str(
+        Path::new(name)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(name),
+    );
     out.push(']');
 }
 

@@ -3556,6 +3556,7 @@ fn from_history(h: HistoryEntry) -> Vec<Entry> {
             name,
             args,
             result,
+            files: _,
         } => vec![Entry::Tool {
             args: describe(&name, &args),
             // `.` marks a call from inside a `python` cell (08 §4.1), as live.

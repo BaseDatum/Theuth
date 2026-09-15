@@ -133,14 +133,14 @@ test('job tail attaches to the tool card by call id, follows output, freezes or 
 })
 
 test('fromHistory maps roles; a tool result tuple becomes a result', () => {
-  expect(fromHistory({ role: 'tool', call_id: 'c.1', name: 'read', args: { p: 1 }, result: ['out', true] })[0]).toMatchObject({
+  expect(fromHistory({ role: 'tool', call_id: 'c.1', name: 'read', args: { p: 1 }, result: ['out', true], files: ['/s.png'] })[0]).toMatchObject({
     kind: 'tool',
     callId: 'c.1',
     child: true,
     pending: false,
-    result: { output: 'out', isError: true, files: [] },
+    result: { output: 'out', isError: true, files: ['/s.png'] },
   })
-  expect(fromHistory({ role: 'tool', call_id: 'c', name: 'read', args: null, result: null })[0]).not.toHaveProperty('result')
+  expect(fromHistory({ role: 'tool', call_id: 'c', name: 'read', args: null, result: null, files: [] })[0]).not.toHaveProperty('result')
   expect(fromHistory({ role: 'assistant', text: 'a' })[0]).toMatchObject({ kind: 'assistant', open: false })
   expect(fromHistory({ role: 'compacted', epoch: 1, summary: 's', style: 'cut' })[0]).toMatchObject({ kind: 'compacted', summary: 's' })
   expect(fromHistory({ role: 'user', text: '<context_summary>x</context_summary>' })).toEqual([])

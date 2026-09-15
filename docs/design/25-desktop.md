@@ -450,9 +450,8 @@ input latency under 16 ms, memory linear in transcript size.
   TUI keeps calling it with `limit: null` and gets the old behaviour. A
   3000-entry session opens in one small payload; the whole transcript is
   never in the wire or the parser unless the user reads all of it.
-- Images: `<img>` from `asset://` (Tauri asset protocol scoped to
-  `<data_dir>/attachments`), thumbnails `max-h-64`, click opens a lightbox
-  Dialog.
+- Images: `<img>` from `asset://` (Tauri asset protocol scoped at runtime to
+  `<data_dir>`), thumbnails `max-h-64`, click opens a lightbox Dialog.
 
 ### 6.3 Measured acceptance (the §9 check)
 
@@ -477,6 +476,7 @@ behaviour.
 | `rename_session(session, title: String) → ()` | `agent::RenameSession` → `store.set_title` + publish `TitleChanged` | sidebar item menu; the store fn exists (`loop_.rs:1204`) |
 | `AgentEvent::TitleChanged { session, title }` | published where the titler writes (`loop_.rs:1204`, `title.rs`) and by `rename_session` | live sidebar titles without polling |
 | `ToolCallFinished.files: Vec<PathBuf>` | from `ToolOutput.files` (already on the struct, `tools/lib.rs:107`) | screenshots and generated images inline, like ChatGPT; TUI ignores the field |
+| `HistoryEntry::Tool.files: Vec<PathBuf>` | the tool response's binary parts are named by full path (`loop_.rs` round); `render` lifts absolute names back out | the same thumbnails after a reload; older rows (bare file names) replay with `[]` |
 | `load_session(session, before?: i64, limit?: u32)`; `Loaded.first_seq: i64?`, `Loaded.more: bool` | `LoadSession` gains the two optional fields; the handler renders all rows (tool call/result pairs collapse across rows, so the slice is on rendered entries, keyed by `seq`; compaction dividers keep their `at_seq` position) and returns entries with `seq < before`, the last `limit` | §6.2: open a long session in one small payload; `ponytail:` the sqlite read is still all rows per page - a `seq`-ranged query is the upgrade if a measured session makes it slow |
 | `knowledge_write(id, text) → Meta` | `KnowledgeActor::Write` → `Knowledge::write_concept` (exists, used by `restore`) with `source: user`, timestamp untouched | the raw editor; `knowledge_put` rebuilds frontmatter and drops unknown keys |
 | `knowledge_sync() → Sync` | exposes `Knowledge::sync()` | explorer calls it on focus so files edited in another editor appear without waiting for a turn |

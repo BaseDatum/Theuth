@@ -35,12 +35,14 @@ export const SessionItem = memo(function SessionItem({
   title,
   active,
   selected,
+  selecting,
   select,
 }: {
   id: string
   title: string
   active: boolean
   selected: boolean
+  selecting: boolean
   select(id: string, mode: SelectMode): void
 }) {
   const api = useApi()
@@ -98,7 +100,7 @@ export const SessionItem = memo(function SessionItem({
               params={{ session: id }}
               title={shown}
               onClick={(e) => {
-                if (e.metaKey || e.shiftKey) {
+                if (selecting || e.metaKey || e.shiftKey) {
                   e.preventDefault()
                   select(id, e.shiftKey ? 'range' : 'toggle')
                 } else {
@@ -106,7 +108,16 @@ export const SessionItem = memo(function SessionItem({
                 }
               }}
             >
-              {selected && <Check className="size-4 shrink-0" />}
+              {selecting && (
+                <span
+                  className={cn(
+                    'flex size-4 shrink-0 items-center justify-center rounded-[4px] border border-fg-tertiary',
+                    selected && 'border-foreground bg-foreground text-background',
+                  )}
+                >
+                  {selected && <Check className="size-3 stroke-[3]" />}
+                </span>
+              )}
               <span className="truncate">{shown}</span>
             </Link>
           </SidebarMenuButton>

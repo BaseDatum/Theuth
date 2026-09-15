@@ -20,16 +20,25 @@ import { surfaceOf } from './slash'
 
 /**
  * ChatGPT's header slot: the model name with a cmdk-filtered list from
- * `list_models`, then the selected model's effort levels. Without a session
- * it changes the defaults (`set_model(null, …)`).
+ * `list_models`, then the selected model's effort levels. A fresh chat keeps
+ * effort in the UI until submit creates the session; model changes update the default.
  */
-export function ModelMenu({ session }: { session: string | null }) {
+export function ModelMenu({
+  session,
+  draftEffort,
+  onDraftEffort,
+}: {
+  session: string | null
+  draftEffort?: string | null
+  onDraftEffort?(effort: string | null): void
+}) {
   const api = useApi()
   const qc = useQueryClient()
   const info = useConnection((s) => s.info)
   const sessionModel = useSessionField(session ?? '', 'model')
-  const effort = useSessionField(session ?? '', 'effort')
+  const sessionEffort = useSessionField(session ?? '', 'effort')
   const model = sessionModel ?? info?.default_model
+  const effort = session ? sessionEffort : draftEffort
   const { data: models = [] } = useQuery({ queryKey: queryKeys.models, queryFn: () => api.list_models() })
   const current = models.find((m) => m.id === model)
   const [open, setOpen] = useState(false)
@@ -53,7 +62,8 @@ export function ModelMenu({ session }: { session: string | null }) {
   const setEffort = async (level: string | null) => {
     setOpen(false)
     try {
-      await api.set_effort(session, level)
+      if (session) await api.set_effort(session, level)
+      else onDraftEffort?.(level)
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e))
     }
