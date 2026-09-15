@@ -312,8 +312,7 @@ sequenceDiagram
 
 - `tailwind.css` defines the §2.4 tokens as CSS variables under `:root` and
   `.dark`, and aliases shadcn's variables to them (`--background:
-  var(--bg-layer-1)` — chatgpt.com's main surface, `#212121` dark; the `#000`
-  page token is what sits behind it, not the thread — `--card: var(--bg-elevated)`, `--muted:
+  var(--bg-page)`, `--card: var(--bg-elevated)`, `--muted:
   var(--bg-layer-2)`, `--border: var(--border-default)`, `--radius: 0.75rem`).
   No hard-coded colour in a component.
 - Shell: sidebar 260 px (collapsible to 0 with ⇧⌘S, ChatGPT's animation),
@@ -325,10 +324,10 @@ sequenceDiagram
 - Composer: `rounded-[28px] p-[7px_8px] bg-elevated border border-subtle`,
   `+` popover (attach file, browse…), trailing send/stop circle; grows to 8
   lines then scrolls.
-- Settings dialog: both panes on `--sidebar` (`#f9f9f9`/`#171717`), the
-  same surface as the sidebar — chatgpt.com uses one near-black for both,
-  not the `#303030` elevated grey (corrected 2026-09-15 against the
-  authenticated app).
+- Sidebar and settings dialog (both panes) share `--sidebar`: `#f9f9f9`
+  light, `#0d0d0d` dark — near-black against the `#000` page, as the
+  authenticated chatgpt.com reads (user-verified 2026-09-15; the `#171717`
+  guess read grey, `#303030` for settings was wrong).
 - Build step: side-by-side screenshots of the authenticated chatgpt.com
   thread (the user's Firefox) and the app at the same viewport, for the
   empty state, a thread with the markdown sample of §2.4, the settings

@@ -60,13 +60,13 @@
   --status-warning-bg: oklch(34.6399% 0.0799531 61.3069);
   --status-warning-border: oklch(75.1371% 0.156458 78.7733);
   --status-warning-fg: #ffd15c;
-  --sidebar: #171717;
+  --sidebar: #0d0d0d;
 }
 
 /* shadcn variables, aliased onto the tokens; no component hard-codes a colour. */
 :root {
   --radius: 0.75rem;
-  --background: var(--bg-layer-1); /* chatgpt.com's main surface: #212121 dark, not the #000 page token */
+  --background: var(--bg-page);
   --foreground: var(--fg-primary);
   --card: var(--bg-elevated);
   --card-foreground: var(--fg-primary);
