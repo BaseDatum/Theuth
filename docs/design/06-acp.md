@@ -104,9 +104,11 @@ the registry already knows them.
 `auth_required` / spawn failed) and the cached registry below them.
 `/acp add <registry-id>` writes an entry from the registry's `distribution`:
 `npx` → `command: npx, args: [-y, <package>, ...args]`; `uvx` → `command:
-uvx, args: [<package>, ...args]`; `binary` → download the current platform's
-archive into `~/.wth/acp/bin/<id>/`, verify `sha256`, extract, `command:` the
-extracted `cmd`. `/acp remove <name>` deletes the entry (and `bin/<id>` if
+uvx, args: [<package>, ...args]`; `binary` → the `cmd`'s basename on `PATH`
+when the user already has it (the daemon runs under the login shell, doc 18),
+else download the current platform's archive into `~/.wth/acp/bin/<id>/`,
+verify `sha256`, extract, `command:` the extracted `cmd`. `/acp remove <name>`
+deletes the entry (and `bin/<id>` if
 present). The registry JSON is fetched on first `/acp` and re-fetched when
 older than a day (`~/.wth/acp/registry.json`); offline shows the cached one.
 Hot-reloaded like `mcp/` (same `notify` watcher pattern, doc 01 §1.4): edit

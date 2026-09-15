@@ -168,9 +168,10 @@ pub fn entry_from_distribution(
     }))
 }
 
-/// Build an [`Entry`] from a registry agent: `npx`/`uvx` map to a command line,
-/// `binary` downloads this platform's archive into `<data_dir>/acp/bin/<id>/`,
-/// verifies `sha256`, extracts it, and points `command` at the extracted `cmd`.
+/// Build an [`Entry`] from a registry agent: `npx`/`uvx` map to a command line;
+/// `binary` uses the same-named executable when it is already on `PATH`, else
+/// downloads this platform's archive into `<data_dir>/acp/bin/<id>/`, verifies
+/// `sha256`, extracts it, and points `command` at the extracted `cmd`.
 pub async fn install(data_dir: &Path, agent: &RegistryAgent) -> anyhow::Result<Entry> {
     let description = description(agent);
     if let Some(entry) = entry_from_distribution(&agent.distribution, description.clone())? {
@@ -191,6 +192,14 @@ pub async fn install(data_dir: &Path, agent: &RegistryAgent) -> anyhow::Result<E
             }
         );
     };
+    if let Some(command) = on_path(bin.cmd.trim_start_matches("./")) {
+        return Ok(Entry {
+            command: command.to_string_lossy().into_owned(),
+            args: bin.args.clone(),
+            env: bin.env.clone(),
+            description,
+        });
+    }
 
     let dir = bin_dir(data_dir, &agent.id);
     let _ = std::fs::remove_dir_all(&dir);
@@ -255,6 +264,16 @@ pub async fn install(data_dir: &Path, agent: &RegistryAgent) -> anyhow::Result<E
         env: bin.env.clone(),
         description,
     })
+}
+
+/// The user's own install of `name`, if `PATH` has one.
+fn on_path(name: &str) -> Option<PathBuf> {
+    if name.contains('/') {
+        return None;
+    }
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .map(|d| d.join(name))
+        .find(|p| p.is_file())
 }
 
 fn bin_dir(data_dir: &Path, id: &str) -> PathBuf {
