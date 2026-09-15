@@ -6,6 +6,7 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::time::Instant;
 
+use base64::Engine as _;
 use browser::{BrowserConfig, Browsers};
 use kameo::actor::Spawn;
 use runtime::SessionId;
@@ -150,11 +151,21 @@ async fn drives_fixture_page() {
     let data_dir = std::env::temp_dir().join(format!("wth-browser-live-{}", uuid_ish()));
     std::fs::create_dir_all(&data_dir).expect("temp dir");
 
+    let rt = runtime::Runtime::new(figment::Figment::new(), data_dir.clone());
     let actor = Browsers::spawn(Browsers::new(cfg.clone()));
     let kit = Kit {
-        tools: browser::tools::all(actor, cfg, data_dir.clone()),
+        tools: browser::tools::all(actor.clone(), cfg, rt.clone()),
         session: SessionId::new(),
     };
+
+    // A viewer polling an unknown session gets nothing and spawns nothing.
+    let none = actor
+        .ask(browser::Screenshot {
+            session: SessionId::new(),
+        })
+        .await
+        .expect("ask");
+    assert!(none.is_none(), "screenshot of unknown session");
 
     let open = kit
         .ok(
@@ -210,7 +221,29 @@ async fn drives_fixture_page() {
     );
     assert!(shot.files[0].starts_with(&data_dir));
 
+    let live = actor
+        .ask(browser::Screenshot {
+            session: kit.session,
+        })
+        .await
+        .expect("ask")
+        .expect("live screenshot of an open page");
+    let live = base64::engine::general_purpose::STANDARD
+        .decode(live)
+        .expect("base64");
+    assert_eq!(&live[..8], b"\x89PNG\r\n\x1a\n");
+
+    kit.ok("browser_show", json!({})).await;
+
     kit.ok("browser_close", json!({})).await;
+
+    let closed = actor
+        .ask(browser::Screenshot {
+            session: kit.session,
+        })
+        .await
+        .expect("ask");
+    assert!(closed.is_none(), "screenshot after close: {closed:?}");
 
     let dead = kit
         .call("browser_open", json!({ "url": "http://127.0.0.1:1/" }))

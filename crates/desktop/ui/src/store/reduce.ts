@@ -31,6 +31,8 @@ export function empty(id: string): SessionSlice {
     more: false,
     firstSeq: null,
     children: {},
+    browser: false,
+    browserLive: false,
   }
 }
 
@@ -168,6 +170,8 @@ export function apply(slice: SessionSlice, e: WireEvent, ctx: Ctx): SessionSlice
     case 'JobFinished':
       // Within grace the tool result carries the output: the tail has nothing to add.
       return patchJob(slice, e.id, (j) => (e.inline ? undefined : { ...j, exit: { exit: e.exit, secs: Number(e.secs) } }))
+    case 'BrowserShowLive':
+      return { ...slice, browser: true, browserLive: true }
   }
   const s = closeTail(slice, e)
   const idle = s.running ? 'thinking' : 'idle'
@@ -216,6 +220,7 @@ export function apply(slice: SessionSlice, e: WireEvent, ctx: Ctx): SessionSlice
     case 'ToolCallPending':
       return {
         ...s,
+        browser: s.browser || e.name.startsWith('browser_'),
         waiting: false,
         activity: 'tool',
         entries: [
@@ -236,7 +241,7 @@ export function apply(slice: SessionSlice, e: WireEvent, ctx: Ctx): SessionSlice
         child: e.call_id.includes('.'),
       }
       const entries = at < 0 ? [...s.entries, tool] : replaceAt(s.entries, at, tool)
-      return { ...s, entries, waiting: false, activity: 'tool' }
+      return { ...s, entries, browser: s.browser || e.name.startsWith('browser_'), waiting: false, activity: 'tool' }
     }
     case 'ToolCallFinished': {
       const result = { output: e.output, isError: e.is_error, files: e.files ?? [] }

@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { PanelLeft } from 'lucide-react'
+import { Globe, PanelLeft } from 'lucide-react'
 import { useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -9,8 +9,9 @@ import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import { useApprovals } from '@/store/approvals'
 import { useConnection } from '@/store/connection'
-import { useSessionField } from '@/store/sessions'
+import { useSessionField, useSessions } from '@/store/sessions'
 import { ApprovalsSheet } from './ApprovalCard'
+import { BrowserLive } from './BrowserLive'
 import { ContextMeter } from './ContextMeter'
 import { ModelMenu } from './ModelMenu'
 import { SessionMenu } from './SessionMenu'
@@ -41,6 +42,8 @@ export function Header({
   const info = useConnection((s) => s.info)
   const pending = useApprovals((s) => s.pending.length)
   const parent = useSessionField(session ?? '', 'parent')
+  const browser = useSessionField(session ?? '', 'browser')
+  const live = useSessionField(session ?? '', 'browserLive')
   const [sheet, setSheet] = useState(false)
   const approvalsOff = info !== null && (!info.approvals.global || !info.approvals.session)
   return (
@@ -53,6 +56,16 @@ export function Header({
       {parent && <Parent id={parent} />}
       <div className="flex-1" data-tauri-drag-region />
       {session && <ContextMeter session={session} />}
+      {session && browser && (
+        <Button
+          variant="ghost"
+          className="size-9 rounded-lg text-fg-secondary"
+          aria-label="Live browser"
+          onClick={() => useSessions.getState().setBrowserLive(session, true)}
+        >
+          <Globe className="size-5" />
+        </Button>
+      )}
       {approvalsOff && (
         <Badge variant="outline" className="text-fg-secondary">
           approvals off
@@ -65,6 +78,7 @@ export function Header({
       )}
       {session && <SessionMenu session={session} />}
       <ApprovalsSheet open={sheet} onOpenChange={setSheet} />
+      {session && <BrowserLive session={session} open={!!live} onOpenChange={(o) => useSessions.getState().setBrowserLive(session, o)} />}
     </header>
   )
 }

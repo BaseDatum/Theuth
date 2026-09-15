@@ -163,6 +163,9 @@ function useEventSideEffects(qc: QueryClient): void {
         if ((slice?.parent ?? summary?.parent) != null) return
         void notifyIfHidden('Turn finished', slice?.title ?? summary?.title ?? '')
       }),
+      on('BrowserShowLive', (e) => {
+        if (router.state.location.pathname !== `/c/${e.session}`) router.history.push(`/c/${e.session}`)
+      }),
     ]
     return () => {
       for (const off of offs) off()

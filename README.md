@@ -37,13 +37,14 @@ model gets a job id and is woken with `<job_result>` when it exits —
 [`docs/design/14-jobs.md`](docs/design/14-jobs.md); `start` / `send` /
 `screen` / `wait` run a command on a pseudo-terminal (REPL, server, TUI) and
 drive it: type, read the rendered 120×40 screen, wait for a prompt or a port —
-[`docs/design/22-pty.md`](docs/design/22-pty.md)), `browser` (fifteen
+[`docs/design/22-pty.md`](docs/design/22-pty.md)), `browser` (sixteen
 `browser_*` tools: an embedded headless browser (obscura) with screenshots —
 `browser_open`, `_read`, `_elements`, `_click`, `_fill`, `_type`, `_press`,
 `_select`, `_scroll`, `_wait`, `_eval`, `_back`, `_screenshot`, `_tabs`,
-`_close` (plus `browser_list_profiles` + `browser_import_cookies` when
+`_close`, `_show` (plus `browser_list_profiles` + `browser_import_cookies` when
 `import_cookies` is on: discover local browser profiles and load the user's
-real cookies so the agent acts as the signed-in user); one
+real cookies so the agent acts as the signed-in user; `browser_show` opens a
+live view of the session's browser in the desktop app); one
 isolate per session, screenshots come back as images in the
 tool result — [`docs/design/23-browser.md`](docs/design/23-browser.md)), `knowledge`
 (OKF bundle, FTS index, gix history, `knowledge_*` tools —
@@ -220,7 +221,8 @@ sessions in a sidebar with the subagent tree under the open one, streamed
 markdown with tool cards, inline approvals, steering chips, attachments,
 the same slash commands, a settings dialog for models, approvals, MCP,
 skills, harnesses, logins, gateways and channels, and a knowledge explorer
-with working links and a raw editor. It has no Dock icon; the tray icon or
+with working links and a raw editor; a globe in the chat header opens a live
+view of the agent's browser while it works. It has no Dock icon; the tray icon or
 ⌥Space toggles the window. On launch it reuses a running `wth --serve` on
 the configured port, otherwise it starts the bundled `wth --headless` on a
 pseudo-terminal through your login shell so the daemon has exactly the

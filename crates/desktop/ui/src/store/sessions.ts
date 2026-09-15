@@ -90,6 +90,10 @@ export type SessionSlice = {
   title?: string
   /** Turn whose `InputInjected` already moved a steer into the transcript; its `TurnStarted` echo is skipped. */
   lastInjected?: string
+  /** A `browser_*` tool ran in this session: the header shows the live-view globe. */
+  browser: boolean
+  /** The live browser dialog is open (globe click or `BrowserShowLive`). */
+  browserLive: boolean
 }
 
 type SessionsStore = {
@@ -106,6 +110,8 @@ type SessionsStore = {
   ensure(id: string): void
   /** Replace the subtree rows from `list_agents`. */
   setChildren(id: string, agents: AgentInfo[]): void
+  /** Open or close the live browser dialog. */
+  setBrowserLive(id: string, open: boolean): void
   resetLagged(): void
 }
 
@@ -129,11 +135,13 @@ export const useSessions = create<SessionsStore>()(
       set((st) => {
         const cur = st.sessions[id] ?? empty(id)
         const fresh = loaded.history.flatMap(fromHistory)
+        const browser = cur.browser || loaded.history.some((h) => h.role === 'tool' && h.name.startsWith('browser_'))
         const next: SessionSlice =
           mode === 'prepend'
-            ? { ...cur, entries: [...fresh, ...cur.entries], firstSeq: loaded.first_seq ?? cur.firstSeq, more: loaded.more }
+            ? { ...cur, browser, entries: [...fresh, ...cur.entries], firstSeq: loaded.first_seq ?? cur.firstSeq, more: loaded.more }
             : {
                 ...cur,
+                browser,
                 entries: fresh,
                 running: loaded.running,
                 waiting: false,
@@ -169,6 +177,12 @@ export const useSessions = create<SessionsStore>()(
         const cur = st.sessions[id] ?? empty(id)
         const children = Object.fromEntries(agents.map((a) => [a.id, a]))
         return { sessions: { ...st.sessions, [id]: { ...cur, children } } }
+      })
+    },
+    setBrowserLive(id, open) {
+      set((st) => {
+        const cur = st.sessions[id] ?? empty(id)
+        return { sessions: { ...st.sessions, [id]: { ...cur, browserLive: open } } }
       })
     },
     resetLagged() {

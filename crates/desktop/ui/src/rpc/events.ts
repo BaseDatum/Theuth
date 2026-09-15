@@ -1,6 +1,7 @@
 import type { AgentEvent as Bound } from '@/rpc/bindings/AgentEvent'
 import type { ApprovalRequested } from '@/rpc/bindings/ApprovalRequested'
 import type { ApprovalResolved } from '@/rpc/bindings/ApprovalResolved'
+import type { BrowserEvent } from '@/rpc/bindings/BrowserEvent'
 import type { JobEvent } from '@/rpc/bindings/JobEvent'
 import type { KnowledgeChanged } from '@/rpc/bindings/KnowledgeChanged'
 import type { McpProgress } from '@/rpc/bindings/McpProgress'
@@ -30,6 +31,7 @@ export type WireEvent =
   | McpProgress
   | LoginFinished
   | JobEvent
+  | BrowserEvent
   | SignalEvent
   | SlackEvent
   | KnowledgeChanged

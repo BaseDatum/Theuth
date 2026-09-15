@@ -146,7 +146,10 @@ cloned repos (read-only). This file is one; it is rewritten on every start.
   share one listing are fine, but clicks must go click, then re-read, then
   click. Submit forms by clicking the submit button (`browser_click`); Enter
   in a field does not submit. `browser_screenshot` returns an image you can
-  look at. `localhost` and private addresses are blocked unless
+  look at. `browser_show` opens a live view of your browser on the user's
+  screen (desktop app only): use it when they ask to watch, when a page
+  needs their eyes, or before a long browse they may want to follow.
+  `localhost` and private addresses are blocked unless
   `browser.allow_private_network` is set in config.
 - You can act as the signed-in user on the web. When `browser.import_cookies`
   is on, `browser_list_profiles` shows the user's local browser profiles and

@@ -26,6 +26,13 @@ uuid = { workspace = true }
 url = { workspace = true }
 iana-time-zone = { workspace = true }
 unjar = { workspace = true }
+ts-rs = { workspace = true, optional = true }
+
+[features]
+ts = ["dep:ts-rs", "runtime/ts"]
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+figment = { workspace = true }

@@ -6,6 +6,7 @@ use std::convert::Infallible;
 use std::sync::Arc;
 
 use agent::{AgentEvent, LoginFinished};
+use browser::BrowserEvent;
 use kameo::Actor;
 use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
@@ -66,7 +67,8 @@ forward!(
     JobEvent,
     SignalEvent,
     SlackEvent,
-    KnowledgeChanged
+    KnowledgeChanged,
+    BrowserEvent
 );
 
 /// Spawn the bridge, subscribe it to every event type, return the sender to
@@ -83,5 +85,6 @@ pub async fn start(rt: &Runtime) -> broadcast::Sender<Event> {
     rt.subscribe::<Bridge, SignalEvent>(&actor).await;
     rt.subscribe::<Bridge, SlackEvent>(&actor).await;
     rt.subscribe::<Bridge, KnowledgeChanged>(&actor).await;
+    rt.subscribe::<Bridge, BrowserEvent>(&actor).await;
     tx
 }

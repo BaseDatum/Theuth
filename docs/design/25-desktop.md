@@ -181,6 +181,7 @@ Every row is an `Api` call already present unless marked **new** (§7).
 | `describe()` of args (`$ cmd` for shell, `k: v` else, long strings collapsed) | `describe.ts`, same rules, unit-tested against the same fixtures |
 | `◆ you` echo rules (skip own send, injected, harness wrappers) | same `injected()` classifier in TS; `<skill name>` → skill chip + words |
 | header `model · effort · ctx used/limit (pct) · cache % · approvals off` | model dropdown (ChatGPT's header slot) shows model; right side: context meter pill (colour steps 70/90 %), cache %, `approvals off` badge |
+| — (**new**) live browser view | globe button in the header, shown when the session slice's `browser` flag is set (any `browser_*` tool call seen live or in loaded history); opens `BrowserLive` (Dialog, `max-w-[90vw]`) which polls `browser_screenshot` (§7) |
 | status line spinner states (`thinking…`, `running tool…`, `streaming…`, `compacting…`, `harvesting…`) | the ChatGPT pulsing dot under the last message + the same words in the composer placeholder area; window title suffix `·` while any session streams |
 | `/model`, `/model <id>` | header dropdown (cmdk list from `list_models`, typed filter) → `set_model` |
 | `/effort`, `/effort <lvl>` | second column in the same dropdown, from `ModelInfo.efforts` (**not** the catalog - `list_models` already carries `efforts`, `context`, `image`) → `set_effort` |
@@ -475,6 +476,8 @@ behaviour.
 | `load_session(session, before?: i64, limit?: u32)`; `Loaded.first_seq: i64?`, `Loaded.more: bool` | `LoadSession` gains the two optional fields; the handler renders all rows (tool call/result pairs collapse across rows, so the slice is on rendered entries, keyed by `seq`; compaction dividers keep their `at_seq` position) and returns entries with `seq < before`, the last `limit` | §6.2: open a long session in one small payload; `ponytail:` the sqlite read is still all rows per page - a `seq`-ranged query is the upgrade if a measured session makes it slow |
 | `knowledge_write(id, text) → Meta` | `KnowledgeActor::Write` → `Knowledge::write_concept` (exists, used by `restore`) with `source: user`, timestamp untouched | the raw editor; `knowledge_put` rebuilds frontmatter and drops unknown keys |
 | `knowledge_sync() → Sync` | exposes `Knowledge::sync()` | explorer calls it on focus so files edited in another editor appear without waiting for a turn |
+| `browser_screenshot(session) → Option<String>` | `browser::Screenshot` (23 §3.2): base64 PNG of the session's current page, `None` without an isolate or open page | the `BrowserLive` dialog polls it at 500 ms while open |
+| `BrowserEvent::BrowserShowLive { session }` | published by `browser_show` (23 §4); the bridge forwards it and `export.rs` emits the binding | the reducer sets `browser` + `browserLive` on the slice, `App` navigates to the session and the dialog opens |
 | `export.rs` list | add `LoginInfo`, `ProviderInfo`, `AgentInfo`, `AgentState`, `LoginFinished`, `Info`, `TitleChanged` (via `AgentEvent`) | bindings were incomplete |
 | `bindings/methods.json` | `export_bindings` also writes `Server::into_rpc().method_names()` sorted | a vitest asserts `api.ts` keys == this list, both directions; the only drift check we need (no method-signature codegen) |
 

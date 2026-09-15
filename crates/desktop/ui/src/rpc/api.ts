@@ -46,6 +46,8 @@ export interface Api {
   add_provider(name: string, base_url: string, key: string): Promise<ProviderInfo>
   add_skill(name: string, description: string, body: string, always: boolean): Promise<SkillMeta>
   add_skill_repo(url: string, name: string | null): Promise<SkillMeta[]>
+  /** PNG (base64) of the session's browser page; `null` when it has no isolate or no open page. */
+  browser_screenshot(session: SessionId): Promise<string | null>
   cancel(session: SessionId): Promise<null>
   cancel_job(session: SessionId, id: JobId): Promise<null>
   compact(session: SessionId, style: CompactStyle | null): Promise<number>
@@ -135,6 +137,7 @@ export const METHODS = [
   'add_provider',
   'add_skill',
   'add_skill_repo',
+  'browser_screenshot',
   'cancel',
   'cancel_job',
   'compact',

@@ -15,6 +15,7 @@ use agent::{
     SearchSessions, SendInput, SessionSummary, SetCompactStyle, SetEffort, SetModel, SetTitleModel,
     ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw,
 };
+use browser::{BROWSER_ACTOR, Browsers, Screenshot};
 use jsonrpsee::core::{RpcResult, SubscriptionResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
 use jsonrpsee::server::{PendingSubscriptionSink, SubscriptionMessage};
@@ -110,6 +111,11 @@ pub trait Api {
     /// Kill a running job; `Err` when unknown or already finished.
     #[method(name = "cancel_job")]
     async fn cancel_job(&self, session: SessionId, id: JobId) -> RpcResult<()>;
+    /// Current page of `session`'s embedded browser as a base64 PNG for a live
+    /// view (23 §3.2); `None` when the session has no live isolate or no open
+    /// page. Polling never spawns an isolate.
+    #[method(name = "browser_screenshot")]
+    async fn browser_screenshot(&self, session: SessionId) -> RpcResult<Option<String>>;
     /// Fold the conversation now (design doc 07 §8.6 / 11 §4.2); returns the
     /// new epoch. `style: None` uses the configured default. Refused while a
     /// turn is running.
@@ -542,6 +548,10 @@ impl ApiServer for Server {
 
     async fn cancel_job(&self, session: SessionId, id: JobId) -> RpcResult<()> {
         ask::<Jobs, _>(JOBS_ACTOR, CancelJob { session, id }).await
+    }
+
+    async fn browser_screenshot(&self, session: SessionId) -> RpcResult<Option<String>> {
+        ask::<Browsers, _>(BROWSER_ACTOR, Screenshot { session }).await
     }
 
     async fn compact(&self, session: SessionId, style: Option<CompactStyle>) -> RpcResult<u32> {

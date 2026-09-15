@@ -1,33 +1,35 @@
-//! The fifteen `browser_*` tools (design doc 23 §4): our names and static
+//! The sixteen `browser_*` tools (design doc 23 §4): our names and static
 //! descriptions over obscura-mcp's tool dispatch. Each tool sends one
 //! [`Call`] to the [`Browsers`] actor, passes obscura's arguments through
 //! unchanged unless the §4 table says otherwise, and tidies the text reply
 //! ([`tidy`]). `browser_screenshot` writes the PNG under the data dir and
-//! hands it back as `ToolOutput.files` (23 §5).
+//! hands it back as `ToolOutput.files` (23 §5); `browser_show` publishes
+//! [`BrowserEvent::ShowLive`] instead of calling obscura.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use kameo::actor::ActorRef;
 use kameo::error::SendError;
-use runtime::SessionId;
+use runtime::{Runtime, SessionId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tools::{DynTool, Risk, Tool, ToolCx, ToolOutput};
 
-use crate::{BrowserConfig, Browsers, Call};
+use crate::{BrowserConfig, BrowserEvent, Browsers, Call};
 
-/// What every tool holds: the actor, the config and where screenshots go.
+/// What every tool holds: the actor, the config and the runtime (screenshot
+/// dir, event bus).
 pub struct Ctx {
     /// Per-session isolates (23 §3.2).
     pub actor: ActorRef<Browsers>,
     /// `browser:` config; `max_chars` caps `browser_open` / `browser_read` replies.
     pub cfg: BrowserConfig,
-    /// Screenshots land under `<data_dir>/browser/<session>/`.
-    pub data_dir: PathBuf,
+    /// Screenshots land under `<rt.data_dir>/browser/<session>/`; `browser_show`
+    /// publishes on `rt`'s bus.
+    pub rt: Runtime,
 }
 
 impl Ctx {
@@ -552,14 +554,7 @@ browser_tool!(
         if is_error {
             return Ok(ToolOutput::err(text));
         }
-        let image = result
-            .get("content")
-            .and_then(Value::as_array)
-            .and_then(|blocks| {
-                blocks.iter().find(|b| b.get("type").and_then(Value::as_str) == Some("image"))
-            })
-            .and_then(|b| b.get("data").and_then(Value::as_str));
-        let Some(data) = image else {
+        let Some(data) = crate::image_data(&result) else {
             return Ok(ToolOutput::err(format!("no image in reply: {text}")));
         };
         let png = match BASE64.decode(data) {
@@ -569,7 +564,7 @@ browser_tool!(
         let Some((w, h)) = png_size(&png) else {
             return Ok(ToolOutput::err("screenshot is not a PNG"));
         };
-        let dir = ctx.data_dir.join("browser").join(cx.session.to_string());
+        let dir = ctx.rt.data_dir.join("browser").join(cx.session.to_string());
         tokio::fs::create_dir_all(&dir).await?;
         // ponytail: linear probe for the next free shot-<n>.png; survives restarts,
         // tens of shots per session at most.
@@ -641,6 +636,20 @@ browser_tool!(
     CloseTool, "browser_close", NoArgs,
     "Close every tab of this session's browser and forget its page state (cookies stay until the session ends). The next `browser_open` starts on a blank page.",
     |ctx, _a, cx| ctx.call(cx.session, "browser_close", json!({})).await
+);
+
+browser_tool!(
+    /// `browser_show` → [`BrowserEvent::ShowLive`] on the bus; no obscura call.
+    ShowTool, "browser_show", NoArgs,
+    "Open a live view of this session's browser on the user's screen (desktop app only; other frontends ignore it). Use it when the user asks to watch, when a page needs their eyes (login, captcha, a visual they should judge), or before a long multi-step browse they may want to follow. It shows what the page looks like as you work; it does not give the user control.",
+    |ctx, _a, cx| {
+        ctx.rt
+            .publish(BrowserEvent::ShowLive { session: cx.session })
+            .await;
+        Ok(ToolOutput::ok(
+            "Live browser view opened in the desktop app (other frontends ignore this).",
+        ))
+    }
 );
 
 /// Local browser [`ImportCookiesTool`] reads cookies from.
@@ -843,12 +852,8 @@ impl Tool for ProfilesTool {
 /// `browser.import_cookies` is on, `browser_list_profiles` and
 /// `browser_import_cookies` are added (23 §7).
 #[must_use]
-pub fn all(actor: ActorRef<Browsers>, cfg: BrowserConfig, data_dir: PathBuf) -> Vec<DynTool> {
-    let ctx = Arc::new(Ctx {
-        actor,
-        cfg,
-        data_dir,
-    });
+pub fn all(actor: ActorRef<Browsers>, cfg: BrowserConfig, rt: Runtime) -> Vec<DynTool> {
+    let ctx = Arc::new(Ctx { actor, cfg, rt });
     let mut all: Vec<DynTool> = vec![
         Arc::new(OpenTool(Arc::clone(&ctx))),
         Arc::new(ReadTool(Arc::clone(&ctx))),
@@ -865,6 +870,7 @@ pub fn all(actor: ActorRef<Browsers>, cfg: BrowserConfig, data_dir: PathBuf) -> 
         Arc::new(ScreenshotTool(Arc::clone(&ctx))),
         Arc::new(TabsTool(Arc::clone(&ctx))),
         Arc::new(CloseTool(Arc::clone(&ctx))),
+        Arc::new(ShowTool(Arc::clone(&ctx))),
     ];
     if ctx.cfg.import_cookies {
         all.push(Arc::new(ProfilesTool));

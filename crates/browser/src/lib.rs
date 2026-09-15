@@ -1,9 +1,10 @@
 //! Embedded obscura headless browser (design doc 23). One V8 isolate per
 //! session on its own thread ([`session`]), the [`Browsers`] actor mapping
-//! `SessionId → Handle` behind [`BROWSER_ACTOR`], fifteen `browser_*` tools
+//! `SessionId → Handle` behind [`BROWSER_ACTOR`], sixteen `browser_*` tools
 //! ([`tools`]) and a rendering `web::Provider` ([`render`]) so `read_url
 //! rendered: true` works keyless. [`warmup`] runs on the main thread before
-//! plugins start (23 §3.1).
+//! plugins start (23 §3.1). Frontends poll [`Screenshot`] for a live view of
+//! a session's page; [`BrowserEvent::ShowLive`] asks the desktop to open it.
 
 pub mod render;
 pub mod session;
@@ -175,6 +176,40 @@ pub struct Close {
     pub session: SessionId,
 }
 
+/// `ask` → `Option<String>`: base64 PNG of the session's current page for a
+/// live viewer (23 §5). `None` when the session has no isolate, no open
+/// page, or its thread died. Never spawns an isolate and never refreshes
+/// the idle stamp: a viewer's poll must not keep a browser alive.
+#[derive(Clone, Copy, Debug)]
+pub struct Screenshot {
+    /// Session whose page is shown.
+    pub session: SessionId,
+}
+
+/// Bus events for frontends, on the shared RPC event stream (23 §5).
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(tag = "type")]
+pub enum BrowserEvent {
+    /// `browser_show`: open the live view of this session's browser.
+    #[serde(rename = "BrowserShowLive")]
+    ShowLive {
+        /// Owning session.
+        session: SessionId,
+    },
+}
+
+/// `data` of the first `type == "image"` block of an obscura-mcp result.
+pub(crate) fn image_data(result: &Value) -> Option<&str> {
+    result
+        .get("content")?
+        .as_array()?
+        .iter()
+        .find(|b| b.get("type").and_then(Value::as_str) == Some("image"))?
+        .get("data")?
+        .as_str()
+}
+
 /// Internal tick: drop handles idle longer than `idle_secs`.
 #[derive(Clone, Copy, Debug)]
 struct Sweep;
@@ -195,6 +230,30 @@ impl Message<Call> for Browsers {
                 .call(&m.name, m.args)
                 .await
                 .map_err(|reason| format!("browser restarted: {reason}"));
+            tx.send(out);
+        });
+        reply
+    }
+}
+
+impl Message<Screenshot> for Browsers {
+    type Reply = DelegatedReply<Option<String>>;
+
+    async fn handle(&mut self, m: Screenshot, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let Some((handle, _)) = self.sessions.get(&m.session) else {
+            tx.send(None);
+            return reply;
+        };
+        let handle = handle.clone();
+        tokio::spawn(async move {
+            let out = handle
+                .call("browser_screenshot", serde_json::json!({}))
+                .await
+                .ok()
+                .filter(|v| v.get("isError").and_then(Value::as_bool) != Some(true))
+                .and_then(|v| image_data(&v).map(str::to_owned));
             tx.send(out);
         });
         reply
@@ -277,7 +336,7 @@ impl runtime::Plugin for BrowserPlugin {
         let rt = rt.clone();
         tokio::spawn(async move {
             if let Some(reg) = rt.lookup_when::<ToolRegistry>(REGISTRY_ACTOR).await {
-                for tool in tools::all(actor, cfg, rt.data_dir.clone()) {
+                for tool in tools::all(actor, cfg, rt) {
                     let _ = reg.ask(RegisterTool(tool)).await;
                 }
             }

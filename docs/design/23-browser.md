@@ -29,7 +29,7 @@ shipped and what was not exercised.
    feature (wreq/BoringSSL TLS fingerprint, tracker blocklist) is compiled
    in; `browser.stealth: true` is the default and `false` is a runtime
    switch. `render` is what makes `browser_screenshot` exist.
-5. **Fifteen curated tools with our names and descriptions**, mapped onto
+5. **Sixteen curated tools with our names and descriptions**, mapped onto
    obscura-mcp's 37 (§4). Descriptions are static (cache-safe). Output is
    tidied (blank-line collapse, trim, `max_chars`) before the model sees it.
 6. **Screenshots reach the model as image parts of the tool result.**
@@ -158,6 +158,16 @@ session }` drops one now; `rt.shutdown` drops all. Not a job (14): invisible
 in `/jobs`, no log file — a browser is a capability, not a process the user
 started.
 
+`Screenshot { session } -> Option<String>` returns the current page as a
+base64 PNG for a live viewer; `None` when the session has no isolate or no
+open page. It looks the handle up without spawning and does not refresh
+`last_used`, so a viewer never keeps an isolate alive. It queues on the
+session's thread like any command, so a frame waits behind an in-flight
+`browser_wait`. This is the in-process equivalent of obscura's
+`Page.captureScreenshot` polling guide
+(https://docs.obscura.sh/guides/watch-agent-sessions-live): the embedded
+engine has no CDP socket.
+
 ### 3.3 The fork
 
 `obscura-mcp` keeps its dispatch `pub(crate)` and its only public entry
@@ -206,12 +216,17 @@ submitted by clicking their submit button** (Enter does not submit, §2).
 | `browser_close` | `browser_close` | — | closes every tab; the isolate stays until idle |
 | `browser_list_profiles` | — (`unjar`) | — | `ReadOnly`; registered only when `browser.import_cookies`. Lists local browser profiles (`browser  id  path`) so the agent picks one to import |
 | `browser_import_cookies` | `browser_set_storage_state` | `browser?`, `domains?`, `profile?` | `Mutating`; registered only when `browser.import_cookies`. Reads local profile cookies via `unjar`, maps them (session cookie `expires 0` → no-expiry, not delete), applies in one call |
+| `browser_show` | — (bus) | — | `ReadOnly`; publishes `BrowserEvent::ShowLive { session }`; the desktop opens the live view (25 §7). Other frontends ignore it; the tool cannot tell whether a desktop is attached |
 
 Every tool is `Risk::ReadOnly` (§0.7) except `browser_import_cookies`
 (`Mutating`). Not exposed: cookie export (`browser_storage_state`), per-cookie
 `get`/`set`/`clear`, PDF, `network_requests`, `console_messages`, `links`,
 `extract`, `detect_forms`, `fill_form`, `get_attribute`, `count`, `search`,
 `forward`, `reload`. They are one table row each when wanted.
+
+`BrowserEvent` is the crate's one wire event (`#[serde(tag = "type")]`, one
+variant `BrowserShowLive { session }`), published on the bus like
+`tools::JobEvent`.
 
 **Output tidy** (`tools::tidy`): trim every line's trailing whitespace,
 collapse runs of ≥ 2 blank lines to one, trim ends, then cut at `max_chars`
@@ -308,9 +323,9 @@ home user; a proxy user sets it to the exit region per obscura's guide.
 crates/browser/
   Cargo.toml        obscura-mcp (fork, stealth+render), tools, runtime, web, kameo, tokio,
                     serde, serde_json, schemars, anyhow, tracing, base64, async-trait, reqwest
-  src/lib.rs        BrowserConfig, BrowserPlugin, Browsers actor (Call/Close/sweep), warmup(), BROWSER_ACTOR
+  src/lib.rs        BrowserConfig, BrowserPlugin, Browsers actor (Call/Close/Screenshot/sweep), BrowserEvent, warmup(), BROWSER_ACTOR
   src/session.rs    Handle, spawn(): thread + current_thread runtime + BrowserState + pump loop
-  src/tools.rs      the 15 Tool impls, tidy(), screenshot file writing; `pub fn all(actor, cfg, data_dir) -> Vec<DynTool>`
+  src/tools.rs      the 16 Tool impls, tidy(), screenshot file writing; `pub fn all(actor, cfg, rt) -> Vec<DynTool>`
   src/render.rs     ObscuraRender: web::Provider { renders: true }; `pub async fn register(rt, actor)`
 ```
 
@@ -422,7 +437,7 @@ Firecrawl.
 
 ## 12. Edits to other docs
 
-- **00 §6.** After the PTY sentence: "Browser (23): fifteen `browser_*`
+- **00 §6.** After the PTY sentence: "Browser (23): sixteen `browser_*`
   tools drive an embedded obscura isolate per session; screenshots return
   as image parts of the tool result."
 - **00 §10 deps.** Rows: `obscura-mcp | git v0.2.2 (fork, 23 §3.3) |
@@ -446,7 +461,7 @@ Firecrawl.
 
 Shipped: `crates/browser` (`lib.rs` 282 lines: config, `Browsers` actor with
 `DelegatedReply` so one slow page never blocks another session, sweeper,
-`warmup`; `session.rs` 128; `tools.rs` 762: fifteen tools via a
+`warmup`; `session.rs` 128; `tools.rs` 762: sixteen tools via a
 `browser_tool!` macro over a shared `Ctx`, `tidy`, screenshot files;
 `render.rs` 163: `ObscuraRender` behind a mutex on one fixed render isolate);
 `tests/live.rs` (§11's fixture test, 0.24 s after warmup); the two obscura
@@ -496,3 +511,10 @@ sweeper and `Close` on a real session end, a proxy, `browser_tabs`,
 `browser_scroll`, `browser_select`, `browser_type`, `browser_press` on a
 real site (unit-tested mappings only), obscura's isolate panic → "browser
 restarted" path.
+
+2026-09-15: live view shipped — `Screenshot` query (§3.2), `browser_show` +
+`BrowserEvent` (§4), `browser_screenshot` RPC, desktop globe + dialog polling
+at 500 ms (25 §7). Icon semantics = "session has used a browser tool",
+decided client-side from tool events/history; it lingers after
+`browser_close`/the idle sweep, the view then reports no page. Ceiling:
+history pagination — browser use only in unloaded older pages does not flag.
