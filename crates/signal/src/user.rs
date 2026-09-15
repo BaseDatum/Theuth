@@ -6,7 +6,6 @@ use agent::{Outbound, UserSink};
 
 use crate::channel::Handle;
 use crate::text;
-use crate::transport::Recipient;
 
 #[async_trait::async_trait]
 impl UserSink for Handle {
@@ -16,31 +15,31 @@ impl UserSink for Handle {
     }
 
     /// Bound pass: the first session of `m.sessions` with a thread
-    /// (`threads.number_for`, 09 §6). Fallback: `signal.owner`, text
+    /// (`threads.recipient_for`, 09 §6). Fallback: `signal.owner`, text
     /// prefixed with `m.origin` on its own line (24 §2, §6).
     async fn deliver(&self, m: &Outbound, fallback: bool) -> Result<Option<String>, String> {
         let chan = &self.chan;
-        let (number, text) = if fallback {
+        let (to, text) = if fallback {
             if chan.owner.is_empty() {
                 return Err("signal: no owner configured".into());
             }
             if !chan.transport.is_registered().await.unwrap_or(false) {
                 return Err("signal: not linked".into());
             }
-            (chan.owner.clone(), format!("{}\n{}", m.origin, m.text))
+            let to = chan.lock().threads.recipient(&chan.owner);
+            (to, format!("{}\n{}", m.origin, m.text))
         } else {
-            let s = chan.lock();
-            let Some(number) = m
-                .sessions
-                .iter()
-                .find_map(|id| s.threads.number_for(*id).map(str::to_owned))
-            else {
+            let to = {
+                let s = chan.lock();
+                m.sessions
+                    .iter()
+                    .find_map(|id| s.threads.recipient_for(*id))
+            };
+            let Some(to) = to else {
                 return Ok(None);
             };
-            drop(s);
-            (number, m.text.clone())
+            (to, m.text.clone())
         };
-        let to = Recipient::new(&number);
         let plain = text::markdown_to_plain(&text);
         if !plain.is_empty() && chan.send_chunks(&to, &plain).await.is_none() {
             return Err("signal: send failed".into());
@@ -56,7 +55,7 @@ impl UserSink for Handle {
                 return Err(format!("signal: attachment {} failed", f.name));
             }
         }
-        Ok(Some(format!("signal: {number}")))
+        Ok(Some(format!("signal: {}", to.number)))
     }
 }
 
@@ -71,6 +70,7 @@ mod tests {
     use crate::SignalConfig;
     use crate::channel;
     use crate::mock::{MockTransport, SentItem};
+    use crate::transport::Recipient;
 
     const OWNER: &str = "+15550001111";
     const FRIEND: &str = "+15550002222";
@@ -100,7 +100,11 @@ mod tests {
     async fn bound_session_gets_text_then_one_attachment_per_file() {
         let (dir, transport, handle) = fixture();
         let (root, child) = (SessionId::new(), SessionId::new());
-        handle.chan.lock().threads.bind(FRIEND, root);
+        handle
+            .chan
+            .lock()
+            .threads
+            .bind(&Recipient::new(FRIEND), root);
         let path = dir.path().join("report.pdf");
         std::fs::write(&path, b"%PDF").unwrap();
         let m = outbound(

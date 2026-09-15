@@ -55,7 +55,7 @@ crates/signal/
     mock.rs       FROZEN  the `MockTransport` half of jarvis mock.rs (`#[cfg(test)]`)
 ~/.wth/signal/
   presage.db      presage's own sqlite (protocol state, identity keys, contacts); schema is presage's
-  threads.json    { "+15551234567": "<session uuid>", … }  contact → live session (§6)
+  threads.json    { "+15551234567": { "session": "<uuid>", "aci": "<uuid>" }, … }  contact → live session + ACI (§6)
   inbox/          inbound attachments, `<timestamp>-<name>` (§7.4)
 ```
 
@@ -73,10 +73,11 @@ Their unit tests come with them (`presage.rs` tests need `tempfile`).
 `cargo test -p signal` therefore proves the copy still compiles against the
 pinned presage rev and behaves as it did in jarvis.
 
-### 2.2 The three additive edits
+### 2.2 The four additive edits
 
 The first two are needed for reaction-based approvals (§10) and nothing else;
-the third for `message_user` (24 §6). All add; none changes an existing branch.
+the third for `message_user` (24 §6); the fourth is test-only. All add; none
+changes an existing branch.
 
 1. **Surface inbound reactions.** `content_to_envelope` (jarvis `presage.rs:896`)
    returns `None` for a `DataMessage` with no body and no attachments. Before
@@ -95,6 +96,10 @@ the third for `message_user` (24 §6). All add; none changes an existing branch.
    already has the field; jarvis never sent files and hard-coded `None`. A
    nameless PDF is unusable on the phone, so the wth outbound path (§8.4)
    passes the file's name through. Images and audio ignore it.
+4. **Mock records the full `Recipient`.** `MockTransport` keeps a
+   `recipients: Vec<Recipient>` parallel to `sent` (whose items carry only the
+   number), read via `sent_recipients()`. Only so `channel` tests can assert
+   that outbound sends keep the inbound ACI (§8.5). `mock.rs` only.
 
 Everything else that touches the wire — linking, receive pump, resolution,
 CDSI/PNI handling, contact-sync requests, `OnNewIdentity::Trust`, the
@@ -222,16 +227,21 @@ lazily: on an unknown ACI it calls `transport.resolve_uuid(number)` for every
 configured number not yet resolved (own account → trusted synced contact →
 CDSI, ACI only, PNIs rejected → contact resync at most every 300 s — all
 inside the frozen transport). Successes cache forever, failures for
-`ACI_RESOLVE_COOLDOWN = 300 s`. The operational consequence goes in the
+`ACI_RESOLVE_COOLDOWN = 300 s`. An allowlisted envelope that carries both
+number and ACI is cached too, so a later sealed-sender message from the same
+account needs no lookup. The operational consequence goes in the
 README: **the owner's number must be saved as a contact on the primary
 phone**, or sealed-sender messages cannot be attributed and are dropped.
 
 ## 6. Threads and sessions
 
 One contact ↔ one live session, in `signal/threads.json`, written on every
-change (`channel::Threads`, a `BTreeMap<String, SessionId>` keyed by the
-*normalised* number — `Threads::get/bind/unbind` run `normalize_number` so
-`"+1 (555) …"` and `"+1555…"` are one key). Rules:
+change (`channel::Threads`, a `BTreeMap<String, Thread { session, aci }>`
+keyed by the *normalised* number — `Threads::get/bind/unbind` run
+`normalize_number` so `"+1 (555) …"` and `"+1555…"` are one key). `aci` is the
+contact's account UUID from the last inbound envelope; `bind` keeps the one
+already stored when the new sender has none. Files written before `aci`
+existed (`{ "+1…": "<session>" }`) still load. Rules:
 
 - First message from a number with no entry → `SendInput { session: None }`;
   the returned id is recorded.
@@ -242,8 +252,8 @@ change (`channel::Threads`, a `BTreeMap<String, SessionId>` keyed by the
   matches when it equals the full id, is a unique prefix, or is a unique
   suffix — so the last-8 short id `/sessions` prints is enough.
 - Restart → the file is read (missing or corrupt → empty); nothing else to
-  restore. Approval codes, typing state and the ACI cache are process-local
-  by design.
+  restore. Approval codes, typing state and the ACI *directory* (§5.2) are
+  process-local by design; the per-thread ACI is not, see §8.5.
 
 Subagent sessions are never bound to a contact; their `AgentEvent`s are
 filtered out by session id like every other UI does.
@@ -330,13 +340,27 @@ aborted on finish or when a new `TurnStarted` replaces it.
 The agent's `message_user` tool (24) reaches the phone through
 `impl agent::UserSink for channel::Handle` (`user.rs`), registered with the
 `"user"` actor at start when the channel runs. Bound pass: the first session
-of the tool's ancestor chain with a thread (`threads.number_for`, §6); fallback
+of the tool's ancestor chain with a thread (`threads.recipient_for`, §6); fallback
 pass: `signal.owner`, with the `session <last 8> · <title>` origin line as the
 first line of the text. The text goes through `markdown_to_plain` + the §8.1
 chunker with retry, then one `send_attachment` per file with its file name and
 no caption (`Channel::send_attachment`, same `SEND_RETRIES` loop). Result
 string: `signal: <number>`. It arrives before the turn's own §8.1 text — out
 of band, by design (24 §6).
+
+### 8.5 Who a send goes to
+
+Every outbound built from a bus event or `message_user` is addressed with
+`Threads::recipient_for(session)` / `Threads::recipient(number)`: the thread's
+number **plus the ACI** learned from its inbound envelopes. `Recipient::new`
+(number only) is never used for a thread that has received a message. The
+frozen presage sender only falls back to the E.164 contact-store scan when
+`uuid` is `None`, and on a freshly linked device that store has no trusted row
+for an allowlisted stranger — which is why the ACI is persisted in
+`threads.json` (§6) rather than kept in the process-local directory (§5.2):
+after a restart, a UI follow-up or `message_user` must still reach the phone
+without waiting for a new inbound message. Checked by
+`channel::tests::bus_sends_keep_inbound_aci`.
 
 ## 9. Slash commands
 

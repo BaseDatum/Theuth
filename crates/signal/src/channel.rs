@@ -73,12 +73,31 @@ pub fn normalize_number(s: &str) -> String {
     }
 }
 
-/// Contact → live session, persisted at `<data_dir>/signal/threads.json` on
-/// every change (09 §6).
+/// One bound thread: the session plus the contact's ACI once a message from
+/// it has been seen, so replies never depend on the presage contact store.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Thread {
+    /// The live session.
+    pub session: SessionId,
+    /// The contact's Signal account UUID, from the last inbound envelope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aci: Option<Uuid>,
+}
+
+/// On-disk value; files written before ACIs were kept hold the bare session id.
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum StoredThread {
+    Session(SessionId),
+    Thread(Thread),
+}
+
+/// Contact → live session (+ ACI), persisted at `<data_dir>/signal/threads.json`
+/// on every change (09 §6).
 #[derive(Debug)]
 pub struct Threads {
     path: PathBuf,
-    map: BTreeMap<String, SessionId>,
+    map: BTreeMap<String, Thread>,
 }
 
 impl Threads {
@@ -88,8 +107,17 @@ impl Threads {
         let path = data_dir.join("signal").join("threads.json");
         let map = std::fs::read(&path)
             .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default();
+            .and_then(|bytes| serde_json::from_slice::<BTreeMap<String, StoredThread>>(&bytes).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(n, t)| {
+                let t = match t {
+                    StoredThread::Session(session) => Thread { session, aci: None },
+                    StoredThread::Thread(t) => t,
+                };
+                (n, t)
+            })
+            .collect();
         Self { path, map }
     }
 
@@ -108,22 +136,45 @@ impl Threads {
     /// The session bound to `number`.
     #[must_use]
     pub fn get(&self, number: &str) -> Option<SessionId> {
-        self.map.get(&normalize_number(number)).copied()
+        self.map.get(&normalize_number(number)).map(|t| t.session)
     }
 
-    /// The number whose thread is `session`.
+    /// Whether some number's thread is `session`.
     #[must_use]
-    pub fn number_for(&self, session: SessionId) -> Option<&str> {
+    pub fn is_bound(&self, session: SessionId) -> bool {
+        self.map.values().any(|t| t.session == session)
+    }
+
+    /// Whom to send to for `session`: its number plus the ACI when known.
+    #[must_use]
+    pub fn recipient_for(&self, session: SessionId) -> Option<Recipient> {
         self.map
             .iter()
-            .find(|(_, s)| **s == session)
-            .map(|(n, _)| n.as_str())
+            .find(|(_, t)| t.session == session)
+            .map(|(n, t)| Recipient {
+                number: n.clone(),
+                uuid: t.aci,
+            })
     }
 
-    /// Binds `number` to `session` and saves.
-    pub fn bind(&mut self, number: &str, session: SessionId) {
-        self.map.insert(normalize_number(number), session);
-        self.save();
+    /// `number` as a recipient, with the ACI its thread learned, if any.
+    #[must_use]
+    pub fn recipient(&self, number: &str) -> Recipient {
+        Recipient {
+            uuid: self.map.get(&normalize_number(number)).and_then(|t| t.aci),
+            number: number.to_owned(),
+        }
+    }
+
+    /// Binds `who` to `session`, keeps a previously learned ACI when `who`
+    /// has none, and saves if anything changed.
+    pub fn bind(&mut self, who: &Recipient, session: SessionId) {
+        let key = normalize_number(&who.number);
+        let aci = who.uuid.or_else(|| self.map.get(&key).and_then(|t| t.aci));
+        let thread = Thread { session, aci };
+        if self.map.insert(key, thread) != Some(thread) {
+            self.save();
+        }
     }
 
     /// Drops `number`'s binding and saves.
@@ -136,7 +187,10 @@ impl Threads {
     /// Every binding.
     #[must_use]
     pub fn all(&self) -> Vec<(String, SessionId)> {
-        self.map.iter().map(|(n, s)| (n.clone(), *s)).collect()
+        self.map
+            .iter()
+            .map(|(n, t)| (n.clone(), t.session))
+            .collect()
     }
 }
 
@@ -758,6 +812,9 @@ impl Channel {
     async fn resolve_sender(&self, mut sender: Recipient) -> Recipient {
         if self.is_allowed(&sender.number) {
             sender.number = normalize_number(&sender.number);
+            if let Some(aci) = sender.uuid {
+                self.lock().aci.by_aci.insert(aci, sender.number.clone());
+            }
             return sender;
         }
         let Some(aci) = sender.uuid else {
@@ -966,9 +1023,7 @@ impl Channel {
         match result {
             Ok(id) => {
                 let mut s = self.lock();
-                if session != Some(id) {
-                    s.threads.bind(&sender.number, id);
-                }
+                s.threads.bind(&sender, id);
                 s.turns
                     .entry(id)
                     .or_default()
@@ -992,7 +1047,7 @@ impl Channel {
                 "new thread; next message starts a session".into()
             }
             Reply::Resume(id) => {
-                self.lock().threads.bind(&sender.number, id);
+                self.lock().threads.bind(sender, id);
                 format!("resumed {id}")
             }
             Reply::Allow(n) => match ask_signal(crate::Allow(n.clone())).await {
@@ -1065,14 +1120,9 @@ impl Channel {
         match ev {
             Event::Agent(ev) => self.handle_agent(ev).await,
             Event::Requested(req) => {
-                let number = self
-                    .lock()
-                    .threads
-                    .number_for(req.session)
-                    .map(str::to_owned);
-                let Some(number) = number else { return };
-                let code = self.approvals.lock().await.insert(&req, &number);
-                let to = Recipient::new(number);
+                let to = self.lock().threads.recipient_for(req.session);
+                let Some(to) = to else { return };
+                let code = self.approvals.lock().await.insert(&req, &to.number);
                 if let Some(ts) = self
                     .send_chunks(&to, &approvals::message(&req, &code))
                     .await
@@ -1084,7 +1134,7 @@ impl Channel {
                 let Some(entry) = self.approvals.lock().await.resolve(&res) else {
                     return;
                 };
-                let to = Recipient::new(entry.number);
+                let to = self.lock().threads.recipient(&entry.number);
                 if let Some(ts) = entry.sent_ts {
                     match self.transport.account().await {
                         Ok(Some(me)) => {
@@ -1105,9 +1155,9 @@ impl Channel {
     async fn handle_agent(&self, ev: AgentEvent) {
         match ev {
             AgentEvent::TurnStarted { session, .. } => {
-                let number = {
+                let to = {
                     let mut s = self.lock();
-                    let Some(number) = s.threads.number_for(session).map(str::to_owned) else {
+                    let Some(to) = s.threads.recipient_for(session) else {
                         return;
                     };
                     let turn = s.turns.entry(session).or_default();
@@ -1115,9 +1165,8 @@ impl Channel {
                     if let Some(h) = turn.typing.take() {
                         h.abort();
                     }
-                    number
+                    to
                 };
-                let to = Recipient::new(number);
                 self.typing(&to, true).await;
                 let transport = Arc::clone(&self.transport);
                 let typing = tokio::spawn(async move {
@@ -1133,7 +1182,7 @@ impl Channel {
             }
             AgentEvent::TextDelta { session, text, .. } => {
                 let mut s = self.lock();
-                if s.threads.number_for(session).is_some() {
+                if s.threads.is_bound(session) {
                     s.turns.entry(session).or_default().text.push_str(&text);
                 }
             }
@@ -1142,19 +1191,15 @@ impl Channel {
                 stop_reason,
                 ..
             } => {
-                let (number, turn) = {
+                let (to, turn) = {
                     let mut s = self.lock();
-                    (
-                        s.threads.number_for(session).map(str::to_owned),
-                        s.turns.remove(&session),
-                    )
+                    (s.threads.recipient_for(session), s.turns.remove(&session))
                 };
                 let Some(mut turn) = turn else { return };
                 if let Some(h) = turn.typing.take() {
                     h.abort();
                 }
-                let Some(number) = number else { return };
-                let to = Recipient::new(number);
+                let Some(to) = to else { return };
                 self.typing(&to, false).await;
                 let plain = text::markdown_to_plain(&turn.text);
                 if !plain.trim().is_empty() {
@@ -1172,18 +1217,17 @@ impl Channel {
             AgentEvent::Error {
                 session, message, ..
             } => {
-                let (number, marks) = {
+                let (to, marks) = {
                     let s = self.lock();
                     (
-                        s.threads.number_for(session).map(str::to_owned),
+                        s.threads.recipient_for(session),
                         s.turns
                             .get(&session)
                             .map(|t| t.marks.clone())
                             .unwrap_or_default(),
                     )
                 };
-                let Some(number) = number else { return };
-                let to = Recipient::new(number);
+                let Some(to) = to else { return };
                 self.send_chunks(&to, &format!("⚠️ {message}")).await;
                 for (author, ts) in &marks {
                     self.react(&to, "❌", author, *ts).await;
@@ -1503,11 +1547,37 @@ mod tests {
     fn threads_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let id = SessionId::new();
+        let aci = Uuid::new_v4();
+        // Pre-ACI file shape still loads.
+        std::fs::create_dir_all(dir.path().join("signal")).unwrap();
+        std::fs::write(
+            dir.path().join("signal/threads.json"),
+            format!("{{\"{OWNER}\": \"{id}\"}}"),
+        )
+        .unwrap();
         let mut t = Threads::load(dir.path());
-        t.bind("+1 555 000 1111", id);
+        assert_eq!(t.get(OWNER), Some(id));
+        assert_eq!(t.recipient_for(id), Some(Recipient::new(OWNER)));
+        // Learning the ACI persists; rebinding without one keeps it.
+        t.bind(
+            &Recipient {
+                number: "+1 555 000 1111".into(),
+                uuid: Some(aci),
+            },
+            id,
+        );
+        let id2 = SessionId::new();
+        t.bind(&Recipient::new(OWNER), id2);
         let t2 = Threads::load(dir.path());
-        assert_eq!(t2.get(OWNER), Some(id));
-        assert_eq!(t2.number_for(id), Some(OWNER));
+        assert_eq!(t2.get(OWNER), Some(id2));
+        assert_eq!(
+            t2.recipient_for(id2),
+            Some(Recipient {
+                number: OWNER.into(),
+                uuid: Some(aci)
+            })
+        );
+        assert_eq!(t2.recipient(OWNER).uuid, Some(aci));
         t.unbind(OWNER);
         assert!(Threads::load(dir.path()).all().is_empty());
         std::fs::write(dir.path().join("signal/threads.json"), b"{nope").unwrap();
@@ -1756,11 +1826,67 @@ mod tests {
         );
     }
 
+    /// Every send driven by a bus event carries the ACI the inbound envelope
+    /// had, so presage takes the UUID path instead of a contact-store lookup
+    /// that fails on a freshly linked device.
+    #[tokio::test]
+    async fn bus_sends_keep_inbound_aci() {
+        let f = fixture().await;
+        let session = f.stub.session;
+        let aci = Uuid::new_v4();
+        let friend = Recipient {
+            number: FRIEND.into(),
+            uuid: Some(aci),
+        };
+        let mut e = env(FRIEND, 10, "hi");
+        e.sender.uuid = Some(aci);
+        f.chan.handle_envelope(e).await;
+        // Restart: the ACI must come back from disk, not process memory.
+        f.chan.lock().threads = Threads::load(&f.chan.rt.data_dir);
+        f.chan.handle_event(Event::Agent(started(session))).await;
+        f.chan
+            .handle_event(Event::Agent(AgentEvent::TextDelta {
+                session,
+                turn: runtime::TurnId(Uuid::nil()),
+                text: "hello".into(),
+            }))
+            .await;
+        f.chan
+            .handle_event(Event::Agent(finished(session, "end_turn")))
+            .await;
+        f.chan
+            .handle_event(Event::Agent(AgentEvent::Error {
+                session,
+                turn: None,
+                message: "boom".into(),
+            }))
+            .await;
+        let recipients = f.transport.sent_recipients();
+        // receipt, 👀, typing on, typing off, text, ✅, ⚠️ text
+        assert_eq!(recipients.len(), 7);
+        assert!(recipients.iter().all(|r| *r == friend), "{recipients:#?}");
+
+        // Sealed sender (no number) mapped through the ACI directory: same.
+        let mut e = env("", 11, "again");
+        e.sender.uuid = Some(aci);
+        f.chan.handle_envelope(e).await;
+        f.chan
+            .handle_event(Event::Agent(finished(session, "end_turn")))
+            .await;
+        assert!(
+            f.transport.sent_recipients()[7..]
+                .iter()
+                .all(|r| *r == friend),
+            "{:#?}",
+            f.transport.sent_recipients()
+        );
+    }
+
     #[tokio::test]
     async fn approval_reaction_resolves_allow() {
         let f = fixture().await;
         let session = f.stub.session;
-        f.chan.lock().threads.bind(OWNER, session);
+        f.chan.lock().threads.bind(&Recipient::new(OWNER), session);
         let id = ApprovalId(Uuid::new_v4());
         f.chan
             .handle_event(Event::Requested(ApprovalRequested {

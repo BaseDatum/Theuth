@@ -98,6 +98,9 @@ struct Inner {
     link_scripts: Mutex<VecDeque<LinkScript>>,
     account: Mutex<Option<Recipient>>,
     uuid_directory: Mutex<HashMap<String, Uuid>>,
+    /// wth 09 §2.2 edit 4: the full `Recipient` of every successful send,
+    /// parallel to `sent` (which keeps only the number).
+    recipients: Mutex<Vec<Recipient>>,
 }
 
 /// Scriptable in-memory [`SignalTransport`] for tests.
@@ -136,6 +139,7 @@ impl MockTransport {
                 link_scripts: Mutex::new(VecDeque::new()),
                 account: Mutex::new(None),
                 uuid_directory: Mutex::new(HashMap::new()),
+                recipients: Mutex::new(Vec::new()),
             }),
         }
     }
@@ -189,6 +193,13 @@ impl MockTransport {
     #[must_use]
     pub fn sent(&self) -> Vec<SentItem> {
         lock(&self.inner.sent).clone()
+    }
+
+    /// The `Recipient` of every successful send, in `sent()` order
+    /// (wth 09 §2.2 edit 4).
+    #[must_use]
+    pub fn sent_recipients(&self) -> Vec<Recipient> {
+        lock(&self.inner.recipients).clone()
     }
 
     /// Number of times `incoming()` was called (reconnect counter).
@@ -298,6 +309,7 @@ impl SignalTransport for MockTransport {
         }
         // wth 09 §2.2 edit 2: deterministic, strictly increasing timestamps
         // so tests can target a sent message with a reaction.
+        lock(&self.inner.recipients).push(to.clone());
         let mut sent = lock(&self.inner.sent);
         let timestamp = 1_000_000 + sent.len() as u64;
         sent.push(SentItem::Text {
@@ -316,6 +328,7 @@ impl SignalTransport for MockTransport {
         file_name: Option<&str>,
         caption: Option<&str>,
     ) -> Result<()> {
+        lock(&self.inner.recipients).push(to.clone());
         lock(&self.inner.sent).push(SentItem::Attachment {
             to: to.number.clone(),
             mime: mime.to_string(),
@@ -327,6 +340,7 @@ impl SignalTransport for MockTransport {
     }
 
     async fn send_typing(&self, to: &Recipient, active: bool) -> Result<()> {
+        lock(&self.inner.recipients).push(to.clone());
         lock(&self.inner.sent).push(SentItem::Typing {
             to: to.number.clone(),
             active,
@@ -335,6 +349,7 @@ impl SignalTransport for MockTransport {
     }
 
     async fn send_receipt(&self, to: &Recipient, ts: u64) -> Result<()> {
+        lock(&self.inner.recipients).push(to.clone());
         lock(&self.inner.sent).push(SentItem::Receipt {
             to: to.number.clone(),
             ts,
@@ -349,6 +364,7 @@ impl SignalTransport for MockTransport {
         target_author: &Recipient,
         target_ts: u64,
     ) -> Result<()> {
+        lock(&self.inner.recipients).push(to.clone());
         lock(&self.inner.sent).push(SentItem::Reaction {
             to: to.number.clone(),
             emoji: emoji.to_string(),
