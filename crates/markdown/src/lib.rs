@@ -10,8 +10,9 @@
 
 use std::fmt;
 
-use mdstream::{FootnotesMode, MdStream, Options};
-use pulldown_cmark::{Alignment, CodeBlockKind, Event, Parser, Tag, TagEnd};
+use mdstream::{FootnotesMode, MdStream, Options as StreamOptions};
+pub use pulldown_cmark::Alignment;
+use pulldown_cmark::{CodeBlockKind, Event, Parser, Tag, TagEnd};
 use unicode_width::UnicodeWidthStr;
 
 /// How a run of text should look. All flags may combine.
@@ -46,14 +47,48 @@ pub struct Span {
 /// One visual line; the renderer never emits `\n` inside a span.
 pub type Line = Vec<Span>;
 
+/// Renders a fenced code block with a non-empty info string in place of the
+/// default `╭ lang` + raw lines: `(lang, body, width)`, where `body` is the
+/// fence content without the fence lines or its trailing newline and `width`
+/// is [`Options::width`]. `Some(lines)` replaces the whole block; `None`
+/// falls back to the default rendering.
+pub type FenceHook = std::sync::Arc<dyn Fn(&str, &str, usize) -> Option<Vec<Line>> + Send + Sync>;
+
+/// Rendering options for [`render_with`] and [`Text::with`].
+#[derive(Clone, Default)]
+pub struct Options {
+    /// Target width in columns for hooks; `0` = unbounded.
+    pub width: usize,
+    /// Optional fenced-code-block renderer.
+    pub fence: Option<FenceHook>,
+}
+
+impl fmt::Debug for Options {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Options")
+            .field("width", &self.width)
+            .field("fence", &self.fence.as_ref().map(|_| ..))
+            .finish()
+    }
+}
+
 /// Render one complete markdown block (or a whole document) to lines. Bare
 /// `http(s)://` URLs become links too (CommonMark only autolinks `<…>`).
+/// Equal to [`render_with`] with [`Options::default`].
 pub fn render(md: &str) -> Vec<Line> {
+    render_with(md, &Options::default())
+}
+
+/// [`render`] with a width and an optional fence hook.
+pub fn render_with(md: &str, opts: &Options) -> Vec<Line> {
     use pulldown_cmark::Options as O;
-    let opts =
-        O::ENABLE_STRIKETHROUGH | O::ENABLE_TABLES | O::ENABLE_TASKLISTS | O::ENABLE_FOOTNOTES;
-    let mut r = Renderer::default();
-    for ev in Parser::new_ext(md, opts) {
+    let po = O::ENABLE_STRIKETHROUGH | O::ENABLE_TABLES | O::ENABLE_TASKLISTS | O::ENABLE_FOOTNOTES;
+    let mut r = Renderer {
+        hook: opts.fence.clone(),
+        width: opts.width,
+        ..Renderer::default()
+    };
+    for ev in Parser::new_ext(md, po) {
         r.event(ev);
     }
     let mut lines = r.finish();
@@ -164,6 +199,7 @@ struct Block {
 /// into markdown.
 pub struct Text {
     stream: MdStream,
+    opts: Options,
     blocks: Vec<Block>,
     /// Byte offset in the raw buffer up to which committed blocks are mapped.
     mapped: usize,
@@ -202,14 +238,20 @@ impl Default for Text {
 }
 
 impl Text {
-    /// Empty, streaming, nothing revealed.
+    /// Empty, streaming, nothing revealed; default [`Options`].
     pub fn new() -> Self {
+        Self::with(Options::default())
+    }
+
+    /// Empty, streaming, nothing revealed; committed blocks render with `opts`.
+    pub fn with(opts: Options) -> Self {
         Self {
-            stream: MdStream::new(Options {
+            stream: MdStream::new(StreamOptions {
                 // A live UI cannot retract an already-rendered block.
                 footnotes: FootnotesMode::Invalidate,
-                ..Options::default()
+                ..StreamOptions::default()
             }),
+            opts,
             blocks: Vec::new(),
             mapped: 0,
             revealed: 0,
@@ -257,7 +299,7 @@ impl Text {
                 .map_or(raw.len(), |i| self.mapped + i + b.raw.len());
             self.mapped = end;
             self.blocks.push(Block {
-                lines: render(&b.raw),
+                lines: render_with(&b.raw, &self.opts),
                 end,
             });
         }
@@ -337,6 +379,12 @@ struct Table {
     row: Vec<Line>,
 }
 
+/// A fenced code block being buffered for the fence hook.
+struct Fence {
+    lang: String,
+    body: String,
+}
+
 #[derive(Default)]
 struct Renderer {
     lines: Vec<Line>,
@@ -353,6 +401,10 @@ struct Renderer {
     link: Option<String>,
     table_head: bool,
     table: Option<Table>,
+    hook: Option<FenceHook>,
+    width: usize,
+    /// Open fenced block whose text is buffered for `hook`.
+    fence: Option<Fence>,
 }
 
 impl Renderer {
@@ -425,6 +477,11 @@ impl Renderer {
         match ev {
             Event::Start(tag) => self.start(tag),
             Event::End(tag) => self.end(tag),
+            Event::Text(s) if self.fence.is_some() => {
+                if let Some(f) = &mut self.fence {
+                    f.body.push_str(&s);
+                }
+            }
             Event::Text(s) if self.code => {
                 let mut first = true;
                 for part in s.split('\n') {
@@ -481,6 +538,13 @@ impl Renderer {
                 if let CodeBlockKind::Fenced(lang) = kind
                     && !lang.is_empty()
                 {
+                    if self.hook.is_some() {
+                        self.fence = Some(Fence {
+                            lang: lang.into_string(),
+                            body: String::new(),
+                        });
+                        return;
+                    }
                     self.dim(&format!("╭ {lang}"));
                     self.flush();
                 }
@@ -558,6 +622,30 @@ impl Renderer {
                 }
             }
             TagEnd::CodeBlock => {
+                if let Some(f) = self.fence.take() {
+                    let body = f.body.strip_suffix('\n').unwrap_or(&f.body);
+                    let hooked = self
+                        .hook
+                        .as_ref()
+                        .and_then(|hook| hook(&f.lang, body, self.width));
+                    match hooked {
+                        Some(lines) => {
+                            for l in lines {
+                                self.open().extend(l);
+                                self.flush();
+                            }
+                            self.end_block();
+                            return;
+                        }
+                        // Replay the default rendering from the buffered text.
+                        None => {
+                            self.dim(&format!("╭ {}", f.lang));
+                            self.flush();
+                            self.code = true;
+                            self.event(Event::Text(f.body.into()));
+                        }
+                    }
+                }
                 self.code = false;
                 // The text ends with '\n', leaving an empty open line.
                 if self
@@ -601,48 +689,10 @@ impl Renderer {
         }
     }
 
-    /// Emit a buffered table: cells padded to their column's width, ` │ `
-    /// between columns, a `─┼─` rule under the header.
     fn layout_table(&mut self, t: Table) {
-        let width = |l: &Line| l.iter().map(|s| s.text.width()).sum::<usize>();
-        let cols = t.rows.iter().map(Vec::len).max().unwrap_or(0);
-        let widths: Vec<usize> = (0..cols)
-            .map(|c| {
-                t.rows
-                    .iter()
-                    .filter_map(|r| r.get(c))
-                    .map(width)
-                    .max()
-                    .unwrap_or(0)
-            })
-            .collect();
-        for (i, row) in t.rows.into_iter().enumerate() {
-            self.open();
-            for (c, w) in widths.iter().enumerate() {
-                if c > 0 {
-                    self.dim(" │ ");
-                }
-                let cell = row.get(c).cloned().unwrap_or_default();
-                let pad = w - width(&cell);
-                let (left, right) = match t.align.get(c) {
-                    Some(Alignment::Right) => (pad, 0),
-                    Some(Alignment::Center) => (pad / 2, pad - pad / 2),
-                    // No trailing blanks after the last column.
-                    _ if c + 1 == cols => (0, 0),
-                    _ => (0, pad),
-                };
-                self.text(&" ".repeat(left));
-                for s in cell {
-                    push_span(self.open(), &s.text, s.style);
-                }
-                self.text(&" ".repeat(right));
-            }
+        for l in layout_table(t.rows, &t.align) {
+            self.open().extend(l);
             self.flush();
-            if i == 0 {
-                let rule: Vec<String> = widths.iter().map(|w| "─".repeat(*w)).collect();
-                self.dim(&rule.join("─┼─"));
-                self.flush();
-            }
         }
     }
 
@@ -653,6 +703,60 @@ impl Renderer {
         }
         self.lines
     }
+}
+
+/// Lay out a table: cells padded to their column's width, a dim ` │ ` between
+/// columns, a dim `─┼─` rule under `rows[0]` (the header). `align` is per column
+/// (missing = left); the last column gets no trailing blanks.
+pub fn layout_table(rows: Vec<Vec<Line>>, align: &[Alignment]) -> Vec<Line> {
+    let width = |l: &Line| l.iter().map(|s| s.text.width()).sum::<usize>();
+    let cols = rows.iter().map(Vec::len).max().unwrap_or(0);
+    let widths: Vec<usize> = (0..cols)
+        .map(|c| {
+            rows.iter()
+                .filter_map(|r| r.get(c))
+                .map(width)
+                .max()
+                .unwrap_or(0)
+        })
+        .collect();
+    let dim = Style {
+        dim: true,
+        ..Style::default()
+    };
+    let mut out = Vec::with_capacity(rows.len() + 1);
+    for (i, row) in rows.into_iter().enumerate() {
+        let mut line = Line::new();
+        let mut cells = row.into_iter();
+        for (c, w) in widths.iter().enumerate() {
+            if c > 0 {
+                push_span(&mut line, " │ ", dim.clone());
+            }
+            let cell = cells.next().unwrap_or_default();
+            let pad = w - width(&cell);
+            let (left, right) = match align.get(c) {
+                Some(Alignment::Right) => (pad, 0),
+                Some(Alignment::Center) => (pad / 2, pad - pad / 2),
+                // No trailing blanks after the last column.
+                _ if c + 1 == cols => (0, 0),
+                _ => (0, pad),
+            };
+            push_span(&mut line, &" ".repeat(left), Style::default());
+            for s in cell {
+                push_span(&mut line, &s.text, s.style);
+            }
+            push_span(&mut line, &" ".repeat(right), Style::default());
+        }
+        out.push(line);
+        if i == 0 {
+            let rule: Vec<String> = widths.iter().map(|w| "─".repeat(*w)).collect();
+            out.push(vec![Span {
+                text: rule.join("─┼─"),
+                style: dim.clone(),
+            }]);
+        }
+    }
+    out
 }
 
 /// Append text, merging into the previous span when the style matches.
@@ -813,6 +917,126 @@ mod tests {
         assert_eq!(
             shown(&Text::complete(t.raw())).0,
             ["Hello world", "", "Next para"]
+        );
+    }
+
+    fn line(s: &str) -> Line {
+        vec![Span {
+            text: s.to_owned(),
+            style: Style::default(),
+        }]
+    }
+
+    /// Hook rendering `box` fences as two fixed lines; everything else `None`.
+    fn box_hook() -> FenceHook {
+        std::sync::Arc::new(|lang: &str, _: &str, _: usize| {
+            (lang == "box").then(|| vec![line("┌ box ┐"), line("└─────┘")])
+        })
+    }
+
+    const DOC: &str = "Intro *text*.\n\n```rust\nlet x = 1;\n```\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n- one\n- two\n\nDone.\n";
+
+    #[test]
+    fn hook_returning_none_is_identical_to_render() {
+        let opts = Options {
+            width: 80,
+            fence: Some(std::sync::Arc::new(|_: &str, _: &str, _: usize| None)),
+        };
+        assert_eq!(render_with(DOC, &opts), render(DOC));
+        assert_eq!(render_with(DOC, &Options::default()), render(DOC));
+    }
+
+    #[test]
+    fn hook_lines_replace_the_block_with_code_block_spacing() {
+        let opts = Options {
+            width: 0,
+            fence: Some(box_hook()),
+        };
+        let md = "before\n\n```box\nanything\n```\n\nafter";
+        assert_eq!(
+            plain(&render_with(md, &opts)),
+            ["before", "", "┌ box ┐", "└─────┘", "", "after"]
+        );
+        // Same spacing as the default rendering of a code block.
+        assert_eq!(
+            plain(&render(md)),
+            ["before", "", "╭ box", "anything", "", "after"]
+        );
+        // Other langs, empty info strings and indented blocks are untouched.
+        assert_eq!(
+            render_with("```rust\nx\n```\n\n```\ny\n```\n\n    z\n", &opts),
+            render("```rust\nx\n```\n\n```\ny\n```\n\n    z\n")
+        );
+    }
+
+    #[test]
+    fn streaming_calls_hook_once_after_the_closing_fence() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let n = calls.clone();
+        let hook: FenceHook = std::sync::Arc::new(move |lang: &str, _: &str, _: usize| {
+            n.fetch_add(1, Ordering::SeqCst);
+            (lang == "box").then(|| vec![line("BOX")])
+        });
+        let mut t = Text::with(Options {
+            width: 40,
+            fence: Some(hook),
+        });
+        t.push("```box\n");
+        t.push("a\nb\n");
+        t.reveal_all();
+        assert_eq!(shown(&t), (vec![], "```box\na\nb\n".to_owned()));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        t.push("```\n\ntail");
+        t.reveal_all();
+        assert_eq!(shown(&t), (vec!["BOX".to_owned()], "tail".to_owned()));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        t.finish();
+        t.reveal_all();
+        assert_eq!(
+            shown(&t),
+            (
+                ["BOX", "", "tail"].map(str::to_owned).to_vec(),
+                String::new()
+            )
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn hook_receives_lang_body_and_width() {
+        let opts = Options {
+            width: 42,
+            fence: Some(std::sync::Arc::new(
+                |lang: &str, body: &str, width: usize| {
+                    Some(vec![line(&format!("{lang}|{body:?}|{width}"))])
+                },
+            )),
+        };
+        assert_eq!(
+            plain(&render_with(
+                "```json-render\n{\n  \"a\": 1\n}\n```\n",
+                &opts
+            )),
+            ["json-render|\"{\\n  \\\"a\\\": 1\\n}\"|42"]
+        );
+        assert_eq!(
+            plain(&render_with("```empty\n```\n", &opts)),
+            ["empty|\"\"|42"]
+        );
+    }
+
+    #[test]
+    fn text_new_renders_code_blocks_as_before() {
+        let md = "```rust\nlet x = 1;\n```\n\nafter";
+        assert_eq!(
+            shown(&Text::complete(md)).0,
+            ["╭ rust", "let x = 1;", "", "after"]
+        );
+        assert_eq!(shown(&Text::complete(md)).0, plain(&render(md)));
+        assert_eq!(
+            format!("{:?}", Options::default()),
+            "Options { width: 0, fence: None }"
         );
     }
 }

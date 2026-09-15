@@ -1,0 +1,23 @@
+classDiagram
+  class Spec {
+    +String root
+    +BTreeMap elements
+    +validate() Result
+  }
+  class Element {
+    +Component component
+    +Vec children
+  }
+  class Component {
+    <<enumeration>>
+    Card
+    Stack
+    Table
+  }
+  class SpecError {
+    +String path
+    +String message
+  }
+  Spec "1" *-- "*" Element : contains
+  Element --> Component
+  Spec ..> SpecError : produces

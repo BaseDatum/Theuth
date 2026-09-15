@@ -1,0 +1,14 @@
+{
+  "root": "s",
+  "elements": {
+    "s": {"type": "Stack", "props": {"direction": "vertical", "gap": "md"}, "children": ["h1", "lead", "body", "sep", "h4", "code", "muted", "cap"]},
+    "h1": {"type": "Heading", "props": {"text": "Streaming markdown", "level": 1}},
+    "lead": {"type": "Text", "props": {"text": "Committed blocks render once; the pending tail stays raw.", "variant": "lead"}},
+    "body": {"type": "Text", "props": {"text": "A fence is committed only when its closing line arrives, so a diagram is drawn exactly once."}},
+    "sep": {"type": "Separator"},
+    "h4": {"type": "Heading", "props": {"text": "Where the hook runs", "level": 4}},
+    "code": {"type": "Text", "props": {"text": "markdown::Text::with(Options { width, fence })", "variant": "code"}},
+    "muted": {"type": "Text", "props": {"text": "Width is fixed at construction; resize does not re-render.", "variant": "muted"}},
+    "cap": {"type": "Text", "props": {"text": "design doc 03 §2, 30 §3.3", "variant": "caption"}}
+  }
+}

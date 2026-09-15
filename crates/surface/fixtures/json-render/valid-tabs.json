@@ -1,0 +1,9 @@
+{
+  "root": "tabs",
+  "elements": {
+    "tabs": {"type": "Tabs", "props": {"labels": ["Summary", "Checks", "Todo"]}, "children": ["sum", "checks", "todo"]},
+    "sum": {"type": "Text", "props": {"text": "Two of three gates pass; notarization is blocked on the certificate."}},
+    "checks": {"type": "Table", "props": {"columns": ["Gate", "Result", "Time"], "rows": [["clippy", "pass", "41 s"], ["tests", "pass", "2 m 10 s"], ["notarize", "blocked", "—"]]}},
+    "todo": {"type": "Checklist", "props": {"items": [{"text": "renew signing certificate", "done": false}, {"text": "re-run notarize", "done": false}]}}
+  }
+}

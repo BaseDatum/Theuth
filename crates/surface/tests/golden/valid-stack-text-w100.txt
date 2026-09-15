@@ -1,0 +1,15 @@
+Streaming markdown
+
+Committed blocks render once; the pending tail stays raw.
+
+A fence is committed only when its closing line arrives, so a diagram is drawn exactly once.
+
+────────────────────────────────────────
+
+Where the hook runs
+
+markdown::Text::with(Options { width, fence })
+
+Width is fixed at construction; resize does not re-render.
+
+design doc 03 §2, 30 §3.3

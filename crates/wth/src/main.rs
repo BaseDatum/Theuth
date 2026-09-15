@@ -85,6 +85,10 @@ agent:
 # knowledge:                 # design doc 10; the bundle lives in <data_dir>/knowledge/
 #   enabled: true            # false: no store, no knowledge_* tools, no hints, no harvest
 
+# surface:                   # Mermaid / json-render blocks in replies (design doc 30)
+#   enabled: true            # false: no prompt block, no rendering; fences stay code blocks
+#   correct: true            # one <surface_error> fix-up round when a json-render block is invalid
+
 # web:                       # search_web / read_url (design doc 16)
 #   enabled: true
 #   engines: [duckduckgo, wikipedia, arxiv, github]   # keyless built-ins
@@ -167,15 +171,21 @@ const DEFAULT_AGENTS: &str =
 const HARNESS_SKILL: &str = include_str!("../harness.md");
 
 /// Creates the data-dir skeleton on first run. Existing files are never
-/// overwritten, except `skills/harness.md`, which the binary owns and rewrites
-/// so it always describes the running version.
+/// overwritten, except `skills/harness.md` and `skills/visualize.md`, which the
+/// binary owns and rewrites so they always describe the running version.
 fn first_run(data_dir: &Path, config_path: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(data_dir.join("mcp"))?;
     std::fs::create_dir_all(data_dir.join("acp"))?;
-    std::fs::create_dir_all(data_dir.join("skills"))?;
-    let harness = data_dir.join("skills").join("harness.md");
-    if std::fs::read_to_string(&harness).ok().as_deref() != Some(HARNESS_SKILL) {
-        std::fs::write(harness, HARNESS_SKILL)?;
+    let skills = data_dir.join("skills");
+    std::fs::create_dir_all(&skills)?;
+    for (name, body) in [
+        ("harness.md", HARNESS_SKILL.to_owned()),
+        ("visualize.md", surface::visualize_skill()),
+    ] {
+        let path = skills.join(name);
+        if std::fs::read_to_string(&path).ok().as_deref() != Some(body.as_str()) {
+            std::fs::write(path, body)?;
+        }
     }
     let agents = data_dir.join("acp").join("agents.yaml");
     if !agents.exists() {

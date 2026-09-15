@@ -1,0 +1,13 @@
+{
+  "root": "r",
+  "elements": {
+    "r":  {"type": "Card", "props": {"title": "Release readiness"}, "children": ["m", "t"]},
+    "m":  {"type": "MetricGrid", "props": {"items": [
+            {"label": "Tests", "value": "412 / 412"},
+            {"label": "Coverage", "value": "81%", "trend": "up"},
+            {"label": "Open P0", "value": "0"}]}},
+    "t":  {"type": "Table", "props": {
+            "columns": ["Check", "Status"],
+            "rows": [["clippy", "pass"], ["signing", "pending"], ["notarize", "blocked"]]}}
+  }
+}

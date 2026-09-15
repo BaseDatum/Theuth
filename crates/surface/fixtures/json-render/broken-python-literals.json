@@ -1,0 +1,11 @@
+{
+  "root": "s",
+  "elements": {
+    "s": {"type": "Stack", "children": ["m", "l"]},
+    "m": {"type": "Metric", "props": {"label": "Open P0", "value": "0", "trend": "flat", "delta": None}},
+    "l": {"type": "Checklist", "props": {"items": [
+      {"text": "schema migration", "done": True},
+      {"text": "full traffic", "done": False}
+    ]}}
+  }
+}

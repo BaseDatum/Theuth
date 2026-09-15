@@ -1,0 +1,11 @@
+{
+  "root": "t",
+  "elements": {
+    "t": {"type": "Timeline", "props": {"items": [
+      {"when": "Mon", "title": "Bake-off", "detail": "merman vs mmdflux vs mermaid-text", "state": "done"},
+      {"when": "Tue", "title": "parse + validate + check", "state": "active"},
+      {"when": "Wed", "title": "TUI renderer", "state": "pending"},
+      {"when": "Thu", "title": "Desktop"}
+    ]}}
+  }
+}

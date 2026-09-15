@@ -1,0 +1,8 @@
+╭─ Session ──────────────────────╮
+│ sessions.sqlite · 3f9a         │
+│                                │
+│   Model  claude-sonnet-4       │
+│   Turns  14                    │
+│  Tokens  38 210 in / 4 102 out │
+│ Channel  tui                   │
+╰────────────────────────────────╯

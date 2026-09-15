@@ -29,6 +29,7 @@ web = { path = "crates/web" }
 search-providers = { path = "crates/search-providers" }
 browser = { path = "crates/browser" }
 computer = { path = "crates/computer" }
+surface = { path = "crates/surface" }
 
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "fs", "time", "io-util", "process", "signal"] }
 tokio-util = { version = "0.7", features = ["rt"] }
@@ -40,6 +41,8 @@ thiserror = "2"
 mdstream = { version = "0.3", features = ["sync"] }
 pulldown-cmark = { version = "0.13", default-features = false }
 unicode-width = "0.2"
+# json-render fences (design doc 30 §4): repair model-authored JSON before serde; same algorithm as the desktop's `jsonrepair`.
+jsonrepair-rs = "0.2"
 # OAuth login (design doc 05). reqwest major must match rmcp's.
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "form", "query", "http2", "stream"] }
 slack-morphism = { version = "2.28", features = ["hyper"] }  # Slack Socket Mode + Web API (design doc 21)

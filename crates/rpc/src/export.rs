@@ -1,6 +1,8 @@
 //! `just ts`: `cargo test -p rpc --features ts export_bindings` writes
 //! `bindings/*.ts` for every wire type and `bindings/methods.json`, the sorted
-//! list of every registered method name (25 §7).
+//! list of every registered method name (25 §7), plus the surface catalog as
+//! `bindings/surface-catalog.json` (JSON Schema) and
+//! `bindings/surface-catalog-compact.txt` (30 §6).
 
 #[cfg(feature = "ts")]
 #[tokio::test]
@@ -74,7 +76,10 @@ async fn export_bindings() {
         slack::SlackStatus,
         browser::BrowserEvent,
         computer::PermissionStatus,
-        computer::DisplayInfo
+        computer::DisplayInfo,
+        surface::Spec,
+        surface::Element,
+        surface::Component
     );
 
     use crate::ApiServer;
@@ -87,4 +92,14 @@ async fn export_bindings() {
         serde_json::to_string_pretty(&names).expect("methods.json"),
     )
     .expect("write methods.json");
+    std::fs::write(
+        format!("{out}/surface-catalog.json"),
+        serde_json::to_string_pretty(&surface::catalog_schema()).expect("surface-catalog.json"),
+    )
+    .expect("write surface-catalog.json");
+    std::fs::write(
+        format!("{out}/surface-catalog-compact.txt"),
+        surface::catalog_compact(),
+    )
+    .expect("write surface-catalog-compact.txt");
 }

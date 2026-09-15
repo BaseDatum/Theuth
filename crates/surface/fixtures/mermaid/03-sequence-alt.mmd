@@ -1,0 +1,18 @@
+sequenceDiagram
+  participant U as User
+  participant A as Agent
+  participant T as Tool
+  participant S as Store
+  U->>A: prompt
+  loop each round
+    A->>T: call(args)
+    T-->>A: result
+  end
+  alt validation passes
+    A->>S: append(entry)
+    S-->>A: ok
+    A-->>U: final reply
+  else validation fails
+    A->>A: surface_error round
+    A-->>U: corrected block
+  end

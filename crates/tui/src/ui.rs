@@ -137,6 +137,8 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                     continue;
                 }
                 let mut m = model.write();
+                // Assistant text renders at the width current when it starts (30 §7).
+                m.width = crossterm::terminal::size().map_or(0, |(w, _)| usize::from(w));
                 for ev in pending.drain(..) {
                     m.apply(ev);
                 }

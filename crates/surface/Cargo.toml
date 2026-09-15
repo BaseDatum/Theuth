@@ -1,0 +1,24 @@
+[package]
+name = "surface"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "json-render fences (design doc 30): parse, repair, validate; one catalog for prompt, TUI and desktop"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+jsonrepair-rs = { workspace = true }
+tracing = { workspace = true }
+markdown = { workspace = true }
+unicode-width = { workspace = true }
+# Mermaid → terminal text; bake-off winner (fixtures/mermaid/BAKEOFF.md).
+merman = { version = "0.7", features = ["ascii"] }
+ts-rs = { workspace = true, optional = true }
+
+[features]
+ts = ["dep:ts-rs"]
+
+[lints]
+workspace = true

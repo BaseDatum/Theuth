@@ -10,6 +10,7 @@ runtime = { workspace = true }
 agent = { workspace = true }
 tools = { workspace = true }
 markdown = { workspace = true }
+surface = { workspace = true }
 slack-morphism = { workspace = true }
 reqwest = { workspace = true }
 # Both `ring` (reqwest) and `aws-lc-rs` (morphism's hyper-rustls) are linked; rustls

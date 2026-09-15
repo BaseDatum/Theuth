@@ -1,0 +1,7 @@
+{ "root": "c", "elements": {
+  "c": {"type":"Card","props":{"title":"Rollout · eu-west"},"children":["p","l"]},
+  "p": {"type":"Progress","props":{"value":7,"max":12,"label":"hosts migrated"}},
+  "l": {"type":"Checklist","props":{"items":[
+    {"text":"schema migration","done":true},
+    {"text":"canary 5%","done":true},
+    {"text":"full traffic","done":false}]}} } }

@@ -1,6 +1,7 @@
 # 30 — Surfaces: Mermaid diagrams and json-render blocks in replies
 
-Status: draft v0 · 2026-09-15 · extends `03-streaming-markdown.md` (the
+Status: as-built v0 · 2026-09-15 (draft v0 same day; §16 records what the
+build changed and wins where it disagrees) · extends `03-streaming-markdown.md` (the
 `markdown` crate is the integration point), `00-architecture.md` §8 (TUI
 shapes) and §10 (crate table), `25-desktop.md` §0.5 (streamdown),
 `28-untrusted-content.md` (a spec is a sink), `24-message-user.md` /
@@ -705,9 +706,103 @@ they can go to two workers with the enum as the contract.
   crate, `schemars`, `ts_rs` (feature `ts`).
 - §8 prompt parts: one more `RegisterPrompt` block, plugin `surface`.
 
-## 16. Status (as-built)
+## 16. Status (as-built, 2026-09-15)
 
-Not started. This section receives: the bake-off table (step 1), the
-repair/error fixture results (step 2), the steering counts (step 8) and
-the pty transcript samples (step 9). Where it disagrees with §1–§15, it
-wins.
+Built on branch `surfaces` in three phases (commits `a08c294`, `03496bf`,
+`4149b80`). Gates at each phase: `cargo clippy --workspace --all-targets
+-D warnings` clean, `cargo test --workspace` green (surface 28, markdown
+9, agent 73, tui 32, slack/signal/user tests included), desktop `tsc`
+clean and vitest 74/74. Steps 8–9 of §13 (steering counts, pty sampling)
+are the user's to run; one smoke turn is recorded below.
+
+### 16.1 Bake-off (step 1) — `merman` 0.7 `ascii`
+
+`crates/surface/fixtures/mermaid/BAKEOFF.md` has the 12 × 3 table. Summary:
+no crate panicked or hung; rendered/unsupported/error — merman 6/5/1,
+mmdflux 8/3/0, mermaid-text 10/0/1. merman: narrowest and cleanest
+sequence output (49 cols vs 69/80), only parser that rejects
+`11-syntax-error.mmd` the way mermaid.js does, 22.5 ms on the 1000-node
+chain (mmdflux 63, mermaid-text 439). Costs: `stateDiagram-v2` is
+`UnsupportedDiagram` in merman-ascii 0.7 (source fallback, no `✗`); class
+relationship cardinality labels unsupported; an upstream lexer bug rejects
+valid `||--o|` in `erDiagram`. Consequences below.
+
+### 16.2 What the build changed against §1–§15
+
+- **Mermaid never triggers the correction round** (§4, §5 said it would).
+  The ER false positive would produce an unsatisfiable `<surface_error>`.
+  `surface::check` covers `json-render` only; a Mermaid parse error is
+  shown in the TUI as `╭ mermaid` / `✗ mermaid: <msg>` / source, and ER
+  parse errors fall back to a plain source block (`mermaid.rs`, `ponytail:`
+  note). Desktop mermaid.js remains the authority there.
+- **Desktop components are ours over the local shadcn primitives**, not
+  `@json-render/shadcn` (§8, §0.7). The catalog is Rust-owned; adopting the
+  package's prop shapes would have made its zod definitions the authority.
+  `@json-render/core` + `@json-render/react` 0.20 are used for
+  `defineCatalog`/`defineRegistry`/`Renderer`. Text-bearing components are
+  `div`s with ARIA roles so `MessageAssistant`'s `[&_p]`/`[&_li]`
+  selectors do not restyle them.
+- **Fence interception uses streamdown's `plugins.renderers`** keyed by
+  language (`{language: 'json-render', component: JsonRenderFence}`), not a
+  `components.code` wrapper. streamdown passes `isIncomplete` per fence,
+  which is exactly R4's open/closed distinction. Mermaid config goes through
+  `createMermaidPlugin({config})` (`securityLevel: strict`,
+  `htmlLabels: false` top-level and `flowchart.htmlLabels`,
+  `suppressErrorRendering`, `maxEdges: 1000`); no DOMPurify added.
+- **`parsePartial` prunes dangling child ids instead of dropping the
+  parent** — dropping the root while its children stream would hide
+  everything until the fence closed.
+- **Skill generation is a runtime template**, not `build.rs` (§6.1):
+  `crates/surface/visualize.md` with `{{catalog}}` filled by
+  `surface::visualize_skill()` from `catalog_schema()`; `crates/wth`
+  depends on `surface` directly and writes `skills/visualize.md` beside
+  `harness.md`.
+- **Config**: `SurfaceConfig { enabled, correct }` lives on
+  `AgentConfig.surface` (`#[serde(skip)]`, filled from the top-level
+  `surface:` section in `supervisor::start` via `rt.section`). Documented
+  in `harness.md` and `DEFAULT_CONFIG`.
+- **Correction hook**: `loop_.rs` `round()`, `calls.is_empty()` branch;
+  pure decision `needs_correction(cfg, state, text)` with tests;
+  `SessionState.surface_corrected` reset per turn; the round returns
+  `Round::Tools` so the extra call counts against `max_tool_rounds`.
+- **Slack streaming**: stream mode appends deltas rather than re-posting,
+  so `flatten` alone would never see a closed fence. `Bubble::streamable()`
+  holds the send boundary at the committed prefix while the pending tail is
+  an open ```` ```json-render ```` fence; when it closes, the whole fence is
+  flattened in one chunk. Prose and other fences stream as before.
+- **TUI width** is read with `crossterm::terminal::size()` into
+  `Model::width` on each frame that applies events (the event future cannot
+  see the `use_terminal_size` hook); hook width = `width - 2`, min 20; 0 =
+  unbounded (line printer, tests). Replay (`from_history`) builds with the
+  same options so history and live render identically.
+- **Validation is schema-driven**: `validate.rs` walks each element's
+  `props` against the schemars schema of `Component` (built once), so prop
+  errors carry `/elements/<id>/props/<field>/...`; then `serde` builds the
+  typed value. Duplicate keys: last wins (as decided).
+- **Bindings**: `just ts` also writes `bindings/surface-catalog.json`
+  (schemars) and `surface-catalog-compact.txt`; the desktop vitest
+  `catalog.test.ts` normalises both the JSON schema and the zod catalog to
+  one shape tree and compares all 18 components (required/optional props,
+  enum values, `Grid.columns` 1..6, `Heading.level` 1..4, containers).
+  Mutation check: dropping `Metric.delta` or renaming `Tabs.labels` fails
+  exactly the affected components.
+- Rendering rules honoured with these readings of §7: Card title plain,
+  `Text muted/caption` dim, `Stack gap: none` is the only gap that removes
+  the blank line, Grid rows adjacent, Progress/Bars use a 20-cell bar when
+  width is unbounded, Timeline default glyph `●`. Mermaid edge labels are
+  not italic: merman's text output has no label structure.
+- Not done (still §14): resize re-render, Mermaid PNG to channels, label
+  pre-repair, `Style.tone`, interactive surfaces.
+
+### 16.3 Smoke (step 8/9 precursor)
+
+`wth --data-dir /tmp/wth-verify -p "Explain in a short answer how a request
+flows from the wth TUI through the agent to the model provider and back,
+including the sessions store."` with `anthropic/claude-sonnet-4-5`, effort
+low, fresh data dir: `skills/visualize.md` written on start; the reply
+(18.6 s, 11 707↑ 660↓) ended with a closed ```` ```mermaid ```` `sequenceDiagram`
+of TUI/Agent/Sessions/Provider — drawn without being asked, with a
+one-sentence takeaway after it. It also kept an 8-step numbered list above
+the diagram, so the "do not repeat in prose" rule is only partly followed
+at effort low; the §6.4 measurement decides whether the wording needs
+tightening. No `<surface_error>` round fired.

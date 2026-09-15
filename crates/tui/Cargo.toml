@@ -17,6 +17,7 @@ jsonrpsee = { workspace = true }
 chrono = { workspace = true }
 models = { workspace = true }
 markdown = { workspace = true }
+surface = { workspace = true }
 oauth = { workspace = true }
 tokio = { workspace = true }
 futures = { workspace = true }

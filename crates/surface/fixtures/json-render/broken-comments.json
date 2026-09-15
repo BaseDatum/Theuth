@@ -1,0 +1,12 @@
+{
+  // the top-level element
+  "root": "s",
+  "elements": {
+    "s": {"type": "Stack", "props": {"gap": "sm"}, "children": ["h", "t"]}, /* two children */
+    "h": {"type": "Heading", "props": {"text": "Plan"}},
+    "t": {"type": "Timeline", "props": {"items": [
+      {"when": "now", "title": "parse", "state": "done"}, // shipped
+      {"when": "next", "title": "render", "state": "active"}
+    ]}}
+  }
+}

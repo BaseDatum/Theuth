@@ -1,0 +1,12 @@
+{
+  "root": "g",
+  "elements": {
+    "g": {"type": "Grid", "props": {"columns": 3}, "children": ["b1", "b2", "b3", "b4", "b5", "b6"]},
+    "b1": {"type": "Badge", "props": {"text": "tui"}},
+    "b2": {"type": "Badge", "props": {"text": "desktop", "variant": "default"}},
+    "b3": {"type": "Badge", "props": {"text": "slack", "variant": "secondary"}},
+    "b4": {"type": "Badge", "props": {"text": "shipped", "variant": "success"}},
+    "b5": {"type": "Badge", "props": {"text": "flaky", "variant": "warning"}},
+    "b6": {"type": "Badge", "props": {"text": "broken", "variant": "destructive"}}
+  }
+}

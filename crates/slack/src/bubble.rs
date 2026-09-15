@@ -33,6 +33,8 @@ pub const DETAILS_MAX: usize = 256;
 /// Consecutive `startStream` failures (other than the known fallback codes)
 /// before the bubble gives up on streaming.
 const OPEN_ATTEMPTS: u8 = 3;
+/// Column width `json-render` fences are rendered at for Slack (30 §9).
+const FLATTEN_WIDTH: usize = 60;
 
 /// `startStream` errors that mean "this thread cannot stream": fall back to
 /// update mode for the rest of the turn (21 §8.1).
@@ -130,6 +132,30 @@ impl Bubble {
     /// Chars of committed text (Slack counts chars, so the caps do too).
     fn committed_chars(&self) -> usize {
         self.text.raw()[..self.text.committed()].chars().count()
+    }
+
+    /// `raw[range]` as it goes on the wire: `json-render` fences rendered
+    /// inside a plain code block (30 §9); everything else verbatim.
+    fn out(&self, range: std::ops::Range<usize>) -> String {
+        surface::flatten(&self.text.raw()[range], FLATTEN_WIDTH)
+    }
+
+    /// Stream mode: bytes of `raw` that may be appended now. A `json-render`
+    /// fence still open in the pending tail is held back until it closes, so
+    /// `out` sees it whole instead of its source having already streamed.
+    fn streamable(&self) -> usize {
+        let raw = self.text.raw();
+        let committed = self.text.committed();
+        let first = raw[committed..]
+            .trim_start()
+            .lines()
+            .next()
+            .unwrap_or_default();
+        if first.trim_start_matches(['`', '~']).trim() == "json-render" {
+            committed
+        } else {
+            raw.len()
+        }
     }
 }
 
@@ -554,7 +580,7 @@ impl Turn {
         }
         let Some(b) = self.bubble.take() else { return };
         let footer = footer.to_string();
-        let raw = b.text.raw();
+        let raw = b.out(0..b.text.raw().len());
         match &b.mode {
             Mode::Unsent => {
                 tracing::warn!("turn finished before its bubble could be opened; text dropped");
@@ -562,8 +588,8 @@ impl Turn {
             Mode::Stream(ts) => {
                 // Cards first: they completed before the text that follows them.
                 let mut chunks: Vec<Chunk> = self.queue.drain(..).map(|q| q.chunk).collect();
-                if b.sent < raw.len() {
-                    chunks.push(Chunk::Text(raw[b.sent..].to_owned()));
+                if b.sent < b.text.raw().len() {
+                    chunks.push(Chunk::Text(b.out(b.sent..b.text.raw().len())));
                 }
                 let stopped = self
                     .api
@@ -611,8 +637,8 @@ impl Turn {
         }
         let Some(b) = &self.bubble else { return false };
         match b.mode {
-            Mode::Unsent => !b.text.raw().is_empty(),
-            Mode::Stream(_) => b.sent < b.text.raw().len(),
+            Mode::Unsent => b.streamable() > 0,
+            Mode::Stream(_) => b.sent < b.streamable(),
             Mode::Update(_) => b.sent < b.text.committed(),
         }
     }
@@ -652,11 +678,7 @@ impl Turn {
                 if !dead && b.sent < cut {
                     match self
                         .api
-                        .append_stream(
-                            &t.channel,
-                            ts,
-                            vec![Chunk::Text(raw[b.sent..cut].to_owned())],
-                        )
+                        .append_stream(&t.channel, ts, vec![Chunk::Text(b.out(b.sent..cut))])
                         .await
                     {
                         Ok(()) => {}
@@ -683,12 +705,12 @@ impl Turn {
                 // Streaming shows raw deltas past the block boundary; trim them
                 // so the text does not appear in two messages.
                 if dead || b.sent > cut {
-                    self.repair(ts, &raw[..cut]).await;
+                    self.repair(ts, &b.out(0..cut)).await;
                 }
             }
             Mode::Update(ts) => {
                 if b.sent != cut {
-                    self.repair(ts, &raw[..cut]).await;
+                    self.repair(ts, &b.out(0..cut)).await;
                 }
             }
         }
@@ -770,16 +792,15 @@ impl Turn {
             return;
         };
         let committed = b.text.committed();
-        let raw = b.text.raw();
         let body = if committed == 0 {
-            "…"
+            "…".to_owned()
         } else {
-            &raw[..committed]
+            b.out(0..committed)
         };
         let t = &self.target;
         match self
             .api
-            .post_markdown(&t.channel, Some(&t.thread_ts), body)
+            .post_markdown(&t.channel, Some(&t.thread_ts), &body)
             .await
         {
             Ok(ts) => {
@@ -798,10 +819,10 @@ impl Turn {
         let Some(b) = self.bubble.as_mut() else {
             return Err(None);
         };
-        let raw = b.text.raw();
+        let end = b.streamable();
         let mut chunks: Vec<Chunk> = self.queue.iter().map(|q| q.chunk.clone()).collect();
-        if !raw.is_empty() {
-            chunks.push(Chunk::Text(raw.to_owned()));
+        if end > 0 {
+            chunks.push(Chunk::Text(b.out(0..end)));
         }
         let t = &self.target;
         match self
@@ -811,7 +832,7 @@ impl Turn {
         {
             Ok(ts) => {
                 b.mode = Mode::Stream(ts);
-                b.sent = raw.len();
+                b.sent = end;
                 b.opened = Instant::now();
                 b.last_append = b.opened;
                 self.open_failures = 0;
@@ -840,10 +861,10 @@ impl Turn {
             return;
         };
         let Mode::Stream(ts) = &b.mode else { return };
-        let raw = b.text.raw();
+        let end = b.streamable();
         let mut chunks: Vec<Chunk> = self.queue.iter().map(|q| q.chunk.clone()).collect();
-        if b.sent < raw.len() {
-            chunks.push(Chunk::Text(raw[b.sent..].to_owned()));
+        if b.sent < end {
+            chunks.push(Chunk::Text(b.out(b.sent..end)));
         }
         if chunks.is_empty() {
             if b.last_append.elapsed() < KEEPALIVE {
@@ -866,13 +887,13 @@ impl Turn {
         {
             Ok(()) => {
                 let b = self.bubble.as_mut().expect("bubble present");
-                b.sent = b.text.raw().len();
+                b.sent = end;
                 b.last_append = Instant::now();
                 self.queue.clear();
             }
             Err(e) if is_dead(&e) => {
                 tracing::warn!(error = %e, ts, "stream died; repairing");
-                let len = raw.len();
+                let len = b.text.raw().len();
                 self.rotate(len, true).await;
             }
             Err(e) => tracing::warn!(error = %e, ts, "appendStream failed; will retry"),
@@ -888,10 +909,9 @@ impl Turn {
         let Mode::Update(ts) = &b.mode else { return };
         let committed = b.text.committed();
         if b.sent < committed {
-            let raw = b.text.raw();
             match self
                 .api
-                .update_markdown(&self.target.channel, ts, &raw[..committed])
+                .update_markdown(&self.target.channel, ts, &b.out(0..committed))
                 .await
             {
                 Ok(()) => b.sent = committed,
@@ -1444,6 +1464,52 @@ mod tests {
         assert_eq!(api.starts(), vec![vec![Chunk::Text("hello".into())]]);
         assert_eq!(api.calls().len(), 1);
         assert_eq!(t.open_stream(), Some("ts0"));
+    }
+
+    /// 30 §9: a `json-render` fence reaches Slack as a code block of its
+    /// rendering, not its JSON; while open it is held back, not streamed raw.
+    #[tokio::test(start_paused = true)]
+    async fn json_render_fence_streams_flattened() {
+        let spec = r#"{"root":"c","elements":{
+  "c":{"type":"Card","props":{"title":"Rollout"},"children":["l"]},
+  "l":{"type":"Checklist","props":{"items":[{"text":"schema migration","done":true}]}}}}"#;
+        let api = FakeApi::new();
+        let mut t = turn(&api, ToolCards::All);
+        t.text("Status:\n\n```json-render\n").await;
+        t.text(spec).await;
+        t.tick().await;
+        let [ref opened] = api.starts()[..] else {
+            panic!()
+        };
+        assert!(
+            matches!(&opened[..], [Chunk::Text(s)] if s.trim() == "Status:"),
+            "{opened:?}"
+        );
+        t.text("\n```\n\nDone.").await;
+        t.finish(footer()).await;
+        let sent: String = api
+            .calls()
+            .into_iter()
+            .flat_map(|c| match c {
+                Call::Start { chunks, .. }
+                | Call::Append { chunks, .. }
+                | Call::Stop { chunks, .. } => chunks,
+                _ => Vec::new(),
+            })
+            .filter_map(|c| match c {
+                Chunk::Text(s) => Some(s),
+                Chunk::Task { .. } => None,
+            })
+            .collect();
+        assert!(
+            sent.trim_start_matches("Status:")
+                .trim_start()
+                .starts_with("```\n╭"),
+            "{sent}"
+        );
+        assert!(sent.contains("[x] schema migration"), "{sent}");
+        assert!(!sent.contains("\"type\""), "{sent}");
+        assert!(sent.ends_with("```\n\nDone."), "{sent}");
     }
 
     #[tokio::test(start_paused = true)]

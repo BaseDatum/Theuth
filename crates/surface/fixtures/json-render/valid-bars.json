@@ -1,0 +1,13 @@
+{
+  "root": "c",
+  "elements": {
+    "c": {"type": "Card", "children": ["h", "b"]},
+    "h": {"type": "Heading", "props": {"text": "Build time by crate", "level": 3}},
+    "b": {"type": "Bars", "props": {"max": 120, "items": [
+      {"label": "agent", "value": 96.5},
+      {"label": "tui", "value": 41},
+      {"label": "markdown", "value": 8},
+      {"label": "surface", "value": 3.2}
+    ]}}
+  }
+}

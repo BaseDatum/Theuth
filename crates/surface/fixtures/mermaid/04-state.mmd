@@ -1,0 +1,10 @@
+stateDiagram-v2
+  [*] --> Idle
+  Idle --> Streaming: user prompt
+  Streaming --> ToolCall: tool requested
+  ToolCall --> Streaming: tool result
+  Streaming --> Validating: text ended
+  Validating --> Done: no errors
+  Validating --> Correcting: surface_error
+  Correcting --> Validating: corrected block
+  Done --> [*]

@@ -1,0 +1,12 @@
+flowchart TD
+  subgraph Client
+    UI[Chat view] --> Input[Composer]
+    Input --> Send[Send message]
+  end
+  subgraph Server
+    API[HTTP API] --> Queue[Job queue]
+    Queue --> Worker[Worker]
+    Worker --> DB[(Database)]
+  end
+  Send -->|POST /messages| API
+  Worker -->|SSE| UI

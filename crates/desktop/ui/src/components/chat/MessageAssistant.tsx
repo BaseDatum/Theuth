@@ -1,17 +1,29 @@
 import { code } from '@streamdown/code'
+import { createMermaidPlugin } from '@streamdown/mermaid'
 import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { Check, Copy, GitFork, type LucideIcon, RefreshCw } from 'lucide-react'
 import { memo, useState } from 'react'
 import { toast } from 'sonner'
-import { Streamdown } from 'streamdown'
+import { type PluginConfig, Streamdown } from 'streamdown'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { useSessionField, useSessions } from '@/store/sessions'
+import { JsonRenderFence } from './surface/JsonRenderFence'
 
 // Module scope: a new object per render would re-initialise the highlighter.
-const plugins = { code }
+// Mermaid security (design 30 §11) goes through the plugin's own `config` (it spreads it into `mermaid.initialize`);
+// `htmlLabels` is set both globally and per-flowchart because the flowchart sub-config defaults it to true.
+// `json-render` fences use streamdown's `plugins.renderers` (matched by language before the built-in code block),
+// so no `components.code` override is needed and every other language keeps the `@streamdown/code` renderer.
+const plugins: PluginConfig = {
+  code,
+  mermaid: createMermaidPlugin({
+    config: { securityLevel: 'strict', htmlLabels: false, flowchart: { htmlLabels: false }, suppressErrorRendering: true, maxEdges: 1000 },
+  }),
+  renderers: [{ language: 'json-render', component: JsonRenderFence }],
+}
 const shikiTheme: ['github-light', 'github-dark'] = ['github-light', 'github-dark']
 
 /** The last fenced code block's body, or `null`. */

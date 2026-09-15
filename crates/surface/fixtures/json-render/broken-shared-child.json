@@ -1,0 +1,8 @@
+{
+  "root": "r",
+  "elements": {
+    "r": {"type": "Stack", "children": ["x", "c"]},
+    "c": {"type": "Card", "props": {"title": "Again"}, "children": ["x"]},
+    "x": {"type": "Text", "props": {"text": "shared"}}
+  }
+}

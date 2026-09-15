@@ -1,0 +1,7 @@
+{
+  "root": "r",
+  "elements": {
+    "r": {"type": "Card", "props": {"title": "Metrics"}, "children": ["m", "m2"]},
+    "m": {"type": "Metric", "props": {"label": "Tests", "value": "412 / 412"}}
+  }
+}

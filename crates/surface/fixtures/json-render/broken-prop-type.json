@@ -1,0 +1,10 @@
+{
+  "root": "r",
+  "elements": {
+    "r": {"type": "Card", "props": {"title": "Release readiness"}, "children": ["m"]},
+    "m": {"type": "MetricGrid", "props": {"items": [
+      {"label": "Tests", "value": 412},
+      {"label": "Coverage", "value": "81%", "trend": "up"}
+    ]}}
+  }
+}
