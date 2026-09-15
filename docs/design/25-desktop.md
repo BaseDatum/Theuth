@@ -312,7 +312,8 @@ sequenceDiagram
 
 - `tailwind.css` defines the §2.4 tokens as CSS variables under `:root` and
   `.dark`, and aliases shadcn's variables to them (`--background:
-  var(--bg-page)`, `--card: var(--bg-elevated)`, `--muted:
+  var(--bg-layer-1)` — chatgpt.com's main surface, `#212121` dark; the `#000`
+  page token is what sits behind it, not the thread — `--card: var(--bg-elevated)`, `--muted:
   var(--bg-layer-2)`, `--border: var(--border-default)`, `--radius: 0.75rem`).
   No hard-coded colour in a component.
 - Shell: sidebar 260 px (collapsible to 0 with ⇧⌘S, ChatGPT's animation),

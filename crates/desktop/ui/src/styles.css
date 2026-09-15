@@ -66,7 +66,7 @@
 /* shadcn variables, aliased onto the tokens; no component hard-codes a colour. */
 :root {
   --radius: 0.75rem;
-  --background: var(--bg-page);
+  --background: var(--bg-layer-1); /* chatgpt.com's main surface: #212121 dark, not the #000 page token */
   --foreground: var(--fg-primary);
   --card: var(--bg-elevated);
   --card-foreground: var(--fg-primary);
