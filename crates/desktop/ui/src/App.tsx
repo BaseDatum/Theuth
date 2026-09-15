@@ -13,7 +13,7 @@ import { queryKeys, useInvalidateOn } from '@/lib/rpc'
 import { type Connection, connection, isTauri, onNavigate, onQuitRequested, quitAck, relaunch } from '@/lib/tauri'
 import { makeApi } from '@/rpc/api'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
-import { RpcClient } from '@/rpc/client'
+import { RpcClient, RpcError } from '@/rpc/client'
 import type { WireEvent } from '@/rpc/events'
 import { routeTree } from '@/routeTree.gen'
 import { useApprovals } from '@/store/approvals'
@@ -104,7 +104,15 @@ function bootstrap(get: () => Promise<Connection>, qc: QueryClient, signal: Abor
       })
       setInfo(await api.info())
     } catch (e) {
-      if (!signal.aborted) setError(e instanceof Error ? e.message : String(e))
+      if (signal.aborted) return
+      // -32601 on `info` = an older `wth --headless` already owns the configured port.
+      setError(
+        e instanceof RpcError && e.code === -32601
+          ? `The daemon already running on this port is older than this app (no "info" method). Quit it and relaunch.`
+          : e instanceof Error
+            ? e.message
+            : String(e),
+      )
     }
   })()
 }
