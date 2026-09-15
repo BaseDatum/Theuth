@@ -451,6 +451,12 @@ lands while the model is mid-response is inserted *above* the streaming text
 `markdown::Text`, so a table or list is not split into two half-rendered
 pieces.
 
+Assistant entries render through `markdown::Text::with(Options { width,
+fence: surface::fence })` (30 §7): a closed ```` ```mermaid ```` or
+```` ```json-render ```` block becomes box-drawn lines at the terminal
+width; one that fails shows `╭ lang`, a dim `✗ <first error>` line and the
+source; other fences and every `Card`/tool expansion keep `Text::new()`.
+
 Subagents are sessions. `/agents` is a picker over the current session's
 subtree with live state on every row (`list_agents`); Enter opens one — the
 `/sessions` switch — and `/parent` climbs back. A board under the transcript
@@ -499,6 +505,7 @@ crates/
   signal/             plugin: Signal channel and device pairing (added in 09)
   slack/              plugin: Slack channel over Socket Mode (added in 21)
   computer/           plugin: screenshot + pointer/keyboard tools (27)
+  surface/            library: json-render spec, jsonrepair parse, located validation, terminal rendering of json-render and Mermaid (merman), flatten for text channels, prompt block + visualize skill (30)
   rpc/                plugin: jsonrpsee server, event subscription bridge (§7)
   tui/                plugin: iocraft frontend (§8)
   desktop/            app: Tauri menubar frontend, RPC client of `Api` - not a plugin (designed in 25)
