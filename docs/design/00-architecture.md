@@ -274,7 +274,11 @@ flowchart LR
   new one. Resume = latest `epochs` row's head + messages from its
   `tail_from` (`07-context.md` §8.4), rebuild the frame. `/clear` is an
   epoch with an empty tail (11 §2.4, added 2026-09-13): the conversation
-  leaves the frame, the session and its rows stay.
+  leaves the frame, the session and its rows stay. `/undo`, edit and
+  regenerate move `cut_at` to a turn start; the next write commits it
+  (07 §8.8, 29). Fork copies the visible rows and epochs of a session into
+  a new one (29 §3): no message tree — rejected because a tree store plus
+  a branch switcher buys nothing the fork does not.
 
 **Session store**: `sqlx` 0.9 sqlite, inside the agent crate (only the agent
 writes it; UIs read via `ask(ListSessions)`/`ask(LoadSession)`). Tables:
@@ -349,8 +353,9 @@ Library: `jsonrpsee` 0.26, `server` + `macros` features, WebSocket on
 `127.0.0.1:<port>`, bearer token from `<data_dir>/token`.
 
 The RPC layer is generic glue, not a second protocol:
-- **Methods** = `ask` on a named actor: `agent.send_input`, `agent.steer`,
-  `agent.list_sessions`, `tools.resolve_approval`, `tools.list`.
+- **Methods** = `ask` on a named actor (80 methods on `trait Api`):
+  `agent.send_input`, `agent.steer`, `agent.list_sessions`,
+  `tools.resolve_approval`, `tools.list`.
 - **Subscriptions** = bus events: `subscribe_events(session?, descendants?)`
   yields every wire-visible event as `{ "type": "<TypeName>", ... }` via
   `#[serde(tag = "type")]`; `descendants: true` widens the filter to the
@@ -646,6 +651,7 @@ Each phase ends with a runnable check, not a test suite.
 | 15 | message_user (24) | a bound Slack session receives a screenshot in its thread; an unbound RPC session lands in the owner DM and on the phone with the `session …` line | done 2026-09-14 (owner DM with the screenshot, three tool calls; bound thread and Signal unit-tested only; 24 §9) |
 | 16 | session search (26) | `search_sessions` over a real store ranks the expected session first with a highlighted snippet; ⌘K and `/search` show it | done 2026-09-15 (26 §8) |
 | 17 | computer (27) | composite screenshot of two displays described; TextEdit typed into and verified from the PNG; a click on display 2 lands | done 2026-09-15 (screenshot + open/key/type/refusal smoked on two displays; live click aborted by the user mid-turn, mapping unit-tested only; 27 §13) |
+| 18 | rewind (29): edit, regenerate, fork | 29 §9 checks 1–6 headless, 7–8 in both UIs | in progress 2026-09-15 |
 
 Known gaps carried forward: cancel/error paths in the loop are code-reviewed,
 not smoke-tested; the `Jobs` actor kills every process group on shutdown

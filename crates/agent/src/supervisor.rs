@@ -27,26 +27,26 @@ use tools::{
 
 use crate::acp_child::AcpChild;
 use crate::loop_::{
-    CancelTurn, CompactNow, HarvestNow, IsRunning, QueuedInputs, RedoTurn, Session, SessionState,
-    SetPendingEffort, SwitchModel, UndoTurn, UserInput, WithdrawInput, text_of,
+    CancelTurn, CompactNow, HarvestNow, IsRunning, QueuedInputs, RedoTurn, RestartTurn, Session,
+    SessionState, SetPendingEffort, SwitchModel, UndoTurn, UserInput, WithdrawInput, text_of,
 };
 use crate::peers::{ListModelsTool, SendMessageTool, SpawnSubagentTool};
 use crate::skills::{
     self, AddSkillRepoTool, AddSkillTool, LoadSkillTool, RemoveSkillRepoTool, RemoveSkillTool,
     SyncSkillsTool,
 };
-use crate::store::{Epoch, Store};
+use crate::store::{self, Epoch, Store};
 use crate::user::{MessageUserTool, USER_ACTOR, UserChannels};
 use crate::{
     AGENT_ACTOR, AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentConfig, AgentEvent, AgentInfo,
-    AgentState, AncestorInfo, Ancestors, Cancel, Compact, CompactStyle, DeleteSession,
-    GetCompactStyle, GetTitleModel, Harvest, HistoryEntry, ListAcp, ListAgents, ListLogins,
-    ListModels, ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills, LoadSession,
-    LoadSkill, Loaded, Login, LoginFinished, LoginInfo, Logout, ModelInfo, NewSession,
-    ProviderInfo, QueuedInput, Redo, RemoveAcp, RemoveProvider, RemoveSkill, RemoveSkillRepo,
-    RenameSession, SearchSessions, SendInput, SessionSummary, SetCompactStyle, SetEffort, SetModel,
-    SetTitleModel, ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw,
-    effort_of,
+    AgentState, AncestorInfo, Ancestors, Cancel, Compact, CompactStyle, DeleteSession, EditTurn,
+    ForkSession, GetCompactStyle, GetTitleModel, Harvest, HistoryEntry, ListAcp, ListAgents,
+    ListLogins, ListModels, ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills,
+    LoadSession, LoadSkill, Loaded, Login, LoginFinished, LoginInfo, Logout, ModelInfo, NewSession,
+    ProviderInfo, QueuedInput, Redo, Regenerate, RemoveAcp, RemoveProvider, RemoveSkill,
+    RemoveSkillRepo, RenameSession, SearchSessions, SendInput, SessionSummary, SetCompactStyle,
+    SetEffort, SetModel, SetTitleModel, ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo,
+    UseSkill, Withdraw, effort_of,
 };
 use crate::{frame, repl, search, spill};
 
@@ -783,6 +783,65 @@ impl Message<Redo> for Agents {
             .ask(RedoTurn)
             .await
             .map_err(|e| e.to_string())
+    }
+}
+
+impl Message<Regenerate> for Agents {
+    type Reply = Result<(), String>;
+
+    async fn handle(&mut self, m: Regenerate, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.search.invalidate();
+        self.actor(m.session)
+            .await?
+            .native()?
+            .ask(RestartTurn {
+                turn: m.turn,
+                input: None,
+            })
+            .await
+            .map_err(|e| e.to_string())
+    }
+}
+
+impl Message<EditTurn> for Agents {
+    type Reply = Result<(), String>;
+
+    async fn handle(&mut self, m: EditTurn, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        check_files(&m.files)?;
+        self.search.invalidate();
+        self.actor(m.session)
+            .await?
+            .native()?
+            .ask(RestartTurn {
+                turn: m.turn,
+                input: Some((m.text, m.files)),
+            })
+            .await
+            .map_err(|e| e.to_string())
+    }
+}
+
+impl Message<ForkSession> for Agents {
+    type Reply = Result<SessionId, String>;
+
+    async fn handle(&mut self, m: ForkSession, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let row = self
+            .store
+            .session(m.session)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "no such session".to_string())?;
+        if row.agent.is_some() {
+            // The transcript is a translation; the harness owns the state (design doc 29 §3).
+            return Err("cannot fork an external harness session".into());
+        }
+        let id = self
+            .store
+            .fork(m.session, m.through)
+            .await
+            .map_err(|e| e.to_string())?;
+        self.search.invalidate();
+        Ok(id)
     }
 }
 
@@ -2094,23 +2153,38 @@ impl From<&Resolved> for ModelInfo {
 /// message that completed them; a tool call and its response become one
 /// `Tool` entry (tagged with the response's seq). Calls without a response
 /// yet — the round running when the session was loaded — come last, in
-/// call order, with `result: None`.
+/// call order, with `result: None`. `User`/`Assistant` entries carry the seq
+/// of the turn opener they belong to (design doc 29 §4.3).
 fn render(messages: &[(i64, ChatMessage)]) -> Vec<(i64, HistoryEntry)> {
     let mut out = Vec::new();
     // ponytail: linear scan; one round's calls, never more than a handful.
     let mut pending: Vec<(i64, &genai::chat::ToolCall)> = Vec::new();
+    let mut current_turn: Option<i64> = None;
+    let mut prev: Option<&ChatMessage> = None;
     for (seq, m) in messages {
+        let opens = store::is_turn_start(prev, m);
+        if opens {
+            current_turn = Some(*seq);
+        }
+        prev = Some(m);
         match m.role {
             ChatRole::User => out.push((
                 *seq,
                 HistoryEntry::User {
                     text: text_of(&m.content),
+                    turn: opens.then_some(*seq),
                 },
             )),
             ChatRole::Assistant => {
                 let text = text_of(&m.content);
                 if !text.is_empty() {
-                    out.push((*seq, HistoryEntry::Assistant { text }));
+                    out.push((
+                        *seq,
+                        HistoryEntry::Assistant {
+                            text,
+                            turn: current_turn,
+                        },
+                    ));
                 }
                 pending.extend(m.content.tool_calls().into_iter().map(|c| (*seq, c)));
             }
@@ -2550,7 +2624,10 @@ mod tests {
     /// repeated on an older page.
     #[test]
     fn page_walks_back_by_seq() {
-        let user = |s: &str| HistoryEntry::User { text: s.into() };
+        let user = |s: &str| HistoryEntry::User {
+            text: s.into(),
+            turn: None,
+        };
         let tool = |id: &str, result| HistoryEntry::Tool {
             call_id: id.into(),
             name: "shell".into(),

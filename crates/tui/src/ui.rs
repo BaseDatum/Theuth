@@ -11,8 +11,9 @@ use tools::{Decision, Risk};
 
 use crate::clip;
 use crate::model::{
-    AcpRow, CardKind, Command, Entry, Level, Menu, MenuKey, Model, Row, Switch, UiEvent,
-    action_name, agent_row, describe, gate_name, k, result_line, short, slash_matches, window,
+    AcpRow, CardKind, Command, Entry, Level, Menu, MenuKey, Model, Row, Switch, TurnAction,
+    UiEvent, action_name, agent_row, describe, gate_name, k, result_line, short, slash_matches,
+    window,
 };
 
 /// Channels handed to the app through iocraft context (owned so the receiver
@@ -268,6 +269,13 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                     m.submit(&line, &commands);
                 }
                 KeyCode::Esc if m.prompt.is_some() => m.cancel_prompt(),
+                // Cleared here, not via `recall`: the event loop only drains
+                // that when events arrive or the model animates, and a stale
+                // `recall` would later wipe whatever gets typed next.
+                KeyCode::Esc if m.cancel_edit() => {
+                    m.recall = None;
+                    input.set(String::new());
+                }
                 KeyCode::Esc => m.cancel(&commands),
                 _ => {}
             }
@@ -506,6 +514,31 @@ fn menu(m: &Model, input: &str, width: u16) -> Option<AnyElement<'static>> {
                         title
                     )
                 })
+                .collect(),
+            *cursor,
+        ),
+        Menu::Turns {
+            items,
+            cursor,
+            action,
+        } => (
+            format!(
+                "{}  ⏎ {}  esc close",
+                match action {
+                    TurnAction::Edit => "edit",
+                    TurnAction::Regen => "regenerate",
+                    TurnAction::Fork => "fork through",
+                },
+                match action {
+                    TurnAction::Edit => "recall",
+                    TurnAction::Regen => "redo reply",
+                    TurnAction::Fork => "fork",
+                }
+            ),
+            items
+                .iter()
+                .enumerate()
+                .map(|(i, (_, _, line))| format!("#{}  ◆ {line}", i + 1))
                 .collect(),
             *cursor,
         ),
@@ -818,7 +851,7 @@ fn queued_text(text: &str) -> String {
 fn entry(e: &Entry, spinner: &str, skip: usize, width: u16) -> AnyElement<'static> {
     match e {
         // Human turns: the same card shape as tools and peers, own colour and glyph.
-        Entry::User(t) => element! {
+        Entry::User { text: t, .. } => element! {
             View(flex_direction: FlexDirection::Column, border_style: BorderStyle::Round, border_color: USER, padding_left: 1, padding_right: 1, margin_top: 1) {
                 Text(content: "◆ you", color: USER, weight: Weight::Bold)
                 #(plain(t, TextWrap::Wrap, |c| c))

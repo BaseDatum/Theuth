@@ -315,6 +315,22 @@ impl Store {
         Ok(Some(text_of(&hidden[first].1.content)))
     }
 
+    /// Hide `seq >= turn` (a visible turn start) and return the opener row
+    /// (design doc 29 §4.1). `Err("not a turn start")` when `turn` is not a
+    /// visible turn start; the marker is untouched then.
+    pub async fn cut_to(&self, id: SessionId, turn: i64) -> anyhow::Result<ChatMessage> {
+        let visible = self.messages(id).await?;
+        let i = visible
+            .iter()
+            .position(|(s, _)| *s == turn)
+            .filter(|&i| is_turn_start(i.checked_sub(1).map(|p| &visible[p].1), &visible[i].1));
+        let Some(i) = i else {
+            anyhow::bail!("not a turn start");
+        };
+        self.set_cut(id, Some(turn)).await?;
+        Ok(visible[i].1.clone())
+    }
+
     /// Delete the hidden tail for real and clear `cut_at`; no-op when nothing is hidden.
     pub async fn commit_cut(&self, id: SessionId) -> anyhow::Result<()> {
         let sid = id.to_string();
@@ -339,6 +355,69 @@ impl Store {
             .await?;
         tx.commit().await?;
         Ok(())
+    }
+
+    /// New session with the source's title/model/effort/cwd and copies of the
+    /// visible rows and epochs before the turn after `through` (all visible
+    /// rows when `None`). Returns the new id; the source is only read
+    /// (design doc 29 §3, §4.1). `parent`/`name`/`agent`/`acp_session` stay NULL.
+    pub async fn fork(&self, src: SessionId, through: Option<i64>) -> anyhow::Result<SessionId> {
+        let visible = self.messages(src).await?;
+        let mut starts = turn_starts(&visible).map(|i| visible[i].0).peekable();
+        if starts.peek().is_none() {
+            anyhow::bail!("nothing to fork");
+        }
+        let end = match through {
+            None => i64::MAX,
+            Some(t) => {
+                if !starts.any(|s| s == t) {
+                    anyhow::bail!("not a turn start");
+                }
+                starts.next().unwrap_or(i64::MAX)
+            }
+        };
+
+        let id = SessionId::new();
+        let (new, old) = (id.to_string(), src.to_string());
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut tx = self.pool.begin().await?;
+        let inserted = sqlx::query(
+            "INSERT INTO sessions (id, created_at, updated_at, title, model, parent, name, effort, cwd) \
+             SELECT ?, ?, ?, title, model, NULL, NULL, effort, cwd FROM sessions WHERE id = ?",
+        )
+        .bind(&new)
+        .bind(&now)
+        .bind(&now)
+        .bind(&old)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if inserted != 1 {
+            anyhow::bail!("no such session");
+        }
+        sqlx::query(
+            "INSERT INTO messages (session_id, seq, body) \
+             SELECT ?1, seq, body FROM messages WHERE session_id = ?2 AND seq < ?3 \
+             AND seq < COALESCE((SELECT cut_at FROM sessions WHERE id = ?2), 9223372036854775807)",
+        )
+        .bind(&new)
+        .bind(&old)
+        .bind(end)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO epochs (session_id, n, at_seq, tail_from, head, created_at) \
+             SELECT ?1, n, at_seq, tail_from, head, created_at FROM epochs WHERE session_id = ?2 \
+             AND at_seq < ?3 \
+             AND at_seq < COALESCE((SELECT cut_at FROM sessions WHERE id = ?2), 9223372036854775807)",
+        )
+        .bind(&new)
+        .bind(&old)
+        .bind(end)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(id)
     }
 
     /// Number of turns hidden by undo (the redo depth).
@@ -986,6 +1065,137 @@ mod tests {
         );
         assert_eq!(store.redo(id).await.unwrap(), None);
         assert_eq!(store.hidden_turns(id).await.unwrap(), 0);
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn cut_to_accepts_only_turn_starts() {
+        let (store, id, dir) = fresh().await;
+        append_all(
+            &store,
+            id,
+            [
+                ChatMessage::user("u1"),
+                asst("a1"),
+                ChatMessage::user("u2"),
+                ChatMessage::from(vec![ToolCall {
+                    call_id: "c1".into(),
+                    fn_name: "shell".into(),
+                    fn_arguments: serde_json::json!({}),
+                    thought_signatures: None,
+                }]),
+                ChatMessage::from(vec![ToolResponse::new("c1", "out")]),
+                ChatMessage::user("steer"),
+                asst("a2"),
+            ],
+        )
+        .await;
+
+        // A steer (seq 5), an assistant row (seq 1) and an unknown seq are refused and hide nothing.
+        for bad in [5, 1, 99] {
+            let err = store.cut_to(id, bad).await.unwrap_err();
+            assert_eq!(err.to_string(), "not a turn start");
+        }
+        assert_eq!(store.hidden_turns(id).await.unwrap(), 0);
+        assert_eq!(store.messages(id).await.unwrap().len(), 7);
+
+        let opener = store.cut_to(id, 2).await.unwrap();
+        assert_eq!(text_of(&opener.content), "u2");
+        assert_eq!(
+            texts(&store.messages(id).await.unwrap()),
+            [(0, "u1".into()), (1, "a1".into())]
+        );
+        assert_eq!(store.hidden_turns(id).await.unwrap(), 1);
+        // The hidden turn is once again not visible, so it cannot be cut at.
+        assert_eq!(
+            store.cut_to(id, 2).await.unwrap_err().to_string(),
+            "not a turn start"
+        );
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn fork_copies_turns_through_the_given_one() {
+        let (store, src, dir) = fresh().await;
+        store.set_title(src, "topic").await.unwrap();
+        append_all(
+            &store,
+            src,
+            [
+                ChatMessage::user("u1"),
+                asst("a1"),
+                ChatMessage::user("u2"),
+                asst("a2"),
+            ],
+        )
+        .await;
+        let head = ChatMessage::user("<context_summary epoch=\"1\">s</context_summary>");
+        store.compact(src, 1, 1, 1, &head).await.unwrap();
+        store.compact(src, 2, 3, 2, &head).await.unwrap();
+
+        assert_eq!(
+            store.fork(src, Some(1)).await.unwrap_err().to_string(),
+            "not a turn start"
+        );
+
+        // Through turn A (seq 0): A's rows and the epoch inside A only.
+        let a = store.fork(src, Some(0)).await.unwrap();
+        assert_eq!(
+            texts(&store.messages(a).await.unwrap()),
+            [(0, "u1".into()), (1, "a1".into())]
+        );
+        let epochs = store.epochs(a).await.unwrap();
+        assert_eq!(epochs.len(), 1);
+        assert_eq!((epochs[0].n, epochs[0].at_seq), (1, 1));
+        let row = store.session(a).await.unwrap().unwrap();
+        assert_eq!((row.title.as_str(), row.model.as_str()), ("topic", "m"));
+        assert_eq!((row.parent, row.name, row.agent), (None, None, None));
+        // A fork appends where the copy ends.
+        assert_eq!(store.append(a, &ChatMessage::user("u2b")).await.unwrap(), 2);
+
+        // Through the last turn / `None`: everything visible.
+        for through in [Some(2), None] {
+            let all = store.fork(src, through).await.unwrap();
+            assert_eq!(
+                texts(&store.messages(all).await.unwrap()),
+                texts(&store.messages(src).await.unwrap())
+            );
+            assert_eq!(store.epochs(all).await.unwrap().len(), 2);
+        }
+
+        // The source is untouched.
+        assert_eq!(
+            texts(&store.messages(src).await.unwrap()),
+            [
+                (0, "u1".into()),
+                (1, "a1".into()),
+                (2, "u2".into()),
+                (3, "a2".into())
+            ]
+        );
+        assert_eq!(store.epochs(src).await.unwrap().len(), 2);
+        assert_eq!(store.hidden_turns(src).await.unwrap(), 0);
+
+        // Undone rows are not part of a fork; nothing visible → nothing to fork.
+        assert_eq!(store.undo(src).await.unwrap().as_deref(), Some("u2"));
+        let cut = store.fork(src, None).await.unwrap();
+        assert_eq!(store.messages(cut).await.unwrap().len(), 2);
+        assert_eq!(store.epochs(cut).await.unwrap().len(), 1);
+        assert_eq!(store.undo(src).await.unwrap().as_deref(), Some("u1"));
+        assert_eq!(
+            store.fork(src, None).await.unwrap_err().to_string(),
+            "nothing to fork"
+        );
+        assert_eq!(
+            store
+                .fork(SessionId::new(), None)
+                .await
+                .unwrap_err()
+                .to_string(),
+            "nothing to fork"
+        );
         drop(store);
         let _ = std::fs::remove_dir_all(&dir);
     }

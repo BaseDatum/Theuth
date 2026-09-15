@@ -126,7 +126,7 @@ export function Transcript({ session }: { session: string }) {
                   className="absolute top-0 left-0 w-full"
                   style={{ transform: `translateY(${item.start}px)` }}
                 >
-                  {'entry' in row ? <Message entry={row.entry} prompts={row.prompts} /> : <PromptCard prompt={row.prompt} />}
+                  {'entry' in row ? <Message entry={row.entry} prompts={row.prompts} session={session} /> : <PromptCard prompt={row.prompt} />}
                 </div>
               )
             })}

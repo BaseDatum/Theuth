@@ -232,7 +232,8 @@ listing the provider keys, and an empty `mcp/`. Existing behaviour, new format.
 session, subscribes a `Collector` to the bus, sends the task, waits up to 10
 minutes for `TurnFinished`, returns the child's text as the tool output. The
 parent cannot do anything else meanwhile, the child cannot ask anything, and
-the human cannot talk to the child.
+the human cannot talk to the child. A fork (29) has `parent = NULL`: it is
+a top-level session even when the source was a child.
 
 ### 2.2 Target behaviour
 

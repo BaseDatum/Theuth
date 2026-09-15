@@ -150,7 +150,7 @@ logs a `login required` server in), `/mcp add <url|json>` installs one,
 to; `/provider add` prompts for name, base url, then API key (an OpenAI-compatible
 gateway such as `https://api.ai.rwx.dev/v1`); `/provider` lists them, `/provider rm <name>`
 forgets one; `/skills` lists skills (⏎ hands one to the model, `s` shows it; `/<skill> [words]` does the same; the status line names the skills in context); `/prompt` shows the system prompt; `/compact` folds into a summary by default; `/compact cut` drops the folded span with no model call; `/compact style` lists/sets the default; `/clear` drops the conversation and keeps the session (id, title, model, settings; the history is still there on `/resume`);
-`/undo` drops the last turn (yours and the reply), `/redo` restores it; URLs in the transcript are OSC 8 hyperlinks (click them in a terminal that supports it, e.g. ghostty/iTerm2/kitty/WezTerm);
+`/undo` drops the last turn (yours and the reply), `/redo` restores it; `/edit [n]` edits a user message and regenerates from it, `/regen [n]` regenerates the reply to a turn, `/fork [n]` opens a new session with the conversation through a turn; URLs in the transcript are OSC 8 hyperlinks (click them in a terminal that supports it, e.g. ghostty/iTerm2/kitty/WezTerm);
 `/jobs` lists the session's shell jobs, `/jobs kill <id>` stops one (a running job's card shows its last 10 output lines live);
 `/acp` manages external ACP harnesses;
 `/knowledge` browses the knowledge base (below); `/approvals off` stops

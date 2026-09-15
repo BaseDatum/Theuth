@@ -54,14 +54,14 @@ function interject(s: SessionSlice, entry: Entry): SessionSlice {
   return { ...s, entries: s.entries.toSpliced(at, 0, entry) }
 }
 
-/** Transcript entries for one user input: the skill chip plus words, one card per harness wrapper, or `you`. */
-function userEntries(text: string, cls: Injected[] | null, injected?: true): Entry[] {
+/** Transcript entries for one user input: the skill chip plus words, one card per harness wrapper, or `you`. `turn` stamps the `you` row (29 §5.1). */
+function userEntries(text: string, cls: Injected[] | null, injected?: true, turn?: number): Entry[] {
   const flag = injected ? { injected } : {}
-  if (cls === null) return [{ id: nextId(), kind: 'user', text, ...flag }]
+  if (cls === null) return [{ id: nextId(), kind: 'user', text, turn, ...flag }]
   return cls.map((c): Entry => {
     switch (c.kind) {
       case 'skill':
-        return { id: nextId(), kind: 'user', text: c.words, skill: c.name, ...flag }
+        return { id: nextId(), kind: 'user', text: c.words, skill: c.name, turn, ...flag }
       case 'peer':
         return { id: nextId(), kind: 'peer', from: c.from, text: c.text }
       case 'subagent':
@@ -77,13 +77,20 @@ function userEntries(text: string, cls: Injected[] | null, injected?: true): Ent
   })
 }
 
+/** The newest `you` row stamped with the turn it opened: an own send or an injected steer whose `TurnStarted` echo was skipped. */
+function stampUser(entries: Entry[], turn: number): Entry[] {
+  const at = entries.findLastIndex((u) => u.kind === 'user')
+  const u = entries[at]
+  return u?.kind === 'user' ? replaceAt(entries, at, { ...u, turn }) : entries
+}
+
 /** Transcript entries for one history record. */
 export function fromHistory(h: HistoryEntry): Entry[] {
   switch (h.role) {
     case 'user':
-      return userEntries(h.text, classify(h.text))
+      return userEntries(h.text, classify(h.text), undefined, h.turn ?? undefined)
     case 'assistant':
-      return [{ id: nextId(), kind: 'assistant', text: h.text, open: false }]
+      return [{ id: nextId(), kind: 'assistant', text: h.text, open: false, turn: h.turn ?? undefined }]
     case 'tool':
       return [
         {
@@ -178,13 +185,27 @@ export function apply(slice: SessionSlice, e: WireEvent, ctx: Ctx): SessionSlice
   switch (e.type) {
     // Echo the turn's input unless we sent it, it was a steer whose card
     // moved up on `InputInjected`, or the harness injected it
-    // (`MessageDelivered` already showed those).
+    // (`MessageDelivered` already showed those). Own sends and injected
+    // steers are already on screen: stamp them with the turn instead.
     case 'TurnStarted': {
       const cls = classify(e.text)
-      const shown = (cls !== null && cls[0]?.kind !== 'skill') || s.lastInjected === e.turn || ctx.sent.delete(e.text)
-      const next: SessionSlice = { ...s, running: true, waiting: true, activity: 'thinking', model: e.model, lastInjected: undefined }
-      if (!shown) next.entries = [...s.entries, ...userEntries(e.text, cls)]
-      return next
+      const wrapped = cls !== null && cls[0]?.kind !== 'skill'
+      const own = !wrapped && (s.lastInjected === e.turn || ctx.sent.delete(e.text))
+      const entries = own
+        ? stampUser(s.entries, e.turn_seq)
+        : wrapped
+          ? s.entries
+          : [...s.entries, ...userEntries(e.text, cls, undefined, e.turn_seq)]
+      return {
+        ...s,
+        entries,
+        running: true,
+        waiting: true,
+        activity: 'thinking',
+        model: e.model,
+        turnSeq: e.turn_seq,
+        lastInjected: undefined,
+      }
     }
     // The steer enters the context now: its card moves from the queue to
     // the transcript, after everything the model said before it.
@@ -205,7 +226,7 @@ export function apply(slice: SessionSlice, e: WireEvent, ctx: Ctx): SessionSlice
       const entries =
         last?.kind === 'assistant' && last.open
           ? replaceAt(s.entries, at, { ...last, text: last.text + e.text })
-          : [...s.entries, { id: nextId(), kind: 'assistant' as const, text: e.text, open: true }]
+          : [...s.entries, { id: nextId(), kind: 'assistant' as const, text: e.text, open: true, turn: s.turnSeq }]
       return { ...s, entries, waiting: false, activity: 'streaming' }
     }
     case 'ReasoningDelta': {

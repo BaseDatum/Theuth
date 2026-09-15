@@ -33,6 +33,8 @@ export const COMMANDS: readonly { name: string; hint: string; desc: string }[] =
   { name: '/compact', hint: '[summary|cut|snap|style …]', desc: 'fold context; style sets the default' },
   { name: '/undo', hint: '', desc: 'drop the last turn (redo restores)' },
   { name: '/redo', hint: '', desc: 'restore the last undone turn' },
+  { name: '/regen', hint: '', desc: 'regenerate the reply to the last turn' },
+  { name: '/fork', hint: '', desc: 'new session with the whole conversation' },
   { name: '/quit', hint: '', desc: 'exit' },
   { name: '/provider', hint: '[add|rm <name>]', desc: 'OpenAI-compatible providers' },
   { name: '/exit', hint: '', desc: 'same as /quit' },
@@ -301,6 +303,26 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       const id = need(session)
       toast(await (cmd === '/undo' ? api.undo(id) : api.redo(id)))
       await ctx.reload()
+      return
+    }
+    // The last turn, as the TUI's default (29 §5.4): the store drops it first and the
+    // stream repaints it; a refusal (`turn in flight`) reloads what was dropped.
+    case '/regen': {
+      const id = need(session)
+      const st = useSessions.getState()
+      let turn: number | undefined
+      for (const e of st.sessions[id]?.entries ?? []) if ((e.kind === 'user' || e.kind === 'assistant') && e.turn !== undefined) turn = e.turn
+      if (turn === undefined) throw new Error('nothing to regenerate')
+      st.truncate(id, turn)
+      await api.regenerate(id, turn).catch(async (e: unknown) => {
+        await ctx.reload()
+        throw e
+      })
+      return
+    }
+    case '/fork': {
+      const nid = await api.fork_session(need(session), null)
+      await navigate({ to: '/c/$session', params: { session: nid } })
       return
     }
     default: {

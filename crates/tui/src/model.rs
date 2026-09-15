@@ -48,6 +48,8 @@ pub enum UiEvent {
     Agents(Vec<AgentInfo>),
     /// Reply to [`Command::Load`].
     History(SessionId, Loaded),
+    /// Reply to [`Command::Fork`]: the new session, already loaded.
+    Forked(SessionId, Loaded),
     /// Reply to [`Command::Send`]: the session the turn went to.
     SessionCreated(SessionId),
     /// Reply to [`Command::ListModels`].
@@ -160,6 +162,29 @@ pub enum Command {
     Undo(SessionId),
     /// `redo`: restore the last hidden turn.
     Redo(SessionId),
+    /// `regenerate`: replay the turn opened at `turn`, dropping its old tail (29 §3).
+    Regenerate {
+        /// Target.
+        session: SessionId,
+        /// Seq of the user row that opens the turn.
+        turn: i64,
+    },
+    /// `edit_turn`: replace the turn opened at `turn` with `text`.
+    EditTurn {
+        /// Target.
+        session: SessionId,
+        /// Seq of the user row that opens the turn.
+        turn: i64,
+        /// New user text.
+        text: String,
+    },
+    /// `fork_session`: a new session with the conversation through `through` (all when `None`).
+    Fork {
+        /// Source.
+        session: SessionId,
+        /// Seq of the last turn to keep.
+        through: Option<i64>,
+    },
     /// `cancel`.
     Cancel(SessionId),
     /// `list_jobs` for the shown session.
@@ -457,7 +482,13 @@ impl JobTail {
 #[derive(Debug)]
 pub enum Entry {
     /// What the user typed.
-    User(String),
+    User {
+        /// The text.
+        text: String,
+        /// Seq of this row when it opens a turn (the `/edit`, `/regen`,
+        /// `/fork` handle, 29 §6.1); `None` for steers and notes.
+        turn: Option<i64>,
+    },
     /// Streamed assistant text: rendered blocks + raw tail.
     Assistant(Box<markdown::Text>),
     /// Collapsible card: a peer message, a skill body, or the system prompt.
@@ -582,7 +613,7 @@ impl Entry {
             v.lines().map(|l| line_rows(l, width)).sum::<usize>() + text_rows(v.plain, width)
         };
         match self {
-            Entry::User(t) => text_rows(t, inner) + 4,
+            Entry::User { text, .. } => text_rows(text, inner) + 4,
             Entry::Assistant(t) => md(t, width),
             Entry::Card { text, expanded, .. } => 4 + if *expanded { md(text, inner) } else { 0 },
             Entry::Reasoning { done: true, .. } | Entry::Info(_) | Entry::Error(_) => 1,
@@ -795,6 +826,21 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     ("/undo", "", "drop the last turn (redo restores)"),
     ("/redo", "", "restore the last undone turn"),
+    (
+        "/edit",
+        "[n]",
+        "edit turn n's message and regenerate from it (picker without n)",
+    ),
+    (
+        "/regen",
+        "[n]",
+        "regenerate the reply to turn n (picker without n)",
+    ),
+    (
+        "/fork",
+        "[n]",
+        "new session with the conversation through turn n (picker without n)",
+    ),
     ("/quit", "", "exit"),
     (
         "/provider",
@@ -970,6 +1016,26 @@ pub enum Menu {
         /// Highlighted row: entries first, then registry rows.
         cursor: usize,
     },
+    /// `/edit`, `/regen`, `/fork` picker over the transcript's turns (29 §6.2).
+    Turns {
+        /// `(entry index, turn seq, first line of the opener)`, oldest first.
+        items: Vec<(usize, i64, String)>,
+        /// Highlighted row; starts on the newest.
+        cursor: usize,
+        /// What ⏎ does with the highlighted turn.
+        action: TurnAction,
+    },
+}
+
+/// What a [`Menu::Turns`] pick does.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TurnAction {
+    /// Put the opener's text in the editor; ⏎ replaces the turn with it.
+    Edit,
+    /// Regenerate the turn's reply.
+    Regen,
+    /// New session with the conversation through the turn.
+    Fork,
 }
 
 /// Multi-step `/provider add` input. Rides on the input box (not a modal menu).
@@ -1298,8 +1364,14 @@ pub struct Model {
     /// Turn the last `InputInjected` joined: its `TurnStarted` is not echoed
     /// (the card moved into `entries` on injection).
     last_injected_turn: Option<TurnId>,
-    /// Text the editor takes on the next render: a withdrawn steer.
+    /// Text the editor takes on the next render: a withdrawn steer, or the
+    /// opener `/edit` puts back.
     pub recall: Option<String>,
+    /// Opener seq of the shown session's current or last turn (`TurnStarted.turn_seq`).
+    pub turn_seq: Option<i64>,
+    /// `/edit` in progress: `(entry index, turn seq)` of the message in the
+    /// editor; the next plain line replaces that turn (29 §6.2).
+    pub editing: Option<(usize, i64)>,
     /// Notice shown after the transcript reloads that an undo/redo triggered.
     notice: Option<String>,
     /// The shown session's summariser call is in flight (`Compacting`).
@@ -1343,6 +1415,31 @@ impl Model {
         };
     }
 
+    /// Show a loaded transcript: `UiEvent::History` and `UiEvent::Forked`.
+    fn load(&mut self, loaded: Loaded) {
+        self.entries = loaded.history.into_iter().flat_map(from_history).collect();
+        self.anchor = None;
+        // An index into the old transcript is meaningless now.
+        self.editing = None;
+        // The reload an undo/redo triggered shows its own notice
+        // instead of the generic depth line.
+        match self.notice.take() {
+            Some(n) => self.entries.push(Entry::Info(n)),
+            None if loaded.undone > 0 => self.entries.push(Entry::Info(format!(
+                "{} turn(s) undone — /redo restores",
+                loaded.undone
+            ))),
+            None => {}
+        }
+        self.queued = loaded.queued;
+        self.model_id = loaded.model;
+        self.effort = loaded.effort;
+        self.streaming = loaded.running;
+        self.session_name = loaded.name;
+        self.session_parent = loaded.parent;
+        self.loaded_skills = loaded.skills;
+    }
+
     /// The approval currently shown, if any.
     pub fn approval(&self) -> Option<&ApprovalRequested> {
         self.approvals.front()
@@ -1370,6 +1467,7 @@ impl Model {
                         | Menu::Acp { .. }
                         | Menu::Skills { .. }
                         | Menu::Logins { .. }
+                        | Menu::Turns { .. }
                 )
             )
     }
@@ -1852,26 +1950,14 @@ impl Model {
             }
             UiEvent::History(id, loaded) => {
                 if self.session == Some(id) {
-                    self.entries = loaded.history.into_iter().flat_map(from_history).collect();
-                    self.anchor = None;
-                    // The reload an undo/redo triggered shows its own notice
-                    // instead of the generic depth line.
-                    match self.notice.take() {
-                        Some(n) => self.entries.push(Entry::Info(n)),
-                        None if loaded.undone > 0 => self.entries.push(Entry::Info(format!(
-                            "{} turn(s) undone — /redo restores",
-                            loaded.undone
-                        ))),
-                        None => {}
-                    }
-                    self.queued = loaded.queued;
-                    self.model_id = loaded.model;
-                    self.effort = loaded.effort;
-                    self.streaming = loaded.running;
-                    self.session_name = loaded.name;
-                    self.session_parent = loaded.parent;
-                    self.loaded_skills = loaded.skills;
+                    self.load(loaded);
                 }
+            }
+            UiEvent::Forked(id, loaded) => {
+                self.reset();
+                self.session = Some(id);
+                self.notice = Some("forked — /rename to tell them apart".into());
+                self.load(loaded);
             }
             UiEvent::SessionCreated(id) => {
                 self.awaiting_session = false;
@@ -2256,16 +2342,31 @@ impl Model {
         match ev {
             // Echo the turn's input unless the human just typed it here, it was
             // a steer whose card moved up on `InputInjected`, or the harness
-            // injected it (`MessageDelivered` already shows those).
+            // injected it (`MessageDelivered` already shows those). The card
+            // that opens the turn carries `turn_seq`: the `/edit` handle.
             AgentEvent::TurnStarted {
-                turn, text, model, ..
+                turn,
+                turn_seq,
+                text,
+                model,
+                ..
             } => {
                 self.model_id = model;
-                let shown = injected(&text).is_some()
-                    || self.last_injected_turn.take() == Some(turn)
+                self.turn_seq = Some(turn_seq);
+                if injected(&text).is_some() {
+                    return;
+                }
+                let shown = self.last_injected_turn.take() == Some(turn)
                     || self.sent.take().as_deref() == Some(&*text);
                 if !shown {
-                    self.entries.extend(user_entries(text));
+                    self.entries.extend(user_entries(text, Some(turn_seq)));
+                } else if let Some(Entry::User { turn, .. }) = self
+                    .entries
+                    .iter_mut()
+                    .rev()
+                    .find(|e| matches!(e, Entry::User { turn: None, .. }))
+                {
+                    *turn = Some(turn_seq);
                 }
             }
             // The steer enters the context now: its card moves from the queue
@@ -2273,7 +2374,7 @@ impl Model {
             AgentEvent::InputInjected { id, turn, .. } => {
                 if let Some(at) = self.queued.iter().position(|q| q.id == id) {
                     self.entries
-                        .extend(user_entries(self.queued.remove(at).text));
+                        .extend(user_entries(self.queued.remove(at).text, None));
                     self.last_injected_turn = Some(turn);
                 }
             }
@@ -2486,6 +2587,28 @@ impl Model {
             self.prompt_submit(line, tx);
             return;
         }
+        // `/edit` in progress: a plain line replaces the turn being edited
+        // (slash commands still run and leave the edit pending).
+        if let Some((idx, turn)) = self.editing.filter(|_| !line.starts_with('/')) {
+            self.editing = None;
+            let Some(session) = self.session else { return };
+            let (text, _) = self.expand_pastes(line);
+            self.entries.truncate(idx);
+            self.entries.push(Entry::User {
+                text: line.to_owned(),
+                turn: None,
+            });
+            self.sent = Some(text.clone());
+            send(
+                tx,
+                Command::EditTurn {
+                    session,
+                    turn,
+                    text,
+                },
+            );
+            return;
+        }
         let (cmd, arg) = line
             .split_once(' ')
             .map_or((line, ""), |(c, a)| (c, a.trim()));
@@ -2607,6 +2730,9 @@ impl Model {
                 Some(session) => send(tx, Command::Redo(session)),
                 None => self.entries.push(Entry::Info("no session".into())),
             },
+            "/edit" => self.turn_cmd(TurnAction::Edit, cmd, arg, tx),
+            "/regen" => self.turn_cmd(TurnAction::Regen, cmd, arg, tx),
+            "/fork" => self.turn_cmd(TurnAction::Fork, cmd, arg, tx),
             "/provider" => self.provider_cmd(arg, tx),
             c if c.starts_with('/') => {
                 // `/<skill> [args]` hands the skill to the model (04 §2.4). Before
@@ -2641,7 +2767,10 @@ impl Model {
                         );
                     }
                     session => {
-                        self.entries.push(Entry::User(line.to_owned()));
+                        self.entries.push(Entry::User {
+                            text: line.to_owned(),
+                            turn: None,
+                        });
                         self.sent = Some(text.clone());
                         self.awaiting_session = session.is_none();
                         send(
@@ -2692,6 +2821,141 @@ impl Model {
         if let Some(session) = self.session {
             send(tx, Command::Withdraw { session, id: q.id });
         }
+    }
+
+    /// The transcript's turns, oldest first: `(entry index, turn seq, first
+    /// line of the opener)`. The 1-based position is the `n` of `/edit n`.
+    fn turns(&self) -> Vec<(usize, i64, String)> {
+        self.entries
+            .iter()
+            .enumerate()
+            .filter_map(|(i, e)| match e {
+                Entry::User {
+                    text,
+                    turn: Some(t),
+                } => Some((
+                    i,
+                    *t,
+                    text.lines()
+                        .next()
+                        .unwrap_or_default()
+                        .chars()
+                        .take(60)
+                        .collect(),
+                )),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// `[n]` of `/edit`, `/regen`, `/fork`: `None` when absent (open the
+    /// picker), the turn's `(entry index, seq)` when it names one.
+    fn turn_arg(&self, cmd: &str, arg: &str) -> Result<Option<(usize, i64)>, String> {
+        if arg.is_empty() {
+            return Ok(None);
+        }
+        let n: usize = arg.parse().map_err(|_| format!("usage: {cmd} [n]"))?;
+        self.turns()
+            .get(n.wrapping_sub(1))
+            .map(|&(idx, seq, _)| Some((idx, seq)))
+            .ok_or_else(|| format!("no turn #{n}"))
+    }
+
+    /// `/edit`, `/regen`, `/fork`: act on turn `arg`, or open the picker on the newest.
+    fn turn_cmd(
+        &mut self,
+        action: TurnAction,
+        cmd: &str,
+        arg: &str,
+        tx: &UnboundedSender<Command>,
+    ) {
+        if self.session.is_none() {
+            self.entries.push(Entry::Info("no session".into()));
+            return;
+        }
+        if self.turn_blocked(action) {
+            return;
+        }
+        match self.turn_arg(cmd, arg) {
+            Err(e) => self.entries.push(Entry::Error(e)),
+            Ok(Some((idx, turn))) => self.turn_action(action, idx, turn, tx),
+            Ok(None) => {
+                let items = self.turns();
+                if items.is_empty() {
+                    self.entries.push(Entry::Error("no turns yet".into()));
+                } else {
+                    self.menu = Some(Menu::Turns {
+                        cursor: items.len() - 1,
+                        items,
+                        action,
+                    });
+                }
+            }
+        }
+    }
+
+    /// Edit and regenerate are refused while a turn runs (the server's
+    /// `"turn in flight"`); fork copies stored rows and is not. Pushes the
+    /// error and says whether `action` must wait.
+    fn turn_blocked(&mut self, action: TurnAction) -> bool {
+        let blocked = self.streaming && action != TurnAction::Fork;
+        if blocked {
+            self.entries
+                .push(Entry::Error("turn in flight — /cancel first".into()));
+        }
+        blocked
+    }
+
+    /// Apply `action` to the turn at `entries[idx]` (29 §6.2). Regenerate
+    /// drops the turn from the transcript now; the new one streams back in.
+    /// Edit only puts the opener in the editor: `submit` does the rest.
+    fn turn_action(
+        &mut self,
+        action: TurnAction,
+        idx: usize,
+        turn: i64,
+        tx: &UnboundedSender<Command>,
+    ) {
+        let Some(session) = self.session else { return };
+        // Checked again: a turn may have started while the picker was open.
+        if self.turn_blocked(action) {
+            return;
+        }
+        match action {
+            TurnAction::Regen => {
+                self.entries.truncate(idx);
+                send(tx, Command::Regenerate { session, turn });
+            }
+            TurnAction::Edit => {
+                // The line that ran `/edit` is gone; held pastes are what is left.
+                if !self.pastes.is_empty() {
+                    self.entries.push(Entry::Info("editor not empty".into()));
+                    return;
+                }
+                let Some(Entry::User { text, .. }) = self.entries.get(idx) else {
+                    return;
+                };
+                self.recall = Some(text.clone());
+                self.editing = Some((idx, turn));
+            }
+            TurnAction::Fork => send(
+                tx,
+                Command::Fork {
+                    session,
+                    through: Some(turn),
+                },
+            ),
+        }
+    }
+
+    /// Esc while `/edit` is pending: forget the edit and empty the editor.
+    /// Returns whether one was pending.
+    pub fn cancel_edit(&mut self) -> bool {
+        if self.editing.take().is_none() {
+            return false;
+        }
+        self.recall = Some(String::new());
+        true
     }
 
     /// Answer the shown approval and dismiss it locally; `ApprovalResolved`
@@ -2823,7 +3087,15 @@ impl Model {
         } else {
             ""
         };
-        format!("{session}  {state}{usage}{agents}{queued}{jobs}{skills}{scrolled}")
+        let editing = self.editing.map_or_else(String::new, |(idx, _)| {
+            let n = self.entries[..idx.min(self.entries.len())]
+                .iter()
+                .filter(|e| matches!(e, Entry::User { turn: Some(_), .. }))
+                .count()
+                + 1;
+            format!("  ·  editing #{n} — ⏎ sends, esc cancels")
+        });
+        format!("{session}  {state}{usage}{agents}{queued}{jobs}{skills}{editing}{scrolled}")
     }
 
     /// Line above the input: `model  ·  high  ·  ctx 12.3k / 200k (6%)  ·  cache 94%`
@@ -3220,6 +3492,7 @@ impl Model {
             Some(Menu::Acp { .. }) => self.acp_key(code, tx),
             Some(Menu::Skills { .. }) => self.skills_key(code, tx),
             Some(Menu::Logins { .. }) => self.logins_key(code, tx),
+            Some(Menu::Turns { .. }) => self.turns_key(code, tx),
         }
     }
 
@@ -3343,6 +3616,34 @@ impl Model {
                     Some(id) if Some(id) == self.session => {}
                     Some(id) => self.resume(id, tx),
                     None => {}
+                }
+            }
+            _ => {}
+        }
+        MenuKey::Consumed
+    }
+
+    /// `/edit`, `/regen`, `/fork` picker: Enter applies the action to the
+    /// highlighted turn.
+    fn turns_key(&mut self, code: KeyCode, tx: &UnboundedSender<Command>) -> MenuKey {
+        let Some(Menu::Turns {
+            items,
+            cursor,
+            action,
+        }) = &mut self.menu
+        else {
+            return MenuKey::Consumed;
+        };
+        match code {
+            KeyCode::Up => *cursor = cursor.saturating_sub(1),
+            KeyCode::Down => *cursor = (*cursor + 1).min(items.len().saturating_sub(1)),
+            KeyCode::Esc => self.menu = None,
+            KeyCode::Enter => {
+                let action = *action;
+                let picked = items.get(*cursor).map(|&(idx, turn, _)| (idx, turn));
+                self.menu = None;
+                if let Some((idx, turn)) = picked {
+                    self.turn_action(action, idx, turn, tx);
                 }
             }
             _ => {}
@@ -3686,17 +3987,21 @@ pub fn mcp_entry(text: &str) -> Result<(String, serde_json::Value), String> {
 
 /// Transcript entries for one user input: a skill injection (04 §2.4) is a
 /// collapsed `◇ name` card plus the user's words; an injected turn holding
-/// several peer messages becomes one card each; anything else is `you`.
-fn user_entries(text: String) -> Vec<Entry> {
+/// several peer messages becomes one card each; anything else is `you`,
+/// stamped with `turn` when the input opened one.
+fn user_entries(text: String, turn: Option<i64>) -> Vec<Entry> {
     if let Some((name, body, rest)) = agent::skills::injected(&text) {
         let mut out = vec![card(CardKind::Skill, name.to_owned(), body)];
         if !rest.is_empty() {
-            out.push(Entry::User(rest.to_owned()));
+            out.push(Entry::User {
+                text: rest.to_owned(),
+                turn,
+            });
         }
         return out;
     }
     match injected(&text) {
-        None => vec![Entry::User(text)],
+        None => vec![Entry::User { text, turn }],
         Some(cards) => cards
             .into_iter()
             .map(|(kind, title, body)| card(kind, title, &body))
@@ -3707,8 +4012,8 @@ fn user_entries(text: String) -> Vec<Entry> {
 /// Transcript entries for one history record.
 fn from_history(h: HistoryEntry) -> Vec<Entry> {
     match h {
-        HistoryEntry::User { text } => user_entries(text),
-        HistoryEntry::Assistant { text } => {
+        HistoryEntry::User { text, turn } => user_entries(text, turn),
+        HistoryEntry::Assistant { text, .. } => {
             vec![Entry::Assistant(Box::new(markdown::Text::complete(&text)))]
         }
         HistoryEntry::Tool {
@@ -4195,7 +4500,9 @@ mod tests {
             ("rwx", "https://api.ai.rwx.dev/v1", "sk-secret")
         );
         let leaked = m.entries.iter().any(|e| match e {
-            Entry::Info(t) | Entry::Error(t) | Entry::User(t) => t.contains("sk-secret"),
+            Entry::Info(t) | Entry::Error(t) | Entry::User { text: t, .. } => {
+                t.contains("sk-secret")
+            }
             _ => false,
         });
         assert!(!leaked, "api key must not land in the transcript");
@@ -4951,12 +5258,13 @@ mod tests {
         assert!(text.starts_with("look: line 0\nline 1\n"));
         assert!(text.ends_with(&"x".repeat(500)));
         assert!(m.pastes.is_empty(), "held pastes are dropped on submit");
-        assert!(matches!(&m.entries[0], Entry::User(t) if t.contains(&token)));
+        assert!(matches!(&m.entries[0], Entry::User { text: t, .. } if t.contains(&token)));
         // The agent echoes the expanded text; the token card already shows it.
         let session = SessionId::new();
         m.apply_agent(AgentEvent::TurnStarted {
             session,
             turn: runtime::TurnId::new(),
+            turn_seq: 0,
             text: text.clone(),
             model: "m".into(),
         });
@@ -4968,6 +5276,7 @@ mod tests {
         m.apply_agent(AgentEvent::TurnStarted {
             session,
             turn: runtime::TurnId::new(),
+            turn_seq: 2,
             text: "from another frontend".into(),
             model: "m".into(),
         });
@@ -4999,7 +5308,7 @@ mod tests {
         assert_eq!(text, "describe");
         assert_eq!(files, vec![shot.path.clone(), dropped.path.clone()]);
         assert!(m.pastes.is_empty());
-        assert!(matches!(&m.entries[0], Entry::User(t) if t.contains(&t1)));
+        assert!(matches!(&m.entries[0], Entry::User { text: t, .. } if t.contains(&t1)));
         // A token the user deleted drops its image.
         m.attach(shot);
         let t2 = m.attach(dropped);
@@ -5016,13 +5325,19 @@ mod tests {
         let mut m = Model::default();
         for _ in 0..10 {
             m.entries.push(Entry::Info("x".into()));
-            m.entries.push(Entry::User("a\nb".into()));
+            m.entries.push(Entry::User {
+                text: "a\nb".into(),
+                turn: None,
+            });
         }
         assert_eq!(m.tail(1, 80), (19, 0));
         assert_eq!(m.tail(7, 80), (18, 0), "Info 1 + User 6 rows");
         assert_eq!(m.tail(1000, 80), (0, 0), "short histories draw whole");
         // A long paragraph wraps: at 20 columns it fills the window alone.
-        m.entries.push(Entry::User("x".repeat(200)));
+        m.entries.push(Entry::User {
+            text: "x".repeat(200),
+            turn: None,
+        });
         assert_eq!(m.tail(8, 20), (20, 0));
         // A reply taller than the window draws only its last lines: 40
         // one-row paragraphs (blank-separated → 79 rendered lines) plus a
@@ -5044,7 +5359,10 @@ mod tests {
         let mut m = Model::default();
         // 20 user cards of 6 rows each (2 text rows + border and title).
         for i in 0..20 {
-            m.entries.push(Entry::User(format!("{i}\n{i}")));
+            m.entries.push(Entry::User {
+                text: format!("{i}\n{i}"),
+                turn: None,
+            });
         }
         // 120 rows of history, a 10-row view. Short histories cannot scroll.
         let mut short = Model::default();
@@ -5077,7 +5395,10 @@ mod tests {
         // Growth below an anchor leaves it where it was.
         m.scroll(-30, 10, 80);
         let before = m.anchor;
-        m.entries.push(Entry::User("new".into()));
+        m.entries.push(Entry::User {
+            text: "new".into(),
+            turn: None,
+        });
         assert_eq!(m.anchor, before);
         // Reloading the transcript follows the tail again.
         m.entries.clear();
@@ -5103,7 +5424,7 @@ mod tests {
         assert_eq!(text, "also do X");
         assert_eq!(m.queued.len(), 1);
         assert!(
-            !m.entries.iter().any(|e| matches!(e, Entry::User(_))),
+            !m.entries.iter().any(|e| matches!(e, Entry::User { .. })),
             "a queued steer has no transcript card yet"
         );
         assert!(m.status().contains("1 queued"));
@@ -5129,13 +5450,14 @@ mod tests {
         });
         assert_eq!(m.queued.len(), 1, "injected steer left the queue");
         assert!(
-            matches!(m.entries.last(), Some(Entry::User(t)) if t == "also do X"),
+            matches!(m.entries.last(), Some(Entry::User { text: t, turn: None }) if t == "also do X"),
             "the card lands after the streamed text"
         );
         let before = m.entries.len();
         m.apply_agent(AgentEvent::TurnStarted {
             session: s,
             turn,
+            turn_seq: 7,
             text: "also do X".into(),
             model: "m".into(),
         });
@@ -5143,6 +5465,10 @@ mod tests {
             m.entries.len(),
             before,
             "the turn echo is not a second card"
+        );
+        assert!(
+            matches!(m.entries.last(), Some(Entry::User { turn: Some(7), .. })),
+            "the steer that opened the turn takes its seq"
         );
         m.apply_agent(AgentEvent::InputWithdrawn {
             session: s,
@@ -5200,6 +5526,7 @@ mod tests {
         m.apply_agent(AgentEvent::TurnStarted {
             session: s,
             turn: TurnId::new(),
+            turn_seq: 1,
             text,
             model: "m".into(),
         });
@@ -5207,7 +5534,7 @@ mod tests {
         assert!(
             matches!(&m.entries[n - 2], Entry::Card { kind: CardKind::Skill, title, .. } if title == "caveman")
         );
-        assert!(matches!(&m.entries[n - 1], Entry::User(t) if t == "lite"));
+        assert!(matches!(&m.entries[n - 1], Entry::User { text: t, turn: Some(1) } if t == "lite"));
 
         // The badge follows the agent's set: grows on load, empties on compaction.
         m.apply_agent(AgentEvent::SkillsChanged {
@@ -5333,5 +5660,163 @@ mod tests {
             timed_out: false,
         }));
         assert!(m.ask().is_none());
+    }
+
+    /// A model showing session `s` with two finished turns: seqs 1 and 3.
+    fn two_turns(s: SessionId) -> Model {
+        let mut m = Model::new("m".into(), true);
+        m.session = Some(s);
+        for (seq, q, a) in [
+            (1, "first question\nmore", "reply one"),
+            (3, "second", "reply two"),
+        ] {
+            m.entries.push(Entry::User {
+                text: q.into(),
+                turn: Some(seq),
+            });
+            m.entries
+                .push(Entry::Assistant(Box::new(markdown::Text::complete(a))));
+        }
+        m
+    }
+
+    #[test]
+    fn turn_started_stamps_the_own_send_with_its_seq() {
+        let (tx, _rx) = unbounded_channel();
+        let mut m = Model::new("m".into(), true);
+        let s = SessionId::new();
+        m.session = Some(s);
+        m.submit("hello", &tx);
+        m.apply_agent(AgentEvent::TurnStarted {
+            session: s,
+            turn: TurnId::new(),
+            turn_seq: 5,
+            text: "hello".into(),
+            model: "m".into(),
+        });
+        assert_eq!(m.entries.len(), 1, "own send is not echoed twice");
+        assert!(matches!(&m.entries[0], Entry::User { text, turn: Some(5) } if text == "hello"));
+        assert_eq!(m.turn_seq, Some(5));
+    }
+
+    #[test]
+    fn regen_truncates_at_the_turn_and_refuses_mid_turn() {
+        let (tx, mut rx) = unbounded_channel();
+        let s = SessionId::new();
+        let mut m = two_turns(s);
+        m.submit("/regen 1", &tx);
+        assert!(
+            m.entries.is_empty(),
+            "turn 1 and everything after it is dropped"
+        );
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::Regenerate { session, turn: 1 }) if session == s
+        ));
+
+        let mut m = two_turns(s);
+        m.submit("/regen 2", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::Regenerate { turn: 3, .. })
+        ));
+        assert!(
+            m.entries
+                .iter()
+                .any(|e| matches!(e, Entry::User { text, .. } if text == "first question\nmore"))
+        );
+
+        let mut m = two_turns(s);
+        m.streaming = true;
+        m.submit("/regen", &tx);
+        assert!(rx.try_recv().is_err(), "nothing is sent while a turn runs");
+        assert!(m.menu.is_none());
+        assert!(
+            matches!(m.entries.last(), Some(Entry::Error(t)) if t.starts_with("turn in flight"))
+        );
+
+        let mut m = two_turns(s);
+        m.submit("/regen 9", &tx);
+        assert!(matches!(m.entries.last(), Some(Entry::Error(t)) if t == "no turn #9"));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn edit_recalls_the_opener_then_replaces_the_turn() {
+        let (tx, mut rx) = unbounded_channel();
+        let s = SessionId::new();
+        let mut m = two_turns(s);
+        m.submit("/edit 2", &tx);
+        assert_eq!(m.editing, Some((2, 3)));
+        assert_eq!(m.recall.take().as_deref(), Some("second"));
+        assert!(m.status().contains("editing #2"));
+        assert!(rx.try_recv().is_err(), "edit sends nothing until ⏎");
+        // A slash command in between runs and leaves the edit pending.
+        m.submit("/sessions", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::ListSessions)));
+        assert_eq!(m.editing, Some((2, 3)));
+
+        m.submit("new text", &tx);
+        assert!(m.editing.is_none());
+        assert_eq!(m.entries.len(), 3, "the edited turn's tail is gone");
+        assert!(
+            matches!(m.entries.last(), Some(Entry::User { text, turn: None }) if text == "new text")
+        );
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::EditTurn { session, turn: 3, text }) if session == s && text == "new text"
+        ));
+        assert!(!m.status().contains("editing"));
+
+        m.submit("/edit 1", &tx);
+        assert!(m.editing.is_some());
+        assert!(m.cancel_edit());
+        assert!(m.editing.is_none());
+        assert_eq!(m.recall.take().as_deref(), Some(""));
+        assert!(!m.cancel_edit(), "nothing left to cancel");
+    }
+
+    #[test]
+    fn fork_picker_opens_on_the_newest_turn() {
+        let (tx, mut rx) = unbounded_channel();
+        let s = SessionId::new();
+        let mut m = two_turns(s);
+        m.submit("/fork", &tx);
+        assert!(matches!(
+            &m.menu,
+            Some(Menu::Turns { items, cursor: 1, action: TurnAction::Fork })
+                if items.len() == 2 && items[0].2 == "first question" && items[1] == (2, 3, "second".to_owned())
+        ));
+        assert!(!m.input_focused(), "the picker is modal");
+        m.menu_key(KeyCode::Up, "", &tx);
+        m.menu_key(KeyCode::Down, "", &tx);
+        assert_eq!(m.menu_key(KeyCode::Enter, "", &tx), MenuKey::Consumed);
+        assert!(m.menu.is_none());
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::Fork { session, through: Some(3) }) if session == s
+        ));
+        assert_eq!(m.entries.len(), 4, "the source transcript is untouched");
+
+        // The reply switches to the copy.
+        let id = SessionId::new();
+        m.apply(UiEvent::Forked(
+            id,
+            Loaded {
+                history: vec![HistoryEntry::User {
+                    text: "first question\nmore".into(),
+                    turn: Some(1),
+                }],
+                ..Loaded::default()
+            },
+        ));
+        assert_eq!(m.session, Some(id));
+        assert!(matches!(&m.entries[0], Entry::User { turn: Some(1), .. }));
+        assert!(matches!(m.entries.last(), Some(Entry::Info(t)) if t.starts_with("forked")));
+
+        let mut m = Model::new("m".into(), true);
+        m.session = Some(s);
+        m.submit("/fork", &tx);
+        assert!(matches!(m.entries.last(), Some(Entry::Error(t)) if t == "no turns yet"));
     }
 }

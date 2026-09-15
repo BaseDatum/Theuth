@@ -662,6 +662,13 @@ Neither deletes. The first write after an undo — `Session::claim` calls
 >= cut_at` in one transaction and sets `cut_at = NULL`; the new turn then
 appends after the visible tail as usual. A no-op when `cut_at` is `NULL`.
 
+**General form (29).** `Store::cut_to(id, turn)` moves `cut_at` to any
+visible turn start and returns the opener row; `undo` is the last-turn
+case. Edit and regenerate (`Session`'s `RestartTurn`) cut and start a turn
+in one handler, so the first write commits the cut exactly as after
+`/undo`. A turn start is the only legal cut position; the store refuses
+anything else (`"not a turn start"`).
+
 **Turn start** (`store::is_turn_start(prev, m)`): a user-role message whose
 predecessor is nothing or an assistant-role message. Steering and harness
 notes follow Tool or User rows, so they never count; a queued batch is

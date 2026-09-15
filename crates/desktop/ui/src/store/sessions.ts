@@ -35,8 +35,16 @@ export type Entry = { id: string } & (
       skill?: string
       /** Attachment paths sent with the text (only known for our own sends). */
       files?: string[]
+      /** Seq of this row when it opens a turn (29 §5.1); steers and harness notes have none. */
+      turn?: number
     }
-  | { kind: 'assistant'; text: string; open: boolean }
+  | {
+      kind: 'assistant'
+      text: string
+      open: boolean
+      /** Opener seq of the turn this reply belongs to. */
+      turn?: number
+    }
   | { kind: 'reasoning'; text: string; done: boolean }
   | {
       kind: 'tool'
@@ -90,6 +98,8 @@ export type SessionSlice = {
   title?: string
   /** Turn whose `InputInjected` already moved a steer into the transcript; its `TurnStarted` echo is skipped. */
   lastInjected?: string
+  /** Opener seq of the running (or last) turn, from `TurnStarted`. */
+  turnSeq?: number
   /** A `browser_*` tool ran in this session: the header shows the live-view globe. */
   browser: boolean
   /** The live browser dialog is open (globe click or `BrowserShowLive`). */
@@ -107,6 +117,8 @@ type SessionsStore = {
   loadHistory(id: string, loaded: LoadedPage, mode: 'replace' | 'prepend'): void
   /** Show our own input at once and skip its echo. */
   markSent(id: string, text: string, files?: string[]): void
+  /** Drop the turn opened at `turn` and everything after it (before `regenerate`/`edit_turn`); no-op when absent. */
+  truncate(id: string, turn: number): void
   ensure(id: string): void
   /** Replace the subtree rows from `list_agents`. */
   setChildren(id: string, agents: AgentInfo[]): void
@@ -168,6 +180,13 @@ export const useSessions = create<SessionsStore>()(
         const entry: Entry = { id: nextId(), kind: 'user', text, ...(files?.length ? { files } : {}) }
         return { sessions: { ...st.sessions, [id]: { ...cur, entries: [...cur.entries, entry] } } }
       })
+    },
+    truncate(id, turn) {
+      const cur = get().sessions[id]
+      if (!cur) return
+      const at = cur.entries.findIndex((e) => (e.kind === 'user' || e.kind === 'assistant') && e.turn === turn)
+      if (at < 0) return
+      set((st) => ({ sessions: { ...st.sessions, [id]: { ...cur, entries: cur.entries.slice(0, at) } } }))
     },
     ensure(id) {
       if (!get().sessions[id]) set((st) => ({ sessions: { ...st.sessions, [id]: empty(id) } }))

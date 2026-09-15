@@ -15,7 +15,7 @@ function run(events: WireEvent[], c = ctx()) {
 
 test('deltas append to one open assistant entry; a tool event closes it', () => {
   const s = run([
-    { type: 'TurnStarted', session: S, turn: T, text: 'hi', model: 'm' },
+    { type: 'TurnStarted', session: S, turn: T, text: 'hi', model: 'm', turn_seq: 1 },
     { type: 'TextDelta', session: S, turn: T, text: 'Hel' },
     { type: 'TextDelta', session: S, turn: T, text: 'lo' },
     { type: 'ToolCallStarted', session: S, turn: T, call_id: 'c1', name: 'shell', args: { command: 'ls' } },
@@ -30,7 +30,7 @@ test('deltas append to one open assistant entry; a tool event closes it', () => 
 
 test('pending tool is replaced by its start (same id), finished by call id, abandoned ones pruned', () => {
   let s = run([
-    { type: 'TurnStarted', session: S, turn: T, text: 'x', model: 'm' },
+    { type: 'TurnStarted', session: S, turn: T, text: 'x', model: 'm', turn_seq: 1 },
     { type: 'ToolCallPending', session: S, turn: T, call_id: 'c1', name: 'read' },
     { type: 'ToolCallPending', session: S, turn: T, call_id: 'c2.1', name: 'shell' },
   ])
@@ -59,24 +59,24 @@ test('InputInjected moves the steer into the transcript and suppresses its echo'
   const s = run([
     { type: 'InputQueued', session: S, id: 'i1', text: 'steer' },
     { type: 'InputInjected', session: S, id: 'i1', turn: 'T2' },
-    { type: 'TurnStarted', session: S, turn: 'T2', text: 'steer', model: 'm' },
+    { type: 'TurnStarted', session: S, turn: 'T2', text: 'steer', model: 'm', turn_seq: 4 },
   ])
   expect(s.queued).toEqual([])
   expect(s.entries).toHaveLength(1)
-  expect(s.entries[0]).toMatchObject({ kind: 'user', text: 'steer', injected: true })
+  expect(s.entries[0]).toMatchObject({ kind: 'user', text: 'steer', injected: true, turn: 4 })
   expect(s.lastInjected).toBeUndefined()
 })
 
 test('TurnStarted echo: skipped for our own send (once) and harness wrappers, skill shows a chip', () => {
   const c = ctx()
   c.sent.add('mine')
-  let s = apply(empty(S), { type: 'TurnStarted', session: S, turn: T, text: 'mine', model: 'm' }, c)
+  let s = apply(empty(S), { type: 'TurnStarted', session: S, turn: T, text: 'mine', model: 'm', turn_seq: 1 }, c)
   expect(s.entries).toEqual([])
   expect(c.sent.size).toBe(0)
-  s = apply(s, { type: 'TurnStarted', session: S, turn: T, text: '<message from="p">\nhi\n</message>', model: 'm' }, c)
+  s = apply(s, { type: 'TurnStarted', session: S, turn: T, text: '<message from="p">\nhi\n</message>', model: 'm', turn_seq: 2 }, c)
   expect(s.entries).toEqual([])
-  s = apply(s, { type: 'TurnStarted', session: S, turn: T, text: '<skill name="k">\nb\n</skill>\n\nwords', model: 'm' }, c)
-  expect(s.entries[0]).toMatchObject({ kind: 'user', skill: 'k', text: 'words' })
+  s = apply(s, { type: 'TurnStarted', session: S, turn: T, text: '<skill name="k">\nb\n</skill>\n\nwords', model: 'm', turn_seq: 3 }, c)
+  expect(s.entries[0]).toMatchObject({ kind: 'user', skill: 'k', text: 'words', turn: 3 })
 })
 
 test('Compacted: clear wipes, other styles add a divider after the closed tail', () => {
@@ -141,13 +141,20 @@ test('fromHistory maps roles; a tool result tuple becomes a result', () => {
     result: { output: 'out', isError: true, files: ['/s.png'] },
   })
   expect(fromHistory({ role: 'tool', call_id: 'c', name: 'read', args: null, result: null, files: [] })[0]).not.toHaveProperty('result')
-  expect(fromHistory({ role: 'assistant', text: 'a' })[0]).toMatchObject({ kind: 'assistant', open: false })
+  expect(fromHistory({ role: 'assistant', text: 'a', turn: 3 })[0]).toMatchObject({ kind: 'assistant', open: false, turn: 3 })
   expect(fromHistory({ role: 'compacted', epoch: 1, summary: 's', style: 'cut' })[0]).toMatchObject({ kind: 'compacted', summary: 's' })
-  expect(fromHistory({ role: 'user', text: '<context_summary>x</context_summary>' })).toEqual([])
-  expect(fromHistory({ role: 'user', text: '<message from="p">\nhi\n</message>\n<message from="q">\nyo\n</message>' })).toMatchObject([
+  expect(fromHistory({ role: 'user', text: '<context_summary>x</context_summary>', turn: null })).toEqual([])
+  expect(fromHistory({ role: 'user', text: '<message from="p">\nhi\n</message>\n<message from="q">\nyo\n</message>', turn: 9 })).toMatchObject([
     { kind: 'peer', from: 'p', text: 'hi' },
     { kind: 'peer', from: 'q', text: 'yo' },
   ])
+})
+
+test('fromHistory carries the turn on openers; a steer has none', () => {
+  expect(fromHistory({ role: 'user', text: 'ask', turn: 3 })[0]).toMatchObject({ kind: 'user', turn: 3 })
+  expect(fromHistory({ role: 'user', text: '<skill name="k">\nb\n</skill>\n\nwords', turn: 3 })[0]).toMatchObject({ kind: 'user', skill: 'k', turn: 3 })
+  const steer = fromHistory({ role: 'user', text: 'steer', turn: null })[0]
+  expect(steer?.kind === 'user' ? steer.turn : 'not a user row').toBeUndefined()
 })
 
 test('store: Lagged counts, history replace then prepend keeps newer entries and sets paging', () => {
@@ -155,17 +162,52 @@ test('store: Lagged counts, history replace then prepend keeps newer entries and
   st.applyEvents([{ type: 'Lagged', count: 3 }, { type: 'TextDelta', session: S, turn: T, text: 'live' }])
   expect(useSessions.getState().lagged).toBe(3)
   const page = { running: false, model: 'm', effort: null, queued: [], undone: 0, agent: null, name: null, parent: null, skills: [] }
-  st.loadHistory(S, { ...page, history: [{ role: 'user', text: 'two' }], first_seq: 7, more: true }, 'replace')
+  st.loadHistory(S, { ...page, history: [{ role: 'user', text: 'two', turn: 7 }], first_seq: 7, more: true }, 'replace')
   let s = useSessions.getState().sessions[S]
   expect(s?.entries.map((e) => e.kind)).toEqual(['user'])
   expect(s).toMatchObject({ loaded: true, firstSeq: 7, more: true, model: 'm' })
-  st.loadHistory(S, { ...page, history: [{ role: 'user', text: 'one' }], first_seq: 2, more: false }, 'prepend')
+  st.loadHistory(S, { ...page, history: [{ role: 'user', text: 'one', turn: 2 }], first_seq: 2, more: false }, 'prepend')
   s = useSessions.getState().sessions[S]
   expect(s?.entries.map((e) => (e.kind === 'user' ? e.text : e.kind))).toEqual(['one', 'two'])
   expect(s).toMatchObject({ firstSeq: 2, more: false })
   st.markSent(S, 'mine', ['/a.png'])
-  st.applyEvents([{ type: 'TurnStarted', session: S, turn: T, text: 'mine', model: 'm' }])
+  st.applyEvents([{ type: 'TurnStarted', session: S, turn: T, text: 'mine', model: 'm', turn_seq: 9 }])
   s = useSessions.getState().sessions[S]
   expect(s?.entries.at(-1)).toMatchObject({ kind: 'user', text: 'mine', files: ['/a.png'] })
   expect(s?.entries).toHaveLength(3)
+})
+
+test('store: TurnStarted stamps the optimistic send and its reply with the turn; truncate drops from that turn', () => {
+  const st = useSessions.getState()
+  const page = { running: false, model: 'm', effort: null, queued: [], undone: 0, agent: null, name: null, parent: null, skills: [], first_seq: 1, more: false }
+  st.loadHistory(
+    S,
+    {
+      ...page,
+      history: [
+        { role: 'user', text: 'one', turn: 1 },
+        { role: 'assistant', text: 'A', turn: 1 },
+      ],
+    },
+    'replace',
+  )
+  st.markSent(S, 'two')
+  expect(useSessions.getState().sessions[S]?.entries.at(-1)).not.toHaveProperty('turn')
+  st.applyEvents([
+    { type: 'TurnStarted', session: S, turn: T, text: 'two', model: 'm', turn_seq: 7 },
+    { type: 'TextDelta', session: S, turn: T, text: 'B' },
+  ])
+  let s = useSessions.getState().sessions[S]
+  expect(s?.turnSeq).toBe(7)
+  expect(s?.entries.map((e) => (e.kind === 'user' || e.kind === 'assistant' ? [e.kind, e.turn] : e.kind))).toEqual([
+    ['user', 1],
+    ['assistant', 1],
+    ['user', 7],
+    ['assistant', 7],
+  ])
+  st.truncate(S, 99)
+  expect(useSessions.getState().sessions[S]).toBe(s)
+  st.truncate(S, 7)
+  s = useSessions.getState().sessions[S]
+  expect(s?.entries.map((e) => (e.kind === 'user' ? e.text : e.kind))).toEqual(['one', 'assistant'])
 })

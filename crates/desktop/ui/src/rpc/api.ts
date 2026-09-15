@@ -64,6 +64,10 @@ export interface Api {
   compact_style(): Promise<CompactStyle>
   /** Computer-control permissions and attached displays (27 §6); rejects when the plugin is disabled. */
   computer_permissions(): Promise<PermissionStatus>
+  /** Replace the turn opened at `turn` with `text` (29 §3); refused mid-turn. */
+  edit_turn(session: SessionId, turn: number, text: string, files: string[]): Promise<null>
+  /** New session with the conversation through the turn opened at `through` (all when `null`). */
+  fork_session(session: SessionId, through: number | null): Promise<SessionId>
   get_prompt(session: SessionId | null): Promise<string>
   info(): Promise<Info>
   knowledge_delete(id: string): Promise<null>
@@ -102,6 +106,8 @@ export interface Api {
   mcp_status(): Promise<McpProgress>
   new_session(): Promise<SessionId>
   redo(session: SessionId): Promise<string>
+  /** Regenerate the reply to the turn opened at `turn` (29 §3); refused mid-turn. */
+  regenerate(session: SessionId, turn: number): Promise<null>
   remove_acp(name: string): Promise<null>
   remove_mcp_server(name: string): Promise<null>
   remove_provider(name: string): Promise<null>
@@ -159,6 +165,8 @@ export const METHODS = [
   'compact_style',
   'computer_permissions',
   'delete_session',
+  'edit_turn',
+  'fork_session',
   'get_prompt',
   'info',
   'knowledge_delete',
@@ -192,6 +200,7 @@ export const METHODS = [
   'mcp_status',
   'new_session',
   'redo',
+  'regenerate',
   'remove_acp',
   'remove_mcp_server',
   'remove_provider',
