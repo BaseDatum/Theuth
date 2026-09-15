@@ -28,6 +28,16 @@ test('deltas append to one open assistant entry; a tool event closes it', () => 
   expect(s.waiting).toBe(false)
 })
 
+test('tool-only turns omit whitespace assistant rows', () => {
+  const s = run([
+    { type: 'TurnStarted', session: S, turn: T, text: 'hi', model: 'm', turn_seq: 1 },
+    { type: 'TextDelta', session: S, turn: T, text: '\n' },
+    { type: 'ToolCallStarted', session: S, turn: T, call_id: 'c1', name: 'read', args: { path: 'a' } },
+  ])
+  expect(s.entries.map((e) => e.kind)).toEqual(['user', 'tool'])
+  expect(fromHistory({ role: 'assistant', text: ' \n', turn: 1 })).toEqual([])
+})
+
 test('pending tool is replaced by its start (same id), finished by call id, abandoned ones pruned', () => {
   let s = run([
     { type: 'TurnStarted', session: S, turn: T, text: 'x', model: 'm', turn_seq: 1 },

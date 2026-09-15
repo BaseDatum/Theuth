@@ -90,7 +90,7 @@ export function fromHistory(h: HistoryEntry): Entry[] {
     case 'user':
       return userEntries(h.text, classify(h.text), undefined, h.turn ?? undefined)
     case 'assistant':
-      return [{ id: nextId(), kind: 'assistant', text: h.text, open: false, turn: h.turn ?? undefined }]
+      return h.text.trim() ? [{ id: nextId(), kind: 'assistant', text: h.text, open: false, turn: h.turn ?? undefined }] : []
     case 'tool':
       return [
         {
@@ -117,7 +117,7 @@ function closeTail(s: SessionSlice, e: WireEvent): SessionSlice {
     return { ...s, entries: replaceAt(s.entries, at, { ...last, done: true }) }
   }
   if (last?.kind === 'assistant' && last.open && e.type !== 'TextDelta') {
-    return { ...s, entries: replaceAt(s.entries, at, { ...last, open: false }) }
+    return { ...s, entries: last.text.trim() ? replaceAt(s.entries, at, { ...last, open: false }) : s.entries.slice(0, at) }
   }
   return s
 }
