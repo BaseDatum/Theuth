@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { MoreHorizontal } from 'lucide-react'
+import { Check, MoreHorizontal } from 'lucide-react'
 import { memo, useState } from 'react'
 import { toast } from 'sonner'
 import {
@@ -22,10 +22,27 @@ import {
 import { Input } from '@/components/ui/input'
 import { SidebarMenuAction, SidebarMenuButton } from '@/components/ui/sidebar'
 import { queryKeys, useApi } from '@/lib/rpc'
+import type { SelectMode } from '@/lib/selection'
+import { cn } from '@/lib/utils'
 import { useSessionField } from '@/store/sessions'
 
-/** One chat in the list: title (live from `TitleChanged`), active highlight, hover `…` menu with inline rename and delete. */
-export const SessionItem = memo(function SessionItem({ id, title, active }: { id: string; title: string; active: boolean }) {
+/**
+ * One chat in the list: title (live from `TitleChanged`), active highlight, hover `…` menu with
+ * inline rename and delete. ⌘-click / ⇧-click / menu > Select feed the list's multi-selection.
+ */
+export const SessionItem = memo(function SessionItem({
+  id,
+  title,
+  active,
+  selected,
+  select,
+}: {
+  id: string
+  title: string
+  active: boolean
+  selected: boolean
+  select(id: string, mode: SelectMode): void
+}) {
   const api = useApi()
   const qc = useQueryClient()
   const navigate = useNavigate()
@@ -70,8 +87,26 @@ export const SessionItem = memo(function SessionItem({ id, title, active }: { id
         />
       ) : (
         <>
-          <SidebarMenuButton asChild isActive={active} className="h-9 rounded-[10px] px-2.5">
-            <Link to="/c/$session" params={{ session: id }} title={shown}>
+          <SidebarMenuButton
+            asChild
+            isActive={active}
+            aria-selected={selected}
+            className={cn('h-9 rounded-[10px] px-2.5', selected && 'bg-sidebar-accent')}
+          >
+            <Link
+              to="/c/$session"
+              params={{ session: id }}
+              title={shown}
+              onClick={(e) => {
+                if (e.metaKey || e.shiftKey) {
+                  e.preventDefault()
+                  select(id, e.shiftKey ? 'range' : 'toggle')
+                } else {
+                  select(id, 'clear')
+                }
+              }}
+            >
+              {selected && <Check className="size-4 shrink-0" />}
               <span className="truncate">{shown}</span>
             </Link>
           </SidebarMenuButton>
@@ -83,6 +118,7 @@ export const SessionItem = memo(function SessionItem({ id, title, active }: { id
             </DropdownMenuTrigger>
             <DropdownMenuContent side="right" align="start" className="w-48">
               <DropdownMenuItem onSelect={() => setEditing(shown)}>Rename</DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => select(id, 'toggle')}>{selected ? 'Deselect' : 'Select'}</DropdownMenuItem>
               <DropdownMenuItem onSelect={() => void navigator.clipboard.writeText(id)}>Copy id</DropdownMenuItem>
               <DropdownMenuItem variant="destructive" onSelect={() => setConfirming(true)}>
                 Delete
