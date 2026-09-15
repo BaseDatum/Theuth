@@ -14,6 +14,10 @@
     "core:window:allow-close",
     "core:window:allow-start-dragging",
     "opener:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "x-apple.systempreferences:*" }]
+    },
     "core:tray:allow-get-by-id",
     "core:tray:allow-set-title",
     "notification:default",

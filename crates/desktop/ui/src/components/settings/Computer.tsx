@@ -1,7 +1,8 @@
 import { useQuery } from '@tanstack/react-query'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { Check, X } from 'lucide-react'
-import { Empty, Row, Section } from '@/components/settings/shared'
+import { toast } from 'sonner'
+import { Empty, Row, Section, errorText } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { queryKeys, useApi } from '@/lib/rpc'
 
@@ -53,7 +54,7 @@ function Permission({ label, granted, pane }: { label: string; granted: boolean;
         </span>
       }
     >
-      <Button variant="outline" size="sm" onClick={() => void openUrl(`${PRIVACY}?${pane}`)}>
+      <Button variant="outline" size="sm" onClick={() => openUrl(`${PRIVACY}?${pane}`).catch((e) => toast.error(errorText(e)))}>
         Open System Settings
       </Button>
     </Row>
