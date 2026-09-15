@@ -18,6 +18,7 @@ browser = { workspace = true }
 computer = { workspace = true }
 search-providers = { workspace = true }
 agent = { workspace = true }
+surface = { workspace = true }
 rpc = { workspace = true }
 signal = { workspace = true }
 slack = { workspace = true }

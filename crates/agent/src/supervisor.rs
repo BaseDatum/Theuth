@@ -2350,10 +2350,14 @@ fn configured(auth: Auth) -> Arc<dyn Fn(&str) -> bool + Send + Sync> {
 
 /// Open the store, spawn and register the supervisor.
 pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
-    let cfg: AgentConfig = rt.section("agent").unwrap_or_else(|e| {
+    let mut cfg: AgentConfig = rt.section("agent").unwrap_or_else(|e| {
         tracing::debug!("no [agent] config section, using defaults: {e}");
         AgentConfig::default()
     });
+    // Design doc 30 §12: its own top-level section, carried on `cfg` so the loop sees it.
+    if rt.config.contains("surface") {
+        cfg.surface = rt.section("surface")?;
+    }
     let cfg = Arc::new(cfg);
     let store = Store::open(&rt.data_dir.join("sessions.sqlite")).await?;
     let creds = runtime::credentials(&rt.data_dir);
@@ -2431,7 +2435,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
                 plugin: "agent",
                 text: format!(
                     "This harness is `wth`; its state is under {d}: config.yaml (every plugin's section: \
-                     `agent.model` = default `provider/model`, `tools.policy`, `rpc`, `web`, `knowledge`, `signal`), \
+                     `agent.model` = default `provider/model`, `tools.policy`, `rpc`, `web`, `knowledge`, `surface`, `signal`), \
                      credentials.yaml (provider -> API key, mode 0600), prompt.md (standing instructions, read every call), \
                      skills/ (markdown skills; this index), knowledge/, sessions.sqlite, logs/wth.log.<date>. \
                      Load the `harness` skill before editing any of them; it has the full layout and every key. \
@@ -2441,6 +2445,14 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
                 ),
             })
             .await;
+        if cfg.surface.enabled {
+            let _ = reg
+                .ask(RegisterPrompt {
+                    plugin: "surface",
+                    text: surface::prompt_block(),
+                })
+                .await;
+        }
         let dir = skills::dir(&data_dir);
         let _ = reg
             .ask(RegisterTool(Arc::new(LoadSkillTool { dir: dir.clone() })))

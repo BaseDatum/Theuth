@@ -984,6 +984,10 @@ pub struct AgentConfig {
     pub title_model: Option<String>,
     /// How the loop uses the knowledge plugin (12 §9.2); the store itself is `knowledge.enabled`.
     pub knowledge: KnowledgeUse,
+    /// The top-level `surface:` section (design doc 30 §12), filled by
+    /// `supervisor::start` — not part of `agent:`.
+    #[serde(skip)]
+    pub surface: SurfaceConfig,
 }
 
 impl Default for AgentConfig {
@@ -998,6 +1002,7 @@ impl Default for AgentConfig {
             compact_style: CompactStyle::Summary,
             title_model: None,
             knowledge: KnowledgeUse::default(),
+            surface: SurfaceConfig::default(),
         }
     }
 }
@@ -1024,6 +1029,25 @@ impl Default for KnowledgeUse {
             hint_rounds: knowledge::KNOWLEDGE_HINT_ROUNDS,
             harvest_every: 3,
             harvest_max: 8,
+        }
+    }
+}
+
+/// `[surface]` config section (design doc 30 §12): Mermaid / json-render blocks in replies.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(default)]
+pub struct SurfaceConfig {
+    /// `false`: no prompt block, no rendering hook; fences stay code blocks everywhere.
+    pub enabled: bool,
+    /// `false`: no `<surface_error>` round; frontends still render what parses.
+    pub correct: bool,
+}
+
+impl Default for SurfaceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            correct: true,
         }
     }
 }

@@ -1,0 +1,13 @@
+Summary
+  Two of three gates pass; notarization is blocked on the certificate.
+
+Checks
+  Gate     │ Result  │ Time
+  ─────────┼─────────┼─────────
+  clippy   │ pass    │ 41 s
+  tests    │ pass    │ 2 m 10 s
+  notarize │ blocked │ —
+
+Todo
+  [ ] renew signing certificate
+  [ ] re-run notarize

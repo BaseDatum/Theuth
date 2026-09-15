@@ -54,6 +54,7 @@ rpc: {listen: 127.0.0.1:7777}
 web: {enabled: true, engines: [duckduckgo, wikipedia, arxiv, github], fetch_max_chars: 4000}
 search_providers: {firecrawl: {base_url: https://api.firecrawl.dev}}   # key in credentials.yaml under the same name
 knowledge: {enabled: true}
+surface: {enabled: true, correct: true}   # replies may draw mermaid / json-render; correct = one fix-up round on invalid json-render
 signal: {enabled: true, device_name: wth, owner: "+1555…", allowed: []}
 ```
 
@@ -113,7 +114,8 @@ A skill is a markdown file with optional front matter (`name`,
 `description`, `always: true` to inline it every call). The index in your
 system prompt lists them; `load_skill` fetches a body; `add_skill` /
 `remove_skill` write local ones; `add_skill_repo` / `sync_skills` manage
-cloned repos (read-only). This file is one; it is rewritten on every start.
+cloned repos (read-only). This file and `visualize` (drawing in replies,
+design doc 30) are binary-owned; both are rewritten on every start.
 
 ## Sessions, subagents, jobs, knowledge
 

@@ -9,7 +9,7 @@ use crate::spec::{Component, Element, Spec};
 use crate::{MAX_DEPTH, MAX_ELEMENTS, SpecError};
 
 /// Components whose `children` may be non-empty.
-const CONTAINERS: [&str; 5] = ["Card", "Stack", "Grid", "Tabs", "Accordion"];
+pub(crate) const CONTAINERS: [&str; 5] = ["Card", "Stack", "Grid", "Tabs", "Accordion"];
 
 pub(crate) fn err(path: &str, message: impl Into<String>) -> SpecError {
     SpecError {

@@ -44,8 +44,8 @@ use crate::store::Store;
 use crate::supervisor::{Auth, PeerContext, Roster};
 use crate::title;
 use crate::{
-    AGENT_ACTOR, AgentConfig, AgentEvent, Agents, CompactStyle, QueuedInput, Usage, compact,
-    skills, spill, todo,
+    AGENT_ACTOR, AgentConfig, AgentEvent, Agents, CompactStyle, QueuedInput, SurfaceConfig, Usage,
+    compact, skills, spill, todo,
 };
 
 /// Characters of tool output shown in [`AgentEvent::ToolCallFinished`].
@@ -162,6 +162,8 @@ pub struct SessionState {
     /// Skills whose body is in the frame this epoch (04 §2.4): user
     /// injections and successful `load_skill` calls; cleared by compaction.
     pub skills: BTreeSet<String>,
+    /// The one `<surface_error>` round of this turn ran (design doc 30 §5).
+    pub surface_corrected: bool,
 }
 
 impl SessionState {
@@ -186,6 +188,7 @@ impl SessionState {
             title_turns: 0,
             title_chars: 0,
             title_epoch: epoch,
+            surface_corrected: false,
         }
     }
 }
@@ -721,6 +724,24 @@ fn est_reply(end: &StreamEnd) -> u32 {
         .saturating_add(reasoning)
 }
 
+/// Design doc 30 §5: whether a reply that ended with `text` gets the one
+/// `<surface_error>` round — `(failing fences, message)` when `json-render`
+/// blocks would not render, correction is on, and this turn has not had its round.
+fn needs_correction(
+    cfg: &SurfaceConfig,
+    state: &SessionState,
+    text: &str,
+) -> Option<(usize, String)> {
+    if !cfg.enabled || !cfg.correct || state.surface_corrected {
+        return None;
+    }
+    let errs = surface::check(text);
+    if errs.is_empty() {
+        return None;
+    }
+    Some((errs.len(), surface::surface_error(&errs)))
+}
+
 impl Turn {
     fn new(
         shared: Shared,
@@ -1049,6 +1070,7 @@ impl Turn {
                 self.rebase(registry).await;
                 self.state.todo_touched_round = 0;
                 self.state.knowledge_hinted_round = 0;
+                self.state.surface_corrected = false;
                 let mut rounds = 0u32;
                 loop {
                     match self.round(registry, turn, rounds).await {
@@ -1405,7 +1427,17 @@ impl Turn {
             .unwrap_or_default();
         if calls.is_empty() {
             if let Some(content) = end.captured_content.filter(|c| !c.is_empty()) {
+                // Design doc 30 §5: one `<surface_error>` round per turn when a
+                // `json-render` block would not render; the frontends already saw the text.
+                let correction =
+                    needs_correction(&self.shared.cfg.surface, &self.state, &text_of(&content));
                 self.persist(ChatMessage::assistant(content)).await;
+                if let Some((fences, msg)) = correction {
+                    self.state.surface_corrected = true;
+                    tracing::info!(target: "surface", session = %self.shared.id, fences, "correction round");
+                    self.persist(ChatMessage::user(msg)).await;
+                    return Round::Tools;
+                }
             }
             return Round::Stop(stop);
         }
@@ -2049,6 +2081,40 @@ pub(crate) fn binary_tag(out: &mut String, b: &Binary) {
 mod tests {
     use super::*;
     use crate::skills;
+
+    const BROKEN_FENCE: &str = "Here:\n```json-render\n{\"root\": \"r\", \"elements\": {\"r\": {\"type\": \"DataTable\", \"props\": {}}}}\n```\n";
+
+    #[test]
+    fn correction_round_only_once_when_on_and_broken() {
+        let state = SessionState::resume(0, None, Vec::new());
+        let on = SurfaceConfig::default();
+        assert!(needs_correction(&on, &state, "plain prose, no fence").is_none());
+        let valid = "```json-render\n{\"root\": \"r\", \"elements\": {\"r\": {\"type\": \"Separator\", \"props\": {}}}}\n```";
+        assert!(needs_correction(&on, &state, valid).is_none());
+
+        let (fences, msg) = needs_correction(&on, &state, BROKEN_FENCE).expect("broken fence");
+        assert_eq!(fences, 1);
+        assert!(msg.starts_with("<surface_error>\n"), "{msg}");
+        assert!(
+            msg.contains("Block 1 (json-render), errors:\n- /elements/r/type: "),
+            "{msg}"
+        );
+
+        let mut corrected = SessionState::resume(0, None, Vec::new());
+        corrected.surface_corrected = true;
+        assert!(needs_correction(&on, &corrected, BROKEN_FENCE).is_none());
+
+        let off = SurfaceConfig {
+            enabled: true,
+            correct: false,
+        };
+        assert!(needs_correction(&off, &state, BROKEN_FENCE).is_none());
+        let disabled = SurfaceConfig {
+            enabled: false,
+            correct: true,
+        };
+        assert!(needs_correction(&disabled, &state, BROKEN_FENCE).is_none());
+    }
 
     #[test]
     fn est_reply_counts_text_tool_calls_and_reasoning() {

@@ -1,0 +1,5 @@
+● Mon  Bake-off
+│      merman vs mmdflux vs mermaid-text
+◉ Tue  parse + validate + check
+○ Wed  TUI renderer
+● Thu  Desktop

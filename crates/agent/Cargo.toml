@@ -11,6 +11,7 @@ runtime = { workspace = true }
 models = { workspace = true }
 tools = { workspace = true }
 oauth = { workspace = true }
+surface = { workspace = true }
 cursor = { workspace = true }
 acp = { workspace = true }
 agent-client-protocol = { workspace = true }

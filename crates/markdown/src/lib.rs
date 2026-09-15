@@ -11,7 +11,8 @@
 use std::fmt;
 
 use mdstream::{FootnotesMode, MdStream, Options as StreamOptions};
-use pulldown_cmark::{Alignment, CodeBlockKind, Event, Parser, Tag, TagEnd};
+pub use pulldown_cmark::Alignment;
+use pulldown_cmark::{CodeBlockKind, Event, Parser, Tag, TagEnd};
 use unicode_width::UnicodeWidthStr;
 
 /// How a run of text should look. All flags may combine.
@@ -688,48 +689,10 @@ impl Renderer {
         }
     }
 
-    /// Emit a buffered table: cells padded to their column's width, ` │ `
-    /// between columns, a `─┼─` rule under the header.
     fn layout_table(&mut self, t: Table) {
-        let width = |l: &Line| l.iter().map(|s| s.text.width()).sum::<usize>();
-        let cols = t.rows.iter().map(Vec::len).max().unwrap_or(0);
-        let widths: Vec<usize> = (0..cols)
-            .map(|c| {
-                t.rows
-                    .iter()
-                    .filter_map(|r| r.get(c))
-                    .map(width)
-                    .max()
-                    .unwrap_or(0)
-            })
-            .collect();
-        for (i, row) in t.rows.into_iter().enumerate() {
-            self.open();
-            for (c, w) in widths.iter().enumerate() {
-                if c > 0 {
-                    self.dim(" │ ");
-                }
-                let cell = row.get(c).cloned().unwrap_or_default();
-                let pad = w - width(&cell);
-                let (left, right) = match t.align.get(c) {
-                    Some(Alignment::Right) => (pad, 0),
-                    Some(Alignment::Center) => (pad / 2, pad - pad / 2),
-                    // No trailing blanks after the last column.
-                    _ if c + 1 == cols => (0, 0),
-                    _ => (0, pad),
-                };
-                self.text(&" ".repeat(left));
-                for s in cell {
-                    push_span(self.open(), &s.text, s.style);
-                }
-                self.text(&" ".repeat(right));
-            }
+        for l in layout_table(t.rows, &t.align) {
+            self.open().extend(l);
             self.flush();
-            if i == 0 {
-                let rule: Vec<String> = widths.iter().map(|w| "─".repeat(*w)).collect();
-                self.dim(&rule.join("─┼─"));
-                self.flush();
-            }
         }
     }
 
@@ -740,6 +703,60 @@ impl Renderer {
         }
         self.lines
     }
+}
+
+/// Lay out a table: cells padded to their column's width, a dim ` │ ` between
+/// columns, a dim `─┼─` rule under `rows[0]` (the header). `align` is per column
+/// (missing = left); the last column gets no trailing blanks.
+pub fn layout_table(rows: Vec<Vec<Line>>, align: &[Alignment]) -> Vec<Line> {
+    let width = |l: &Line| l.iter().map(|s| s.text.width()).sum::<usize>();
+    let cols = rows.iter().map(Vec::len).max().unwrap_or(0);
+    let widths: Vec<usize> = (0..cols)
+        .map(|c| {
+            rows.iter()
+                .filter_map(|r| r.get(c))
+                .map(width)
+                .max()
+                .unwrap_or(0)
+        })
+        .collect();
+    let dim = Style {
+        dim: true,
+        ..Style::default()
+    };
+    let mut out = Vec::with_capacity(rows.len() + 1);
+    for (i, row) in rows.into_iter().enumerate() {
+        let mut line = Line::new();
+        let mut cells = row.into_iter();
+        for (c, w) in widths.iter().enumerate() {
+            if c > 0 {
+                push_span(&mut line, " │ ", dim.clone());
+            }
+            let cell = cells.next().unwrap_or_default();
+            let pad = w - width(&cell);
+            let (left, right) = match align.get(c) {
+                Some(Alignment::Right) => (pad, 0),
+                Some(Alignment::Center) => (pad / 2, pad - pad / 2),
+                // No trailing blanks after the last column.
+                _ if c + 1 == cols => (0, 0),
+                _ => (0, pad),
+            };
+            push_span(&mut line, &" ".repeat(left), Style::default());
+            for s in cell {
+                push_span(&mut line, &s.text, s.style);
+            }
+            push_span(&mut line, &" ".repeat(right), Style::default());
+        }
+        out.push(line);
+        if i == 0 {
+            let rule: Vec<String> = widths.iter().map(|w| "─".repeat(*w)).collect();
+            out.push(vec![Span {
+                text: rule.join("─┼─"),
+                style: dim.clone(),
+            }]);
+        }
+    }
+    out
 }
 
 /// Append text, merging into the previous span when the style matches.

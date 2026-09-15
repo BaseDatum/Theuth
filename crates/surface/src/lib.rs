@@ -1,16 +1,29 @@
-//! Surfaces (design doc 30): the `json-render` fences a model writes in its replies.
+//! Surfaces (design doc 30): the `json-render` and `mermaid` fences a model writes in its
+//! replies.
 //!
 //! [`parse`] turns one fence body into a typed [`Spec`] — strict JSON first, `jsonrepair`
 //! on failure, then validation that reports every problem with a JSON Pointer path.
-//! [`check`] runs that over every fence in a finished reply. The catalog the prompt and
-//! the skill show ([`catalog_compact`], [`catalog_schema`]) is read off the same types.
+//! [`check`] runs that over every fence in a finished reply. [`spec_lines`] and
+//! [`mermaid_lines`] render to [`markdown::Line`]s at a width; [`fence`] is the
+//! `markdown` hook over both, and [`flatten`] replaces renderable fences in a text for
+//! channels that only carry text. The catalog the prompt and the skill show
+//! ([`catalog_compact`], [`catalog_schema`]) is read off the same types.
 //! UI-agnostic: the TUI, the text channels and (via ts-rs) the desktop consume this.
 
 mod catalog;
+mod fences;
+mod flatten;
+mod mermaid;
+pub mod prompt;
+mod render;
 mod spec;
 mod validate;
 
 pub use catalog::{catalog_compact, catalog_schema};
+pub use flatten::flatten;
+pub use mermaid::mermaid_lines;
+pub use prompt::*;
+pub use render::{fence, spec_lines};
 pub use spec::*;
 
 use serde_json::Value;
@@ -87,63 +100,19 @@ pub fn parse(body: &str) -> Result<Parsed, Vec<SpecError>> {
 /// of at least as many of the same character. Fences inside another fenced block are
 /// content, not fences. An unclosed fence is one error at path `""`.
 pub fn check(text: &str) -> Vec<(usize, Vec<SpecError>)> {
-    let mut lines = Vec::new();
-    let mut offset = 0;
-    for line in text.split_inclusive('\n') {
-        lines.push((offset, line));
-        offset += line.len();
-    }
     let mut out = Vec::new();
-    let mut ordinal = 0;
-    let mut i = 0;
-    while i < lines.len() {
-        let Some((marker, len, info)) = opening(lines[i].1) else {
-            i += 1;
-            continue;
-        };
-        let json = info == "json-render";
-        ordinal += usize::from(json);
-        let Some(close) = (i + 1..lines.len()).find(|&j| closing(lines[j].1, marker, len)) else {
-            if json {
-                out.push((ordinal, vec![err("", "fence not closed")]));
-            }
-            break;
-        };
-        if json && let Err(errs) = parse(&text[lines[i + 1].0..lines[close].0]) {
+    for (i, f) in fences::fences(text)
+        .filter(|f| f.lang == "json-render")
+        .enumerate()
+    {
+        let ordinal = i + 1;
+        if !f.closed {
+            out.push((ordinal, vec![err("", "fence not closed")]));
+        } else if let Err(errs) = parse(f.body) {
             out.push((ordinal, errs));
         }
-        i = close + 1;
     }
     out
-}
-
-/// The line with up to three leading spaces removed; `None` if indented further.
-fn unindented(line: &str) -> Option<&str> {
-    let n = line.bytes().take_while(|b| *b == b' ').count();
-    (n <= 3).then_some(&line[n..])
-}
-
-/// `(marker, run length, trimmed info string)` if `line` opens a fence.
-fn opening(line: &str) -> Option<(u8, usize, &str)> {
-    let line = unindented(line)?;
-    let marker = *line.as_bytes().first()?;
-    if marker != b'`' && marker != b'~' {
-        return None;
-    }
-    let len = line.bytes().take_while(|b| *b == marker).count();
-    let rest = &line[len..];
-    if len < 3 || (marker == b'`' && rest.contains('`')) {
-        return None;
-    }
-    Some((marker, len, rest.trim()))
-}
-
-/// Whether `line` closes a fence opened by `len` × `marker`.
-fn closing(line: &str, marker: u8, len: usize) -> bool {
-    unindented(line).is_some_and(|l| {
-        let n = l.bytes().take_while(|b| *b == marker).count();
-        n >= len && l[n..].trim().is_empty()
-    })
 }
 
 #[cfg(test)]

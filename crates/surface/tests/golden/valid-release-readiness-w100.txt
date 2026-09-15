@@ -1,0 +1,10 @@
+╭─ Release readiness ──────────╮
+│ Tests      Coverage  Open P0 │
+│ 412 / 412  81% ▲     0       │
+│                              │
+│ Check    │ Status            │
+│ ─────────┼────────           │
+│ clippy   │ pass              │
+│ signing  │ pending           │
+│ notarize │ blocked           │
+╰──────────────────────────────╯
