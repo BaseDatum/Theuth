@@ -17,12 +17,14 @@ function Job({ job }: { job: JobTail }) {
         {job.id} · {job.command}
         {exit && ` · ${exit}`}
       </div>
-      {lines.map((l, i) => (
-        // Positional rows of a scrolling tail: the index is the identity.
-        <div key={i} className="truncate text-fg-secondary">
-          {l}
-        </div>
-      ))}
+      <div className="max-h-[12.5rem] overflow-y-auto">
+        {lines.map((l, i) => (
+          // Positional rows of a scrolling tail: the index is the identity.
+          <div key={i} className="truncate text-fg-secondary">
+            {l}
+          </div>
+        ))}
+      </div>
     </div>
   )
 }
@@ -57,7 +59,7 @@ export const MessageTool = memo(function MessageTool({ tool }: { tool: Tool }) {
         )}
       </button>
       {expanded && result && (
-        <pre className="mt-2 max-h-96 overflow-auto rounded-lg bg-layer-2 p-3 font-mono text-xs leading-5 wrap-anywhere whitespace-pre-wrap">
+        <pre className="mt-2 max-h-56 overflow-auto rounded-lg bg-layer-2 p-3 font-mono text-xs leading-5 wrap-anywhere whitespace-pre-wrap">
           {result.output}
         </pre>
       )}

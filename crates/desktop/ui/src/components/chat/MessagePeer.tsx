@@ -22,7 +22,7 @@ export const MessagePeer = memo(function MessagePeer({ from, text }: { from: str
       </button>
       {open ? (
         raw ? (
-          <pre className="mt-2 max-h-96 overflow-auto rounded-lg bg-layer-2 p-3 font-mono text-xs leading-5 wrap-anywhere whitespace-pre-wrap">
+          <pre className="mt-2 max-h-56 overflow-auto rounded-lg bg-layer-2 p-3 font-mono text-xs leading-5 wrap-anywhere whitespace-pre-wrap">
             {text}
           </pre>
         ) : (
