@@ -180,6 +180,31 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             let _ = tx.send(UiEvent::Redone(msg(api.redo(session).await)?));
             UiEvent::History(session, msg(api.load_session(session, None, None).await)?)
         }
+        // The UI already truncated its transcript at the turn (29 §3); the
+        // new turn streams back through ordinary events. On refusal, the
+        // error lands first, then the transcript reloads to undo the cut.
+        Command::Regenerate { session, turn } => match api.regenerate(session, turn).await {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                let _ = tx.send(UiEvent::Error(e.message().to_owned()));
+                UiEvent::History(session, msg(api.load_session(session, None, None).await)?)
+            }
+        },
+        Command::EditTurn {
+            session,
+            turn,
+            text,
+        } => match api.edit_turn(session, turn, text, Vec::new()).await {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                let _ = tx.send(UiEvent::Error(e.message().to_owned()));
+                UiEvent::History(session, msg(api.load_session(session, None, None).await)?)
+            }
+        },
+        Command::Fork { session, through } => {
+            let id = msg(api.fork_session(session, through).await)?;
+            UiEvent::Forked(id, msg(api.load_session(id, None, None).await)?)
+        }
         Command::Cancel(session) => {
             msg(api.cancel(session).await)?;
             return Ok(());
@@ -509,6 +534,7 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         UiEvent::Withdrawn { text, .. } => writeln!(out, "withdrawn: {text}"),
         UiEvent::Undone(text) => writeln!(out, "undone: {text} — /redo restores"),
         UiEvent::Redone(text) => writeln!(out, "restored: {text}"),
+        UiEvent::Forked(id, _) => writeln!(out, "forked: {id}"),
         UiEvent::CompactStyle(s) => writeln!(
             out,
             "compact style: {s} (default)\n  summary  cache-hot LLM fold (07 §8.3)\n  cut      drop the folded span, keep the tail, no model call\n  snap     rasterize the folded span to images (vision model)"
@@ -613,8 +639,8 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             )
         }),
         UiEvent::History(_, loaded) => loaded.history.iter().try_for_each(|h| match h {
-            agent::HistoryEntry::User { text } => writeln!(out, "> {text}"),
-            agent::HistoryEntry::Assistant { text } => writeln!(out, "{text}"),
+            agent::HistoryEntry::User { text, .. } => writeln!(out, "> {text}"),
+            agent::HistoryEntry::Assistant { text, .. } => writeln!(out, "{text}"),
             agent::HistoryEntry::Tool {
                 name, args, result, ..
             } => writeln!(
