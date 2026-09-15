@@ -5,9 +5,9 @@
   "identifier": "wth.desktop",
   "build": {
     "devUrl": "http://localhost:1420",
-    "frontendDist": "../ui/dist",
-    "beforeDevCommand": "cd ui && bun run dev",
-    "beforeBuildCommand": "cd ui && bun run build"
+    "frontendDist": "ui/dist",
+    "beforeDevCommand": "bun run dev",
+    "beforeBuildCommand": "bun run build"
   },
   "app": {
     "windows": [

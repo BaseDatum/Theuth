@@ -47,10 +47,12 @@ ts-desktop: ts
     cp bindings/*.ts bindings/methods.json crates/desktop/ui/src/rpc/bindings/
 
 # Desktop app in dev mode against `target/debug/wth` (or `$WTH_BIN`); `WTH_DATA_DIR` overrides ~/.wth.
+# `TAURI_FRONTEND_PATH`: the UI lives inside the crate (not beside it as Tauri assumes), so the
+# before*Command cwd must be pinned.
 desktop: ts-desktop
     cargo build -p wth
     cd crates/desktop/ui && bun install
-    cd crates/desktop && WTH_BIN="${WTH_BIN:-$PWD/../../target/debug/wth}" cargo tauri dev
+    cd crates/desktop && TAURI_FRONTEND_PATH=ui WTH_BIN="${WTH_BIN:-$PWD/../../target/debug/wth}" cargo tauri dev
 
 # `wth.app` + dmg with the release `wth` bundled as the sidecar (25 §5, 18). `externalBin`
 # lives in tauri.bundle.conf.json so a plain `cargo check` does not need the binary present.
@@ -58,8 +60,8 @@ desktop-bundle target="aarch64-apple-darwin": ts-desktop
     cargo build --release -p wth
     mkdir -p crates/desktop/binaries
     cp target/release/wth crates/desktop/binaries/wth-{{target}}
-    cd crates/desktop/ui && bun install && bun run build
-    cd crates/desktop && cargo tauri build --config tauri.bundle.conf.json
+    cd crates/desktop/ui && bun install
+    cd crates/desktop && TAURI_FRONTEND_PATH=ui cargo tauri build --config tauri.bundle.conf.json
 
 # Desktop UI gates: types, unit tests.
 desktop-check:
