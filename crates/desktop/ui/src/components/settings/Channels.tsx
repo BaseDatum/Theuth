@@ -1,5 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Copy, X } from 'lucide-react'
+import { QRCodeSVG } from 'qrcode.react'
 import { type FormEvent, useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { type Action, Empty, Row, Section, useAction } from '@/components/settings/shared'
@@ -122,8 +123,11 @@ function Signal() {
               label="Link this device"
               description={
                 <>
-                  Open Signal › Linked devices › Link, and use this address:
-                  <code className="mt-1 block break-all font-mono text-xs">{linkUrl}</code>
+                  Open Signal › Linked devices › Link new device, and scan this code:
+                  <div className="mt-3 inline-block rounded-lg bg-white p-3">
+                    <QRCodeSVG value={linkUrl} size={192} marginSize={0} />
+                  </div>
+                  <code className="mt-2 block break-all font-mono text-xs text-fg-tertiary">{linkUrl}</code>
                 </>
               }
             >

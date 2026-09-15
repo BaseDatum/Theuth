@@ -187,11 +187,11 @@ function ServerRow({ server: s, session, act }: { server: McpServer; session: st
   const sessionHint = !session ? 'Open a chat first' : !live ? 'Not connected' : undefined
   return (
     <Collapsible open={open} onOpenChange={setOpen} className="border-b border-border-subtle py-3 last:border-0">
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="flex items-center gap-3">
         <CollapsibleTrigger asChild>
           <button type="button" className="flex min-w-0 flex-1 items-center gap-2 text-left" disabled={s.tools.length === 0}>
             <ChevronRight className={`size-4 shrink-0 text-fg-tertiary transition-transform ${open ? 'rotate-90' : ''}`} />
-            <span className="truncate text-sm font-medium">{s.name}</span>
+            <span className="wrap-anywhere text-sm font-medium">{s.name}</span>
             <span className="shrink-0 text-[13px] text-fg-tertiary">{s.connected ? `${s.tools.length} tools` : '–'}</span>
             {s.repo && (
               <Badge variant="outline" className="shrink-0 font-normal">
@@ -201,6 +201,29 @@ function ServerRow({ server: s, session, act }: { server: McpServer; session: st
           </button>
         </CollapsibleTrigger>
         <span className="shrink-0 text-[13px] text-fg-secondary">{status}</span>
+        <AlertDialog>
+          <AlertDialogTrigger asChild>
+            <Button variant="ghost" size="icon-sm" aria-label={`Remove ${s.name}`}>
+              <Trash2 />
+            </Button>
+          </AlertDialogTrigger>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Remove {s.name}?</AlertDialogTitle>
+              <AlertDialogDescription>
+                Its entry is deleted from the config file, or disabled when the file holds other servers
+                {s.repo ? '; the clone stays on disk' : ''}.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction onClick={() => act.remove.mutate(s.name)}>Remove</AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      </div>
+      {/* Controls on their own line: three of them beside the name squashed it. */}
+      <div className="mt-2 ml-6 flex flex-wrap items-center gap-2">
         <span title={sessionHint}>
           <ToggleGroup
             type="single"
@@ -230,26 +253,6 @@ function ServerRow({ server: s, session, act }: { server: McpServer; session: st
             {s.auth === 'required' ? 'Login' : 'Logout'}
           </Button>
         )}
-        <AlertDialog>
-          <AlertDialogTrigger asChild>
-            <Button variant="ghost" size="icon-sm" aria-label={`Remove ${s.name}`}>
-              <Trash2 />
-            </Button>
-          </AlertDialogTrigger>
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>Remove {s.name}?</AlertDialogTitle>
-              <AlertDialogDescription>
-                Its entry is deleted from the config file, or disabled when the file holds other servers
-                {s.repo ? '; the clone stays on disk' : ''}.
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel>Cancel</AlertDialogCancel>
-              <AlertDialogAction onClick={() => act.remove.mutate(s.name)}>Remove</AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
       </div>
       <CollapsibleContent className="mt-2 ml-6">
         {s.tools.map((t) => (
@@ -274,24 +277,26 @@ function ToolRow({
   // `mutating* (ask)`: effective risk, `*` when the tool's own line sets it, then what `tools.policy` does with it.
   const risk = t.gate === 'off' ? '' : `${RISK_NAME[t.risk]}${t.gate ? '*' : ''} (${t.action})`
   return (
-    <div className="flex items-center gap-3 border-b border-border-subtle py-2 last:border-0">
+    <div className="flex items-start gap-3 border-b border-border-subtle py-2 last:border-0">
       <div className="min-w-0 flex-1">
-        <div className="flex items-baseline gap-2 text-sm">
-          <span className="truncate">{t.name}</span>
+        <div className="flex flex-wrap items-baseline gap-x-2 text-sm">
+          <span className="wrap-anywhere">{t.name}</span>
           {t.registered && t.registered !== t.name && (
-            <span className="shrink-0 text-[13px] text-fg-tertiary">as {t.registered}</span>
+            <span className="text-[13px] text-fg-tertiary">as {t.registered}</span>
           )}
         </div>
         <div className="text-[13px] wrap-break-word text-fg-secondary">{t.description}</div>
       </div>
-      <span className="shrink-0 text-[13px] text-fg-tertiary">{risk}</span>
-      <GateSelect value={t.gate} off onChange={(gate) => act.gate.mutate({ server, tool: t.name, gate })} />
-      <Switch
-        checked={!t.hidden}
-        disabled={!session || t.registered === null}
-        title={!session ? 'Open a chat first' : undefined}
-        onCheckedChange={(v) => t.registered && act.hidden.mutate({ names: [t.registered], hidden: !v })}
-      />
+      <div className="flex shrink-0 items-center gap-3">
+        <span className="text-[13px] text-fg-tertiary">{risk}</span>
+        <GateSelect value={t.gate} off onChange={(gate) => act.gate.mutate({ server, tool: t.name, gate })} />
+        <Switch
+          checked={!t.hidden}
+          disabled={!session || t.registered === null}
+          title={!session ? 'Open a chat first' : undefined}
+          onCheckedChange={(v) => t.registered && act.hidden.mutate({ names: [t.registered], hidden: !v })}
+        />
+      </div>
     </div>
   )
 }

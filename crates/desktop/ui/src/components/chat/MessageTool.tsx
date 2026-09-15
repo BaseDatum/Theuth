@@ -34,30 +34,30 @@ export const MessageTool = memo(function MessageTool({ tool }: { tool: Tool }) {
   const { result } = tool
   const running = tool.pending || !result
   return (
-    <div className="my-2 rounded-xl border border-border-subtle bg-layer-1 px-4 py-3 text-sm">
+    <div className="my-2 min-w-0 rounded-xl border border-border-subtle bg-layer-1 px-4 py-3 text-sm">
       <button
         type="button"
-        className="flex w-full flex-col items-start gap-1 text-left"
+        className="flex w-full min-w-0 flex-col gap-1 text-left"
         onClick={() => result && setExpanded((v) => !v)}
       >
         <div className="flex items-center gap-2 font-medium">
-          <span className="text-fg-secondary">{tool.child ? '↳' : '⚙'}</span>
-          {tool.name}
-          {running && <Loader2 className="size-3.5 animate-spin text-fg-tertiary" />}
+          <span className="shrink-0 text-fg-secondary">{tool.child ? '↳' : '⚙'}</span>
+          <span className="wrap-anywhere">{tool.name}</span>
+          {running && <Loader2 className="size-3.5 shrink-0 animate-spin text-fg-tertiary" />}
         </div>
         {lines.length > 0 && (
-          <pre className="max-w-full overflow-x-auto font-mono text-xs leading-5 text-fg-secondary whitespace-pre-wrap">
+          <pre className="w-full font-mono text-xs leading-5 wrap-anywhere whitespace-pre-wrap text-fg-secondary">
             {lines.join('\n')}
           </pre>
         )}
         {result && (
-          <div className={cn('truncate font-mono text-xs', result.isError ? 'text-danger' : 'text-success')}>
+          <div className={cn('w-full truncate font-mono text-xs', result.isError ? 'text-danger' : 'text-success')}>
             {result.isError ? '✗' : '✓'} {resultLine(result.output)}
           </div>
         )}
       </button>
       {expanded && result && (
-        <pre className="mt-2 max-h-96 overflow-auto rounded-lg bg-layer-2 p-3 font-mono text-xs leading-5 whitespace-pre-wrap">
+        <pre className="mt-2 max-h-96 overflow-auto rounded-lg bg-layer-2 p-3 font-mono text-xs leading-5 wrap-anywhere whitespace-pre-wrap">
           {result.output}
         </pre>
       )}

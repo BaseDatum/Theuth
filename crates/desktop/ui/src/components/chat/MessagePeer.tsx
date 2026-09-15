@@ -7,6 +7,8 @@ export const MessagePeer = memo(function MessagePeer({ from, text }: { from: str
   const [open, setOpen] = useState(false)
   const first = text.split('\n', 1)[0] ?? ''
   const more = text.length > first.length
+  // A job result is raw command output (14 §3): markdown would fold its lines into one paragraph.
+  const raw = from.startsWith('job ')
   return (
     <div className="my-2 rounded-xl border border-border-subtle bg-layer-1 px-4 py-3 text-sm">
       <button
@@ -19,11 +21,17 @@ export const MessagePeer = memo(function MessagePeer({ from, text }: { from: str
         <span className="truncate">⟵ {from}</span>
       </button>
       {open ? (
-        <Streamdown mode="static" className="mt-2 text-sm">
-          {text}
-        </Streamdown>
+        raw ? (
+          <pre className="mt-2 max-h-96 overflow-auto rounded-lg bg-layer-2 p-3 font-mono text-xs leading-5 wrap-anywhere whitespace-pre-wrap">
+            {text}
+          </pre>
+        ) : (
+          <Streamdown mode="static" className="mt-2 text-sm">
+            {text}
+          </Streamdown>
+        )
       ) : (
-        <div className="mt-1 truncate text-fg-secondary">{first}</div>
+        <div className={`mt-1 truncate text-fg-secondary ${raw ? 'font-mono text-xs' : ''}`}>{first}</div>
       )}
     </div>
   )

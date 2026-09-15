@@ -78,7 +78,8 @@ export function Explorer() {
         </SearchBox>
       </aside>
       <main className="flex min-w-0 flex-1">
-        {active === undefined ? (
+        {/* The `$` child also matches bare `/knowledge`, with an empty splat. */}
+        {!active ? (
           <p className="m-auto text-sm text-fg-tertiary">Select a document</p>
         ) : (
           <Outlet />
