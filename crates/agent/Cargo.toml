@@ -28,6 +28,7 @@ tracing = { workspace = true }
 kameo = { workspace = true }
 genai = { workspace = true }
 sqlx = { workspace = true }
+nucleo = { workspace = true }
 gray_matter = { workspace = true }
 ts-rs = { workspace = true, optional = true }
 serde_yaml = { workspace = true }

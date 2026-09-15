@@ -208,6 +208,10 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             UiEvent::TitleModel(msg(api.set_title_model(model).await)?)
         }
         Command::ListSessions => UiEvent::Sessions(msg(api.list_sessions().await)?),
+        Command::Search(query) => {
+            let hits = msg(api.search_sessions(query.clone(), Some(20)).await)?;
+            UiEvent::Search(query, hits)
+        }
         Command::ListAgents(session) => UiEvent::Agents(msg(api.list_agents(session).await)?),
         Command::Load(session) => {
             UiEvent::History(session, msg(api.load_session(session, None, None).await)?)
@@ -593,6 +597,9 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         UiEvent::Sessions(list) => list
             .iter()
             .try_for_each(|s| writeln!(out, "{}  {}  {}", s.id, s.model, s.title)),
+        UiEvent::Search(_, hits) => hits
+            .iter()
+            .try_for_each(|h| writeln!(out, "{}  {}  {}", h.session, h.title, h.snippet)),
         UiEvent::Agents(list) => list.iter().try_for_each(|a| {
             writeln!(
                 out,

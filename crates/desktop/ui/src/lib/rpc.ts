@@ -14,6 +14,7 @@ export function useApi(): Api {
 export const queryKeys = {
   sessions: ['sessions'] as const,
   session: (id: string) => ['session', id] as const,
+  search: (q: string) => ['search', q] as const,
   models: ['models'] as const,
   mcp: (s: string | null) => ['mcp', s] as const,
   skills: ['skills'] as const,

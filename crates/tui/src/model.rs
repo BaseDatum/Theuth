@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use acp::EntryInfo;
 use acp::registry::RegistryAgent;
+use agent::search::SearchHit;
 use agent::{
     AgentEvent, AgentInfo, AgentState, CompactStyle, HistoryEntry, Loaded, ModelInfo, ProviderInfo,
     QueuedInput, SessionSummary, SkillBody, SkillMeta, Usage,
@@ -36,6 +37,8 @@ pub enum UiEvent {
     Resolved(ApprovalResolved),
     /// Reply to [`Command::ListSessions`].
     Sessions(Vec<SessionSummary>),
+    /// Reply to [`Command::Search`]: the query echoed with its hits.
+    Search(String, Vec<SearchHit>),
     /// Reply to [`Command::ListAgents`]: the session's subtree with live state.
     Agents(Vec<AgentInfo>),
     /// Reply to [`Command::Load`].
@@ -178,6 +181,8 @@ pub enum Command {
     SetTitleModel(Option<String>),
     /// `list_sessions`.
     ListSessions,
+    /// `search_sessions`: fuzzy match over titles and message text.
+    Search(String),
     /// `list_agents`: the subtree under a session.
     ListAgents(SessionId),
     /// `load_session`.
@@ -744,6 +749,11 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     ("/parent", "", "open the parent session (from a subagent)"),
     ("/sessions", "", "switch session (picker)"),
+    (
+        "/search",
+        "<query>",
+        "find a session by title or message text (fuzzy)",
+    ),
     ("/resume", "<id>", "open a session"),
     ("/new", "", "start a new session"),
     (
@@ -885,6 +895,15 @@ pub enum Menu {
     Sessions {
         /// Top-level sessions, newest first.
         items: Vec<SessionSummary>,
+        /// Highlighted row.
+        cursor: usize,
+    },
+    /// `/search` picker.
+    Search {
+        /// What was searched for.
+        query: String,
+        /// Best score first, one per session.
+        hits: Vec<SearchHit>,
         /// Highlighted row.
         cursor: usize,
     },
@@ -1279,6 +1298,7 @@ impl Model {
                     Menu::Models { .. }
                         | Menu::Efforts { .. }
                         | Menu::Sessions { .. }
+                        | Menu::Search { .. }
                         | Menu::Agents { .. }
                         | Menu::Mcp { .. }
                         | Menu::Acp { .. }
@@ -1714,6 +1734,13 @@ impl Model {
                         .unwrap_or(0);
                     self.menu = Some(Menu::Sessions { items, cursor });
                 }
+            }
+            UiEvent::Search(query, hits) => {
+                self.menu = Some(Menu::Search {
+                    query,
+                    hits,
+                    cursor: 0,
+                });
             }
             UiEvent::Agents(list) => {
                 // Reseeding keeps what events taught about rows still there.
@@ -2390,6 +2417,10 @@ impl Model {
         match cmd {
             "/quit" | "/exit" => self.quit = true,
             "/sessions" => send(tx, Command::ListSessions),
+            "/search" if arg.is_empty() => self
+                .entries
+                .push(Entry::Error("usage: /search <query>".into())),
+            "/search" => send(tx, Command::Search(arg.to_owned())),
             "/resume" => match arg.parse::<SessionId>() {
                 Ok(id) => self.resume(id, tx),
                 Err(_) => self
@@ -3023,6 +3054,7 @@ impl Model {
             Some(Menu::Models { .. }) => self.models_key(code, tx),
             Some(Menu::Efforts { .. }) => self.efforts_key(code, tx),
             Some(Menu::Sessions { .. }) => self.sessions_key(code, tx),
+            Some(Menu::Search { .. }) => self.search_key(code, tx),
             Some(Menu::Agents { .. }) => self.agents_key(code, tx),
             Some(Menu::Mcp { .. }) => self.mcp_key(code, tx),
             Some(Menu::Acp { .. }) => self.acp_key(code, tx),
@@ -3146,6 +3178,30 @@ impl Model {
             KeyCode::Esc => self.menu = None,
             KeyCode::Enter => {
                 let picked = items.get(*cursor).map(|s| s.id);
+                self.menu = None;
+                match picked {
+                    Some(id) if Some(id) == self.session => {}
+                    Some(id) => self.resume(id, tx),
+                    None => {}
+                }
+            }
+            _ => {}
+        }
+        MenuKey::Consumed
+    }
+
+    /// `/search`: Enter switches to the highlighted hit's session, the same
+    /// path as `/sessions`.
+    fn search_key(&mut self, code: KeyCode, tx: &UnboundedSender<Command>) -> MenuKey {
+        let Some(Menu::Search { hits, cursor, .. }) = &mut self.menu else {
+            return MenuKey::Consumed;
+        };
+        match code {
+            KeyCode::Up => *cursor = cursor.saturating_sub(1),
+            KeyCode::Down => *cursor = (*cursor + 1).min(hits.len().saturating_sub(1)),
+            KeyCode::Esc => self.menu = None,
+            KeyCode::Enter => {
+                let picked = hits.get(*cursor).map(|h| h.session);
                 self.menu = None;
                 match picked {
                     Some(id) if Some(id) == self.session => {}
@@ -3725,6 +3781,43 @@ mod tests {
         assert!(m.quit && m.menu.is_none());
         assert_eq!(slash_matches("/").len(), COMMANDS.len());
         assert!(slash_matches("/zzz").is_empty());
+    }
+
+    #[test]
+    fn search_opens_picker_and_enter_switches_session() {
+        use agent::search::{HitKind, MatchRange};
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        m.submit("/search", &tx);
+        assert!(matches!(m.entries.last(), Some(Entry::Error(t)) if t == "usage: /search <query>"));
+        assert!(rx.try_recv().is_err());
+        m.submit("/search deploy", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::Search(q)) if q == "deploy"));
+        let hit = SessionId::new();
+        m.apply(UiEvent::Search(
+            "deploy".into(),
+            vec![SearchHit {
+                session: hit,
+                title: "deploy checklist".into(),
+                kind: HitKind::Title,
+                seq: None,
+                role: None,
+                snippet: "deploy checklist".into(),
+                ranges: vec![MatchRange { start: 0, end: 6 }],
+                score: 1,
+                matches: 0,
+                updated_at: String::new(),
+            }],
+        ));
+        assert!(
+            matches!(&m.menu, Some(Menu::Search { query, hits, cursor: 0 }) if query == "deploy" && hits.len() == 1)
+        );
+        assert!(!m.input_focused());
+        // Enter is a session switch, the `/sessions` path.
+        m.menu_key(KeyCode::Enter, "", &tx);
+        assert!(m.menu.is_none());
+        assert_eq!(m.session, Some(hit));
+        assert!(matches!(rx.try_recv(), Ok(Command::Load(s)) if s == hit));
     }
 
     #[test]

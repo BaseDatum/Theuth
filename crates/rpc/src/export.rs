@@ -27,6 +27,7 @@ async fn export_bindings() {
         agent::ProviderInfo,
         agent::AgentInfo,
         agent::AgentState,
+        agent::search::SearchHit,
         acp::EntryInfo,
         acp::registry::RegistryAgent,
         knowledge::Meta,

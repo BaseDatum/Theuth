@@ -12,8 +12,8 @@ use agent::{
     ListLogins, ListModels, ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills,
     LoadSession, LoadSkill, Loaded, Login, LoginInfo, Logout, ModelInfo, NewSession, ProviderInfo,
     QueuedInput, Redo, RemoveAcp, RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession,
-    SendInput, SessionSummary, SetCompactStyle, SetEffort, SetModel, SetTitleModel, ShowPrompt,
-    SkillBody, SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw,
+    SearchSessions, SendInput, SessionSummary, SetCompactStyle, SetEffort, SetModel, SetTitleModel,
+    ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw,
 };
 use jsonrpsee::core::{RpcResult, SubscriptionResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
@@ -157,6 +157,15 @@ pub trait Api {
     /// follows on the stream. Refused while any of them is mid-turn.
     #[method(name = "delete_session")]
     async fn delete_session(&self, session: SessionId) -> RpcResult<()>;
+    /// Fuzzy search (nucleo, design doc 26) over every session's title and its
+    /// user/assistant messages: the best hit per session, best score first, with a
+    /// snippet and the matched char ranges. Empty query → `[]`. `limit` defaults to 30, max 50.
+    #[method(name = "search_sessions")]
+    async fn search_sessions(
+        &self,
+        query: String,
+        limit: Option<u32>,
+    ) -> RpcResult<Vec<agent::search::SearchHit>>;
     /// Every registered tool.
     #[method(name = "list_tools")]
     async fn list_tools(&self) -> RpcResult<Vec<ToolSpec>>;
@@ -594,6 +603,14 @@ impl ApiServer for Server {
 
     async fn delete_session(&self, session: SessionId) -> RpcResult<()> {
         ask::<Agents, _>(agent::AGENT_ACTOR, DeleteSession { session }).await
+    }
+
+    async fn search_sessions(
+        &self,
+        query: String,
+        limit: Option<u32>,
+    ) -> RpcResult<Vec<agent::search::SearchHit>> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, SearchSessions { query, limit }).await
     }
 
     async fn list_tools(&self) -> RpcResult<Vec<ToolSpec>> {

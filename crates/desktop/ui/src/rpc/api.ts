@@ -20,6 +20,7 @@ import type { Put } from '@/rpc/bindings/Put'
 import type { QueuedInput } from '@/rpc/bindings/QueuedInput'
 import type { RegistryAgent } from '@/rpc/bindings/RegistryAgent'
 import type { RepoInfo } from '@/rpc/bindings/RepoInfo'
+import type { SearchHit } from '@/rpc/bindings/SearchHit'
 import type { SessionId } from '@/rpc/bindings/SessionId'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import type { SignalStatus } from '@/rpc/bindings/SignalStatus'
@@ -96,6 +97,8 @@ export interface Api {
   /** Delete a session and its subagents; `SessionDeleted` per removed id follows. Refused mid-turn. */
   delete_session(session: SessionId): Promise<null>
   resolve_approval(id: ApprovalId, decision: Decision): Promise<boolean>
+  /** Fuzzy (fzf/helix syntax) search over titles and message text; best hit per session. */
+  search_sessions(query: string, limit: number | null): Promise<SearchHit[]>
   send_input(session: SessionId | null, text: string, files: string[]): Promise<SessionId>
   set_approvals(session: SessionId | null, enabled: boolean): Promise<ApprovalsState>
   set_compact_style(style: CompactStyle): Promise<null>
@@ -177,6 +180,7 @@ export const METHODS = [
   'remove_skill_repo',
   'rename_session',
   'resolve_approval',
+  'search_sessions',
   'send_input',
   'set_approvals',
   'set_compact_style',

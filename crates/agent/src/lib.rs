@@ -26,6 +26,7 @@ pub mod loop_;
 pub mod peers;
 pub mod providers;
 pub mod repl;
+pub mod search;
 pub mod skills;
 pub mod snap;
 pub mod spill;
@@ -209,6 +210,17 @@ pub struct RenameSession {
 pub struct DeleteSession {
     /// Root of the subtree to delete.
     pub session: SessionId,
+}
+
+/// `ask` → `Result<Vec<search::SearchHit>, String>`: fuzzy search (nucleo, design
+/// doc 26) over every session's title and its user/assistant message text; the
+/// best hit per session, best score first. Empty query → no hits.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SearchSessions {
+    /// Fuzzy pattern (fzf syntax: space-separated atoms, `'exact`, `^prefix`, `suffix$`, `!not`).
+    pub query: String,
+    /// Hits to return; `None` → [`search::DEFAULT_LIMIT`], clamped to [`search::MAX_LIMIT`].
+    pub limit: Option<u32>,
 }
 
 /// Reply to [`LoadSession`].

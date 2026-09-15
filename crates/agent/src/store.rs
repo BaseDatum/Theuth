@@ -248,6 +248,39 @@ impl Store {
         Ok(decode_rows(id, rows))
     }
 
+    /// `(id, title, updated_at)` of every session, for the search index (26 §2).
+    pub async fn search_titles(&self) -> anyhow::Result<Vec<(SessionId, String, String)>> {
+        let rows: Vec<(String, String, String)> =
+            sqlx::query_as("SELECT id, title, updated_at FROM sessions")
+                .fetch_all(&self.pool)
+                .await?;
+        rows.into_iter()
+            .map(|(id, title, updated_at)| Ok((id.parse()?, title, updated_at)))
+            .collect()
+    }
+
+    /// Every visible (`seq < cut_at`) user and assistant message of every
+    /// session, for the search index (26 §2). Tool rows are skipped in SQL so
+    /// their bodies - the bulk of the table - are never decoded.
+    pub async fn search_bodies(&self) -> anyhow::Result<Vec<(SessionId, i64, ChatMessage)>> {
+        let rows: Vec<(String, i64, String)> = sqlx::query_as(
+            "SELECT m.session_id, m.seq, m.body FROM messages m JOIN sessions s ON s.id = m.session_id \
+             WHERE m.seq < COALESCE(s.cut_at, 9223372036854775807) \
+             AND json_extract(m.body, '$.role') IN ('User', 'Assistant') \
+             ORDER BY m.session_id, m.seq",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|(sid, seq, body)| {
+                let id: SessionId = sid.parse().ok()?;
+                let m = decode_rows(id, vec![(seq, body)]).pop()?;
+                Some((id, m.0, m.1))
+            })
+            .collect())
+    }
+
     async fn set_cut(&self, id: SessionId, cut: Option<i64>) -> anyhow::Result<()> {
         sqlx::query("UPDATE sessions SET cut_at = ? WHERE id = ?")
             .bind(cut)

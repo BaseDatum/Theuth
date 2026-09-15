@@ -380,6 +380,8 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
 /// terminal makes the terminal wrap the frame, and one exactly as wide makes
 /// taffy hand the box several extra rows (see `menu_box_is_tight_at_any_width`).
 fn menu(m: &Model, input: &str, width: u16) -> Option<AnyElement<'static>> {
+    // Char ranges to accent per row; only `/search` fills it.
+    let mut marks: Vec<Vec<std::ops::Range<usize>>> = Vec::new();
     let (title, rows, cursor): (String, Vec<String>, usize) = match m.menu.as_ref()? {
         Menu::Slash { cursor } => {
             let word = input.split(' ').next().unwrap_or_default();
@@ -436,6 +438,40 @@ fn menu(m: &Model, input: &str, width: u16) -> Option<AnyElement<'static>> {
                 .collect(),
             *cursor,
         ),
+        Menu::Search { query, hits, cursor } => {
+            let rows: Vec<String> = hits
+                .iter()
+                .map(|h| {
+                    let name = if h.title.is_empty() { short(h.session) } else { h.title.clone() };
+                    let at = name.chars().count() + 3;
+                    marks.push(
+                        h.ranges
+                            .iter()
+                            .map(|r| at + r.start as usize..at + r.end as usize)
+                            .collect(),
+                    );
+                    // Char-for-char so the ranges still line up.
+                    let snippet: String = h
+                        .snippet
+                        .chars()
+                        .map(|c| if c.is_whitespace() { ' ' } else { c })
+                        .collect();
+                    format!("{name} · {snippet}")
+                })
+                .collect();
+            (
+                format!(
+                    "search: {query}  ({} hits)  ⏎ switch  esc close",
+                    hits.len()
+                ),
+                if rows.is_empty() {
+                    vec!["no matches".to_owned()]
+                } else {
+                    rows
+                },
+                *cursor,
+            )
+        }
         Menu::Agents { items, cursor } => (
             "agents  ⏎ open  esc close  (the one you leave keeps running)".to_owned(),
             items
@@ -593,12 +629,42 @@ fn menu(m: &Model, input: &str, width: u16) -> Option<AnyElement<'static>> {
                 Text(content: title, color: Color::DarkGrey)
                 #(rows[shown.clone()].iter().enumerate().map(|(i, row)| {
                     let here = shown.start + i == cursor;
-                    element!(Text(
-                        content: format!("{} {}", if here { "›" } else { " " }, row.chars().take(fit).collect::<String>()),
-                        wrap: TextWrap::NoWrap,
-                        color: if here { Color::White } else { Color::Grey },
-                        weight: if here { Weight::Bold } else { Weight::Normal },
-                    ))
+                    let color = if here { Color::White } else { Color::Grey };
+                    let weight = if here { Weight::Bold } else { Weight::Normal };
+                    let text: String = row.chars().take(fit).collect();
+                    match marks.get(shown.start + i).filter(|r| !r.is_empty()) {
+                        None => element!(Text(
+                            content: format!("{} {text}", if here { "›" } else { " " }),
+                            wrap: TextWrap::NoWrap,
+                            color,
+                            weight,
+                        )).into_any(),
+                        Some(ranges) => {
+                            let run = |s: String, hit: bool| {
+                                MixedTextContent::new(s)
+                                    .color(if hit { HEADING } else { color })
+                                    .weight(if hit { Weight::Bold } else { weight })
+                            };
+                            let chars: Vec<char> = text.chars().collect();
+                            let mut contents = vec![run(format!("{} ", if here { "›" } else { " " }), false)];
+                            let mut at = 0;
+                            for r in ranges {
+                                let (s, e) = (r.start.max(at), r.end.min(chars.len()));
+                                if s >= e {
+                                    continue;
+                                }
+                                if s > at {
+                                    contents.push(run(chars[at..s].iter().collect(), false));
+                                }
+                                contents.push(run(chars[s..e].iter().collect(), true));
+                                at = e;
+                            }
+                            if at < chars.len() {
+                                contents.push(run(chars[at..].iter().collect(), false));
+                            }
+                            element!(MixedText(contents, wrap: TextWrap::NoWrap)).into_any()
+                        }
+                    }
                 }))
             }
         }

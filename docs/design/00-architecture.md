@@ -490,7 +490,7 @@ crates/
   acp/                library: agents.yaml, ACP registry, Harness (external harness process), renderers (06)
   tools/              plugin: registry, approval, shell (brush), fs, mcp (rmcp) (§6, 01)
   knowledge/          plugin: OKF bundle, FTS index, gix history, knowledge_* tools (added in 10; extracted from agent in 12 §9)
-  agent/              plugin: genai loop, session store, frame/compaction, skills, subagents, repl (§5, 07, 08)
+  agent/              plugin: genai loop, session store, frame/compaction, skills, subagents, repl, session search (§5, 07, 08, 26)
   web/                plugin: search_web / read_url, SSRF-guarded fetcher, RRF aggregator, keyless engines (16)
   search-providers/   plugin: Firecrawl, SearXNG, OpenSERP, Brave registered with web over the bus (16)
   signal/             plugin: Signal channel and device pairing (added in 09)
@@ -633,6 +633,7 @@ Each phase ends with a runnable check, not a test suite.
 | 13 | PTY jobs (22) | `start` a REPL with `ready`, `send` an expression, read the answer off the screen; the harness drives its own TUI | done 2026-09-14 (3 tool calls for the REPL, `pty="true"` result; the harness read `no session · idle` off its own TUI; 22 §11) |
 | 14 | browser (23) | `browser_open` reads HN; a screenshot of a local dev server is described from the image; `read_url rendered` keyless | done 2026-09-14 (one `browser_open` names the top story; colours of a fixture page read off the screenshot, not the text; `read_url rendered: true` without Firecrawl; 23 §13) |
 | 15 | message_user (24) | a bound Slack session receives a screenshot in its thread; an unbound RPC session lands in the owner DM and on the phone with the `session …` line | done 2026-09-14 (owner DM with the screenshot, three tool calls; bound thread and Signal unit-tested only; 24 §9) |
+| 16 | session search (26) | `search_sessions` over a real store ranks the expected session first with a highlighted snippet; ⌘K and `/search` show it | done 2026-09-15 (26 §8) |
 
 Known gaps carried forward: cancel/error paths in the loop are code-reviewed,
 not smoke-tested; the `Jobs` actor kills every process group on shutdown

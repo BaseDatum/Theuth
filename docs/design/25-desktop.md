@@ -215,9 +215,9 @@ ChatGPT affordances with no TUI counterpart:
 | affordance | decision |
 |---|---|
 | rename chat | **add** `rename_session` (§7, 5 lines over `store.set_title`) - the sidebar item menu without it looks broken |
-| delete / archive chat | not in v0: no RPC, running sessions and subagent trees make it non-trivial; the item menu says so. Add `delete_session` when asked. |
+| delete / archive chat | delete: yes (2026-09-15) — item menu › Delete with a confirm; `delete_session` removes the subtree (rows, messages, epochs, actors) and emits `SessionDeleted` per id; refused while a turn runs. Archive: no. |
 | share, temporary chat, voice, projects, GPTs, plans | not shown |
-| search chat contents | titles and ids only (no content-search RPC); the ⌘K dialog says "titles" |
+| search chat contents | yes since 26: ⌘K asks `search_sessions` (nucleo, fzf syntax) over titles and user/assistant messages; snippet with the matched ranges marked. Was titles-only in v0. |
 | light / dark / system theme | Settings › General, default system (`prefers-color-scheme`), tokens from §2.4 |
 | shortcuts dialog `⌘/` | yes, the table in §2.4 plus ours (⌥Space toggle window) |
 

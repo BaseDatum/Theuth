@@ -43,6 +43,7 @@ unicode-width = "0.2"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "form", "query", "http2", "stream"] }
 slack-morphism = { version = "2.28", features = ["hyper"] }  # Slack Socket Mode + Web API (design doc 21)
 sha2 = "0.10"
+nucleo = "0.5"  # fzf/helix fuzzy scoring for session search (design doc 26)
 base64 = "0.22"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"

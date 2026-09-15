@@ -44,10 +44,11 @@ use crate::{
     ListModels, ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills, LoadSession,
     LoadSkill, Loaded, Login, LoginFinished, LoginInfo, Logout, ModelInfo, NewSession,
     ProviderInfo, QueuedInput, Redo, RemoveAcp, RemoveProvider, RemoveSkill, RemoveSkillRepo,
-    RenameSession, SendInput, SessionSummary, SetCompactStyle, SetEffort, SetModel, SetTitleModel,
-    ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw, effort_of,
+    RenameSession, SearchSessions, SendInput, SessionSummary, SetCompactStyle, SetEffort, SetModel,
+    SetTitleModel, ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw,
+    effort_of,
 };
-use crate::{frame, repl, spill};
+use crate::{frame, repl, search, spill};
 
 /// The supervisor actor. Look up with `ActorRef::<Agents>::lookup(AGENT_ACTOR)`.
 #[derive(kameo::Actor)]
@@ -86,6 +87,8 @@ pub struct Agents {
     last_stop: HashMap<SessionId, (String, DateTime<Utc>)>,
     /// Unanswered approvals per session: `(id, tool)` (design doc 19 §2.1).
     approvals: HashMap<SessionId, (ApprovalId, String)>,
+    /// Session search index (design doc 26), rebuilt after the rows change.
+    search: Arc<search::Cache>,
     next_msg: u64,
 }
 
@@ -591,8 +594,12 @@ impl Message<AgentEvent> for Agents {
                 }
                 self.last_stop
                     .insert(session, (stop_reason.clone(), Utc::now()));
+                self.search.invalidate();
                 self.child_finished(session, &stop_reason).await;
             }
+            AgentEvent::TitleChanged { .. }
+            | AgentEvent::SessionDeleted { .. }
+            | AgentEvent::Compacted { .. } => self.search.invalidate(),
             _ => {}
         }
     }
@@ -755,6 +762,7 @@ impl Message<Undo> for Agents {
     type Reply = Result<String, String>;
 
     async fn handle(&mut self, m: Undo, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.search.invalidate();
         self.actor(m.session)
             .await?
             .native()?
@@ -768,6 +776,7 @@ impl Message<Redo> for Agents {
     type Reply = Result<String, String>;
 
     async fn handle(&mut self, m: Redo, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.search.invalidate();
         self.actor(m.session)
             .await?
             .native()?
@@ -1579,6 +1588,32 @@ impl Message<DeleteSession> for Agents {
     }
 }
 
+impl Message<SearchSessions> for Agents {
+    type Reply = kameo::reply::DelegatedReply<Result<Vec<search::SearchHit>, String>>;
+
+    async fn handle(
+        &mut self,
+        m: SearchSessions,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        // Off the mailbox: a rebuild scans every message row and matching
+        // runs on a blocking thread; events keep flowing meanwhile.
+        let (cache, store) = (self.search.clone(), self.store.clone());
+        let limit = m.limit.unwrap_or(search::DEFAULT_LIMIT);
+        tokio::spawn(async move {
+            tx.send(
+                cache
+                    .search(&store, m.query, limit)
+                    .await
+                    .map_err(|e| e.to_string()),
+            );
+        });
+        reply
+    }
+}
+
 impl Message<ListModels> for Agents {
     type Reply = Vec<ModelInfo>;
 
@@ -2363,6 +2398,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             timed_out: HashSet::new(),
             last_stop: HashMap::new(),
             approvals: HashMap::new(),
+            search: Arc::default(),
             next_msg: 0,
         },
         runtime::subscriber_mailbox(),
