@@ -174,3 +174,33 @@
     @apply border-border outline-ring/50;
   }
 }
+
+/* streamdown mermaid/code blocks in the transcript (design 30 §8). Unlayered so they beat the utilities. */
+
+/* The toolbar is `sticky top-2` upstream, so it slides down a card as the transcript scrolls; pin it to the card. */
+[data-streamdown="code-block"] {
+  position: relative;
+}
+[data-streamdown="mermaid-block"] > div:has(> [data-streamdown="mermaid-block-actions"]),
+[data-streamdown="code-block"] > div:has(> [data-streamdown="code-block-actions"]) {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  margin-top: 0;
+}
+
+/* Pan/zoom animates every transform (150 ms); during a drag that lags the pointer and jitters. Keep it for the zoom buttons only. */
+[data-streamdown="mermaid"] [style*="grabbing"] > [role="application"] {
+  transition: none;
+}
+
+/* Fullscreen: upstream sizes the svg `auto`, which WebKit collapses inside the flex chain, and blurs a window-sized layer. */
+[data-streamdown="mermaid-fullscreen"] {
+  backdrop-filter: none;
+  background-color: var(--background);
+}
+[data-streamdown="mermaid-fullscreen"] [data-streamdown="mermaid"] svg {
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
+}
