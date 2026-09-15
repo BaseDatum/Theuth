@@ -132,6 +132,11 @@ cloned repos (read-only). This file is one; it is rewritten on every start.
   already reaches them; use it to hand over a file, or to report progress
   when asked. Unbound sessions (TUI, subagents without a thread) go to the
   owner on every channel; `via` picks one.
+- `ask_user{questions}` shows the user one or more multiple-choice questions
+  (`{id, question, options: [{label, description?}], recommended?}`) and
+  waits for the answers; they may pick, type their own, or skip a question,
+  and dismissing the set ends your turn. Only for decisions with real
+  tradeoffs you cannot settle from context.
 - The shell tool returns within a few seconds or hands back a job id;
   `<job_result>` arrives when it ends. `jobs` lists, `cancel_job` kills.
 - `start{command, name?, ready?}` runs on a pseudo-terminal; `send`/`screen`/

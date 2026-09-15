@@ -6,9 +6,10 @@
 //! Public surface consumed by other plugins:
 //! - commands on the `"tools"` actor ([`ToolRegistry`]): [`ListTools`], [`Invoke`], [`ExternalApproval`], [`RegisterTool`], [`UnregisterTool`]
 //! - commands on the `"approval"` actor ([`Approval`]): [`Resolve`]
+//! - commands on the `"ask"` actor ([`AskUser`]): [`AnswerAsk`]
 //! - commands on the `"mcp"` actor ([`Mcp`]): [`ListServers`], [`SetGate`], [`Restart`], [`AddServer`], [`RemoveServer`], [`AddRepo`], [`SyncMcp`], [`McpLogin`], [`McpLogout`]
 //! - commands on the `"jobs"` actor ([`Jobs`]): [`ListJobs`], [`CancelJob`]
-//! - events: [`ApprovalRequested`], [`ApprovalResolved`], [`JobEvent`]
+//! - events: [`ApprovalRequested`], [`ApprovalResolved`], [`AskRequested`], [`AskResolved`], [`JobEvent`]
 
 use std::sync::Arc;
 
@@ -19,6 +20,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 pub mod approval;
+pub mod ask;
 pub mod doc;
 pub mod fs;
 pub mod git;
@@ -29,6 +31,7 @@ pub mod registry;
 pub mod shell;
 
 pub use approval::{Approval, ApprovalId, ApprovalRequested, ApprovalResolved, Decision, Resolve};
+pub use ask::{Answer, AnswerAsk, AskId, AskRequested, AskResolved, AskUser, Choice, Question};
 pub use jobs::{CancelJob, JOBS_ACTOR, JobEvent, JobExit, JobId, JobView, Jobs, ListJobs};
 pub use mcp::{
     AddRepo, AddServer, ListServers, Mcp, McpAuth, McpLogin, McpLogout, McpProgress, McpServer,
@@ -44,6 +47,8 @@ pub use registry::{
 pub const REGISTRY_ACTOR: &str = "tools";
 /// Registry name of the [`Approval`] actor.
 pub const APPROVAL_ACTOR: &str = "approval";
+/// Registry name of the [`AskUser`] actor.
+pub const ASK_ACTOR: &str = "ask";
 /// Registry name of the [`Mcp`] actor.
 pub const MCP_ACTOR: &str = "mcp";
 
@@ -256,6 +261,8 @@ pub struct ToolsConfig {
     pub approvals: bool,
     /// Seconds to wait for a human before denying.
     pub approval_timeout_secs: u64,
+    /// Seconds `ask_user` waits for answers before giving up.
+    pub ask_timeout_secs: u64,
     /// Seconds `shell` waits for a job to exit before replying with a stub
     /// instead of the output; `0` makes every command a stub.
     pub job_grace_secs: u64,
@@ -271,6 +278,7 @@ impl Default for ToolsConfig {
             policy: Policy::default(),
             approvals: true,
             approval_timeout_secs: 300,
+            ask_timeout_secs: 1800,
             job_grace_secs: 3,
             job_timeout_secs: 1800,
             pty_ready_timeout_secs: 30,

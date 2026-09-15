@@ -1,7 +1,8 @@
 import { memo } from 'react'
-import type { ApprovalRequested } from '@/rpc/bindings/ApprovalRequested'
+import type { Prompt } from '@/store/approvals'
 import type { Entry } from '@/store/sessions'
 import { ApprovalCard } from './ApprovalCard'
+import { AskCard } from './AskCard'
 import { MessageAssistant } from './MessageAssistant'
 import { MessageCompacted } from './MessageCompacted'
 import { MessageError, MessageInfo } from './MessageInfo'
@@ -31,12 +32,17 @@ function body(entry: Entry) {
   }
 }
 
-/** One transcript row: the entry's card plus the approval cards waiting on it. Entries are immutable, so `memo` skips untouched rows. */
-export const Message = memo(function Message({ entry, approvals }: { entry: Entry; approvals: ApprovalRequested[] | null }) {
+/** An approval or an `ask_user` card. */
+export function PromptCard({ prompt }: { prompt: Prompt }) {
+  return prompt.type === 'ApprovalRequested' ? <ApprovalCard approval={prompt} /> : <AskCard ask={prompt} />
+}
+
+/** One transcript row: the entry's card plus the prompts waiting on it. Entries are immutable, so `memo` skips untouched rows. */
+export const Message = memo(function Message({ entry, prompts }: { entry: Entry; prompts: Prompt[] | null }) {
   return (
     <>
       {body(entry)}
-      {approvals?.map((a) => <ApprovalCard key={a.id} approval={a} />)}
+      {prompts?.map((p) => <PromptCard key={p.id} prompt={p} />)}
     </>
   )
 })

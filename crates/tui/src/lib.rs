@@ -21,7 +21,10 @@ use rpc::api::{ApiServer, Server};
 use runtime::{Runtime, SessionId};
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
-use tools::{ApprovalRequested, ApprovalResolved, Decision, JobEvent, McpAuth, McpProgress};
+use tools::{
+    ApprovalRequested, ApprovalResolved, AskRequested, AskResolved, Decision, JobEvent, McpAuth,
+    McpProgress,
+};
 
 mod clip;
 pub mod model;
@@ -55,6 +58,8 @@ impl runtime::Plugin for TuiPlugin {
         rt.subscribe::<Bridge, AgentEvent>(&bridge).await;
         rt.subscribe::<Bridge, ApprovalRequested>(&bridge).await;
         rt.subscribe::<Bridge, ApprovalResolved>(&bridge).await;
+        rt.subscribe::<Bridge, AskRequested>(&bridge).await;
+        rt.subscribe::<Bridge, AskResolved>(&bridge).await;
         rt.subscribe::<Bridge, McpProgress>(&bridge).await;
         rt.subscribe::<Bridge, LoginFinished>(&bridge).await;
         rt.subscribe::<Bridge, JobEvent>(&bridge).await;
@@ -121,6 +126,8 @@ forward!(
     AgentEvent => Agent,
     ApprovalRequested => Approval,
     ApprovalResolved => Resolved,
+    AskRequested => Ask,
+    AskResolved => AskResolved,
     McpProgress => McpProgress,
     LoginFinished => LoginFinished,
     JobEvent => Job,
@@ -149,6 +156,12 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
         Command::Resolve { id, decision } => {
             if !msg(api.resolve_approval(id, decision).await)? {
                 anyhow::bail!("approval {} was no longer pending", id.0);
+            }
+            return Ok(());
+        }
+        Command::AnswerAsk { id, answers } => {
+            if !msg(api.answer_ask(id, answers).await)? {
+                anyhow::bail!("ask {} was no longer pending", id.0);
             }
             return Ok(());
         }
@@ -596,6 +609,24 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             model::describe(&req.tool, &req.args).join("\n")
         ),
         UiEvent::Resolved(_) => Ok(()),
+        UiEvent::Ask(req) => req.questions.iter().try_for_each(|q| {
+            let opts = q.options.iter().enumerate().map(|(i, c)| {
+                let rec = if q.recommended == Some(i) {
+                    "  (recommended)"
+                } else {
+                    ""
+                };
+                format!("\n  {}. {}{rec}", i + 1, c.label)
+            });
+            writeln!(
+                out,
+                "ask_user {}: {}{}",
+                q.id,
+                q.question,
+                opts.collect::<String>()
+            )
+        }),
+        UiEvent::AskResolved(_) => Ok(()),
         UiEvent::Sessions(list) => list
             .iter()
             .try_for_each(|s| writeln!(out, "{}  {}  {}", s.id, s.model, s.title)),

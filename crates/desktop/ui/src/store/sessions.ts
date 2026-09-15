@@ -7,7 +7,7 @@ import type { Usage } from '@/rpc/bindings/Usage'
 import type { WireEvent } from '@/rpc/events'
 import type { AgentInfo, LoadedPage } from '@/rpc/extra'
 import { empty, fromHistory, nextId, route } from './reduce'
-import { useApprovals } from './approvals'
+import { useApprovals, useAsks } from './approvals'
 
 /** Live tail of a `shell` card's background job. */
 export type JobTail = {
@@ -224,9 +224,12 @@ export function on<T extends WireEvent['type']>(type: T, cb: Listener<T>): () =>
 export function dispatch(events: WireEvent[]): void {
   useSessions.getState().applyEvents(events)
   const approvals = useApprovals.getState()
+  const asks = useAsks.getState()
   for (const e of events) {
     if (e.type === 'ApprovalRequested') approvals.add(e)
     else if (e.type === 'ApprovalResolved') approvals.resolve(e.id)
+    else if (e.type === 'AskRequested') asks.add(e)
+    else if (e.type === 'AskResolved') asks.resolve(e.id)
     listeners.get(e.type)?.forEach((cb) => cb(e))
   }
 }

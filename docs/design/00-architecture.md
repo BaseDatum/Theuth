@@ -262,9 +262,13 @@ flowchart LR
   via a `UserSink` registry the two plugins fill at start. Computer (27):
   eight `computer_*` tools see and drive the user's desktop — one composite
   screenshot of every display as an image part, enigo input on one
-  thread, `Risk` as the only gate. `todo` and
-  `python` are loop-local (dispatched by the turn, not the registry;
-  `07 §5`).
+  thread, `Risk` as the only gate. `ask_user` (added 2026-09-15): the
+  model's multiple-choice questions to the user, an `AskUser` actor with
+  the same shape as approvals (`AskRequested`/`AskResolved` on the bus,
+  `answer_ask` over RPC; dismiss cancels the turn); TUI and desktop show
+  the questions, Slack as Block Kit cards, Signal one question per text.
+  `todo` and `python` are loop-local (dispatched by the turn, not the
+  registry; `07 §5`).
 - Every `ChatMessage` is appended to the session store before the next
   request; history is append-only within an epoch and compaction opens a
   new one. Resume = latest `epochs` row's head + messages from its

@@ -131,6 +131,27 @@ pub struct Cancel {
     pub session: SessionId,
 }
 
+/// Answer a pending `ask_user`: one answer per question, or
+/// `None` to dismiss the set, which also cancels the owning session's turn.
+/// `Ok(true)` if the ask was still pending. Every frontend answers through here.
+pub async fn answer_ask(
+    id: tools::AskId,
+    answers: Option<Vec<tools::Answer>>,
+) -> anyhow::Result<bool> {
+    use kameo::actor::ActorRef;
+    let dismissed = answers.is_none();
+    let ask = ActorRef::<tools::AskUser>::lookup(tools::ASK_ACTOR)?
+        .ok_or_else(|| anyhow::anyhow!("ask actor is not running"))?;
+    let session = ask.ask(tools::AnswerAsk { id, answers }).await?;
+    if let Some(session) = session.filter(|_| dismissed) {
+        ActorRef::<Agents>::lookup(AGENT_ACTOR)?
+            .ok_or_else(|| anyhow::anyhow!("agent actor is not running"))?
+            .ask(Cancel { session })
+            .await?;
+    }
+    Ok(session.is_some())
+}
+
 /// `ask` → `Result<u32 /* epoch */, String>`: compact `session` now,
 /// threshold ignored (design doc 07 §8.6). Refused while a turn is running.
 /// `style: None` uses the configured default (design doc 11).

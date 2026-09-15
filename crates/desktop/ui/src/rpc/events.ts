@@ -1,6 +1,8 @@
 import type { AgentEvent as Bound } from '@/rpc/bindings/AgentEvent'
 import type { ApprovalRequested } from '@/rpc/bindings/ApprovalRequested'
 import type { ApprovalResolved } from '@/rpc/bindings/ApprovalResolved'
+import type { AskRequested } from '@/rpc/bindings/AskRequested'
+import type { AskResolved } from '@/rpc/bindings/AskResolved'
 import type { BrowserEvent } from '@/rpc/bindings/BrowserEvent'
 import type { JobEvent } from '@/rpc/bindings/JobEvent'
 import type { KnowledgeChanged } from '@/rpc/bindings/KnowledgeChanged'
@@ -28,6 +30,8 @@ export type WireEvent =
   | AgentEvent
   | ApprovalRequested
   | ApprovalResolved
+  | AskRequested
+  | AskResolved
   | McpProgress
   | LoginFinished
   | JobEvent

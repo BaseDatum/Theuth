@@ -37,8 +37,8 @@ use slack::{SLACK_ACTOR, Slack, SlackStatus};
 use tokio::sync::broadcast;
 use tools::git::SyncResult;
 use tools::{
-    AddRepo, AddServer, Approval, ApprovalId, ApprovalsState, CancelJob, Decision, Gate,
-    GetApprovals, JOBS_ACTOR, JobId, JobView, Jobs, ListJobs, ListServers, ListTools, Mcp,
+    AddRepo, AddServer, Answer, Approval, ApprovalId, ApprovalsState, AskId, CancelJob, Decision,
+    Gate, GetApprovals, JOBS_ACTOR, JobId, JobView, Jobs, ListJobs, ListServers, ListTools, Mcp,
     McpLogin, McpLogout, McpProgress, McpServer, Progress, RemoveServer, RepoInfo, Resolve,
     SetApprovals, SetGate, SetHidden, SyncMcp, ToolRegistry, ToolSpec,
 };
@@ -183,6 +183,10 @@ pub trait Api {
     /// Answer a pending approval; `true` if it was still pending.
     #[method(name = "resolve_approval")]
     async fn resolve_approval(&self, id: ApprovalId, decision: Decision) -> RpcResult<bool>;
+    /// Answer a pending `ask_user`: one answer per question, or `None` to
+    /// dismiss the set, which also cancels the turn. `true` if it was still pending.
+    #[method(name = "answer_ask")]
+    async fn answer_ask(&self, id: AskId, answers: Option<Vec<Answer>>) -> RpcResult<bool>;
     /// Every catalog model whose provider is configured.
     #[method(name = "list_models")]
     async fn list_models(&self) -> RpcResult<Vec<ModelInfo>>;
@@ -638,6 +642,12 @@ impl ApiServer for Server {
 
     async fn resolve_approval(&self, id: ApprovalId, decision: Decision) -> RpcResult<bool> {
         ask::<Approval, _>(tools::APPROVAL_ACTOR, Resolve { id, decision }).await
+    }
+
+    async fn answer_ask(&self, id: AskId, answers: Option<Vec<Answer>>) -> RpcResult<bool> {
+        agent::answer_ask(id, answers)
+            .await
+            .map_err(|e| ErrorObjectOwned::owned(ASK_FAILED, e.to_string(), None::<()>))
     }
 
     async fn list_models(&self) -> RpcResult<Vec<ModelInfo>> {

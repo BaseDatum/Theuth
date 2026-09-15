@@ -23,13 +23,14 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::AbortHandle;
 use tokio::time::Instant;
 use tools::{
-    APPROVAL_ACTOR, Approval, ApprovalId, ApprovalRequested, ApprovalResolved, Decision, Resolve,
+    APPROVAL_ACTOR, Answer, Approval, ApprovalId, ApprovalRequested, ApprovalResolved, AskId,
+    AskRequested, AskResolved, Decision, Resolve,
 };
 use uuid::Uuid;
 
 use crate::commands::{self, Cx, Reply};
 use crate::transport::{IncomingAttachment, Recipient, SignalEnvelope, SignalTransport};
-use crate::{SIGNAL_ACTOR, SignalConfig, SignalEvent, SignalStatus, approvals, text};
+use crate::{SIGNAL_ACTOR, SignalConfig, SignalEvent, SignalStatus, approvals, asks, text};
 
 /// How long the Signal server keeps a provisioning URL scannable.
 pub const LINK_URL_TTL: Duration = Duration::from_secs(90);
@@ -212,6 +213,7 @@ trait Port: Send + Sync {
         files: Vec<PathBuf>,
     ) -> Result<(), String>;
     async fn resolve(&self, id: ApprovalId, decision: Decision) -> Result<bool, String>;
+    async fn answer_ask(&self, id: AskId, answers: Option<Vec<Answer>>) -> Result<bool, String>;
 }
 
 /// [`Port`] over the registered `agent` and `approval` actors.
@@ -269,6 +271,12 @@ impl Port for Actors {
             .await
             .map_err(|e| e.to_string())
     }
+
+    async fn answer_ask(&self, id: AskId, answers: Option<Vec<Answer>>) -> Result<bool, String> {
+        agent::answer_ask(id, answers)
+            .await
+            .map_err(|e| e.to_string())
+    }
 }
 
 /// Bus events the channel renders, in bus order.
@@ -276,6 +284,8 @@ enum Event {
     Agent(AgentEvent),
     Requested(ApprovalRequested),
     Resolved(ApprovalResolved),
+    AskRequested(AskRequested),
+    AskResolved(AskResolved),
 }
 
 /// Bus subscriber: forwards into the ordered event worker.
@@ -302,6 +312,20 @@ impl Message<ApprovalResolved> for Bus {
     type Reply = ();
     async fn handle(&mut self, m: ApprovalResolved, _: &mut Context<Self, ()>) {
         let _ = self.tx.send(Event::Resolved(m));
+    }
+}
+
+impl Message<AskRequested> for Bus {
+    type Reply = ();
+    async fn handle(&mut self, m: AskRequested, _: &mut Context<Self, ()>) {
+        let _ = self.tx.send(Event::AskRequested(m));
+    }
+}
+
+impl Message<AskResolved> for Bus {
+    type Reply = ();
+    async fn handle(&mut self, m: AskResolved, _: &mut Context<Self, ()>) {
+        let _ = self.tx.send(Event::AskResolved(m));
     }
 }
 
@@ -348,6 +372,8 @@ pub(crate) struct Channel {
     state: Mutex<State>,
     /// Async lock: `commands::handle` needs `&mut Pending` across its asks.
     approvals: tokio::sync::Mutex<approvals::Pending>,
+    /// Open `ask_user` questions per number.
+    asks: tokio::sync::Mutex<asks::Pending>,
 }
 
 /// Control handle the `"signal"` actor uses. Cheap to clone.
@@ -449,6 +475,8 @@ async fn run(chan: Arc<Channel>, mut ctrl: mpsc::UnboundedReceiver<Control>) {
     chan.rt.subscribe::<Bus, AgentEvent>(&bus).await;
     chan.rt.subscribe::<Bus, ApprovalRequested>(&bus).await;
     chan.rt.subscribe::<Bus, ApprovalResolved>(&bus).await;
+    chan.rt.subscribe::<Bus, AskRequested>(&bus).await;
+    chan.rt.subscribe::<Bus, AskResolved>(&bus).await;
     let inbound = {
         let chan = Arc::clone(&chan);
         tokio::spawn(async move {
@@ -511,6 +539,7 @@ impl Channel {
                 link_url: None,
             }),
             approvals: tokio::sync::Mutex::new(approvals::Pending::default()),
+            asks: tokio::sync::Mutex::new(asks::Pending::default()),
             rt,
         }
     }
@@ -960,6 +989,13 @@ impl Channel {
             return;
         }
         let body = env.text.as_deref().map(str::trim).unwrap_or_default();
+        if !body.is_empty()
+            && !body.starts_with('/')
+            && let Some(reply) = self.ask_reply(&sender.number, body).await
+        {
+            self.send_chunks(&sender, &reply).await;
+            return;
+        }
         if !body.is_empty() {
             let reply = {
                 let status = self.status().await;
@@ -1036,6 +1072,33 @@ impl Channel {
                 self.react(&sender, "❌", &sender, env.timestamp).await;
             }
         }
+    }
+
+    /// `body` as the answer to `number`'s open question, if one is waiting:
+    /// the next question, the outcome of sending the answers, or a hint.
+    async fn ask_reply(&self, number: &str, body: &str) -> Option<String> {
+        let mut asks = self.asks.lock().await;
+        let entry = asks.answerable(number)?;
+        let answer = match asks::parse_reply(body, entry.question()) {
+            Err(hint) => return Some(hint),
+            Ok(asks::Reply::Dismiss) => {
+                entry.done = true;
+                let res = self.port.answer_ask(entry.req.id, None).await;
+                return Some(asks::outcome(res, "🚫 dismissed; turn cancelled"));
+            }
+            Ok(asks::Reply::Pick(index)) => Answer::Choice { index },
+            Ok(asks::Reply::Text(text)) => Answer::Text { text },
+            Ok(asks::Reply::Skip) => Answer::Skipped,
+        };
+        if !entry.record(answer) {
+            return Some(asks::question_text(&entry.req, entry.current));
+        }
+        entry.done = true;
+        let res = self
+            .port
+            .answer_ask(entry.req.id, Some(entry.answers.clone()))
+            .await;
+        Some(asks::outcome(res, "✅ answers sent"))
     }
 
     /// Acts on a slash-command outcome (09 §9).
@@ -1147,6 +1210,26 @@ impl Channel {
                 if res.timed_out {
                     self.send_chunks(&to, &format!("⌛ {} expired", entry.code))
                         .await;
+                }
+            }
+            Event::AskRequested(req) => {
+                let to = self.lock().threads.recipient_for(req.session);
+                let Some(to) = to else { return };
+                let first = asks::question_text(&req, 0);
+                if self.asks.lock().await.insert(req, &to.number) {
+                    self.send_chunks(&to, &first).await;
+                }
+            }
+            Event::AskResolved(res) => {
+                let Some((entry, next)) = self.asks.lock().await.resolve(res.id) else {
+                    return;
+                };
+                let to = self.lock().threads.recipient(&entry.number);
+                if let Some(note) = asks::closing_note(&entry, &res) {
+                    self.send_chunks(&to, note).await;
+                }
+                if let Some(req) = next {
+                    self.send_chunks(&to, &asks::question_text(&req, 0)).await;
                 }
             }
         }
@@ -1341,6 +1424,7 @@ mod tests {
         SendInput(Option<SessionId>, String, Vec<PathBuf>),
         Steer(SessionId, String, Vec<PathBuf>),
         Resolve(ApprovalId, Decision),
+        AnswerAsk(AskId, Option<Vec<Answer>>),
     }
 
     struct Stub {
@@ -1383,6 +1467,17 @@ mod tests {
         }
         async fn resolve(&self, id: ApprovalId, decision: Decision) -> Result<bool, String> {
             self.calls.lock().unwrap().push(Call::Resolve(id, decision));
+            Ok(true)
+        }
+        async fn answer_ask(
+            &self,
+            id: AskId,
+            answers: Option<Vec<Answer>>,
+        ) -> Result<bool, String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(Call::AnswerAsk(id, answers));
             Ok(true)
         }
     }
@@ -1931,6 +2026,99 @@ mod tests {
                 target_ts: timestamp,
             })
         );
+    }
+
+    #[tokio::test]
+    async fn asks_answered_by_text_replies() {
+        let f = fixture().await;
+        let session = f.stub.session;
+        f.chan.lock().threads.bind(&Recipient::new(OWNER), session);
+        let choice = |label: &str| tools::Choice {
+            label: label.into(),
+            description: None,
+        };
+        let ask = |questions: Vec<tools::Question>| AskRequested {
+            id: AskId(Uuid::new_v4()),
+            session,
+            questions,
+        };
+        let question = |q: &str, options: Vec<tools::Choice>| tools::Question {
+            id: q.into(),
+            question: q.into(),
+            options,
+            recommended: None,
+        };
+        let last_text = || {
+            f.transport
+                .sent()
+                .into_iter()
+                .rev()
+                .find_map(|s| match s {
+                    SentItem::Text { text, .. } => Some(text),
+                    _ => None,
+                })
+                .expect("no text sent")
+        };
+
+        let req = ask(vec![
+            question("lang?", vec![choice("Rust"), choice("Go")]),
+            question("name?", Vec::new()),
+        ]);
+        let id = req.id;
+        f.chan.handle_event(Event::AskRequested(req)).await;
+        assert!(last_text().starts_with("❓ Question 1/2: lang?\n1. Rust\n2. Go\n"));
+
+        f.chan.handle_envelope(env(OWNER, 1, "/status")).await;
+        assert!(f.stub.calls().is_empty());
+        assert!(!last_text().starts_with('❓'), "{}", last_text());
+
+        f.chan.handle_envelope(env(OWNER, 2, "3")).await;
+        assert_eq!(last_text(), "pick 1–2, your own answer, skip or dismiss");
+        f.chan.handle_envelope(env(OWNER, 3, "2")).await;
+        assert!(last_text().starts_with("❓ Question 2/2: name?\n"));
+        assert!(f.stub.calls().is_empty());
+        f.chan.handle_envelope(env(OWNER, 4, "my own")).await;
+        assert_eq!(last_text(), "✅ answers sent");
+        assert_eq!(
+            f.stub.calls(),
+            [Call::AnswerAsk(
+                id,
+                Some(vec![
+                    Answer::Choice { index: 1 },
+                    Answer::Text {
+                        text: "my own".into()
+                    },
+                ]),
+            )]
+        );
+        // Sent: later text is input again, not an answer.
+        f.chan.handle_envelope(env(OWNER, 5, "hello")).await;
+        assert!(matches!(f.stub.calls()[..], [Call::SendInput(..)]));
+
+        // A second ask queues behind the first until it resolves.
+        let next = ask(vec![question("more?", Vec::new())]);
+        let next_id = next.id;
+        f.chan.handle_event(Event::AskRequested(next)).await;
+        assert!(!last_text().starts_with("❓ Question 1/1: more?"));
+        f.chan
+            .handle_event(Event::AskResolved(AskResolved {
+                id,
+                dismissed: false,
+                timed_out: false,
+            }))
+            .await;
+        assert!(last_text().starts_with("❓ Question 1/1: more?\n"));
+        f.chan.handle_envelope(env(OWNER, 6, "dismiss")).await;
+        assert_eq!(last_text(), "🚫 dismissed; turn cancelled");
+        assert_eq!(f.stub.calls(), [Call::AnswerAsk(next_id, None)]);
+        f.chan
+            .handle_event(Event::AskResolved(AskResolved {
+                id: next_id,
+                dismissed: true,
+                timed_out: false,
+            }))
+            .await;
+        assert_eq!(last_text(), "🚫 dismissed; turn cancelled");
     }
 
     #[test]

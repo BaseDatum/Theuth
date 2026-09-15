@@ -26,7 +26,8 @@ use slack_morphism::prelude::*;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tools::{
-    APPROVAL_ACTOR, Approval, ApprovalId, ApprovalRequested, ApprovalResolved, Decision, Resolve,
+    APPROVAL_ACTOR, Answer, Approval, ApprovalId, ApprovalRequested, ApprovalResolved, AskId,
+    AskRequested, AskResolved, Decision, Resolve,
 };
 
 use crate::api::{Api, ApiError, MARKDOWN_TEXT_MAX, SlackApi};
@@ -35,7 +36,7 @@ use crate::commands::{self, CommandCx, Outcome, Reply};
 use crate::threads::{Thread, ThreadKey, Threads, thread_key};
 use crate::ui;
 use crate::{
-    ApprovalsScope, SlackConfig, SlackEvent, SlackStatus, ToolCards, approvals, board, socket,
+    ApprovalsScope, SlackConfig, SlackEvent, SlackStatus, ToolCards, approvals, asks, board, socket,
 };
 
 /// Dedup set size for `event_id` / `trigger_id` (21 §3.1).
@@ -98,6 +99,8 @@ trait Port: Send + Sync {
     async fn list_sessions(&self) -> Result<Vec<SessionSummary>, String>;
     /// `tools::Resolve`: `true` when the id was pending.
     async fn resolve(&self, id: ApprovalId, decision: Decision) -> Result<bool, String>;
+    /// `agent::answer_ask`: `true` when the id was pending; `None` dismisses (cancels the turn).
+    async fn answer_ask(&self, id: AskId, answers: Option<Vec<Answer>>) -> Result<bool, String>;
     /// `agent::ListAgents`: the subtree under `session`.
     async fn list_agents(&self, session: SessionId) -> Result<Vec<AgentInfo>, String>;
 }
@@ -169,6 +172,12 @@ impl Port for Actors {
             .map_err(|e| e.to_string())
     }
 
+    async fn answer_ask(&self, id: AskId, answers: Option<Vec<Answer>>) -> Result<bool, String> {
+        agent::answer_ask(id, answers)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
     async fn list_agents(&self, session: SessionId) -> Result<Vec<AgentInfo>, String> {
         agents()?
             .ask(ListAgents { session })
@@ -182,6 +191,8 @@ enum Event {
     Agent(AgentEvent),
     Requested(ApprovalRequested),
     Resolved(ApprovalResolved),
+    Ask(AskRequested),
+    AskDone(AskResolved),
 }
 
 /// Bus subscriber: forwards into the ordered router.
@@ -211,6 +222,20 @@ impl Message<ApprovalResolved> for Bus {
     }
 }
 
+impl Message<AskRequested> for Bus {
+    type Reply = ();
+    async fn handle(&mut self, m: AskRequested, _: &mut Context<Self, ()>) {
+        let _ = self.tx.send(Event::Ask(m));
+    }
+}
+
+impl Message<AskResolved> for Bus {
+    type Reply = ();
+    async fn handle(&mut self, m: AskResolved, _: &mut Context<Self, ()>) {
+        let _ = self.tx.send(Event::AskDone(m));
+    }
+}
+
 /// An acked, deduplicated Socket Mode envelope (21 §7).
 pub enum Inbound {
     /// Events API payload.
@@ -228,6 +253,8 @@ enum Out {
     Approval(Box<ApprovalRequested>),
     /// The card for this id was answered: replace it with the outcome; `by` = the clicker.
     Resolved(ApprovalResolved, Option<String>),
+    /// Question `i` of an `ask_user` for this thread's session: post its card.
+    Ask(Box<AskRequested>, usize),
     /// A descendant was bound to its own thread at `link` (21 §9.1); `depth` 1 = direct child.
     Spawned {
         child: SessionId,
@@ -260,6 +287,34 @@ struct Card {
     dm: Option<(String, String)>,
 }
 
+/// A pending `ask_user`: one message per question, the current one replaced
+/// in place as it is answered. Lives here for thread and owner-DM cards alike.
+struct AskCard {
+    req: AskRequested,
+    /// The thread's user, allowed to click beside the owner; `None` for owner-DM cards.
+    thread_user: Option<String>,
+    /// Index of the question whose card is up.
+    current: usize,
+    answers: Vec<Answer>,
+    channel: String,
+    /// The current question's message; empty until the worker has posted it.
+    ts: String,
+    /// Owner-DM cards only: the `session <id> · <title>` context line.
+    context: Option<String>,
+    /// Answered or dismissed from here; the message is already final.
+    done: bool,
+}
+
+/// What follows an accepted question-card click.
+enum AskNext {
+    /// Post question `i`.
+    Post(usize),
+    /// Every question answered: hand these to the agent.
+    Answer(Vec<Answer>),
+    /// Dismiss the set (cancels the turn).
+    Dismiss,
+}
+
 struct State {
     allowed: Vec<String>,
     channels: Vec<String>,
@@ -272,6 +327,8 @@ struct State {
     dropped: u64,
     /// Pending approval cards by id (thread and owner-DM alike).
     cards: HashMap<ApprovalId, Card>,
+    /// Pending `ask_user` questions by id.
+    asks: HashMap<AskId, AskCard>,
     /// child → (parent, child's name), from `SubagentSpawned` and `list_agents`.
     parent_of: HashMap<SessionId, (SessionId, String)>,
     /// `chat.getPermalink` results by thread key.
@@ -383,6 +440,8 @@ async fn run(
     chan.rt.subscribe::<Bus, AgentEvent>(&bus).await;
     chan.rt.subscribe::<Bus, ApprovalRequested>(&bus).await;
     chan.rt.subscribe::<Bus, ApprovalResolved>(&bus).await;
+    chan.rt.subscribe::<Bus, AskRequested>(&bus).await;
+    chan.rt.subscribe::<Bus, AskResolved>(&bus).await;
     let inbound = {
         let chan = Arc::clone(&chan);
         tokio::spawn(async move {
@@ -495,6 +554,7 @@ impl Channel {
                 last_event: None,
                 dropped: 0,
                 cards: HashMap::new(),
+                asks: HashMap::new(),
                 parent_of: HashMap::new(),
                 permalinks: HashMap::new(),
             }),
@@ -693,6 +753,9 @@ impl Channel {
                 if let Some(click) = approvals::click(&ev) {
                     return self.handle_click(click).await;
                 }
+                if let Some(click) = asks::click(&ev) {
+                    return self.handle_ask_click(click).await;
+                }
                 match *ev {
                     SlackInteractionEvent::BlockActions(ev) => self.handle_cmd_click(ev).await,
                     SlackInteractionEvent::ViewSubmission(ev) => self.handle_view(ev).await,
@@ -842,6 +905,121 @@ impl Channel {
                 self.ephemeral(&click.channel, &click.user, &format!("⚠️ {e}"))
                     .await;
             }
+        }
+    }
+
+    /// A question-card click (21 §10.1 shape): owner or the card's thread user
+    /// may answer. The clicked message is finalised at once; the next question
+    /// is posted or the answers handed to the agent.
+    async fn handle_ask_click(self: &Arc<Self>, click: asks::Click) {
+        let (blocks, next) = match self.ask_step(&click) {
+            Ok(step) => step,
+            Err(msg) => {
+                tracing::debug!(user = %click.user, msg, "slack ask click refused");
+                return self.ephemeral(&click.channel, &click.user, msg).await;
+            }
+        };
+        if let Err(e) = self
+            .api
+            .update_blocks(&click.channel, &click.message_ts, blocks)
+            .await
+        {
+            tracing::debug!(error = %e, "ask card update failed");
+        }
+        let answers = match next {
+            AskNext::Post(i) => return self.post_question(click.id, i).await,
+            AskNext::Answer(answers) => Some(answers),
+            AskNext::Dismiss => None,
+        };
+        match self.port.answer_ask(click.id, answers).await {
+            Ok(true) => {}
+            Ok(false) => {
+                self.ephemeral(&click.channel, &click.user, "already answered")
+                    .await
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "answer_ask failed");
+                self.ephemeral(&click.channel, &click.user, &format!("⚠️ {e}"))
+                    .await;
+            }
+        }
+    }
+
+    /// Applies `click` to its card under the lock: the blocks replacing the
+    /// clicked message and what follows; `Err` = the ephemeral to send instead.
+    fn ask_step(&self, click: &asks::Click) -> Result<(serde_json::Value, AskNext), &'static str> {
+        let mut s = self.lock();
+        let card = s.asks.get_mut(&click.id);
+        let permitted = click.user == self.owner
+            || card
+                .as_deref()
+                .is_some_and(|c| c.thread_user.as_deref() == Some(click.user.as_str()));
+        if !permitted {
+            return Err("not allowed");
+        }
+        let Some(card) = card else {
+            return Err("already answered");
+        };
+        if card.done || click.question.is_some_and(|q| q != card.current) {
+            return Err("already answered");
+        }
+        let i = card.current;
+        let answer = match &click.kind {
+            asks::Kind::Dismiss => {
+                card.done = true;
+                return Ok((
+                    asks::closed_card(&card.req, i, true, false),
+                    AskNext::Dismiss,
+                ));
+            }
+            asks::Kind::Pick(index) if *index >= card.req.questions[i].options.len() => {
+                return Err("unknown option");
+            }
+            asks::Kind::Pick(index) => Answer::Choice { index: *index },
+            asks::Kind::Text(text) => Answer::Text { text: text.clone() },
+            asks::Kind::Skip => Answer::Skipped,
+        };
+        let blocks = asks::answered_card(&card.req, i, &answer);
+        card.answers.push(answer);
+        card.current += 1;
+        let next = if card.current < card.req.questions.len() {
+            card.ts.clear();
+            AskNext::Post(card.current)
+        } else {
+            card.done = true;
+            AskNext::Answer(card.answers.clone())
+        };
+        Ok((blocks, next))
+    }
+
+    /// Posts question `i` of `id`: through the thread's worker for a bound
+    /// session, straight into the owner DM otherwise.
+    async fn post_question(self: &Arc<Self>, id: AskId, i: usize) {
+        let card = self
+            .lock()
+            .asks
+            .get(&id)
+            .map(|c| (c.req.clone(), c.context.clone(), c.channel.clone()));
+        let Some((req, context, channel)) = card else {
+            return;
+        };
+        let Some(context) = context else {
+            if let Some((key, thread)) = self.bound(req.session) {
+                let _ = self.worker(&key, &thread).send(Out::Ask(Box::new(req), i));
+            }
+            return;
+        };
+        match self
+            .api
+            .post_blocks(&channel, None, asks::question_card(&req, i, Some(&context)))
+            .await
+        {
+            Ok(ts) => {
+                if let Some(c) = self.lock().asks.get_mut(&id) {
+                    c.ts = ts;
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "owner ask card post failed"),
         }
     }
 
@@ -1130,6 +1308,52 @@ impl Channel {
                     (None, None) => {}
                 }
             }
+            Event::Ask(req) => {
+                let (thread_user, channel, context) = match self.bound(req.session) {
+                    Some((key, thread)) => (Some(thread.user), split_key(&key).0.to_owned(), None),
+                    None => {
+                        if self.approvals != ApprovalsScope::All {
+                            return;
+                        }
+                        let Some(dm) = self.identity.get().and_then(|i| i.owner_dm.clone()) else {
+                            return;
+                        };
+                        let context = self.session_context(req.session).await;
+                        (None, dm, Some(context))
+                    }
+                };
+                let id = req.id;
+                self.lock().asks.insert(
+                    id,
+                    AskCard {
+                        req,
+                        thread_user,
+                        current: 0,
+                        answers: Vec::new(),
+                        channel,
+                        ts: String::new(),
+                        context,
+                        done: false,
+                    },
+                );
+                self.post_question(id, 0).await;
+            }
+            Event::AskDone(res) => {
+                let card = self.lock().asks.remove(&res.id);
+                let Some(card) = card else { return };
+                if card.done || card.ts.is_empty() {
+                    return;
+                }
+                let blocks =
+                    asks::closed_card(&card.req, card.current, res.dismissed, res.timed_out);
+                if let Err(e) = self
+                    .api
+                    .update_blocks(&card.channel, &card.ts, blocks)
+                    .await
+                {
+                    tracing::debug!(error = %e, "ask card update failed");
+                }
+            }
         }
     }
 
@@ -1169,20 +1393,7 @@ impl Channel {
         let Some(dm) = self.identity.get().and_then(|i| i.owner_dm.clone()) else {
             return;
         };
-        let title = match self.port.list_sessions().await {
-            Ok(sessions) => sessions
-                .into_iter()
-                .find(|s| s.id == req.session)
-                .map(|s| s.title)
-                .filter(|t| !t.trim().is_empty())
-                .unwrap_or_else(|| "Unknown".to_owned()),
-            Err(e) => {
-                tracing::debug!(error = %e, "list_sessions for the approval context failed");
-                "Unknown".to_owned()
-            }
-        };
-        let id = req.session.to_string();
-        let context = format!("session {} · {title}", &id[id.len().saturating_sub(8)..]);
+        let context = self.session_context(req.session).await;
         let body = approvals::body(&req);
         match self
             .api
@@ -1202,6 +1413,25 @@ impl Channel {
             }
             Err(e) => tracing::warn!(error = %e, "owner approval card post failed"),
         }
+    }
+
+    /// `session <last 8> · <title>` for owner-DM cards; title from `ListSessions`,
+    /// `Unknown` when the ask fails.
+    async fn session_context(&self, session: SessionId) -> String {
+        let title = match self.port.list_sessions().await {
+            Ok(sessions) => sessions
+                .into_iter()
+                .find(|s| s.id == session)
+                .map(|s| s.title)
+                .filter(|t| !t.trim().is_empty())
+                .unwrap_or_else(|| "Unknown".to_owned()),
+            Err(e) => {
+                tracing::debug!(error = %e, "list_sessions for the card context failed");
+                "Unknown".to_owned()
+            }
+        };
+        let id = session.to_string();
+        format!("session {} · {title}", &id[id.len().saturating_sub(8)..])
     }
 
     /// `SubagentSpawned` for a bound parent (21 §9.1): a new top-level
@@ -1392,6 +1622,7 @@ impl Worker {
                     Some(Out::Agent(ev)) => self.apply(ev).await,
                     Some(Out::Approval(req)) => self.approval(*req).await,
                     Some(Out::Resolved(res, by)) => self.resolved(res, by.as_deref()).await,
+                    Some(Out::Ask(req, i)) => self.ask(*req, i).await,
                     Some(Out::Spawned { child, name, link, depth }) => self.spawned(child, name, link, depth).await,
                     Some(Out::Child(session, ev)) => self.child(session, &ev).await,
                     Some(Out::ChildApproval(session, tool)) => {
@@ -1507,6 +1738,29 @@ impl Worker {
             .await
         {
             tracing::debug!(error = %e, "approval card update failed");
+        }
+    }
+
+    // -- asks --------------------------------------------------------------
+
+    /// Posts question `i`'s card in the thread and records its `ts` on the card.
+    async fn ask(&mut self, req: AskRequested, i: usize) {
+        match self
+            .chan
+            .api
+            .post_blocks(
+                &self.channel,
+                Some(&self.thread_ts),
+                asks::question_card(&req, i, None),
+            )
+            .await
+        {
+            Ok(ts) => {
+                if let Some(c) = self.chan.lock().asks.get_mut(&req.id) {
+                    c.ts = ts;
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "ask card post failed"),
         }
     }
 
@@ -1847,6 +2101,7 @@ pub(crate) mod tests {
         Steer(SessionId, String),
         Cancel(SessionId),
         Resolve(ApprovalId, Decision),
+        AnswerAsk(AskId, Option<Vec<Answer>>),
     }
 
     pub(crate) struct Stub {
@@ -1893,6 +2148,17 @@ pub(crate) mod tests {
         }
         async fn resolve(&self, id: ApprovalId, decision: Decision) -> Result<bool, String> {
             self.calls.lock().unwrap().push(Call::Resolve(id, decision));
+            Ok(true)
+        }
+        async fn answer_ask(
+            &self,
+            id: AskId,
+            answers: Option<Vec<Answer>>,
+        ) -> Result<bool, String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(Call::AnswerAsk(id, answers));
             Ok(true)
         }
         async fn list_agents(&self, _: SessionId) -> Result<Vec<AgentInfo>, String> {
@@ -2175,6 +2441,54 @@ pub(crate) mod tests {
             "channel": { "id": DM, "name": "dm" },
             "response_url": "https://hooks.slack.com/actions/T1/1/x",
             "actions": [{ "type": "button", "action_id": action, "value": id.0.to_string() }],
+        }))
+        .unwrap();
+        Inbound::Action(Box::new(ev))
+    }
+
+    fn ask(session: SessionId) -> AskRequested {
+        let choice = |label: &str| tools::Choice {
+            label: label.into(),
+            description: None,
+        };
+        AskRequested {
+            id: AskId(uuid::Uuid::new_v4()),
+            session,
+            questions: vec![
+                tools::Question {
+                    id: "db".into(),
+                    question: "Which database?".into(),
+                    options: vec![choice("sqlite"), choice("postgres")],
+                    recommended: Some(0),
+                },
+                tools::Question {
+                    id: "name".into(),
+                    question: "Project name?".into(),
+                    options: Vec::new(),
+                    recommended: None,
+                },
+            ],
+        }
+    }
+
+    /// An ask-card interaction on message `7.7`: a button with `value`, or the
+    /// text input (`block_id` = `value`, typed `text`) for [`asks::ACTION_TEXT`].
+    fn ask_click(user: &str, action: &str, value: &str, text: Option<&str>) -> Inbound {
+        let a = match text {
+            Some(t) => {
+                json!({ "type": "plain_text_input", "action_id": action, "block_id": value, "value": t })
+            }
+            None => json!({ "type": "button", "action_id": action, "value": value }),
+        };
+        let ev: SlackInteractionEvent = serde_json::from_value(json!({
+            "type": "block_actions",
+            "team": { "id": "T1" },
+            "user": { "id": user },
+            "api_app_id": "A1",
+            "container": { "type": "message", "message_ts": "7.7", "channel_id": DM },
+            "trigger_id": "tr1",
+            "channel": { "id": DM, "name": "dm" },
+            "actions": [a],
         }))
         .unwrap();
         Inbound::Action(Box::new(ev))
@@ -2487,6 +2801,130 @@ pub(crate) mod tests {
             .await;
         assert!(f.api.calls().is_empty());
         assert!(f.chan.lock().cards.is_empty());
+    }
+
+    #[tokio::test]
+    async fn asks_in_a_bound_thread_run_one_question_at_a_time() {
+        let f = fixture();
+        f.bind(FRIEND);
+        let req = ask(f.stub.session);
+        let id = req.id;
+        f.chan.route(Event::Ask(req)).await;
+        let card = format!("post_blocks {DM} 100.1 3 blocks");
+        f.until(|calls| calls.contains(&card)).await;
+        assert_eq!(f.chan.lock().asks[&id].ts, "7.7");
+
+        f.chan
+            .handle_inbound(ask_click(
+                FRIEND,
+                asks::ACTION_PICK,
+                &format!("{}:0:1", id.0),
+                None,
+            ))
+            .await;
+        let updated = format!("update_blocks {DM} 7.7");
+        f.until(|calls| calls.iter().filter(|c| **c == card).count() == 2)
+            .await;
+        assert!(f.api.calls().contains(&updated));
+        assert!(f.stub.calls().is_empty());
+
+        // The old card again: stale.
+        f.chan
+            .handle_inbound(ask_click(
+                FRIEND,
+                asks::ACTION_PICK,
+                &format!("{}:0:0", id.0),
+                None,
+            ))
+            .await;
+        f.until(|calls| calls.contains(&format!("ephemeral {DM} {FRIEND} already answered")))
+            .await;
+
+        f.chan
+            .handle_inbound(ask_click(
+                STRANGER,
+                asks::ACTION_TEXT,
+                &format!("ask_text:{}:1", id.0),
+                Some("nope"),
+            ))
+            .await;
+        f.until(|calls| calls.contains(&format!("ephemeral {DM} {STRANGER} not allowed")))
+            .await;
+        f.chan
+            .handle_inbound(ask_click(
+                OWNER,
+                asks::ACTION_TEXT,
+                &format!("ask_text:{}:1", id.0),
+                Some("wth"),
+            ))
+            .await;
+        assert_eq!(
+            f.stub.calls(),
+            vec![Call::AnswerAsk(
+                id,
+                Some(vec![
+                    Answer::Choice { index: 1 },
+                    Answer::Text { text: "wth".into() },
+                ]),
+            )]
+        );
+        let before = f.api.calls().len();
+        f.chan
+            .route(Event::AskDone(AskResolved {
+                id,
+                dismissed: false,
+                timed_out: false,
+            }))
+            .await;
+        assert!(f.chan.lock().asks.is_empty());
+        assert_eq!(
+            f.api.calls().len(),
+            before,
+            "already finalised; no second update"
+        );
+    }
+
+    #[tokio::test]
+    async fn ask_dismiss_and_timeout_close_the_card() {
+        let f = fixture();
+        f.bind(FRIEND);
+        let req = ask(f.stub.session);
+        let id = req.id;
+        f.chan.route(Event::Ask(req)).await;
+        f.until(|calls| calls.iter().any(|c| c.starts_with("post_blocks")))
+            .await;
+        f.chan
+            .handle_inbound(ask_click(
+                FRIEND,
+                asks::ACTION_DISMISS,
+                &id.0.to_string(),
+                None,
+            ))
+            .await;
+        assert!(f.api.calls().contains(&format!("update_blocks {DM} 7.7")));
+        assert_eq!(f.stub.calls(), vec![Call::AnswerAsk(id, None)]);
+
+        // Unbound + timeout: the owner-DM card is closed from the bus event.
+        let f = fixture();
+        let req = ask(SessionId::new());
+        let id = req.id;
+        f.chan.route(Event::Ask(req)).await;
+        assert_eq!(
+            f.api.calls(),
+            vec![format!("post_blocks {OWNER_DM} - 4 blocks")]
+        );
+        f.chan
+            .route(Event::AskDone(AskResolved {
+                id,
+                dismissed: false,
+                timed_out: true,
+            }))
+            .await;
+        assert_eq!(
+            f.api.calls().last().unwrap(),
+            &format!("update_blocks {OWNER_DM} 7.7")
+        );
+        assert!(f.chan.lock().asks.is_empty());
     }
 
     /// Binds the parent, spawns `grep-logs` under it; the child's thread is `DM:8.8`.

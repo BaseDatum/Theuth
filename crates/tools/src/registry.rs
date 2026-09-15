@@ -16,9 +16,10 @@ use runtime::{Runtime, SessionId};
 use serde::{Deserialize, Serialize};
 
 use crate::approval::{Approval, Decision, RequestApproval};
+use crate::ask::{AskUser, AskUserTool};
 use crate::{
-    APPROVAL_ACTOR, DynTool, Policy, PolicyAction, REGISTRY_ACTOR, Risk, ToolCall, ToolCx,
-    ToolOutput, ToolSpec, ToolsConfig, fs, jobs, pty, shell,
+    APPROVAL_ACTOR, ASK_ACTOR, DynTool, Policy, PolicyAction, REGISTRY_ACTOR, Risk, ToolCall,
+    ToolCx, ToolOutput, ToolSpec, ToolsConfig, fs, jobs, pty, shell,
 };
 
 /// The registry actor. Look up with `ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR)`.
@@ -501,6 +502,11 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
         runtime::subscriber_mailbox(),
     );
     approval.register(APPROVAL_ACTOR)?;
+    let ask = AskUser::spawn_with_mailbox(
+        AskUser::new(rt.clone(), Duration::from_secs(cfg.ask_timeout_secs)),
+        runtime::subscriber_mailbox(),
+    );
+    ask.register(ASK_ACTOR)?;
     let jobs = jobs::start(
         rt,
         Duration::from_secs(cfg.job_grace_secs),
@@ -509,7 +515,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
 
     let shell = shell::ShellTool::new(jobs.clone());
     let shells = shell.shells();
-    let builtins: [DynTool; 12] = [
+    let builtins: [DynTool; 13] = [
         Arc::new(shell),
         Arc::new(pty::StartTool::new(
             jobs.clone(),
@@ -526,6 +532,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
         Arc::new(fs::ListDir),
         Arc::new(fs::Grep),
         Arc::new(fs::Edit),
+        Arc::new(AskUserTool(ask)),
     ];
     let registry = ToolRegistry::spawn_with_mailbox(
         ToolRegistry {

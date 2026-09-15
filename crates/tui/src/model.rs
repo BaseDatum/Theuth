@@ -20,8 +20,9 @@ use runtime::{InputId, SessionId, TurnId};
 use tokio::sync::mpsc::UnboundedSender;
 use tools::git::SyncResult;
 use tools::{
-    ApprovalId, ApprovalRequested, ApprovalResolved, ApprovalsState, Decision, Gate, JobEvent,
-    JobView, McpAuth, McpProgress, McpServer, McpToolInfo, PolicyAction, RepoInfo,
+    Answer, ApprovalId, ApprovalRequested, ApprovalResolved, ApprovalsState, AskId, AskRequested,
+    AskResolved, Decision, Gate, JobEvent, JobView, McpAuth, McpProgress, McpServer, McpToolInfo,
+    PolicyAction, RepoInfo,
 };
 
 use crate::clip::Image;
@@ -35,6 +36,10 @@ pub enum UiEvent {
     Approval(ApprovalRequested),
     /// An approval was answered (by anyone).
     Resolved(ApprovalResolved),
+    /// The model asks the user questions (`ask_user`).
+    Ask(AskRequested),
+    /// An ask was answered or dismissed (by anyone).
+    AskResolved(AskResolved),
     /// Reply to [`Command::ListSessions`].
     Sessions(Vec<SessionSummary>),
     /// Reply to [`Command::Search`]: the query echoed with its hits.
@@ -197,6 +202,13 @@ pub enum Command {
         id: ApprovalId,
         /// Answer.
         decision: Decision,
+    },
+    /// `answer_ask`; `answers: None` dismisses the set and cancels the turn.
+    AnswerAsk {
+        /// Request.
+        id: AskId,
+        /// One per question, in order.
+        answers: Option<Vec<Answer>>,
     },
     /// `list_models`.
     ListModels,
@@ -994,6 +1006,43 @@ impl Prompt {
     }
 }
 
+/// A pending `ask_user` being answered one question at a time.
+#[derive(Debug)]
+pub struct Ask {
+    /// The request.
+    pub req: AskRequested,
+    /// Index of the question being shown.
+    pub current: usize,
+    /// Row under the cursor: an option, or `options.len()` for "type your own".
+    pub cursor: usize,
+    /// Answers so far, one per finished question.
+    pub answers: Vec<Answer>,
+    /// The input box is taking a freeform answer.
+    pub typing: bool,
+}
+
+impl Ask {
+    fn new(req: AskRequested) -> Self {
+        let cursor = req
+            .questions
+            .first()
+            .and_then(|q| q.recommended)
+            .unwrap_or(0);
+        Self {
+            req,
+            current: 0,
+            cursor,
+            answers: Vec::new(),
+            typing: false,
+        }
+    }
+
+    /// The question being shown.
+    pub fn question(&self) -> &tools::Question {
+        &self.req.questions[self.current]
+    }
+}
+
 /// One line of the `/mcp` menu.
 #[derive(Debug)]
 pub enum Row<'a> {
@@ -1223,6 +1272,8 @@ pub struct Model {
     pub menu: Option<Menu>,
     /// Pending approvals for the current session or its subtree, oldest first; the front is shown.
     pub approvals: VecDeque<ApprovalRequested>,
+    /// Pending `ask_user` calls for the current session or its subtree, oldest first; the front is shown.
+    pub asks: VecDeque<Ask>,
     /// `tools.approvals` (global); false = never prompts.
     pub approvals_global: bool,
     /// The root session opted out of prompts (`/approvals off`).
@@ -1297,10 +1348,16 @@ impl Model {
         self.approvals.front()
     }
 
+    /// The ask currently shown, if any.
+    pub fn ask(&self) -> Option<&Ask> {
+        self.asks.front()
+    }
+
     /// The input box takes keys: no approval prompt and no modal menu
     /// (the slash popup rides on the box).
     pub fn input_focused(&self) -> bool {
         self.approval().is_none()
+            && self.ask().is_none_or(|a| a.typing)
             && !matches!(
                 self.menu,
                 Some(
@@ -1731,6 +1788,14 @@ impl Model {
                 }
                 self.approvals.retain(|a| a.id != r.id);
             }
+            UiEvent::Ask(req) => {
+                if !req.questions.is_empty()
+                    && (self.session == Some(req.session) || self.agents.contains_key(&req.session))
+                {
+                    self.asks.push_back(Ask::new(req));
+                }
+            }
+            UiEvent::AskResolved(r) => self.asks.retain(|a| a.req.id != r.id),
             UiEvent::Sessions(list) => {
                 let items: Vec<SessionSummary> =
                     list.into_iter().filter(|s| s.parent.is_none()).collect();
@@ -2599,8 +2664,10 @@ impl Model {
     /// subtree reply prunes the ones that do not belong to the new view.
     pub fn resume(&mut self, id: SessionId, tx: &UnboundedSender<Command>) {
         let approvals = std::mem::take(&mut self.approvals);
+        let asks = std::mem::take(&mut self.asks);
         self.reset();
         self.approvals = approvals;
+        self.asks = asks;
         self.session = Some(id);
         send(tx, Command::Load(id));
         send(tx, Command::ListAgents(id));
@@ -2637,6 +2704,88 @@ impl Model {
                 Command::Resolve {
                     id: req.id,
                     decision,
+                },
+            );
+        }
+    }
+
+    /// A key while an ask is shown. Returns text for the input box when it
+    /// must change (entering or leaving freeform typing, sending an answer).
+    pub fn ask_key(
+        &mut self,
+        code: KeyCode,
+        input: &str,
+        tx: &UnboundedSender<Command>,
+    ) -> Option<String> {
+        let a = self.asks.front_mut()?;
+        if a.typing {
+            return match code {
+                KeyCode::Enter => {
+                    let text = input.trim();
+                    if text.is_empty() {
+                        return None;
+                    }
+                    let text = text.to_owned();
+                    self.ask_answer(Answer::Text { text }, tx);
+                    Some(String::new())
+                }
+                KeyCode::Esc => {
+                    a.typing = false;
+                    Some(String::new())
+                }
+                _ => None,
+            };
+        }
+        let n = a.question().options.len();
+        match code {
+            KeyCode::Up => a.cursor = a.cursor.saturating_sub(1),
+            KeyCode::Down => a.cursor = (a.cursor + 1).min(n),
+            KeyCode::Enter if a.cursor < n => {
+                let index = a.cursor;
+                self.ask_answer(Answer::Choice { index }, tx);
+            }
+            KeyCode::Enter => a.typing = true,
+            KeyCode::Char(c) if c.is_ascii_digit() => {
+                let d = usize::from(c as u8 - b'0');
+                if (1..=n).contains(&d) {
+                    self.ask_answer(Answer::Choice { index: d - 1 }, tx);
+                }
+            }
+            KeyCode::Char('s') | KeyCode::Tab => self.ask_answer(Answer::Skipped, tx),
+            KeyCode::Esc => {
+                if let Some(a) = self.asks.pop_front() {
+                    send(
+                        tx,
+                        Command::AnswerAsk {
+                            id: a.req.id,
+                            answers: None,
+                        },
+                    );
+                }
+            }
+            _ => {}
+        }
+        None
+    }
+
+    /// Record the shown question's answer; the last one sends the set.
+    fn ask_answer(&mut self, answer: Answer, tx: &UnboundedSender<Command>) {
+        let Some(a) = self.asks.front_mut() else {
+            return;
+        };
+        a.answers.push(answer);
+        a.typing = false;
+        a.current += 1;
+        if a.current < a.req.questions.len() {
+            a.cursor = a.question().recommended.unwrap_or(0);
+            return;
+        }
+        if let Some(a) = self.asks.pop_front() {
+            send(
+                tx,
+                Command::AnswerAsk {
+                    id: a.req.id,
+                    answers: Some(a.answers),
                 },
             );
         }
@@ -3015,7 +3164,7 @@ impl Model {
 
     /// Open or close the slash popup to match what the input box holds.
     pub fn sync_slash(&mut self, input: &str) {
-        if self.prompt.is_some() {
+        if self.prompt.is_some() || self.ask().is_some() {
             return;
         }
         match (&self.menu, input.starts_with('/')) {
@@ -5098,5 +5247,91 @@ mod tests {
         });
         assert_eq!(m.queued.len(), 1);
         assert_eq!(m.recall.take().as_deref(), Some("second"));
+    }
+
+    #[test]
+    fn ask_picks_types_skips_and_dismisses() {
+        use tools::{AskId, Choice, Question};
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::new("m".into(), true);
+        let s = SessionId::new();
+        m.session = Some(s);
+        let q = |id: &str, n: usize, rec: Option<usize>| Question {
+            id: id.into(),
+            question: format!("{id}?"),
+            options: (0..n)
+                .map(|i| Choice {
+                    label: format!("o{i}"),
+                    description: None,
+                })
+                .collect(),
+            recommended: rec,
+        };
+        let req = AskRequested {
+            id: AskId(Default::default()),
+            session: s,
+            questions: vec![q("a", 3, Some(2)), q("b", 2, None), q("c", 0, None)],
+        };
+        // A stranger's ask is ignored; ours opens on the recommended row.
+        m.apply(UiEvent::Ask(AskRequested {
+            session: SessionId::new(),
+            ..req.clone()
+        }));
+        assert!(m.ask().is_none());
+        m.apply(UiEvent::Ask(req.clone()));
+        assert_eq!(m.ask().unwrap().cursor, 2);
+        assert!(!m.input_focused());
+        // Enter picks the cursor row; then `s` skips; then the freeform-only
+        // question goes straight to typing and Enter sends the text.
+        assert_eq!(m.ask_key(KeyCode::Enter, "", &tx), None);
+        assert_eq!(m.ask().unwrap().current, 1);
+        m.ask_key(KeyCode::Char('s'), "", &tx);
+        assert_eq!(m.ask().unwrap().current, 2);
+        m.ask_key(KeyCode::Enter, "", &tx);
+        assert!(m.ask().unwrap().typing && m.input_focused());
+        assert_eq!(
+            m.ask_key(KeyCode::Enter, "  ", &tx),
+            None,
+            "blank text stays"
+        );
+        assert_eq!(
+            m.ask_key(KeyCode::Enter, " mine ", &tx),
+            Some(String::new())
+        );
+        assert!(m.ask().is_none());
+        match rx.try_recv() {
+            Ok(Command::AnswerAsk { id, answers }) => {
+                assert_eq!(id, req.id);
+                assert_eq!(
+                    answers,
+                    Some(vec![
+                        Answer::Choice { index: 2 },
+                        Answer::Skipped,
+                        Answer::Text {
+                            text: "mine".into()
+                        },
+                    ])
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        // Digits pick directly; Esc dismisses the whole set.
+        m.apply(UiEvent::Ask(req.clone()));
+        m.ask_key(KeyCode::Char('1'), "", &tx);
+        assert_eq!(m.ask().unwrap().current, 1);
+        m.ask_key(KeyCode::Esc, "", &tx);
+        assert!(m.ask().is_none());
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::AnswerAsk { answers: None, .. })
+        ));
+        // Resolved elsewhere: the box goes away.
+        m.apply(UiEvent::Ask(req.clone()));
+        m.apply(UiEvent::AskResolved(AskResolved {
+            id: req.id,
+            dismissed: false,
+            timed_out: false,
+        }));
+        assert!(m.ask().is_none());
     }
 }

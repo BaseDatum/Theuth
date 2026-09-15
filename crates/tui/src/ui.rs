@@ -209,6 +209,13 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 }
                 return;
             }
+            if m.ask().is_some() {
+                let text = input.read().to_string();
+                if let Some(text) = m.ask_key(code, &text, &commands) {
+                    input.set(text);
+                }
+                return;
+            }
             // Shift+Enter: the input inserts the newline itself.
             if code == KeyCode::Enter && modifiers.contains(KeyModifiers::SHIFT) {
                 return;
@@ -290,9 +297,11 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
         }
         .into_any()
     });
-    // Approval on top; otherwise whichever menu is open.
+    // Approval on top, then the model's questions; otherwise whichever menu is open.
     let (width, height) = terminal_size;
-    let modal = modal.or_else(|| menu(&m, &input.read(), width));
+    let modal = modal
+        .or_else(|| ask_box(&m))
+        .or_else(|| menu(&m, &input.read(), width));
     let has_focus = m.input_focused();
     let (header, level) = m.header(&catalog);
     let header_color = match level {
@@ -373,6 +382,68 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             }
         }
     }
+}
+
+/// The shown `ask_user` question: options with the cursor, a "type your own"
+/// row, and the keys. `None` without one.
+fn ask_box(m: &Model) -> Option<AnyElement<'static>> {
+    let a = m.ask()?;
+    let q = a.question();
+    let agent = m
+        .peer_name(a.req.session)
+        .map_or_else(String::new, |n| format!("  [agent: {n}]"));
+    let title = format!(
+        "question {}/{}{agent}",
+        a.current + 1,
+        a.req.questions.len()
+    );
+    let n = q.options.len();
+    let rows = q.options.iter().enumerate().map(|(i, c)| {
+        let here = a.cursor == i && !a.typing;
+        let rec = if q.recommended == Some(i) { "  (recommended)" } else { "" };
+        let desc = c
+            .description
+            .as_deref()
+            .map_or_else(String::new, |d| format!(" — {d}"));
+        element! {
+            Text(
+                content: format!("{} {}. {}{desc}{rec}", if here { "›" } else { " " }, i + 1, c.label),
+                color: if here { Color::White } else { Color::Grey },
+                weight: if here { Weight::Bold } else { Weight::Normal },
+                wrap: TextWrap::Wrap,
+            )
+        }
+    });
+    let own = if a.typing {
+        "› type your answer below   [⏎] send  [esc] back".to_owned()
+    } else {
+        format!(
+            "{}    type your own…",
+            if a.cursor == n { "›" } else { " " }
+        )
+    };
+    let keys = if a.typing {
+        String::new()
+    } else {
+        let pick = if n > 0 {
+            "[1-9/⏎] pick  "
+        } else {
+            "[⏎] type  "
+        };
+        format!("[↑↓] move  {pick}[s] skip  [esc] dismiss (ends the turn)")
+    };
+    Some(
+        element! {
+            View(border_style: BorderStyle::Double, border_color: Color::Magenta, flex_direction: FlexDirection::Column, padding_left: 1, padding_right: 1) {
+                Text(content: title, weight: Weight::Bold)
+                Text(content: q.question.clone(), color: Color::Cyan, wrap: TextWrap::Wrap)
+                #(rows)
+                Text(content: own, color: if a.cursor == n || a.typing { Color::White } else { Color::Grey }, weight: if a.cursor == n || a.typing { Weight::Bold } else { Weight::Normal })
+                #((!keys.is_empty()).then(|| element!(Text(content: keys, color: Color::Magenta))))
+            }
+        }
+        .into_any(),
+    )
 }
 
 /// The open menu as a bordered box; `None` without one. Rows are clipped to

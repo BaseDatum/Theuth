@@ -25,6 +25,7 @@ use tools::{Risk, Tool, ToolCx, ToolOutput};
 use transport::SignalTransport;
 
 pub mod approvals;
+pub mod asks;
 pub mod channel;
 pub mod commands;
 pub mod error;

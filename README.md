@@ -63,7 +63,10 @@ loop, sqlite sessions with compaction epochs, skills, subagents, persistent
 Python runtime over monty worker subprocesses —
 [`docs/design/08-repl.md`](docs/design/08-repl.md); `message_user` sends text
 and files to the user on Slack or Signal out of band —
-[`docs/design/24-message-user.md`](docs/design/24-message-user.md)), `web` (`search_web` and
+[`docs/design/24-message-user.md`](docs/design/24-message-user.md); `ask_user`
+puts one or more multiple-choice questions to the user — pick, type your own,
+skip one, or dismiss the set to end the turn — in the TUI, the desktop app, a
+Slack thread (Block Kit) or over Signal one question at a time), `web` (`search_web` and
 `read_url`: SSRF-guarded fetch, keyless duckduckgo/wikipedia/arxiv/github
 merged by RRF with SERP features — [`docs/design/16-web.md`](docs/design/16-web.md)),
 `search-providers` (Firecrawl, SearXNG, OpenSERP, Brave; registered with `web`
@@ -92,6 +95,7 @@ Config (`~/.wth/`, created on first run; details in
     job_grace_secs: 3      # inline `shell` reply if the job exits within this; 0 = always a stub
     job_timeout_secs: 1800 # kill the process group after this; result exit="timeout"
     pty_ready_timeout_secs: 30   # `start` readiness wait when `ready` gives no timeout
+    ask_timeout_secs: 1800  # `ask_user` gives up (the model sees "no answer") after this
   knowledge:
     enabled: true          # false: no store, no knowledge_* tools, no hints, no harvest
   web:

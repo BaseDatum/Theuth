@@ -1,6 +1,8 @@
 import type { EntryInfo } from '@/rpc/bindings/EntryInfo'
+import type { Answer } from '@/rpc/bindings/Answer'
 import type { ApprovalId } from '@/rpc/bindings/ApprovalId'
 import type { ApprovalsState } from '@/rpc/bindings/ApprovalsState'
+import type { AskId } from '@/rpc/bindings/AskId'
 import type { Change } from '@/rpc/bindings/Change'
 import type { CompactStyle } from '@/rpc/bindings/CompactStyle'
 import type { Concept } from '@/rpc/bindings/Concept'
@@ -109,6 +111,8 @@ export interface Api {
   /** Delete a session and its subagents; `SessionDeleted` per removed id follows. Refused mid-turn. */
   delete_session(session: SessionId): Promise<null>
   resolve_approval(id: ApprovalId, decision: Decision): Promise<boolean>
+  /** Answer a pending `ask_user`: one answer per question, or `null` to dismiss the set (which cancels the turn). */
+  answer_ask(id: AskId, answers: Answer[] | null): Promise<boolean>
   /** Fuzzy (fzf/helix syntax) search over titles and message text; best hit per session. */
   search_sessions(query: string, limit: number | null): Promise<SearchHit[]>
   send_input(session: SessionId | null, text: string, files: string[]): Promise<SessionId>
@@ -147,6 +151,7 @@ export const METHODS = [
   'add_provider',
   'add_skill',
   'add_skill_repo',
+  'answer_ask',
   'browser_screenshot',
   'cancel',
   'cancel_job',

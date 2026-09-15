@@ -3,11 +3,9 @@ import { ArrowDown } from 'lucide-react'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { useApi } from '@/lib/rpc'
-import type { ApprovalRequested } from '@/rpc/bindings/ApprovalRequested'
-import { useApprovals } from '@/store/approvals'
+import { type Prompt, useApprovals, useAsks } from '@/store/approvals'
 import { type Activity, type Entry, useEntries, useSessionField, useSessions } from '@/store/sessions'
-import { ApprovalCard } from './ApprovalCard'
-import { Message } from './Message'
+import { Message, PromptCard } from './Message'
 import { Pulse } from './Pulse'
 
 const PAGE = 60
@@ -26,25 +24,24 @@ const WORD: Record<Activity, string> = {
   harvesting: 'harvesting…',
 }
 
-type Row =
-  | { key: string; entry: Entry; approvals: ApprovalRequested[] | null }
-  | { key: string; approval: ApprovalRequested }
+type Row = { key: string; entry: Entry; prompts: Prompt[] | null } | { key: string; prompt: Prompt }
 
-/** Entries, each with the approvals waiting on its (unfinished, same-named) tool call; approvals with no such row come last. */
-function buildRows(entries: Entry[], pending: ApprovalRequested[], session: string): Row[] {
-  const rows: Row[] = entries.map((entry) => ({ key: entry.id, entry, approvals: null }))
+/** Entries, each with the prompts waiting on its (unfinished, same-named) tool call; prompts with no such row come last. */
+function buildRows(entries: Entry[], pending: Prompt[], session: string): Row[] {
+  const rows: Row[] = entries.map((entry) => ({ key: entry.id, entry, prompts: null }))
   const loose: Row[] = []
-  for (const approval of pending) {
-    if (approval.session !== session) continue
+  for (const prompt of pending) {
+    if (prompt.session !== session) continue
+    const tool = prompt.type === 'ApprovalRequested' ? prompt.tool : 'ask_user'
     let at = entries.length - 1
     while (at >= 0) {
       const e = entries[at]
-      if (e?.kind === 'tool' && e.name === approval.tool && !e.result) break
+      if (e?.kind === 'tool' && e.name === tool && !e.result) break
       at--
     }
     const row = rows[at]
-    if (row && 'entry' in row) row.approvals = [...(row.approvals ?? []), approval]
-    else loose.push({ key: approval.id, approval })
+    if (row && 'entry' in row) row.prompts = [...(row.prompts ?? []), prompt]
+    else loose.push({ key: prompt.id, prompt })
   }
   return rows.concat(loose)
 }
@@ -53,7 +50,9 @@ function buildRows(entries: Entry[], pending: ApprovalRequested[], session: stri
 export function Transcript({ session }: { session: string }) {
   const api = useApi()
   const entries = useEntries(session)
-  const pending = useApprovals((s) => s.pending)
+  const approvals = useApprovals((s) => s.pending)
+  const asks = useAsks((s) => s.pending)
+  const pending = useMemo<Prompt[]>(() => [...approvals, ...asks], [approvals, asks])
   const more = useSessionField(session, 'more')
   const firstSeq = useSessionField(session, 'firstSeq')
   const running = useSessionField(session, 'running')
@@ -127,7 +126,7 @@ export function Transcript({ session }: { session: string }) {
                   className="absolute top-0 left-0 w-full"
                   style={{ transform: `translateY(${item.start}px)` }}
                 >
-                  {'entry' in row ? <Message entry={row.entry} approvals={row.approvals} /> : <ApprovalCard approval={row.approval} />}
+                  {'entry' in row ? <Message entry={row.entry} prompts={row.prompts} /> : <PromptCard prompt={row.prompt} />}
                 </div>
               )
             })}

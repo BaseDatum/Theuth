@@ -16,7 +16,9 @@ use serde::Serialize;
 use signal::SignalEvent;
 use slack::SlackEvent;
 use tokio::sync::broadcast;
-use tools::{ApprovalRequested, ApprovalResolved, JobEvent, McpProgress};
+use tools::{
+    ApprovalRequested, ApprovalResolved, AskRequested, AskResolved, JobEvent, McpProgress,
+};
 
 /// One serialized event; shared across every subscription without copying.
 pub type Event = Arc<serde_json::Value>;
@@ -63,6 +65,8 @@ forward!(
     LoginFinished,
     ApprovalRequested,
     ApprovalResolved,
+    AskRequested,
+    AskResolved,
     McpProgress,
     JobEvent,
     SignalEvent,
@@ -80,6 +84,8 @@ pub async fn start(rt: &Runtime) -> broadcast::Sender<Event> {
     rt.subscribe::<Bridge, LoginFinished>(&actor).await;
     rt.subscribe::<Bridge, ApprovalRequested>(&actor).await;
     rt.subscribe::<Bridge, ApprovalResolved>(&actor).await;
+    rt.subscribe::<Bridge, AskRequested>(&actor).await;
+    rt.subscribe::<Bridge, AskResolved>(&actor).await;
     rt.subscribe::<Bridge, McpProgress>(&actor).await;
     rt.subscribe::<Bridge, JobEvent>(&actor).await;
     rt.subscribe::<Bridge, SignalEvent>(&actor).await;
