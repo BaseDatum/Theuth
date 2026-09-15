@@ -1,0 +1,18 @@
+erDiagram
+  SESSION ||--o{ ENTRY : contains
+  ENTRY ||--o| TOOL_CALL : may_invoke
+  SESSION }o--|| USER : owned_by
+  SESSION {
+    string id PK
+    string title
+    datetime created_at
+  }
+  ENTRY {
+    int seq PK
+    string role
+    text body
+  }
+  USER {
+    string id PK
+    string name
+  }

@@ -1,0 +1,5 @@
+flowchart TD
+  A[Plan] --> B[Execute]
+  B --> C{Passed?}
+  C -->|yes| Done[Ship]
+  C -->|no| A

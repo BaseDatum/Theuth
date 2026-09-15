@@ -1,0 +1,10 @@
+gantt
+  title Surfaces rollout
+  dateFormat YYYY-MM-DD
+  section Rust
+    Bake-off        :done,    a1, 2026-09-15, 2d
+    surface crate   :active,  a2, after a1, 4d
+    markdown hook   :         a3, after a1, 3d
+  section Desktop
+    streamdown plugin :       b1, 2026-09-18, 2d
+    JsonRenderFence   :       b2, after b1, 3d

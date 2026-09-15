@@ -6306,6 +6306,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "jsonrepair-rs"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5bb8db9715bb6f3f7bb38c78bd572b18757e27aa79d029859268fc9d8b3d21f9"
+
+[[package]]
 name = "jsonrpsee"
 version = "0.26.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12473,6 +12479,18 @@ name = "supports-hyperlinks"
 version = "3.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e396b6523b11ccb83120b115a0b7366de372751aa6edf19844dfb13a6af97e91"
+
+[[package]]
+name = "surface"
+version = "0.1.0"
+dependencies = [
+ "jsonrepair-rs",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tracing",
+ "ts-rs",
+]
 
 [[package]]
 name = "svgtypes"

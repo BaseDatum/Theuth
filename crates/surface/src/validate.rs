@@ -1,0 +1,547 @@
+//! Located validation of a parsed fence body: every error is collected, none stops the walk.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use serde_json::{Map, Value, json};
+
+use crate::catalog::catalog;
+use crate::spec::{Component, Element, Spec};
+use crate::{MAX_DEPTH, MAX_ELEMENTS, SpecError};
+
+/// Components whose `children` may be non-empty.
+const CONTAINERS: [&str; 5] = ["Card", "Stack", "Grid", "Tabs", "Accordion"];
+
+pub(crate) fn err(path: &str, message: impl Into<String>) -> SpecError {
+    SpecError {
+        path: path.to_owned(),
+        message: message.into(),
+    }
+}
+
+/// JSON Pointer escaping of one reference token.
+fn esc(token: &str) -> String {
+    token.replace('~', "~0").replace('/', "~1")
+}
+
+/// Validate a JSON value as a [`Spec`]; `Err` carries every problem found.
+pub(crate) fn validate(v: &Value) -> Result<Spec, Vec<SpecError>> {
+    let mut errs = Vec::new();
+    let Some(top) = v.as_object() else {
+        return Err(vec![err(
+            "",
+            "expected an object with \"root\" and \"elements\"",
+        )]);
+    };
+    for k in top.keys().filter(|k| *k != "root" && *k != "elements") {
+        errs.push(err(
+            &format!("/{}", esc(k)),
+            "unknown key; only \"root\" and \"elements\" are allowed",
+        ));
+    }
+    let root = match top.get("root") {
+        Some(Value::String(s)) => Some(s.as_str()),
+        Some(_) => {
+            errs.push(err("/root", "expected string"));
+            None
+        }
+        None => {
+            errs.push(err("/root", "missing"));
+            None
+        }
+    };
+    let raw = match top.get("elements") {
+        Some(Value::Object(m)) => m,
+        Some(_) => {
+            errs.push(err("/elements", "expected an object of elements by id"));
+            return Err(errs);
+        }
+        None => {
+            errs.push(err("/elements", "missing"));
+            return Err(errs);
+        }
+    };
+    if raw.len() > MAX_ELEMENTS {
+        errs.push(err(
+            "/",
+            format!("{} elements, limit {MAX_ELEMENTS}", raw.len()),
+        ));
+    }
+
+    let empty = Value::Object(Map::new());
+    let mut elements = BTreeMap::new();
+    let mut tree: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for (id, el) in raw {
+        let p = format!("/elements/{}", esc(id));
+        let Some(obj) = el.as_object() else {
+            errs.push(err(
+                &p,
+                "expected an object with \"type\", \"props\", \"children\"",
+            ));
+            continue;
+        };
+        for k in obj
+            .keys()
+            .filter(|k| !matches!(k.as_str(), "type" | "props" | "children"))
+        {
+            errs.push(err(
+                &format!("{p}/{}", esc(k)),
+                "unknown key; only \"type\", \"props\" and \"children\" are allowed",
+            ));
+        }
+        let name = match obj.get("type") {
+            Some(Value::String(s)) => Some(s.as_str()),
+            Some(_) => {
+                errs.push(err(&format!("{p}/type"), "expected string"));
+                None
+            }
+            None => {
+                errs.push(err(&format!("{p}/type"), "missing"));
+                None
+            }
+        };
+        let entry = name.and_then(|n| {
+            let e = catalog().entry(n);
+            if e.is_none() {
+                errs.push(err(
+                    &format!("{p}/type"),
+                    format!("unknown component {n:?}; catalog: {}", catalog().names),
+                ));
+            }
+            e
+        });
+
+        let mut kids = Vec::new();
+        let mut n_children = 0;
+        match obj.get("children") {
+            None => {}
+            Some(Value::Array(a)) => {
+                n_children = a.len();
+                if let Some(n) = name
+                    && entry.is_some()
+                    && !a.is_empty()
+                    && !CONTAINERS.contains(&n)
+                {
+                    errs.push(err(
+                        &format!("{p}/children"),
+                        format!("{n} cannot have children"),
+                    ));
+                }
+                for (i, c) in a.iter().enumerate() {
+                    match c.as_str() {
+                        Some(cid) if raw.contains_key(cid) => kids.push(cid),
+                        Some(cid) => errs.push(err(
+                            &format!("{p}/children/{i}"),
+                            format!("{cid:?} is not an element id"),
+                        )),
+                        None => errs.push(err(&format!("{p}/children/{i}"), "expected string")),
+                    }
+                }
+            }
+            Some(_) => errs.push(err(
+                &format!("{p}/children"),
+                "expected an array of element ids",
+            )),
+        }
+        let children: Vec<String> = kids.iter().map(|c| (*c).to_owned()).collect();
+        tree.insert(id.as_str(), kids);
+
+        let Some(entry) = entry else { continue };
+        let props = obj.get("props").unwrap_or(&empty);
+        let before = errs.len();
+        walk(props, &entry.props, &format!("{p}/props"), &mut errs);
+        if errs.len() != before {
+            continue;
+        }
+        let component: Component =
+            match serde_json::from_value(json!({ "type": entry.name, "props": props })) {
+                Ok(c) => c,
+                Err(e) => {
+                    errs.push(err(&format!("{p}/props"), e.to_string()));
+                    continue;
+                }
+            };
+        match &component {
+            Component::Table(t) => {
+                for (i, row) in t
+                    .rows
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, r)| r.len() != t.columns.len())
+                {
+                    errs.push(err(
+                        &format!("{p}/props/rows/{i}"),
+                        format!("{} cells, {} columns", row.len(), t.columns.len()),
+                    ));
+                }
+            }
+            Component::Tabs(t) if t.labels.len() != n_children => {
+                errs.push(err(
+                    &format!("{p}/props/labels"),
+                    format!("{} labels, {n_children} children", t.labels.len()),
+                ));
+            }
+            Component::Accordion(a) if a.titles.len() != n_children => {
+                errs.push(err(
+                    &format!("{p}/props/titles"),
+                    format!("{} titles, {n_children} children", a.titles.len()),
+                ));
+            }
+            _ => {}
+        }
+        elements.insert(
+            id.clone(),
+            Element {
+                component,
+                children,
+            },
+        );
+    }
+
+    let mut parent: BTreeMap<&str, &str> = BTreeMap::new();
+    for (pid, kids) in &tree {
+        for k in kids {
+            if let Some(first) = parent.insert(*k, *pid) {
+                errs.push(err(
+                    "/",
+                    format!("element {k:?} has two parents ({first}, {pid})"),
+                ));
+            }
+        }
+    }
+    if let Some(root) = root {
+        if raw.contains_key(root) {
+            let mut seen = BTreeSet::new();
+            reach(root, &tree, &mut seen, &mut Vec::new(), &mut errs);
+            for id in raw.keys().filter(|id| !seen.contains(id.as_str())) {
+                errs.push(err(
+                    &format!("/elements/{}", esc(id)),
+                    "not reachable from root",
+                ));
+            }
+        } else {
+            errs.push(err("/root", format!("{root:?} is not an element id")));
+        }
+    }
+
+    match root {
+        Some(root) if errs.is_empty() => Ok(Spec {
+            root: root.to_owned(),
+            elements,
+        }),
+        _ => Err(errs),
+    }
+}
+
+/// Depth-first from `id`: marks `seen`, reports a cycle back into `stack` and nesting past [`MAX_DEPTH`].
+fn reach<'a>(
+    id: &'a str,
+    tree: &BTreeMap<&'a str, Vec<&'a str>>,
+    seen: &mut BTreeSet<&'a str>,
+    stack: &mut Vec<&'a str>,
+    errs: &mut Vec<SpecError>,
+) {
+    if stack.contains(&id) {
+        errs.push(err("/", format!("cycle through {id:?}")));
+        return;
+    }
+    if !seen.insert(id) {
+        return;
+    }
+    if stack.len() >= MAX_DEPTH {
+        errs.push(err(
+            "/",
+            format!("depth {} at {id:?}, limit {MAX_DEPTH}", stack.len() + 1),
+        ));
+        return;
+    }
+    stack.push(id);
+    for k in tree.get(id).into_iter().flatten() {
+        reach(k, tree, seen, stack, errs);
+    }
+    stack.pop();
+}
+
+/// Check `v` against the subset of JSON Schema schemars emits for the props structs:
+/// `type` (string or list), `const`/`enum`, `anyOf`/`oneOf` (how it spells a nullable
+/// or documented enum), `minimum`/`maximum`, `items`, `properties` + `required` +
+/// `additionalProperties: false`. Anything else is left to serde.
+fn walk(v: &Value, schema: &Value, path: &str, errs: &mut Vec<SpecError>) {
+    if let Some(alts) = schema
+        .get("anyOf")
+        .or_else(|| schema.get("oneOf"))
+        .and_then(Value::as_array)
+    {
+        let mut scratch = Vec::new();
+        for alt in alts {
+            scratch.clear();
+            walk(v, alt, path, &mut scratch);
+            if scratch.is_empty() {
+                return;
+            }
+        }
+        let mut choices = Vec::new();
+        literals(schema, &mut choices);
+        if choices.is_empty() {
+            errs.append(&mut scratch);
+        } else {
+            errs.push(err(path, format!("expected one of {}", choices.join(", "))));
+        }
+        return;
+    }
+    let kind = match v {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(n) if n.is_f64() => "number",
+        Value::Number(_) => "integer",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    };
+    let allowed: Vec<&str> = match &schema["type"] {
+        Value::String(s) => vec![s.as_str()],
+        Value::Array(a) => a.iter().filter_map(Value::as_str).collect(),
+        _ => Vec::new(),
+    };
+    if !allowed.is_empty()
+        && !allowed
+            .iter()
+            .any(|t| *t == kind || (*t == "number" && kind == "integer"))
+    {
+        let want = allowed
+            .iter()
+            .filter(|t| **t != "null")
+            .copied()
+            .collect::<Vec<_>>()
+            .join(" or ");
+        errs.push(err(path, format!("expected {want}")));
+        return;
+    }
+    let literal_ok = match (schema.get("const"), schema["enum"].as_array()) {
+        (Some(c), _) => c == v,
+        (None, Some(choices)) => choices.contains(v),
+        (None, None) => true,
+    };
+    if !literal_ok {
+        let mut choices = Vec::new();
+        literals(schema, &mut choices);
+        errs.push(err(path, format!("expected one of {}", choices.join(", "))));
+        return;
+    }
+    match v {
+        Value::Number(n) => {
+            let x = n.as_f64().unwrap_or_default();
+            let (lo, hi) = (schema.get("minimum"), schema.get("maximum"));
+            if lo.and_then(Value::as_f64).is_some_and(|lo| x < lo)
+                || hi.and_then(Value::as_f64).is_some_and(|hi| x > hi)
+            {
+                let bound = |b: Option<&Value>| b.map(Value::to_string).unwrap_or_default();
+                errs.push(err(path, format!("expected {}..={}", bound(lo), bound(hi))));
+            }
+        }
+        Value::Array(a) if schema["items"].is_object() => {
+            for (i, x) in a.iter().enumerate() {
+                walk(x, &schema["items"], &format!("{path}/{i}"), errs);
+            }
+        }
+        Value::Object(o) => {
+            let props = schema["properties"].as_object();
+            let closed = schema["additionalProperties"] == Value::Bool(false);
+            for (k, x) in o {
+                match props.and_then(|p| p.get(k)) {
+                    Some(s) => walk(x, s, &format!("{path}/{}", esc(k)), errs),
+                    None if closed => errs.push(err(&format!("{path}/{}", esc(k)), "unknown prop")),
+                    None => {}
+                }
+            }
+            for r in schema["required"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+            {
+                if !o.contains_key(r) {
+                    errs.push(err(&format!("{path}/{}", esc(r)), "missing"));
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Every non-null `const`/`enum` literal in `schema`, through `anyOf`/`oneOf`, JSON-encoded.
+fn literals(schema: &Value, out: &mut Vec<String>) {
+    if let Some(c) = schema.get("const")
+        && !c.is_null()
+    {
+        out.push(c.to_string());
+    }
+    for c in schema["enum"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|c| !c.is_null())
+    {
+        out.push(c.to_string());
+    }
+    for alt in ["anyOf", "oneOf"]
+        .iter()
+        .filter_map(|k| schema[*k].as_array())
+        .flatten()
+    {
+        literals(alt, out);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn errors(body: &str) -> Vec<SpecError> {
+        crate::parse(body).expect_err("should not validate")
+    }
+
+    fn paths(body: &str) -> Vec<String> {
+        errors(body).into_iter().map(|e| e.path).collect()
+    }
+
+    #[test]
+    fn structural_errors_are_located_and_all_reported() {
+        let errs = errors(
+            r#"{"root":"main","elements":{
+                "r":{"type":"Card","children":["h","x"]},
+                "h":{"type":"Heading","props":{"text":"t","level":9},"children":["r"]},
+                "t":{"type":"DataTable","props":{}},
+                "g":{"type":"Grid","props":{"columns":0}}
+            },"extra":1}"#,
+        );
+        let got: Vec<String> = errs.iter().map(ToString::to_string).collect();
+        let expect = [
+            ("/extra", "unknown key"),
+            ("/root", "\"main\" is not an element id"),
+            ("/elements/r/children/1", "\"x\" is not an element id"),
+            ("/elements/h/children", "Heading cannot have children"),
+            ("/elements/h/props/level", "expected 1..=4"),
+            (
+                "/elements/t/type",
+                "unknown component \"DataTable\"; catalog: Accordion, Alert, Badge",
+            ),
+            ("/elements/g/props/columns", "expected 1..=6"),
+        ];
+        for (path, fragment) in expect {
+            assert!(
+                errs.iter()
+                    .any(|e| e.path == path && e.message.contains(fragment)),
+                "missing {path}: {fragment} in {got:#?}"
+            );
+        }
+        assert!(
+            !got.iter().any(|m| m.contains("reachable")),
+            "no reachability errors without a valid root: {got:#?}"
+        );
+    }
+
+    #[test]
+    fn graph_errors() {
+        assert_eq!(
+            paths(
+                r#"{"root":"a","elements":{"a":{"type":"Stack","children":["b"]},"b":{"type":"Stack","children":["a"]}}}"#
+            ),
+            ["/"]
+        );
+        let errs = errors(
+            r#"{"root":"a","elements":{"a":{"type":"Stack","children":["b"]},"b":{"type":"Stack","children":["a"]}}}"#,
+        );
+        assert!(errs[0].message.contains("cycle through"), "{errs:?}");
+        assert_eq!(
+            paths(r#"{"root":"a","elements":{"a":{"type":"Separator"},"b":{"type":"Separator"}}}"#),
+            ["/elements/b"]
+        );
+        let errs = errors(
+            r#"{"root":"a","elements":{"a":{"type":"Stack","children":["x","x"]},"x":{"type":"Separator"}}}"#,
+        );
+        assert_eq!(errs.len(), 1, "{errs:?}");
+        assert!(
+            errs[0].path == "/" && errs[0].message.contains("two parents (a, a)"),
+            "{errs:?}"
+        );
+    }
+
+    #[test]
+    fn prop_errors_carry_field_paths() {
+        let body = r#"{"root":"r","elements":{"r":{"type":"Stack","props":{"gap":"huge","bogus":1},"children":["t","m","k","tb"]},
+            "t":{"type":"Table","props":{"columns":["a","b"],"rows":[["1","2"],["3"],["4","5","6"]]}},
+            "m":{"type":"MetricGrid","props":{"items":[{"label":"x","value":"1"},{"label":"y"}]}},
+            "k":{"type":"KeyValueList","props":{"items":[{"key":"a","value":2}]}},
+            "tb":{"type":"Tabs","props":{"labels":["one","two"]},"children":["s"]},
+            "s":{"type":"Separator"}}}"#;
+        let mut got = paths(body);
+        got.sort();
+        assert_eq!(
+            got,
+            [
+                "/elements/k/props/items/0/value",
+                "/elements/m/props/items/1/value",
+                "/elements/r/props/bogus",
+                "/elements/r/props/gap",
+                "/elements/t/props/rows/1",
+                "/elements/t/props/rows/2",
+                "/elements/tb/props/labels",
+            ]
+        );
+        let errs = errors(body);
+        let msg = |p: &str| {
+            errs.iter()
+                .find(|e| e.path == p)
+                .map(|e| e.message.as_str())
+                .unwrap_or_default()
+        };
+        assert_eq!(msg("/elements/k/props/items/0/value"), "expected string");
+        assert_eq!(msg("/elements/m/props/items/1/value"), "missing");
+        assert_eq!(msg("/elements/r/props/bogus"), "unknown prop");
+        assert!(
+            msg("/elements/r/props/gap").starts_with("expected one of \"none\""),
+            "{errs:?}"
+        );
+        assert_eq!(msg("/elements/t/props/rows/2"), "3 cells, 2 columns");
+        assert_eq!(msg("/elements/tb/props/labels"), "2 labels, 1 children");
+    }
+
+    #[test]
+    fn limits() {
+        let mut elements = Map::new();
+        let ids: Vec<String> = (0..MAX_ELEMENTS + 1).map(|i| format!("e{i}")).collect();
+        elements.insert("r".into(), json!({ "type": "Stack", "children": ids }));
+        for id in &ids {
+            elements.insert(id.clone(), json!({ "type": "Separator" }));
+        }
+        let errs = errors(&json!({ "root": "r", "elements": elements }).to_string());
+        assert_eq!(errs.len(), 1, "{errs:?}");
+        assert_eq!(
+            errs[0].to_string(),
+            format!("/: {} elements, limit {MAX_ELEMENTS}", MAX_ELEMENTS + 2)
+        );
+
+        let mut elements = Map::new();
+        for i in 0..MAX_DEPTH + 1 {
+            let mut el = json!({ "type": "Stack" });
+            if i < MAX_DEPTH {
+                el["children"] = json!([format!("d{}", i + 1)]);
+            }
+            elements.insert(format!("d{i}"), el);
+        }
+        let errs = errors(&json!({ "root": "d0", "elements": elements }).to_string());
+        assert_eq!(errs.len(), 1, "{errs:?}");
+        assert_eq!(
+            errs[0].to_string(),
+            format!(
+                "/: depth {} at \"d{MAX_DEPTH}\", limit {MAX_DEPTH}",
+                MAX_DEPTH + 1
+            )
+        );
+        assert!(
+            crate::parse(&format!("{{{}", " ".repeat(crate::MAX_FENCE_BYTES))).unwrap_err()[0]
+                .message
+                .contains("byte limit")
+        );
+    }
+}

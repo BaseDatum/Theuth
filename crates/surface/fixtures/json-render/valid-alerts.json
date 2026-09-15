@@ -1,0 +1,10 @@
+{
+  "root": "s",
+  "elements": {
+    "s": {"type": "Stack", "children": ["info", "ok", "warn", "err"]},
+    "info": {"type": "Alert", "props": {"message": "The daemon restarts automatically after an update."}},
+    "ok": {"type": "Alert", "props": {"title": "Migrated", "message": "All 12 hosts are on the new schema.", "type": "success"}},
+    "warn": {"type": "Alert", "props": {"title": "Canary", "message": "p99 latency is up 8% on the canary.", "type": "warning"}},
+    "err": {"type": "Alert", "props": {"message": "Notarization failed: certificate expired.", "type": "error"}}
+  }
+}

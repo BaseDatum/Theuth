@@ -1,0 +1,7 @@
+{
+  "root": "r",
+  "elements": {
+    "r": {"type": "Card", "props": {"title": "Checks"}, "children": ["t"]},
+    "t": {"type": "DataTable", "props": {"columns": ["Check", "Status"], "rows": [["clippy", "pass"]]}}
+  }
+}

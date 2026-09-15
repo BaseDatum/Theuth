@@ -1,0 +1,11 @@
+{
+  'root': 'c',
+  'elements': {
+    'c': {'type': 'Card', 'props': {'title': 'Rollout'}, 'children': ['p', 'l']},
+    'p': {'type': 'Progress', 'props': {'value': 7, 'max': 12, 'label': 'hosts migrated'}},
+    'l': {'type': 'Checklist', 'props': {'items': [
+      {'text': 'schema migration', 'done': true},
+      {'text': 'full traffic', 'done': false}
+    ]}}
+  }
+}

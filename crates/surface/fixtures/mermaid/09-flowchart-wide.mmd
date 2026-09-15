@@ -1,0 +1,3 @@
+flowchart LR
+  A[Receive request] --> B[Authenticate user] --> C[Parse payload] --> D[Validate schema] --> E[Load session] --> F[Build prompt] --> G[Call model]
+  G --> H[Stream tokens] --> I[Detect fences] --> J[Validate blocks] --> K[Correction round] --> L[Persist entry] --> M[Render surfaces] --> N[Reply to user]

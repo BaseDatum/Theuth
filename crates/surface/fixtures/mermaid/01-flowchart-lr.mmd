@@ -1,0 +1,9 @@
+flowchart LR
+  TUI["TUI (ghostty)"] -- "UserInput" --> Agent
+  Desktop["Desktop (Tauri)"] -- "ws RPC" --> RPC["RPC (json)"] --> Agent
+  Agent -->|"load_skill(name)"| Skills
+  Agent -->|"tool call"| Tools
+  Tools -->|"result"| Agent
+  Agent -->|"append(entry)"| Store["Store (sqlite)"]
+  Store -->|"replay"| Agent
+  Agent -- "stream" --> Renderer["Renderer (markdown)"]

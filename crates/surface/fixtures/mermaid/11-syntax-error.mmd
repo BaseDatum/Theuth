@@ -1,0 +1,5 @@
+flowchart LR
+  A[fetch(url)] --> B[parse(body)]
+  B --> C{ok?}
+  C -->|yes| D[render]
+  C -->|no| E[retry(3)]

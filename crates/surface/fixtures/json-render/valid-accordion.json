@@ -1,0 +1,8 @@
+{
+  "root": "acc",
+  "elements": {
+    "acc": {"type": "Accordion", "props": {"titles": ["Progress", "Notes"]}, "children": ["p", "n"]},
+    "p": {"type": "Progress", "props": {"value": 58}},
+    "n": {"type": "Text", "props": {"text": "Default max is 100, so 58 reads as 58%.", "variant": "muted"}}
+  }
+}
