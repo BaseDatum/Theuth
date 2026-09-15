@@ -7,7 +7,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::Context as _;
-use genai::chat::{ChatMessage, ChatRole};
+use genai::chat::{ChatMessage, ChatRole, ContentPart, MessageContent};
 use runtime::SessionId;
 use sqlx::FromRow;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
@@ -359,15 +359,23 @@ impl Store {
 
     /// New session with the source's title/model/effort/cwd and copies of the
     /// visible rows and epochs before the turn after `through` (all visible
-    /// rows when `None`). Returns the new id; the source is only read
-    /// (design doc 29 §3, §4.1). `parent`/`name`/`agent`/`acp_session` stay NULL.
-    pub async fn fork(&self, src: SessionId, through: Option<i64>) -> anyhow::Result<SessionId> {
+    /// rows when `None`). With `reply`, the copy ends at the `reply`-th
+    /// (0-based) assistant text of that turn instead, its tool calls dropped so
+    /// the fork never ends on a dangling `tool_use`. Returns the new id; the
+    /// source is only read (design doc 29 §3, §4.1). `parent`/`name`/`agent`/
+    /// `acp_session` stay NULL.
+    pub async fn fork(
+        &self,
+        src: SessionId,
+        through: Option<i64>,
+        reply: Option<u32>,
+    ) -> anyhow::Result<SessionId> {
         let visible = self.messages(src).await?;
         let mut starts = turn_starts(&visible).map(|i| visible[i].0).peekable();
         if starts.peek().is_none() {
             anyhow::bail!("nothing to fork");
         }
-        let end = match through {
+        let mut end = match through {
             None => i64::MAX,
             Some(t) => {
                 if !starts.any(|s| s == t) {
@@ -376,6 +384,34 @@ impl Store {
                 starts.next().unwrap_or(i64::MAX)
             }
         };
+        // Mid-turn: stop after the chosen reply; a message that also carried
+        // tool calls is copied without them.
+        let mut stripped: Option<(i64, String)> = None;
+        if let (Some(t), Some(n)) = (through, reply) {
+            let (seq, m) = visible
+                .iter()
+                .filter(|(s, m)| {
+                    (t..end).contains(s)
+                        && m.role == ChatRole::Assistant
+                        && !text_of(&m.content).is_empty()
+                })
+                .nth(n as usize)
+                .ok_or_else(|| anyhow::anyhow!("no such reply"))?;
+            end = seq + 1;
+            if !m.content.tool_calls().is_empty() {
+                let parts: Vec<ContentPart> = m
+                    .content
+                    .iter()
+                    .filter(|p| !matches!(p, ContentPart::ToolCall(_)))
+                    .cloned()
+                    .collect();
+                let m = ChatMessage {
+                    content: MessageContent::from_parts(parts),
+                    ..m.clone()
+                };
+                stripped = Some((*seq, serde_json::to_string(&m)?));
+            }
+        }
 
         let id = SessionId::new();
         let (new, old) = (id.to_string(), src.to_string());
@@ -405,6 +441,14 @@ impl Store {
         .bind(end)
         .execute(&mut *tx)
         .await?;
+        if let Some((seq, body)) = &stripped {
+            sqlx::query("UPDATE messages SET body = ? WHERE session_id = ? AND seq = ?")
+                .bind(body)
+                .bind(&new)
+                .bind(seq)
+                .execute(&mut *tx)
+                .await?;
+        }
         sqlx::query(
             "INSERT INTO epochs (session_id, n, at_seq, tail_from, head, created_at) \
              SELECT ?1, n, at_seq, tail_from, head, created_at FROM epochs WHERE session_id = ?2 \
@@ -1136,12 +1180,16 @@ mod tests {
         store.compact(src, 2, 3, 2, &head).await.unwrap();
 
         assert_eq!(
-            store.fork(src, Some(1)).await.unwrap_err().to_string(),
+            store
+                .fork(src, Some(1), None)
+                .await
+                .unwrap_err()
+                .to_string(),
             "not a turn start"
         );
 
         // Through turn A (seq 0): A's rows and the epoch inside A only.
-        let a = store.fork(src, Some(0)).await.unwrap();
+        let a = store.fork(src, Some(0), None).await.unwrap();
         assert_eq!(
             texts(&store.messages(a).await.unwrap()),
             [(0, "u1".into()), (1, "a1".into())]
@@ -1157,7 +1205,7 @@ mod tests {
 
         // Through the last turn / `None`: everything visible.
         for through in [Some(2), None] {
-            let all = store.fork(src, through).await.unwrap();
+            let all = store.fork(src, through, None).await.unwrap();
             assert_eq!(
                 texts(&store.messages(all).await.unwrap()),
                 texts(&store.messages(src).await.unwrap())
@@ -1180,21 +1228,82 @@ mod tests {
 
         // Undone rows are not part of a fork; nothing visible → nothing to fork.
         assert_eq!(store.undo(src).await.unwrap().as_deref(), Some("u2"));
-        let cut = store.fork(src, None).await.unwrap();
+        let cut = store.fork(src, None, None).await.unwrap();
         assert_eq!(store.messages(cut).await.unwrap().len(), 2);
         assert_eq!(store.epochs(cut).await.unwrap().len(), 1);
         assert_eq!(store.undo(src).await.unwrap().as_deref(), Some("u1"));
         assert_eq!(
-            store.fork(src, None).await.unwrap_err().to_string(),
+            store.fork(src, None, None).await.unwrap_err().to_string(),
             "nothing to fork"
         );
         assert_eq!(
             store
-                .fork(SessionId::new(), None)
+                .fork(SessionId::new(), None, None)
                 .await
                 .unwrap_err()
                 .to_string(),
             "nothing to fork"
+        );
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A fork at a reply inside a multi-round turn ends on that reply with its
+    /// tool calls dropped; later rounds and steers stay behind.
+    #[tokio::test]
+    async fn fork_at_a_reply_stops_there_without_tool_calls() {
+        use genai::chat::{ContentPart, MessageContent, ToolCall, ToolResponse};
+        let (store, src, dir) = fresh().await;
+        let call = ToolCall {
+            thought_signatures: None,
+            call_id: "c1".into(),
+            fn_name: "shell".into(),
+            fn_arguments: serde_json::json!({ "cmd": "ls" }),
+        };
+        let first = ChatMessage::assistant(MessageContent::from_parts(vec![
+            ContentPart::Text("looking".into()),
+            ContentPart::ToolCall(call),
+        ]));
+        append_all(
+            &store,
+            src,
+            [
+                ChatMessage::user("u1"),
+                first,
+                ChatMessage::from(vec![ToolResponse::new("c1", "ok")]),
+                ChatMessage::user("steer"),
+                asst("done"),
+                ChatMessage::user("u2"),
+                asst("a2"),
+            ],
+        )
+        .await;
+
+        let f = store.fork(src, Some(0), Some(0)).await.unwrap();
+        let rows = store.messages(f).await.unwrap();
+        assert_eq!(texts(&rows), [(0, "u1".into()), (1, "looking".into())]);
+        assert!(
+            rows[1].1.content.tool_calls().is_empty(),
+            "tool call dropped"
+        );
+        // The second reply is the turn's last text: the tool round before it comes along.
+        let g = store.fork(src, Some(0), Some(1)).await.unwrap();
+        assert_eq!(store.messages(g).await.unwrap().len(), 5);
+        assert_eq!(
+            store
+                .fork(src, Some(0), Some(2))
+                .await
+                .unwrap_err()
+                .to_string(),
+            "no such reply"
+        );
+        // The source still has the call.
+        assert!(
+            !store.messages(src).await.unwrap()[1]
+                .1
+                .content
+                .tool_calls()
+                .is_empty()
         );
         drop(store);
         let _ = std::fs::remove_dir_all(&dir);

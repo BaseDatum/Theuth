@@ -837,7 +837,7 @@ impl Message<ForkSession> for Agents {
         }
         let id = self
             .store
-            .fork(m.session, m.through)
+            .fork(m.session, m.through, m.reply)
             .await
             .map_err(|e| e.to_string())?;
         self.search.invalidate();

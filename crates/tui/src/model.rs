@@ -5227,7 +5227,10 @@ mod tests {
         // Replayed history renders the same way.
         let live = lines;
         let replayed = from_history(
-            HistoryEntry::Assistant { text: md, turn: None },
+            HistoryEntry::Assistant {
+                text: md,
+                turn: None,
+            },
             &m.assistant_options(),
         );
         m.entries = replayed;

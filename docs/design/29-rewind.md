@@ -186,14 +186,29 @@ strict prefix of a cached request up to the opener (07 §8.8 "Cache").
 `parent = NULL`, `name = NULL`, plus copies of every visible message and
 epoch row with `seq < end`, where `end` is the next turn start after
 `through` (or `MAX` when `through` is `None` or the last turn). *Through*
-means the clicked exchange is in the fork: fork on a user bubble or on its
-reply both keep that whole turn. `through` must be a visible turn start.
-The source is not modified.
+means the clicked exchange is in the fork: fork on a user bubble keeps that
+whole turn. `through` must be a visible turn start. The source is not
+modified.
+
+*Mid-turn (added 2026-09-15).* A multi-round turn shows several replies,
+and a fork button on one of them means "up to here", not "the whole turn".
+`reply: Option<u32>` names the 0-based assistant text within the turn (the
+same rows `render()` emits as `Assistant` entries); the copy then ends at
+that message, and if the message also carried tool calls they are dropped
+from the copy, so the fork never ends on a `tool_use` without its result.
+Later rounds and steers of that turn stay behind. The desktop computes the
+index from its own transcript (assistant entries with the same `turn`
+before this one); live entries split the same way the server does — one
+entry per assistant message, closed by any non-delta event. The TUI passes
+`None` (turn granularity). Rejected: a per-message seq on `Assistant`
+entries — live entries would need a new event to learn it, for a handle the
+count already gives.
 
 **Refusals.** `Err("turn in flight")` for edit/regenerate while running.
 `Err("cannot fork an external harness session")` when `sessions.agent` is
 set (the transcript is a translation; the harness owns the state, 06).
-`Err("nothing to fork")` on a session with no visible turn.
+`Err("nothing to fork")` on a session with no visible turn; `Err("no such
+reply")` when `reply` is past the turn's last text.
 
 ## 4. Server
 
@@ -207,7 +222,7 @@ pub async fn cut_to(&self, id: SessionId, turn: i64) -> anyhow::Result<ChatMessa
 /// New session with the source's title/model/effort/cwd and copies of the
 /// visible rows and epochs before the turn after `through` (all when None).
 /// Returns the new id. The source is only read.
-pub async fn fork(&self, src: SessionId, through: Option<i64>) -> anyhow::Result<SessionId>;
+pub async fn fork(&self, src: SessionId, through: Option<i64>, reply: Option<u32>) -> anyhow::Result<SessionId>;
 ```
 
 - `cut_to`: `let visible = self.messages(id).await?; let i = visible.iter()
@@ -309,7 +324,7 @@ async fn regenerate(&self, session: SessionId, turn: i64) -> RpcResult<()>;
 #[method(name = "edit_turn")]
 async fn edit_turn(&self, session: SessionId, turn: i64, text: String, files: Vec<PathBuf>) -> RpcResult<()>;
 #[method(name = "fork_session")]
-async fn fork_session(&self, session: SessionId, through: Option<i64>) -> RpcResult<SessionId>;
+async fn fork_session(&self, session: SessionId, through: Option<i64>, reply: Option<u32>) -> RpcResult<SessionId>;
 ```
 
 Three `ask`s, 80 methods. `just ts` regenerates `HistoryEntry.ts`,
@@ -340,7 +355,8 @@ and `page_walks_back_by_seq` match `HistoryEntry::User { text, .. }`.
 - `MessageAssistant` action bar (the `-ml-2 flex` div): `CopyButton`,
   then `ActionButton icon={RefreshCw} label="Regenerate"` →
   `truncate(session, turn); api.regenerate(session, turn)`, then
-  `ActionButton icon={GitFork} label="Fork from here"` → §5.3.
+  `ActionButton icon={GitFork} label="Fork from here"` → §5.3 with the
+  entry's reply index within its turn (§3 mid-turn).
   `ActionButton` is `CopyButton` with the click and icon lifted out (same
   classes, same `Tooltip`); `CopyButton` becomes one call of it.
 - `MessageUser`: wrap in `group`; below the bubble a right-aligned row

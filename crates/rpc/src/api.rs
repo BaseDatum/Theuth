@@ -153,7 +153,12 @@ pub trait Api {
     /// `through` (all of it when `None`); returns its id (design doc 29 §3).
     /// The source is untouched. Refused for external harness sessions.
     #[method(name = "fork_session")]
-    async fn fork_session(&self, session: SessionId, through: Option<i64>) -> RpcResult<SessionId>;
+    async fn fork_session(
+        &self,
+        session: SessionId,
+        through: Option<i64>,
+        reply: Option<u32>,
+    ) -> RpcResult<SessionId>;
     /// The live default compaction style (`agent.compact_style`).
     #[method(name = "compact_style")]
     async fn compact_style(&self) -> RpcResult<CompactStyle>;
@@ -624,8 +629,21 @@ impl ApiServer for Server {
         .await
     }
 
-    async fn fork_session(&self, session: SessionId, through: Option<i64>) -> RpcResult<SessionId> {
-        ask::<Agents, _>(agent::AGENT_ACTOR, ForkSession { session, through }).await
+    async fn fork_session(
+        &self,
+        session: SessionId,
+        through: Option<i64>,
+        reply: Option<u32>,
+    ) -> RpcResult<SessionId> {
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            ForkSession {
+                session,
+                through,
+                reply,
+            },
+        )
+        .await
     }
 
     async fn compact_style(&self) -> RpcResult<CompactStyle> {

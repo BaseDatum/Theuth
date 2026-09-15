@@ -159,6 +159,9 @@ pub struct ForkSession {
     pub session: SessionId,
     /// Seq of the last turn opener to keep; `None` = everything visible.
     pub through: Option<i64>,
+    /// Stop at this (0-based) assistant text of that turn instead of its end
+    /// (design doc 29 §3); ignored without `through`.
+    pub reply: Option<u32>,
 }
 
 /// `ask` → `()`. Abort the in-flight turn of `session` and of every running

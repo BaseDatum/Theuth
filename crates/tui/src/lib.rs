@@ -215,7 +215,7 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             }
         },
         Command::Fork { session, through } => {
-            let id = msg(api.fork_session(session, through).await)?;
+            let id = msg(api.fork_session(session, through, None).await)?;
             UiEvent::Forked(id, msg(api.load_session(id, None, None).await)?)
         }
         Command::Cancel(session) => {

@@ -16,7 +16,7 @@ function body(entry: Entry, session: string) {
     case 'user':
       return <MessageUser text={entry.text} skill={entry.skill} files={entry.files} session={session} turn={entry.turn} />
     case 'assistant':
-      return <MessageAssistant text={entry.text} open={entry.open} session={session} turn={entry.turn} />
+      return <MessageAssistant id={entry.id} text={entry.text} open={entry.open} session={session} turn={entry.turn} />
     case 'reasoning':
       return <MessageReasoning text={entry.text} done={entry.done} />
     case 'tool':

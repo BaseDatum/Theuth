@@ -321,7 +321,7 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       return
     }
     case '/fork': {
-      const nid = await api.fork_session(need(session), null)
+      const nid = await api.fork_session(need(session), null, null)
       await navigate({ to: '/c/$session', params: { session: nid } })
       return
     }

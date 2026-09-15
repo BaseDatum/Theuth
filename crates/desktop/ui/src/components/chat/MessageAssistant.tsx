@@ -82,14 +82,14 @@ export function rewind(session: string, turn: number, rpc: () => Promise<unknown
   })
 }
 
-/** `fork(turn)`: copy `session` through `turn`, refresh the list, open the copy. */
+/** `fork(turn, reply?)`: copy `session` through `turn` (or through its `reply`-th text), refresh the list, open the copy. */
 export function useFork(session: string) {
   const api = useApi()
   const qc = useQueryClient()
   const navigate = useNavigate()
-  return async (turn: number) => {
+  return async (turn: number, reply?: number) => {
     try {
-      const id = await api.fork_session(session, turn)
+      const id = await api.fork_session(session, turn, reply ?? null)
       void qc.invalidateQueries({ queryKey: queryKeys.sessions })
       await navigate({ to: '/c/$session', params: { session: id } })
     } catch (e) {
@@ -98,13 +98,22 @@ export function useFork(session: string) {
   }
 }
 
-/** Markdown at column width; `open` while the reply streams (only the last entry ever is). `turn` is the opener seq the reply belongs to. */
+/** Position of assistant entry `id` among the replies of its turn: the server's `reply` index (29 §3); `undefined` (whole turn) if unknown. */
+function replyIndex(session: string, turn: number, id: string): number | undefined {
+  const entries = useSessions.getState().sessions[session]?.entries ?? []
+  const n = entries.filter((e) => e.kind === 'assistant' && e.turn === turn).findIndex((e) => e.id === id)
+  return n < 0 ? undefined : n
+}
+
+/** Markdown at column width; `open` while the reply streams (only the last entry ever is). `turn` is the opener seq the reply belongs to; `id` is the entry id (for the fork's reply index). */
 export const MessageAssistant = memo(function MessageAssistant({
+  id,
   text,
   open,
   session,
   turn,
 }: {
+  id: string
   text: string
   open: boolean
   session: string
@@ -130,7 +139,7 @@ export const MessageAssistant = memo(function MessageAssistant({
           {turn != null && !running && (
             <>
               <ActionButton icon={RefreshCw} label="Regenerate" onClick={() => rewind(session, turn, () => api.regenerate(session, turn))} />
-              <ActionButton icon={GitFork} label="Fork from here" onClick={() => void fork(turn)} />
+              <ActionButton icon={GitFork} label="Fork from here" onClick={() => void fork(turn, replyIndex(session, turn, id))} />
             </>
           )}
         </div>

@@ -66,8 +66,8 @@ export interface Api {
   computer_permissions(): Promise<PermissionStatus>
   /** Replace the turn opened at `turn` with `text` (29 §3); refused mid-turn. */
   edit_turn(session: SessionId, turn: number, text: string, files: string[]): Promise<null>
-  /** New session with the conversation through the turn opened at `through` (all when `null`). */
-  fork_session(session: SessionId, through: number | null): Promise<SessionId>
+  /** New session with the conversation through the turn opened at `through` (all when `null`); `reply` stops at that 0-based assistant text of the turn instead. */
+  fork_session(session: SessionId, through: number | null, reply: number | null): Promise<SessionId>
   get_prompt(session: SessionId | null): Promise<string>
   info(): Promise<Info>
   knowledge_delete(id: string): Promise<null>
