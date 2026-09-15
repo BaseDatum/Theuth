@@ -1530,6 +1530,7 @@ mod tests {
             turn: runtime::TurnId(Uuid::nil()),
             text: String::new(),
             model: String::new(),
+            turn_seq: 0,
         }
     }
 

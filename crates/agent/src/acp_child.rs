@@ -135,9 +135,14 @@ impl AcpChild {
         self.rt.publish(ev).await;
     }
 
-    async fn append(&self, m: ChatMessage) {
-        if let Err(e) = self.store.append(self.id, &m).await {
-            tracing::error!(session = %self.id, "append: {e:#}");
+    /// Persist `m`; its seq, or 0 when the write failed (logged).
+    async fn append(&self, m: ChatMessage) -> i64 {
+        match self.store.append(self.id, &m).await {
+            Ok(seq) => seq,
+            Err(e) => {
+                tracing::error!(session = %self.id, "append: {e:#}");
+                0
+            }
         }
     }
 
@@ -164,7 +169,8 @@ impl AcpChild {
         }
     }
 
-    /// Open a turn for `text` and persist it as the user message.
+    /// Persist `text` as the user message, then open a turn for it; the row
+    /// exists when `TurnStarted` is delivered (design doc 29 §4.2).
     async fn open(&mut self, id: Option<InputId>, text: &str) -> TurnId {
         let turn = TurnId::new();
         if let Some(id) = id {
@@ -175,15 +181,16 @@ impl AcpChild {
             })
             .await;
         }
+        self.title(text).await;
+        let turn_seq = self.append(ChatMessage::user(text)).await;
         self.publish(AgentEvent::TurnStarted {
             session: self.id,
             turn,
             text: text.to_owned(),
             model: self.name.clone(),
+            turn_seq,
         })
         .await;
-        self.title(text).await;
-        self.append(ChatMessage::user(text)).await;
         turn
     }
 

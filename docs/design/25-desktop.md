@@ -80,7 +80,7 @@ different capabilities means the TUI stays the real one.
   (default `127.0.0.1:7777`, env `WTH_RPC__LISTEN`); token 64-hex at
   `<data_dir>/token`, presented as `Authorization: Bearer` **or** `?token=`
   on the upgrade (`lib.rs:120-141`). Loopback only, no TLS.
-- 77 methods on `trait Api` (`api.rs:52-341`), every one a thin `ask`.
+- 80 methods on `trait Api` (`api.rs:52-341`), every one a thin `ask`.
   Errors: `-32000` handler string, `-32001` actor not running.
 - One subscription `subscribe_events(session?, descendants?)`; items are
   `{ "type": "<TypeName>", ... }`. `session: null` = everything
@@ -102,7 +102,7 @@ different capabilities means the TUI stays the real one.
   `bindings/*.ts` (gitignored). The export list omits `LoginInfo`,
   `ProviderInfo`, `AgentInfo`, `AgentState`, `LoginFinished`, and nothing
   exports method signatures; `bindings/` on disk predates Slack.
-- No RPC: session rename/delete/fork, default-model or approvals getter,
+- No RPC: session rename/delete, default-model or approvals getter,
   `data_dir`, title-change event, bytes upload, images in
   `ToolCallFinished`. §7 adds the ones the clone needs.
 
@@ -203,6 +203,9 @@ Every row is an `Api` call already present unless marked **new** (§7).
 | `/new` (lazy create) | New chat → route `/`, session created by the first `send_input(null, …)` exactly like the TUI; `SessionCreated` inferred from the reply |
 | `/agents` picker + board (≤6 rows) + `/parent` | sidebar: the active session expands into its `list_agents` subtree (glyph · name · state · age), live from the subtree's events; clicking a child opens it with `↳ parent` breadcrumb in the header (19 §5) |
 | `/clear`, `/compact [style]`, `/compact style …`, `/undo`, `/redo`, `/cancel` | session menu (compact with style submenu, clear, undo, redo); Esc / stop button in the composer = `cancel`; compact style default in Settings › General |
+| `/edit [n]` (29) | Edit button under a user bubble (hover): the bubble becomes a textarea, Send → `edit_turn` |
+| `/regen [n]` (29) | Regenerate button in the reply's action bar → `regenerate` |
+| `/fork [n]` (29) | Fork button on either bubble → `fork_session`, opens the new session |
 | steer while streaming + `◇ queued` chips + ⌥↑ withdraw | typing while streaming sends `steer(session, text, client id)`; chips above the composer with an × (`withdraw`) and click-to-edit (withdraw into the composer) |
 | Shift+Enter newline, Enter send | same |
 | paste → `[⎘ paste N]` token over 5 lines / 400 chars | same tokens, same expansion at submit (`pastes.ts`) |
@@ -260,7 +263,7 @@ crates/desktop/                 Tauri crate (workspace member by glob; kind: app
   ui/                           Vite app (bun)
     package.json, vite.config.ts, tsconfig.json, components.json (shadcn), tailwind.css (tokens)
     src/rpc/client.ts           WebSocket JSON-RPC client + subscription demux
-    src/rpc/api.ts              typed `Api` interface (77 methods + §7), hand-written against bindings/
+    src/rpc/api.ts              typed `Api` interface (80 methods + §7), hand-written against bindings/
     src/rpc/events.ts           `WireEvent` union = AgentEvent | ApprovalRequested | … | Lagged
     src/rpc/bindings/           copied by `just ts-desktop` from ../../bindings (gitignored)
     src/store/                  zustand: sessions.ts (slices, reducer per event), approvals.ts, connection.ts

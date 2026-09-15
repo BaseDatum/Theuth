@@ -73,6 +73,10 @@ pub struct Input {
     pub text: String,
     /// Image files, one `Binary` part each.
     pub files: Vec<PathBuf>,
+    /// Persist this message instead of building one from `text`/`files`
+    /// (regenerate, design doc 29 §4.2). `text` is still its rendering, for
+    /// `TurnStarted` and the title.
+    pub replay: Option<ChatMessage>,
 }
 
 /// One queued input: the caller's id (`None` for harness inputs) and its content.
@@ -92,6 +96,17 @@ pub struct UndoTurn;
 /// `ask` → `Result<String, String>`: restore the last hidden turn; `Ok(first line)`.
 /// `Err("turn in flight" | "nothing to redo")`.
 pub struct RedoTurn;
+
+/// `ask` → `Result<(), String>`: hide `seq >= turn`, then start a turn
+/// (design doc 29 §4.2). `input: None` replays the hidden opener verbatim
+/// (regenerate); `Some((text, files))` starts it with new text (edit).
+/// `Err("turn in flight" | <store error text, e.g. "not a turn start">)`.
+pub struct RestartTurn {
+    /// Seq of the user row that opens the turn to hide.
+    pub turn: i64,
+    /// New text and files, or `None` to replay the opener.
+    pub input: Option<(String, Vec<PathBuf>)>,
+}
 
 /// `tell`: abort the in-flight turn, if any.
 pub struct CancelTurn;
@@ -123,7 +138,8 @@ pub struct HarvestNow;
 pub struct TurnDone(SessionState);
 
 /// Per-session state that crosses turns (07 §11). Moved into the running
-/// turn and handed back in [`TurnDone`].
+/// turn and handed back in [`TurnDone`]; rebuilt from the store after an
+/// undo/redo or a [`RestartTurn`] cut (design doc 29 §4.2).
 pub struct SessionState {
     /// Current epoch; 0 before any compaction.
     pub epoch: u32,
@@ -343,6 +359,9 @@ impl Session {
         Ok(text.lines().next().unwrap_or("").chars().take(80).collect())
     }
 
+    /// Claim the state and start a turn over `inputs`. The first input is
+    /// persisted here so `TurnStarted` can carry its seq (design doc 29 §4.2);
+    /// the rest are persisted by the turn task.
     async fn start_turn(&mut self, inputs: Vec<Queued>, me: &ActorRef<Self>) {
         let Some(state) = self.claim().await else {
             // Only reachable if a turn is already running; the caller checked `inflight`.
@@ -394,6 +413,15 @@ impl Session {
             .map(|i| i.text.as_str())
             .collect::<Vec<_>>()
             .join("\n");
+        let mut task = Turn::new(self.shared.clone(), Some(turn), cancel, state);
+        task.input_text = text.clone();
+        task.state.title_chars += title::user_chars(inputs.iter().map(|i| i.text.as_str()));
+        let mut inputs = inputs.into_iter();
+        if let Some(first) = inputs.next() {
+            task.take_input(first).await;
+        }
+        // 0 only for an empty `inputs`, which no caller passes.
+        let turn_seq = task.state.history.last().map_or(0, |(seq, _)| *seq);
         self.shared
             .rt
             .publish(AgentEvent::TurnStarted {
@@ -401,12 +429,12 @@ impl Session {
                 turn,
                 text,
                 model,
+                turn_seq,
             })
             .await;
-        let task = Turn::new(self.shared.clone(), Some(turn), cancel, state);
         let me = me.clone();
         tokio::spawn(async move {
-            let state = task.run(turn, inputs).await;
+            let state = task.run(turn, inputs.collect()).await;
             let _ = me.tell(TurnDone(state)).await;
         });
     }
@@ -422,9 +450,12 @@ impl Message<UserInput> for Session {
     ) {
         if self.inflight.is_none() {
             let me = ctx.actor_ref().clone();
-            return self
-                .start_turn(vec![(id, Input { text, files })], &me)
-                .await;
+            let input = Input {
+                text,
+                files,
+                replay: None,
+            };
+            return self.start_turn(vec![(id, input)], &me).await;
         }
         let event = id.map(|id| AgentEvent::InputQueued {
             session: self.shared.id,
@@ -435,7 +466,14 @@ impl Message<UserInput> for Session {
             .steer
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .push((id, Input { text, files }));
+            .push((
+                id,
+                Input {
+                    text,
+                    files,
+                    replay: None,
+                },
+            ));
         if let Some(event) = event {
             self.shared.rt.publish(event).await;
         }
@@ -501,6 +539,40 @@ impl Message<RedoTurn> for Session {
 
     async fn handle(&mut self, _: RedoTurn, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.cut(false).await
+    }
+}
+
+impl Message<RestartTurn> for Session {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        m: RestartTurn,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        if self.inflight.is_some() || self.state.is_none() {
+            return Err("turn in flight".into());
+        }
+        let id = self.shared.id;
+        let store = &self.shared.store;
+        let opener = store.cut_to(id, m.turn).await.map_err(|e| e.to_string())?;
+        let (epoch, head, history) = store.frame(id).await.map_err(|e| e.to_string())?;
+        self.state = Some(SessionState::resume(epoch, head, history));
+        let input = match m.input {
+            Some((text, files)) => Input {
+                text,
+                files,
+                replay: None,
+            },
+            None => Input {
+                text: text_of(&opener.content),
+                files: vec![],
+                replay: Some(opener),
+            },
+        };
+        let me = ctx.actor_ref().clone();
+        self.start_turn(vec![(None, input)], &me).await;
+        Ok(())
     }
 }
 
@@ -1003,12 +1075,17 @@ impl Turn {
         }
     }
 
-    /// Persist one input; a `<skill>` injection (04 §2.4) also marks the skill loaded.
-    async fn take_input(&mut self, input: Input) {
+    /// Persist one input (the replayed opener when set, design doc 29 §4.2);
+    /// a `<skill>` injection (04 §2.4) also marks the skill loaded.
+    async fn take_input(&mut self, mut input: Input) {
         if let Some((name, _, _)) = skills::injected(&input.text) {
             self.note_skill(name.to_owned()).await;
         }
-        self.persist(user_message(input)).await;
+        let msg = match input.replay.take() {
+            Some(m) => m,
+            None => user_message(input),
+        };
+        self.persist(msg).await;
     }
 
     /// A skill body entered the frame; publish the set when it grew.
@@ -1027,13 +1104,9 @@ impl Turn {
     }
 
     /// Runs to completion (or cancel/error) and returns the state to hand back.
+    /// `inputs` are the turn's inputs after the first, which
+    /// [`Session::start_turn`] already persisted.
     async fn run(mut self, turn: TurnId, inputs: Vec<Input>) -> SessionState {
-        self.input_text = inputs
-            .iter()
-            .map(|i| i.text.as_str())
-            .collect::<Vec<_>>()
-            .join("\n");
-        self.state.title_chars += title::user_chars(inputs.iter().map(|i| i.text.as_str()));
         for input in inputs {
             self.take_input(input).await;
         }
@@ -1990,7 +2063,7 @@ impl Turn {
 /// The user message for one input: text, then one `Binary` part per file
 /// (17 §3.2; a PDF rides as a native document part, 20 §2.5). A file that
 /// vanished since `check_files` becomes a placeholder rather than aborting the turn.
-fn user_message(Input { text, files }: Input) -> ChatMessage {
+fn user_message(Input { text, files, .. }: Input) -> ChatMessage {
     if files.is_empty() {
         return ChatMessage::user(text);
     }

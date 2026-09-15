@@ -286,6 +286,7 @@ mod tests {
             turn: TurnId::new(),
             text: "go".into(),
             model: "m".into(),
+            turn_seq: 0,
         }
     }
 

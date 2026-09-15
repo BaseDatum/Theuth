@@ -123,6 +123,44 @@ pub struct Redo {
     pub session: SessionId,
 }
 
+/// `ask` → `Result<(), String>`: regenerate the reply to the turn opened at
+/// `turn` — hide `seq >= turn`, then start a turn that replays the stored
+/// opener verbatim (design doc 29 §4.3). `Err("turn in flight" | "not a turn start")`.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct Regenerate {
+    /// Target session.
+    pub session: SessionId,
+    /// Seq of the user row that opens the turn (`HistoryEntry::User.turn`).
+    pub turn: i64,
+}
+
+/// `ask` → `Result<(), String>`: replace the turn opened at `turn` with `text`
+/// (+ `files`) — hide `seq >= turn`, then start a turn with the new input
+/// (design doc 29 §4.3). `Err("turn in flight" | "not a turn start")`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EditTurn {
+    /// Target session.
+    pub session: SessionId,
+    /// Seq of the user row that opens the turn (`HistoryEntry::User.turn`).
+    pub turn: i64,
+    /// New user text.
+    pub text: String,
+    /// Files to attach.
+    pub files: Vec<PathBuf>,
+}
+
+/// `ask` → `Result<SessionId, String>`: new session with a copy of the
+/// conversation through the turn opened at `through` (all visible turns when
+/// `None`); the source is only read (design doc 29 §4.3).
+/// `Err("cannot fork an external harness session" | "nothing to fork" | "not a turn start")`.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct ForkSession {
+    /// Source session.
+    pub session: SessionId,
+    /// Seq of the last turn opener to keep; `None` = everything visible.
+    pub through: Option<i64>,
+}
+
 /// `ask` → `()`. Abort the in-flight turn of `session` and of every running
 /// descendant (design doc 19 §2.3); each emits `TurnFinished { stop_reason: "cancelled" }`.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -664,11 +702,21 @@ pub enum HistoryEntry {
     User {
         /// Text.
         text: String,
+        /// Own seq when this row opens a turn (design doc 29 §4.3); `None`
+        /// for steers and harness notes, which are not addressable.
+        #[serde(default)]
+        #[cfg_attr(feature = "ts", ts(type = "number | null"))]
+        turn: Option<i64>,
     },
     /// Assistant text.
     Assistant {
         /// Text.
         text: String,
+        /// Seq of the user row that opened the turn this reply belongs to
+        /// (design doc 29 §4.3).
+        #[serde(default)]
+        #[cfg_attr(feature = "ts", ts(type = "number | null"))]
+        turn: Option<i64>,
     },
     /// A tool call and its result; `result` is `None` while the call is
     /// still running (a session loaded mid-turn), and `ToolCallFinished`
@@ -727,6 +775,9 @@ pub enum AgentEvent {
         text: String,
         /// Canonical model id the turn runs on.
         model: String,
+        /// Seq of the stored user row that opened the turn (design doc 29 §4.2).
+        #[cfg_attr(feature = "ts", ts(type = "number"))]
+        turn_seq: i64,
     },
     /// Streamed assistant text.
     TextDelta {

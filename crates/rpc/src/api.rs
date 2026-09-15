@@ -8,12 +8,13 @@ use std::path::PathBuf;
 
 use agent::{
     AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentConfig, AgentInfo, Agents, Cancel, Compact,
-    CompactStyle, DeleteSession, GetCompactStyle, GetTitleModel, Harvest, ListAcp, ListAgents,
-    ListLogins, ListModels, ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills,
-    LoadSession, LoadSkill, Loaded, Login, LoginInfo, Logout, ModelInfo, NewSession, ProviderInfo,
-    QueuedInput, Redo, RemoveAcp, RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession,
-    SearchSessions, SendInput, SessionSummary, SetCompactStyle, SetEffort, SetModel, SetTitleModel,
-    ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw,
+    CompactStyle, DeleteSession, EditTurn, ForkSession, GetCompactStyle, GetTitleModel, Harvest,
+    ListAcp, ListAgents, ListLogins, ListModels, ListProviders, ListQueued, ListRegistry,
+    ListSessions, ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginInfo, Logout, ModelInfo,
+    NewSession, ProviderInfo, QueuedInput, Redo, Regenerate, RemoveAcp, RemoveProvider,
+    RemoveSkill, RemoveSkillRepo, RenameSession, SearchSessions, SendInput, SessionSummary,
+    SetCompactStyle, SetEffort, SetModel, SetTitleModel, ShowPrompt, SkillBody, SkillMeta, Steer,
+    SyncSkills, Undo, UseSkill, Withdraw,
 };
 use browser::{BROWSER_ACTOR, Browsers, Screenshot};
 use computer::{COMPUTER_ACTOR, Computer, Permissions};
@@ -132,6 +133,27 @@ pub trait Api {
     /// Restore the last undone turn; returns its first line.
     #[method(name = "redo")]
     async fn redo(&self, session: SessionId) -> RpcResult<String>;
+    /// Regenerate the reply to the turn opened at `turn` (a `HistoryEntry`
+    /// `turn` handle): drop it and everything after, replay the stored opener
+    /// (design doc 29 §3). Refused while a turn is running.
+    #[method(name = "regenerate")]
+    async fn regenerate(&self, session: SessionId, turn: i64) -> RpcResult<()>;
+    /// Replace the turn opened at `turn` with `text` (+ `files`): drop it and
+    /// everything after, start a turn with the new input (design doc 29 §3).
+    /// Refused while a turn is running.
+    #[method(name = "edit_turn")]
+    async fn edit_turn(
+        &self,
+        session: SessionId,
+        turn: i64,
+        text: String,
+        files: Vec<PathBuf>,
+    ) -> RpcResult<()>;
+    /// New session with a copy of the conversation through the turn opened at
+    /// `through` (all of it when `None`); returns its id (design doc 29 §3).
+    /// The source is untouched. Refused for external harness sessions.
+    #[method(name = "fork_session")]
+    async fn fork_session(&self, session: SessionId, through: Option<i64>) -> RpcResult<SessionId>;
     /// The live default compaction style (`agent.compact_style`).
     #[method(name = "compact_style")]
     async fn compact_style(&self) -> RpcResult<CompactStyle>;
@@ -573,6 +595,33 @@ impl ApiServer for Server {
 
     async fn redo(&self, session: SessionId) -> RpcResult<String> {
         ask::<Agents, _>(agent::AGENT_ACTOR, Redo { session }).await
+    }
+
+    async fn regenerate(&self, session: SessionId, turn: i64) -> RpcResult<()> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, Regenerate { session, turn }).await
+    }
+
+    async fn edit_turn(
+        &self,
+        session: SessionId,
+        turn: i64,
+        text: String,
+        files: Vec<PathBuf>,
+    ) -> RpcResult<()> {
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            EditTurn {
+                session,
+                turn,
+                text,
+                files,
+            },
+        )
+        .await
+    }
+
+    async fn fork_session(&self, session: SessionId, through: Option<i64>) -> RpcResult<SessionId> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, ForkSession { session, through }).await
     }
 
     async fn compact_style(&self) -> RpcResult<CompactStyle> {

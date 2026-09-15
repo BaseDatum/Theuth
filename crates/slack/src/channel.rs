@@ -2210,6 +2210,7 @@ pub(crate) mod tests {
             turn: TurnId::new(),
             text: text.into(),
             model: "m".into(),
+            turn_seq: 0,
         }
     }
 

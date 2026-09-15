@@ -286,10 +286,10 @@ fn stop_reason(s: String) -> StopReason {
 /// One stored history entry as a `session/load` replay update.
 fn replay(i: usize, entry: HistoryEntry) -> SessionUpdate {
     match entry {
-        HistoryEntry::User { text } => {
+        HistoryEntry::User { text, .. } => {
             SessionUpdate::UserMessageChunk(ContentChunk::new(text.into()))
         }
-        HistoryEntry::Assistant { text } => {
+        HistoryEntry::Assistant { text, .. } => {
             SessionUpdate::AgentMessageChunk(ContentChunk::new(text.into()))
         }
         HistoryEntry::Tool {
