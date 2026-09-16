@@ -76,7 +76,7 @@ workspace = true                       # missing_docs = warn, clippy::all = deny
 
 Add `foo = { path = "crates/foo" }` to the root `[workspace.dependencies]`; `members = ["crates/*"]` already globs the directory. New third-party crates go in the root `[workspace.dependencies]` with a one-line comment saying which doc chose them.
 
-**Dependency order is acyclic and downward only**: `runtime ← tools ← knowledge ← agent ← signal ← rpc ← tui ← wth` (`rpc` sits above every plugin because `Api` names all their command types; `tui` calls `Api`, so it sits above `rpc`). Depend on another plugin's crate for its *types* (message structs, events, `Tool` trait) — never to call functions on its state. If you need a crate that depends on you, you have the arrow backwards: the thing you want from it is a message.
+**Dependency order is acyclic and downward only**: `runtime ← tools ← knowledge ← agent ← link ← {signal, slack} ← rpc ← tui ← wth` (`rpc` sits above every plugin because `Api` names all their command types; `tui` calls `Api`, so it sits above `rpc`). Depend on another plugin's crate for its *types* (message structs, events, `Tool` trait) — never to call functions on its state. If you need a crate that depends on you, you have the arrow backwards: the thing you want from it is a message — `link` needing `rpc`'s `RpcModule` is the worked case: `link` sits below `rpc` and receives the module (today a factory from `main.rs`; 32 §3.1 makes it a `SetDispatch` message from `rpc`).
 
 ### 3.2 `lib.rs` skeleton
 

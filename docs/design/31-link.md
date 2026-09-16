@@ -212,12 +212,16 @@ Three deliverables, three crates/dirs:
 | part | where | kind | depends on |
 |---|---|---|---|
 | relay | `crates/relay/` → binary `wth-relay` | bin, not a plugin | tokio, axum, tokio-tungstenite, snow, tower-http, rustls (optional) |
-| link plugin | `crates/link/` | plugin (00 §4; `docs/plugins.md`) | runtime, rpc (for `api::Server` and `bridge::start`), snow, tokio-tungstenite, qrcode |
+| link plugin | `crates/link/` | plugin (00 §4; `docs/plugins.md`) | runtime, snow, tokio-tungstenite, jsonrpsee (`Methods` only), qrcode — **not** `rpc`: `rpc::Api` returns `LinkStatus` and `bridge.rs` forwards `LinkEvent`, so `rpc → link`; the dispatch handle comes the other way (§6.2) |
 | device transport + UI | `crates/desktop/ui/src/link/` and responsive changes across `ui/src` | TS | WebCrypto, `@tauri-apps/plugin-barcode-scanner`, `-deep-link` |
 
-Dependency order gains `link` between `rpc` and `tui`:
-`… ← rpc ← link ← tui ← wth`. The TUI depends on `link` for `link::qr`
-(moved from `signal`, which then imports it too — one QR renderer).
+Dependency order: `runtime ← link ← signal ← rpc ← tui ← wth`. `link` sits
+with the channel plugins below `rpc` (which names its types, like every
+plugin's); `signal` imports `link::qr` (one QR renderer); `tui` renders
+`link`'s status and QR. The `RpcModule` that `link` dispatches into is
+injected: `wth/main.rs` passes `rpc::methods` as a `MethodsFactory` (§6.2).
+32 §3.1 replaces that with `rpc` sending `SetDispatch { methods, acp }` to
+the `link` actor at start, which takes the handle out of `main.rs` (00 §1.4).
 
 ## 4. Protocol
 
@@ -953,8 +957,8 @@ Open: §11 bench numbers; the mobile Settings deep link landing on the pane.
   methods; `rpc::bridge::start` idempotent (registered `"rpc.events"`).
 - **00 §10**: `link/  plugin: relay uplink, Noise pairing and sessions,
   device registry (31)`; `relay/  bin: wth-relay, stateless encrypted-frame
-  relay (31)`; dependency order `… ← rpc ← link ← tui ← wth`; `signal::qr`
-  moves to `link::qr`.
+  relay (31)`; dependency order `runtime ← link ← signal ← rpc ← tui ← wth`;
+  `signal::qr` moves to `link::qr`.
 - **00 §12**: row 19 `link (31)`, with §12 here as its check column.
 - **25 §0.4**: still true (the webview owns the socket) — now through a
   `Transport`. **25 §3**: the "no TUI counterpart" table gains "connect to

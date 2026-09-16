@@ -540,9 +540,11 @@ the `wth` bin; the rest were added by the docs named beside them, each as the ki
 `--headless`. Budget: `runtime` ≤ 400 lines. `agent` is the loop and what
 the loop must own (store, frame, compact, repl); frontends do not grow it.
 New subsystems earn a plugin. `agent/src/lib.rs` re-exports; command structs
-live next to the handler that answers them (12 §8). Dependency order among
-the frontends: `… ← rpc ← link ← tui ← wth` (`tui` renders `link`'s status
-and QR; `wth` hands `link` the `rpc::methods` factory).
+live next to the handler that answers them (12 §8). Dependency order:
+`runtime ← tools ← knowledge ← agent ← link ← {signal, slack} ← rpc ← tui ← wth`
+(`rpc` names `link`'s types like every plugin's; `signal` imports
+`link::qr`; `tui` renders `link`'s status and QR; `wth` hands `link` the
+`rpc::methods` factory until 32 §3.1's `SetDispatch` message replaces it).
 
 Workspace dependencies (versions verified 2026-09-09 via `cargo info`):
 
