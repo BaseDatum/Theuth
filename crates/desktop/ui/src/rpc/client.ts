@@ -18,6 +18,8 @@ export class RpcError extends Error {
 const TRANSPORT = -32300
 const BACKOFF_MIN_MS = 500
 const BACKOFF_MAX_MS = 10_000
+/** A foreground probe unanswered for this long means the socket died while the phone slept. */
+const PROBE_MS = 5_000
 
 type Pending = { resolve: (v: unknown) => void; reject: (e: RpcError) => void }
 type Sub = {
@@ -40,6 +42,10 @@ type Frame = {
  * by `params.subscription`. When the transport reports `reconnecting` it is
  * reconnected with capped exponential backoff and live subscriptions are
  * re-issued; the gap between is lost by design (25 §2.1).
+ *
+ * Coming back to the foreground (31 §7.3) skips the backoff, and probes an
+ * `open` socket with `info`: iOS suspends the process and its sockets without
+ * telling the page, so a dead one otherwise looks open and every call hangs.
  */
 export class RpcClient {
   #t: Transport
@@ -51,6 +57,7 @@ export class RpcClient {
   #listeners = new Set<(s: ConnState) => void>()
   #attempt = 0
   #timer: ReturnType<typeof setTimeout> | undefined
+  #probe: ReturnType<typeof setTimeout> | undefined
   #closed = false
 
   constructor(transport: Transport) {
@@ -66,6 +73,11 @@ export class RpcClient {
         this.#schedule()
       }
     })
+    // Tests run without a document.
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', this.#foreground)
+      window.addEventListener('pageshow', this.#foreground)
+    }
   }
 
   /** The daemon's own socket (25 §2.1). */
@@ -124,12 +136,39 @@ export class RpcClient {
   close(): void {
     this.#closed = true
     clearTimeout(this.#timer)
-    this.#timer = undefined
+    clearTimeout(this.#probe)
+    this.#timer = this.#probe = undefined
     this.#subs.clear()
     this.#bySubId.clear()
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', this.#foreground)
+      window.removeEventListener('pageshow', this.#foreground)
+    }
     this.#t.close()
     this.#failPending('closed')
     this.#setState('closed')
+  }
+
+  #foreground = (): void => {
+    if (this.#closed || document.visibilityState !== 'visible') return
+    if (this.#state === 'reconnecting') {
+      // A socket parked on the relay (harness offline) may have died in the sleep too; a fresh one costs one upgrade.
+      this.#t.reset()
+      clearTimeout(this.#timer)
+      this.#timer = undefined
+      this.#attempt = 0
+      this.#t.connect().catch(() => this.#schedule())
+    } else if (this.#state === 'open' && !this.#probe) {
+      this.#probe = setTimeout(() => {
+        this.#probe = undefined
+        this.#t.reset()
+      }, PROBE_MS)
+      // Any reply, even an error, proves the socket; `reset()` fails the call and clears the timer.
+      void this.call('info', []).catch(() => undefined).finally(() => {
+        clearTimeout(this.#probe)
+        this.#probe = undefined
+      })
+    }
   }
 
   #schedule(): void {

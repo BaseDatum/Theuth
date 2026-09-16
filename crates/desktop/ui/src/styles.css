@@ -6,6 +6,7 @@
 
 /* Measured chatgpt.com tokens (docs/design/25-desktop.md §2.4, assets/25-chatgpt-tokens.md). */
 :root {
+  color-scheme: light;
   --bg-page: #fff;
   --bg-layer-1: #fff;
   --bg-layer-2: #f3f3f3;
@@ -35,6 +36,7 @@
 }
 
 .dark {
+  color-scheme: dark;
   --bg-page: #000;
   --bg-layer-1: #212121;
   --bg-layer-2: #303030;
@@ -148,11 +150,41 @@
   --font-sans: -apple-system-body, ui-sans-serif, -apple-system, system-ui, "Segoe UI", Helvetica, Arial, sans-serif;
 }
 
+/* Full-height shell: the layout viewport, or the band above the iOS keyboard (lib/viewport.ts). */
+@utility h-band {
+  height: var(--visible-band, 100dvh);
+}
+
 @layer base {
   html,
   body {
     overscroll-behavior: none;
     -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+  }
+
+  /*
+   * Safe areas as variables so the shell can zero the bottom one while the iOS
+   * keyboard is up (the home indicator is under the keyboard then; keeping the
+   * inset leaves a band of page between composer and keys). `--visible-band` is
+   * set by lib/viewport.ts: the layout height, or the part above the keyboard.
+   */
+  :root {
+    --safe-top: env(safe-area-inset-top, 0px);
+    --safe-right: env(safe-area-inset-right, 0px);
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+    --safe-left: env(safe-area-inset-left, 0px);
+  }
+
+  html[data-keyboard-open] {
+    --safe-bottom: 0px;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100dvh;
+    overflow: hidden;
   }
 
   body {

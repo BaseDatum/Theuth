@@ -77,6 +77,28 @@ export class LinkTransport implements Transport {
     this.#state('closed')
   }
 
+  reset(): void {
+    const ws = this.#ws
+    if (!ws) return
+    this.#lost(ws, true)
+    ws.close(1000)
+  }
+
+  /** The socket `ws` is gone (closed by the peer, or given up on): forget it and report. */
+  #lost(ws: WebSocket, opened: boolean): void {
+    if (this.#ws !== ws) return
+    this.#ws = null
+    this.#refused = !opened
+    this.#drop()
+    const pending = this.#pending
+    this.#pending = null
+    if (!this.#closed) {
+      this.#presence('offline')
+      this.#state('reconnecting')
+    }
+    pending?.reject(new Error('link: socket closed'))
+  }
+
   #presence(p: 'online' | 'offline' | 'connecting'): void {
     useHarnesses.getState().setPresence(this.harness.id, p)
   }
@@ -111,19 +133,7 @@ export class LinkTransport implements Transport {
       // Browsers throw on close codes outside 1000/3000–4999; a throwing catch would poison this chain for good.
       this.#inbound = this.#inbound.then(() => this.#frame(ws, bytes)).catch(() => ws.close())
     }
-    ws.onclose = () => {
-      if (this.#ws !== ws) return
-      this.#ws = null
-      this.#refused = !opened
-      this.#drop()
-      const pending = this.#pending
-      this.#pending = null
-      if (!this.#closed) {
-        this.#presence('offline')
-        this.#state('reconnecting')
-      }
-      pending?.reject(new Error('link: socket closed'))
-    }
+    ws.onclose = () => this.#lost(ws, opened)
   }
 
   async #frame(ws: WebSocket, bytes: Uint8Array<ArrayBuffer>): Promise<void> {

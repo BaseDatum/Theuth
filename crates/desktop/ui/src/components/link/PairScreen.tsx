@@ -123,7 +123,7 @@ export function PairScreen({ onPaired }: { onPaired?: () => void }) {
 
   if (scanning) {
     return (
-      <div id="pair-screen" className="flex min-h-dvh flex-col items-center justify-end p-6 pb-[max(1.5rem,env(safe-area-inset-bottom))]">
+      <div id="pair-screen" className="flex h-band flex-col items-center justify-end p-6 pb-[max(1.5rem,var(--safe-bottom))]">
         <Button variant="secondary" className="min-h-11 w-full max-w-sm" onClick={() => void cancelScan()}>
           Cancel
         </Button>
@@ -134,9 +134,10 @@ export function PairScreen({ onPaired }: { onPaired?: () => void }) {
   return (
     <div
       id="pair-screen"
-      className="flex min-h-dvh flex-col items-center justify-center gap-6 px-6 pt-[max(1.5rem,env(safe-area-inset-top))] pb-[max(1.5rem,env(safe-area-inset-bottom))]"
+      className="flex h-band flex-col items-center gap-6 overflow-y-auto px-6 pt-[max(1.5rem,var(--safe-top))] pb-[max(1.5rem,var(--safe-bottom))]"
     >
-      <div className="flex w-full max-w-sm flex-col gap-4">
+      {/* Auto margins, not `justify-center`: they centre without clipping the top when the keyboard shrinks the band. */}
+      <div className="mt-auto flex w-full max-w-sm flex-col gap-4">
         <h1 className="text-2xl font-semibold">Connect to a harness</h1>
         {pairingWith !== null ? (
           <p className="flex items-center gap-2 text-fg-secondary">
@@ -168,7 +169,7 @@ export function PairScreen({ onPaired }: { onPaired?: () => void }) {
           </>
         )}
       </div>
-      <p className="max-w-sm text-center text-xs text-fg-tertiary">
+      <p className="mb-auto max-w-sm text-center text-xs text-fg-tertiary">
         The relay carries encrypted traffic between your devices and this harness. It can see that they are connected, not what they say.
       </p>
       <Dialog open={choice !== null} onOpenChange={(o) => !o && setChoice(null)}>

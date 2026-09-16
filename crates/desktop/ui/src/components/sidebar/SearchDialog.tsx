@@ -55,10 +55,10 @@ export function SearchDialog({
       shouldFilter={false}
       title="Search chats"
       description="Search chats by title or message text"
-      className="h-dvh max-h-dvh w-screen max-w-none rounded-none border-0 pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] sm:h-auto sm:max-h-none sm:w-full sm:max-w-lg sm:rounded-lg sm:border"
+      className="top-0 h-band max-h-none w-screen max-w-none translate-y-0 rounded-none border-0 pt-[var(--safe-top)] pb-[var(--safe-bottom)] sm:top-[50%] sm:h-auto sm:w-full sm:max-w-lg sm:translate-y-[-50%] sm:rounded-lg sm:border"
     >
       <CommandInput autoFocus placeholder="Search chats…" value={query} onValueChange={setQuery} />
-      <CommandList className="max-h-[calc(100dvh-6rem)] sm:max-h-[300px]">
+      <CommandList className="max-h-none flex-1 sm:max-h-[300px]">
         {debounced !== '' && !isFetching && hits.length === 0 && (
           <CommandEmpty>No matches</CommandEmpty>
         )}

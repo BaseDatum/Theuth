@@ -9,9 +9,10 @@ import { StartupScreen } from '@/components/launch/StartupScreen'
 import { PairScreen } from '@/components/link/PairScreen'
 import { Toaster } from '@/components/ui/sonner'
 import { describe } from '@/lib/describe'
-import { notifyIfHidden } from '@/lib/notify'
+import { notifyIfHidden, primeNotifications } from '@/lib/notify'
+import { container } from '@/lib/platform'
 import { queryKeys, useInvalidateOn } from '@/lib/rpc'
-import { connection, isTauri, onNavigate, onQuitRequested, quitAck, relaunch } from '@/lib/tauri'
+import { connection, onNavigate, onQuitRequested, quitAck, relaunch } from '@/lib/tauri'
 import { LOCAL, hasLocal, hydrateHarnesses, useHarnesses, useNeedsPairing } from '@/link/harnesses'
 import { autoPair, watchNodes } from '@/link/nodes'
 import { LinkTransport } from '@/link/transport'
@@ -55,9 +56,16 @@ function loadInfo(st: Stores, api: Api): Promise<void> {
   })
 }
 
-/** After a reconnect or `Lagged`: the gap is lost, so refetch what the screen shows (25 §4.3). */
+/**
+ * After a reconnect or `Lagged`: the gap is lost, so refetch what the screen shows (25 §4.3).
+ * On a reconnect the router is still unmounted (`Shell` shows the startup screen while
+ * `reconnecting`), so the event below finds no listener; `unload` makes the chat route
+ * fetch again when it mounts. `Lagged` arrives with the route mounted and takes the event.
+ */
 function reload(st: Stores): void {
-  st.sessions.getState().resetLagged()
+  const sessions = st.sessions.getState()
+  sessions.resetLagged()
+  sessions.unload()
   void st.qc.invalidateQueries({ queryKey: queryKeys.sessions })
   const api = st.connection.getState().api
   if (api) void loadInfo(st, api).catch(() => undefined)
@@ -166,7 +174,7 @@ async function cancelAll(): Promise<void> {
   if (running.length) toast(`cancelled ${running.length} sessions`)
 }
 
-/** Tray / menu navigation, the quit handshake, ⌥Space and ⌥Esc; mounted once. */
+/** Tray / menu navigation, the quit handshake, ⌥Space and ⌥Esc (macOS); notification permission (iOS); mounted once. */
 function useTauri(): void {
   useEffect(() => {
     const unlistens = [
@@ -175,7 +183,9 @@ function useTauri(): void {
     ]
     const onQuit = () => void quit()
     window.addEventListener('wth:quit', onQuit)
-    if (isTauri()) {
+    const desktop = container() === 'macos'
+    void primeNotifications()
+    if (desktop) {
       void register(TOGGLE_SHORTCUT, async (e) => {
         if (e.state !== 'Pressed') return
         const win = getCurrentWindow()
@@ -192,7 +202,7 @@ function useTauri(): void {
     return () => {
       for (const u of unlistens) void u.then((f) => f())
       window.removeEventListener('wth:quit', onQuit)
-      if (isTauri()) void unregister([TOGGLE_SHORTCUT, CANCEL_SHORTCUT])
+      if (desktop) void unregister([TOGGLE_SHORTCUT, CANCEL_SHORTCUT])
     }
   }, [])
 }
@@ -224,7 +234,7 @@ function useEventSideEffects(st: Stores): void {
           router.history.push(`/c/${e.session}`)
       }),
       st.approvals.subscribe((s, prev) => {
-        if (!isTauri() || s.pending.length === prev.pending.length) return
+        if (container() !== 'macos' || s.pending.length === prev.pending.length) return
         void TrayIcon.getById('main').then((t) =>
           t?.setTitle(s.pending.length ? `●${s.pending.length}` : null),
         )

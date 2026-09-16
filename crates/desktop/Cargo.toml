@@ -44,6 +44,13 @@ dirs = { workspace = true }
 tauri-plugin-barcode-scanner = "2"
 tauri-plugin-deep-link = "2"
 
+# iOS only: `UIApplication.beginBackgroundTask` so the relay socket outlives
+# backgrounding for the grace period iOS grants (31 §8). Same objc2 line tauri uses.
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2 = "0.6"
+block2 = "0.6"
+objc2-ui-kit = { version = "0.3", default-features = false, features = ["std", "UIApplication", "UIResponder", "block2"] }
+
 [build-dependencies]
 tauri-build = { workspace = true }
 

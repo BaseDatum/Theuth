@@ -3,7 +3,10 @@
 //! hidden-on-close window, a template tray icon that toggles it,
 //! `ActivationPolicy::Accessory` (no Dock icon), the local daemon on a pty.
 //! Mobile: the same webview as a link device (QR scanner + universal link), no
-//! local daemon. `main.rs` and the generated iOS bridge both enter at [`run`].
+//! local daemon; the window is built here (not from `tauri.ios.conf.json`) so the
+//! iOS keyboard's accessory bar can be dropped, and backgrounding holds a
+//! `UIBackgroundTask` so the relay socket survives the grace period. `main.rs`
+//! and the generated iOS bridge both enter at [`run`].
 
 mod commands;
 #[cfg(desktop)]
@@ -20,10 +23,7 @@ pub fn run() {
     #[cfg(desktop)]
     let builder = desktop::configure(builder);
     #[cfg(mobile)]
-    let builder = builder
-        .plugin(tauri_plugin_barcode_scanner::init())
-        .plugin(tauri_plugin_deep_link::init())
-        .invoke_handler(tauri::generate_handler![commands::connection]);
+    let builder = mobile::configure(builder);
     let app = builder
         .build(tauri::generate_context!())
         .expect("build tauri app");
@@ -35,7 +35,89 @@ pub fn run() {
         }
     });
     #[cfg(mobile)]
-    app.run(|_, _| {});
+    app.run(|_, event| mobile::on_event(&event));
+}
+
+/// The phone (31 §8): plugins, the one window, and the background grace period.
+#[cfg(mobile)]
+mod mobile {
+    use tauri::{Builder, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent, Wry};
+
+    use crate::commands;
+
+    pub(super) fn configure(builder: Builder<Wry>) -> Builder<Wry> {
+        builder
+            .plugin(tauri_plugin_barcode_scanner::init())
+            .plugin(tauri_plugin_deep_link::init())
+            .invoke_handler(tauri::generate_handler![commands::connection])
+            .setup(|app| {
+                let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()));
+                // WKWebView paints a native "‹ › Done" bar above the keyboard for every
+                // focused input (and paints it light under a dark page); a chat composer
+                // has no use for it.
+                #[cfg(target_os = "ios")]
+                let builder = builder.with_input_accessory_view_builder(|_| None);
+                builder.build()?;
+                Ok(())
+            })
+    }
+
+    /// `Suspended` is `applicationWillResignActive`, `Resumed` is `willEnterForeground`.
+    pub(super) fn on_event(event: &RunEvent) {
+        let RunEvent::WindowEvent { event, .. } = event else { return };
+        match event {
+            #[cfg(target_os = "ios")]
+            WindowEvent::Suspended => background::hold(),
+            #[cfg(target_os = "ios")]
+            WindowEvent::Resumed => background::release(),
+            _ => {}
+        }
+    }
+
+    /// iOS suspends the process seconds after the app leaves the screen, and the
+    /// relay socket dies with it. A background task buys the ~30 s iOS grants, so
+    /// a turn that finishes right after the user switches away still streams in
+    /// and posts its notification (31 §8). Anything longer needs push, which the
+    /// relay cannot do without seeing plaintext.
+    #[cfg(target_os = "ios")]
+    mod background {
+        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+
+        use objc2::MainThreadMarker;
+        use objc2_ui_kit::UIApplication;
+
+        /// No task in flight. Real identifiers are small counters; `UIBackgroundTaskInvalid` is 0.
+        const NONE: usize = usize::MAX;
+        static TASK: AtomicUsize = AtomicUsize::new(NONE);
+
+        pub(super) fn hold() {
+            let Some(mtm) = MainThreadMarker::new() else { return };
+            end(mtm);
+            // The handler must end the task or iOS kills the app; it runs on the main thread.
+            let expired = block2::RcBlock::new(|| {
+                if let Some(mtm) = MainThreadMarker::new() {
+                    end(mtm);
+                }
+            });
+            let id = UIApplication::sharedApplication(mtm).beginBackgroundTaskWithExpirationHandler(Some(&expired));
+            if id != unsafe { objc2_ui_kit::UIBackgroundTaskInvalid } {
+                TASK.store(id, SeqCst);
+            }
+        }
+
+        pub(super) fn release() {
+            if let Some(mtm) = MainThreadMarker::new() {
+                end(mtm);
+            }
+        }
+
+        fn end(mtm: MainThreadMarker) {
+            let id = TASK.swap(NONE, SeqCst);
+            if id != NONE {
+                UIApplication::sharedApplication(mtm).endBackgroundTask(id);
+            }
+        }
+    }
 }
 
 /// The menubar app (25): tray, app menu, window show/hide, quit handshake and

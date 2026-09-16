@@ -765,8 +765,9 @@ today assumes macOS is re-keyed on `container()`; the unguarded ones in
 
 | rule | where |
 |---|---|
-| `<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">` | `index.html` |
-| shell `h-dvh` (not `h-screen`); `padding: env(safe-area-inset-*)` on `SidebarInset` and the `Sheet` content | `__root.tsx`, `ui/sidebar.tsx`, `ui/sheet.tsx` |
+| `<meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, viewport-fit=cover, interactive-widget=resizes-content">`; `color-scheme` follows the theme (`:root` light, `.dark` dark) so form controls and the iOS keyboard match | `index.html`, `styles.css` |
+| iOS keyboard: WebKit shrinks only the visual viewport, so `lib/viewport.ts` publishes `--visible-band` (layout height, or the band above the keyboard while an editable has focus) and `data-keyboard-open` on `<html>`; full-height shells use `h-band`, and `--safe-bottom` is `0` while the keyboard is open. The native "‹ › Done" accessory bar is removed by building the window in Rust with `with_input_accessory_view_builder(\|_\| None)` (`lib.rs`, `tauri.ios.conf.json` `windows: []`) | `viewport.ts`, `styles.css`, `__root.tsx`, `SettingsDialog.tsx`, `SearchDialog.tsx`, `PairScreen.tsx`, `src/lib.rs` |
+| safe areas as `--safe-{top,right,bottom,left}` on `SidebarInset` and every `Sheet` side; the mobile settings sheet is `top-0 h-band pt-[var(--safe-top)]` with the X in its header row (the absolute one landed on the first row's chevron) | `styles.css`, `__root.tsx`, `ui/sidebar.tsx`, `ui/sheet.tsx`, `SettingsDialog.tsx` |
 | composer pinned bottom with `pb-[max(0.5rem,env(safe-area-inset-bottom))]`; grows to 6 lines on touch (8 on desktop) | `Composer.tsx` |
 | min target `min-h-11 min-w-11` on icon buttons under `pointer-coarse:`; `SidebarMenuButton` height 44 under `pointer-coarse:` | `ui/button.tsx`, `ui/sidebar.tsx` |
 | sheets: `w-full sm:w-[480px]` (approvals, history), `sm:w-[640px]` (prompt, jobs), `sm:w-[560px]` (skills) — mobile full-width slide-up | the five components in §2.2 |
@@ -789,9 +790,18 @@ Nothing above changes a desktop pixel at ≥ 768 px with a fine pointer; the
 
 - Notifications: `tauri-plugin-notification` on iOS for approvals and
   finished turns while the app is backgrounded — same `notifyIfHidden`
-  (`notify.ts`), gated on `document.hidden`. No push service in v0: iOS
-  suspends the socket in the background, so a notification arrives when the
-  app is next foregrounded and the client reloads. `ponytail:` APNs via the
+  (`notify.ts`), gated on `document.hidden`; permission is asked once at
+  launch (`primeNotifications`), since iOS shows the prompt only in the
+  foreground. Backgrounding holds a `UIBackgroundTask` (`lib.rs`
+  `mobile::background`, on tao's `Suspended`/`Resumed`): the socket and the
+  webview keep running for the ~30 s iOS grants, so a turn that finishes
+  right after the user leaves still posts its notification. Beyond that iOS
+  suspends the process and the socket dies without telling the page; on
+  `visibilitychange`/`pageshow` the `RpcClient` reconnects at once when
+  `reconnecting` (backoff skipped, a parked socket dropped) and probes an
+  `open` socket with `info`, `reset()`ing the transport after 5 s of silence.
+  After a reconnect `reload()` marks every transcript unloaded so the chat
+  route refetches when the router remounts. No push service: APNs via the
   relay would need the relay to see something; it cannot. A harness-side
   push through the user's Signal/Slack (`message_user`, 24) is the honest
   route if wanted later.

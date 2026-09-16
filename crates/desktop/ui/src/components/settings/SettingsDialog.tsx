@@ -16,6 +16,7 @@ import {
   ShieldCheck,
   Sparkles,
   Wrench,
+  X,
 } from 'lucide-react'
 import { useState } from 'react'
 import { Harnesses } from '@/components/link/Harnesses'
@@ -32,7 +33,7 @@ import { Shortcuts } from '@/components/settings/Shortcuts'
 import { Skills } from '@/components/settings/Skills'
 import { Tools } from '@/components/settings/Tools'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
-import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet'
+import { Sheet, SheetClose, SheetContent, SheetTitle } from '@/components/ui/sheet'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { useHasNodes } from '@/link/nodes'
 
@@ -102,7 +103,8 @@ export function SettingsDialog({ tab, session, onTab, onClose }: Props) {
   if (mobile) {
     return (
       <Sheet open onOpenChange={(open) => !open && onClose()}>
-        <SheetContent side="bottom" showCloseButton={!pushed} className="h-dvh gap-0 bg-elevated">
+        {/* The X lives in the header row, not the sheet's absolute one: that one lands on the first row's chevron. */}
+        <SheetContent side="bottom" showCloseButton={false} className="top-0 h-band gap-0 bg-elevated pt-[var(--safe-top)]">
           <SheetTitle className="sr-only">Settings</SheetTitle>
           <div className="flex h-12 shrink-0 items-center gap-1 border-b border-border-subtle px-2">
             {pushed ? (
@@ -118,6 +120,10 @@ export function SettingsDialog({ tab, session, onTab, onClose }: Props) {
               <h2 className="px-2 text-lg font-semibold">Settings</h2>
             )}
             {pushed && <span className="font-semibold">{label}</span>}
+            <SheetClose className="ml-auto flex size-11 items-center justify-center rounded-full text-fg-secondary active:bg-layer-3">
+              <X className="size-5" />
+              <span className="sr-only">Close</span>
+            </SheetClose>
           </div>
           {pushed ? (
             <div className="min-h-0 flex-1 overflow-y-auto px-4 pt-4 pb-8">

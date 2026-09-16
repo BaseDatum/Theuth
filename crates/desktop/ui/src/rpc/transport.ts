@@ -6,12 +6,16 @@ export type ConnState = 'connecting' | 'open' | 'reconnecting' | 'closed'
  * reports `reconnecting` whenever it lost the peer without `close()` being called;
  * the client then re-calls `connect()` with backoff. `connect()` may be called
  * again while a previous attempt is pending; it must return that attempt.
+ * `reset()` drops a socket the client has decided is dead (no reply to a probe
+ * after the phone slept) and reports `reconnecting` at once, without waiting for
+ * WebKit's own close handshake.
  */
 export interface Transport {
   connect(): Promise<void>
   send(text: string): void
   onMessage(cb: (text: string) => void): void
   onState(cb: (s: ConnState) => void): void
+  reset(): void
   close(): void
 }
 
@@ -44,15 +48,24 @@ export class LocalTransport implements Transport {
       resolve()
     }
     ws.onmessage = (m) => this.#message(m.data as string)
-    ws.onclose = () => {
-      if (this.#ws !== ws) return
-      this.#ws = null
-      this.#pending = null
-      reject(new Error('connect failed'))
-      if (!this.#closed) this.#state('reconnecting')
-    }
+    ws.onclose = () => this.#lost(ws, reject)
     this.#pending = promise
     return promise
+  }
+
+  #lost(ws: WebSocket, reject?: (e: Error) => void): void {
+    if (this.#ws !== ws) return
+    this.#ws = null
+    this.#pending = null
+    reject?.(new Error('connect failed'))
+    if (!this.#closed) this.#state('reconnecting')
+  }
+
+  reset(): void {
+    const ws = this.#ws
+    if (!ws) return
+    this.#lost(ws)
+    ws.close()
   }
 
   send(text: string): void {

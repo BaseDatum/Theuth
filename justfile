@@ -95,6 +95,12 @@ desktop-check:
 ios-init:
     cd crates/desktop && TAURI_FRONTEND_PATH=ui cargo tauri ios init --ci --config tauri.ios.conf.json
 
+# iOS AppIcon set from the desktop icon (the same mark everywhere). gen/apple is
+# committed, so rerun this after changing icons/icon.png; `ios-init` resets it.
+ios-icons:
+    cd crates/desktop && cargo tauri icon icons/icon.png -o /tmp/wth-icons --ios-color '#000000' \
+      && cp /tmp/wth-icons/ios/*.png gen/apple/Assets.xcassets/AppIcon.appiconset/
+
 # iOS app in dev mode on a simulator/device. tauri.ios.conf.json overlays the bundle
 # id, iOS 17 floor and the universal-link host: `plugins.deep-link.mobile[].host`
 # must be the relay the operator serves /link from (relay.wth.rwx.dev by default).

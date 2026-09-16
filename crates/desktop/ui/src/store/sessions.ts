@@ -126,6 +126,8 @@ type SessionsStore = {
   /** Open or close the live browser dialog. */
   setBrowserLive(id: string, open: boolean): void
   resetLagged(): void
+  /** Forget that any transcript was loaded: the chat route refetches on its next mount. */
+  unload(): void
 }
 
 export type SessionsApi = StoreApi<SessionsStore>
@@ -242,6 +244,11 @@ export const createSessions = (): SessionsApi =>
       },
       resetLagged() {
         set({ lagged: 0 })
+      },
+      unload() {
+        set((st) => ({
+          sessions: Object.fromEntries(Object.entries(st.sessions).map(([id, s]) => [id, { ...s, loaded: false }])),
+        }))
       },
     })),
   )

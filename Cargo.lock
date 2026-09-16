@@ -2882,7 +2882,10 @@ name = "desktop"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "block2",
  "dirs 6.0.0",
+ "objc2",
+ "objc2-ui-kit",
  "portable-pty",
  "serde",
  "serde_json",
