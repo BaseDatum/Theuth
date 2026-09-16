@@ -273,7 +273,7 @@ once per turn and `Turn::direct_tools` builds the direct list from that
 
 ```
 specs = ListTools
-      .filter(|s| (!runtime || s.direct) && (s.name != spawn_subagent || depth < max_depth))
+      .filter(|s| (!(runtime && cfg.runtime_only) || s.direct) && (s.name != spawn_subagent || depth < max_depth))
       + todo::spec()  + repl::spec() if runtime          // loop-local tools, §9, 08 §3.1
       sorted by name
 ```
@@ -283,11 +283,14 @@ mid-turn; a tool registered during a turn (an MCP server connecting, the
 knowledge plugin's tools landing after the registry) is visible on the next
 turn.
 
-With the runtime on (`08-repl.md` §0.4) MCP tools carry `ToolSpec.direct =
-false` (`tools/mcp.rs`) and the `retain(direct)` above drops them: the direct
-list is native tools + `todo` + `python`, and MCP servers connecting or
-flapping no longer touch it. The runtime's tool index lives in the baseline
-and changes at turn boundaries as a rebase.
+With the runtime on (`08-repl.md` §0.4) `ToolSpec.direct` is `Tool::DIRECT`,
+`false` by default: only the tools that talk to the user or to other agents
+(`ask_user`, `message_user`, `show`, `spawn_subagent`, `send_message`) opt in,
+MCP tools never do. The direct list is that floor + `todo` + `python`;
+data-returning tools are runtime functions, so their output lands in a
+variable, and MCP servers connecting or flapping never touch the list. The
+runtime's tool index lives in the baseline and changes at turn boundaries as
+a rebase. `agent.runtime_only: false` keeps every registered tool direct.
 
 `todo` and `python` are **loop-local**: not in the registry, dispatched by
 `Turn::round` itself (`Turn::todo`, `Turn::python`), so they bypass the

@@ -1072,15 +1072,17 @@ impl Turn {
     }
 
     /// This turn's direct tools (07 §5, 08 §0.4, 12 §4), from one `ListTools`
-    /// per turn: registry tools (only `direct` ones when the runtime is on,
-    /// `spawn_subagent` gated by depth) plus the loop-local `todo` and `python`.
-    /// A tool registered mid-turn is visible on the next turn.
+    /// per turn: registry tools (only `direct` ones when the runtime is on and
+    /// `agent.runtime_only`, `spawn_subagent` gated by depth) plus the
+    /// loop-local `todo` and `python`. A tool registered mid-turn is visible
+    /// on the next turn.
     fn direct_tools(&self, specs: Vec<ToolSpec>) -> Vec<Tool> {
         let runtime = self.shared.pool.is_some();
+        let floor = runtime && self.shared.cfg.runtime_only;
         let mut specs: Vec<ToolSpec> = specs
             .into_iter()
             .filter(|s| {
-                (!runtime || s.direct)
+                (!floor || s.direct)
                     && (s.name != <SpawnSubagentTool as tools::Tool>::NAME
                         || self.shared.depth < self.shared.cfg.subagents.max_depth)
             })

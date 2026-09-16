@@ -223,6 +223,7 @@ impl Tool for AskUserTool {
     const RISK: Risk = Risk::ReadOnly;
     type Args = AskArgs;
     const RETURNS: &'static str = "dict[str, str | None]";
+    const DIRECT: bool = true;
 
     fn description(&self) -> String {
         "Ask the user one or more multiple-choice questions and wait for the answers. Use only when \

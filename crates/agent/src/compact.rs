@@ -20,8 +20,10 @@ Reply with text only — do not call tools. Use exactly these headings and short
 ## Open  (in-progress work, unanswered questions, pending approvals)
 ## Next  (the immediate next step, and a short verbatim quote of the last thing you were
          doing so the continuation resumes mid-step rather than restarting)
-## Notes (user preferences, constraints, names and paths to remember, runtime variables you
-         rely on and what they hold, decisions taken and alternatives rejected)
+## Notes (user preferences, constraints, names and paths to remember, decisions taken and
+         alternatives rejected; the Python runtime keeps every variable after this summary -
+         for each name worth reusing say what it holds: type, size, where it came from -
+         so it is reused, not recomputed)
 
 If a previous summary is present at the top of the conversation it is authoritative for the
 earlier history: carry forward what is still true, drop what is finished. Every request the

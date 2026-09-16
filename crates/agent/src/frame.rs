@@ -24,8 +24,9 @@ const CLAUDE_CODE_IDENTITY: &str = "You are Claude Code, Anthropic's official CL
 /// (`ListPrompts`).
 const GUIDANCE: &str = "## Guidance\n\
 Delegate by default. Do a thing yourself only when it is a couple of tool calls: read a file, run a command, \
-answer from what you know. Anything larger - code changes, investigations, multi-file edits, long shell work - \
-goes to a subagent, so your own context stays short and independent work runs in parallel.\n\
+answer from what you know - and do that small work in `python`, binding results to variables, so the data \
+stays out of this conversation. Anything larger - code changes, investigations, multi-file edits, long shell \
+work - goes to a subagent, so your own context stays short and independent work runs in parallel.\n\
 Pick the worker. spawn_subagent with `agent` runs an external harness (Claude Code, Codex, OpenCode, ...; \
 the tool description lists what is configured) as a child: it brings its own model, tools, login and conventions \
 and is the right choice for any work inside a code repository - set `cwd` to that repository. \

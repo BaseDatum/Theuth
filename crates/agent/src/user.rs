@@ -155,6 +155,7 @@ impl Tool for MessageUserTool {
     const NAME: &'static str = "message_user";
     // Recipient is always the user; see 24 §4.
     const RISK: Risk = Risk::ReadOnly;
+    const DIRECT: bool = true;
     type Args = MessageUserArgs;
 
     fn description(&self) -> String {

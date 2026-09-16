@@ -50,13 +50,13 @@ const DISPLAY_CHARS: usize = 2_000;
 /// Summary length in a signature line.
 const SUMMARY_CHARS: usize = 120;
 
-const DESCRIPTION: &str = "Run Python in your persistent runtime. Globals, functions and imports \
-persist across calls and across sessions. Tools are async functions named as listed under \
-\"Runtime\" in the system prompt: `r = await github_search(q=\"x\")`; run several at once with \
-`await asyncio.gather(a(), b())`. The value of the last expression is returned; stdout is \
-returned too, capped — keep data in variables and print summaries. `tools(query)` lists tools, \
-`help(name)` shows one tool's full parameters and description. `/cwd` is the working directory \
-(read-only); write files with `write_file`.";
+const DESCRIPTION: &str = "Run Python in your persistent runtime - your working memory. Globals, functions and \
+imports persist across calls and across sessions. Tools are async functions named as listed under \
+\"Runtime\" in the system prompt; bind every result to a name (`src = await read_file(path=\"x.rs\")`) and \
+work on it in Python; run several at once with `await asyncio.gather(a(), b())`. The value of the last \
+expression is returned; stdout is returned too, capped - print only what you need to decide the next \
+step, never a whole file or result. `tools(query)` lists tools, `help(name)` shows one tool's full \
+parameters and description. `/cwd` is the working directory (read-only); write files with `write_file`.";
 
 const RUNTIME_BLOCK: &str = "## Runtime
 `python` runs a sandboxed Python 3.14 subset (Monty): no third-party packages, no
@@ -68,7 +68,15 @@ the `gather` itself, or await tools one at a time. `shell()` returns the output 
 the command finishes within a few seconds, otherwise `{\"job\": id, \"log\": path}`; the
 result arrives later as <job_result>.
 
-Tools available in the runtime (all `async`; native tools are also direct tool calls):
+The runtime is your working memory; the conversation is for decisions. Every tool call
+is an `await` expression - bind its result to a name (`src = await read_file(path=\"x.rs\")`)
+and work on it in Python: slice, filter, regex, count, diff. Print only what you need to
+decide the next step, never a whole file or a whole result; the full value stays in the
+variable and survives compaction and restart. Use Python for loops, conditions and
+parsing; use `shell()` to run programs, not to write shell programs. Discover a tool's
+full parameters with `help(name)` - the index below is names and signatures only.
+
+Tools available in the runtime (all `async`):
 ";
 
 /// Arguments of the `python` tool.
@@ -803,7 +811,7 @@ impl Repl {
             if !body.is_empty() {
                 body.push('\n');
             }
-            body.push_str("bindings: ");
+            body.push_str("bindings (reuse, do not re-read): ");
             body.push_str(&bound);
             // The rest of the live inventory by name, so nothing is lost track of.
             let rest: Vec<&str> = self
@@ -1370,8 +1378,9 @@ mod tests {
         );
         assert!(out.content.starts_with("line 0000\n"));
         assert!(
-            out.content
-                .ends_with("line 2999\nbindings: n (int) · out1 (str, 30000)"),
+            out.content.ends_with(
+                "line 2999\nbindings (reuse, do not re-read): n (int) · out1 (str, 30000)"
+            ),
             "{}",
             out.content
         );
@@ -1387,7 +1396,7 @@ mod tests {
         let out = repl.run("c4", "r = [1, 2, 3]\nr").await;
         assert_eq!(
             out.content,
-            "→ [1, 2, 3]\nbindings: r (list, 3) · also n, out1"
+            "→ [1, 2, 3]\nbindings (reuse, do not re-read): r (list, 3) · also n, out1"
         );
         assert_eq!(
             repl.render_inventory().as_deref(),
@@ -1434,8 +1443,9 @@ mod tests {
         );
         let out = repl.run("c8", "ls = await list_dir(path='/')\nmsg = ''\ntry:\n    await read_file('/nonexistent')\nexcept RuntimeError as e:\n    msg = str(e)\n(type(ls).__name__, msg[:10])").await;
         assert!(
-            out.content
-                .starts_with("→ ('str', 'read_file:')\nbindings: ls (str, "),
+            out.content.starts_with(
+                "→ ('str', 'read_file:')\nbindings (reuse, do not re-read): ls (str, "
+            ),
             "{}",
             out.content
         );

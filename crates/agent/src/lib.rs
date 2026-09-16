@@ -1075,6 +1075,12 @@ pub struct AgentConfig {
     pub max_tool_rounds: u32,
     /// Max characters of tool output sent back to the model.
     pub max_tool_output_chars: usize,
+    /// With the runtime on, only `python` and the tools that talk to the user
+    /// or to other agents are direct tool definitions; data-returning tools
+    /// are runtime functions (08 §0.4). `false` makes every registered tool a
+    /// direct definition as well - for models weak at code; MCP churn then
+    /// rebases the prefix.
+    pub runtime_only: bool,
     /// Subagent limits and model.
     pub subagents: SubagentsConfig,
     /// Auto-compaction threshold as a fraction of the model's context window;
@@ -1100,6 +1106,7 @@ impl Default for AgentConfig {
             effort: None,
             max_tool_rounds: 32,
             max_tool_output_chars: 32_000,
+            runtime_only: true,
             subagents: SubagentsConfig::default(),
             compact_at: 0.8,
             compact_style: CompactStyle::Summary,

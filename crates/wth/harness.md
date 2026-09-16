@@ -45,6 +45,7 @@ agent:
   effort: null                         # low | high | off | token budget; provider default when unset
   max_tool_rounds: 32
   max_tool_output_chars: 32000
+  runtime_only: true                   # false: every tool is also a direct definition, not just python + user/agent tools
   compact_at: 0.8                      # auto-compact at this fraction of the context window; 0 = off
   compact_style: summary               # summary | cut | snap
   subagents: {model: null, effort: null, max_depth: 1, max_concurrent: 8, max_runtime_secs: 600, reply_timeout_secs: 120}

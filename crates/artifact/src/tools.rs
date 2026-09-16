@@ -45,6 +45,7 @@ impl Tool for ShowTool {
     const NAME: &'static str = "show";
     const RISK: Risk = Risk::ReadOnly;
     const RETURNS: &'static str = "dict";
+    const DIRECT: bool = true;
     type Args = ShowArgs;
 
     fn description(&self) -> String {

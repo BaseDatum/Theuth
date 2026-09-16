@@ -113,6 +113,7 @@ pub(crate) fn supervisor() -> Result<ActorRef<Agents>, &'static str> {
 impl Tool for SpawnSubagentTool {
     const NAME: &'static str = "spawn_subagent";
     const RISK: Risk = Risk::ReadOnly;
+    const DIRECT: bool = true;
     type Args = SpawnSubagentArgs;
 
     fn description(&self) -> String {
@@ -195,6 +196,7 @@ pub struct SendMessageTool {
 impl Tool for SendMessageTool {
     const NAME: &'static str = "send_message";
     const RISK: Risk = Risk::ReadOnly;
+    const DIRECT: bool = true;
     type Args = SendMessageArgs;
 
     fn description(&self) -> String {

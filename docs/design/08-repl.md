@@ -38,8 +38,15 @@ the user's earlier `../codemcp`, and pydantic `monty` 0.0.23 (Rust crates
    human decides.
 4. **Transparent to the user.** MCP servers are added exactly as today
    (`mcp/*.json`, hot-reloaded, gates in `mcp/config.yaml`). The harness
-   decides how their tools reach the model: **MCP tools are runtime
-   functions; native tools are both direct tools and runtime functions.**
+   decides how their tools reach the model: **every tool is a runtime
+   function; the direct list is `python`, `todo`, and the floor of tools
+   that talk to the user or to other agents** (`ask_user`, `message_user`,
+   `show`, `spawn_subagent`, `send_message`: `Tool::DIRECT = true`).
+   Anything that returns data the model would work on is runtime-only, so
+   its output lands in a variable, not the transcript - the prime-agent
+   rule ("one tool, `ipython`"), kept alongside our per-tool signatures.
+   `agent.runtime_only: false` restores every registered tool as a direct
+   definition for models weak at code (MCP churn then rebases the prefix).
    No gateway, no per-server flag, no code-mode switch.
 5. **Output is capped small and nothing is lost.** `python`'s result is
    stdout + the last expression's repr, each capped at 8 000 chars. Oversize
@@ -202,13 +209,14 @@ pub fn spec() -> ToolSpec;      // NAME = "python", Risk::ReadOnly, direct: true
 
 Description (static bytes):
 
-> Run Python in your persistent runtime. Globals, functions and imports
-> persist across calls and across sessions. Tools are async functions
-> named as listed under "Runtime" in the system prompt: `r = await
-> github_search(q="x")`; run several at once with `await
-> asyncio.gather(a(), b())`. The value of the last expression is returned;
-> stdout is returned too, capped — keep data in variables and print
-> summaries. `tools(query)` lists tools, `help(name)` shows one tool's
+> Run Python in your persistent runtime - your working memory. Globals,
+> functions and imports persist across calls and across sessions. Tools are
+> async functions named as listed under "Runtime" in the system prompt; bind
+> every result to a name (`src = await read_file(path="x.rs")`) and work on
+> it in Python; run several at once with `await asyncio.gather(a(), b())`.
+> The value of the last expression is returned; stdout is returned too,
+> capped - print only what you need to decide the next step, never a whole
+> file or result. `tools(query)` lists tools, `help(name)` shows one tool's
 > full parameters and description. `/cwd` is the working directory
 > (read-only); write files with `write_file`.
 
@@ -221,7 +229,15 @@ generators, no class inheritance; stdlib: json re math datetime collections iter
 functools dataclasses pathlib base64 asyncio(gather). State persists, except names
 starting with `_`, which do not carry across cells.
 
-Tools available in the runtime (all `async`; native tools are also direct tool calls):
+The runtime is your working memory; the conversation is for decisions. Every tool call
+is an `await` expression - bind its result to a name (`src = await read_file(path="x.rs")`)
+and work on it in Python: slice, filter, regex, count, diff. Print only what you need to
+decide the next step, never a whole file or a whole result; the full value stays in the
+variable and survives compaction and restart. Use Python for loops, conditions and
+parsing; use `shell()` to run programs, not to write shell programs. Discover a tool's
+full parameters with `help(name)` - the index below is names and signatures only.
+
+Tools available in the runtime (all `async`):
 async def github__search_repos(query: str, page: int | None = None) -> Any  # Search for GitHub repositories.
 async def read_file(path: str, limit: int | None = None, offset: int | None = None) -> str  # Read a text file.
 …
@@ -260,7 +276,7 @@ registered like any other native tool and appear in this index the same way
 ```
 <stdout, capped at 8 000 chars>
 → <repr of the last expression, capped at 8 000 chars>      (omitted when None)
-bindings: r (list, 42) · total (int) · summarise (function) · also n, hits  (names bound by this cell, then the rest of the live inventory by name)
+bindings (reuse, do not re-read): r (list, 42) · total (int) · summarise (function) · also n, hits  (names bound by this cell, then the rest of the live inventory by name)
 ```
 
 - Empty everything → `(no output)`.
