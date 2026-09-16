@@ -30,7 +30,7 @@ use crate::loop_::{
     CancelTurn, CompactNow, HarvestNow, IsRunning, QueuedInputs, RedoTurn, RestartTurn, Session,
     SessionState, SetPendingEffort, SwitchModel, UndoTurn, UserInput, WithdrawInput, text_of,
 };
-use crate::peers::{ListModelsTool, SendMessageTool, SpawnSubagentTool};
+use crate::peers::{ListModelsTool, Nodes, SendMessageTool, SpawnSubagentTool, node_lines};
 use crate::skills::{
     self, AddSkillRepoTool, AddSkillTool, LoadSkillTool, RemoveSkillRepoTool, RemoveSkillTool,
     SyncSkillsTool,
@@ -89,6 +89,8 @@ pub struct Agents {
     approvals: HashMap<SessionId, (ApprovalId, String)>,
     /// Session search index (design doc 26), rebuilt after the rows change.
     search: Arc<search::Cache>,
+    /// Registered nodes (32 §6.5); shared with the `spawn_subagent` tool's description.
+    nodes: Nodes,
     next_msg: u64,
 }
 
@@ -184,7 +186,7 @@ pub struct SpawnChild {
     pub name: Option<String>,
     /// First input of the child.
     pub task: String,
-    /// External harness (`agents.yaml` key); `None` runs a wth subagent (design doc 06 §3.2).
+    /// External harness (`agents.yaml` key) or registered node (32 §6.5); `None` runs a wth subagent (design doc 06 §3.2).
     pub agent: Option<String>,
     /// Working directory for an external harness's `session/new`; default: wth's cwd.
     pub cwd: Option<PathBuf>,
@@ -225,6 +227,25 @@ pub struct PeerContext {
 pub struct Roster {
     /// Session whose children to list.
     pub session: SessionId,
+}
+
+/// `ask` → `()`. Registers (or replaces) a node the model may spawn on with
+/// `spawn_subagent{agent: name}` (32 §6.5; the `RegisterUserSink` shape).
+#[derive(Clone, Debug)]
+pub struct RegisterNode {
+    /// The name the model uses; one namespace with `agents.yaml`.
+    pub name: String,
+    /// The description shown after the name, e.g. `linux · wth 0.4.1` or `macos · offline`.
+    pub describe: String,
+    /// Opens one connection per remote child.
+    pub dialer: Arc<dyn acp::Dialer>,
+}
+
+/// `ask` → `()`. Forgets a node; a live child on it is unaffected.
+#[derive(Clone, Debug)]
+pub struct UnregisterNode {
+    /// The registered name.
+    pub name: String,
 }
 
 /// `tell` (internal): a permit was acquired; run the child's first turn.
@@ -358,9 +379,10 @@ impl Agents {
         Ok((id, actor))
     }
 
-    /// Spawn an [`AcpChild`] for `id` on harness `name`: a new row (model
-    /// column = the harness name) or a resume of `row` with its stored ACP
-    /// session id (design doc 06 §3.2, §3.6).
+    /// Spawn an [`AcpChild`] for `id` on harness `name` — an `agents.yaml`
+    /// entry, else a registered node (32 §6.5) — a new row (model column = the
+    /// harness name) or a resume of `row` with its stored ACP session id
+    /// (design doc 06 §3.2, §3.6).
     async fn acp_session(
         &mut self,
         id: SessionId,
@@ -370,8 +392,19 @@ impl Agents {
         cwd: Option<PathBuf>,
     ) -> anyhow::Result<LiveActor> {
         let entries = acp::load(&self.rt.data_dir)?;
-        let Some(entry) = entries.get(&name) else {
-            anyhow::bail!("{}", acp::unknown(&name, &entries));
+        let node = self
+            .nodes
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&name)
+            .map(|(_, d)| d.clone());
+        let transport = match (entries.get(&name), node) {
+            (Some(entry), _) => acp::Transport::Process(entry.config()),
+            (None, Some(dialer)) => acp::Transport::Dial(dialer),
+            (None, None) => anyhow::bail!(
+                "{}",
+                crate::peers::unknown(&name, &entries, &node_lines(&self.nodes))
+            ),
         };
         let (parent, cwd, resume) = match row {
             Some(row) => (
@@ -393,7 +426,7 @@ impl Agents {
         let actor = LiveActor::Acp(AcpChild::spawn(AcpChild::new(
             id,
             name,
-            entry,
+            transport,
             cwd,
             resume,
             self.store.clone(),
@@ -2054,8 +2087,11 @@ impl Message<ListAcp> for Agents {
             let probes = entries.iter().map(|(name, e)| async move {
                 let mut info = acp_info(name.clone(), e);
                 if m.probe {
-                    let r =
-                        acp::harness::probe(e.config(), logs.join(format!("acp-{name}.log"))).await;
+                    let r = acp::probe(
+                        acp::Transport::Process(e.config()),
+                        logs.join(format!("acp-{name}.log")),
+                    )
+                    .await;
                     info.status = Some(r.status);
                 }
                 info
@@ -2109,6 +2145,28 @@ impl Message<RemoveAcp> for Agents {
         }
         acp::save(data_dir, &entries).map_err(|e| format!("{e:#}"))?;
         acp::registry::remove_bin(data_dir, &m.name).map_err(|e| format!("bin/{}: {e}", m.name))
+    }
+}
+
+impl Message<RegisterNode> for Agents {
+    type Reply = ();
+
+    async fn handle(&mut self, m: RegisterNode, _: &mut Context<Self, Self::Reply>) {
+        self.nodes
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(m.name, (m.describe, m.dialer));
+    }
+}
+
+impl Message<UnregisterNode> for Agents {
+    type Reply = ();
+
+    async fn handle(&mut self, m: UnregisterNode, _: &mut Context<Self, Self::Reply>) {
+        self.nodes
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&m.name);
     }
 }
 
@@ -2494,6 +2552,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             .map_err(|e| tracing::warn!("agent.title_model: {e}"))
             .ok()
     });
+    let nodes = Nodes::default();
     let agents = Agents::spawn_with_mailbox(
         Agents {
             rt: rt.clone(),
@@ -2517,6 +2576,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             last_stop: HashMap::new(),
             approvals: HashMap::new(),
             search: Arc::default(),
+            nodes: nodes.clone(),
             next_msg: 0,
         },
         runtime::subscriber_mailbox(),
@@ -2582,7 +2642,10 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             .ask(RegisterTool(Arc::new(SyncSkillsTool { dir })))
             .await;
         let _ = reg
-            .ask(RegisterTool(Arc::new(SpawnSubagentTool { data_dir })))
+            .ask(RegisterTool(Arc::new(SpawnSubagentTool {
+                data_dir,
+                nodes,
+            })))
             .await;
         let _ = reg
             .ask(RegisterTool(Arc::new(SendMessageTool { cfg })))

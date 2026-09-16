@@ -76,7 +76,9 @@ workspace = true                       # missing_docs = warn, clippy::all = deny
 
 Add `foo = { path = "crates/foo" }` to the root `[workspace.dependencies]`; `members = ["crates/*"]` already globs the directory. New third-party crates go in the root `[workspace.dependencies]` with a one-line comment saying which doc chose them.
 
-**Dependency order is acyclic and downward only**: `runtime ← tools ← knowledge ← agent ← link ← {signal, slack} ← rpc ← tui ← wth` (`rpc` sits above every plugin because `Api` names all their command types; `tui` calls `Api`, so it sits above `rpc`). Depend on another plugin's crate for its *types* (message structs, events, `Tool` trait) — never to call functions on its state. If you need a crate that depends on you, you have the arrow backwards: the thing you want from it is a message — `link` needing `rpc`'s `RpcModule` is the worked case: `link` sits below `rpc` and receives the module (today a factory from `main.rs`; 32 §3.1 makes it a `SetDispatch` message from `rpc`).
+**Dependency order is acyclic and downward only**: `runtime ← tools ← knowledge ← agent ← link ← {signal, slack, nodes} ← rpc ← tui ← wth` (`rpc` sits above every plugin because `Api` names all their command types; `tui` calls `Api`, so it sits above `rpc`). Depend on another plugin's crate for its *types* (message structs, events, `Tool` trait) — never to call functions on its state. If you need a crate that depends on you, you have the arrow backwards: the thing you want from it is a message — `link` needing `rpc`'s `Methods` is the worked case: `link` sits below `rpc` and `rpc` sends it a `SetDispatch` message at start (32 §3.1).
+
+A plugin that needs a *handle* only a higher plugin can build (the link plugin dispatches decrypted requests into `rpc`'s `Methods`) receives it as a message from that plugin at start (`rpc::RpcPlugin::start` → `lookup_when::<link::LinkActor>` → `tell(SetDispatch { … })`), never as a constructor argument from `main.rs` (00 §1.4). The higher plugin already depends on the lower one for its types, so the tell is a downward edge that exists anyway.
 
 ### 3.2 `lib.rs` skeleton
 

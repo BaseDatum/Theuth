@@ -1,10 +1,11 @@
-//! [`AcpChild`]: one external harness process bound to one wth session
-//! (design doc 06 §3.2–§3.5, §8.7). It answers the same [`UserInput`],
-//! [`CancelTurn`] and [`IsRunning`] messages as a native `Session`, so the
-//! supervisor, roster, approvals and `<subagent_result>` delivery are
-//! unchanged; every `session/update` becomes an [`AgentEvent`] on the wth
-//! session id (§3.3), every `session/request_permission` goes through the
-//! registry's one approval gate (§3.4, §8.8).
+//! [`AcpChild`]: one external harness — a process from `agents.yaml` or a
+//! dialled node (32 §6.5) — bound to one wth session (design doc 06 §3.2–§3.5,
+//! §8.7). It answers the same [`UserInput`], [`CancelTurn`] and [`IsRunning`]
+//! messages as a native `Session`, so the supervisor, roster, approvals and
+//! `<subagent_result>` delivery are unchanged; every `session/update` becomes
+//! an [`AgentEvent`] on the wth session id (§3.3), every
+//! `session/request_permission` goes through the registry's one approval gate
+//! (§3.4, §8.8).
 
 use std::collections::VecDeque;
 use std::convert::Infallible;
@@ -12,7 +13,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use acp::{Connect, Harness, Permission, Update};
+use acp::{Connect, Harness, Permission, Transport, Update};
 use agent_client_protocol::schema::v1::{
     PermissionOptionKind, RequestPermissionOutcome, SelectedPermissionOutcome, SessionUpdate,
     ToolCallStatus,
@@ -39,7 +40,7 @@ const CANCEL_GRACE: Duration = Duration::from_secs(5);
 /// starts in `on_start` and dies with the actor.
 pub struct AcpChild {
     id: SessionId,
-    /// `agents.yaml` key; shown as the turn's model.
+    /// `agents.yaml` key or node name; shown as the turn's model.
     name: String,
     store: Store,
     rt: Runtime,
@@ -100,19 +101,19 @@ struct PromptDone(Result<String, String>);
 struct KillTimer(TurnId);
 
 impl AcpChild {
-    /// Bind session `id` to harness `name` (`entry`), prompting in `cwd`;
-    /// `resume` is the stored ACP session id to `session/load`.
+    /// Bind session `id` to harness `name` reached over `transport`, prompting
+    /// in `cwd`; `resume` is the stored ACP session id to `session/load`.
     pub fn new(
         id: SessionId,
         name: String,
-        entry: &acp::Entry,
+        transport: Transport,
         cwd: PathBuf,
         resume: Option<String>,
         store: Store,
         rt: Runtime,
     ) -> Self {
         let connect = Connect {
-            config: entry.config(),
+            transport,
             cwd,
             resume,
             stderr_log: rt.data_dir.join("logs").join(format!("acp-{name}.log")),

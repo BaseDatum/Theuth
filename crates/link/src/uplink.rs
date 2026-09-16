@@ -25,6 +25,8 @@ pub const OP_OPEN: u8 = 0x01;
 pub const OP_DATA: u8 = 0x02;
 /// `CLOSE` both ways, payload `reason:u8`.
 pub const OP_CLOSE: u8 = 0x03;
+/// `PRESENCE` relay→device (31 §4.2): payload `online:u8`, on connect and every change.
+pub const OP_PRESENCE: u8 = 0x04;
 
 /// CLOSE reason: normal.
 pub const CLOSE_NORMAL: u8 = 0;
@@ -58,6 +60,21 @@ pub fn parse(b: &Bytes) -> Option<(u8, u32, Bytes)> {
     }
     let conn = u32::from_le_bytes([b[1], b[2], b[3], b[4]]);
     Some((b[0], conn, b.slice(5..)))
+}
+
+/// `op ‖ payload` as a binary frame on a *device* socket (`/h/<id>` without
+/// `role=harness`, 31 §4.2). What the `nodes` plugin speaks as a device.
+pub fn device_frame(op: u8, payload: &[u8]) -> Message {
+    let mut v = Vec::with_capacity(1 + payload.len());
+    v.push(op);
+    v.extend_from_slice(payload);
+    Message::Binary(v.into())
+}
+
+/// Inverse of [`device_frame`]; `None` when empty.
+pub fn parse_device(b: &Bytes) -> Option<(u8, Bytes)> {
+    let op = *b.first()?;
+    Some((op, b.slice(1..)))
 }
 
 /// Dial, register and serve until `cancel` or the socket drops; then back off
@@ -239,5 +256,18 @@ mod tests {
             (OP_DATA, 0x0102_0304, &b"xyz"[..])
         );
         assert!(parse(&Bytes::from_static(&[1, 2])).is_none());
+    }
+
+    #[test]
+    fn device_frame_round_trip() {
+        let Message::Binary(b) = device_frame(OP_PRESENCE, &[1]) else {
+            panic!("binary")
+        };
+        assert_eq!(b.as_ref(), &[OP_PRESENCE, 1]);
+        let (op, payload) = parse_device(&b).unwrap();
+        assert_eq!((op, payload.as_ref()), (OP_PRESENCE, &[1u8][..]));
+        let (op, payload) = parse_device(&Bytes::from_static(&[OP_CLOSE])).unwrap();
+        assert!(op == OP_CLOSE && payload.is_empty());
+        assert!(parse_device(&Bytes::new()).is_none());
     }
 }

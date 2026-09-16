@@ -212,16 +212,17 @@ Three deliverables, three crates/dirs:
 | part | where | kind | depends on |
 |---|---|---|---|
 | relay | `crates/relay/` → binary `wth-relay` | bin, not a plugin | tokio, axum, tokio-tungstenite, snow, tower-http, rustls (optional) |
-| link plugin | `crates/link/` | plugin (00 §4; `docs/plugins.md`) | runtime, snow, tokio-tungstenite, jsonrpsee (`Methods` only), qrcode — **not** `rpc`: `rpc::Api` returns `LinkStatus` and `bridge.rs` forwards `LinkEvent`, so `rpc → link`; the dispatch handle comes the other way (§6.2) |
+| link plugin | `crates/link/` | plugin (00 §4; `docs/plugins.md`) | runtime, snow, tokio-tungstenite, jsonrpsee (`Methods` only), qrcode — **not** `rpc`: `rpc::Api` returns `LinkStatus` and `bridge.rs` forwards `LinkEvent`, so `rpc → link`; the dispatch handle arrives as a message (§6.2) |
 | device transport + UI | `crates/desktop/ui/src/link/` and responsive changes across `ui/src` | TS | WebCrypto, `@tauri-apps/plugin-barcode-scanner`, `-deep-link` |
 
 Dependency order: `runtime ← link ← signal ← rpc ← tui ← wth`. `link` sits
 with the channel plugins below `rpc` (which names its types, like every
 plugin's); `signal` imports `link::qr` (one QR renderer); `tui` renders
-`link`'s status and QR. The `RpcModule` that `link` dispatches into is
-injected: `wth/main.rs` passes `rpc::methods` as a `MethodsFactory` (§6.2).
-32 §3.1 replaces that with `rpc` sending `SetDispatch { methods, acp }` to
-the `link` actor at start, which takes the handle out of `main.rs` (00 §1.4).
+`link`'s status and QR. The `Methods` that `link` dispatches into is not
+injected by the binary (00 §1.4): `rpc::RpcPlugin::start` sends
+`link::SetDispatch { methods, acp }` to the `link` actor (`lookup_when`,
+like `signal`/`slack` resolve their peers); a conn arriving first waits for
+it (§6.2). `acp` is 32 §4.3's mode-1 server.
 
 ## 4. Protocol
 
@@ -518,8 +519,12 @@ it reloads like the desktop does (25 §6.1 step 6). A conn is `Device.online`
 from handshake to close; `last_seen_ms` is written on close (one write, not
 per frame).
 
-**Methods object**: `rpc::api::Server { events: rpc::bridge::start(rt).await,
-rt }.into_rpc()`. `rpc::bridge::start` becomes idempotent (§14): it
+**Methods object**: `rpc::RpcPlugin::start` builds `rpc::methods(rt)`
+(`rpc::api::Server { events: rpc::bridge::start(rt).await, rt }.into_rpc()`)
+and `tell`s the `link` actor `SetDispatch { methods, acp }`; the actor stores
+it in the shared `Ctx` (`OnceCell` + `Notify`) and every conn task awaits it
+before its first dispatch — no error path, the handshake deadline bounds
+the wait. `rpc::bridge::start` is idempotent (§14): it
 registers the `Bridge` actor as `"rpc.events"` and returns the existing
 sender when one is registered, so a harness running both the rpc and the
 link plugins serializes each event once. `raw_json_request` runs every conn
@@ -890,9 +895,10 @@ ios-bundle relay web-build`.
 
 Deviations from the sections above:
 
-- **`link` does not depend on `rpc`** (§3 table, §6.2 "Methods object"): it
-  takes a `MethodsFactory` (`Arc<dyn Fn(Runtime) -> BoxFuture<Methods>>`),
-  built lazily on the first conn; `wth/main.rs` passes a named fn.
+- **`link` does not depend on `rpc`** (§3 table, §6.2 "Methods object"): the
+  dispatch arrives as a `SetDispatch { methods, acp }` message from
+  `rpc::RpcPlugin::start` (32 §3.1); the `MethodsFactory` that `wth/main.rs`
+  first injected was removed as 00 §1.4 god-wiring.
 - **`LinkPaired` is published before `LinkPairing { None }`** (§6.2 events):
   a listener sees the device before the pending row clears.
 - **The harness's local label in the device store is never overwritten by

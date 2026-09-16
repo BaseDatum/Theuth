@@ -166,3 +166,19 @@ pub struct Revoke {
     /// `Device.id`.
     pub id: String,
 }
+
+/// Serves one ACP conn (32 §4.3) over a record channel; ends when either half closes.
+pub type AcpServe = std::sync::Arc<
+    dyn Fn(runtime::Runtime, crate::RecordChannel) -> futures::future::BoxFuture<'static, ()>
+        + Send
+        + Sync,
+>;
+
+/// `tell` → `()`: rpc hands link what conns dispatch into (mode 0 → `methods`,
+/// mode 1 → `acp`). Sent once by `rpc::RpcPlugin::start`; a second send is ignored.
+pub struct SetDispatch {
+    /// jsonrpsee methods a mode-0 conn's records go through (`raw_json_request`).
+    pub methods: jsonrpsee::Methods,
+    /// ACP agent half a mode-1 conn hands its [`crate::RecordChannel`] to.
+    pub acp: AcpServe,
+}

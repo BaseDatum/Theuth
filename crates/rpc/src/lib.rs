@@ -57,6 +57,19 @@ impl runtime::Plugin for RpcPlugin {
 
     async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()> {
         serve(rt, rt.section("rpc")?).await?;
+        // The link plugin dispatches decrypted device requests into our
+        // methods and serves ACP over mode-1 conns (32 §4.3); it registers
+        // in its own start, so hand it the dispatch once it is there.
+        let rt = rt.clone();
+        tokio::spawn(async move {
+            let methods = methods(rt.clone()).await;
+            if let Some(link) = rt.lookup_when::<link::LinkActor>(link::LINK_ACTOR).await {
+                let acp: link::AcpServe = Arc::new(|rt, ch: link::RecordChannel| {
+                    Box::pin(acp::serve_records(rt, ch.inbound, ch.outbound))
+                });
+                let _ = link.tell(link::SetDispatch { methods, acp }).await;
+            }
+        });
         Ok(())
     }
 }

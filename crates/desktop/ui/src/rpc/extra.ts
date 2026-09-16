@@ -17,6 +17,8 @@ export type Info = {
   subagent_timeout_secs: number
   /** Harness display name (`link.name`, else the hostname; 31 §6.4). */
   name: string
+  /** `std::env::consts::OS`: `macos`, `linux`, … (32 §15 row 2). */
+  platform: string
 }
 
 /** `load_session` reply with paging (`before`/`limit`). */

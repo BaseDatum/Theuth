@@ -13,8 +13,9 @@ import { notifyIfHidden } from '@/lib/notify'
 import { queryKeys, useInvalidateOn } from '@/lib/rpc'
 import { connection, isTauri, onNavigate, onQuitRequested, quitAck, relaunch } from '@/lib/tauri'
 import { LOCAL, hasLocal, hydrateHarnesses, useHarnesses, useNeedsPairing } from '@/link/harnesses'
+import { autoPair, watchNodes } from '@/link/nodes'
 import { LinkTransport } from '@/link/transport'
-import { makeApi } from '@/rpc/api'
+import { type Api, makeApi } from '@/rpc/api'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import { RpcClient, RpcError } from '@/rpc/client'
 import type { WireEvent } from '@/rpc/events'
@@ -46,14 +47,20 @@ async function quit(): Promise<void> {
   await quitAck()
 }
 
+/** `info` into the connection store, then the harness's nodes (32 §8.2). */
+function loadInfo(st: Stores, api: Api): Promise<void> {
+  return api.info().then((info) => {
+    st.connection.getState().setInfo(info)
+    void autoPair(st.id, api)
+  })
+}
+
 /** After a reconnect or `Lagged`: the gap is lost, so refetch what the screen shows (25 §4.3). */
 function reload(st: Stores): void {
   st.sessions.getState().resetLagged()
   void st.qc.invalidateQueries({ queryKey: queryKeys.sessions })
-  void st.connection
-    .getState()
-    .api?.info()
-    .then((info) => st.connection.getState().setInfo(info))
+  const api = st.connection.getState().api
+  if (api) void loadInfo(st, api).catch(() => undefined)
   if (useHarnesses.getState().active === st.id)
     window.dispatchEvent(new Event('wth:reload-session'))
 }
@@ -138,7 +145,7 @@ function boot(st: Stores, make: () => Promise<RpcClient>, signal: AbortSignal): 
             lost = false
             if (shown) toast('Reconnected')
             reload(st)
-          } else api.info().then(conn.setInfo, fail)
+          } else loadInfo(st, api).catch(fail)
         }
       })
       conn.setClient(client, api)
@@ -254,6 +261,7 @@ export function App() {
   const shown = useRef<string | null>(null)
 
   useEffect(() => void hydrateHarnesses(), [])
+  useEffect(watchNodes, [])
 
   // The desktop's own daemon (25's launch path), relaunched on demand from the startup screen.
   useEffect(() => {
@@ -273,10 +281,11 @@ export function App() {
   }, [attempt])
 
   // One LinkTransport client per paired harness; all connect (presence), only the active one subscribes.
+  // A node its parent introduced while offline (`pairedAt: 0`, 32 §8.2) has no client until it pairs.
   useEffect(() => {
     if (!hydrated) return
     for (const h of harnesses) {
-      if (links.has(h.id)) continue
+      if (links.has(h.id) || h.pairedAt === 0) continue
       const ctl = new AbortController()
       links.set(h.id, ctl)
       boot(scope(h.id), async () => new RpcClient(new LinkTransport(h)), ctl.signal)

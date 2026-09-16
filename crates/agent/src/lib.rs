@@ -37,7 +37,7 @@ pub mod todo;
 pub mod user;
 
 pub use compact::CompactStyle;
-pub use supervisor::Agents;
+pub use supervisor::{Agents, RegisterNode, UnregisterNode};
 pub use user::{
     Deliver, MessageUserTool, Outbound, OutboundFile, RegisterUserSink, USER_ACTOR, UserChannels,
     UserSink,

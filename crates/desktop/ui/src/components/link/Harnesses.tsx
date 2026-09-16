@@ -87,6 +87,7 @@ export function Harnesses() {
         {harnesses.length === 0 && <Empty>No harnesses paired.</Empty>}
         {harnesses.map((h, i) => {
           const p = presence[h.id] ?? 'offline'
+          const via = h.parent && harnesses.find((x) => x.id === h.parent)?.name
           return (
             <Row
               key={h.id}
@@ -94,9 +95,10 @@ export function Harnesses() {
                 <span className="flex items-center gap-2">
                   <Dot presence={p} />
                   <Name harness={h} />
+                  {via && <span className="text-[13px] text-fg-tertiary">via {via}</span>}
                 </span>
               }
-              description={`${h.relayHost} · paired ${ago(new Date(h.pairedAt).toISOString())} ago · ${p}`}
+              description={`${h.relayHost} · ${h.pairedAt ? `paired ${ago(new Date(h.pairedAt).toISOString())} ago` : 'not paired yet'} · ${p}`}
             >
               <Button variant="ghost" size="icon-sm" aria-label="Move up" disabled={i === 0} onClick={() => move(i, -1)}>
                 <ArrowUp />

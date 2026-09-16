@@ -543,8 +543,9 @@ New subsystems earn a plugin. `agent/src/lib.rs` re-exports; command structs
 live next to the handler that answers them (12 §8). Dependency order:
 `runtime ← tools ← knowledge ← agent ← link ← {signal, slack} ← rpc ← tui ← wth`
 (`rpc` names `link`'s types like every plugin's; `signal` imports
-`link::qr`; `tui` renders `link`'s status and QR; `wth` hands `link` the
-`rpc::methods` factory until 32 §3.1's `SetDispatch` message replaces it).
+`link::qr`; `tui` renders `link`'s status and QR; `rpc` sends `link` its
+dispatch as a `SetDispatch` message at start, 32 §3.1 — never a handle
+threaded through `wth`).
 
 Workspace dependencies (versions verified 2026-09-09 via `cargo info`):
 

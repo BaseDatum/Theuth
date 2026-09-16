@@ -21,6 +21,7 @@ import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { useApi } from '@/lib/rpc'
 import { LOCAL, useHarnesses } from '@/link/harnesses'
+import { useNodes } from '@/link/nodes'
 import type { Device } from '@/rpc/bindings/Device'
 import type { LinkEvent } from '@/rpc/bindings/LinkEvent'
 import type { LinkStatus } from '@/rpc/bindings/LinkStatus'
@@ -55,6 +56,8 @@ export function Link() {
   const cancelPair = useAction((_: void) => api.link_cancel_pair(), { keys })
   const renameDevice = useAction((v: { id: string; name: string }) => api.link_rename_device(v.id, v.name), { keys })
   const revoke = useAction((id: string) => api.link_revoke_device(id), { keys })
+  // The revoke cascades to the harness's nodes (32 §8.4); the copy says so.
+  const nodes = useNodes().data?.length ?? 0
 
   useEffect(() => {
     const invalidate = () => void qc.invalidateQueries({ queryKey: KEY })
@@ -152,7 +155,7 @@ export function Link() {
       <Section title="Devices">
         {s.devices.length === 0 && <Empty>No device paired yet.</Empty>}
         {s.devices.map((d) => (
-          <DeviceRow key={d.id} device={d} onRename={(name) => renameDevice.mutate({ id: d.id, name })} onRevoke={() => revoke.mutate(d.id)} />
+          <DeviceRow key={d.id} device={d} nodes={nodes} onRename={(name) => renameDevice.mutate({ id: d.id, name })} onRevoke={() => revoke.mutate(d.id)} />
         ))}
       </Section>
       <p className="text-[13px] text-fg-tertiary">
@@ -168,7 +171,7 @@ function Dot({ on }: { on: boolean }) {
 }
 
 /** `expires in m:ss`, ticking once a second; `expired` past `until`. */
-function Countdown({ until }: { until: number }) {
+export function Countdown({ until }: { until: number }) {
   const [now, setNow] = useState(Date.now)
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000)
@@ -184,7 +187,7 @@ function Countdown({ until }: { until: number }) {
 }
 
 /** Text with a pencil; click to edit inline, Enter/blur saves, Escape reverts. */
-function Editable({
+export function Editable({
   value,
   width,
   disabled,
@@ -235,7 +238,7 @@ function Editable({
   )
 }
 
-function DeviceRow({ device: d, onRename, onRevoke }: { device: Device; onRename: (name: string) => void; onRevoke: () => void }) {
+function DeviceRow({ device: d, nodes, onRename, onRevoke }: { device: Device; nodes: number; onRename: (name: string) => void; onRevoke: () => void }) {
   const paired = ago(new Date(Number(d.paired_at_ms)).toISOString())
   const seen = Number(d.last_seen_ms)
   return (
@@ -259,6 +262,7 @@ function DeviceRow({ device: d, onRename, onRevoke }: { device: Device; onRename
             <AlertDialogTitle>Revoke {d.name}?</AlertDialogTitle>
             <AlertDialogDescription>
               Its connection closes now and it cannot reconnect; pairing again needs a new QR scan.
+              {nodes > 0 && ` The same happens on ${nodes === 1 ? 'its node' : `its ${nodes} nodes`}.`}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

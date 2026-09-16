@@ -5,41 +5,54 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use bytes::Bytes;
 use runtime::Runtime;
-use tokio::sync::mpsc;
+use tokio::sync::{Notify, OnceCell, mpsc};
 use tokio_util::sync::CancellationToken;
 
-use crate::MethodsFactory;
 use crate::devices::Devices;
 use crate::identity::Identity;
 use crate::pairing::Pending;
-use crate::types::{LinkConfig, LinkStatus};
+use crate::types::{LinkConfig, LinkStatus, SetDispatch};
 
-/// Everything a conn task needs: the runtime (events), the lazily built
-/// jsonrpsee methods and the mutable [`State`].
+/// Everything a conn task needs: the runtime (events), the dispatch `rpc`
+/// hands over by message (32 §13) and the mutable [`State`].
 pub struct Ctx {
     /// Publishes [`crate::LinkEvent`]s.
     pub rt: Runtime,
-    factory: MethodsFactory,
-    methods: tokio::sync::OnceCell<jsonrpsee::Methods>,
+    dispatch: OnceCell<SetDispatch>,
+    dispatch_set: Notify,
     state: Mutex<State>,
 }
 
 impl Ctx {
     /// Wrap.
-    pub fn new(rt: Runtime, factory: MethodsFactory, state: State) -> Arc<Self> {
+    pub fn new(rt: Runtime, state: State) -> Arc<Self> {
         Arc::new(Self {
             rt,
-            factory,
-            methods: tokio::sync::OnceCell::new(),
+            dispatch: OnceCell::new(),
+            dispatch_set: Notify::new(),
             state: Mutex::new(state),
         })
     }
 
-    /// The methods object, built on first use.
-    pub async fn methods(&self) -> &jsonrpsee::Methods {
-        self.methods
-            .get_or_init(|| (self.factory)(self.rt.clone()))
-            .await
+    /// Store the dispatch; a second call is ignored.
+    pub fn set_dispatch(&self, d: SetDispatch) {
+        if self.dispatch.set(d).is_ok() {
+            self.dispatch_set.notify_waiters();
+        }
+    }
+
+    /// The dispatch, waiting until `rpc` has sent it (the caller's handshake
+    /// deadline bounds the wait).
+    pub async fn dispatch(&self) -> &SetDispatch {
+        loop {
+            // Register before re-checking so a `set` between the check and the
+            // await cannot be missed.
+            let notified = self.dispatch_set.notified();
+            if let Some(d) = self.dispatch.get() {
+                return d;
+            }
+            notified.await;
+        }
     }
 
     /// Lock the state. Never hold across an `await`.

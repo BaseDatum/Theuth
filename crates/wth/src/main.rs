@@ -2,10 +2,10 @@
 //! Also the Python runtime worker: `wth subprocess` (design doc 08 §9, [`worker`]).
 
 mod link_cli;
+mod service;
 mod worker;
 
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
 
 use clap::Parser;
 use figment::Figment;
@@ -68,6 +68,24 @@ struct Cli {
     /// key, waits for the scan, exits). Needs `wth --headless` on this box.
     #[arg(long, conflicts_with_all = ["headless", "serve", "acp", "prompt", "link_signal", "slack_manifest", "slack_setup"])]
     link: bool,
+    /// Install this harness as a background service (launchd LaunchAgent or
+    /// systemd user unit) that runs `wth --headless` through the login shell,
+    /// set `link.enabled: true`, start it, then pair it to your main harness
+    /// as a node (design doc 32 §5.1).
+    #[arg(long, conflicts_with_all = ["headless", "serve", "acp", "prompt", "link_signal", "slack_manifest", "slack_setup", "link", "resume", "uninstall_service"])]
+    install_service: bool,
+    /// Stop and remove the service unit written by --install-service. The data dir is untouched.
+    #[arg(long, conflicts_with_all = ["headless", "serve", "acp", "prompt", "link_signal", "slack_manifest", "slack_setup", "link", "resume"])]
+    uninstall_service: bool,
+    /// Relay WebSocket URL for --install-service (`link.relay`); default: the configured relay.
+    #[arg(long, requires = "install_service")]
+    relay: Option<String>,
+    /// Display name for --install-service (`link.name`); default: hostname.
+    #[arg(long, requires = "install_service")]
+    name: Option<String>,
+    /// --install-service: skip the pairing step after the service starts.
+    #[arg(long, requires = "install_service")]
+    no_pair: bool,
 }
 
 const DEFAULT_CONFIG: &str = "# wth configuration. Every plugin reads its own section.
@@ -120,7 +138,7 @@ agent:
 #   enabled: true            # the OS permission prompts are the consent; actions still ask
 #   max_edge: 1568           # screenshot long edge after logical scaling (~1280 for Anthropic click accuracy)
 
-# link:                      # drive this harness from a phone through the relay (design doc 31). `wth --link` / `/link` pair.
+# link:                      # drive this harness from a phone through the relay (design doc 31). `wth --link` / `/link` pair; `wth --install-service` runs it as a node (32).
 #   enabled: false           # `/link on`, Settings › Link or hand-edit; the uplink dials out, nothing listens
 #   relay: wss://relay.wth.rwx.dev   # self-host: your `wth-relay` URL
 #   name: \"\"                 # display name in the QR and on devices; \"\" → hostname
@@ -229,13 +247,6 @@ fn first_run(data_dir: &Path, config_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// The link plugin's [`link::MethodsFactory`]: the full RPC surface, fed by
-/// the shared event bridge, for in-process dispatch of decrypted requests
-/// (31 §6.2).
-fn link_methods(rt: Runtime) -> Pin<Box<dyn Future<Output = jsonrpsee::Methods> + Send>> {
-    Box::pin(rpc::methods(rt))
-}
-
 fn main() -> anyhow::Result<()> {
     // Before clap, tokio, logging or anything that could touch stdout: the
     // worker's stdout is the protocol channel (08 §9).
@@ -270,6 +281,22 @@ async fn run() -> anyhow::Result<()> {
         .merge(Env::prefixed("WTH_").split("__"));
     if cli.link {
         return link_cli::run(&data_dir, &config).await;
+    }
+    if cli.install_service {
+        return service::install(
+            &data_dir,
+            &config_path,
+            &config,
+            service::Opts {
+                relay: cli.relay,
+                name: cli.name,
+                pair: !cli.no_pair,
+            },
+        )
+        .await;
+    }
+    if cli.uninstall_service {
+        return service::uninstall().await;
     }
 
     // The TUI owns the terminal; logs go to a file.
@@ -346,9 +373,7 @@ async fn run() -> anyhow::Result<()> {
                 channel: cli.headless,
             }),
         ];
-        plugins.push(Box::new(link::LinkPlugin {
-            methods: std::sync::Arc::new(link_methods),
-        }));
+        plugins.push(Box::new(link::LinkPlugin));
         if cli.serve || cli.headless {
             plugins.push(Box::new(rpc::RpcPlugin));
         }

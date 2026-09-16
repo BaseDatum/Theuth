@@ -1,18 +1,20 @@
-//! One external harness process bound to one ACP session (design doc 06 §3.2,
-//! §3.7, §8.1–§8.3). [`Harness::connect`] spawns the process, runs
+//! One external harness bound to one ACP session (design doc 06 §3.2, §3.7,
+//! §8.1–§8.3; 32 §6.5). [`Harness::connect`] opens the [`Transport`] — a
+//! subprocess, or a [`Dialer`]'s line duplex (a node over a link conn) — runs
 //! `initialize` → auth → `session/load` | `session/new`, and hands back a
 //! handle; `session/update` notifications and `session/request_permission`
 //! requests arrive on the caller's channel as [`Update`]s in wire order.
 //!
 //! The SDK connection lives inside one `tokio::spawn`ed future; the child
-//! process (its whole process group) dies when that future ends, which
-//! happens on [`Harness::close`], when the last handle is dropped, or when
-//! the child's stdout hits EOF.
+//! process (its whole process group) or the dialled duplex dies when that
+//! future ends, which happens on [`Harness::close`], when the last handle is
+//! dropped, or when the transport's incoming side hits EOF.
 
 use std::fmt;
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -25,7 +27,7 @@ use agent_client_protocol::schema::v1::{
     SessionNotification, SessionUpdate, StopReason, ToolCallUpdate,
 };
 use agent_client_protocol::{
-    AcpAgent, AcpAgentConfig, Agent, Client, ConnectionTo, JsonRpcRequest, LineDirection,
+    AcpAgent, AcpAgentConfig, Agent, Client, ConnectionTo, JsonRpcRequest, LineDirection, Lines,
     Responder, is_incoming_transport_closed,
 };
 use futures::future::BoxFuture;
@@ -79,17 +81,59 @@ impl Permission {
     }
 }
 
+/// Outgoing half of a [`LineDuplex`]: one JSON-RPC message per `String`, no newline.
+pub type LineSink = Pin<Box<dyn futures::Sink<String, Error = std::io::Error> + Send>>;
+/// Incoming half of a [`LineDuplex`]: one JSON-RPC message per `String`, no newline.
+pub type LineStream = Pin<Box<dyn futures::Stream<Item = std::io::Result<String>> + Send>>;
+
+/// A dialled connection to a harness (32 §4.3): one JSON-RPC message per
+/// `String`, no line framing — the record is the frame.
+pub struct LineDuplex {
+    /// Client → agent.
+    pub outgoing: LineSink,
+    /// Agent → client; the stream ending is the connection closing.
+    pub incoming: LineStream,
+}
+
+/// Opens a fresh [`LineDuplex`] per connection (32 §6.5: one link conn per
+/// remote child). `Err` is the text the model and the user see.
+#[async_trait::async_trait]
+pub trait Dialer: Send + Sync + fmt::Debug {
+    /// Open a new connection.
+    async fn dial(&self) -> Result<LineDuplex, String>;
+}
+
+/// How the harness is reached (32 §6.5).
+#[derive(Debug)]
+pub enum Transport {
+    /// Spawn a process ([`crate::Entry::config`]) and speak ACP on its stdio.
+    Process(AcpAgentConfig),
+    /// Dial a running harness (a node) and speak ACP over the returned duplex.
+    Dial(Arc<dyn Dialer>),
+}
+
+impl Transport {
+    /// The process configuration, for the `login` command line; `None` for a dial.
+    fn config(&self) -> Option<&AcpAgentConfig> {
+        match self {
+            Self::Process(c) => Some(c),
+            Self::Dial(_) => None,
+        }
+    }
+}
+
 /// How to connect.
 pub struct Connect {
-    /// Process launch configuration ([`crate::Entry::config`]).
-    pub config: AcpAgentConfig,
-    /// Working directory for `session/new` / `session/load` (the process itself
-    /// inherits wth's cwd, 06 §8.4).
+    /// Process to spawn or harness to dial.
+    pub transport: Transport,
+    /// Working directory for `session/new` / `session/load` (a process itself
+    /// inherits wth's cwd, 06 §8.4; for a node it is a path on the node).
     pub cwd: PathBuf,
     /// Existing ACP session id to `session/load` when the agent advertises
     /// `loadSession`; else a new session.
     pub resume: Option<String>,
-    /// Where the child's stderr lines are appended.
+    /// Where a child process's stderr lines are appended (created and left
+    /// empty for a dial transport).
     pub stderr_log: PathBuf,
 }
 
@@ -135,6 +179,9 @@ struct Link {
     cx: ConnectionTo<Agent>,
     shutdown: oneshot::Sender<()>,
     done: Option<JoinHandle<Result<(), Error>>>,
+    /// What a clean end of the connection task is called: `process exited`
+    /// for a subprocess, `connection closed` for a dial.
+    closed: &'static str,
 }
 
 /// Why the handshake could not open a session.
@@ -147,27 +194,17 @@ enum Fail {
 }
 
 impl Link {
-    /// Spawn the process and wait for the connection handle.
+    /// Open the transport and wait for the connection handle.
     async fn spawn(
-        config: AcpAgentConfig,
+        transport: Transport,
         stderr_log: &Path,
         tx: UnboundedSender<Update>,
     ) -> Result<Link, String> {
-        let log = Mutex::new(open_log(stderr_log));
-        let agent = AcpAgent::new(config).with_debug(move |line, dir| {
-            if dir == LineDirection::Stderr
-                && let Ok(mut guard) = log.lock()
-                && let Some(f) = guard.as_mut()
-            {
-                let _ = writeln!(f, "{line}");
-            }
-        });
-
         let (cx_tx, cx_rx) = oneshot::channel::<ConnectionTo<Agent>>();
         let (shutdown, shutdown_rx) = oneshot::channel::<()>();
         let notify_tx = tx.clone();
         let permission_tx = tx;
-        let connection = Client
+        let builder = Client
             .builder()
             .on_receive_notification(
                 async move |n: SessionNotification, _cx| {
@@ -195,25 +232,52 @@ impl Link {
                     Ok(())
                 },
                 agent_client_protocol::on_receive_request!(),
-            )
-            .connect_with(agent, |cx: ConnectionTo<Agent>| async move {
-                let _ = cx_tx.send(cx.clone());
-                // The connection (and the child) lives until `close`, the last
-                // handle drop, or the child's stdout EOF.
-                tokio::select! {
-                    _ = shutdown_rx => {}
-                    () = cx.incoming_closed() => {}
+            );
+        let main = |cx: ConnectionTo<Agent>| async move {
+            let _ = cx_tx.send(cx.clone());
+            // The connection (and the child) lives until `close`, the last
+            // handle drop, or the transport's incoming EOF.
+            tokio::select! {
+                _ = shutdown_rx => {}
+                () = cx.incoming_closed() => {}
+            }
+            Ok(())
+        };
+        let log = Mutex::new(open_log(stderr_log));
+        let (connection, closed): (BoxFuture<'static, Result<(), Error>>, &'static str) =
+            match transport {
+                Transport::Process(config) => {
+                    let agent = AcpAgent::new(config).with_debug(move |line, dir| {
+                        if dir == LineDirection::Stderr
+                            && let Ok(mut guard) = log.lock()
+                            && let Some(f) = guard.as_mut()
+                        {
+                            let _ = writeln!(f, "{line}");
+                        }
+                    });
+                    (
+                        Box::pin(builder.connect_with(agent, main)),
+                        "process exited",
+                    )
                 }
-                Ok(())
-            });
+                Transport::Dial(dialer) => {
+                    let duplex = dialer.dial().await?;
+                    let lines = Lines::new(duplex.outgoing, duplex.incoming);
+                    (
+                        Box::pin(builder.connect_with(lines, main)),
+                        "connection closed",
+                    )
+                }
+            };
         let done = tokio::spawn(connection);
         match cx_rx.await {
             Ok(cx) => Ok(Link {
                 cx,
                 shutdown,
                 done: Some(done),
+                closed,
             }),
-            Err(_) => Err(format!("spawn failed: {}", exit_text(done.await))),
+            Err(_) => Err(format!("spawn failed: {}", exit_text(done.await, closed))),
         }
     }
 
@@ -227,7 +291,7 @@ impl Link {
         if is_incoming_transport_closed(&e)
             && let Some(done) = self.done.take()
         {
-            return exit_text(done.await);
+            return exit_text(done.await, self.closed);
         }
         error_text(&e)
     }
@@ -238,7 +302,7 @@ impl Link {
     /// agent-type method when `authenticate`, else [`Fail::Login`].
     async fn open(
         &mut self,
-        config: &AcpAgentConfig,
+        config: Option<&AcpAgentConfig>,
         cwd: &Path,
         resume: Option<String>,
         authenticate: bool,
@@ -295,7 +359,7 @@ impl Link {
 }
 
 impl Harness {
-    /// Spawn the process, `initialize` (client capabilities: no `fs`, no
+    /// Open the transport, `initialize` (client capabilities: no `fs`, no
     /// `terminal`, `auth.terminal: true`; client info `wth`/version), authenticate
     /// per 06 §3.7 (agent-type method → `authenticate` once and retry; only a
     /// terminal-type method → `Err("not logged in — run `<cmd>` in a terminal, then retry")`),
@@ -304,13 +368,14 @@ impl Harness {
     /// model and the user see; on process exit it includes the last stderr lines.
     pub async fn connect(c: Connect, tx: UnboundedSender<Update>) -> Result<Harness, String> {
         let Connect {
-            config,
+            transport,
             cwd,
             resume,
             stderr_log,
         } = c;
-        let mut link = Link::spawn(config.clone(), &stderr_log, tx.clone()).await?;
-        let (session, resumed) = match link.open(&config, &cwd, resume, true).await {
+        let config = transport.config().cloned();
+        let mut link = Link::spawn(transport, &stderr_log, tx.clone()).await?;
+        let (session, resumed) = match link.open(config.as_ref(), &cwd, resume, true).await {
             Ok(s) => s,
             Err(Fail::Login(cmd)) => {
                 return Err(format!(
@@ -319,10 +384,15 @@ impl Harness {
             }
             Err(Fail::Other(why)) => return Err(why),
         };
-        let Link { cx, shutdown, done } = link;
+        let Link {
+            cx,
+            shutdown,
+            done,
+            closed,
+        } = link;
         if let Some(done) = done {
             tokio::spawn(async move {
-                let _ = tx.send(Update::Closed(exit_text(done.await)));
+                let _ = tx.send(Update::Closed(exit_text(done.await, closed)));
             });
         }
         Ok(Harness {
@@ -376,14 +446,15 @@ impl Harness {
     }
 }
 
-/// Spawn, `initialize`, `session/new`, report, close. Never authenticates.
+/// Open, `initialize`, `session/new`, report, close. Never authenticates.
 /// [`PROBE_TIMEOUT`] → `spawn failed: timeout`.
-pub async fn probe(config: AcpAgentConfig, stderr_log: PathBuf) -> ProbeResult {
+pub async fn probe(transport: Transport, stderr_log: PathBuf) -> ProbeResult {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
     let attempt = async {
-        let mut link = Link::spawn(config.clone(), &stderr_log, tx).await?;
-        link.open(&config, &cwd, None, false)
+        let config = transport.config().cloned();
+        let mut link = Link::spawn(transport, &stderr_log, tx).await?;
+        link.open(config.as_ref(), &cwd, None, false)
             .await
             .map_err(|f| match f {
                 Fail::Login(cmd) => format!("login required: {cmd}"),
@@ -415,12 +486,17 @@ fn initialize_request() -> InitializeRequest {
 
 /// The command line the user must run for a terminal-type auth method: our
 /// configured invocation plus the method's `args`, prefixed by its `env`.
-fn login_command(config: &AcpAgentConfig, methods: &[AuthMethod]) -> String {
-    let mut parts: Vec<String> = Vec::new();
+/// Without a process (a dial transport) there is nothing to run here: the
+/// method's name, or `login`.
+fn login_command(config: Option<&AcpAgentConfig>, methods: &[AuthMethod]) -> String {
     let terminal = methods.iter().find_map(|m| match m {
         AuthMethod::Terminal(t) => Some(t),
         _ => None,
     });
+    let Some(config) = config else {
+        return terminal.map_or_else(|| "login".to_owned(), |t| t.name.clone());
+    };
+    let mut parts: Vec<String> = Vec::new();
     if let Some(t) = terminal {
         parts.extend(t.env.iter().map(|(k, v)| format!("{k}={v}")));
     }
@@ -440,10 +516,10 @@ fn stop_reason(s: StopReason) -> String {
         .unwrap_or_else(|| "end_turn".to_owned())
 }
 
-/// What the connection task's result says about the process.
-fn exit_text(r: Result<Result<(), Error>, tokio::task::JoinError>) -> String {
+/// What the connection task's result says about the transport.
+fn exit_text(r: Result<Result<(), Error>, tokio::task::JoinError>, closed: &str) -> String {
     match r {
-        Ok(Ok(())) => "process exited".to_owned(),
+        Ok(Ok(())) => closed.to_owned(),
         Ok(Err(e)) => error_text(&e),
         Err(e) => format!("connection task failed: {e}"),
     }
@@ -503,9 +579,40 @@ mod tests {
             AuthMethod::Terminal(term),
         ];
         assert_eq!(
-            login_command(&config, &methods),
+            login_command(Some(&config), &methods),
             "A=1 codex-acp --acp --login"
         );
-        assert_eq!(login_command(&config, &[]), "codex-acp --acp");
+        assert_eq!(login_command(Some(&config), &[]), "codex-acp --acp");
+        assert_eq!(login_command(None, &methods), "Log in");
+        assert_eq!(login_command(None, &[]), "login");
+    }
+
+    /// A dialer that fails never reaches the SDK: no process, the dial text is the error.
+    #[derive(Debug)]
+    struct Offline;
+
+    #[async_trait::async_trait]
+    impl Dialer for Offline {
+        async fn dial(&self) -> Result<LineDuplex, String> {
+            Err("offline".to_owned())
+        }
+    }
+
+    #[tokio::test]
+    async fn dial_failure_is_the_connect_error() {
+        let dir = std::env::temp_dir().join(format!("wth-acp-dial-{}", std::process::id()));
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let r = Harness::connect(
+            Connect {
+                transport: Transport::Dial(Arc::new(Offline)),
+                cwd: dir.clone(),
+                resume: None,
+                stderr_log: dir.join("acp-offline.log"),
+            },
+            tx,
+        )
+        .await;
+        assert!(r.as_ref().is_err_and(|e| e.contains("offline")), "{r:?}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

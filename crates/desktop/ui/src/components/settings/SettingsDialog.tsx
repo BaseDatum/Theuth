@@ -6,6 +6,7 @@ import {
   KeyRound,
   Keyboard,
   Link2,
+  Network,
   type LucideIcon,
   MessageSquare,
   Monitor,
@@ -24,12 +25,14 @@ import { Computer } from '@/components/settings/Computer'
 import { Connections } from '@/components/settings/Connections'
 import { General } from '@/components/settings/General'
 import { Link } from '@/components/settings/Link'
+import { Nodes } from '@/components/settings/Nodes'
 import { Shortcuts } from '@/components/settings/Shortcuts'
 import { Skills } from '@/components/settings/Skills'
 import { Tools } from '@/components/settings/Tools'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet'
 import { useIsMobile } from '@/hooks/use-mobile'
+import { useHasNodes } from '@/link/nodes'
 
 const TABS = [
   ['general', 'General', Settings2],
@@ -40,6 +43,7 @@ const TABS = [
   ['agents', 'Agents', Bot],
   ['harnesses', 'Harnesses', Server],
   ['link', 'Link', Link2],
+  ['nodes', 'Nodes', Network],
   ['connections', 'Connections', KeyRound],
   ['channels', 'Channels', MessageSquare],
   ['shortcuts', 'Shortcuts', Keyboard],
@@ -70,6 +74,7 @@ function Pane({ tab, session, onClose }: Omit<Props, 'onTab'>) {
       {tab === 'agents' && <Agents />}
       {tab === 'harnesses' && <Harnesses />}
       {tab === 'link' && <Link />}
+      {tab === 'nodes' && <Nodes />}
       {tab === 'connections' && <Connections />}
       {tab === 'channels' && <Channels />}
       {tab === 'shortcuts' && <Shortcuts />}
@@ -85,6 +90,9 @@ function Pane({ tab, session, onClose }: Omit<Props, 'onTab'>) {
 export function SettingsDialog({ tab, session, onTab, onClose }: Props) {
   const mobile = useIsMobile()
   const [pushed, setPushed] = useState(false)
+  // Settings › Nodes only where the harness answers `list_nodes` (32 §8.3).
+  const hasNodes = useHasNodes()
+  const tabs = hasNodes ? TABS : TABS.filter(([id]) => id !== 'nodes')
   const label = TABS.find(([id]) => id === tab)?.[1] ?? 'Settings'
 
   if (mobile) {
@@ -113,7 +121,7 @@ export function SettingsDialog({ tab, session, onTab, onClose }: Props) {
             </div>
           ) : (
             <nav className="min-h-0 flex-1 overflow-y-auto p-2">
-              {TABS.map(([id, tabLabel, Icon]) => (
+              {tabs.map(([id, tabLabel, Icon]) => (
                 <button
                   key={id}
                   type="button"
@@ -144,7 +152,7 @@ export function SettingsDialog({ tab, session, onTab, onClose }: Props) {
         <DialogTitle className="sr-only">Settings</DialogTitle>
         <nav className="flex w-[220px] shrink-0 flex-col gap-0.5 border-r border-border-subtle px-3 pt-5 pb-3">
           <h2 className="mb-3 px-2.5 text-lg font-semibold">Settings</h2>
-          {TABS.map(([id, tabLabel, Icon]) => (
+          {tabs.map(([id, tabLabel, Icon]) => (
             <button
               key={id}
               type="button"

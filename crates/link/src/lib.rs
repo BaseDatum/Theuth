@@ -10,13 +10,16 @@
 //!
 //! Modules: [`identity`] (static key, prologue), [`devices`] (`devices.yaml`),
 //! [`pairing`] (the §4.4 string), [`uplink`] (relay socket, `NK`, demux),
-//! [`conn`] (per-conn `IK`/`IKpsk2` handshake and records), [`state`]
-//! (what those share).
+//! [`conn`] (per-conn `IK`/`IKpsk2` handshake and records, dispatched by mode
+//! — 32 §4.2), [`initiator`] (this harness as a device of another, 32 §4.1),
+//! [`state`] (what those share).
+//!
+//! What a conn dispatches into arrives by message: `rpc` `tell`s
+//! [`SetDispatch`] once at start (32 §13).
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use futures::future::BoxFuture;
 use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
 use runtime::Runtime;
@@ -26,11 +29,13 @@ use tokio_util::sync::CancellationToken;
 pub mod conn;
 pub mod devices;
 pub mod identity;
+pub mod initiator;
 pub mod pairing;
 pub mod state;
 pub mod types;
 pub mod uplink;
 
+pub use conn::RecordChannel;
 pub use types::*;
 
 use devices::Devices;
@@ -38,16 +43,8 @@ use identity::Identity;
 use pairing::Pending;
 use state::{Ctx, State};
 
-/// Builds the jsonrpsee `Methods` a conn dispatches into; called once, lazily,
-/// on the first conn. `main.rs` passes `Arc::new(|rt| Box::pin(rpc::methods(rt)))`.
-pub type MethodsFactory =
-    Arc<dyn Fn(Runtime) -> BoxFuture<'static, jsonrpsee::Methods> + Send + Sync>;
-
 /// The plugin.
-pub struct LinkPlugin {
-    /// See [`MethodsFactory`].
-    pub methods: MethodsFactory,
-}
+pub struct LinkPlugin;
 
 /// Render `text` as a unicode half-block QR code without quiet zone.
 pub fn qr(text: &str) -> String {
@@ -132,6 +129,14 @@ impl Message<Status> for LinkActor {
 
     async fn handle(&mut self, _: Status, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.ctx.lock().status()
+    }
+}
+
+impl Message<SetDispatch> for LinkActor {
+    type Reply = ();
+
+    async fn handle(&mut self, m: SetDispatch, _: &mut Context<Self, Self::Reply>) {
+        self.ctx.set_dispatch(m);
     }
 }
 
@@ -333,7 +338,7 @@ impl runtime::Plugin for LinkPlugin {
             conns: Default::default(),
         };
         let mut actor = LinkActor {
-            ctx: Ctx::new(rt.clone(), self.methods, state),
+            ctx: Ctx::new(rt.clone(), state),
             config_path: rt.data_dir.join("config.yaml"),
             uplink: None,
             pair_timer: None,

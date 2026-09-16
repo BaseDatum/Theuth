@@ -7,8 +7,9 @@
 //! session and depth/peer availability is enforced at call time; per-session
 //! tool visibility is the upgrade path.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use kameo::actor::ActorRef;
@@ -28,7 +29,7 @@ pub struct SpawnSubagentArgs {
     /// Stable peer name (used to address it with send_message); generated when omitted.
     #[serde(default)]
     pub name: Option<String>,
-    /// An external harness from ~/.wth/acp/agents.yaml; default: a wth subagent.
+    /// An external harness from ~/.wth/acp/agents.yaml or a node (another machine running wth); default: a wth subagent.
     #[serde(default)]
     pub agent: Option<String>,
     /// Absolute working directory for an external harness; default: wth's cwd.
@@ -42,18 +43,62 @@ pub struct SpawnSubagentArgs {
     pub effort: Option<String>,
 }
 
+/// Registered nodes (32 §6.5): name → (`describe` line, dialer). Written by
+/// `Agents` on `RegisterNode`/`UnregisterNode`, read live by the tool
+/// description, so the model sees a node the moment it is registered.
+pub(crate) type Nodes = Arc<RwLock<BTreeMap<String, (String, Arc<dyn acp::Dialer>)>>>;
+
 /// Non-blocking delegation to a child session.
 pub struct SpawnSubagentTool {
     /// For `acp/agents.yaml`: the harness names the description offers.
     pub data_dir: PathBuf,
+    /// The nodes the description offers.
+    pub nodes: Nodes,
 }
 
 /// The configured harnesses, empty (and logged) when the file is unreadable.
-fn harnesses(data_dir: &std::path::Path) -> std::collections::BTreeMap<String, acp::Entry> {
+fn harnesses(data_dir: &std::path::Path) -> BTreeMap<String, acp::Entry> {
     acp::load(data_dir).unwrap_or_else(|e| {
         tracing::warn!("acp/agents.yaml: {e:#}");
         Default::default()
     })
+}
+
+/// A snapshot of the registered nodes' `describe` lines, by name.
+pub(crate) fn node_lines(nodes: &Nodes) -> BTreeMap<String, String> {
+    nodes
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .iter()
+        .map(|(n, (d, _))| (n.clone(), d.clone()))
+        .collect()
+}
+
+/// The tool description's node line (32 §7); empty with no nodes.
+pub(crate) fn describe_nodes(nodes: &BTreeMap<String, String>) -> String {
+    if nodes.is_empty() {
+        return String::new();
+    }
+    let items: Vec<String> = nodes.iter().map(|(n, d)| format!("{n} — {d}")).collect();
+    format!(
+        "Nodes (wth on other machines, same tools, their own cwd and credentials): {}",
+        items.join("; ")
+    )
+}
+
+/// [`acp::unknown`] plus the registered node names, when there are any.
+pub(crate) fn unknown(
+    name: &str,
+    entries: &BTreeMap<String, acp::Entry>,
+    nodes: &BTreeMap<String, String>,
+) -> String {
+    let mut s = acp::unknown(name, entries);
+    if !nodes.is_empty() {
+        let names: Vec<&str> = nodes.keys().map(String::as_str).collect();
+        s.push_str("; nodes: ");
+        s.push_str(&names.join(", "));
+    }
+    s
 }
 
 /// The supervisor, or the text the model reads when it is not running.
@@ -82,6 +127,11 @@ impl Tool for SpawnSubagentTool {
             s.push(' ');
             s.push_str(&line);
         }
+        let line = describe_nodes(&node_lines(&self.nodes));
+        if !line.is_empty() {
+            s.push(' ');
+            s.push_str(&line);
+        }
         s
     }
 
@@ -92,8 +142,9 @@ impl Tool for SpawnSubagentTool {
         };
         if let Some(agent) = &args.agent {
             let known = harnesses(&self.data_dir);
-            if !known.contains_key(agent) {
-                return Ok(ToolOutput::err(acp::unknown(agent, &known)));
+            let nodes = node_lines(&self.nodes);
+            if !known.contains_key(agent) && !nodes.contains_key(agent) {
+                return Ok(ToolOutput::err(unknown(agent, &known, &nodes)));
             }
         }
         Ok(
@@ -245,15 +296,28 @@ impl Tool for ListModelsTool {
 mod tests {
     use super::*;
 
+    /// A dialer for the description test: never dialled.
+    #[derive(Debug)]
+    struct NoDial;
+
+    #[async_trait::async_trait]
+    impl acp::Dialer for NoDial {
+        async fn dial(&self) -> Result<acp::LineDuplex, String> {
+            Err("not dialled".to_owned())
+        }
+    }
+
     #[test]
     fn spawn_description_lists_configured_harnesses() {
         let dir = std::env::temp_dir().join(format!("wth-peers-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
         let plain = SpawnSubagentTool {
             data_dir: dir.clone(),
+            nodes: Nodes::default(),
         }
         .description();
         assert!(plain.contains("none configured"));
+        assert!(!plain.contains("Nodes ("));
 
         let mut entries = std::collections::BTreeMap::new();
         entries.insert(
@@ -268,10 +332,51 @@ mod tests {
         acp::save(&dir, &entries).unwrap();
         let with = SpawnSubagentTool {
             data_dir: dir.clone(),
+            nodes: Nodes::default(),
         }
         .description();
         assert!(with.contains("External harnesses: codex"));
         assert!(with.contains("ChatGPT's coding agent"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 32 §7: a registered node is offered after the harness line, sorted by
+    /// name, and an unknown name's error lists it.
+    #[test]
+    fn spawn_description_and_unknown_list_nodes() {
+        let dir = std::env::temp_dir().join(format!("wth-peers-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let nodes = Nodes::default();
+        {
+            let mut w = nodes.write().unwrap_or_else(|p| p.into_inner());
+            w.insert(
+                "mac-mini".into(),
+                (
+                    "macos · offline".into(),
+                    Arc::new(NoDial) as Arc<dyn acp::Dialer>,
+                ),
+            );
+            w.insert(
+                "build-box".into(),
+                (
+                    "linux · wth 0.4.1".into(),
+                    Arc::new(NoDial) as Arc<dyn acp::Dialer>,
+                ),
+            );
+        }
+        let desc = SpawnSubagentTool {
+            data_dir: dir.clone(),
+            nodes: nodes.clone(),
+        }
+        .description();
+        let line = "Nodes (wth on other machines, same tools, their own cwd and credentials): \
+                    build-box — linux · wth 0.4.1; mac-mini — macos · offline";
+        assert!(desc.contains(line), "{desc}");
+        assert!(desc.find("External harnesses").unwrap() < desc.find("Nodes (").unwrap());
+
+        let err = unknown("box", &harnesses(&dir), &node_lines(&nodes));
+        assert!(err.starts_with("unknown agent `box`"), "{err}");
+        assert!(err.ends_with("nodes: build-box, mac-mini"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

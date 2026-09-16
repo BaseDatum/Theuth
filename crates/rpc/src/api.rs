@@ -65,6 +65,9 @@ const NOT_RUNNING: i32 = -32001;
 pub struct Info {
     /// Harness version (`CARGO_PKG_VERSION`).
     pub version: String,
+    /// Host OS (`std::env::consts::OS`: `linux`, `macos`, `windows`, …); a
+    /// parent shows it beside a node's name (32 §6.2).
+    pub platform: String,
     /// `<data_dir>`: config, sqlite, logs, attachments.
     pub data_dir: String,
     /// `agent.model`: the model new sessions start on.
@@ -610,6 +613,7 @@ impl ApiServer for Server {
         };
         Ok(Info {
             version: env!("CARGO_PKG_VERSION").into(),
+            platform: std::env::consts::OS.into(),
             data_dir: self.rt.data_dir.display().to_string(),
             default_model,
             approvals,

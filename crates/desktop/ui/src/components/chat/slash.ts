@@ -123,6 +123,7 @@ export type SettingsTab =
   | 'agents'
   | 'harnesses'
   | 'link'
+  | 'nodes'
   | 'connections'
   | 'channels'
   | 'shortcuts'

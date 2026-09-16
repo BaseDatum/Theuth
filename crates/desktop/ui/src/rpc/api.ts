@@ -19,6 +19,7 @@ import type { McpProgress } from '@/rpc/bindings/McpProgress'
 import type { McpServer } from '@/rpc/bindings/McpServer'
 import type { Meta } from '@/rpc/bindings/Meta'
 import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
+import type { Node } from '@/rpc/bindings/Node'
 import type { Pairing } from '@/rpc/bindings/Pairing'
 import type { Put } from '@/rpc/bindings/Put'
 import type { QueuedInput } from '@/rpc/bindings/QueuedInput'
@@ -60,6 +61,8 @@ export type PermissionStatus = {
  */
 export interface Api {
   add_acp(id: string): Promise<EntryInfo>
+  /** Pair this harness with a node from the key `wth --install-service` printed (32 §6.6); `NodeAdded` follows. */
+  add_node(key: string, name: string | null): Promise<Node>
   add_mcp_repo(url: string, name: string | null): Promise<RepoInfo>
   add_mcp_server(name: string, entry: JsonValue): Promise<McpServer>
   add_provider(name: string, base_url: string, key: string): Promise<ProviderInfo>
@@ -119,6 +122,13 @@ export interface Api {
   link_rename_device(id: string, name: string): Promise<null>
   link_revoke_device(id: string): Promise<null>
   link_status(): Promise<LinkStatus>
+  /** Nodes of this harness (32 §6.6); method-not-found (-32601) on a harness without the `nodes` plugin. */
+  list_nodes(): Promise<Node[]>
+  /** A fresh 31 §4.4 pairing string issued by the node, so a device pairs with it directly (32 §4.4). */
+  invite_node(id: string): Promise<Pairing>
+  /** Drop a node; the user's devices stay paired with it (32 §8.4). */
+  remove_node(id: string): Promise<null>
+  rename_node(id: string, name: string): Promise<null>
   login(provider: string): Promise<string>
   logout(provider: string): Promise<null>
   mcp_login(server: string): Promise<string>
@@ -177,6 +187,7 @@ export const METHODS = [
   'add_acp',
   'add_mcp_repo',
   'add_mcp_server',
+  'add_node',
   'add_provider',
   'add_skill',
   'add_skill_repo',
@@ -193,6 +204,7 @@ export const METHODS = [
   'get_attachment',
   'get_prompt',
   'info',
+  'invite_node',
   'knowledge_delete',
   'knowledge_get',
   'knowledge_harvest',
@@ -217,6 +229,7 @@ export const METHODS = [
   'list_logins',
   'list_mcp',
   'list_models',
+  'list_nodes',
   'list_providers',
   'list_queued',
   'list_sessions',
@@ -235,9 +248,11 @@ export const METHODS = [
   'regenerate',
   'remove_acp',
   'remove_mcp_server',
+  'remove_node',
   'remove_provider',
   'remove_skill',
   'remove_skill_repo',
+  'rename_node',
   'rename_session',
   'resolve_approval',
   'search_sessions',

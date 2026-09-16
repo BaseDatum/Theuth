@@ -1,6 +1,8 @@
 //! One relay conn: responder handshake (IK, falling back to IKpsk2 while a
-//! pairing is pending), then Noise transport records carrying JSON-RPC
-//! (31 §4.3, §6.2).
+//! pairing is pending), then Noise transport records dispatched by the mode
+//! byte in IK message 1 (31 §4.3, §6.2; 32 §4.2): mode 0 carries JSON-RPC
+//! into `raw_json_request`, mode 1 hands the records to the ACP agent half
+//! (32 §4.3).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -30,11 +32,11 @@ const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(10);
 const SUB_BUF: usize = 4096;
 
 /// IKpsk2 msg1 payload.
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PairHello {
     /// Device display name.
     pub name: String,
-    /// `ios` | `macos` | `web` | …
+    /// `ios` | `macos` | `web` | `wth` | …
     pub platform: String,
 }
 
@@ -51,6 +53,16 @@ struct SessionHello<'a> {
     version: &'static str,
 }
 
+/// Both halves of a mode-1 conn as the ACP agent sees them (32 §4.3). One
+/// reassembled JSON-RPC message per item, no trailing newline, UTF-8 bytes.
+/// Dropping the conn closes both; the ACP future ends on either.
+pub struct RecordChannel {
+    /// Device → harness.
+    pub inbound: mpsc::Receiver<Vec<u8>>,
+    /// Harness → device.
+    pub outbound: mpsc::Sender<Vec<u8>>,
+}
+
 /// Outcome of reading msg1.
 pub enum Handshake {
     /// Known device: continue as a session.
@@ -61,6 +73,8 @@ pub enum Handshake {
         key: [u8; 32],
         /// msg2 to send.
         msg2: Vec<u8>,
+        /// Conn mode from the msg1 payload (32 §4.2); empty payload → 0.
+        mode: u8,
     },
     /// Pairing: the row is written after the first record decrypts.
     Pair {
@@ -79,8 +93,9 @@ fn static_of(hs: &snow::HandshakeState) -> Option<[u8; 32]> {
     hs.get_remote_static()?.try_into().ok()
 }
 
-/// Read `msg1` as IK; if it authenticates a known static → session; else, with
-/// `psk`, re-read it as IKpsk2 → pairing; else `None` (CLOSE 3).
+/// Read `msg1` as IK; if it authenticates a known static → session (payload
+/// `[]` or `[mode]`; anything longer is refused); else, with `psk`, re-read it
+/// as IKpsk2 → pairing; else `None` (CLOSE 3).
 pub fn respond(
     msg1: &[u8],
     identity: &Identity,
@@ -98,10 +113,15 @@ pub fn respond(
         .prologue(&prologue)
         .ok()?
         .build_responder()
-        && hs.read_message(msg1, &mut payload).is_ok()
+        && let Ok(n) = hs.read_message(msg1, &mut payload)
         && let Some(key) = static_of(&hs)
         && known(&key)
     {
+        let mode = match &payload[..n] {
+            [] => 0,
+            [mode] => *mode,
+            _ => return None,
+        };
         let hello = serde_json::to_vec(&SessionHello {
             name,
             version: env!("CARGO_PKG_VERSION"),
@@ -113,6 +133,7 @@ pub fn respond(
             transport: hs.into_transport_mode().ok()?,
             key,
             msg2,
+            mode,
         });
     }
 
@@ -194,6 +215,24 @@ impl Conn {
             .send(uplink::frame(uplink::OP_CLOSE, self.id, &[reason]))
             .await;
     }
+
+    /// Encrypt one JSON-RPC message as records and send them as `DATA`.
+    async fn write_records(
+        &self,
+        transport: &mut TransportState,
+        text: &[u8],
+        buf: &mut [u8],
+    ) -> bool {
+        for rec in split(text) {
+            let Ok(n) = transport.write_message(&rec, buf) else {
+                return false;
+            };
+            if !self.send(buf[..n].to_vec()).await {
+                return false;
+            }
+        }
+        true
+    }
 }
 
 /// Run the conn to completion. Publishes `LinkDevice`/`LinkPaired`/`LinkPairing`;
@@ -226,71 +265,39 @@ pub async fn run(mut c: Conn) {
         });
         (hs, psk)
     };
-    let (mut transport, key, mut pending, msg2) = match hs {
+    let (mut transport, key, pending, msg2, mode) = match hs {
         Some(Handshake::Session {
             transport,
             key,
             msg2,
-        }) => (transport, key, None, msg2),
+            mode,
+        }) => (transport, key, None, msg2, mode),
         Some(Handshake::Pair {
             transport,
             key,
             hello,
             msg2,
-        }) => (transport, key, Some(hello), msg2),
+        }) => (transport, key, Some(hello), msg2, 0),
         None => return c.close(CLOSE_REFUSED).await,
     };
     if !c.send(msg2).await {
         return;
     }
-    let mut session = false;
     if pending.is_none() {
         mark_online(&c, &key).await;
-        session = true;
     }
 
-    let (resp_tx, mut resp_rx) = mpsc::channel::<Box<JsonRawValue>>(256);
-    let mut asm = Reassembler::default();
-    let mut buf = vec![0u8; MAX_MSG];
-    let mut first = true;
-    let first_deadline = tokio::time::sleep_until(deadline);
-    tokio::pin!(first_deadline);
-
-    loop {
-        tokio::select! {
-            _ = c.cancel.cancelled() => { c.close(CLOSE_NORMAL).await; break }
-            _ = &mut first_deadline, if first => { c.close(CLOSE_REFUSED).await; break }
-            m = c.inbound.recv() => {
-                let Some(bytes) = m else { break };
-                let Ok(n) = transport.read_message(&bytes, &mut buf) else {
-                    c.close(CLOSE_REFUSED).await;
-                    break;
-                };
-                first = false;
-                if let Some(hello) = pending.take() {
-                    if !commit_pairing(&c, &key, hello, psk).await {
-                        c.close(CLOSE_REFUSED).await;
-                        break;
-                    }
-                    session = true;
-                }
-                if let Some(text) = asm.push(&buf[..n]) {
-                    let ctx = c.ctx.clone();
-                    let tx = resp_tx.clone();
-                    tokio::spawn(dispatch(ctx, text, tx));
-                }
-            }
-            r = resp_rx.recv() => {
-                let Some(raw) = r else { break };
-                let mut ok = true;
-                for rec in split(raw.get().as_bytes()) {
-                    let Ok(n) = transport.write_message(&rec, &mut buf) else { ok = false; break };
-                    if !c.send(buf[..n].to_vec()).await { ok = false; break }
-                }
-                if !ok { break }
-            }
+    let session = match mode {
+        0 => run_api(&mut c, &mut transport, &key, pending, psk, deadline).await,
+        1 => {
+            run_acp(&mut c, &mut transport, deadline).await;
+            true
         }
-    }
+        _ => {
+            c.close(CLOSE_REFUSED).await;
+            true
+        }
+    };
 
     let (was_session, still_online) = {
         let mut st = c.ctx.lock();
@@ -313,6 +320,103 @@ pub async fn run(mut c: Conn) {
                 online: still_online,
             })
             .await;
+    }
+}
+
+/// Mode 0 (31 §6.2): records are JSON-RPC requests into `raw_json_request`;
+/// a pairing conn enrols the device on its first record. Returns whether the
+/// conn became a session.
+async fn run_api(
+    c: &mut Conn,
+    transport: &mut TransportState,
+    key: &[u8; 32],
+    mut pending: Option<PairHello>,
+    psk: Option<[u8; 32]>,
+    deadline: Instant,
+) -> bool {
+    let mut session = pending.is_none();
+    let (resp_tx, mut resp_rx) = mpsc::channel::<Box<JsonRawValue>>(256);
+    let mut asm = Reassembler::default();
+    let mut buf = vec![0u8; MAX_MSG];
+    let mut first = true;
+    let first_deadline = tokio::time::sleep_until(deadline);
+    tokio::pin!(first_deadline);
+
+    loop {
+        tokio::select! {
+            _ = c.cancel.cancelled() => { c.close(CLOSE_NORMAL).await; break }
+            _ = &mut first_deadline, if first => { c.close(CLOSE_REFUSED).await; break }
+            m = c.inbound.recv() => {
+                let Some(bytes) = m else { break };
+                let Ok(n) = transport.read_message(&bytes, &mut buf) else {
+                    c.close(CLOSE_REFUSED).await;
+                    break;
+                };
+                first = false;
+                if let Some(hello) = pending.take() {
+                    if !commit_pairing(c, key, hello, psk).await {
+                        c.close(CLOSE_REFUSED).await;
+                        break;
+                    }
+                    session = true;
+                }
+                if let Some(text) = asm.push(&buf[..n]) {
+                    let ctx = c.ctx.clone();
+                    let tx = resp_tx.clone();
+                    tokio::spawn(dispatch(ctx, text, tx));
+                }
+            }
+            r = resp_rx.recv() => {
+                let Some(raw) = r else { break };
+                if !c.write_records(transport, raw.get().as_bytes(), &mut buf).await { break }
+            }
+        }
+    }
+    session
+}
+
+/// Mode 1 (32 §4.3): hand a [`RecordChannel`] to the ACP agent half and pump
+/// records both ways until cancel, relay EOF or the ACP future drops either
+/// half. Waiting for `SetDispatch` counts against the handshake deadline.
+async fn run_acp(c: &mut Conn, transport: &mut TransportState, deadline: Instant) {
+    let acp = tokio::select! {
+        _ = c.cancel.cancelled() => return c.close(CLOSE_NORMAL).await,
+        d = tokio::time::timeout_at(deadline, c.ctx.dispatch()) => match d {
+            Ok(d) => d.acp.clone(),
+            Err(_) => return c.close(CLOSE_REFUSED).await,
+        },
+    };
+    let (in_tx, inbound) = mpsc::channel::<Vec<u8>>(256);
+    let (outbound, mut out_rx) = mpsc::channel::<Vec<u8>>(256);
+    tokio::spawn(acp(c.ctx.rt.clone(), RecordChannel { inbound, outbound }));
+
+    let mut asm = Reassembler::default();
+    let mut buf = vec![0u8; MAX_MSG];
+    let mut first = true;
+    let first_deadline = tokio::time::sleep_until(deadline);
+    tokio::pin!(first_deadline);
+
+    loop {
+        tokio::select! {
+            _ = c.cancel.cancelled() => { c.close(CLOSE_NORMAL).await; break }
+            _ = &mut first_deadline, if first => { c.close(CLOSE_REFUSED).await; break }
+            m = c.inbound.recv() => {
+                let Some(bytes) = m else { break };
+                let Ok(n) = transport.read_message(&bytes, &mut buf) else {
+                    c.close(CLOSE_REFUSED).await;
+                    break;
+                };
+                first = false;
+                if let Some(rec) = asm.push(&buf[..n]) && in_tx.send(rec).await.is_err() {
+                    c.close(CLOSE_NORMAL).await;
+                    break;
+                }
+            }
+            r = out_rx.recv() => {
+                let Some(text) = r else { c.close(CLOSE_NORMAL).await; break };
+                if !c.write_records(transport, &text, &mut buf).await { break }
+            }
+        }
     }
 }
 
@@ -382,7 +486,8 @@ async fn dispatch(ctx: Arc<Ctx>, text: Vec<u8>, tx: mpsc::Sender<Box<JsonRawValu
         let _ = tx.send(parse_error()).await;
         return;
     };
-    match ctx.methods().await.raw_json_request(&text, SUB_BUF).await {
+    let methods = &ctx.dispatch().await.methods;
+    match methods.raw_json_request(&text, SUB_BUF).await {
         Ok((resp, mut rx)) => {
             if tx.send(resp).await.is_err() {
                 return;
@@ -520,11 +625,12 @@ mod tests {
             mut transport,
             key,
             msg2,
+            mode,
         }) = respond(&msg1[..n], &harness, "Sky", |k| k == &dpub, Some(&psk))
         else {
             panic!("expected session");
         };
-        assert_eq!(key, dpub);
+        assert_eq!((key, mode), (dpub, 0));
         let n = dev.read_message(&msg2, &mut buf).unwrap();
         let v: serde_json::Value = serde_json::from_slice(&buf[..n]).unwrap();
         assert_eq!(v["name"], "Sky");
