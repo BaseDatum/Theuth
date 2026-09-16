@@ -1,5 +1,6 @@
 //! The store: `<data_dir>/artifacts/` blobs by content hash plus the
-//! `artifacts.sqlite` index (35 §3.3–§3.4). Truth is the index; blobs
+//! `<data_dir>/artifacts.sqlite` index beside it (35 §3.3–§3.4; the
+//! `knowledge/` + `knowledge.sqlite` layout). Truth is the index; blobs
 //! without a row are swept at start.
 
 use std::collections::HashSet;
@@ -19,7 +20,7 @@ use crate::{Artifact, ArtifactShown, Kind, MAX_BYTES, svg};
 
 /// Directory under `data_dir`.
 pub const DIR: &str = "artifacts";
-/// Index file name inside [`DIR`].
+/// Index file name, beside [`DIR`] in `data_dir`.
 pub const DB: &str = "artifacts.sqlite";
 
 /// What one `show` produced: the record plus the numbers its receipt needs.
@@ -74,6 +75,24 @@ fn blob_name(id: &str, name: &str) -> String {
     }
 }
 
+/// Document title for a markdown body: the front matter `title:` when there is
+/// one (the same key the PDF template prints), else the first `#` heading.
+fn doc_title(text: &str) -> Option<String> {
+    front_matter_title(text).or_else(|| first_heading(text))
+}
+
+fn front_matter_title(text: &str) -> Option<String> {
+    let mut lines = text.lines();
+    if lines.next()?.trim_end() != "---" {
+        return None;
+    }
+    lines
+        .take_while(|l| l.trim_end() != "---")
+        .find_map(|l| l.strip_prefix("title:"))
+        .map(|t| t.trim().trim_matches(['"', '\'']).to_owned())
+        .filter(|t| !t.is_empty())
+}
+
 fn first_heading(text: &str) -> Option<String> {
     text.lines().find_map(|l| {
         let l = l.trim_start();
@@ -92,11 +111,11 @@ fn count_lines(bytes: &[u8]) -> usize {
 }
 
 impl State {
-    /// Create `<data_dir>/artifacts/`, open the index, run migrations.
+    /// Create `<data_dir>/artifacts/`, open `<data_dir>/artifacts.sqlite`, run migrations.
     pub async fn open(data_dir: &Path, rt: Runtime, fonts: Vec<PathBuf>) -> anyhow::Result<Self> {
         let dir = data_dir.join(DIR);
         std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
-        let db = dir.join(DB);
+        let db = data_dir.join(DB);
         let opts = SqliteConnectOptions::new()
             .filename(&db)
             .create_if_missing(true)
@@ -284,7 +303,7 @@ impl State {
         };
         let title = args
             .title
-            .or_else(|| text_for_title.and_then(first_heading))
+            .or_else(|| text_for_title.and_then(doc_title))
             .unwrap_or_else(|| name.clone());
 
         let id = sha16(&bytes);
@@ -303,14 +322,7 @@ impl State {
             None => None,
         };
 
-        let (count,): (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM artifacts WHERE session = ? AND name = ?")
-                .bind(session.to_string())
-                .bind(&name)
-                .fetch_one(&self.pool)
-                .await
-                .map_err(|e| format!("{name}: index: {e}"))?;
-        let artifact = Artifact {
+        let mut artifact = Artifact {
             mime: kind::mime(&name),
             id,
             session,
@@ -319,7 +331,7 @@ impl State {
             title,
             kind,
             bytes: bytes.len() as u64,
-            version: u32::try_from(count).unwrap_or_default() + 1,
+            version: 0,
             path,
             source: source_file.as_deref().map(|s| self.dir.join(s)),
             preview: preview_file.as_deref().map(|p| self.dir.join(p)),
@@ -327,9 +339,13 @@ impl State {
             origin,
             created_at: chrono::Utc::now().timestamp(),
         };
-        // Only `COLS` (a const) is interpolated; every value is bound.
-        sqlx::query(sqlx::AssertSqlSafe(format!(
-            "INSERT OR REPLACE INTO artifacts ({COLS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+        // The version is assigned inside the INSERT so two parallel `show`s of one
+        // name (one assistant message, `Show` runs off the mailbox) cannot both read
+        // the same count. Only `COLS` (a const) is interpolated; every value is bound.
+        let (version,): (i64,) = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "INSERT OR REPLACE INTO artifacts ({COLS}) VALUES (?,?,?,?,?,?,?,?,\
+             (SELECT COUNT(*) + 1 FROM artifacts WHERE session = ? AND name = ? AND call_id != ?),\
+             ?,?,?,?,?) RETURNING version"
         )))
         .bind(&artifact.call_id)
         .bind(&artifact.id)
@@ -339,7 +355,9 @@ impl State {
         .bind(artifact.kind.as_str())
         .bind(&artifact.mime)
         .bind(i64::try_from(artifact.bytes).unwrap_or(i64::MAX))
-        .bind(i64::from(artifact.version))
+        .bind(artifact.session.to_string())
+        .bind(&artifact.name)
+        .bind(&artifact.call_id)
         .bind(source_file)
         .bind(preview_file)
         .bind(artifact.pages.map(i64::from))
@@ -350,9 +368,10 @@ impl State {
                 .map(|p| p.to_string_lossy().into_owned()),
         )
         .bind(artifact.created_at)
-        .execute(&self.pool)
+        .fetch_one(&self.pool)
         .await
         .map_err(|e| format!("{}: index: {e}", artifact.name))?;
+        artifact.version = u32::try_from(version).unwrap_or_default();
 
         tracing::info!(
             target: "artifact",
@@ -374,18 +393,19 @@ impl State {
         Ok(Shown { artifact, receipt })
     }
 
-    async fn select(&self, sessions: &[SessionId]) -> anyhow::Result<Vec<Artifact>> {
-        if sessions.is_empty() {
+    /// `None` → every row; `Some(&[])` → none.
+    async fn select(&self, sessions: Option<&[SessionId]>) -> anyhow::Result<Vec<Artifact>> {
+        if sessions.is_some_and(<[_]>::is_empty) {
             return Ok(Vec::new());
         }
         // Only `COLS` (a const) and a `?` list sized to `sessions` are interpolated; ids are bound.
-        let sql = format!(
-            "SELECT {COLS} FROM artifacts WHERE session IN ({}) \
-             ORDER BY created_at DESC, rowid DESC",
-            vec!["?"; sessions.len()].join(",")
-        );
+        let where_ = sessions.map_or(String::new(), |s| {
+            format!("WHERE session IN ({})", vec!["?"; s.len()].join(","))
+        });
+        let sql =
+            format!("SELECT {COLS} FROM artifacts {where_} ORDER BY created_at DESC, rowid DESC");
         let mut q = sqlx::query_as::<_, Row>(sqlx::AssertSqlSafe(sql));
-        for s in sessions {
+        for s in sessions.unwrap_or_default() {
             q = q.bind(s.to_string());
         }
         q.fetch_all(&self.pool)
@@ -395,15 +415,19 @@ impl State {
             .collect()
     }
 
-    /// The session's artifacts, newest first. `descendants` adds every
-    /// session under it, asked from the agent supervisor
-    /// ([`agent::ListAgents`]); when the agent is absent only the session's
-    /// own rows are returned.
+    /// Artifacts newest first. `Some(session)` → that session's rows;
+    /// `descendants` adds every session under it, asked from the agent
+    /// supervisor ([`agent::ListAgents`]); when the agent is absent only the
+    /// session's own rows are returned. `None` → every session (the
+    /// explorer); `descendants` is moot.
     pub async fn list(
         &self,
-        session: SessionId,
+        session: Option<SessionId>,
         descendants: bool,
     ) -> anyhow::Result<Vec<Artifact>> {
+        let Some(session) = session else {
+            return self.select(None).await;
+        };
         let mut sessions = vec![session];
         if descendants
             && let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
@@ -411,7 +435,7 @@ impl State {
         {
             sessions.extend(tree.into_iter().map(|a| a.id));
         }
-        self.select(&sessions).await
+        self.select(Some(&sessions)).await
     }
 
     /// Copy the blob of `id` to `dest` (parent created). `Err` when `dest`
@@ -541,10 +565,39 @@ mod tests {
         assert_eq!(a.artifact.kind, Kind::Markdown);
         assert_eq!(a.receipt.lines, Some(3));
         assert_eq!(blobs(&s.dir), [format!("{}.md", a.artifact.id)]);
-        let list = s.list(sess, false).await.unwrap();
+        let list = s.list(Some(sess), false).await.unwrap();
         assert_eq!(list.len(), 2);
         assert_eq!(list[0].call_id, "c2");
         assert_eq!(list[0].path, a.artifact.path);
+    }
+
+    #[test]
+    fn title_prefers_front_matter_then_heading() {
+        assert_eq!(
+            doc_title("---\ntitle: \"Quarterly summary\"\ntoc: true\n---\n# Executive Overview\n")
+                .as_deref(),
+            Some("Quarterly summary")
+        );
+        assert_eq!(
+            doc_title("---\ntoc: true\n---\n# Overview\n").as_deref(),
+            Some("Overview")
+        );
+        assert_eq!(doc_title("plain text\n"), None);
+    }
+
+    /// Two `show`s of one name in one assistant message run concurrently (the
+    /// actor answers `Show` off its mailbox); the version must still be 1 then 2.
+    #[tokio::test]
+    async fn parallel_shows_of_one_name_get_distinct_versions() {
+        let (s, _d) = open().await;
+        let sess = SessionId::new();
+        let (a, b) = tokio::join!(
+            s.show(sess, "c1".into(), content("notes.md", "one\n")),
+            s.show(sess, "c2".into(), content("notes.md", "two\n")),
+        );
+        let mut versions = [a.unwrap().artifact.version, b.unwrap().artifact.version];
+        versions.sort_unstable();
+        assert_eq!(versions, [1, 2]);
     }
 
     #[tokio::test]
@@ -582,7 +635,7 @@ mod tests {
             s.show(sess, "c".into(), args).await.unwrap_err(),
             "content requires name"
         );
-        assert!(s.list(sess, false).await.unwrap().is_empty());
+        assert!(s.list(Some(sess), false).await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -616,7 +669,7 @@ mod tests {
         );
 
         s.delete_session(sess).await.unwrap();
-        assert!(s.list(sess, false).await.unwrap().is_empty());
+        assert!(s.list(Some(sess), false).await.unwrap().is_empty());
         assert_eq!(s.sweep().await.unwrap(), 2);
         assert!(blobs(&s.dir).is_empty());
     }

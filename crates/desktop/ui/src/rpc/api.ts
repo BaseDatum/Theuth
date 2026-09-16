@@ -108,8 +108,8 @@ export interface Api {
   list_acp(probe: boolean): Promise<EntryInfo[]>
   list_acp_registry(): Promise<RegistryAgent[]>
   list_agents(session: SessionId): Promise<AgentInfo[]>
-  /** The session's artifacts, newest first; `descendants` widens to its subtree (35 §3.5). */
-  list_artifacts(session: SessionId, descendants: boolean | null): Promise<Artifact[]>
+  /** Artifacts newest first: one session's (`descendants` widens to its subtree) or, with `null`, every session's (35 §3.5). */
+  list_artifacts(session: SessionId | null, descendants?: boolean | null): Promise<Artifact[]>
   list_jobs(session: SessionId): Promise<JobView[]>
   list_logins(): Promise<LoginInfo[]>
   list_mcp(session: SessionId | null): Promise<McpServer[]>

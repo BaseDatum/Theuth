@@ -168,12 +168,13 @@ pub struct Show {
     pub args: ShowArgs,
 }
 
-/// `ask` → `Vec<Artifact>`, newest first; `descendants` widens to the
-/// session's subtree (asked from the agent supervisor).
+/// `ask` → `Vec<Artifact>`, newest first. `session: Some` → that session;
+/// `descendants` widens to its subtree (asked from the agent supervisor).
+/// `None` → every session (the explorer).
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct List {
-    /// Root session.
-    pub session: SessionId,
+    /// Root session; `None` = every session.
+    pub session: Option<SessionId>,
     /// Include every session under it.
     pub descendants: bool,
 }
@@ -226,7 +227,7 @@ impl Message<List> for ArtifactActor {
                 .list(m.session, m.descendants)
                 .await
                 .unwrap_or_else(|e| {
-                    tracing::error!(session = %m.session, "artifacts unreadable: {e:#}");
+                    tracing::error!(session = ?m.session, "artifacts unreadable: {e:#}");
                     Vec::new()
                 });
             tx.send(list);

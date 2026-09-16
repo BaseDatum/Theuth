@@ -92,18 +92,33 @@ pub fn parse(body: &str) -> Result<Parsed, Vec<SpecError>> {
     validate::validate(&value).map(|spec| Parsed { spec, repaired })
 }
 
-/// The file a streaming `show` call is writing (design doc 35 §6.1): `jsonrepair` the
-/// cumulative partial tool-argument JSON, then `name`, else the file name of `path`.
-/// `None` until either key has streamed in.
-pub fn partial_name(partial_json: &str) -> Option<String> {
+/// What a streaming `show` call is doing, read off its cumulative partial argument JSON
+/// (design doc 35 §6.1).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PartialShow {
+    /// `name`, else the file name of `path`; `None` until either has streamed in.
+    pub name: Option<String>,
+    /// A `content` key is present: the model is writing the file, not showing an existing one.
+    pub writing: bool,
+}
+
+/// `jsonrepair` the cumulative partial tool-argument JSON and read `name`/`path`/`content`.
+/// `None` when it does not parse yet.
+pub fn partial_show(partial_json: &str) -> Option<PartialShow> {
     let fixed = jsonrepair_rs::jsonrepair(partial_json).ok()?;
     let v = serde_json::from_str::<Value>(&fixed).ok()?;
-    match v.get("name").and_then(Value::as_str) {
+    let name = match v.get("name").and_then(Value::as_str) {
         Some(n) if !n.is_empty() => Some(n.to_owned()),
-        _ => std::path::Path::new(v.get("path")?.as_str()?)
-            .file_name()
+        _ => v
+            .get("path")
+            .and_then(Value::as_str)
+            .and_then(|p| std::path::Path::new(p).file_name())
             .map(|f| f.to_string_lossy().into_owned()),
-    }
+    };
+    Some(PartialShow {
+        name,
+        writing: v.get("content").is_some(),
+    })
 }
 
 /// Validate every `json-render` fence in a markdown text; `(ordinal, errors)` for each

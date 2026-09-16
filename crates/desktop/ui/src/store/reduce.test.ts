@@ -61,7 +61,9 @@ test('ToolCallProgress names the file being written; ToolCallStarted clears it; 
     { type: 'ToolCallPending', session: S, turn: T, call_id: 'c1', name: 'show' },
     { type: 'ToolCallProgress', session: S, turn: T, call_id: 'c1', args: '{"name": "report.pdf", "content": "# Quar' },
   ])
-  expect(s.progress.get('c1')).toMatchObject({ name: 'report.pdf' })
+  expect(s.progress.get('c1')).toMatchObject({ name: 'report.pdf', writing: true })
+  s = apply(s, { type: 'ToolCallProgress', session: S, turn: T, call_id: 'c1', args: '{"path": "/tmp/x/notes.md", "ti' }, ctx())
+  expect(s.progress.get('c1')).toMatchObject({ name: 'notes.md', writing: false })
   s = apply(s, { type: 'ToolCallStarted', session: S, turn: T, call_id: 'c1', name: 'show', args: { name: 'report.pdf' } }, ctx())
   expect(s.progress.has('c1')).toBe(false)
   const artifact = {

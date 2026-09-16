@@ -30,6 +30,7 @@ export const queryKeys = {
   knowledgeDoc: (id: string) => ['knowledge', 'doc', id] as const,
   knowledgeHistory: (id: string) => ['knowledge', 'history', id] as const,
   knowledgeSearch: (q: string) => ['knowledge', 'search', q] as const,
+  artifacts: ['artifacts'] as const,
   info: ['info'] as const,
   titleModel: ['title-model'] as const,
   signal: ['signal'] as const,
@@ -59,6 +60,7 @@ export function useInvalidateOn(): void {
         void qc.invalidateQueries({ queryKey: queryKeys.knowledgeList })
         void qc.invalidateQueries({ queryKey: queryKeys.knowledgeDoc(e.id) })
       }),
+      on('ArtifactShown', () => void qc.invalidateQueries({ queryKey: queryKeys.artifacts })),
     ]
     return () => {
       clearTimeout(timer)

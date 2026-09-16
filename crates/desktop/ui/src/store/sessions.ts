@@ -107,8 +107,9 @@ export type SessionSlice = {
   browserLive: boolean
   /** Artifacts by `call_id` of the `show` call that made them (35 §7.3); fed by `ArtifactShown` and `list_artifacts`. */
   artifacts: Map<string, Artifact>
-  /** Tool calls whose arguments are still streaming (`ToolCallProgress`), by `call_id`; cleared on `ToolCallStarted`. */
-  progress: Map<string, { name?: string; bytes: number }>
+  /** Tool calls whose arguments are still streaming (`ToolCallProgress`), by `call_id`; cleared on `ToolCallStarted`.
+   * `writing` = a `show` call carrying `content` (writing a file) rather than a `path` (showing one). */
+  progress: Map<string, { name?: string; writing?: boolean; bytes: number }>
   /** `call_id` of the artifact open in the side panel; `null` when closed. */
   artifactPanel: string | null
 }

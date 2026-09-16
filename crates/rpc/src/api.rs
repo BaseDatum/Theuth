@@ -503,12 +503,13 @@ pub trait Api {
     #[method(name = "schedule_history")]
     async fn schedule_history(&self, name: String, limit: u32)
     -> RpcResult<Vec<schedule::RunInfo>>;
-    /// Every artifact shown in `session`, newest first; `descendants: true`
-    /// (default `false`) widens to the session's subtree (35 §3.5).
+    /// Every artifact shown in `session` (`null` = every session), newest
+    /// first; `descendants: true` (default `false`) widens to the session's
+    /// subtree (35 §3.5).
     #[method(name = "list_artifacts")]
     async fn list_artifacts(
         &self,
-        session: SessionId,
+        session: Option<SessionId>,
         descendants: Option<bool>,
     ) -> RpcResult<Vec<artifact::Artifact>>;
     /// Copy artifact `id`'s blob to `dest` (parent created; refuses to
@@ -1261,7 +1262,7 @@ impl ApiServer for Server {
 
     async fn list_artifacts(
         &self,
-        session: SessionId,
+        session: Option<SessionId>,
         descendants: Option<bool>,
     ) -> RpcResult<Vec<artifact::Artifact>> {
         send(

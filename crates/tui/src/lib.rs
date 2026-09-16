@@ -471,7 +471,7 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             UiEvent::NodeInvite(node.name, msg(api.invite_node(node.id).await)?)
         }
         Command::ListArtifacts { session, pick } => UiEvent::Artifacts {
-            items: msg(api.list_artifacts(session, Some(true)).await)?,
+            items: msg(api.list_artifacts(Some(session), Some(true)).await)?,
             pick,
         },
         Command::ExportArtifact { id, name } => {

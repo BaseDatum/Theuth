@@ -10,8 +10,10 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as ArtifactsRouteImport } from './routes/artifacts'
 import { Route as KnowledgeRouteImport } from './routes/knowledge'
 import { Route as LinkRouteImport } from './routes/link'
+import { Route as ArtifactsCallIdRouteImport } from './routes/artifacts.$callId'
 import { Route as CSessionRouteImport } from './routes/c.$session'
 import { Route as KnowledgeSplatRouteImport } from './routes/knowledge.$'
 import { Route as SettingsTabRouteImport } from './routes/settings.$tab'
@@ -19,6 +21,11 @@ import { Route as SettingsTabRouteImport } from './routes/settings.$tab'
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ArtifactsRoute = ArtifactsRouteImport.update({
+  id: '/artifacts',
+  path: '/artifacts',
   getParentRoute: () => rootRouteImport,
 } as any)
 const KnowledgeRoute = KnowledgeRouteImport.update({
@@ -30,6 +37,11 @@ const LinkRoute = LinkRouteImport.update({
   id: '/link',
   path: '/link',
   getParentRoute: () => rootRouteImport,
+} as any)
+const ArtifactsCallIdRoute = ArtifactsCallIdRouteImport.update({
+  id: '/$callId',
+  path: '/$callId',
+  getParentRoute: () => ArtifactsRoute,
 } as any)
 const CSessionRoute = CSessionRouteImport.update({
   id: '/c/$session',
@@ -49,16 +61,20 @@ const SettingsTabRoute = SettingsTabRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/artifacts': typeof ArtifactsRouteWithChildren
   '/knowledge': typeof KnowledgeRouteWithChildren
   '/link': typeof LinkRoute
+  '/artifacts/$callId': typeof ArtifactsCallIdRoute
   '/c/$session': typeof CSessionRoute
   '/knowledge/$': typeof KnowledgeSplatRoute
   '/settings/$tab': typeof SettingsTabRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/artifacts': typeof ArtifactsRouteWithChildren
   '/knowledge': typeof KnowledgeRouteWithChildren
   '/link': typeof LinkRoute
+  '/artifacts/$callId': typeof ArtifactsCallIdRoute
   '/c/$session': typeof CSessionRoute
   '/knowledge/$': typeof KnowledgeSplatRoute
   '/settings/$tab': typeof SettingsTabRoute
@@ -66,8 +82,10 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/artifacts': typeof ArtifactsRouteWithChildren
   '/knowledge': typeof KnowledgeRouteWithChildren
   '/link': typeof LinkRoute
+  '/artifacts/$callId': typeof ArtifactsCallIdRoute
   '/c/$session': typeof CSessionRoute
   '/knowledge/$': typeof KnowledgeSplatRoute
   '/settings/$tab': typeof SettingsTabRoute
@@ -76,24 +94,30 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/artifacts'
     | '/knowledge'
     | '/link'
+    | '/artifacts/$callId'
     | '/c/$session'
     | '/knowledge/$'
     | '/settings/$tab'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/artifacts'
     | '/knowledge'
     | '/link'
+    | '/artifacts/$callId'
     | '/c/$session'
     | '/knowledge/$'
     | '/settings/$tab'
   id:
     | '__root__'
     | '/'
+    | '/artifacts'
     | '/knowledge'
     | '/link'
+    | '/artifacts/$callId'
     | '/c/$session'
     | '/knowledge/$'
     | '/settings/$tab'
@@ -101,6 +125,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  ArtifactsRoute: typeof ArtifactsRouteWithChildren
   KnowledgeRoute: typeof KnowledgeRouteWithChildren
   LinkRoute: typeof LinkRoute
   CSessionRoute: typeof CSessionRoute
@@ -116,6 +141,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/artifacts': {
+      id: '/artifacts'
+      path: '/artifacts'
+      fullPath: '/artifacts'
+      preLoaderRoute: typeof ArtifactsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/knowledge': {
       id: '/knowledge'
       path: '/knowledge'
@@ -129,6 +161,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/link'
       preLoaderRoute: typeof LinkRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/artifacts/$callId': {
+      id: '/artifacts/$callId'
+      path: '/$callId'
+      fullPath: '/artifacts/$callId'
+      preLoaderRoute: typeof ArtifactsCallIdRouteImport
+      parentRoute: typeof ArtifactsRoute
     }
     '/c/$session': {
       id: '/c/$session'
@@ -154,6 +193,18 @@ declare module '@tanstack/react-router' {
   }
 }
 
+interface ArtifactsRouteChildren {
+  ArtifactsCallIdRoute: typeof ArtifactsCallIdRoute
+}
+
+const ArtifactsRouteChildren: ArtifactsRouteChildren = {
+  ArtifactsCallIdRoute: ArtifactsCallIdRoute,
+}
+
+const ArtifactsRouteWithChildren = ArtifactsRoute._addFileChildren(
+  ArtifactsRouteChildren,
+)
+
 interface KnowledgeRouteChildren {
   KnowledgeSplatRoute: typeof KnowledgeSplatRoute
 }
@@ -168,6 +219,7 @@ const KnowledgeRouteWithChildren = KnowledgeRoute._addFileChildren(
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  ArtifactsRoute: ArtifactsRouteWithChildren,
   KnowledgeRoute: KnowledgeRouteWithChildren,
   LinkRoute: LinkRoute,
   CSessionRoute: CSessionRoute,

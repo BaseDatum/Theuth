@@ -173,6 +173,7 @@ Config (`~/.wth/`, created on first run; details in
 - `acp/agents.yaml` — one entry per external harness (`name: {command, args, env, description}`); `/acp` lists, probes, adds from the registry (`/acp add <id>`), removes. The model spawns one with `spawn_subagent{agent}`; it runs as a child session like a wth subagent.
 - `skills/` — `<name>/SKILL.md` directories, loose `*.md`, or git clones (`/skills add <url>`, `/skills sync`); see [`docs/skills.md`](docs/skills.md). `harness.md` is written here on every start: the model's manual for this data dir and its config, loaded on demand.
 - `knowledge/` — the knowledge bundle (OKF markdown, one `<id>.md` per concept, a git repo kept in-process); `knowledge.sqlite` beside it is its search index and can be deleted.
+- `artifacts/` — content-addressed blobs of every file the agent has `show`n; `artifacts.sqlite` beside it is the index. Deleting the index orphans the blobs, which are swept at the next start.
 
 TUI: `/` opens the command list; `/model` picks a model (header above the
 input shows model, effort and context used); `/effort [level|clear]` sets the

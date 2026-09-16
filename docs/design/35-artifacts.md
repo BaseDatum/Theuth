@@ -28,7 +28,8 @@ cites `file:line` as of this tree.
    `show` copies the bytes to `<data_dir>/artifacts/<sha256[..16]>.<ext>`
    (the `attachments/` convention, `rpc/src/api.rs:619-630`) and records
    `{call_id, session, name, title, kind, bytes, version, …}` in
-   `artifacts.sqlite`. Showing the same `name` again in a session is `v2`;
+   `<data_dir>/artifacts.sqlite` beside it (the `knowledge/` +
+   `knowledge.sqlite` layout). Showing the same `name` again in a session is `v2`;
    every card keeps opening the version it showed. Rejected: showing the
    live file at its path — the transcript would lie once the file changed,
    a phone through the relay could not fetch it (`get_attachment` serves
@@ -284,8 +285,8 @@ pub struct Artifact {
 
 /// ask → Result<Artifact, String>. Snapshots, renders, records, publishes `ArtifactShown`.
 pub struct Show { pub session: SessionId, pub call_id: String, pub args: ShowArgs }
-/// ask → Vec<Artifact>, newest first; `descendants` widens to the session's subtree (19 §2.2).
-pub struct List { pub session: SessionId, pub descendants: bool }
+/// ask → Vec<Artifact>, newest first; `Some(session)` + `descendants` widens to its subtree (19 §2.2); `None` = every session (the desktop explorer).
+pub struct List { pub session: Option<SessionId>, pub descendants: bool }
 /// ask → Result<PathBuf, String>: copy the blob to `dest` (parent created; refuses to overwrite).
 pub struct Export { pub id: String, pub dest: PathBuf }
 
@@ -313,11 +314,14 @@ insert → `rt.publish(ArtifactShown)` → reply.
     3f9a1c2e7b04d5aa.pdf            # blob, content-addressed
     3f9a1c2e7b04d5aa.preview.png    # page 1, long edge ≤ 1568 (17 §1)
     9c0b…e1.md                      # the markdown source of that PDF
-    artifacts.sqlite                # the index; deleting it orphans the blobs (sweep removes them at next start)
+  artifacts.sqlite                  # the index; deleting it orphans the blobs (sweep removes them at next start)
 ```
 
-Truth is the sqlite index; blobs without a row are garbage and swept at
-`start` (one `read_dir`, like `spill::sweep`, 07 §6). `SessionDeleted`
+Truth is the sqlite index, `<data_dir>/artifacts.sqlite` beside the blob
+directory (the `knowledge/` + `knowledge.sqlite` layout; an index inside
+the directory it indexes is one `read_dir` entry the sweep has to skip);
+blobs without a row are garbage and swept at `start` (one `read_dir`,
+like `spill::sweep`, 07 §6). `SessionDeleted`
 (`agent/src/lib.rs:1014-1017`) is subscribed: rows of that session are
 deleted, blobs the next sweep collects. No age-based GC: these are the
 user's deliverables. `sqlx::migrate!` with one table:
@@ -340,7 +344,7 @@ same reason).
 Three additions to `trait Api` (`rpc/src/api.rs`), each lookup + one `ask`:
 
 ```rust
-#[method(name = "list_artifacts")]   async fn list_artifacts(&self, session: SessionId, descendants: Option<bool>) -> RpcResult<Vec<Artifact>>;
+#[method(name = "list_artifacts")]   async fn list_artifacts(&self, session: Option<SessionId>, descendants: Option<bool>) -> RpcResult<Vec<Artifact>>;  // None = every session
 #[method(name = "export_artifact")]  async fn export_artifact(&self, id: String, dest: PathBuf) -> RpcResult<PathBuf>;
 ```
 
@@ -853,6 +857,46 @@ fixtures: 1280×720; a 4000-wide chart scaled to 1568×196.
   (the name may be unknown while bytes stream); `Menu::Artifacts` had to
   join `input_focused`'s modal list — the smoke caught the picker's `s`
   leaking into the editor.
+- **`artifacts.sqlite` sits beside `artifacts/`**, not inside it (the
+  `knowledge/` + `knowledge.sqlite` layout, §3.4); the draft drew it
+  under the blob directory, which put the index in the sweep's own
+  `read_dir`. `List.session` / `list_artifacts(session)` became
+  `Option`: `None` lists every session newest first (no `WHERE`) for the
+  desktop's cross-session artifacts explorer; the TUI and the chat header
+  still pass `Some(session)`.
+- **Desktop card is the tool card.** The first build gave the `show` card
+  its own frame (`max-w-[640px]`, `rounded-2xl`, elevated background,
+  shadow); the user saw a different width and colour beside every other
+  tool card. It now uses `PlainTool`'s box verbatim (`rounded-xl`,
+  `bg-layer-1`, `px-4 py-3`, full column width) with the same `⚙ show`
+  header, and the preview slot + actions sit under it. §7.1's 640 px /
+  radius-16 / elevated description is superseded.
+- **Progress label is tool-aware.** `writing <name>…` only when the
+  partial args carry `content`; a `show{path}` streams as `showing
+  <name>…`; every other tool as `preparing <tool>… <bytes>`. `surface::partial_show`
+  returns `{name, writing}`; the TUI's `Progress`/`progress_line` and the
+  desktop reducer's `partialShow` mirror it.
+- **Version assignment is atomic.** Two `show`s of one name in one
+  assistant message run concurrently (the actor answers off its mailbox);
+  the draft's `1 + COUNT` read-then-insert gave both `v1` in the smoke.
+  The version is now the `(SELECT COUNT(*) + 1 …)` subquery inside the
+  `INSERT … RETURNING version`; `parallel_shows_of_one_name_get_distinct_versions`
+  pins it.
+- **Title precedence**: front matter `title:` (what the PDF prints) beats
+  the first `#` heading; the smoke showed `Executive Overview` for a
+  document titled `Quarterly summary`.
+- **Artifacts explorer** (`/artifacts`, `/artifacts/$callId`; desktop
+  and phone): the knowledge explorer's shape — 300 px rail with filter,
+  kind chips and rows grouped by session (title, newest first, older
+  versions of a name folded under `▸ N older`), a viewer pane with the
+  shared `ArtifactView` (extracted from the panel), version `Select`,
+  Reveal / Open chat / `⋯`, and a 260 px details rail; one pane at a time
+  under `md` with a back chevron and `Esc`. Sidebar entry `Artifacts`
+  under `Knowledge`; the card's `⋯` gains `Open in explorer`.
+  `queryKeys.artifacts` is invalidated on `ArtifactShown`. Verified in a
+  browser against the headless daemon (`VITE_WTH_URL`) at 1280 and
+  390 px: list, PDF (native viewer), markdown, CSV, details rail, mobile
+  list → viewer → back.
 
 ### 14.3 Smoke (headless, `claude-sonnet-4-5` effort low, `/tmp/wth-art`)
 

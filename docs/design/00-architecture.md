@@ -401,8 +401,9 @@ serialization. So `rpc::bridge::start` is idempotent: the one `Bridge` per
 process is registered as `"rpc.events"` and looked up before it is spawned.
 `put_attachment(bytes, ext)` / `get_attachment(path)` are `Api` methods
 (base64; `<data_dir>/{attachments,browser,computer,artifacts}` only) because
-a phone is not on the harness host (31 §6.4). `list_artifacts(session,
-descendants?)` and `export_artifact(id, dest)` (35 §3.5, added 2026-09-16)
+a phone is not on the harness host (31 §6.4). `list_artifacts(session?,
+descendants?)` (`null` session = every session, for the desktop explorer)
+and `export_artifact(id, dest)` (35 §3.5, added 2026-09-16)
 are the two asks on the artifact actor; the desktop's `resolveFile` fetches
 artifact blobs and previews through `get_attachment` unchanged.
 
@@ -531,7 +532,10 @@ defaults to `~/.wth`, with `credentials.yaml`, `mcp/`, `skills/`,
 `knowledge/` (the OKF knowledge bundle, a git repository kept in-process by
 `gix`) and `knowledge.sqlite` (its derived FTS index; delete to rebuild),
 `schedules/` (one `<name>.md` per scheduled run, 34) and `schedule.sqlite`
-(its run history; deleting it forgets, does not rebuild — 34 §7)
+(its run history; deleting it forgets, does not rebuild — 34 §7),
+`artifacts/` (content-addressed blobs shown with `show`, 35) and
+`artifacts.sqlite` (its index; deleting it orphans the blobs, swept at the
+next start — 35 §3.4)
 beside it — `10-knowledge.md`. No shared `Config` struct: each plugin
 extracts its own section
 (`rt.config.extract_inner::<AgentConfig>("agent")`), so `runtime` never knows

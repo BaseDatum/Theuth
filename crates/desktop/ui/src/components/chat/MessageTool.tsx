@@ -89,7 +89,7 @@ function PlainTool({ tool, session }: { tool: Tool; session: string }) {
             {lines.join('\n')}
           </pre>
         )}
-        {progress && <Progress name={progress.name} bytes={progress.bytes} />}
+        {progress && <Progress tool={tool.name} progress={progress} />}
         {result && (
           <div className={cn('w-full truncate font-mono text-xs', result.isError ? 'text-danger' : 'text-success')}>
             {result.isError ? '✗' : '✓'} {resultLine(result.output)}

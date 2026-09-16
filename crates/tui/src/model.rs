@@ -590,9 +590,9 @@ pub enum Entry {
         call_id: String,
         /// Tool name.
         name: String,
-        /// `ToolCallProgress` so far: the file a `show` call is writing and
-        /// the argument bytes streamed (design doc 35 §6.1).
-        progress: Option<(Option<String>, usize)>,
+        /// `ToolCallProgress` so far: what a `show` call is doing and the
+        /// argument bytes streamed (design doc 35 §6.1).
+        progress: Option<Progress>,
     },
     /// A tool call and, once finished, its result.
     Tool {
@@ -2179,8 +2179,10 @@ impl Model {
                 name, result: None, ..
             } => Some(format!("running {name}…")),
             Entry::Pending {
-                progress: Some(p), ..
-            } => Some(writing_line(p)),
+                name,
+                progress: Some(p),
+                ..
+            } => Some(progress_line(name, p)),
             Entry::Pending { name, .. } => Some(format!("preparing {name}…")),
             _ => None,
         });
@@ -2931,7 +2933,10 @@ impl Model {
                     .iter_mut()
                     .find(|e| matches!(e, Entry::Pending { call_id: c, .. } if *c == call_id))
                 {
-                    *progress = Some((surface::partial_name(&args), args.len()));
+                    *progress = Some(Progress {
+                        show: surface::partial_show(&args),
+                        bytes: args.len(),
+                    });
                 }
             }
             AgentEvent::ToolCallStarted {
@@ -5058,11 +5063,28 @@ pub fn bytes_label(bytes: u64) -> String {
     }
 }
 
-/// The spinner row of a `Pending` call with progress: `writing report.pdf… 3.2 KB`.
-pub fn writing_line((name, bytes): &(Option<String>, usize)) -> String {
-    match name {
-        Some(n) => format!("writing {n}… {}", bytes_label(*bytes as u64)),
-        None => format!("writing… {}", bytes_label(*bytes as u64)),
+/// A `Pending` call's streamed arguments so far.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Progress {
+    /// For `show`: the file and whether `content` is being written.
+    pub show: Option<surface::PartialShow>,
+    /// Cumulative argument bytes.
+    pub bytes: usize,
+}
+
+/// The spinner row of a `Pending` call with progress: `writing report.pdf… 3.2 KB`
+/// when `show` carries `content`, `showing report.pdf…` when it names a path,
+/// `preparing <tool>… 3.2 KB` for every other tool.
+pub fn progress_line(tool: &str, p: &Progress) -> String {
+    let size = bytes_label(p.bytes as u64);
+    match (tool, &p.show) {
+        ("show", Some(s)) => match (&s.name, s.writing) {
+            (Some(n), true) => format!("writing {n}… {size}"),
+            (Some(n), false) => format!("showing {n}…"),
+            (None, true) => format!("writing… {size}"),
+            (None, false) => "preparing show…".to_owned(),
+        },
+        _ => format!("preparing {tool}… {size}"),
     }
 }
 
@@ -7353,8 +7375,27 @@ mod tests {
         });
         assert!(matches!(
             m.entries.last(),
-            Some(Entry::Pending { progress: Some((Some(n), 37)), .. }) if n == "note.md"
+            Some(Entry::Pending { name, progress: Some(Progress { show: Some(s), bytes: 37 }), .. })
+                if name == "show" && s.name.as_deref() == Some("note.md") && s.writing
         ));
+        let Some(Entry::Pending {
+            name,
+            progress: Some(p),
+            ..
+        }) = m.entries.last()
+        else {
+            unreachable!()
+        };
+        assert_eq!(progress_line(name, p), "writing note.md… 37 B");
+        let shown = Progress {
+            show: Some(surface::PartialShow {
+                name: Some("x.pdf".into()),
+                writing: false,
+            }),
+            bytes: 40,
+        };
+        assert_eq!(progress_line("show", &shown), "showing x.pdf…");
+        assert_eq!(progress_line("shell", &shown), "preparing shell… 40 B");
         m.apply_agent(AgentEvent::ToolCallStarted {
             session: s,
             turn,

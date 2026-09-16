@@ -1,6 +1,7 @@
 import { save } from '@tauri-apps/plugin-dialog'
 import { openPath, revealItemInDir } from '@tauri-apps/plugin-opener'
-import { File, FileCode, FileText, FolderOpen, Image as ImageIcon, MoreHorizontal, PanelRight, Table } from 'lucide-react'
+import { useNavigate } from '@tanstack/react-router'
+import { File, FileCode, FileText, FolderOpen, Image as ImageIcon, Loader2, MoreHorizontal, PanelRight, Table } from 'lucide-react'
 import { memo, type MouseEvent, type ReactNode, useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
@@ -37,7 +38,8 @@ export const TEXT_KINDS: Record<Kind, boolean> = {
   file: false,
 }
 
-const GLYPH: Record<Kind, typeof File> = {
+/** One lucide glyph per kind; the card slot, the explorer's thumbs and its kind chips share it. */
+export const GLYPH: Record<Kind, typeof File> = {
   markdown: FileText,
   text: FileText,
   csv: Table,
@@ -94,9 +96,10 @@ export async function saveAs(api: Api, a: Artifact, local: boolean) {
   el.click()
 }
 
-/** `⋯` menu: Copy (text kinds), Save as… / Download, Open (local), Copy path. */
-export function ArtifactMenu({ artifact: a, className }: { artifact: Artifact; className?: string }) {
+/** `⋯` menu: Copy (text kinds), Save as… / Download, Open (local), Open in explorer (unless `explorer`), Copy path. */
+export function ArtifactMenu({ artifact: a, className, explorer }: { artifact: Artifact; className?: string; explorer?: boolean }) {
   const api = useApi()
+  const navigate = useNavigate()
   const active = useHarnesses((s) => s.active)
   const local = isLocal(active)
   return (
@@ -114,6 +117,11 @@ export function ArtifactMenu({ artifact: a, className }: { artifact: Artifact; c
         )}
         <DropdownMenuItem onSelect={() => saveAs(api, a, local).catch(fail)}>{local ? 'Save as…' : 'Download'}</DropdownMenuItem>
         {local && <DropdownMenuItem onSelect={() => openPath(a.path).catch(fail)}>Open</DropdownMenuItem>}
+        {!explorer && (
+          <DropdownMenuItem onSelect={() => void navigate({ to: '/artifacts/$callId', params: { callId: a.call_id } })}>
+            Open in explorer
+          </DropdownMenuItem>
+        )}
         <DropdownMenuSeparator />
         <DropdownMenuItem onSelect={() => void navigator.clipboard.writeText(a.path)}>Copy path</DropdownMenuItem>
       </DropdownMenuContent>
@@ -145,13 +153,20 @@ export function RevealButton({ artifact: a }: { artifact: Artifact }) {
   )
 }
 
-/** `writing report.pdf… 3.2 KB` plus a thin indeterminate bar while a call's arguments stream (35 §0.7). */
-export function Progress({ name, bytes }: { name?: string; bytes: number }) {
+/** The spinner row while a call's arguments stream (35 §0.7): `writing report.pdf… 3.2 KB` for a `show` carrying
+ * `content`, `showing report.pdf…` for one naming a path, `preparing <tool>… 3.2 KB` for any other tool. */
+export function progressLabel(tool: string, p: { name?: string; writing?: boolean; bytes: number }): string {
+  const size = fmtBytes(p.bytes)
+  if (tool !== 'show') return `preparing ${tool}… ${size}`
+  if (p.writing) return p.name ? `writing ${p.name}… ${size}` : `writing… ${size}`
+  return p.name ? `showing ${p.name}…` : 'preparing show…'
+}
+
+/** Progress label plus a thin indeterminate bar. */
+export function Progress({ tool, progress }: { tool: string; progress: { name?: string; writing?: boolean; bytes: number } }) {
   return (
     <div className="mt-1 flex w-full flex-col gap-1.5">
-      <span className="text-xs text-fg-tertiary">
-        writing {name ?? ''}… {fmtBytes(bytes)}
-      </span>
+      <span className="text-xs text-fg-tertiary">{progressLabel(tool, progress)}</span>
       <div className="h-0.5 w-full overflow-hidden rounded-full bg-layer-3">
         <div className="h-full w-1/3 animate-indeterminate rounded-full bg-fg-accent" />
       </div>
@@ -179,8 +194,9 @@ function Preview({ a, text }: { a: Artifact; text: string | null }) {
   )
 }
 
-/** The card frame: preview slot on the left, body on the right; `onClick` opens the panel. */
-function Frame({ children, slot, onClick }: { children: ReactNode; slot: ReactNode; onClick?: () => void }) {
+/** The card frame — the same box as every other tool card (`MessageTool`): `⚙ show` header, then the preview
+ * slot on the left and the body on the right; `onClick` opens the panel. */
+function Frame({ children, slot, onClick, busy }: { children: ReactNode; slot: ReactNode; onClick?: () => void; busy?: boolean }) {
   const click = (e: MouseEvent<HTMLDivElement>) => {
     // Buttons and menus inside the card keep their own actions.
     if (e.target instanceof Element && e.target.closest('button,a,[role=menu]')) return
@@ -190,13 +206,20 @@ function Frame({ children, slot, onClick }: { children: ReactNode; slot: ReactNo
     <div
       role={onClick ? 'button' : undefined}
       className={cn(
-        'my-2 flex w-full max-w-[640px] min-w-0 gap-3 rounded-2xl border border-border-subtle bg-elevated p-3 text-sm shadow-xs',
+        'my-2 min-w-0 rounded-xl border border-border-subtle bg-layer-1 px-4 py-3 text-sm',
         onClick && 'cursor-pointer hover:border-border-strong',
       )}
       onClick={click}
     >
-      {slot}
-      <div className="flex min-w-0 flex-1 flex-col gap-1">{children}</div>
+      <div className="flex items-center gap-2 font-medium">
+        <span className="shrink-0 text-fg-secondary">⚙</span>
+        <span>show</span>
+        {busy && <Loader2 className="size-3.5 shrink-0 animate-spin text-fg-tertiary" />}
+      </div>
+      <div className="mt-2 flex min-w-0 gap-3">
+        {slot}
+        <div className="flex min-w-0 flex-1 flex-col gap-1">{children}</div>
+      </div>
     </div>
   )
 }
@@ -268,11 +291,11 @@ export const ArtifactCard = memo(function ArtifactCard({ tool, session }: { tool
 
   // Writing (arguments streaming) or compiling (started, `ArtifactShown` not yet); a finished call whose artifact the list did not carry shows its receipt.
   return (
-    <Frame slot={SKELETON}>
+    <Frame slot={SKELETON} busy={!result}>
       {result ? (
         <div className="truncate font-mono text-xs text-fg-secondary">{resultLine(result.output)}</div>
       ) : tool.pending ? (
-        <Progress name={progress?.name} bytes={progress?.bytes ?? 0} />
+        <Progress tool={tool.name} progress={progress ?? { bytes: 0 }} />
       ) : (
         <>
           <div className="h-4 w-1/2 animate-pulse rounded bg-layer-2" />

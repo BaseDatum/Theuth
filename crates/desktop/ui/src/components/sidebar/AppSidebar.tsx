@@ -1,5 +1,5 @@
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
-import { BookOpen, PanelLeft, Search, Settings, SquarePen } from 'lucide-react'
+import { BookOpen, FolderOpen, PanelLeft, Search, Settings, SquarePen } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { HarnessSwitcher } from '@/components/link/HarnessSwitcher'
 import { Button } from '@/components/ui/button'
@@ -19,7 +19,7 @@ import { cn } from '@/lib/utils'
 import { SearchDialog } from './SearchDialog'
 import { SessionList } from './SessionList'
 
-/** ChatGPT's left rail: New chat, Search chats, Knowledge, the chat list, Settings. */
+/** ChatGPT's left rail: New chat, Search chats, Knowledge, Artifacts, the chat list, Settings. */
 export function AppSidebar({ session }: { session: string | undefined }) {
   const navigate = useNavigate()
   const { isMobile, setOpenMobile, toggleSidebar } = useSidebar()
@@ -79,6 +79,13 @@ export function AppSidebar({ session }: { session: string | undefined }) {
             <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5">
               <Link to="/knowledge">
                 <BookOpen /> Knowledge
+              </Link>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+          <SidebarMenuItem>
+            <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5">
+              <Link to="/artifacts">
+                <FolderOpen /> Artifacts
               </Link>
             </SidebarMenuButton>
           </SidebarMenuItem>

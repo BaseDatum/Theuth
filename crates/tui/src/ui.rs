@@ -13,7 +13,7 @@ use crate::clip;
 use crate::model::{
     AcpRow, CardKind, Command, Entry, Level, Menu, MenuKey, Model, Row, Switch, TurnAction,
     UiEvent, action_name, agent_row, artifact_row, artifact_size, describe, gate_name, k,
-    result_line, short, slash_matches, window, writing_line,
+    progress_line, result_line, short, slash_matches, window,
 };
 
 /// Channels handed to the app through iocraft context (owned so the receiver
@@ -947,7 +947,7 @@ fn entry(e: &Entry, spinner: &str, skip: usize, width: u16) -> AnyElement<'stati
         }
         Entry::Pending { name, progress, .. } => {
             let row = match progress {
-                Some(p) => writing_line(p),
+                Some(p) => progress_line(name, p),
                 None => format!("preparing {name}…"),
             };
             element! {

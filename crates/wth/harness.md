@@ -29,7 +29,8 @@ real path. Everything below is relative to it.
 | `knowledge/` | the knowledge bundle (markdown, git history); `knowledge.sqlite` is a derived index | live |
 | `sessions.sqlite` | every session's history; `/sessions`, `/resume <id>` | live |
 | `attachments/`, `spill/` | pasted images; tool output that exceeded the cap (`read_file` the path a result names) | - |
-| `artifacts/` | files shown with `show`: content-addressed blobs + `artifacts.sqlite`, the index (design doc 35). Deleting the index rebuilds nothing — the blobs it named are orphaned and swept at the next start | live |
+| `artifacts/` | files shown with `show`: content-addressed blobs (design doc 35) | live |
+| `artifacts.sqlite` | the artifact index. Deleting it rebuilds nothing — the blobs it named are orphaned and swept at the next start | live |
 | `logs/wth.log.<YYYY-MM-DD>` | the process log; `RUST_LOG=debug` for more | live |
 | `token` | bearer for the JSON-RPC server | startup |
 | `signal/` | Signal linked-device state and `inbox/` for files the user texts | - |

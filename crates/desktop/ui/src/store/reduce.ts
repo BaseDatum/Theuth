@@ -40,14 +40,20 @@ export function empty(id: string): SessionSlice {
   }
 }
 
-/** `name` (else the base name of `path`) from a tool call's partial JSON arguments; `undefined` until either parses. */
-export function partialName(args: string): string | undefined {
+/** What a streaming `show` call is doing, read off its partial JSON arguments: `name` (else the base name of
+ * `path`) and whether a `content` key is present (writing a file vs showing an existing one). `undefined` until it parses. */
+export function partialShow(args: string): { name?: string; writing: boolean } | undefined {
   try {
     const v: unknown = JSON.parse(jsonrepair(args))
     if (typeof v !== 'object' || v === null) return undefined
-    const { name, path } = v as Record<string, unknown>
-    if (typeof name === 'string' && name) return name
-    if (typeof path === 'string' && path) return path.slice(path.lastIndexOf('/') + 1) || undefined
+    const { name, path, content } = v as Record<string, unknown>
+    const file =
+      typeof name === 'string' && name
+        ? name
+        : typeof path === 'string' && path
+          ? path.slice(path.lastIndexOf('/') + 1) || undefined
+          : undefined
+    return { name: file, writing: content !== undefined }
   } catch {}
   return undefined
 }
@@ -212,7 +218,7 @@ export function apply(slice: SessionSlice, e: WireEvent, ctx: Ctx): SessionSlice
     case 'BrowserShowLive':
       return { ...slice, browser: true, browserLive: true }
     case 'ToolCallProgress':
-      return { ...slice, progress: new Map(slice.progress).set(e.call_id, { name: partialName(e.args), bytes: e.args.length }) }
+      return { ...slice, progress: new Map(slice.progress).set(e.call_id, { ...partialShow(e.args), bytes: e.args.length }) }
     case 'ArtifactShown':
       return { ...slice, artifacts: new Map(slice.artifacts).set(e.call_id, e.artifact), progress: without(slice.progress, e.call_id) }
   }
