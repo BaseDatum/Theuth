@@ -1,5 +1,4 @@
 import { useQuery } from '@tanstack/react-query'
-import { openUrl } from '@tauri-apps/plugin-opener'
 import { Trash2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
@@ -7,7 +6,6 @@ import { Empty, Row, Section, useAction } from '@/components/settings/shared'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { container } from '@/lib/platform'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { LOCAL, useHarnesses } from '@/link/harnesses'
 import { useConnection } from '@/store/connection'
@@ -41,7 +39,6 @@ function Logins() {
   const login = useAction(async (v: { name: string; mcp: boolean }) => {
     const url = await (v.mcp ? api.mcp_login(v.name) : api.login(v.name))
     if (active !== LOCAL) setRemote({ name: v.name, url })
-    else if (container() === 'macos') await openUrl(url)
     else window.open(url, '_blank')
   })
   const logout = useAction(

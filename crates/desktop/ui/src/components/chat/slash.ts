@@ -1,8 +1,6 @@
 import type { UseNavigateResult } from '@tanstack/react-router'
-import { openUrl } from '@tauri-apps/plugin-opener'
 import { toast } from 'sonner'
 import { gitUrl, mcpEntry } from '@/lib/mcpEntry'
-import { container } from '@/lib/platform'
 import { LOCAL, useHarnesses } from '@/link/harnesses'
 import type { Api } from '@/rpc/api'
 import type { CompactStyle } from '@/rpc/bindings/CompactStyle'
@@ -310,8 +308,6 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
           `Sign in from the harness (${useConnection.getState().info?.name ?? 'harness'})`,
           { description: url },
         )
-      } else if (container() === 'macos') {
-        await openUrl(url)
       } else {
         window.open(url, '_blank')
       }
