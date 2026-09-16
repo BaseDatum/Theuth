@@ -20,7 +20,9 @@ const devConnection = (): Connection => {
   const url = import.meta.env.VITE_WTH_URL
   const token = import.meta.env.VITE_WTH_TOKEN
   if (typeof url !== 'string' || typeof token !== 'string') {
-    throw new Error('Not running in the app; set VITE_WTH_URL and VITE_WTH_TOKEN to connect to a daemon')
+    throw new Error(
+      'Not running in the app; set VITE_WTH_URL and VITE_WTH_TOKEN to connect to a daemon',
+    )
   }
   return { url, token, data_dir: '', owned: false }
 }
@@ -30,18 +32,16 @@ export const connection = (): Promise<Connection> =>
   isTauri() ? invoke<Connection>('connection') : Promise.resolve(devConnection())
 
 /** The pty transcript so far; `onLaunchLog` carries the increments. */
-export const launchLog = (): Promise<string> => (isTauri() ? invoke<string>('launch_log') : Promise.resolve(''))
+export const launchLog = (): Promise<string> =>
+  isTauri() ? invoke<string>('launch_log') : Promise.resolve('')
 
 /** Stop the daemon we own (if any) and connect again. */
 export const relaunch = (): Promise<Connection> =>
   isTauri() ? invoke<Connection>('relaunch') : Promise.resolve(devConnection())
 
-/** Write bytes to `<data_dir>/attachments/<sha256[..16]>.<ext>`; returns the absolute path for `send_input`. */
-export const saveAttachment = (bytes: Uint8Array, ext: string): Promise<string> =>
-  invoke<string>('save_attachment', bytes, { headers: { ext } })
-
 /** The webview finished its part of the quit sequence; the app exits now. */
-export const quitAck = (): Promise<void> => (isTauri() ? invoke<void>('quit_ack') : Promise.resolve())
+export const quitAck = (): Promise<void> =>
+  isTauri() ? invoke<void>('quit_ack') : Promise.resolve()
 
 const on = <T>(event: string, cb: (payload: T) => void): Promise<UnlistenFn> =>
   isTauri() ? listen<T>(event, (e) => cb(e.payload)) : Promise.resolve(() => {})

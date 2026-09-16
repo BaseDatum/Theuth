@@ -26,7 +26,9 @@ inventory and the measured ChatGPT tokens are recorded in §2.
    and reuse a live daemon (18 §3). Same `~/.wth` as the terminal: sessions,
    knowledge, skills and logins are shared.
 4. **The webview owns the WebSocket.** The Rust side does launch, probe,
-   quit, attachment writes and OS integration only; it never proxies RPC.
+   quit and OS integration only; it never proxies RPC. Still true since 31:
+   the socket is now behind a `Transport` seam (31 §7.1) so the same client
+   speaks to `ws://127.0.0.1` or through a relay-linked Noise channel.
    Rejected: RPC through Tauri IPC - a second serialization of every
    `TextDelta`, for nothing.
 5. **React 19 + TypeScript + Vite; TanStack Router/Query/Virtual; shadcn/ui
@@ -191,7 +193,7 @@ Every row is an `Api` call already present unless marked **new** (§7).
 | `/approvals [on|off] [always]` | Settings › Approvals (global + this session toggles) → `set_approvals`; state read from **new** `info()` |
 | approval modal `y/n/o` | inline card at the tool row: `approval: tool (risk)`, described args, **Allow** / **Deny** buttons; also a sheet listing all pending approvals across sessions (badge on tray title); `o` = the card's "open session" link; macOS notification when the window is hidden |
 | `/mcp` menu (switch, scope prompt, gate cycle, expand, `l`, `s`) | Settings › Tools: server rows with connect state, `On / Off here / Off always` segmented control (→ `set_mcp_hidden` / `set_mcp_gate`), tool sub-rows with risk select (→ `set_mcp_gate`), Login/Logout, Sync, Add (JSON or git URL), Remove (**exposes `remove_mcp_server`, which the TUI never did**); refreshed on `McpProgress` |
-| `/acp` (`p` probe, add, remove) | Settings › Harnesses: installed + registry, Probe, Add, Remove |
+| `/acp` (`p` probe, add, remove) | Settings › Agents (was "Harnesses" until 31; "harness" now means a wth harness): installed + registry, Probe, Add, Remove |
 | `/skills`, `/skills add|rm|sync`, `/<skill> args`, `s` show | Settings › Skills (list, body viewer, add repo, remove, sync); composer `/` popup runs `use_skill` for skill names as the TUI does |
 | `/login`, `/logout`, `LoginFinished` | Settings › Connections: providers + OAuth MCP servers, Login opens the URL via the opener plugin, row flips on `LoginFinished` |
 | `/provider`, `/provider add`, `/provider rm` | Settings › Connections › Gateways: table + add form (name, base URL, key; key never echoed) |
@@ -209,7 +211,7 @@ Every row is an `Api` call already present unless marked **new** (§7).
 | steer while streaming + `◇ queued` chips + ⌥↑ withdraw | typing while streaming sends `steer(session, text, client id)`; chips above the composer with an × (`withdraw`) and click-to-edit (withdraw into the composer) |
 | Shift+Enter newline, Enter send | same |
 | paste → `[⎘ paste N]` token over 5 lines / 400 chars | same tokens, same expansion at submit (`pastes.ts`) |
-| Ctrl+V image → PNG in `<data_dir>/attachments`, dropped paths | paste/drop of image or PDF → **Tauri command** `save_attachment(bytes, ext)` (same sha16 path convention; `data_dir` from `info()`); native drag-drop paths are passed straight through; thumbnails inline in the bubble; text-only model warning from `ModelInfo.image` |
+| Ctrl+V image → PNG in `<data_dir>/attachments`, dropped paths | paste/drop of image or PDF → `put_attachment(bytes, ext)` over RPC (31 §6.4; same sha16 path convention); native drag-drop paths are passed straight through; thumbnails inline in the bubble; text-only model warning from `ModelInfo.image` |
 | Ctrl+O toggle newest card | click any collapsible; ⌘⇧O is New chat here (ChatGPT binding) |
 | PgUp/PgDn, ↑/↓ scroll, anchored scrolling during streaming | native scroll; stick-to-bottom with ChatGPT's "scroll to bottom" arrow when the user has scrolled up |
 | `/quit` | tray › Quit, ⌘Q: RPC `shutdown` if we launched the daemon, then close the pty (18 §7 step 3); a reused daemon is left running |
@@ -226,6 +228,7 @@ ChatGPT affordances with no TUI counterpart:
 | search chat contents | yes since 26: ⌘K asks `search_sessions` (nucleo, fzf syntax) over titles and user/assistant messages; snippet with the matched ranges marked. Was titles-only in v0. |
 | light / dark / system theme | Settings › General, default system (`prefers-color-scheme`), tokens from §2.4 |
 | shortcuts dialog `⌘/` | yes, the table in §2.4 plus ours (⌥Space toggle window) |
+| connect to another harness | yes (31): a phone, a browser tab or this app pairs with a harness through the relay and switches between paired harnesses; Settings › Link lists, renames and revokes devices |
 
 ## 4. Shape
 
@@ -259,7 +262,7 @@ crates/desktop/                 Tauri crate (workspace member by glob; kind: app
   icons/                        template tray icon (monochrome), app icon (plain glyph, no wordmark)
   src/main.rs                   Builder: plugins, tray, activation policy, window show/hide, quit sequence
   src/launch.rs                 18 §7 step 1: probe → spawn on pty → drain transcript → wait for port
-  src/commands.rs               #[tauri::command]: connection(), launch_log(), save_attachment(), relaunch()
+  src/commands.rs               #[tauri::command]: connection(), launch_log(), relaunch()  (save_attachment() removed in 31 §6.4: attachments go over RPC)
   ui/                           Vite app (bun)
     package.json, vite.config.ts, tsconfig.json, components.json (shadcn), tailwind.css (tokens)
     src/rpc/client.ts           WebSocket JSON-RPC client + subscription demux
@@ -274,7 +277,7 @@ crates/desktop/                 Tauri crate (workspace member by glob; kind: app
     src/components/chat/        Transcript, Message{User,Assistant,Reasoning,Tool,Job,Peer,Divider,Error},
                                 Composer, QueuedChips, ApprovalCard, ScrollToBottom, ModelMenu, ContextMeter
     src/components/sidebar/     SessionList, SessionItem (menu: rename, copy id, harvest, prompt, jobs), AgentTree, SearchDialog
-    src/components/settings/    General, Approvals, Tools (MCP), Skills, Harnesses, Connections, Channels
+    src/components/settings/    General, Approvals, Tools (MCP), Skills, Agents (ACP; "Harnesses" before 31), Connections, Channels, Link
     src/components/knowledge/   Tree, Document, Editor, Backlinks, History, SearchBox
     src/components/launch/      StartupScreen (pty transcript, 18 §4 timeout message, Relaunch)
 ```
@@ -487,12 +490,14 @@ behaviour.
 | `export.rs` list | add `LoginInfo`, `ProviderInfo`, `AgentInfo`, `AgentState`, `LoginFinished`, `Info`, `TitleChanged` (via `AgentEvent`) | bindings were incomplete |
 | `bindings/methods.json` | `export_bindings` also writes `Server::into_rpc().method_names()` sorted | a vitest asserts `api.ts` keys == this list, both directions; the only drift check we need (no method-signature codegen) |
 
-Not added, with the reason: `delete_session` (§3 table), bytes upload
-(same host; `save_attachment` is a Tauri command),
+Not added, with the reason: `delete_session` (§3 table),
 `SessionCreated` event (the `send_input` reply carries the id; a foreign
 client's new session shows up on its first `TurnStarted`), a desktop
 `UserSink` for `message_user` (24 targets out-of-band channels; the desktop
-is in-band - the transcript is where the agent talks to the user).
+is in-band - the transcript is where the agent talks to the user). Bytes
+upload was "not added, same host" here; 31 §6.4 reversed that with
+`put_attachment`/`get_attachment` once the client could be a phone, and
+the `save_attachment` Tauri command went with it.
 
 `docs/plugins.md` §"Commands" procedure applies: trait + impl, export
 list, `methods.json`. `TitleChanged` is an `AgentEvent` variant, so the

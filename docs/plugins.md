@@ -15,6 +15,7 @@ A plugin is a workspace crate that exports one type implementing `runtime::Plugi
 | A pure library with no actors, no config, no events (`models`, `markdown`, `oauth`, `cursor`) | a library crate, listed in 00 §10 as such | nothing to start, nothing to subscribe |
 | A subsystem with its own state on disk, its own actor(s), its own tools and/or events, its own config section (`knowledge`, `signal`, `tools`, `rpc`, `tui`) | **a plugin** | this guide |
 | Another frontend (Tauri) | RPC client of `Api`; not a plugin | |
+| A network peer that authenticates itself with keys and proxies `Api` (a phone through a relay) | **a plugin** (`link`, 31) | it owns state (identity, `devices.yaml`), an actor, config and events; the peer's requests are dispatched in-process, see §4 |
 
 Two tests. *Does it need to exist before `main` starts anything else?* — no plugin does; if yours does, it is part of `runtime` or the binary, and that needs a written reason. *Could a user turn it off and still have a working harness?* — a plugin can be left out of the vector or disabled by its config; if the answer is no, it is not a plugin, it is the loop.
 
@@ -237,6 +238,8 @@ Order of edits once the crate compiles on its own.
 
 1. **`crates/wth/src/main.rs`** — one line in the plugin vector: `Box::new(foo::FooPlugin)`. Position is convention only (tools first, frontends last); nothing may depend on it. `wth/Cargo.toml` gains the dep.
 2. **Commands** — add the method to `trait Api` + `impl ApiServer` in `crates/rpc/src/api.rs` (`#[method(name = "foo_ping")]`; lookup + one `ask`, through a small `fn foo() -> RpcResult<ActorRef<FooActor>>` next to `knowledge()`). That is the whole command list; the TUI calls it in-process, Tauri over the socket. Events: each wire-visible event into `bridge.rs`'s `forward!(…)` **and** its `rt.subscribe` line; each wire type into `export.rs` for `just ts`; `rpc`'s `ts` feature forwards to `foo/ts`.
+
+   A plugin that serves `Api` on a socket it owns does not add a second server: it asks `rpc::methods(rt)` for the `jsonrpsee::Methods` once and dispatches each request text with `Methods::raw_json_request` (the `link` plugin, 31 §6.2; `crates/link/src/conn.rs`). The bridge behind it is per-process (`bridge::start` finds the `"rpc.events"` actor before spawning one), so both the socket and the plugin share one event stream. Writing a lookup+ask of your own is still the thing not to do.
 3. **TUI** (`crates/tui`) — `Command`/`UiEvent` variants in `model.rs` (UI intent), the arm in `execute` calling the `Api` method, the slash entry in `model::COMMANDS`, rendering in `ui.rs`; subscribe the TUI `Bridge` to your event if the transcript shows it. Menus are modal like the approval box; approvals take precedence (02 §4).
 4. **Signal** (`crates/signal`) — only if the phone needs it; slash commands there mirror the TUI.
 5. **Docs** — your design doc's Status section; 00 §10 line; README crate list and the `TUI:` paragraph; `docs/design/02` if you add a menu.

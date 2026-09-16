@@ -19,7 +19,13 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
@@ -48,7 +54,11 @@ const RISKS: [Exclude<Gate, 'off'>, string][] = [
   ['mutating', 'Mutating'],
   ['destructive', 'Destructive'],
 ]
-const RISK_NAME: Record<Risk, string> = { read_only: 'read-only', mutating: 'mutating', destructive: 'destructive' }
+const RISK_NAME: Record<Risk, string> = {
+  read_only: 'read-only',
+  mutating: 'mutating',
+  destructive: 'destructive',
+}
 
 /** The mutations every server and tool row shares; owned by `Tools`. */
 type Actions = {
@@ -67,12 +77,15 @@ function useMcpActions(session: string | null): Actions {
   const keys = [queryKeys.mcp(session), queryKeys.mcp(null)]
   return {
     gate: useAction(
-      (v: { server: string; tool: string | null; gate: Gate | null }) => api.set_mcp_gate(v.server, v.tool, v.gate),
+      (v: { server: string; tool: string | null; gate: Gate | null }) =>
+        api.set_mcp_gate(v.server, v.tool, v.gate),
       { keys },
     ),
     hidden: useAction(
       (v: { names: string[]; hidden: boolean }) =>
-        session ? api.set_mcp_hidden(session, v.names, v.hidden) : Promise.reject(new Error('Open a chat first')),
+        session
+          ? api.set_mcp_hidden(session, v.names, v.hidden)
+          : Promise.reject(new Error('Open a chat first')),
       { keys },
     ),
     // ⏎ in the TUI: turning on undoes whichever switch is off; off asks for the scope.
@@ -92,8 +105,13 @@ function useMcpActions(session: string | null): Actions {
     ),
     login: useAction((server: string) => api.mcp_login(server).then((url) => openUrl(url))),
     logout: useAction((server: string) => api.mcp_logout(server), { keys }),
-    remove: useAction((server: string) => api.remove_mcp_server(server), { keys }),
-    sync: useAction((_: void) => api.sync_mcp(), { keys, onSuccess: toastSync }),
+    remove: useAction((server: string) => api.remove_mcp_server(server), {
+      keys,
+    }),
+    sync: useAction((_: void) => api.sync_mcp(), {
+      keys,
+      onSuccess: toastSync,
+    }),
     add: useAction(
       async (text: string) => {
         if (gitUrl(text)) return api.add_mcp_repo(text, null).then((r) => `Cloned ${r.name}`)
@@ -107,14 +125,22 @@ function useMcpActions(session: string | null): Actions {
 
 export function Tools({ session }: { session: string | null }) {
   const api = useApi()
-  const servers = useQuery({ queryKey: queryKeys.mcp(session), queryFn: () => api.list_mcp(session) })
+  const servers = useQuery({
+    queryKey: queryKeys.mcp(session),
+    queryFn: () => api.list_mcp(session),
+  })
   const act = useMcpActions(session)
   return (
     <Section
       title="Tools"
       actions={
         <>
-          <Button variant="ghost" size="sm" disabled={act.sync.isPending} onClick={() => act.sync.mutate(undefined)}>
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={act.sync.isPending}
+            onClick={() => act.sync.mutate(undefined)}
+          >
             <RefreshCw className={act.sync.isPending ? 'animate-spin' : undefined} />
             Sync
           </Button>
@@ -122,7 +148,9 @@ export function Tools({ session }: { session: string | null }) {
         </>
       }
     >
-      {servers.data?.length === 0 && <Empty>No servers. Add one with a git URL or a JSON entry.</Empty>}
+      {servers.data?.length === 0 && (
+        <Empty>No servers. Add one with a git URL or a JSON entry.</Empty>
+      )}
       {servers.data?.map((s) => (
         <ServerRow key={s.name} server={s} session={session} act={act} />
       ))}
@@ -141,7 +169,7 @@ function AddPopover({ add }: { add: Actions['add'] }) {
           Add
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-[380px] space-y-2">
+      <PopoverContent align="end" className="w-[min(380px,calc(100vw-2rem))] space-y-2">
         <p className="text-sm text-fg-secondary">A git URL to clone, or one server as JSON.</p>
         <Textarea
           value={text}
@@ -149,7 +177,9 @@ function AddPopover({ add }: { add: Actions['add'] }) {
           rows={5}
           spellCheck={false}
           className="font-mono text-xs"
-          placeholder={'https://github.com/org/server.git\n{"name": {"command": "npx", "args": ["-y", "…"]}}'}
+          placeholder={
+            'https://github.com/org/server.git\n{"name": {"command": "npx", "args": ["-y", "…"]}}'
+          }
         />
         <div className="flex justify-end">
           <Button
@@ -172,7 +202,15 @@ function AddPopover({ add }: { add: Actions['add'] }) {
   )
 }
 
-function ServerRow({ server: s, session, act }: { server: McpServer; session: string | null; act: Actions }) {
+function ServerRow({
+  server: s,
+  session,
+  act,
+}: {
+  server: McpServer
+  session: string | null
+  act: Actions
+}) {
   const [open, setOpen] = useState(false)
   const sw = serverSwitch(s)
   const live = s.tools.some((t) => t.registered !== null)
@@ -186,13 +224,25 @@ function ServerRow({ server: s, session, act }: { server: McpServer; session: st
           : '○ not connected'
   const sessionHint = !session ? 'Open a chat first' : !live ? 'Not connected' : undefined
   return (
-    <Collapsible open={open} onOpenChange={setOpen} className="border-b border-border-subtle py-3 last:border-0">
+    <Collapsible
+      open={open}
+      onOpenChange={setOpen}
+      className="border-b border-border-subtle py-3 last:border-0"
+    >
       <div className="flex items-center gap-3">
         <CollapsibleTrigger asChild>
-          <button type="button" className="flex min-w-0 flex-1 items-center gap-2 text-left" disabled={s.tools.length === 0}>
-            <ChevronRight className={`size-4 shrink-0 text-fg-tertiary transition-transform ${open ? 'rotate-90' : ''}`} />
+          <button
+            type="button"
+            className="flex min-w-0 flex-1 items-center gap-2 text-left"
+            disabled={s.tools.length === 0}
+          >
+            <ChevronRight
+              className={`size-4 shrink-0 text-fg-tertiary transition-transform ${open ? 'rotate-90' : ''}`}
+            />
             <span className="wrap-anywhere text-sm font-medium">{s.name}</span>
-            <span className="shrink-0 text-[13px] text-fg-tertiary">{s.connected ? `${s.tools.length} tools` : '–'}</span>
+            <span className="shrink-0 text-[13px] text-fg-tertiary">
+              {s.connected ? `${s.tools.length} tools` : '–'}
+            </span>
             {s.repo && (
               <Badge variant="outline" className="shrink-0 font-normal">
                 ⟳ {s.repo}
@@ -211,13 +261,16 @@ function ServerRow({ server: s, session, act }: { server: McpServer; session: st
             <AlertDialogHeader>
               <AlertDialogTitle>Remove {s.name}?</AlertDialogTitle>
               <AlertDialogDescription>
-                Its entry is deleted from the config file, or disabled when the file holds other servers
+                Its entry is deleted from the config file, or disabled when the file holds other
+                servers
                 {s.repo ? '; the clone stays on disk' : ''}.
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
               <AlertDialogCancel>Cancel</AlertDialogCancel>
-              <AlertDialogAction onClick={() => act.remove.mutate(s.name)}>Remove</AlertDialogAction>
+              <AlertDialogAction onClick={() => act.remove.mutate(s.name)}>
+                Remove
+              </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
@@ -248,7 +301,9 @@ function ServerRow({ server: s, session, act }: { server: McpServer; session: st
           <Button
             variant="outline"
             size="sm"
-            onClick={() => (s.auth === 'required' ? act.login.mutate(s.name) : act.logout.mutate(s.name))}
+            onClick={() =>
+              s.auth === 'required' ? act.login.mutate(s.name) : act.logout.mutate(s.name)
+            }
           >
             {s.auth === 'required' ? 'Login' : 'Logout'}
           </Button>
@@ -289,12 +344,18 @@ function ToolRow({
       </div>
       <div className="flex shrink-0 items-center gap-3">
         <span className="text-[13px] text-fg-tertiary">{risk}</span>
-        <GateSelect value={t.gate} off onChange={(gate) => act.gate.mutate({ server, tool: t.name, gate })} />
+        <GateSelect
+          value={t.gate}
+          off
+          onChange={(gate) => act.gate.mutate({ server, tool: t.name, gate })}
+        />
         <Switch
           checked={!t.hidden}
           disabled={!session || t.registered === null}
           title={!session ? 'Open a chat first' : undefined}
-          onCheckedChange={(v) => t.registered && act.hidden.mutate({ names: [t.registered], hidden: !v })}
+          onCheckedChange={(v) =>
+            t.registered && act.hidden.mutate({ names: [t.registered], hidden: !v })
+          }
         />
       </div>
     </div>

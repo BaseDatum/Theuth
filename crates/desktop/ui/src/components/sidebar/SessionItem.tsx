@@ -21,6 +21,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { SidebarMenuAction, SidebarMenuButton } from '@/components/ui/sidebar'
+import { touch } from '@/lib/hotkeys'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { SelectMode } from '@/lib/selection'
 import { cn } from '@/lib/utils'
@@ -100,7 +101,7 @@ export const SessionItem = memo(function SessionItem({
               params={{ session: id }}
               title={shown}
               onClick={(e) => {
-                if (selecting || e.metaKey || e.shiftKey) {
+                if (!touch() && (selecting || e.metaKey || e.shiftKey)) {
                   e.preventDefault()
                   select(id, e.shiftKey ? 'range' : 'toggle')
                 } else {
@@ -129,8 +130,12 @@ export const SessionItem = memo(function SessionItem({
             </DropdownMenuTrigger>
             <DropdownMenuContent side="right" align="start" className="w-48">
               <DropdownMenuItem onSelect={() => setEditing(shown)}>Rename</DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => select(id, 'toggle')}>{selected ? 'Deselect' : 'Select'}</DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => void navigator.clipboard.writeText(id)}>Copy id</DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => select(id, 'toggle')}>
+                {selected ? 'Deselect' : 'Select'}
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => void navigator.clipboard.writeText(id)}>
+                Copy id
+              </DropdownMenuItem>
               <DropdownMenuItem variant="destructive" onSelect={() => setConfirming(true)}>
                 Delete
               </DropdownMenuItem>

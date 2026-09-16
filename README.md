@@ -14,6 +14,8 @@ just run -- --resume <id>  # reopen a session
 just run -- -p "prompt"    # print mode: stream the reply, exit when the turn ends
 echo "prompt" | just run -- -p   # same, prompt from stdin
 just run -- --link-signal --owner +15551234567   # pair as a Signal linked device (one-shot QR), then run --headless
+just run -- --link             # pair a phone with the running daemon (one-shot QR + key); needs `wth --headless` on this box
+just relay                     # local wth-relay on 127.0.0.1:8787 for link development; `just web-build` builds the browser UI it serves
 just run -- --slack-setup      # create the Slack app from the manifest, verify tokens, write config; then run --headless
 just run -- --slack-manifest   # manual path: print the Slack app manifest for api.slack.com/apps → From a manifest
 just run -- --acp          # Agent Client Protocol on stdio: use wth from Zed/editors (agent_servers: {"wth": {"command": "wth", "args": ["--acp"]}})
@@ -73,12 +75,17 @@ merged by RRF with SERP features — [`docs/design/16-web.md`](docs/design/16-we
 over the bus), `acp` (external
 harnesses over the Agent Client Protocol: agents.yaml, registry, harness
 connection), `signal` (phone frontend
-over Signal messenger), `slack` (Slack frontend over Socket Mode), `rpc` (jsonrpsee), `tui` (iocraft), `wth` (binary).
+over Signal messenger), `slack` (Slack frontend over Socket Mode), `rpc` (jsonrpsee),
+`link` (drive the harness from a phone or browser through a relay: Noise
+end-to-end encryption, pairing QR, device registry —
+[`docs/design/31-link.md`](docs/design/31-link.md)), `relay` (the `wth-relay`
+binary: a stateless relay that copies encrypted frames between one harness
+and its devices), `tui` (iocraft), `wth` (binary).
 
 Config (`~/.wth/`, created on first run; details in
 [`docs/design/01-config-and-subagents.md`](docs/design/01-config-and-subagents.md) §1):
 
-- `config.yaml` — every plugin reads its own section; `WTH_<SECTION>__<KEY>` env overrides. `agent.model` is a models.dev id (`anthropic/claude-sonnet-4-5`); `/model` rewrites that one line in place. The `agent`, `tools`, `knowledge`, `web`, `search_providers`, `browser`, `computer` and `slack` sections with their defaults:
+- `config.yaml` — every plugin reads its own section; `WTH_<SECTION>__<KEY>` env overrides. `agent.model` is a models.dev id (`anthropic/claude-sonnet-4-5`); `/model` rewrites that one line in place. The `agent`, `tools`, `knowledge`, `web`, `search_providers`, `browser`, `computer`, `link` and `slack` sections with their defaults:
 
   ```yaml
   agent:
@@ -120,6 +127,11 @@ Config (`~/.wth/`, created on first run; details in
   computer:                       # design doc 27
     enabled: true                 # the OS permission prompts are the consent; actions still ask (tools.policy)
     max_edge: 1568                # long edge of a screenshot after logical scaling (17 §1; ~1280 for Anthropic click accuracy)
+  link:                           # design doc 31; `/link on`, Settings › Link or hand-edit
+    enabled: false                # the uplink dials out; nothing listens
+    relay: wss://relay.wth.rwx.dev   # self-host: your `wth-relay` URL
+    name: ""                      # display name in the QR and on devices; "" → hostname
+    max_devices: 16
   slack:
     # owner: U0123456789           # owner-only commands, may click any approval, receives unbound approvals
     allowed: []                    # more user ids; each owns their threads
@@ -237,7 +249,7 @@ chatgpt.com and does everything the TUI does over the JSON-RPC socket —
 sessions in a sidebar with the subagent tree under the open one, streamed
 markdown with tool cards, inline approvals, steering chips, attachments,
 the same slash commands, a settings dialog for models, approvals, MCP,
-skills, harnesses, logins, gateways and channels, and a knowledge explorer
+skills, ACP agents, logins, gateways, channels and linked devices, and a knowledge explorer
 with working links and a raw editor; a globe in the chat header opens a live
 view of the agent's browser while it works. It has no Dock icon; the tray icon or
 ⌥Space toggles the window. On launch it reuses a running `wth --serve` on
@@ -246,3 +258,38 @@ pseudo-terminal through your login shell so the daemon has exactly the
 environment a terminal would (design doc 18). `just desktop` runs it
 against `target/debug/wth`; `just package-macos` produces `wth.app`. See
 [`docs/design/25-desktop.md`](docs/design/25-desktop.md).
+
+## Link
+
+Drive the harness from a phone (or any browser) without opening a port.
+Pair in three steps:
+
+1. Run the daemon with link on: set `link.enabled: true` (or `/link on` in
+   the TUI, or the toggle in the desktop app's Settings › Link) and start
+   `wth --headless`.
+2. Show a pairing code: `wth --link` on the same machine, `/link pair` (or
+   `/link` then `p`) in the TUI, or Settings › Link › Pair a device. It is
+   a QR of `https://<relay>/link#1.…` plus the same string as text, valid
+   for a few minutes; the secret is in the URL fragment, which the relay
+   never receives.
+3. Scan it with the phone's camera, open the URL, or paste the string into
+   the app's Add harness screen. A phone without the app lands on the page
+   the relay serves and pairs there; the desktop app pairs the same way to
+   drive another machine. Devices are listed, renamed and revoked from
+   `/link` or Settings › Link.
+
+Self-host the relay (the default `link.relay` is the operator's; any
+`wth-relay` works):
+
+```sh
+just web-build                                                             # browser UI → crates/desktop/ui/dist
+cargo run -p relay -- --listen 0.0.0.0:8787 --web crates/desktop/ui/dist   # plain; put TLS in front or add --tls CERT KEY
+RELAY_HOST=relay.example.com docker compose -f deploy/relay/compose.yaml up -d   # or: relay + Caddy with automatic TLS
+# then in config.yaml: link.relay: wss://relay.example.com
+```
+
+The relay keeps no state and no accounts: everything after the WebSocket
+upgrade is Noise-encrypted end to end between your device and your harness,
+so the relay (ours or anyone's) sees ciphertext, frame sizes, timing, IP
+addresses and the harness id — never your messages, keys or which device
+is connected. Design: [`docs/design/31-link.md`](docs/design/31-link.md).

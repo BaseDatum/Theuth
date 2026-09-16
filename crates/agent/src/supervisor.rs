@@ -40,13 +40,13 @@ use crate::user::{MessageUserTool, USER_ACTOR, UserChannels};
 use crate::{
     AGENT_ACTOR, AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentConfig, AgentEvent, AgentInfo,
     AgentState, AncestorInfo, Ancestors, Cancel, Compact, CompactStyle, DeleteSession, EditTurn,
-    ForkSession, GetCompactStyle, GetTitleModel, Harvest, HistoryEntry, ListAcp, ListAgents,
-    ListLogins, ListModels, ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills,
-    LoadSession, LoadSkill, Loaded, Login, LoginFinished, LoginInfo, Logout, ModelInfo, NewSession,
-    ProviderInfo, QueuedInput, Redo, Regenerate, RemoveAcp, RemoveProvider, RemoveSkill,
-    RemoveSkillRepo, RenameSession, SearchSessions, SendInput, SessionSummary, SetCompactStyle,
-    SetEffort, SetModel, SetTitleModel, ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo,
-    UseSkill, Withdraw, effort_of,
+    ForkSession, GetCompactStyle, GetSubagentTimeout, GetTitleModel, Harvest, HistoryEntry,
+    ListAcp, ListAgents, ListLogins, ListModels, ListProviders, ListQueued, ListRegistry,
+    ListSessions, ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginFinished, LoginInfo,
+    Logout, ModelInfo, NewSession, ProviderInfo, QueuedInput, Redo, Regenerate, RemoveAcp,
+    RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession, SearchSessions, SendInput,
+    SessionSummary, SetCompactStyle, SetEffort, SetModel, SetSubagentTimeout, SetTitleModel,
+    ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw, effort_of,
 };
 use crate::{frame, repl, search, spill};
 
@@ -928,6 +928,37 @@ impl Message<GetCompactStyle> for Agents {
         _: &mut Context<Self, Self::Reply>,
     ) -> CompactStyle {
         *self.compact_style.read().unwrap_or_else(|p| p.into_inner())
+    }
+}
+
+impl Message<SetSubagentTimeout> for Agents {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        m: SetSubagentTimeout,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<(), String> {
+        Arc::make_mut(&mut self.cfg).subagents.max_runtime_secs = m.seconds;
+        let path = self.rt.data_dir.join("config.yaml");
+        if let Err(e) = runtime::write_nested_config_value(
+            &path,
+            "agent",
+            "subagents",
+            "max_runtime_secs",
+            &m.seconds.to_string(),
+        ) {
+            tracing::warn!("config.yaml: {e}");
+        }
+        Ok(())
+    }
+}
+
+impl Message<GetSubagentTimeout> for Agents {
+    type Reply = u64;
+
+    async fn handle(&mut self, _: GetSubagentTimeout, _: &mut Context<Self, Self::Reply>) -> u64 {
+        self.cfg.subagents.max_runtime_secs
     }
 }
 

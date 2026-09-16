@@ -6,6 +6,7 @@ import type { AskResolved } from '@/rpc/bindings/AskResolved'
 import type { BrowserEvent } from '@/rpc/bindings/BrowserEvent'
 import type { JobEvent } from '@/rpc/bindings/JobEvent'
 import type { KnowledgeChanged } from '@/rpc/bindings/KnowledgeChanged'
+import type { LinkEvent } from '@/rpc/bindings/LinkEvent'
 import type { McpProgress } from '@/rpc/bindings/McpProgress'
 import type { SignalEvent } from '@/rpc/bindings/SignalEvent'
 import type { SlackEvent } from '@/rpc/bindings/SlackEvent'
@@ -39,4 +40,5 @@ export type WireEvent =
   | SignalEvent
   | SlackEvent
   | KnowledgeChanged
+  | LinkEvent
   | Lagged

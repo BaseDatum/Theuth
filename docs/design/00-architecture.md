@@ -369,6 +369,16 @@ Rejected: raw bus envelope over the wire (couples internal type layout to the
 wire, no request semantics without reinventing JSON-RPC); `tonic` (no
 webview story without grpc-web).
 
+**Second in-process consumer.** The `link` plugin (31) dispatches each
+decrypted device request into the same `jsonrpsee::Methods` the socket
+serves, through `Methods::raw_json_request` (`rpc::methods(rt)` builds it;
+`crates/link/src/conn.rs`) — no loopback socket, no token, no second
+serialization. So `rpc::bridge::start` is idempotent: the one `Bridge` per
+process is registered as `"rpc.events"` and looked up before it is spawned.
+`put_attachment(bytes, ext)` / `get_attachment(path)` are `Api` methods
+(base64; `<data_dir>/{attachments,browser,computer}` only) because a phone
+is not on the harness host (31 §6.4).
+
 **ACP.** `wth --acp` speaks the Agent Client Protocol on stdio
 (`rpc::AcpPlugin`, `crates/rpc/src/acp.rs`): the same actor lookups as the
 methods above, a bus-subscribed `Relay` translating
@@ -516,6 +526,8 @@ crates/
   computer/           plugin: screenshot + pointer/keyboard tools (27)
   surface/            library: json-render spec, jsonrepair parse, located validation, terminal rendering of json-render and Mermaid (merman), flatten for text channels, prompt block + visualize skill (30)
   rpc/                plugin: jsonrpsee server, event subscription bridge (§7)
+  link/               plugin: relay uplink, Noise pairing and sessions, device registry (31)
+  relay/              bin: wth-relay, stateless encrypted-frame relay (31)
   tui/                plugin: iocraft frontend (§8)
   desktop/            app: Tauri menubar frontend, RPC client of `Api` - not a plugin (designed in 25)
   wth/                bin: config load, plugin list from CLI flags, run (§2)
@@ -528,7 +540,9 @@ the `wth` bin; the rest were added by the docs named beside them, each as the ki
 `--headless`. Budget: `runtime` ≤ 400 lines. `agent` is the loop and what
 the loop must own (store, frame, compact, repl); frontends do not grow it.
 New subsystems earn a plugin. `agent/src/lib.rs` re-exports; command structs
-live next to the handler that answers them (12 §8).
+live next to the handler that answers them (12 §8). Dependency order among
+the frontends: `… ← rpc ← link ← tui ← wth` (`tui` renders `link`'s status
+and QR; `wth` hands `link` the `rpc::methods` factory).
 
 Workspace dependencies (versions verified 2026-09-09 via `cargo info`):
 
@@ -561,6 +575,12 @@ Workspace dependencies (versions verified 2026-09-09 via `cargo info`):
 | xcap | 0.9 (no default features) | display enumeration; capture off-macOS (27) |
 | enigo | 0.6 | mouse/keyboard simulation (27) |
 | image | 0.25 (png) | resize + PNG for screenshots (27; ends 13 §0.4's avoidance) |
+| snow | 0.10 | Noise `IKpsk2`/`IK` on the harness side (31) |
+| tokio-tungstenite | 0.30 | relay uplink WebSocket client (31) |
+| axum / axum-server | 0.8 / 0.8 | `wth-relay` HTTP + WebSocket, `--tls` (31) |
+| tower-http | 0.6 | relay: static UI bundle, CSP header (31) |
+| dashmap | 6 | relay: harness id → uplink table (31) |
+| rand | 0.9 | pairing secrets, relay cookie secret (31) |
 | wiremock | 0.6 dev | provider contract tests |
 
 Build prerequisites (23 §9): `cmake`, `clang`/`libclang` and `llvm-objcopy`/`llvm-nm` (brew `llvm`) for BoringSSL
@@ -659,6 +679,7 @@ Each phase ends with a runnable check, not a test suite.
 | 16 | session search (26) | `search_sessions` over a real store ranks the expected session first with a highlighted snippet; ⌘K and `/search` show it | done 2026-09-15 (26 §8) |
 | 17 | computer (27) | composite screenshot of two displays described; TextEdit typed into and verified from the PNG; a click on display 2 lands | done 2026-09-15 (screenshot + open/key/type/refusal smoked on two displays; live click aborted by the user mid-turn, mapping unit-tested only; 27 §13) |
 | 18 | rewind (29): edit, regenerate, fork | 29 §9 checks 1–6 headless, 7–8 in both UIs | in progress 2026-09-15 |
+| 19 | link (31): phone/browser drives the harness through a stateless relay, Noise E2E, same JSON-RPC | 31 §12 | done 2026-09-15 (relay + headless + `wth --link` QR; browser paired IKpsk2, reconnected IK, no secrets in storage; device script paired/reconnected/revoked; relay restart re-registers <4 s; TUI `/link` card and badge in a pty; iOS build, camera scan and 31 §11 bench not run; 31 §13) |
 
 Known gaps carried forward: cancel/error paths in the loop are code-reviewed,
 not smoke-tested; the `Jobs` actor kills every process group on shutdown

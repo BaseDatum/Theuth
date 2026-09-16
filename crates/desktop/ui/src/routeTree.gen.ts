@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as KnowledgeRouteImport } from './routes/knowledge'
+import { Route as LinkRouteImport } from './routes/link'
 import { Route as CSessionRouteImport } from './routes/c.$session'
 import { Route as KnowledgeSplatRouteImport } from './routes/knowledge.$'
 import { Route as SettingsTabRouteImport } from './routes/settings.$tab'
@@ -23,6 +24,11 @@ const IndexRoute = IndexRouteImport.update({
 const KnowledgeRoute = KnowledgeRouteImport.update({
   id: '/knowledge',
   path: '/knowledge',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LinkRoute = LinkRouteImport.update({
+  id: '/link',
+  path: '/link',
   getParentRoute: () => rootRouteImport,
 } as any)
 const CSessionRoute = CSessionRouteImport.update({
@@ -44,6 +50,7 @@ const SettingsTabRoute = SettingsTabRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/knowledge': typeof KnowledgeRouteWithChildren
+  '/link': typeof LinkRoute
   '/c/$session': typeof CSessionRoute
   '/knowledge/$': typeof KnowledgeSplatRoute
   '/settings/$tab': typeof SettingsTabRoute
@@ -51,6 +58,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/knowledge': typeof KnowledgeRouteWithChildren
+  '/link': typeof LinkRoute
   '/c/$session': typeof CSessionRoute
   '/knowledge/$': typeof KnowledgeSplatRoute
   '/settings/$tab': typeof SettingsTabRoute
@@ -59,6 +67,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/knowledge': typeof KnowledgeRouteWithChildren
+  '/link': typeof LinkRoute
   '/c/$session': typeof CSessionRoute
   '/knowledge/$': typeof KnowledgeSplatRoute
   '/settings/$tab': typeof SettingsTabRoute
@@ -66,13 +75,25 @@ export interface FileRoutesById {
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
-    '/' | '/knowledge' | '/c/$session' | '/knowledge/$' | '/settings/$tab'
+    | '/'
+    | '/knowledge'
+    | '/link'
+    | '/c/$session'
+    | '/knowledge/$'
+    | '/settings/$tab'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/knowledge' | '/c/$session' | '/knowledge/$' | '/settings/$tab'
+  to:
+    | '/'
+    | '/knowledge'
+    | '/link'
+    | '/c/$session'
+    | '/knowledge/$'
+    | '/settings/$tab'
   id:
     | '__root__'
     | '/'
     | '/knowledge'
+    | '/link'
     | '/c/$session'
     | '/knowledge/$'
     | '/settings/$tab'
@@ -81,6 +102,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   KnowledgeRoute: typeof KnowledgeRouteWithChildren
+  LinkRoute: typeof LinkRoute
   CSessionRoute: typeof CSessionRoute
   SettingsTabRoute: typeof SettingsTabRoute
 }
@@ -99,6 +121,13 @@ declare module '@tanstack/react-router' {
       path: '/knowledge'
       fullPath: '/knowledge'
       preLoaderRoute: typeof KnowledgeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/link': {
+      id: '/link'
+      path: '/link'
+      fullPath: '/link'
+      preLoaderRoute: typeof LinkRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/c/$session': {
@@ -140,6 +169,7 @@ const KnowledgeRouteWithChildren = KnowledgeRoute._addFileChildren(
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   KnowledgeRoute: KnowledgeRouteWithChildren,
+  LinkRoute: LinkRoute,
   CSessionRoute: CSessionRoute,
   SettingsTabRoute: SettingsTabRoute,
 }

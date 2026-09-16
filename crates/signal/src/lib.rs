@@ -426,16 +426,8 @@ async fn pair(
     Ok(())
 }
 
-/// Render `url` as a unicode half-block QR code without quiet zone (09 §11).
-pub fn qr(url: &str) -> String {
-    match qrcode::QrCode::new(url) {
-        Ok(code) => code
-            .render::<qrcode::render::unicode::Dense1x2>()
-            .quiet_zone(false)
-            .build(),
-        Err(e) => format!("(qr unavailable: {e})"),
-    }
-}
+/// Unicode half-block QR without quiet zone (09 §11); one renderer, owned by `link` (31 §14).
+pub use link::qr;
 
 /// One-shot linking outside the daemon (09 §11.1): opens the store, refuses
 /// when already registered, rotates provisioning URLs per 09 §3.1 (each

@@ -12,12 +12,14 @@ import type { HarvestResult } from '@/rpc/bindings/HarvestResult'
 import type { History } from '@/rpc/bindings/History'
 import type { Hit } from '@/rpc/bindings/Hit'
 import type { InputId } from '@/rpc/bindings/InputId'
+import type { LinkStatus } from '@/rpc/bindings/LinkStatus'
 import type { JobId } from '@/rpc/bindings/JobId'
 import type { JobView } from '@/rpc/bindings/JobView'
 import type { McpProgress } from '@/rpc/bindings/McpProgress'
 import type { McpServer } from '@/rpc/bindings/McpServer'
 import type { Meta } from '@/rpc/bindings/Meta'
 import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
+import type { Pairing } from '@/rpc/bindings/Pairing'
 import type { Put } from '@/rpc/bindings/Put'
 import type { QueuedInput } from '@/rpc/bindings/QueuedInput'
 import type { RegistryAgent } from '@/rpc/bindings/RegistryAgent'
@@ -40,7 +42,14 @@ import type { AgentInfo, Info, LoadedPage, LoginInfo, ProviderInfo } from '@/rpc
 export type PermissionStatus = {
   accessibility: boolean
   screen_recording: boolean
-  displays: { index: number; name: string; main: boolean; width: number; height: number; scale: number }[]
+  displays: {
+    index: number
+    name: string
+    main: boolean
+    width: number
+    height: number
+    scale: number
+  }[]
   note: string
 }
 
@@ -69,6 +78,8 @@ export interface Api {
   /** New session with the conversation through the turn opened at `through` (all when `null`); `reply` stops at that 0-based assistant text of the turn instead. */
   fork_session(session: SessionId, through: number | null, reply: number | null): Promise<SessionId>
   get_prompt(session: SessionId | null): Promise<string>
+  /** Base64 of a file under `<data_dir>/{attachments,browser,computer}` (31 §6.4); `-32000` elsewhere. */
+  get_attachment(path: string): Promise<string>
   info(): Promise<Info>
   knowledge_delete(id: string): Promise<null>
   knowledge_get(id: string): Promise<Concept>
@@ -99,12 +110,23 @@ export interface Api {
   list_tools(): Promise<ToolSpec[]>
   load_session(session: SessionId, before: number | null, limit: number | null): Promise<LoadedPage>
   load_skill(name: string): Promise<SkillBody>
+  link_cancel_pair(): Promise<null>
+  /** Toggle the link plugin; `relay` replaces `link.relay` when not `null` (31 §6.4). */
+  link_enable(enabled: boolean, relay: string | null): Promise<null>
+  /** Start a 5-minute single-use pairing; the key is the QR payload. */
+  link_pair(): Promise<Pairing>
+  link_rename(name: string): Promise<null>
+  link_rename_device(id: string, name: string): Promise<null>
+  link_revoke_device(id: string): Promise<null>
+  link_status(): Promise<LinkStatus>
   login(provider: string): Promise<string>
   logout(provider: string): Promise<null>
   mcp_login(server: string): Promise<string>
   mcp_logout(server: string): Promise<null>
   mcp_status(): Promise<McpProgress>
   new_session(): Promise<SessionId>
+  /** Write base64 `bytes` to `<data_dir>/attachments/<sha256[..16]>.<ext>`; returns the path for `send_input.files`. */
+  put_attachment(bytes_b64: string, ext: string): Promise<string>
   redo(session: SessionId): Promise<string>
   /** Regenerate the reply to the turn opened at `turn` (29 §3); refused mid-turn. */
   regenerate(session: SessionId, turn: number): Promise<null>
@@ -128,6 +150,7 @@ export interface Api {
   set_mcp_gate(server: string, tool: string | null, gate: Gate | null): Promise<null>
   set_mcp_hidden(session: SessionId, tools: string[], hidden: boolean): Promise<null>
   set_model(session: SessionId | null, model: string): Promise<ModelInfo>
+  set_subagent_timeout(seconds: number): Promise<null>
   set_title_model(model: string | null): Promise<ModelInfo | null>
   shutdown(): Promise<null>
   signal_allow(number: string): Promise<null>
@@ -167,6 +190,7 @@ export const METHODS = [
   'delete_session',
   'edit_turn',
   'fork_session',
+  'get_attachment',
   'get_prompt',
   'info',
   'knowledge_delete',
@@ -179,6 +203,13 @@ export const METHODS = [
   'knowledge_search',
   'knowledge_sync',
   'knowledge_write',
+  'link_cancel_pair',
+  'link_enable',
+  'link_pair',
+  'link_rename',
+  'link_rename_device',
+  'link_revoke_device',
+  'link_status',
   'list_acp',
   'list_acp_registry',
   'list_agents',
@@ -199,6 +230,7 @@ export const METHODS = [
   'mcp_logout',
   'mcp_status',
   'new_session',
+  'put_attachment',
   'redo',
   'regenerate',
   'remove_acp',
@@ -216,6 +248,7 @@ export const METHODS = [
   'set_mcp_gate',
   'set_mcp_hidden',
   'set_model',
+  'set_subagent_timeout',
   'set_title_model',
   'shutdown',
   'signal_allow',

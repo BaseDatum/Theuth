@@ -30,6 +30,7 @@ search-providers = { path = "crates/search-providers" }
 browser = { path = "crates/browser" }
 computer = { path = "crates/computer" }
 surface = { path = "crates/surface" }
+link = { path = "crates/link" }
 
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "fs", "time", "io-util", "process", "signal"] }
 tokio-util = { version = "0.7", features = ["rt"] }
@@ -153,6 +154,18 @@ tauri-plugin-autostart = "2"
 tauri-plugin-positioner = { version = "2", features = ["tray-icon"] }
 tauri-plugin-window-state = "2"
 tauri-plugin-dialog = "2"
+# Link (design doc 31): the harness pairs with phones through a stateless relay.
+# snow = Noise handshakes (NK registration, IKpsk2 pairing, IK sessions; suite
+# 25519_AESGCM_SHA256 so the device side is pure WebCrypto). tokio-tungstenite =
+# harness → relay WebSocket; axum/axum-server/tower-http = the `wth-relay` server
+# (crates/relay); dashmap = its id → uplink table.
+snow = "0.10"
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
+axum = { version = "0.8", features = ["ws"] }
+axum-server = { version = "0.8", features = ["tls-rustls"] }
+tower-http = { version = "0.6", features = ["fs", "set-header"] }
+dashmap = "6"
+rand = "0.9"
 
 [workspace.lints.rust]
 missing_docs = "warn"

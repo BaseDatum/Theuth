@@ -8,7 +8,14 @@ import { Empty, Section, errorText, toastSync, useAction } from '@/components/se
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from '@/components/ui/sheet'
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+} from '@/components/ui/sheet'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { SkillMeta } from '@/rpc/bindings/SkillMeta'
 import { useSessionField } from '@/store/sessions'
@@ -16,7 +23,10 @@ import { useSessionField } from '@/store/sessions'
 export function Skills({ session }: { session: string | null }) {
   const api = useApi()
   const navigate = useNavigate()
-  const skills = useQuery({ queryKey: queryKeys.skills, queryFn: () => api.list_skills() })
+  const skills = useQuery({
+    queryKey: queryKeys.skills,
+    queryFn: () => api.list_skills(),
+  })
   const loaded = useSessionField(session ?? '', 'skills')
   const [shown, setShown] = useState<SkillMeta | null>(null)
   const [url, setUrl] = useState('')
@@ -28,7 +38,10 @@ export function Skills({ session }: { session: string | null }) {
       toast.success(`Added ${added.length} skills`)
     },
   })
-  const sync = useAction((_: void) => api.sync_skills(), { keys: [queryKeys.skills], onSuccess: toastSync })
+  const sync = useAction((_: void) => api.sync_skills(), {
+    keys: [queryKeys.skills],
+    onSuccess: toastSync,
+  })
   const run = useAction((name: string) => api.use_skill(session, name, ''), {
     onSuccess: (id) => void navigate({ to: '/c/$session', params: { session: id } }),
   })
@@ -42,7 +55,12 @@ export function Skills({ session }: { session: string | null }) {
     <Section
       title="Skills"
       actions={
-        <Button variant="ghost" size="sm" disabled={sync.isPending} onClick={() => sync.mutate(undefined)}>
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={sync.isPending}
+          onClick={() => sync.mutate(undefined)}
+        >
           <RefreshCw className={sync.isPending ? 'animate-spin' : undefined} />
           Sync
         </Button>
@@ -61,7 +79,11 @@ export function Skills({ session }: { session: string | null }) {
           placeholder="Git URL of a skills repo"
           spellCheck={false}
         />
-        <Button type="submit" variant="outline" disabled={url.trim().length === 0 || addRepo.isPending}>
+        <Button
+          type="submit"
+          variant="outline"
+          disabled={url.trim().length === 0 || addRepo.isPending}
+        >
           Add repo
         </Button>
       </form>
@@ -73,11 +95,16 @@ export function Skills({ session }: { session: string | null }) {
           onClick={() => setShown(s)}
           className="flex w-full items-center gap-3 border-b border-border-subtle py-3 text-left last:border-0 hover:bg-layer-2/60"
         >
-          <span className="w-3 shrink-0 text-center text-fg-accent" title={loaded?.includes(s.name) ? 'In this chat' : undefined}>
+          <span
+            className="w-3 shrink-0 text-center text-fg-accent"
+            title={loaded?.includes(s.name) ? 'In this chat' : undefined}
+          >
             {loaded?.includes(s.name) ? '●' : ''}
           </span>
           <span className="shrink-0 text-sm font-medium">{s.name}</span>
-          <span className="min-w-0 flex-1 truncate text-[13px] text-fg-secondary">{s.description}</span>
+          <span className="min-w-0 flex-1 truncate text-[13px] text-fg-secondary">
+            {s.description}
+          </span>
           {s.repo && (
             <Badge variant="outline" className="shrink-0 font-normal">
               {s.repo}
@@ -87,7 +114,7 @@ export function Skills({ session }: { session: string | null }) {
         </button>
       ))}
       <Sheet open={shown !== null} onOpenChange={(open) => !open && setShown(null)}>
-        <SheetContent className="flex w-[560px] flex-col sm:max-w-[560px]">
+        <SheetContent className="flex w-full flex-col sm:w-[560px] sm:max-w-[560px]">
           {shown && (
             <>
               <SheetHeader>
@@ -96,7 +123,11 @@ export function Skills({ session }: { session: string | null }) {
               </SheetHeader>
               <SkillBody name={shown.name} />
               <SheetFooter className="flex-row justify-end">
-                <Button variant="outline" disabled={remove.isPending} onClick={() => remove.mutate(shown)}>
+                <Button
+                  variant="outline"
+                  disabled={remove.isPending}
+                  onClick={() => remove.mutate(shown)}
+                >
                   Remove
                 </Button>
                 <Button disabled={run.isPending} onClick={() => run.mutate(shown.name)}>
@@ -113,7 +144,10 @@ export function Skills({ session }: { session: string | null }) {
 
 function SkillBody({ name }: { name: string }) {
   const api = useApi()
-  const body = useQuery({ queryKey: queryKeys.skill(name), queryFn: () => api.load_skill(name) })
+  const body = useQuery({
+    queryKey: queryKeys.skill(name),
+    queryFn: () => api.load_skill(name),
+  })
   return (
     <div className="min-h-0 flex-1 overflow-y-auto px-4 text-sm">
       {body.isError && <p className="text-danger">{errorText(body.error)}</p>}

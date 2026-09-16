@@ -129,6 +129,74 @@ pub fn write_config_value(
     std::fs::write(path, lines.join("\n") + "\n")
 }
 
+/// Set `section.subsection.key: value` while preserving the rest of the YAML.
+pub fn write_nested_config_value(
+    path: &Path,
+    section: &str,
+    subsection: &str,
+    key: &str,
+    value: &str,
+) -> std::io::Result<()> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e),
+    };
+    let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
+    let Some(section_start) = lines
+        .iter()
+        .position(|l| l.trim_end() == format!("{section}:"))
+    else {
+        if !lines.is_empty() {
+            lines.push(String::new());
+        }
+        lines.extend([
+            format!("{section}:"),
+            format!("  {subsection}:"),
+            format!("    {key}: {value}"),
+        ]);
+        return std::fs::write(path, lines.join("\n") + "\n");
+    };
+    let section_end = lines[section_start + 1..]
+        .iter()
+        .position(|l| l.starts_with(|c: char| !c.is_whitespace()))
+        .map_or(lines.len(), |i| section_start + 1 + i);
+    let subsection_line = format!("  {subsection}:");
+    let Some(subsection_start) = lines[section_start + 1..section_end]
+        .iter()
+        .position(|l| l.trim_end() == subsection_line)
+        .map(|i| section_start + 1 + i)
+    else {
+        lines.splice(
+            section_start + 1..section_start + 1,
+            [subsection_line, format!("    {key}: {value}")],
+        );
+        return std::fs::write(path, lines.join("\n") + "\n");
+    };
+    let subsection_end = lines[subsection_start + 1..section_end]
+        .iter()
+        .position(|l| {
+            let trimmed = l.trim_start();
+            !trimmed.is_empty() && !trimmed.starts_with('#') && l.len() - trimmed.len() <= 2
+        })
+        .map_or(section_end, |i| subsection_start + 1 + i);
+    let prefix = format!("{key}:");
+    match lines[subsection_start + 1..subsection_end]
+        .iter()
+        .position(|l| l.trim_start().starts_with(&prefix))
+    {
+        Some(i) => {
+            let line = &mut lines[subsection_start + 1 + i];
+            let indent = line.len() - line.trim_start().len();
+            let rest = &line[indent + prefix.len()..];
+            let comment = rest.find(" #").map(|c| &rest[c..]).unwrap_or("");
+            *line = format!("{}{prefix} {value}{comment}", &line[..indent]);
+        }
+        None => lines.insert(subsection_start + 1, format!("    {key}: {value}")),
+    }
+    std::fs::write(path, lines.join("\n") + "\n")
+}
+
 /// `<data_dir>/credentials.yaml` as a flat `name: key` map (design doc 01
 /// §1.1). Missing file → empty; unparsable → warn and empty; world-readable
 /// → warn. Every plugin that needs an API key reads it through here.
@@ -263,7 +331,7 @@ impl std::str::FromStr for InputId {
 
 #[cfg(test)]
 mod tests {
-    use super::write_config_value;
+    use super::{write_config_value, write_nested_config_value};
 
     #[test]
     fn write_back_edits_in_place_or_appends() {
@@ -294,6 +362,17 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             "agent:\n  model: x/y\n  max_tool_rounds: 4\n"
+        );
+
+        std::fs::write(
+            &path,
+            "agent:\n  model: x/y\n  subagents:\n    model: z/y\n    max_runtime_secs: 600 # keep\n  compact_style: cut\n",
+        )
+        .unwrap();
+        write_nested_config_value(&path, "agent", "subagents", "max_runtime_secs", "900").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "agent:\n  model: x/y\n  subagents:\n    model: z/y\n    max_runtime_secs: 900 # keep\n  compact_style: cut\n"
         );
         std::fs::remove_dir_all(dir).unwrap();
     }

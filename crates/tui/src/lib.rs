@@ -63,6 +63,7 @@ impl runtime::Plugin for TuiPlugin {
         rt.subscribe::<Bridge, McpProgress>(&bridge).await;
         rt.subscribe::<Bridge, LoginFinished>(&bridge).await;
         rt.subscribe::<Bridge, JobEvent>(&bridge).await;
+        rt.subscribe::<Bridge, link::LinkEvent>(&bridge).await;
         let api = Arc::new(Server::new(rt.clone()));
         tokio::spawn(run_commands(api, commands_rx, events_tx));
 
@@ -131,6 +132,7 @@ forward!(
     McpProgress => McpProgress,
     LoginFinished => LoginFinished,
     JobEvent => Job,
+    link::LinkEvent => LinkEvent,
 );
 
 /// The one place commands become `rpc::Api` calls. Each command runs in its
@@ -401,6 +403,33 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
         Command::RemoveProvider(name) => {
             msg(api.remove_provider(name.clone()).await)?;
             UiEvent::Info(format!("removed provider {name}"))
+        }
+        Command::LinkStatus => UiEvent::Link(msg(api.link_status().await)?),
+        Command::LinkEnable(enabled) => {
+            msg(api.link_enable(enabled, None).await)?;
+            UiEvent::Link(msg(api.link_status().await)?)
+        }
+        Command::LinkRelay(url) => {
+            let enabled = msg(api.link_status().await)?.enabled;
+            msg(api.link_enable(enabled, Some(url)).await)?;
+            UiEvent::Link(msg(api.link_status().await)?)
+        }
+        Command::LinkPair => UiEvent::Pairing(msg(api.link_pair().await)?),
+        Command::LinkCancelPair => {
+            msg(api.link_cancel_pair().await)?;
+            UiEvent::Info("pairing cancelled".into())
+        }
+        Command::LinkRename(name) => {
+            msg(api.link_rename(name).await)?;
+            UiEvent::Link(msg(api.link_status().await)?)
+        }
+        Command::LinkRenameDevice(id, name) => {
+            msg(api.link_rename_device(id, name).await)?;
+            UiEvent::Link(msg(api.link_status().await)?)
+        }
+        Command::LinkRevoke(id) => {
+            msg(api.link_revoke_device(id).await)?;
+            UiEvent::Link(msg(api.link_status().await)?)
         }
     };
     let _ = tx.send(reply);
@@ -707,5 +736,11 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             "provider {}  {}  {} models — /model {}/<id>",
             p.name, p.base_url, p.models, p.name
         ),
+        UiEvent::Link(s) => writeln!(out, "{}", model::link_line(s)),
+        UiEvent::Pairing(p) => writeln!(out, "{}\n{}", link::qr(&p.key), p.key),
+        UiEvent::LinkEvent(link::LinkEvent::LinkPaired { device }) => {
+            writeln!(out, "paired: {}", device.name)
+        }
+        UiEvent::LinkEvent(_) => Ok(()),
     };
 }

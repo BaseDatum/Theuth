@@ -2,6 +2,8 @@ import type { UseNavigateResult } from '@tanstack/react-router'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { toast } from 'sonner'
 import { gitUrl, mcpEntry } from '@/lib/mcpEntry'
+import { container } from '@/lib/platform'
+import { LOCAL, useHarnesses } from '@/link/harnesses'
 import type { Api } from '@/rpc/api'
 import type { CompactStyle } from '@/rpc/bindings/CompactStyle'
 import type { SyncResult } from '@/rpc/bindings/SyncResult'
@@ -12,31 +14,87 @@ import { useSessions } from '@/store/sessions'
 /** Slash commands (`tui::model::COMMANDS`): name, argument hint, description. */
 export const COMMANDS: readonly { name: string; hint: string; desc: string }[] = [
   { name: '/model', hint: '[id]', desc: 'switch model (picker without id)' },
-  { name: '/title', hint: '[model|off]', desc: 'model that names sessions in the history list (off = the session\'s model)' },
-  { name: '/effort', hint: '[level|clear]', desc: 'reasoning effort (picker without arg)' },
-  { name: '/mcp', hint: '[add <url|json>|sync]', desc: 'MCP servers: on/off (this session or always), risk lines' },
-  { name: '/acp', hint: '[add <registry-id>|remove <name>]', desc: 'External harnesses (ACP) and the registry' },
-  { name: '/skills', hint: '[add <url>|rm <name>|sync]', desc: 'skills: picker; `/<skill> [words]` hands one to the model' },
-  { name: '/knowledge', hint: '[query | history [id] | restore <id> [commit] | harvest]', desc: 'knowledge base: list, search, history, restore, harvest' },
-  { name: '/login', hint: '[name]', desc: 'log in to a provider or MCP server (picker without name)' },
+  {
+    name: '/title',
+    hint: '[model|off]',
+    desc: "model that names sessions in the history list (off = the session's model)",
+  },
+  {
+    name: '/effort',
+    hint: '[level|clear]',
+    desc: 'reasoning effort (picker without arg)',
+  },
+  {
+    name: '/mcp',
+    hint: '[add <url|json>|sync]',
+    desc: 'MCP servers: on/off (this session or always), risk lines',
+  },
+  {
+    name: '/acp',
+    hint: '[add <registry-id>|remove <name>]',
+    desc: 'External harnesses (ACP) and the registry',
+  },
+  {
+    name: '/skills',
+    hint: '[add <url>|rm <name>|sync]',
+    desc: 'skills: picker; `/<skill> [words]` hands one to the model',
+  },
+  {
+    name: '/knowledge',
+    hint: '[query | history [id] | restore <id> [commit] | harvest]',
+    desc: 'knowledge base: list, search, history, restore, harvest',
+  },
+  {
+    name: '/login',
+    hint: '[name]',
+    desc: 'log in to a provider or MCP server (picker without name)',
+  },
   { name: '/logout', hint: '<name>', desc: 'forget a login' },
   { name: '/prompt', hint: '', desc: 'show the assembled system prompt' },
   { name: '/agents', hint: '', desc: 'subagents of this session' },
-  { name: '/jobs', hint: '[kill <id>]', desc: 'list this session\'s background jobs' },
-  { name: '/parent', hint: '', desc: 'open the parent session (from a subagent)' },
+  {
+    name: '/jobs',
+    hint: '[kill <id>]',
+    desc: "list this session's background jobs",
+  },
+  {
+    name: '/parent',
+    hint: '',
+    desc: 'open the parent session (from a subagent)',
+  },
   { name: '/sessions', hint: '', desc: 'switch session (picker)' },
   { name: '/resume', hint: '<id>', desc: 'open a session' },
   { name: '/new', hint: '', desc: 'start a new session' },
-  { name: '/clear', hint: '', desc: 'drop the conversation, keep the session and its settings' },
-  { name: '/approvals', hint: '[on|off] [always]', desc: 'tool approval prompts; `always` persists to config.yaml' },
+  {
+    name: '/clear',
+    hint: '',
+    desc: 'drop the conversation, keep the session and its settings',
+  },
+  {
+    name: '/approvals',
+    hint: '[on|off] [always]',
+    desc: 'tool approval prompts; `always` persists to config.yaml',
+  },
   { name: '/cancel', hint: '', desc: 'abort the in-flight turn' },
-  { name: '/compact', hint: '[summary|cut|snap|style …]', desc: 'fold context; style sets the default' },
+  {
+    name: '/compact',
+    hint: '[summary|cut|snap|style …]',
+    desc: 'fold context; style sets the default',
+  },
   { name: '/undo', hint: '', desc: 'drop the last turn (redo restores)' },
   { name: '/redo', hint: '', desc: 'restore the last undone turn' },
   { name: '/regen', hint: '', desc: 'regenerate the reply to the last turn' },
-  { name: '/fork', hint: '', desc: 'new session with the whole conversation' },
+  {
+    name: '/fork',
+    hint: '',
+    desc: 'new session with the whole conversation',
+  },
   { name: '/quit', hint: '', desc: 'exit' },
-  { name: '/provider', hint: '[add|rm <name>]', desc: 'OpenAI-compatible providers' },
+  {
+    name: '/provider',
+    hint: '[add|rm <name>]',
+    desc: 'OpenAI-compatible providers',
+  },
   { name: '/exit', hint: '', desc: 'same as /quit' },
 ]
 
@@ -62,7 +120,9 @@ export type SettingsTab =
   | 'tools'
   | 'computer'
   | 'skills'
+  | 'agents'
   | 'harnesses'
+  | 'link'
   | 'connections'
   | 'channels'
   | 'shortcuts'
@@ -71,7 +131,11 @@ type Navigate = UseNavigateResult<string>
 
 /** Open the settings dialog on `tab`; `session` scopes the per-session switches. */
 export function settings(navigate: Navigate, tab: SettingsTab, session: string | null | undefined) {
-  return navigate({ to: '/settings/$tab', params: { tab }, search: session ? { session } : {} })
+  return navigate({
+    to: '/settings/$tab',
+    params: { tab },
+    search: session ? { session } : {},
+  })
 }
 
 export type Ctx = {
@@ -156,9 +220,12 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
     }
     case '/approvals': {
       if (!arg) return settings(navigate, 'approvals', session)
-      if (sub !== 'on' && sub !== 'off') throw new Error(`/approvals: expected on|off, got ${JSON.stringify(sub)}`)
-      if (rest && rest !== 'always') throw new Error(`/approvals: expected \`always\`, got ${JSON.stringify(rest)}`)
-      if (!rest && !session) throw new Error('no session yet: send a message first, or use `/approvals off always`')
+      if (sub !== 'on' && sub !== 'off')
+        throw new Error(`/approvals: expected on|off, got ${JSON.stringify(sub)}`)
+      if (rest && rest !== 'always')
+        throw new Error(`/approvals: expected \`always\`, got ${JSON.stringify(rest)}`)
+      if (!rest && !session)
+        throw new Error('no session yet: send a message first, or use `/approvals off always`')
       const approvals = await api.set_approvals(rest ? null : session, sub === 'on')
       const { info, setInfo } = useConnection.getState()
       if (info) setInfo({ ...info, approvals })
@@ -180,7 +247,7 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       }
       throw new Error('usage: /mcp [add <url|json> | sync]')
     case '/acp':
-      if (!arg) return settings(navigate, 'harnesses', session)
+      if (!arg) return settings(navigate, 'agents', session)
       if (sub === 'add' && rest) {
         const e = await api.add_acp(rest)
         toast(`added ${e.name}`)
@@ -202,7 +269,10 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       }
       if (sub === 'rm' && rest) {
         // A repo dir first (only removed when it holds `.git`), else a local skill.
-        const repo = await api.remove_skill_repo(rest).then(() => true, () => false)
+        const repo = await api.remove_skill_repo(rest).then(
+          () => true,
+          () => false,
+        )
         if (!repo) await api.remove_skill(rest)
         toast(repo ? `removed repo ${rest}` : `removed skill ${rest}`)
         return
@@ -211,7 +281,9 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
     case '/knowledge':
       if (!arg) return navigate({ to: '/knowledge' })
       if (sub === 'history') {
-        return rest ? navigate({ to: '/knowledge/$', params: { _splat: rest } }) : navigate({ to: '/knowledge' })
+        return rest
+          ? navigate({ to: '/knowledge/$', params: { _splat: rest } })
+          : navigate({ to: '/knowledge' })
       }
       if (sub === 'restore') {
         if (!rest) throw new Error('usage: /knowledge restore <id> [commit]')
@@ -230,7 +302,17 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       if (!arg) return settings(navigate, 'connections', session)
       // A provider name first, else an MCP server.
       const url = await api.login(arg).catch(() => api.mcp_login(arg))
-      await openUrl(url)
+      // Over link the daemon opens its own browser on the harness (31 §9); here the URL is only shown.
+      if (useHarnesses.getState().active !== LOCAL) {
+        toast.message(
+          `Sign in from the harness (${useConnection.getState().info?.name ?? 'harness'})`,
+          { description: url },
+        )
+      } else if (container() === 'macos') {
+        await openUrl(url)
+      } else {
+        window.open(url, '_blank')
+      }
       return
     }
     case '/logout':
@@ -311,7 +393,8 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       const id = need(session)
       const st = useSessions.getState()
       let turn: number | undefined
-      for (const e of st.sessions[id]?.entries ?? []) if ((e.kind === 'user' || e.kind === 'assistant') && e.turn !== undefined) turn = e.turn
+      for (const e of st.sessions[id]?.entries ?? [])
+        if ((e.kind === 'user' || e.kind === 'assistant') && e.turn !== undefined) turn = e.turn
       if (turn === undefined) throw new Error('nothing to regenerate')
       st.truncate(id, turn)
       await api.regenerate(id, turn).catch(async (e: unknown) => {
@@ -339,9 +422,12 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
 async function compact(api: Api, session: string, s: CompactStyle | null) {
   const epoch = await api.compact(session, s)
   // The `Compacted` event wipes the transcript and announces a clear.
-  if (s !== 'clear') toast(s ? `context compacted (epoch ${epoch} · ${s})` : `context compacted (epoch ${epoch})`)
+  if (s !== 'clear')
+    toast(s ? `context compacted (epoch ${epoch} · ${s})` : `context compacted (epoch ${epoch})`)
 }
 
 function synced(results: SyncResult[]) {
-  toast(results.length ? results.map((r) => `${r.name}: ${r.status}`).join('\n') : 'nothing to sync')
+  toast(
+    results.length ? results.map((r) => `${r.name}: ${r.status}`).join('\n') : 'nothing to sync',
+  )
 }

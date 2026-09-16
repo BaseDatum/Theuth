@@ -4,7 +4,13 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { useApi } from '@/lib/rpc'
 import { type Prompt, useApprovals, useAsks } from '@/store/approvals'
-import { type Activity, type Entry, useEntries, useSessionField, useSessions } from '@/store/sessions'
+import {
+  type Activity,
+  type Entry,
+  useEntries,
+  useSessionField,
+  useSessions,
+} from '@/store/sessions'
 import { Message, PromptCard } from './Message'
 import { Pulse } from './Pulse'
 
@@ -28,7 +34,11 @@ type Row = { key: string; entry: Entry; prompts: Prompt[] | null } | { key: stri
 
 /** Entries, each with the prompts waiting on its (unfinished, same-named) tool call; prompts with no such row come last. */
 function buildRows(entries: Entry[], pending: Prompt[], session: string): Row[] {
-  const rows: Row[] = entries.map((entry) => ({ key: entry.id, entry, prompts: null }))
+  const rows: Row[] = entries.map((entry) => ({
+    key: entry.id,
+    entry,
+    prompts: null,
+  }))
   const loose: Row[] = []
   for (const prompt of pending) {
     if (prompt.session !== session) continue
@@ -113,7 +123,10 @@ export function Transcript({ session }: { session: string }) {
   return (
     <div className="relative min-h-0 flex-1">
       <div ref={ref} onScroll={onScroll} className="h-full overflow-y-auto">
-        <div className="relative mx-auto w-full max-w-[768px] px-4" style={{ height: v.getTotalSize() }}>
+        <div
+          className="relative mx-auto w-full md:max-w-[768px] px-4"
+          style={{ height: v.getTotalSize() }}
+        >
           <div className="relative h-full w-full">
             {items.map((item) => {
               const row = rows[item.index]
@@ -126,14 +139,18 @@ export function Transcript({ session }: { session: string }) {
                   className="absolute top-0 left-0 w-full"
                   style={{ transform: `translateY(${item.start}px)` }}
                 >
-                  {'entry' in row ? <Message entry={row.entry} prompts={row.prompts} session={session} /> : <PromptCard prompt={row.prompt} />}
+                  {'entry' in row ? (
+                    <Message entry={row.entry} prompts={row.prompts} session={session} />
+                  ) : (
+                    <PromptCard prompt={row.prompt} />
+                  )}
                 </div>
               )
             })}
           </div>
         </div>
         {running && (
-          <div className="mx-auto flex w-full max-w-[768px] items-center gap-2 px-8 py-3 text-sm text-fg-secondary">
+          <div className="mx-auto flex w-full md:max-w-[768px] items-center gap-2 px-8 py-3 text-sm text-fg-secondary">
             <Pulse />
             {WORD[activity]}
           </div>

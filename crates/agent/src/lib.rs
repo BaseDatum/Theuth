@@ -216,6 +216,17 @@ pub struct SetCompactStyle {
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct GetCompactStyle;
 
+/// `ask` → `Result<(), String>`: persist the subagent runtime limit and use it for new turns.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct SetSubagentTimeout {
+    /// Wall-clock limit in seconds.
+    pub seconds: u64,
+}
+
+/// `ask` → `u64`: the live subagent runtime limit in seconds.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct GetSubagentTimeout;
+
 /// `ask` → `Result<Option<ModelInfo>, String>`: persist `agent.title_model` and
 /// use it for every session's next title call; `None` clears it (session model).
 #[derive(Clone, Debug, Serialize, Deserialize)]

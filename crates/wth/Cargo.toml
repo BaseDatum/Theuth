@@ -20,6 +20,9 @@ search-providers = { workspace = true }
 agent = { workspace = true }
 surface = { workspace = true }
 rpc = { workspace = true }
+link = { workspace = true }
+jsonrpsee = { workspace = true, features = ["ws-client"] }
+serde_json = { workspace = true }
 signal = { workspace = true }
 slack = { workspace = true }
 tui = { workspace = true }

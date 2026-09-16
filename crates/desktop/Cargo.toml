@@ -3,7 +3,14 @@ name = "desktop"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
-description = "macOS menubar app: Tauri shell that launches the `wth` sidecar on a pty and hosts the RPC webview"
+description = "Tauri shell: macOS menubar app that launches the `wth` sidecar on a pty, and the iOS link client; both host the RPC webview"
+
+# 31 §8.3: the Tauri iOS bridge links the app as a static library, so the
+# Builder lives in the lib and the desktop binary is a one-line shim.
+[lib]
+name = "desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+path = "src/lib.rs"
 
 [[bin]]
 name = "wth-desktop"
@@ -13,6 +20,12 @@ path = "src/main.rs"
 tauri = { workspace = true }
 tauri-plugin-opener = { workspace = true }
 tauri-plugin-notification = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Desktop only: the local daemon launcher (pty) and the menubar integrations.
+[target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
 tauri-plugin-global-shortcut = { workspace = true }
 tauri-plugin-autostart = { workspace = true }
 tauri-plugin-positioner = { workspace = true }
@@ -20,12 +33,15 @@ tauri-plugin-window-state = { workspace = true }
 tauri-plugin-dialog = { workspace = true }
 portable-pty = { workspace = true }
 anyhow = { workspace = true }
-serde = { workspace = true }
 serde_yaml = { workspace = true }
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
-sha2 = { workspace = true }
 dirs = { workspace = true }
+
+# Mobile only: QR scanning for `/link` and the universal-link handoff (31 §8.2).
+# Direct versions: these have no other consumer, so they are not in the
+# workspace dependency table.
+[target.'cfg(any(target_os = "ios", target_os = "android"))'.dependencies]
+tauri-plugin-barcode-scanner = "2"
+tauri-plugin-deep-link = "2"
 
 [build-dependencies]
 tauri-build = { workspace = true }

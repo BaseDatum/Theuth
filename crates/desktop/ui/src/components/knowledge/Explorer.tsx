@@ -9,12 +9,13 @@ import { Tree } from '@/components/knowledge/Tree'
 import { Button } from '@/components/ui/button'
 import { useSidebar } from '@/components/ui/sidebar'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { isMacDesktop } from '@/lib/hotkeys'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from 'cn'
 
 const route = getRouteApi('/knowledge')
 
-/** `/knowledge`: 300 px rail (search, tree) and the document outlet (25 §8). */
+/** `/knowledge`: 300 px rail (search, tree) and the document outlet (25 §8). Under `md` one pane at a time: the tree at `/knowledge`, the document at `/knowledge/$id`. */
 export function Explorer() {
   const api = useApi()
   const qc = useQueryClient()
@@ -36,15 +37,29 @@ export function Explorer() {
     return () => window.removeEventListener('focus', onFocus)
   }, [runSync])
 
+  const mac = isMacDesktop()
   return (
     <div className="flex min-h-0 flex-1 overflow-hidden">
-      <aside className="flex w-[300px] shrink-0 flex-col border-r border-border-subtle">
+      <aside
+        className={cn(
+          'w-full shrink-0 flex-col border-r border-border-subtle md:flex md:w-[300px]',
+          active ? 'hidden' : 'flex',
+        )}
+      >
         <header
-          data-tauri-drag-region
-          className={cn('flex h-[52px] shrink-0 items-center gap-1 px-3', !sidebar.open && 'pl-20')}
+          data-tauri-drag-region={mac || undefined}
+          className={cn(
+            'flex h-[52px] shrink-0 items-center gap-1 px-3',
+            !sidebar.open && mac && 'pl-20',
+          )}
         >
-          {!sidebar.open && (
-            <Button variant="ghost" size="icon-sm" aria-label="Show sidebar" onClick={sidebar.toggleSidebar}>
+          {(!sidebar.open || sidebar.isMobile) && (
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label="Show sidebar"
+              onClick={sidebar.toggleSidebar}
+            >
               <PanelLeft />
             </Button>
           )}
@@ -58,7 +73,8 @@ export function Explorer() {
                 disabled={sync.isPending}
                 onClick={() =>
                   sync.mutate(undefined, {
-                    onSuccess: (r) => toast(`Synced: ${r.added} added, ${r.updated} updated, ${r.removed} removed`),
+                    onSuccess: (r) =>
+                      toast(`Synced: ${r.added} added, ${r.updated} updated, ${r.removed} removed`),
                     onError: (e) => toast.error(e.message),
                   })
                 }
@@ -77,7 +93,7 @@ export function Explorer() {
           <Tree active={active} />
         </SearchBox>
       </aside>
-      <main className="flex min-w-0 flex-1">
+      <main className={cn('min-w-0 flex-1 md:flex', active ? 'flex' : 'hidden')}>
         {/* The `$` child also matches bare `/knowledge`, with an empty splat. */}
         {!active ? (
           <p className="m-auto text-sm text-fg-tertiary">Select a document</p>

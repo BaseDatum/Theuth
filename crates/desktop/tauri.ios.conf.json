@@ -1,0 +1,28 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "identifier": "wth.rwx.dev.ios",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": ""
+      }
+    ],
+    "trayIcon": null
+  },
+  "bundle": {
+    "iOS": {
+      "minimumSystemVersion": "17.0"
+    }
+  },
+  "plugins": {
+    "deep-link": {
+      "mobile": [
+        {
+          "host": "relay.wth.rwx.dev",
+          "pathPrefix": ["/link"]
+        }
+      ]
+    }
+  }
+}

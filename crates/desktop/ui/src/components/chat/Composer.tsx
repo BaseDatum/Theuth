@@ -3,15 +3,24 @@ import { useNavigate } from '@tanstack/react-router'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { open as pickFiles } from '@tauri-apps/plugin-dialog'
 import { ArrowUp, Paperclip, Plus, Square, X } from 'lucide-react'
-import { type ClipboardEvent, type KeyboardEvent, useEffect, useRef, useState } from 'react'
+import {
+  type ClipboardEvent,
+  type DragEvent,
+  type KeyboardEvent,
+  useEffect,
+  useRef,
+  useState,
+} from 'react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Textarea } from '@/components/ui/textarea'
+import { extFor, putAttachment } from '@/lib/files'
 import { attach, expand, type Pastes, prune, token, tokenize } from '@/lib/pastes'
+import { container, touch } from '@/lib/platform'
 import { queryKeys, useApi } from '@/lib/rpc'
-import { isTauri, saveAttachment } from '@/lib/tauri'
 import { cn } from '@/lib/utils'
+import { LOCAL, useHarnesses } from '@/link/harnesses'
 import { useConnection } from '@/store/connection'
 import { useSessionField, useSessions } from '@/store/sessions'
 import { Attachments } from './Attachments'
@@ -22,7 +31,15 @@ const NONE: Pastes = new Map()
 const IMAGE = /\.(png|jpe?g|gif|webp|bmp)$/i
 
 /** The slash popup: commands matching the typed word, one highlighted. */
-function SlashList({ word, selected, onPick }: { word: string; selected: number; onPick(name: string): void }) {
+function SlashList({
+  word,
+  selected,
+  onPick,
+}: {
+  word: string
+  selected: number
+  onPick(name: string): void
+}) {
   return (
     <div className="absolute bottom-full left-0 mb-2 max-h-72 w-full overflow-y-auto rounded-xl border bg-popover p-1 text-sm shadow-md">
       {matches(word).map((c, i) => (
@@ -31,7 +48,10 @@ function SlashList({ word, selected, onPick }: { word: string; selected: number;
           key={c.name}
           onMouseDown={(e) => e.preventDefault()}
           onClick={() => onPick(c.name)}
-          className={cn('flex w-full items-baseline gap-2 rounded-lg px-3 py-2 text-left', i === selected && 'bg-accent')}
+          className={cn(
+            'flex w-full items-baseline gap-2 rounded-lg px-3 py-2 text-left',
+            i === selected && 'bg-accent',
+          )}
         >
           <span className="font-mono">{c.name}</span>
           {c.hint && <span className="font-mono text-fg-tertiary">{c.hint}</span>}
@@ -48,14 +68,27 @@ function SlashList({ word, selected, onPick }: { word: string; selected: number;
  * `[⎘ …]` tokens (`lib/pastes`) expanded on submit. `/` at column 0 opens
  * the command list; other `/x` runs `use_skill`.
  */
-export function Composer({ session, draftEffort }: { session: string | null; draftEffort?: string | null }) {
+export function Composer({
+  session,
+  draftEffort,
+}: {
+  session: string | null
+  draftEffort?: string | null
+}) {
   const api = useApi()
+  const active = useHarnesses((s) => s.active)
+  // Host paths (native drop / dialog) only mean something to the daemon on this Mac.
+  const hostFiles = container() === 'macos' && active === LOCAL
+  const fileInput = useRef<HTMLInputElement>(null)
   const navigate = useNavigate()
   const running = useSessionField(session ?? '', 'running') ?? false
   const model = useSessionField(session ?? '', 'model')
   const parent = useSessionField(session ?? '', 'parent')
   const defaultModel = useConnection((s) => s.info?.default_model)
-  const { data: models } = useQuery({ queryKey: queryKeys.models, queryFn: () => api.list_models() })
+  const { data: models } = useQuery({
+    queryKey: queryKeys.models,
+    queryFn: () => api.list_models(),
+  })
   const [text, setText] = useState('')
   const [pastes, setPastes] = useState<Pastes>(NONE)
   const [selected, setSelected] = useState(0)
@@ -90,29 +123,52 @@ export function Composer({ session, draftEffort }: { session: string | null; dra
     insert(`${tokens.join(' ')} `)
     const id = model ?? defaultModel
     const info = models?.find((m) => m.id === id)
-    if (info && !info.image && paths.some((p) => IMAGE.test(p))) toast.warning(`${info.name} does not accept images`)
+    if (info && !info.image && paths.some((p) => IMAGE.test(p)))
+      toast.warning(`${info.name} does not accept images`)
   }
 
-  // One native listener for the component's life; it reads the latest handler through the ref.
-  const dropRef = useRef(addFiles)
-  dropRef.current = addFiles
+  // Uploads `blobs` through `put_attachment` (31 §9), then attaches the harness paths; image dims for the first image.
+  const addBlobs = async (blobs: (File | Blob)[]) => {
+    if (blobs.length === 0) return
+    try {
+      let dims: [number, number] | undefined
+      const first = blobs[0]
+      if (first?.type.startsWith('image/')) {
+        const bitmap = await createImageBitmap(first)
+        dims = [bitmap.width, bitmap.height]
+        bitmap.close()
+      }
+      addFiles(await Promise.all(blobs.map((b) => putAttachment(api, b, extFor(b)))), dims)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  // The macOS webview swallows HTML5 drops and reports host paths instead; one native listener for the component's life reads the latest handler through the ref.
+  const dropPaths = (paths: string[]) => {
+    if (hostFiles) addFiles(paths)
+    else toast.error('Dropped files stay on this Mac; use Attach to upload them')
+  }
+  const dropRef = useRef(dropPaths)
+  dropRef.current = dropPaths
   useEffect(() => {
-    if (!isTauri()) return
+    if (container() !== 'macos') return
     const un = getCurrentWebview().onDragDropEvent((e) => {
       if (e.payload.type === 'drop') dropRef.current(e.payload.paths)
     })
     return () => void un.then((f) => f())
   }, [])
 
+  const onDrop = (e: DragEvent) => {
+    e.preventDefault()
+    void addBlobs([...e.dataTransfer.files])
+  }
+
   const onPaste = async (e: ClipboardEvent<HTMLTextAreaElement>) => {
     const image = [...e.clipboardData.items].find((i) => i.type.startsWith('image/'))?.getAsFile()
     if (image) {
       e.preventDefault()
-      const bitmap = await createImageBitmap(image)
-      const ext = image.type === 'image/jpeg' ? 'jpg' : image.type.slice('image/'.length)
-      const path = await saveAttachment(new Uint8Array(await image.arrayBuffer()), ext)
-      addFiles([path], [bitmap.width, bitmap.height])
-      bitmap.close()
+      await addBlobs([image])
       return
     }
     const plain = e.clipboardData.getData('text/plain')
@@ -144,7 +200,10 @@ export function Composer({ session, draftEffort }: { session: string | null; dra
     parent,
     navigate,
     async reload() {
-      if (session) useSessions.getState().loadHistory(session, await api.load_session(session, null, 60), 'replace')
+      if (session)
+        useSessions
+          .getState()
+          .loadHistory(session, await api.load_session(session, null, 60), 'replace')
     },
   }
 
@@ -179,7 +238,11 @@ export function Composer({ session, draftEffort }: { session: string | null; dra
         }
         // A fresh session has nothing stored yet: mark it loaded so the route does not
         // re-fetch and drop the bubble below (its echo is skipped via `markSent`).
-        loadHistory(id, { ...FRESH, model: defaultModel ?? '', effort: draftEffort ?? null }, 'replace')
+        loadHistory(
+          id,
+          { ...FRESH, model: defaultModel ?? '', effort: draftEffort ?? null },
+          'replace',
+        )
         markSent(id, body, files)
         await navigate({ to: '/c/$session', params: { session: id } })
       }
@@ -216,16 +279,32 @@ export function Composer({ session, draftEffort }: { session: string | null; dra
         return
       }
     }
-    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+    // Fingers: Enter breaks a line and only the send button sends (31 §8.1).
+    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && !touch()) {
       e.preventDefault()
       void submit()
     }
   }
 
   return (
-    <div className="mx-auto w-full max-w-[768px] px-4 pb-4">
+    <div className="mx-auto w-full max-w-[768px] px-4 pb-2">
       {session && <QueuedChips session={session} onEdit={(t) => setText(t)} />}
-      <div className="relative rounded-[28px] border border-border-subtle bg-elevated px-2 py-[7px] shadow-sm">
+      <input
+        ref={fileInput}
+        type="file"
+        accept="image/*,application/pdf"
+        multiple
+        className="hidden"
+        onChange={(e) => {
+          void addBlobs([...(e.target.files ?? [])])
+          e.target.value = ''
+        }}
+      />
+      <div
+        className="relative rounded-[28px] border border-border-subtle bg-elevated px-2 py-[7px] shadow-sm"
+        onDragOver={(e) => e.preventDefault()}
+        onDrop={onDrop}
+      >
         {slash && slashWord && <SlashList word={slashWord} selected={selected} onPick={pick} />}
         {files.length > 0 && (
           <div className="flex flex-wrap gap-2 px-2 pt-2">
@@ -247,7 +326,11 @@ export function Composer({ session, draftEffort }: { session: string | null; dra
         <div className="flex items-end gap-1">
           <Popover>
             <PopoverTrigger asChild>
-              <Button variant="ghost" className="size-9 shrink-0 rounded-full text-fg-secondary" aria-label="Add">
+              <Button
+                variant="ghost"
+                className="size-9 shrink-0 rounded-full text-fg-secondary"
+                aria-label="Add"
+              >
                 <Plus className="size-5" />
               </Button>
             </PopoverTrigger>
@@ -256,9 +339,18 @@ export function Composer({ session, draftEffort }: { session: string | null; dra
                 variant="ghost"
                 className="w-full justify-start"
                 onClick={async () => {
+                  if (!hostFiles) {
+                    fileInput.current?.click()
+                    return
+                  }
                   const picked = await pickFiles({
                     multiple: true,
-                    filters: [{ name: 'Images and PDF', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'pdf'] }],
+                    filters: [
+                      {
+                        name: 'Images and PDF',
+                        extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'pdf'],
+                      },
+                    ],
                   })
                   if (picked) addFiles(picked)
                 }}
@@ -279,11 +371,18 @@ export function Composer({ session, draftEffort }: { session: string | null; dra
             onPaste={onPaste}
             rows={1}
             placeholder={running ? 'Send to steer…' : 'Ask anything'}
-            // ponytail: `field-sizing: content` grows the box (8 lines then scrolls); older WebKit keeps one line.
-            className="max-h-[200px] min-h-10 min-w-0 flex-1 resize-none border-0 bg-transparent px-2 py-2 text-[17px] leading-6 shadow-none focus-visible:ring-0 md:text-[17px] dark:bg-transparent"
+            // ponytail: `field-sizing: content` grows the box (6 lines on touch, 8 on desktop, then scrolls); older WebKit keeps one line.
+            className={cn(
+              'min-h-10 min-w-0 flex-1 resize-none border-0 bg-transparent px-2 py-2 text-[17px] leading-6 shadow-none focus-visible:ring-0 md:text-[17px] dark:bg-transparent',
+              touch() ? 'max-h-[160px]' : 'max-h-[200px]',
+            )}
           />
           {running && session ? (
-            <Button className="size-9 shrink-0 rounded-full" aria-label="Stop" onClick={() => void api.cancel(session)}>
+            <Button
+              className="size-9 shrink-0 rounded-full"
+              aria-label="Stop"
+              onClick={() => void api.cancel(session)}
+            >
               <Square className="size-4 fill-current" />
             </Button>
           ) : (

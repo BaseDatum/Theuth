@@ -31,7 +31,6 @@ use kameo::Actor;
 use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
 use runtime::{Runtime, SessionId};
-use sha2::{Digest, Sha256};
 use tokio::sync::oneshot;
 use tools::{Approval, ApprovalRequested, Decision, Resolve, Risk};
 
@@ -255,8 +254,8 @@ fn prompt_parts(blocks: &[ContentBlock], data_dir: &Path) -> (String, Vec<PathBu
 }
 
 /// Decodes a base64 image block or PDF blob into
-/// `<data_dir>/attachments/<sha256[..16]>.<ext>`; `None` for a mime type
-/// outside png/jpeg/gif/webp/pdf. An existing file is not rewritten.
+/// `<data_dir>/attachments/<sha256[..16]>.<ext>` ([`api::save_blob`]); `None`
+/// for a mime type outside png/jpeg/gif/webp/pdf.
 fn save_blob(data: &str, mime: &str, data_dir: &Path) -> anyhow::Result<Option<PathBuf>> {
     let ext = match mime {
         "image/png" => "png",
@@ -267,14 +266,7 @@ fn save_blob(data: &str, mime: &str, data_dir: &Path) -> anyhow::Result<Option<P
         _ => return Ok(None),
     };
     let bytes = base64::engine::general_purpose::STANDARD.decode(data)?;
-    let hex = format!("{:x}", Sha256::digest(&bytes));
-    let dir = data_dir.join("attachments");
-    let path = dir.join(format!("{}.{ext}", &hex[..16]));
-    if !path.exists() {
-        std::fs::create_dir_all(&dir)?;
-        std::fs::write(&path, bytes)?;
-    }
-    Ok(Some(path))
+    Ok(Some(api::save_blob(&bytes, ext, data_dir)?))
 }
 
 /// wth's stop reason string as ACP's: matching serde names pass through,
@@ -486,6 +478,8 @@ mod tests {
     use agent_client_protocol::schema::v1::{
         BlobResourceContents, EmbeddedResource, ImageContent, TextContent,
     };
+
+    use sha2::{Digest, Sha256};
 
     use super::*;
 

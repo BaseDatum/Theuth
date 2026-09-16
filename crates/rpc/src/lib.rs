@@ -61,12 +61,20 @@ impl runtime::Plugin for RpcPlugin {
     }
 }
 
+/// The full [`api::Api`] as a jsonrpsee `Methods` object, fed by the shared
+/// [`bridge`]: what `serve` binds to the socket and what the link plugin
+/// dispatches decrypted requests into with `raw_json_request` (31 §6.2).
+pub async fn methods(rt: Runtime) -> jsonrpsee::Methods {
+    let events = bridge::start(&rt).await;
+    api::Server { events, rt }.into_rpc().into()
+}
+
 /// Start the bridge and the server; returns the bound address. The server
 /// stops when `rt.shutdown` is cancelled.
 pub async fn serve(rt: &Runtime, cfg: RpcConfig) -> anyhow::Result<SocketAddr> {
     let token_path = rt.data_dir.join("token");
     let token = load_token(&token_path)?;
-    let events = bridge::start(rt).await;
+    let methods = methods(rt.clone()).await;
 
     let auth = tower::ServiceBuilder::new().layer(layer_fn(move |inner| Auth {
         inner,
@@ -77,13 +85,7 @@ pub async fn serve(rt: &Runtime, cfg: RpcConfig) -> anyhow::Result<SocketAddr> {
         .build(cfg.listen.as_str())
         .await?;
     let addr = server.local_addr()?;
-    let handle = server.start(
-        api::Server {
-            events,
-            rt: rt.clone(),
-        }
-        .into_rpc(),
-    );
+    let handle = server.start(methods);
     tracing::info!(%addr, token = %token_path.display(), "rpc listening");
 
     let shutdown = rt.shutdown.clone();

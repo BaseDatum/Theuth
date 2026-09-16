@@ -4,18 +4,20 @@
 
 use std::collections::HashSet;
 use std::fmt::Display;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 use agent::{
     AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentConfig, AgentInfo, Agents, Cancel, Compact,
-    CompactStyle, DeleteSession, EditTurn, ForkSession, GetCompactStyle, GetTitleModel, Harvest,
-    ListAcp, ListAgents, ListLogins, ListModels, ListProviders, ListQueued, ListRegistry,
-    ListSessions, ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginInfo, Logout, ModelInfo,
-    NewSession, ProviderInfo, QueuedInput, Redo, Regenerate, RemoveAcp, RemoveProvider,
-    RemoveSkill, RemoveSkillRepo, RenameSession, SearchSessions, SendInput, SessionSummary,
-    SetCompactStyle, SetEffort, SetModel, SetTitleModel, ShowPrompt, SkillBody, SkillMeta, Steer,
-    SyncSkills, Undo, UseSkill, Withdraw,
+    CompactStyle, DeleteSession, EditTurn, ForkSession, GetCompactStyle, GetSubagentTimeout,
+    GetTitleModel, Harvest, ListAcp, ListAgents, ListLogins, ListModels, ListProviders, ListQueued,
+    ListRegistry, ListSessions, ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginInfo,
+    Logout, ModelInfo, NewSession, ProviderInfo, QueuedInput, Redo, Regenerate, RemoveAcp,
+    RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession, SearchSessions, SendInput,
+    SessionSummary, SetCompactStyle, SetEffort, SetModel, SetSubagentTimeout, SetTitleModel,
+    ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw,
 };
+use base64::Engine as _;
 use browser::{BROWSER_ACTOR, Browsers, Screenshot};
 use computer::{COMPUTER_ACTOR, Computer, Permissions};
 use jsonrpsee::core::{RpcResult, SubscriptionResult, async_trait};
@@ -31,8 +33,13 @@ use knowledge::{
     Change, Concept, Delete, Get, HarvestResult, History, HistoryOf, Hit, KNOWLEDGE_ACTOR,
     KnowledgeActor, List, Meta, Put, PutConcept, Restore, Search, Source, SyncNow, Write,
 };
+use link::{
+    CancelPair, Enable, LINK_ACTOR, LinkActor, LinkConfig, LinkStatus, Pair, Pairing, Rename,
+    RenameDevice, Revoke,
+};
 use runtime::{InputId, Runtime, SessionId};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use signal::{Allow, Link, RemoveAllowed, SIGNAL_ACTOR, Signal, SignalStatus, Status, Unlink};
 use slack::{SLACK_ACTOR, Slack, SlackStatus};
 use tokio::sync::broadcast;
@@ -66,6 +73,11 @@ pub struct Info {
     pub approvals: ApprovalsState,
     /// `agent.compact_style`.
     pub compact_style: CompactStyle,
+    /// `agent.subagents.max_runtime_secs`.
+    pub subagent_timeout_secs: u64,
+    /// Harness display name (`link.name`, else the hostname): what a linked
+    /// device shows in its harness switcher (31 §6.4).
+    pub name: String,
 }
 
 /// The wire API. `#[rpc(server)]` generates `ApiServer` (+ `into_rpc()`).
@@ -165,6 +177,9 @@ pub trait Api {
     /// Persist `agent.compact_style` and update live sessions.
     #[method(name = "set_compact_style")]
     async fn set_compact_style(&self, style: CompactStyle) -> RpcResult<()>;
+    /// Persist `agent.subagents.max_runtime_secs` and use it for newly spawned turns.
+    #[method(name = "set_subagent_timeout")]
+    async fn set_subagent_timeout(&self, seconds: u64) -> RpcResult<()>;
     /// The live title model (`agent.title_model`), if set.
     #[method(name = "title_model")]
     async fn title_model(&self) -> RpcResult<Option<ModelInfo>>;
@@ -425,6 +440,37 @@ pub trait Api {
     /// Stop the whole process.
     #[method(name = "shutdown")]
     async fn shutdown(&self) -> RpcResult<()>;
+    /// Link state: relay, uplink, paired devices, pending pairing (31 §6.4).
+    #[method(name = "link_status")]
+    async fn link_status(&self) -> RpcResult<LinkStatus>;
+    /// Turn the relay uplink on/off (persisted as `link.enabled`); `relay: Some` also rewrites `link.relay`.
+    #[method(name = "link_enable")]
+    async fn link_enable(&self, enabled: bool, relay: Option<String>) -> RpcResult<()>;
+    /// Start (or restart) the single pending pairing: the QR string and its expiry.
+    #[method(name = "link_pair")]
+    async fn link_pair(&self) -> RpcResult<Pairing>;
+    /// Drop the pending pairing.
+    #[method(name = "link_cancel_pair")]
+    async fn link_cancel_pair(&self) -> RpcResult<()>;
+    /// Set the harness display name (persisted as `link.name`; empty → hostname).
+    #[method(name = "link_rename")]
+    async fn link_rename(&self, name: String) -> RpcResult<()>;
+    /// Rename a paired device.
+    #[method(name = "link_rename_device")]
+    async fn link_rename_device(&self, id: String, name: String) -> RpcResult<()>;
+    /// Revoke a paired device: close its conns, delete its row.
+    #[method(name = "link_revoke_device")]
+    async fn link_revoke_device(&self, id: String) -> RpcResult<()>;
+    /// Store base64 `bytes` as `<data_dir>/attachments/<sha256[..16]>.<ext>`
+    /// and return the path, for `send_input { files }`. `ext` ∈ png, jpg,
+    /// jpeg, gif, webp, pdf; images ≤ 5 MB, PDFs ≤ 32 MB decoded.
+    #[method(name = "put_attachment")]
+    async fn put_attachment(&self, bytes: String, ext: String) -> RpcResult<PathBuf>;
+    /// Read a file the harness produced or stored, base64-encoded. Only
+    /// paths under `<data_dir>/{attachments,browser,computer}` (after
+    /// canonicalization) are served.
+    #[method(name = "get_attachment")]
+    async fn get_attachment(&self, path: PathBuf) -> RpcResult<String>;
     /// Stream every wire-visible event as `{"type": ..., ...}`, optionally
     /// only those carrying `session`. `descendants: true` (default `false`)
     /// also delivers events of every session in `session`'s subtree, plus
@@ -504,6 +550,47 @@ fn knowledge() -> RpcResult<ActorRef<KnowledgeActor>> {
     })
 }
 
+/// The link actor; absent when the plugin is not in this process's list.
+fn link() -> RpcResult<ActorRef<LinkActor>> {
+    lookup::<LinkActor>(LINK_ACTOR).map_err(|e| match e.code() {
+        NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "link is disabled", None::<()>),
+        _ => e,
+    })
+}
+
+/// This machine's hostname, read once; `"wth"` when `hostname` fails.
+static HOSTNAME: LazyLock<String> = LazyLock::new(|| {
+    std::process::Command::new("hostname")
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "wth".to_owned())
+});
+
+/// Write `bytes` as `<data_dir>/attachments/<sha256[..16]>.<ext>`; an existing
+/// file is not rewritten. Shared by `put_attachment` and the ACP prompt path.
+pub(crate) fn save_blob(bytes: &[u8], ext: &str, data_dir: &Path) -> std::io::Result<PathBuf> {
+    let hex = format!("{:x}", Sha256::digest(bytes));
+    let dir = data_dir.join("attachments");
+    let path = dir.join(format!("{}.{ext}", &hex[..16]));
+    if !path.exists() {
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(&path, bytes)?;
+    }
+    Ok(path)
+}
+
+/// An `ASK_FAILED` (`-32000`) error with `msg`.
+fn failed(msg: impl Into<String>) -> ErrorObjectOwned {
+    ErrorObjectOwned::owned(ASK_FAILED, msg.into(), None::<()>)
+}
+
+/// Largest decoded image `put_attachment` accepts (17 §1: Anthropic's 5 MB).
+const MAX_IMAGE: usize = 5 * 1024 * 1024;
+/// Largest decoded PDF `put_attachment` accepts (20 §2.5: Anthropic's 32 MB).
+const MAX_PDF: usize = 32 * 1024 * 1024;
+
 #[async_trait]
 impl ApiServer for Server {
     async fn info(&self) -> RpcResult<Info> {
@@ -515,12 +602,20 @@ impl ApiServer for Server {
         let approvals =
             ask::<ToolRegistry, _>(tools::REGISTRY_ACTOR, GetApprovals { session: None }).await?;
         let compact_style = ask::<Agents, _>(agent::AGENT_ACTOR, GetCompactStyle).await?;
+        let subagent_timeout_secs =
+            ask::<Agents, _>(agent::AGENT_ACTOR, GetSubagentTimeout).await?;
+        let name = match self.rt.section::<LinkConfig>("link") {
+            Ok(c) if !c.name.is_empty() => c.name,
+            _ => HOSTNAME.clone(),
+        };
         Ok(Info {
             version: env!("CARGO_PKG_VERSION").into(),
             data_dir: self.rt.data_dir.display().to_string(),
             default_model,
             approvals,
             compact_style,
+            subagent_timeout_secs,
+            name,
         })
     }
 
@@ -652,6 +747,10 @@ impl ApiServer for Server {
 
     async fn set_compact_style(&self, style: CompactStyle) -> RpcResult<()> {
         ask::<Agents, _>(agent::AGENT_ACTOR, SetCompactStyle { style }).await
+    }
+
+    async fn set_subagent_timeout(&self, seconds: u64) -> RpcResult<()> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, SetSubagentTimeout { seconds }).await
     }
 
     async fn title_model(&self) -> RpcResult<Option<ModelInfo>> {
@@ -1025,6 +1124,67 @@ impl ApiServer for Server {
     async fn shutdown(&self) -> RpcResult<()> {
         self.rt.shutdown.cancel();
         Ok(())
+    }
+
+    async fn link_status(&self) -> RpcResult<LinkStatus> {
+        send(&link()?, link::Status).await
+    }
+
+    async fn link_enable(&self, enabled: bool, relay: Option<String>) -> RpcResult<()> {
+        send(&link()?, Enable { enabled, relay }).await
+    }
+
+    async fn link_pair(&self) -> RpcResult<Pairing> {
+        send(&link()?, Pair).await
+    }
+
+    async fn link_cancel_pair(&self) -> RpcResult<()> {
+        send(&link()?, CancelPair).await
+    }
+
+    async fn link_rename(&self, name: String) -> RpcResult<()> {
+        send(&link()?, Rename { name }).await
+    }
+
+    async fn link_rename_device(&self, id: String, name: String) -> RpcResult<()> {
+        send(&link()?, RenameDevice { id, name }).await
+    }
+
+    async fn link_revoke_device(&self, id: String) -> RpcResult<()> {
+        send(&link()?, Revoke { id }).await
+    }
+
+    async fn put_attachment(&self, bytes: String, ext: String) -> RpcResult<PathBuf> {
+        let (ext, cap) = match ext.as_str() {
+            "png" | "jpg" | "jpeg" | "gif" | "webp" => (ext.as_str(), MAX_IMAGE),
+            "pdf" => ("pdf", MAX_PDF),
+            _ => return Err(failed(format!("unsupported attachment type .{ext}"))),
+        };
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(bytes)
+            .map_err(|e| failed(format!("bad base64: {e}")))?;
+        if bytes.len() > cap {
+            return Err(failed(format!(
+                "attachment is {} bytes; the cap for .{ext} is {cap}",
+                bytes.len()
+            )));
+        }
+        save_blob(&bytes, ext, &self.rt.data_dir).map_err(|e| failed(e.to_string()))
+    }
+
+    async fn get_attachment(&self, path: PathBuf) -> RpcResult<String> {
+        let real =
+            std::fs::canonicalize(&path).map_err(|e| failed(format!("{}: {e}", path.display())))?;
+        let allowed = ["attachments", "browser", "computer"].iter().any(|d| {
+            std::fs::canonicalize(self.rt.data_dir.join(d)).is_ok_and(|dir| real.starts_with(dir))
+        });
+        if !allowed {
+            return Err(failed(format!("{}: not an attachment", path.display())));
+        }
+        let bytes = tokio::fs::read(&real)
+            .await
+            .map_err(|e| failed(format!("{}: {e}", path.display())))?;
+        Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
     }
 
     async fn subscribe_events(

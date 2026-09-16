@@ -12,12 +12,22 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from '@/components/ui/sheet'
 import { Skeleton } from '@/components/ui/skeleton'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { Change } from '@/rpc/bindings/Change'
 
-type Props = { id: string; open: boolean; onOpenChange: (open: boolean) => void }
+type Props = {
+  id: string
+  open: boolean
+  onOpenChange: (open: boolean) => void
+}
 
 /** The concept's last 20 commits with the latest diff; Restore rewrites the file from a commit. */
 export function History({ id, open, onOpenChange }: Props) {
@@ -43,7 +53,7 @@ export function History({ id, open, onOpenChange }: Props) {
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent className="flex w-[480px] flex-col gap-0 sm:max-w-[480px]">
+      <SheetContent className="flex w-full flex-col gap-0 sm:w-[480px] sm:max-w-[480px]">
         <SheetHeader>
           <SheetTitle>History</SheetTitle>
           <SheetDescription className="truncate">{id}</SheetDescription>
@@ -84,12 +94,16 @@ export function History({ id, open, onOpenChange }: Props) {
           <AlertDialogHeader>
             <AlertDialogTitle>Restore {restoring?.commit}?</AlertDialogTitle>
             <AlertDialogDescription>
-              {id} is rewritten as of {restoring?.time} ({restoring?.message}). The current version stays in history.
+              {id} is rewritten as of {restoring?.time} ({restoring?.message}). The current version
+              stays in history.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction disabled={restore.isPending} onClick={() => restoring && restore.mutate(restoring.commit)}>
+            <AlertDialogAction
+              disabled={restore.isPending}
+              onClick={() => restoring && restore.mutate(restoring.commit)}
+            >
               Restore
             </AlertDialogAction>
           </AlertDialogFooter>

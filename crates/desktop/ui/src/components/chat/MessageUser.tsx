@@ -8,7 +8,15 @@ import { Attachments } from './Attachments'
 import { ActionButton, rewind, useFork } from './MessageAssistant'
 
 /** The bubble as a textarea: Enter sends, Shift+Enter breaks the line, Escape cancels. Mounted only while editing, so `text` seeds it once. */
-function EditBubble({ text, onSend, onCancel }: { text: string; onSend: (text: string) => void; onCancel: () => void }) {
+function EditBubble({
+  text,
+  onSend,
+  onCancel,
+}: {
+  text: string
+  onSend: (text: string) => void
+  onCancel: () => void
+}) {
   const [value, setValue] = useState(text)
   const send = () => {
     const t = value.trim()
@@ -27,7 +35,7 @@ function EditBubble({ text, onSend, onCancel }: { text: string; onSend: (text: s
             send()
           }
         }}
-        className="max-w-[70%] min-h-0 rounded-[22px] border-0 bg-layer-3 px-4 py-2.5 text-base shadow-none whitespace-pre-wrap break-words md:text-base"
+        className="max-w-[85%] min-h-0 rounded-[22px] border-0 bg-layer-3 px-4 py-2.5 text-base shadow-none whitespace-pre-wrap break-words md:max-w-[70%] md:text-base"
       />
       <div className="flex gap-2">
         <Button variant="ghost" size="sm" onClick={onCancel}>
@@ -61,7 +69,11 @@ export const MessageUser = memo(function MessageUser({
   const [editing, setEditing] = useState(false)
   return (
     <div className="group flex flex-col items-end gap-2 py-2">
-      {skill && <span className="rounded-full bg-layer-2 px-3 py-1 text-sm text-fg-secondary">◇ {skill}</span>}
+      {skill && (
+        <span className="rounded-full bg-layer-2 px-3 py-1 text-sm text-fg-secondary">
+          ◇ {skill}
+        </span>
+      )}
       {files && <Attachments files={files} className="justify-end" />}
       {editing && turn != null ? (
         <EditBubble
@@ -74,11 +86,13 @@ export const MessageUser = memo(function MessageUser({
         />
       ) : (
         text && (
-          <div className="max-w-[70%] rounded-[22px] bg-layer-3 px-4 py-2.5 whitespace-pre-wrap break-words">{text}</div>
+          <div className="max-w-[85%] rounded-[22px] bg-layer-3 px-4 py-2.5 whitespace-pre-wrap break-words md:max-w-[70%]">
+            {text}
+          </div>
         )
       )}
       {turn != null && !running && !editing && (
-        <div className="-mr-2 flex justify-end opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+        <div className="-mr-2 flex justify-end opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100 pointer-coarse:opacity-100">
           <ActionButton icon={Pencil} label="Edit" onClick={() => setEditing(true)} />
           <ActionButton icon={GitFork} label="Fork from here" onClick={() => void fork(turn)} />
         </div>

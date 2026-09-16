@@ -53,6 +53,8 @@ const SKILL: Color = Color::Yellow;
 const PROMPT: Color = Color::DarkGrey;
 /// Finished background job cards.
 const JOB: Color = Color::Green;
+/// `/link pair` QR cards.
+const LINK: Color = Color::Cyan;
 
 /// Run the fullscreen UI until the user quits. Mouse capture stays off so
 /// the terminal's own selection (and copy-on-select) keeps working. Ctrl+C
@@ -151,6 +153,9 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 }
                 if std::mem::take(&mut m.refresh_mcp) {
                     let _ = commands.send(Command::ListMcp(m.session));
+                }
+                if std::mem::take(&mut m.refresh_link) {
+                    let _ = commands.send(Command::LinkStatus);
                 }
             }
         }
@@ -724,6 +729,7 @@ fn menu(m: &Model, input: &str, width: u16) -> Option<AnyElement<'static>> {
                 .collect(),
             *cursor,
         ),
+        Menu::Link { cursor } => (m.link_title(), m.link_rows(), *cursor),
     };
     let cursor = cursor.min(rows.len().saturating_sub(1));
     let shown = window(rows.len(), cursor, MENU_ROWS);
@@ -872,6 +878,7 @@ fn entry(e: &Entry, spinner: &str, skip: usize, width: u16) -> AnyElement<'stati
                 CardKind::Skill => SKILL,
                 CardKind::Prompt => PROMPT,
                 CardKind::Job => JOB,
+                CardKind::Link => LINK,
             };
             let v = text.view();
             let lines = v.lines().count();

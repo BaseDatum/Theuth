@@ -1,0 +1,42 @@
+[package]
+name = "relay"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "wth-relay: stateless encrypted-frame relay between harnesses and devices (design doc 31 §5)"
+
+[[bin]]
+name = "wth-relay"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+axum = { workspace = true }
+axum-server = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+dashmap = { workspace = true }
+bytes = { workspace = true }
+snow = { workspace = true }
+base64 = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+rand = { workspace = true }
+sha2 = { workspace = true }
+# Same as crates/slack: with both `ring` and `aws-lc-rs` in the workspace graph,
+# `ServerConfig::builder()` panics unless a process provider is installed. `--tls` does it.
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] }
+
+[dev-dependencies]
+tokio-tungstenite = { workspace = true }
+futures = { workspace = true }
+
+[[example]]
+name = "bench"
+path = "examples/bench.rs"
+
+[lints]
+workspace = true

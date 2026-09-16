@@ -1,4 +1,4 @@
-import { create } from 'zustand'
+import { type StoreApi, createStore } from 'zustand'
 import { subscribeWithSelector } from 'zustand/middleware'
 import type { CompactStyle } from '@/rpc/bindings/CompactStyle'
 import type { JobExit } from '@/rpc/bindings/JobExit'
@@ -7,7 +7,7 @@ import type { Usage } from '@/rpc/bindings/Usage'
 import type { WireEvent } from '@/rpc/events'
 import type { AgentInfo, LoadedPage } from '@/rpc/extra'
 import { empty, fromHistory, nextId, route } from './reduce'
-import { useApprovals, useAsks } from './approvals'
+import { type Stores, active, scoped } from './harness-scope'
 
 /** Live tail of a `shell` card's background job. */
 export type JobTail = {
@@ -67,7 +67,8 @@ export type Entry = { id: string } & (
 )
 
 /** What the status dot says. */
-export type Activity = 'idle' | 'thinking' | 'streaming' | 'reasoning' | 'tool' | 'compacting' | 'harvesting'
+export type Activity =
+  'idle' | 'thinking' | 'streaming' | 'reasoning' | 'tool' | 'compacting' | 'harvesting'
 
 /** Everything the transcript and sidebar need for one session. */
 export type SessionSlice = {
@@ -127,88 +128,125 @@ type SessionsStore = {
   resetLagged(): void
 }
 
-export const useSessions = create<SessionsStore>()(
-  subscribeWithSelector((set, get) => ({
-    sessions: {},
-    sent: new Set(),
-    lagged: 0,
-    applyEvents(events) {
-      const { sessions, sent, lagged } = get()
-      const draft = { ...sessions }
-      let changed = false
-      let dropped = 0
-      for (const e of events) {
-        if (e.type === 'Lagged') dropped += e.count
-        else changed = route(draft, e, { sent }) || changed
-      }
-      if (changed || dropped) set({ sessions: changed ? draft : sessions, lagged: lagged + dropped })
-    },
-    loadHistory(id, loaded, mode) {
-      set((st) => {
-        const cur = st.sessions[id] ?? empty(id)
-        const fresh = loaded.history.flatMap(fromHistory)
-        const browser = cur.browser || loaded.history.some((h) => h.role === 'tool' && h.name.startsWith('browser_'))
-        const next: SessionSlice =
-          mode === 'prepend'
-            ? { ...cur, browser, entries: [...fresh, ...cur.entries], firstSeq: loaded.first_seq ?? cur.firstSeq, more: loaded.more }
-            : {
-                ...cur,
-                browser,
-                entries: fresh,
-                running: loaded.running,
-                waiting: false,
-                activity: loaded.running ? 'thinking' : 'idle',
-                model: loaded.model,
-                effort: loaded.effort,
-                queued: loaded.queued,
-                undone: loaded.undone,
-                agent: loaded.agent,
-                name: loaded.name,
-                parent: loaded.parent,
-                skills: loaded.skills,
-                loaded: true,
-                firstSeq: loaded.first_seq,
-                more: loaded.more,
-              }
-        return { sessions: { ...st.sessions, [id]: next } }
-      })
-    },
-    markSent(id, text, files) {
-      get().sent.add(text)
-      set((st) => {
-        const cur = st.sessions[id] ?? empty(id)
-        const entry: Entry = { id: nextId(), kind: 'user', text, ...(files?.length ? { files } : {}) }
-        return { sessions: { ...st.sessions, [id]: { ...cur, entries: [...cur.entries, entry] } } }
-      })
-    },
-    truncate(id, turn) {
-      const cur = get().sessions[id]
-      if (!cur) return
-      const at = cur.entries.findIndex((e) => (e.kind === 'user' || e.kind === 'assistant') && e.turn === turn)
-      if (at < 0) return
-      set((st) => ({ sessions: { ...st.sessions, [id]: { ...cur, entries: cur.entries.slice(0, at) } } }))
-    },
-    ensure(id) {
-      if (!get().sessions[id]) set((st) => ({ sessions: { ...st.sessions, [id]: empty(id) } }))
-    },
-    setChildren(id, agents) {
-      set((st) => {
-        const cur = st.sessions[id] ?? empty(id)
-        const children = Object.fromEntries(agents.map((a) => [a.id, a]))
-        return { sessions: { ...st.sessions, [id]: { ...cur, children } } }
-      })
-    },
-    setBrowserLive(id, open) {
-      set((st) => {
-        const cur = st.sessions[id] ?? empty(id)
-        return { sessions: { ...st.sessions, [id]: { ...cur, browserLive: open } } }
-      })
-    },
-    resetLagged() {
-      set({ lagged: 0 })
-    },
-  })),
-)
+export type SessionsApi = StoreApi<SessionsStore>
+
+/** One harness's sessions (31 §7.4); `useSessions` reads the enclosing harness's. */
+export const createSessions = (): SessionsApi =>
+  createStore<SessionsStore>()(
+    subscribeWithSelector((set, get) => ({
+      sessions: {},
+      sent: new Set(),
+      lagged: 0,
+      applyEvents(events) {
+        const { sessions, sent, lagged } = get()
+        const draft = { ...sessions }
+        let changed = false
+        let dropped = 0
+        for (const e of events) {
+          if (e.type === 'Lagged') dropped += e.count
+          else changed = route(draft, e, { sent }) || changed
+        }
+        if (changed || dropped)
+          set({
+            sessions: changed ? draft : sessions,
+            lagged: lagged + dropped,
+          })
+      },
+      loadHistory(id, loaded, mode) {
+        set((st) => {
+          const cur = st.sessions[id] ?? empty(id)
+          const fresh = loaded.history.flatMap(fromHistory)
+          const browser =
+            cur.browser ||
+            loaded.history.some((h) => h.role === 'tool' && h.name.startsWith('browser_'))
+          const next: SessionSlice =
+            mode === 'prepend'
+              ? {
+                  ...cur,
+                  browser,
+                  entries: [...fresh, ...cur.entries],
+                  firstSeq: loaded.first_seq ?? cur.firstSeq,
+                  more: loaded.more,
+                }
+              : {
+                  ...cur,
+                  browser,
+                  entries: fresh,
+                  running: loaded.running,
+                  waiting: false,
+                  activity: loaded.running ? 'thinking' : 'idle',
+                  model: loaded.model,
+                  effort: loaded.effort,
+                  queued: loaded.queued,
+                  undone: loaded.undone,
+                  agent: loaded.agent,
+                  name: loaded.name,
+                  parent: loaded.parent,
+                  skills: loaded.skills,
+                  loaded: true,
+                  firstSeq: loaded.first_seq,
+                  more: loaded.more,
+                }
+          return { sessions: { ...st.sessions, [id]: next } }
+        })
+      },
+      markSent(id, text, files) {
+        get().sent.add(text)
+        set((st) => {
+          const cur = st.sessions[id] ?? empty(id)
+          const entry: Entry = {
+            id: nextId(),
+            kind: 'user',
+            text,
+            ...(files?.length ? { files } : {}),
+          }
+          return {
+            sessions: {
+              ...st.sessions,
+              [id]: { ...cur, entries: [...cur.entries, entry] },
+            },
+          }
+        })
+      },
+      truncate(id, turn) {
+        const cur = get().sessions[id]
+        if (!cur) return
+        const at = cur.entries.findIndex(
+          (e) => (e.kind === 'user' || e.kind === 'assistant') && e.turn === turn,
+        )
+        if (at < 0) return
+        set((st) => ({
+          sessions: {
+            ...st.sessions,
+            [id]: { ...cur, entries: cur.entries.slice(0, at) },
+          },
+        }))
+      },
+      ensure(id) {
+        if (!get().sessions[id]) set((st) => ({ sessions: { ...st.sessions, [id]: empty(id) } }))
+      },
+      setChildren(id, agents) {
+        set((st) => {
+          const cur = st.sessions[id] ?? empty(id)
+          const children = Object.fromEntries(agents.map((a) => [a.id, a]))
+          return { sessions: { ...st.sessions, [id]: { ...cur, children } } }
+        })
+      },
+      setBrowserLive(id, open) {
+        set((st) => {
+          const cur = st.sessions[id] ?? empty(id)
+          return {
+            sessions: { ...st.sessions, [id]: { ...cur, browserLive: open } },
+          }
+        })
+      },
+      resetLagged() {
+        set({ lagged: 0 })
+      },
+    })),
+  )
+
+export const useSessions = scoped((st) => st.sessions)
 
 const NO_ENTRIES: Entry[] = []
 
@@ -219,7 +257,10 @@ export const useSession = (id: string) => useSessions((s) => s.sessions[id])
 export const useEntries = (id: string) => useSessions((s) => s.sessions[id]?.entries ?? NO_ENTRIES)
 
 /** One field of the slice; re-renders only when that field changes. */
-export function useSessionField<K extends keyof SessionSlice>(id: string, key: K): SessionSlice[K] | undefined {
+export function useSessionField<K extends keyof SessionSlice>(
+  id: string,
+  key: K,
+): SessionSlice[K] | undefined {
   return useSessions((s) => s.sessions[id]?.[key])
 }
 
@@ -239,16 +280,17 @@ export function on<T extends WireEvent['type']>(type: T, cb: Listener<T>): () =>
   }
 }
 
-/** Route one frame's events: session slices, approvals, then `on` listeners. */
-export function dispatch(events: WireEvent[]): void {
-  useSessions.getState().applyEvents(events)
-  const approvals = useApprovals.getState()
-  const asks = useAsks.getState()
+/** Route one frame's events into `st` (the harness they came from): session slices, approvals, then `on` listeners. */
+export function dispatch(events: WireEvent[], st: Stores = active()): void {
+  st.sessions.getState().applyEvents(events)
+  const approvals = st.approvals.getState()
+  const asks = st.asks.getState()
+  const live = st === active()
   for (const e of events) {
     if (e.type === 'ApprovalRequested') approvals.add(e)
     else if (e.type === 'ApprovalResolved') approvals.resolve(e.id)
     else if (e.type === 'AskRequested') asks.add(e)
     else if (e.type === 'AskResolved') asks.resolve(e.id)
-    listeners.get(e.type)?.forEach((cb) => cb(e))
+    if (live) listeners.get(e.type)?.forEach((cb) => cb(e))
   }
 }

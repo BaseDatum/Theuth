@@ -7,7 +7,10 @@ import { Empty, Row, Section, useAction } from '@/components/settings/shared'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { container } from '@/lib/platform'
 import { queryKeys, useApi } from '@/lib/rpc'
+import { LOCAL, useHarnesses } from '@/link/harnesses'
+import { useConnection } from '@/store/connection'
 import { on } from '@/store/sessions'
 
 export function Connections() {
@@ -22,19 +25,36 @@ export function Connections() {
 /** OAuth providers and OAuth MCP servers in one list, as the TUI's `/login` menu. */
 function Logins() {
   const api = useApi()
-  const logins = useQuery({ queryKey: queryKeys.logins, queryFn: () => api.list_logins() })
-  const mcp = useQuery({ queryKey: queryKeys.mcp(null), queryFn: () => api.list_mcp(null) })
-  const keys = [queryKeys.logins, queryKeys.mcp(null)]
-  const login = useAction((v: { name: string; mcp: boolean }) =>
-    (v.mcp ? api.mcp_login(v.name) : api.login(v.name)).then((url) => openUrl(url)),
-  )
-  const logout = useAction((v: { name: string; mcp: boolean }) => (v.mcp ? api.mcp_logout(v.name) : api.logout(v.name)), {
-    keys,
+  const active = useHarnesses((s) => s.active)
+  const harnessName = useConnection((s) => s.info?.name)
+  const logins = useQuery({
+    queryKey: queryKeys.logins,
+    queryFn: () => api.list_logins(),
   })
+  const mcp = useQuery({
+    queryKey: queryKeys.mcp(null),
+    queryFn: () => api.list_mcp(null),
+  })
+  const keys = [queryKeys.logins, queryKeys.mcp(null)]
+  // Over link the daemon opens its own browser on the harness (31 §9): the URL is only shown here, as text.
+  const [remote, setRemote] = useState<{ name: string; url: string } | null>(null)
+  const login = useAction(async (v: { name: string; mcp: boolean }) => {
+    const url = await (v.mcp ? api.mcp_login(v.name) : api.login(v.name))
+    if (active !== LOCAL) setRemote({ name: v.name, url })
+    else if (container() === 'macos') await openUrl(url)
+    else window.open(url, '_blank')
+  })
+  const logout = useAction(
+    (v: { name: string; mcp: boolean }) => (v.mcp ? api.mcp_logout(v.name) : api.logout(v.name)),
+    {
+      keys,
+    },
+  )
 
   useEffect(
     () =>
       on('LoginFinished', (e) => {
+        setRemote(null)
         if (e.error) toast.error(`${e.provider}: ${e.error}`)
         else toast.success(`Logged in to ${e.provider}`)
       }),
@@ -60,7 +80,9 @@ function Logins() {
 
   return (
     <Section title="Accounts">
-      {logins.isSuccess && mcp.isSuccess && rows.length === 0 && <Empty>Nothing to log in to.</Empty>}
+      {logins.isSuccess && mcp.isSuccess && rows.length === 0 && (
+        <Empty>Nothing to log in to.</Empty>
+      )}
       {rows.map((r) => (
         <Row
           key={`${r.mcp ? 'mcp' : 'provider'}:${r.name}`}
@@ -72,7 +94,16 @@ function Logins() {
               </Badge>
             </span>
           }
-          description={r.status}
+          description={
+            remote?.name === r.name ? (
+              <>
+                Sign in from the harness ({harnessName ?? 'harness'}):{' '}
+                <code className="select-all break-all font-mono text-xs">{remote.url}</code>
+              </>
+            ) : (
+              r.status
+            )
+          }
         >
           <Button
             variant="outline"
@@ -91,7 +122,10 @@ function Logins() {
 /** Named OpenAI-compatible gateways; the key is sent once and never echoed. */
 function Gateways() {
   const api = useApi()
-  const providers = useQuery({ queryKey: queryKeys.providers, queryFn: () => api.list_providers() })
+  const providers = useQuery({
+    queryKey: queryKeys.providers,
+    queryFn: () => api.list_providers(),
+  })
   const [form, setForm] = useState({ name: '', url: '', key: '' })
   const add = useAction((v: typeof form) => api.add_provider(v.name, v.url, v.key), {
     keys: [queryKeys.providers, queryKeys.models],
@@ -100,7 +134,9 @@ function Gateways() {
       toast.success(`Added ${p.name}: ${p.models} models`)
     },
   })
-  const remove = useAction((name: string) => api.remove_provider(name), { keys: [queryKeys.providers, queryKeys.models] })
+  const remove = useAction((name: string) => api.remove_provider(name), {
+    keys: [queryKeys.providers, queryKeys.models],
+  })
   const ready = form.name.trim() && form.url.trim() && form.key.trim()
 
   return (
@@ -131,7 +167,12 @@ function Gateways() {
         className="mt-4 grid grid-cols-[1fr_2fr_2fr_auto] gap-2"
         onSubmit={(e) => {
           e.preventDefault()
-          if (ready) add.mutate({ name: form.name.trim(), url: form.url.trim(), key: form.key.trim() })
+          if (ready)
+            add.mutate({
+              name: form.name.trim(),
+              url: form.url.trim(),
+              key: form.key.trim(),
+            })
         }}
       >
         <Input

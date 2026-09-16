@@ -2,7 +2,13 @@ import { Link } from '@tanstack/react-router'
 import { memo, useState } from 'react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from '@/components/ui/sheet'
 import { describe } from '@/lib/describe'
 import { useApi } from '@/lib/rpc'
 import type { ApprovalRequested } from '@/rpc/bindings/ApprovalRequested'
@@ -10,16 +16,25 @@ import type { Decision } from '@/rpc/bindings/Decision'
 import type { Risk } from '@/rpc/bindings/Risk'
 import { useApprovals } from '@/store/approvals'
 
-const RISK: Record<Risk, string> = { read_only: 'read-only', mutating: 'mutating', destructive: 'destructive' }
+const RISK: Record<Risk, string> = {
+  read_only: 'read-only',
+  mutating: 'mutating',
+  destructive: 'destructive',
+}
 
 /** `approval: tool (risk)`, the described arguments, Allow / Deny. Rendered at the tool row or at the transcript's end. */
-export const ApprovalCard = memo(function ApprovalCard({ approval }: { approval: ApprovalRequested }) {
+export const ApprovalCard = memo(function ApprovalCard({
+  approval,
+}: {
+  approval: ApprovalRequested
+}) {
   const api = useApi()
   const [busy, setBusy] = useState(false)
   const decide = async (decision: Decision) => {
     setBusy(true)
     try {
-      if (!(await api.resolve_approval(approval.id, decision))) toast.error('approval was no longer pending')
+      if (!(await api.resolve_approval(approval.id, decision)))
+        toast.error('approval was no longer pending')
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e))
     } finally {
@@ -35,10 +50,21 @@ export const ApprovalCard = memo(function ApprovalCard({ approval }: { approval:
         {describe(approval.tool, approval.args).join('\n')}
       </pre>
       <div className="mt-3 flex gap-2">
-        <Button size="sm" disabled={busy} onClick={() => decide('allow')}>
+        <Button
+          size="sm"
+          className="pointer-coarse:h-11 pointer-coarse:flex-1"
+          disabled={busy}
+          onClick={() => decide('allow')}
+        >
           Allow
         </Button>
-        <Button size="sm" variant="outline" disabled={busy} onClick={() => decide('deny')}>
+        <Button
+          size="sm"
+          variant="outline"
+          className="pointer-coarse:h-11 pointer-coarse:flex-1"
+          disabled={busy}
+          onClick={() => decide('deny')}
+        >
           Deny
         </Button>
       </div>
@@ -47,14 +73,22 @@ export const ApprovalCard = memo(function ApprovalCard({ approval }: { approval:
 })
 
 /** Every pending approval across sessions, each with a link to its session. */
-export function ApprovalsSheet({ open, onOpenChange }: { open: boolean; onOpenChange(open: boolean): void }) {
+export function ApprovalsSheet({
+  open,
+  onOpenChange,
+}: {
+  open: boolean
+  onOpenChange(open: boolean): void
+}) {
   const pending = useApprovals((s) => s.pending)
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent className="w-[480px] overflow-y-auto sm:max-w-[480px]">
+      <SheetContent className="w-full overflow-y-auto sm:w-[480px] sm:max-w-[480px]">
         <SheetHeader>
           <SheetTitle>Pending approvals</SheetTitle>
-          <SheetDescription>{pending.length === 0 ? 'Nothing is waiting.' : `${pending.length} waiting`}</SheetDescription>
+          <SheetDescription>
+            {pending.length === 0 ? 'Nothing is waiting.' : `${pending.length} waiting`}
+          </SheetDescription>
         </SheetHeader>
         <div className="flex flex-col gap-4 px-4 pb-4">
           {pending.map((p) => (

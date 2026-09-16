@@ -1,8 +1,9 @@
 {
   "$schema": "https://schema.tauri.app/acl/capability/2",
   "identifier": "default",
-  "description": "The main window: window show/hide/title, events, and the OS integration plugins.",
+  "description": "The main window on desktop: window show/hide/title, events, and the OS integration plugins.",
   "windows": ["main"],
+  "platforms": ["macOS", "windows", "linux"],
   "permissions": [
     "core:default",
     "core:event:default",

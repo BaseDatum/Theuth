@@ -1,9 +1,11 @@
 //! `wth`: build the runtime, start the plugin list, wait for shutdown.
 //! Also the Python runtime worker: `wth subprocess` (design doc 08 §9, [`worker`]).
 
+mod link_cli;
 mod worker;
 
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 
 use clap::Parser;
 use figment::Figment;
@@ -62,6 +64,10 @@ struct Cli {
     /// Existing Slack app id (`A…`) that --slack-setup updates to the manifest instead of creating one.
     #[arg(long, requires = "slack_setup")]
     app: Option<String>,
+    /// Pair a phone with the running daemon (one-shot: prints a QR and the
+    /// key, waits for the scan, exits). Needs `wth --headless` on this box.
+    #[arg(long, conflicts_with_all = ["headless", "serve", "acp", "prompt", "link_signal", "slack_manifest", "slack_setup"])]
+    link: bool,
 }
 
 const DEFAULT_CONFIG: &str = "# wth configuration. Every plugin reads its own section.
@@ -113,6 +119,12 @@ agent:
 # computer:                  # see and drive this desktop, computer_* tools (design doc 27)
 #   enabled: true            # the OS permission prompts are the consent; actions still ask
 #   max_edge: 1568           # screenshot long edge after logical scaling (~1280 for Anthropic click accuracy)
+
+# link:                      # drive this harness from a phone through the relay (design doc 31). `wth --link` / `/link` pair.
+#   enabled: false           # `/link on`, Settings › Link or hand-edit; the uplink dials out, nothing listens
+#   relay: wss://relay.wth.rwx.dev   # self-host: your `wth-relay` URL
+#   name: \"\"                 # display name in the QR and on devices; \"\" → hostname
+#   max_devices: 16
 
 tools:
   policy:
@@ -217,6 +229,13 @@ fn first_run(data_dir: &Path, config_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// The link plugin's [`link::MethodsFactory`]: the full RPC surface, fed by
+/// the shared event bridge, for in-process dispatch of decrypted requests
+/// (31 §6.2).
+fn link_methods(rt: Runtime) -> Pin<Box<dyn Future<Output = jsonrpsee::Methods> + Send>> {
+    Box::pin(rpc::methods(rt))
+}
+
 fn main() -> anyhow::Result<()> {
     // Before clap, tokio, logging or anything that could touch stdout: the
     // worker's stdout is the protocol channel (08 §9).
@@ -249,6 +268,9 @@ async fn run() -> anyhow::Result<()> {
     let config = Figment::new()
         .merge(Yaml::file(&config_path))
         .merge(Env::prefixed("WTH_").split("__"));
+    if cli.link {
+        return link_cli::run(&data_dir, &config).await;
+    }
 
     // The TUI owns the terminal; logs go to a file.
     let logs = data_dir.join("logs");
@@ -324,6 +346,9 @@ async fn run() -> anyhow::Result<()> {
                 channel: cli.headless,
             }),
         ];
+        plugins.push(Box::new(link::LinkPlugin {
+            methods: std::sync::Arc::new(link_methods),
+        }));
         if cli.serve || cli.headless {
             plugins.push(Box::new(rpc::RpcPlugin));
         }

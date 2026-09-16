@@ -1,8 +1,8 @@
 import { code } from '@streamdown/code'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { getRouteApi, useNavigate } from '@tanstack/react-router'
+import { Link, getRouteApi, useNavigate } from '@tanstack/react-router'
 import { openUrl } from '@tauri-apps/plugin-opener'
-import { Copy, History as HistoryIcon, PanelRight, Pencil, Trash2 } from 'lucide-react'
+import { ChevronLeft, Copy, History as HistoryIcon, PanelRight, Pencil, Trash2 } from 'lucide-react'
 import { type ComponentType, type MouseEvent, type ReactNode, memo, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { type Components, Streamdown } from 'streamdown'
@@ -25,6 +25,8 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { useIsMobile } from '@/hooks/use-mobile'
+import { isMacDesktop } from '@/lib/hotkeys'
 import { classify, resolveLink } from '@/lib/resolveLink'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { Concept } from '@/rpc/bindings/Concept'
@@ -46,9 +48,9 @@ function Doc({ id, draft }: { id: string; draft: string | undefined }) {
   const api = useApi()
   const navigate = useNavigate()
   const [editing, setEditing] = useState(false)
-  const [railOpen, setRailOpen] = useState(true)
   const [missing, setMissing] = useState<{ id: string; title: string } | null>(null)
-
+  const [railOpen, setRailOpen] = useState(true)
+  const mobile = useIsMobile()
   const doc = useQuery({
     queryKey: queryKeys.knowledgeDoc(id),
     queryFn: () => api.knowledge_get(id),
@@ -61,7 +63,14 @@ function Doc({ id, draft }: { id: string; draft: string | undefined }) {
         <Editor
           id={id}
           initial={scaffold(id, draft)}
-          onSaved={() => navigate({ to: '/knowledge/$', params: { _splat: id }, search: {}, replace: true })}
+          onSaved={() =>
+            navigate({
+              to: '/knowledge/$',
+              params: { _splat: id },
+              search: {},
+              replace: true,
+            })
+          }
           onCancel={() => navigate({ to: '/knowledge' })}
         />
       </Frame>
@@ -83,10 +92,19 @@ function Doc({ id, draft }: { id: string; draft: string | undefined }) {
       <Frame id={id}>
         <div className="m-auto text-center text-sm">
           <p className="text-danger">{doc.error.message}</p>
-          <Button variant="ghost" size="sm" className="mt-2" onClick={() => setMissing({ id, title: id })}>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="mt-2"
+            onClick={() => setMissing({ id, title: id })}
+          >
             Create {id}
           </Button>
-          <NewDocDialog open={missing !== null} onOpenChange={(o) => !o && setMissing(null)} initial={missing ?? undefined} />
+          <NewDocDialog
+            open={missing !== null}
+            onOpenChange={(o) => !o && setMissing(null)}
+            initial={missing ?? undefined}
+          />
         </div>
       </Frame>
     )
@@ -95,39 +113,92 @@ function Doc({ id, draft }: { id: string; draft: string | undefined }) {
   if (editing) {
     return (
       <Frame id={id}>
-        <Editor id={id} initial={concept.text} onSaved={() => setEditing(false)} onCancel={() => setEditing(false)} />
+        <Editor
+          id={id}
+          initial={concept.text}
+          onSaved={() => setEditing(false)}
+          onCancel={() => setEditing(false)}
+        />
       </Frame>
     )
   }
+  const rail = (
+    <>
+      <Backlinks ids={concept.cited_by} />
+      <Links
+        links={concept.links}
+        onMissing={(target) => setMissing({ id: target, title: target })}
+      />
+    </>
+  )
   return (
     <Frame
       id={id}
-      actions={<Actions concept={concept} railOpen={railOpen} onEdit={() => setEditing(true)} onToggleRail={() => setRailOpen((v) => !v)} />}
+      actions={
+        <Actions
+          concept={concept}
+          railOpen={railOpen}
+          onEdit={() => setEditing(true)}
+          onToggleRail={() => setRailOpen((v) => !v)}
+        />
+      }
     >
       <div className="flex min-h-0 flex-1">
         <div className="min-w-0 flex-1 overflow-y-auto">
           <div className="mx-auto w-full max-w-[768px] px-6 py-4">
             <Header meta={concept.meta} />
-            <Body concept={concept} onMissing={(target, title) => setMissing({ id: target, title })} />
+            <Body
+              concept={concept}
+              onMissing={(target, title) => setMissing({ id: target, title })}
+            />
           </div>
+          {/* Under `md` the links rail has no room beside the body; it follows the body instead, still toggled by the same action. */}
+          {mobile && railOpen && (
+            <section className="border-t border-border-subtle">{rail}</section>
+          )}
         </div>
-        {railOpen && (
+        {!mobile && railOpen && (
           <aside className="w-[260px] shrink-0 overflow-y-auto border-l border-border-subtle">
-            <Backlinks ids={concept.cited_by} />
-            <Links links={concept.links} onMissing={(target) => setMissing({ id: target, title: target })} />
+            {rail}
           </aside>
         )}
       </div>
-      <NewDocDialog open={missing !== null} onOpenChange={(o) => !o && setMissing(null)} initial={missing ?? undefined} />
+      <NewDocDialog
+        open={missing !== null}
+        onOpenChange={(o) => !o && setMissing(null)}
+        initial={missing ?? undefined}
+      />
     </Frame>
   )
 }
 
-/** 52 px bar (id left, actions right) over the pane body. */
-function Frame({ id, actions, children }: { id: string; actions?: ReactNode; children: ReactNode }) {
+/** 52 px bar (id left, actions right) over the pane body. Under `md` a back chevron returns to the tree. */
+function Frame({
+  id,
+  actions,
+  children,
+}: {
+  id: string
+  actions?: ReactNode
+  children: ReactNode
+}) {
   return (
     <article className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <header data-tauri-drag-region className="flex h-[52px] shrink-0 items-center gap-1 border-b border-border-subtle px-3">
+      <header
+        data-tauri-drag-region={isMacDesktop() || undefined}
+        className="flex h-[52px] shrink-0 items-center gap-1 border-b border-border-subtle px-3"
+      >
+        <Button
+          asChild
+          variant="ghost"
+          size="icon-sm"
+          className="md:hidden"
+          aria-label="Back to knowledge"
+        >
+          <Link to="/knowledge">
+            <ChevronLeft />
+          </Link>
+        </Button>
         <code className="min-w-0 flex-1 truncate font-mono text-xs text-fg-tertiary">{id}</code>
         {actions}
       </header>
@@ -171,10 +242,20 @@ function Actions({
       <Action
         label="Copy id"
         icon={Copy}
-        onClick={() => navigator.clipboard.writeText(id).then(() => toast('Copied'), (e: unknown) => toast.error(String(e)))}
+        onClick={() =>
+          navigator.clipboard.writeText(id).then(
+            () => toast('Copied'),
+            (e: unknown) => toast.error(String(e)),
+          )
+        }
       />
       <Action label="Delete" icon={Trash2} onClick={() => setDeleting(true)} />
-      <Action label={railOpen ? 'Hide links' : 'Show links'} icon={PanelRight} onClick={onToggleRail} pressed={railOpen} />
+      <Action
+        label={railOpen ? 'Hide links' : 'Show links'}
+        icon={PanelRight}
+        onClick={onToggleRail}
+        pressed={railOpen}
+      />
       <History id={id} open={historyOpen} onOpenChange={setHistoryOpen} />
       <AlertDialog open={deleting} onOpenChange={setDeleting}>
         <AlertDialogContent>
@@ -189,7 +270,11 @@ function Actions({
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction variant="destructive" disabled={del.isPending} onClick={() => del.mutate()}>
+            <AlertDialogAction
+              variant="destructive"
+              disabled={del.isPending}
+              onClick={() => del.mutate()}
+            >
               Delete
             </AlertDialogAction>
           </AlertDialogFooter>
@@ -213,7 +298,13 @@ function Action({
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <Button variant="ghost" className="size-11 rounded-xl" aria-label={label} aria-pressed={pressed} onClick={onClick}>
+        <Button
+          variant="ghost"
+          className="size-11 rounded-xl"
+          aria-label={label}
+          aria-pressed={pressed}
+          onClick={onClick}
+        >
           <Icon className={cn('size-[18px]', pressed === false && 'text-fg-tertiary')} />
         </Button>
       </TooltipTrigger>
@@ -244,11 +335,20 @@ const Header = memo(function Header({ meta }: { meta: Meta }) {
 const RESERVED: Record<string, true> = { index: true, log: true }
 
 /** The markdown body with okf link semantics: external → opener, internal → route, missing → create. */
-const Body = memo(function Body({ concept, onMissing }: { concept: Concept; onMissing: (id: string, title: string) => void }) {
+const Body = memo(function Body({
+  concept,
+  onMissing,
+}: {
+  concept: Concept
+  onMissing: (id: string, title: string) => void
+}) {
   const navigate = useNavigate()
   const id = concept.meta.id
   const body = useMemo(() => stripFrontmatter(concept.text).body, [concept.text])
-  const exists = useMemo<Record<string, boolean>>(() => Object.fromEntries(concept.links), [concept.links])
+  const exists = useMemo<Record<string, boolean>>(
+    () => Object.fromEntries(concept.links),
+    [concept.links],
+  )
 
   const components = useMemo<Components>(
     () => ({
@@ -296,7 +396,12 @@ const Body = memo(function Body({ concept, onMissing }: { concept: Concept; onMi
 
   return (
     <div onClickCapture={onClick}>
-      <Streamdown mode="static" plugins={plugins} components={components} linkSafety={{ enabled: false }}>
+      <Streamdown
+        mode="static"
+        plugins={plugins}
+        components={components}
+        linkSafety={{ enabled: false }}
+      >
         {body}
       </Streamdown>
     </div>

@@ -1,6 +1,7 @@
 import { Link, useNavigate } from '@tanstack/react-router'
 import { BookOpen, PanelLeft, Search, Settings, SquarePen } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
+import { HarnessSwitcher } from '@/components/link/HarnessSwitcher'
 import { Button } from '@/components/ui/button'
 import {
   Sidebar,
@@ -13,6 +14,8 @@ import {
   useSidebar,
 } from '@/components/ui/sidebar'
 import { settings } from '@/components/chat/slash'
+import { isMacDesktop, modKey } from '@/lib/hotkeys'
+import { cn } from '@/lib/utils'
 import { SearchDialog } from './SearchDialog'
 import { SessionList } from './SessionList'
 
@@ -31,8 +34,17 @@ export function AppSidebar({ session }: { session: string | undefined }) {
 
   return (
     <Sidebar collapsible="offcanvas" className="border-r-0">
-      <SidebarHeader data-tauri-drag-region className="h-[52px] flex-row items-center justify-end pl-20">
-        <Button variant="ghost" className="size-9 rounded-lg text-fg-secondary" aria-label="Close sidebar" onClick={toggleSidebar}>
+      <SidebarHeader
+        data-tauri-drag-region={isMacDesktop() || undefined}
+        className={cn('h-[52px] flex-row items-center', isMacDesktop() && 'pl-20')}
+      >
+        <HarnessSwitcher className="min-w-0 flex-1 justify-start" />
+        <Button
+          variant="ghost"
+          className="ml-auto size-9 rounded-lg text-fg-secondary"
+          aria-label="Close sidebar"
+          onClick={toggleSidebar}
+        >
           <PanelLeft className="size-5" />
         </Button>
       </SidebarHeader>
@@ -42,14 +54,17 @@ export function AppSidebar({ session }: { session: string | undefined }) {
             <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5">
               <Link to="/">
                 <SquarePen /> New chat
-                <span className="ml-auto text-xs text-fg-tertiary">⇧⌘O</span>
+                <span className="ml-auto text-xs text-fg-tertiary">⇧{modKey()}O</span>
               </Link>
             </SidebarMenuButton>
           </SidebarMenuItem>
           <SidebarMenuItem>
-            <SidebarMenuButton className="h-9 rounded-[10px] px-2.5" onClick={() => setSearch(true)}>
+            <SidebarMenuButton
+              className="h-9 rounded-[10px] px-2.5"
+              onClick={() => setSearch(true)}
+            >
               <Search /> Search chats
-              <span className="ml-auto text-xs text-fg-tertiary">⌘K</span>
+              <span className="ml-auto text-xs text-fg-tertiary">{modKey()}K</span>
             </SidebarMenuButton>
           </SidebarMenuItem>
           <SidebarMenuItem>
@@ -65,7 +80,10 @@ export function AppSidebar({ session }: { session: string | undefined }) {
       <SidebarFooter className="px-1.5">
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton className="h-9 rounded-[10px] px-2.5" onClick={() => void settings(navigate, 'general', session)}>
+            <SidebarMenuButton
+              className="h-9 rounded-[10px] px-2.5"
+              onClick={() => void settings(navigate, 'general', session)}
+            >
               <Settings /> Settings
             </SidebarMenuButton>
           </SidebarMenuItem>

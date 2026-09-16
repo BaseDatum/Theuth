@@ -1,23 +1,26 @@
-import { type QueryClient, useQueryClient } from '@tanstack/react-query'
+import { useQueryClient } from '@tanstack/react-query'
 import { RouterProvider, createRouter } from '@tanstack/react-router'
 import { TrayIcon } from '@tauri-apps/api/tray'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { register, unregister } from '@tauri-apps/plugin-global-shortcut'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { StartupScreen } from '@/components/launch/StartupScreen'
+import { PairScreen } from '@/components/link/PairScreen'
 import { Toaster } from '@/components/ui/sonner'
 import { describe } from '@/lib/describe'
 import { notifyIfHidden } from '@/lib/notify'
 import { queryKeys, useInvalidateOn } from '@/lib/rpc'
-import { type Connection, connection, isTauri, onNavigate, onQuitRequested, quitAck, relaunch } from '@/lib/tauri'
+import { connection, isTauri, onNavigate, onQuitRequested, quitAck, relaunch } from '@/lib/tauri'
+import { LOCAL, hasLocal, hydrateHarnesses, useHarnesses, useNeedsPairing } from '@/link/harnesses'
+import { LinkTransport } from '@/link/transport'
 import { makeApi } from '@/rpc/api'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import { RpcClient, RpcError } from '@/rpc/client'
 import type { WireEvent } from '@/rpc/events'
 import { routeTree } from '@/routeTree.gen'
-import { useApprovals } from '@/store/approvals'
 import { useConnection } from '@/store/connection'
+import { HarnessProvider, type Stores, dropScope, scope } from '@/store/harness-scope'
 import { dispatch, on, useSessions } from '@/store/sessions'
 
 const router = createRouter({ routeTree })
@@ -33,87 +36,116 @@ const HIDDEN_DRAIN_MS = 250
 const TOGGLE_SHORTCUT = 'Alt+Space'
 const CANCEL_SHORTCUT = 'Alt+Escape'
 
-/** Set by `bootstrap`: 18 §3 — quitting `shutdown`s a daemon we started, not one we reused. */
+/** Set by the local boot: 18 §3 — quitting `shutdown`s a daemon we started, not one we reused. */
 let owned = false
 
 /** 25 §4.3 quit: RPC `shutdown` if owned (errors ignored: the socket may close first), then `quit_ack`. */
 async function quit(): Promise<void> {
-  const api = useConnection.getState().api
+  const api = scope(LOCAL).connection.getState().api
   if (owned && api) await api.shutdown().catch(() => undefined)
   await quitAck()
 }
 
 /** After a reconnect or `Lagged`: the gap is lost, so refetch what the screen shows (25 §4.3). */
-function reload(qc: QueryClient): void {
-  useSessions.getState().resetLagged()
-  void qc.invalidateQueries({ queryKey: queryKeys.sessions })
-  void useConnection
+function reload(st: Stores): void {
+  st.sessions.getState().resetLagged()
+  void st.qc.invalidateQueries({ queryKey: queryKeys.sessions })
+  void st.connection
     .getState()
     .api?.info()
-    .then((info) => useConnection.getState().setInfo(info))
-  window.dispatchEvent(new Event('wth:reload-session'))
+    .then((info) => st.connection.getState().setInfo(info))
+  if (useHarnesses.getState().active === st.id)
+    window.dispatchEvent(new Event('wth:reload-session'))
 }
 
 /**
- * Open the socket, subscribe once (25 §6.1) and load `info`. Events are queued
- * and drained into one `dispatch` per frame; this is the only place they enter
- * the stores. `signal` aborts (StrictMode remount, relaunch) and closes the client.
+ * `subscribe_events(null, null)` for the active harness (25 §6.1, 31 §7.3). Events
+ * are queued and drained into one `dispatch` per frame; this is the only place
+ * they enter the stores. Issued on `open` when the client is not connected yet.
  */
-function bootstrap(get: () => Promise<Connection>, qc: QueryClient, signal: AbortSignal): void {
-  const { setConnState, setClient, setInfo, setError } = useConnection.getState()
-  setError(undefined)
-  setClient(null, null)
-  setInfo(null)
+function attach(st: Stores): void {
+  const client = st.connection.getState().client
+  if (!client || st.attached) return
+  const queue: WireEvent[] = []
+  let frame = 0
+  let timer = 0
+  const drain = () => {
+    cancelAnimationFrame(frame)
+    clearTimeout(timer)
+    frame = timer = 0
+    dispatch(queue.splice(0), st)
+  }
+  st.attached = client.subscribe(null, null, (e) => {
+    queue.push(e)
+    if (frame) return
+    frame = requestAnimationFrame(drain)
+    timer = window.setTimeout(drain, HIDDEN_DRAIN_MS)
+  })
+  st.attached.catch(() => undefined)
+}
+
+function detach(st: Stores): void {
+  const attached = st.attached
+  st.attached = null
+  void attached?.then((off) => off()).catch(() => undefined)
+}
+
+/**
+ * Connect one harness: build its client, mirror its state into its connection
+ * store, subscribe if it is the active one and load `info` on every `open` (a
+ * link harness may be offline for a while first). `signal` aborts (StrictMode
+ * remount, relaunch, harness removed) and closes the client.
+ */
+function boot(st: Stores, make: () => Promise<RpcClient>, signal: AbortSignal): void {
+  const conn = st.connection.getState()
+  conn.setError(undefined)
+  conn.setClient(null, null)
+  conn.setInfo(null)
   let client: RpcClient | undefined
-  signal.addEventListener('abort', () => client?.close())
+  signal.addEventListener('abort', () => {
+    detach(st)
+    client?.close()
+  })
+  const fail = (e: unknown) => {
+    if (signal.aborted) return
+    // -32601 on `info` = an older `wth --headless` already owns the configured port.
+    conn.setError(
+      e instanceof RpcError && e.code === -32601
+        ? `The daemon already running on this port is older than this app (no "info" method). Quit it and relaunch.`
+        : e instanceof Error
+          ? e.message
+          : String(e),
+    )
+  }
   void (async () => {
     try {
-      const conn = await get()
-      if (signal.aborted) return
-      owned = conn.owned
-      client = new RpcClient(conn.url, conn.token)
+      client = await make()
+      if (signal.aborted) {
+        client.close()
+        return
+      }
       const api = makeApi(client)
       let lost = false
       client.onState((s) => {
-        setConnState(s)
+        conn.setConnState(s)
+        const shown = useHarnesses.getState().active === st.id
         if (s === 'reconnecting' && !lost) {
           lost = true
-          toast('Connection lost, reconnecting…')
-        } else if (s === 'open' && lost) {
-          lost = false
-          toast('Reconnected')
-          reload(qc)
+          if (shown) toast('Connection lost, reconnecting…')
+        } else if (s === 'open') {
+          conn.setError(undefined)
+          if (lost) {
+            lost = false
+            if (shown) toast('Reconnected')
+            reload(st)
+          } else api.info().then(conn.setInfo, fail)
         }
       })
+      conn.setClient(client, api)
+      if (useHarnesses.getState().active === st.id) attach(st)
       await client.connect()
-      setClient(client, api)
-
-      const queue: WireEvent[] = []
-      let frame = 0
-      let timer = 0
-      const drain = () => {
-        cancelAnimationFrame(frame)
-        clearTimeout(timer)
-        frame = timer = 0
-        dispatch(queue.splice(0))
-      }
-      await client.subscribe(null, null, (e) => {
-        queue.push(e)
-        if (frame) return
-        frame = requestAnimationFrame(drain)
-        timer = window.setTimeout(drain, HIDDEN_DRAIN_MS)
-      })
-      setInfo(await api.info())
     } catch (e) {
-      if (signal.aborted) return
-      // -32601 on `info` = an older `wth --headless` already owns the configured port.
-      setError(
-        e instanceof RpcError && e.code === -32601
-          ? `The daemon already running on this port is older than this app (no "info" method). Quit it and relaunch.`
-          : e instanceof Error
-            ? e.message
-            : String(e),
-      )
+      fail(e)
     }
   })()
 }
@@ -127,10 +159,13 @@ async function cancelAll(): Promise<void> {
   if (running.length) toast(`cancelled ${running.length} sessions`)
 }
 
-/** Tray / menu navigation, the quit handshake, ⌥Space, ⌥Esc and the tray badge; mounted once. */
+/** Tray / menu navigation, the quit handshake, ⌥Space and ⌥Esc; mounted once. */
 function useTauri(): void {
   useEffect(() => {
-    const unlistens = [onNavigate((path) => router.history.push(path)), onQuitRequested(() => void quit())]
+    const unlistens = [
+      onNavigate((path) => router.history.push(path)),
+      onQuitRequested(() => void quit()),
+    ]
     const onQuit = () => void quit()
     window.addEventListener('wth:quit', onQuit)
     if (isTauri()) {
@@ -147,66 +182,137 @@ function useTauri(): void {
         if (e.state === 'Pressed') void cancelAll()
       }).catch(() => toast.error(`Could not register ${CANCEL_SHORTCUT}; another app holds it`))
     }
-    const offBadge = useApprovals.subscribe((s, prev) => {
-      if (!isTauri() || s.pending.length === prev.pending.length) return
-      void TrayIcon.getById('main').then((t) => t?.setTitle(s.pending.length ? `●${s.pending.length}` : null))
-    })
     return () => {
       for (const u of unlistens) void u.then((f) => f())
       window.removeEventListener('wth:quit', onQuit)
       if (isTauri()) void unregister([TOGGLE_SHORTCUT, CANCEL_SHORTCUT])
-      offBadge()
     }
   }, [])
 }
 
-/** 25 §4.5 notifications and the `Lagged` reload; mounted once. */
-function useEventSideEffects(qc: QueryClient): void {
+/** 25 §4.5 notifications, the `Lagged` reload and the tray badge; per active harness. */
+function useEventSideEffects(st: Stores): void {
+  const qc = useQueryClient()
   useEffect(() => {
     const offs = [
       on('Lagged', () => {
-        reload(qc)
+        reload(st)
         toast('Events dropped, reloaded')
       }),
-      on('ApprovalRequested', (e) => void notifyIfHidden(`Approval: ${e.tool}`, describe(e.tool, e.args).join('\n'))),
+      on(
+        'ApprovalRequested',
+        (e) => void notifyIfHidden(`Approval: ${e.tool}`, describe(e.tool, e.args).join('\n')),
+      ),
       on('TurnFinished', (e) => {
         if (router.state.location.pathname === `/c/${e.session}`) return
-        const slice = useSessions.getState().sessions[e.session]
-        const summary = qc.getQueryData<SessionSummary[]>(queryKeys.sessions)?.find((s) => s.id === e.session)
+        const slice = st.sessions.getState().sessions[e.session]
+        const summary = qc
+          .getQueryData<SessionSummary[]>(queryKeys.sessions)
+          ?.find((s) => s.id === e.session)
         if ((slice?.parent ?? summary?.parent) != null) return
         void notifyIfHidden('Turn finished', slice?.title ?? summary?.title ?? '')
       }),
       on('BrowserShowLive', (e) => {
-        if (router.state.location.pathname !== `/c/${e.session}`) router.history.push(`/c/${e.session}`)
+        if (router.state.location.pathname !== `/c/${e.session}`)
+          router.history.push(`/c/${e.session}`)
+      }),
+      st.approvals.subscribe((s, prev) => {
+        if (!isTauri() || s.pending.length === prev.pending.length) return
+        void TrayIcon.getById('main').then((t) =>
+          t?.setTitle(s.pending.length ? `●${s.pending.length}` : null),
+        )
       }),
     ]
     return () => {
       for (const off of offs) off()
     }
-  }, [qc])
+  }, [st, qc])
 }
 
-export function App() {
-  const qc = useQueryClient()
+/** Everything under the active harness's provider: the router once connected, the startup screen before. */
+function Shell({ harness, onRelaunch }: { harness: string; onRelaunch(): void }) {
   const ready = useConnection((s) => s.state === 'open' && s.info !== null)
-  const [attempt, setAttempt] = useState(0)
+  useInvalidateOn()
+  useEventSideEffects(scope(harness))
+  return ready ? (
+    <RouterProvider router={router} />
+  ) : (
+    <StartupScreen onRelaunch={onRelaunch} onQuit={() => void quit()} />
+  )
+}
 
+/** Link clients by harness id; `AbortController` closes one when the harness is removed. */
+const links = new Map<string, AbortController>()
+
+export function App() {
+  const [attempt, setAttempt] = useState(0)
+  const hydrated = useHarnesses((s) => s.hydrated)
+  const harnesses = useHarnesses((s) => s.harnesses)
+  const active = useHarnesses((s) => s.active)
+  const needsPairing = useNeedsPairing()
+  /** The `active` last shown once IndexedDB was read; `null` before, so the stored value does not count as a switch. */
+  const shown = useRef<string | null>(null)
+
+  useEffect(() => void hydrateHarnesses(), [])
+
+  // The desktop's own daemon (25's launch path), relaunched on demand from the startup screen.
   useEffect(() => {
+    if (!hasLocal()) return
     const ctl = new AbortController()
-    bootstrap(attempt === 0 ? connection : relaunch, qc, ctl.signal)
+    const get = attempt === 0 ? connection : relaunch
+    boot(
+      scope(LOCAL),
+      async () => {
+        const c = await get()
+        owned = c.owned
+        return RpcClient.local(c.url, c.token)
+      },
+      ctl.signal,
+    )
     return () => ctl.abort()
-  }, [qc, attempt])
+  }, [attempt])
+
+  // One LinkTransport client per paired harness; all connect (presence), only the active one subscribes.
+  useEffect(() => {
+    if (!hydrated) return
+    for (const h of harnesses) {
+      if (links.has(h.id)) continue
+      const ctl = new AbortController()
+      links.set(h.id, ctl)
+      boot(scope(h.id), async () => new RpcClient(new LinkTransport(h)), ctl.signal)
+    }
+    for (const [id, ctl] of links) {
+      if (harnesses.some((h) => h.id === id)) continue
+      ctl.abort()
+      links.delete(id)
+      dropScope(id)
+    }
+  }, [hydrated, harnesses])
+
+  // Switching moves the subscription; the tree below remounts under the new provider.
+  useEffect(() => {
+    const st = scope(active)
+    attach(st)
+    return () => detach(st)
+  }, [active])
+
+  // A switch routes to `/` (the tree below remounts under the new provider); the hydration read keeps deep links like `/link#…`.
+  useEffect(() => {
+    if (!hydrated) return
+    if (shown.current !== null && shown.current !== active) void router.navigate({ to: '/' })
+    shown.current = active
+  }, [hydrated, active])
 
   useTauri()
-  useInvalidateOn()
-  useEventSideEffects(qc)
 
   return (
     <>
-      {ready ? (
-        <RouterProvider router={router} />
+      {needsPairing ? (
+        <PairScreen />
       ) : (
-        <StartupScreen onRelaunch={() => setAttempt((n) => n + 1)} onQuit={() => void quit()} />
+        <HarnessProvider key={active} harness={active}>
+          <Shell harness={active} onRelaunch={() => setAttempt((n) => n + 1)} />
+        </HarnessProvider>
       )}
       <Toaster />
     </>

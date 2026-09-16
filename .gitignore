@@ -3,3 +3,4 @@
 *.sqlite-*
 /bindings
 .env.signing
+crates/desktop/ui/.link-smoke-identity.json

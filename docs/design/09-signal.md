@@ -459,10 +459,12 @@ there is no "UI open"; the phone *is* the UI for its own sessions.
 
 Linking follows the `/login` shape (`Login` ask → URL, `LoginFinished`
 event): a command returns a URL, the UI renders it, completion arrives as an
-event. Signal's URL is a `sgnl://linkdevice?uuid=…&pub_key=…` (~110 chars)
+event). Signal's URL is a `sgnl://linkdevice?uuid=…&pub_key=…` (~110 chars)
 that must be scanned, so every surface renders a QR (`qrcode` → unicode
 half-blocks, `Dense1x2`, no quiet zone: QR version ≈ 6, about 41×21 cells,
-~900 chars — well under the 2000-char tool display cap).
+~900 chars — well under the 2000-char tool display cap). The renderer is
+`link::qr` (31 §14), re-exported here as `signal::qr`; `signal` depends on
+`link` for it (`link` sits above `runtime` only, so the order stays acyclic).
 
 ### 11.1 CLI, one-shot
 

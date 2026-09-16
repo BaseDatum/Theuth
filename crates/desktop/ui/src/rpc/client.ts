@@ -1,7 +1,7 @@
 import type { WireEvent } from '@/rpc/events'
+import { type ConnState, LocalTransport, type Transport } from '@/rpc/transport'
 
-/** Socket lifecycle as the store shows it. */
-export type ConnState = 'connecting' | 'open' | 'reconnecting' | 'closed'
+export type { ConnState } from '@/rpc/transport'
 
 /** A JSON-RPC error object, or a transport failure (`code` -32300). */
 export class RpcError extends Error {
@@ -20,7 +20,12 @@ const BACKOFF_MIN_MS = 500
 const BACKOFF_MAX_MS = 10_000
 
 type Pending = { resolve: (v: unknown) => void; reject: (e: RpcError) => void }
-type Sub = { session: string | null; descendants: boolean | null; onEvent: (e: WireEvent) => void; id: unknown }
+type Sub = {
+  session: string | null
+  descendants: boolean | null
+  onEvent: (e: WireEvent) => void
+  id: unknown
+}
 type Frame = {
   id?: number
   result?: unknown
@@ -30,14 +35,14 @@ type Frame = {
 }
 
 /**
- * JSON-RPC 2.0 over one WebSocket (jsonrpsee framing): positional params,
+ * JSON-RPC 2.0 over one `Transport` (jsonrpsee framing): positional params,
  * numeric ids, subscription items as `subscribe_events` notifications keyed
- * by `params.subscription`. Reconnects with capped exponential backoff and
- * re-issues live subscriptions; the gap between is lost by design (25 §2.1).
+ * by `params.subscription`. When the transport reports `reconnecting` it is
+ * reconnected with capped exponential backoff and live subscriptions are
+ * re-issued; the gap between is lost by design (25 §2.1).
  */
 export class RpcClient {
-  #url: string
-  #ws: WebSocket | null = null
+  #t: Transport
   #next = 1
   #pending = new Map<number, Pending>()
   #subs = new Set<Sub>()
@@ -48,33 +53,49 @@ export class RpcClient {
   #timer: ReturnType<typeof setTimeout> | undefined
   #closed = false
 
-  constructor(url: string, token: string) {
-    const u = new URL(url)
-    u.searchParams.set('token', token)
-    this.#url = u.toString()
+  constructor(transport: Transport) {
+    this.#t = transport
+    transport.onMessage((text) => this.#receive(JSON.parse(text) as Frame))
+    transport.onState((s) => {
+      this.#setState(s)
+      if (s === 'open') {
+        this.#attempt = 0
+        for (const sub of this.#subs) void this.#issue(sub).catch(() => undefined)
+      } else if (s === 'reconnecting') {
+        this.#failPending('connection closed')
+        this.#schedule()
+      }
+    })
   }
 
-  /** Open the socket; resolves once it is open, rejects if the first attempt fails. */
+  /** The daemon's own socket (25 §2.1). */
+  static local(url: string, token: string): RpcClient {
+    return new RpcClient(new LocalTransport(url, token))
+  }
+
+  /** Open the transport; resolves once open, rejects if the first attempt fails (retries continue). */
   connect(): Promise<void> {
     this.#closed = false
-    this.#setState('connecting')
-    return this.#open()
+    return this.#t.connect()
   }
 
-  /** One request; rejects with `RpcError` on an error reply or when the socket is not open. */
+  /** One request; rejects with `RpcError` on an error reply or when not connected. */
   call<T>(method: string, params: unknown[]): Promise<T> {
     const { promise, resolve, reject } = Promise.withResolvers<T>()
-    if (this.#ws?.readyState !== WebSocket.OPEN) {
+    if (this.#state !== 'open') {
       reject(new RpcError(TRANSPORT, 'not connected'))
       return promise
     }
     const id = this.#next++
     this.#pending.set(id, { resolve: resolve as (v: unknown) => void, reject })
-    this.#ws.send(JSON.stringify({ jsonrpc: '2.0', id, method, params }))
+    this.#t.send(JSON.stringify({ jsonrpc: '2.0', id, method, params }))
     return promise
   }
 
-  /** `subscribe_events`; the returned function unsubscribes. Survives reconnects. */
+  /**
+   * `subscribe_events`; the returned function unsubscribes. Survives reconnects,
+   * and may be called before the transport is open (issued on `open`).
+   */
   async subscribe(
     session: string | null,
     descendants: boolean | null,
@@ -82,11 +103,11 @@ export class RpcClient {
   ): Promise<() => Promise<void>> {
     const sub: Sub = { session, descendants, onEvent, id: null }
     this.#subs.add(sub)
-    await this.#issue(sub)
+    if (this.#state === 'open') await this.#issue(sub)
     return async () => {
       this.#subs.delete(sub)
       this.#bySubId.delete(sub.id)
-      if (this.#ws?.readyState === WebSocket.OPEN) {
+      if (this.#state === 'open' && sub.id !== null) {
         await this.call('unsubscribe_events', [sub.id]).catch(() => undefined)
       }
     }
@@ -103,38 +124,22 @@ export class RpcClient {
   close(): void {
     this.#closed = true
     clearTimeout(this.#timer)
+    this.#timer = undefined
     this.#subs.clear()
     this.#bySubId.clear()
-    this.#ws?.close()
-    this.#ws = null
+    this.#t.close()
     this.#failPending('closed')
     this.#setState('closed')
   }
 
-  #open(): Promise<void> {
-    const { promise, resolve, reject } = Promise.withResolvers<void>()
-    const ws = new WebSocket(this.#url)
-    this.#ws = ws
-    let opened = false
-    ws.onopen = () => {
-      opened = true
-      this.#attempt = 0
-      this.#setState('open')
-      for (const sub of this.#subs) void this.#issue(sub)
-      resolve()
-    }
-    ws.onmessage = (m) => this.#receive(JSON.parse(m.data as string) as Frame)
-    ws.onclose = () => {
-      if (this.#ws !== ws) return
-      this.#ws = null
-      this.#failPending('connection closed')
-      if (!opened) reject(new RpcError(TRANSPORT, 'connect failed'))
+  #schedule(): void {
+    if (this.#closed || this.#timer) return
+    const delay = Math.min(BACKOFF_MAX_MS, BACKOFF_MIN_MS * 2 ** this.#attempt++)
+    this.#timer = setTimeout(() => {
+      this.#timer = undefined
       if (this.#closed) return
-      this.#setState('reconnecting')
-      const delay = Math.min(BACKOFF_MAX_MS, BACKOFF_MIN_MS * 2 ** this.#attempt++)
-      this.#timer = setTimeout(() => void this.#open().catch(() => undefined), delay)
-    }
-    return promise
+      this.#t.connect().catch(() => this.#schedule())
+    }, delay)
   }
 
   async #issue(sub: Sub): Promise<void> {

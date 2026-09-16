@@ -26,4 +26,9 @@ approvals: ApprovalsState,
 /**
  * `agent.compact_style`.
  */
-compact_style: CompactStyle, };
+compact_style: CompactStyle, 
+/**
+ * Harness display name (`link.name`, else the hostname): what a linked
+ * device shows in its harness switcher (31 §6.4).
+ */
+name: string, };

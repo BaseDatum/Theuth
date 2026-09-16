@@ -76,6 +76,32 @@ desktop-bundle: package-macos
 desktop-check:
     cd crates/desktop/ui && bun run check && bun run test
 
+# One-time Xcode project generation into crates/desktop/gen/apple (gitignored; this
+# recipe regenerates it). Signing: Xcode automatic signing with the team from
+# .env.signing (scripts/load-signing-env.sh). 31 §8.3.
+ios-init:
+    cd crates/desktop && cargo tauri ios init
+
+# iOS app in dev mode on a simulator/device. tauri.ios.conf.json overlays the bundle
+# id, iOS 17 floor and the universal-link host: `plugins.deep-link.mobile[].host`
+# must be the relay the operator serves /link from (relay.wth.rwx.dev by default).
+ios:
+    cd crates/desktop/ui && bun install
+    cd crates/desktop && TAURI_FRONTEND_PATH=ui cargo tauri ios dev --config tauri.ios.conf.json
+
+# App Store Connect archive (needs `just ios-init` once and a signing team).
+ios-bundle:
+    cd crates/desktop && TAURI_FRONTEND_PATH=ui cargo tauri ios build --config tauri.ios.conf.json --export-method app-store-connect
+
+# Local relay for link development (31 §5); pair with `wth link pair` against ws://127.0.0.1:8787.
+relay *ARGS:
+    cargo run -p relay -- --listen 127.0.0.1:8787 {{ARGS}}
+
+# Static UI build for the browser container (31 §7.6), served by the relay.
+web-build:
+    cd crates/desktop/ui && bun install && bun run build
+    @echo "serve it: wth-relay --listen 0.0.0.0:8787 --web crates/desktop/ui/dist"
+
 # Refresh the bundled model catalog: models.dev api.json trimmed to `models::ROUTABLE`
 # providers and re-emitted through the crate's own types, so the field list lives in
 # `crates/models/src/lib.rs` (`Model`), not here (design doc 02 §1).

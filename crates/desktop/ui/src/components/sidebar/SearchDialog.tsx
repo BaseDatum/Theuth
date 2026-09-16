@@ -1,7 +1,13 @@
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { type ReactNode, useEffect, useState } from 'react'
-import { CommandDialog, CommandEmpty, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
+import {
+  CommandDialog,
+  CommandEmpty,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from '@/components/ui/command'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { MatchRange } from '@/rpc/bindings/MatchRange'
 import type { SearchHit } from '@/rpc/bindings/SearchHit'
@@ -9,7 +15,13 @@ import type { SearchHit } from '@/rpc/bindings/SearchHit'
 const DEBOUNCE_MS = 150
 
 /** ⌘K: server-side fuzzy search (`search_sessions`) over titles and message text; empty query lists recent chats. */
-export function SearchDialog({ open, onOpenChange }: { open: boolean; onOpenChange(open: boolean): void }) {
+export function SearchDialog({
+  open,
+  onOpenChange,
+}: {
+  open: boolean
+  onOpenChange(open: boolean): void
+}) {
   const api = useApi()
   const navigate = useNavigate()
   const [query, setQuery] = useState('')
@@ -21,7 +33,11 @@ export function SearchDialog({ open, onOpenChange }: { open: boolean; onOpenChan
     const t = setTimeout(() => setDebounced(query.trim()), DEBOUNCE_MS)
     return () => clearTimeout(t)
   }, [query])
-  const { data: sessions = [] } = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions(), enabled: open && debounced === '' })
+  const { data: sessions = [] } = useQuery({
+    queryKey: queryKeys.sessions,
+    queryFn: () => api.list_sessions(),
+    enabled: open && debounced === '',
+  })
   const { data: hits = [], isFetching } = useQuery({
     queryKey: queryKeys.search(debounced),
     queryFn: () => api.search_sessions(debounced, 30),
@@ -33,15 +49,28 @@ export function SearchDialog({ open, onOpenChange }: { open: boolean; onOpenChan
     void navigate({ to: '/c/$session', params: { session } })
   }
   return (
-    <CommandDialog open={open} onOpenChange={onOpenChange} shouldFilter={false} title="Search chats" description="Search chats by title or message text">
-      <CommandInput placeholder="Search chats…" value={query} onValueChange={setQuery} />
-      <CommandList>
-        {debounced !== '' && !isFetching && hits.length === 0 && <CommandEmpty>No matches</CommandEmpty>}
+    <CommandDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      shouldFilter={false}
+      title="Search chats"
+      description="Search chats by title or message text"
+      className="h-dvh max-h-dvh w-screen max-w-none rounded-none border-0 pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] sm:h-auto sm:max-h-none sm:w-full sm:max-w-lg sm:rounded-lg sm:border"
+    >
+      <CommandInput autoFocus placeholder="Search chats…" value={query} onValueChange={setQuery} />
+      <CommandList className="max-h-[calc(100dvh-6rem)] sm:max-h-[300px]">
+        {debounced !== '' && !isFetching && hits.length === 0 && (
+          <CommandEmpty>No matches</CommandEmpty>
+        )}
         {debounced === ''
           ? sessions.map((s) => (
               <CommandItem key={s.id} value={s.id} onSelect={() => go(s.id)}>
-                <span className="truncate">{s.name ? `↳ ${s.name}` : s.title || s.id.slice(0, 8)}</span>
-                <span className="ml-auto font-mono text-xs text-fg-tertiary">{s.id.slice(0, 8)}</span>
+                <span className="truncate">
+                  {s.name ? `↳ ${s.name}` : s.title || s.id.slice(0, 8)}
+                </span>
+                <span className="ml-auto font-mono text-xs text-fg-tertiary">
+                  {s.id.slice(0, 8)}
+                </span>
               </CommandItem>
             ))
           : hits.map((hit) => (
@@ -64,7 +93,9 @@ export function SearchDialog({ open, onOpenChange }: { open: boolean; onOpenChan
               </CommandItem>
             ))}
       </CommandList>
-      <div className="border-t px-3 py-2 text-xs text-fg-tertiary">fuzzy · 'exact · ^prefix · suffix$ · !not</div>
+      <div className="border-t px-3 py-2 text-xs text-fg-tertiary">
+        fuzzy · 'exact · ^prefix · suffix$ · !not
+      </div>
     </CommandDialog>
   )
 }

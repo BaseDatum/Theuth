@@ -31,9 +31,9 @@ function Root() {
   }, [navigate, session])
 
   return (
-    <SidebarProvider open={open} onOpenChange={setOpen} style={WIDTH} className="h-screen min-h-0">
+    <SidebarProvider open={open} onOpenChange={setOpen} style={WIDTH} className="h-dvh min-h-0">
       <AppSidebar session={session} />
-      <SidebarInset className="min-h-0 overflow-hidden">
+      <SidebarInset className="min-h-0 overflow-hidden pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)]">
         <Outlet />
       </SidebarInset>
     </SidebarProvider>

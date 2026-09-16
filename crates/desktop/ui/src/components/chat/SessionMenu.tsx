@@ -4,7 +4,13 @@ import { MoreHorizontal } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -16,7 +22,13 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from '@/components/ui/sheet'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { CompactStyle } from '@/rpc/bindings/CompactStyle'
 import { useSessionField, useSessions } from '@/store/sessions'
@@ -25,7 +37,15 @@ import { type Ctx, openSurface, run, type Surface, surfaceOf } from './slash'
 const STYLES: CompactStyle[] = ['summary', 'cut', 'snap']
 
 /** Rename a session; `rename_session` fires `TitleChanged`, which updates the slice and the list. */
-export function RenameDialog({ session, open, onOpenChange }: { session: string; open: boolean; onOpenChange(o: boolean): void }) {
+export function RenameDialog({
+  session,
+  open,
+  onOpenChange,
+}: {
+  session: string
+  open: boolean
+  onOpenChange(o: boolean): void
+}) {
   const api = useApi()
   const qc = useQueryClient()
   const title = useSessionField(session, 'title')
@@ -67,12 +87,24 @@ export function RenameDialog({ session, open, onOpenChange }: { session: string;
   )
 }
 
-function PromptSheet({ session, open, onOpenChange }: { session: string; open: boolean; onOpenChange(o: boolean): void }) {
+function PromptSheet({
+  session,
+  open,
+  onOpenChange,
+}: {
+  session: string
+  open: boolean
+  onOpenChange(o: boolean): void
+}) {
   const api = useApi()
-  const { data, error } = useQuery({ queryKey: queryKeys.prompt(session), queryFn: () => api.get_prompt(session), enabled: open })
+  const { data, error } = useQuery({
+    queryKey: queryKeys.prompt(session),
+    queryFn: () => api.get_prompt(session),
+    enabled: open,
+  })
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent className="w-[640px] sm:max-w-[640px]">
+      <SheetContent className="w-full sm:w-[640px] sm:max-w-[640px]">
         <SheetHeader>
           <SheetTitle>System prompt</SheetTitle>
           <SheetDescription>What the model sees at the top of this session.</SheetDescription>
@@ -85,10 +117,23 @@ function PromptSheet({ session, open, onOpenChange }: { session: string; open: b
   )
 }
 
-function JobsSheet({ session, open, onOpenChange }: { session: string; open: boolean; onOpenChange(o: boolean): void }) {
+function JobsSheet({
+  session,
+  open,
+  onOpenChange,
+}: {
+  session: string
+  open: boolean
+  onOpenChange(o: boolean): void
+}) {
   const api = useApi()
   const key = queryKeys.jobs(session)
-  const { data: jobs = [], refetch } = useQuery({ queryKey: key, queryFn: () => api.list_jobs(session), enabled: open, refetchInterval: open ? 2000 : false })
+  const { data: jobs = [], refetch } = useQuery({
+    queryKey: key,
+    queryFn: () => api.list_jobs(session),
+    enabled: open,
+    refetchInterval: open ? 2000 : false,
+  })
   const kill = async (id: string) => {
     try {
       await api.cancel_job(session, id)
@@ -100,10 +145,12 @@ function JobsSheet({ session, open, onOpenChange }: { session: string; open: boo
   }
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent className="w-[640px] sm:max-w-[640px]">
+      <SheetContent className="w-full sm:w-[640px] sm:max-w-[640px]">
         <SheetHeader>
           <SheetTitle>Background jobs</SheetTitle>
-          <SheetDescription>{jobs.length === 0 ? 'No jobs in this session.' : `${jobs.length} in this session`}</SheetDescription>
+          <SheetDescription>
+            {jobs.length === 0 ? 'No jobs in this session.' : `${jobs.length} in this session`}
+          </SheetDescription>
         </SheetHeader>
         <div className="mx-4 mb-4 min-h-0 flex-1 overflow-auto text-sm">
           <table className="w-full">
@@ -167,22 +214,33 @@ export function SessionMenu({ session }: { session: string }) {
     parent,
     navigate,
     async reload() {
-      useSessions.getState().loadHistory(session, await api.load_session(session, null, 60), 'replace')
+      useSessions
+        .getState()
+        .loadHistory(session, await api.load_session(session, null, 60), 'replace')
     },
   }
-  const cmd = (line: string) => () => void run(line, ctx).catch((e: unknown) => toast.error(e instanceof Error ? e.message : String(e)))
+  const cmd = (line: string) => () =>
+    void run(line, ctx).catch((e: unknown) =>
+      toast.error(e instanceof Error ? e.message : String(e)),
+    )
 
   return (
     <>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button variant="ghost" className="size-9 rounded-lg text-fg-secondary" aria-label="Session menu">
+          <Button
+            variant="ghost"
+            className="size-9 rounded-lg text-fg-secondary"
+            aria-label="Session menu"
+          >
             <MoreHorizontal className="size-5" />
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-56">
           <DropdownMenuItem onSelect={() => setRename(true)}>Rename</DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => void navigator.clipboard.writeText(session)}>Copy id</DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => void navigator.clipboard.writeText(session)}>
+            Copy id
+          </DropdownMenuItem>
           {parent && <DropdownMenuItem onSelect={cmd('/parent')}>Open parent</DropdownMenuItem>}
           <DropdownMenuSeparator />
           <DropdownMenuSub>
@@ -201,14 +259,24 @@ export function SessionMenu({ session }: { session: string }) {
             Redo
           </DropdownMenuItem>
           <DropdownMenuSeparator />
-          <DropdownMenuItem onSelect={cmd('/knowledge harvest')}>Harvest knowledge</DropdownMenuItem>
+          <DropdownMenuItem onSelect={cmd('/knowledge harvest')}>
+            Harvest knowledge
+          </DropdownMenuItem>
           <DropdownMenuItem onSelect={() => openSurface('prompt')}>Show prompt</DropdownMenuItem>
           <DropdownMenuItem onSelect={() => openSurface('jobs')}>Jobs</DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
       <RenameDialog session={session} open={rename} onOpenChange={setRename} />
-      <PromptSheet session={session} open={sheet === 'prompt'} onOpenChange={(o) => !o && setSheet(null)} />
-      <JobsSheet session={session} open={sheet === 'jobs'} onOpenChange={(o) => !o && setSheet(null)} />
+      <PromptSheet
+        session={session}
+        open={sheet === 'prompt'}
+        onOpenChange={(o) => !o && setSheet(null)}
+      />
+      <JobsSheet
+        session={session}
+        open={sheet === 'jobs'}
+        onOpenChange={(o) => !o && setSheet(null)}
+      />
     </>
   )
 }

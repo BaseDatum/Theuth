@@ -125,6 +125,12 @@ pub enum UiEvent {
     Job(JobEvent),
     /// Reply to [`Command::ComputerStatus`].
     Computer(computer::PermissionStatus),
+    /// Reply to [`Command::LinkStatus`] and the link commands that change it.
+    Link(link::LinkStatus),
+    /// Reply to [`Command::LinkPair`]: the string the QR card encodes.
+    Pairing(link::Pairing),
+    /// Link plugin traffic (bus event).
+    LinkEvent(link::LinkEvent),
 }
 
 /// Everything the UI can ask of the rest of the process. One task turns
@@ -360,6 +366,22 @@ pub enum Command {
     RemoveProvider(String),
     /// `list_providers`.
     ListProviders,
+    /// `link_status`.
+    LinkStatus,
+    /// `link_enable(enabled, None)`, then `link_status`.
+    LinkEnable(bool),
+    /// `link_enable(<current>, Some(url))`, then `link_status`.
+    LinkRelay(String),
+    /// `link_pair`.
+    LinkPair,
+    /// `link_cancel_pair`.
+    LinkCancelPair,
+    /// `link_rename` (harness display name), then `link_status`.
+    LinkRename(String),
+    /// `link_rename_device(id, name)`, then `link_status`.
+    LinkRenameDevice(String, String),
+    /// `link_revoke_device`, then `link_status`.
+    LinkRevoke(String),
 }
 
 /// One row of the `/login` picker.
@@ -563,6 +585,8 @@ pub enum CardKind {
     Prompt,
     /// A `<job_result>` the harness injected when a background job ended.
     Job,
+    /// A `/link pair` QR (31 §6.5).
+    Link,
 }
 
 impl CardKind {
@@ -573,6 +597,7 @@ impl CardKind {
             CardKind::Skill => "◇",
             CardKind::Prompt => "§",
             CardKind::Job => "⚙",
+            CardKind::Link => "⌁",
         }
     }
 }
@@ -849,6 +874,11 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "[add|rm <name>]",
         "OpenAI-compatible providers (add prompts for name, url, key)",
     ),
+    (
+        "/link",
+        "[on|off|pair|rm <n>|name <n> <name>|relay <url>]",
+        "pair and manage phones",
+    ),
     ("/exit", "", "same as /quit"),
 ];
 
@@ -1027,6 +1057,46 @@ pub enum Menu {
         /// What ⏎ does with the highlighted turn.
         action: TurnAction,
     },
+    /// `/link`: paired devices over [`Model::link`] (31 §6.5).
+    Link {
+        /// Highlighted device.
+        cursor: usize,
+    },
+}
+
+/// The `/link pair` card that is still counting down.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PairingCard {
+    /// The pairing string (rendered as the QR and on one line).
+    key: String,
+    /// Unix ms.
+    expires_at_ms: u64,
+    /// Whole seconds the card last showed; redraw when it changes.
+    left: u64,
+}
+
+impl PairingCard {
+    /// Seconds until expiry, floored at zero.
+    fn remaining(&self) -> u64 {
+        self.expires_at_ms.saturating_sub(now_ms()) / 1000
+    }
+
+    /// Card body: the QR in a fence, the key, the countdown.
+    fn body(&self) -> String {
+        let left = self.left;
+        format!(
+            "```\n{}\n```\n{}\nexpires in {}:{:02}",
+            link::qr(&self.key),
+            self.key,
+            left / 60,
+            left % 60
+        )
+    }
+}
+
+/// Unix ms now.
+fn now_ms() -> u64 {
+    u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0)
 }
 
 /// What a [`Menu::Turns`] pick does.
@@ -1040,7 +1110,8 @@ pub enum TurnAction {
     Fork,
 }
 
-/// Multi-step `/provider add` input. Rides on the input box (not a modal menu).
+/// Multi-step input (`/provider add`, `/link` rename / revoke). Rides on the
+/// input box (not a modal menu).
 #[derive(Debug)]
 pub enum Prompt {
     /// Asking for the gateway name.
@@ -1057,6 +1128,22 @@ pub enum Prompt {
         /// Normalized URL already collected.
         url: String,
     },
+    /// `/link` `r`: asking for a paired device's new name.
+    LinkDeviceName {
+        /// `Device.id`.
+        id: String,
+        /// Its current name (the hint).
+        name: String,
+    },
+    /// `/link` `n`: asking for the harness display name.
+    LinkName,
+    /// `/link` `x`: `y` revokes the device, anything else keeps it.
+    LinkRevoke {
+        /// `Device.id`.
+        id: String,
+        /// Its name (the hint).
+        name: String,
+    },
 }
 
 impl Prompt {
@@ -1069,6 +1156,23 @@ impl Prompt {
             }
             Prompt::ProviderKey { name, .. } => {
                 format!("provider add  {name}  api key  (esc cancel)")
+            }
+            Prompt::LinkDeviceName { name, .. } => {
+                format!("link  rename {name}  new name  (esc cancel)")
+            }
+            Prompt::LinkName => "link  harness name  (esc cancel)".into(),
+            Prompt::LinkRevoke { name, .. } => format!("link  revoke {name}?  y/n"),
+        }
+    }
+
+    /// Notice when Esc drops the flow.
+    fn cancelled(&self) -> &'static str {
+        match self {
+            Prompt::ProviderName | Prompt::ProviderUrl { .. } | Prompt::ProviderKey { .. } => {
+                "provider add cancelled"
+            }
+            Prompt::LinkDeviceName { .. } | Prompt::LinkName | Prompt::LinkRevoke { .. } => {
+                "link: cancelled"
             }
         }
     }
@@ -1399,6 +1503,16 @@ pub struct Model {
     /// (tests, line printer) = unbounded. Assistant text renders at this
     /// width when constructed; resize does not re-render (design doc 30 §7).
     pub width: usize,
+    /// Latest `link_status` (badge and `/link` menu); `None` until fetched.
+    pub link: Option<link::LinkStatus>,
+    /// `/link` was typed (or a flow that reopens it ran); the next
+    /// `UiEvent::Link` opens the menu (same rule as `awaiting_mcp`).
+    awaiting_link: bool,
+    /// A link event arrived that the local copy cannot fold in: the event
+    /// loop re-asks `link_status`.
+    pub refresh_link: bool,
+    /// The live `/link pair` card, redrawn each second by [`Model::tick`].
+    pairing: Option<PairingCard>,
 }
 
 impl Model {
@@ -1418,6 +1532,7 @@ impl Model {
             catalog: self.catalog.take(),
             skills: std::mem::take(&mut self.skills),
             width: self.width,
+            link: self.link.take(),
             ..Self::new(std::mem::take(&mut self.model_id), self.approvals_global)
         };
     }
@@ -1493,6 +1608,7 @@ impl Model {
                         | Menu::Skills { .. }
                         | Menu::Logins { .. }
                         | Menu::Turns { .. }
+                        | Menu::Link { .. }
                 )
             )
     }
@@ -1764,6 +1880,7 @@ impl Model {
             || self.compacting
             || self.harvesting
             || self.agents.values().any(AgentRow::live)
+            || self.pairing.is_some()
     }
 
     /// The board (design doc 19 §3.3): the subtree's live rows plus errors
@@ -1866,6 +1983,42 @@ impl Model {
                 }
                 t.reveal((backlog / 16).max(1));
             }
+        }
+        self.tick_pairing();
+    }
+
+    /// Redraw the live pairing card when its countdown moved a second; at
+    /// zero it reads `pairing expired` (the bus says so too, later).
+    fn tick_pairing(&mut self) {
+        let Some(p) = &mut self.pairing else { return };
+        let left = p.remaining();
+        if left == p.left {
+            return;
+        }
+        p.left = left;
+        let body = if left == 0 {
+            "pairing expired".to_owned()
+        } else {
+            p.body()
+        };
+        if left == 0 {
+            self.pairing = None;
+        }
+        self.set_link_card(&body);
+    }
+
+    /// Replace the body of the newest `/link pair` card, if any.
+    fn set_link_card(&mut self, body: &str) {
+        if let Some(Entry::Card { text, .. }) = self.entries.iter_mut().rev().find(|e| {
+            matches!(
+                e,
+                Entry::Card {
+                    kind: CardKind::Link,
+                    ..
+                }
+            )
+        }) {
+            **text = markdown::Text::complete(body);
         }
     }
 
@@ -2259,12 +2412,106 @@ impl Model {
             // The transcript reload that follows pushes the notice (`History`).
             UiEvent::Undone(t) => self.notice = Some(format!("undone: {t} — /redo restores")),
             UiEvent::Redone(t) => self.notice = Some(format!("restored: {t}")),
+            UiEvent::Link(status) => {
+                let open = matches!(self.menu, Some(Menu::Link { .. }));
+                if !open && !self.awaiting_link {
+                    self.entries.push(Entry::Info(link_line(&status)));
+                } else if !open {
+                    self.menu = Some(Menu::Link { cursor: 0 });
+                }
+                self.awaiting_link = false;
+                self.link = Some(status);
+            }
+            UiEvent::Pairing(p) => {
+                // One pending pairing per harness: a new key kills the old card.
+                if self.pairing.take().is_some() {
+                    self.set_link_card("pairing expired");
+                }
+                let card = PairingCard {
+                    left: p.expires_at_ms.saturating_sub(now_ms()) / 1000,
+                    key: p.key,
+                    expires_at_ms: p.expires_at_ms,
+                };
+                self.entries.push(Entry::Card {
+                    kind: CardKind::Link,
+                    title: "link pairing".into(),
+                    text: Box::new(markdown::Text::complete(&card.body())),
+                    expanded: true,
+                });
+                self.pairing = Some(card);
+            }
+            UiEvent::LinkEvent(ev) => self.apply_link(ev),
             UiEvent::Error(e) => {
                 // A failed `/compact` answers here, not with an agent event.
                 self.compacting = false;
                 self.awaiting_effort = false;
+                self.awaiting_link = false;
                 self.notice = None;
                 self.entries.push(Entry::Error(e));
+            }
+        }
+    }
+
+    /// Fold a link bus event into the local status and the pairing card.
+    /// What the copy cannot absorb (a device it has not seen) re-asks.
+    fn apply_link(&mut self, ev: link::LinkEvent) {
+        use link::LinkEvent::*;
+        match ev {
+            LinkRelay { connected } => match &mut self.link {
+                Some(s) => s.connected = connected,
+                None => self.refresh_link = true,
+            },
+            LinkPairing { key: None, .. } => {
+                if self.pairing.take().is_some() {
+                    self.set_link_card("pairing expired");
+                }
+                if let Some(s) = &mut self.link {
+                    s.pairing = None;
+                }
+            }
+            LinkPairing {
+                key: Some(key),
+                expires_at_ms,
+            } => {
+                if let Some(s) = &mut self.link {
+                    s.pairing = Some(link::Pairing {
+                        key,
+                        expires_at_ms: expires_at_ms.unwrap_or(0),
+                    });
+                }
+            }
+            LinkPaired { device } => {
+                if self.pairing.take().is_some() {
+                    self.set_link_card(&format!("paired: {}", device.name));
+                }
+                match &mut self.link {
+                    Some(s) => {
+                        s.pairing = None;
+                        s.devices.retain(|d| d.id != device.id);
+                        s.devices.push(device);
+                    }
+                    None => self.refresh_link = true,
+                }
+            }
+            LinkDevice { id, online } => {
+                match self
+                    .link
+                    .as_mut()
+                    .and_then(|s| s.devices.iter_mut().find(|d| d.id == id))
+                {
+                    Some(d) => {
+                        d.online = online;
+                        if !online {
+                            d.last_seen_ms = now_ms();
+                        }
+                    }
+                    None => self.refresh_link = true,
+                }
+            }
+            LinkRevoked { id } => {
+                if let Some(s) = &mut self.link {
+                    s.devices.retain(|d| d.id != id);
+                }
             }
         }
     }
@@ -2759,6 +3006,7 @@ impl Model {
             "/regen" => self.turn_cmd(TurnAction::Regen, cmd, arg, tx),
             "/fork" => self.turn_cmd(TurnAction::Fork, cmd, arg, tx),
             "/provider" => self.provider_cmd(arg, tx),
+            "/link" => self.link_cmd(arg, tx),
             c if c.starts_with('/') => {
                 // `/<skill> [args]` hands the skill to the model (04 §2.4). Before
                 // the index has arrived the agent decides; it names an unknown skill.
@@ -3157,17 +3405,19 @@ impl Model {
                 };
                 (
                     format!(
-                        "{model}{effort}  ·  ctx {used} / {} ({pct}%){cache}{}",
+                        "{model}{effort}  ·  ctx {used} / {} ({pct}%){cache}{}{}",
                         k(limit),
-                        self.approvals_tag()
+                        self.approvals_tag(),
+                        self.link_tag()
                     ),
                     level,
                 )
             }
             _ => (
                 format!(
-                    "{model}{effort}  ·  ctx {used}{cache}{}",
-                    self.approvals_tag()
+                    "{model}{effort}  ·  ctx {used}{cache}{}{}",
+                    self.approvals_tag(),
+                    self.link_tag()
                 ),
                 Level::Normal,
             ),
@@ -3179,6 +3429,20 @@ impl Model {
             "  ·  approvals off"
         } else {
             ""
+        }
+    }
+
+    /// `  ·  link ●N` (N = devices online) while the uplink is registered
+    /// and a device is paired; empty otherwise.
+    fn link_tag(&self) -> String {
+        match &self.link {
+            Some(s) if s.connected && !s.devices.is_empty() => {
+                format!(
+                    "  ·  link ●{}",
+                    s.devices.iter().filter(|d| d.online).count()
+                )
+            }
+            _ => String::new(),
         }
     }
 
@@ -3447,15 +3711,30 @@ impl Model {
                     },
                 );
             }
+            Some(Prompt::LinkDeviceName { id, .. }) => {
+                self.awaiting_link = true;
+                send(tx, Command::LinkRenameDevice(id, line.to_owned()));
+            }
+            Some(Prompt::LinkName) => {
+                self.awaiting_link = true;
+                send(tx, Command::LinkRename(line.to_owned()));
+            }
+            Some(Prompt::LinkRevoke { id, name }) => {
+                if line.eq_ignore_ascii_case("y") || line.eq_ignore_ascii_case("yes") {
+                    self.awaiting_link = true;
+                    send(tx, Command::LinkRevoke(id));
+                } else {
+                    self.entries.push(Entry::Info(format!("link: kept {name}")));
+                }
+            }
             None => {}
         }
     }
 
-    /// Drop an in-progress `/provider add`.
+    /// Drop an in-progress prompt flow.
     pub fn cancel_prompt(&mut self) {
-        if self.prompt.take().is_some() {
-            self.entries
-                .push(Entry::Info("provider add cancelled".into()));
+        if let Some(p) = self.prompt.take() {
+            self.entries.push(Entry::Info(p.cancelled().into()));
         }
     }
 
@@ -3518,6 +3797,7 @@ impl Model {
             Some(Menu::Skills { .. }) => self.skills_key(code, tx),
             Some(Menu::Logins { .. }) => self.logins_key(code, tx),
             Some(Menu::Turns { .. }) => self.turns_key(code, tx),
+            Some(Menu::Link { .. }) => self.link_key(code, tx),
         }
     }
 
@@ -3970,6 +4250,170 @@ impl Model {
         }
         MenuKey::Consumed
     }
+
+    /// `/link` menu | `on` | `off` | `pair` | `cancel` | `rm <id>` |
+    /// `name <id> <name…>` | `relay <url>` (31 §6.5).
+    fn link_cmd(&mut self, arg: &str, tx: &UnboundedSender<Command>) {
+        let (sub, rest) = arg
+            .split_once(char::is_whitespace)
+            .map_or((arg, ""), |(s, r)| (s, r.trim()));
+        match (sub, rest) {
+            ("", _) => {
+                self.awaiting_link = true;
+                send(tx, Command::LinkStatus);
+            }
+            ("on", _) => {
+                self.awaiting_link = true;
+                send(tx, Command::LinkEnable(true));
+            }
+            ("off", _) => send(tx, Command::LinkEnable(false)),
+            ("pair", _) => send(tx, Command::LinkPair),
+            ("cancel", _) => send(tx, Command::LinkCancelPair),
+            ("rm", id) if !id.is_empty() => send(tx, Command::LinkRevoke(id.to_owned())),
+            ("name", rest) if rest.contains(char::is_whitespace) => {
+                let (id, name) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+                send(
+                    tx,
+                    Command::LinkRenameDevice(id.to_owned(), name.trim().to_owned()),
+                );
+            }
+            ("relay", url) if !url.is_empty() => send(tx, Command::LinkRelay(url.to_owned())),
+            _ => self.entries.push(Entry::Error(
+                "usage: /link [on|off|pair|cancel|rm <id>|name <id> <name>|relay <url>]".into(),
+            )),
+        }
+    }
+
+    /// `/link` menu title: the status line, then the keys.
+    pub fn link_title(&self) -> String {
+        let Some(s) = &self.link else {
+            return "link".into();
+        };
+        let state = match (s.enabled, s.connected) {
+            (false, _) => "off",
+            (true, true) => "connected",
+            (true, false) => "disconnected",
+        };
+        let id: String = s
+            .harness_id
+            .as_deref()
+            .map_or_else(|| "no identity".into(), |id| id.chars().take(8).collect());
+        format!(
+            "link · {} · {state} · {} ({id}…)   p pair  r rename  x revoke  n harness name  e {}  esc",
+            relay_host(&s.relay),
+            s.name,
+            if s.enabled { "disable" } else { "enable" }
+        )
+    }
+
+    /// `/link` menu rows: `● name  platform  paired <ago>  online|seen <ago>`
+    /// per device, or one hint row when none is paired.
+    pub fn link_rows(&self) -> Vec<String> {
+        let now = now_ms();
+        let since = |ms: u64| ago(chrono::Duration::milliseconds(now.saturating_sub(ms) as i64));
+        let rows: Vec<String> = self
+            .link
+            .iter()
+            .flat_map(|s| &s.devices)
+            .map(|d| {
+                let seen = match (d.online, d.last_seen_ms) {
+                    (true, _) => "online".to_owned(),
+                    (false, 0) => "never seen".to_owned(),
+                    (false, ms) => format!("seen {}", since(ms)),
+                };
+                format!(
+                    "{} {:<20} {:<8} paired {:<10} {seen}",
+                    if d.online { "●" } else { "○" },
+                    d.name.chars().take(20).collect::<String>(),
+                    platform_name(&d.platform),
+                    since(d.paired_at_ms),
+                )
+            })
+            .collect();
+        if rows.is_empty() {
+            return vec!["no devices paired · p pairs one".into()];
+        }
+        rows
+    }
+
+    /// `/link`: `p` pairs (card in the transcript), `r`/`n`/`x` open a
+    /// prompt, `e` flips `link.enabled` in place.
+    fn link_key(&mut self, code: KeyCode, tx: &UnboundedSender<Command>) -> MenuKey {
+        let Some(Menu::Link { cursor }) = &mut self.menu else {
+            return MenuKey::Consumed;
+        };
+        let Some(s) = &self.link else {
+            self.menu = None;
+            return MenuKey::Consumed;
+        };
+        let device = s
+            .devices
+            .get(*cursor)
+            .map(|d| (d.id.clone(), d.name.clone()));
+        let enabled = s.enabled;
+        match code {
+            KeyCode::Up => *cursor = cursor.saturating_sub(1),
+            KeyCode::Down => *cursor = (*cursor + 1).min(s.devices.len().saturating_sub(1)),
+            KeyCode::Esc => self.menu = None,
+            KeyCode::Char('p') => {
+                self.menu = None;
+                send(tx, Command::LinkPair);
+            }
+            KeyCode::Char('e') => send(tx, Command::LinkEnable(!enabled)),
+            KeyCode::Char('n') => {
+                self.menu = None;
+                self.prompt = Some(Prompt::LinkName);
+            }
+            KeyCode::Char('r') => {
+                if let Some((id, name)) = device {
+                    self.menu = None;
+                    self.prompt = Some(Prompt::LinkDeviceName { id, name });
+                }
+            }
+            KeyCode::Char('x') => {
+                if let Some((id, name)) = device {
+                    self.menu = None;
+                    self.prompt = Some(Prompt::LinkRevoke { id, name });
+                }
+            }
+            _ => {}
+        }
+        MenuKey::Consumed
+    }
+}
+
+/// Host part of a relay origin: `wss://relay.wth.rwx.dev/x` → `relay.wth.rwx.dev`.
+fn relay_host(relay: &str) -> &str {
+    let rest = relay.split_once("://").map_or(relay, |(_, r)| r);
+    rest.split('/').next().unwrap_or(rest)
+}
+
+/// `ios` → `iOS`, `macos` → `macOS`; anything else as sent.
+fn platform_name(p: &str) -> &str {
+    match p {
+        "ios" => "iOS",
+        "macos" => "macOS",
+        other => other,
+    }
+}
+
+/// One-line `link_status`: `link off` or `link on · <host> · connected · 2 devices (1 online)`.
+pub fn link_line(s: &link::LinkStatus) -> String {
+    if !s.enabled {
+        return "link off".into();
+    }
+    format!(
+        "link on · {} · {} · {} device{} ({} online)",
+        relay_host(&s.relay),
+        if s.connected {
+            "connected"
+        } else {
+            "disconnected"
+        },
+        s.devices.len(),
+        if s.devices.len() == 1 { "" } else { "s" },
+        s.devices.iter().filter(|d| d.online).count()
+    )
 }
 
 fn filter_models<'a>(items: &'a [ModelInfo], filter: &str) -> Vec<&'a ModelInfo> {
@@ -4505,6 +4949,89 @@ mod tests {
         ));
         assert!(matches!(m.menu, Some(Menu::Agents { .. })));
         assert!(m.board().iter().all(|r| r.info.id != a) && m.agents[&b].error.is_some());
+    }
+
+    #[test]
+    fn link_menu_pairs_and_card_follows_events() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        let device = link::Device {
+            id: "abcd1234".into(),
+            name: "phone".into(),
+            platform: "ios".into(),
+            paired_at_ms: 1,
+            last_seen_ms: 0,
+            online: false,
+        };
+        let status = link::LinkStatus {
+            enabled: true,
+            relay: "wss://relay.example:8787".into(),
+            name: "Studio".into(),
+            harness_id: Some("HsAbCdEf0123".into()),
+            connected: true,
+            devices: vec![device.clone()],
+            pairing: None,
+        };
+        // Bare `/link` asks, the reply opens the modal; `/link off` alone only reports.
+        m.submit("/link", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::LinkStatus)));
+        m.apply(UiEvent::Link(status.clone()));
+        assert!(matches!(m.menu, Some(Menu::Link { .. })) && !m.input_focused());
+        assert!(
+            m.link_title()
+                .starts_with("link · relay.example:8787 · connected · Studio (HsAbCdEf…)")
+        );
+        assert!(m.link_rows()[0].starts_with("○ phone"));
+        // `x` confirms through a prompt; `n` keeps.
+        m.menu_key(KeyCode::Char('x'), "", &tx);
+        assert!(matches!(m.prompt, Some(Prompt::LinkRevoke { .. })) && m.menu.is_none());
+        m.submit("n", &tx);
+        assert!(rx.try_recv().is_err() && m.prompt.is_none());
+        // `p` pairs: the card counts down, then reads `paired: <name>`.
+        m.menu = Some(Menu::Link { cursor: 0 });
+        m.menu_key(KeyCode::Char('p'), "", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::LinkPair)));
+        m.apply(UiEvent::Pairing(link::Pairing {
+            key: "https://relay.example:8787/link#1.AAAA.QQ".into(),
+            expires_at_ms: now_ms() + 300_000,
+        }));
+        assert!(m.animating());
+        let body = |m: &Model| match m.entries.last() {
+            Some(Entry::Card {
+                kind: CardKind::Link,
+                text,
+                ..
+            }) => {
+                text.view().plain.to_owned()
+                    + &text
+                        .view()
+                        .lines()
+                        .flat_map(|l| l.iter().map(|s| s.text.clone()))
+                        .collect::<String>()
+            }
+            _ => panic!("no pairing card"),
+        };
+        assert!(body(&m).contains("expires in 4:5") || body(&m).contains("expires in 5:00"));
+        m.apply(UiEvent::LinkEvent(link::LinkEvent::LinkPaired {
+            device: link::Device {
+                id: "zzzz9999".into(),
+                name: "Sky's iPhone".into(),
+                ..device
+            },
+        }));
+        assert!(!m.animating());
+        assert!(body(&m).contains("paired: Sky's iPhone"));
+        assert_eq!(m.link.as_ref().map(|s| s.devices.len()), Some(2));
+        // `/link off` with the menu closed: a one-line notice, no menu.
+        m.menu = None;
+        m.submit("/link off", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::LinkEnable(false))));
+        m.apply(UiEvent::Link(link::LinkStatus {
+            enabled: false,
+            ..status
+        }));
+        assert!(m.menu.is_none());
+        assert!(matches!(m.entries.last(), Some(Entry::Info(t)) if t == "link off"));
     }
 
     #[test]
