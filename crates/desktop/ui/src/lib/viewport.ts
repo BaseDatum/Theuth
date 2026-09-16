@@ -1,12 +1,14 @@
 /**
- * iOS keyboard (31 §8.1): WebKit never shrinks the layout viewport for the
- * keyboard, only the visual one, so a `100dvh` shell keeps its full height and
- * WebKit scrolls the page to show the focused field, pushing the header off
- * screen. Publish the visible part instead: `--visible-band` on `<html>` ends
- * at the visual viewport's document-relative bottom while an editable has
- * focus, and `data-keyboard-open` marks that state. Nothing here fires on a
- * desktop: the visual viewport equals the layout one.
+ * iOS keyboard (31 §8.1; the same fix as jarvis `lib/appHeight.ts`): WebKit
+ * reveals the focused field by scrolling the page, and depending on the
+ * container shrinks either only the visual viewport or the layout one too.
+ * The shell must never scroll: `--visible-band` on `<html>` is the visual
+ * viewport height while an editable has focus and the keyboard is up
+ * (`data-keyboard-open`), else the layout height, and any page scroll WebKit
+ * did is undone so the shrunk shell sits on the visible band. Nothing here
+ * fires on a desktop: the visual viewport equals the layout one.
  */
+import { touch } from '@/lib/platform'
 
 /** Smaller collapses are browser chrome / rounding, not a keyboard. */
 const SLACK = 50
@@ -16,16 +18,26 @@ const editing = (): boolean => {
   return el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || (el instanceof HTMLElement && el.isContentEditable)
 }
 
+/**
+ * The screen's block edge: the one full-height reading that survives both
+ * keyboard modes (`innerHeight` itself shrinks in one of them).
+ */
+const screenBlock = (): number => {
+  const { width: w, height: h } = window.screen
+  return matchMedia('(orientation: landscape)').matches ? Math.min(w, h) : Math.max(w, h)
+}
+
 /** Read the viewports and write the variables; exported for tests. */
 export function applyViewport(): void {
   const layout = window.innerHeight
-  const vv = window.visualViewport
-  const open = editing() && !!vv && vv.height < layout - SLACK
-  // `pageTop` includes WebKit's automatic document scroll; `offsetTop` does not.
-  const band = open ? Math.min(layout, Math.round(vv.height + vv.pageTop)) : layout
+  const visible = Math.round(window.visualViewport?.height ?? layout)
+  // ponytail: a touch window shorter than the screen (iPad Stage Manager) reads as keyboard-open while editing; only `--safe-bottom` is affected.
+  const full = touch() ? Math.max(layout, screenBlock()) : layout
+  const open = editing() && visible < full - SLACK
   const root = document.documentElement
-  root.style.setProperty('--visible-band', `${band}px`)
+  root.style.setProperty('--visible-band', `${open ? visible : layout}px`)
   root.toggleAttribute('data-keyboard-open', open)
+  if (window.scrollY || window.scrollX) window.scrollTo(0, 0)
 }
 
 /** Start tracking; returns the disposer. Call once before the first render. */
