@@ -79,6 +79,8 @@ async fn export_bindings() {
         link::Device,
         link::Pairing,
         link::LinkEvent,
+        nodes::Node,
+        nodes::NodeEvent,
         computer::PermissionStatus,
         computer::DisplayInfo,
         surface::Spec,

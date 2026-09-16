@@ -12,6 +12,7 @@ use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
 use knowledge::KnowledgeChanged;
 use link::LinkEvent;
+use nodes::NodeEvent;
 use runtime::Runtime;
 use serde::Serialize;
 use signal::SignalEvent;
@@ -88,7 +89,8 @@ forward!(
     SlackEvent,
     KnowledgeChanged,
     BrowserEvent,
-    LinkEvent
+    LinkEvent,
+    NodeEvent
 );
 
 /// The process-wide event feed. The first caller spawns the bridge,
@@ -119,5 +121,6 @@ pub async fn start(rt: &Runtime) -> broadcast::Sender<Event> {
     rt.subscribe::<Bridge, KnowledgeChanged>(&actor).await;
     rt.subscribe::<Bridge, BrowserEvent>(&actor).await;
     rt.subscribe::<Bridge, LinkEvent>(&actor).await;
+    rt.subscribe::<Bridge, NodeEvent>(&actor).await;
     tx
 }

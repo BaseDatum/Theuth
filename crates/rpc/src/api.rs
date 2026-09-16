@@ -474,6 +474,24 @@ pub trait Api {
     /// canonicalization) are served.
     #[method(name = "get_attachment")]
     async fn get_attachment(&self, path: PathBuf) -> RpcResult<String>;
+    /// Paired nodes with liveness and child counts (32 §6.6).
+    #[method(name = "list_nodes")]
+    async fn list_nodes(&self) -> RpcResult<Vec<nodes::Node>>;
+    /// Pair with a node from its pasted key (31 §4.4 string); `name` overrides
+    /// the node's own display name locally (32 §6.6).
+    #[method(name = "add_node")]
+    async fn add_node(&self, key: String, name: Option<String>) -> RpcResult<nodes::Node>;
+    /// Close the node's conns, delete its row and best-effort revoke this
+    /// harness on the node (32 §6.6).
+    #[method(name = "remove_node")]
+    async fn remove_node(&self, id: String) -> RpcResult<()>;
+    /// Set a node's local alias (32 §6.6).
+    #[method(name = "rename_node")]
+    async fn rename_node(&self, id: String, name: String) -> RpcResult<()>;
+    /// `link_pair` on the node over the control conn: a QR string a phone
+    /// scans to pair with the node directly (32 §6.6, §8.2).
+    #[method(name = "invite_node")]
+    async fn invite_node(&self, id: String) -> RpcResult<Pairing>;
     /// Stream every wire-visible event as `{"type": ..., ...}`, optionally
     /// only those carrying `session`. `descendants: true` (default `false`)
     /// also delivers events of every session in `session`'s subtree, plus
@@ -541,6 +559,14 @@ where
 {
     actor.ask(msg).await.map_err(|e: SendError<M, _>| {
         ErrorObjectOwned::owned(ASK_FAILED, e.to_string(), None::<()>)
+    })
+}
+
+/// The nodes actor; absent when `nodes.enabled: false` or the plugin is not loaded.
+fn nodes() -> RpcResult<ActorRef<nodes::NodesActor>> {
+    lookup::<nodes::NodesActor>(nodes::NODES_ACTOR).map_err(|e| match e.code() {
+        NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "nodes is disabled", None::<()>),
+        _ => e,
     })
 }
 
@@ -1156,6 +1182,26 @@ impl ApiServer for Server {
 
     async fn link_revoke_device(&self, id: String) -> RpcResult<()> {
         send(&link()?, Revoke { id }).await
+    }
+
+    async fn list_nodes(&self) -> RpcResult<Vec<nodes::Node>> {
+        send(&nodes()?, nodes::Status).await
+    }
+
+    async fn add_node(&self, key: String, name: Option<String>) -> RpcResult<nodes::Node> {
+        send(&nodes()?, nodes::Add { key, name }).await
+    }
+
+    async fn remove_node(&self, id: String) -> RpcResult<()> {
+        send(&nodes()?, nodes::Remove { id }).await
+    }
+
+    async fn rename_node(&self, id: String, name: String) -> RpcResult<()> {
+        send(&nodes()?, nodes::Rename { id, name }).await
+    }
+
+    async fn invite_node(&self, id: String) -> RpcResult<Pairing> {
+        send(&nodes()?, nodes::Invite { id }).await
     }
 
     async fn put_attachment(&self, bytes: String, ext: String) -> RpcResult<PathBuf> {

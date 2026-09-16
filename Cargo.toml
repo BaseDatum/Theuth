@@ -31,6 +31,7 @@ browser = { path = "crates/browser" }
 computer = { path = "crates/computer" }
 surface = { path = "crates/surface" }
 link = { path = "crates/link" }
+nodes = { path = "crates/nodes" }
 
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "fs", "time", "io-util", "process", "signal"] }
 tokio-util = { version = "0.7", features = ["rt"] }

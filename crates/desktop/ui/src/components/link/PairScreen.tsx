@@ -3,10 +3,13 @@ import { Loader2, QrCode } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Textarea } from '@/components/ui/textarea'
 import { container, deviceName } from '@/lib/platform'
-import { useHarnesses } from '@/link/harnesses'
+import { LOCAL, useHarnesses } from '@/link/harnesses'
+import { adopt } from '@/link/nodes'
 import { pair, parsePairingKey } from '@/link/pairing'
+import { useConnection } from '@/store/connection'
 
 /** Read and strip a `#1.<…>` pairing hash from the address bar: the secret should not outlive this mount in history. */
 function takeHashKey(): string | null {
@@ -20,12 +23,20 @@ function takeHashKey(): string | null {
  * 31 §7.5 device side: "Scan QR" (iOS) and "Paste key", both through `pair()`.
  * Rendered by `/link` and, when nothing is paired, by `App` outside the router —
  * so navigation is the caller's (`onPaired`); the harness switch itself routes to `/`.
+ * With an active harness that answers `list_nodes`, a key first asks: pair here, or
+ * add the harness as a node of the active one and auto-pair with it (32 §8.3).
  */
 export function PairScreen({ onPaired }: { onPaired?: () => void }) {
   const [key, setKey] = useState('')
   const [pairingWith, setPairingWith] = useState<string | null>(null)
   const [scanning, setScanning] = useState(false)
+  const [choice, setChoice] = useState<{ key: string; name: string } | null>(null)
   const ios = container() === 'ios'
+  const parent = useHarnesses((s) => (s.nodes[s.active] ? s.active : null))
+  const infoName = useConnection((s) => s.info?.name)
+  const storedName = useHarnesses((s) => s.harnesses.find((h) => h.id === s.active)?.name)
+  const parentName = infoName ?? storedName ?? (parent === LOCAL ? 'this Mac' : 'the active harness')
+  const api = useConnection((s) => s.api)
 
   const start = async (raw: string) => {
     const parsed = parsePairingKey(raw.trim())
@@ -33,11 +44,32 @@ export function PairScreen({ onPaired }: { onPaired?: () => void }) {
       toast.error('not a pairing key')
       return
     }
-    setPairingWith(parsed.name)
+    if (parent && api) setChoice({ key: raw.trim(), name: parsed.name })
+    else await pairHere(raw.trim(), parsed.name)
+  }
+
+  const pairHere = async (k: string, name: string) => {
+    setPairingWith(name)
     try {
-      const h = await pair(raw.trim(), deviceName())
+      const h = await pair(k, deviceName())
       toast.success(`Paired ${h.name}`)
       useHarnesses.getState().setActive(h.id)
+      onPaired?.()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e))
+    } finally {
+      setPairingWith(null)
+    }
+  }
+
+  // `add_node` on the parent, then this device pairs with the node as it would on first sight (32 §8.2).
+  const asNode = async (k: string, name: string) => {
+    if (!parent || !api) return
+    setPairingWith(name)
+    try {
+      const node = await api.add_node(k, null)
+      await adopt(parent, api, node)
+      toast.success(`Added ${node.name} to ${parentName}`)
       onPaired?.()
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e))
@@ -139,6 +171,37 @@ export function PairScreen({ onPaired }: { onPaired?: () => void }) {
       <p className="max-w-sm text-center text-xs text-fg-tertiary">
         The relay carries encrypted traffic between your devices and this harness. It can see that they are connected, not what they say.
       </p>
+      <Dialog open={choice !== null} onOpenChange={(o) => !o && setChoice(null)}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Pair {choice?.name}</DialogTitle>
+            <DialogDescription>A node runs sessions for {parentName}; this device connects to it too.</DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-2">
+            <Button
+              className="min-h-11 w-full"
+              onClick={() => {
+                const c = choice
+                setChoice(null)
+                if (c) void asNode(c.key, c.name)
+              }}
+            >
+              as a node of {parentName}
+            </Button>
+            <Button
+              variant="secondary"
+              className="min-h-11 w-full"
+              onClick={() => {
+                const c = choice
+                setChoice(null)
+                if (c) void pairHere(c.key, c.name)
+              }}
+            >
+              as a harness on this {ios ? 'phone' : 'device'}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

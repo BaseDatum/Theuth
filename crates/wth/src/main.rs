@@ -144,6 +144,9 @@ agent:
 #   name: \"\"                 # display name in the QR and on devices; \"\" → hostname
 #   max_devices: 16
 
+# nodes:                     # harnesses on other machines this one can run sessions on (design doc 32). `/nodes add <key>` pairs; the node runs `wth --install-service`.
+#   enabled: true            # false: no dials, nodes invisible to the model and the UI; nodes.yaml kept
+
 tools:
   policy:
     read_only: allow
@@ -374,6 +377,7 @@ async fn run() -> anyhow::Result<()> {
             }),
         ];
         plugins.push(Box::new(link::LinkPlugin));
+        plugins.push(Box::new(nodes::NodesPlugin));
         if cli.serve || cli.headless {
             plugins.push(Box::new(rpc::RpcPlugin));
         }

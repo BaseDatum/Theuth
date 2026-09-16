@@ -17,6 +17,7 @@ browser = { workspace = true }
 computer = { workspace = true }
 surface = { workspace = true }
 link = { workspace = true }
+nodes = { workspace = true }
 agent-client-protocol = { workspace = true }
 tokio = { workspace = true }
 futures = { workspace = true }
@@ -39,7 +40,7 @@ jsonrpsee = { workspace = true, features = ["ws-client"] }
 figment = { workspace = true }
 
 [features]
-ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "knowledge/ts", "agent/ts", "signal/ts", "slack/ts", "acp/ts", "browser/ts", "computer/ts", "surface/ts", "link/ts"]
+ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "knowledge/ts", "agent/ts", "signal/ts", "slack/ts", "acp/ts", "browser/ts", "computer/ts", "surface/ts", "link/ts", "nodes/ts"]
 
 [lints]
 workspace = true

@@ -15,7 +15,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ago } from '@/components/sidebar/AgentTree'
 import { Empty, Row, Section } from '@/components/settings/shared'
-import { type Harness, useHarnesses } from '@/link/harnesses'
+import { type Harness, LOCAL, LOCAL_NAME, useHarnesses } from '@/link/harnesses'
 import { Dot } from './HarnessSwitcher'
 
 /** Local label; Enter/blur saves, Escape restores. */
@@ -87,7 +87,7 @@ export function Harnesses() {
         {harnesses.length === 0 && <Empty>No harnesses paired.</Empty>}
         {harnesses.map((h, i) => {
           const p = presence[h.id] ?? 'offline'
-          const via = h.parent && harnesses.find((x) => x.id === h.parent)?.name
+          const via = h.parent && (h.parent === LOCAL ? LOCAL_NAME : harnesses.find((x) => x.id === h.parent)?.name)
           return (
             <Row
               key={h.id}

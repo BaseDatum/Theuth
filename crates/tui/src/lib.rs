@@ -64,6 +64,7 @@ impl runtime::Plugin for TuiPlugin {
         rt.subscribe::<Bridge, LoginFinished>(&bridge).await;
         rt.subscribe::<Bridge, JobEvent>(&bridge).await;
         rt.subscribe::<Bridge, link::LinkEvent>(&bridge).await;
+        rt.subscribe::<Bridge, nodes::NodeEvent>(&bridge).await;
         let api = Arc::new(Server::new(rt.clone()));
         tokio::spawn(run_commands(api, commands_rx, events_tx));
 
@@ -133,6 +134,7 @@ forward!(
     LoginFinished => LoginFinished,
     JobEvent => Job,
     link::LinkEvent => LinkEvent,
+    nodes::NodeEvent => NodeEvent,
 );
 
 /// The one place commands become `rpc::Api` calls. Each command runs in its
@@ -431,6 +433,31 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             msg(api.link_revoke_device(id).await)?;
             UiEvent::Link(msg(api.link_status().await)?)
         }
+        Command::ListNodes => UiEvent::Nodes(msg(api.list_nodes().await)?),
+        Command::AddNode(key, name) => {
+            let node = msg(api.add_node(key, name).await)?;
+            let _ = tx.send(UiEvent::Info(format!("paired node {}", node.name)));
+            UiEvent::Nodes(msg(api.list_nodes().await)?)
+        }
+        Command::RemoveNode(n) => {
+            let node = resolve_node(api, &n).await?;
+            msg(api.remove_node(node.id).await)?;
+            let _ = tx.send(UiEvent::Info(format!("removed node {}", node.name)));
+            UiEvent::Nodes(msg(api.list_nodes().await)?)
+        }
+        Command::RenameNode(n, name) => {
+            let node = resolve_node(api, &n).await?;
+            msg(api.rename_node(node.id, name.clone()).await)?;
+            let _ = tx.send(UiEvent::Info(format!(
+                "renamed node {} → {name}",
+                node.name
+            )));
+            UiEvent::Nodes(msg(api.list_nodes().await)?)
+        }
+        Command::InviteNode(n) => {
+            let node = resolve_node(api, &n).await?;
+            UiEvent::NodeInvite(node.name, msg(api.invite_node(node.id).await)?)
+        }
     };
     let _ = tx.send(reply);
     Ok(())
@@ -439,6 +466,14 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
 /// Keep only the message: the JSON-RPC code is not user-facing.
 fn msg<T>(r: RpcResult<T>) -> anyhow::Result<T> {
     r.map_err(|e| anyhow::anyhow!("{}", e.message()))
+}
+
+/// The node `/nodes <verb> <n>` names (exact name, else a unique id prefix).
+async fn resolve_node(api: &Server, n: &str) -> anyhow::Result<nodes::Node> {
+    let list = msg(api.list_nodes().await)?;
+    model::find_node(&list, n)
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("no node named {n}"))
 }
 
 /// Non-TTY fallback and `-p` print mode: print what streams in, read lines
@@ -742,5 +777,29 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             writeln!(out, "paired: {}", device.name)
         }
         UiEvent::LinkEvent(_) => Ok(()),
+        UiEvent::Nodes(list) => list.iter().try_for_each(|n| {
+            writeln!(
+                out,
+                "{} {}  {}  wth {}  {}",
+                if n.online { "●" } else { "○" },
+                n.name,
+                n.platform,
+                n.version,
+                if n.revoked {
+                    "revoked"
+                } else if n.online {
+                    "online"
+                } else {
+                    "offline"
+                }
+            )
+        }),
+        UiEvent::NodeInvite(name, p) => {
+            writeln!(out, "node invite · {name}\n{}\n{}", link::qr(&p.key), p.key)
+        }
+        UiEvent::NodeEvent(nodes::NodeEvent::NodeAdded { node }) => {
+            writeln!(out, "paired node {}", node.name)
+        }
+        UiEvent::NodeEvent(_) => Ok(()),
     };
 }

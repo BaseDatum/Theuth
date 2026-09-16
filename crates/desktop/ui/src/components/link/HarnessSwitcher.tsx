@@ -10,7 +10,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { cn } from '@/lib/utils'
-import { LOCAL, type Presence, hasLocal, useHarnessTree, useHarnesses } from '@/link/harnesses'
+import { LOCAL, LOCAL_NAME, type Presence, hasLocal, useHarnessTree, useHarnesses } from '@/link/harnesses'
 import { retryPair } from '@/link/nodes'
 import { useConnection } from '@/store/connection'
 import { scope } from '@/store/harness-scope'
@@ -44,21 +44,19 @@ export function Dot({ presence }: { presence: Presence }) {
 export function HarnessSwitcher({ className }: { className?: string }) {
   const navigate = useNavigate()
   const harnesses = useHarnesses((s) => s.harnesses)
-  const tree = useHarnessTree()
+  const rows = useHarnessTree()
   const active = useHarnesses((s) => s.active)
   const presence = useHarnesses((s) => s.presence)
   const pairError = useHarnesses((s) => s.pairError)
   const setActive = useHarnesses((s) => s.setActive)
   const info = useConnection((s) => s.info)
-  const local = hasLocal()
   const localPresence = useLocalPresence()
-  if (harnesses.length === 0 && local) return null
+  if (harnesses.length === 0 && hasLocal()) return null
 
   const presenceOf = (id: string): Presence => (id === LOCAL ? localPresence : (presence[id] ?? 'offline'))
   const current = harnesses.find((h) => h.id === active)
-  const activeName = info?.name ?? (active === LOCAL ? 'This Mac' : (current?.name ?? 'Harness'))
-  const via = current?.parent && harnesses.find((h) => h.id === current.parent)?.name
-  const rows = [...(local ? [{ harness: { id: LOCAL, name: 'This Mac' }, depth: 0 }] : []), ...tree]
+  const activeName = info?.name ?? (active === LOCAL ? LOCAL_NAME : (current?.name ?? 'Harness'))
+  const via = current?.parent && (current.parent === LOCAL ? LOCAL_NAME : harnesses.find((h) => h.id === current.parent)?.name)
 
   return (
     <DropdownMenu>
@@ -79,7 +77,7 @@ export function HarnessSwitcher({ className }: { className?: string }) {
           return (
             <DropdownMenuItem
               key={h.id}
-              className={cn(depth === 1 && 'pl-6')}
+              style={depth > 0 ? { paddingLeft: `${0.5 + depth}rem` } : undefined}
               onSelect={(e) => (failed ? e.preventDefault() : setActive(h.id))}
             >
               <Dot presence={p} />

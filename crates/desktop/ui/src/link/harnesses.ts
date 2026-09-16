@@ -23,6 +23,10 @@ export type Presence = 'online' | 'offline' | 'connecting'
 
 /** The desktop's own daemon in the switcher. */
 export const LOCAL = 'local'
+/** Its label; `Info.name` replaces it once connected. */
+export const LOCAL_NAME = 'This Mac'
+/** The local daemon as a `Harness` row, so its nodes nest under it. */
+const LOCAL_ROW: Harness = { id: LOCAL, name: LOCAL_NAME, relayHost: '', secure: false, pairedAt: 0, lastSeen: 0, order: -1 }
 
 type Persisted = { harnesses: Harness[]; active: string }
 
@@ -45,19 +49,28 @@ type HarnessesStore = Persisted & {
   setNodes(id: string, on: boolean): void
 }
 
-/** `{ harness, depth }` rows of the switcher: each child right after its parent, in order. */
-export type HarnessTreeRow = { harness: Harness; depth: 0 | 1 }
+/** `{ harness, depth }` rows of the switcher: each child right after its parent, in order; `depth` 0 at the top. */
+export type HarnessTreeRow = { harness: Harness; depth: number }
 
-/** Parents before their children (32 §8.1): top level by `order`, each parent's children (by `order`) right after it; orphans flat. */
+/**
+ * Parents before their children (32 §8.1): top level by `order`, each harness's
+ * children (by `order`) right after it, one level deeper — a node's own nodes
+ * included. Orphans (parent not in the list) render flat; a cycle renders once.
+ */
 export function harnessTree(hs: Harness[]): HarnessTreeRow[] {
   const sorted = [...hs].sort((a, b) => a.order - b.order)
   const ids = new Set(hs.map((h) => h.id))
   const rows: HarnessTreeRow[] = []
-  for (const h of sorted) {
-    if (h.parent && ids.has(h.parent)) continue
-    rows.push({ harness: h, depth: 0 })
-    for (const c of sorted) if (c.parent === h.id) rows.push({ harness: c, depth: 1 })
+  const seen = new Set<string>()
+  const visit = (h: Harness, depth: number) => {
+    if (seen.has(h.id)) return
+    seen.add(h.id)
+    rows.push({ harness: h, depth })
+    for (const c of sorted) if (c.parent === h.id) visit(c, depth + 1)
   }
+  for (const h of sorted) if (!h.parent || !ids.has(h.parent)) visit(h, 0)
+  // Members of a cycle have a parent in the list yet no root; list them flat.
+  for (const h of sorted) visit(h, 0)
   return rows
 }
 
@@ -99,10 +112,10 @@ export const useHarnesses = create<HarnessesStore>()((set) => ({
   setNodes: (id, on) => set((s) => (s.nodes[id] === on ? s : { nodes: { ...s.nodes, [id]: on } })),
 }))
 
-/** The switcher's rows: children indented one step under their parent. */
+/** The switcher's rows: the local daemon first when this container has one, children indented under their parent. */
 export function useHarnessTree(): HarnessTreeRow[] {
   const hs = useHarnesses((s) => s.harnesses)
-  return useMemo(() => harnessTree(hs), [hs])
+  return useMemo(() => harnessTree(hasLocal() ? [LOCAL_ROW, ...hs] : hs), [hs])
 }
 
 /** Whether this container has a daemon of its own: the macOS shell, or a dev browser pointed at one. */

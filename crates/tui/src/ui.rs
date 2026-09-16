@@ -53,7 +53,7 @@ const SKILL: Color = Color::Yellow;
 const PROMPT: Color = Color::DarkGrey;
 /// Finished background job cards.
 const JOB: Color = Color::Green;
-/// `/link pair` QR cards.
+/// `/link pair` and `/nodes` invite QR cards.
 const LINK: Color = Color::Cyan;
 
 /// Run the fullscreen UI until the user quits. Mouse capture stays off so
@@ -156,6 +156,9 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 }
                 if std::mem::take(&mut m.refresh_link) {
                     let _ = commands.send(Command::LinkStatus);
+                }
+                if std::mem::take(&mut m.refresh_nodes) {
+                    let _ = commands.send(Command::ListNodes);
                 }
             }
         }
@@ -730,6 +733,7 @@ fn menu(m: &Model, input: &str, width: u16) -> Option<AnyElement<'static>> {
             *cursor,
         ),
         Menu::Link { cursor } => (m.link_title(), m.link_rows(), *cursor),
+        Menu::Nodes { cursor } => (m.nodes_title(), m.nodes_rows(), *cursor),
     };
     let cursor = cursor.min(rows.len().saturating_sub(1));
     let shown = window(rows.len(), cursor, MENU_ROWS);
@@ -878,7 +882,7 @@ fn entry(e: &Entry, spinner: &str, skip: usize, width: u16) -> AnyElement<'stati
                 CardKind::Skill => SKILL,
                 CardKind::Prompt => PROMPT,
                 CardKind::Job => JOB,
-                CardKind::Link => LINK,
+                CardKind::Link | CardKind::Node => LINK,
             };
             let v = text.view();
             let lines = v.lines().count();

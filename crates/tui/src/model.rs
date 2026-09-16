@@ -131,6 +131,12 @@ pub enum UiEvent {
     Pairing(link::Pairing),
     /// Link plugin traffic (bus event).
     LinkEvent(link::LinkEvent),
+    /// Reply to [`Command::ListNodes`] and the node commands that change the list.
+    Nodes(Vec<nodes::Node>),
+    /// Reply to [`Command::InviteNode`]: the node's name and the string its QR card encodes.
+    NodeInvite(String, link::Pairing),
+    /// Nodes plugin traffic (bus event).
+    NodeEvent(nodes::NodeEvent),
 }
 
 /// Everything the UI can ask of the rest of the process. One task turns
@@ -382,6 +388,16 @@ pub enum Command {
     LinkRenameDevice(String, String),
     /// `link_revoke_device`, then `link_status`.
     LinkRevoke(String),
+    /// `list_nodes`.
+    ListNodes,
+    /// `add_node(key, name)`, then `list_nodes`.
+    AddNode(String, Option<String>),
+    /// `remove_node(<resolved id>)`, then `list_nodes`. Holds a name or id prefix.
+    RemoveNode(String),
+    /// `rename_node(<resolved id>, name)`, then `list_nodes`. Holds a name or id prefix.
+    RenameNode(String, String),
+    /// `invite_node(<resolved id>)`. Holds a name or id prefix.
+    InviteNode(String),
 }
 
 /// One row of the `/login` picker.
@@ -587,6 +603,8 @@ pub enum CardKind {
     Job,
     /// A `/link pair` QR (31 §6.5).
     Link,
+    /// A `/nodes` `i` invite QR: a phone that scans it pairs with that node (32 §6.7).
+    Node,
 }
 
 impl CardKind {
@@ -597,7 +615,7 @@ impl CardKind {
             CardKind::Skill => "◇",
             CardKind::Prompt => "§",
             CardKind::Job => "⚙",
-            CardKind::Link => "⌁",
+            CardKind::Link | CardKind::Node => "⌁",
         }
     }
 }
@@ -879,6 +897,11 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "[on|off|pair|rm <n>|name <n> <name>|relay <url>]",
         "pair and manage phones",
     ),
+    (
+        "/nodes",
+        "[add <key>|rm <n>|name <n> <name>|invite <n>]",
+        "machines this harness can run sessions on",
+    ),
     ("/exit", "", "same as /quit"),
 ];
 
@@ -1062,9 +1085,14 @@ pub enum Menu {
         /// Highlighted device.
         cursor: usize,
     },
+    /// `/nodes`: paired nodes over [`Model::nodes`] (32 §6.7).
+    Nodes {
+        /// Highlighted node.
+        cursor: usize,
+    },
 }
 
-/// The `/link pair` card that is still counting down.
+/// A `/link pair` or `/nodes` invite card that is still counting down.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PairingCard {
     /// The pairing string (rendered as the QR and on one line).
@@ -1076,6 +1104,15 @@ struct PairingCard {
 }
 
 impl PairingCard {
+    /// A card over `p`, showing its whole seconds left as of now.
+    fn new(p: link::Pairing) -> Self {
+        Self {
+            left: p.expires_at_ms.saturating_sub(now_ms()) / 1000,
+            key: p.key,
+            expires_at_ms: p.expires_at_ms,
+        }
+    }
+
     /// Seconds until expiry, floored at zero.
     fn remaining(&self) -> u64 {
         self.expires_at_ms.saturating_sub(now_ms()) / 1000
@@ -1091,6 +1128,37 @@ impl PairingCard {
             left / 60,
             left % 60
         )
+    }
+}
+
+/// Redraw the live countdown card in `slot` when its countdown moved a
+/// second; at zero it reads `pairing expired` and the slot empties.
+fn tick_card(entries: &mut [Entry], slot: &mut Option<PairingCard>, kind: CardKind) {
+    let Some(p) = slot else { return };
+    let left = p.remaining();
+    if left == p.left {
+        return;
+    }
+    p.left = left;
+    let body = if left == 0 {
+        "pairing expired".to_owned()
+    } else {
+        p.body()
+    };
+    if left == 0 {
+        *slot = None;
+    }
+    set_card(entries, kind, &body);
+}
+
+/// Replace the body of the newest card of `kind`, if any.
+fn set_card(entries: &mut [Entry], kind: CardKind, body: &str) {
+    if let Some(Entry::Card { text, .. }) = entries
+        .iter_mut()
+        .rev()
+        .find(|e| matches!(e, Entry::Card { kind: k, .. } if *k == kind))
+    {
+        **text = markdown::Text::complete(body);
     }
 }
 
@@ -1110,8 +1178,8 @@ pub enum TurnAction {
     Fork,
 }
 
-/// Multi-step input (`/provider add`, `/link` rename / revoke). Rides on the
-/// input box (not a modal menu).
+/// Multi-step input (`/provider add`, `/link` rename / revoke, `/nodes` add /
+/// rename / remove). Rides on the input box (not a modal menu).
 #[derive(Debug)]
 pub enum Prompt {
     /// Asking for the gateway name.
@@ -1144,6 +1212,22 @@ pub enum Prompt {
         /// Its name (the hint).
         name: String,
     },
+    /// `/nodes` `a`: asking for a node's pasted pairing key.
+    NodeKey,
+    /// `/nodes` `r`: asking for a node's new local alias.
+    NodeName {
+        /// `Node.id`.
+        id: String,
+        /// Its current name (the hint).
+        name: String,
+    },
+    /// `/nodes` `x`: `y` removes the node, anything else keeps it.
+    NodeRemove {
+        /// `Node.id`.
+        id: String,
+        /// Its name (the hint).
+        name: String,
+    },
 }
 
 impl Prompt {
@@ -1162,6 +1246,11 @@ impl Prompt {
             }
             Prompt::LinkName => "link  harness name  (esc cancel)".into(),
             Prompt::LinkRevoke { name, .. } => format!("link  revoke {name}?  y/n"),
+            Prompt::NodeKey => "nodes  add  paste the node's key  (esc cancel)".into(),
+            Prompt::NodeName { name, .. } => {
+                format!("nodes  rename {name}  new name  (esc cancel)")
+            }
+            Prompt::NodeRemove { name, .. } => format!("nodes  remove {name}?  y/n"),
         }
     }
 
@@ -1173,6 +1262,9 @@ impl Prompt {
             }
             Prompt::LinkDeviceName { .. } | Prompt::LinkName | Prompt::LinkRevoke { .. } => {
                 "link: cancelled"
+            }
+            Prompt::NodeKey | Prompt::NodeName { .. } | Prompt::NodeRemove { .. } => {
+                "nodes: cancelled"
             }
         }
     }
@@ -1513,6 +1605,15 @@ pub struct Model {
     pub refresh_link: bool,
     /// The live `/link pair` card, redrawn each second by [`Model::tick`].
     pairing: Option<PairingCard>,
+    /// Latest `list_nodes` (badge and `/nodes` menu); `None` until fetched.
+    pub nodes: Option<Vec<nodes::Node>>,
+    /// `/nodes` was typed (or a flow that reopens it ran); the next
+    /// `UiEvent::Nodes` opens the menu (same rule as `awaiting_link`).
+    awaiting_nodes: bool,
+    /// A node event arrived: the event loop re-asks `list_nodes`.
+    pub refresh_nodes: bool,
+    /// The live `/nodes` invite card, redrawn each second by [`Model::tick`].
+    invite: Option<PairingCard>,
 }
 
 impl Model {
@@ -1533,6 +1634,7 @@ impl Model {
             skills: std::mem::take(&mut self.skills),
             width: self.width,
             link: self.link.take(),
+            nodes: self.nodes.take(),
             ..Self::new(std::mem::take(&mut self.model_id), self.approvals_global)
         };
     }
@@ -1609,6 +1711,7 @@ impl Model {
                         | Menu::Logins { .. }
                         | Menu::Turns { .. }
                         | Menu::Link { .. }
+                        | Menu::Nodes { .. }
                 )
             )
     }
@@ -1881,6 +1984,7 @@ impl Model {
             || self.harvesting
             || self.agents.values().any(AgentRow::live)
             || self.pairing.is_some()
+            || self.invite.is_some()
     }
 
     /// The board (design doc 19 §3.3): the subtree's live rows plus errors
@@ -1984,42 +2088,13 @@ impl Model {
                 t.reveal((backlog / 16).max(1));
             }
         }
-        self.tick_pairing();
-    }
-
-    /// Redraw the live pairing card when its countdown moved a second; at
-    /// zero it reads `pairing expired` (the bus says so too, later).
-    fn tick_pairing(&mut self) {
-        let Some(p) = &mut self.pairing else { return };
-        let left = p.remaining();
-        if left == p.left {
-            return;
-        }
-        p.left = left;
-        let body = if left == 0 {
-            "pairing expired".to_owned()
-        } else {
-            p.body()
-        };
-        if left == 0 {
-            self.pairing = None;
-        }
-        self.set_link_card(&body);
+        tick_card(&mut self.entries, &mut self.pairing, CardKind::Link);
+        tick_card(&mut self.entries, &mut self.invite, CardKind::Node);
     }
 
     /// Replace the body of the newest `/link pair` card, if any.
     fn set_link_card(&mut self, body: &str) {
-        if let Some(Entry::Card { text, .. }) = self.entries.iter_mut().rev().find(|e| {
-            matches!(
-                e,
-                Entry::Card {
-                    kind: CardKind::Link,
-                    ..
-                }
-            )
-        }) {
-            **text = markdown::Text::complete(body);
-        }
+        set_card(&mut self.entries, CardKind::Link, body);
     }
 
     /// Peer name of a subagent in the current session's subtree; `None`
@@ -2427,11 +2502,7 @@ impl Model {
                 if self.pairing.take().is_some() {
                     self.set_link_card("pairing expired");
                 }
-                let card = PairingCard {
-                    left: p.expires_at_ms.saturating_sub(now_ms()) / 1000,
-                    key: p.key,
-                    expires_at_ms: p.expires_at_ms,
-                };
+                let card = PairingCard::new(p);
                 self.entries.push(Entry::Card {
                     kind: CardKind::Link,
                     title: "link pairing".into(),
@@ -2441,11 +2512,35 @@ impl Model {
                 self.pairing = Some(card);
             }
             UiEvent::LinkEvent(ev) => self.apply_link(ev),
+            UiEvent::Nodes(list) => {
+                // Never a transcript line: every node event refetches, and a
+                // presence flip is not worth a row. The verbs report themselves.
+                if self.awaiting_nodes && !matches!(self.menu, Some(Menu::Nodes { .. })) {
+                    self.menu = Some(Menu::Nodes { cursor: 0 });
+                }
+                self.awaiting_nodes = false;
+                self.nodes = Some(list);
+            }
+            UiEvent::NodeInvite(name, p) => {
+                // ponytail: one countdown at a time; an older invite card
+                // freezes at its last second. Per-card slots if two are common.
+                let card = PairingCard::new(p);
+                self.entries.push(Entry::Card {
+                    kind: CardKind::Node,
+                    title: format!("node invite · {name}"),
+                    text: Box::new(markdown::Text::complete(&card.body())),
+                    expanded: true,
+                });
+                self.invite = Some(card);
+            }
+            // Added, removed, online, revoked: all reshape the rows; re-ask.
+            UiEvent::NodeEvent(_) => self.refresh_nodes = true,
             UiEvent::Error(e) => {
                 // A failed `/compact` answers here, not with an agent event.
                 self.compacting = false;
                 self.awaiting_effort = false;
                 self.awaiting_link = false;
+                self.awaiting_nodes = false;
                 self.notice = None;
                 self.entries.push(Entry::Error(e));
             }
@@ -3007,6 +3102,7 @@ impl Model {
             "/fork" => self.turn_cmd(TurnAction::Fork, cmd, arg, tx),
             "/provider" => self.provider_cmd(arg, tx),
             "/link" => self.link_cmd(arg, tx),
+            "/nodes" => self.nodes_cmd(arg, tx),
             c if c.starts_with('/') => {
                 // `/<skill> [args]` hands the skill to the model (04 §2.4). Before
                 // the index has arrived the agent decides; it names an unknown skill.
@@ -3405,19 +3501,21 @@ impl Model {
                 };
                 (
                     format!(
-                        "{model}{effort}  ·  ctx {used} / {} ({pct}%){cache}{}{}",
+                        "{model}{effort}  ·  ctx {used} / {} ({pct}%){cache}{}{}{}",
                         k(limit),
                         self.approvals_tag(),
-                        self.link_tag()
+                        self.link_tag(),
+                        self.nodes_tag()
                     ),
                     level,
                 )
             }
             _ => (
                 format!(
-                    "{model}{effort}  ·  ctx {used}{cache}{}{}",
+                    "{model}{effort}  ·  ctx {used}{cache}{}{}{}",
                     self.approvals_tag(),
-                    self.link_tag()
+                    self.link_tag(),
+                    self.nodes_tag()
                 ),
                 Level::Normal,
             ),
@@ -3443,6 +3541,14 @@ impl Model {
                 )
             }
             _ => String::new(),
+        }
+    }
+
+    /// `  ·  nodes ●N` (N = nodes online) while a node is paired; empty otherwise.
+    fn nodes_tag(&self) -> String {
+        match self.nodes.as_deref() {
+            Some([]) | None => String::new(),
+            Some(list) => format!("  ·  nodes ●{}", list.iter().filter(|n| n.online).count()),
         }
     }
 
@@ -3727,6 +3833,23 @@ impl Model {
                     self.entries.push(Entry::Info(format!("link: kept {name}")));
                 }
             }
+            Some(Prompt::NodeKey) => {
+                self.awaiting_nodes = true;
+                send(tx, Command::AddNode(line.to_owned(), None));
+            }
+            Some(Prompt::NodeName { id, .. }) => {
+                self.awaiting_nodes = true;
+                send(tx, Command::RenameNode(id, line.to_owned()));
+            }
+            Some(Prompt::NodeRemove { id, name }) => {
+                if line.eq_ignore_ascii_case("y") || line.eq_ignore_ascii_case("yes") {
+                    self.awaiting_nodes = true;
+                    send(tx, Command::RemoveNode(id));
+                } else {
+                    self.entries
+                        .push(Entry::Info(format!("nodes: kept {name}")));
+                }
+            }
             None => {}
         }
     }
@@ -3798,6 +3921,7 @@ impl Model {
             Some(Menu::Logins { .. }) => self.logins_key(code, tx),
             Some(Menu::Turns { .. }) => self.turns_key(code, tx),
             Some(Menu::Link { .. }) => self.link_key(code, tx),
+            Some(Menu::Nodes { .. }) => self.nodes_key(code, tx),
         }
     }
 
@@ -4380,6 +4504,152 @@ impl Model {
         }
         MenuKey::Consumed
     }
+
+    /// `/nodes` menu | `add <key>` | `rm <n>` | `name <n> <name…>` |
+    /// `invite <n>` (32 §6.7). `<n>` is a node name or id prefix, resolved
+    /// by the command task against `list_nodes` ([`find_node`]).
+    fn nodes_cmd(&mut self, arg: &str, tx: &UnboundedSender<Command>) {
+        match parse_nodes_arg(arg) {
+            Some(NodesArg::Menu) => {
+                self.awaiting_nodes = true;
+                send(tx, Command::ListNodes);
+            }
+            Some(NodesArg::Add(key)) => send(tx, Command::AddNode(key, None)),
+            Some(NodesArg::Remove(n)) => send(tx, Command::RemoveNode(n)),
+            Some(NodesArg::Rename(n, name)) => send(tx, Command::RenameNode(n, name)),
+            Some(NodesArg::Invite(n)) => send(tx, Command::InviteNode(n)),
+            None => self.entries.push(Entry::Error(
+                "usage: /nodes [add <key>|rm <n>|name <n> <name>|invite <n>]".into(),
+            )),
+        }
+    }
+
+    /// `/nodes` menu title: the count, then the keys.
+    pub fn nodes_title(&self) -> String {
+        format!(
+            "nodes · {} paired   a add (paste key)  i invite (QR for a phone)  r rename  x remove  esc",
+            self.nodes.as_ref().map_or(0, Vec::len)
+        )
+    }
+
+    /// `/nodes` menu rows: `● name  platform  wth <version>  [<n> running]  paired <ago>`
+    /// online, `○ name  platform  wth <version>  seen <ago>|revoked` otherwise,
+    /// or one hint row when none is paired.
+    pub fn nodes_rows(&self) -> Vec<String> {
+        let now = now_ms();
+        let since = |ms: u64| ago(chrono::Duration::milliseconds(now.saturating_sub(ms) as i64));
+        let rows: Vec<String> = self
+            .nodes
+            .iter()
+            .flatten()
+            .map(|n| {
+                let tail = match (n.revoked, n.online, n.children, n.last_seen_ms) {
+                    (true, ..) => "revoked".to_owned(),
+                    (false, true, 0, _) => format!("paired {}", since(n.paired_at_ms)),
+                    (false, true, c, _) => {
+                        format!("{c} running   paired {}", since(n.paired_at_ms))
+                    }
+                    (false, false, _, 0) => "never seen".to_owned(),
+                    (false, false, _, ms) => format!("seen {}", since(ms)),
+                };
+                format!(
+                    "{} {:<20} {:<8} wth {:<8} {tail}",
+                    if n.online { "●" } else { "○" },
+                    n.name.chars().take(20).collect::<String>(),
+                    platform_name(&n.platform),
+                    n.version,
+                )
+            })
+            .collect();
+        if rows.is_empty() {
+            return vec!["no nodes paired · a adds one from its key".into()];
+        }
+        rows
+    }
+
+    /// `/nodes`: `a` prompts for a key, `i` invites (card in the transcript),
+    /// `r`/`x` open a prompt over the highlighted node.
+    fn nodes_key(&mut self, code: KeyCode, tx: &UnboundedSender<Command>) -> MenuKey {
+        let Some(Menu::Nodes { cursor }) = &mut self.menu else {
+            return MenuKey::Consumed;
+        };
+        let list = self.nodes.as_deref().unwrap_or_default();
+        let node = list.get(*cursor).map(|n| (n.id.clone(), n.name.clone()));
+        match code {
+            KeyCode::Up => *cursor = cursor.saturating_sub(1),
+            KeyCode::Down => *cursor = (*cursor + 1).min(list.len().saturating_sub(1)),
+            KeyCode::Esc => self.menu = None,
+            KeyCode::Char('a') => {
+                self.menu = None;
+                self.prompt = Some(Prompt::NodeKey);
+            }
+            KeyCode::Char('i') => {
+                if let Some((id, _)) = node {
+                    self.menu = None;
+                    send(tx, Command::InviteNode(id));
+                }
+            }
+            KeyCode::Char('r') => {
+                if let Some((id, name)) = node {
+                    self.menu = None;
+                    self.prompt = Some(Prompt::NodeName { id, name });
+                }
+            }
+            KeyCode::Char('x') => {
+                if let Some((id, name)) = node {
+                    self.menu = None;
+                    self.prompt = Some(Prompt::NodeRemove { id, name });
+                }
+            }
+            _ => {}
+        }
+        MenuKey::Consumed
+    }
+}
+
+/// A parsed `/nodes` argument.
+#[derive(Debug, PartialEq, Eq)]
+pub enum NodesArg {
+    /// Bare `/nodes`: open the menu.
+    Menu,
+    /// `add <key>`.
+    Add(String),
+    /// `rm <n>`.
+    Remove(String),
+    /// `name <n> <name…>`.
+    Rename(String, String),
+    /// `invite <n>`.
+    Invite(String),
+}
+
+/// `/nodes` verbs; `None` for anything else (the caller prints usage).
+pub fn parse_nodes_arg(arg: &str) -> Option<NodesArg> {
+    let (sub, rest) = arg
+        .split_once(char::is_whitespace)
+        .map_or((arg, ""), |(s, r)| (s, r.trim()));
+    Some(match (sub, rest) {
+        ("", _) => NodesArg::Menu,
+        ("add", key) if !key.is_empty() => NodesArg::Add(key.to_owned()),
+        ("rm", n) if !n.is_empty() => NodesArg::Remove(n.to_owned()),
+        ("invite", n) if !n.is_empty() => NodesArg::Invite(n.to_owned()),
+        ("name", rest) => {
+            let (n, name) = rest.split_once(char::is_whitespace)?;
+            NodesArg::Rename(n.to_owned(), name.trim().to_owned())
+        }
+        _ => return None,
+    })
+}
+
+/// The node `/nodes <verb> <n>` names: an exact name, else the one node
+/// whose id starts with `n`.
+pub fn find_node<'a>(list: &'a [nodes::Node], n: &str) -> Option<&'a nodes::Node> {
+    list.iter().find(|x| x.name == n).or_else(|| {
+        let mut hits = list.iter().filter(|x| x.id.starts_with(n));
+        match (hits.next(), hits.next()) {
+            (Some(one), None) => Some(one),
+            _ => None,
+        }
+    })
 }
 
 /// Host part of a relay origin: `wss://relay.wth.rwx.dev/x` → `relay.wth.rwx.dev`.
@@ -5032,6 +5302,151 @@ mod tests {
         }));
         assert!(m.menu.is_none());
         assert!(matches!(m.entries.last(), Some(Entry::Info(t)) if t == "link off"));
+    }
+
+    #[test]
+    fn nodes_arg_parser_maps_verbs_and_rejects_unknown() {
+        assert_eq!(parse_nodes_arg(""), Some(NodesArg::Menu));
+        assert_eq!(
+            parse_nodes_arg("add https://r/link#1.AAAA.QQ"),
+            Some(NodesArg::Add("https://r/link#1.AAAA.QQ".into()))
+        );
+        assert_eq!(
+            parse_nodes_arg("rm build-box"),
+            Some(NodesArg::Remove("build-box".into()))
+        );
+        assert_eq!(
+            parse_nodes_arg("name abcd  Build Box "),
+            Some(NodesArg::Rename("abcd".into(), "Build Box".into()))
+        );
+        assert_eq!(
+            parse_nodes_arg("invite mac"),
+            Some(NodesArg::Invite("mac".into()))
+        );
+        for bad in ["add", "rm", "name", "name only", "invite", "frob x"] {
+            assert_eq!(parse_nodes_arg(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn find_node_prefers_exact_name_then_unique_id_prefix() {
+        let node = |id: &str, name: &str| nodes::Node {
+            id: id.into(),
+            name: name.into(),
+            relay: "wss://r".into(),
+            platform: "linux".into(),
+            version: "0.4.1".into(),
+            paired_at_ms: 1,
+            last_seen_ms: 0,
+            online: false,
+            revoked: false,
+            children: 0,
+        };
+        let list = [
+            node("abc1", "build-box"),
+            node("abd2", "abc1"),
+            node("zzz3", "mac"),
+        ];
+        assert_eq!(
+            find_node(&list, "abc1").map(|n| &n.id),
+            Some(&"abd2".to_owned())
+        );
+        assert_eq!(
+            find_node(&list, "zz").map(|n| &n.name),
+            Some(&"mac".to_owned())
+        );
+        assert!(find_node(&list, "ab").is_none(), "ambiguous prefix");
+        assert!(find_node(&list, "nope").is_none());
+    }
+
+    #[test]
+    fn nodes_menu_rows_keys_and_invite_card() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        let node = nodes::Node {
+            id: "abcd1234".into(),
+            name: "build-box".into(),
+            relay: "wss://relay.example".into(),
+            platform: "linux".into(),
+            version: "0.4.1".into(),
+            paired_at_ms: now_ms() - 3 * 86_400_000,
+            last_seen_ms: now_ms(),
+            online: true,
+            revoked: false,
+            children: 2,
+        };
+        let offline = nodes::Node {
+            id: "zzzz9999".into(),
+            name: "mac-mini".into(),
+            online: false,
+            children: 0,
+            last_seen_ms: now_ms() - 7_200_000,
+            ..node.clone()
+        };
+        // Bare `/nodes` asks; the reply opens the modal.
+        m.submit("/nodes", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::ListNodes)));
+        m.apply(UiEvent::Nodes(vec![node.clone(), offline]));
+        assert!(matches!(m.menu, Some(Menu::Nodes { .. })) && !m.input_focused());
+        assert!(m.nodes_title().starts_with("nodes · 2 paired"));
+        let rows = m.nodes_rows();
+        assert!(
+            rows[0].starts_with("● build-box") && rows[0].contains("2 running   paired 3d ago")
+        );
+        assert!(rows[1].starts_with("○ mac-mini") && rows[1].ends_with("seen 2h ago"));
+        let catalog = Catalog::load(std::env::temp_dir().join("wth-tui-no-user-file").as_path());
+        assert!(m.header(&catalog).0.ends_with("  ·  nodes ●1"));
+        // `x` confirms through a prompt; `n` keeps.
+        m.menu_key(KeyCode::Char('x'), "", &tx);
+        assert!(matches!(m.prompt, Some(Prompt::NodeRemove { .. })) && m.menu.is_none());
+        m.submit("n", &tx);
+        assert!(rx.try_recv().is_err() && m.prompt.is_none());
+        // `a` prompts for the key; the reply reopens the menu.
+        m.menu = Some(Menu::Nodes { cursor: 0 });
+        m.menu_key(KeyCode::Char('a'), "", &tx);
+        assert!(matches!(m.prompt, Some(Prompt::NodeKey)));
+        m.submit(" https://relay.example/link#1.AAAA.QQ ", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::AddNode(k, None)) if k == "https://relay.example/link#1.AAAA.QQ"
+        ));
+        m.apply(UiEvent::Nodes(vec![node.clone()]));
+        assert!(matches!(m.menu, Some(Menu::Nodes { .. })));
+        // `i` invites: a node card counting down, untouched by link pairing events.
+        m.menu_key(KeyCode::Char('i'), "", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::InviteNode(id)) if id == "abcd1234"));
+        m.apply(UiEvent::NodeInvite(
+            "build-box".into(),
+            link::Pairing {
+                key: "https://relay.example/link#1.BBBB.QQ".into(),
+                expires_at_ms: now_ms() + 300_000,
+            },
+        ));
+        assert!(m.animating());
+        assert!(matches!(
+            m.entries.last(),
+            Some(Entry::Card { kind: CardKind::Node, title, .. }) if title == "node invite · build-box"
+        ));
+        m.apply(UiEvent::LinkEvent(link::LinkEvent::LinkPairing {
+            key: None,
+            expires_at_ms: None,
+        }));
+        assert!(
+            m.animating(),
+            "a link pairing ending leaves the node invite live"
+        );
+        // Any node event re-asks the list; verbs resolve later, in the command task.
+        m.apply(UiEvent::NodeEvent(nodes::NodeEvent::NodeRemoved {
+            id: "zzzz9999".into(),
+        }));
+        assert!(std::mem::take(&mut m.refresh_nodes));
+        m.menu = None;
+        m.submit("/nodes rm mac-mini", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::RemoveNode(n)) if n == "mac-mini"));
+        m.submit("/nodes frob", &tx);
+        assert!(
+            matches!(m.entries.last(), Some(Entry::Error(e)) if e.starts_with("usage: /nodes"))
+        );
     }
 
     #[test]

@@ -12,6 +12,11 @@ export type Info = {
  */
 version: string, 
 /**
+ * Host OS (`std::env::consts::OS`: `linux`, `macos`, `windows`, …); a
+ * parent shows it beside a node's name (32 §6.2).
+ */
+platform: string, 
+/**
  * `<data_dir>`: config, sqlite, logs, attachments.
  */
 data_dir: string, 
@@ -27,6 +32,10 @@ approvals: ApprovalsState,
  * `agent.compact_style`.
  */
 compact_style: CompactStyle, 
+/**
+ * `agent.subagents.max_runtime_secs`.
+ */
+subagent_timeout_secs: bigint, 
 /**
  * Harness display name (`link.name`, else the hostname): what a linked
  * device shows in its harness switcher (31 §6.4).
