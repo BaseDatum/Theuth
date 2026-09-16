@@ -1,0 +1,39 @@
+# Repo-root context for deploy/relay/Dockerfile.
+.git
+.github
+**/.DS_Store
+**/*~
+**/*.swp
+.idea
+.vscode
+.cursor
+
+# Rust / JS build output
+target
+**/target
+**/node_modules
+**/.bun
+**/.vite
+crates/desktop/ui/dist
+
+# Desktop packaging — never in the relay image
+crates/desktop/binaries
+crates/desktop/gen
+**/*.app
+**/*.dmg
+
+# Local data / secrets
+.env.signing
+**/.env
+**/*.pem
+**/*.key
+**/*.sqlite
+**/*.sqlite-*
+
+# Noise
+docs
+bindings
+wth.tar.gz
+**/*.log
+**/*.md
+!README.md

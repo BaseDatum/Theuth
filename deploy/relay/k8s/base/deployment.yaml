@@ -1,0 +1,97 @@
+# In-memory uplink table — replicas share nothing. Ingress must hash on URI
+# path so every socket for /h/<id> lands on one pod (design doc 31 §5.5).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wth-relay
+  labels:
+    app.kubernetes.io/name: wth-relay
+    app.kubernetes.io/component: relay
+    app.kubernetes.io/part-of: wth
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: wth-relay
+      app.kubernetes.io/component: relay
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: wth-relay
+        app.kubernetes.io/component: relay
+        app.kubernetes.io/part-of: wth
+    spec:
+      automountServiceAccountToken: false
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: wth-relay
+              app.kubernetes.io/component: relay
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: wth-relay
+          image: ghcr.io/skymoore/wth/relay:latest
+          imagePullPolicy: Always
+          args:
+            - --listen
+            - 0.0.0.0:8787
+            - --web
+            - /web
+          env:
+            - name: WTH_RELAY_COOKIE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: wth-relay
+                  key: cookie-secret
+                  optional: true
+          ports:
+            - name: http
+              containerPort: 8787
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 10
+      terminationGracePeriodSeconds: 20

@@ -102,6 +102,29 @@ web-build:
     cd crates/desktop/ui && bun install && bun run build
     @echo "serve it: wth-relay --listen 0.0.0.0:8787 --web crates/desktop/ui/dist"
 
+# Multi-arch (amd64+arm64) build+push. Needs buildx + ghcr login.
+# SPA compiles once on the host arch (Dockerfile FROM --platform=$BUILDPLATFORM).
+# Usage: just relay-docker-push
+#        just relay-docker-push v0.1.0
+relay-docker-push tag="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    TAG="{{tag}}"
+    if [ -z "$TAG" ]; then
+      TAG="${WTH_RELAY_TAG:-$(git rev-parse --short HEAD 2>/dev/null || echo dev)}"
+    fi
+    IMAGE="${WTH_RELAY_IMAGE:-ghcr.io/skymoore/wth/relay}"
+    PLATFORM="${WTH_RELAY_PLATFORM:-linux/amd64,linux/arm64}"
+    echo "==> buildx build+push ${IMAGE}:${TAG} (${PLATFORM})"
+    docker buildx build \
+      --platform "${PLATFORM}" \
+      -f deploy/relay/Dockerfile \
+      -t "${IMAGE}:${TAG}" \
+      -t "${IMAGE}:latest" \
+      --push \
+      .
+    echo "pushed ${IMAGE}:${TAG} and ${IMAGE}:latest"
+
 # Refresh the bundled model catalog: models.dev api.json trimmed to `models::ROUTABLE`
 # providers and re-emitted through the crate's own types, so the field list lives in
 # `crates/models/src/lib.rs` (`Model`), not here (design doc 02 §1).

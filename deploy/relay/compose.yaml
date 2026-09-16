@@ -1,7 +1,7 @@
 # wth-relay behind Caddy with automatic TLS (design doc 31 §5.4).
 #   RELAY_HOST=relay.example.com docker compose -f deploy/relay/compose.yaml up -d
-# Optional: COOKIE_SECRET=<hex> keeps browser cookies valid across restarts;
-# mount the UI bundle at ./web to serve the browser container (`--web`).
+# Optional: COOKIE_SECRET=<64 hex chars> keeps browser cookies valid across restarts.
+# The UI bundle is baked into the image at /web.
 services:
   relay:
     build:
@@ -9,9 +9,9 @@ services:
       dockerfile: deploy/relay/Dockerfile
     image: wth-relay
     restart: unless-stopped
-    command: ["--listen", "0.0.0.0:8787", "--web", "/web", "--cookie-secret", "${COOKIE_SECRET:-}"]
-    volumes:
-      - ./web:/web:ro
+    command: ["--listen", "0.0.0.0:8787", "--web", "/web"]
+    environment:
+      WTH_RELAY_COOKIE_SECRET: ${COOKIE_SECRET:-}
     expose:
       - "8787"
 

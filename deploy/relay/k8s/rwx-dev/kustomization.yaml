@@ -1,0 +1,23 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: wth
+
+resources:
+  - ../base
+  - ingress.yaml
+  - secret.yaml
+
+images:
+  - name: ghcr.io/skymoore/wth/relay
+    newTag: latest
+
+patches:
+  - target:
+      kind: Deployment
+      name: wth-relay
+    patch: |-
+      - op: add
+        path: /spec/template/spec/imagePullSecrets
+        value:
+          - name: ghcr-secret

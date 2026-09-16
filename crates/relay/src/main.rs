@@ -50,7 +50,7 @@ struct Cli {
     #[arg(long, default_value_t = 64)]
     max_conns: usize,
     /// Hex secret for the browser cookie HMAC; empty or absent → random per start.
-    #[arg(long)]
+    #[arg(long, env = "WTH_RELAY_COOKIE_SECRET")]
     cookie_secret: Option<String>,
 }
 

@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: wth-relay
+  labels:
+    app.kubernetes.io/name: wth-relay
+    app.kubernetes.io/component: relay
+    app.kubernetes.io/part-of: wth
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: wth-relay
+    app.kubernetes.io/component: relay
+  ports:
+    - name: http
+      port: 8787
+      targetPort: http
+      protocol: TCP
