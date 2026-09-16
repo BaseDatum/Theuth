@@ -235,16 +235,24 @@ and work on it in Python: slice, filter, regex, count, diff. Print only what you
 decide the next step, never a whole file or a whole result; the full value stays in the
 variable and survives compaction and restart. Use Python for loops, conditions and
 parsing; use `shell()` to run programs, not to write shell programs. Discover a tool's
-full parameters with `help(name)` - the index below is names and signatures only.
+full parameters with `help(name)` - the index below is names and signatures only. The
+tools defined directly for you are awaitable here too, by the same name.
 
-Tools available in the runtime (all `async`):
+Tools available only in the runtime (all `async`):
 async def github__search_repos(query: str, page: int | None = None) -> Any  # Search for GitHub repositories.
 async def read_file(path: str, limit: int | None = None, offset: int | None = None) -> str  # Read a text file.
 …
 ```
 
-`repl::prompt_block(ListTools)`, appended to the baseline by `Turn::rebase`
-(07 §4). One line per tool, `repl::signature(spec)`: a Python signature
+`repl::prompt_block(ListTools, runtime_only)`, appended to the baseline by
+`Turn::rebase` (07 §4). **Every tool is defined for the model exactly once**
+(amended 2026-09-16): the index lists the tools that are *not* in the direct
+array - with `runtime_only` the non-`DIRECT` ones, with `runtime_only: false`
+none (the block is then just the runtime rules). Direct tools remain
+awaitable in a cell; the model knows their names from their definitions.
+Before the amendment the index listed every spec, so each `DIRECT` tool
+cost a definition plus a signature line. One line per tool,
+`repl::signature(spec)`: a Python signature
 derived from the JSON Schema (codemcp `py_type`: `string→str, integer→int,
 number→float, boolean→bool, array→list[T], object→dict, enum→Literal[…]`,
 `anyOf`/`oneOf`→`A | B`, `type: [T, "null"]`→`T | None`; required

@@ -74,9 +74,10 @@ and work on it in Python: slice, filter, regex, count, diff. Print only what you
 decide the next step, never a whole file or a whole result; the full value stays in the
 variable and survives compaction and restart. Use Python for loops, conditions and
 parsing; use `shell()` to run programs, not to write shell programs. Discover a tool's
-full parameters with `help(name)` - the index below is names and signatures only.
+full parameters with `help(name)` - the index below is names and signatures only. The
+tools defined directly for you are awaitable here too, by the same name.
 
-Tools available in the runtime (all `async`):
+Tools available only in the runtime (all `async`):
 ";
 
 /// Arguments of the `python` tool.
@@ -325,10 +326,14 @@ pub fn stubs(specs: &[ToolSpec]) -> String {
     out
 }
 
-/// The system prompt `## Runtime` block (08 §3.2).
-pub fn prompt_block(specs: &[ToolSpec]) -> String {
+/// The system prompt `## Runtime` block (08 §3.2). Lists exactly the tools that
+/// are *not* in the direct array, so every tool is defined once: with
+/// `runtime_only` the non-`direct` ones; without it (every tool direct) none.
+/// Direct tools stay awaitable in a cell either way - the model knows them
+/// from their definitions.
+pub fn prompt_block(specs: &[ToolSpec], runtime_only: bool) -> String {
     let mut out = String::from(RUNTIME_BLOCK);
-    for spec in specs {
+    for spec in specs.iter().filter(|s| runtime_only && !s.direct) {
         out.push_str(&signature(spec));
         out.push('\n');
     }
@@ -1312,6 +1317,22 @@ mod tests {
             h.contains("  query    str  ") && h.contains("  required   Search query\n"),
             "{h}"
         );
+    }
+
+    /// A tool is defined for the model exactly once: direct tools are absent
+    /// from the runtime index; with `runtime_only: false` the index is empty.
+    #[test]
+    fn runtime_index_excludes_direct_tools() {
+        let runtime_only = fixture();
+        let direct = ToolSpec {
+            name: "ask_user".into(),
+            direct: true,
+            ..fixture()
+        };
+        let block = prompt_block(&[runtime_only, direct.clone()], true);
+        assert!(block.contains("async def github__search_repos("));
+        assert!(!block.contains("async def ask_user("), "{block}");
+        assert!(!prompt_block(&[fixture(), direct], false).contains("async def "));
     }
 
     #[test]

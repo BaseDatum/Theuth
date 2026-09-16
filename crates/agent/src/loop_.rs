@@ -1042,7 +1042,7 @@ impl Turn {
             frame::baseline(&self.shared.rt.data_dir, &peer_line, &blocks, claude_code);
         if self.shared.pool.is_some() {
             baseline.push_str("\n\n");
-            baseline.push_str(&repl::prompt_block(&specs));
+            baseline.push_str(&repl::prompt_block(&specs, self.shared.cfg.runtime_only));
         }
         if baseline != self.state.baseline {
             if !self.state.baseline.is_empty() {

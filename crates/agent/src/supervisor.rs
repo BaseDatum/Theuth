@@ -1408,7 +1408,7 @@ impl Message<ShowPrompt> for Agents {
             && let Ok(specs) = reg.ask(ListTools(m.session)).await
         {
             prompt.push_str("\n\n");
-            prompt.push_str(&repl::prompt_block(&specs));
+            prompt.push_str(&repl::prompt_block(&specs, self.cfg.runtime_only));
         }
         prompt
     }
