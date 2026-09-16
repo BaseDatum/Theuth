@@ -86,7 +86,14 @@ Then the epoch insert is identical: `store.compact`, `history.drain(..keep_from)
 ### 2.1 `summary` (default)
 
 Unchanged 07 §8.3–8.4. Cache-hot continuation, `COMPACT_INSTRUCTION`,
-retry once with `Text only. ` if the reply is empty or has tool calls.
+retry once with `Text only. ` if the reply is empty or has tool calls;
+a reply under `SUMMARY_MIN_CHARS = 500` takes the same retry, and a second
+short one is `degenerate summary`. The call is bounded by
+`SUMMARISE_TIMEOUT = 300 s`. Timeout and degenerate both fall back to
+`cut` on the same `keep_from`, like overflow (36 §6.1). Before the cut the
+folded span is written to `spill/<session>/epoch_<n>.txt` (and the head
+body to `epoch_<n>.summary.md`); the head's last harness line names the
+`.txt` so the model can `read_file` a detail the summary dropped (36 §6.4).
 Head:
 
 ```

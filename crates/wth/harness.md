@@ -28,7 +28,7 @@ real path. Everything below is relative to it.
 | `acp/agents.yaml` | external harnesses runnable as subagents (`spawn_subagent{agent}`) | startup |
 | `knowledge/` | the knowledge bundle (markdown, git history); `knowledge.sqlite` is a derived index | live |
 | `sessions.sqlite` | every session's history; `/sessions`, `/resume <id>` | live |
-| `attachments/`, `spill/` | pasted images; tool output that exceeded the cap (`read_file` the path a result names) | - |
+| `attachments/`, `spill/` | pasted images; tool output that exceeded the cap (`read_file` the path a result names). `spill/<session>/epoch_<n>.txt` holds the turns folded by compaction `n` verbatim (and `epoch_<n>.summary.md` the summary), readable with `read_file` | - |
 | `artifacts/` | files shown with `show`: content-addressed blobs (design doc 35) | live |
 | `artifacts.sqlite` | the artifact index. Deleting it rebuilds nothing — the blobs it named are orphaned and swept at the next start | live |
 | `logs/wth.log.<YYYY-MM-DD>` | the process log; `RUST_LOG=debug` for more | live |

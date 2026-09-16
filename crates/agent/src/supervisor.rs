@@ -580,6 +580,14 @@ impl Agents {
                 self.cfg.subagents.max_runtime_secs
             );
         }
+        // Bound like any tool result; the child's id is the spill file stem (36 §4.1).
+        text = spill::cap(
+            parent,
+            &child.to_string(),
+            &text,
+            self.cfg.max_tool_output_chars,
+            &self.rt.data_dir.join("spill"),
+        );
         if let Some(tx) = self.waiters.remove(&(parent, child)) {
             match tx.send(text) {
                 Ok(()) => return,

@@ -14,6 +14,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
@@ -54,6 +55,18 @@ const DISPLAY_OUTPUT_CHARS: usize = 2000;
 const CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 /// Below this prompt size `cached == 0` is legitimate (07 §7).
 const CACHE_FLOOR: u32 = 4096;
+/// Backoff before each transient model-call resend, seconds; length = resends per call (36 §2.2).
+const RETRY_BACKOFF: [u64; 3] = [2, 10, 30];
+/// Transient resends allowed across one turn (36 §2.2).
+const RETRY_MAX_PER_TURN: u32 = 10;
+/// No stream event for this long is a dead socket, not a slow model (36 §2.3).
+const STREAM_IDLE: Duration = Duration::from_secs(120);
+/// Partial-reply plus length salvages allowed per turn (36 §2.4, §2.6).
+const SALVAGE_MAX_PER_TURN: u32 = 2;
+/// Wall clock on one summariser call; expiry degrades the compaction to `cut` (36 §6.1).
+const SUMMARISE_TIMEOUT: Duration = Duration::from_secs(300);
+/// Smallest a tool result is shrunk to by the batch budget: a spill marker plus a hint (36 §4.2).
+const TOOL_RESULT_FLOOR_CHARS: usize = 1000;
 
 /// `tell`: user text. Starts a turn when idle, otherwise queued and injected
 /// after the current tool batch (steering). `id` is the caller's
@@ -184,6 +197,10 @@ pub struct SessionState {
     pub skills: BTreeSet<String>,
     /// The one `<surface_error>` round of this turn ran (design doc 30 §5).
     pub surface_corrected: bool,
+    /// Paths passed to `write_file` this epoch, for the compaction head (36 §6.3); cleared by compaction.
+    pub files_written: BTreeSet<String>,
+    /// Upper bound on the window learnt from an overflow when the catalog has none (36 §6.6); 0 = unknown.
+    pub window_hint: u32,
 }
 
 impl SessionState {
@@ -209,6 +226,8 @@ impl SessionState {
             title_chars: 0,
             title_epoch: epoch,
             surface_corrected: false,
+            files_written: BTreeSet::new(),
+            window_hint: 0,
         }
     }
 }
@@ -736,12 +755,26 @@ struct Turn {
     calls: u32,
     /// Process working directory, resolved once per turn.
     cwd: PathBuf,
+    /// The `max_tool_rounds` landing call is in flight: tool calls are refused (36 §5).
+    landing: bool,
+    /// Transient model-call retries this turn (36 §2.2); atomic because `call`
+    /// runs on `&self` (the frame borrows session state).
+    retries: AtomicU32,
+    /// Partial-reply and length salvages this turn (36 §2.4, §2.6).
+    salvaged: u32,
+    /// `(name, args)` of the last failed tool call, for the repeat-failure note (36 §4.3).
+    last_failure: Option<(String, serde_json::Value)>,
 }
 
 /// Why a model call did not return a [`StreamEnd`].
 enum Abort {
     Cancelled,
     Model(String),
+    /// The stream died after `text` was streamed (36 §2.4); `err` is the transport error.
+    Partial {
+        text: String,
+        err: String,
+    },
 }
 
 /// Outcome of one model call.
@@ -850,6 +883,10 @@ impl Turn {
             input_text: String::new(),
             calls: 0,
             cwd: std::env::current_dir().unwrap_or_default(),
+            landing: false,
+            retries: AtomicU32::new(0),
+            salvaged: 0,
+            last_failure: None,
         }
     }
 
@@ -880,13 +917,17 @@ impl Turn {
             .clone()
     }
 
-    /// Context window of `model`; 0 when the catalog does not know it (07 §8.1).
+    /// Context window of `model`; the catalog's figure, else the projection that
+    /// last overflowed (36 §6.6), else 0 (07 §8.1).
     fn window(&mut self, model: &Resolved) -> u32 {
-        let window = self
+        let mut window = self
             .shared
             .catalog
             .closest(&model.id)
             .map_or(0, |m| m.limit.context);
+        if window == 0 {
+            window = self.state.window_hint;
+        }
         if window == 0 && !self.window_logged {
             self.window_logged = true;
             tracing::info!(session = %self.shared.id, model = %model.id, "context window unknown; auto-compaction off");
@@ -924,6 +965,32 @@ impl Turn {
     async fn note(&mut self, kind: &str, text: &str) {
         self.persist(ChatMessage::user(format!("<{kind}>\n{text}\n</{kind}>")))
             .await;
+    }
+
+    /// 36 §3: a frame ending in an assistant `tool_use` with no `tool_result`
+    /// (the process died between the two persists) is rejected by the provider
+    /// on every request. Append one tool message answering every call.
+    async fn repair_dangling(&mut self) {
+        let responses: Vec<ToolResponse> = match self.state.history.last() {
+            Some((_, m)) if m.role == ChatRole::Assistant => m
+                .content
+                .tool_calls()
+                .into_iter()
+                .map(|tc| {
+                    ToolResponse::new(
+                        tc.call_id.clone(),
+                        "ERROR: not run: the harness exited before this tool completed",
+                    )
+                })
+                .collect(),
+            _ => return,
+        };
+        if responses.is_empty() {
+            return;
+        }
+        let n = responses.len();
+        self.persist(ChatMessage::from(responses)).await;
+        tracing::info!(session = %self.shared.id, n, "resume: repaired {n} dangling tool calls");
     }
 
     /// Turn start: render the system prompt and log a rebase when it changed
@@ -1035,12 +1102,64 @@ impl Turn {
 
     /// Open the stream for `frame` and drain it to its `End`. With `live`,
     /// deltas and pending tool calls are published; the summariser passes `None`.
+    /// Transient failures before anything streamed are resent with backoff
+    /// (36 §2.2); one that dies mid-reply is `Abort::Partial` (36 §2.4).
     async fn call(
         &self,
         current: &Current,
         frame: Frame<'_>,
         transport: Transport,
         live: Option<TurnId>,
+    ) -> Result<StreamEnd, Abort> {
+        let mut attempt = 0;
+        loop {
+            let mut text = String::new();
+            let mut calls = false;
+            let e = match self
+                .stream_once(current, &frame, transport, live, &mut text, &mut calls)
+                .await
+            {
+                Ok(end) => return Ok(end),
+                Err(Abort::Model(e)) => e,
+                Err(other) => return Err(other),
+            };
+            if !matches!(compact::classify(&e), compact::Failure::Transient) {
+                return Err(Abort::Model(e));
+            }
+            if !text.is_empty() || calls {
+                return Err(Abort::Partial { text, err: e });
+            }
+            if attempt >= RETRY_BACKOFF.len()
+                || self.retries.load(Ordering::Relaxed) >= RETRY_MAX_PER_TURN
+            {
+                return Err(Abort::Model(e));
+            }
+            let jitter = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.subsec_nanos());
+            let wait =
+                Duration::from_secs(RETRY_BACKOFF[attempt]) + Duration::from_nanos(jitter.into());
+            tracing::info!(session = %self.shared.id, attempt, wait = ?wait, "retrying model call: {e}");
+            self.retries.fetch_add(1, Ordering::Relaxed);
+            attempt += 1;
+            tokio::select! {
+                _ = self.cancel.cancelled() => return Err(Abort::Cancelled),
+                _ = tokio::time::sleep(wait) => {}
+            }
+        }
+    }
+
+    /// One open + drain. Streamed assistant text accumulates in `text`; `calls`
+    /// is set once a tool-call chunk arrived. No event for [`STREAM_IDLE`] is a
+    /// transient `stream idle for 120s` (36 §2.3).
+    async fn stream_once(
+        &self,
+        current: &Current,
+        frame: &Frame<'_>,
+        transport: Transport,
+        live: Option<TurnId>,
+        text: &mut String,
+        calls: &mut bool,
     ) -> Result<StreamEnd, Abort> {
         let (req, opts) = frame.request(transport, self.shared.id, current.effort.clone());
         let open = current
@@ -1056,13 +1175,22 @@ impl Turn {
         loop {
             let ev = tokio::select! {
                 _ = self.cancel.cancelled() => return Err(Abort::Cancelled),
-                ev = stream.next() => ev,
+                ev = tokio::time::timeout(STREAM_IDLE, stream.next()) => match ev {
+                    Ok(ev) => ev,
+                    Err(_) => {
+                        return Err(Abort::Model(format!(
+                            "stream idle for {}s",
+                            STREAM_IDLE.as_secs()
+                        )));
+                    }
+                },
             };
             match ev {
                 None => return Err(Abort::Model("stream ended without End event".into())),
                 Some(Err(e)) => return Err(Abort::Model(e)),
                 Some(Ok(ChatStreamEvent::End(end))) => return Ok(end),
                 Some(Ok(ChatStreamEvent::Chunk(c))) => {
+                    text.push_str(&c.content);
                     if let Some(turn) = live {
                         self.publish(AgentEvent::TextDelta {
                             session,
@@ -1087,6 +1215,7 @@ impl Turn {
                 // the cumulative partial JSON is surfaced, coalesced, as
                 // ToolCallProgress.
                 Some(Ok(ChatStreamEvent::ToolCallChunk(c))) => {
+                    *calls = true;
                     let Some(turn) = live else { continue };
                     let tc = c.tool_call;
                     if !tc.fn_name.is_empty() && !pending.contains(&tc.call_id) {
@@ -1173,18 +1302,31 @@ impl Turn {
             }
             Some(registry) => {
                 self.rebase(registry).await;
+                self.repair_dangling().await;
                 self.state.todo_touched_round = 0;
                 self.state.knowledge_hinted_round = 0;
                 self.state.surface_corrected = false;
                 let mut rounds = 0u32;
+                self.landing = false;
                 loop {
                     match self.round(registry, turn, rounds).await {
                         Round::Tools => {
                             rounds += 1;
-                            if rounds >= self.shared.cfg.max_tool_rounds {
-                                self.error(format!("stopped after {rounds} tool rounds"))
-                                    .await;
-                                break "max_tool_rounds".to_string();
+                            let max = self.shared.cfg.max_tool_rounds;
+                            if rounds >= max {
+                                // 36 §5: land, don't crash — one more call, text expected.
+                                self.landing = true;
+                                self.note(
+                                    "rounds",
+                                    "No tool rounds remain in this turn. Reply with text now: what was done, what was not, and the next step.",
+                                )
+                                .await;
+                            } else if rounds + 2 == max {
+                                self.note(
+                                    "rounds",
+                                    "2 tool rounds remain in this turn. Finish the current step and reply with results and next steps.",
+                                )
+                                .await;
                             }
                             let queued = std::mem::take(
                                 &mut *self.shared.steer.lock().unwrap_or_else(|p| p.into_inner()),
@@ -1453,10 +1595,32 @@ impl Turn {
         let end = match self.call(&current, frame, transport, Some(turn)).await {
             Ok(end) => end,
             Err(Abort::Cancelled) => return Round::Stop("cancelled".into()),
+            // 36 §2.4: keep what streamed, ask the model to carry on.
+            Err(Abort::Partial { text, err }) => {
+                if self.salvaged >= SALVAGE_MAX_PER_TURN {
+                    self.error(format!("model: {err}")).await;
+                    return Round::Stop("error".into());
+                }
+                self.salvaged += 1;
+                tracing::info!(session = %self.shared.id, "salvaging partial reply after: {err}");
+                if !text.trim().is_empty() {
+                    self.persist(ChatMessage::assistant(text)).await;
+                }
+                self.note(
+                    "recovery",
+                    "Your reply was interrupted by a transport error after the text above. Continue from where it stopped; do not repeat it. If a tool call was in progress, make it again.",
+                )
+                .await;
+                return Round::Tools;
+            }
             Err(Abort::Model(e)) => {
                 // 07 §8.5: one forced compaction per turn, then retry the round.
                 if compact::is_overflow(&e) && !self.overflowed {
                     self.overflowed = true;
+                    // 36 §6.6: the overflowing projection bounds an unknown window.
+                    if self.window(&current.model) == 0 {
+                        self.state.window_hint = projected;
+                    }
                     match self
                         .compact(
                             &current,
@@ -1544,12 +1708,43 @@ impl Turn {
                     return Round::Tools;
                 }
             }
+            // 36 §2.6: output cap hit; the cut-off reply is persisted, ask for the rest.
+            if (stop == "max_tokens" || stop == "length") && self.salvaged < SALVAGE_MAX_PER_TURN {
+                self.salvaged += 1;
+                tracing::info!(session = %self.shared.id, stop = %stop, "salvaging length-capped reply");
+                self.note(
+                    "continue",
+                    "Your previous reply hit the output token limit and was cut off. Continue from exactly where it stopped — do not repeat what is above. If a newer user message follows this note, answer that instead.",
+                )
+                .await;
+                return Round::Tools;
+            }
             return Round::Stop(stop);
         }
         let assistant = end
             .into_assistant_message_for_tool_use()
             .unwrap_or_else(|| ChatMessage::from(calls.clone()));
         self.persist(assistant).await;
+        if self.landing {
+            // 36 §5: the landing call asked for text; tools are not run, the
+            // pair invariant is kept with synthetic results, and the turn ends.
+            const NOT_RUN: &str = "ERROR: not run: tool rounds exhausted";
+            let mut responses = Vec::with_capacity(calls.len());
+            for c in &calls {
+                self.publish(AgentEvent::ToolCallFinished {
+                    session: self.shared.id,
+                    turn,
+                    call_id: c.call_id.clone(),
+                    output: NOT_RUN.into(),
+                    is_error: true,
+                    files: Vec::new(),
+                })
+                .await;
+                responses.push(ToolResponse::new(c.call_id.clone(), NOT_RUN));
+            }
+            self.persist(ChatMessage::from(responses)).await;
+            return Round::Stop("max_tool_rounds".into());
+        }
 
         let session = self.shared.id;
         for call in &calls {
@@ -1601,9 +1796,15 @@ impl Turn {
             outputs[i] = Some(out);
         }
 
+        let outs: Vec<ToolOutput> = outputs
+            .into_iter()
+            .map(|o| o.unwrap_or_else(|| ToolOutput::err("cancelled by user")))
+            .collect();
+        // 36 §4.3: the (name, args) of an error result seen twice in a row this turn.
+        let mut repeat: Option<String> = None;
+        let mut failed = false;
         let mut responses = Vec::with_capacity(calls.len());
-        for (call, out) in calls.iter().zip(outputs) {
-            let out = out.unwrap_or_else(|| ToolOutput::err("cancelled by user"));
+        for (call, out) in calls.iter().zip(&outs) {
             let mut display = frame::truncate(&out.content, DISPLAY_OUTPUT_CHARS);
             for f in &out.files {
                 display.push_str("\n[image: ");
@@ -1628,12 +1829,28 @@ impl Turn {
                 &self.shared.spill_dir,
             );
             let mut content = if out.is_error {
+                failed = true;
+                let key = (call.fn_name.clone(), call.fn_arguments.clone());
+                if self.last_failure.as_ref() == Some(&key) {
+                    repeat = Some(call.fn_name.clone());
+                    self.last_failure = None;
+                } else {
+                    self.last_failure = Some(key);
+                }
                 format!("ERROR: {content}")
             } else {
                 if call.fn_name == skills::LOAD
                     && let Some(name) = call.fn_arguments.get("name").and_then(|v| v.as_str())
                 {
                     self.note_skill(name.to_owned()).await;
+                }
+                // 36 §6.3: paths this epoch wrote, for the compaction head.
+                // ponytail: only write_file is tracked; edits through python or a shell redirect are not.
+                if call.fn_name == "write_file"
+                    && self.state.files_written.len() < 40
+                    && let Some(path) = call.fn_arguments.get("path").and_then(|v| v.as_str())
+                {
+                    self.state.files_written.insert(path.to_owned());
                 }
                 content
             };
@@ -1654,8 +1871,68 @@ impl Turn {
             }
             responses.push(ToolResponse::new(call.call_id.clone(), content).with_images(images));
         }
+        if !failed {
+            self.last_failure = None;
+        }
+        // 36 §4.2: bound the batch, not only each result — four capped results can
+        // still fill a small window. Halve the largest until the batch fits a quarter
+        // of the compaction threshold; the floor keeps a marker plus a hint per result.
+        let window = self.window(&current.model);
+        if window > 0 {
+            let compact_at = self.shared.cfg.compact_at;
+            let limit = if compact_at > 0.0 {
+                (compact_at * window as f32) as u32
+            } else {
+                window
+            };
+            let budget = limit / 4;
+            let est = |r: &ToolResponse| {
+                (r.content.len() / 4) as u32 + r.images.len() as u32 * compact::IMAGE_TOKENS
+            };
+            let before: u32 = responses.iter().map(est).sum();
+            let mut total = before;
+            let mut shrunk = 0u32;
+            while total > budget {
+                let Some((i, chars)) = responses
+                    .iter()
+                    .map(|r| r.content.chars().count())
+                    .enumerate()
+                    .max_by_key(|&(_, n)| n)
+                    .filter(|&(_, n)| n > TOOL_RESULT_FLOOR_CHARS)
+                else {
+                    break;
+                };
+                let out = &outs[i];
+                let mut content = spill::cap(
+                    session,
+                    &calls[i].call_id,
+                    &out.content,
+                    chars / 2,
+                    &self.shared.spill_dir,
+                );
+                if out.is_error {
+                    content.insert_str(0, "ERROR: ");
+                }
+                total -= est(&responses[i]);
+                responses[i].content = content;
+                total += est(&responses[i]);
+                shrunk += 1;
+            }
+            if shrunk > 0 {
+                tracing::info!(session = %self.shared.id, budget, total_before = before, total, "tool batch over budget; shrunk {shrunk} results");
+            }
+        }
         // One tool message carrying every response (genai: `ChatMessage::from(Vec<ToolResponse>)`).
         self.persist(ChatMessage::from(responses)).await;
+        if let Some(name) = repeat {
+            self.note(
+                "steer",
+                &format!(
+                    "The call {name} failed twice with the same arguments. Do not repeat it; change the arguments or the approach."
+                ),
+            )
+            .await;
+        }
         self.calls += calls.len() as u32;
         // 10 §7: the ids the model held verbatim this epoch, for the compaction head.
         self.state.knowledge_read.extend(
@@ -1871,13 +2148,17 @@ impl Turn {
                     .summarise(current, transport, &mut full, keep_from)
                     .await
                 {
-                    Ok(text) => text,
+                    // 36 §6.1: the tag the model just saw must not prime its next reply.
+                    Ok(text) => compact::neutralise(&text),
                     Err(e) if e.contains("cancelled") => return Err(e),
                     Err(e)
                         if compact::is_overflow(&e)
                             || e.contains("no text twice")
+                            || e.contains("timed out")
+                            || e.contains("degenerate")
                             || reason == compact::CompactReason::Overflow =>
                     {
+                        tracing::warn!(session = %session, "summariser failed ({e}); compacting as cut");
                         style = CompactStyle::Cut;
                         cut_body()
                     }
@@ -1886,9 +2167,17 @@ impl Turn {
             }
         };
 
-        // 07 §8.4, 10 §7: harness truth the summariser cannot drift — roster, todos,
-        // runtime inventory, concepts read.
+        // 07 §8.4, 10 §7, 36 §6.3: harness truth the summariser cannot drift — roster,
+        // todos, runtime inventory, concepts read, running jobs, files written, epoch file.
         let n = self.state.epoch + 1;
+        // 36 §6.4: the folded span verbatim (from `history`, not `full`: the summariser
+        // may have stripped images) as a file the model can read back.
+        let folded: Vec<ChatMessage> = self.state.history[..keep_from]
+            .iter()
+            .map(|(_, m)| m.clone())
+            .collect();
+        let earlier = spill::epoch(session, n, &folded, body.trim(), &self.shared.spill_dir)
+            .map(|p| format!("Earlier turns verbatim: {}", p.display()));
         let roster = match ActorRef::<Agents>::lookup(AGENT_ACTOR) {
             Ok(Some(agents)) => agents.ask(Roster { session }).await.unwrap_or_default(),
             _ => String::new(),
@@ -1907,11 +2196,41 @@ impl Turn {
                 .collect();
             format!("Knowledge: read {}", ids.join(", "))
         });
+        let jobs = match ActorRef::<tools::Jobs>::lookup(tools::JOBS_ACTOR) {
+            Ok(Some(jobs)) => jobs.ask(tools::ListJobs(session)).await.unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        let jobs: Vec<String> = jobs
+            .iter()
+            .filter(|j| j.state == "running")
+            .map(|j| {
+                let cmd: String = j.command.chars().take(60).collect();
+                format!(
+                    "{} running ({cmd}, {}m{:02}s)",
+                    j.id,
+                    j.secs / 60,
+                    j.secs % 60
+                )
+            })
+            .collect();
+        let jobs = (!jobs.is_empty()).then(|| format!("Jobs: {}", jobs.join(", ")));
+        let files = (!self.state.files_written.is_empty()).then(|| {
+            let paths: Vec<&str> = self
+                .state
+                .files_written
+                .iter()
+                .map(String::as_str)
+                .collect();
+            format!("Files written: {}", paths.join(", "))
+        });
         let harness = [
             roster,
             todos.unwrap_or_default(),
             runtime.map(|r| format!("Runtime: {r}")).unwrap_or_default(),
             read.unwrap_or_default(),
+            jobs.unwrap_or_default(),
+            files.unwrap_or_default(),
+            earlier.unwrap_or_default(),
         ];
         let frames = pngs.len();
         let head = if pngs.is_empty() {
@@ -1957,11 +2276,13 @@ impl Turn {
                 acc.saturating_add(compact::est(m))
             });
         self.state.head = Some(head);
-        self.state.used = 0;
+        // 36 §6.5: seed with the estimate; the provider's number replaces it next call.
+        self.state.used = after;
         self.state.epoch = n;
         self.state.pressure_sent = false;
         self.state.hinted.clear();
         self.state.knowledge_read.clear();
+        self.state.files_written.clear();
         if !self.state.skills.is_empty() {
             self.state.skills.clear();
             self.publish_skills().await;
@@ -2013,8 +2334,11 @@ impl Turn {
 
     /// A cache-hot continuation of the live frame (07 §8.3, 10 §5.4): `full`
     /// is the history plus `instruction` as its last message. Retries once
-    /// with a `Text only.` prefix when the reply carries only tool calls.
-    /// `Err` is the raw model error (callers test `compact::is_overflow`).
+    /// with a `Text only.` prefix when the reply carries only tool calls or,
+    /// for the compaction instruction, is shorter than
+    /// [`compact::SUMMARY_MIN_CHARS`] (36 §6.1). Bounded by
+    /// [`SUMMARISE_TIMEOUT`]. `Err` is the raw model error (callers test
+    /// `compact::is_overflow`), `summariser timed out` or `degenerate summary`.
     async fn continuation(
         &self,
         current: &Current,
@@ -2022,6 +2346,8 @@ impl Turn {
         full: &mut Vec<ChatMessage>,
         instruction: &str,
     ) -> Result<String, String> {
+        // 36 §6.1: a short harvest is a valid "nothing new"; only the summary has a floor.
+        let summary = instruction == compact::COMPACT_INSTRUCTION;
         let mut text_only = false;
         loop {
             let frame = Frame {
@@ -2031,24 +2357,38 @@ impl Turn {
                 history: full.as_slice(),
                 vision: current.vision(),
             };
-            match self.call(current, frame, transport, None).await {
-                Ok(end) => {
+            let call = self.call(current, frame, transport, None);
+            match tokio::time::timeout(SUMMARISE_TIMEOUT, call).await {
+                Err(_) => return Err("summariser timed out".into()),
+                Ok(Ok(end)) => {
                     let has_calls = end.captured_tool_calls().is_some_and(|c| !c.is_empty());
                     let text = end.captured_texts().map(|t| t.concat()).unwrap_or_default();
-                    if !has_calls && !text.trim().is_empty() {
+                    let chars = text.trim().chars().count();
+                    let short = summary && chars < compact::SUMMARY_MIN_CHARS;
+                    if !has_calls && chars > 0 && !short {
                         return Ok(text);
                     }
                     if text_only {
-                        return Err("no text twice".into());
+                        return Err(if short {
+                            "degenerate summary"
+                        } else {
+                            "no text twice"
+                        }
+                        .into());
                     }
                     text_only = true;
-                    tracing::info!(session = %self.shared.id, "continuation replied without text; retrying");
+                    tracing::info!(session = %self.shared.id, chars, has_calls, "continuation replied without a usable text; retrying");
+                    let prefix = if summary {
+                        "Text only, complete summary. "
+                    } else {
+                        "Text only. "
+                    };
                     if let Some(last) = full.last_mut() {
-                        *last = ChatMessage::user(format!("Text only. {instruction}"));
+                        *last = ChatMessage::user(format!("{prefix}{instruction}"));
                     }
                 }
-                Err(Abort::Cancelled) => return Err("cancelled".into()),
-                Err(Abort::Model(e)) => return Err(e),
+                Ok(Err(Abort::Cancelled)) => return Err("cancelled".into()),
+                Ok(Err(Abort::Model(e))) | Ok(Err(Abort::Partial { err: e, .. })) => return Err(e),
             }
         }
     }

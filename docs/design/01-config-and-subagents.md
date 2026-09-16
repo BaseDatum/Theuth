@@ -281,7 +281,7 @@ actor and the parent column:
 
 "Final assistant text of the turn" = concatenated assistant content persisted
 after the turn's last user message — read from the store, not collected from
-the stream. The `Collector` actor goes away.
+the stream, then capped by `spill::cap` (§2.5). The `Collector` actor goes away.
 
 Consequences worth stating:
 
@@ -415,7 +415,9 @@ Your final message is delivered to the parent when your turn ends.
 The live roster (`- grep-logs idle …`) is **not** in the prompt: it changed
 between turns and busted the parent's system-prompt cache every time a
 child finished (`07-context.md` §10). The parent learns names from
-`spawn_subagent`'s output and completion from `<subagent_result>`; after a
+`spawn_subagent`'s output and completion from `<subagent_result>`; the
+injected text is capped at `max_tool_output_chars` with a spill marker
+naming `spill/<parent>/<child>.txt`, the waiter branch alike (36 §4.1); after a
 compaction the head carries `Subagents: grep-logs (running), fix-tests
 (idle)` (`Roster`, `07 §8.4`). The how-to (delegate by default, choose
 between an external harness and a wth subagent, choose the child's model,

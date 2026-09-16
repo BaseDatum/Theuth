@@ -9,24 +9,31 @@ use genai::chat::{Binary, BinarySource, ChatMessage, ChatRole, ContentPart, Mess
 use serde::{Deserialize, Serialize};
 
 /// Appended as one user message to the live frame; the summary replaces
-/// everything above it in the next epoch (07 §8.3).
+/// everything above it in the next epoch (07 §8.3, 36 §6.2).
 pub const COMPACT_INSTRUCTION: &str = "\
 The conversation is about to be compacted: everything above this message will be replaced by
 your summary, and only the most recent messages will be kept verbatim. Write the summary now.
 Reply with text only — do not call tools. Use exactly these headings and short bullets:
 
 ## Goal
-## Done  (facts established, files changed, commands run and their outcomes)
+## Done  (facts established, files changed, commands run and whether they passed)
 ## Open  (in-progress work, unanswered questions, pending approvals)
-## Next  (the immediate next step)
-## Notes (user preferences, constraints, names and paths to remember, runtime variables you rely on and what they hold)
+## Next  (the immediate next step, and a short verbatim quote of the last thing you were
+         doing so the continuation resumes mid-step rather than restarting)
+## Notes (user preferences, constraints, names and paths to remember, runtime variables you
+         rely on and what they hold, decisions taken and alternatives rejected)
 
-If a previous summary is present at the top of the conversation, fold it in: keep what is still
-true, drop what is finished. Be specific — paths, identifiers, exact error text — and omit
-chit-chat and tool-call boilerplate.";
+If a previous summary is present at the top of the conversation it is authoritative for the
+earlier history: carry forward what is still true, drop what is finished. Every request the
+user made, in order, belongs under Goal or Done; do not invent tasks. Be specific — paths,
+identifiers, exact error text — and omit chit-chat and tool-call boilerplate. A summary that
+fits is worth more than one that is exhaustive: at most a few thousand words.";
 
-/// Substrings (lowercase) that mark a provider "context too long" error (07 §8.5).
-const OVERFLOW_NEEDLES: [&str; 8] = [
+/// Shortest summary accepted as healthy (36 §6.1); grok's smallest healthy prod summary is ~3,242 chars.
+pub const SUMMARY_MIN_CHARS: usize = 500;
+
+/// Substrings (lowercase) that mark a provider "context too long" error (07 §8.5, 36 §2.5).
+const OVERFLOW_NEEDLES: [&str; 15] = [
     "context length",
     "context_length_exceeded",
     "maximum context",
@@ -35,6 +42,28 @@ const OVERFLOW_NEEDLES: [&str; 8] = [
     "request too large",
     "exceeds the maximum number of tokens",
     "too many tokens",
+    "too long for this model",
+    "maximum allowed number of bytes",
+    "exceeds the maximum allowed length",
+    "payload too large",
+    "content too large",
+    "request entity too large",
+    "413 ",
+];
+
+/// Substrings (lowercase) of a rate-limit error (36 §2.5): a 429 that says
+/// "too large a burst" is Transient, not Overflow.
+const RATE_LIMIT_NEEDLES: [&str; 2] = ["rate limit", "too many requests"];
+
+/// Substrings (lowercase) of an error the same request would hit again (36 §2.1).
+const DETERMINISTIC_NEEDLES: [&str; 7] = [
+    "unauthorized",
+    "forbidden",
+    "invalid_request",
+    "invalid api key",
+    "authentication",
+    "schema",
+    "not found",
 ];
 
 /// Flat token charge for one image part in [`est`] (17 §3.4): a ≤1568 px PNG lands near this.
@@ -115,6 +144,67 @@ pub fn keep_from(history: &[ChatMessage], limit: u32) -> usize {
 pub fn is_overflow(err: &str) -> bool {
     let e = err.to_lowercase();
     OVERFLOW_NEEDLES.iter().any(|n| e.contains(n))
+}
+
+/// Why a model call failed, and what the loop does about it (36 §2.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Failure {
+    /// The request exceeded the context window: compact and resend (07 §8.5).
+    Overflow,
+    /// 4xx other than 408/429, auth/config, schema rejection: the same request
+    /// gets the same answer, so it is not retried.
+    Deterministic,
+    /// Everything else — 408, 429, 5xx, connection errors, dead streams: retry.
+    Transient,
+}
+
+/// Classify a provider error message (36 §2.1). Rate-limit phrases and a
+/// `429` code win first, then [`is_overflow`], then anything carrying a 4xx
+/// status (a standalone three-digit `4dd` token, which covers genai's
+/// `status: 4..`, `status code 4..` and `http 4..`) or an auth/schema word;
+/// the rest is transient. Same heuristic as grok `session_compact.rs:145-217`.
+pub fn classify(err: &str) -> Failure {
+    let e = err.to_lowercase();
+    let (mut rate, mut client) = (false, false);
+    for code in e
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|t| t.len() == 3 && t.starts_with('4'))
+    {
+        match code {
+            "429" => rate = true,
+            "408" => {}
+            _ => client = true,
+        }
+    }
+    if rate || RATE_LIMIT_NEEDLES.iter().any(|n| e.contains(n)) {
+        Failure::Transient
+    } else if OVERFLOW_NEEDLES.iter().any(|n| e.contains(n)) {
+        Failure::Overflow
+    } else if client || DETERMINISTIC_NEEDLES.iter().any(|n| e.contains(n)) {
+        Failure::Deterministic
+    } else {
+        Failure::Transient
+    }
+}
+
+/// Summary body with a U+200B after `<` in every `<context_summary` /
+/// `</context_summary`, so the model is not primed to open its next reply
+/// with the tag it just saw (36 §6.1). One allocation; unchanged text otherwise.
+pub fn neutralise(body: &str) -> String {
+    const TAG: &str = "context_summary";
+    let mut out = String::with_capacity(body.len() + 8);
+    let mut rest = body;
+    while let Some(i) = rest.find(TAG) {
+        let (head, tail) = rest.split_at(i);
+        out.push_str(head);
+        if head.ends_with('<') || head.ends_with("</") {
+            out.push('\u{200B}');
+        }
+        out.push_str(TAG);
+        rest = &tail[TAG.len()..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// How a compaction builds the new epoch head (design doc 11).
@@ -370,7 +460,42 @@ mod tests {
         assert!(is_overflow(
             "This model's maximum context length is 128000 tokens"
         ));
+        assert!(is_overflow("413 Payload Too Large"));
+        assert!(is_overflow("input is too long for this model"));
         assert!(!is_overflow("rate limit exceeded"));
+        assert!(!is_overflow("too many requests"));
+    }
+
+    #[test]
+    fn classify_table() {
+        use Failure::*;
+        for (err, want) in [
+            ("429 too many requests", Transient),
+            ("status: 400 invalid_request_error", Deterministic),
+            ("prompt is too long", Overflow),
+            ("413 Payload Too Large", Overflow),
+            ("rate limit exceeded: request too large a burst", Transient),
+            ("connection reset by peer", Transient),
+            ("stream ended without End event", Transient),
+            ("status: 401 unauthorized", Deterministic),
+            ("status: 408 request timeout", Transient),
+            ("status: 503 service unavailable", Transient),
+            ("http 422 schema validation failed", Deterministic),
+        ] {
+            assert_eq!(classify(err), want, "{err}");
+        }
+    }
+
+    #[test]
+    fn neutralise_breaks_tags_only() {
+        assert_eq!(
+            neutralise("a <context_summary epoch=\"1\">b</context_summary> c"),
+            "a <\u{200B}context_summary epoch=\"1\">b</\u{200B}context_summary> c"
+        );
+        assert_eq!(
+            neutralise("plain context_summary text"),
+            "plain context_summary text"
+        );
     }
 
     #[test]

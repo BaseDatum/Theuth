@@ -59,7 +59,10 @@ serialisation, budget and gates so the implementation has no open choices,
    rows; the head is priced by the provider's reported usage on the first
    call after the cut (`used`). A head full of base64 never goes through
    `est`. The frame budget in (1) uses the family's per-frame estimate,
-   nothing else.
+   nothing else. Superseded in part by 36 §6.5: `used` is now seeded with
+   `est(head) + Σ est(tail)` after the fold instead of 0, so a `snap` head
+   is priced once by `est` (text + `IMAGE_TOKENS` per frame) until the
+   provider reports.
 7. **`snap_built()` goes away.** With the rasterizer in-tree the only gate
    is (5). `resolve()` gains the model/transport argument and the
    `Err("snap needs a vision model (this one is text-only)")` branch 11

@@ -328,13 +328,19 @@ The spill directory is also mounted read-only into the runtime as
 a variable instead of paged with `read_file`.
 
 This is the whole tool-output policy. There is no per-tool cap table, no
-per-batch token budget, no bulk/minified detector, no later pruning
-(jarvis has all five). The append-time cap bounds one round's results at
-`calls × max_tool_output_chars` chars, all of which are counted by the
-trigger *before* the next call (§8.1). Ceiling: on a 32k-window model a
-four-call batch of 32k chars each is the whole window; lower
-`max_tool_output_chars` there. If a transcript shows a tool that needs a
-tighter cap, the tool truncates its own output — `read_file` already does.
+bulk/minified detector, no later pruning (jarvis has all of them). The
+append-time cap bounds one round's results at `calls ×
+max_tool_output_chars` chars, all of which are counted by the trigger
+*before* the next call (§8.1). One batch bound closes the ceiling that
+left (on a 32k-window model a four-call batch of 32k chars each was the
+whole window): after the per-result cap, while `Σ est(responses) >
+limit / 4` (`limit` as §8.2; skipped when `window == 0`) the largest
+result is re-`cap`ped to half its chars, floor 1 000 chars per result so
+a marker plus a hint always survives (36 §4.2). A `<subagent_result>` is
+capped the same way — `spill::cap` with the child's session id as the
+file stem — before it is injected into the parent (36 §4.1). If a
+transcript shows a tool that needs a tighter cap, the tool truncates its
+own output — `read_file` already does.
 
 ## 7. Measurement
 
@@ -515,7 +521,7 @@ head      = ChatMessage::user("<context_summary epoch=\"{n}\" style=\"summary\">
 tail_from = seq(M[keep_from])
 at_seq    = seq(M[n-1])
 store.compact(session, n, at_seq, tail_from, &head)        // one INSERT into epochs
-history.drain(..keep_from); head = Some(head); used = 0; epoch = n; pressure_sent = false; hinted.clear(); knowledge_read.clear(); reset_this_round = true
+history.drain(..keep_from); head = Some(head); used = after; epoch = n; pressure_sent = false; hinted.clear(); knowledge_read.clear(); reset_this_round = true   // after = est(head) + Σ est(tail), 36 §6.5
 info!(session, epoch, folded, before, "compaction")
 publish Compacted { session, turn, epoch: n, before: projected, folded: keep_from, style }
 ```
@@ -571,19 +577,27 @@ the current streaming text (the `Model::interject` path from `00 §8`).
 
 ### 8.5 Overflow
 
-genai has no typed overflow error; classification is by substring on the
-lowercased message, the same needle list jarvis converged on
+genai has no typed overflow error; `compact::classify(err) -> Failure::{Overflow,
+Deterministic, Transient}` (36 §2.1) sorts every model-call error by substring on
+the lowercased message. `Overflow` is the needle list jarvis converged on
 (`"context length"`, `"context_length_exceeded"`, `"maximum context"`,
 `"prompt is too long"`, `"input length and max_tokens exceed"`,
 `"request too large"`, `"exceeds the maximum number of tokens"`, `"too
-many tokens"`). On a match, once per turn: compaction with the threshold
-ignored, then retry the round. If the *summariser* call itself overflows,
-retry it once with `M[keep_from..)` removed from its frame (a strict
-prefix of the previous request — smaller, and usually still within the
-lookback window). If `summary` still fails after that retry (overflow, or
-empty/tool-call after `Text only. `), finish as `cut` on the same
-`keep_from` (11 §3.2); `Compacted.style` is `cut`. If `keep_from == 0`,
-surface the original overflow and stop the turn.
+many tokens"`) plus grok's anchored slugs (36 §2.5). `Deterministic`
+(4xx other than 408/429) ends the turn. `Transient` (408, 429, 5xx,
+connection/TLS, stream death, idle) is resent with the identical bytes
+after `[2, 10, 30]` s + jitter — three per call, ten per turn; a stream
+that emits nothing for 120 s is `Transient`; a stream that dies after
+content persists the partial text and appends a `recovery` note (§8.7)
+instead of resending (36 §2.2–2.4). On `Overflow`, once per turn:
+compaction with the threshold ignored, then retry the round. If the
+*summariser* call itself overflows, retry it once with `M[keep_from..)`
+removed from its frame (a strict prefix of the previous request —
+smaller, and usually still within the lookback window). If `summary`
+still fails after that retry (overflow, or empty/tool-call after `Text
+only. `), finish as `cut` on the same `keep_from` (11 §3.2);
+`Compacted.style` is `cut`. If `keep_from == 0`, surface the original
+overflow and stop the turn.
 
 ### 8.6 Manual, events, surfaces
 
@@ -620,7 +634,7 @@ wrappers are (`tui::model::injected`). They are the *only* way the harness
 speaks to the model mid-turn, and they are append-only by construction —
 this is what replaces jarvis's `retain()+push()` stickies.
 
-Three kinds exist:
+Seven kinds exist:
 
 - `context_pressure` — once per epoch (`pressure_sent`, reset by
   compaction), when `compact_at > 0.1` and `projected / window >= compact_at
@@ -634,6 +648,17 @@ Three kinds exist:
   against the input, then every `hint_rounds` rounds against what was
   appended since; each id once per epoch (`hinted`); nothing when nothing
   matches.
+- `recovery` — the stream died after content was streamed; the partial
+  text is persisted and the note asks the model to continue without
+  repeating (36 §2.4).
+- `continue` — `stop == max_tokens` with no tool calls; continue from the
+  cut (36 §2.6). `recovery` and `continue` share a cap of 2 per turn.
+- `steer` — a tool call failed twice with identical `(name, args)`; change
+  the arguments or the approach (36 §4.3).
+- `rounds` — at `max_tool_rounds − 2` ("2 tool rounds remain…") and at
+  `max_tool_rounds` ("No tool rounds remain… reply with text now"), then one
+  more call: the turn lands with an answer instead of `Error("stopped after
+  …")` (36 §5).
 
 A lost or crashed runtime is *not* a note: the `<runtime>` line opens the
 result of the cell that discovered it (`08-repl.md` §5), where the model
@@ -964,6 +989,9 @@ each item.
 6. **Rebase**: edit `prompt.md` between two turns → log line `rebase`,
    the next `TurnFinished` cache ratio dips once, the turn after is back
    above 0.85. **Not exercised.**
+7. **Survival** — retry, salvage, resume repair, subagent cap, batch
+   budget, soft land, summariser fallback, epoch file, `used` seed: the
+   checks are 36 §10. **Not yet run.**
 
 ## 13. Implementation order (done)
 
