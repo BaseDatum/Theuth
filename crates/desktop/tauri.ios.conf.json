@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "identifier": "wth.rwx.dev.ios",
+  "identifier": "dev.rwx.wth.ios",
   "app": {
     "windows": [
       {
@@ -12,7 +12,9 @@
   },
   "bundle": {
     "iOS": {
-      "minimumSystemVersion": "17.0"
+      "minimumSystemVersion": "17.0",
+      "developmentTeam": "8H548FVL95",
+      "infoPlist": "./ios/Info.ios.plist"
     }
   },
   "plugins": {

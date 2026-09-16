@@ -818,7 +818,7 @@ Nothing above changes a desktop pixel at ≥ 768 px with a fine pointer; the
   plugin list is split `#[cfg(desktop)]` / `#[cfg(mobile)]` (`barcode-scanner`,
   `deep-link`).
 - `cargo tauri ios init` → `gen/apple/` (gitignored today; the Xcode project
-  is committed, the build dirs are not). Bundle id `wth.rwx.dev.ios`;
+  is committed, the build dirs are not). Bundle id `dev.rwx.wth.ios`;
   `tauri.ios.conf.json` overlay: `identifier`, `bundle.iOS.minimumSystemVersion
   "17.0"`, no `externalBin`, CSP `connect-src 'self' ipc: http://ipc.localhost wss:`.
 - Universal link: `apple-app-site-association` served by the relay at

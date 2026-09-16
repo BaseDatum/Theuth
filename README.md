@@ -24,6 +24,8 @@ just run -- --acp          # Agent Client Protocol on stdio: use wth from Zed/ed
 just ts                    # TypeScript bindings for the wire types → bindings/
 just desktop               # macOS menubar app in dev mode (Tauri + Vite); starts the daemon itself
 just package-macos         # wth.app + dmg; ad-hoc unless WTH_SIGN_IDENTITY / .env.signing
+just package-ios           # signed IPA for TestFlight (Apple Distribution)
+just testflight            # upload last IPA to App Store Connect
 just install-macos         # copy the packaged app to /Applications
 ```
 

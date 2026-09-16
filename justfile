@@ -69,6 +69,20 @@ install-macos:
 notarize-macos:
     ./scripts/notarize-macos.sh
 
+# Signed IPA for iOS/iPadOS TestFlight (scripts/package-ios.sh).
+# Signing: Apple Distribution + automatic provisioning. See .env.signing.
+package-ios:
+    ./scripts/package-ios.sh
+
+# Upload the last IPA to App Store Connect (TestFlight). Needs APPLE_API_*.
+testflight:
+    ./scripts/upload-testflight.sh
+
+# Build a signed IPA and upload it to TestFlight.
+release-ios:
+    just package-ios
+    just testflight
+
 # Alias of package-macos.
 desktop-bundle: package-macos
 
@@ -76,11 +90,10 @@ desktop-bundle: package-macos
 desktop-check:
     cd crates/desktop/ui && bun run check && bun run test
 
-# One-time Xcode project generation into crates/desktop/gen/apple (gitignored; this
-# recipe regenerates it). Signing: Xcode automatic signing with the team from
-# .env.signing (scripts/load-signing-env.sh). 31 §8.3.
+# One-time Xcode project generation into crates/desktop/gen/apple (gitignored;
+# `just package-ios` also does this if the dir is missing). 31 §8.3.
 ios-init:
-    cd crates/desktop && cargo tauri ios init
+    cd crates/desktop && TAURI_FRONTEND_PATH=ui cargo tauri ios init --ci --config tauri.ios.conf.json
 
 # iOS app in dev mode on a simulator/device. tauri.ios.conf.json overlays the bundle
 # id, iOS 17 floor and the universal-link host: `plugins.deep-link.mobile[].host`
@@ -89,9 +102,8 @@ ios:
     cd crates/desktop/ui && bun install
     cd crates/desktop && TAURI_FRONTEND_PATH=ui cargo tauri ios dev --config tauri.ios.conf.json
 
-# App Store Connect archive (needs `just ios-init` once and a signing team).
-ios-bundle:
-    cd crates/desktop && TAURI_FRONTEND_PATH=ui cargo tauri ios build --config tauri.ios.conf.json --export-method app-store-connect
+# App Store Connect archive. Alias of package-ios.
+ios-bundle: package-ios
 
 # Local relay for link development (31 §5); pair with `wth link pair` against ws://127.0.0.1:8787.
 relay *ARGS:
