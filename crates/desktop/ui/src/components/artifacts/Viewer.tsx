@@ -8,7 +8,7 @@ import { Streamdown } from 'streamdown'
 import { sessionLabel, useArtifactList } from '@/components/artifacts/List'
 import { ArtifactMenu, RevealButton, TEXT_KINDS, metaLine, saveAs, useText } from '@/components/chat/ArtifactCard'
 import { Img, useFileUrl } from '@/components/chat/Attachments'
-import { plugins, shikiTheme } from '@/components/chat/MessageAssistant'
+import { fenced, plugins, shikiTheme } from '@/components/chat/MessageAssistant'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -29,13 +29,6 @@ const MD_CLASS =
   '[&_h1]:mb-2 [&_h1]:text-2xl [&_h1]:font-semibold [&_h2]:mb-2 [&_h2]:mt-6 [&_h2]:text-xl [&_h2]:font-semibold [&_h3]:mt-4 [&_h3]:font-semibold [&_p]:my-1 [&_p]:leading-[26px] [&_li]:pt-2 [&_a]:underline [&_a]:underline-offset-2 [&_pre]:rounded-2xl [&_table_th]:font-semibold'
 
 const fail = (e: unknown) => toast.error(e instanceof Error ? e.message : String(e))
-
-/** `text` fenced with the extension as language; the fence outruns any backtick run inside. */
-function fenced(text: string, lang: string): string {
-  const longest = Math.max(2, ...[...text.matchAll(/`+/g)].map((m) => m[0].length))
-  const fence = '`'.repeat(longest + 1)
-  return `${fence}${lang}\n${text}\n${fence}`
-}
 
 /** Committed markdown through streamdown; `http(s)` links open with the OS. */
 function Markdown({ text }: { text: string }) {

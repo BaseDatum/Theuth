@@ -5,6 +5,23 @@ const lineCount = (s: string) => s.split('\n').length - (s.endsWith('\n') ? 1 : 
 
 const utf8 = new TextEncoder()
 
+export type CodeDetails = { code: string; language: string; args: Record<string, unknown> }
+
+/** Source-bearing tool arguments, with the source removed from the collapsed-card arguments. */
+export function codeDetails(name: string, args: unknown): CodeDetails | null {
+  if (typeof args !== 'object' || args === null || Array.isArray(args)) return null
+  const obj = args as Record<string, unknown>
+  const field = name === 'python' ? 'code' : name === 'shell' || name === 'start' ? 'command' : name === 'write_file' ? 'content' : null
+  if (!field) return null
+  const code = obj[field]
+  if (typeof code !== 'string') return null
+  const rest = { ...obj }
+  delete rest[field]
+  const path = typeof obj.path === 'string' ? obj.path : ''
+  const language = name === 'python' ? 'python' : name === 'write_file' ? path.split('.').pop()?.toLowerCase() || 'text' : 'bash'
+  return { code, language, args: rest }
+}
+
 /**
  * Tool arguments as display lines (mirrors `tui::model::describe`). `shell`
  * shows the command itself (`$ ` on the first line); anything else is

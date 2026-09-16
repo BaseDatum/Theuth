@@ -1,12 +1,14 @@
 import { Loader2 } from 'lucide-react'
 import { memo, useMemo, useState } from 'react'
-import { describe, resultLine } from '@/lib/describe'
+import { Streamdown } from 'streamdown'
+import { codeDetails, describe, resultLine } from '@/lib/describe'
 import { type DiffLine, diffLines } from '@/lib/diff'
 import { rows } from '@/lib/jobTail'
 import { cn } from '@/lib/utils'
 import { type Entry, type JobTail, useSessions } from '@/store/sessions'
 import { ArtifactCard, Progress } from './ArtifactCard'
 import { Attachments } from './Attachments'
+import { fenced, plugins, shikiTheme } from './MessageAssistant'
 
 type Tool = Extract<Entry, { kind: 'tool' }>
 
@@ -16,7 +18,7 @@ function Job({ job }: { job: JobTail }) {
   return (
     <div className="mt-2 font-mono text-xs leading-5 text-fg-tertiary">
       <div className="italic">
-        {job.id} · {job.command}
+        {job.id}
         {exit && ` · ${exit}`}
       </div>
       <div className="max-h-[12.5rem] overflow-y-auto">
@@ -36,6 +38,20 @@ function editArgs(args: unknown): { old: string; new: string } | null {
   if (typeof args !== 'object' || args === null) return null
   const { old, new: next } = args as Record<string, unknown>
   return typeof old === 'string' && typeof next === 'string' ? { old, new: next } : null
+}
+
+/** Source shown only inside an expanded tool card. */
+function Source({ code, language }: { code: string; language: string }) {
+  return (
+    <Streamdown
+      mode="static"
+      plugins={plugins}
+      shikiTheme={shikiTheme}
+      className="mt-2 text-xs [&_[data-streamdown=code-block]]:my-0 [&_pre]:max-h-96 [&_pre]:overflow-auto"
+    >
+      {fenced(code, language)}
+    </Streamdown>
+  )
 }
 
 const ROW: Record<DiffLine['op'], string> = {
@@ -67,17 +83,20 @@ export const MessageTool = memo(function MessageTool({ tool, session }: { tool: 
 
 function PlainTool({ tool, session }: { tool: Tool; session: string }) {
   const [expanded, setExpanded] = useState(false)
-  const lines = useMemo(() => describe(tool.name, tool.args), [tool.name, tool.args])
+  const source = useMemo(() => codeDetails(tool.name, tool.args), [tool.name, tool.args])
+  const lines = useMemo(() => describe(tool.name, source?.args ?? tool.args), [tool.name, tool.args, source])
   const progress = useSessions((s) => (tool.pending ? s.sessions[session]?.progress.get(tool.callId) : undefined))
   const { result } = tool
   const running = tool.pending || !result
   const edit = tool.name === 'edit' ? editArgs(tool.args) : null
+  const expandable = !!(source || edit || result || tool.job)
   return (
     <div className="my-2 min-w-0 rounded-xl border border-border-subtle bg-layer-1 px-4 py-3 text-sm">
       <button
         type="button"
         className="flex w-full min-w-0 flex-col gap-1 text-left"
-        onClick={() => result && setExpanded((v) => !v)}
+        aria-expanded={expandable ? expanded : undefined}
+        onClick={() => expandable && setExpanded((v) => !v)}
       >
         <div className="flex items-center gap-2 font-medium">
           <span className="shrink-0 text-fg-secondary">{tool.child ? '↳' : '⚙'}</span>
@@ -96,6 +115,7 @@ function PlainTool({ tool, session }: { tool: Tool; session: string }) {
           </div>
         )}
       </button>
+      {expanded && source && <Source code={source.code} language={source.language} />}
       {expanded && edit && <Diff old={edit.old} new={edit.new} />}
       {expanded && result && (
         <pre className="mt-2 max-h-56 overflow-auto rounded-lg bg-layer-2 p-3 font-mono text-xs leading-5 wrap-anywhere whitespace-pre-wrap">
@@ -103,7 +123,7 @@ function PlainTool({ tool, session }: { tool: Tool; session: string }) {
         </pre>
       )}
       {result && result.files.length > 0 && <Attachments files={result.files} className="mt-2" />}
-      {tool.job && <Job job={tool.job} />}
+      {expanded && tool.job && <Job job={tool.job} />}
     </div>
   )
 }

@@ -1,8 +1,20 @@
 import { expect, test } from 'vitest'
-import { describe, resultLine } from './describe'
+import { codeDetails, describe, resultLine } from './describe'
 
 test('shell shows the command, continuation lines indented', () => {
   expect(describe('shell', { command: ' ls -la\nwc -l \n', timeout: 5 })).toEqual(['$ ls -la', '  wc -l'])
+})
+
+test('code details hide source and choose its syntax', () => {
+  expect(codeDetails('python', { code: 'print("hi")' })).toEqual({ code: 'print("hi")', language: 'python', args: {} })
+  expect(codeDetails('shell', { command: 'echo hi', timeout: 5 })).toEqual({ code: 'echo hi', language: 'bash', args: { timeout: 5 } })
+  expect(codeDetails('start', { command: 'bun dev', name: 'web' })).toEqual({ code: 'bun dev', language: 'bash', args: { name: 'web' } })
+  expect(codeDetails('write_file', { path: 'App.tsx', content: 'export default 1' })).toEqual({
+    code: 'export default 1',
+    language: 'tsx',
+    args: { path: 'App.tsx' },
+  })
+  expect(codeDetails('read_file', { path: 'App.tsx' })).toBeNull()
 })
 
 test('key: value per argument, object order kept', () => {

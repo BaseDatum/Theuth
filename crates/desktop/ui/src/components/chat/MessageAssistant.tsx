@@ -26,6 +26,13 @@ export const plugins: PluginConfig = {
 }
 export const shikiTheme: ['github-light', 'github-dark'] = ['github-light', 'github-dark']
 
+/** `text` fenced with `language`; the fence outruns any backtick run inside. */
+export function fenced(text: string, language: string): string {
+  const longest = Math.max(2, ...[...text.matchAll(/`+/g)].map((m) => m[0].length))
+  const fence = '`'.repeat(longest + 1)
+  return `${fence}${language}\n${text}\n${fence}`
+}
+
 /** The last fenced code block's body, or `null`. */
 export function lastCode(text: string): string | null {
   const blocks = [...text.matchAll(/```[^\n]*\n([\s\S]*?)```/g)]
