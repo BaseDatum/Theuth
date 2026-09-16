@@ -16683,6 +16683,7 @@ dependencies = [
  "nodes",
  "rpc",
  "runtime",
+ "rustls",
  "schedule",
  "search-providers",
  "serde_json",

@@ -267,6 +267,9 @@ fn main() -> anyhow::Result<()> {
 }
 
 async fn run() -> anyhow::Result<()> {
+    // reqwest links `ring`, slack/relay link `aws-lc-rs`; with both present rustls
+    // panics on the first TLS dial unless a process provider is chosen (21 §2.1).
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     let cli = Cli::parse();
     if cli.slack_manifest {
         print!("{}", slack::MANIFEST);
