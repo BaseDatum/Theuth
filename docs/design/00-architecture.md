@@ -139,7 +139,7 @@ Shared crate `runtime` contains exactly `Plugin`, `Runtime` (+ the three
 helpers above), `SessionId`, `TurnId`. Nothing else. The tool and approval
 contracts live in `tools`; the agent's commands and its `AgentEvent` live in
 `agent`. Plugins depend on each other's crates for those types along the
-acyclic order `runtime ← tools ← knowledge ← agent ← link ← {signal, slack, nodes} ← rpc ← tui ← wth`
+acyclic order `runtime ← tools ← knowledge ← agent ← link ← {signal, slack, nodes, schedule} ← rpc ← tui ← wth`
 (`knowledge` joins the chain in 12 §9). This keeps the shared crate under
 its 400-line ceiling and puts each contract next to the code that enforces
 it. (Earlier draft put the tool contract in `runtime`; dropped once the
@@ -501,7 +501,9 @@ the terminal already does).
 `figment` 0.10: `<data_dir>/config.yaml` merged with `WTH_*` env; data dir
 defaults to `~/.wth`, with `credentials.yaml`, `mcp/`, `skills/`,
 `knowledge/` (the OKF knowledge bundle, a git repository kept in-process by
-`gix`) and `knowledge.sqlite` (its derived FTS index; delete to rebuild)
+`gix`) and `knowledge.sqlite` (its derived FTS index; delete to rebuild),
+`schedules/` (one `<name>.md` per scheduled run, 34) and `schedule.sqlite`
+(its run history; deleting it forgets, does not rebuild — 34 §7)
 beside it — `10-knowledge.md`. No shared `Config` struct: each plugin
 extracts its own section
 (`rt.config.extract_inner::<AgentConfig>("agent")`), so `runtime` never knows
@@ -536,6 +538,7 @@ crates/
   rpc/                plugin: jsonrpsee server, event subscription bridge (§7)
   link/               plugin: relay uplink, Noise pairing and sessions, device registry (31)
   nodes/              plugin: paired remote harnesses — control conns, dial transport for ACP children (32)
+  schedule/           plugin: scheduled runs from `schedules/*.md` — tick, one session per schedule, delivery (34)
   relay/              bin: wth-relay, stateless encrypted-frame relay (31)
   tui/                plugin: iocraft frontend (§8)
   desktop/            app: Tauri menubar frontend, RPC client of `Api` - not a plugin (designed in 25)
@@ -550,7 +553,7 @@ the `wth` bin; the rest were added by the docs named beside them, each as the ki
 the loop must own (store, frame, compact, repl); frontends do not grow it.
 New subsystems earn a plugin. `agent/src/lib.rs` re-exports; command structs
 live next to the handler that answers them (12 §8). Dependency order:
-`runtime ← tools ← knowledge ← agent ← link ← {signal, slack, nodes} ← rpc ← tui ← wth`
+`runtime ← tools ← knowledge ← agent ← link ← {signal, slack, nodes, schedule} ← rpc ← tui ← wth`
 (`rpc` names `link`'s and `nodes`' types like every plugin's; `signal`
 imports `link::qr`; `nodes` imports `link`'s identity, initiator and record
 codec; `tui` renders `link`'s status and QR; `rpc` sends `link` its
@@ -594,6 +597,8 @@ Workspace dependencies (versions verified 2026-09-09 via `cargo info`):
 | tower-http | 0.6 | relay: static UI bundle, CSP header (31) |
 | dashmap | 6 | relay: harness id → uplink table (31) |
 | rand | 0.9 | pairing secrets, relay cookie secret (31) |
+| croner | 4 (chrono) | cron parsing, next occurrence in a chrono TimeZone, describe() (34) |
+| humantime | 2 | `every:` durations (34) |
 | wiremock | 0.6 dev | provider contract tests |
 
 Build prerequisites (23 §9): `cmake`, `clang`/`libclang` and `llvm-objcopy`/`llvm-nm` (brew `llvm`) for BoringSSL
@@ -694,6 +699,7 @@ Each phase ends with a runnable check, not a test suite.
 | 18 | rewind (29): edit, regenerate, fork | 29 §9 checks 1–6 headless, 7–8 in both UIs | in progress 2026-09-15 |
 | 19 | link (31): phone/browser drives the harness through a stateless relay, Noise E2E, same JSON-RPC | 31 §12 | done 2026-09-15 (relay + headless + `wth --link` QR; browser paired IKpsk2, reconnected IK, no secrets in storage; device script paired/reconnected/revoked; relay restart re-registers <4 s; TUI `/link` card and badge in a pty; iOS build, camera scan and 31 §11 bench not run; 31 §13) |
 | 20 | nodes (32): a harness on another machine paired to this one; `spawn_subagent` runs there over a link mode-1 conn | 32 §11 | in progress 2026-09-15 |
+| 21 | schedule (34) | an `every: 20s` file fires a titled session twice; a `cron` reply lands in the owner DM; a laptop-sleep fire arrives once on wake | done 2026-09-16 (20 s cadence, restart reuse + `lost`, one-shot consumed, `busy` skip, model-made `demo-cron` via the tool; owner-DM delivery, timeout and laptop sleep not exercised; 34 §13) |
 
 Known gaps carried forward: cancel/error paths in the loop are code-reviewed,
 not smoke-tested; the `Jobs` actor kills every process group on shutdown
@@ -724,3 +730,4 @@ verified only against documented response shapes, not live.
   | slack | `slack` crate: Socket Mode channel, streamed threads, approvals, subagent threads | plugin | 21 |
   | okf | `knowledge` crate: store, FTS index, gix history, `knowledge_*` tools | plugin | 10, 12 §9 (the harvest *model call* stays in `agent`: it is a continuation of the live frame, 07; keep-it-all-in-agent rejected by the user) |
   | control | `computer` crate | plugin | 27 (safety engine not ported: `Risk` covers it) |
+  | scheduler | `schedule` crate: files, tick, one session per schedule, `Deliver` | plugin | 34 (heartbeat, goals briefings, task DAG, notify flags, phase plumbing not ported: each is a file the user writes or a primitive the harness already has) |

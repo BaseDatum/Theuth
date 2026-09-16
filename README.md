@@ -82,12 +82,17 @@ over Signal messenger), `slack` (Slack frontend over Socket Mode), `rpc` (jsonrp
 end-to-end encryption, pairing QR, device registry —
 [`docs/design/31-link.md`](docs/design/31-link.md)), `relay` (the `wth-relay`
 binary: a stateless relay that copies encrypted frames between one harness
-and its devices), `tui` (iocraft), `wth` (binary).
+and its devices), `schedule` (scheduled runs: one `~/.wth/schedules/<name>.md`
+per schedule with `cron:` / `every:` / `at:` front matter and the prompt as
+body; each fire is a turn in that schedule's own session, the reply is
+delivered to the user —
+[`docs/design/34-schedule.md`](docs/design/34-schedule.md)), `tui` (iocraft),
+`wth` (binary).
 
 Config (`~/.wth/`, created on first run; details in
 [`docs/design/01-config-and-subagents.md`](docs/design/01-config-and-subagents.md) §1):
 
-- `config.yaml` — every plugin reads its own section; `WTH_<SECTION>__<KEY>` env overrides. `agent.model` is a models.dev id (`anthropic/claude-sonnet-4-5`); `/model` rewrites that one line in place. The `agent`, `tools`, `knowledge`, `web`, `search_providers`, `browser`, `computer`, `link`, `nodes` and `slack` sections with their defaults:
+- `config.yaml` — every plugin reads its own section; `WTH_<SECTION>__<KEY>` env overrides. `agent.model` is a models.dev id (`anthropic/claude-sonnet-4-5`); `/model` rewrites that one line in place. The `agent`, `tools`, `knowledge`, `web`, `search_providers`, `browser`, `computer`, `link`, `nodes`, `schedule` and `slack` sections with their defaults:
 
   ```yaml
   agent:
@@ -136,6 +141,9 @@ Config (`~/.wth/`, created on first run; details in
     max_devices: 16
   nodes:                          # design doc 32; `/nodes add <key>` pairs, the node ran `wth --install-service`
     enabled: true                 # false: no dials, nodes invisible to the model and the UI; nodes.yaml kept
+  schedule:                       # design doc 34; `~/.wth/schedules/*.md` files, `/schedules` lists them
+    enabled: true                 # false: no watcher, no actor, no `schedule` tool, no prompt block
+    run_timeout_secs: 1800        # a run still going after this is cancelled and reported as `timeout`
   slack:
     # owner: U0123456789           # owner-only commands, may click any approval, receives unbound approvals
     allowed: []                    # more user ids; each owns their threads
@@ -168,6 +176,7 @@ gateway such as `https://api.ai.rwx.dev/v1`); `/provider` lists them, `/provider
 forgets one; `/skills` lists skills (⏎ hands one to the model, `s` shows it; `/<skill> [words]` does the same; the status line names the skills in context); `/prompt` shows the system prompt; `/compact` folds into a summary by default; `/compact cut` drops the folded span with no model call; `/compact style` lists/sets the default; `/clear` drops the conversation and keeps the session (id, title, model, settings; the history is still there on `/resume`);
 `/undo` drops the last turn (yours and the reply), `/redo` restores it; `/edit [n]` edits a user message and regenerates from it, `/regen [n]` regenerates the reply to a turn, `/fork [n]` opens a new session with the conversation through a turn; URLs in the transcript are OSC 8 hyperlinks (click them in a terminal that supports it, e.g. ghostty/iTerm2/kitty/WezTerm);
 `/jobs` lists the session's shell jobs, `/jobs kill <id>` stops one (a running job's card shows its last 10 output lines live);
+`/schedules` lists the scheduled runs with their next and last fire, `/schedules run <name>` fires one now, `/schedules history <name>` shows its runs;
 `/acp` manages external ACP harnesses;
 `/knowledge` browses the knowledge base (below); `/approvals off` stops
 approval prompts for this session, `/approvals off always` for good

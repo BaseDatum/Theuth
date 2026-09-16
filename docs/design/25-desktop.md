@@ -181,7 +181,7 @@ Every row is an `Api` call already present unless marked **new** (§7).
 |---|---|
 | transcript, windowed | virtualized column (§6.3); same card kinds: user bubble, assistant markdown, reasoning (collapsible "Thinking…", dim), tool call row (`name  described args`, ✓/✗, click expands output in a code block), job tail (last 10 lines live, PTY screen rows), `⟵ name` peer message card, `↳ name` subagent spawn/cancel/error lines, `── context compacted (epoch · style) ──` divider with expandable summary, red error line |
 | `describe()` of args (`$ cmd` for shell, `k: v` else, long strings collapsed) | `describe.ts`, same rules, unit-tested against the same fixtures |
-| `◆ you` echo rules (skip own send, injected, harness wrappers) | same `injected()` classifier in TS; `<skill name>` → skill chip + words |
+| `◆ you` echo rules (skip own send, injected, harness wrappers) | same `injected()` classifier in TS; `<skill name>` → skill chip + words; `<schedule name>` → schedule card |
 | header `model · effort · ctx used/limit (pct) · cache % · approvals off` | model dropdown (ChatGPT's header slot) shows model; right side: context meter pill (colour steps 70/90 %), cache %, `approvals off` badge |
 | — (**new**) live browser view | globe button in the header, shown when the session slice's `browser` flag is set (any `browser_*` tool call seen live or in loaded history); opens `BrowserLive` (Dialog, `max-w-[90vw]`) which polls `browser_screenshot` (§7) |
 | `/computer` (**new**) | Settings › Computer: the two permission rows (accessibility, screen recording) with ✓/✗ and "Open System Settings" (opener plugin on 27 §2.2's deep links), the display list, the `note`; from `computer_permissions` (§7) |
@@ -200,6 +200,7 @@ Every row is an `Api` call already present unless marked **new** (§7).
 | `/knowledge …` | Knowledge explorer (§8); `harvest` is a button on the current session's menu |
 | `/prompt` | session menu › "Show prompt" → sheet with the text in a code block |
 | `/jobs`, `/jobs kill` | session menu › Jobs sheet (`list_jobs` table, kill) |
+| `/schedules`, `/schedules run`, `/schedules history` (34) | Settings › Schedules: `list_schedules` table, Run → `fire_schedule`, row opens the session, expand → `schedule_history` |
 | `/sessions`, picker row `● id8 date model title` | sidebar (ChatGPT chat list): title (or first user line), grouped Today / Yesterday / Previous 7 days / Older by `updated_at`; active row highlighted; **new** `TitleChanged` keeps it live |
 | `/resume <uuid>` | ⌘K search (titles + ids, client-side over `list_sessions`) |
 | `/new` (lazy create) | New chat → route `/`, session created by the first `send_input(null, …)` exactly like the TUI; `SessionCreated` inferred from the reply |
