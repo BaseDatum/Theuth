@@ -8,6 +8,7 @@ description = "Web search and fetch: search_web / read_url tools, SSRF-guarded f
 [dependencies]
 runtime = { workspace = true }
 tools = { workspace = true }
+secrets = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 anyhow = { workspace = true }

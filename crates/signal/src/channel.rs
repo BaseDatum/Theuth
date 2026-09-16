@@ -59,6 +59,14 @@ pub fn backoff_delay(attempt: u32) -> Duration {
     Duration::from_secs((1u64 << attempt.min(6)).min(60))
 }
 
+/// The 37 §7 line, plain text: where to enter a requested secret. Never answerable here.
+#[must_use]
+pub fn secret_notice(name: &str, note: &str) -> String {
+    format!(
+        "wth asks for secret {name} — {note}. Enter it in the desktop app, the TUI (/secrets add {name}) or `wth --secret-set {name}`; it will not be read from this chat."
+    )
+}
+
 /// Strips ` -.()` and prefixes `+` when what remains is all digits, so
 /// `"+1 (409) 519-3333"` and `"14095193333"` both match `"+14095193333"`.
 #[must_use]
@@ -298,6 +306,7 @@ enum Event {
     AskRequested(AskRequested),
     AskResolved(AskResolved),
     Artifact(ArtifactShown),
+    Secret(secrets::SecretsEvent),
 }
 
 /// Bus subscriber: forwards into the ordered event worker.
@@ -345,6 +354,13 @@ impl Message<ArtifactShown> for Bus {
     type Reply = ();
     async fn handle(&mut self, m: ArtifactShown, _: &mut Context<Self, ()>) {
         let _ = self.tx.send(Event::Artifact(m));
+    }
+}
+
+impl Message<secrets::SecretsEvent> for Bus {
+    type Reply = ();
+    async fn handle(&mut self, m: secrets::SecretsEvent, _: &mut Context<Self, ()>) {
+        let _ = self.tx.send(Event::Secret(m));
     }
 }
 
@@ -497,6 +513,7 @@ async fn run(chan: Arc<Channel>, mut ctrl: mpsc::UnboundedReceiver<Control>) {
     chan.rt.subscribe::<Bus, AskRequested>(&bus).await;
     chan.rt.subscribe::<Bus, AskResolved>(&bus).await;
     chan.rt.subscribe::<Bus, ArtifactShown>(&bus).await;
+    chan.rt.subscribe::<Bus, secrets::SecretsEvent>(&bus).await;
     let inbound = {
         let chan = Arc::clone(&chan);
         tokio::spawn(async move {
@@ -1286,6 +1303,16 @@ impl Channel {
                     tracing::warn!(name = %a.name, to = %to.number, "artifact send failed");
                 }
             }
+            // 37 §7: the model asked the user for a secret; tell the owner where
+            // to enter it (never here — the value would sit in Signal's history).
+            Event::Secret(secrets::SecretsEvent::Requested { name, note, .. }) => {
+                if self.owner.is_empty() {
+                    return;
+                }
+                let to = self.lock().threads.recipient(&self.owner);
+                self.send_chunks(&to, &secret_notice(&name, &note)).await;
+            }
+            Event::Secret(_) => {}
         }
     }
 

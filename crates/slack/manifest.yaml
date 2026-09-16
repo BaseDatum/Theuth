@@ -1,7 +1,7 @@
 # Slack app manifest for wth (design doc 21 §10.3). Create the app from this at
-# https://api.slack.com/apps → "From a manifest", install it, then put the bot
-# token (xoxb-…) as `slack_bot` and an app-level token with `connections:write`
-# (xapp-…) as `slack_app` in ~/.wth/credentials.yaml.
+# https://api.slack.com/apps → "From a manifest", install it, then store the bot
+# token (xoxb-…) as secret `slack_bot` and an app-level token with
+# `connections:write` (xapp-…) as `slack_app` (`wth --secret-set slack_bot`).
 display_information:
   name: wth
   description: the wth agent, in your workspace

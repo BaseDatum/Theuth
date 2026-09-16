@@ -28,6 +28,8 @@ import type { RepoInfo } from '@/rpc/bindings/RepoInfo'
 import type { RunInfo } from '@/rpc/bindings/RunInfo'
 import type { ScheduleInfo } from '@/rpc/bindings/ScheduleInfo'
 import type { SearchHit } from '@/rpc/bindings/SearchHit'
+import type { SecretInfo } from '@/rpc/bindings/SecretInfo'
+import type { SecretsList } from '@/rpc/bindings/SecretsList'
 import type { SessionId } from '@/rpc/bindings/SessionId'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import type { SignalStatus } from '@/rpc/bindings/SignalStatus'
@@ -163,6 +165,16 @@ export interface Api {
   resolve_approval(id: ApprovalId, decision: Decision): Promise<boolean>
   /** Answer a pending `ask_user`: one answer per question, or `null` to dismiss the set (which cancels the turn). */
   answer_ask(id: AskId, answers: Answer[] | null): Promise<boolean>
+  /** Answer a `SecretsEvent.SecretRequested` (37 §3.8); `null` declines. Rejects when `id` is unknown or expired. */
+  answer_secret(id: string, value: string | null): Promise<void>
+  /** Names, notes, versions and the key store (37 §3.8); never a value. */
+  list_secrets(): Promise<SecretsList>
+  /** Store a new version of `name`; the value transits once and is never echoed. `note: null` keeps the old note. */
+  set_secret(name: string, value: string, note: string | null): Promise<SecretInfo>
+  /** Make version `-back` current again, as a new version. */
+  restore_secret(name: string, back: number): Promise<SecretInfo>
+  /** The name and every version. */
+  delete_secret(name: string): Promise<void>
   /** Fuzzy (fzf/helix syntax) search over titles and message text; best hit per session. */
   search_sessions(query: string, limit: number | null): Promise<SearchHit[]>
   /** The last `limit` fires and skips of a schedule, newest first (34 §8). */
@@ -206,12 +218,14 @@ export const METHODS = [
   'add_skill',
   'add_skill_repo',
   'answer_ask',
+  'answer_secret',
   'browser_screenshot',
   'cancel',
   'cancel_job',
   'compact',
   'compact_style',
   'computer_permissions',
+  'delete_secret',
   'delete_session',
   'edit_turn',
   'enable_schedule',
@@ -251,6 +265,7 @@ export const METHODS = [
   'list_providers',
   'list_queued',
   'list_schedules',
+  'list_secrets',
   'list_sessions',
   'list_skills',
   'list_tools',
@@ -274,6 +289,7 @@ export const METHODS = [
   'rename_node',
   'rename_session',
   'resolve_approval',
+  'restore_secret',
   'schedule_history',
   'search_sessions',
   'send_input',
@@ -283,6 +299,7 @@ export const METHODS = [
   'set_mcp_gate',
   'set_mcp_hidden',
   'set_model',
+  'set_secret',
   'set_subagent_timeout',
   'set_title_model',
   'shutdown',

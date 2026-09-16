@@ -60,7 +60,7 @@ Not goals, with the reason:
   brain. The terminal process never opens the socket; the actor answers
   `DaemonOnly` (09 §3 shape).
 - **Marketplace distribution / OAuth install.** One workspace, one installed
-  app, two tokens in `credentials.yaml`. The 2025 non-Marketplace rate cut
+  app, two tokens in the secrets vault (37). The 2025 non-Marketplace rate cut
   (`conversations.history` → 1/min) is for distributed apps and we never
   call `conversations.history`.
 - **Voice/TTS.** Inbound files are saved and their path handed to the model
@@ -155,8 +155,8 @@ connector is for `slack.com/api`), `mdstream` through `markdown`,
 after `signal`. `start`:
 
 1. Read `slack:` config (§12); `enabled: false` → log, return. Read
-   `slack_bot` / `slack_app` from `credentials.yaml`
-   (`runtime::credentials`); either missing → `warn!` naming the keys, spawn
+   `slack_bot` / `slack_app` from the secrets vault (`secrets::Handle`, 37
+   §3.6); either missing → `warn!` naming the keys, spawn
    the actor in `Unconfigured` state, return. The harness comes up
    regardless (plugins.md §3.2).
 2. `channel == true`: `channel::spawn(cfg, tokens, rt)` → `Handle`; runs the
@@ -709,12 +709,13 @@ one interactive terminal session, no daemon running:
    with `users.lookupByEmail`/`users.list` only if `users:read` is granted
    (it is not in the manifest), so the prompt says how to copy the id from
    a Slack profile ("Copy member ID") and accepts `U…` only.
-5. Writes `slack_bot` / `slack_app` into `credentials.yaml` (0600) and
+5. Writes `slack_bot` / `slack_app` into the secrets vault (`Vault::open`
+   directly, source `slack setup`; 37 §3.6) and
    `slack.owner` / `slack.enabled: true` into `config.yaml`
    (`write_config_value`), prints `run wth --headless and DM the bot`.
 
 Every step is idempotent and re-runnable; a step whose input is already
-present (a token in `credentials.yaml` that passes `auth.test`) is
+present (a token in the vault that passes `auth.test`) is
 skipped with a line saying so. The Slack CLI (`slack` from slack.dev/cli)
 was considered and rejected: it targets its own project layout and calls
 the same `apps.manifest.*` methods underneath; a binary dependency for two
@@ -750,8 +751,10 @@ slack:
   approvals: all           # all | threads — where approvals for non-Slack sessions go (§10.1)
 ```
 
-`credentials.yaml`: `slack_bot: xoxb-…`, `slack_app: xapp-…` (01 §1.3: keys
-never live in `config.yaml`). Env overrides as everywhere
+Tokens are secrets `slack_bot` (`xoxb-…`) and `slack_app` (`xapp-…`) in the
+encrypted vault (37; `wth --slack-setup` writes them, or `wth --secret-set
+slack_bot` on a box without a UI) — keys never live in `config.yaml` (01
+§1.3). Env overrides as everywhere
 (`WTH_SLACK__OWNER`). No flush/pacing knobs: they are Slack's limits, not
 preferences.
 

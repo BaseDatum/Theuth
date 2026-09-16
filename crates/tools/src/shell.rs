@@ -99,6 +99,7 @@ impl Tool for ShellTool {
                 session,
                 command: args.command,
                 call_id: cx.call_id,
+                quiet: cx.quiet,
                 shell,
                 put_back: Arc::new(move |shell| {
                     lock(&sessions).insert(session, shell);

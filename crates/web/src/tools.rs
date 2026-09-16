@@ -22,7 +22,7 @@ use crate::provider::{Category, FeatureKind, ProviderMeta, Query, Recency};
 use crate::render;
 
 /// Appended to the search description when only built-in engines are registered.
-pub const NO_EXTERNAL_PROVIDER: &str = "No external search provider is configured; Firecrawl's free tier works out of the box once `firecrawl: <key>` is in credentials.yaml (firecrawl.dev).";
+pub const NO_EXTERNAL_PROVIDER: &str = "No external search provider is configured; Firecrawl's free tier works out of the box once the `firecrawl` secret is set (/secrets add firecrawl; key from firecrawl.dev).";
 
 /// Arguments for [`SearchTool`].
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]

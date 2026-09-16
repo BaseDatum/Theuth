@@ -19,6 +19,7 @@ pub use provider::{
     Query, RawResult, Recency, RegisterProvider, Rendered, UnregisterProvider, WEB_ACTOR,
 };
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -70,8 +71,9 @@ impl Default for WebConfig {
     }
 }
 
-/// The plugin: reads `web`, spawns [`WebActor`] as [`WEB_ACTOR`] with the
-/// configured built-in engines, registers `search_web` and `read_url` once
+/// The plugin: reads `web`, then in a task waits for the secrets vault (37
+/// §3.6: the `github` key), spawns [`WebActor`] as [`WEB_ACTOR`] with the
+/// configured built-in engines, and registers `search_web` and `read_url` once
 /// the tool registry is up (knowledge pattern). The search tool registers even
 /// with zero engines: external providers may arrive over the bus, and the
 /// description tells the user how to add one.
@@ -101,29 +103,41 @@ impl runtime::Plugin for WebPlugin {
             cfg.max_fetch_bytes,
             cfg.max_redirects,
         )?);
-        let creds = runtime::credentials(&rt.data_dir);
-        let providers: Vec<Arc<dyn Provider>> = cfg
-            .engines
-            .iter()
-            .filter_map(|name| {
-                let p = engines::builtin(name, &creds);
-                if p.is_none() {
-                    tracing::warn!(engine = %name, "unknown built-in engine in web.engines");
-                }
-                p
-            })
-            .collect();
-        let metas = actor::ProviderMetas::default();
-        let actor = WebActor::spawn(WebActor::new(
-            cfg.clone(),
-            client,
-            providers,
-            Arc::clone(&metas),
-        ));
-        actor.register(WEB_ACTOR)?;
-
         let rt = rt.clone();
         tokio::spawn(async move {
+            let vault = secrets::handle(&rt).await;
+            if vault.is_none() {
+                tracing::warn!("web: secrets vault unavailable; starting without API keys");
+            }
+            let creds: HashMap<String, String> = ["github"]
+                .iter()
+                .filter_map(|k| {
+                    let v = vault.as_ref()?.get(k, 0)?;
+                    Some((k.to_string(), v.as_str().to_owned()))
+                })
+                .collect();
+            let providers: Vec<Arc<dyn Provider>> = cfg
+                .engines
+                .iter()
+                .filter_map(|name| {
+                    let p = engines::builtin(name, &creds);
+                    if p.is_none() {
+                        tracing::warn!(engine = %name, "unknown built-in engine in web.engines");
+                    }
+                    p
+                })
+                .collect();
+            let metas = actor::ProviderMetas::default();
+            let actor = WebActor::spawn(WebActor::new(
+                cfg.clone(),
+                client,
+                providers,
+                Arc::clone(&metas),
+            ));
+            if let Err(e) = actor.register(WEB_ACTOR) {
+                tracing::error!("web: registering {WEB_ACTOR}: {e}");
+                return;
+            }
             if let Some(reg) = rt.lookup_when::<ToolRegistry>(REGISTRY_ACTOR).await {
                 let _ = reg
                     .ask(RegisterTool(Arc::new(tools::SearchTool {

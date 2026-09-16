@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
-import { type Prompt, useApprovals, useAsks } from '@/store/approvals'
+import { type Prompt, useApprovals, useAsks, useSecretRequests } from '@/store/approvals'
 import {
   type Activity,
   type Entry,
@@ -44,7 +44,8 @@ function buildRows(entries: Entry[], pending: Prompt[], session: string): Row[] 
   const loose: Row[] = []
   for (const prompt of pending) {
     if (prompt.session !== session) continue
-    const tool = prompt.type === 'ApprovalRequested' ? prompt.tool : 'ask_user'
+    const tool =
+      prompt.type === 'ApprovalRequested' ? prompt.tool : prompt.type === 'AskRequested' ? 'ask_user' : 'secret_request'
     let at = entries.length - 1
     while (at >= 0) {
       const e = entries[at]
@@ -128,7 +129,8 @@ export function Transcript({ session }: { session: string }) {
   const entries = useEntries(session)
   const approvals = useApprovals((s) => s.pending)
   const asks = useAsks((s) => s.pending)
-  const pending = useMemo<Prompt[]>(() => [...approvals, ...asks], [approvals, asks])
+  const secrets = useSecretRequests((s) => s.pending)
+  const pending = useMemo<Prompt[]>(() => [...approvals, ...asks, ...secrets], [approvals, asks, secrets])
   const more = useSessionField(session, 'more')
   const firstSeq = useSessionField(session, 'firstSeq')
   const running = useSessionField(session, 'running')

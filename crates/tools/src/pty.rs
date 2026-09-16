@@ -198,9 +198,19 @@ pub(crate) struct PtyHandle {
 }
 
 impl PtyHandle {
-    /// Current screen per 22 §4.3.
+    /// Current screen per 22 §4.3, scrubbed of vault values (37 §3.4): this
+    /// is the one source for the `screen` tool, `JobView.tail`, `JobEvent::Screen`
+    /// and the final `<job_result>` of a pty job.
     pub(crate) fn screen(&self) -> (Vec<String>, (u16, u16)) {
-        screen_text(lock(&self.parser).screen())
+        let (rows, cursor) = screen_text(lock(&self.parser).screen());
+        let rows = rows
+            .into_iter()
+            .map(|r| match crate::secrets::redact(&r) {
+                std::borrow::Cow::Owned(clean) => clean,
+                std::borrow::Cow::Borrowed(_) => r,
+            })
+            .collect();
+        (rows, cursor)
     }
 
     fn exit(&self) -> Option<JobExit> {
@@ -347,12 +357,15 @@ impl Message<StartPty> for Jobs {
             pid: s.pid,
             exit: Mutex::new(None),
         });
-        let log = Arc::new(Mutex::new(Log::new(s.file)));
+        let log = Arc::new(Mutex::new(Log::new(Some(s.file))));
         let cancel = Arc::new(Notify::new());
         let (done_tx, mut done_rx) = oneshot::channel();
         // Same claim protocol as the pipes path (14): first swap owns the result.
         let claimable = Arc::new(AtomicBool::new(true));
         let started = Instant::now();
+        // 37 §3.4: `spawn` above ran the real command; every stored/published
+        // copy is scrubbed.
+        let shown = crate::secrets::redact(&m.args.command).into_owned();
         let (chunk_tx, rx) = mpsc::channel(64);
         std::thread::spawn(move || read_loop(s.reader, &chunk_tx));
         let task = tokio::spawn(run(Run {
@@ -360,7 +373,7 @@ impl Message<StartPty> for Jobs {
             me: ctx.actor_ref().clone(),
             session: m.session,
             id: id.clone(),
-            command: m.args.command.clone(),
+            command: shown.clone(),
             call_id: m.call_id,
             log_path: log_path.clone(),
             log: log.clone(),
@@ -376,7 +389,7 @@ impl Message<StartPty> for Jobs {
         .abort_handle();
         sj.push(Job {
             id: id.clone(),
-            command: m.args.command,
+            command: shown,
             started,
             exit: None,
             secs: 0,
@@ -1177,6 +1190,7 @@ mod tests {
         ToolCx {
             session: fx.session,
             call_id: String::new(),
+            quiet: false,
         }
     }
 

@@ -2,6 +2,7 @@
 //! Also the Python runtime worker: `wth subprocess` (design doc 08 §9, [`worker`]).
 
 mod link_cli;
+mod secret_cli;
 mod service;
 mod worker;
 
@@ -21,7 +22,7 @@ static ALLOC: monty_alloc::LimitedAllocator = monty_alloc::LimitedAllocator;
 #[derive(Parser, Debug)]
 #[command(name = "wth", version, about = "what the harness")]
 struct Cli {
-    /// Data directory (config, credentials, mcp/, sqlite, logs, token, skills).
+    /// Data directory (config, secrets vault, mcp/, sqlite, logs, token, skills).
     #[arg(long, env = "WTH_DATA_DIR")]
     data_dir: Option<PathBuf>,
     /// Config file; defaults to `<data_dir>/config.yaml`.
@@ -57,8 +58,8 @@ struct Cli {
     #[arg(long, conflicts_with_all = ["headless", "serve", "acp", "link_signal"])]
     slack_manifest: bool,
     /// Interactive Slack setup: create the app from the manifest (or update
-    /// `--app`), verify the bot and app-level tokens, set the owner, write
-    /// credentials.yaml and config.yaml, exit.
+    /// `--app`), verify the bot and app-level tokens, set the owner, write the
+    /// tokens into the secrets vault and the owner into config.yaml, exit.
     #[arg(long, conflicts_with_all = ["headless", "serve", "acp", "link_signal", "slack_manifest", "prompt"])]
     slack_setup: bool,
     /// Existing Slack app id (`A…`) that --slack-setup updates to the manifest instead of creating one.
@@ -86,6 +87,19 @@ struct Cli {
     /// --install-service: skip the pairing step after the service starts.
     #[arg(long, requires = "install_service")]
     no_pair: bool,
+    /// Store a secret: value read from the terminal without echo (asked twice),
+    /// or the first line of stdin when piped. Exit 0 with `stored NAME vN`.
+    #[arg(long, value_name = "NAME", conflicts_with_all = ["headless", "serve", "acp", "prompt", "resume", "link_signal", "slack_manifest", "slack_setup", "link", "install_service", "uninstall_service", "secret_rm", "secret_list"])]
+    secret_set: Option<String>,
+    /// Note shown in `secret_list` next to the name stored by --secret-set.
+    #[arg(long, requires = "secret_set")]
+    secret_note: Option<String>,
+    /// Delete a secret and every version of it.
+    #[arg(long, value_name = "NAME", conflicts_with_all = ["headless", "serve", "acp", "prompt", "resume", "link_signal", "slack_manifest", "slack_setup", "link", "install_service", "uninstall_service", "secret_list"])]
+    secret_rm: Option<String>,
+    /// List secrets: names, versions, notes, dates. Never values.
+    #[arg(long, conflicts_with_all = ["headless", "serve", "acp", "prompt", "resume", "link_signal", "slack_manifest", "slack_setup", "link", "install_service", "uninstall_service"])]
+    secret_list: bool,
 }
 
 const DEFAULT_CONFIG: &str = "# wth configuration. Every plugin reads its own section.
@@ -119,14 +133,14 @@ agent:
 #   fetch_max_chars: 4000
 
 # search_providers:          # external engines registered with `web` (design doc 16 §3)
-#   firecrawl:               # on by default; needs `firecrawl:` in credentials.yaml (free tier at firecrawl.dev)
+#   firecrawl:               # on by default; needs the `firecrawl` secret (`wth --secret-set firecrawl`; free tier at firecrawl.dev)
 #     base_url: https://api.firecrawl.dev
 #   searxng:
 #     base_url: http://127.0.0.1:8080
 #   openserp:
 #     base_url: http://127.0.0.1:7000
 #     engines: [google, bing]
-#   brave: {}                # needs `brave:` in credentials.yaml
+#   brave: {}                # needs the `brave` secret (Brave Search API key)
 
 # browser:                   # embedded headless browser, browser_* tools (design doc 23)
 #   enabled: true
@@ -162,6 +176,11 @@ tools:
     destructive: ask
   # approvals: false   # never prompt; `/approvals off always` writes this
 
+# secrets:                   # design doc 37; `/secrets`, Settings › Secrets, `wth --secret-set`
+#   key_store: auto          # auto | keychain | file — where the vault key lives; auto = keychain when one answers, else <data_dir>/secrets.key (0600) with a warning
+#   tools: true              # false: no secret_* tools, no prompt block, `{{secret:…}}` stays literal, nothing is scrubbed; the vault, /secrets and the harness's own keys are unaffected
+#   request_timeout_secs: 1800   # `secret_request` gives up (the model sees \"no answer\") after this
+
 rpc:
   listen: 127.0.0.1:7777
 
@@ -172,7 +191,7 @@ rpc:
 #   allowed: []             # more E.164s; each gets its own thread
 
 # slack:                    # Slack frontend; runs in `wth --headless`. `wth --slack-setup` creates the app and fills
-#                           # this in; `wth --slack-manifest` prints the manifest for the manual path (tokens → credentials.yaml).
+#                           # this in; `wth --slack-manifest` prints the manifest for the manual path (tokens → `wth --secret-set slack_bot` / `slack_app`).
 #   enabled: true           # daemon opens the socket when tokens are present
 #   owner: U0123456789      # owner-only commands; may click any approval; receives unbound approvals
 #   allowed: []             # more user ids; each owns their threads
@@ -180,19 +199,6 @@ rpc:
 #   tools: all              # all | errors | none — task cards per tool call
 #   reasoning: true         # post the quoted reasoning message
 #   approvals: all          # all | threads — approvals for sessions not bound to a thread go to the owner DM (all) or nowhere (threads)
-";
-
-const DEFAULT_CREDENTIALS: &str =
-    "# Provider API keys, one per line. The file beats the environment.
-# anthropic: sk-ant-...
-# openai: sk-...
-# gemini: AIza...
-# groq: gsk_...
-# firecrawl: fc-...        # web search + rendered fetch; free tier at firecrawl.dev
-# brave: BSA...            # Brave Search API
-# slack_bot: xoxb-...       # Slack bot token (wth --slack-manifest → create app → install)
-# slack_app: xapp-...       # Slack app-level token with connections:write (Socket Mode)
-# ollama needs no key.
 ";
 
 const DEFAULT_AGENTS: &str =
@@ -245,19 +251,6 @@ fn first_run(data_dir: &Path, config_path: &Path) -> std::io::Result<()> {
             "<!-- Standing instructions for the assistant; read at every model call. -->\n",
         )?;
     }
-    let creds = data_dir.join("credentials.yaml");
-    if !creds.exists() {
-        let mut open = std::fs::OpenOptions::new();
-        open.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            open.mode(0o600);
-        }
-        use std::io::Write;
-        open.open(&creds)?
-            .write_all(DEFAULT_CREDENTIALS.as_bytes())?;
-    }
     Ok(())
 }
 
@@ -290,12 +283,25 @@ async fn run() -> anyhow::Result<()> {
 
     let config_path = cli.config.unwrap_or_else(|| data_dir.join("config.yaml"));
     first_run(&data_dir, &config_path)?;
-    if cli.slack_setup {
-        return slack::setup::run(&data_dir, cli.app, &mut slack::setup::Terminal).await;
-    }
     let config = Figment::new()
         .merge(Yaml::file(&config_path))
         .merge(Env::prefixed("WTH_").split("__"));
+    if let Some(name) = cli.secret_set {
+        let op = secret_cli::Op::Set {
+            name,
+            note: cli.secret_note,
+        };
+        return secret_cli::run(&data_dir, &config, op);
+    }
+    if let Some(name) = cli.secret_rm {
+        return secret_cli::run(&data_dir, &config, secret_cli::Op::Rm(name));
+    }
+    if cli.secret_list {
+        return secret_cli::run(&data_dir, &config, secret_cli::Op::List);
+    }
+    if cli.slack_setup {
+        return slack::setup::run(&data_dir, cli.app, &mut slack::setup::Terminal).await;
+    }
     if cli.link {
         return link_cli::run(&data_dir, &config).await;
     }
@@ -360,6 +366,7 @@ async fn run() -> anyhow::Result<()> {
         // WebSocket server; tracing already goes to the file (06 §8.13).
         vec![
             Box::new(tools::ToolsPlugin),
+            Box::new(secrets::SecretsPlugin),
             Box::new(knowledge::KnowledgePlugin),
             Box::new(web::WebPlugin),
             Box::new(browser::BrowserPlugin),
@@ -377,6 +384,7 @@ async fn run() -> anyhow::Result<()> {
     } else {
         let mut plugins: Vec<Box<dyn Plugin>> = vec![
             Box::new(tools::ToolsPlugin),
+            Box::new(secrets::SecretsPlugin),
             Box::new(knowledge::KnowledgePlugin),
             Box::new(web::WebPlugin),
             Box::new(browser::BrowserPlugin),

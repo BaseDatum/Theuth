@@ -296,9 +296,10 @@ search_providers:             # design doc 16 §3 - external engines; each block
   brave: {}
 ```
 
-Keys live in `credentials.yaml` next to provider keys (01 §1.1: "the file
-beats the environment"): `brave:`, `firecrawl:`, `github:`, `openserp:`
-(hosted only). No new environment variables; jarvis's
+Keys are secrets in the encrypted vault next to the provider keys (37;
+`/secrets add`, Settings › Secrets or `wth --secret-set`), under the names
+`brave`, `firecrawl`, `github`, `openserp` (hosted only); `search-providers`
+reads them through `secrets::Handle` at start (37 §3.6). No new environment variables; jarvis's
 `JARVIS_USE_SYSTEM_ROOTS` / `JARVIS_EXTRA_CA_CERTS` (`http_tls.rs:14,32`)
 are dropped — the workspace `reqwest` already uses rustls with native
 roots (`Cargo.toml:39`), the same client every other plugin builds. A
@@ -350,8 +351,8 @@ crates/search-providers/          plugin "search-providers" - depends on runtime
 workspace: `url`, `html-to-markdown-rs` 3.12 (default features off; the
 only HTML parser - §13). Dev: `wiremock`. `scraper`, `async-trait`,
 `bitflags`, `base64`, `chrono`, `parking_lot`, `html-escape` from jarvis
-are not used. `runtime::credentials(data_dir)` is the shared
-`credentials.yaml` reader (the agent's private copy was removed).
+are not used. Keys come from the secrets vault through `secrets::Handle`
+(37 §3.6; `runtime::credentials` is gone).
 
 `search-providers` dependencies: `reqwest`, `serde*`, `web`. No HTML
 parsing: every external provider returns JSON.
@@ -407,9 +408,9 @@ Each step leaves `wth` runnable.
    shapes, no captured responses - no keys or instances); with only `web`
    the description lists four engines and names Firecrawl as the way in;
    `rendered: true` with no provider errors naming `search_providers`;
-   startup with `firecrawl` enabled and no key logs `firecrawl: no key in
-   credentials.yaml; add `firecrawl: <key>` (free tier at firecrawl.dev)
-   to enable web search through it`. Not checked live: a key on any
+   startup with `firecrawl` enabled and no key logs `firecrawl: no key …;
+   add `firecrawl: <key>` (free tier at firecrawl.dev) to enable web search
+   through it` naming where the key goes (the secrets vault since 37). Not checked live: a key on any
    hosted provider, a JS-only page through `rendered: true`.
 4. Docs: 00 §10/§12 rows and deps, 01 §1.1 credentials keys, README, this
    §13.

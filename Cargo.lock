@@ -134,6 +134,7 @@ dependencies = [
  "regex",
  "runtime",
  "schemars 1.2.2",
+ "secrets",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -2768,6 +2769,16 @@ dependencies = [
  "libc",
  "libdbus-sys",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "dbus-secret-service"
+version = "4.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "708b509edf7889e53d7efb0ffadd994cc6c2345ccb62f55cfd6b0682165e4fa6"
+dependencies = [
+ "dbus",
+ "zeroize",
 ]
 
 [[package]]
@@ -6712,7 +6723,7 @@ checksum = "2f0fb0570afe1fed943c5c3d4102d5358592d8625fda6a0007fdbe65a92fba96"
 [[package]]
 name = "iocraft"
 version = "0.9.1"
-source = "git+https://github.com/skymoore/iocraft?branch=newline-modifiers-0.9#e08cf1dc5e30c62a675e953fa2926950840c543b"
+source = "git+https://github.com/skymoore/iocraft?branch=mask-0.9#b25ae1f3f6280cc2a1da55a2c80ad1c2f8fdbcd8"
 dependencies = [
  "bitflags 2.13.1",
  "crossterm",
@@ -6727,7 +6738,7 @@ dependencies = [
 [[package]]
 name = "iocraft-macros"
 version = "0.2.4"
-source = "git+https://github.com/skymoore/iocraft?branch=newline-modifiers-0.9#e08cf1dc5e30c62a675e953fa2926950840c543b"
+source = "git+https://github.com/skymoore/iocraft?branch=mask-0.9#b25ae1f3f6280cc2a1da55a2c80ad1c2f8fdbcd8"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -7233,6 +7244,21 @@ dependencies = [
  "bitflags 2.13.1",
  "serde",
  "unicode-segmentation",
+]
+
+[[package]]
+name = "keyring"
+version = "3.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eebcc3aff044e5944a8fbaf69eb277d11986064cba30c468730e8b9909fb551c"
+dependencies = [
+ "byteorder",
+ "dbus-secret-service",
+ "log",
+ "security-framework 2.11.1",
+ "security-framework 3.7.0",
+ "windows-sys 0.60.2",
+ "zeroize",
 ]
 
 [[package]]
@@ -11590,6 +11616,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rpassword"
+version = "7.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2da316a15f47e3d053de9cb2c439650bd8fa4aaeb9365f2e5f27f492ff73c196"
+dependencies = [
+ "libc",
+ "rtoolbox",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "rpc"
 version = "0.1.0"
 dependencies = [
@@ -11612,6 +11649,7 @@ dependencies = [
  "runtime",
  "schedule",
  "schemars 1.2.2",
+ "secrets",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -11675,6 +11713,16 @@ checksum = "c51c9ae4df8a7fba42103df5c621fa3c37eccf3a3c650879e90fc48b11cc192c"
 dependencies = [
  "hashbrown 0.16.1",
  "thiserror 2.0.20",
+]
+
+[[package]]
+name = "rtoolbox"
+version = "0.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9a1efe12a1469752d0e6ff5ebec0b6ef4924cc5c4c71046b0ec730040535819d"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -11929,7 +11977,6 @@ dependencies = [
  "kameo_actors",
  "schemars 1.2.2",
  "serde",
- "serde_yaml",
  "tokio",
  "tokio-util",
  "tracing",
@@ -12054,7 +12101,7 @@ dependencies = [
  "openssl-probe",
  "rustls-pki-types",
  "schannel",
- "security-framework",
+ "security-framework 3.7.0",
 ]
 
 [[package]]
@@ -12082,7 +12129,7 @@ dependencies = [
  "rustls-native-certs",
  "rustls-platform-verifier-android",
  "rustls-webpki",
- "security-framework",
+ "security-framework 3.7.0",
  "security-framework-sys",
  "webpki-root-certs 0.26.11",
  "windows-sys 0.59.0",
@@ -12103,7 +12150,7 @@ dependencies = [
  "rustls-native-certs",
  "rustls-platform-verifier-android",
  "rustls-webpki",
- "security-framework",
+ "security-framework 3.7.0",
  "security-framework-sys",
  "webpki-root-certs 1.0.9",
  "windows-sys 0.61.2",
@@ -12358,6 +12405,7 @@ dependencies = [
  "kameo",
  "reqwest 0.13.5",
  "runtime",
+ "secrets",
  "serde",
  "serde_json",
  "tokio",
@@ -12365,6 +12413,47 @@ dependencies = [
  "url",
  "web",
  "wiremock",
+]
+
+[[package]]
+name = "secrets"
+version = "0.1.0"
+dependencies = [
+ "aho-corasick",
+ "anyhow",
+ "async-trait",
+ "base64 0.22.1",
+ "chacha20poly1305",
+ "chrono",
+ "kameo",
+ "keyring",
+ "rand 0.9.5",
+ "regex",
+ "runtime",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "tokio",
+ "tools",
+ "tracing",
+ "ts-rs",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
+name = "security-framework"
+version = "2.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "897b2245f0b511c87893af39b033e5ca9cce68824c4d7e7630b5a1d339658d02"
+dependencies = [
+ "bitflags 2.13.1",
+ "core-foundation 0.9.4",
+ "core-foundation-sys",
+ "libc",
+ "security-framework-sys",
 ]
 
 [[package]]
@@ -12813,6 +12902,7 @@ dependencies = [
  "presage-store-sqlite",
  "runtime",
  "schemars 1.2.2",
+ "secrets",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -13012,6 +13102,7 @@ dependencies = [
  "runtime",
  "rustls",
  "schemars 1.2.2",
+ "secrets",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -15319,6 +15410,7 @@ dependencies = [
  "rpc",
  "runtime",
  "schedule",
+ "secrets",
  "serde_json",
  "sha2 0.10.9",
  "surface",
@@ -16928,6 +17020,7 @@ dependencies = [
  "reqwest 0.13.5",
  "runtime",
  "schemars 1.2.2",
+ "secrets",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
@@ -17999,11 +18092,13 @@ dependencies = [
  "monty-alloc",
  "monty-proto",
  "nodes",
+ "rpassword",
  "rpc",
  "runtime",
  "rustls",
  "schedule",
  "search-providers",
+ "secrets",
  "serde_json",
  "signal",
  "slack",
@@ -18342,6 +18437,7 @@ version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e13c156562582aa81c60cb29407084cdb54c4164760106ab78e6c5b0858cf64e"
 dependencies = [
+ "serde",
  "zeroize_derive",
 ]
 

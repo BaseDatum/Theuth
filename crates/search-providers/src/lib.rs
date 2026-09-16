@@ -1,8 +1,9 @@
 //! External search providers (design doc 16 §3, §6): Brave, Firecrawl,
 //! SearXNG and OpenSERP. [`SearchProvidersPlugin`] reads the
-//! `search_providers` config section and `credentials.yaml`, builds every
-//! enabled provider, and registers each with the `web` plugin's actor over
-//! the bus ([`web::RegisterProvider`]). This crate owns no tools.
+//! `search_providers` config section and the secrets vault (37 §3.6: keys
+//! `firecrawl`, `brave`, `openserp`), builds every enabled provider, and
+//! registers each with the `web` plugin's actor over the bus
+//! ([`web::RegisterProvider`]). This crate owns no tools.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -21,13 +22,13 @@ pub mod searxng;
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
 pub struct SearchProvidersConfig {
-    /// Hosted or self-hosted Firecrawl; needs `firecrawl:` in credentials.
+    /// Hosted or self-hosted Firecrawl; needs the `firecrawl` secret.
     pub firecrawl: Option<FirecrawlConfig>,
     /// Self-hosted SearXNG instance; keyless.
     pub searxng: Option<SearxngConfig>,
     /// Self-hosted (or hosted, with `openserp:` key) OpenSERP.
     pub openserp: Option<OpenserpConfig>,
-    /// Brave Search API; needs `brave:` in credentials.
+    /// Brave Search API; needs the `brave` secret.
     pub brave: Option<BraveConfig>,
 }
 
@@ -125,7 +126,7 @@ pub fn build(
         match key(credentials, "firecrawl") {
             Some(k) => out.push(Arc::new(firecrawl::Firecrawl::new(&fc.base_url, k))),
             None => tracing::info!(
-                "firecrawl: no key in credentials.yaml; add `firecrawl: <key>` (free tier at firecrawl.dev) to enable web search through it"
+                "firecrawl: no `firecrawl` secret; add one (free tier at firecrawl.dev) with /secrets add or `wth --secret-set firecrawl` to enable web search through it"
             ),
         }
     }
@@ -143,7 +144,7 @@ pub fn build(
         match key(credentials, "brave") {
             Some(k) => out.push(Arc::new(brave::Brave::new(k))),
             None => tracing::warn!(
-                "search-providers: brave needs `brave: <key>` in credentials.yaml; skipped"
+                "search-providers: brave needs the `brave` secret (/secrets add or `wth --secret-set brave`); skipped"
             ),
         }
     }
@@ -165,12 +166,25 @@ impl runtime::Plugin for SearchProvidersPlugin {
             tracing::debug!("no [search_providers] config section, using defaults: {e}");
             SearchProvidersConfig::default()
         });
-        let providers = build(&cfg, &runtime::credentials(&rt.data_dir));
-        if providers.is_empty() {
-            return Ok(());
-        }
         let rt = rt.clone();
         tokio::spawn(async move {
+            let vault = secrets::handle(&rt).await;
+            if vault.is_none() {
+                tracing::warn!(
+                    "search-providers: secrets vault unavailable; starting without API keys"
+                );
+            }
+            let creds: HashMap<String, String> = ["firecrawl", "openserp", "brave"]
+                .iter()
+                .filter_map(|k| {
+                    let v = vault.as_ref()?.get(k, 0)?;
+                    Some((k.to_string(), v.as_str().to_owned()))
+                })
+                .collect();
+            let providers = build(&cfg, &creds);
+            if providers.is_empty() {
+                return;
+            }
             let Some(actor) = rt.lookup_when::<web::WebActor>(web::WEB_ACTOR).await else {
                 tracing::warn!("web plugin not running; nothing to register with");
                 return;

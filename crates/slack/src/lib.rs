@@ -358,36 +358,53 @@ impl runtime::Plugin for SlackPlugin {
             tracing::info!("slack disabled by config");
             return Ok(());
         }
-        let creds = runtime::credentials(&rt.data_dir);
-        let tokens = match (creds.get("slack_bot"), creds.get("slack_app")) {
-            (Some(bot), Some(app)) => Some((bot.clone(), app.clone())),
-            _ => {
-                tracing::warn!(
-                    "slack: `slack_bot` (xoxb-…) and `slack_app` (xapp-…) must both be in credentials.yaml; slack not started"
-                );
-                None
-            }
-        };
-        let configured = tokens.is_some();
-        let handle = match tokens {
-            Some(tokens) if self.channel => Some(channel::spawn(cfg.clone(), tokens, rt.clone())?),
-            _ => None,
-        };
-        let sink = handle.clone();
-        let actor = Slack::spawn(Slack {
-            handle,
-            cfg,
-            rt: rt.clone(),
-            configured,
-        });
-        actor.register(SLACK_ACTOR)?;
-        if !configured {
-            rt.publish(SlackEvent::Unconfigured).await;
-        }
-
-        // First use of the registry (00 §4, 12 §2); then the user sink (24 §5).
+        let run_channel = self.channel;
         let rt = rt.clone();
         tokio::spawn(async move {
+            // Tokens live in the vault (37 §3.6); wait for it, then connect.
+            let vault = secrets::handle(&rt).await;
+            if vault.is_none() {
+                tracing::warn!("slack: secrets vault unavailable; starting without API keys");
+            }
+            let get = |k| vault.as_ref().and_then(|v| v.get(k, 0));
+            let tokens = match (get("slack_bot"), get("slack_app")) {
+                (Some(bot), Some(app)) => Some((bot.as_str().to_owned(), app.as_str().to_owned())),
+                _ => {
+                    tracing::warn!(
+                        "slack: secrets `slack_bot` (xoxb-…) and `slack_app` (xapp-…) must both be set (wth --slack-setup); slack not started"
+                    );
+                    None
+                }
+            };
+            let configured = tokens.is_some();
+            let handle = match tokens {
+                Some(tokens) if run_channel => {
+                    match channel::spawn(cfg.clone(), tokens, rt.clone()) {
+                        Ok(h) => Some(h),
+                        Err(e) => {
+                            tracing::error!("slack: channel failed to start: {e:#}");
+                            return;
+                        }
+                    }
+                }
+                _ => None,
+            };
+            let sink = handle.clone();
+            let actor = Slack::spawn(Slack {
+                handle,
+                cfg,
+                rt: rt.clone(),
+                configured,
+            });
+            if let Err(e) = actor.register(SLACK_ACTOR) {
+                tracing::error!("slack: registering {SLACK_ACTOR}: {e}");
+                return;
+            }
+            if !configured {
+                rt.publish(SlackEvent::Unconfigured).await;
+            }
+
+            // First use of the registry (00 §4, 12 §2); then the user sink (24 §5).
             let Some(reg) = rt
                 .lookup_when::<tools::ToolRegistry>(tools::REGISTRY_ACTOR)
                 .await
@@ -456,7 +473,7 @@ pub fn render_status(s: &SlackStatus) -> String {
             format!("stream fallback for {session}: {reason}")
         }
         Some(SlackEvent::Unconfigured) => {
-            "unconfigured (slack_bot / slack_app missing in credentials.yaml)".into()
+            "unconfigured (secrets slack_bot / slack_app missing; run wth --slack-setup)".into()
         }
         Some(SlackEvent::DaemonOnly) => "daemon only (runs in wth --headless)".into(),
     };

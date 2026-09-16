@@ -7,6 +7,7 @@ import {
   KeyRound,
   Keyboard,
   Link2,
+  Lock,
   Network,
   type LucideIcon,
   MessageSquare,
@@ -29,6 +30,7 @@ import { General } from '@/components/settings/General'
 import { Link } from '@/components/settings/Link'
 import { Nodes } from '@/components/settings/Nodes'
 import { Schedules } from '@/components/settings/Schedules'
+import { Secrets } from '@/components/settings/Secrets'
 import { Shortcuts } from '@/components/settings/Shortcuts'
 import { Skills } from '@/components/settings/Skills'
 import { Tools } from '@/components/settings/Tools'
@@ -49,6 +51,7 @@ const TABS = [
   ['link', 'Link', Link2],
   ['nodes', 'Nodes', Network],
   ['connections', 'Connections', KeyRound],
+  ['secrets', 'Secrets', Lock],
   ['channels', 'Channels', MessageSquare],
   ['shortcuts', 'Shortcuts', Keyboard],
 ] as const satisfies readonly (readonly [string, string, LucideIcon])[]
@@ -81,6 +84,7 @@ function Pane({ tab, session, onClose }: Omit<Props, 'onTab'>) {
       {tab === 'link' && <Link />}
       {tab === 'nodes' && <Nodes />}
       {tab === 'connections' && <Connections />}
+      {tab === 'secrets' && <Secrets />}
       {tab === 'channels' && <Channels />}
       {tab === 'shortcuts' && <Shortcuts />}
     </>

@@ -10,6 +10,7 @@ runtime = { workspace = true }
 agent = { workspace = true }
 tools = { workspace = true }
 artifact = { workspace = true }
+secrets = { workspace = true }
 surface = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }

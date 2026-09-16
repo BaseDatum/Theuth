@@ -36,6 +36,7 @@ export const queryKeys = {
   signal: ['signal'] as const,
   slack: ['slack'] as const,
   computer: ['computer'] as const,
+  secrets: ['secrets'] as const,
 }
 
 const SESSIONS_DEBOUNCE_MS = 500
@@ -61,6 +62,8 @@ export function useInvalidateOn(): void {
         void qc.invalidateQueries({ queryKey: queryKeys.knowledgeDoc(e.id) })
       }),
       on('ArtifactShown', () => void qc.invalidateQueries({ queryKey: queryKeys.artifacts })),
+      on('SecretsChanged', () => void qc.invalidateQueries({ queryKey: queryKeys.secrets })),
+      on('SecretResolved', () => void qc.invalidateQueries({ queryKey: queryKeys.secrets })),
     ]
     return () => {
       clearTimeout(timer)

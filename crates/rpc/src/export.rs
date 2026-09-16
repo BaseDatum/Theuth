@@ -89,6 +89,11 @@ async fn export_bindings() {
         artifact::Artifact,
         artifact::Kind,
         artifact::ArtifactShown,
+        secrets::SecretInfo,
+        secrets::VersionInfo,
+        secrets::SecretsList,
+        secrets::SecretsEvent,
+        secrets::RequestId,
         surface::Spec,
         surface::Element,
         surface::Component

@@ -240,13 +240,19 @@ impl ToolRegistry {
 
     /// The one permission decision (12 §5), shared by [`Invoke`] and
     /// [`ExternalApproval`]: `Ok(None)` run now, `Ok(Some(approval))` ask the
-    /// human first, `Err(why)` refuse.
+    /// human first, `Err(why)` refuse. `mentions` = the args carry a secret
+    /// placeholder (37 §0.4): at least `Ask`, before the approval switches,
+    /// so `/approvals off` still silences it and `Deny` is never rewritten.
     fn gate(
         &mut self,
         session: SessionId,
         risk: Risk,
+        mentions: bool,
     ) -> Result<Option<ActorRef<Approval>>, &'static str> {
         let mut action = self.policy.action(risk);
+        if mentions {
+            action = action.max(PolicyAction::Ask);
+        }
         if action == PolicyAction::Ask && (!self.approvals || self.bypassed(session)) {
             action = PolicyAction::Allow;
         }
@@ -276,7 +282,7 @@ impl Message<ExternalApproval> for ToolRegistry {
     ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        let approval = match self.gate(m.session, m.risk) {
+        let approval = match self.gate(m.session, m.risk, false) {
             Ok(None) => {
                 tx.send(Decision::Allow);
                 return reply;
@@ -434,7 +440,8 @@ impl Message<Invoke> for ToolRegistry {
             return reply;
         };
         let spec = tool.spec();
-        let approval = match self.gate(call.session, spec.risk) {
+        let mentions = crate::secrets::mentions(&call.args);
+        let approval = match self.gate(call.session, spec.risk, mentions) {
             Ok(a) => a,
             Err(why) => {
                 tx.send(ToolOutput::err(format!("{}: {why}", call.name)));
@@ -452,7 +459,7 @@ impl Message<Invoke> for ToolRegistry {
 async fn invoke(
     tool: DynTool,
     spec: ToolSpec,
-    call: ToolCall,
+    mut call: ToolCall,
     approval: Option<ActorRef<Approval>>,
 ) -> ToolOutput {
     if let Some(approval) = approval {
@@ -471,16 +478,25 @@ async fn invoke(
             Err(e) => return ToolOutput::err(format!("{}: approval unavailable: {e}", spec.name)),
         }
     }
+    // Placeholders become values after the gate (the approval card showed the
+    // placeholder) and before the tool; an unknown name fails the whole call.
+    if let Err(e) = crate::secrets::expand(&mut call.args) {
+        return ToolOutput::err(e);
+    }
     let cx = ToolCx {
         session: call.session,
         call_id: call.id,
+        quiet: call.quiet,
     };
     // Own task so a panicking tool is an error output, not a dead registry.
-    match tokio::spawn(async move { tool.call(call.args, cx).await }).await {
+    let mut out = match tokio::spawn(async move { tool.call(call.args, cx).await }).await {
         Ok(Ok(out)) => out,
         Ok(Err(e)) => ToolOutput::err(format!("{}: {e:#}", spec.name)),
         Err(e) => ToolOutput::err(format!("{}: tool panicked: {e}", spec.name)),
-    }
+    };
+    // Every arm: an error string may echo the expanded args.
+    crate::secrets::redact_output(&mut out);
+    out
 }
 
 /// The `tools` section, defaults when absent.
@@ -597,6 +613,7 @@ mod tests {
             name: "echo".into(),
             args: serde_json::json!({}),
             session: s,
+            quiet: false,
         };
         let names = |specs: Vec<ToolSpec>| specs.into_iter().map(|s| s.name).collect::<Vec<_>>();
 

@@ -10,6 +10,7 @@ import { MessagePeer } from './MessagePeer'
 import { MessageReasoning } from './MessageReasoning'
 import { MessageTool } from './MessageTool'
 import { MessageUser } from './MessageUser'
+import { SecretRequestCard } from './SecretRequestCard'
 
 function body(entry: Entry, session: string) {
   switch (entry.kind) {
@@ -32,9 +33,11 @@ function body(entry: Entry, session: string) {
   }
 }
 
-/** An approval or an `ask_user` card. */
+/** An approval, an `ask_user` or a `secret_request` card. */
 export function PromptCard({ prompt }: { prompt: Prompt }) {
-  return prompt.type === 'ApprovalRequested' ? <ApprovalCard approval={prompt} /> : <AskCard ask={prompt} />
+  if (prompt.type === 'ApprovalRequested') return <ApprovalCard approval={prompt} />
+  if (prompt.type === 'AskRequested') return <AskCard ask={prompt} />
+  return <SecretRequestCard id={prompt.id} name={prompt.name} note={prompt.note} current={prompt.current} />
 }
 
 /** One transcript row: the entry's card plus the prompts waiting on it. Entries are immutable and `session` is stable, so `memo` skips untouched rows. */

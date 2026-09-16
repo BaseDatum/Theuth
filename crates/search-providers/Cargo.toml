@@ -8,6 +8,7 @@ description = "External search providers (Brave, Firecrawl, SearXNG, OpenSERP) r
 [dependencies]
 runtime = { workspace = true }
 web = { workspace = true }
+secrets = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 anyhow = { workspace = true }

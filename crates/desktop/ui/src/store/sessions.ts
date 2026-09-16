@@ -310,17 +310,20 @@ export function on<T extends WireEvent['type']>(type: T, cb: Listener<T>): () =>
   }
 }
 
-/** Route one frame's events into `st` (the harness they came from): session slices, approvals, then `on` listeners. */
+/** Route one frame's events into `st` (the harness they came from): session slices, approvals, asks, secret requests, then `on` listeners. */
 export function dispatch(events: WireEvent[], st: Stores = active()): void {
   st.sessions.getState().applyEvents(events)
   const approvals = st.approvals.getState()
   const asks = st.asks.getState()
+  const secrets = st.secretRequests.getState()
   const live = st === active()
   for (const e of events) {
     if (e.type === 'ApprovalRequested') approvals.add(e)
     else if (e.type === 'ApprovalResolved') approvals.resolve(e.id)
     else if (e.type === 'AskRequested') asks.add(e)
     else if (e.type === 'AskResolved') asks.resolve(e.id)
+    else if (e.type === 'SecretRequested') secrets.add(e)
+    else if (e.type === 'SecretResolved') secrets.resolve(e.id)
     if (live) listeners.get(e.type)?.forEach((cb) => cb(e))
   }
 }

@@ -524,6 +524,28 @@ pub trait Api {
     /// overwrite); returns the written path (35 §3.5).
     #[method(name = "export_artifact")]
     async fn export_artifact(&self, id: String, dest: PathBuf) -> RpcResult<PathBuf>;
+    /// Every secret's name, note and version history (37 §3.1). Never values.
+    #[method(name = "list_secrets")]
+    async fn list_secrets(&self) -> RpcResult<secrets::SecretsList>;
+    /// Store a new version of `name` as `source: user`; `note: None` keeps
+    /// the old note. Unchanged value → the current info, nothing written.
+    #[method(name = "set_secret")]
+    async fn set_secret(
+        &self,
+        name: String,
+        value: String,
+        note: Option<String>,
+    ) -> RpcResult<secrets::SecretInfo>;
+    /// Copy version `back` (1 = previous … 4) of `name` to the top as a new version.
+    #[method(name = "restore_secret")]
+    async fn restore_secret(&self, name: String, back: u8) -> RpcResult<secrets::SecretInfo>;
+    /// Remove `name` and every kept version. `Err` when unknown.
+    #[method(name = "delete_secret")]
+    async fn delete_secret(&self, name: String) -> RpcResult<()>;
+    /// Answer a `SecretsEvent::Requested`: `value: Some` stores it as
+    /// `source: user`, `None` declines. `Err` when `id` is unknown or expired.
+    #[method(name = "answer_secret")]
+    async fn answer_secret(&self, id: secrets::RequestId, value: Option<String>) -> RpcResult<()>;
     /// Stream every wire-visible event as `{"type": ..., ...}`, optionally
     /// only those carrying `session`. `descendants: true` (default `false`)
     /// also delivers events of every session in `session`'s subtree, plus
@@ -614,6 +636,16 @@ fn schedule() -> RpcResult<ActorRef<schedule::Schedule>> {
 fn artifact() -> RpcResult<ActorRef<artifact::ArtifactActor>> {
     lookup::<artifact::ArtifactActor>(artifact::ARTIFACT_ACTOR).map_err(|e| match e.code() {
         NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "artifact is disabled", None::<()>),
+        _ => e,
+    })
+}
+
+/// The secrets actor; absent when the plugin is not loaded or the vault failed to open.
+fn secrets() -> RpcResult<ActorRef<secrets::SecretsActor>> {
+    lookup::<secrets::SecretsActor>(secrets::SECRETS_ACTOR).map_err(|e| match e.code() {
+        NOT_RUNNING => {
+            ErrorObjectOwned::owned(NOT_RUNNING, "secrets vault unavailable", None::<()>)
+        }
         _ => e,
     })
 }
@@ -1293,6 +1325,42 @@ impl ApiServer for Server {
 
     async fn export_artifact(&self, id: String, dest: PathBuf) -> RpcResult<PathBuf> {
         send(&artifact()?, artifact::Export { id, dest }).await
+    }
+
+    async fn list_secrets(&self) -> RpcResult<secrets::SecretsList> {
+        send(&secrets()?, secrets::List).await
+    }
+
+    async fn set_secret(
+        &self,
+        name: String,
+        value: String,
+        note: Option<String>,
+    ) -> RpcResult<secrets::SecretInfo> {
+        send(
+            &secrets()?,
+            secrets::Set {
+                name,
+                value,
+                note,
+                source: "user".into(),
+            },
+        )
+        .await
+    }
+
+    async fn restore_secret(&self, name: String, back: u8) -> RpcResult<secrets::SecretInfo> {
+        send(&secrets()?, secrets::Restore { name, back }).await
+    }
+
+    async fn delete_secret(&self, name: String) -> RpcResult<()> {
+        send(&secrets()?, secrets::Delete { name }).await
+    }
+
+    async fn answer_secret(&self, id: secrets::RequestId, value: Option<String>) -> RpcResult<()> {
+        send(&secrets()?, secrets::Answer { id, value })
+            .await
+            .map(|_| ())
     }
 
     async fn put_attachment(&self, bytes: String, ext: String) -> RpcResult<PathBuf> {

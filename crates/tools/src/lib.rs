@@ -28,6 +28,7 @@ pub mod jobs;
 pub mod mcp;
 pub mod pty;
 pub mod registry;
+pub mod secrets;
 pub mod shell;
 
 pub use approval::{Approval, ApprovalId, ApprovalRequested, ApprovalResolved, Decision, Resolve};
@@ -99,6 +100,11 @@ pub struct ToolCall {
     pub args: serde_json::Value,
     /// Session the call belongs to (persistent shell, cwd, approvals).
     pub session: SessionId,
+    /// The caller consumes the output itself (`secret_capture`, 37 §3.2):
+    /// publish no events, keep no log, and wait for completion instead of
+    /// handing back a background job.
+    #[serde(default)]
+    pub quiet: bool,
 }
 
 /// Result returned to the model. Errors are content, not `Err`: the model
@@ -145,6 +151,8 @@ pub struct ToolCx {
     pub session: SessionId,
     /// Provider call id.
     pub call_id: String,
+    /// [`ToolCall::quiet`], copied from the call.
+    pub quiet: bool,
 }
 
 /// One struct per tool; the schema is derived from `Args`.
@@ -212,8 +220,11 @@ impl<T: Tool> ErasedTool for T {
 /// Shared handle type stored in the registry.
 pub type DynTool = Arc<dyn ErasedTool>;
 
-/// What the gate does for a risk class.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
+/// What the gate does for a risk class. Ordered `Allow < Ask < Deny` so a
+/// caller can only ever raise it (`action.max(Ask)`, 37 §0.4).
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default, JsonSchema,
+)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum PolicyAction {

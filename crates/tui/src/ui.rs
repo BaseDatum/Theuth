@@ -11,7 +11,7 @@ use tools::{Decision, Risk};
 
 use crate::clip;
 use crate::model::{
-    AcpRow, CardKind, Command, Entry, Level, Menu, MenuKey, Model, Row, Switch, TurnAction,
+    AcpRow, CardKind, Command, Entry, Level, Menu, MenuKey, Model, Prompt, Row, Switch, TurnAction,
     UiEvent, action_name, agent_row, artifact_row, artifact_size, describe, gate_name, k,
     progress_line, result_line, short, slash_matches, window,
 };
@@ -160,6 +160,9 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 if std::mem::take(&mut m.refresh_nodes) {
                     let _ = commands.send(Command::ListNodes);
                 }
+                if std::mem::take(&mut m.refresh_secrets) {
+                    let _ = commands.send(Command::ListSecrets);
+                }
                 if std::mem::take(&mut m.refresh_artifacts)
                     && let Some(session) = m.session
                 {
@@ -224,6 +227,24 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                     KeyCode::Char('n') | KeyCode::Esc => m.decide(Decision::Deny, &commands),
                     // Read what led to a child's request; the modal stays up (19 §3.4).
                     KeyCode::Char('o') if child => m.resume(session, &commands),
+                    _ => {}
+                }
+                return;
+            }
+            // The masked box types into the editor; ⏎ stores, esc declines.
+            if m.secret_request().is_some() {
+                match code {
+                    KeyCode::Enter => {
+                        let line = std::mem::take(&mut *input.write());
+                        let value = line.trim();
+                        if !value.is_empty() {
+                            m.answer_secret(Some(value.to_owned()), &commands);
+                        }
+                    }
+                    KeyCode::Esc => {
+                        input.set(String::new());
+                        m.answer_secret(None, &commands);
+                    }
                     _ => {}
                 }
                 return;
@@ -333,11 +354,16 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
         }
         .into_any()
     });
-    // Approval on top, then the model's questions; otherwise whichever menu is open.
+    // Approval on top, then a secret request, then the model's questions;
+    // otherwise whichever menu is open.
     let (width, height) = terminal_size;
     let modal = modal
+        .or_else(|| secret_box(&m))
         .or_else(|| ask_box(&m))
         .or_else(|| menu(&m, &input.read(), width));
+    // A secret's value (or a provider's key) shows as dots.
+    let mask = (m.secret_request().is_some() || m.prompt.as_ref().is_some_and(Prompt::masked))
+        .then_some('•');
     let has_focus = m.input_focused();
     let (header, level) = m.header(&catalog);
     let header_color = match level {
@@ -406,6 +432,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                     multiline: true,
                     auto_grow: true,
                     newline_modifiers: KeyModifiers::SHIFT,
+                    mask,
                     on_change: move |v: String| {
                         model.write().sync_slash(&v);
                         input.set(v);
@@ -418,6 +445,39 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             }
         }
     }
+}
+
+/// The shown `secret_request` (37 §5): name and note, what version the
+/// answer becomes, the keys. The value itself is typed into the (masked)
+/// editor below. `None` without one.
+fn secret_box(m: &Model) -> Option<AnyElement<'static>> {
+    let r = m.secret_request()?;
+    let head = if r.note.is_empty() {
+        r.name.clone()
+    } else {
+        format!("{} — {}", r.name, r.note)
+    };
+    let version = r.current.map_or_else(
+        || "(new secret)".to_owned(),
+        |v| {
+            format!(
+                "(adds v{}; v{v} stays as {{{{secret:{}:-1}}}})",
+                v + 1,
+                r.name
+            )
+        },
+    );
+    Some(
+        element! {
+            View(border_style: BorderStyle::Double, border_color: Color::Magenta, flex_direction: FlexDirection::Column, padding_left: 1, padding_right: 1) {
+                Text(content: "secret requested", weight: Weight::Bold)
+                Text(content: head, color: Color::Cyan, wrap: TextWrap::Wrap)
+                Text(content: version, color: Color::Grey)
+                Text(content: "type it below · [⏎] store  [esc] decline", color: Color::Magenta)
+            }
+        }
+        .into_any(),
+    )
 }
 
 /// The shown `ask_user` question: options with the cursor, a "type your own"
@@ -752,6 +812,9 @@ fn menu(m: &Model, input: &str, width: u16) -> Option<AnyElement<'static>> {
         ),
         Menu::Link { cursor } => (m.link_title(), m.link_rows(), *cursor),
         Menu::Nodes { cursor } => (m.nodes_title(), m.nodes_rows(), *cursor),
+        Menu::Secrets { cursor, history } => {
+            (m.secrets_title(), m.secrets_rows(), history.unwrap_or(*cursor))
+        }
         Menu::Artifacts { items, cursor } => (
             "artifacts  ⏎ open  s show inline  e export to ~/Downloads  esc close".to_owned(),
             items.iter().map(artifact_row).collect(),

@@ -1776,6 +1776,7 @@ impl Turn {
                     name: c.fn_name.clone(),
                     args: c.fn_arguments.clone(),
                     session,
+                    quiet: false,
                 })).send()
             })) => outs,
         };

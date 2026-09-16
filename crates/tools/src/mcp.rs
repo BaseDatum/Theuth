@@ -1083,16 +1083,27 @@ impl Message<Progress> for Mcp {
     }
 }
 
-/// Expand `$VAR`, `${VAR:-x}`, `$(cmd)` and backticks in one entry string with
-/// the user's shell (`$SHELL`, else `/bin/sh`), so a file can say
-/// `"GITHUB_PERSONAL_ACCESS_TOKEN=$(gh auth token)"` or `"${GRAFANA_TOKEN}"`.
+/// Expand `{{secret:NAME}}` placeholders (37 §3.4; an unknown name is an
+/// error), then `$VAR`, `${VAR:-x}`, `$(cmd)` and backticks with the user's
+/// shell (`$SHELL`, else `/bin/sh`), so a file can say
+/// `"GITHUB_PERSONAL_ACCESS_TOKEN=$(gh auth token)"` or `"${GRAFANA_TOKEN}"`,
+/// or `"Authorization": "Bearer {{secret:grafana}}"` and store nothing.
 /// The string is fed as an unquoted heredoc: quotes stay literal, `\$` is a
 /// literal dollar, and the shell's own parser handles nesting. A `$`-free
 /// string is returned as is; a failed substitution is a warning and empty
 /// (POSIX), the server's own auth error names the consequence.
-async fn expand(s: &str) -> anyhow::Result<String> {
+async fn expand(raw: &str) -> anyhow::Result<String> {
+    let mut s = raw.to_owned();
+    if s.contains("{{secret:") {
+        let mut v = serde_json::Value::String(s);
+        crate::secrets::expand(&mut v).map_err(anyhow::Error::msg)?;
+        s = match v {
+            serde_json::Value::String(expanded) => expanded,
+            other => other.to_string(),
+        };
+    }
     if !s.contains('$') && !s.contains('`') {
-        return Ok(s.to_owned());
+        return Ok(s);
     }
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
     let out = tokio::process::Command::new(shell)
@@ -1103,7 +1114,8 @@ async fn expand(s: &str) -> anyhow::Result<String> {
         .await?;
     let err = String::from_utf8_lossy(&out.stderr);
     if !out.status.success() || !err.trim().is_empty() {
-        tracing::warn!(value = %s, status = %out.status, "mcp expansion: {}", err.trim());
+        // `raw`, not `s`: the expanded string may hold a secret value.
+        tracing::warn!(value = %raw, status = %out.status, "mcp expansion: {}", err.trim());
     }
     let mut text = String::from_utf8(out.stdout)?;
     text.pop(); // the heredoc's own trailing newline

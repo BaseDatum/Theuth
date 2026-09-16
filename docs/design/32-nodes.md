@@ -67,10 +67,10 @@ else is 31's: harness, device, relay, link.
    parent cascades to its nodes (one static per device → the same 8-char id
    on every harness, 31 §4.1). Compromise of the parent is compromise of the
    fleet; the doc says so once (§9) and does not build a second policy.
-7. **Nothing is synced.** A node has its own `~/.wth`: config, credentials,
-   skills, MCP servers, knowledge, sessions. The service installer creates
-   the skeleton (`first_run`) and the user puts a key in `credentials.yaml`
-   over the same ssh session that ran the installer. Rejected for now:
+7. **Nothing is synced.** A node has its own `~/.wth`: config, secrets
+   vault, skills, MCP servers, knowledge, sessions. The service installer creates
+   the skeleton (`first_run`) and the user runs `wth --secret-set anthropic`
+   over the same ssh session that ran the installer (37 §3.9). Rejected for now:
    credential/skill sync over link — a real want, a separate doc when
    someone has three nodes (§15).
 
@@ -395,6 +395,10 @@ Both conflict with every other mode flag (`headless`, `serve`, `acp`,
 `systemctl --user disable --now wth` + remove the unit + `daemon-reload`.
 `data_dir`, `link/identity`, `devices.yaml` untouched — the harness can be
 run by hand or re-installed and every pairing survives.
+
+A node has no TUI, so its provider key is entered with `wth --secret-set
+anthropic` on the box (value from the tty with echo off, or piped on
+stdin; 37 §3.9); the running service sees it on its next model call.
 
 ### 5.2 What the node keeps
 
@@ -878,9 +882,9 @@ revoke-cascade copy on a live revoke.
 - **Running the service through `portable-pty`** (18 §2 verbatim): the pty
   existed so a GUI could show the shell's transcript; a service has a
   journal. Kept as the `ponytail:` upgrade in §5.1.
-- **Syncing credentials, skills, knowledge, MCP entries to nodes**: a real
+- **Syncing secrets, skills, knowledge, MCP entries to nodes**: a real
   want; a node is a harness with a `data_dir` of its own, and the same
-  ssh session that installs it can `scp credentials.yaml`. Separate doc
+  ssh session that installs it can `wth --secret-set` (37 §3.9). Separate doc
   when it hurts. §0.7, §15.
 - **Fleet-wide session list / search on the parent**: the switcher is per
   harness (31 §7.4's "never two harnesses in one store"); a cross-node

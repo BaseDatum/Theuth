@@ -373,6 +373,7 @@ mod tests {
         let cx = ToolCx {
             session: SessionId::new(),
             call_id: "1".into(),
+            quiet: false,
         };
         Tool::call(&AskUserTool(actor), args, cx).await.unwrap()
     }
@@ -404,6 +405,7 @@ mod tests {
             ToolCx {
                 session: SessionId::new(),
                 call_id: "1".into(),
+                quiet: false,
             },
         )
         .await

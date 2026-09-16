@@ -180,6 +180,11 @@ pub struct Start {
     pub command: String,
     /// Provider call id of the `shell` call (carried on `JobEvent::Started`).
     pub call_id: String,
+    /// 37 §3.2: the caller consumes the output itself. No `JobEvent`, no log
+    /// file, no `jobs` row, and the reply is always `Done` — the actor waits
+    /// for the command (bounded by the job timeout) instead of returning a
+    /// `Running` stub whose result would later be injected as `<job_result>`.
+    pub quiet: bool,
     /// A clone of the session shell; the job owns it and hands it to
     /// `put_back` when it exits normally (not when killed or timed out).
     pub shell: Shell,
@@ -228,16 +233,17 @@ pub(crate) struct Finished {
 /// `tell` on `rt.shutdown`: kill every running job's process groups.
 struct KillAll;
 
-/// Output as it arrives: appended to the log file, the last [`TAIL`] bytes
-/// kept, and the bytes since the last [`JobEvent::Output`] (capped the same way).
+/// Output as it arrives: appended to the log file (none for a quiet job), the
+/// last [`TAIL`] bytes kept, and the bytes since the last [`JobEvent::Output`]
+/// (capped the same way).
 pub(crate) struct Log {
-    file: std::fs::File,
+    file: Option<std::fs::File>,
     tail: VecDeque<u8>,
     pending: VecDeque<u8>,
 }
 
 impl Log {
-    pub(crate) fn new(file: std::fs::File) -> Self {
+    pub(crate) fn new(file: Option<std::fs::File>) -> Self {
         Self {
             file,
             tail: VecDeque::with_capacity(TAIL),
@@ -245,8 +251,20 @@ impl Log {
         }
     }
 
+    /// Every chunk from a pipe or a pty passes here before the log file, the
+    /// tail and `JobEvent::Output`. Known secret values are scrubbed first —
+    /// best effort, a value split across two chunks escapes; `run`'s pass
+    /// over the whole render is the exact one (37 §3.4).
     pub(crate) fn push(&mut self, chunk: &[u8]) {
-        let _ = self.file.write_all(chunk);
+        let text = String::from_utf8_lossy(chunk);
+        let clean = crate::secrets::redact(&text);
+        let chunk = match &clean {
+            std::borrow::Cow::Owned(s) => s.as_bytes(),
+            std::borrow::Cow::Borrowed(_) => chunk,
+        };
+        if let Some(file) = &mut self.file {
+            let _ = file.write_all(chunk);
+        }
         keep_last(&mut self.tail, chunk);
         keep_last(&mut self.pending, chunk);
     }
@@ -390,13 +408,19 @@ impl Message<Start> for Jobs {
     async fn handle(&mut self, m: Start, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
+        let quiet = m.quiet;
         let sj = self.sessions.entry(m.session).or_default();
-        sj.next += 1;
+        // A quiet job takes no row and no id: it reuses the last number, which
+        // nothing publishes or lists.
+        if !quiet {
+            sj.next += 1;
+        }
         let id = JobId(format!("j{}", sj.next));
         let dir = self.rt.data_dir.join("jobs").join(m.session.to_string());
         let log_path = dir.join(format!("{id}.log"));
         let pgids: Arc<Mutex<Vec<i32>>> = Arc::default();
-        let (file, params, out_r, err_r) = match setup(&dir, &log_path, &m.shell, &pgids) {
+        let log_file = (!quiet).then_some(log_path.as_path());
+        let (file, params, out_r, err_r) = match setup(&dir, log_file, &m.shell, &pgids) {
             Ok(s) => s,
             Err(e) => {
                 tx.send(StartReply::Done(ToolOutput::err(format!(
@@ -412,13 +436,17 @@ impl Message<Start> for Jobs {
         // `Running`, the event is injected later) or the task (reply `Done`,
         // the event is `inline` and not injected).
         let claimable = Arc::new(AtomicBool::new(true));
+        // 37 §3.4: the executed string is real; everything published or stored
+        // (`Started`/`Finished`, `JobView`, `<job_result command>`) is scrubbed.
+        let shown = crate::secrets::redact(&m.command).into_owned();
         let started = Instant::now();
         let task = tokio::spawn(run(Run {
             rt: self.rt.clone(),
             me: ctx.actor_ref().clone(),
             session: m.session,
             id: id.clone(),
-            command: m.command.clone(),
+            command: m.command,
+            shown: shown.clone(),
             call_id: m.call_id,
             shell: m.shell,
             put_back: m.put_back,
@@ -430,28 +458,39 @@ impl Message<Start> for Jobs {
             pgids: pgids.clone(),
             cancel: cancel.clone(),
             claimable: claimable.clone(),
+            quiet,
             timeout: self.timeout,
             started,
             done: done_tx,
         }))
         .abort_handle();
-        sj.push(Job {
-            id: id.clone(),
-            command: m.command,
-            started,
-            exit: None,
-            secs: 0,
-            log_path: log_path.clone(),
-            log: log.clone(),
-            pgids,
-            cancel,
-            task,
-            name: None,
-            pty: None,
-        });
+        if !quiet {
+            sj.push(Job {
+                id: id.clone(),
+                command: shown,
+                started,
+                exit: None,
+                secs: 0,
+                log_path: log_path.clone(),
+                log: log.clone(),
+                pgids,
+                cancel,
+                task,
+                name: None,
+                pty: None,
+            });
+        }
         // The grace wait leaves the mailbox so `ListJobs` / `CancelJob` stay live.
         let grace = self.grace;
         tokio::spawn(async move {
+            if quiet {
+                // 37 §3.2: never a stub; the task's own `timeout` bounds the wait.
+                let out = done_rx
+                    .await
+                    .unwrap_or_else(|_| ToolOutput::err("job task died"));
+                tx.send(StartReply::Done(out));
+                return;
+            }
             // `Some`: the task finished (or died) within grace; `None`: grace elapsed.
             let within = if grace.is_zero() {
                 None
@@ -543,20 +582,26 @@ pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Log file, exec params and the read ends of the output pipes for one job.
+/// Log file (none for a quiet job: `log_path` absent), exec params and the
+/// read ends of the output pipes for one job.
 fn setup(
     dir: &std::path::Path,
-    log_path: &std::path::Path,
+    log_path: Option<&std::path::Path>,
     shell: &Shell,
     pgids: &Arc<Mutex<Vec<i32>>>,
 ) -> anyhow::Result<(
-    std::fs::File,
+    Option<std::fs::File>,
     ExecutionParameters,
     std::io::PipeReader,
     std::io::PipeReader,
 )> {
-    std::fs::create_dir_all(dir)?;
-    let file = std::fs::File::create(log_path)?;
+    let file = match log_path {
+        Some(p) => {
+            std::fs::create_dir_all(dir)?;
+            Some(std::fs::File::create(p)?)
+        }
+        None => None,
+    };
     let (out_r, out_w) = std::io::pipe()?;
     let (err_r, err_w) = std::io::pipe()?;
     let mut params = shell.default_exec_params();
@@ -584,7 +629,10 @@ struct Run {
     me: ActorRef<Jobs>,
     session: SessionId,
     id: JobId,
+    /// Executed verbatim.
     command: String,
+    /// `command` with secrets scrubbed: the only copy that is published.
+    shown: String,
     call_id: String,
     shell: Shell,
     put_back: PutBack,
@@ -596,6 +644,8 @@ struct Run {
     pgids: Arc<Mutex<Vec<i32>>>,
     cancel: Arc<Notify>,
     claimable: Arc<AtomicBool>,
+    /// [`Start::quiet`]: publish nothing, tell the actor nothing.
+    quiet: bool,
     timeout: Duration,
     started: Instant,
     done: oneshot::Sender<ToolOutput>,
@@ -638,14 +688,16 @@ fn drain(mut r: std::io::PipeReader, log: Arc<Mutex<Log>>) -> tokio::task::JoinH
 }
 
 async fn run(mut j: Run) {
-    j.rt.publish(JobEvent::Started {
-        session: j.session,
-        id: j.id.clone(),
-        command: j.command.clone(),
-        call_id: j.call_id,
-        log: j.log_path,
-    })
-    .await;
+    if !j.quiet {
+        j.rt.publish(JobEvent::Started {
+            session: j.session,
+            id: j.id.clone(),
+            command: j.shown.clone(),
+            call_id: j.call_id,
+            log: j.log_path,
+        })
+        .await;
+    }
 
     let out_task = drain(j.out_r, j.log.clone());
     let err_task = drain(j.err_r, j.log.clone());
@@ -664,7 +716,7 @@ async fn run(mut j: Run) {
                     Ok(r) => (JobExit::Exited(u8::from(r.exit_code)), None),
                     Err(e) => (JobExit::Exited(1), Some(e.to_string())),
                 },
-                _ = tick.tick() => flush(&j.rt, j.session, &j.id, &j.log).await,
+                _ = tick.tick(), if !j.quiet => flush(&j.rt, j.session, &j.id, &j.log).await,
             }
         }
     };
@@ -683,7 +735,11 @@ async fn run(mut j: Run) {
     };
 
     let secs = j.started.elapsed().as_secs();
-    let body = render(&stdout, &stderr);
+    // Whole text, once: exact where the chunk pass above is best effort.
+    let mut body = render(&stdout, &stderr);
+    if let std::borrow::Cow::Owned(clean) = crate::secrets::redact(&body) {
+        body = clean;
+    }
     let (output, out) = match (&exit, shell_err) {
         (_, Some(e)) => {
             let body = truncate(format!("{body}\nshell error: {e}"));
@@ -717,7 +773,6 @@ async fn run(mut j: Run) {
         }
     };
 
-    flush(&j.rt, j.session, &j.id, &j.log).await;
     // A killed shell was dropped mid-command; its state is not worth keeping.
     if !matches!(exit, JobExit::Timeout | JobExit::Killed) {
         (j.put_back)(j.shell);
@@ -725,25 +780,29 @@ async fn run(mut j: Run) {
     // Claim the result (see `Start`); then the row update is queued before
     // anyone can react to the reply or the event.
     let inline = j.claimable.swap(false, SeqCst);
-    let _ =
-        j.me.tell(Finished {
+    // 37 §3.2: a quiet job's output reaches only the `Start` asker.
+    if !j.quiet {
+        flush(&j.rt, j.session, &j.id, &j.log).await;
+        let _ =
+            j.me.tell(Finished {
+                session: j.session,
+                id: j.id.clone(),
+                exit: exit.clone(),
+                secs,
+            })
+            .await;
+        j.rt.publish(JobEvent::Finished {
             session: j.session,
-            id: j.id.clone(),
-            exit: exit.clone(),
+            id: j.id,
+            command: j.shown,
+            exit,
             secs,
+            output,
+            inline,
+            pty: false,
         })
         .await;
-    j.rt.publish(JobEvent::Finished {
-        session: j.session,
-        id: j.id,
-        command: j.command,
-        exit,
-        secs,
-        output,
-        inline,
-        pty: false,
-    })
-    .await;
+    }
     let _ = j.done.send(out);
 }
 
@@ -953,6 +1012,7 @@ pub(crate) mod tests {
                 session: fx.session,
                 command: command.into(),
                 call_id: String::new(),
+                quiet: false,
                 shell: ShellTool::build_shell().await.unwrap(),
                 put_back: Arc::new(|_| {}),
             })
@@ -996,6 +1056,32 @@ pub(crate) mod tests {
             finished(&fx).await,
             (JobExit::Exited(0), "hi\n".to_owned(), true)
         );
+    }
+
+    /// 37 §3.2: a quiet job past grace still replies `Done`, and nothing of
+    /// it reaches the bus, the log dir or the `jobs` table.
+    #[tokio::test]
+    async fn quiet_job_is_invisible() {
+        let fx = fixture(Duration::from_millis(100), Duration::from_secs(60)).await;
+        let reply = fx
+            .jobs
+            .ask(Start {
+                session: fx.session,
+                command: "sleep 0.3; echo s3cret".into(),
+                call_id: String::new(),
+                quiet: true,
+                shell: ShellTool::build_shell().await.unwrap(),
+                put_back: Arc::new(|_| {}),
+            })
+            .await
+            .unwrap();
+        match reply {
+            StartReply::Done(out) => assert_eq!(out.content, "s3cret\nexit code: 0"),
+            r => panic!("expected Done, got {r:?}"),
+        }
+        assert!(lock(&fx.events).is_empty());
+        assert!(list(&fx).await.is_empty());
+        assert!(!fx.dir.join("jobs").exists());
     }
 
     #[tokio::test]
@@ -1085,6 +1171,7 @@ pub(crate) mod tests {
         let cx = ToolCx {
             session: fx.session,
             call_id: String::new(),
+            quiet: false,
         };
         let cd = Tool::call(
             &tool,

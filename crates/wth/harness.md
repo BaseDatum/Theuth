@@ -1,6 +1,6 @@
 ---
 name: harness
-description: How wth (this harness) is laid out and configured - data dir, config.yaml keys, credentials, MCP files and gates, skills, knowledge, sessions, logs, what only the user can do. Load before touching any of them.
+description: How wth (this harness) is laid out and configured - data dir, config.yaml keys, secrets vault, MCP files and gates, skills, knowledge, sessions, logs, what only the user can do. Load before touching any of them.
 ---
 
 <!-- Written by wth on every start from crates/wth/harness.md; edits here are overwritten. -->
@@ -16,8 +16,9 @@ real path. Everything below is relative to it.
 | path | what | live? |
 |---|---|---|
 | `config.yaml` | every plugin's section (below) | read at startup |
-| `credentials.yaml` | `provider: key`, one per line, mode 0600; beats the environment | read at startup |
-| `providers.yaml` | named OpenAI-compatible gateways: `name: {base_url, key?}`; `/provider add` writes it | startup |
+| `secrets.vault` | encrypted vault of named, versioned secrets — the provider keys (`anthropic`, `openai`, gateway names), web keys, Slack tokens and anything the user adds; you use one as `{{secret:NAME}}`, never read it (design doc 37). Deleting it forgets every secret | read on every use |
+| `secrets.key` | the vault key, 0600 — only when no OS keychain holds it (`secrets.key_store`); losing it loses the vault | read on every use |
+| `providers.yaml` | named OpenAI-compatible gateways: `name: {base_url}`; the key is the secret of the same name; `/provider add` writes both | startup |
 | `models.json` | optional; same shape as the bundled models.dev catalog, adds or overrides models | startup |
 | `prompt.md` | standing instructions, prepended to every model call | every call |
 | `skills/` | markdown skills (`*.md` or `<dir>/SKILL.md`); `add_skill_repo` clones under it | every call (index) |
@@ -55,7 +56,8 @@ tools:
   approvals: true                      # false: never prompt (`/approvals off always` writes this)
 rpc: {listen: 127.0.0.1:7777}
 web: {enabled: true, engines: [duckduckgo, wikipedia, arxiv, github], fetch_max_chars: 4000}
-search_providers: {firecrawl: {base_url: https://api.firecrawl.dev}}   # key in credentials.yaml under the same name
+search_providers: {firecrawl: {base_url: https://api.firecrawl.dev}}   # key = the `firecrawl` secret in the vault
+secrets: {key_store: auto, tools: true, request_timeout_secs: 1800}   # encrypted vault; key_store auto = OS keychain, else secrets.key; tools false = no secret_* tools and `{{secret:…}}` stays literal (37)
 knowledge: {enabled: true}
 surface: {enabled: true, correct: true}   # replies may draw mermaid / json-render; correct = one fix-up round on invalid json-render
 artifact: {enabled: true, fonts: []}   # the `show` tool; fonts = extra directories searched when compiling PDFs (35)
@@ -74,7 +76,8 @@ or `url` + `headers` (streamable HTTP; `type` is ignored); `enabled: false`
 or `disabled: true` skips it. `$VAR`, `${VAR:-x}`, `$(cmd)` and backticks in
 any of those strings expand through the user's shell when the server
 connects, so `"GITHUB_TOKEN": "$(gh auth token)"` is fine and nothing is
-stored in the file.
+stored in the file. `{{secret:NAME}}` in the same fields is filled from the
+vault when the server connects.
 
 Remote servers that answer 401 need the user to log in (`l` on the row in
 `/mcp`, or `/login <server>`); you cannot. An optional `oauth` object tunes
@@ -152,6 +155,16 @@ every start.
   tradeoffs you cannot settle from context.
 - The shell tool returns within a few seconds or hands back a job id;
   `<job_result>` arrives when it ends. `jobs` lists, `cancel_job` kills.
+- `{{secret:NAME}}` in any tool argument — a shell command, a header, a URL,
+  file content, an MCP tool's field — is swapped for the vault's value when
+  the tool runs; you, the transcript and the approval card see only the
+  placeholder, the value is scrubbed from the output if it echoes back, and
+  `{{secret:NAME:-1}}` is the previous version (up to `:-4`). `secret_list`
+  names them with versions; `secret_request` asks the user to type a new one
+  into a masked field, `secret_capture` stores a tool's output as one
+  without showing it to you, `secret_restore` makes an older version
+  current — no tool returns a value, and a call carrying a placeholder
+  always asks unless approvals are off.
 - `start{command, name?, ready?}` runs on a pseudo-terminal; `send`/`screen`/
   `wait` drive it; use it for REPLs, servers, TUIs and prompts — `shell` for
   anything that runs and exits (22).
@@ -191,6 +204,6 @@ every start.
 ## Only the user can
 
 Restart the process, log in (providers or MCP), approve a call, switch the
-running session's model (`/model`), pair Signal, edit `credentials.yaml`
-safely (you may, but say what you wrote). When a task needs one of these,
-stop and ask.
+running session's model (`/model`), pair Signal, see a secret's value, add
+one from the keyboard, or delete one (`/secrets`, Settings › Secrets, `wth
+--secret-set`). When a task needs one of these, stop and ask.

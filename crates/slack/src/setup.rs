@@ -1,11 +1,14 @@
 //! `wth --slack-setup` (21 §10.3): create or update the Slack app from
 //! [`crate::MANIFEST`], collect and verify the bot and app-level tokens and
-//! the owner, write `credentials.yaml` and `config.yaml`. Every step is
-//! re-runnable; a token already on disk that still verifies is skipped.
+//! the owner, write the tokens into the secrets vault (37 §3.6: `slack_bot`,
+//! `slack_app`) and the owner into `config.yaml`. Every step is re-runnable;
+//! a token already in the vault that still verifies is skipped.
 
 use std::path::Path;
 
 use anyhow::{Context, bail};
+use figment::Figment;
+use figment::providers::{Env, Format, Yaml};
 use serde_json::{Value, json};
 
 /// Terminal I/O of the setup, so tests can script it.
@@ -139,9 +142,10 @@ async fn run_with(
     io.say(&format!("   app {app_id} {what}"));
 
     // 2. Bot token.
-    let creds = runtime::credentials(data_dir);
-    let bot = match creds.get("slack_bot") {
-        Some(t) if api.call("auth.test", t, json!({})).await.is_ok() => {
+    let config = data_dir.join("config.yaml");
+    let vault = open_vault(data_dir, &config)?;
+    let bot = match vault.get("slack_bot", 0) {
+        Some(t) if api.call("auth.test", &t, json!({})).await.is_ok() => {
             io.say("2. bot token ok (existing)");
             None
         }
@@ -165,10 +169,10 @@ async fn run_with(
     };
 
     // 3. App-level token.
-    let app_tok = match creds.get("slack_app") {
+    let app_tok = match vault.get("slack_app", 0) {
         Some(t)
             if api
-                .call("apps.connections.open", t, json!({}))
+                .call("apps.connections.open", &t, json!({}))
                 .await
                 .is_ok() =>
         {
@@ -190,7 +194,6 @@ async fn run_with(
     };
 
     // 4. Owner.
-    let config = data_dir.join("config.yaml");
     let current = current_owner(&config);
     io.say("4. owner: your Slack member id (profile → ⋮ More → Copy member ID)");
     let prompt = match &current {
@@ -207,7 +210,9 @@ async fn run_with(
     // 5. Write.
     for (key, value) in [("slack_bot", bot), ("slack_app", app_tok)] {
         if let Some(v) = value {
-            agent::providers::upsert_credential(data_dir, key, &v).map_err(anyhow::Error::msg)?;
+            vault
+                .set(key, &v, Some("Slack token"), "slack setup")
+                .map_err(anyhow::Error::msg)?;
         }
     }
     runtime::write_config_value(&config, "slack", "owner", &format!("\"{owner}\""))?;
@@ -239,6 +244,20 @@ fn owner_id(s: &str) -> Option<&str> {
             .bytes()
             .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit()))
     .then_some(s)
+}
+
+/// The vault as the daemon would open it: `secrets.key_store` from the same
+/// Figment `main` builds (`config.yaml` + `WTH_*` env).
+fn open_vault(data_dir: &Path, config: &Path) -> anyhow::Result<secrets::Vault> {
+    let figment = Figment::new()
+        .merge(Yaml::file(config))
+        .merge(Env::prefixed("WTH_").split("__"));
+    let cfg: secrets::SecretsConfig = if figment.contains("secrets") {
+        figment.extract_inner("secrets")?
+    } else {
+        secrets::SecretsConfig::default()
+    };
+    secrets::Vault::open(data_dir, cfg.key_store)
 }
 
 /// `slack.owner` from config.yaml when set and non-empty.
@@ -329,19 +348,25 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn create_path_writes_credentials_and_config() {
+    /// `secrets.key_store: file`: tests run headless, no keychain.
+    const KEY_STORE: &str = "secrets:\n  key_store: file\n";
+
+    /// A data dir whose `config.yaml` is [`KEY_STORE`] followed by `rest`.
+    fn data_dir(rest: &str) -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("credentials.yaml"),
-            "# keep me\nanthropic: sk-1\n",
-        )
-        .unwrap();
-        std::fs::write(
-            dir.path().join("config.yaml"),
-            "agent:\n  model: x\n# slack:\n#   owner: U0\n",
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("config.yaml"), format!("{KEY_STORE}{rest}")).unwrap();
+        dir
+    }
+
+    fn vault(dir: &tempfile::TempDir) -> secrets::Vault {
+        secrets::Vault::open(dir.path(), secrets::KeyStore::File).unwrap()
+    }
+
+    #[tokio::test]
+    async fn create_path_writes_vault_and_config() {
+        let dir = data_dir("agent:\n  model: x\n# slack:\n#   owner: U0\n");
+        // An old credentials.yaml is imported at vault open (37 §3.6).
+        std::fs::write(dir.path().join("credentials.yaml"), "anthropic: sk-1\n").unwrap();
         let api = FakeApi::new(vec![
             ("apps.manifest.create", Ok(created())),
             ("auth.test", Ok(authed())),
@@ -350,20 +375,11 @@ mod tests {
         let mut io = io(&["xoxe.xoxp-cfg", "xoxb-bot", "xapp-app", "U12345678"]);
         run_with(dir.path(), None, &mut io, &api).await.unwrap();
 
-        let creds = std::fs::read_to_string(dir.path().join("credentials.yaml")).unwrap();
-        assert!(creds.contains("# keep me\n"), "{creds}");
-        assert!(creds.contains("anthropic: sk-1\n"), "{creds}");
-        assert!(creds.contains("slack_bot: xoxb-bot\n"), "{creds}");
-        assert!(creds.contains("slack_app: xapp-app\n"), "{creds}");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(dir.path().join("credentials.yaml"))
-                .unwrap()
-                .permissions()
-                .mode();
-            assert_eq!(mode & 0o777, 0o600);
-        }
+        assert!(!dir.path().join("credentials.yaml").exists());
+        let vault = vault(&dir);
+        assert_eq!(vault.get("anthropic", 0).unwrap().as_str(), "sk-1");
+        assert_eq!(vault.get("slack_bot", 0).unwrap().as_str(), "xoxb-bot");
+        assert_eq!(vault.get("slack_app", 0).unwrap().as_str(), "xapp-app");
         let config = std::fs::read_to_string(dir.path().join("config.yaml")).unwrap();
         assert!(config.contains("agent:\n  model: x\n"), "{config}");
         assert!(config.contains("\nslack:\n"), "{config}");
@@ -397,8 +413,10 @@ mod tests {
 
     #[tokio::test]
     async fn existing_valid_bot_token_is_skipped() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("credentials.yaml"), "slack_bot: xoxb-old\n").unwrap();
+        let dir = data_dir("");
+        vault(&dir)
+            .set("slack_bot", "xoxb-old", None, "test")
+            .unwrap();
         let api = FakeApi::new(vec![
             ("apps.manifest.create", Ok(created())),
             ("auth.test", Ok(authed())),
@@ -413,14 +431,14 @@ mod tests {
         );
         assert!(!io.out.iter().any(|l| l == "bot token: "));
         assert_eq!(lock(&api.calls)[1].1, "xoxb-old");
-        let creds = std::fs::read_to_string(dir.path().join("credentials.yaml")).unwrap();
-        assert!(creds.contains("slack_bot: xoxb-old\n"), "{creds}");
-        assert!(creds.contains("slack_app: xapp-new\n"), "{creds}");
+        let vault = vault(&dir);
+        assert_eq!(vault.get("slack_bot", 0).unwrap().as_str(), "xoxb-old");
+        assert_eq!(vault.get("slack_app", 0).unwrap().as_str(), "xapp-new");
     }
 
     #[tokio::test]
     async fn invalid_bot_token_reprompts_and_invalid_owner_reprompts() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = data_dir("");
         let api = FakeApi::new(vec![
             ("apps.manifest.create", Ok(created())),
             ("auth.test", Err("invalid_auth")),
@@ -454,12 +472,7 @@ mod tests {
 
     #[tokio::test]
     async fn app_flag_updates_and_enter_keeps_owner() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("config.yaml"),
-            "slack:\n  owner: \"UKEEP1234\"\n  enabled: false\n",
-        )
-        .unwrap();
+        let dir = data_dir("slack:\n  owner: \"UKEEP1234\"\n  enabled: false\n");
         let api = FakeApi::new(vec![
             (
                 "apps.manifest.update",
@@ -494,7 +507,10 @@ mod tests {
             io.out
         );
         let config = std::fs::read_to_string(dir.path().join("config.yaml")).unwrap();
-        assert_eq!(config, "slack:\n  owner: \"UKEEP1234\"\n  enabled: true\n");
+        assert_eq!(
+            config,
+            format!("{KEY_STORE}slack:\n  owner: \"UKEEP1234\"\n  enabled: true\n")
+        );
     }
 
     #[tokio::test]

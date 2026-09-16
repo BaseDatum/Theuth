@@ -627,7 +627,7 @@ pub struct AddProvider {
     pub name: String,
     /// `https://host/v1`.
     pub base_url: String,
-    /// Bearer key; stored in `credentials.yaml`.
+    /// Bearer key; stored in the secrets vault (37) under the gateway's name.
     pub key: String,
 }
 

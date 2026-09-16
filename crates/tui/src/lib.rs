@@ -1,5 +1,6 @@
-//! Terminal UI plugin. Subscribes to `agent::AgentEvent` and
-//! `tools::ApprovalRequested`; every command is an in-process call on
+//! Terminal UI plugin. Subscribes to `agent::AgentEvent`,
+//! `tools::ApprovalRequested`, `secrets::SecretsEvent` and the rest of the
+//! bus; every command is an in-process call on
 //! [`rpc::api::Server`], the same [`rpc::api::Api`] the socket exposes.
 //! Cancels `rt.shutdown` on quit. See design doc §8.
 //!
@@ -67,6 +68,7 @@ impl runtime::Plugin for TuiPlugin {
         rt.subscribe::<Bridge, nodes::NodeEvent>(&bridge).await;
         rt.subscribe::<Bridge, artifact::ArtifactShown>(&bridge)
             .await;
+        rt.subscribe::<Bridge, secrets::SecretsEvent>(&bridge).await;
         let api = Arc::new(Server::new(rt.clone()));
         tokio::spawn(run_commands(api, commands_rx, events_tx));
 
@@ -138,6 +140,7 @@ forward!(
     link::LinkEvent => LinkEvent,
     nodes::NodeEvent => NodeEvent,
     artifact::ArtifactShown => ArtifactShown,
+    secrets::SecretsEvent => SecretsEvent,
 );
 
 /// The one place commands become `rpc::Api` calls. Each command runs in its
@@ -493,6 +496,21 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
                 .join(name);
             let path = msg(api.export_artifact(id, dest).await)?;
             UiEvent::Info(format!("exported → {}", path.display()))
+        }
+        Command::ListSecrets => UiEvent::Secrets(msg(api.list_secrets().await)?),
+        Command::SetSecret { name, value, note } => {
+            UiEvent::SecretSet(msg(api.set_secret(name, value, note).await)?)
+        }
+        Command::RestoreSecret { name, back } => {
+            UiEvent::SecretSet(msg(api.restore_secret(name, back).await)?)
+        }
+        Command::DeleteSecret(name) => {
+            msg(api.delete_secret(name.clone()).await)?;
+            UiEvent::Info(format!("{name}: deleted"))
+        }
+        Command::AnswerSecret { id, value } => {
+            msg(api.answer_secret(id, value).await)?;
+            return Ok(());
         }
         // Detached, like `computer_open`: the TUI runs on the harness host, so the path is local.
         Command::OpenPath(path) => {
@@ -869,5 +887,27 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             writeln!(out, "paired node {}", node.name)
         }
         UiEvent::NodeEvent(_) => Ok(()),
+        UiEvent::Secrets(list) => writeln!(out, "key: {}", list.key_store).and_then(|()| {
+            list.secrets.iter().try_for_each(|s| {
+                writeln!(
+                    out,
+                    "{} · v{} ({} kept) · {} · {}",
+                    s.name,
+                    s.current,
+                    s.versions.len(),
+                    s.note,
+                    s.updated
+                )
+            })
+        }),
+        UiEvent::SecretSet(info) => writeln!(out, "{}: v{} set", info.name, info.current),
+        // No editor here: the request waits out `request_timeout_secs` unless another client answers.
+        UiEvent::SecretsEvent(secrets::SecretsEvent::Requested { name, note, .. }) => {
+            writeln!(
+                out,
+                "secret requested: {name} — {note} (needs a TTY or another client)"
+            )
+        }
+        UiEvent::SecretsEvent(_) => Ok(()),
     };
 }

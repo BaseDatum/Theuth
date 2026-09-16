@@ -139,8 +139,9 @@ Shared crate `runtime` contains exactly `Plugin`, `Runtime` (+ the three
 helpers above), `SessionId`, `TurnId`. Nothing else. The tool and approval
 contracts live in `tools`; the agent's commands and its `AgentEvent` live in
 `agent`. Plugins depend on each other's crates for those types along the
-`runtime ← tools ← knowledge ← agent ← link ← {signal, slack, nodes, schedule, artifact} ← rpc ← tui ← wth`
-(`knowledge` joins the chain in 12 §9). This keeps the shared crate under
+`runtime ← tools ← secrets ← knowledge ← agent ← link ← {signal, slack, nodes, schedule, artifact} ← rpc ← tui ← wth`
+(`knowledge` joins the chain in 12 §9; `secrets` in 37 §0.10 — `web`,
+`search-providers`, `agent`, `slack`, `rpc`, `signal` depend on it). This keeps the shared crate under
 its 400-line ceiling and puts each contract next to the code that enforces
 it. (Earlier draft put the tool contract in `runtime`; dropped once the
 agent needed `tools` anyway for the registry actor type.)
@@ -175,6 +176,10 @@ hand-written schemas. A `ToolRegistry` actor (in `tools`) holds
 `HashMap<String, Box<dyn ErasedTool>>` and answers `ask(ListTools)` /
 `ask(Invoke)`. MCP servers add tools to the same registry (§6).
 
+`tools::secrets` is the one hook between the gate and `tool.call`:
+placeholder expansion in, value scrubbing out (37 §3.4). No other
+middleware exists; a second one amends this sentence first.
+
 `ToolOutput.files` is the model's view, not the user's (17 §10; 35 §13,
 added 2026-09-16): a tool may return the page-1 PNG of a document it
 rendered so a vision model sees what it made; the artifact itself is
@@ -204,9 +209,12 @@ amends this sentence first. Test: if it can affect the world without
 ### Permission gate
 
 One contract: `Risk → PolicyAction` from `tools.policy` (`{ read_only =
-"allow", mutating = "ask", destructive = "ask" }`). On `Ask` the registry
-publishes `ApprovalRequested` (Guaranteed) and awaits `ask(Resolve { id,
-decision })` from whichever UI answers first; timeout → deny. Two UI
+"allow", mutating = "ask", destructive = "ask" }`). A call whose arguments
+carry a `{{secret:…}}` placeholder resolves to at least `Ask` before the
+two switches apply (37 §0.4); 28 folds this into `consequential`. On `Ask`
+the registry publishes `ApprovalRequested` (Guaranteed) and awaits
+`ask(Resolve { id, decision })` from whichever UI answers first; timeout →
+deny. Two UI
 switches rewrite `Ask` to `Allow` and nothing else: the persisted
 `tools.approvals: false` (written back to `config.yaml` by `SetApprovals {
 session: None }`) and the in-memory per-session set (`SetApprovals {
@@ -223,6 +231,8 @@ Library: `genai` (0.7.0-beta.23 now; 0.7.0 stable due this month, migration
 from 0.6 is "minimal API changes" — starting on the beta avoids migrating
 twice). Provides native-protocol streaming, tool calls, reasoning content,
 prompt caching, 26 providers. Default provider/model comes from config.
+Provider keys come from the secrets vault through `secrets::Handle`, read
+per request (37 §3.6); `credentials.yaml` is gone.
 
 Rejected: `async-openai` (one provider), `llm-chain`/`rig` (framework
 opinions we would fight).
@@ -352,6 +362,8 @@ drain then pinned process exit — `main` now `process::exit`s after the flush
 sleep instead of waiting for the runtime). Tools never read the terminal.
 The approval prompt shows the command verbatim (`describe` in the TUI), so
 the parse-only shell that used to summarise it into command names is gone.
+Job output is scrubbed of vault values per chunk and once whole before it
+reaches the log, the bus or the model (37 §3.4).
 
 Rejected: `std::process::Command("bash", "-c")`: no in-process state, spawns
 a subprocess per call.
@@ -528,7 +540,9 @@ the terminal already does).
 ## 9. Config
 
 `figment` 0.10: `<data_dir>/config.yaml` merged with `WTH_*` env; data dir
-defaults to `~/.wth`, with `credentials.yaml`, `mcp/`, `skills/`,
+defaults to `~/.wth`, with `secrets.vault` (encrypted vault: provider keys,
+web keys, Slack tokens, the user's secrets — 37) and `secrets.key` (only
+without a keychain), `mcp/`, `skills/`,
 `knowledge/` (the OKF knowledge bundle, a git repository kept in-process by
 `gix`) and `knowledge.sqlite` (its derived FTS index; delete to rebuild),
 `schedules/` (one `<name>.md` per scheduled run, 34) and `schedule.sqlite`
@@ -539,7 +553,7 @@ next start — 35 §3.4)
 beside it — `10-knowledge.md`. No shared `Config` struct: each plugin
 extracts its own section
 (`rt.config.extract_inner::<AgentConfig>("agent")`), so `runtime` never knows
-the union of all config. Layout, first run, credentials and MCP drop-in files:
+the union of all config. Layout, first run, secrets and MCP drop-in files:
 `01-config-and-subagents.md` §1.
 
 Hot reload (v0 read everything once; added in 01 §1.4 because MCP drop-ins
@@ -559,6 +573,7 @@ crates/
   cursor/             library: Cursor AgentService adapter behind agent::backend (added in 05 §2.5; seam 12 §6)
   acp/                library: agents.yaml, ACP registry, Harness (external harness process), renderers (06)
   tools/              plugin: registry, approval, shell (brush), fs, mcp (rmcp) (§6, 01)
+  secrets/            plugin: encrypted versioned vault (provider keys included), keychain key, {{secret:NAME[:-N]}} expansion + output scrub hook, secret_* tools, masked request, --secret-* CLI (37)
   knowledge/          plugin: OKF bundle, FTS index, gix history, knowledge_* tools (added in 10; extracted from agent in 12 §9)
   agent/              plugin: genai loop, session store, frame/compaction, skills, subagents, repl, session search (§5, 07, 08, 26)
   web/                plugin: search_web / read_url, SSRF-guarded fetcher, RRF aggregator, keyless engines (16)
@@ -586,8 +601,10 @@ the `wth` bin; the rest were added by the docs named beside them, each as the ki
 the loop must own (store, frame, compact, repl); frontends do not grow it.
 New subsystems earn a plugin. `agent/src/lib.rs` re-exports; command structs
 live next to the handler that answers them (12 §8). Dependency order:
-`runtime ← tools ← knowledge ← agent ← link ← {signal, slack, nodes, schedule, artifact} ← rpc ← tui ← wth`
-(`rpc` names `link`'s and `nodes`' types like every plugin's; `signal`
+`runtime ← tools ← secrets ← knowledge ← agent ← link ← {signal, slack, nodes, schedule, artifact} ← rpc ← tui ← wth`
+(`web`, `search-providers`, `agent`, `slack`, `rpc`, `signal` depend on
+`secrets`; `agent` calls `tools::secrets::redact` from `tools`, 37 §0.10;
+`rpc` names `link`'s and `nodes`' types like every plugin's; `signal`
 imports `link::qr`; `nodes` imports `link`'s identity, initiator and record
 codec; `tui` renders `link`'s status and QR; `rpc` sends `link` its
 dispatch as a `SetDispatch` message at start, 32 §3.1 — never a handle
@@ -638,6 +655,11 @@ Workspace dependencies (versions verified 2026-09-09 via `cargo info`):
 | typst / typst-pdf / typst-render / typst-kit | 0.15 (kit: embedded-fonts, scan-fonts) | PDF compile + page render, embedded and system fonts (35) |
 | resvg | 0.47 (already transitive via typst) | SVG raster (35) |
 | csv | 1.4 | CSV parse (35) |
+| keyring | 3 | vault key in the OS keychain (37) |
+| chacha20poly1305 | 0.10 | vault encryption (37; already transitive via snow) |
+| zeroize | 1 | secret values in memory (37) |
+| aho-corasick | 1 | one-pass output scrub (37; already transitive via regex) |
+| rpassword | 7 | --secret-set without echo (37) |
 | wiremock | 0.6 dev | provider contract tests |
 
 Build prerequisites (23 §9): `cmake`, `clang`/`libclang` and `llvm-objcopy`/`llvm-nm` (brew `llvm`) for BoringSSL
@@ -741,6 +763,7 @@ Each phase ends with a runnable check, not a test suite.
 | 21 | schedule (34) | an `every: 20s` file fires a titled session twice; a `cron` reply lands in the owner DM; a laptop-sleep fire arrives once on wake | done 2026-09-16 (20 s cadence, restart reuse + `lost`, one-shot consumed, `busy` skip, model-made `demo-cron` via the tool; owner-DM delivery, timeout and laptop sleep not exercised; 34 §13) |
 | 22 | artifacts (35) | 35 §11 checks: a `.pdf` show compiles and its page-1 image comes back to the model; the card, panel and Slack thread each show it; a phone fetches it through the relay | done 2026-09-16 (headless: md/csv/svg/pdf shown, page-1 PNG to the model, compile error located `5:16`, v2 on re-show, list/get/export over RPC; TUI card, Ctrl+O and `/artifacts` on a pty; desktop webview, Slack/Signal live and the relay not exercised; 35 §14) |
 | 23 | loops (33) | a `0s` file with `until` runs until the check passes and removes itself; `schedule_done` from a run ends it; `pause`/`resume` flips the line; a run with a live child stays open; `schedule_status` reports from chat | done 2026-09-16 (all five headless; also `max_runs` cap, broken check, `removed`, restart → `lost` + resume, status from history after the file is gone; three defects found and fixed in smoke — tick wake, pending children, settle; owner-DM delivery, subtree timeout, the §2 port loop with an external harness not exercised; 33 §11) |
+| 24 | secrets (37) | a `shell` echoing `{{secret:T}}` shows the placeholder in every frontend and in `messages.body`; `secret_capture` stores a token the transcript never contains; a rotated key is reachable as `:-1` and restorable; a data dir with `credentials.yaml` starts with the file imported and gone; a placeholder in `read_url` asks | done 2026-09-16 (all headless with a real model, plus the TUI on a pty; three leaks found and fixed in smoke — expanded job `command` in `JobEvent`, capture output through `JobEvent`, pty tail; keychain key store and the desktop panes not exercised; 37 §15) |
 
 Known gaps carried forward: cancel/error paths in the loop are code-reviewed,
 not smoke-tested; the `Jobs` actor kills every process group on shutdown

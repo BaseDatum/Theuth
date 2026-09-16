@@ -93,12 +93,12 @@ and `Device`; everything else is the same row shape.
 
 For a genai namespace `ns`, in this order:
 
-1. `credentials.yaml` has `ns:` → API key (unchanged).
+1. the secrets vault (37) has `ns` → API key (read per request, 37 §3.6).
 2. `<data_dir>/oauth/<ns>.json` exists → OAuth.
 3. the adapter's default env var is set → API key (unchanged).
 
-The explicit key stays first (doc 01 §1.3: "the file the user edited on
-purpose"); a login is also on purpose but a user who set a key *and* logged
+The explicit key stays first (doc 01 §1.3: the vault holds what the user
+entered on purpose); a login is also on purpose but a user who set a key *and* logged
 in most likely wants the key. `configured(ns)` (doc 02 §1) gains clause 2, so
 `/model` lists OpenAI models right after login.
 

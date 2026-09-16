@@ -10,6 +10,7 @@ import type { LinkEvent } from '@/rpc/bindings/LinkEvent'
 import type { McpProgress } from '@/rpc/bindings/McpProgress'
 import type { NodeEvent } from '@/rpc/bindings/NodeEvent'
 import type { ScheduleEvent } from '@/rpc/bindings/ScheduleEvent'
+import type { SecretsEvent } from '@/rpc/bindings/SecretsEvent'
 import type { SignalEvent } from '@/rpc/bindings/SignalEvent'
 import type { SlackEvent } from '@/rpc/bindings/SlackEvent'
 import type { ArtifactShown, LoginFinished, SessionDeleted, TitleChanged, ToolCallProgress } from '@/rpc/extra'
@@ -46,5 +47,6 @@ export type WireEvent =
   | LinkEvent
   | NodeEvent
   | ScheduleEvent
+  | SecretsEvent
   | ArtifactShown
   | Lagged

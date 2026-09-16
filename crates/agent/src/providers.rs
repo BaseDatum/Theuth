@@ -1,12 +1,13 @@
 //! Named OpenAI-compatible gateways (`<data_dir>/providers.yaml`) plus their
-//! keys in `credentials.yaml`. User-facing ids are `name/model`; genai sees
-//! the OpenAI adapter with a rewritten endpoint.
+//! keys in the secrets vault (37 §3.6), under the gateway's name. User-facing
+//! ids are `name/model`; genai sees the OpenAI adapter with a rewritten endpoint.
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
 use std::path::Path;
 
 use genai::adapter::AdapterKind;
+use kameo::actor::ActorRef;
 use models::{Limit, Model, Provider};
 use serde::{Deserialize, Serialize};
 
@@ -15,7 +16,7 @@ use serde::{Deserialize, Serialize};
 pub(crate) struct Gateway {
     /// Base URL, trailing slash (`https://api.example/v1/`).
     pub base_url: String,
-    /// API key from `credentials.yaml`.
+    /// API key from the secrets vault.
     pub key: String,
 }
 
@@ -76,21 +77,33 @@ pub fn normalize_url(raw: &str) -> Result<String, String> {
     Ok(s)
 }
 
-/// Gateways that have both a `providers.yaml` row and a key.
-pub(crate) fn load(data_dir: &Path, creds: &HashMap<String, String>) -> HashMap<String, Gateway> {
+/// Gateways that have both a `providers.yaml` row and a key in the vault.
+/// `vault: None` (the vault failed to open) yields no gateways.
+pub(crate) fn load(data_dir: &Path, vault: Option<&secrets::Vault>) -> HashMap<String, Gateway> {
+    let Some(vault) = vault else {
+        return HashMap::new();
+    };
     let mut out = HashMap::new();
     for (name, url) in read_file(data_dir) {
-        if let Some(key) = creds.get(&name).filter(|k| !k.is_empty()) {
+        if let Some(key) = vault.get(&name, 0).filter(|k| !k.is_empty()) {
             out.insert(
                 name,
                 Gateway {
                     base_url: url,
-                    key: key.clone(),
+                    key: key.to_string(),
                 },
             );
         }
     }
     out
+}
+
+/// The running secrets actor, or why a gateway cannot be saved.
+pub fn secrets_actor() -> Result<ActorRef<secrets::SecretsActor>, String> {
+    ActorRef::<secrets::SecretsActor>::lookup(secrets::SECRETS_ACTOR)
+        .ok()
+        .flatten()
+        .ok_or_else(|| "secrets vault unavailable".to_owned())
 }
 
 fn read_file(data_dir: &Path) -> BTreeMap<String, String> {
@@ -127,54 +140,6 @@ fn write_file(data_dir: &Path, rows: &BTreeMap<String, String>) -> Result<(), St
     };
     let text = serde_yaml::to_string(&file).map_err(|e| e.to_string())?;
     atomic_write(&path, text.as_bytes(), 0o644)
-}
-
-/// Insert or replace `name: value` in a flat YAML map file (credentials.yaml).
-/// Comments and unknown lines stay; the matching key line is rewritten.
-pub fn upsert_credential(data_dir: &Path, name: &str, value: &str) -> Result<(), String> {
-    let path = data_dir.join("credentials.yaml");
-    let text = match std::fs::read_to_string(&path) {
-        Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => return Err(e.to_string()),
-    };
-    let prefix = format!("{name}:");
-    let rendered = match serde_yaml::to_string(&HashMap::from([(name, value)])) {
-        Ok(s) => s,
-        Err(e) => return Err(e.to_string()),
-    };
-    let line = rendered.trim_end().to_owned();
-    let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
-    match lines.iter().position(|l| {
-        let t = l.trim_start();
-        !t.starts_with('#') && t.starts_with(&prefix)
-    }) {
-        Some(i) => lines[i] = line,
-        None => {
-            if !lines.is_empty() && !lines.last().is_some_and(|l| l.is_empty()) {
-                lines.push(String::new());
-            }
-            lines.push(line);
-        }
-    }
-    atomic_write(&path, (lines.join("\n") + "\n").as_bytes(), 0o600)
-}
-
-fn remove_credential(data_dir: &Path, name: &str) -> Result<(), String> {
-    let path = data_dir.join("credentials.yaml");
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return Ok(());
-    };
-    let prefix = format!("{name}:");
-    let lines: Vec<String> = text
-        .lines()
-        .filter(|l| {
-            let t = l.trim_start();
-            t.starts_with('#') || !t.starts_with(&prefix)
-        })
-        .map(str::to_owned)
-        .collect();
-    atomic_write(&path, (lines.join("\n") + "\n").as_bytes(), 0o600)
 }
 
 /// Merge `name`'s models into `<data_dir>/models.json` (user file; bundled is untouched).
@@ -236,9 +201,11 @@ fn remove_models(data_dir: &Path, name: &str) -> Result<(), String> {
     std::fs::write(&path, text + "\n").map_err(|e| e.to_string())
 }
 
-/// Persist a gateway (url + key + optional catalog models). Overwrites the same name.
-pub fn save(
+/// Persist a gateway: key into the vault (source `provider add`), url into
+/// `providers.yaml`, optional catalog models. Overwrites the same name.
+pub async fn save(
     data_dir: &Path,
+    actor: &ActorRef<secrets::SecretsActor>,
     name: &str,
     base_url: &str,
     key: &str,
@@ -249,21 +216,41 @@ pub fn save(
     if key.trim().is_empty() {
         return Err("api key is empty".into());
     }
+    actor
+        .ask(secrets::Set {
+            name: name.to_owned(),
+            value: key.trim().to_owned(),
+            note: Some(format!("gateway {name} key")),
+            source: "provider add".into(),
+        })
+        .await
+        .map_err(|e| e.to_string())?;
     let mut rows = read_file(data_dir);
     rows.insert(name.to_owned(), base_url);
     write_file(data_dir, &rows)?;
-    upsert_credential(data_dir, name, key.trim())?;
     write_models(data_dir, name, models)
 }
 
-/// Drop a gateway's url, key, and catalog models.
-pub fn remove(data_dir: &Path, name: &str) -> Result<(), String> {
+/// Drop a gateway's url, key, and catalog models. A key already gone from
+/// the vault (the user deleted it) is not an error.
+pub async fn remove(
+    data_dir: &Path,
+    actor: &ActorRef<secrets::SecretsActor>,
+    name: &str,
+) -> Result<(), String> {
     let mut rows = read_file(data_dir);
     if rows.remove(name).is_none() {
         return Err(format!("no provider `{name}`"));
     }
     write_file(data_dir, &rows)?;
-    remove_credential(data_dir, name)?;
+    if let Err(e) = actor
+        .ask(secrets::Delete {
+            name: name.to_owned(),
+        })
+        .await
+    {
+        tracing::warn!(provider = name, "removing key from the vault: {e}");
+    }
     remove_models(data_dir, name)
 }
 
@@ -308,47 +295,41 @@ mod tests {
         assert!(normalize_url("not a url").is_err());
     }
 
-    #[test]
-    fn save_roundtrip_and_remove() {
+    #[tokio::test]
+    async fn save_roundtrip_and_remove() {
+        use kameo::actor::Spawn;
+        use std::sync::Arc;
         let dir = std::env::temp_dir().join(format!("wth-prov-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
+        let vault = Arc::new(secrets::Vault::open(&dir, secrets::KeyStore::File).unwrap());
+        let rt = runtime::Runtime::new(figment::Figment::new(), dir.clone());
+        let actor = secrets::SecretsActor::spawn(secrets::SecretsActor::new(
+            vault.clone(),
+            rt,
+            std::time::Duration::from_secs(1),
+        ));
         save(
             &dir,
+            &actor,
             "rwx",
             "https://api.ai.rwx.dev/v1",
             "sk-test",
             &["m1".into()],
         )
+        .await
         .unwrap();
-        let creds = HashMap::from([("rwx".into(), "sk-test".into())]);
-        let g = load(&dir, &creds);
+        assert_eq!(vault.get("rwx", 0).unwrap().as_str(), "sk-test");
+        let g = load(&dir, Some(&vault));
         assert_eq!(g["rwx"].base_url, "https://api.ai.rwx.dev/v1/");
         assert_eq!(g["rwx"].key, "sk-test");
         let models: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(dir.join("models.json")).unwrap())
                 .unwrap();
         assert_eq!(models["rwx"]["models"]["m1"]["id"], "m1");
-        remove(&dir, "rwx").unwrap();
-        assert!(load(&dir, &creds).is_empty());
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn credential_upsert_keeps_comments() {
-        let dir = std::env::temp_dir().join(format!("wth-cred-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join("credentials.yaml"),
-            "# keep me\n# openai: sk-...\nanthropic: sk-ant-1\n",
-        )
-        .unwrap();
-        upsert_credential(&dir, "rwx", "sk-new").unwrap();
-        upsert_credential(&dir, "anthropic", "sk-ant-2").unwrap();
-        let text = std::fs::read_to_string(dir.join("credentials.yaml")).unwrap();
-        assert!(text.contains("# keep me"));
-        assert!(text.contains("# openai: sk-..."));
-        assert!(text.contains("anthropic: sk-ant-2"));
-        assert!(text.contains("rwx: sk-new"));
+        remove(&dir, &actor, "rwx").await.unwrap();
+        assert!(vault.get("rwx", 0).is_none());
+        assert!(load(&dir, Some(&vault)).is_empty());
+        assert!(load(&dir, None).is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -2017,7 +2017,16 @@ impl Message<AddProvider> for Agents {
                 Vec::new()
             }
         };
-        crate::providers::save(&self.rt.data_dir, &m.name, &base_url, key, &models)?;
+        let secrets = crate::providers::secrets_actor()?;
+        crate::providers::save(
+            &self.rt.data_dir,
+            &secrets,
+            &m.name,
+            &base_url,
+            key,
+            &models,
+        )
+        .await?;
         self.auth
             .gateways
             .write()
@@ -2046,7 +2055,8 @@ impl Message<RemoveProvider> for Agents {
         m: RemoveProvider,
         _: &mut Context<Self, Self::Reply>,
     ) -> Result<(), String> {
-        crate::providers::remove(&self.rt.data_dir, &m.name)?;
+        let secrets = crate::providers::secrets_actor()?;
+        crate::providers::remove(&self.rt.data_dir, &secrets, &m.name).await?;
         self.auth
             .gateways
             .write()
@@ -2365,23 +2375,28 @@ fn compacted(e: Epoch) -> HistoryEntry {
     }
 }
 
-/// Key sources in precedence order (design doc 05 §2.2): `credentials.yaml`,
-/// then a `/login`, then the adapter's env var (left to genai).
+/// Key sources in precedence order (design doc 05 §2.2, 37 §0.7): the secrets
+/// vault, then a `/login`, then the adapter's env var (left to genai).
 #[derive(Clone)]
 pub(crate) struct Auth {
-    pub(crate) creds: Arc<HashMap<String, String>>,
+    /// The vault (37 §3.7); `None` when it failed to open — keys then come
+    /// from the environment and `/login` only.
+    pub(crate) vault: Option<Arc<secrets::Vault>>,
     pub(crate) oauth: oauth::Store,
     /// Named OpenAI-compatible gateways; interior-mutable so `/provider add` is live.
     pub(crate) gateways: Arc<RwLock<HashMap<String, crate::providers::Gateway>>>,
 }
 
 impl Auth {
-    /// A login is in force for genai namespace `ns`: no key in
-    /// `credentials.yaml` and tokens on disk.
+    /// The current vault value for genai namespace `ns`, read live.
+    pub(crate) fn key(&self, ns: &str) -> Option<String> {
+        self.vault.as_ref()?.get(ns, 0).map(|k| k.to_string())
+    }
+
+    /// A login is in force for genai namespace `ns`: no key in the vault and
+    /// tokens on disk.
     pub(crate) fn login(&self, ns: &str) -> bool {
-        !self.creds.contains_key(ns)
-            && oauth::provider(ns).is_some()
-            && self.oauth.load(ns).is_some()
+        self.key(ns).is_none() && oauth::provider(ns).is_some() && self.oauth.load(ns).is_some()
     }
 
     /// OpenAI-compatible gateway for user-facing provider id `ns`.
@@ -2428,16 +2443,17 @@ fn check_files(files: &[PathBuf]) -> Result<(), String> {
     Ok(())
 }
 
-/// genai client whose keys come from `credentials.yaml`, falling back to each
-/// adapter's env var. A login in force (design doc 05 §2.3) rewrites the
-/// target instead: OpenAI → the ChatGPT Codex backend; Anthropic → the same
-/// Messages API with the Claude Code bearer and betas.
+/// genai client whose keys come from the secrets vault (read per request, so
+/// a new key is live), falling back to each adapter's env var. A login in
+/// force (design doc 05 §2.3) rewrites the target instead: OpenAI → the
+/// ChatGPT Codex backend; Anthropic → the same Messages API with the Claude
+/// Code bearer and betas.
 fn client(auth: Auth) -> anyhow::Result<Client> {
-    let keys = auth.creds.clone();
+    let keys = auth.clone();
     Ok(Client::builder()
         .with_auth_resolver_fn(move |m: ModelIden| {
-            Ok(match keys.get(m.adapter_kind.as_lower_str()) {
-                Some(k) => Some(AuthData::Key(k.clone())),
+            Ok(match keys.key(m.adapter_kind.as_lower_str()) {
+                Some(k) => Some(AuthData::Key(k)),
                 None => AdapterKind::default_key_env_name(&m.adapter_kind).map(AuthData::from_env),
             })
         })
@@ -2513,12 +2529,12 @@ const ANTHROPIC_BETAS: &str =
 const CLAUDE_CODE_UA: &str = "claude-cli/2.1.257 (external, cli)";
 
 /// The auth-resolver rule as a predicate over genai namespaces: a key in
-/// `creds`, a login on disk, the adapter's default env var set, or an
+/// the vault, a login on disk, the adapter's default env var set, or an
 /// adapter needing no key (`ollama`). `cursor` is not a genai adapter: only
 /// a login configures it.
 fn configured(auth: Auth) -> Arc<dyn Fn(&str) -> bool + Send + Sync> {
     Arc::new(move |ns: &str| {
-        auth.creds.contains_key(ns)
+        auth.key(ns).is_some()
             || auth.gateway(ns).is_some()
             || auth.login(ns)
             || AdapterKind::from_lower_str(ns).is_some_and(|k| {
@@ -2540,10 +2556,20 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
     }
     let cfg = Arc::new(cfg);
     let store = Store::open(&rt.data_dir.join("sessions.sqlite")).await?;
-    let creds = runtime::credentials(&rt.data_dir);
-    let gateways = crate::providers::load(&rt.data_dir, &creds);
+    // Plugins start in order and `secrets` precedes `agent`, so the actor is
+    // registered by now or never (its vault failed to open).
+    let vault = match ActorRef::<secrets::SecretsActor>::lookup(secrets::SECRETS_ACTOR) {
+        Ok(Some(actor)) => actor.ask(secrets::Handle).await.ok(),
+        _ => None,
+    };
+    if vault.is_none() {
+        tracing::error!(
+            "secrets vault unavailable; provider keys come from the environment and /login only"
+        );
+    }
+    let gateways = crate::providers::load(&rt.data_dir, vault.as_deref());
     let auth = Auth {
-        creds: Arc::new(creds),
+        vault,
         oauth: oauth::Store::new(&rt.data_dir),
         gateways: Arc::new(RwLock::new(gateways)),
     };
@@ -2617,11 +2643,12 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
                 plugin: "agent",
                 text: format!(
                     "This harness is `wth`; its state is under {d}: config.yaml (every plugin's section: \
-                     `agent.model` = default `provider/model`, `tools.policy`, `rpc`, `web`, `knowledge`, `surface`, `signal`), \
-                     credentials.yaml (provider -> API key, mode 0600), prompt.md (standing instructions, read every call), \
+                     `agent.model` = default `provider/model`, `tools.policy`, `rpc`, `web`, `knowledge`, `surface`, `signal`, `secrets`), \
+                     secrets.vault (encrypted; provider keys and every other secret — secret_list shows the names, never values), \
+                     prompt.md (standing instructions, read every call), \
                      skills/ (markdown skills; this index), knowledge/, sessions.sqlite, logs/wth.log.<date>. \
                      Load the `harness` skill before editing any of them; it has the full layout and every key. \
-                     config.yaml and credentials.yaml are read once at startup (mcp/, skills/ and prompt.md are live); \
+                     config.yaml is read once at startup (mcp/, skills/, prompt.md and the vault are live); \
                      the user switches the running model with /model.",
                     d = data_dir.display()
                 ),

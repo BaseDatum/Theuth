@@ -441,6 +441,7 @@ mod tests {
                 ToolCx {
                     session: SessionId::new(),
                     call_id: "c".into(),
+                    quiet: false,
                 },
             )
             .await
@@ -471,6 +472,7 @@ mod tests {
                 ToolCx {
                     session: SessionId::new(),
                     call_id: "c".into(),
+                    quiet: false,
                 },
             )
             .await

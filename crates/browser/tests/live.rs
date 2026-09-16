@@ -122,6 +122,7 @@ impl Kit {
         let cx = ToolCx {
             session: self.session,
             call_id: "c1".to_owned(),
+            quiet: false,
         };
         tool.call(args, cx).await.expect(name)
     }

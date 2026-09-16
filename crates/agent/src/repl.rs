@@ -829,7 +829,9 @@ impl Repl {
         self.finish_output(body, is_error)
     }
 
-    /// Prepend the pending `<runtime>` line, fill in `(no output)`.
+    /// Prepend the pending `<runtime>` line, fill in `(no output)`, and scrub
+    /// known secret values (37 §3.4: `open('/cwd/.env').read()` after a
+    /// `write_file` that expanded a placeholder).
     fn finish_output(&mut self, body: String, is_error: bool) -> ToolOutput {
         let body = if body.is_empty() {
             "(no output)".to_owned()
@@ -840,11 +842,13 @@ impl Repl {
             Some(line) => format!("{line}\n{body}"),
             None => body,
         };
-        if is_error {
+        let mut out = if is_error {
             ToolOutput::err(content)
         } else {
             ToolOutput::ok(content)
-        }
+        };
+        tools::secrets::redact_output(&mut out);
+        out
     }
 
     /// Hidden feed: bind `inputs` as globals and read back `(name, type, len)`
@@ -1053,6 +1057,7 @@ impl Repl {
                                 name: c.name.clone(),
                                 args: c.args.clone(),
                                 session: cx.session,
+                                quiet: false,
                             }))
                             .send()
                     }))

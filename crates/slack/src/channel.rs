@@ -55,6 +55,14 @@ pub fn threads_path(data_dir: &Path) -> PathBuf {
     data_dir.join("slack").join("threads.json")
 }
 
+/// The 37 §7 line: where to enter a requested secret. Never answerable here.
+#[must_use]
+pub fn secret_notice(name: &str, note: &str) -> String {
+    format!(
+        "wth asks for secret `{name}` — {note}. Enter it in the desktop app, the TUI (/secrets add {name}) or `wth --secret-set {name}`; it will not be read from this chat."
+    )
+}
+
 /// Bounded FIFO set of recently seen envelope keys.
 #[derive(Debug, Default)]
 pub struct RecentKeys {
@@ -195,6 +203,7 @@ enum Event {
     Ask(AskRequested),
     AskDone(AskResolved),
     Artifact(ArtifactShown),
+    Secret(secrets::SecretsEvent),
 }
 
 /// Bus subscriber: forwards into the ordered router.
@@ -245,6 +254,13 @@ impl Message<ArtifactShown> for Bus {
     }
 }
 
+impl Message<secrets::SecretsEvent> for Bus {
+    type Reply = ();
+    async fn handle(&mut self, m: secrets::SecretsEvent, _: &mut Context<Self, ()>) {
+        let _ = self.tx.send(Event::Secret(m));
+    }
+}
+
 /// An acked, deduplicated Socket Mode envelope (21 §7).
 pub enum Inbound {
     /// Events API payload.
@@ -277,6 +293,8 @@ enum Out {
     Child(SessionId, AgentEvent),
     /// A child's approval pending (`Some(tool)`) or answered (`None`).
     ChildApproval(SessionId, Option<String>),
+    /// One markdown line for this thread (the 37 §7 secret notice).
+    Note(String),
 }
 
 /// `auth.test` identity plus the owner DM (21 §11).
@@ -454,6 +472,7 @@ async fn run(
     chan.rt.subscribe::<Bus, AskRequested>(&bus).await;
     chan.rt.subscribe::<Bus, AskResolved>(&bus).await;
     chan.rt.subscribe::<Bus, ArtifactShown>(&bus).await;
+    chan.rt.subscribe::<Bus, secrets::SecretsEvent>(&bus).await;
     let inbound = {
         let chan = Arc::clone(&chan);
         tokio::spawn(async move {
@@ -1382,6 +1401,41 @@ impl Channel {
                     .worker(&key, &thread)
                     .send(Out::Artifact(Box::new(m.artifact)));
             }
+            // 37 §7: the model asked the user for a secret; say where to enter it
+            // (never here). The session's thread, else the nearest bound
+            // ancestor's, else the owner DM (Ask's routing).
+            Event::Secret(secrets::SecretsEvent::Requested {
+                session,
+                name,
+                note,
+                ..
+            }) => {
+                let md = secret_notice(&name, &note);
+                let target = self.bound(session).or_else(|| {
+                    self.ancestors(session)
+                        .into_iter()
+                        .next()
+                        .map(|(k, t, _)| (k, t))
+                });
+                match target {
+                    Some((key, thread)) => {
+                        let _ = self.worker(&key, &thread).send(Out::Note(md));
+                    }
+                    None => {
+                        if self.approvals != ApprovalsScope::All {
+                            return;
+                        }
+                        let Some(dm) = self.identity.get().and_then(|i| i.owner_dm.as_deref())
+                        else {
+                            return;
+                        };
+                        if let Err(e) = self.api.post_markdown(dm, None, &md).await {
+                            tracing::debug!(error = %e, "secret notice to the owner DM failed");
+                        }
+                    }
+                }
+            }
+            Event::Secret(_) => {}
         }
     }
 
@@ -1654,6 +1708,7 @@ impl Worker {
                     Some(Out::Spawned { child, name, link, depth }) => self.spawned(child, name, link, depth).await,
                     Some(Out::Child(session, ev)) => self.child(session, &ev).await,
                     Some(Out::Artifact(a)) => self.artifact(*a).await,
+                    Some(Out::Note(md)) => { self.post_markdown_in_thread(&md).await; }
                     Some(Out::ChildApproval(session, tool)) => {
                         if let Some(row) = self.rows.iter_mut().find(|r| r.session == session) {
                             self.rows_dirty |= row.approval(tool.as_deref());

@@ -2,7 +2,7 @@
 
 Status: draft v0 · 2026-09-09 · extends `00-architecture.md` §5, §9
 
-Two changes. (1) Config moves to `~/.wth/` as YAML with credentials and MCP
+Two changes. (1) Config moves to `~/.wth/` as YAML with secrets and MCP
 servers split out. (2) Subagents stop being a blocking tool call: the parent
 keeps working, the child's result arrives as a new turn, and peers message each
 other through one tool. Both are modelled on oh-my-pi (`docs/tools/task.md`,
@@ -15,7 +15,8 @@ other through one tool. Both are modelled on oh-my-pi (`docs/tools/task.md`,
 ```
 ~/.wth/
   config.yaml          every plugin reads its own section (unchanged rule)
-  credentials.yaml     provider -> api key; mode 0600; never merged into config; also web keys (`brave`, `firecrawl`, `github`; doc 16 §6)
+  secrets.vault        encrypted vault: provider keys, gateway keys, web keys (`brave`, `firecrawl`, `github`; doc 16 §6), Slack tokens, the user's secrets (doc 37)
+  secrets.key          vault key, 0600 — only without an OS keychain (doc 37 §3.5)
   oauth/               /login tokens: <ns>.json (providers), mcp/<server>.json; 0600 (doc 05)
   acp/agents.yaml      external ACP harnesses: name -> {command, args, env, description} (doc 06)
   acp/registry.json    cached ACP registry (24 h)
@@ -65,37 +66,14 @@ Rejected: TOML (user preference; figment makes it a one-token swap either
 way), project-local config (`./.wth/`) — the harness runs for the user, not
 per repository; add when a real per-directory need shows up.
 
-### 1.3 `credentials.yaml`
+### 1.3 `secrets.vault` (credentials)
 
-```yaml
-anthropic: sk-ant-...
-openai: sk-...
-gemini: AIza...
-```
-
-Keys are genai `AdapterKind::as_lower_str()` names, so the file needs no
-schema of its own and gains providers as genai does. Wiring, in
-`agent::AgentPlugin::start`:
-
-```rust
-let creds: HashMap<String, String> = read yaml or empty;   // missing file is fine
-Client::builder().with_auth_resolver_fn(move |m: ModelIden| {
-    Ok(match creds.get(m.adapter_kind.as_lower_str()) {
-        Some(k) => Some(AuthData::Key(k.clone())),
-        None => m.adapter_kind.default_key_env_name().map(AuthData::FromEnv),
-    })
-})
-```
-
-Precedence: file beats login beats env. Reason: the file is the thing the
-user edited on purpose; env vars leak in from shells and CI. A `/login`
-(`oauth/<ns>.json`, doc 05) sits between them. Startup warns (not fails) if
-the file mode is wider than 0600 or if the configured model's provider has
-none of the three; the model call then fails with genai's own error.
-
-Rejected: OS keychain (`keyring` crate) — extra dep, platform prompts, and the
-sqlite/token already live unencrypted in the same directory; revisit with the
-Tauri build. Encrypting the file — same argument.
+Provider keys are secrets in the encrypted vault of doc 37, under the genai
+adapter names (`anthropic`, `openai`, …) plus gateway names, web keys and
+Slack tokens. Enter them with `/secrets add`, Settings › Secrets, `/provider
+add`, or `wth --secret-set <name>` on a box without a UI. Precedence: vault
+beats `/login` beats env. An existing `credentials.yaml` is imported and
+removed on the first start.
 
 ### 1.4 `mcp/` — drop-in server files, hot-reloaded
 
@@ -221,8 +199,9 @@ server-driven tool changes are rare).
 ### 1.5 First run
 
 `wth` creates `~/.wth/`, writes a commented `config.yaml` (same defaults as
-today's `DEFAULT_CONFIG`, in YAML), an empty `credentials.yaml` with a comment
-listing the provider keys, and an empty `mcp/`. Existing behaviour, new format.
+today's `DEFAULT_CONFIG`, in YAML) and an empty `mcp/`. Existing behaviour,
+new format. No credentials template: the vault is created on the first
+`set` (37 §3.5).
 
 ## 2. Detached subagents
 
@@ -487,7 +466,7 @@ set) — they would be one more markdown-with-frontmatter loader next to skills.
 
 Each step leaves `wth` runnable.
 
-1. Config: `~/.wth`, YAML, `credentials.yaml` resolver, `mcp/` structural
+1. Config: `~/.wth`, YAML, the credentials-file resolver (since replaced by the secrets vault, 37), `mcp/` structural
    loader + watcher + `config.yaml` gate, remove `tools.mcp` +
    `agent.subagent_model`. Check: fresh `~/.wth` created; model call
    authenticates from the file with `ANTHROPIC_API_KEY` unset; while `wth`
@@ -509,8 +488,8 @@ Each step leaves `wth` runnable.
 ## 4. Status (2026-09-09)
 
 All five steps shipped and verified against the real binary, headless over
-RPC, with `ANTHROPIC_API_KEY` unset (key read from `credentials.yaml`, mode
-600): a Claude-Desktop-style file dropped into `mcp/` made unprefixed `echo`
+RPC, with `ANTHROPIC_API_KEY` unset (key read from the then credentials
+file, mode 600; the vault since 37): a Claude-Desktop-style file dropped into `mcp/` made unprefixed `echo`
 callable ~1 s later with no approval; `mcp/config.yaml` `echo: ask` produced an
 `ApprovalRequested`, `deny` hid it, deleting the file removed all 13 tools and
 left no `server-everything` process. Parent spawned `a`/`b` in one message,

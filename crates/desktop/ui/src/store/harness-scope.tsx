@@ -8,7 +8,14 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { type ReactNode, createContext, useContext } from 'react'
 import { type StoreApi, useStore } from 'zustand'
 import { useHarnesses } from '@/link/harnesses'
-import { type ApprovalsApi, type AsksApi, createApprovals, createAsks } from './approvals'
+import {
+  type ApprovalsApi,
+  type AsksApi,
+  type SecretRequestsApi,
+  createApprovals,
+  createAsks,
+  createSecretRequests,
+} from './approvals'
 import { type ConnectionApi, createConnection } from './connection'
 import { type SessionsApi, createSessions } from './sessions'
 
@@ -18,6 +25,7 @@ export type Stores = {
   sessions: SessionsApi
   approvals: ApprovalsApi
   asks: AsksApi
+  secretRequests: SecretRequestsApi
   connection: ConnectionApi
   qc: QueryClient
   /** The live `subscribe_events` unsubscribe, while this harness is the active one. */
@@ -35,6 +43,7 @@ export function scope(id: string): Stores {
       sessions: createSessions(),
       approvals: createApprovals(),
       asks: createAsks(),
+      secretRequests: createSecretRequests(),
       connection: createConnection(),
       qc: new QueryClient({ defaultOptions: { queries: { staleTime: 30_000, retry: 1 } } }),
       attached: null,

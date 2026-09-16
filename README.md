@@ -7,7 +7,7 @@ Adding a plugin: [`docs/plugins.md`](docs/plugins.md).
 
 ```sh
 just setup                 # rustup toolchain; `just toolchain` prints its bin dir
-export ANTHROPIC_API_KEY=… # any genai provider works; default model in config
+export ANTHROPIC_API_KEY=… # any genai provider works; default model in config   # or: wth --secret-set anthropic
 just run                   # terminal UI; data dir is ~/.wth (--data-dir / WTH_DATA_DIR relocate it)
 just run -- --headless     # JSON-RPC only, ws://127.0.0.1:7777 with <data_dir>/token
 just run -- --resume <id>  # reopen a session
@@ -49,7 +49,11 @@ model gets a job id and is woken with `<job_result>` when it exits —
 [`docs/design/14-jobs.md`](docs/design/14-jobs.md); `start` / `send` /
 `screen` / `wait` run a command on a pseudo-terminal (REPL, server, TUI) and
 drive it: type, read the rendered 120×40 screen, wait for a prompt or a port —
-[`docs/design/22-pty.md`](docs/design/22-pty.md)), `browser` (sixteen
+[`docs/design/22-pty.md`](docs/design/22-pty.md)), `secrets` (an encrypted,
+versioned vault the agent uses by name but never reads: `{{secret:NAME}}` in
+any tool argument is swapped for the value at run time and scrubbed from the
+output; holds the provider, web and Slack keys too —
+[`docs/design/37-secrets.md`](docs/design/37-secrets.md)), `browser` (sixteen
 `browser_*` tools: an embedded headless browser (obscura) with screenshots —
 `browser_open`, `_read`, `_elements`, `_click`, `_fill`, `_type`, `_press`,
 `_select`, `_scroll`, `_wait`, `_eval`, `_back`, `_screenshot`, `_tabs`,
@@ -101,7 +105,7 @@ Typst; a content-addressed store under `~/.wth/artifacts/` —
 Config (`~/.wth/`, created on first run; details in
 [`docs/design/01-config-and-subagents.md`](docs/design/01-config-and-subagents.md) §1):
 
-- `config.yaml` — every plugin reads its own section; `WTH_<SECTION>__<KEY>` env overrides. `agent.model` is a models.dev id (`anthropic/claude-sonnet-4-5`); `/model` rewrites that one line in place. The `agent`, `tools`, `knowledge`, `web`, `search_providers`, `browser`, `computer`, `link`, `nodes`, `schedule`, `artifact` and `slack` sections with their defaults:
+- `config.yaml` — every plugin reads its own section; `WTH_<SECTION>__<KEY>` env overrides. `agent.model` is a models.dev id (`anthropic/claude-sonnet-4-5`); `/model` rewrites that one line in place. The `agent`, `tools`, `secrets`, `knowledge`, `web`, `search_providers`, `browser`, `computer`, `link`, `nodes`, `schedule`, `artifact` and `slack` sections with their defaults:
 
   ```yaml
   agent:
@@ -119,15 +123,19 @@ Config (`~/.wth/`, created on first run; details in
     job_timeout_secs: 1800 # kill the process group after this; result exit="timeout"
     pty_ready_timeout_secs: 30   # `start` readiness wait when `ready` gives no timeout
     ask_timeout_secs: 1800  # `ask_user` gives up (the model sees "no answer") after this
+  secrets:                       # design doc 37; `/secrets`, Settings › Secrets, `wth --secret-set`
+    key_store: auto              # auto | keychain | file — where the vault key lives; auto = keychain when one answers, else <data_dir>/secrets.key (0600) with a warning
+    tools: true                  # false: no secret_* tools, no prompt block, `{{secret:…}}` stays literal, nothing is scrubbed; the vault, /secrets and the harness's own keys are unaffected
+    request_timeout_secs: 1800   # `secret_request` gives up (the model sees "no answer") after this
   knowledge:
     enabled: true          # false: no store, no knowledge_* tools, no hints, no harvest
   web:
     engines: [duckduckgo, wikipedia, arxiv, github]   # keyless; search_web / read_url
   search_providers:
-    firecrawl: { enabled: true }   # on by default; active once `firecrawl: <key>` is in credentials.yaml (free tier at firecrawl.dev)
+    firecrawl: { enabled: true }   # on by default; active once a `firecrawl` secret is in the vault (free tier at firecrawl.dev)
     # searxng: { base_url: http://127.0.0.1:8080 }
     # openserp: { base_url: http://127.0.0.1:7000 }
-    # brave: {}                    # key `brave` in credentials.yaml
+    # brave: {}                    # secret `brave` in the vault
   browser:                        # design doc 23
     enabled: true
     stealth: true                 # wreq TLS fingerprint + tracker blocklist (§0.4)
@@ -166,12 +174,12 @@ Config (`~/.wth/`, created on first run; details in
   ```
 
   The Python runtime is always on: the worker is the `wth` binary itself (`wth subprocess`, nothing to install); every tool is an `async` function inside the sandbox and state persists across turns.
-- `credentials.yaml` — `provider: key` (genai adapter names), mode 0600; beats env vars. A provider with a key, a login, or its env var is "configured": `/model` lists only those. Named OpenAI-compatible gateways (`/provider add`) store their key here under the gateway name. Web search keys (`firecrawl`, `brave`, optional `github`) and the Slack tokens (`slack_bot`, `slack_app`) live here too.
-- `providers.yaml` — named OpenAI-compatible gateways (`name: { base_url }`); keys live in `credentials.yaml`. `/provider add` writes both and fetches `GET {base}models` into `models.json`.
+- `secrets.vault` — encrypted (XChaCha20-Poly1305) vault of named, versioned secrets; the key lives in the OS keychain (or `secrets.key`, mode 0600, where there is none). Provider keys (genai adapter names: `anthropic`, `openai`, …) beat env vars; a provider with a key, a login, or its env var is "configured": `/model` lists only those. Named OpenAI-compatible gateways (`/provider add`) store their key here under the gateway name; web search keys (`firecrawl`, `brave`, optional `github`) and the Slack tokens (`slack_bot`, `slack_app`) live here too. Add, replace, restore or delete with `/secrets`, Settings › Secrets or `wth --secret-set NAME` (a server over ssh; value read without echo or piped on stdin). The agent uses a secret by name — `{{secret:NAME}}` in any tool argument — and never sees its value; an existing `credentials.yaml` is imported into the vault and removed on first start. See [`docs/design/37-secrets.md`](docs/design/37-secrets.md).
+- `providers.yaml` — named OpenAI-compatible gateways (`name: { base_url }`); keys live in the vault. `/provider add` writes both and fetches `GET {base}models` into `models.json`.
 - `models.json` — optional, same shape as the bundled catalog; adds or overrides models (local `ollama/...`, private gateways). Refresh the bundled data with `just models`. `/provider add` writes the fetched model list here.
 - `oauth/` — tokens from `/login` (`openai.json` = ChatGPT subscription via the Codex client, `anthropic.json` = Claude Pro/Max via the Claude Code client, `cursor.json` = Cursor subscription, `xai.json` = SuperGrok via the Grok CLI client; `mcp/<server>.json` = MCP servers that answered 401), mode 0600; `/logout <name>` deletes one. See [`docs/design/05-oauth.md`](docs/design/05-oauth.md).
 - `prompt.md` — standing instructions, read into the system prompt on every model call; `/prompt` shows the assembled prompt.
-- `mcp/*.json` — drop in any `mcp.json` (Claude Desktop, Cursor, OpenCode, …); hot-reloaded, tools registered under their own names — a name two servers both offer (four `grafana-*` entries) registers as `<server>__<name>` for each. `${VAR}` and `$(cmd)` in `command`/`args`/`env`/`url`/`headers` expand through your shell when the server starts (`"GITHUB_PERSONAL_ACCESS_TOKEN=$(gh auth token)"`). `cwd` (relative → `mcp/`) points a server at a checkout under `mcp/repos/`, where `/mcp add <url>` clones and `/mcp sync` pulls. A remote entry's optional `oauth: {client_id, client_secret, scopes, redirect_uri}` shapes its login; `redirect_uri` (`http://localhost:8765/callback`) is for servers that only accept a registered loopback URL.
+- `mcp/*.json` — drop in any `mcp.json` (Claude Desktop, Cursor, OpenCode, …); hot-reloaded, tools registered under their own names — a name two servers both offer (four `grafana-*` entries) registers as `<server>__<name>` for each. `${VAR}` and `$(cmd)` in `command`/`args`/`env`/`url`/`headers` expand through your shell when the server starts (`"GITHUB_PERSONAL_ACCESS_TOKEN=$(gh auth token)"`); `{{secret:NAME}}` in the same fields is filled from the vault, so a token never sits in the file. `cwd` (relative → `mcp/`) points a server at a checkout under `mcp/repos/`, where `/mcp add <url>` clones and `/mcp sync` pulls. A remote entry's optional `oauth: {client_id, client_secret, scopes, redirect_uri}` shapes its login; `redirect_uri` (`http://localhost:8765/callback`) is for servers that only accept a registered loopback URL.
 - `mcp/config.yaml` — per-server / per-tool risk override (`read_only` | `mutating` | `destructive` | `off`); `/mcp` edits it (`off` on a server = disabled). An MCP tool's risk defaults to its annotations, and one without annotations prompts by default; set `risk: read_only` on a trusted server once.
 - `acp/agents.yaml` — one entry per external harness (`name: {command, args, env, description}`); `/acp` lists, probes, adds from the registry (`/acp add <id>`), removes. The model spawns one with `spawn_subagent{agent}`; it runs as a child session like a wth subagent.
 - `skills/` — `<name>/SKILL.md` directories, loose `*.md`, or git clones (`/skills add <url>`, `/skills sync`); see [`docs/skills.md`](docs/skills.md). `harness.md` is written here on every start: the model's manual for this data dir and its config, loaded on demand.
@@ -191,6 +199,7 @@ forgets one; `/skills` lists skills (⏎ hands one to the model, `s` shows it; `
 `/jobs` lists the session's shell jobs, `/jobs kill <id>` stops one (a running job's card shows its last 10 output lines live);
 `/schedules` lists the scheduled runs and loops with their next and last fire and run count, `/schedules run <name>` fires one now, `/schedules pause|resume <name>` flips its `enabled:` line, `/schedules history <name>` shows its runs and reports;
 `/artifacts` lists the files the agent has shown in this session and its subagents (⏎ opens one with the OS, `s` shows it inline, `e` exports it); a `▣` artifact card's path is a `file://` link, `o` opens the newest one, Ctrl+O renders markdown, code and CSV inline;
+`/secrets` lists the vault's secrets with their versions (`a` adds one into a masked field, `r` replaces the value as a new version, `h` shows history and restores an older version, `d` deletes); `/secrets add [name]`, `/secrets rm <name>`, `/secrets restore <name> [n]` skip the menu; when the agent calls `secret_request` a masked box asks you to type it;
 `/acp` manages external ACP harnesses;
 `/knowledge` browses the knowledge base (below); `/approvals off` stops
 approval prompts for this session, `/approvals off always` for good
@@ -260,11 +269,11 @@ Tokens), creates the app from the bundled manifest (`--app <A…>` updates an
 existing one instead), prints the install URL, verifies the bot token
 (`xoxb-`) with `auth.test` and the app-level token (`xapp-`,
 `connections:write`) with `apps.connections.open`, asks for your member id
-(`U…`), and writes `slack_bot`/`slack_app` into `credentials.yaml` and
+(`U…`), and writes `slack_bot`/`slack_app` into the secrets vault and
 `slack.owner`/`slack.enabled` into `config.yaml`; re-running skips every
 step whose token still verifies. The manual path is `wth --slack-manifest`:
 create the app from the printed manifest at api.slack.com/apps, install it,
-put the two tokens in `credentials.yaml` and set `slack.owner` yourself.
+store the two tokens with `wth --secret-set slack_bot` / `slack_app` and set `slack.owner` yourself.
 Then `wth --headless`. Each top-level message in the bot's DM (or an `@wth` mention in
 a `slack.channels` channel) opens a session whose replies stream live into
 the thread — one message per turn with task cards for tool calls, a quoted
@@ -342,11 +351,12 @@ is connected. Design: [`docs/design/31-link.md`](docs/design/31-link.md).
 
 ## Nodes
 
-Give the model, and your phone, another machine. Three lines on the box:
+Give the model, and your phone, another machine. Four lines on the box:
 
 ```sh
 ssh box
-just install                          # release `wth` into ~/.cargo/bin (or copy the binary over); a model key goes in ~/.wth/credentials.yaml over the same ssh session
+just install                          # release `wth` into ~/.cargo/bin (or copy the binary over)
+wth --secret-set anthropic            # a model key, typed without echo (or piped: `printf %s "$KEY" | wth --secret-set anthropic`)
 wth --install-service --relay wss://relay.example.com   # writes a launchd LaunchAgent / systemd user unit running `$SHELL -l -i -c 'exec wth --headless'`, sets link.enabled, starts it, prints a QR + key
 ```
 
@@ -358,5 +368,5 @@ your UI, and the desktop and phone switcher list the node nested under its
 parent — your devices pair with it automatically, so switching to it shows
 its own sessions. `/nodes` lists, renames, removes and invites; `wth
 --uninstall-service` removes the unit and nothing else. The node has its own
-`~/.wth` (config, credentials, skills, MCP servers): nothing is synced.
+`~/.wth` (config, secrets vault, skills, MCP servers): nothing is synced.
 Design: [`docs/design/32-nodes.md`](docs/design/32-nodes.md).

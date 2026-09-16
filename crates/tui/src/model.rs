@@ -156,6 +156,12 @@ pub enum UiEvent {
         /// Open the picker.
         pick: bool,
     },
+    /// Reply to [`Command::ListSecrets`]: names, notes, versions. Never values.
+    Secrets(secrets::SecretsList),
+    /// Reply to [`Command::SetSecret`] / [`Command::RestoreSecret`]: the new version.
+    SecretSet(secrets::SecretInfo),
+    /// Secrets plugin traffic (bus event): a change, a `secret_request`, its resolution.
+    SecretsEvent(secrets::SecretsEvent),
 }
 
 /// Everything the UI can ask of the rest of the process. One task turns
@@ -441,6 +447,33 @@ pub enum Command {
     },
     /// Open a local file with the OS default handler (`open` / `xdg-open`, detached).
     OpenPath(PathBuf),
+    /// `list_secrets`.
+    ListSecrets,
+    /// `set_secret(name, value, note)`. The value transits once and is never shown again.
+    SetSecret {
+        /// Name.
+        name: String,
+        /// The value (source `user`).
+        value: String,
+        /// `None` keeps the old note.
+        note: Option<String>,
+    },
+    /// `restore_secret(name, back)`: version `-back` becomes current, as a new version.
+    RestoreSecret {
+        /// Name.
+        name: String,
+        /// Versions back, 1..=4.
+        back: u8,
+    },
+    /// `delete_secret`: the name and every version.
+    DeleteSecret(String),
+    /// `answer_secret`: `None` declines a `secret_request`.
+    AnswerSecret {
+        /// The request.
+        id: secrets::RequestId,
+        /// The typed value.
+        value: Option<String>,
+    },
 }
 
 /// One row of the `/login` picker.
@@ -968,6 +1001,11 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "OpenAI-compatible providers (add prompts for name, url, key)",
     ),
     (
+        "/secrets",
+        "[add [name]|rm <name>|restore <name> [n]]",
+        "encrypted secrets the agent uses by name",
+    ),
+    (
         "/link",
         "[on|off|pair|rm <n>|name <n> <name>|relay <url>]",
         "pair and manage phones",
@@ -1177,6 +1215,14 @@ pub enum Menu {
         /// Highlighted row.
         cursor: usize,
     },
+    /// `/secrets`: the vault's names over [`Model::secrets`] (37 §5).
+    Secrets {
+        /// Highlighted secret.
+        cursor: usize,
+        /// History of the highlighted secret is open: the highlighted
+        /// version row (0 = current). `None` shows the names.
+        history: Option<usize>,
+    },
 }
 
 /// A `/link pair` or `/nodes` invite card that is still counting down.
@@ -1266,7 +1312,8 @@ pub enum TurnAction {
 }
 
 /// Multi-step input (`/provider add`, `/link` rename / revoke, `/nodes` add /
-/// rename / remove). Rides on the input box (not a modal menu).
+/// rename / remove, `/secrets` add / replace / delete). Rides on the input
+/// box (not a modal menu).
 #[derive(Debug)]
 pub enum Prompt {
     /// Asking for the gateway name.
@@ -1315,6 +1362,27 @@ pub enum Prompt {
         /// Its name (the hint).
         name: String,
     },
+    /// `/secrets add`: asking for the name.
+    SecretName,
+    /// `/secrets add NAME` / `r`: asking for the value (masked).
+    SecretValue {
+        /// Name already collected.
+        name: String,
+        /// `Some(v)` when the name exists: the value adds `v + 1`.
+        current: Option<u32>,
+    },
+    /// `/secrets add`: asking for the note; an empty line keeps the old one (or none).
+    SecretNote {
+        /// Name already collected.
+        name: String,
+        /// Value already collected. Never written to the transcript.
+        value: String,
+    },
+    /// `/secrets` `d`: typing the name again deletes it, anything else keeps it.
+    SecretDelete {
+        /// The name.
+        name: String,
+    },
 }
 
 impl Prompt {
@@ -1338,6 +1406,24 @@ impl Prompt {
                 format!("nodes  rename {name}  new name  (esc cancel)")
             }
             Prompt::NodeRemove { name, .. } => format!("nodes  remove {name}?  y/n"),
+            Prompt::SecretName => "secrets add  name  (esc cancel)".into(),
+            Prompt::SecretValue {
+                name,
+                current: None,
+            } => format!("secrets add  {name}  value  (esc cancel)"),
+            Prompt::SecretValue {
+                name,
+                current: Some(v),
+            } => format!(
+                "secrets add  {name}  value  (replaces v{v} → v{}; esc cancel)",
+                v + 1
+            ),
+            Prompt::SecretNote { name, .. } => {
+                format!("secrets add  {name}  note  (⏎ none; esc cancel)")
+            }
+            Prompt::SecretDelete { name } => {
+                format!("secrets  delete {name}?  type the name to confirm  (esc cancel)")
+            }
         }
     }
 
@@ -1353,7 +1439,19 @@ impl Prompt {
             Prompt::NodeKey | Prompt::NodeName { .. } | Prompt::NodeRemove { .. } => {
                 "nodes: cancelled"
             }
+            Prompt::SecretName
+            | Prompt::SecretValue { .. }
+            | Prompt::SecretNote { .. }
+            | Prompt::SecretDelete { .. } => "secrets: cancelled",
         }
+    }
+
+    /// The input box hides what is typed: a secret's value, a provider's key.
+    pub fn masked(&self) -> bool {
+        matches!(
+            self,
+            Prompt::ProviderKey { .. } | Prompt::SecretValue { .. }
+        )
     }
 }
 
@@ -1392,6 +1490,19 @@ impl Ask {
     pub fn question(&self) -> &tools::Question {
         &self.req.questions[self.current]
     }
+}
+
+/// A pending `secret_request` (37 §5): the masked box in the approval box's place.
+#[derive(Debug)]
+pub struct SecretRequest {
+    /// Answer with this id.
+    pub id: secrets::RequestId,
+    /// Name it will be stored under.
+    pub name: String,
+    /// What it is for.
+    pub note: String,
+    /// `Some(v)` when the name exists: the answer adds `v + 1`.
+    pub current: Option<u32>,
 }
 
 /// One line of the `/mcp` menu.
@@ -1704,6 +1815,14 @@ pub struct Model {
     pub refresh_artifacts: bool,
     /// The live `/nodes` invite card, redrawn each second by [`Model::tick`].
     invite: Option<PairingCard>,
+    /// Latest `list_secrets` (the `/secrets` menu, the `replaces vN` hint); `None` until fetched.
+    pub secrets: Option<secrets::SecretsList>,
+    /// `/secrets` was typed; the next `UiEvent::Secrets` opens the menu (same rule as `awaiting_link`).
+    awaiting_secrets: bool,
+    /// The vault changed while a list is held: the event loop re-asks `list_secrets`.
+    pub refresh_secrets: bool,
+    /// Pending `secret_request`s for the current session or its subtree, oldest first; the front is shown.
+    pub secret_requests: VecDeque<SecretRequest>,
 }
 
 impl Model {
@@ -1723,6 +1842,7 @@ impl Model {
             catalog: self.catalog.take(),
             skills: std::mem::take(&mut self.skills),
             width: self.width,
+            secrets: self.secrets.take(),
             link: self.link.take(),
             nodes: self.nodes.take(),
             ..Self::new(std::mem::take(&mut self.model_id), self.approvals_global)
@@ -1786,11 +1906,22 @@ impl Model {
         self.asks.front()
     }
 
+    /// The `secret_request` currently shown, if any.
+    pub fn secret_request(&self) -> Option<&SecretRequest> {
+        self.secret_requests.front()
+    }
+
     /// The input box takes keys: no approval prompt and no modal menu
-    /// (the slash popup rides on the box).
+    /// (the slash popup rides on the box). A shown `secret_request` types
+    /// into the box (masked).
     pub fn input_focused(&self) -> bool {
-        self.approval().is_none()
-            && self.ask().is_none_or(|a| a.typing)
+        if self.approval().is_some() {
+            return false;
+        }
+        if self.secret_request().is_some() {
+            return true;
+        }
+        self.ask().is_none_or(|a| a.typing)
             && !matches!(
                 self.menu,
                 Some(
@@ -1806,6 +1937,7 @@ impl Model {
                         | Menu::Turns { .. }
                         | Menu::Link { .. }
                         | Menu::Nodes { .. }
+                        | Menu::Secrets { .. }
                         | Menu::Artifacts { .. }
                 )
             )
@@ -2697,16 +2829,84 @@ impl Model {
             }
             // Added, removed, online, revoked: all reshape the rows; re-ask.
             UiEvent::NodeEvent(_) => self.refresh_nodes = true,
+            UiEvent::Secrets(list) => {
+                if self.awaiting_secrets && !matches!(self.menu, Some(Menu::Secrets { .. })) {
+                    self.menu = Some(Menu::Secrets {
+                        cursor: 0,
+                        history: None,
+                    });
+                }
+                self.awaiting_secrets = false;
+                self.secrets = Some(list);
+            }
+            UiEvent::SecretSet(info) => self
+                .entries
+                .push(Entry::Info(format!("{}: v{} set", info.name, info.current))),
+            UiEvent::SecretsEvent(ev) => self.apply_secrets(ev),
             UiEvent::Error(e) => {
                 // A failed `/compact` answers here, not with an agent event.
                 self.compacting = false;
                 self.awaiting_effort = false;
                 self.awaiting_link = false;
+                self.awaiting_secrets = false;
                 self.awaiting_nodes = false;
                 self.notice = None;
                 self.entries.push(Entry::Error(e));
             }
         }
+    }
+
+    /// Fold a secrets bus event in: a change re-lists a held list, a request
+    /// from this session's tree queues its masked box, a resolution (answered
+    /// elsewhere, declined, timed out) drops it.
+    fn apply_secrets(&mut self, ev: secrets::SecretsEvent) {
+        use secrets::SecretsEvent::*;
+        match ev {
+            Changed => self.refresh_secrets = self.secrets.is_some(),
+            Requested {
+                id,
+                session,
+                name,
+                note,
+                current,
+            } => {
+                if self.session == Some(session) || self.agents.contains_key(&session) {
+                    self.secret_requests.push_back(SecretRequest {
+                        id,
+                        name,
+                        note,
+                        current,
+                    });
+                }
+            }
+            Resolved { id, timed_out, .. } => {
+                if let Some(i) = self.secret_requests.iter().position(|r| r.id == id) {
+                    let r = self.secret_requests.remove(i).expect("position");
+                    if timed_out {
+                        self.entries
+                            .push(Entry::Info(format!("{}: request timed out", r.name)));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Answer the shown `secret_request` (`None` declines) and dismiss it
+    /// locally; its `Resolved` is then a no-op. The value is never shown.
+    pub fn answer_secret(&mut self, value: Option<String>, tx: &UnboundedSender<Command>) {
+        let Some(r) = self.secret_requests.pop_front() else {
+            return;
+        };
+        self.entries.push(Entry::Info(format!(
+            "{}: {}",
+            r.name,
+            if value.is_some() {
+                "stored"
+            } else {
+                "declined"
+            }
+        )));
+        send(tx, Command::AnswerSecret { id: r.id, value });
     }
 
     /// Fold a link bus event into the local status and the pairing card.
@@ -3130,7 +3330,8 @@ impl Model {
     /// Handle a submitted input line: slash command or message.
     pub fn submit(&mut self, line: &str, tx: &UnboundedSender<Command>) {
         let line = line.trim();
-        if line.is_empty() {
+        // An empty note is an answer (keep / none); every other step waits for text.
+        if line.is_empty() && !matches!(self.prompt, Some(Prompt::SecretNote { .. })) {
             return;
         }
         // Anything you send is what you want to see land.
@@ -3312,6 +3513,7 @@ impl Model {
             "/regen" => self.turn_cmd(TurnAction::Regen, cmd, arg, tx),
             "/fork" => self.turn_cmd(TurnAction::Fork, cmd, arg, tx),
             "/provider" => self.provider_cmd(arg, tx),
+            "/secrets" => self.secrets_cmd(arg, tx),
             "/link" => self.link_cmd(arg, tx),
             "/nodes" => self.nodes_cmd(arg, tx),
             c if c.starts_with('/') => {
@@ -3961,6 +4163,177 @@ impl Model {
         }
     }
 
+    /// `/secrets` menu | `add [name]` | `rm <name>` | `restore <name> [n]` (37 §5).
+    fn secrets_cmd(&mut self, arg: &str, tx: &UnboundedSender<Command>) {
+        let (sub, rest) = arg
+            .split_once(char::is_whitespace)
+            .map_or((arg, ""), |(s, r)| (s, r.trim()));
+        match (sub, rest) {
+            ("", _) => {
+                self.awaiting_secrets = true;
+                send(tx, Command::ListSecrets);
+            }
+            ("add", "") => self.prompt = Some(Prompt::SecretName),
+            ("add", name) if secrets::vault::valid_name(name) => {
+                self.prompt = Some(Prompt::SecretValue {
+                    name: name.to_owned(),
+                    current: self.secret_current(name),
+                });
+            }
+            ("add", name) => self.entries.push(Entry::Error(bad_secret_name(name))),
+            ("rm", name) if !name.is_empty() => send(tx, Command::DeleteSecret(name.to_owned())),
+            ("restore", rest) if !rest.is_empty() => {
+                let (name, back) = rest
+                    .split_once(char::is_whitespace)
+                    .map_or((rest, "1"), |(n, b)| (n, b.trim()));
+                match back.parse::<u8>() {
+                    Ok(back) if (1..secrets::KEEP as u8).contains(&back) => send(
+                        tx,
+                        Command::RestoreSecret {
+                            name: name.to_owned(),
+                            back,
+                        },
+                    ),
+                    _ => self.entries.push(Entry::Error(format!(
+                        "/secrets restore: n is 1..={}",
+                        secrets::KEEP - 1
+                    ))),
+                }
+            }
+            _ => self.entries.push(Entry::Error(
+                "usage: /secrets [add [name] | rm <name> | restore <name> [n]]".into(),
+            )),
+        }
+    }
+
+    /// Current version of `name` per the last `list_secrets`; `None` when
+    /// unknown (or never listed).
+    fn secret_current(&self, name: &str) -> Option<u32> {
+        self.secrets
+            .as_ref()?
+            .secrets
+            .iter()
+            .find(|s| s.name == name)
+            .map(|s| s.current)
+    }
+
+    /// `/secrets` menu title: the key store, then the keys.
+    pub fn secrets_title(&self) -> String {
+        let key = self.secrets.as_ref().map_or("?", |l| l.key_store.as_str());
+        match &self.menu {
+            Some(Menu::Secrets {
+                cursor,
+                history: Some(_),
+            }) => {
+                let name = self
+                    .secrets
+                    .as_ref()
+                    .and_then(|l| l.secrets.get(*cursor))
+                    .map_or("", |s| s.name.as_str());
+                format!("secrets · {name} · history   ⏎ restore  h/esc back")
+            }
+            _ => format!("secrets · key: {key}   a add  r replace  h history  d delete  esc"),
+        }
+    }
+
+    /// `/secrets` menu rows: `NAME · vN (k kept) · note · updated`, or the
+    /// highlighted secret's versions `vN · created · source [· current]`
+    /// while its history is open. Never a value.
+    pub fn secrets_rows(&self) -> Vec<String> {
+        let list = self
+            .secrets
+            .as_ref()
+            .map(|l| l.secrets.as_slice())
+            .unwrap_or_default();
+        if let Some(Menu::Secrets {
+            cursor,
+            history: Some(_),
+        }) = &self.menu
+            && let Some(s) = list.get(*cursor)
+        {
+            return s
+                .versions
+                .iter()
+                .enumerate()
+                .map(|(i, v)| {
+                    format!(
+                        "v{} · {} · {}{}",
+                        v.v,
+                        when(&v.created),
+                        v.source,
+                        if i == 0 { " · current" } else { "" }
+                    )
+                })
+                .collect();
+        }
+        if list.is_empty() {
+            return vec!["no secrets · a adds one".into()];
+        }
+        list.iter()
+            .map(|s| {
+                format!(
+                    "{:<20} · v{} ({} kept) · {} · {}",
+                    s.name.chars().take(20).collect::<String>(),
+                    s.current,
+                    s.versions.len(),
+                    s.note,
+                    when(&s.updated)
+                )
+            })
+            .collect()
+    }
+
+    /// `/secrets`: `a` adds, `r` replaces the highlighted value, `h` opens its
+    /// history (⏎ on an older version restores it), `d` deletes after a
+    /// typed confirm. Esc leaves the history, then the menu.
+    fn secrets_key(&mut self, code: KeyCode, tx: &UnboundedSender<Command>) -> MenuKey {
+        let Some(Menu::Secrets { cursor, history }) = &mut self.menu else {
+            return MenuKey::Consumed;
+        };
+        // Field access, not a method: `cursor`/`history` hold `self.menu`.
+        let list = self
+            .secrets
+            .as_ref()
+            .map(|l| l.secrets.as_slice())
+            .unwrap_or_default();
+        let info = list.get(*cursor);
+        let name = info.map(|s| s.name.clone());
+        let current = info.map(|s| s.current);
+        let versions = info.map_or(0, |s| s.versions.len());
+        match (code, *history) {
+            (KeyCode::Up, Some(h)) => *history = Some(h.saturating_sub(1)),
+            (KeyCode::Down, Some(h)) => *history = Some((h + 1).min(versions.saturating_sub(1))),
+            (KeyCode::Esc | KeyCode::Char('h'), Some(_)) => *history = None,
+            (KeyCode::Enter, Some(h)) if h > 0 => {
+                if let (Some(name), Ok(back)) = (name, u8::try_from(h)) {
+                    send(tx, Command::RestoreSecret { name, back });
+                }
+            }
+            (KeyCode::Up, None) => *cursor = cursor.saturating_sub(1),
+            (KeyCode::Down, None) => *cursor = (*cursor + 1).min(list.len().saturating_sub(1)),
+            (KeyCode::Esc, None) => self.menu = None,
+            (KeyCode::Char('h'), None) if info.is_some() => *history = Some(0),
+            (KeyCode::Char('a'), _) => {
+                self.menu = None;
+                self.prompt = Some(Prompt::SecretName);
+            }
+            (KeyCode::Char('r'), _) => {
+                if let Some(name) = name {
+                    self.menu = None;
+                    self.prompt = Some(Prompt::SecretValue { name, current });
+                }
+            }
+            (KeyCode::Char('d'), _) => {
+                if let Some(name) = name {
+                    self.menu = None;
+                    self.prompt = Some(Prompt::SecretDelete { name });
+                }
+            }
+            _ => {}
+        }
+        MenuKey::Consumed
+    }
+
     /// `/compact [summary|cut|snap|style …]`.
     fn compact_cmd(&mut self, arg: &str, tx: &UnboundedSender<Command>) {
         let (sub, rest) = arg
@@ -4001,7 +4374,8 @@ impl Model {
         }
     }
 
-    /// Advance `/provider add` one field. The API key is never written to the transcript.
+    /// Advance a prompt flow one field. An API key or a secret's value is
+    /// never written to the transcript.
     fn prompt_submit(&mut self, line: &str, tx: &UnboundedSender<Command>) {
         match self.prompt.take() {
             Some(Prompt::ProviderName) => {
@@ -4061,6 +4435,39 @@ impl Model {
                         .push(Entry::Info(format!("nodes: kept {name}")));
                 }
             }
+            Some(Prompt::SecretName) => {
+                if secrets::vault::valid_name(line) {
+                    self.prompt = Some(Prompt::SecretValue {
+                        name: line.to_owned(),
+                        current: self.secret_current(line),
+                    });
+                } else {
+                    self.prompt = Some(Prompt::SecretName);
+                    self.entries.push(Entry::Error(bad_secret_name(line)));
+                }
+            }
+            Some(Prompt::SecretValue { name, .. }) => {
+                self.prompt = Some(Prompt::SecretNote {
+                    name,
+                    value: line.to_owned(),
+                });
+            }
+            Some(Prompt::SecretNote { name, value }) => send(
+                tx,
+                Command::SetSecret {
+                    name,
+                    value,
+                    note: (!line.is_empty()).then(|| line.to_owned()),
+                },
+            ),
+            Some(Prompt::SecretDelete { name }) => {
+                if line == name {
+                    send(tx, Command::DeleteSecret(name));
+                } else {
+                    self.entries
+                        .push(Entry::Info(format!("secrets: kept {name}")));
+                }
+            }
             None => {}
         }
     }
@@ -4074,7 +4481,7 @@ impl Model {
 
     /// Open or close the slash popup to match what the input box holds.
     pub fn sync_slash(&mut self, input: &str) {
-        if self.prompt.is_some() || self.ask().is_some() {
+        if self.prompt.is_some() || self.ask().is_some() || self.secret_request().is_some() {
             return;
         }
         match (&self.menu, input.starts_with('/')) {
@@ -4133,6 +4540,7 @@ impl Model {
             Some(Menu::Turns { .. }) => self.turns_key(code, tx),
             Some(Menu::Link { .. }) => self.link_key(code, tx),
             Some(Menu::Nodes { .. }) => self.nodes_key(code, tx),
+            Some(Menu::Secrets { .. }) => self.secrets_key(code, tx),
             Some(Menu::Artifacts { .. }) => self.artifacts_key(code, tx),
         }
     }
@@ -5506,6 +5914,23 @@ fn elapsed(d: chrono::Duration) -> String {
     }
 }
 
+/// An RFC 3339 stamp as local `YYYY-MM-DD HH:MM`; anything else verbatim.
+fn when(rfc3339: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(rfc3339).map_or_else(
+        |_| rfc3339.to_owned(),
+        |t| {
+            t.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M")
+                .to_string()
+        },
+    )
+}
+
+/// Error line for a name the vault would refuse (37 §3.1).
+fn bad_secret_name(name: &str) -> String {
+    format!("secrets: {name:?} is not a name; use [A-Za-z0-9_.-], at most 64")
+}
+
 /// Time since a turn ended, coarse: `48s ago`, `3m ago`, `2h ago`, `3d ago`.
 fn ago(d: chrono::Duration) -> String {
     let s = d.num_seconds().max(0);
@@ -6011,6 +6436,210 @@ mod tests {
         m.submit("/provider add", &tx);
         m.cancel_prompt();
         assert!(m.prompt.is_none());
+    }
+
+    /// A vault listing with one two-version secret.
+    fn secrets_list() -> secrets::SecretsList {
+        let version = |v: u32, source: &str| secrets::VersionInfo {
+            v,
+            created: format!("2026-09-1{v}T10:02:11Z"),
+            source: source.into(),
+        };
+        secrets::SecretsList {
+            key_store: "keychain".into(),
+            secrets: vec![secrets::SecretInfo {
+                name: "github".into(),
+                note: "PAT, repo scope".into(),
+                source: "local".into(),
+                current: 2,
+                versions: vec![version(2, "user"), version(1, "import")],
+                updated: "2026-09-12T10:02:11Z".into(),
+            }],
+        }
+    }
+
+    /// No transcript line holds `value`.
+    fn leaked(m: &Model, value: &str) -> bool {
+        m.entries.iter().any(|e| match e {
+            Entry::Info(t) | Entry::Error(t) | Entry::User { text: t, .. } => t.contains(value),
+            _ => false,
+        })
+    }
+
+    #[test]
+    fn secrets_add_and_request_never_show_the_value() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        // `/secrets add`: name → masked value → note; the note may be empty.
+        m.submit("/secrets add", &tx);
+        assert!(matches!(m.prompt, Some(Prompt::SecretName)));
+        assert!(!m.prompt.as_ref().unwrap().masked());
+        m.submit("bad name", &tx);
+        assert!(matches!(m.prompt, Some(Prompt::SecretName)));
+        m.submit("github", &tx);
+        assert!(matches!(
+            m.prompt,
+            Some(Prompt::SecretValue { current: None, .. })
+        ));
+        assert!(m.prompt.as_ref().unwrap().masked());
+        m.submit("ghp_topsecret", &tx);
+        assert!(matches!(m.prompt, Some(Prompt::SecretNote { .. })));
+        m.submit("", &tx);
+        assert!(m.prompt.is_none());
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetSecret { name, value, note: None }) if name == "github" && value == "ghp_topsecret"
+        ));
+        let mut list = secrets_list();
+        list.secrets[0].current = 1;
+        list.secrets[0].versions.truncate(1);
+        m.apply(UiEvent::SecretSet(list.secrets[0].clone()));
+        assert!(matches!(m.entries.last(), Some(Entry::Info(t)) if t == "github: v1 set"));
+        // Once listed, adding to a known name says which version it replaces.
+        m.apply(UiEvent::Secrets(list));
+        m.submit("/secrets add github", &tx);
+        assert!(
+            matches!(
+                &m.prompt,
+                Some(Prompt::SecretValue {
+                    current: Some(1),
+                    ..
+                })
+            ) && m
+                .prompt
+                .as_ref()
+                .unwrap()
+                .hint()
+                .contains("replaces v1 → v2")
+        );
+        m.submit("ghp_second", &tx);
+        m.submit("rotated", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetSecret { note: Some(n), .. }) if n == "rotated"
+        ));
+        // `secret_request`: ours opens the masked box; a stranger's does not.
+        let session = SessionId::new();
+        m.session = Some(session);
+        let id: secrets::RequestId =
+            serde_json::from_str("\"6f1a2b3c-4d5e-4f60-8a9b-0c1d2e3f4a5b\"").unwrap();
+        m.apply(UiEvent::SecretsEvent(secrets::SecretsEvent::Requested {
+            id,
+            session: SessionId::new(),
+            name: "other".into(),
+            note: String::new(),
+            current: None,
+        }));
+        assert!(m.secret_request().is_none());
+        m.apply(UiEvent::SecretsEvent(secrets::SecretsEvent::Requested {
+            id,
+            session,
+            name: "github".into(),
+            note: "PAT".into(),
+            current: Some(2),
+        }));
+        assert!(m.secret_request().is_some() && m.input_focused());
+        m.answer_secret(Some("ghp_requested".into()), &tx);
+        assert!(m.secret_request().is_none());
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::AnswerSecret { id: i, value: Some(v) }) if i == id && v == "ghp_requested"
+        ));
+        assert!(matches!(m.entries.last(), Some(Entry::Info(t)) if t == "github: stored"));
+        // Resolved elsewhere (or timed out): the box goes away.
+        m.apply(UiEvent::SecretsEvent(secrets::SecretsEvent::Requested {
+            id,
+            session,
+            name: "github".into(),
+            note: "PAT".into(),
+            current: None,
+        }));
+        m.apply(UiEvent::SecretsEvent(secrets::SecretsEvent::Resolved {
+            id,
+            stored: None,
+            timed_out: true,
+        }));
+        assert!(m.secret_request().is_none());
+        for v in ["ghp_topsecret", "ghp_second", "ghp_requested"] {
+            assert!(!leaked(&m, v), "{v} must not land in the transcript");
+        }
+    }
+
+    #[test]
+    fn secrets_menu_history_restore_delete() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        m.submit("/secrets", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::ListSecrets)));
+        m.apply(UiEvent::Secrets(secrets_list()));
+        assert!(matches!(m.menu, Some(Menu::Secrets { .. })) && !m.input_focused());
+        assert!(m.secrets_title().starts_with("secrets · key: keychain"));
+        assert!(
+            m.secrets_rows()[0].starts_with("github")
+                && m.secrets_rows()[0].contains("v2 (2 kept)")
+        );
+        // `h` opens the history; ⏎ on the current row is a no-op, on v1 restores it.
+        m.menu_key(KeyCode::Char('h'), "", &tx);
+        let rows = m.secrets_rows();
+        assert!(
+            rows[0].starts_with("v2") && rows[0].ends_with("current") && rows[1].starts_with("v1")
+        );
+        m.menu_key(KeyCode::Enter, "", &tx);
+        assert!(rx.try_recv().is_err());
+        m.menu_key(KeyCode::Down, "", &tx);
+        m.menu_key(KeyCode::Enter, "", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::RestoreSecret { name, back: 1 }) if name == "github"
+        ));
+        // A change re-lists while the menu is open; Esc leaves the history first.
+        m.apply(UiEvent::SecretsEvent(secrets::SecretsEvent::Changed));
+        assert!(std::mem::take(&mut m.refresh_secrets));
+        m.menu_key(KeyCode::Esc, "", &tx);
+        assert!(matches!(m.menu, Some(Menu::Secrets { history: None, .. })));
+        // `r` replaces the highlighted value, knowing its version.
+        m.menu_key(KeyCode::Char('r'), "", &tx);
+        assert!(
+            matches!(
+                m.prompt,
+                Some(Prompt::SecretValue {
+                    current: Some(2),
+                    ..
+                })
+            ) && m.menu.is_none()
+        );
+        m.cancel_prompt();
+        // `d` deletes only when the name is typed back.
+        m.menu = Some(Menu::Secrets {
+            cursor: 0,
+            history: None,
+        });
+        m.menu_key(KeyCode::Char('d'), "", &tx);
+        assert!(matches!(m.prompt, Some(Prompt::SecretDelete { .. })));
+        m.submit("nope", &tx);
+        assert!(rx.try_recv().is_err() && m.prompt.is_none());
+        m.menu = Some(Menu::Secrets {
+            cursor: 0,
+            history: None,
+        });
+        m.menu_key(KeyCode::Char('d'), "", &tx);
+        m.submit("github", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::DeleteSecret(n)) if n == "github"));
+        // One-shot forms.
+        m.submit("/secrets rm github", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::DeleteSecret(n)) if n == "github"));
+        m.submit("/secrets restore github", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::RestoreSecret { back: 1, .. })
+        ));
+        m.submit("/secrets restore github 3", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::RestoreSecret { back: 3, .. })
+        ));
+        m.submit("/secrets restore github 9", &tx);
+        assert!(rx.try_recv().is_err() && matches!(m.entries.last(), Some(Entry::Error(_))));
     }
 
     #[test]

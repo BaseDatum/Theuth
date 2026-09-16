@@ -238,7 +238,7 @@ pub enum ProviderError {
     #[error("rate limited")]
     RateLimited,
     /// 401/403 on a keyed provider.
-    #[error("unauthorized: check the key in credentials.yaml")]
+    #[error("unauthorized: check the provider's secret")]
     Unauthorized,
     /// Response did not have the expected shape.
     #[error("bad response: {0}")]
