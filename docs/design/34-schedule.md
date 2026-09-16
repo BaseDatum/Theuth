@@ -127,6 +127,9 @@ Name = file stem, so it is what the user typed and what `/sessions` shows.
 
 ### 2.2 Format
 
+Loops (33 §2) add `until`, `max_runs`, `cwd`, `approvals` and lift the
+`every` floor to `0s` when a stop is present.
+
 ```markdown
 ---
 cron: "0 9 * * 1-5"      # or   every: 30m     or   at: 2026-09-16T15:00
@@ -209,6 +212,9 @@ tick is `min(next − now, 60 s)`, so a schedule due in 20 s wakes in 20 s;
 60 s is the ceiling for the suspended-clock case, not the resolution.
 
 ## 4. Runs
+
+Loops (33 §3) run the `until` check and the `max_runs` count before step 1,
+keep a run open while its subtree is live, and end by removing the file.
 
 `fire(s)`, in order — every step is an existing `agent` message:
 
@@ -346,6 +352,10 @@ retried next tick. Dependency order: `agent ← schedule ← rpc`, beside
 
 ## 6. Tool and prompt block (`crates/schedule/src/tools.rs`)
 
+Loops (33 §5) add `until`, `max_runs`, `cwd`, `approvals`, `enabled` to
+`ScheduleArgs`, the `schedule_done` and `schedule_status` tools, a paragraph
+to the prompt block, and `skills/loops.md`.
+
 ```rust
 pub struct ScheduleArgs {
     /// File stem: `[a-z0-9][a-z0-9-]*`, ≤ 40 chars. An existing schedule of this name is replaced.
@@ -399,6 +409,9 @@ system prompt stays cache-stable (07 §2.2.5).
 |---|---|---|
 | `schedules/*.md` | **truth** — the user's files | when + prompt |
 | `schedule.sqlite` | derived, beside the directory like `knowledge.sqlite` beside `knowledge/` (00 §9) | one table, every fire and skip |
+
+Loops (33 §8) add a `report` column (migration 0002) and five end-row
+`result` strings; see 33 §3.3.
 
 ```sql
 CREATE TABLE runs (
@@ -603,9 +616,16 @@ Deviations from §§1–9:
 - `NextWake` (internal) replies `Option<Duration>`, and **includes entries
   whose run is in flight** — the first build excluded them, so a 20 s
   schedule whose run finished in 2 s slept until the 60 s ceiling (found in
-  smoke: fires at :08, :08+60, :08+120). A due-but-busy entry now yields the
-  `skipped: busy` row at its tick, and a busy skip advances `next` so a long
-  run does not write a skip every tick.
+  smoke: fires at :08, :08+60, :08+120).
+- **§1.5 / §4 step 1 as built: a fire that comes due mid-run is deferred,
+  not skipped.** `Tick` leaves running entries out of `due`; the entry stays
+  overdue (the loop ticks at its 1 s floor meanwhile) and fires on the first
+  tick after `TurnFinished`. Only a forced `Fire` (`/schedules run`,
+  `fire_schedule`) on a running schedule writes `skipped: busy` and
+  publishes `Skipped`, and that skip advances `next`. Reason kept: the
+  five-minute monitor whose run took seven then runs at 7, not 10 — an
+  interval measured from `last` already says so; and 33 (loops) gets
+  back-to-back for free.
 - Tick sleep floors at 1 s (a fire that keeps failing does not spin); no
   initial `Reconcile` tell — `load` builds the set before spawn.
 - Broken files list `enabled: false`, `when`/`describe` = `—`.

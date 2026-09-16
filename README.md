@@ -84,11 +84,14 @@ over Signal messenger), `slack` (Slack frontend over Socket Mode), `rpc` (jsonrp
 end-to-end encryption, pairing QR, device registry —
 [`docs/design/31-link.md`](docs/design/31-link.md)), `relay` (the `wth-relay`
 binary: a stateless relay that copies encrypted frames between one harness
-and its devices), `schedule` (scheduled runs: one `~/.wth/schedules/<name>.md`
+and its devices), `schedule` (scheduled runs and loops: one `~/.wth/schedules/<name>.md`
 per schedule with `cron:` / `every:` / `at:` front matter and the prompt as
 body; each fire is a turn in that schedule's own session, the reply is
-delivered to the user —
-[`docs/design/34-schedule.md`](docs/design/34-schedule.md)), `artifact`
+delivered to the user; add `until:` (a shell check) or `max_runs:` and it
+loops until done, `every: 0s` for back to back, `approvals: false` for
+unattended, `schedule_done` when the model decides —
+[`docs/design/34-schedule.md`](docs/design/34-schedule.md),
+[`docs/design/33-loops.md`](docs/design/33-loops.md)), `artifact`
 (the `show` tool: files the agent makes for you, shown as cards in the chat —
 markdown, code, CSV, images, SVG, PDFs compiled in-process from markdown or
 Typst; a content-addressed store under `~/.wth/artifacts/` —
@@ -147,7 +150,7 @@ Config (`~/.wth/`, created on first run; details in
     max_devices: 16
   nodes:                          # design doc 32; `/nodes add <key>` pairs, the node ran `wth --install-service`
     enabled: true                 # false: no dials, nodes invisible to the model and the UI; nodes.yaml kept
-  schedule:                       # design doc 34; `~/.wth/schedules/*.md` files, `/schedules` lists them
+  schedule:                       # design docs 34 + 33; `~/.wth/schedules/*.md` files, `/schedules` lists them
     enabled: true                 # false: no watcher, no actor, no `schedule` tool, no prompt block
     run_timeout_secs: 1800        # a run still going after this is cancelled and reported as `timeout`
   artifact:                       # design doc 35; the `show` tool, `/artifacts` lists a session's
@@ -186,7 +189,7 @@ gateway such as `https://api.ai.rwx.dev/v1`); `/provider` lists them, `/provider
 forgets one; `/skills` lists skills (⏎ hands one to the model, `s` shows it; `/<skill> [words]` does the same; the status line names the skills in context); `/prompt` shows the system prompt; `/compact` folds into a summary by default; `/compact cut` drops the folded span with no model call; `/compact style` lists/sets the default; `/clear` drops the conversation and keeps the session (id, title, model, settings; the history is still there on `/resume`);
 `/undo` drops the last turn (yours and the reply), `/redo` restores it; `/edit [n]` edits a user message and regenerates from it, `/regen [n]` regenerates the reply to a turn, `/fork [n]` opens a new session with the conversation through a turn; URLs in the transcript are OSC 8 hyperlinks (click them in a terminal that supports it, e.g. ghostty/iTerm2/kitty/WezTerm);
 `/jobs` lists the session's shell jobs, `/jobs kill <id>` stops one (a running job's card shows its last 10 output lines live);
-`/schedules` lists the scheduled runs with their next and last fire, `/schedules run <name>` fires one now, `/schedules history <name>` shows its runs;
+`/schedules` lists the scheduled runs and loops with their next and last fire and run count, `/schedules run <name>` fires one now, `/schedules pause|resume <name>` flips its `enabled:` line, `/schedules history <name>` shows its runs and reports;
 `/artifacts` lists the files the agent has shown in this session and its subagents (⏎ opens one with the OS, `s` shows it inline, `e` exports it); a `▣` artifact card's path is a `file://` link, `o` opens the newest one, Ctrl+O renders markdown, code and CSV inline;
 `/acp` manages external ACP harnesses;
 `/knowledge` browses the knowledge base (below); `/approvals off` stops
