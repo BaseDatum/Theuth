@@ -90,8 +90,8 @@ desktop-bundle: package-macos
 desktop-check:
     cd crates/desktop/ui && bun run check && bun run test
 
-# One-time Xcode project generation into crates/desktop/gen/apple (gitignored;
-# `just package-ios` also does this if the dir is missing). 31 §8.3.
+# Regenerates crates/desktop/gen/apple — overwrites the committed Xcode project.
+# Caps live in gen/apple/desktop_iOS/*. Do not run this for a normal build.
 ios-init:
     cd crates/desktop && TAURI_FRONTEND_PATH=ui cargo tauri ios init --ci --config tauri.ios.conf.json
 

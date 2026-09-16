@@ -1,0 +1,9 @@
+xcuserdata/
+build/
+Externals/
+Pods/
+Podfile.lock
+*.ipa
+*.xcarchive
+assets/*
+!assets/.gitkeep

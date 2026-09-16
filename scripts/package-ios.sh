@@ -3,19 +3,18 @@
 #
 # Pipeline:
 #   1. toolchain (full Xcode, Apple Distribution, rust iOS target)
-#   2. tauri ios init if crates/desktop/gen/apple is missing
-#   3. cargo tauri ios build --export-method app-store-connect
+#   2. cargo tauri ios build --export-method app-store-connect
 #      → crates/desktop/gen/apple/build/arm64/wth.ipa
 #
-# Thin link client: no daemon, sidecars, or tray. Signing uses the Apple
-# Distribution identity (NOT Developer ID Application — that cert is
-# macOS-outside-App-Store only). Automatic signing; team ID from
-# tauri.ios.conf.json (8H548FVL95) or $APPLE_DEVELOPMENT_TEAM.
+# The Xcode project (crates/desktop/gen/apple) is committed. Caps live in
+# desktop_iOS/desktop_iOS.entitlements. Do not `tauri ios init` over it.
+# Signing matches jarvis: automatic + team ID. Export-method app-store-connect
+# re-signs with Apple Distribution. Do not pass CODE_SIGN_IDENTITY — that
+# conflicts with automatic development signing.
 #
 # Env:
 #   APPLE_DEVELOPMENT_TEAM     overwrite bundle.iOS.developmentTeam
 #   WTH_IOS_BUILD_NUMBER       CFBundleVersion (default: git commit count)
-#   WTH_IOS_REINIT=1           regenerate gen/apple even if it exists
 #   WTH_SKIP_BUN_INSTALL=1     skip `bun install`
 #   WTH_IOS_EXPORT_METHOD      default app-store-connect
 # Optional local defaults: repo-root `.env.signing`.
@@ -62,21 +61,13 @@ fi
 echo "    ok: rust target aarch64-apple-ios"
 
 echo "==> [2/3] Xcode project (gen/apple)"
-if [[ "${WTH_IOS_REINIT:-0}" == "1" && -d "$APPLE_DIR" ]]; then
-  echo "    WTH_IOS_REINIT=1 — removing $APPLE_DIR"
-  rm -rf "$APPLE_DIR"
-fi
+[[ -d "$APPLE_DIR/desktop.xcodeproj" ]] || fail "missing committed $APPLE_DIR/desktop.xcodeproj
+    (the Xcode project is in git; do not tauri ios init over it)"
 if [[ "${WTH_SKIP_BUN_INSTALL:-0}" != "1" ]]; then
   (cd "$DESKTOP/ui" && bun install)
 fi
 just ts-desktop
-if [[ ! -d "$APPLE_DIR" ]]; then
-  echo "    running tauri ios init --ci"
-  (cd "$DESKTOP" && TAURI_FRONTEND_PATH=ui cargo tauri ios init --ci --config tauri.ios.conf.json)
-  [[ -d "$APPLE_DIR" ]] || fail "tauri ios init did not produce $APPLE_DIR"
-else
-  echo "    exists (set WTH_IOS_REINIT=1 to regenerate)"
-fi
+echo "    ok: $APPLE_DIR"
 
 echo "==> [3/3] tauri ios build (export-method=$EXPORT_METHOD, version=$VERSION, build=$BUILD_NUMBER)"
 export APPLE_DEVELOPMENT_TEAM="$TEAM_ID"

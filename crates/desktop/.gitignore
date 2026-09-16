@@ -1,5 +1,5 @@
 binaries/
-gen/
+gen/schemas/
 ui/node_modules/
 ui/dist/
 ui/src/rpc/bindings/
