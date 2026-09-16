@@ -114,6 +114,10 @@ pub struct CancelTurn;
 /// `ask` → whether a turn is in flight.
 pub struct IsRunning;
 
+/// `tell`: the session has a title (`RenameSession`); the first turn must not
+/// replace it with the input placeholder.
+pub struct Titled;
+
 /// `tell`: switch the model; takes effect on the next model call, mid-turn included.
 pub struct SwitchModel(pub Resolved);
 
@@ -594,6 +598,14 @@ impl Message<IsRunning> for Session {
 
     async fn handle(&mut self, _: IsRunning, _: &mut Context<Self, Self::Reply>) -> bool {
         self.inflight.is_some()
+    }
+}
+
+impl Message<Titled> for Session {
+    type Reply = ();
+
+    async fn handle(&mut self, _: Titled, _: &mut Context<Self, Self::Reply>) {
+        self.titled = true;
     }
 }
 

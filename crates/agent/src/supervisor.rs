@@ -1663,6 +1663,15 @@ impl Message<RenameSession> for Agents {
             .set_title(m.session, &title)
             .await
             .map_err(|e| e.to_string())?;
+        // A fresh session's first turn would otherwise overwrite this with the
+        // input placeholder (`Session::start_turn`).
+        if let Some(Live {
+            actor: LiveActor::Native(a),
+            ..
+        }) = self.sessions.get(&m.session)
+        {
+            let _ = a.tell(crate::loop_::Titled).await;
+        }
         self.rt
             .publish(AgentEvent::TitleChanged {
                 session: m.session,
