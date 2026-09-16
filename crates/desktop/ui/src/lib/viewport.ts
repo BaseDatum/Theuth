@@ -2,10 +2,10 @@
  * iOS keyboard (31 §8.1): WebKit never shrinks the layout viewport for the
  * keyboard, only the visual one, so a `100dvh` shell keeps its full height and
  * WebKit scrolls the page to show the focused field, pushing the header off
- * screen. Publish the visible part instead: `--visible-band` on `<html>` is the
- * layout height, or the band above the keyboard while an editable has focus,
- * and `data-keyboard-open` marks the latter. Nothing here fires on a desktop:
- * the visual viewport equals the layout one.
+ * screen. Publish the visible part instead: `--visible-band` on `<html>` ends
+ * at the visual viewport's document-relative bottom while an editable has
+ * focus, and `data-keyboard-open` marks that state. Nothing here fires on a
+ * desktop: the visual viewport equals the layout one.
  */
 
 /** Smaller collapses are browser chrome / rounding, not a keyboard. */
@@ -20,10 +20,11 @@ const editing = (): boolean => {
 export function applyViewport(): void {
   const layout = window.innerHeight
   const vv = window.visualViewport
-  const visual = vv ? Math.round(vv.height + vv.offsetTop) : layout
-  const open = editing() && visual < layout - SLACK
+  const open = editing() && !!vv && vv.height < layout - SLACK
+  // `pageTop` includes WebKit's automatic document scroll; `offsetTop` does not.
+  const band = open ? Math.min(layout, Math.round(vv.height + vv.pageTop)) : layout
   const root = document.documentElement
-  root.style.setProperty('--visible-band', `${open ? visual : layout}px`)
+  root.style.setProperty('--visible-band', `${band}px`)
   root.toggleAttribute('data-keyboard-open', open)
 }
 

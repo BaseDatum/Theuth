@@ -39,8 +39,8 @@ export function Dot({ presence }: { presence: Presence }) {
 /**
  * 31 §7.5 `● Studio Mac ▾`: every harness with its presence dot, nodes nested one step
  * under their parent (32 §8.1), "Add harness…", "Manage…". Hidden when the local
- * daemon is the only harness — today's desktop UI unchanged. The title doubles as the
- * header's: `build-box · via Studio Mac` on a node.
+ * daemon is the only harness — today's desktop UI unchanged. Nodes include their
+ * parent: `build-box · via Studio Mac`.
  */
 export function HarnessSwitcher({ className }: { className?: string }) {
   const navigate = useNavigate()

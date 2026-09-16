@@ -72,9 +72,9 @@ export function ModelMenu({
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <Button variant="ghost" className="h-9 gap-1 rounded-lg px-2.5 text-lg font-medium text-fg-secondary">
-          {current?.name ?? model ?? 'Model'}
-          {effort && <span className="text-sm font-normal text-fg-tertiary">· {effort}</span>}
+        <Button variant="ghost" className="h-9 max-w-full gap-1 rounded-lg px-2.5 text-lg font-medium text-fg-secondary">
+          <span className="min-w-0 truncate">{current?.name ?? model ?? 'Model'}</span>
+          {effort && <span className="shrink-0 text-sm font-normal text-fg-tertiary">· {effort}</span>}
           <ChevronDown className="size-4 opacity-70" />
         </Button>
       </PopoverTrigger>

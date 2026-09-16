@@ -359,24 +359,26 @@ export function Composer({
               </Button>
             </PopoverContent>
           </Popover>
-          <Textarea
-            ref={ref}
-            value={text}
-            onChange={(e) => {
-              setText(e.target.value)
-              setPastes(prune(e.target.value, pastes))
-              setSelected(0)
-            }}
-            onKeyDown={onKeyDown}
-            onPaste={onPaste}
-            rows={1}
-            placeholder={running ? 'Send to steer…' : 'Ask anything'}
-            // ponytail: `field-sizing: content` grows the box (6 lines on touch, 8 on desktop, then scrolls); older WebKit keeps one line.
-            className={cn(
-              'min-h-10 min-w-0 flex-1 resize-none border-0 bg-transparent px-2 py-2 text-[17px] leading-6 shadow-none focus-visible:ring-0 md:text-[17px] dark:bg-transparent',
-              touch() ? 'max-h-[160px]' : 'max-h-[200px]',
-            )}
-          />
+          <div className="min-w-0 flex-1">
+            <Textarea
+              ref={ref}
+              value={text}
+              onChange={(e) => {
+                setText(e.target.value)
+                setPastes(prune(e.target.value, pastes))
+                setSelected(0)
+              }}
+              onKeyDown={onKeyDown}
+              onPaste={onPaste}
+              rows={1}
+              placeholder={running ? 'Send to steer…' : 'Ask anything'}
+              // ponytail: `field-sizing: content` grows the box (6 lines on touch, 8 on desktop, then scrolls); older WebKit keeps one line.
+              className={cn(
+                'min-h-10 resize-none border-0 bg-transparent px-2 py-2 text-[17px] leading-6 shadow-none focus-visible:ring-0 md:text-[17px] dark:bg-transparent',
+                touch() ? 'max-h-[160px]' : 'max-h-[200px]',
+              )}
+            />
+          </div>
           {running && session ? (
             <Button
               className="size-9 shrink-0 rounded-full"

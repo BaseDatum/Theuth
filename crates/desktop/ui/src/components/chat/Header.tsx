@@ -2,13 +2,11 @@ import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Globe, PanelLeft, ShieldOff } from 'lucide-react'
 import { useState } from 'react'
-import { HarnessSwitcher, useHarnessCount } from '@/components/link/HarnessSwitcher'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { useSidebar } from '@/components/ui/sidebar'
 import { isMacDesktop } from '@/lib/hotkeys'
-import { touch } from '@/lib/platform'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import { useApprovals } from '@/store/approvals'
@@ -87,17 +85,15 @@ export function Header({
   const [sheet, setSheet] = useState(false)
   const approvalsOff = info !== null && (!info.approvals.global || !info.approvals.session)
   const mac = isMacDesktop()
-  // Phones: the harness name in the title area opens the switcher (31 §7.5); desktop keeps the sidebar one.
-  const count = useHarnessCount()
-  const switcher = touch() && count > 1
   return (
     <header
       data-tauri-drag-region={mac || undefined}
       className={cn('flex h-[52px] shrink-0 items-center gap-2 px-3', !open && mac && 'pl-20')}
     >
       {(!open || isMobile) && <SidebarToggle />}
-      {switcher && <HarnessSwitcher className="max-w-[40vw] shrink-0" />}
-      <ModelMenu session={session} draftEffort={draftEffort} onDraftEffort={onDraftEffort} />
+      <div className="min-w-0">
+        <ModelMenu session={session} draftEffort={draftEffort} onDraftEffort={onDraftEffort} />
+      </div>
       {parent && <Parent id={parent} />}
       <div className="flex-1" data-tauri-drag-region={mac || undefined} />
       {session && <ContextMeter session={session} />}

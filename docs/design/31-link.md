@@ -706,7 +706,7 @@ harnesses into one store.
 Toggle → `link_enable`; QR from `qrcode.react` on `Pairing.key`;
 `LinkPaired` → toast "Paired Sky's iPhone", the row appears, the QR
 collapses. This tab is available when the app is itself connected through
-link (it then manages *that* harness's devices — the header says which).
+link (it then manages *that* harness's devices — the sidebar says which).
 
 **Device side:**
 
@@ -722,9 +722,9 @@ link (it then manages *that* harness's devices — the header says which).
   › Harnesses, renamed from today's ACP "Harnesses" tab which becomes
   "Agents" — see §14). Manage: rename locally, reorder, "Forget" (deletes
   the local entry; the harness still lists the device until revoked there —
-  the copy says so). On phones the same list is also reachable from the
-  chat header title (tap the harness name). 32 §8.1 nests nodes under their
-  parent in this list.
+  the copy says so). On phones the switcher stays in the sidebar, reached from
+  the chat header's sidebar button. 32 §8.1 nests nodes under their parent in
+  this list.
 - `/link` with a key from a node's QR (32 §4.4) offers the choice "as a
   node of <parent>" beside plain pairing (32 §8.3); Settings › Nodes sits
   beside Settings › Link on the parent (32 §8.3); revoking a device on the
