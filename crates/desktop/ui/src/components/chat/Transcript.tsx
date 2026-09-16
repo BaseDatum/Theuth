@@ -86,7 +86,7 @@ function Ruler({ ticks, at, onJump }: { ticks: Tick[]; at: number; onJump(index:
   const next = ticks[cur + 1]
   const chevron = 'size-5 rounded text-fg-tertiary opacity-0 transition-opacity group-hover:opacity-100 hover:text-foreground disabled:invisible'
   return (
-    <div className="group absolute inset-y-3 right-1.5 hidden w-6 flex-col items-center justify-center md:flex">
+    <div className="group absolute inset-y-3 right-4 hidden w-6 flex-col items-center justify-center md:flex">
       <button type="button" className={chevron} aria-label="Previous turn" disabled={!prev} onClick={() => prev && onJump(prev.index)}>
         <ChevronUp className="size-5" />
       </button>
