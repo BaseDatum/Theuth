@@ -1,4 +1,4 @@
-import { Link, useNavigate } from '@tanstack/react-router'
+import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
 import { BookOpen, PanelLeft, Search, Settings, SquarePen } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { HarnessSwitcher } from '@/components/link/HarnessSwitcher'
@@ -22,7 +22,13 @@ import { SessionList } from './SessionList'
 /** ChatGPT's left rail: New chat, Search chats, Knowledge, the chat list, Settings. */
 export function AppSidebar({ session }: { session: string | undefined }) {
   const navigate = useNavigate()
-  const { toggleSidebar } = useSidebar()
+  const { isMobile, setOpenMobile, toggleSidebar } = useSidebar()
+  // Phones: the sidebar is a sheet over the chat, so every tap that navigates (a chat, New chat,
+  // Knowledge, Settings, a search hit) also dismisses it. Selecting rows for deletion does not navigate.
+  const href = useRouterState({ select: (s) => s.location.href })
+  useEffect(() => {
+    if (isMobile) setOpenMobile(false)
+  }, [href, isMobile, setOpenMobile])
   // State, not a ref: `SessionList`'s virtualizer reads the scroll element in its layout effect,
   // which runs before this parent's ref would attach; the state change re-renders it with the element.
   const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null)

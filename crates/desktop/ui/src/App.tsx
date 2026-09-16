@@ -261,6 +261,9 @@ function Shell({ harness, onRelaunch }: { harness: string; onRelaunch(): void })
 /** Link clients by harness id; `AbortController` closes one when the harness is removed. */
 const links = new Map<string, AbortController>()
 
+/** The chat each harness was showing when the user switched away, restored on the way back (`/` otherwise). */
+const lastChat = new Map<string, string>()
+
 export function App() {
   const [attempt, setAttempt] = useState(0)
   const hydrated = useHarnesses((s) => s.hydrated)
@@ -315,10 +318,16 @@ export function App() {
     return () => detach(st)
   }, [active])
 
-  // A switch routes to `/` (the tree below remounts under the new provider); the hydration read keeps deep links like `/link#…`.
+  // A switch restores that harness's last chat, else `/` (the tree below remounts under the new provider);
+  // the hydration read keeps deep links like `/link#…`.
   useEffect(() => {
     if (!hydrated) return
-    if (shown.current !== null && shown.current !== active) void router.navigate({ to: '/' })
+    if (shown.current !== null && shown.current !== active) {
+      const { pathname, href } = router.state.location
+      if (pathname.startsWith('/c/')) lastChat.set(shown.current, href)
+      else lastChat.delete(shown.current)
+      router.history.push(lastChat.get(active) ?? '/')
+    }
     shown.current = active
   }, [hydrated, active])
 

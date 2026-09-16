@@ -109,7 +109,7 @@ export function fromHistory(h: HistoryEntry): Entry[] {
           args: h.args,
           pending: false,
           child: h.call_id.includes('.'),
-          ...(h.result ? { result: { output: h.result[0], isError: h.result[1], files: h.files } } : {}),
+          ...(h.result ? { result: { output: h.result[0], isError: h.result[1], files: h.files ?? [] } } : {}),
         },
       ]
     case 'compacted':
