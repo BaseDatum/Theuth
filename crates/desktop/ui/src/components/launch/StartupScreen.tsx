@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { PairScreen } from '@/components/link/PairScreen'
 import { Button } from '@/components/ui/button'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { launchLog, onLaunchLog } from '@/lib/tauri'
@@ -18,38 +19,49 @@ export function StartupScreen(props: Props) {
 
 /**
  * A paired harness that is not reachable: no Quit/Relaunch (those act on the desktop's own
- * daemon), just the presence hint and a way to another harness. Rendered outside the router,
- * so switching is `setActive`, not a route.
+ * daemon), the presence hint, and every way out — another harness, pairing a new one, or
+ * forgetting this entry (a phone has no other route to those while nothing connects).
+ * Rendered outside the router, so switching is `setActive`, not a route.
  */
 function LinkStartup({ id }: { id: string }) {
-  const { harnesses, presence: all, setActive } = useHarnesses()
+  const { harnesses, presence: all, setActive, remove } = useHarnesses()
+  const [pairing, setPairing] = useState(false)
   const presence = all[id]
   const name = useConnection((s) => s.info?.name) ?? harnesses.find((h) => h.id === id)?.name ?? id
   // ponytail: one button to the local daemon, else another paired harness (online first); a picker if people pair many.
   const others = harnesses.filter((h) => h.id !== id)
   const next = hasLocal() ? LOCAL : (others.find((h) => all[h.id] === 'online') ?? others[0])?.id
 
+  if (pairing) return <PairScreen onPaired={() => setPairing(false)} onBack={() => setPairing(false)} />
+
+  const refused = presence === 'refused'
   return (
     <div
-      className="flex h-dvh items-center justify-center bg-background text-foreground"
+      className="flex h-band items-center justify-center bg-background px-4 text-foreground"
       data-tauri-drag-region={isMacDesktop() || undefined}
     >
       <div className="flex w-full max-w-[640px] flex-col gap-4 rounded-xl border border-border-subtle bg-elevated p-6">
-        <p className="text-fg-secondary">Reconnecting to {name}…</p>
+        <p className="text-fg-secondary">{refused ? `${name} refused this device` : `Reconnecting to ${name}…`}</p>
         {presence === 'offline' && <p className="text-xs text-fg-secondary">Harness offline</p>}
-        {presence === 'connecting' && (
-          <p className="text-xs text-fg-secondary">Relay unreachable</p>
-        )}
+        {presence === 'connecting' && <p className="text-xs text-fg-secondary">Relay unreachable</p>}
         <p className="text-sm text-fg-secondary">
-          The harness is offline or the relay is unreachable. This screen closes when it is back.
+          {refused
+            ? 'The harness no longer knows this device (revoked, or its device list was reset). Show a new pairing code there (Settings › Link, or `wth --link`), pair again, then forget this entry.'
+            : 'The harness is offline or the relay is unreachable. This screen closes when it is back.'}
         </p>
-        {next !== undefined && (
-          <div className="flex justify-end">
-            <Button variant="ghost" onClick={() => setActive(next)}>
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button variant="ghost" className="min-h-11" onClick={() => remove(id)}>
+            Forget this harness
+          </Button>
+          <Button variant="secondary" className="min-h-11" onClick={() => setPairing(true)}>
+            Pair a harness…
+          </Button>
+          {next !== undefined && (
+            <Button variant="secondary" className="min-h-11" onClick={() => setActive(next)}>
               Switch harness
             </Button>
-          </div>
-        )}
+          )}
+        </div>
       </div>
     </div>
   )

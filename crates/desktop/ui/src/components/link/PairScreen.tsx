@@ -1,5 +1,5 @@
 import { Format, cancel, checkPermissions, requestPermissions, scan } from '@tauri-apps/plugin-barcode-scanner'
-import { Loader2, QrCode } from 'lucide-react'
+import { ChevronLeft, Loader2, QrCode } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
@@ -26,7 +26,7 @@ function takeHashKey(): string | null {
  * With an active harness that answers `list_nodes`, a key first asks: pair here, or
  * add the harness as a node of the active one and auto-pair with it (32 §8.3).
  */
-export function PairScreen({ onPaired }: { onPaired?: () => void }) {
+export function PairScreen({ onPaired, onBack }: { onPaired?: () => void; onBack?: () => void }) {
   const [key, setKey] = useState('')
   const [pairingWith, setPairingWith] = useState<string | null>(null)
   const [scanning, setScanning] = useState(false)
@@ -138,6 +138,11 @@ export function PairScreen({ onPaired }: { onPaired?: () => void }) {
     >
       {/* Auto margins, not `justify-center`: they centre without clipping the top when the keyboard shrinks the band. */}
       <div className="mt-auto flex w-full max-w-sm flex-col gap-4">
+        {onBack && (
+          <Button variant="ghost" className="h-11 justify-start self-start px-2 text-fg-secondary" onClick={onBack}>
+            <ChevronLeft className="size-5" /> Back
+          </Button>
+        )}
         <h1 className="text-2xl font-semibold">Connect to a harness</h1>
         {pairingWith !== null ? (
           <p className="flex items-center gap-2 text-fg-secondary">

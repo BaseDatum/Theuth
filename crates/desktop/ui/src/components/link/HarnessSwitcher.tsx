@@ -19,6 +19,7 @@ const DOT: Record<Presence, string> = {
   online: 'bg-success',
   connecting: 'bg-warning',
   offline: 'bg-fg-tertiary/40',
+  refused: 'bg-danger',
 }
 
 /** Paired harnesses plus the local daemon when this container has one. */
@@ -98,7 +99,7 @@ export function HarnessSwitcher({ className }: { className?: string }) {
               ) : h.id === active ? (
                 <Check className="ml-auto size-4" />
               ) : (
-                p === 'offline' && <span className="ml-auto text-xs text-fg-tertiary">offline</span>
+                (p === 'offline' || p === 'refused') && <span className="ml-auto text-xs text-fg-tertiary">{p}</span>
               )}
             </DropdownMenuItem>
           )

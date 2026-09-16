@@ -1,6 +1,6 @@
 import { Link, useNavigate } from '@tanstack/react-router'
 import { BookOpen, PanelLeft, Search, Settings, SquarePen } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { HarnessSwitcher } from '@/components/link/HarnessSwitcher'
 import { Button } from '@/components/ui/button'
 import {
@@ -23,7 +23,9 @@ import { SessionList } from './SessionList'
 export function AppSidebar({ session }: { session: string | undefined }) {
   const navigate = useNavigate()
   const { toggleSidebar } = useSidebar()
-  const scrollRef = useRef<HTMLDivElement>(null)
+  // State, not a ref: `SessionList`'s virtualizer reads the scroll element in its layout effect,
+  // which runs before this parent's ref would attach; the state change re-renders it with the element.
+  const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null)
   const [search, setSearch] = useState(false)
 
   useEffect(() => {
@@ -48,7 +50,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
           <PanelLeft className="size-5" />
         </Button>
       </SidebarHeader>
-      <SidebarContent ref={scrollRef} className="gap-0 overflow-y-auto">
+      <SidebarContent ref={setScrollEl} className="gap-0 overflow-y-auto">
         <SidebarMenu className="px-1.5">
           <SidebarMenuItem>
             <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5">
@@ -75,7 +77,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>
-        <SessionList scrollRef={scrollRef} active={session} />
+        <SessionList scrollEl={scrollEl} active={session} />
       </SidebarContent>
       <SidebarFooter className="px-1.5">
         <SidebarMenu>

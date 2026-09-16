@@ -15,6 +15,8 @@ export const CLOSE_REASON: Record<number, string> = {
   3: 'refused',
   4: 'harness gone',
 }
+/** DATA before OPEN, conn limit, or the harness rejected the device. */
+export const CLOSE_REFUSED = 3
 
 export type Frame =
   | { op: 'data'; payload: Uint8Array<ArrayBuffer> }

@@ -45,14 +45,41 @@ export async function importPrivate(raw: Uint8Array<ArrayBuffer>, extractable = 
 
 let identity: Promise<Identity> | undefined
 
-/** The device identity from IndexedDB (`link`/`identity`), created on first call; the private key never leaves WebCrypto. */
+/** IndexedDB row: PKCS#8 private key bytes and the raw public key. Older rows hold an `Identity` (a `CryptoKey`). */
+type StoredIdentity = { pkcs8: ArrayBuffer; pub: Uint8Array<ArrayBuffer> }
+
+const X25519 = { name: 'X25519' }
+
+/** `priv` can still derive: WKWebView wraps a serialized `CryptoKey` with a master key that does not always survive a relaunch on iOS. */
+async function usable({ priv, pub }: Identity): Promise<boolean> {
+  try {
+    await subtle.deriveBits({ ...X25519, public: await subtle.importKey('raw', pub, X25519, false, []) }, priv, 256)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The device identity from IndexedDB (`link`/`identity`), created on first call.
+ * At rest the private key is PKCS#8 bytes (a `CryptoKey` row did not survive an
+ * iOS relaunch, which looked like a lost pairing); in memory it is a
+ * non-extractable `CryptoKey`. A legacy `CryptoKey` row is kept while it works.
+ */
 export function getIdentity(): Promise<Identity> {
   identity ??= (async () => {
-    const stored = await idbGet<Identity>('identity', 'device')
-    if (stored) return stored
-    const fresh = await generateIdentity()
-    await idbPut('identity', 'device', fresh)
-    return fresh
+    const stored = await idbGet<Identity | StoredIdentity>('identity', 'device').catch(() => undefined)
+    if (stored && 'pkcs8' in stored) {
+      return { priv: await subtle.importKey('pkcs8', stored.pkcs8, X25519, false, ['deriveBits']), pub: stored.pub }
+    }
+    if (stored && (await usable(stored))) return stored
+    const kp = (await subtle.generateKey(X25519, true, ['deriveBits'])) as CryptoKeyPair
+    const row: StoredIdentity = {
+      pkcs8: await subtle.exportKey('pkcs8', kp.privateKey),
+      pub: new Uint8Array(await subtle.exportKey('raw', kp.publicKey)),
+    }
+    await idbPut('identity', 'device', row)
+    return { priv: await subtle.importKey('pkcs8', row.pkcs8, X25519, false, ['deriveBits']), pub: row.pub }
   })()
   return identity
 }

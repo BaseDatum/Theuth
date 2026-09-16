@@ -65,10 +65,10 @@ harness-side plugin, the device-side transport, and the pairing flow.
    queues, no JSON, no allocation per frame beyond tungstenite's, no locks on
    the copy path. Budget: p99 added latency < 1 ms at 10 k connections ×
    100 msg/s on one core; ≤ 16 KiB RSS per idle connection.
-8. **Browser container: nothing in `localStorage`.** The device key is a
-   non-extractable WebCrypto `CryptoKey` persisted in IndexedDB (usable by
-   the origin, never readable, wrapped by WebKit with a Keychain key on Apple
-   platforms); harness list beside it. The relay sets an `HttpOnly; Secure;
+8. **Browser container: nothing in `localStorage`.** The device key lives in
+   IndexedDB as PKCS#8 bytes and is imported as a non-extractable WebCrypto
+   `CryptoKey` on load (usable by the origin only; see §7.2 for why not a
+   serialized `CryptoKey`); harness list beside it. The relay sets an `HttpOnly; Secure;
    SameSite=Strict; __Host-` cookie on first load and requires it on browser-
    origin WebSocket upgrades — a per-browser session handle the relay can rate
    limit and revoke, not a credential (§7.6 says exactly what it is and is
@@ -627,9 +627,15 @@ does today.
 
 ### 7.2 Keys and Noise in WebCrypto (`src/link/noise.ts`, `src/link/keys.ts`)
 
-- Identity: `crypto.subtle.generateKey({ name: 'X25519' }, false, ['deriveBits'])`
-  — `extractable: false`. Stored as a `CryptoKey` in IndexedDB (`db link`,
-  store `identity`); the public key is exported once and stored beside it.
+- Identity: `crypto.subtle.generateKey({ name: 'X25519' }, true, ['deriveBits'])`
+  once, exported as PKCS#8 and stored with the raw public key in IndexedDB
+  (`db link`, store `identity`); on every load it is imported back with
+  `extractable: false`, so the in-memory key never leaves WebCrypto. As-built
+  note: v0 stored the non-extractable `CryptoKey` itself. WKWebView wraps a
+  serialized `CryptoKey` with a WebCrypto master key that did not survive an
+  app relaunch on iOS, so the row came back unusable and every handshake
+  failed — a paired phone looked unpaired after each restart. A legacy
+  `CryptoKey` row is kept while it still derives (desktop), else replaced.
   Every DH is `deriveBits({ name: 'X25519', public }, priv, 256)`.
 - `MixKey`/`MixKeyAndHash`: `importKey('raw', dh, 'HKDF')` →
   `deriveBits({ name: 'HKDF', hash: 'SHA-256', salt: ck, info: empty }, 512|768)`
@@ -641,12 +647,10 @@ does today.
   both directions for both patterns with test vectors.
 - Harness list: IndexedDB store `harnesses` `{ id, name, relayHost,
   pairedAt, lastSeen, order }`, and `active`. Nothing in `localStorage`,
-  nothing in `sessionStorage`. On Apple platforms WebKit wraps serialized
-  `CryptoKey`s with a key held in the Keychain `[INFERENCE: WebKit
-  CryptoKey serialization design; a backup of the IndexedDB files alone does
-  not yield the key]`. `ponytail:` if a Keychain-only store is ever required
-  on iOS, a Tauri command wrapping `security-framework` replaces the IDB
-  identity store behind the same `keys.ts` interface.
+  nothing in `sessionStorage`. `ponytail:` the PKCS#8 bytes are readable by
+  the origin; if a Keychain-only store is ever required on iOS, a Tauri
+  command wrapping `security-framework` replaces the IDB identity store
+  behind the same `keys.ts` interface.
 
 ### 7.3 Connection model
 

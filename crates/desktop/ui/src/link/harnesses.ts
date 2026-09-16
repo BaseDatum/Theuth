@@ -19,7 +19,8 @@ export interface Harness {
   parent?: string
 }
 
-export type Presence = 'online' | 'offline' | 'connecting'
+/** `refused`: the harness answered the handshake with `CLOSE refused` — it no longer knows this device; pair again. */
+export type Presence = 'online' | 'offline' | 'connecting' | 'refused'
 
 /** The desktop's own daemon in the switcher. */
 export const LOCAL = 'local'

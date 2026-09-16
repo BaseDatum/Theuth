@@ -4,7 +4,7 @@
 // called again (a parked socket is reused until the harness comes back).
 
 import type { ConnState, Transport } from '@/rpc/transport'
-import { Reassembler, decodeFrame, encodeData, splitRecords } from './frames'
+import { CLOSE_REFUSED, Reassembler, decodeFrame, encodeData, splitRecords } from './frames'
 import { type Harness, useHarnesses } from './harnesses'
 import { getIdentity, unb64url } from './keys'
 import { type Initiator, type Session, handshakeIK, prologue } from './noise'
@@ -31,6 +31,8 @@ export class LinkTransport implements Transport {
   #closed = false
   /** Last socket closed before `open`: the upgrade was refused (relay-origin cookie stale after a relay restart). */
   #refused = false
+  /** The harness answered our handshake with `CLOSE refused`: it no longer knows this device's key. Sticky until a handshake succeeds. */
+  #rejected = false
   #message: (t: string) => void = () => {}
   #state: (s: ConnState) => void = () => {}
   /** Last `SessionHello`, for the switcher. */
@@ -99,7 +101,9 @@ export class LinkTransport implements Transport {
     pending?.reject(new Error('link: socket closed'))
   }
 
-  #presence(p: 'online' | 'offline' | 'connecting'): void {
+  #presence(p: 'online' | 'offline' | 'connecting' | 'refused'): void {
+    // A refusal outlives the retry loop's `connecting` flickers; only a successful handshake clears it.
+    if (this.#rejected && p === 'connecting') return
     useHarnesses.getState().setPresence(this.harness.id, p)
   }
 
@@ -152,7 +156,12 @@ export class LinkTransport implements Transport {
         this.#state('reconnecting')
       }
     } else if (f.op === 'close') {
-      // Any reason (refused = revoked, idle, harness gone): the socket closes; the client retries with backoff.
+      // `refused` while our handshake is out = the harness does not know this device (revoked, or its
+      // devices.yaml is gone). Every other reason (idle, harness gone) is transient; the client retries.
+      if (f.reason === CLOSE_REFUSED && this.#hs) {
+        this.#rejected = true
+        this.#presence('refused')
+      }
       ws.close(1000)
     } else if (this.#session) {
       const whole = this.#asm.push(await this.#session.recv.decrypt(EMPTY, f.payload))
@@ -167,6 +176,7 @@ export class LinkTransport implements Transport {
       // `name` is the user's local label (Settings › Harnesses); the live name
       // is `hello.name` / `info.name`, shown by the switcher. Never overwrite.
       add({ ...cur, lastSeen: Date.now() })
+      this.#rejected = false
       this.#presence('online')
       this.#state('open')
       this.#pending?.resolve()

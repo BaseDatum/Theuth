@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { type RefObject, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import {
   AlertDialog,
@@ -65,7 +65,7 @@ function buildRows(sessions: SessionSummary[], active: string | undefined): Row[
  * ⌘-click toggles a chat into a selection, ⇧-click extends it from the last one
  * (Finder rules); a bar under the list deletes them together. Esc clears.
  */
-export function SessionList({ scrollRef, active }: { scrollRef: RefObject<HTMLDivElement | null>; active: string | undefined }) {
+export function SessionList({ scrollEl, active }: { scrollEl: HTMLDivElement | null; active: string | undefined }) {
   const api = useApi()
   const navigate = useNavigate()
   const { data: sessions = [] } = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
@@ -108,7 +108,7 @@ export function SessionList({ scrollRef, active }: { scrollRef: RefObject<HTMLDi
 
   const v = useVirtualizer({
     count: rows.length,
-    getScrollElement: () => scrollRef.current,
+    getScrollElement: () => scrollEl,
     estimateSize: (i) => ('label' in (rows[i] ?? {}) ? 36 : 40),
     overscan: 8,
     getItemKey: (i) => rows[i]?.key ?? i,
