@@ -706,12 +706,73 @@ After 31 §12 is green. Each ends with a runnable check.
 | 6 | UI: `parent` in IDB, nested switcher, auto-pair, Settings › Nodes, phone `/link` choice, revoke cascade | desktop connected to the parent shows `build-box` under it within 2 s of first connect with no click; switch → node's sessions; new session streams; switch back with no event bleed (31 step 4's fixture); phone scans a node's QR → "as a node of Studio Mac" → row appears on the desktop too; revoke the phone on the parent → the phone loses the parent *and* the node (`revoked by Studio Mac`) |
 | 7 | docs: 00 §10/§12, 31 §3/§4.3/§6.2 amendments, 06 §4.2 note, README `## Nodes` (install on a server in three lines) | docs and tree agree |
 
-## 12. Status
+## 12. Status (as-built v0, 2026-09-16)
 
-Design only. Nothing built. Numbers (§10 row 2) and deviations land here
-after steps 3 and 4.
+Shipped in three commits after 31: foundations (`link` `SetDispatch` +
+mode byte + `initiator`, `rpc::acp::serve_records` + per-connection `Relay`,
+`acp::Transport::{Process, Dial}` + `Dialer`, `agent::RegisterNode`,
+`wth --install-service`/`--uninstall-service`), then `crates/nodes` + the
+five `Api` methods + TUI `/nodes` + device UI, then docs. Deviations from
+the design text are listed under §13.
 
-## 13. Amendments (same commit series)
+Gates: `cargo clippy --workspace --all-targets -D warnings`, `cargo test
+--workspace`, `just ts-desktop` (bindings gained `Node`, `NodeEvent`,
+`Info.platform`, five method names), UI `tsc -b`, vitest 16 files / 95
+tests, `vite build` — all green.
+
+Verified live (one Mac, local `wth-relay --listen 127.0.0.1:8787 --web`,
+two headless `wth` on separate data dirs, `claude-haiku-4-5`):
+
+- **Step 1/2**: the 31 device script (`link-smoke.ts`) still pairs and
+  gets `hello:` + `list_sessions:` after `SetDispatch` replaced the
+  `main.rs` factory. Mode 1 is exercised end to end by step 3 (the parent's
+  `Dialer` opens it).
+- **Step 3**: `add_node(key)` from node-b's `link_pair` → `NodeAdded`,
+  `online: true` within 3 s; node-b's `link_status` lists `parent-a / wth /
+  online`. `invite_node` returned a fresh node pairing. `send_input` on the
+  parent → the model called `spawn_subagent{agent: "node-b"}` →
+  `SubagentSpawned`, child `TurnStarted { model: "node-b" }`; node-b's own
+  bus showed the child's `TurnStarted`; node-b's `sessions.sqlite` holds the
+  child's row with a `shell` call (`echo NODE-OK-$(hostname) && pwd` →
+  `NODE-OK-NAMGQ1Y4930L0`, cwd recorded) and the assistant text; the parent
+  received `<subagent_result>` as a new turn; `list_agents` shows
+  `brisk-finch (node-b)`; `list_nodes().children == 1` while the child
+  lived. `link_revoke_device(parent)` on node-b → parent saw `NodeOnline
+  false` then `NodeRevoked`, row `online: false, revoked: true`;
+  `remove_node` emptied the list. `METHODS ⊂ methods.json` unit test.
+- **Step 4** (macOS only): `wth --install-service --no-pair --relay … --name
+  svc-test` on a scratch data dir wrote `link.{enabled,relay,name}`, wrote
+  `~/Library/LaunchAgents/wth.plist` (`/bin/zsh -l -i -c exec … --headless`,
+  `WTH_LAUNCH=1`, `service.log`), bootstrapped `gui/501/wth` (launchctl
+  `state = running`), the relay's `uplinks` went 2 → 3 within 2 s; exit 0.
+  `--uninstall-service` booted it out, removed the plist, uplinks 3 → 2,
+  `link/identity` intact. Not exercised: the pairing step of the installer
+  (`--no-pair`), Linux/systemd, reboot survival, the rc-file `PATH` check
+  under launchd (18 §6 covered the same exec line).
+- **Step 5**: TUI on a pty: `/nodes add <key>` → `paired node node-b`,
+  header badge `nodes ●1`, `/nodes` menu row `● node-b macOS wth 0.1.0
+  paired 4s ago`, `i` → `⌁ node invite · node-b` QR card counting down
+  from 4:59. Rename/remove verbs unit-tested only.
+- **Step 6**: browser container (relay-served build, fresh IndexedDB):
+  pasted the parent's key → landed in chat; within seconds the device had
+  paired with node-b **with no click** — node-b's `devices.yaml` gained
+  `Chrome / web`, IDB `harnesses` had `node-b { parent: <parent id> }`;
+  switching to node-b showed the header `node-b · via parent-a` and the
+  node's session list (the remote child's session); Settings › Nodes on the
+  parent rendered `● node-b · macos · wth 0.1.0 · paired 9m ago` with QR /
+  rename / Remove and the disclosure sentence; on a harness without nodes
+  the tab shows the empty-state copy. Not exercised: the phone "as a node
+  of" choice (no second pairing string scanned), `pairing failed · retry`,
+  revoke cascade in the UI (`revoke_pending` unit-tested), iOS.
+- **Step 7**: docs and tree agree (§13).
+
+Numbers (§10 row 2) not measured: the remote child's events reached the
+parent's subscriber well under a second on loopback; no instrumented run.
+
+Open: Linux service install on a real box; the §10 latency number; UI
+revoke-cascade copy on a live revoke.
+
+## 13. Amendments (applied 2026-09-15; same commit series)
 
 - **31 §3**: dependency order becomes §3.1 here; `link` depends on
   `jsonrpsee` (type) and not on `rpc`; `SetDispatch` replaces "methods
@@ -742,6 +803,56 @@ after steps 3 and 4.
   a message (`SetDispatch`, `RegisterNode`), never by depending upward.
 - **README**: `## Nodes` — `ssh box; curl … | sh; wth --install-service;
   paste the key into /nodes add`.
+
+**Deviations** (the tree over the text above; §12 records the smoke):
+
+- **§3.1 / 31 §6.2**: `SetDispatch { methods, acp }` also carries the ACP
+  server and replaces the `MethodsFactory` `wth/main.rs` threaded through
+  31's first build (`link::types`, `rpc/src/lib.rs`).
+- **§4.3, §5.3**: the duplex is not `AsyncRead`/`AsyncWrite`. `AcpServe`
+  is `Fn(Runtime, RecordChannel)`; `RecordChannel` is a pair of `mpsc`
+  channels of `Vec<u8>`, one JSON-RPC message per item; the public entry is
+  `rpc::acp::serve_records(rt, inbound, outbound)`, which wraps both ends in
+  the SDK's `Lines::new(sink, stream)` and calls the private
+  `serve(transport, relay, data_dir)`. The `[INFERENCE]` in §4.3 is settled:
+  no `tokio::io::duplex`, no copy tasks. On the parent `acp::Duplex` is
+  `acp::LineDuplex { outgoing: Sink<String>, incoming: Stream<String> }`
+  for the same reason. `rpc::acp::relay(rt)` is the idempotent getter of
+  the process-wide `Relay` (`"acp.relay"`), whichever plugin asks first.
+- **§5.3**: `Relay` keys connections by a per-`serve` counter
+  (`connections: HashMap<u64, ConnectionTo<Client>>`, `owners:
+  HashMap<SessionId, u64>`) rather than `HashMap<SessionId,
+  ConnectionTo<Client>>`, so a connection's sessions are unbound in one
+  pass when it ends.
+- **§5.1 step 3**: the shell is `$SHELL` when it names an executable, not a
+  `passwd` lookup; the fallback (`/bin/zsh` on macOS, `/bin/sh` elsewhere)
+  runs `-l -c` without `-i` on both. `--relay` must start with `ws://` or
+  `wss://`. Linux runs `systemctl --user enable` then `restart`, not
+  `enable --now`: a re-run on a live service must pick up the unit and
+  config it just rewrote. `--uninstall-service` (`service::uninstall()`)
+  takes no `data_dir` — it only needs the unit path.
+- **§5.1 step 5**: a pairing is single use (31 §4.5), so after a phone or
+  laptop pairs instead of a parent the installer issues a fresh key and
+  keeps waiting on that one (`link_cli::pair(client, wait_for_parent =
+  true)`); "until the pairing expires" applies to the reissued key.
+- **§6.2**: `Node` has a `revoked: bool` beside `online` (the UI's "why").
+  It is not persisted (`Row.revoked` is `#[serde(skip)]`): a restart retries
+  the `IK` once, and a still-revoked node flips it back. `Add` refuses a
+  name that collides with another node as well as with `agents.yaml`. The
+  pairing conn is not reused as the control conn: `info` is sent on it as
+  the enrolling first record (31 §4.3), it is dropped, and the control task
+  opens its own `IK` mode-0 session. `Rename` publishes no event; UIs
+  refetch `list_nodes` after the call.
+- **§6.3**: the control conn is not silent at rest. The relay closes a
+  device socket idle for 600 s (`relay.rs` `DEVICE_IDLE`, `CLOSE 2`), so
+  the control task sends `link_status` every 300 s (`KEEPALIVE`); a failed
+  keepalive ends the session and the backoff loop reconnects.
+- **§6.5**: a node is registered with `agent` from `Add` on — the control
+  task's first act — with `describe` ending `· offline` until its conn is
+  up, then re-registered on every presence flip and on `Rename`;
+  unregistered on `Remove` and `NodeRevoked`. The `Dialer` refuses before
+  dialling when the presence bit is off (`"<name> is offline"`), and waits
+  up to 10 s for `PRESENCE 1` on the fresh socket otherwise.
 
 ## 14. Rejected
 

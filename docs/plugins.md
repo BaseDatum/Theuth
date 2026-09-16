@@ -16,6 +16,7 @@ A plugin is a workspace crate that exports one type implementing `runtime::Plugi
 | A subsystem with its own state on disk, its own actor(s), its own tools and/or events, its own config section (`knowledge`, `signal`, `tools`, `rpc`, `tui`) | **a plugin** | this guide |
 | Another frontend (Tauri) | RPC client of `Api`; not a plugin | |
 | A network peer that authenticates itself with keys and proxies `Api` (a phone through a relay) | **a plugin** (`link`, 31) | it owns state (identity, `devices.yaml`), an actor, config and events; the peer's requests are dispatched in-process, see §4 |
+| A peer this harness *dials* and exposes to `agent` as a harness source (another wth on another machine) | **a plugin** (`nodes`, 32) | it owns state (`nodes.yaml`), an actor, config and events; what `agent` needs from it — a `Dialer` per node — arrives as a `RegisterNode` message, never by `agent` depending upward (§3.1) |
 
 Two tests. *Does it need to exist before `main` starts anything else?* — no plugin does; if yours does, it is part of `runtime` or the binary, and that needs a written reason. *Could a user turn it off and still have a working harness?* — a plugin can be left out of the vector or disabled by its config; if the answer is no, it is not a plugin, it is the loop.
 

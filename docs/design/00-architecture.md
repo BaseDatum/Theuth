@@ -53,7 +53,11 @@ launchd's environment, not the shell's. It opens a pty and runs
 `$SHELL -l -i -c 'exec wth --headless'` on it - a terminal for one command,
 no window - so the daemon is exactly the process a terminal would have
 produced. Design doc 18; the bundle around it (sidecar, signing, tray) is
-25 §5.
+25 §5. **How a server starts it.** `wth --install-service` writes a launchd
+LaunchAgent or a systemd user unit whose command is the same
+`$SHELL -l -i -c 'exec wth --headless'` without the pty (the journal /
+`logs/service.log` is the transcript), starts it, and pairs the box to the
+user's main harness as a node; 32 §5.1.
 
 ## 3. Message bus: kameo
 
@@ -135,7 +139,7 @@ Shared crate `runtime` contains exactly `Plugin`, `Runtime` (+ the three
 helpers above), `SessionId`, `TurnId`. Nothing else. The tool and approval
 contracts live in `tools`; the agent's commands and its `AgentEvent` live in
 `agent`. Plugins depend on each other's crates for those types along the
-acyclic order `runtime ← tools ← knowledge ← agent ← {tui, rpc, signal, slack} ← wth`
+acyclic order `runtime ← tools ← knowledge ← agent ← link ← {signal, slack, nodes} ← rpc ← tui ← wth`
 (`knowledge` joins the chain in 12 §9). This keeps the shared crate under
 its 400-line ceiling and puts each contract next to the code that enforces
 it. (Earlier draft put the tool contract in `runtime`; dropped once the
@@ -259,7 +263,11 @@ flowchart LR
   screenshots return as image parts of the tool result. `message_user`
   (24, added 2026-09-14): text plus files to the user on Slack or Signal,
   out of band; the session's bound thread, else every channel's owner,
-  via a `UserSink` registry the two plugins fill at start. Computer (27):
+  via a `UserSink` registry the two plugins fill at start
+  (`RegisterUserSink`). `RegisterNode` (32 §6.5) is the second message of
+  that shape — a higher plugin hands `agent` a trait object: `nodes` sends
+  a `Dialer` per paired machine so `spawn_subagent{agent: <node>}` runs
+  there as an ACP child over a link conn. Computer (27):
   eight `computer_*` tools see and drive the user's desktop — one composite
   screenshot of every display as an image part, enigo input on one
   thread, `Risk` as the only gate. `ask_user` (added 2026-09-15): the
@@ -527,10 +535,11 @@ crates/
   surface/            library: json-render spec, jsonrepair parse, located validation, terminal rendering of json-render and Mermaid (merman), flatten for text channels, prompt block + visualize skill (30)
   rpc/                plugin: jsonrpsee server, event subscription bridge (§7)
   link/               plugin: relay uplink, Noise pairing and sessions, device registry (31)
+  nodes/              plugin: paired remote harnesses — control conns, dial transport for ACP children (32)
   relay/              bin: wth-relay, stateless encrypted-frame relay (31)
   tui/                plugin: iocraft frontend (§8)
   desktop/            app: Tauri menubar frontend, RPC client of `Api` - not a plugin (designed in 25)
-  wth/                bin: config load, plugin list from CLI flags, run (§2)
+  wth/                bin: config load, plugin list from CLI flags, run (§2); service.rs: --install-service / --uninstall-service (32 §5.1)
 docs/design/          this file and per-plugin decisions
 ```
 
@@ -541,9 +550,10 @@ the `wth` bin; the rest were added by the docs named beside them, each as the ki
 the loop must own (store, frame, compact, repl); frontends do not grow it.
 New subsystems earn a plugin. `agent/src/lib.rs` re-exports; command structs
 live next to the handler that answers them (12 §8). Dependency order:
-`runtime ← tools ← knowledge ← agent ← link ← {signal, slack} ← rpc ← tui ← wth`
-(`rpc` names `link`'s types like every plugin's; `signal` imports
-`link::qr`; `tui` renders `link`'s status and QR; `rpc` sends `link` its
+`runtime ← tools ← knowledge ← agent ← link ← {signal, slack, nodes} ← rpc ← tui ← wth`
+(`rpc` names `link`'s and `nodes`' types like every plugin's; `signal`
+imports `link::qr`; `nodes` imports `link`'s identity, initiator and record
+codec; `tui` renders `link`'s status and QR; `rpc` sends `link` its
 dispatch as a `SetDispatch` message at start, 32 §3.1 — never a handle
 threaded through `wth`).
 
@@ -683,6 +693,7 @@ Each phase ends with a runnable check, not a test suite.
 | 17 | computer (27) | composite screenshot of two displays described; TextEdit typed into and verified from the PNG; a click on display 2 lands | done 2026-09-15 (screenshot + open/key/type/refusal smoked on two displays; live click aborted by the user mid-turn, mapping unit-tested only; 27 §13) |
 | 18 | rewind (29): edit, regenerate, fork | 29 §9 checks 1–6 headless, 7–8 in both UIs | in progress 2026-09-15 |
 | 19 | link (31): phone/browser drives the harness through a stateless relay, Noise E2E, same JSON-RPC | 31 §12 | done 2026-09-15 (relay + headless + `wth --link` QR; browser paired IKpsk2, reconnected IK, no secrets in storage; device script paired/reconnected/revoked; relay restart re-registers <4 s; TUI `/link` card and badge in a pty; iOS build, camera scan and 31 §11 bench not run; 31 §13) |
+| 20 | nodes (32): a harness on another machine paired to this one; `spawn_subagent` runs there over a link mode-1 conn | 32 §11 | in progress 2026-09-15 |
 
 Known gaps carried forward: cancel/error paths in the loop are code-reviewed,
 not smoke-tested; the `Jobs` actor kills every process group on shutdown

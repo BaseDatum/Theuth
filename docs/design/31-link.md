@@ -235,7 +235,9 @@ transport messages carrying JSON-RPC.
 
 - Harness: one X25519 static keypair, `<data_dir>/link/identity` (32 bytes,
   0600), created on first enable. **Harness id** = `base64url(pub)`, 43
-  chars, appears in URLs and in the pairing string.
+  chars, appears in URLs and in the pairing string. The same 32 bytes are
+  this harness's *device* static when it pairs with another harness as its
+  parent (32 §4.1): on that node it is a device with id `base64url(pub)[..8]`.
 - Device: one X25519 static keypair per install, generated on first pairing
   (§7.2). **Device id** (harness-side display) = first 8 chars of
   `base64url(pub)`.
@@ -311,9 +313,14 @@ is recorded.
 
 ```
 Noise_IK_25519_AESGCM_SHA256       prologue = "wth-link-1" ‖ harness_id
-→ e, es, s, ss          payload: empty
+→ e, es, s, ss          payload: mode:u8 | empty      (empty ≡ mode 0)
 ← e, ee, se             payload: SessionHello { name, version }
 ```
+
+`mode` selects what the conn's records dispatch into (table in 32 §4.2):
+absent or `0` is this doc's JSON-RPC conn; `1` is the ACP conn a parent
+opens per remote child; anything else, or a payload longer than one byte,
+is `CLOSE 3`.
 
 The harness learns the device's static by decrypting message 1
 (`get_remote_static` after `read_message`) and looks it up in
@@ -509,7 +516,9 @@ authenticates and the remote static is in `devices.yaml`, continue as a
 session; otherwise, if a pairing is pending, re-read the same bytes as
 `IKpsk2` (the two patterns share the message-1 layout but not the handshake
 hash, so a message written for one fails cleanly under the other — at most
-two DH pairs per attempt); otherwise `CLOSE 3`. Then loop: decrypt a record → reassemble at FIN →
+two DH pairs per attempt); otherwise `CLOSE 3`. Then dispatch by the mode
+byte (§4.3): mode 1 hands a `RecordChannel` to `SetDispatch.acp` and pumps
+records both ways (32 §4.3); mode 0 loops: decrypt a record → reassemble at FIN →
 `methods.raw_json_request(&text, 4096)` on a **spawned** task per request
 (a slow method must not block the conn) → encrypt the response → `DATA`.
 The `mpsc::Receiver` from the first `subscribe_events` request is drained by
@@ -649,7 +658,8 @@ does today.
 
 - `local` is the desktop's own daemon (25's launch path), present only when
   `isTauri() && platform === 'macos'`. It is a harness like any other in the
-  switcher, named from `Info.name`.
+  switcher, named from `Info.name`. 32 §8.1 adds `parent?: string` to
+  `Harness`: a node the parent introduced (32 §8.2) is stored under it.
 - On app start every paired harness gets a `LinkTransport` and an
   `RpcClient`; all connect (presence dots); **only the active one** calls
   `subscribe_events(null, null)`. Switching: the old client unsubscribes,
@@ -709,7 +719,13 @@ link (it then manages *that* harness's devices — the header says which).
   "Agents" — see §14). Manage: rename locally, reorder, "Forget" (deletes
   the local entry; the harness still lists the device until revoked there —
   the copy says so). On phones the same list is also reachable from the
-  chat header title (tap the harness name).
+  chat header title (tap the harness name). 32 §8.1 nests nodes under their
+  parent in this list.
+- `/link` with a key from a node's QR (32 §4.4) offers the choice "as a
+  node of <parent>" beside plain pairing (32 §8.3); Settings › Nodes sits
+  beside Settings › Link on the parent (32 §8.3); revoking a device on the
+  parent cascades to its nodes, so the parent's revoke copy becomes "…and
+  on its N nodes" (32 §8.4).
 
 ### 7.6 Browser container
 
@@ -955,6 +971,9 @@ against a fake harness); the §11 bench numbers (`crates/relay/examples/bench.rs
 exists, not run); `--tls`; Docker image build.
 
 Open: §11 bench numbers; the mobile Settings deep link landing on the pane.
+
+- 32 (nodes) amends §4.1, §4.3, §6.2, §7.3, §7.5; the `SetDispatch` message
+  now also carries `acp`.
 
 ## 14. Amendments (same commit series)
 

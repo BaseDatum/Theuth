@@ -141,7 +141,10 @@ struct SpawnSubagentArgs {
 The tool description appends the configured names and descriptions
 (`External harnesses: claude — …; codex — …`) so the model can choose without
 a second call. `PeerContext` (§2.5 of doc 01) adds the same line under
-`## Subagents`. Unknown `agent` → tool error listing the names.
+`## Subagents`. Unknown `agent` → tool error listing the names. Since 32
+§6.5 the same field also names a paired *node*: the supervisor resolves
+`agents.yaml` first, then the nodes `RegisterNode` registered, and the
+error lists both.
 
 `SpawnChild` grows `agent: Option<String>` and `cwd: Option<PathBuf>`. For
 `Some`, the supervisor creates the session row exactly as today (name
@@ -160,6 +163,14 @@ impl Message<UserInput> for AcpChild  // → session/prompt; a second input whil
                                       //   prompt is in flight is queued (§3.5)
 impl Message<Cancel>    for AcpChild  // → session/cancel
 ```
+
+As built for 32 §6.5, `Connect.config: AcpAgentConfig` became
+`Connect.transport: Transport`, `Transport::{Process(AcpAgentConfig),
+Dial(Arc<dyn Dialer>)}`; a `Dialer` opens one `LineDuplex` (one JSON-RPC
+message per `String`, no line framing) per connection, and the private
+`Link::spawn` under `Harness::connect` either spawns the process or dials.
+`probe(Transport, stderr_log)` takes the same enum. `AcpChild` carries the
+`Transport`, so a remote child is the same actor with a different first hop.
 
 `ChildSink` is what the child needs from the harness: `publish(AgentEvent)`
 and `approve(ApprovalRequested) -> Decision`. Both are one `Runtime` handle
@@ -324,7 +335,8 @@ subscription is already on disk once the user has used the harness.
   in wth (`rmcp` `server` feature) reachable from a subprocess — a stdio
   shim `wth mcp --session <id>` proxying to the daemon over RPC. One
   transcript showing a stuck child that should have asked a question
-  triggers it.
+  triggers it. (A remote child on a node, 32, is in the same position: it
+  cannot ask its parent either.)
 - **Forwarding `~/.wth/mcp/*.json` to children.** Same mechanism
   (`mcpServers`), zero code beyond a mapping — but doubles every MCP server
   process per child and bypasses our gates. Off by default; `agents.yaml`
@@ -374,6 +386,11 @@ the RPC port are not used. A TUI running alongside sees the ACP sessions in
 same stdio shim as §3.8's MCP back-channel (`wth --acp` connecting to a
 running daemon over jsonrpsee instead of hosting plugins), and the
 Transports WG's Streamable HTTP/WebSocket RFD may make the shim unnecessary.
+The in-daemon ACP server over a link mode-1 conn (32 §4.3;
+`rpc::acp::serve_records`, one `Relay` per process with per-connection
+session ownership) is the shim this paragraph anticipated, without a
+shim: the running daemon serves ACP itself and the sessions are its own.
+`wth --acp` on stdio stays for editors.
 
 ### 4.3 What the client sees that the TUI does not
 
@@ -394,8 +411,8 @@ catalog's pricing, `session/close`, message ids.
 crates/acp/          library, no dependency on agent or tools (like cursor):
                        agents.rs   agents.yaml loader, describe() (tool-description line)
                        registry.rs registry fetch/cache, install (npx/uvx/binary), remove_bin
-                       harness.rs  Harness: connect (spawn → initialize → auth → session/new|load),
-                                   prompt, cancel, close; probe
+                       harness.rs  Harness: connect (Transport::{Process, Dial} → initialize → auth → session/new|load),
+                                   prompt, cancel, close; probe(Transport); Dialer, LineDuplex (32 §6.5)
                        render.rs   content/diff renderers, risk(kind), kind(name, risk)
 crates/agent/        acp_child.rs: AcpChild actor (session/update → AgentEvent, permissions,
                        queued input, respawn + session/load); migrations/0006_acp.sql
@@ -406,7 +423,9 @@ crates/agent/        acp_child.rs: AcpChild actor (session/update → AgentEvent
                        ListRegistry.
 crates/tools/        ExternalApproval on ToolRegistry, sharing Invoke's decision (gate()).
 crates/rpc/src/acp.rs   agent half: AcpPlugin + Relay bus actor (AgentEvent, approvals,
-                       prompt waiters). RPC: list_acp(probe), add_acp(id), remove_acp(name),
+                       prompt waiters; one per process, "acp.relay", sessions bound to the
+                       connection that made them); serve_records for link mode-1 conns (32 §4.3).
+                       RPC: list_acp(probe), add_acp(id), remove_acp(name),
                        list_acp_registry(). TS bindings EntryInfo.ts, RegistryAgent.ts.
 crates/wth/          --acp flag (conflicts with headless/serve/-p/link-signal): plugins
                        tools, knowledge, agent, signal (channel off), rpc::AcpPlugin;

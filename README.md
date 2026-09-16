@@ -15,6 +15,8 @@ just run -- -p "prompt"    # print mode: stream the reply, exit when the turn en
 echo "prompt" | just run -- -p   # same, prompt from stdin
 just run -- --link-signal --owner +15551234567   # pair as a Signal linked device (one-shot QR), then run --headless
 just run -- --link             # pair a phone with the running daemon (one-shot QR + key); needs `wth --headless` on this box
+just run -- --install-service --relay wss://relay.example.com   # on a server: run wth --headless as a launchd/systemd user service through your login shell, print the key to pair it to your main harness as a node
+just run -- --uninstall-service                                  # remove that unit; the data dir and every pairing stay
 just relay                     # local wth-relay on 127.0.0.1:8787 for link development; `just web-build` builds the browser UI it serves
 just run -- --slack-setup      # create the Slack app from the manifest, verify tokens, write config; then run --headless
 just run -- --slack-manifest   # manual path: print the Slack app manifest for api.slack.com/apps → From a manifest
@@ -85,7 +87,7 @@ and its devices), `tui` (iocraft), `wth` (binary).
 Config (`~/.wth/`, created on first run; details in
 [`docs/design/01-config-and-subagents.md`](docs/design/01-config-and-subagents.md) §1):
 
-- `config.yaml` — every plugin reads its own section; `WTH_<SECTION>__<KEY>` env overrides. `agent.model` is a models.dev id (`anthropic/claude-sonnet-4-5`); `/model` rewrites that one line in place. The `agent`, `tools`, `knowledge`, `web`, `search_providers`, `browser`, `computer`, `link` and `slack` sections with their defaults:
+- `config.yaml` — every plugin reads its own section; `WTH_<SECTION>__<KEY>` env overrides. `agent.model` is a models.dev id (`anthropic/claude-sonnet-4-5`); `/model` rewrites that one line in place. The `agent`, `tools`, `knowledge`, `web`, `search_providers`, `browser`, `computer`, `link`, `nodes` and `slack` sections with their defaults:
 
   ```yaml
   agent:
@@ -132,6 +134,8 @@ Config (`~/.wth/`, created on first run; details in
     relay: wss://relay.wth.rwx.dev   # self-host: your `wth-relay` URL
     name: ""                      # display name in the QR and on devices; "" → hostname
     max_devices: 16
+  nodes:                          # design doc 32; `/nodes add <key>` pairs, the node ran `wth --install-service`
+    enabled: true                 # false: no dials, nodes invisible to the model and the UI; nodes.yaml kept
   slack:
     # owner: U0123456789           # owner-only commands, may click any approval, receives unbound approvals
     allowed: []                    # more user ids; each owns their threads
@@ -293,3 +297,24 @@ upgrade is Noise-encrypted end to end between your device and your harness,
 so the relay (ours or anyone's) sees ciphertext, frame sizes, timing, IP
 addresses and the harness id — never your messages, keys or which device
 is connected. Design: [`docs/design/31-link.md`](docs/design/31-link.md).
+
+## Nodes
+
+Give the model, and your phone, another machine. Three lines on the box:
+
+```sh
+ssh box
+just install                          # release `wth` into ~/.cargo/bin (or copy the binary over); a model key goes in ~/.wth/credentials.yaml over the same ssh session
+wth --install-service --relay wss://relay.example.com   # writes a launchd LaunchAgent / systemd user unit running `$SHELL -l -i -c 'exec wth --headless'`, sets link.enabled, starts it, prints a QR + key
+```
+
+On your main harness, `/nodes add <key>` in the TUI (or Settings › Nodes ›
+Add node in the desktop app, or scan the QR with the phone and choose "as a
+node of …"). From then on `spawn_subagent{agent: "<node>"}` runs the child
+on that machine over the same encrypted link conn, its approvals land in
+your UI, and the desktop and phone switcher list the node nested under its
+parent — your devices pair with it automatically, so switching to it shows
+its own sessions. `/nodes` lists, renames, removes and invites; `wth
+--uninstall-service` removes the unit and nothing else. The node has its own
+`~/.wth` (config, credentials, skills, MCP servers): nothing is synced.
+Design: [`docs/design/32-nodes.md`](docs/design/32-nodes.md).

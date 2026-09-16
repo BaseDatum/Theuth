@@ -146,10 +146,15 @@ All come from running the user's real rc files, which is the point.
 - **`launchctl setenv PATH …` / a LaunchAgent plist with a copied `PATH`**:
   a snapshot the user maintains by hand; wrong the day they install a new
   toolchain.
-- **Ship the daemon as a LaunchAgent (`launchd` service) the app talks to**:
-  same environment problem, plus lifecycle the user cannot see. If a
-  background service is ever wanted, it launches through this same
-  pty-shell path.
+- **Ship the desktop app's daemon as a LaunchAgent (`launchd` service) the
+  app talks to**: same environment problem, plus lifecycle the user cannot
+  see. This rejection is scoped to the app's daemon. The background service
+  this bullet reserved is 32 §5.1 (`wth --install-service`, a node on a
+  server nobody sits at): its unit runs the same `$SHELL -l -i -c 'exec wth
+  --headless'` command line, as §2 requires, with the pty dropped — under a
+  service the journal / `<data_dir>/logs/service.log` is the transcript,
+  and the systemd unit's `StandardInput=null` makes an rc file that waits
+  for input fail fast instead of hanging (§4).
 - **Open a real Terminal/Ghostty window running `wth --headless`**: works,
   visibly clunky, and depends on which terminal is installed and its
   AppleScript/CLI surface.
