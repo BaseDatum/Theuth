@@ -32,8 +32,14 @@ pub struct Store {
 
 /// `(name, session, fired_at, result)` as `latest()` selects it.
 type LatestRow = (String, Option<String>, Option<String>, Option<String>);
-/// `(session, fired_at, finished_at, result)` as `history()` selects it.
-type RunRow = (Option<String>, String, Option<String>, Option<String>);
+/// `(session, fired_at, finished_at, result, report)` as `history()` selects it.
+type RunRow = (
+    Option<String>,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
 
 impl Store {
     /// Open or create the file, run the migration, and close every row still
@@ -84,20 +90,40 @@ impl Store {
         Ok(done.last_insert_rowid())
     }
 
-    /// Close a fire: `end_turn` / `error: …` / `timeout` / `cancelled`.
+    /// Close a fire: `end_turn` / `error: …` / `timeout` / `cancelled`, with the
+    /// run's final text as `report` (33 §0.7).
     pub async fn finish_run(
         &self,
         id: i64,
         finished_at: DateTime<Local>,
         result: &str,
+        report: Option<&str>,
     ) -> anyhow::Result<()> {
-        sqlx::query("UPDATE runs SET finished_at = ?, result = ? WHERE id = ?")
+        sqlx::query("UPDATE runs SET finished_at = ?, result = ?, report = ? WHERE id = ?")
             .bind(finished_at.to_rfc3339())
             .bind(result)
+            .bind(report)
             .bind(id)
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    /// Fires of `name` since its last loop end row (33 §3.2): rows with a
+    /// session that are not skips, newer than the newest `done…` / `max_runs…` /
+    /// `until broken…` / `removed` row. No end row = all its fires.
+    pub async fn count_since_end(&self, name: &str) -> anyhow::Result<u32> {
+        let (n,): (u32,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM runs WHERE name = ?1 AND session IS NOT NULL \
+             AND (result IS NULL OR result NOT LIKE 'skipped:%') \
+             AND id > COALESCE((SELECT MAX(id) FROM runs WHERE name = ?1 \
+                 AND (result LIKE 'done%' OR result LIKE 'max_runs%' \
+                      OR result LIKE 'until broken%' OR result = 'removed')), 0)",
+        )
+        .bind(name)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(n)
     }
 
     /// Per name, the boot state derived from its rows (34 §7). Newest = highest
@@ -133,7 +159,7 @@ impl Store {
     /// The last `limit` fires and skips of `name`, newest first.
     pub async fn history(&self, name: &str, limit: u32) -> anyhow::Result<Vec<RunInfo>> {
         let rows: Vec<RunRow> = sqlx::query_as(
-            "SELECT session, fired_at, finished_at, result FROM runs \
+            "SELECT session, fired_at, finished_at, result, report FROM runs \
              WHERE name = ? ORDER BY fired_at DESC, id DESC LIMIT ?",
         )
         .bind(name)
@@ -141,12 +167,13 @@ impl Store {
         .fetch_all(&self.pool)
         .await?;
         rows.into_iter()
-            .map(|(session, fired_at, finished_at, result)| {
+            .map(|(session, fired_at, finished_at, result, report)| {
                 Ok(RunInfo {
                     session: session.as_deref().map(session_of).transpose()?,
                     fired_at: time_of(&fired_at)?,
                     finished_at: finished_at.as_deref().map(time_of).transpose()?,
                     result,
+                    report,
                 })
             })
             .collect()
@@ -182,7 +209,7 @@ mod tests {
         let t2 = t0 + TimeDelta::minutes(20);
 
         let first = store.insert_run("a", Some(s1), t0, None).await.unwrap();
-        store.finish_run(first, t1, "end_turn").await.unwrap();
+        store.finish_run(first, t1, "end_turn", None).await.unwrap();
         store.insert_run("a", Some(s2), t1, None).await.unwrap();
         store
             .insert_run("a", Some(s2), t2, Some("skipped: busy"))
@@ -212,6 +239,76 @@ mod tests {
         assert_eq!(h[1].session, Some(s2));
         assert_eq!(h[1].finished_at, None);
         assert_eq!(h[1].result, None);
+    }
+
+    #[tokio::test]
+    async fn count_since_end_and_report() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("schedule.sqlite"))
+            .await
+            .unwrap();
+        let s = SessionId::new();
+        let t0 = Local::now() - TimeDelta::minutes(30);
+        let at = |m: i64| t0 + TimeDelta::minutes(m);
+
+        // loop: fire, fire, skip, end, fire (finished with report), fire (running)
+        let r = store
+            .insert_run("loop", Some(s), at(0), None)
+            .await
+            .unwrap();
+        store.finish_run(r, at(1), "end_turn", None).await.unwrap();
+        let r = store
+            .insert_run("loop", Some(s), at(2), None)
+            .await
+            .unwrap();
+        store.finish_run(r, at(3), "end_turn", None).await.unwrap();
+        store
+            .insert_run("loop", Some(s), at(4), Some("skipped: busy"))
+            .await
+            .unwrap();
+        store
+            .insert_run("loop", Some(s), at(5), Some("max_runs 2 reached"))
+            .await
+            .unwrap();
+        let r = store
+            .insert_run("loop", Some(s), at(6), None)
+            .await
+            .unwrap();
+        store
+            .finish_run(r, at(7), "end_turn", Some("all green"))
+            .await
+            .unwrap();
+        store
+            .insert_run("loop", Some(s), at(8), None)
+            .await
+            .unwrap();
+        assert_eq!(store.count_since_end("loop").await.unwrap(), 2);
+
+        let h = store.history("loop", 10).await.unwrap();
+        assert_eq!(h.len(), 6);
+        assert_eq!(h[0].report, None);
+        assert_eq!(h[1].report.as_deref(), Some("all green"));
+        assert!(h[2..].iter().all(|r| r.report.is_none()));
+
+        // plain: no end row = every fire, no skips
+        store
+            .insert_run("plain", Some(s), at(0), None)
+            .await
+            .unwrap();
+        store
+            .insert_run("plain", Some(s), at(1), None)
+            .await
+            .unwrap();
+        store
+            .insert_run("plain", Some(s), at(2), Some("skipped: busy"))
+            .await
+            .unwrap();
+        store
+            .insert_run("plain", None, at(3), Some("skipped: busy"))
+            .await
+            .unwrap();
+        assert_eq!(store.count_since_end("plain").await.unwrap(), 2);
+        assert_eq!(store.count_since_end("nothing").await.unwrap(), 0);
     }
 
     #[tokio::test]

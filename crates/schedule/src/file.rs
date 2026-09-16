@@ -75,6 +75,14 @@ pub struct Spec {
     pub enabled: bool,
     /// Body, trimmed; never empty.
     pub prompt: String,
+    /// `until:` — shell command run before each fire; exit 0 ends the loop (33 §0.2, §3.1).
+    pub until: Option<String>,
+    /// `max_runs:` — fires since the last end row before the loop is capped (33 §3.2).
+    pub max_runs: Option<u32>,
+    /// `cwd:` — where `until` runs and the session is created; `~` expanded (33 §0.9).
+    pub cwd: Option<PathBuf>,
+    /// `approvals:` — default true; false maps to the per-session switch on every fire (33 §0.8).
+    pub approvals: bool,
 }
 
 #[derive(Deserialize, Default)]
@@ -87,11 +95,17 @@ struct FrontMatter {
     missed: Option<String>,
     model: Option<String>,
     enabled: Option<bool>,
+    until: Option<String>,
+    max_runs: Option<u32>,
+    cwd: Option<String>,
+    approvals: Option<bool>,
 }
 
 /// Parse one file's text. `Err` is the user-facing reason (`cron: …`,
 /// `exactly one of cron / every / at`, `every: below 10s`, `at: in the past`,
-/// `missed: expected run|skip`, `empty prompt`).
+/// `missed: expected run|skip`, `empty prompt`; loops (33 §2): `every: 0s needs
+/// until or max_runs`, `until: empty`, `max_runs: at least 1`, `cwd: not a
+/// directory: …`, `at: a one-shot has no loop to stop`).
 pub fn parse(name: &str, text: &str) -> Result<Spec, String> {
     let matter = gray_matter::Matter::<gray_matter::engine::YAML>::new();
     let parsed = matter
@@ -99,6 +113,30 @@ pub fn parse(name: &str, text: &str) -> Result<Spec, String> {
         .map_err(|e| format!("front matter: {e}"))?;
     let fm = parsed.data.unwrap_or_default();
     let prompt = parsed.content.trim();
+
+    let until = fm.until.map(|u| u.trim().to_string());
+    if until.as_deref() == Some("") {
+        return Err("until: empty".into());
+    }
+    if fm.max_runs == Some(0) {
+        return Err("max_runs: at least 1".into());
+    }
+    let has_stop = until.is_some() || fm.max_runs.is_some();
+    let cwd = match fm.cwd.as_deref().map(str::trim) {
+        None => None,
+        Some(c) => {
+            let path = match c.strip_prefix('~') {
+                Some(rest) if rest.is_empty() || rest.starts_with('/') => dirs::home_dir()
+                    .ok_or("cwd: no home directory")?
+                    .join(rest.trim_start_matches('/')),
+                _ => PathBuf::from(c),
+            };
+            if !path.is_dir() {
+                return Err(format!("cwd: not a directory: {}", path.display()));
+            }
+            Some(path)
+        }
+    };
 
     let (when, when_text) = match (&fm.cron, &fm.every, &fm.at) {
         (Some(c), None, None) => {
@@ -109,12 +147,19 @@ pub fn parse(name: &str, text: &str) -> Result<Spec, String> {
         (None, Some(e), None) => {
             let e = e.trim();
             let d = humantime::parse_duration(e).map_err(|err| format!("every: {err}"))?;
-            if d < MIN_EVERY {
-                return Err("every: below 10s".into());
+            if d < MIN_EVERY && !has_stop {
+                return Err(if d.is_zero() {
+                    "every: 0s needs until or max_runs".into()
+                } else {
+                    "every: below 10s".into()
+                });
             }
             (When::Every(d), format!("every {e}"))
         }
         (None, None, Some(a)) => {
+            if has_stop {
+                return Err("at: a one-shot has no loop to stop".into());
+            }
             let a = a.trim();
             let t = parse_at(a)?;
             if t <= Local::now() {
@@ -146,6 +191,10 @@ pub fn parse(name: &str, text: &str) -> Result<Spec, String> {
             .filter(|m| !m.is_empty()),
         enabled: fm.enabled.unwrap_or(true),
         prompt: prompt.to_string(),
+        until,
+        max_runs: fm.max_runs,
+        cwd,
+        approvals: fm.approvals.unwrap_or(true),
     })
 }
 
@@ -215,8 +264,24 @@ pub struct FileArgs<'a> {
     pub quiet: bool,
     /// `model:` — written only when present.
     pub model: Option<&'a str>,
+    /// `until:` — the stop command (33 §2); written only when present.
+    pub until: Option<&'a str>,
+    /// `max_runs:` — the cap (33 §2); written only when present.
+    pub max_runs: Option<u32>,
+    /// `cwd:` — where `until` runs and the session starts (33 §2); written only when present.
+    pub cwd: Option<&'a str>,
+    /// `approvals:` — written only when false (33 §0.8).
+    pub approvals: bool,
+    /// `enabled:` — written only when false: the draft (33 §0.6).
+    pub enabled: bool,
     /// Body.
     pub prompt: &'a str,
+}
+
+/// YAML double-quoted scalar: `\` and `"` escaped, so `:`, `#`, `$(…)` and a
+/// leading `~` survive.
+fn yaml_str(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 /// Render the file text: front matter with only the keys present, a blank
@@ -238,10 +303,57 @@ pub fn render(a: &FileArgs<'_>) -> String {
     if let Some(m) = a.model {
         s.push_str(&format!("model: {}\n", m.trim()));
     }
+    if let Some(u) = a.until {
+        s.push_str(&format!("until: {}\n", yaml_str(u.trim())));
+    }
+    if let Some(n) = a.max_runs {
+        s.push_str(&format!("max_runs: {n}\n"));
+    }
+    if let Some(c) = a.cwd {
+        s.push_str(&format!("cwd: {}\n", yaml_str(c.trim())));
+    }
+    if !a.approvals {
+        s.push_str("approvals: false\n");
+    }
+    if !a.enabled {
+        s.push_str("enabled: false\n");
+    }
     s.push_str("---\n\n");
     s.push_str(a.prompt.trim());
     s.push('\n');
     s
+}
+
+/// Rewrite the `enabled:` line inside the front matter (33 §3.5): replace it
+/// when present, else insert `enabled: <v>` right after the opening `---`.
+/// Text without front matter gets one. Everything else is byte-for-byte.
+pub fn set_enabled(text: &str, enabled: bool) -> String {
+    let line = format!("enabled: {enabled}\n");
+    if !text.starts_with("---\n") {
+        return format!("---\n{line}---\n{text}");
+    }
+    let mut lines = text.split_inclusive('\n');
+    let open = lines.next().unwrap_or_default();
+    let mut out = String::with_capacity(text.len() + line.len());
+    out.push_str(open);
+    let mut replaced = false;
+    for l in &mut lines {
+        if l.trim_end() == "---" {
+            out.push_str(l);
+            break;
+        }
+        if l.starts_with("enabled:") {
+            out.push_str(&line);
+            replaced = true;
+        } else {
+            out.push_str(l);
+        }
+    }
+    if !replaced {
+        out.insert_str(open.len(), &line);
+    }
+    out.extend(lines);
+    out
 }
 
 /// Write `<dir>/<name>.md` atomically (dotfile temp in `dir`, then rename) so the
@@ -366,44 +478,123 @@ mod tests {
         assert_eq!(at.next(now + chrono::Duration::hours(2), None), None);
     }
 
+    const BASE: FileArgs<'static> = FileArgs {
+        cron: None,
+        every: None,
+        at: None,
+        quiet: false,
+        model: None,
+        until: None,
+        max_runs: None,
+        cwd: None,
+        approvals: true,
+        enabled: true,
+        prompt: "p",
+    };
+
     #[test]
     fn render_parse_round_trip() {
         let text = render(&FileArgs {
             cron: Some("0 9 * * 1-5"),
-            every: None,
-            at: None,
             quiet: true,
             model: Some("claude-haiku-4-5"),
             prompt: "Brief me.\n\nTwice.",
+            ..BASE
         });
         let s = parse("brief", &text).unwrap();
         assert_eq!(s.when_text, "cron 0 9 * * 1-5");
-        assert!(s.quiet && s.enabled && !s.missed_run);
+        assert!(s.quiet && s.enabled && !s.missed_run && s.approvals);
         assert_eq!(s.model.as_deref(), Some("claude-haiku-4-5"));
         assert_eq!(s.prompt, "Brief me.\n\nTwice.");
+        assert!(s.until.is_none() && s.max_runs.is_none() && s.cwd.is_none());
 
         let text = render(&FileArgs {
-            cron: None,
             every: Some("30m"),
-            at: None,
-            quiet: false,
-            model: None,
-            prompt: "p",
+            ..BASE
         });
         assert!(!text.contains("quiet") && !text.contains("model"));
+        assert!(!text.contains("approvals") && !text.contains("enabled"));
         let s = parse("q", &text).unwrap();
         assert!(!s.quiet && s.model.is_none());
         assert_eq!(s.when_text, "every 30m");
 
         let text = render(&FileArgs {
-            cron: None,
-            every: None,
             at: Some("2099-01-01T10:00"),
-            quiet: false,
-            model: None,
-            prompt: "p",
+            ..BASE
         });
         assert_eq!(parse("a", &text).unwrap().when_text, "at 2099-01-01T10:00");
+    }
+
+    #[test]
+    fn loop_keys_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().to_str().unwrap();
+        let text = render(&FileArgs {
+            every: Some("0s"),
+            until: Some("test \"$(gh issue view 42 -q .state)\" = CLOSED # done: closed"),
+            max_runs: Some(200),
+            cwd: Some(cwd),
+            approvals: false,
+            enabled: false,
+            ..BASE
+        });
+        let s = parse("port", &text).unwrap();
+        assert!(matches!(s.when, When::Every(d) if d.is_zero()));
+        assert_eq!(
+            s.until.as_deref(),
+            Some("test \"$(gh issue view 42 -q .state)\" = CLOSED # done: closed")
+        );
+        assert_eq!(s.max_runs, Some(200));
+        assert_eq!(s.cwd.as_deref(), Some(dir.path()));
+        assert!(!s.approvals && !s.enabled);
+    }
+
+    #[test]
+    fn loop_rules() {
+        assert_eq!(
+            parse("x", &md("every: 0s", "p")).unwrap_err(),
+            "every: 0s needs until or max_runs"
+        );
+        let s = parse("x", &md("every: 0s\nmax_runs: 1", "p")).unwrap();
+        assert!(matches!(s.when, When::Every(d) if d.is_zero()));
+        assert!(parse("x", &md("every: 5s\nuntil: cargo test", "p")).is_ok());
+        assert_eq!(
+            parse("x", &md("at: 2099-01-01T10:00\nuntil: ./done.sh", "p")).unwrap_err(),
+            "at: a one-shot has no loop to stop"
+        );
+        assert!(
+            parse("x", &md("every: 1h\ncwd: /definitely/not/here", "p"))
+                .unwrap_err()
+                .starts_with("cwd: not a directory")
+        );
+        assert_eq!(
+            parse("x", &md("every: 1h\nmax_runs: 0", "p")).unwrap_err(),
+            "max_runs: at least 1"
+        );
+        assert_eq!(
+            parse("x", &md("every: 1h\nuntil: \"  \"", "p")).unwrap_err(),
+            "until: empty"
+        );
+        if let Some(home) = dirs::home_dir() {
+            let s = parse("x", &md("every: 1h\ncwd: \"~\"", "p")).unwrap();
+            assert_eq!(s.cwd.as_deref(), Some(home.as_path()));
+        }
+    }
+
+    #[test]
+    fn set_enabled_rewrites_or_inserts() {
+        let text = md("every: 1h\nenabled: true\nquiet: true", "p");
+        let off = set_enabled(&text, false);
+        assert_eq!(off, md("every: 1h\nenabled: false\nquiet: true", "p"));
+        assert!(!parse("x", &off).unwrap().enabled);
+        assert_eq!(set_enabled(&off, true), text);
+
+        let text = md("every: 1h", "p");
+        let off = set_enabled(&text, false);
+        assert_eq!(off, md("enabled: false\nevery: 1h", "p"));
+        assert!(!parse("x", &off).unwrap().enabled);
+
+        assert_eq!(set_enabled("p\n", false), "---\nenabled: false\n---\np\n");
     }
 
     #[test]

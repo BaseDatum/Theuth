@@ -125,8 +125,13 @@ pub enum UiEvent {
     Job(JobEvent),
     /// Reply to [`Command::ListSchedules`].
     Schedules(Vec<schedule::ScheduleInfo>),
-    /// Reply to [`Command::ScheduleHistory`]: the schedule's name and its runs, newest first.
-    ScheduleHistory(String, Vec<schedule::RunInfo>),
+    /// Reply to [`Command::ScheduleHistory`]: the schedule's name, its info
+    /// when the file still exists, and its runs, newest first.
+    ScheduleHistory(
+        String,
+        Option<schedule::ScheduleInfo>,
+        Vec<schedule::RunInfo>,
+    ),
     /// Reply to [`Command::ComputerStatus`].
     Computer(computer::PermissionStatus),
     /// Reply to [`Command::LinkStatus`] and the link commands that change it.
@@ -228,6 +233,8 @@ pub enum Command {
     FireSchedule(String),
     /// `schedule_history`: the schedule's last runs.
     ScheduleHistory(String),
+    /// `enable_schedule`: `/schedules pause|resume <name>` (33 §3.5).
+    EnableSchedule(String, bool),
     /// `computer_permissions`.
     ComputerStatus,
     /// `compact`.
@@ -904,8 +911,8 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     (
         "/schedules",
-        "[run <name>|history <name>]",
-        "scheduled prompts: list, fire one now, show its runs",
+        "[run <name>|history <name>|pause <name>|resume <name>]",
+        "scheduled prompts: list, fire one now, show its runs, pause or resume a loop",
     ),
     (
         "/computer",
@@ -2545,9 +2552,9 @@ impl Model {
             UiEvent::Info(t) => self.entries.push(Entry::Info(t)),
             UiEvent::Jobs(jobs) => self.entries.push(Entry::Info(tools::jobs::table(&jobs))),
             UiEvent::Schedules(rows) => self.entries.push(Entry::Info(schedules_table(&rows))),
-            UiEvent::ScheduleHistory(name, rows) => self
+            UiEvent::ScheduleHistory(name, info, rows) => self
                 .entries
-                .push(Entry::Info(schedule_history_table(&name, &rows))),
+                .push(Entry::Info(schedule_history_table(&name, info.as_ref(), &rows))),
             UiEvent::Computer(status) => self.entries.push(Entry::Info(computer_line(&status))),
             UiEvent::ArtifactShown(ev) => {
                 if self.session == Some(ev.session) {
@@ -3271,9 +3278,13 @@ impl Model {
                 Some(("history", name)) if !name.trim().is_empty() => {
                     send(tx, Command::ScheduleHistory(name.trim().to_owned()))
                 }
-                _ => self.entries.push(Entry::Info(
-                    "usage: /schedules [run <name>|history <name>]".into(),
-                )),
+                Some(("pause", name)) if !name.trim().is_empty() => {
+                    send(tx, Command::EnableSchedule(name.trim().to_owned(), false))
+                }
+                Some(("resume", name)) if !name.trim().is_empty() => {
+                    send(tx, Command::EnableSchedule(name.trim().to_owned(), true))
+                }
+                _ => self.entries.push(Entry::Info(SCHEDULES_USAGE.into())),
             },
             "/computer" => send(tx, Command::ComputerStatus),
             "/compact" => self.compact_cmd(arg, tx),
@@ -5224,7 +5235,12 @@ pub fn title_model_line(m: Option<&ModelInfo>) -> String {
     }
 }
 
-/// `/schedules`: one row per file — `name · when · next · last · result · state`.
+/// The `/schedules` usage line, shown on a bad argument.
+pub const SCHEDULES_USAGE: &str =
+    "usage: /schedules [run <name>|history <name>|pause <name>|resume <name>]";
+
+/// `/schedules`: one row per file — `name · when · next · runs · last · result · state`.
+/// `runs` is `—` for a plain schedule, `N` or `N/max` for a loop (33 §3.2);
 /// `state` is `running`, `off`, `error: …` (then `next` is `—`), or empty.
 pub fn schedules_table(rows: &[schedule::ScheduleInfo]) -> String {
     if rows.is_empty() {
@@ -5233,7 +5249,7 @@ pub fn schedules_table(rows: &[schedule::ScheduleInfo]) -> String {
     let stamp = |t: Option<chrono::DateTime<chrono::Local>>| {
         t.map_or("—".to_owned(), |t| t.format("%a %d %b %H:%M").to_string())
     };
-    let mut out = vec!["name · when · next · last · result · state".to_owned()];
+    let mut out = vec!["name · when · next · runs · last · result · state".to_owned()];
     out.extend(rows.iter().map(|s| {
         let state = match (&s.error, s.running, s.enabled) {
             (Some(e), ..) => format!("error: {e}"),
@@ -5242,8 +5258,13 @@ pub fn schedules_table(rows: &[schedule::ScheduleInfo]) -> String {
             (None, false, true) => String::new(),
         };
         let next = if s.error.is_some() { None } else { s.next };
+        let runs = match s.max_runs {
+            Some(max) => format!("{}/{max}", s.runs),
+            None if s.until.is_some() => s.runs.to_string(),
+            None => "—".to_owned(),
+        };
         format!(
-            "{} · {} · {} · {} · {} · {state}",
+            "{} · {} · {} · {runs} · {} · {} · {state}",
             s.name,
             s.when,
             stamp(next),
@@ -5254,13 +5275,32 @@ pub fn schedules_table(rows: &[schedule::ScheduleInfo]) -> String {
     out.join("\n")
 }
 
-/// `/schedules history <name>`: `fired · took · result · session` rows, newest first;
-/// `took` is `…` while the run is still going.
-pub fn schedule_history_table(name: &str, rows: &[schedule::RunInfo]) -> String {
+/// `/schedules history <name>`: `fired · took · result · session · report` rows,
+/// newest first; `took` is `…` while the run is still going, `report` is the
+/// run's first line cut at 60 chars. A loop with `until` or `approvals: false`
+/// gets a line naming those above the header (33 §6).
+pub fn schedule_history_table(
+    name: &str,
+    info: Option<&schedule::ScheduleInfo>,
+    rows: &[schedule::RunInfo],
+) -> String {
     if rows.is_empty() {
         return format!("no runs of {name}");
     }
-    let mut out = vec![format!("{name}: fired · took · result · session")];
+    let mut out = Vec::with_capacity(rows.len() + 2);
+    if let Some(info) = info {
+        let mut loop_line: Vec<String> = Vec::new();
+        if let Some(until) = &info.until {
+            loop_line.push(format!("until: {until}"));
+        }
+        if !info.approvals {
+            loop_line.push("approvals off".to_owned());
+        }
+        if !loop_line.is_empty() {
+            out.push(format!("{name}: {}", loop_line.join(" · ")));
+        }
+    }
+    out.push(format!("{name}: fired · took · result · session · report"));
     out.extend(rows.iter().map(|r| {
         let took = r
             .finished_at
@@ -5268,8 +5308,21 @@ pub fn schedule_history_table(name: &str, rows: &[schedule::RunInfo]) -> String 
         let session = r.session.map_or("—".to_owned(), |s| {
             s.to_string().chars().take(8).collect()
         });
+        let report = r
+            .report
+            .as_deref()
+            .and_then(|t| t.lines().map(str::trim).find(|l| !l.is_empty()))
+            .map_or("—".to_owned(), |l| {
+                if l.chars().count() > 60 {
+                    let mut cut: String = l.chars().take(59).collect();
+                    cut.push('…');
+                    cut
+                } else {
+                    l.to_owned()
+                }
+            });
         format!(
-            "{} · {took} · {} · {session}",
+            "{} · {took} · {} · {session} · {report}",
             r.fired_at.format("%a %d %b %H:%M"),
             r.result.as_deref().unwrap_or("—"),
         )
@@ -6372,6 +6425,85 @@ mod tests {
         assert!(
             matches!(m.entries.last(), Some(Entry::Info(t)) if t.starts_with("accessibility ✓"))
         );
+    }
+
+    #[test]
+    fn schedules_slash_args_and_loop_columns() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        m.submit("/schedules pause port", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::EnableSchedule(name, false)) if name == "port"
+        ));
+        m.submit("/schedules resume port", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::EnableSchedule(name, true)) if name == "port"
+        ));
+        for bad in ["/schedules pause", "/schedules stop x"] {
+            m.submit(bad, &tx);
+            assert!(rx.try_recv().is_err(), "{bad}");
+            assert!(
+                matches!(m.entries.last(), Some(Entry::Info(t)) if t == SCHEDULES_USAGE),
+                "{bad}"
+            );
+        }
+
+        let info =
+            |name: &str, until: Option<&str>, max_runs, runs, approvals| schedule::ScheduleInfo {
+                name: name.into(),
+                when: "every 0s".into(),
+                describe: "every 0s".into(),
+                enabled: true,
+                quiet: false,
+                next: None,
+                last: None,
+                last_result: None,
+                session: None,
+                running: false,
+                error: None,
+                until: until.map(Into::into),
+                max_runs,
+                runs,
+                approvals,
+                cwd: None,
+            };
+        let rows = [
+            info("plain", None, None, 0, true),
+            info("capped", None, Some(20), 3, true),
+            info("checked", Some("cargo test"), None, 7, false),
+        ];
+        let table = schedules_table(&rows);
+        let mut lines = table.lines();
+        assert_eq!(
+            lines.next(),
+            Some("name · when · next · runs · last · result · state")
+        );
+        assert!(lines.next().unwrap().contains(" · — · — · — · — · "));
+        assert!(lines.next().unwrap().contains(" · 3/20 · "));
+        assert!(lines.next().unwrap().contains(" · 7 · "));
+
+        let fired = chrono::Local::now();
+        let run = schedule::RunInfo {
+            session: None,
+            fired_at: fired,
+            finished_at: Some(fired),
+            result: Some("end_turn".into()),
+            report: Some(format!("\n  {}\nsecond line", "x".repeat(70))),
+        };
+        let table = schedule_history_table("checked", Some(&rows[2]), &[run]);
+        let mut lines = table.lines();
+        assert_eq!(
+            lines.next(),
+            Some("checked: until: cargo test · approvals off")
+        );
+        assert_eq!(
+            lines.next(),
+            Some("checked: fired · took · result · session · report")
+        );
+        let row = lines.next().unwrap();
+        assert!(row.ends_with(&format!(" · {}…", "x".repeat(59))), "{row}");
     }
 
     #[test]

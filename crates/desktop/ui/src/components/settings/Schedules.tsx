@@ -4,7 +4,9 @@ import { ChevronRight, Play } from 'lucide-react'
 import { Fragment, useEffect, useState } from 'react'
 import { Pulse } from '@/components/chat/Pulse'
 import { Empty, Section, useAction } from '@/components/settings/shared'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Switch } from '@/components/ui/switch'
 import { useApi } from '@/lib/rpc'
 import type { RunInfo } from '@/rpc/bindings/RunInfo'
 import type { ScheduleEvent } from '@/rpc/bindings/ScheduleEvent'
@@ -33,10 +35,22 @@ function took(from: string, to: string): string {
   return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m` : `${Math.floor(s / 3600)}h`
 }
 
+/** `—` for a plain schedule, `14` with `until` only, `14/200` with `max_runs` (33 §6). */
+function runCount(s: ScheduleInfo): string {
+  if (s.max_runs !== null) return `${s.runs}/${s.max_runs}`
+  return s.until !== null ? String(s.runs) : '—'
+}
+
+/** First line of a report, cut at 80 chars. */
+function firstLine(report: string): string {
+  const line = report.split('\n', 1)[0] ?? ''
+  return line.length > 80 ? `${line.slice(0, 80)}…` : line
+}
+
 const TH = 'px-2 py-1.5 font-semibold'
 const TD = 'px-2 py-1.5 align-top'
 
-/** 34 §8: Settings › Schedules — `list_schedules` as a table, Run → `fire_schedule`, a row expands to its runs. */
+/** 34 §8 + 33 §6: Settings › Schedules — `list_schedules` as a table, Run → `fire_schedule`, the switch → `enable_schedule`, a row expands to its runs. */
 export function Schedules() {
   const api = useApi()
   const qc = useQueryClient()
@@ -45,6 +59,7 @@ export function Schedules() {
   const [open, setOpen] = useState<string | null>(null)
   const openSession = (session: string) => void navigate({ to: '/c/$session', params: { session } })
   const fire = useAction((name: string) => api.fire_schedule(name), { keys: [KEY], onSuccess: openSession })
+  const enable = useAction((v: { name: string; enabled: boolean }) => api.enable_schedule(v.name, v.enabled), { keys: [KEY] })
 
   useEffect(() => {
     const invalidate = () => void qc.invalidateQueries({ queryKey: KEY })
@@ -71,6 +86,7 @@ export function Schedules() {
                 <th className={TH} />
                 <th className={TH}>name</th>
                 <th className={TH}>when</th>
+                <th className={TH}>runs</th>
                 <th className={TH}>next</th>
                 <th className={TH}>last</th>
                 <th className={TH}>result</th>
@@ -85,14 +101,16 @@ export function Schedules() {
                     s={s}
                     open={open === s.name}
                     firing={fire.isPending && fire.variables === s.name}
+                    toggling={enable.isPending && enable.variables?.name === s.name}
                     onToggle={() => setOpen((v) => (v === s.name ? null : s.name))}
                     onOpen={() => s.session && openSession(s.session)}
                     onRun={() => fire.mutate(s.name)}
+                    onEnable={(enabled) => enable.mutate({ name: s.name, enabled })}
                   />
                   {open === s.name && (
                     <tr className="border-b border-border-subtle last:border-0">
                       <td />
-                      <td colSpan={7} className="px-2 pb-3">
+                      <td colSpan={8} className="px-2 pb-3">
                         <History name={s.name} onOpen={openSession} />
                       </td>
                     </tr>
@@ -114,16 +132,20 @@ function ScheduleRow({
   s,
   open,
   firing,
+  toggling,
   onToggle,
   onOpen,
   onRun,
+  onEnable,
 }: {
   s: ScheduleInfo
   open: boolean
   firing: boolean
+  toggling: boolean
   onToggle: () => void
   onOpen: () => void
   onRun: () => void
+  onEnable: (enabled: boolean) => void
 }) {
   const link = s.session !== null
   return (
@@ -148,7 +170,14 @@ function ScheduleRow({
       <td className={`${TD} font-medium`}>{s.name}</td>
       <td className={`${TD} text-fg-secondary`} title={s.when}>
         {s.describe}
+        {s.until !== null && <div className="font-mono text-xs">until: {s.until}</div>}
+        {!s.approvals && (
+          <Badge variant="outline" className="mt-1 font-normal">
+            approvals off
+          </Badge>
+        )}
       </td>
+      <td className={`${TD} tabular-nums`}>{runCount(s)}</td>
       <td className={TD}>
         {s.error !== null ? (
           <span className="text-danger">{s.error}</span>
@@ -165,17 +194,23 @@ function ScheduleRow({
       </td>
       <td className={`${TD} font-mono text-xs`}>{s.last_result ?? '—'}</td>
       <td className={TD}>
-        {s.running ? (
-          <span className="flex items-center gap-1.5">
-            <Pulse className="bg-emerald-500" /> running
-          </span>
-        ) : s.error !== null ? (
-          <span className="text-danger">error</span>
-        ) : s.enabled ? (
-          ''
-        ) : (
-          'off'
-        )}
+        <span className="flex items-center gap-2">
+          <Switch
+            size="sm"
+            checked={s.enabled}
+            disabled={toggling}
+            aria-label={`${s.enabled ? 'Pause' : 'Resume'} ${s.name}`}
+            onClick={(e) => e.stopPropagation()}
+            onCheckedChange={onEnable}
+          />
+          {s.running ? (
+            <span className="flex items-center gap-1.5">
+              <Pulse className="bg-emerald-500" /> running
+            </span>
+          ) : s.error !== null ? (
+            <span className="text-danger">error</span>
+          ) : null}
+        </span>
       </td>
       <td className={`${TD} text-right`}>
         <Button
@@ -194,10 +229,11 @@ function ScheduleRow({
   )
 }
 
-/** The last runs of one schedule: fired · took · result; a row opens its session. */
+/** The last runs of one schedule: fired · took · result · report; a row opens its session, its report cell unfolds the full text. */
 function History({ name, onOpen }: { name: string; onOpen: (session: string) => void }) {
   const api = useApi()
   const runs = useQuery({ queryKey: ['schedules', 'history', name], queryFn: () => api.schedule_history(name, HISTORY_LIMIT) })
+  const [shown, setShown] = useState<number | null>(null)
   if (runs.data?.length === 0) return <Empty>No run yet.</Empty>
   return (
     <table className="w-full text-xs">
@@ -206,21 +242,43 @@ function History({ name, onOpen }: { name: string; onOpen: (session: string) => 
           <th className="px-2 py-1 font-medium">fired</th>
           <th className="px-2 py-1 font-medium">took</th>
           <th className="px-2 py-1 font-medium">result</th>
+          <th className="px-2 py-1 font-medium">report</th>
         </tr>
       </thead>
       <tbody>
-        {runs.data?.map((r: RunInfo) => (
-          <tr
-            key={`${r.fired_at}${r.session ?? ''}`}
-            className={r.session ? 'cursor-pointer hover:bg-layer-1' : ''}
-            onClick={() => r.session && onOpen(r.session)}
-          >
-            <td className="px-2 py-1 tabular-nums" title={r.fired_at}>
-              {new Date(r.fired_at).toLocaleString()}
-            </td>
-            <td className="px-2 py-1 tabular-nums">{r.finished_at ? took(r.fired_at, r.finished_at) : <Pulse className="bg-emerald-500" />}</td>
-            <td className="px-2 py-1 font-mono">{r.result ?? 'running'}</td>
-          </tr>
+        {runs.data?.map((r: RunInfo, i) => (
+          <Fragment key={`${r.fired_at}${r.session ?? ''}`}>
+            <tr className={r.session ? 'cursor-pointer hover:bg-layer-1' : ''} onClick={() => r.session && onOpen(r.session)}>
+              <td className="px-2 py-1 tabular-nums" title={r.fired_at}>
+                {new Date(r.fired_at).toLocaleString()}
+              </td>
+              <td className="px-2 py-1 tabular-nums">{r.finished_at ? took(r.fired_at, r.finished_at) : <Pulse className="bg-emerald-500" />}</td>
+              <td className="px-2 py-1 font-mono">{r.result ?? 'running'}</td>
+              <td className="px-2 py-1 text-fg-secondary">
+                {r.report !== null && (
+                  <button
+                    type="button"
+                    className="text-left"
+                    title={r.report}
+                    aria-expanded={shown === i}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setShown((v) => (v === i ? null : i))
+                    }}
+                  >
+                    {firstLine(r.report)}
+                  </button>
+                )}
+              </td>
+            </tr>
+            {shown === i && r.report !== null && (
+              <tr>
+                <td colSpan={4} className="px-2 pb-2">
+                  <pre className="whitespace-pre-wrap font-mono text-xs text-fg-secondary">{r.report}</pre>
+                </td>
+              </tr>
+            )}
+          </Fragment>
         ))}
       </tbody>
     </table>

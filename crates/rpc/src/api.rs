@@ -499,6 +499,14 @@ pub trait Api {
     /// Refused while a run is in flight (`busy`) or the file does not parse.
     #[method(name = "fire_schedule")]
     async fn fire_schedule(&self, name: String) -> RpcResult<SessionId>;
+    /// Flip a schedule's `enabled:` line (33 §3.5): pause/resume a loop.
+    /// `Err` when unknown.
+    #[method(name = "enable_schedule")]
+    async fn enable_schedule(
+        &self,
+        name: String,
+        enabled: bool,
+    ) -> RpcResult<schedule::ScheduleInfo>;
     /// The last `limit` fires and skips of `name`, newest first (34 §8).
     #[method(name = "schedule_history")]
     async fn schedule_history(&self, name: String, limit: u32)
@@ -1250,6 +1258,14 @@ impl ApiServer for Server {
 
     async fn fire_schedule(&self, name: String) -> RpcResult<SessionId> {
         send(&schedule()?, schedule::Fire { name }).await
+    }
+
+    async fn enable_schedule(
+        &self,
+        name: String,
+        enabled: bool,
+    ) -> RpcResult<schedule::ScheduleInfo> {
+        send(&schedule()?, schedule::SetEnabled { name, enabled }).await
     }
 
     async fn schedule_history(

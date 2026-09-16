@@ -237,7 +237,19 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
         }
         Command::ScheduleHistory(name) => {
             let rows = msg(api.schedule_history(name.clone(), 20).await)?;
-            UiEvent::ScheduleHistory(name, rows)
+            // ponytail: a second round trip for the loop header; fold into
+            // `schedule_history` if the RPC ever grows a combined reply.
+            let info = msg(api.list_schedules().await)?
+                .into_iter()
+                .find(|s| s.name == name);
+            UiEvent::ScheduleHistory(name, info, rows)
+        }
+        Command::EnableSchedule(name, enabled) => {
+            msg(api.enable_schedule(name.clone(), enabled).await)?;
+            UiEvent::Info(format!(
+                "{name} {}",
+                if enabled { "resumed" } else { "paused" }
+            ))
         }
         Command::ComputerStatus => UiEvent::Computer(msg(api.computer_permissions().await)?),
         Command::CancelJob { session, id } => {
@@ -655,8 +667,12 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         UiEvent::Prompt(text) | UiEvent::Info(text) => writeln!(out, "{text}"),
         UiEvent::Jobs(jobs) => writeln!(out, "{}", tools::jobs::table(jobs)),
         UiEvent::Schedules(rows) => writeln!(out, "{}", model::schedules_table(rows)),
-        UiEvent::ScheduleHistory(name, rows) => {
-            writeln!(out, "{}", model::schedule_history_table(name, rows))
+        UiEvent::ScheduleHistory(name, info, rows) => {
+            writeln!(
+                out,
+                "{}",
+                model::schedule_history_table(name, info.as_ref(), rows)
+            )
         }
         UiEvent::Computer(status) => writeln!(out, "{}", model::computer_line(status)),
         UiEvent::Job(_) => Ok(()),

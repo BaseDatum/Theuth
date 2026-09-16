@@ -18,6 +18,7 @@ serde_json = { workspace = true }
 schemars = { workspace = true }
 tracing = { workspace = true }
 chrono = { workspace = true }
+dirs = { workspace = true }
 croner = { workspace = true }
 humantime = { workspace = true }
 gray_matter = { workspace = true }

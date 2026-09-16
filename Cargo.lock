@@ -12254,6 +12254,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "croner",
+ "dirs 6.0.0",
  "gray_matter",
  "humantime",
  "kameo",

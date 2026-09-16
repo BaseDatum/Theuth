@@ -80,6 +80,8 @@ export interface Api {
   computer_permissions(): Promise<PermissionStatus>
   /** Replace the turn opened at `turn` with `text` (29 §3); refused mid-turn. */
   edit_turn(session: SessionId, turn: number, text: string, files: string[]): Promise<null>
+  /** Rewrite a schedule's `enabled:` line (33 §3.5; the toggle); rejects with `no such schedule`. */
+  enable_schedule(name: string, enabled: boolean): Promise<ScheduleInfo>
   /** Copy artifact `id`'s blob to `dest` (parent created; refuses to overwrite); returns `dest` (35 §3.5). */
   export_artifact(id: string, dest: string): Promise<string>
   /** Fire a schedule now, ignoring `next` (34 §8); rejects with `busy` / `no such schedule` / the parse error. */
@@ -212,6 +214,7 @@ export const METHODS = [
   'computer_permissions',
   'delete_session',
   'edit_turn',
+  'enable_schedule',
   'export_artifact',
   'fire_schedule',
   'fork_session',
