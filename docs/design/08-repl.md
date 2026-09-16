@@ -251,7 +251,12 @@ array - with `runtime_only` the non-`DIRECT` ones, with `runtime_only: false`
 none (the block is then just the runtime rules). Direct tools remain
 awaitable in a cell; the model knows their names from their definitions.
 Before the amendment the index listed every spec, so each `DIRECT` tool
-cost a definition plus a signature line. One line per tool,
+cost a definition plus a signature line. **The floor is enforced, not
+advisory** (same day): a model that reads a name off this index and emits a
+direct `tool_use` for it (providers do not validate names against the
+array) gets `NAME is not a direct tool here; call it from python: r = await
+NAME(...)` from the loop, before the registry - observed live, the model
+then wrote the cell. One line per tool,
 `repl::signature(spec)`: a Python signature
 derived from the JSON Schema (codemcp `py_type`: `string→str, integer→int,
 number→float, boolean→bool, array→list[T], object→dict, enum→Literal[…]`,

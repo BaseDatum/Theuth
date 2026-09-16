@@ -1760,10 +1760,24 @@ impl Turn {
             .await;
         }
         // Registry batch first (parallel), then the loop-local calls in order.
+        // A name outside this turn's array (a runtime-only tool the model saw
+        // in the `## Runtime` index and guessed as a direct call) is refused
+        // here: the provider does not validate `tool_use` names, and the
+        // registry would run anything registered (08 §1.4 floor).
         let local = |name: &str| name == todo::NAME || name == repl::NAME;
-        let mut outputs: Vec<Option<ToolOutput>> = calls.iter().map(|_| None).collect();
+        let mut outputs: Vec<Option<ToolOutput>> = calls
+            .iter()
+            .map(|c| {
+                (!self.tools.iter().any(|t| t.name.as_str() == c.fn_name)).then(|| {
+                    ToolOutput::err(format!(
+                        "{0} is not a direct tool here; call it from python: `r = await {0}(...)`",
+                        c.fn_name
+                    ))
+                })
+            })
+            .collect();
         let remote: Vec<usize> = (0..calls.len())
-            .filter(|&i| !local(&calls[i].fn_name))
+            .filter(|&i| outputs[i].is_none() && !local(&calls[i].fn_name))
             .collect();
         let cancel = self.cancel.clone();
         let mut cancelled = false;
