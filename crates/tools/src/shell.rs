@@ -110,7 +110,7 @@ impl Tool for ShellTool {
             StartReply::Done(out) => out,
             StartReply::Running { id, log, tail } => ToolOutput {
                 content: format!(
-                    "job {id} started {}s ago, still running.\nlog: {}\noutput so far:\n{}\nResult arrives as <job_result id=\"{id}\"> when it exits — keep working, or end the turn and it will start a new one.",
+                    "job {id} started {}s ago, still running.\nlog: {}\noutput so far:\n{}\nResult arrives as <job_result id=\"{id}\"> when it exits — keep working, or end the turn and it will start a new one. `wait` is for PTY jobs only; do not call it on {id}.",
                     started.elapsed().as_secs(),
                     log.display(),
                     tail.trim_end()

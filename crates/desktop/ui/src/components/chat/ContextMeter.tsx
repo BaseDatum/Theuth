@@ -19,7 +19,7 @@ export function ContextMeter({ session }: { session: string }) {
   return (
     <span
       className={cn(
-        'rounded-full border px-2.5 py-0.5 text-xs tabular-nums',
+        'rounded-full border px-2.5 py-0.5 text-xs whitespace-nowrap tabular-nums',
         pct === null || pct < 70
           ? 'border-border-subtle text-fg-secondary'
           : pct < 90
@@ -28,8 +28,15 @@ export function ContextMeter({ session }: { session: string }) {
       )}
       title="Context window used · prefix cache hit rate"
     >
-      {pct === null ? k(used) : `${k(used)}/${k(limit)} · ${pct}%`}
-      {cache !== null && ` · cache ${cache}%`}
+      {pct === null ? (
+        k(used)
+      ) : (
+        <>
+          <span className="hidden md:inline">{`${k(used)}/${k(limit)} · `}</span>
+          {pct}%
+        </>
+      )}
+      {cache !== null && <span className="hidden md:inline"> · cache {cache}%</span>}
     </span>
   )
 }

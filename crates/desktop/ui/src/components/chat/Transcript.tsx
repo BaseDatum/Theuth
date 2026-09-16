@@ -1,8 +1,10 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { ArrowDown } from 'lucide-react'
+import { ArrowDown, ChevronDown, ChevronUp } from 'lucide-react'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useApi } from '@/lib/rpc'
+import { cn } from '@/lib/utils'
 import { type Prompt, useApprovals, useAsks } from '@/store/approvals'
 import {
   type Activity,
@@ -56,6 +58,70 @@ function buildRows(entries: Entry[], pending: Prompt[], session: string): Row[] 
   return rows.concat(loose)
 }
 
+type Tick = { index: number; ask: string; reply: string }
+
+/** One tick per turn opener: its row index, the question and the first reply text. */
+function ticksOf(rows: Row[]): Tick[] {
+  const out: Tick[] = []
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i]
+    if (!row || !('entry' in row)) continue
+    const e = row.entry
+    const last = out[out.length - 1]
+    if (e.kind === 'user' && e.turn !== undefined) out.push({ index: i, ask: e.text, reply: '' })
+    else if (e.kind === 'assistant' && last && !last.reply) last.reply = e.text
+  }
+  return out
+}
+
+/**
+ * Grok-style ruler on the right: one muted line per turn, the turn at `at`
+ * highlighted; hovering shows prev/next chevrons and a preview per line.
+ * Pointer-only: hidden below `md`.
+ */
+function Ruler({ ticks, at, onJump }: { ticks: Tick[]; at: number; onJump(index: number): void }) {
+  if (ticks.length < 2) return null
+  const cur = ticks.findLastIndex((t) => t.index <= at)
+  const prev = ticks[cur - 1]
+  const next = ticks[cur + 1]
+  const chevron = 'size-5 rounded text-fg-tertiary opacity-0 transition-opacity group-hover:opacity-100 hover:text-foreground disabled:invisible'
+  return (
+    <div className="group absolute inset-y-3 right-1.5 hidden w-6 flex-col items-center justify-center md:flex">
+      <button type="button" className={chevron} aria-label="Previous turn" disabled={!prev} onClick={() => prev && onJump(prev.index)}>
+        <ChevronUp className="size-5" />
+      </button>
+      <div className="flex min-h-0 w-full shrink flex-col items-end py-1">
+        {ticks.map((t, i) => (
+          <Tooltip key={t.index}>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                className="flex h-2.5 min-h-0 w-full shrink items-center justify-end"
+                aria-label={`Turn ${i + 1}`}
+                onClick={() => onJump(t.index)}
+              >
+                <span
+                  className={cn(
+                    'h-px rounded-full transition-all',
+                    i === cur ? 'w-4 bg-foreground' : 'w-2.5 bg-fg-tertiary/50 group-hover:w-3 hover:bg-foreground',
+                  )}
+                />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="left" sideOffset={4} className="max-w-xs text-left text-wrap">
+              <div className="line-clamp-1 font-medium">{t.ask}</div>
+              {t.reply && <div className="line-clamp-3 opacity-80">{t.reply}</div>}
+            </TooltipContent>
+          </Tooltip>
+        ))}
+      </div>
+      <button type="button" className={chevron} aria-label="Next turn" disabled={!next} onClick={() => next && onJump(next.index)}>
+        <ChevronDown className="size-5" />
+      </button>
+    </div>
+  )
+}
+
 /** The session's transcript: virtualized, pinned to the bottom until the user scrolls up, paged backwards from the top. */
 export function Transcript({ session }: { session: string }) {
   const api = useApi()
@@ -73,6 +139,8 @@ export function Transcript({ session }: { session: string }) {
   const height = useRef(0)
   const paging = useRef(false)
   const [unstuck, setUnstuck] = useState(false)
+  /** Row at the viewport's midpoint: the ruler's active turn while scrolled up. */
+  const [at, setAt] = useState(0)
 
   const rows = useMemo(() => buildRows(entries, pending, session), [entries, pending, session])
   const v = useVirtualizer({
@@ -116,7 +184,16 @@ export function Transcript({ session }: { session: string }) {
     const gap = el.scrollHeight - el.scrollTop - el.clientHeight
     stuck.current = gap <= STICK
     setUnstuck(!stuck.current)
+    setAt(v.getVirtualItemForOffset(el.scrollTop + el.clientHeight / 2)?.index ?? 0)
     if (el.scrollTop < TOP) void page()
+  }
+
+  const ticks = useMemo(() => ticksOf(rows), [rows])
+  const pinned = !unstuck
+  const jump = (index: number) => {
+    stuck.current = false
+    setUnstuck(true)
+    v.scrollToIndex(index, { align: 'start' })
   }
 
   const items = v.getVirtualItems()
@@ -149,13 +226,14 @@ export function Transcript({ session }: { session: string }) {
             })}
           </div>
         </div>
-        {running && (
+        {(running || activity !== 'idle') && (
           <div className="mx-auto flex w-full md:max-w-[768px] items-center gap-2 px-8 py-3 text-sm text-fg-secondary">
             <Pulse />
             {WORD[activity]}
           </div>
         )}
       </div>
+      <Ruler ticks={ticks} at={pinned ? Number.POSITIVE_INFINITY : at} onJump={jump} />
       {unstuck && (
         <Button
           variant="outline"

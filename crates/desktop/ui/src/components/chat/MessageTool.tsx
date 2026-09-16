@@ -1,6 +1,7 @@
 import { Loader2 } from 'lucide-react'
 import { memo, useMemo, useState } from 'react'
 import { describe, resultLine } from '@/lib/describe'
+import { type DiffLine, diffLines } from '@/lib/diff'
 import { rows } from '@/lib/jobTail'
 import { cn } from '@/lib/utils'
 import type { Entry, JobTail } from '@/store/sessions'
@@ -29,12 +30,41 @@ function Job({ job }: { job: JobTail }) {
   )
 }
 
+/** `old`/`new` of an `edit` call when the arguments carry both. */
+function editArgs(args: unknown): { old: string; new: string } | null {
+  if (typeof args !== 'object' || args === null) return null
+  const { old, new: next } = args as Record<string, unknown>
+  return typeof old === 'string' && typeof next === 'string' ? { old, new: next } : null
+}
+
+const ROW: Record<DiffLine['op'], string> = {
+  ' ': 'text-fg-tertiary',
+  '-': 'bg-danger-bg text-danger',
+  '+': 'bg-success-bg text-success',
+}
+
+/** Unified line diff of an `edit`'s `old` → `new`. */
+function Diff({ old, new: next }: { old: string; new: string }) {
+  const lines = useMemo(() => diffLines(old, next), [old, next])
+  return (
+    <pre className="mt-2 max-h-96 overflow-auto rounded-lg bg-layer-2 py-2 font-mono text-xs leading-5">
+      {lines.map((l, i) => (
+        // Positional rows of one diff: the index is the identity.
+        <div key={i} className={cn('px-3 whitespace-pre-wrap wrap-anywhere', ROW[l.op])}>
+          {l.op} {l.text}
+        </div>
+      ))}
+    </pre>
+  )
+}
+
 /** `⚙ name` row with the described arguments; ✓/✗ + first result line when done, click shows the whole output. */
 export const MessageTool = memo(function MessageTool({ tool }: { tool: Tool }) {
   const [expanded, setExpanded] = useState(false)
   const lines = useMemo(() => describe(tool.name, tool.args), [tool.name, tool.args])
   const { result } = tool
   const running = tool.pending || !result
+  const edit = tool.name === 'edit' ? editArgs(tool.args) : null
   return (
     <div className="my-2 min-w-0 rounded-xl border border-border-subtle bg-layer-1 px-4 py-3 text-sm">
       <button
@@ -58,6 +88,7 @@ export const MessageTool = memo(function MessageTool({ tool }: { tool: Tool }) {
           </div>
         )}
       </button>
+      {expanded && edit && <Diff old={edit.old} new={edit.new} />}
       {expanded && result && (
         <pre className="mt-2 max-h-56 overflow-auto rounded-lg bg-layer-2 p-3 font-mono text-xs leading-5 wrap-anywhere whitespace-pre-wrap">
           {result.output}

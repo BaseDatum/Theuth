@@ -2865,8 +2865,14 @@ impl Model {
                 self.effort = effort;
             }
             AgentEvent::Compacting { .. } => self.compacting = true,
-            AgentEvent::Compacted { epoch, style, .. } => {
+            AgentEvent::Compacted {
+                epoch,
+                style,
+                after,
+                ..
+            } => {
                 self.compacting = false;
+                self.context = after;
                 if style == CompactStyle::Clear {
                     // A clean slate on screen too; `/resume` still shows everything.
                     // Compaction only runs between turns, so nothing is streaming.

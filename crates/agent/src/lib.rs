@@ -971,6 +971,8 @@ pub enum AgentEvent {
         epoch: u32,
         /// Projected tokens before the cut.
         before: u32,
+        /// Estimated tokens the new epoch holds (head plus kept tail).
+        after: u32,
         /// Messages folded into the summary.
         folded: u32,
         /// Style actually used (cut if the summariser fell back).

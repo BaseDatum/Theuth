@@ -1929,6 +1929,11 @@ impl Turn {
             .map_err(|e| format!("store: {e:#}"))?;
         // 07 §2.2.1: the one non-append mutation of history.
         self.state.history.drain(..keep_from);
+        let after = self
+            .state
+            .history
+            .iter()
+            .fold(compact::est(&head), |acc, (_, m)| acc.saturating_add(compact::est(m)));
         self.state.head = Some(head);
         self.state.used = 0;
         self.state.epoch = n;
@@ -1948,6 +1953,7 @@ impl Turn {
             turn: self.turn,
             epoch: n,
             before: projected,
+            after,
             folded: keep_from as u32,
             style,
         })

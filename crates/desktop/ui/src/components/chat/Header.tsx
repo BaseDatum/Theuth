@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { Globe, PanelLeft } from 'lucide-react'
+import { Globe, PanelLeft, ShieldOff } from 'lucide-react'
 import { useState } from 'react'
 import { HarnessSwitcher, useHarnessCount } from '@/components/link/HarnessSwitcher'
 import { Badge } from '@/components/ui/badge'
@@ -82,9 +82,12 @@ export function Header({
         </Button>
       )}
       {approvalsOff && (
-        <Badge variant="outline" className="text-fg-secondary">
-          approvals off
-        </Badge>
+        <>
+          <Badge variant="outline" className="hidden text-fg-secondary md:inline-flex">
+            approvals off
+          </Badge>
+          <ShieldOff className="size-4 shrink-0 text-fg-secondary md:hidden" aria-label="Approvals off" />
+        </>
       )}
       {pending > 0 && (
         <Button

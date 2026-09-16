@@ -91,11 +91,12 @@ test('TurnStarted echo: skipped for our own send (once) and harness wrappers, sk
 
 test('Compacted: clear wipes, other styles add a divider after the closed tail', () => {
   const streaming = run([{ type: 'TextDelta', session: S, turn: T, text: 'a' }])
-  const div = apply(streaming, { type: 'Compacted', session: S, turn: T, epoch: 2, before: 1, folded: 3, style: 'summary' }, ctx())
+  const div = apply(streaming, { type: 'Compacted', session: S, turn: T, epoch: 2, before: 1, after: 400, folded: 3, style: 'summary' }, ctx())
   expect(div.entries.map((e) => e.kind)).toEqual(['assistant', 'compacted'])
   expect(div.entries[0]).toMatchObject({ open: false })
   expect(div.entries[1]).toMatchObject({ epoch: 2, style: 'summary' })
-  const cleared = apply(streaming, { type: 'Compacted', session: S, turn: null, epoch: 3, before: 1, folded: 3, style: 'clear' }, ctx())
+  expect(div.context).toBe(400)
+  const cleared = apply(streaming, { type: 'Compacted', session: S, turn: null, epoch: 3, before: 1, after: 50, folded: 3, style: 'clear' }, ctx())
   expect(cleared.entries).toHaveLength(1)
   expect(cleared.entries[0]).toMatchObject({ kind: 'info', text: 'context cleared (epoch 3)' })
 })

@@ -310,8 +310,8 @@ export function apply(slice: SessionSlice, e: WireEvent, ctx: Ctx): SessionSlice
     case 'Compacted':
       // Clear is a clean slate on screen too; `load_session` still shows everything.
       return e.style === 'clear'
-        ? { ...s, activity: idle, entries: [{ id: nextId(), kind: 'info', text: `context cleared (epoch ${e.epoch})` }] }
-        : interject({ ...s, activity: idle }, { id: nextId(), kind: 'compacted', epoch: e.epoch, style: e.style })
+        ? { ...s, activity: idle, context: e.after, entries: [{ id: nextId(), kind: 'info', text: `context cleared (epoch ${e.epoch})` }] }
+        : interject({ ...s, activity: idle, context: e.after }, { id: nextId(), kind: 'compacted', epoch: e.epoch, style: e.style })
     case 'Harvesting':
       return { ...s, activity: 'harvesting' }
     case 'Harvested':

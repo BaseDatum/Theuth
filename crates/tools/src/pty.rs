@@ -279,7 +279,11 @@ impl Jobs {
             ));
         }
         let Some(pty) = &job.pty else {
-            return Err(format!("{} is not a PTY job", job.id));
+            return Err(format!(
+                "{} is a background `shell` job, not a PTY: `wait`/`send`/`screen` do not apply. \
+                 Its result arrives as <job_result id=\"{}\"> when it exits — keep working or end the turn.",
+                job.id, job.id
+            ));
         };
         Ok(Live {
             id: job.id.clone(),
@@ -1148,7 +1152,7 @@ impl Tool for WaitTool {
     type Args = WaitArgs;
 
     fn description(&self) -> String {
-        "Block until a PTY job prints something matching `pattern`, or exits; at most `timeout` seconds (default 30). Returns the match and the screen. Use it for prompts and readiness, not to babysit a build — end the turn and the `<job_result>` wakes you.".into()
+        "Block until a PTY job (started with `start`) prints something matching `pattern`, or exits; at most `timeout` seconds (default 30). Returns the match and the screen. Use it for prompts and readiness, not to babysit a build — end the turn and the `<job_result>` wakes you. Not for `shell` jobs: those cannot be waited on and report as `<job_result>` on their own.".into()
     }
 
     async fn call(&self, args: WaitArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
