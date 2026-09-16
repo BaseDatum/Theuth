@@ -25,6 +25,8 @@ import type { Put } from '@/rpc/bindings/Put'
 import type { QueuedInput } from '@/rpc/bindings/QueuedInput'
 import type { RegistryAgent } from '@/rpc/bindings/RegistryAgent'
 import type { RepoInfo } from '@/rpc/bindings/RepoInfo'
+import type { RunInfo } from '@/rpc/bindings/RunInfo'
+import type { ScheduleInfo } from '@/rpc/bindings/ScheduleInfo'
 import type { SearchHit } from '@/rpc/bindings/SearchHit'
 import type { SessionId } from '@/rpc/bindings/SessionId'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
@@ -78,6 +80,8 @@ export interface Api {
   computer_permissions(): Promise<PermissionStatus>
   /** Replace the turn opened at `turn` with `text` (29 §3); refused mid-turn. */
   edit_turn(session: SessionId, turn: number, text: string, files: string[]): Promise<null>
+  /** Fire a schedule now, ignoring `next` (34 §8); rejects with `busy` / `no such schedule` / the parse error. */
+  fire_schedule(name: string): Promise<SessionId>
   /** New session with the conversation through the turn opened at `through` (all when `null`); `reply` stops at that 0-based assistant text of the turn instead. */
   fork_session(session: SessionId, through: number | null, reply: number | null): Promise<SessionId>
   get_prompt(session: SessionId | null): Promise<string>
@@ -124,6 +128,8 @@ export interface Api {
   link_status(): Promise<LinkStatus>
   /** Nodes of this harness (32 §6.6); method-not-found (-32601) on a harness without the `nodes` plugin. */
   list_nodes(): Promise<Node[]>
+  /** Every file in `~/.wth/schedules/`, parsed or not (34 §8). */
+  list_schedules(): Promise<ScheduleInfo[]>
   /** A fresh 31 §4.4 pairing string issued by the node, so a device pairs with it directly (32 §4.4). */
   invite_node(id: string): Promise<Pairing>
   /** Drop a node; the user's devices stay paired with it (32 §8.4). */
@@ -153,6 +159,8 @@ export interface Api {
   answer_ask(id: AskId, answers: Answer[] | null): Promise<boolean>
   /** Fuzzy (fzf/helix syntax) search over titles and message text; best hit per session. */
   search_sessions(query: string, limit: number | null): Promise<SearchHit[]>
+  /** The last `limit` fires and skips of a schedule, newest first (34 §8). */
+  schedule_history(name: string, limit: number): Promise<RunInfo[]>
   send_input(session: SessionId | null, text: string, files: string[]): Promise<SessionId>
   set_approvals(session: SessionId | null, enabled: boolean): Promise<ApprovalsState>
   set_compact_style(style: CompactStyle): Promise<null>
@@ -200,6 +208,7 @@ export const METHODS = [
   'computer_permissions',
   'delete_session',
   'edit_turn',
+  'fire_schedule',
   'fork_session',
   'get_attachment',
   'get_prompt',
@@ -232,6 +241,7 @@ export const METHODS = [
   'list_nodes',
   'list_providers',
   'list_queued',
+  'list_schedules',
   'list_sessions',
   'list_skills',
   'list_tools',
@@ -255,6 +265,7 @@ export const METHODS = [
   'rename_node',
   'rename_session',
   'resolve_approval',
+  'schedule_history',
   'search_sessions',
   'send_input',
   'set_approvals',

@@ -32,6 +32,7 @@ computer = { path = "crates/computer" }
 surface = { path = "crates/surface" }
 link = { path = "crates/link" }
 nodes = { path = "crates/nodes" }
+schedule = { path = "crates/schedule" }
 
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "fs", "time", "io-util", "process", "signal"] }
 tokio-util = { version = "0.7", features = ["rt"] }
@@ -167,6 +168,10 @@ axum-server = { version = "0.8", features = ["tls-rustls"] }
 tower-http = { version = "0.6", features = ["fs", "set-header"] }
 dashmap = "6"
 rand = "0.9"
+# Schedule (design doc 34): croner = cron parsing + next occurrence in a chrono TimeZone
+# (local time, DST-correct) + `describe()`; humantime = `every:` durations.
+croner = { version = "4", features = ["chrono"] }
+humantime = "2"
 
 [workspace.lints.rust]
 missing_docs = "warn"

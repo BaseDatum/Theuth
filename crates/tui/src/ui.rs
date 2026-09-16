@@ -881,7 +881,7 @@ fn entry(e: &Entry, spinner: &str, skip: usize, width: u16) -> AnyElement<'stati
                 CardKind::Peer => PEER,
                 CardKind::Skill => SKILL,
                 CardKind::Prompt => PROMPT,
-                CardKind::Job => JOB,
+                CardKind::Job | CardKind::Schedule => JOB,
                 CardKind::Link | CardKind::Node => LINK,
             };
             let v = text.view();

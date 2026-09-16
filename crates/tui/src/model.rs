@@ -123,6 +123,10 @@ pub enum UiEvent {
     Jobs(Vec<JobView>),
     /// A background job started, wrote output or ended (bus event).
     Job(JobEvent),
+    /// Reply to [`Command::ListSchedules`].
+    Schedules(Vec<schedule::ScheduleInfo>),
+    /// Reply to [`Command::ScheduleHistory`]: the schedule's name and its runs, newest first.
+    ScheduleHistory(String, Vec<schedule::RunInfo>),
     /// Reply to [`Command::ComputerStatus`].
     Computer(computer::PermissionStatus),
     /// Reply to [`Command::LinkStatus`] and the link commands that change it.
@@ -208,6 +212,12 @@ pub enum Command {
         /// Job id, e.g. `j3`.
         id: String,
     },
+    /// `list_schedules`.
+    ListSchedules,
+    /// `fire_schedule`: run a schedule now.
+    FireSchedule(String),
+    /// `schedule_history`: the schedule's last runs.
+    ScheduleHistory(String),
     /// `computer_permissions`.
     ComputerStatus,
     /// `compact`.
@@ -601,6 +611,8 @@ pub enum CardKind {
     Prompt,
     /// A `<job_result>` the harness injected when a background job ended.
     Job,
+    /// A `<schedule>` fire the harness injected (34 §1.5).
+    Schedule,
     /// A `/link pair` QR (31 §6.5).
     Link,
     /// A `/nodes` `i` invite QR: a phone that scans it pairs with that node (32 §6.7).
@@ -615,6 +627,7 @@ impl CardKind {
             CardKind::Skill => "◇",
             CardKind::Prompt => "§",
             CardKind::Job => "⚙",
+            CardKind::Schedule => "◷",
             CardKind::Link | CardKind::Node => "⌁",
         }
     }
@@ -744,6 +757,7 @@ pub fn injected(text: &str) -> Option<Vec<(CardKind, String, String)>> {
             "subagent_result" => (Some("name=\""), "</subagent_result>"),
             "message" => (Some("from=\""), "</message>"),
             "job_result" => (Some("id=\""), "</job_result>"),
+            "schedule" => (Some("name=\""), "</schedule>"),
             "context_summary" => (None, "</context_summary>"),
             "todo" => (None, "</todo>"),
             "context_pressure" => (None, "</context_pressure>"),
@@ -773,6 +787,13 @@ pub fn injected(text: &str) -> Option<Vec<(CardKind, String, String)>> {
                     CardKind::Job,
                     format!("{from} · {command} · exit {exit} · {secs}s{pty}"),
                 )
+            } else if name == "schedule" {
+                let at = attr(open, "at=\"").unwrap_or_default();
+                let at = chrono::DateTime::parse_from_rfc3339(at).map_or_else(
+                    |_| at.to_owned(),
+                    |t| t.with_timezone(&chrono::Local).format("%H:%M").to_string(),
+                );
+                (CardKind::Schedule, format!("{from} · {at}"))
             } else {
                 (CardKind::Peer, from.to_owned())
             };
@@ -838,6 +859,11 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "/jobs",
         "[kill <id>]",
         "list this session's background jobs",
+    ),
+    (
+        "/schedules",
+        "[run <name>|history <name>]",
+        "scheduled prompts: list, fire one now, show its runs",
     ),
     (
         "/computer",
@@ -2409,6 +2435,10 @@ impl Model {
             ))),
             UiEvent::Info(t) => self.entries.push(Entry::Info(t)),
             UiEvent::Jobs(jobs) => self.entries.push(Entry::Info(tools::jobs::table(&jobs))),
+            UiEvent::Schedules(rows) => self.entries.push(Entry::Info(schedules_table(&rows))),
+            UiEvent::ScheduleHistory(name, rows) => self
+                .entries
+                .push(Entry::Info(schedule_history_table(&name, &rows))),
             UiEvent::Computer(status) => self.entries.push(Entry::Info(computer_line(&status))),
             UiEvent::Job(ev) => match ev {
                 JobEvent::Started {
@@ -3074,6 +3104,18 @@ impl Model {
                 _ => self
                     .entries
                     .push(Entry::Error("usage: /jobs [kill <id>]".into())),
+            },
+            "/schedules" => match arg.split_once(' ') {
+                None if arg.is_empty() => send(tx, Command::ListSchedules),
+                Some(("run", name)) if !name.trim().is_empty() => {
+                    send(tx, Command::FireSchedule(name.trim().to_owned()))
+                }
+                Some(("history", name)) if !name.trim().is_empty() => {
+                    send(tx, Command::ScheduleHistory(name.trim().to_owned()))
+                }
+                _ => self.entries.push(Entry::Info(
+                    "usage: /schedules [run <name>|history <name>]".into(),
+                )),
             },
             "/computer" => send(tx, Command::ComputerStatus),
             "/compact" => self.compact_cmd(arg, tx),
@@ -4812,6 +4854,59 @@ pub fn title_model_line(m: Option<&ModelInfo>) -> String {
     }
 }
 
+/// `/schedules`: one row per file — `name · when · next · last · result · state`.
+/// `state` is `running`, `off`, `error: …` (then `next` is `—`), or empty.
+pub fn schedules_table(rows: &[schedule::ScheduleInfo]) -> String {
+    if rows.is_empty() {
+        return "no schedules".into();
+    }
+    let stamp = |t: Option<chrono::DateTime<chrono::Local>>| {
+        t.map_or("—".to_owned(), |t| t.format("%a %d %b %H:%M").to_string())
+    };
+    let mut out = vec!["name · when · next · last · result · state".to_owned()];
+    out.extend(rows.iter().map(|s| {
+        let state = match (&s.error, s.running, s.enabled) {
+            (Some(e), ..) => format!("error: {e}"),
+            (None, true, _) => "running".to_owned(),
+            (None, false, false) => "off".to_owned(),
+            (None, false, true) => String::new(),
+        };
+        let next = if s.error.is_some() { None } else { s.next };
+        format!(
+            "{} · {} · {} · {} · {} · {state}",
+            s.name,
+            s.when,
+            stamp(next),
+            stamp(s.last),
+            s.last_result.as_deref().unwrap_or("—"),
+        )
+    }));
+    out.join("\n")
+}
+
+/// `/schedules history <name>`: `fired · took · result · session` rows, newest first;
+/// `took` is `…` while the run is still going.
+pub fn schedule_history_table(name: &str, rows: &[schedule::RunInfo]) -> String {
+    if rows.is_empty() {
+        return format!("no runs of {name}");
+    }
+    let mut out = vec![format!("{name}: fired · took · result · session")];
+    out.extend(rows.iter().map(|r| {
+        let took = r
+            .finished_at
+            .map_or("…".to_owned(), |f| elapsed(f - r.fired_at));
+        let session = r.session.map_or("—".to_owned(), |s| {
+            s.to_string().chars().take(8).collect()
+        });
+        format!(
+            "{} · {took} · {} · {session}",
+            r.fired_at.format("%a %d %b %H:%M"),
+            r.result.as_deref().unwrap_or("—"),
+        )
+    }));
+    out.join("\n")
+}
+
 /// The `/computer` reply: permission ticks and the attached displays on one
 /// line, then the status note on a second line when there is one.
 pub fn computer_line(s: &computer::PermissionStatus) -> String {
@@ -5784,6 +5879,31 @@ mod tests {
                 CardKind::Job,
                 "j4 · python3 -q · exit 0 · 41s · pty".to_owned(),
                 ">>>".to_owned()
+            )])
+        );
+        // 34 §1.5: a schedule fire cards as `name · HH:MM` (local); a bad `at` shows raw.
+        let at = "2026-09-16T09:00:00-07:00";
+        let hhmm = chrono::DateTime::parse_from_rfc3339(at)
+            .unwrap()
+            .with_timezone(&chrono::Local)
+            .format("%H:%M")
+            .to_string();
+        assert_eq!(
+            injected(&format!(
+                "<schedule name=\"morning-brief\" at=\"{at}\" quiet=\"false\">\nBrief me.\n</schedule>"
+            )),
+            Some(vec![(
+                CardKind::Schedule,
+                format!("morning-brief · {hhmm}"),
+                "Brief me.".to_owned()
+            )])
+        );
+        assert_eq!(
+            injected("<schedule name=\"x\" at=\"soon\" quiet=\"true\">\nhi\n</schedule>"),
+            Some(vec![(
+                CardKind::Schedule,
+                "x · soon".to_owned(),
+                "hi".to_owned()
             )])
         );
     }

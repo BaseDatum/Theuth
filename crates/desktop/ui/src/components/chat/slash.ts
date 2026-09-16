@@ -118,6 +118,7 @@ export type SettingsTab =
   | 'general'
   | 'approvals'
   | 'tools'
+  | 'schedules'
   | 'computer'
   | 'skills'
   | 'agents'

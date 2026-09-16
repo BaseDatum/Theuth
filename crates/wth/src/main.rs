@@ -147,6 +147,10 @@ agent:
 # nodes:                     # harnesses on other machines this one can run sessions on (design doc 32). `/nodes add <key>` pairs; the node runs `wth --install-service`.
 #   enabled: true            # false: no dials, nodes invisible to the model and the UI; nodes.yaml kept
 
+# schedule:                  # scheduled runs from <data_dir>/schedules/*.md files (design doc 34); `/schedules` lists them
+#   enabled: true            # false: no watcher, no actor, no tool, no prompt block
+#   run_timeout_secs: 1800   # a run still going after this is cancelled and reported as `timeout`
+
 tools:
   policy:
     read_only: allow
@@ -378,6 +382,7 @@ async fn run() -> anyhow::Result<()> {
         ];
         plugins.push(Box::new(link::LinkPlugin));
         plugins.push(Box::new(nodes::NodesPlugin));
+        plugins.push(Box::new(schedule::SchedulePlugin));
         if cli.serve || cli.headless {
             plugins.push(Box::new(rpc::RpcPlugin));
         }

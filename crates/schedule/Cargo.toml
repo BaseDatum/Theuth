@@ -1,0 +1,35 @@
+[package]
+name = "schedule"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Prompt files that fire on a clock: schedules/ directory, croner tick, one session per schedule, reply delivery (design doc 34)"
+
+[dependencies]
+runtime = { workspace = true }
+tools = { workspace = true }
+agent = { workspace = true }
+kameo = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+croner = { workspace = true }
+humantime = { workspace = true }
+gray_matter = { workspace = true }
+notify = { workspace = true }
+sqlx = { workspace = true }
+ts-rs = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[features]
+ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "agent/ts"]
+
+[lints]
+workspace = true

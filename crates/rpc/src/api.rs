@@ -492,6 +492,17 @@ pub trait Api {
     /// scans to pair with the node directly (32 §6.6, §8.2).
     #[method(name = "invite_node")]
     async fn invite_node(&self, id: String) -> RpcResult<Pairing>;
+    /// Every schedule file with its next/last fire and parse state (34 §8).
+    #[method(name = "list_schedules")]
+    async fn list_schedules(&self) -> RpcResult<Vec<schedule::ScheduleInfo>>;
+    /// Fire a schedule now, ignoring `next`; returns its session (34 §8).
+    /// Refused while a run is in flight (`busy`) or the file does not parse.
+    #[method(name = "fire_schedule")]
+    async fn fire_schedule(&self, name: String) -> RpcResult<SessionId>;
+    /// The last `limit` fires and skips of `name`, newest first (34 §8).
+    #[method(name = "schedule_history")]
+    async fn schedule_history(&self, name: String, limit: u32)
+    -> RpcResult<Vec<schedule::RunInfo>>;
     /// Stream every wire-visible event as `{"type": ..., ...}`, optionally
     /// only those carrying `session`. `descendants: true` (default `false`)
     /// also delivers events of every session in `session`'s subtree, plus
@@ -566,6 +577,14 @@ where
 fn nodes() -> RpcResult<ActorRef<nodes::NodesActor>> {
     lookup::<nodes::NodesActor>(nodes::NODES_ACTOR).map_err(|e| match e.code() {
         NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "nodes is disabled", None::<()>),
+        _ => e,
+    })
+}
+
+/// The schedule actor; absent when `schedule.enabled: false` or the plugin is not loaded.
+fn schedule() -> RpcResult<ActorRef<schedule::Schedule>> {
+    lookup::<schedule::Schedule>(schedule::SCHEDULE_ACTOR).map_err(|e| match e.code() {
+        NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "schedule is disabled", None::<()>),
         _ => e,
     })
 }
@@ -1202,6 +1221,22 @@ impl ApiServer for Server {
 
     async fn invite_node(&self, id: String) -> RpcResult<Pairing> {
         send(&nodes()?, nodes::Invite { id }).await
+    }
+
+    async fn list_schedules(&self) -> RpcResult<Vec<schedule::ScheduleInfo>> {
+        send(&schedule()?, schedule::ListSchedules).await
+    }
+
+    async fn fire_schedule(&self, name: String) -> RpcResult<SessionId> {
+        send(&schedule()?, schedule::Fire { name }).await
+    }
+
+    async fn schedule_history(
+        &self,
+        name: String,
+        limit: u32,
+    ) -> RpcResult<Vec<schedule::RunInfo>> {
+        send(&schedule()?, schedule::History { name, limit }).await
     }
 
     async fn put_attachment(&self, bytes: String, ext: String) -> RpcResult<PathBuf> {

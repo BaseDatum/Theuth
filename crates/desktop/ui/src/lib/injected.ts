@@ -4,9 +4,10 @@ export type Injected =
   | { kind: 'peer'; from: string; text: string }
   | { kind: 'subagent'; name: string; text: string }
   | { kind: 'job'; id: string; command: string; exit: string; secs: string; pty: boolean; text: string }
+  | { kind: 'schedule'; name: string; at: string; quiet: boolean; text: string }
 
 /** Wrappers that render a card, with the attribute naming the sender, and wrappers that render nothing. */
-const CARD: Record<string, string> = { subagent_result: 'name="', message: 'from="', job_result: 'id="' }
+const CARD: Record<string, string> = { subagent_result: 'name="', message: 'from="', job_result: 'id="', schedule: 'name="' }
 const HIDDEN: Record<string, true> = { context_summary: true, todo: true, context_pressure: true, runtime: true, knowledge: true }
 
 /** Value of `key` (`name="`) in an open tag, up to the closing quote. */
@@ -16,7 +17,7 @@ const attr = (open: string, key: string) => open.split(key, 2)[1]?.split('"', 1)
  * Classify one user input (mirrors `agent::skills::injected` and
  * `tui::model::injected`). A skill injection (`<skill name="…">…</skill>`
  * plus the user's words) is one card; an input made entirely of harness
- * wrappers (`<subagent_result>`, `<message>`, `<job_result>` blocks joined
+ * wrappers (`<subagent_result>`, `<message>`, `<job_result>`, `<schedule>` blocks joined
  * by newlines, harness notes such as `<context_summary>`) is one card per
  * block, notes yielding none. `null` for human text (or anything not
  * entirely made of wrappers).
@@ -59,6 +60,8 @@ export function classify(text: string): Injected[] | null {
           pty: attr(open, 'pty="') === 'true',
           text: body,
         })
+      } else if (name === 'schedule') {
+        out.push({ kind: 'schedule', name: from, at: attr(open, 'at="') ?? '', quiet: attr(open, 'quiet="') === 'true', text: body })
       } else if (name === 'message') {
         out.push({ kind: 'peer', from, text: body })
       } else {

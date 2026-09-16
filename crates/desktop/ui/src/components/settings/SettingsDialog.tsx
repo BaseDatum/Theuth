@@ -1,6 +1,7 @@
 import { cn } from 'cn'
 import {
   Bot,
+  CalendarClock,
   ChevronLeft,
   ChevronRight,
   KeyRound,
@@ -26,6 +27,7 @@ import { Connections } from '@/components/settings/Connections'
 import { General } from '@/components/settings/General'
 import { Link } from '@/components/settings/Link'
 import { Nodes } from '@/components/settings/Nodes'
+import { Schedules } from '@/components/settings/Schedules'
 import { Shortcuts } from '@/components/settings/Shortcuts'
 import { Skills } from '@/components/settings/Skills'
 import { Tools } from '@/components/settings/Tools'
@@ -38,6 +40,7 @@ const TABS = [
   ['general', 'General', Settings2],
   ['approvals', 'Approvals', ShieldCheck],
   ['tools', 'Tools', Wrench],
+  ['schedules', 'Schedules', CalendarClock],
   ['computer', 'Computer', Monitor],
   ['skills', 'Skills', Sparkles],
   ['agents', 'Agents', Bot],
@@ -69,6 +72,7 @@ function Pane({ tab, session, onClose }: Omit<Props, 'onTab'>) {
       {tab === 'general' && <General />}
       {tab === 'approvals' && <Approvals session={session} onClose={onClose} />}
       {tab === 'tools' && <Tools session={session} />}
+      {tab === 'schedules' && <Schedules />}
       {tab === 'computer' && <Computer />}
       {tab === 'skills' && <Skills session={session} />}
       {tab === 'agents' && <Agents />}

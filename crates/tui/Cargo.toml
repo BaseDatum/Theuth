@@ -15,6 +15,7 @@ acp = { workspace = true }
 computer = { workspace = true }
 link = { workspace = true }
 nodes = { workspace = true }
+schedule = { workspace = true }
 jsonrpsee = { workspace = true }
 chrono = { workspace = true }
 models = { workspace = true }

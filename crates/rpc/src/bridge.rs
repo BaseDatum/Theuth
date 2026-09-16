@@ -14,6 +14,7 @@ use knowledge::KnowledgeChanged;
 use link::LinkEvent;
 use nodes::NodeEvent;
 use runtime::Runtime;
+use schedule::ScheduleEvent;
 use serde::Serialize;
 use signal::SignalEvent;
 use slack::SlackEvent;
@@ -90,7 +91,8 @@ forward!(
     KnowledgeChanged,
     BrowserEvent,
     LinkEvent,
-    NodeEvent
+    NodeEvent,
+    ScheduleEvent
 );
 
 /// The process-wide event feed. The first caller spawns the bridge,
@@ -122,5 +124,6 @@ pub async fn start(rt: &Runtime) -> broadcast::Sender<Event> {
     rt.subscribe::<Bridge, BrowserEvent>(&actor).await;
     rt.subscribe::<Bridge, LinkEvent>(&actor).await;
     rt.subscribe::<Bridge, NodeEvent>(&actor).await;
+    rt.subscribe::<Bridge, ScheduleEvent>(&actor).await;
     tx
 }

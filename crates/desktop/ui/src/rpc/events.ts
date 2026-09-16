@@ -9,6 +9,7 @@ import type { KnowledgeChanged } from '@/rpc/bindings/KnowledgeChanged'
 import type { LinkEvent } from '@/rpc/bindings/LinkEvent'
 import type { McpProgress } from '@/rpc/bindings/McpProgress'
 import type { NodeEvent } from '@/rpc/bindings/NodeEvent'
+import type { ScheduleEvent } from '@/rpc/bindings/ScheduleEvent'
 import type { SignalEvent } from '@/rpc/bindings/SignalEvent'
 import type { SlackEvent } from '@/rpc/bindings/SlackEvent'
 import type { LoginFinished, SessionDeleted, TitleChanged } from '@/rpc/extra'
@@ -43,4 +44,5 @@ export type WireEvent =
   | KnowledgeChanged
   | LinkEvent
   | NodeEvent
+  | ScheduleEvent
   | Lagged

@@ -54,6 +54,12 @@ function interject(s: SessionSlice, entry: Entry): SessionSlice {
   return { ...s, entries: s.entries.toSpliced(at, 0, entry) }
 }
 
+/** `09:00` local of an RFC 3339 instant; the raw attribute when it does not parse. */
+function hhmm(iso: string): string {
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime()) ? iso : `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
 /** Transcript entries for one user input: the skill chip plus words, one card per harness wrapper, or `you`. `turn` stamps the `you` row (29 §5.1). */
 function userEntries(text: string, cls: Injected[] | null, injected?: true, turn?: number): Entry[] {
   const flag = injected ? { injected } : {}
@@ -73,6 +79,8 @@ function userEntries(text: string, cls: Injected[] | null, injected?: true, turn
           from: `${c.id} · ${c.command} · exit ${c.exit} · ${c.secs}s${c.pty ? ' · pty' : ''}`,
           text: c.text,
         }
+      case 'schedule':
+        return { id: nextId(), kind: 'peer', from: `${c.name} · ${hhmm(c.at)}`, text: c.text }
     }
   })
 }
