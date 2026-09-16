@@ -150,6 +150,19 @@
   --font-sans: -apple-system-body, ui-sans-serif, -apple-system, system-ui, "Segoe UI", Helvetica, Arial, sans-serif;
 }
 
+/* `animate-indeterminate`: the thin bar under a tool call whose arguments are still streaming (35 §7.1). */
+@theme {
+  --animate-indeterminate: indeterminate 1.2s ease-in-out infinite;
+  @keyframes indeterminate {
+    from {
+      transform: translateX(-100%);
+    }
+    to {
+      transform: translateX(300%);
+    }
+  }
+}
+
 /* Full-height shell: the layout viewport, or the band above the iOS keyboard (lib/viewport.ts). */
 @utility h-band {
   height: var(--visible-band, 100dvh);

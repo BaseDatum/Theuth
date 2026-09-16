@@ -11,7 +11,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use agent::{AGENT_ACTOR, AgentEvent, Agents, SendInput, Steer};
+use agent::{AGENT_ACTOR, AgentEvent, Agents, Ancestors, SendInput, Steer};
+use artifact::ArtifactShown;
 use async_trait::async_trait;
 use futures::StreamExt;
 use kameo::Actor;
@@ -214,6 +215,8 @@ trait Port: Send + Sync {
     ) -> Result<(), String>;
     async fn resolve(&self, id: ApprovalId, decision: Decision) -> Result<bool, String>;
     async fn answer_ask(&self, id: AskId, answers: Option<Vec<Answer>>) -> Result<bool, String>;
+    /// `session`, then its parent, …, the root (24 §2); `[session]` when unknown.
+    async fn ancestors(&self, session: SessionId) -> Result<Vec<SessionId>, String>;
 }
 
 /// [`Port`] over the registered `agent` and `approval` actors.
@@ -277,6 +280,14 @@ impl Port for Actors {
             .await
             .map_err(|e| e.to_string())
     }
+
+    async fn ancestors(&self, session: SessionId) -> Result<Vec<SessionId>, String> {
+        agents()?
+            .ask(Ancestors { session })
+            .await
+            .map(|chain| chain.into_iter().map(|a| a.id).collect())
+            .map_err(|e| e.to_string())
+    }
 }
 
 /// Bus events the channel renders, in bus order.
@@ -286,6 +297,7 @@ enum Event {
     Resolved(ApprovalResolved),
     AskRequested(AskRequested),
     AskResolved(AskResolved),
+    Artifact(ArtifactShown),
 }
 
 /// Bus subscriber: forwards into the ordered event worker.
@@ -326,6 +338,13 @@ impl Message<AskResolved> for Bus {
     type Reply = ();
     async fn handle(&mut self, m: AskResolved, _: &mut Context<Self, ()>) {
         let _ = self.tx.send(Event::AskResolved(m));
+    }
+}
+
+impl Message<ArtifactShown> for Bus {
+    type Reply = ();
+    async fn handle(&mut self, m: ArtifactShown, _: &mut Context<Self, ()>) {
+        let _ = self.tx.send(Event::Artifact(m));
     }
 }
 
@@ -477,6 +496,7 @@ async fn run(chan: Arc<Channel>, mut ctrl: mpsc::UnboundedReceiver<Control>) {
     chan.rt.subscribe::<Bus, ApprovalResolved>(&bus).await;
     chan.rt.subscribe::<Bus, AskRequested>(&bus).await;
     chan.rt.subscribe::<Bus, AskResolved>(&bus).await;
+    chan.rt.subscribe::<Bus, ArtifactShown>(&bus).await;
     let inbound = {
         let chan = Arc::clone(&chan);
         tokio::spawn(async move {
@@ -917,11 +937,12 @@ impl Channel {
         bytes: &[u8],
         mime: &str,
         file_name: Option<&str>,
+        caption: Option<&str>,
     ) -> bool {
         for attempt in 0..=SEND_RETRIES {
             match self
                 .transport
-                .send_attachment(to, bytes, mime, file_name, None)
+                .send_attachment(to, bytes, mime, file_name, caption)
                 .await
             {
                 Ok(()) => return true,
@@ -1232,6 +1253,39 @@ impl Channel {
                     self.send_chunks(&to, &asks::question_text(&req, 0)).await;
                 }
             }
+            // 35 §8: the session's number, else the nearest bound ancestor's.
+            Event::Artifact(m) => {
+                let chain = match self.port.ancestors(m.session).await {
+                    Ok(chain) => chain,
+                    Err(e) => {
+                        tracing::debug!(error = %e, "ancestors for the artifact failed; using the session alone");
+                        vec![m.session]
+                    }
+                };
+                let to = {
+                    let s = self.lock();
+                    chain.iter().find_map(|id| s.threads.recipient_for(*id))
+                };
+                let Some(to) = to else {
+                    tracing::debug!(session = %m.session, name = %m.artifact.name, "artifact for an unbound session; not sent");
+                    return;
+                };
+                let a = m.artifact;
+                let bytes = match tokio::fs::read(&a.path).await {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::warn!(error = %e, path = %a.path.display(), "artifact not readable");
+                        return;
+                    }
+                };
+                let caption = (!a.title.trim().is_empty()).then_some(a.title.as_str());
+                if !self
+                    .send_attachment(&to, &bytes, &a.mime, Some(&a.name), caption)
+                    .await
+                {
+                    tracing::warn!(name = %a.name, to = %to.number, "artifact send failed");
+                }
+            }
         }
     }
 
@@ -1432,6 +1486,8 @@ mod tests {
     struct Stub {
         session: SessionId,
         calls: Mutex<Vec<Call>>,
+        /// child → parent, for `ancestors`.
+        parents: Mutex<HashMap<SessionId, SessionId>>,
     }
 
     impl Stub {
@@ -1481,6 +1537,14 @@ mod tests {
                 .unwrap()
                 .push(Call::AnswerAsk(id, answers));
             Ok(true)
+        }
+        async fn ancestors(&self, session: SessionId) -> Result<Vec<SessionId>, String> {
+            let parents = self.parents.lock().unwrap();
+            let mut chain = vec![session];
+            while let Some(p) = parents.get(chain.last().unwrap()) {
+                chain.push(*p);
+            }
+            Ok(chain)
         }
     }
 
@@ -1579,6 +1643,7 @@ mod tests {
         let stub = Arc::new(Stub {
             session: SessionId::new(),
             calls: Mutex::new(Vec::new()),
+            parents: Mutex::new(HashMap::new()),
         });
         let (tx, _rx) = mpsc::unbounded_channel();
         let handle = Handle {
@@ -2156,6 +2221,84 @@ mod tests {
             }))
             .await;
         assert_eq!(last_text(), "🚫 dismissed; turn cancelled");
+    }
+
+    fn artifact(session: SessionId, dir: &Path) -> ArtifactShown {
+        let path = dir.join("report.pdf");
+        std::fs::write(&path, b"%PDF").unwrap();
+        ArtifactShown {
+            session,
+            call_id: "call_1".into(),
+            artifact: artifact::Artifact {
+                id: "a1".into(),
+                session,
+                call_id: "call_1".into(),
+                name: "report.pdf".into(),
+                title: "Weekly report".into(),
+                kind: artifact::Kind::Pdf,
+                mime: "application/pdf".into(),
+                bytes: 4,
+                version: 1,
+                path,
+                source: None,
+                preview: None,
+                pages: None,
+                origin: None,
+                created_at: 0,
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn artifact_for_a_bound_session_is_one_attachment_with_its_title() {
+        let f = fixture().await;
+        f.chan
+            .lock()
+            .threads
+            .bind(&Recipient::new(FRIEND), f.stub.session);
+        f.chan
+            .handle_event(Event::Artifact(artifact(f.stub.session, f._dir.path())))
+            .await;
+        let sent = f.transport.sent();
+        assert_eq!(sent.len(), 1);
+        assert!(matches!(
+            &sent[0],
+            SentItem::Attachment { to, mime, bytes, file_name, caption }
+                if to == FRIEND
+                    && mime == "application/pdf"
+                    && bytes == b"%PDF"
+                    && file_name.as_deref() == Some("report.pdf")
+                    && caption.as_deref() == Some("Weekly report")
+        ));
+    }
+
+    #[tokio::test]
+    async fn artifact_of_an_unbound_child_goes_to_the_bound_parents_number() {
+        let f = fixture().await;
+        f.chan
+            .lock()
+            .threads
+            .bind(&Recipient::new(FRIEND), f.stub.session);
+        let child = SessionId::new();
+        f.stub.parents.lock().unwrap().insert(child, f.stub.session);
+        f.chan
+            .handle_event(Event::Artifact(artifact(child, f._dir.path())))
+            .await;
+        let sent = f.transport.sent();
+        assert!(matches!(
+            &sent[..],
+            [SentItem::Attachment { to, file_name, .. }]
+                if to == FRIEND && file_name.as_deref() == Some("report.pdf")
+        ));
+    }
+
+    #[tokio::test]
+    async fn artifact_for_an_unbound_session_sends_nothing() {
+        let f = fixture().await;
+        f.chan
+            .handle_event(Event::Artifact(artifact(SessionId::new(), f._dir.path())))
+            .await;
+        assert!(f.transport.sent().is_empty());
     }
 
     #[test]

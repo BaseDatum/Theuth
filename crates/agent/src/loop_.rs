@@ -12,7 +12,7 @@
 //! [`UndoTurn`]/[`RedoTurn`] move the store's cut between turns; the first
 //! write afterwards (`Session::claim`) commits it.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
@@ -1052,6 +1052,7 @@ impl Turn {
         };
         let session = self.shared.id;
         let mut pending: Vec<String> = Vec::new();
+        let mut progress: HashMap<String, Progress> = HashMap::new();
         loop {
             let ev = tokio::select! {
                 _ = self.cancel.cancelled() => return Err(Abort::Cancelled),
@@ -1082,21 +1083,40 @@ impl Turn {
                     }
                 }
                 // Arguments arrive whole only at End (ToolCallStarted is
-                // published at dispatch); the first chunk names the tool.
+                // published at dispatch); the first chunk names the tool and
+                // the cumulative partial JSON is surfaced, coalesced, as
+                // ToolCallProgress.
                 Some(Ok(ChatStreamEvent::ToolCallChunk(c))) => {
+                    let Some(turn) = live else { continue };
                     let tc = c.tool_call;
-                    if let Some(turn) = live
-                        && !tc.fn_name.is_empty()
-                        && !pending.contains(&tc.call_id)
-                    {
+                    if !tc.fn_name.is_empty() && !pending.contains(&tc.call_id) {
                         pending.push(tc.call_id.clone());
                         self.publish(AgentEvent::ToolCallPending {
                             session,
                             turn,
-                            call_id: tc.call_id,
+                            call_id: tc.call_id.clone(),
                             name: tc.fn_name,
                         })
                         .await;
+                    }
+                    if let serde_json::Value::String(cum) = tc.fn_arguments {
+                        let now = Instant::now();
+                        if progress_due(progress.get(&tc.call_id), now, cum.len()) {
+                            progress.insert(
+                                tc.call_id.clone(),
+                                Progress {
+                                    last: now,
+                                    bytes: cum.len(),
+                                },
+                            );
+                            self.publish(AgentEvent::ToolCallProgress {
+                                session,
+                                turn,
+                                call_id: tc.call_id,
+                                args: Arc::from(cum.as_str()),
+                            })
+                            .await;
+                        }
                     }
                 }
                 Some(Ok(
@@ -1933,7 +1953,9 @@ impl Turn {
             .state
             .history
             .iter()
-            .fold(compact::est(&head), |acc, (_, m)| acc.saturating_add(compact::est(m)));
+            .fold(compact::est(&head), |acc, (_, m)| {
+                acc.saturating_add(compact::est(m))
+            });
         self.state.head = Some(head);
         self.state.used = 0;
         self.state.epoch = n;
@@ -2168,10 +2190,59 @@ pub(crate) fn binary_tag(out: &mut String, b: &Binary) {
     out.push(']');
 }
 
+/// Last published `ToolCallProgress` for one streaming call.
+struct Progress {
+    last: Instant,
+    bytes: usize,
+}
+
+/// Whether a cumulative argument string of `len` bytes warrants a new
+/// `ToolCallProgress`: first once ≥ 512 bytes, then only after ≥ 512 new
+/// bytes *and* ≥ 250 ms since the last publish.
+fn progress_due(prev: Option<&Progress>, now: Instant, len: usize) -> bool {
+    const MIN_BYTES: usize = 512;
+    const MIN_GAP: Duration = Duration::from_millis(250);
+    match prev {
+        None => len >= MIN_BYTES,
+        Some(p) => {
+            len.saturating_sub(p.bytes) >= MIN_BYTES && now.duration_since(p.last) >= MIN_GAP
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::skills;
+
+    #[test]
+    fn progress_due_coalesces_by_bytes_and_time() {
+        let t0 = Instant::now();
+        assert!(!progress_due(None, t0, 511));
+        assert!(progress_due(None, t0, 512));
+        let prev = Progress {
+            last: t0,
+            bytes: 512,
+        };
+        // 10 ms later, plenty of bytes: too soon.
+        assert!(!progress_due(
+            Some(&prev),
+            t0 + Duration::from_millis(10),
+            2000
+        ));
+        // 300 ms later, 600 new bytes: due.
+        assert!(progress_due(
+            Some(&prev),
+            t0 + Duration::from_millis(300),
+            1112
+        ));
+        // 300 ms later, only 100 new bytes: not due.
+        assert!(!progress_due(
+            Some(&prev),
+            t0 + Duration::from_millis(300),
+            612
+        ));
+    }
 
     const BROKEN_FENCE: &str = "Here:\n```json-render\n{\"root\": \"r\", \"elements\": {\"r\": {\"type\": \"DataTable\", \"props\": {}}}}\n```\n";
 

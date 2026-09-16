@@ -17,6 +17,7 @@ use agent::{
     AGENT_ACTOR, AgentEvent, AgentInfo, Agents, Cancel, ListAgents, ListSessions, SendInput,
     SessionSummary, Steer,
 };
+use artifact::{Artifact, ArtifactShown};
 use async_trait::async_trait;
 use kameo::Actor;
 use kameo::actor::{ActorRef, Spawn};
@@ -193,6 +194,7 @@ enum Event {
     Resolved(ApprovalResolved),
     Ask(AskRequested),
     AskDone(AskResolved),
+    Artifact(ArtifactShown),
 }
 
 /// Bus subscriber: forwards into the ordered router.
@@ -236,6 +238,13 @@ impl Message<AskResolved> for Bus {
     }
 }
 
+impl Message<ArtifactShown> for Bus {
+    type Reply = ();
+    async fn handle(&mut self, m: ArtifactShown, _: &mut Context<Self, ()>) {
+        let _ = self.tx.send(Event::Artifact(m));
+    }
+}
+
 /// An acked, deduplicated Socket Mode envelope (21 §7).
 pub enum Inbound {
     /// Events API payload.
@@ -255,6 +264,8 @@ enum Out {
     Resolved(ApprovalResolved, Option<String>),
     /// Question `i` of an `ask_user` for this thread's session: post its card.
     Ask(Box<AskRequested>, usize),
+    /// A `show` artifact for this thread's session or a descendant (35 §8): upload it.
+    Artifact(Box<Artifact>),
     /// A descendant was bound to its own thread at `link` (21 §9.1); `depth` 1 = direct child.
     Spawned {
         child: SessionId,
@@ -442,6 +453,7 @@ async fn run(
     chan.rt.subscribe::<Bus, ApprovalResolved>(&bus).await;
     chan.rt.subscribe::<Bus, AskRequested>(&bus).await;
     chan.rt.subscribe::<Bus, AskResolved>(&bus).await;
+    chan.rt.subscribe::<Bus, ArtifactShown>(&bus).await;
     let inbound = {
         let chan = Arc::clone(&chan);
         tokio::spawn(async move {
@@ -1354,6 +1366,22 @@ impl Channel {
                     tracing::debug!(error = %e, "ask card update failed");
                 }
             }
+            // 35 §8: the session's own thread, else the nearest bound ancestor's.
+            Event::Artifact(m) => {
+                let target = self.bound(m.session).or_else(|| {
+                    self.ancestors(m.session)
+                        .into_iter()
+                        .next()
+                        .map(|(k, t, _)| (k, t))
+                });
+                let Some((key, thread)) = target else {
+                    tracing::debug!(session = %m.session, name = %m.artifact.name, "artifact for an unbound session; not posted");
+                    return;
+                };
+                let _ = self
+                    .worker(&key, &thread)
+                    .send(Out::Artifact(Box::new(m.artifact)));
+            }
         }
     }
 
@@ -1625,6 +1653,7 @@ impl Worker {
                     Some(Out::Ask(req, i)) => self.ask(*req, i).await,
                     Some(Out::Spawned { child, name, link, depth }) => self.spawned(child, name, link, depth).await,
                     Some(Out::Child(session, ev)) => self.child(session, &ev).await,
+                    Some(Out::Artifact(a)) => self.artifact(*a).await,
                     Some(Out::ChildApproval(session, tool)) => {
                         if let Some(row) = self.rows.iter_mut().find(|r| r.session == session) {
                             self.rows_dirty |= row.approval(tool.as_deref());
@@ -1723,6 +1752,38 @@ impl Worker {
                 self.approvals.insert(req.id, (ts, body));
             }
             Err(e) => tracing::warn!(error = %e, "approval card post failed"),
+        }
+    }
+
+    // -- artifacts (35 §8) -------------------------------------------------
+
+    /// Uploads a `show` artifact into the thread, `title` as the comment.
+    async fn artifact(&self, a: Artifact) {
+        let bytes = match tokio::fs::read(&a.path).await {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(error = %e, path = %a.path.display(), "artifact not readable");
+                return;
+            }
+        };
+        let file = crate::api::UploadFile {
+            name: a.name,
+            mime: a.mime,
+            bytes,
+        };
+        let comment = (!a.title.trim().is_empty()).then_some(a.title.as_str());
+        if let Err(e) = self
+            .chan
+            .api
+            .upload_file(
+                &self.channel,
+                Some(&self.thread_ts),
+                std::slice::from_ref(&file),
+                comment,
+            )
+            .await
+        {
+            tracing::warn!(error = %e, name = %file.name, "artifact upload failed");
         }
     }
 
@@ -1951,6 +2012,7 @@ impl Worker {
             | AgentEvent::Harvested { .. }
             | AgentEvent::SkillsChanged { .. }
             | AgentEvent::TitleChanged { .. }
+            | AgentEvent::ToolCallProgress { .. }
             | AgentEvent::SessionDeleted { .. } => {}
         }
     }
@@ -2764,6 +2826,77 @@ pub(crate) mod tests {
         let updated = format!("update_blocks {DM} 7.7");
         f.until(|calls| calls.contains(&updated)).await;
         assert!(f.chan.lock().cards.is_empty());
+    }
+
+    fn artifact(session: SessionId, dir: &Path) -> ArtifactShown {
+        let path = dir.join("report.md");
+        std::fs::write(&path, b"# hi").unwrap();
+        ArtifactShown {
+            session,
+            call_id: "call_1".into(),
+            artifact: Artifact {
+                id: "a1".into(),
+                session,
+                call_id: "call_1".into(),
+                name: "report.md".into(),
+                title: "Weekly report".into(),
+                kind: artifact::Kind::Markdown,
+                mime: "text/markdown".into(),
+                bytes: 4,
+                version: 1,
+                path,
+                source: None,
+                preview: None,
+                pages: None,
+                origin: None,
+                created_at: 0,
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn artifact_for_a_bound_session_is_uploaded_into_its_thread() {
+        let f = fixture();
+        f.bind(OWNER);
+        f.chan
+            .route(Event::Artifact(artifact(f.stub.session, f._dir.path())))
+            .await;
+        let upload = format!("upload_file {DM} 100.1 [report.md] Weekly report");
+        f.until(|calls| calls.contains(&upload)).await;
+        assert_eq!(
+            f.api
+                .calls()
+                .iter()
+                .filter(|c| c.starts_with("upload_file"))
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn artifact_of_an_unbound_child_lands_in_the_bound_parents_thread() {
+        let f = fixture();
+        f.bind(OWNER);
+        let child = SessionId::new();
+        f.chan
+            .lock()
+            .parent_of
+            .insert(child, (f.stub.session, "grep-logs".into()));
+        f.chan
+            .route(Event::Artifact(artifact(child, f._dir.path())))
+            .await;
+        let upload = format!("upload_file {DM} 100.1 [report.md] Weekly report");
+        f.until(|calls| calls.contains(&upload)).await;
+    }
+
+    #[tokio::test]
+    async fn artifact_for_an_unbound_session_posts_nothing() {
+        let f = fixture();
+        f.chan
+            .route(Event::Artifact(artifact(SessionId::new(), f._dir.path())))
+            .await;
+        assert!(f.api.calls().is_empty());
+        assert!(f.chan.lock().workers.is_empty());
     }
 
     #[tokio::test]

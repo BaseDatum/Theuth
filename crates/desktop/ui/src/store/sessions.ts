@@ -5,7 +5,7 @@ import type { JobExit } from '@/rpc/bindings/JobExit'
 import type { QueuedInput } from '@/rpc/bindings/QueuedInput'
 import type { Usage } from '@/rpc/bindings/Usage'
 import type { WireEvent } from '@/rpc/events'
-import type { AgentInfo, LoadedPage } from '@/rpc/extra'
+import type { AgentInfo, Artifact, LoadedPage } from '@/rpc/extra'
 import { empty, fromHistory, nextId, route } from './reduce'
 import { type Stores, active, scoped } from './harness-scope'
 
@@ -105,6 +105,12 @@ export type SessionSlice = {
   browser: boolean
   /** The live browser dialog is open (globe click or `BrowserShowLive`). */
   browserLive: boolean
+  /** Artifacts by `call_id` of the `show` call that made them (35 §7.3); fed by `ArtifactShown` and `list_artifacts`. */
+  artifacts: Map<string, Artifact>
+  /** Tool calls whose arguments are still streaming (`ToolCallProgress`), by `call_id`; cleared on `ToolCallStarted`. */
+  progress: Map<string, { name?: string; bytes: number }>
+  /** `call_id` of the artifact open in the side panel; `null` when closed. */
+  artifactPanel: string | null
 }
 
 type SessionsStore = {
@@ -125,6 +131,10 @@ type SessionsStore = {
   setChildren(id: string, agents: AgentInfo[]): void
   /** Open or close the live browser dialog. */
   setBrowserLive(id: string, open: boolean): void
+  /** Replace the artifacts from `list_artifacts` (session load). */
+  setArtifacts(id: string, artifacts: Artifact[]): void
+  /** Open the artifact panel on `callId`, or close it with `null`. */
+  setArtifactPanel(id: string, callId: string | null): void
   resetLagged(): void
   /** Forget that any transcript was loaded: the chat route refetches on its next mount. */
   unload(): void
@@ -240,6 +250,18 @@ export const createSessions = (): SessionsApi =>
           return {
             sessions: { ...st.sessions, [id]: { ...cur, browserLive: open } },
           }
+        })
+      },
+      setArtifacts(id, artifacts) {
+        set((st) => {
+          const cur = st.sessions[id] ?? empty(id)
+          return { sessions: { ...st.sessions, [id]: { ...cur, artifacts: new Map(artifacts.map((a) => [a.call_id, a])) } } }
+        })
+      },
+      setArtifactPanel(id, callId) {
+        set((st) => {
+          const cur = st.sessions[id] ?? empty(id)
+          return cur.artifactPanel === callId ? st : { sessions: { ...st.sessions, [id]: { ...cur, artifactPanel: callId } } }
         })
       },
       resetLagged() {

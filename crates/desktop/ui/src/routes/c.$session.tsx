@@ -26,10 +26,16 @@ function SessionRoute() {
   }, [title, running])
 
   const load = useCallback(async () => {
-    const [page, agents] = await Promise.all([api.load_session(session, null, PAGE), api.list_agents(session)])
-    const { loadHistory, setChildren } = useSessions.getState()
+    const [page, agents, artifacts] = await Promise.all([
+      api.load_session(session, null, PAGE),
+      api.list_agents(session),
+      // A harness without the artifact plugin has no such method.
+      api.list_artifacts(session, null).catch(() => []),
+    ])
+    const { loadHistory, setChildren, setArtifacts } = useSessions.getState()
     loadHistory(session, page, 'replace')
     setChildren(session, agents)
+    setArtifacts(session, artifacts)
   }, [api, session])
 
   useEffect(() => {

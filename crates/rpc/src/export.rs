@@ -86,6 +86,9 @@ async fn export_bindings() {
         schedule::ScheduleEvent,
         computer::PermissionStatus,
         computer::DisplayInfo,
+        artifact::Artifact,
+        artifact::Kind,
+        artifact::ArtifactShown,
         surface::Spec,
         surface::Element,
         surface::Component

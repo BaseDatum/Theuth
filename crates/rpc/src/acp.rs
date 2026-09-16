@@ -25,11 +25,12 @@ use agent_client_protocol::schema::v1::{
     Implementation, InitializeRequest, InitializeResponse, ListSessionsRequest,
     ListSessionsResponse, LoadSessionRequest, LoadSessionResponse, NewSessionRequest,
     NewSessionResponse, PermissionOption, PermissionOptionKind, PromptCapabilities, PromptRequest,
-    PromptResponse, RequestPermissionOutcome, RequestPermissionRequest, SessionId as AcpSessionId,
-    SessionInfo, SessionNotification, SessionUpdate, StopReason, ToolCall, ToolCallContent,
-    ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, UsageUpdate,
+    PromptResponse, RequestPermissionOutcome, RequestPermissionRequest, ResourceLink,
+    SessionId as AcpSessionId, SessionInfo, SessionNotification, SessionUpdate, StopReason,
+    ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, UsageUpdate,
 };
 use agent_client_protocol::{Agent, Client, ConnectTo, ConnectionTo, Error, Lines, Stdio};
+use artifact::ArtifactShown;
 use base64::Engine as _;
 use jsonrpsee::types::ErrorObjectOwned;
 use kameo::Actor;
@@ -81,6 +82,7 @@ pub async fn relay(rt: &Runtime) -> ActorRef<Relay> {
     }
     rt.subscribe::<Relay, AgentEvent>(&relay).await;
     rt.subscribe::<Relay, ApprovalRequested>(&relay).await;
+    rt.subscribe::<Relay, ArtifactShown>(&relay).await;
     relay
 }
 
@@ -343,6 +345,9 @@ fn replay(i: usize, entry: HistoryEntry) -> SessionUpdate {
         HistoryEntry::Assistant { text, .. } => {
             SessionUpdate::AgentMessageChunk(ContentChunk::new(text.into()))
         }
+        // A `show` entry replays as a plain tool card; the artifact link it
+        // carried live (`ArtifactShown`) is a frontend join on
+        // `list_artifacts`, not part of the history (35 §0.3).
         HistoryEntry::Tool {
             name, args, result, ..
         } => {
@@ -516,6 +521,28 @@ impl Message<AgentEvent> for Relay {
             ),
             _ => {}
         }
+    }
+}
+
+/// A shown artifact becomes a second update on its `show` tool call: one
+/// `ResourceLink` the client renders as an openable file (35 §8).
+impl Message<ArtifactShown> for Relay {
+    type Reply = ();
+    async fn handle(&mut self, ev: ArtifactShown, _: &mut Context<Self, ()>) {
+        let a = ev.artifact;
+        let link = ResourceLink::new(a.name, format!("file://{}", a.path.display()))
+            .title(a.title)
+            .mime_type(a.mime)
+            .size(i64::try_from(a.bytes).ok());
+        self.notify(
+            ev.session,
+            SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                ev.call_id,
+                ToolCallUpdateFields::new().content(vec![ToolCallContent::from(
+                    ContentBlock::ResourceLink(link),
+                )]),
+            )),
+        );
     }
 }
 

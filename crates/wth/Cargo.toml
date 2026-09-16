@@ -23,6 +23,7 @@ rpc = { workspace = true }
 link = { workspace = true }
 nodes = { workspace = true }
 schedule = { workspace = true }
+artifact = { workspace = true }
 jsonrpsee = { workspace = true, features = ["ws-client"] }
 serde_json = { workspace = true }
 signal = { workspace = true }

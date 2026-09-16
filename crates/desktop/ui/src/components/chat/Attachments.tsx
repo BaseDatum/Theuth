@@ -7,11 +7,11 @@ import { useHarnesses } from '@/link/harnesses'
 
 const IMAGE = /\.(png|jpe?g|gif|webp|bmp|svg)$/i
 
-/** `<img>` for a harness path via `resolveFile` (31 §9): immediate on macOS local; elsewhere a dim block until the bytes arrive, nothing on failure. */
-function Img({ path, className }: { path: string; className: string }) {
+/** A URL for a harness path via `resolveFile` (31 §9): immediate on macOS local; elsewhere `null` until the bytes arrive, `''` on failure. */
+export function useFileUrl(path: string): string | null {
   const api = useApi()
   const active = useHarnesses((s) => s.active)
-  // The local case is synchronous, so the first paint already has the image; the RPC case is cached, so the effect's call is the same promise.
+  // The local case is synchronous, so the first paint already has the URL; the RPC case is cached, so the effect's call is the same promise.
   const [src, setSrc] = useState<string | null>(() => {
     const r = resolveFile(api, path, active)
     return typeof r === 'string' ? r : null
@@ -32,6 +32,12 @@ function Img({ path, className }: { path: string; className: string }) {
       live = false
     }
   }, [api, path, active])
+  return src
+}
+
+/** `<img>` for a harness path: a dim block until the URL resolves, nothing on failure. */
+export function Img({ path, className }: { path: string; className: string }) {
+  const src = useFileUrl(path)
   if (src === null) return <div className={cn('h-24 w-32 animate-pulse bg-layer-2', className)} />
   if (src === '') return null
   return <img src={src} alt="" className={className} />

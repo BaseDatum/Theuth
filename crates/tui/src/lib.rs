@@ -65,6 +65,8 @@ impl runtime::Plugin for TuiPlugin {
         rt.subscribe::<Bridge, JobEvent>(&bridge).await;
         rt.subscribe::<Bridge, link::LinkEvent>(&bridge).await;
         rt.subscribe::<Bridge, nodes::NodeEvent>(&bridge).await;
+        rt.subscribe::<Bridge, artifact::ArtifactShown>(&bridge)
+            .await;
         let api = Arc::new(Server::new(rt.clone()));
         tokio::spawn(run_commands(api, commands_rx, events_tx));
 
@@ -135,6 +137,7 @@ forward!(
     JobEvent => Job,
     link::LinkEvent => LinkEvent,
     nodes::NodeEvent => NodeEvent,
+    artifact::ArtifactShown => ArtifactShown,
 );
 
 /// The one place commands become `rpc::Api` calls. Each command runs in its
@@ -467,6 +470,33 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             let node = resolve_node(api, &n).await?;
             UiEvent::NodeInvite(node.name, msg(api.invite_node(node.id).await)?)
         }
+        Command::ListArtifacts { session, pick } => UiEvent::Artifacts {
+            items: msg(api.list_artifacts(session, Some(true)).await)?,
+            pick,
+        },
+        Command::ExportArtifact { id, name } => {
+            let dest = std::env::home_dir()
+                .ok_or_else(|| anyhow::anyhow!("no home directory"))?
+                .join("Downloads")
+                .join(name);
+            let path = msg(api.export_artifact(id, dest).await)?;
+            UiEvent::Info(format!("exported → {}", path.display()))
+        }
+        // Detached, like `computer_open`: the TUI runs on the harness host, so the path is local.
+        Command::OpenPath(path) => {
+            let mut cmd = tokio::process::Command::new(if cfg!(target_os = "macos") {
+                "open"
+            } else {
+                "xdg-open"
+            });
+            cmd.arg(&path)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            cmd.spawn()
+                .map_err(|e| anyhow::anyhow!("could not open {}: {e}", path.display()))?;
+            return Ok(());
+        }
     };
     let _ = tx.send(reply);
     Ok(())
@@ -602,6 +632,15 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             writeln!(out, "error: {message}")
         }
         UiEvent::Agent(_) => Ok(()),
+        UiEvent::ArtifactShown(ev) => writeln!(
+            out,
+            "[artifact: {} → {}]",
+            ev.artifact.name,
+            ev.artifact.path.display()
+        ),
+        UiEvent::Artifacts { items, .. } => items
+            .iter()
+            .try_for_each(|a| writeln!(out, "{}", model::artifact_row(a))),
         UiEvent::ModelSet(info) => writeln!(out, "model → {}", info.id),
         UiEvent::EffortSet(Some(e)) => writeln!(out, "effort: {e}"),
         UiEvent::EffortSet(None) => writeln!(out, "effort cleared"),

@@ -88,13 +88,17 @@ and its devices), `schedule` (scheduled runs: one `~/.wth/schedules/<name>.md`
 per schedule with `cron:` / `every:` / `at:` front matter and the prompt as
 body; each fire is a turn in that schedule's own session, the reply is
 delivered to the user —
-[`docs/design/34-schedule.md`](docs/design/34-schedule.md)), `tui` (iocraft),
+[`docs/design/34-schedule.md`](docs/design/34-schedule.md)), `artifact`
+(the `show` tool: files the agent makes for you, shown as cards in the chat —
+markdown, code, CSV, images, SVG, PDFs compiled in-process from markdown or
+Typst; a content-addressed store under `~/.wth/artifacts/` —
+[`docs/design/35-artifacts.md`](docs/design/35-artifacts.md)), `tui` (iocraft),
 `wth` (binary).
 
 Config (`~/.wth/`, created on first run; details in
 [`docs/design/01-config-and-subagents.md`](docs/design/01-config-and-subagents.md) §1):
 
-- `config.yaml` — every plugin reads its own section; `WTH_<SECTION>__<KEY>` env overrides. `agent.model` is a models.dev id (`anthropic/claude-sonnet-4-5`); `/model` rewrites that one line in place. The `agent`, `tools`, `knowledge`, `web`, `search_providers`, `browser`, `computer`, `link`, `nodes`, `schedule` and `slack` sections with their defaults:
+- `config.yaml` — every plugin reads its own section; `WTH_<SECTION>__<KEY>` env overrides. `agent.model` is a models.dev id (`anthropic/claude-sonnet-4-5`); `/model` rewrites that one line in place. The `agent`, `tools`, `knowledge`, `web`, `search_providers`, `browser`, `computer`, `link`, `nodes`, `schedule`, `artifact` and `slack` sections with their defaults:
 
   ```yaml
   agent:
@@ -146,6 +150,9 @@ Config (`~/.wth/`, created on first run; details in
   schedule:                       # design doc 34; `~/.wth/schedules/*.md` files, `/schedules` lists them
     enabled: true                 # false: no watcher, no actor, no `schedule` tool, no prompt block
     run_timeout_secs: 1800        # a run still going after this is cancelled and reported as `timeout`
+  artifact:                       # design doc 35; the `show` tool, `/artifacts` lists a session's
+    enabled: true                 # false: no `show` tool, no prompt block, no /artifacts; blobs and index kept
+    fonts: []                     # extra directories searched for PDF fonts, besides system fonts and the embedded set
   slack:
     # owner: U0123456789           # owner-only commands, may click any approval, receives unbound approvals
     allowed: []                    # more user ids; each owns their threads
@@ -179,6 +186,7 @@ forgets one; `/skills` lists skills (⏎ hands one to the model, `s` shows it; `
 `/undo` drops the last turn (yours and the reply), `/redo` restores it; `/edit [n]` edits a user message and regenerates from it, `/regen [n]` regenerates the reply to a turn, `/fork [n]` opens a new session with the conversation through a turn; URLs in the transcript are OSC 8 hyperlinks (click them in a terminal that supports it, e.g. ghostty/iTerm2/kitty/WezTerm);
 `/jobs` lists the session's shell jobs, `/jobs kill <id>` stops one (a running job's card shows its last 10 output lines live);
 `/schedules` lists the scheduled runs with their next and last fire, `/schedules run <name>` fires one now, `/schedules history <name>` shows its runs;
+`/artifacts` lists the files the agent has shown in this session and its subagents (⏎ opens one with the OS, `s` shows it inline, `e` exports it); a `▣` artifact card's path is a `file://` link, `o` opens the newest one, Ctrl+O renders markdown, code and CSV inline;
 `/acp` manages external ACP harnesses;
 `/knowledge` browses the knowledge base (below); `/approvals off` stops
 approval prompts for this session, `/approvals off always` for good
@@ -211,6 +219,21 @@ concept back, `/knowledge harvest` runs a harvest now. Turn off with
 `knowledge.enabled: false`; tune hint/harvest cadence under `agent.knowledge`
 in `config.yaml`. See
 [`docs/design/10-knowledge.md`](docs/design/10-knowledge.md).
+
+Files the agent makes for you: when the deliverable is a document — a report,
+a table, a chart, a PDF — the agent calls `show` instead of pasting it into
+the reply. `show{path}` displays a file that exists (something it wrote, a
+screenshot, a PDF you dropped); `show{content, name}` writes one under
+`~/.wth/artifacts/` and displays it. The extension decides the rendering:
+`.md` as markdown, `.csv` as a table, `.png`/`.svg` as a picture, `.pdf`
+compiled from the markdown (or Typst) in `content` into a real PDF — the
+model gets the first page back as an image and fixes what it sees. Every
+card is an immutable snapshot with a version, so the transcript never lies
+about what you were shown; the same name again in a session is `v2`. In
+Slack or Signal the file lands in the bound thread. `message_user` is still
+how the agent reaches you when you are not looking at this chat. Turn off
+with `artifact.enabled: false`. See
+[`docs/design/35-artifacts.md`](docs/design/35-artifacts.md).
 
 Signal: a phone-side frontend that runs only in the daemon. Pair once with
 `wth --link-signal --owner +15551234567` (scan the QR from Signal → Settings
@@ -266,7 +289,11 @@ markdown with tool cards, inline approvals, steering chips, attachments,
 the same slash commands, a settings dialog for models, approvals, MCP,
 skills, ACP agents, logins, gateways, channels and linked devices, and a knowledge explorer
 with working links and a raw editor; a globe in the chat header opens a live
-view of the agent's browser while it works. It has no Dock icon; the tray icon or
+view of the agent's browser while it works. A file the agent shows is a card
+with a thumbnail in the transcript and opens in a side panel with a viewer per
+kind (markdown, highlighted code, CSV table, image, native PDF) and Copy /
+Save as / Open / Reveal; a `▣ N` button in the header lists the session's
+artifacts. It has no Dock icon; the tray icon or
 ⌥Space toggles the window. On launch it reuses a running `wth --serve` on
 the configured port, otherwise it starts the bundled `wth --headless` on a
 pseudo-terminal through your login shell so the daemon has exactly the

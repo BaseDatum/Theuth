@@ -24,6 +24,10 @@ export const extOf = (name: string): string => {
   return i < 0 ? '' : name.slice(i + 1).toLowerCase()
 }
 
+/** `84 KB`, `1.2 MB`, `312 B`. */
+export const fmtBytes = (n: number): string =>
+  n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(n < 10240 ? 1 : 0)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`
+
 /** `put_attachment` ext for a file: from its name, else from its MIME type (pasted images have no name). */
 export const extFor = (file: Blob & { name?: string }): string => {
   const byName = file.name ? extOf(file.name) : ''
@@ -44,6 +48,9 @@ export async function putAttachment(api: Api, file: Blob, ext: string): Promise<
   return api.put_attachment(toBase64(new Uint8Array(await file.arrayBuffer())), ext)
 }
 
+/** The file is on this machine (macOS shell talking to the local daemon): paths open, reveal and `asset://` work. */
+export const isLocal = (active: string): boolean => container() === 'macos' && active === LOCAL
+
 const LRU_MAX = 50
 /** Blob URLs by harness path, insertion-ordered; re-inserted on hit so the oldest is first. */
 const lru = new Map<string, Promise<string>>()
@@ -54,7 +61,7 @@ const lru = new Map<string, Promise<string>>()
  * come over RPC and live in a blob URL. Failures are not cached.
  */
 export function resolveFile(api: Api, path: string, active: string): string | Promise<string> {
-  if (container() === 'macos' && active === LOCAL) return convertFileSrc(path)
+  if (isLocal(active)) return convertFileSrc(path)
   const hit = lru.get(path)
   if (hit) {
     lru.delete(path)
@@ -72,5 +79,18 @@ export function resolveFile(api: Api, path: string, active: string): string | Pr
     lru.delete(oldest)
     void url.then(URL.revokeObjectURL, () => {})
   }
+  return p
+}
+
+const texts = new Map<string, Promise<string>>()
+
+/** UTF-8 text of a harness file via `get_attachment` (works locally and through the relay); cached, failures are not. */
+export function readText(api: Api, path: string): Promise<string> {
+  const hit = texts.get(path)
+  if (hit) return hit
+  const p = api.get_attachment(path).then((b64) => new TextDecoder().decode(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))))
+  p.catch(() => texts.delete(path))
+  texts.set(path, p)
+  // ponytail: unbounded by count, keyed by content-addressed path; an LRU when a session shows hundreds of documents.
   return p
 }

@@ -17,14 +17,14 @@ import { JsonRenderFence } from './surface/JsonRenderFence'
 // `htmlLabels` is set both globally and per-flowchart because the flowchart sub-config defaults it to true.
 // `json-render` fences use streamdown's `plugins.renderers` (matched by language before the built-in code block),
 // so no `components.code` override is needed and every other language keeps the `@streamdown/code` renderer.
-const plugins: PluginConfig = {
+export const plugins: PluginConfig = {
   code,
   mermaid: createMermaidPlugin({
     config: { securityLevel: 'strict', htmlLabels: false, flowchart: { htmlLabels: false }, suppressErrorRendering: true, maxEdges: 1000 },
   }),
   renderers: [{ language: 'json-render', component: JsonRenderFence }],
 }
-const shikiTheme: ['github-light', 'github-dark'] = ['github-light', 'github-dark']
+export const shikiTheme: ['github-light', 'github-dark'] = ['github-light', 'github-dark']
 
 /** The last fenced code block's body, or `null`. */
 export function lastCode(text: string): string | null {

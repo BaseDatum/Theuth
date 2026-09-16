@@ -33,6 +33,18 @@ surface = { path = "crates/surface" }
 link = { path = "crates/link" }
 nodes = { path = "crates/nodes" }
 schedule = { path = "crates/schedule" }
+artifact = { path = "crates/artifact" }
+# Artifacts (design doc 35): in-process Typst for markdown/Typst → PDF, page render for the model's
+# preview; `csv` parses table artifacts; `resvg` (already transitive via typst) rasterises SVG artifacts.
+# typst-as-lib's kit features = embedded fonts + system font scan through typst-kit; `typst-layout`
+# owns `PagedDocument` (not re-exported by `typst` 0.15).
+typst-as-lib = { version = "0.16", features = ["typst-kit-fonts", "typst-kit-embed-fonts"] }
+typst = "0.15"
+typst-layout = "0.15"
+typst-pdf = "0.15"
+typst-render = "0.15"
+resvg = "0.47"
+csv = "1.4"
 
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "fs", "time", "io-util", "process", "signal"] }
 tokio-util = { version = "0.7", features = ["rt"] }

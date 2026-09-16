@@ -20,7 +20,7 @@ function body(entry: Entry, session: string) {
     case 'reasoning':
       return <MessageReasoning text={entry.text} done={entry.done} />
     case 'tool':
-      return <MessageTool tool={entry} />
+      return <MessageTool tool={entry} session={session} />
     case 'peer':
       return <MessagePeer from={entry.from} text={entry.text} />
     case 'info':

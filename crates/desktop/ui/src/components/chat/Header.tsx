@@ -5,6 +5,7 @@ import { useState } from 'react'
 import { HarnessSwitcher, useHarnessCount } from '@/components/link/HarnessSwitcher'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { useSidebar } from '@/components/ui/sidebar'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { touch } from '@/lib/platform'
@@ -14,6 +15,8 @@ import { useApprovals } from '@/store/approvals'
 import { useConnection } from '@/store/connection'
 import { useSessionField, useSessions } from '@/store/sessions'
 import { ApprovalsSheet } from './ApprovalCard'
+import { metaLine } from './ArtifactCard'
+import { ArtifactPanel } from './ArtifactPanel'
 import { BrowserLive } from './BrowserLive'
 import { ContextMeter } from './ContextMeter'
 import { ModelMenu } from './ModelMenu'
@@ -35,6 +38,33 @@ function Parent({ id }: { id: string }) {
     >
       ↳ {row?.name ?? row?.title ?? id.slice(0, 8)}
     </Link>
+  )
+}
+
+/** `▣ N`: the session's artifacts, newest first; picking one opens the panel (35 §7.2). */
+function Artifacts({ session }: { session: string }) {
+  const artifacts = useSessionField(session, 'artifacts')
+  if (!artifacts?.size) return null
+  const list = [...artifacts.values()].sort((x, y) => y.created_at - x.created_at)
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" className="h-9 gap-1 rounded-lg px-2 text-fg-secondary" aria-label="Artifacts">
+          ▣<span className="text-xs">{list.length}</span>
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-72">
+        {list.map((a) => (
+          <DropdownMenuItem key={a.call_id} className="flex-col items-start gap-0" onSelect={() => useSessions.getState().setArtifactPanel(session, a.call_id)}>
+            <span className="w-full truncate">{a.title}</span>
+            <span className="w-full truncate text-xs text-fg-tertiary">
+              {metaLine(a)}
+              {a.version > 1 ? ` · v${a.version}` : ''}
+            </span>
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 
@@ -81,6 +111,7 @@ export function Header({
           <Globe className="size-5" />
         </Button>
       )}
+      {session && <Artifacts session={session} />}
       {approvalsOff && (
         <>
           <Badge variant="outline" className="hidden text-fg-secondary md:inline-flex">
@@ -108,6 +139,7 @@ export function Header({
           onOpenChange={(o) => useSessions.getState().setBrowserLive(session, o)}
         />
       )}
+      {session && <ArtifactPanel session={session} />}
     </header>
   )
 }

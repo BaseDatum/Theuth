@@ -39,7 +39,7 @@ import type { SyncResult } from '@/rpc/bindings/SyncResult'
 import type { ToolSpec } from '@/rpc/bindings/ToolSpec'
 import type { JsonValue } from '@/rpc/bindings/serde_json/JsonValue'
 import type { RpcClient } from '@/rpc/client'
-import type { AgentInfo, Info, LoadedPage, LoginInfo, ProviderInfo } from '@/rpc/extra'
+import type { AgentInfo, Artifact, Info, LoadedPage, LoginInfo, ProviderInfo } from '@/rpc/extra'
 
 /** `computer::PermissionStatus` (27 §6); hand-written until the bindings are regenerated. */
 export type PermissionStatus = {
@@ -80,12 +80,14 @@ export interface Api {
   computer_permissions(): Promise<PermissionStatus>
   /** Replace the turn opened at `turn` with `text` (29 §3); refused mid-turn. */
   edit_turn(session: SessionId, turn: number, text: string, files: string[]): Promise<null>
+  /** Copy artifact `id`'s blob to `dest` (parent created; refuses to overwrite); returns `dest` (35 §3.5). */
+  export_artifact(id: string, dest: string): Promise<string>
   /** Fire a schedule now, ignoring `next` (34 §8); rejects with `busy` / `no such schedule` / the parse error. */
   fire_schedule(name: string): Promise<SessionId>
   /** New session with the conversation through the turn opened at `through` (all when `null`); `reply` stops at that 0-based assistant text of the turn instead. */
   fork_session(session: SessionId, through: number | null, reply: number | null): Promise<SessionId>
   get_prompt(session: SessionId | null): Promise<string>
-  /** Base64 of a file under `<data_dir>/{attachments,browser,computer}` (31 §6.4); `-32000` elsewhere. */
+  /** Base64 of a file under `<data_dir>/{attachments,browser,computer,artifacts}` (31 §6.4); `-32000` elsewhere. */
   get_attachment(path: string): Promise<string>
   info(): Promise<Info>
   knowledge_delete(id: string): Promise<null>
@@ -106,6 +108,8 @@ export interface Api {
   list_acp(probe: boolean): Promise<EntryInfo[]>
   list_acp_registry(): Promise<RegistryAgent[]>
   list_agents(session: SessionId): Promise<AgentInfo[]>
+  /** The session's artifacts, newest first; `descendants` widens to its subtree (35 §3.5). */
+  list_artifacts(session: SessionId, descendants: boolean | null): Promise<Artifact[]>
   list_jobs(session: SessionId): Promise<JobView[]>
   list_logins(): Promise<LoginInfo[]>
   list_mcp(session: SessionId | null): Promise<McpServer[]>
@@ -208,6 +212,7 @@ export const METHODS = [
   'computer_permissions',
   'delete_session',
   'edit_turn',
+  'export_artifact',
   'fire_schedule',
   'fork_session',
   'get_attachment',
@@ -234,6 +239,7 @@ export const METHODS = [
   'list_acp',
   'list_acp_registry',
   'list_agents',
+  'list_artifacts',
   'list_jobs',
   'list_logins',
   'list_mcp',

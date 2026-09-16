@@ -51,7 +51,8 @@ mod mobile {
             .plugin(tauri_plugin_deep_link::init())
             .invoke_handler(tauri::generate_handler![commands::connection])
             .setup(|app| {
-                let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()));
+                let builder =
+                    WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()));
                 // WKWebView paints a native "‹ › Done" bar above the keyboard for every
                 // focused input (and paints it light under a dark page); a chat composer
                 // has no use for it.
@@ -64,7 +65,9 @@ mod mobile {
 
     /// `Suspended` is `applicationWillResignActive`, `Resumed` is `willEnterForeground`.
     pub(super) fn on_event(event: &RunEvent) {
-        let RunEvent::WindowEvent { event, .. } = event else { return };
+        let RunEvent::WindowEvent { event, .. } = event else {
+            return;
+        };
         match event {
             #[cfg(target_os = "ios")]
             WindowEvent::Suspended => background::hold(),
@@ -91,7 +94,9 @@ mod mobile {
         static TASK: AtomicUsize = AtomicUsize::new(NONE);
 
         pub(super) fn hold() {
-            let Some(mtm) = MainThreadMarker::new() else { return };
+            let Some(mtm) = MainThreadMarker::new() else {
+                return;
+            };
             end(mtm);
             // The handler must end the task or iOS kills the app; it runs on the main thread.
             let expired = block2::RcBlock::new(|| {
@@ -99,7 +104,8 @@ mod mobile {
                     end(mtm);
                 }
             });
-            let id = UIApplication::sharedApplication(mtm).beginBackgroundTaskWithExpirationHandler(Some(&expired));
+            let id = UIApplication::sharedApplication(mtm)
+                .beginBackgroundTaskWithExpirationHandler(Some(&expired));
             if id != unsafe { objc2_ui_kit::UIBackgroundTaskInvalid } {
                 TASK.store(id, SeqCst);
             }

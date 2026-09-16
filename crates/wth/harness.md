@@ -29,6 +29,7 @@ real path. Everything below is relative to it.
 | `knowledge/` | the knowledge bundle (markdown, git history); `knowledge.sqlite` is a derived index | live |
 | `sessions.sqlite` | every session's history; `/sessions`, `/resume <id>` | live |
 | `attachments/`, `spill/` | pasted images; tool output that exceeded the cap (`read_file` the path a result names) | - |
+| `artifacts/` | files shown with `show`: content-addressed blobs + `artifacts.sqlite`, the index (design doc 35). Deleting the index rebuilds nothing — the blobs it named are orphaned and swept at the next start | live |
 | `logs/wth.log.<YYYY-MM-DD>` | the process log; `RUST_LOG=debug` for more | live |
 | `token` | bearer for the JSON-RPC server | startup |
 | `signal/` | Signal linked-device state and `inbox/` for files the user texts | - |
@@ -55,6 +56,7 @@ web: {enabled: true, engines: [duckduckgo, wikipedia, arxiv, github], fetch_max_
 search_providers: {firecrawl: {base_url: https://api.firecrawl.dev}}   # key in credentials.yaml under the same name
 knowledge: {enabled: true}
 surface: {enabled: true, correct: true}   # replies may draw mermaid / json-render; correct = one fix-up round on invalid json-render
+artifact: {enabled: true, fonts: []}   # the `show` tool; fonts = extra directories searched when compiling PDFs (35)
 signal: {enabled: true, device_name: wth, owner: "+1555…", allowed: []}
 ```
 
@@ -114,8 +116,10 @@ A skill is a markdown file with optional front matter (`name`,
 `description`, `always: true` to inline it every call). The index in your
 system prompt lists them; `load_skill` fetches a body; `add_skill` /
 `remove_skill` write local ones; `add_skill_repo` / `sync_skills` manage
-cloned repos (read-only). This file and `visualize` (drawing in replies,
-design doc 30) are binary-owned; both are rewritten on every start.
+cloned repos (read-only). This file, `visualize` (drawing in replies,
+design doc 30) and `pdf` (front matter, page breaks and Typst for `show`'s
+`.pdf` names, design doc 35) are binary-owned; all three are rewritten on
+every start.
 
 ## Sessions, subagents, jobs, knowledge
 
@@ -134,6 +138,11 @@ design doc 30) are binary-owned; both are rewritten on every start.
   already reaches them; use it to hand over a file, or to report progress
   when asked. Unbound sessions (TUI, subagents without a thread) go to the
   owner on every channel; `via` picks one.
+- `show{path | content+name, title?, source?}` puts a file in front of the
+  user as a card *in this chat* — rendered, openable, savable; a `.pdf` name
+  compiles the markdown (or `source: typst`) in `content` and the result
+  includes a picture of page 1. Same name again is a new version. *show* =
+  in this chat; *message_user* = wherever the user is.
 - `ask_user{questions}` shows the user one or more multiple-choice questions
   (`{id, question, options: [{label, description?}], recommended?}`) and
   waits for the answers; they may pick, type their own, or skip a question,

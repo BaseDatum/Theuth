@@ -151,6 +151,10 @@ agent:
 #   enabled: true            # false: no watcher, no actor, no tool, no prompt block
 #   run_timeout_secs: 1800   # a run still going after this is cancelled and reported as `timeout`
 
+# artifact:                  # `show` tool: files the agent makes for the user, as cards in the chat (design doc 35); `/artifacts` lists them
+#   enabled: true            # false: no `show` tool, no prompt block, no /artifacts; blobs and index kept
+#   fonts: []                # extra directories searched for PDF fonts, besides system fonts and the embedded set
+
 tools:
   policy:
     read_only: allow
@@ -208,8 +212,9 @@ const DEFAULT_AGENTS: &str =
 const HARNESS_SKILL: &str = include_str!("../harness.md");
 
 /// Creates the data-dir skeleton on first run. Existing files are never
-/// overwritten, except `skills/harness.md` and `skills/visualize.md`, which the
-/// binary owns and rewrites so they always describe the running version.
+/// overwritten, except `skills/harness.md`, `skills/visualize.md` and
+/// `skills/pdf.md`, which the binary owns and rewrites so they always describe
+/// the running version.
 fn first_run(data_dir: &Path, config_path: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(data_dir.join("mcp"))?;
     std::fs::create_dir_all(data_dir.join("acp"))?;
@@ -218,6 +223,7 @@ fn first_run(data_dir: &Path, config_path: &Path) -> std::io::Result<()> {
     for (name, body) in [
         ("harness.md", HARNESS_SKILL.to_owned()),
         ("visualize.md", surface::visualize_skill()),
+        ("pdf.md", artifact::pdf::skill()),
     ] {
         let path = skills.join(name);
         if std::fs::read_to_string(&path).ok().as_deref() != Some(body.as_str()) {
@@ -357,6 +363,7 @@ async fn run() -> anyhow::Result<()> {
             Box::new(web::WebPlugin),
             Box::new(browser::BrowserPlugin),
             Box::new(computer::ComputerPlugin),
+            Box::new(artifact::ArtifactPlugin),
             Box::new(search_providers::SearchProvidersPlugin),
             Box::new(agent::AgentPlugin),
             Box::new(signal::SignalPlugin {
@@ -373,6 +380,7 @@ async fn run() -> anyhow::Result<()> {
             Box::new(web::WebPlugin),
             Box::new(browser::BrowserPlugin),
             Box::new(computer::ComputerPlugin),
+            Box::new(artifact::ArtifactPlugin),
             Box::new(search_providers::SearchProvidersPlugin),
             Box::new(agent::AgentPlugin),
             Box::new(signal::SignalPlugin {

@@ -12,8 +12,8 @@ use tools::{Decision, Risk};
 use crate::clip;
 use crate::model::{
     AcpRow, CardKind, Command, Entry, Level, Menu, MenuKey, Model, Row, Switch, TurnAction,
-    UiEvent, action_name, agent_row, describe, gate_name, k, result_line, short, slash_matches,
-    window,
+    UiEvent, action_name, agent_row, artifact_row, artifact_size, describe, gate_name, k,
+    result_line, short, slash_matches, window, writing_line,
 };
 
 /// Channels handed to the app through iocraft context (owned so the receiver
@@ -160,6 +160,14 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 if std::mem::take(&mut m.refresh_nodes) {
                     let _ = commands.send(Command::ListNodes);
                 }
+                if std::mem::take(&mut m.refresh_artifacts)
+                    && let Some(session) = m.session
+                {
+                    let _ = commands.send(Command::ListArtifacts {
+                        session,
+                        pick: false,
+                    });
+                }
             }
         }
     });
@@ -256,6 +264,16 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 if let MenuKey::Input(text) = m.menu_key(code, &text, &commands) {
                     input.set(text);
                 }
+                return;
+            }
+            // `o` on an empty editor opens the newest artifact card's file with the OS (35 §6.1).
+            if code == KeyCode::Char('o')
+                && modifiers.is_empty()
+                && m.prompt.is_none()
+                && input.read().is_empty()
+                && let Some(path) = m.artifact_path()
+            {
+                let _ = commands.send(Command::OpenPath(path.to_owned()));
                 return;
             }
             // Transcript scrolling. ↑/↓ are the editor's while it spans
@@ -734,6 +752,11 @@ fn menu(m: &Model, input: &str, width: u16) -> Option<AnyElement<'static>> {
         ),
         Menu::Link { cursor } => (m.link_title(), m.link_rows(), *cursor),
         Menu::Nodes { cursor } => (m.nodes_title(), m.nodes_rows(), *cursor),
+        Menu::Artifacts { items, cursor } => (
+            "artifacts  ⏎ open  s show inline  e export to ~/Downloads  esc close".to_owned(),
+            items.iter().map(artifact_row).collect(),
+            *cursor,
+        ),
     };
     let cursor = cursor.min(rows.len().saturating_sub(1));
     let shown = window(rows.len(), cursor, MENU_ROWS);
@@ -883,6 +906,7 @@ fn entry(e: &Entry, spinner: &str, skip: usize, width: u16) -> AnyElement<'stati
                 CardKind::Prompt => PROMPT,
                 CardKind::Job | CardKind::Schedule => JOB,
                 CardKind::Link | CardKind::Node => LINK,
+                CardKind::Artifact => TOOL,
             };
             let v = text.view();
             let lines = v.lines().count();
@@ -921,12 +945,61 @@ fn entry(e: &Entry, spinner: &str, skip: usize, width: u16) -> AnyElement<'stati
             };
             plain(&shown, TextWrap::Wrap, |c| c.color(Color::DarkGrey).italic())
         }
-        Entry::Pending { name, .. } => element! {
-            View(margin_top: 1) {
-                Text(content: format!("{} preparing {name}…", spinner), color: Color::DarkGrey, italic: true)
+        Entry::Pending { name, progress, .. } => {
+            let row = match progress {
+                Some(p) => writing_line(p),
+                None => format!("preparing {name}…"),
+            };
+            element! {
+                View(margin_top: 1) {
+                    Text(content: format!("{spinner} {row}"), color: Color::DarkGrey, italic: true)
+                }
             }
+            .into_any()
         }
-        .into_any(),
+        // Artifact card (35 §6.1): `▣ name · vN · size`, the title when it
+        // differs, the path as a `file://` link; a failed show keeps its ✗ line.
+        Entry::Tool {
+            artifact: Some(a),
+            result,
+            expanded,
+            ..
+        } => {
+            let mut header = format!("{} {}", CardKind::Artifact.glyph(), a.name);
+            if a.version > 1 {
+                header.push_str(&format!(" · v{}", a.version));
+            }
+            header.push_str(&format!(" · {}", artifact_size(a)));
+            let error = match result {
+                Some((output, true)) => Some(format!("✗ {}", result_line(output))),
+                _ => None,
+            };
+            let hint = if expanded.is_some() {
+                "ctrl+o collapses"
+            } else {
+                "o open · ctrl+o"
+            };
+            let path = a.path.display().to_string();
+            let link = vec![
+                MixedTextContent::new(&path)
+                    .color(Color::DarkGrey)
+                    .decoration(TextDecoration::Underline)
+                    .hyperlink(format!("file://{path}")),
+                MixedTextContent::new(format!("   {hint}")).color(Color::DarkGrey),
+            ];
+            element! {
+                View(flex_direction: FlexDirection::Column, border_style: BorderStyle::Round, border_color: TOOL, padding_left: 1, padding_right: 1, margin_top: 1, margin_bottom: 1) {
+                    Text(content: header, color: TOOL, weight: Weight::Bold)
+                    #((a.title != a.name).then(|| element!(Text(content: a.title.clone(), wrap: TextWrap::Wrap))))
+                    #(error.map(|e| element!(Text(content: e, color: Color::Red, wrap: TextWrap::Wrap))))
+                    MixedText(contents: link, wrap: TextWrap::Wrap)
+                    #(expanded.as_ref().map(|t| element!(View(flex_direction: FlexDirection::Column, margin_top: 1) {
+                        #(t.view().lines().map(line))
+                    })))
+                }
+            }
+            .into_any()
+        }
         // Tool calls: a card in the tool colour; name, arguments, then result.
         Entry::Tool {
             name,

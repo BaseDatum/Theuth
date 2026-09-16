@@ -139,7 +139,7 @@ Shared crate `runtime` contains exactly `Plugin`, `Runtime` (+ the three
 helpers above), `SessionId`, `TurnId`. Nothing else. The tool and approval
 contracts live in `tools`; the agent's commands and its `AgentEvent` live in
 `agent`. Plugins depend on each other's crates for those types along the
-acyclic order `runtime ← tools ← knowledge ← agent ← link ← {signal, slack, nodes, schedule} ← rpc ← tui ← wth`
+`runtime ← tools ← knowledge ← agent ← link ← {signal, slack, nodes, schedule, artifact} ← rpc ← tui ← wth`
 (`knowledge` joins the chain in 12 §9). This keeps the shared crate under
 its 400-line ceiling and puts each contract next to the code that enforces
 it. (Earlier draft put the tool contract in `runtime`; dropped once the
@@ -174,6 +174,12 @@ the agent, structured args for any frontend.
 hand-written schemas. A `ToolRegistry` actor (in `tools`) holds
 `HashMap<String, Box<dyn ErasedTool>>` and answers `ask(ListTools)` /
 `ask(Invoke)`. MCP servers add tools to the same registry (§6).
+
+`ToolOutput.files` is the model's view, not the user's (17 §10; 35 §13,
+added 2026-09-16): a tool may return the page-1 PNG of a document it
+rendered so a vision model sees what it made; the artifact itself is
+announced to frontends by the owning plugin's own event (`ArtifactShown`),
+never by `files`.
 
 A plugin that wants the model to know *when* to use what it registered
 sends `ask(RegisterPrompt { plugin, text })` to the same registry (added
@@ -251,7 +257,11 @@ flowchart LR
   `TurnFinished { stop_reason, usage }`). No buffering in the agent except
   tool-call arguments, which genai only delivers parsed in `StreamEnd`
   (`with_capture_tool_calls(true)` is mandatory; chunks carry cumulative
-  partial JSON strings, usable for a "calling X…" indicator only).
+  partial JSON strings). Those partial strings are republished as
+  `ToolCallProgress { call_id, args }` (35 §3.6, added 2026-09-16):
+  coalesced to at most one event per 250 ms per call, not persisted — a
+  `writing report.pdf… 3.2 KB` row for a long `show{content}`, never a
+  dispatch.
 - Tool calls in one assistant message run concurrently (`join_all` on
   `ask(Invoke)`); results appended as one tool-response message. `shell`
   returns within `tools.job_grace_secs`; the process continues as a job and
@@ -275,6 +285,12 @@ flowchart LR
   the same shape as approvals (`AskRequested`/`AskResolved` on the bus,
   `answer_ask` over RPC; dismiss cancels the turn); TUI and desktop show
   the questions, Slack as Block Kit cards, Signal one question per text.
+  `show` (35, added 2026-09-16): the model's file-to-user display — one
+  tool, kind by extension (`.md`, `.csv`, `.png`, `.svg`, `.pdf`, …),
+  `path` for a file that exists or `content` + `name` to write one under
+  `<data_dir>/artifacts/`; `.pdf` compiles markdown or Typst in-process
+  and the page-1 image comes back to the model; the `show` tool card *is*
+  the artifact card in every frontend, joined by `call_id`.
   `todo` and `python` are loop-local (dispatched by the turn, not the
   registry; `07 §5`).
 - Every `ChatMessage` is appended to the session store before the next
@@ -384,8 +400,11 @@ serves, through `Methods::raw_json_request` (`rpc::methods(rt)` builds it;
 serialization. So `rpc::bridge::start` is idempotent: the one `Bridge` per
 process is registered as `"rpc.events"` and looked up before it is spawned.
 `put_attachment(bytes, ext)` / `get_attachment(path)` are `Api` methods
-(base64; `<data_dir>/{attachments,browser,computer}` only) because a phone
-is not on the harness host (31 §6.4).
+(base64; `<data_dir>/{attachments,browser,computer,artifacts}` only) because
+a phone is not on the harness host (31 §6.4). `list_artifacts(session,
+descendants?)` and `export_artifact(id, dest)` (35 §3.5, added 2026-09-16)
+are the two asks on the artifact actor; the desktop's `resolveFile` fetches
+artifact blobs and previews through `get_attachment` unchanged.
 
 **ACP.** `wth --acp` speaks the Agent Client Protocol on stdio
 (`rpc::AcpPlugin`, `crates/rpc/src/acp.rs`): the same actor lookups as the
@@ -458,6 +477,15 @@ underlined) with no `#` marker. A finished tool card collapses its output
 to the first line; Ctrl+O expands the most recent card to the full output
 in a code fence, pretty-printed when it parses as JSON (also with a
 trailing `exit code` line).
+
+A `show` tool card is an artifact card (35 §6, added 2026-09-16): header
+`▣ name · vN · <pages | lines | W×H | bytes>`, the title when it differs,
+the path dim as an OSC 8 `file://` link; before `ArtifactShown` lands the
+spinner row reads `writing report.pdf… 3.2 KB` from `ToolCallProgress`.
+`o` opens the newest card's file with the OS (`open`/`xdg-open`); Ctrl+O
+renders text kinds inline — markdown through the fence-aware path below,
+code in a fence, CSV as a table; `/artifacts` is a picker over the
+session's subtree (open, show inline, export).
 
 Nothing ever looks frozen: while a turn is in flight the status line and
 the transcript show a braille spinner with what is happening — `thinking…`
@@ -539,6 +567,7 @@ crates/
   link/               plugin: relay uplink, Noise pairing and sessions, device registry (31)
   nodes/              plugin: paired remote harnesses — control conns, dial transport for ACP children (32)
   schedule/           plugin: scheduled runs from `schedules/*.md` — tick, one session per schedule, delivery (34)
+  artifact/           plugin: show tool, content-addressed artifact store + index, Typst PDF compile and page render, SVG rasterise, prompt block + pdf skill (35)
   relay/              bin: wth-relay, stateless encrypted-frame relay (31)
   tui/                plugin: iocraft frontend (§8)
   desktop/            app: Tauri menubar frontend, RPC client of `Api` - not a plugin (designed in 25)
@@ -553,12 +582,14 @@ the `wth` bin; the rest were added by the docs named beside them, each as the ki
 the loop must own (store, frame, compact, repl); frontends do not grow it.
 New subsystems earn a plugin. `agent/src/lib.rs` re-exports; command structs
 live next to the handler that answers them (12 §8). Dependency order:
-`runtime ← tools ← knowledge ← agent ← link ← {signal, slack, nodes, schedule} ← rpc ← tui ← wth`
+`runtime ← tools ← knowledge ← agent ← link ← {signal, slack, nodes, schedule, artifact} ← rpc ← tui ← wth`
 (`rpc` names `link`'s and `nodes`' types like every plugin's; `signal`
 imports `link::qr`; `nodes` imports `link`'s identity, initiator and record
 codec; `tui` renders `link`'s status and QR; `rpc` sends `link` its
 dispatch as a `SetDispatch` message at start, 32 §3.1 — never a handle
-threaded through `wth`).
+threaded through `wth`; `artifact` depends on `agent` for
+`AgentEvent::SessionDeleted` — subscribed, never asked — and on
+`tools`/`runtime`; nothing below `rpc` depends on it, 35 §13).
 
 Workspace dependencies (versions verified 2026-09-09 via `cargo info`):
 
@@ -599,6 +630,10 @@ Workspace dependencies (versions verified 2026-09-09 via `cargo info`):
 | rand | 0.9 | pairing secrets, relay cookie secret (31) |
 | croner | 4 (chrono) | cron parsing, next occurrence in a chrono TimeZone, describe() (34) |
 | humantime | 2 | `every:` durations (34) |
+| typst-as-lib | 0.16 (Typst 0.15; API unstable, pinned) | PDF compile: engine builder, static resolvers for the vendored `cmarker` package, located diagnostics (35) |
+| typst / typst-pdf / typst-render / typst-kit | 0.15 (kit: embedded-fonts, scan-fonts) | PDF compile + page render, embedded and system fonts (35) |
+| resvg | 0.47 (already transitive via typst) | SVG raster (35) |
+| csv | 1.4 | CSV parse (35) |
 | wiremock | 0.6 dev | provider contract tests |
 
 Build prerequisites (23 §9): `cmake`, `clang`/`libclang` and `llvm-objcopy`/`llvm-nm` (brew `llvm`) for BoringSSL
@@ -700,6 +735,7 @@ Each phase ends with a runnable check, not a test suite.
 | 19 | link (31): phone/browser drives the harness through a stateless relay, Noise E2E, same JSON-RPC | 31 §12 | done 2026-09-15 (relay + headless + `wth --link` QR; browser paired IKpsk2, reconnected IK, no secrets in storage; device script paired/reconnected/revoked; relay restart re-registers <4 s; TUI `/link` card and badge in a pty; iOS build, camera scan and 31 §11 bench not run; 31 §13) |
 | 20 | nodes (32): a harness on another machine paired to this one; `spawn_subagent` runs there over a link mode-1 conn | 32 §11 | in progress 2026-09-15 |
 | 21 | schedule (34) | an `every: 20s` file fires a titled session twice; a `cron` reply lands in the owner DM; a laptop-sleep fire arrives once on wake | done 2026-09-16 (20 s cadence, restart reuse + `lost`, one-shot consumed, `busy` skip, model-made `demo-cron` via the tool; owner-DM delivery, timeout and laptop sleep not exercised; 34 §13) |
+| 22 | artifacts (35) | 35 §11 checks: a `.pdf` show compiles and its page-1 image comes back to the model; the card, panel and Slack thread each show it; a phone fetches it through the relay | done 2026-09-16 (headless: md/csv/svg/pdf shown, page-1 PNG to the model, compile error located `5:16`, v2 on re-show, list/get/export over RPC; TUI card, Ctrl+O and `/artifacts` on a pty; desktop webview, Slack/Signal live and the relay not exercised; 35 §14) |
 
 Known gaps carried forward: cancel/error paths in the loop are code-reviewed,
 not smoke-tested; the `Jobs` actor kills every process group on shutdown

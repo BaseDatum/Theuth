@@ -844,6 +844,20 @@ pub enum AgentEvent {
         /// Tool name.
         name: String,
     },
+    /// Tool arguments still streaming: the cumulative partial JSON so far
+    /// (genai delivers cumulative strings, 00 §11.4). Coalesced: at most one
+    /// per 250 ms per call and only after ≥ 512 new bytes. Not persisted; UIs
+    /// may jsonrepair it to name what is being written (design doc 35 §3.6).
+    ToolCallProgress {
+        /// Session.
+        session: SessionId,
+        /// Turn.
+        turn: TurnId,
+        /// Provider call id (matches `ToolCallPending`).
+        call_id: String,
+        /// Cumulative argument JSON so far (may be truncated mid-token).
+        args: Arc<str>,
+    },
     /// The model asked for a tool; the call is now routed to the registry.
     ToolCallStarted {
         /// Session.
@@ -1024,6 +1038,7 @@ impl AgentEvent {
             | Self::TextDelta { session, .. }
             | Self::ReasoningDelta { session, .. }
             | Self::ToolCallPending { session, .. }
+            | Self::ToolCallProgress { session, .. }
             | Self::ToolCallStarted { session, .. }
             | Self::ToolCallFinished { session, .. }
             | Self::TurnFinished { session, .. }

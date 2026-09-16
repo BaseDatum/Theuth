@@ -503,6 +503,18 @@ pub trait Api {
     #[method(name = "schedule_history")]
     async fn schedule_history(&self, name: String, limit: u32)
     -> RpcResult<Vec<schedule::RunInfo>>;
+    /// Every artifact shown in `session`, newest first; `descendants: true`
+    /// (default `false`) widens to the session's subtree (35 §3.5).
+    #[method(name = "list_artifacts")]
+    async fn list_artifacts(
+        &self,
+        session: SessionId,
+        descendants: Option<bool>,
+    ) -> RpcResult<Vec<artifact::Artifact>>;
+    /// Copy artifact `id`'s blob to `dest` (parent created; refuses to
+    /// overwrite); returns the written path (35 §3.5).
+    #[method(name = "export_artifact")]
+    async fn export_artifact(&self, id: String, dest: PathBuf) -> RpcResult<PathBuf>;
     /// Stream every wire-visible event as `{"type": ..., ...}`, optionally
     /// only those carrying `session`. `descendants: true` (default `false`)
     /// also delivers events of every session in `session`'s subtree, plus
@@ -585,6 +597,14 @@ fn nodes() -> RpcResult<ActorRef<nodes::NodesActor>> {
 fn schedule() -> RpcResult<ActorRef<schedule::Schedule>> {
     lookup::<schedule::Schedule>(schedule::SCHEDULE_ACTOR).map_err(|e| match e.code() {
         NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "schedule is disabled", None::<()>),
+        _ => e,
+    })
+}
+
+/// The artifact actor; absent when `artifact.enabled: false` or the plugin is not loaded.
+fn artifact() -> RpcResult<ActorRef<artifact::ArtifactActor>> {
+    lookup::<artifact::ArtifactActor>(artifact::ARTIFACT_ACTOR).map_err(|e| match e.code() {
+        NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "artifact is disabled", None::<()>),
         _ => e,
     })
 }
@@ -1239,6 +1259,25 @@ impl ApiServer for Server {
         send(&schedule()?, schedule::History { name, limit }).await
     }
 
+    async fn list_artifacts(
+        &self,
+        session: SessionId,
+        descendants: Option<bool>,
+    ) -> RpcResult<Vec<artifact::Artifact>> {
+        send(
+            &artifact()?,
+            artifact::List {
+                session,
+                descendants: descendants.unwrap_or(false),
+            },
+        )
+        .await
+    }
+
+    async fn export_artifact(&self, id: String, dest: PathBuf) -> RpcResult<PathBuf> {
+        send(&artifact()?, artifact::Export { id, dest }).await
+    }
+
     async fn put_attachment(&self, bytes: String, ext: String) -> RpcResult<PathBuf> {
         let (ext, cap) = match ext.as_str() {
             "png" | "jpg" | "jpeg" | "gif" | "webp" => (ext.as_str(), MAX_IMAGE),
@@ -1260,9 +1299,12 @@ impl ApiServer for Server {
     async fn get_attachment(&self, path: PathBuf) -> RpcResult<String> {
         let real =
             std::fs::canonicalize(&path).map_err(|e| failed(format!("{}: {e}", path.display())))?;
-        let allowed = ["attachments", "browser", "computer"].iter().any(|d| {
-            std::fs::canonicalize(self.rt.data_dir.join(d)).is_ok_and(|dir| real.starts_with(dir))
-        });
+        let allowed = ["attachments", "browser", "computer", "artifacts"]
+            .iter()
+            .any(|d| {
+                std::fs::canonicalize(self.rt.data_dir.join(d))
+                    .is_ok_and(|dir| real.starts_with(dir))
+            });
         if !allowed {
             return Err(failed(format!("{}: not an attachment", path.display())));
         }

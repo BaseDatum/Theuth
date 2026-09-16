@@ -16,6 +16,7 @@ computer = { workspace = true }
 link = { workspace = true }
 nodes = { workspace = true }
 schedule = { workspace = true }
+artifact = { workspace = true }
 jsonrpsee = { workspace = true }
 chrono = { workspace = true }
 models = { workspace = true }

@@ -9,6 +9,7 @@ description = "Slack frontend for the daemon over Socket Mode (design doc 21)"
 runtime = { workspace = true }
 agent = { workspace = true }
 tools = { workspace = true }
+artifact = { workspace = true }
 markdown = { workspace = true }
 surface = { workspace = true }
 slack-morphism = { workspace = true }
@@ -38,7 +39,7 @@ figment = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 
 [features]
-ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "agent/ts"]
+ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "agent/ts", "artifact/ts"]
 
 [lints]
 workspace = true

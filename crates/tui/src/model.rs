@@ -141,6 +141,16 @@ pub enum UiEvent {
     NodeInvite(String, link::Pairing),
     /// Nodes plugin traffic (bus event).
     NodeEvent(nodes::NodeEvent),
+    /// A `show` call produced a file (bus event, design doc 35).
+    ArtifactShown(artifact::ArtifactShown),
+    /// Reply to [`Command::ListArtifacts`]: the session subtree's artifacts, newest first;
+    /// `pick` opens the `/artifacts` menu, else the rows only join their `show` cards.
+    Artifacts {
+        /// The rows.
+        items: Vec<artifact::Artifact>,
+        /// Open the picker.
+        pick: bool,
+    },
 }
 
 /// Everything the UI can ask of the rest of the process. One task turns
@@ -408,6 +418,22 @@ pub enum Command {
     RenameNode(String, String),
     /// `invite_node(<resolved id>)`. Holds a name or id prefix.
     InviteNode(String),
+    /// `list_artifacts(session, descendants: true)`; `pick` opens the `/artifacts` menu.
+    ListArtifacts {
+        /// Session.
+        session: SessionId,
+        /// Open the picker on reply.
+        pick: bool,
+    },
+    /// `export_artifact(id, ~/Downloads/<name>)`.
+    ExportArtifact {
+        /// The artifact.
+        id: String,
+        /// Its file name.
+        name: String,
+    },
+    /// Open a local file with the OS default handler (`open` / `xdg-open`, detached).
+    OpenPath(PathBuf),
 }
 
 /// One row of the `/login` picker.
@@ -564,6 +590,9 @@ pub enum Entry {
         call_id: String,
         /// Tool name.
         name: String,
+        /// `ToolCallProgress` so far: the file a `show` call is writing and
+        /// the argument bytes streamed (design doc 35 §6.1).
+        progress: Option<(Option<String>, usize)>,
     },
     /// A tool call and, once finished, its result.
     Tool {
@@ -581,6 +610,9 @@ pub enum Entry {
         /// (design doc 14); `None` for other tools and jobs that finished
         /// within the grace window (their result carries the output).
         job: Option<JobTail>,
+        /// The file a `show` call produced (`ArtifactShown`, design doc 35);
+        /// the card renders as an artifact card once set.
+        artifact: Option<Box<artifact::Artifact>>,
     },
     /// A compaction boundary (design doc 07 §8.4): a divider, expandable with
     /// Ctrl+O to the summary when loaded from history (the live event has none).
@@ -617,6 +649,8 @@ pub enum CardKind {
     Link,
     /// A `/nodes` `i` invite QR: a phone that scans it pairs with that node (32 §6.7).
     Node,
+    /// An artifact shown inline from `/artifacts` (`s`), or the `show` card header (35 §6.1).
+    Artifact,
 }
 
 impl CardKind {
@@ -629,6 +663,7 @@ impl CardKind {
             CardKind::Job => "⚙",
             CardKind::Schedule => "◷",
             CardKind::Link | CardKind::Node => "⌁",
+            CardKind::Artifact => "▣",
         }
     }
 }
@@ -677,6 +712,13 @@ impl Entry {
             Entry::Reasoning { done: true, .. } | Entry::Info(_) | Entry::Error(_) => 1,
             Entry::Reasoning { text, .. } => text_rows(text, width),
             Entry::Pending { .. } => 2,
+            // Artifact card: header, title (when it differs), path row; the
+            // arguments are not drawn (35 §6.1).
+            Entry::Tool {
+                artifact: Some(a),
+                expanded,
+                ..
+            } => 6 + usize::from(a.title != a.name) + expanded.as_ref().map_or(0, |t| md(t, inner)),
             Entry::Tool {
                 args,
                 expanded,
@@ -928,6 +970,11 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "[add <key>|rm <n>|name <n> <name>|invite <n>]",
         "machines this harness can run sessions on",
     ),
+    (
+        "/artifacts",
+        "",
+        "files the agent showed (picker: ⏎ opens, s shows inline, e exports to ~/Downloads)",
+    ),
     ("/exit", "", "same as /quit"),
 ];
 
@@ -1114,6 +1161,13 @@ pub enum Menu {
     /// `/nodes`: paired nodes over [`Model::nodes`] (32 §6.7).
     Nodes {
         /// Highlighted node.
+        cursor: usize,
+    },
+    /// `/artifacts` picker (35 §6.2).
+    Artifacts {
+        /// The session subtree's artifacts, newest first.
+        items: Vec<artifact::Artifact>,
+        /// Highlighted row.
         cursor: usize,
     },
 }
@@ -1638,6 +1692,9 @@ pub struct Model {
     awaiting_nodes: bool,
     /// A node event arrived: the event loop re-asks `list_nodes`.
     pub refresh_nodes: bool,
+    /// A loaded transcript holds `show` cards: the event loop asks
+    /// `list_artifacts` to join their artifacts back (35 §0.3).
+    pub refresh_artifacts: bool,
     /// The live `/nodes` invite card, redrawn each second by [`Model::tick`].
     invite: Option<PairingCard>,
 }
@@ -1673,6 +1730,10 @@ impl Model {
             .into_iter()
             .flat_map(|h| from_history(h, &opts))
             .collect();
+        self.refresh_artifacts = self
+            .entries
+            .iter()
+            .any(|e| matches!(e, Entry::Tool { name, .. } if name == SHOW));
         self.anchor = None;
         // An index into the old transcript is meaningless now.
         self.editing = None;
@@ -1738,6 +1799,7 @@ impl Model {
                         | Menu::Turns { .. }
                         | Menu::Link { .. }
                         | Menu::Nodes { .. }
+                        | Menu::Artifacts { .. }
                 )
             )
     }
@@ -1948,7 +2010,9 @@ impl Model {
     }
 
     /// Expand or collapse the most recent card or finished tool call (Ctrl+O).
+    /// An artifact card expands to its file rendered by kind (35 §6.1).
     pub fn toggle_card(&mut self) {
+        let opts = self.assistant_options();
         let Some(e) = self.entries.iter_mut().rev().find(|e| {
             matches!(
                 e,
@@ -1970,6 +2034,17 @@ impl Model {
                 *expanded = !*expanded;
             }
             Entry::Tool {
+                result: Some((_, false)),
+                artifact: Some(a),
+                expanded,
+                ..
+            } => {
+                *expanded = match expanded.take() {
+                    Some(_) => None,
+                    None => Some(Box::new(artifact_body(a, &opts))),
+                }
+            }
+            Entry::Tool {
                 result: Some((output, _)),
                 expanded,
                 ..
@@ -1980,6 +2055,35 @@ impl Model {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// The path `o` opens: the newest artifact card of the current exchange
+    /// (nothing later than the user's last message), if any.
+    pub fn artifact_path(&self) -> Option<&std::path::Path> {
+        self.entries
+            .iter()
+            .rev()
+            .take_while(|e| !matches!(e, Entry::User { .. }))
+            .find_map(|e| match e {
+                Entry::Tool {
+                    artifact: Some(a), ..
+                } => Some(a.path.as_path()),
+                _ => None,
+            })
+    }
+
+    /// Join an artifact to its `show` card by `call_id` (35 §0.3); a card
+    /// not on this transcript (another session's, or scrolled out of
+    /// history) is left alone.
+    fn attach_artifact(&mut self, a: artifact::Artifact) {
+        if let Some(Entry::Tool { artifact, .. }) = self
+            .entries
+            .iter_mut()
+            .rev()
+            .find(|e| matches!(e, Entry::Tool { call_id, .. } if *call_id == a.call_id))
+        {
+            *artifact = Some(Box::new(a));
         }
     }
 
@@ -2074,6 +2178,9 @@ impl Model {
             Entry::Tool {
                 name, result: None, ..
             } => Some(format!("running {name}…")),
+            Entry::Pending {
+                progress: Some(p), ..
+            } => Some(writing_line(p)),
             Entry::Pending { name, .. } => Some(format!("preparing {name}…")),
             _ => None,
         });
@@ -2440,6 +2547,22 @@ impl Model {
                 .entries
                 .push(Entry::Info(schedule_history_table(&name, &rows))),
             UiEvent::Computer(status) => self.entries.push(Entry::Info(computer_line(&status))),
+            UiEvent::ArtifactShown(ev) => {
+                if self.session == Some(ev.session) {
+                    self.attach_artifact(ev.artifact);
+                }
+            }
+            UiEvent::Artifacts { items, pick } => {
+                if !pick {
+                    for a in items {
+                        self.attach_artifact(a);
+                    }
+                } else if items.is_empty() {
+                    self.entries.push(Entry::Info("no artifacts".into()));
+                } else {
+                    self.menu = Some(Menu::Artifacts { items, cursor: 0 });
+                }
+            }
             UiEvent::Job(ev) => match ev {
                 JobEvent::Started {
                     session,
@@ -2796,7 +2919,20 @@ impl Model {
                 }),
             },
             AgentEvent::ToolCallPending { call_id, name, .. } => {
-                self.entries.push(Entry::Pending { call_id, name });
+                self.entries.push(Entry::Pending {
+                    call_id,
+                    name,
+                    progress: None,
+                });
+            }
+            AgentEvent::ToolCallProgress { call_id, args, .. } => {
+                if let Some(Entry::Pending { progress, .. }) = self
+                    .entries
+                    .iter_mut()
+                    .find(|e| matches!(e, Entry::Pending { call_id: c, .. } if *c == call_id))
+                {
+                    *progress = Some((surface::partial_name(&args), args.len()));
+                }
             }
             AgentEvent::ToolCallStarted {
                 call_id,
@@ -2814,6 +2950,7 @@ impl Model {
                     result: None,
                     expanded: None,
                     job: None,
+                    artifact: None,
                 };
                 match self
                     .entries
@@ -3110,6 +3247,16 @@ impl Model {
                 _ => self
                     .entries
                     .push(Entry::Error("usage: /jobs [kill <id>]".into())),
+            },
+            "/artifacts" => match self.session {
+                Some(session) => send(
+                    tx,
+                    Command::ListArtifacts {
+                        session,
+                        pick: true,
+                    },
+                ),
+                None => self.entries.push(Entry::Info("no session".into())),
             },
             "/schedules" => match arg.split_once(' ') {
                 None if arg.is_empty() => send(tx, Command::ListSchedules),
@@ -3970,6 +4117,7 @@ impl Model {
             Some(Menu::Turns { .. }) => self.turns_key(code, tx),
             Some(Menu::Link { .. }) => self.link_key(code, tx),
             Some(Menu::Nodes { .. }) => self.nodes_key(code, tx),
+            Some(Menu::Artifacts { .. }) => self.artifacts_key(code, tx),
         }
     }
 
@@ -4167,6 +4315,52 @@ impl Model {
                 self.menu = None;
                 if let Some(id) = picked {
                     self.resume(id, tx);
+                }
+            }
+            _ => {}
+        }
+        MenuKey::Consumed
+    }
+
+    /// `/artifacts`: Enter opens the highlighted file with the OS, `s` shows
+    /// it inline as a card, `e` exports it to `~/Downloads/<name>` (35 §6.2).
+    fn artifacts_key(&mut self, code: KeyCode, tx: &UnboundedSender<Command>) -> MenuKey {
+        let Some(Menu::Artifacts { items, cursor }) = &mut self.menu else {
+            return MenuKey::Consumed;
+        };
+        match code {
+            KeyCode::Up => *cursor = cursor.saturating_sub(1),
+            KeyCode::Down => *cursor = (*cursor + 1).min(items.len().saturating_sub(1)),
+            KeyCode::Esc => self.menu = None,
+            KeyCode::Enter => {
+                if let Some(a) = items.get(*cursor) {
+                    send(tx, Command::OpenPath(a.path.clone()));
+                }
+                self.menu = None;
+            }
+            KeyCode::Char('e') => {
+                if let Some(a) = items.get(*cursor) {
+                    send(
+                        tx,
+                        Command::ExportArtifact {
+                            id: a.id.clone(),
+                            name: a.name.clone(),
+                        },
+                    );
+                }
+                self.menu = None;
+            }
+            KeyCode::Char('s') => {
+                let picked = items.get(*cursor).cloned();
+                self.menu = None;
+                if let Some(a) = picked {
+                    let text = artifact_body(&a, &self.assistant_options());
+                    self.entries.push(Entry::Card {
+                        kind: CardKind::Artifact,
+                        title: a.name,
+                        text: Box::new(text),
+                        expanded: true,
+                    });
                 }
             }
             _ => {}
@@ -4827,6 +5021,7 @@ fn from_history(h: HistoryEntry, opts: &markdown::Options) -> Vec<Entry> {
             },
             call_id,
             job: None,
+            artifact: None,
             result,
             expanded: None,
         }],
@@ -4845,6 +5040,153 @@ fn from_history(h: HistoryEntry, opts: &markdown::Options) -> Vec<Entry> {
 
 fn on_off(b: bool) -> &'static str {
     if b { "on" } else { "off" }
+}
+
+/// The tool whose card is an artifact card (35 §0.3).
+const SHOW: &str = "show";
+/// Rows an inline artifact body shows at most (35 §6.1).
+const INLINE_LINES: usize = 200;
+/// Rows of a CSV artifact shown inline.
+const CSV_ROWS: usize = 20;
+
+/// Bytes as `512 B` / `3.2 KB` / `1.4 MB`.
+pub fn bytes_label(bytes: u64) -> String {
+    match bytes {
+        b if b < 1024 => format!("{b} B"),
+        b if b < 1024 * 1024 => format!("{:.1} KB", b as f64 / 1024.0),
+        b => format!("{:.1} MB", b as f64 / (1024.0 * 1024.0)),
+    }
+}
+
+/// The spinner row of a `Pending` call with progress: `writing report.pdf… 3.2 KB`.
+pub fn writing_line((name, bytes): &(Option<String>, usize)) -> String {
+    match name {
+        Some(n) => format!("writing {n}… {}", bytes_label(*bytes as u64)),
+        None => format!("writing… {}", bytes_label(*bytes as u64)),
+    }
+}
+
+/// The kind-specific size of an artifact card header (35 §6.1): pages for a
+/// compiled PDF, bytes otherwise. Drawn every frame, so nothing here touches
+/// the file; the line count shows in the expanded body.
+pub fn artifact_size(a: &artifact::Artifact) -> String {
+    match (a.kind, a.pages) {
+        (artifact::Kind::Pdf, Some(p)) => format!("{p} pages · {}", bytes_label(a.bytes)),
+        _ => bytes_label(a.bytes),
+    }
+}
+
+/// One `/artifacts` row: `▣ name · kind · size · vN · 2m ago`.
+pub fn artifact_row(a: &artifact::Artifact) -> String {
+    let age = chrono::DateTime::from_timestamp(a.created_at, 0)
+        .map(|t| chrono::Utc::now().signed_duration_since(t))
+        .map_or_else(String::new, |d| {
+            let secs = d.num_seconds().max(0);
+            match secs {
+                s if s < 60 => format!("{s}s ago"),
+                s if s < 3600 => format!("{}m ago", s / 60),
+                s if s < 86400 => format!("{}h ago", s / 3600),
+                s => format!("{}d ago", s / 86400),
+            }
+        });
+    format!(
+        "▣ {} · {} · {} · v{} · {age}",
+        a.name,
+        a.kind.as_str(),
+        bytes_label(a.bytes),
+        a.version
+    )
+}
+
+/// The first [`INLINE_LINES`] lines of `s` and how many were cut.
+fn cap_lines(s: &str) -> (String, usize) {
+    let total = s.lines().count();
+    if total <= INLINE_LINES {
+        return (s.trim_end().to_owned(), 0);
+    }
+    let kept: Vec<&str> = s.lines().take(INLINE_LINES).collect();
+    (kept.join("\n"), total - INLINE_LINES)
+}
+
+/// `body` in a code fence tagged `lang`; the fence grows past any backtick run inside.
+fn fenced(lang: &str, body: &str) -> String {
+    let longest = body
+        .lines()
+        .map(|l| l.chars().take_while(|c| *c == '`').count())
+        .max()
+        .unwrap_or(0);
+    let fence = "`".repeat(longest.max(2) + 1);
+    format!("{fence}{lang}\n{body}\n{fence}")
+}
+
+/// A CSV cell as a markdown table cell: pipes escaped, newlines flattened.
+fn md_cell(s: &str) -> String {
+    s.replace('|', "\\|").replace(['\n', '\r'], " ")
+}
+
+/// An artifact's inline body by kind (35 §3.2): markdown rendered with the
+/// assistant's options so its own fences draw, text in a fence tagged with the
+/// extension, CSV as a table of the first [`CSV_ROWS`] rows, anything else one
+/// line. Text bodies cap at [`INLINE_LINES`].
+fn artifact_body(a: &artifact::Artifact, opts: &markdown::Options) -> markdown::Text {
+    use artifact::Kind;
+    let ext = a.path.extension().map_or("", |e| e.to_str().unwrap_or(""));
+    let path = a.path.display().to_string();
+    let unreadable = |e: &dyn std::fmt::Display| format!("cannot read {path}: {e}");
+    let md = match a.kind {
+        Kind::Markdown | Kind::Text | Kind::Html => match std::fs::read_to_string(&a.path) {
+            Err(e) => unreadable(&e),
+            Ok(s) => {
+                let (body, cut) = cap_lines(&s);
+                let text = match a.kind {
+                    Kind::Markdown => body,
+                    _ => fenced(ext, &body),
+                };
+                match cut {
+                    0 => text,
+                    n => format!("{text}\n\n… (+{n} lines, o opens)"),
+                }
+            }
+        },
+        Kind::Csv => match std::fs::read(&a.path)
+            .map_err(|e| e.to_string())
+            .and_then(|b| artifact::kind::csv_table(&b, ext == "tsv", CSV_ROWS))
+        {
+            Err(e) => unreadable(&e),
+            Ok((header, rows, total)) => {
+                let cols = header.len().max(1);
+                let row = |cells: &[String]| {
+                    let mut line = String::from("|");
+                    for i in 0..cols {
+                        line.push(' ');
+                        line.push_str(&cells.get(i).map_or_else(String::new, |c| md_cell(c)));
+                        line.push_str(" |");
+                    }
+                    line
+                };
+                let mut out = row(&header);
+                out.push('\n');
+                out.push_str(&format!("|{}", " --- |".repeat(cols)));
+                for r in &rows {
+                    out.push('\n');
+                    out.push_str(&row(r));
+                }
+                if total > rows.len() {
+                    out.push_str(&format!("\n\n… (+{} rows)", total - rows.len()));
+                }
+                out
+            }
+        },
+        Kind::Image => format!("[image] {path}"),
+        Kind::Svg => format!("[svg] {path}"),
+        Kind::Pdf => format!("{} · {path}", artifact_size(a)),
+        Kind::File => path.clone(),
+    };
+    let mut t = markdown::Text::with(opts.clone());
+    t.push(&md);
+    t.finish();
+    t.reveal_all();
+    t
 }
 
 /// One `/knowledge` row: `` `id` — title [type]: description `` (10 §6).
@@ -6137,6 +6479,7 @@ mod tests {
             result: None,
             expanded: None,
             job: None,
+            artifact: None,
         }
         .height(80);
         let tool = m
@@ -6985,5 +7328,105 @@ mod tests {
         m.session = Some(s);
         m.submit("/fork", &tx);
         assert!(matches!(m.entries.last(), Some(Entry::Error(t)) if t == "no turns yet"));
+    }
+
+    #[test]
+    fn show_card_joins_its_artifact_and_expands_the_markdown() {
+        let s = SessionId::new();
+        let turn = TurnId::new();
+        let mut m = Model {
+            session: Some(s),
+            ..Model::default()
+        };
+        // Progress before the call starts names the file from the partial JSON.
+        m.apply_agent(AgentEvent::ToolCallPending {
+            session: s,
+            turn,
+            call_id: "c1".into(),
+            name: "show".into(),
+        });
+        m.apply_agent(AgentEvent::ToolCallProgress {
+            session: s,
+            turn,
+            call_id: "c1".into(),
+            args: r##"{"name": "note.md", "content": "# Hel"##.into(),
+        });
+        assert!(matches!(
+            m.entries.last(),
+            Some(Entry::Pending { progress: Some((Some(n), 37)), .. }) if n == "note.md"
+        ));
+        m.apply_agent(AgentEvent::ToolCallStarted {
+            session: s,
+            turn,
+            call_id: "c1".into(),
+            name: "show".into(),
+            args: serde_json::json!({"name": "note.md", "content": "# Hello\n\nbody"}),
+        });
+        let path = std::env::temp_dir().join(format!("wth-tui-artifact-{}.md", std::process::id()));
+        std::fs::write(&path, "# Hello\n\nbody\n").unwrap();
+        let artifact = artifact::Artifact {
+            id: "abc".into(),
+            session: s,
+            call_id: "c1".into(),
+            name: "note.md".into(),
+            title: "Hello".into(),
+            kind: artifact::Kind::Markdown,
+            mime: "text/markdown".into(),
+            bytes: 14,
+            version: 1,
+            path: path.clone(),
+            source: None,
+            preview: None,
+            pages: None,
+            origin: None,
+            created_at: 0,
+        };
+        // Another session's artifact is not ours.
+        m.apply(UiEvent::ArtifactShown(artifact::ArtifactShown {
+            session: SessionId::new(),
+            call_id: "c1".into(),
+            artifact: artifact.clone(),
+        }));
+        assert!(matches!(
+            m.entries.last(),
+            Some(Entry::Tool { artifact: None, .. })
+        ));
+        m.apply(UiEvent::ArtifactShown(artifact::ArtifactShown {
+            session: s,
+            call_id: "c1".into(),
+            artifact,
+        }));
+        m.apply_agent(AgentEvent::ToolCallFinished {
+            session: s,
+            turn,
+            call_id: "c1".into(),
+            output: "shown note.md (v1 · 3 lines · 14 B)".into(),
+            is_error: false,
+            files: Vec::new(),
+        });
+        let card = m.entries.last().unwrap();
+        assert!(matches!(card, Entry::Tool { artifact: Some(a), .. } if a.name == "note.md"));
+        assert_eq!(m.artifact_path(), Some(path.as_path()));
+        let collapsed = card.height(80);
+        m.toggle_card();
+        let card = m.entries.last().unwrap();
+        assert!(card.height(80) > collapsed);
+        let Entry::Tool {
+            expanded: Some(t), ..
+        } = card
+        else {
+            panic!("expanded");
+        };
+        assert!(
+            t.view()
+                .lines()
+                .any(|l| l.iter().any(|s| s.text.contains("Hello")))
+        );
+        m.toggle_card();
+        assert!(matches!(
+            m.entries.last(),
+            Some(Entry::Tool { expanded: None, .. })
+        ));
+        std::fs::remove_file(&path).unwrap();
     }
 }

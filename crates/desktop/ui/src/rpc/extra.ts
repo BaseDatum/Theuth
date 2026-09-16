@@ -86,3 +86,51 @@ export type SessionDeleted = {
   type: 'SessionDeleted'
   session: SessionId
 }
+
+/** `artifact::Kind` (35 §3.2): derived from the extension at show time; frontends switch on it. */
+export type Kind = 'markdown' | 'text' | 'csv' | 'image' | 'svg' | 'pdf' | 'html' | 'file'
+
+/** `artifact::Artifact` (35 §3.3): one immutable snapshot a `show` call produced. */
+export type Artifact = {
+  /** sha256[..16] of the bytes; also the blob file stem. */
+  id: string
+  session: SessionId
+  /** Joins the `show` tool card. */
+  call_id: string
+  /** `report.pdf` */
+  name: string
+  title: string
+  kind: Kind
+  mime: string
+  bytes: number
+  /** Per (session, name), 1-based. */
+  version: number
+  /** `<data_dir>/artifacts/<id>.<ext>` */
+  path: string
+  /** Markdown/Typst source of a compiled PDF. */
+  source: string | null
+  /** Page-1 / rasterised PNG for `pdf` (compiled) and `svg`. */
+  preview: string | null
+  pages: number | null
+  /** The `path` argument when the model showed an existing file. */
+  origin: string | null
+  /** Unix seconds. */
+  created_at: number
+}
+
+/** Event: a `show` call finished snapshotting; its card becomes the artifact card. */
+export type ArtifactShown = {
+  type: 'ArtifactShown'
+  session: SessionId
+  call_id: string
+  artifact: Artifact
+}
+
+/** `AgentEvent::ToolCallProgress`: cumulative partial JSON of a tool call's arguments still streaming (35 §3.6). */
+export type ToolCallProgress = {
+  type: 'ToolCallProgress'
+  session: SessionId
+  turn: string
+  call_id: string
+  args: string
+}

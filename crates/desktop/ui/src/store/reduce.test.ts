@@ -55,6 +55,37 @@ test('pending tool is replaced by its start (same id), finished by call id, aban
   expect(s).toMatchObject({ running: false, activity: 'idle', usage, context: 15 })
 })
 
+test('ToolCallProgress names the file being written; ToolCallStarted clears it; ArtifactShown attaches to the tool entry', () => {
+  let s = run([
+    { type: 'TurnStarted', session: S, turn: T, text: 'x', model: 'm', turn_seq: 1 },
+    { type: 'ToolCallPending', session: S, turn: T, call_id: 'c1', name: 'show' },
+    { type: 'ToolCallProgress', session: S, turn: T, call_id: 'c1', args: '{"name": "report.pdf", "content": "# Quar' },
+  ])
+  expect(s.progress.get('c1')).toMatchObject({ name: 'report.pdf' })
+  s = apply(s, { type: 'ToolCallStarted', session: S, turn: T, call_id: 'c1', name: 'show', args: { name: 'report.pdf' } }, ctx())
+  expect(s.progress.has('c1')).toBe(false)
+  const artifact = {
+    id: 'abc',
+    session: S,
+    call_id: 'c1',
+    name: 'report.pdf',
+    title: 'Quarterly',
+    kind: 'pdf' as const,
+    mime: 'application/pdf',
+    bytes: 84_000,
+    version: 1,
+    path: '/d/artifacts/abc.pdf',
+    source: null,
+    preview: null,
+    pages: 3,
+    origin: null,
+    created_at: 0,
+  }
+  s = apply(s, { type: 'ArtifactShown', session: S, call_id: 'c1', artifact }, ctx())
+  const tool = s.entries.find((e) => e.kind === 'tool')
+  expect(tool && s.artifacts.get(tool.callId)).toEqual(artifact)
+})
+
 test('InputQueued dedupes by id and never touches the streaming tail', () => {
   const base = run([{ type: 'TextDelta', session: S, turn: T, text: 'a' }])
   const q = apply(base, { type: 'InputQueued', session: S, id: 'i1', text: 'steer' }, ctx())

@@ -4,7 +4,8 @@ import { describe, resultLine } from '@/lib/describe'
 import { type DiffLine, diffLines } from '@/lib/diff'
 import { rows } from '@/lib/jobTail'
 import { cn } from '@/lib/utils'
-import type { Entry, JobTail } from '@/store/sessions'
+import { type Entry, type JobTail, useSessions } from '@/store/sessions'
+import { ArtifactCard, Progress } from './ArtifactCard'
 import { Attachments } from './Attachments'
 
 type Tool = Extract<Entry, { kind: 'tool' }>
@@ -58,10 +59,16 @@ function Diff({ old, new: next }: { old: string; new: string }) {
   )
 }
 
-/** `⚙ name` row with the described arguments; ✓/✗ + first result line when done, click shows the whole output. */
-export const MessageTool = memo(function MessageTool({ tool }: { tool: Tool }) {
+/** `⚙ name` row with the described arguments; ✓/✗ + first result line when done, click shows the whole output. A `show` call is an artifact card. */
+export const MessageTool = memo(function MessageTool({ tool, session }: { tool: Tool; session: string }) {
+  if (tool.name === 'show') return <ArtifactCard tool={tool} session={session} />
+  return <PlainTool tool={tool} session={session} />
+})
+
+function PlainTool({ tool, session }: { tool: Tool; session: string }) {
   const [expanded, setExpanded] = useState(false)
   const lines = useMemo(() => describe(tool.name, tool.args), [tool.name, tool.args])
+  const progress = useSessions((s) => (tool.pending ? s.sessions[session]?.progress.get(tool.callId) : undefined))
   const { result } = tool
   const running = tool.pending || !result
   const edit = tool.name === 'edit' ? editArgs(tool.args) : null
@@ -82,6 +89,7 @@ export const MessageTool = memo(function MessageTool({ tool }: { tool: Tool }) {
             {lines.join('\n')}
           </pre>
         )}
+        {progress && <Progress name={progress.name} bytes={progress.bytes} />}
         {result && (
           <div className={cn('w-full truncate font-mono text-xs', result.isError ? 'text-danger' : 'text-success')}>
             {result.isError ? '✗' : '✓'} {resultLine(result.output)}
@@ -98,4 +106,4 @@ export const MessageTool = memo(function MessageTool({ tool }: { tool: Tool }) {
       {tool.job && <Job job={tool.job} />}
     </div>
   )
-})
+}

@@ -92,6 +92,20 @@ pub fn parse(body: &str) -> Result<Parsed, Vec<SpecError>> {
     validate::validate(&value).map(|spec| Parsed { spec, repaired })
 }
 
+/// The file a streaming `show` call is writing (design doc 35 §6.1): `jsonrepair` the
+/// cumulative partial tool-argument JSON, then `name`, else the file name of `path`.
+/// `None` until either key has streamed in.
+pub fn partial_name(partial_json: &str) -> Option<String> {
+    let fixed = jsonrepair_rs::jsonrepair(partial_json).ok()?;
+    let v = serde_json::from_str::<Value>(&fixed).ok()?;
+    match v.get("name").and_then(Value::as_str) {
+        Some(n) if !n.is_empty() => Some(n.to_owned()),
+        _ => std::path::Path::new(v.get("path")?.as_str()?)
+            .file_name()
+            .map(|f| f.to_string_lossy().into_owned()),
+    }
+}
+
 /// Validate every `json-render` fence in a markdown text; `(ordinal, errors)` for each
 /// failing fence, ordinal 1-based over the `json-render` fences only. Empty = nothing to fix.
 ///

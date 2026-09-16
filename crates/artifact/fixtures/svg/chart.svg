@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360">
+  <rect width="640" height="360" fill="#ffffff"/>
+  <text x="24" y="36" font-family="Helvetica, Arial, sans-serif" font-size="20" fill="#222">Requests per day</text>
+  <g fill="#3b6fd6">
+    <rect x="60"  y="220" width="60" height="100"/>
+    <rect x="160" y="160" width="60" height="160"/>
+    <rect x="260" y="120" width="60" height="200"/>
+    <rect x="360" y="180" width="60" height="140"/>
+    <rect x="460" y="80"  width="60" height="240"/>
+  </g>
+  <line x1="40" y1="320" x2="600" y2="320" stroke="#444" stroke-width="2"/>
+  <g font-family="Helvetica, Arial, sans-serif" font-size="14" fill="#444" text-anchor="middle">
+    <text x="90" y="342">Mon</text>
+    <text x="190" y="342">Tue</text>
+    <text x="290" y="342">Wed</text>
+    <text x="390" y="342">Thu</text>
+    <text x="490" y="342">Fri</text>
+  </g>
+  <circle cx="560" cy="60" r="24" fill="none" stroke="#d63b3b" stroke-width="4"/>
+</svg>

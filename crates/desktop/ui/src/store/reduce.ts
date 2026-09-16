@@ -1,3 +1,4 @@
+import { jsonrepair } from 'jsonrepair'
 import { resultLine } from '@/lib/describe'
 import { classify, type Injected } from '@/lib/injected'
 import { pushChunk } from '@/lib/jobTail'
@@ -33,7 +34,30 @@ export function empty(id: string): SessionSlice {
     children: {},
     browser: false,
     browserLive: false,
+    artifacts: new Map(),
+    progress: new Map(),
+    artifactPanel: null,
   }
+}
+
+/** `name` (else the base name of `path`) from a tool call's partial JSON arguments; `undefined` until either parses. */
+export function partialName(args: string): string | undefined {
+  try {
+    const v: unknown = JSON.parse(jsonrepair(args))
+    if (typeof v !== 'object' || v === null) return undefined
+    const { name, path } = v as Record<string, unknown>
+    if (typeof name === 'string' && name) return name
+    if (typeof path === 'string' && path) return path.slice(path.lastIndexOf('/') + 1) || undefined
+  } catch {}
+  return undefined
+}
+
+/** `map` without `key`; `map` itself when absent. */
+function without<V>(map: Map<string, V>, key: string): Map<string, V> {
+  if (!map.has(key)) return map
+  const next = new Map(map)
+  next.delete(key)
+  return next
 }
 
 function replaceAt(entries: readonly Entry[], at: number, entry: Entry): Entry[] {
@@ -187,6 +211,10 @@ export function apply(slice: SessionSlice, e: WireEvent, ctx: Ctx): SessionSlice
       return patchJob(slice, e.id, (j) => (e.inline ? undefined : { ...j, exit: { exit: e.exit, secs: Number(e.secs) } }))
     case 'BrowserShowLive':
       return { ...slice, browser: true, browserLive: true }
+    case 'ToolCallProgress':
+      return { ...slice, progress: new Map(slice.progress).set(e.call_id, { name: partialName(e.args), bytes: e.args.length }) }
+    case 'ArtifactShown':
+      return { ...slice, artifacts: new Map(slice.artifacts).set(e.call_id, e.artifact), progress: without(slice.progress, e.call_id) }
   }
   const s = closeTail(slice, e)
   const idle = s.running ? 'thinking' : 'idle'
@@ -270,7 +298,14 @@ export function apply(slice: SessionSlice, e: WireEvent, ctx: Ctx): SessionSlice
         child: e.call_id.includes('.'),
       }
       const entries = at < 0 ? [...s.entries, tool] : replaceAt(s.entries, at, tool)
-      return { ...s, entries, browser: s.browser || e.name.startsWith('browser_'), waiting: false, activity: 'tool' }
+      return {
+        ...s,
+        entries,
+        progress: without(s.progress, e.call_id),
+        browser: s.browser || e.name.startsWith('browser_'),
+        waiting: false,
+        activity: 'tool',
+      }
     }
     case 'ToolCallFinished': {
       const result = { output: e.output, isError: e.is_error, files: e.files ?? [] }
@@ -290,6 +325,7 @@ export function apply(slice: SessionSlice, e: WireEvent, ctx: Ctx): SessionSlice
         ...s,
         // A call the model abandoned mid-stream never starts.
         entries: s.entries.filter((t) => !(t.kind === 'tool' && t.pending)),
+        progress: s.progress.size ? new Map() : s.progress,
         usage: e.usage,
         context: e.context,
         running: false,

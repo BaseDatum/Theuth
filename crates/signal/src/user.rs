@@ -49,7 +49,7 @@ impl UserSink for Handle {
                 .await
                 .map_err(|e| format!("cannot read {}: {e}", f.path.display()))?;
             if !chan
-                .send_attachment(&to, &bytes, &f.mime, Some(&f.name))
+                .send_attachment(&to, &bytes, &f.mime, Some(&f.name), None)
                 .await
             {
                 return Err(format!("signal: attachment {} failed", f.name));
