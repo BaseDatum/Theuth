@@ -102,7 +102,8 @@ export function ArtifactPanel({ session }: { session: string }) {
     <Sheet open={callId !== null} onOpenChange={(o) => !o && close()}>
       <SheetContent
         showCloseButton={false}
-        className="w-full gap-0 p-0 transition-transform sm:w-(--panel-w) sm:max-w-[50vw]"
+        // No `p-0`: `cn` would let it swallow the sheet's `pt-[var(--safe-top)]` and put the header under the notch.
+        className="w-full gap-0 transition-transform sm:w-(--panel-w) sm:max-w-[50vw]"
         style={{ '--panel-w': `${width}px` } as CSSProperties}
       >
         <div

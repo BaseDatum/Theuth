@@ -201,7 +201,8 @@ export function Transcript({ session }: { session: string }) {
   const items = v.getVirtualItems()
   return (
     <div className="relative min-h-0 flex-1">
-      <div ref={ref} onScroll={onScroll} className="h-full overflow-y-auto">
+      {/* Never a page-wide horizontal scroll: long words wrap (inherited; `pre` and `nowrap` cells keep scrolling inside their own boxes). */}
+      <div ref={ref} onScroll={onScroll} className="h-full overflow-x-hidden overflow-y-auto wrap-anywhere">
         <div
           className="relative mx-auto w-full md:max-w-[768px] px-4"
           style={{ height: v.getTotalSize() }}
