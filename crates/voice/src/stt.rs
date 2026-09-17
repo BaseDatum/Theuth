@@ -25,39 +25,48 @@ const PIECE: usize = 180 * MODEL_RATE as usize;
 /// How often the idle watchdog looks.
 const WATCH: Duration = Duration::from_secs(60);
 
-/// ONNX Runtime is loaded at run time: `libonnxruntime*.dylib` / `.so` in the checkpoint
-/// directory, else `$ORT_DYLIB_PATH`, else Homebrew's (`brew install onnxruntime`). Linked
-/// statically it brings protobuf 3.21, which cannot share a process with the protobuf-lite
-/// 3.14 inside `sentencepiece` (ptts): the TTS load aborts. As a dylib its symbols stay
-/// private to it.
+/// ONNX Runtime is loaded at run time, from the first of: the bundle (`Contents/Frameworks/`
+/// beside the `.app`'s `MacOS/wth`, or the binary's own directory — `package-macos.sh` ships
+/// it there, signed), the checkpoint directory, `$ORT_DYLIB_PATH`, Homebrew's
+/// (`brew install onnxruntime`). Linked statically it brings protobuf 3.21, which cannot share
+/// a process with the protobuf-lite 3.14 inside `sentencepiece` (ptts): the TTS load aborts. As
+/// a dylib its symbols stay private to it.
 fn ort_lib(dir: &Path) -> anyhow::Result<PathBuf> {
     let ext = if cfg!(target_os = "macos") {
         ".dylib"
     } else {
         ".so"
     };
+    let name = format!("libonnxruntime{ext}");
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(Path::to_path_buf));
+    let bundled = exe_dir
+        .iter()
+        .flat_map(|d| [d.join("../Frameworks").join(&name), d.join(&name)]);
     let in_dir = std::fs::read_dir(dir)
         .ok()
         .into_iter()
         .flatten()
         .flatten()
         .map(|e| e.path())
-        .find(|p| {
+        .filter(|p| {
             p.file_name()
                 .and_then(|n| n.to_str())
                 .is_some_and(|n| n.starts_with("libonnxruntime") && n.contains(ext))
         });
-    in_dir
-        .or_else(|| std::env::var_os("ORT_DYLIB_PATH").map(PathBuf::from))
-        .or_else(|| {
-            ["/opt/homebrew/lib", "/usr/local/lib"]
-                .into_iter()
-                .map(|d| Path::new(d).join(format!("libonnxruntime{ext}")))
-                .find(|p| p.exists())
-        })
+    let env = std::env::var_os("ORT_DYLIB_PATH").map(PathBuf::from);
+    let brew = ["/opt/homebrew/lib", "/usr/local/lib"]
+        .into_iter()
+        .map(|d| Path::new(d).join(&name));
+    bundled
+        .chain(in_dir)
+        .chain(env)
+        .chain(brew)
+        .find(|p| p.exists())
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "no libonnxruntime{ext} in {} (nor $ORT_DYLIB_PATH, nor Homebrew): copy lib/libonnxruntime* from an ONNX Runtime release (github.com/microsoft/onnxruntime/releases, 1.17 or newer) there",
+                "no {name} bundled, in {} (nor $ORT_DYLIB_PATH, nor Homebrew): copy lib/libonnxruntime* from an ONNX Runtime release (github.com/microsoft/onnxruntime/releases, 1.17 or newer) there",
                 dir.display()
             )
         })
@@ -112,7 +121,11 @@ pub(crate) fn decode(bytes: Vec<u8>, ext: &str) -> anyhow::Result<(Vec<f32>, u32
         let spec = *a.spec();
         rate = spec.rate;
         let ch = spec.channels.count();
-        let sb = sbuf.get_or_insert_with(|| SampleBuffer::new(a.capacity() as u64, spec));
+        // `copy_interleaved_ref` asserts the buffer fits: size it to this frame's capacity and spec, not the first's.
+        let sb = match sbuf.as_mut() {
+            Some(sb) if sb.capacity() >= a.capacity() * ch => sb,
+            _ => sbuf.insert(SampleBuffer::new(a.capacity() as u64, spec)),
+        };
         sb.copy_interleaved_ref(a);
         for frame in sb.samples().chunks(ch) {
             out.push(frame.iter().sum::<f32>() / ch as f32);
@@ -242,13 +255,26 @@ impl Message<Transcribe> for Transcriber {
         };
         tokio::task::spawn_blocking(move || {
             let t = Instant::now();
-            let r = this.transcribe(&m.path).map_err(|e| format!("{e:#}"));
-            if let Ok(t2) = &r {
-                tracing::debug!(
+            // A panic here (a decoder on an odd container) must not drop `tx`: the asker would read "actor stopped".
+            let r = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                this.transcribe(&m.path)
+            })) {
+                Ok(r) => r.map_err(|e| format!("{e:#}")),
+                Err(p) => Err(format!(
+                    "transcribe panicked: {}",
+                    p.downcast_ref::<&str>()
+                        .map(|s| s.to_string())
+                        .or_else(|| p.downcast_ref::<String>().cloned())
+                        .unwrap_or_default()
+                )),
+            };
+            match &r {
+                Ok(t2) => tracing::debug!(
                     "voice: transcribed {} ms of audio in {:?}",
                     t2.duration_ms,
                     t.elapsed()
-                );
+                ),
+                Err(e) => tracing::warn!("voice: {e}"),
             }
             tx.send(r);
         });

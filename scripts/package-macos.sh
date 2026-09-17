@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Package wth.app + wth.dmg for macOS (jarvis pipeline, stripped).
 #
-# Pipeline:
 #   1. cargo build --release -p wth  (daemon sidecar, host arch)
 #   2. stage sidecar as binaries/wth-<host-triple>
 #   3. cargo tauri build --config tauri.bundle.conf.json  (app bundle only)
+#      + libonnxruntime.dylib (Microsoft's release, pinned) into Contents/Frameworks (45 §2.1)
 #   4. codesign inside-out (hardened runtime): $WTH_SIGN_IDENTITY, else ad-hoc "-"
 #   5. hdiutil DMG (after signing — Tauri's dmg target would snapshot pre-signature)
 #
@@ -28,6 +28,10 @@ IDENTITY="${WTH_SIGN_IDENTITY:--}"
 BUNDLE_ID="wth.rwx.dev"
 BUNDLE_DIR="target/release/bundle/macos"
 APP="$BUNDLE_DIR/wth.app"
+# ONNX Runtime for speech-to-text (45 §2.1): dlopened by the sidecar from Contents/Frameworks.
+ORT_VERSION="1.27.0"
+ORT_SHA256="545e81c58152353acb0d1e8bd6ce4b62f830c0961f5b3acfedc790ffd76e477a"
+ORT_TGZ="target/onnxruntime-osx-arm64-${ORT_VERSION}.tgz"
 ENTITLEMENTS="crates/desktop/entitlements.plist"
 
 echo "==> [1/5] TypeScript bindings"
@@ -49,6 +53,15 @@ fi
 [[ -x "$APP/Contents/MacOS/wth" ]] || { echo "error: sidecar missing at $APP/Contents/MacOS/wth" >&2; exit 1; }
 [[ -x "$APP/Contents/MacOS/wth-desktop" ]] || { echo "error: app binary missing at $APP/Contents/MacOS/wth-desktop" >&2; exit 1; }
 
+echo "==> [3/5] libonnxruntime ${ORT_VERSION} → Contents/Frameworks"
+if [[ ! -f "$ORT_TGZ" ]] || ! echo "$ORT_SHA256  $ORT_TGZ" | shasum -a 256 -c --status; then
+  curl -sSfL -o "$ORT_TGZ" "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-osx-arm64-${ORT_VERSION}.tgz"
+  echo "$ORT_SHA256  $ORT_TGZ" | shasum -a 256 -c --status || { echo "error: onnxruntime tarball sha256 mismatch" >&2; exit 1; }
+fi
+mkdir -p "$APP/Contents/Frameworks"
+tar -xzf "$ORT_TGZ" -O "onnxruntime-osx-arm64-${ORT_VERSION}/lib/libonnxruntime.${ORT_VERSION}.dylib" > "$APP/Contents/Frameworks/libonnxruntime.dylib"
+chmod 755 "$APP/Contents/Frameworks/libonnxruntime.dylib"
+
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")"
 DMG="$BUNDLE_DIR/wth_${VERSION}_$(uname -m).dmg"
 
@@ -57,6 +70,7 @@ TIMESTAMP_FLAG="--timestamp"
 [[ "$IDENTITY" == "-" ]] && TIMESTAMP_FLAG="--timestamp=none"
 # Nested helpers get $BUNDLE_ID.* so macOS 15+ Local Network Privacy attributes
 # to the app instead of an orphan bare-binary row.
+codesign --force $TIMESTAMP_FLAG --sign "$IDENTITY" "$APP/Contents/Frameworks/libonnxruntime.dylib"
 codesign --force --options runtime $TIMESTAMP_FLAG --sign "$IDENTITY" \
   -i "${BUNDLE_ID}.wth" \
   --entitlements "$ENTITLEMENTS" "$APP/Contents/MacOS/wth"
