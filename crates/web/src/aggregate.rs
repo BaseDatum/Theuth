@@ -59,6 +59,9 @@ pub struct ReadPage {
     pub error: Option<String>,
     /// Wall time of the read in milliseconds.
     pub took_ms: u64,
+    /// How the page was obtained: `fetch` (plain HTTP), `render` (a browser),
+    /// empty on error.
+    pub tier: String,
 }
 
 /// What one search produced; the `structured` half of the tool output.

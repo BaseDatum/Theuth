@@ -334,7 +334,12 @@ crates/browser/
 one internal contract; `tools.rs` and `render.rs` never touch a `Handle`.
 The render provider uses a fixed private `SessionId` so it has its own
 isolate: `browser_navigate` → `browser_markdown { max_chars: 1_000_000 }`
-→ `browser_close`, returned as `web::Rendered { markdown, .. }`.
+→ `browser_close`, returned as `web::Rendered { markdown, tier: "render", .. }`.
+Since 2026-09-17 (16 §13.17) `web::Provider` has two entry points — `read`
+(cheapest real content) and `render` (always the browser) — and this provider
+implements only `render`, so it is the browser for both `read_url {rendered:
+true}` and a `search_web` read when `scrape` is disabled; with `scrape` on,
+`web` prefers `scrape` by name and this one is the fallback (38 §5).
 
 ## 9. Build and dependencies
 

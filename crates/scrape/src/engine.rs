@@ -1,6 +1,6 @@
 //! Fetch adapter and two-tier engine pick (38 §0.3, §3).
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use kameo::actor::ActorRef;
@@ -16,13 +16,68 @@ pub const PAGE_CHARS: usize = 500_000;
 /// Bytes of a body inspected by the HTML / SPA sniffers.
 const HEAD_BYTES: usize = 4096;
 
-/// One isolate for scrape's render tier, distinct from `browser`'s
-/// `read_url` session.
-static RENDER_SESSION: std::sync::LazyLock<SessionId> = std::sync::LazyLock::new(|| {
-    SessionId(uuid::Uuid::from_u128(
-        0x7363_7261_7065_5f72_656e_6465_725f_0038,
-    ))
-});
+/// Base of the render-tier session ids: slot `i` is `RENDER_BASE + i`,
+/// distinct from `browser`'s `read_url` session.
+const RENDER_BASE: u128 = 0x7363_7261_7065_5f72_656e_6465_725f_0038;
+
+/// Browser sessions for the render tier. Each slot is one obscura isolate;
+/// `cfg.concurrency` of them let `search_web`'s parallel reads and a crawl
+/// render concurrently instead of serialising on one isolate. Idle isolates
+/// are reclaimed by the browser's idle sweeper and recreated on next use.
+struct RenderSlots {
+    permits: tokio::sync::Semaphore,
+    free: Mutex<Vec<SessionId>>,
+}
+
+impl RenderSlots {
+    fn new(n: usize) -> Self {
+        Self {
+            permits: tokio::sync::Semaphore::new(n),
+            free: Mutex::new(
+                (0..n)
+                    .map(|i| SessionId(uuid::Uuid::from_u128(RENDER_BASE + i as u128)))
+                    .collect(),
+            ),
+        }
+    }
+
+    /// Wait for a free slot; the session returns to the pool when the guard drops.
+    async fn acquire(&self) -> anyhow::Result<RenderSlot<'_>> {
+        let permit = self
+            .permits
+            .acquire()
+            .await
+            .map_err(|_| anyhow::anyhow!("render slots closed"))?;
+        let session = self
+            .free
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .pop()
+            .ok_or_else(|| anyhow::anyhow!("render slot pool empty under permit"))?;
+        Ok(RenderSlot {
+            slots: self,
+            session,
+            _permit: permit,
+        })
+    }
+}
+
+/// One checked-out render session; `Drop` pushes it back before the permit frees.
+struct RenderSlot<'a> {
+    slots: &'a RenderSlots,
+    session: SessionId,
+    _permit: tokio::sync::SemaphorePermit<'a>,
+}
+
+impl Drop for RenderSlot<'_> {
+    fn drop(&mut self) {
+        self.slots
+            .free
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(self.session);
+    }
+}
 
 /// Shared scrape handle: SSRF-guarded fetch, optional obscura, config.
 pub struct Scrape {
@@ -30,7 +85,7 @@ pub struct Scrape {
     pub(crate) fetcher: Arc<Fetcher>,
     /// `scrape:` section.
     pub(crate) cfg: ScrapeConfig,
-    render_lock: tokio::sync::Mutex<()>,
+    slots: RenderSlots,
     /// Publishes [`crate::ScrapeProgress`]; `None` in unit tests.
     pub(crate) rt: Option<Runtime>,
 }
@@ -39,10 +94,11 @@ impl Scrape {
     /// Wrap a fetcher. The browser actor is looked up at render time.
     #[must_use]
     pub fn new(fetcher: Fetcher, cfg: ScrapeConfig) -> Self {
+        let slots = RenderSlots::new(cfg.concurrency.max(1));
         Self {
             fetcher: Arc::new(fetcher),
             cfg,
-            render_lock: tokio::sync::Mutex::new(()),
+            slots,
             rt: None,
         }
     }
@@ -124,7 +180,7 @@ impl Scrape {
         })
     }
 
-    /// `browser_navigate` → `browser_markdown` → `browser_close` on the scrape session.
+    /// `browser_navigate` → `browser_markdown` → `browser_close` on a free render slot.
     pub async fn render(&self, url: &url::Url) -> anyhow::Result<Fetched> {
         let actor = browser_actor()
             .ok_or_else(|| anyhow::anyhow!("browser not available for rendered fetch"))?;
@@ -136,15 +192,24 @@ impl Scrape {
         actor: &ActorRef<browser::Browsers>,
         url: &url::Url,
     ) -> anyhow::Result<Fetched> {
-        let _guard = self.render_lock.lock().await;
-        let navigated = call(actor, "browser_navigate", json!({ "url": url.as_str() })).await?;
+        let slot = self.slots.acquire().await?;
+        let session = slot.session;
+        let navigated = call(
+            actor,
+            session,
+            "browser_navigate",
+            json!({ "url": url.as_str() }),
+        )
+        .await?;
         let markdown = call(
             actor,
+            session,
             "browser_markdown",
             json!({ "max_chars": PAGE_CHARS }),
         )
         .await;
-        let _ = call(actor, "browser_close", json!({})).await;
+        let _ = call(actor, session, "browser_close", json!({})).await;
+        drop(slot);
         let markdown = firecrawl_native::post_process_markdown(strip_base64_images(markdown?));
         let (final_url, title) = parse_navigated(&navigated).unwrap_or((url.as_str(), None));
         let links = links_from_markdown(&markdown);
@@ -207,12 +272,13 @@ fn browser_actor() -> Option<ActorRef<browser::Browsers>> {
 
 async fn call(
     actor: &ActorRef<browser::Browsers>,
+    session: SessionId,
     name: &str,
     args: Value,
 ) -> anyhow::Result<String> {
     let result = actor
         .ask(browser::Call {
-            session: *RENDER_SESSION,
+            session,
             name: name.to_owned(),
             args,
         })
@@ -256,16 +322,17 @@ fn html_looks_like_html(body: &str) -> bool {
     t.len() > 15 && (t.as_bytes().starts_with(b"<") || head(t).contains("<html"))
 }
 
-// ponytail: thin = <200 chars of markdown, or <800 chars alongside an SPA
-// root marker in the first 4 KiB of HTML. Upgrade path is upstream's
-// engine-picker (text/HTML ratio, status codes) if this misfires on real
-// sites.
+/// Thin = the browser tier should run. Gate on prose, not markdown length:
+/// rtings.com's plain fetch yields thousands of chars of navigation links
+/// with the article client-rendered, so a raw-length gate let it through as
+/// a nav shell. Thin when the scored prose is under 800 chars, or under
+/// 2500 alongside an SPA root marker in the first 4 KiB of HTML.
 fn is_thin(html: &str, markdown: &str) -> bool {
-    let text = markdown.trim();
-    if text.len() < 200 {
+    let prose = web::excerpt::prose_chars(markdown);
+    if prose < 800 {
         return true;
     }
-    if text.len() >= 800 {
+    if prose >= 2500 {
         return false;
     }
     let h = head(html);
@@ -499,15 +566,64 @@ mod tests {
         assert!(md.contains("Only chrome here"), "{md}");
     }
 
+    /// Blank-line separated 240-char paragraphs totalling at least `n` prose
+    /// chars (each under `excerpt`'s 1200-char passage cap, so none is cut).
+    fn prose(n: usize) -> String {
+        let para =
+            "The reviewer measured input lag across every picture mode and found it stable. "
+                .repeat(3);
+        let mut out = String::new();
+        while out.len() < n {
+            out.push_str(para.trim_end());
+            out.push_str("\n\n");
+        }
+        out
+    }
+
     #[test]
-    fn thin_sniff_is_case_insensitive_and_bounded() {
-        let long = "x".repeat(300);
-        assert!(is_thin("<div ID=\"ROOT\"></div>", &long));
-        assert!(!is_thin("<div id=\"content\"></div>", &long));
-        assert!(!is_thin("<div id=\"root\"></div>", &"x".repeat(900)));
+    fn thin_is_prose_based_not_markdown_length() {
+        let mut nav_shell = String::new();
+        for i in 0..300 {
+            nav_shell.push_str(&format!(
+                "- [Menu item number {i}](https://e.com/section/{i})\n"
+            ));
+        }
+        nav_shell.push_str("\nLoading the review.\n");
+        assert!(nav_shell.len() > 10_000);
+        assert!(is_thin("<html><body>", &nav_shell));
+
+        let article = prose(1000);
+        assert!(!is_thin("<div id=\"content\"></div>", &article));
+        assert!(is_thin("<div ID=\"ROOT\"></div>", &prose(1500)));
+        assert!(!is_thin("<div id=\"root\"></div>", &prose(3000)));
         assert!(is_thin("<html>", "short"));
+    }
+
+    #[test]
+    fn html_sniff_is_bounded() {
         assert!(html_looks_like_html("  <!DOCTYPE html><html></html>"));
         assert!(html_looks_like_html("garbage prefix here <HTML>"));
         assert!(!html_looks_like_html("# markdown\n\nplain text"));
+    }
+}
+
+#[cfg(test)]
+mod slot_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn slots_hand_out_distinct_sessions_and_recycle() {
+        let slots = RenderSlots::new(2);
+        let a = slots.acquire().await.unwrap();
+        let b = slots.acquire().await.unwrap();
+        assert_ne!(a.session, b.session);
+        assert_eq!(slots.permits.available_permits(), 0);
+        let first = a.session;
+        drop(a);
+        let c = slots.acquire().await.unwrap();
+        assert_eq!(c.session, first);
+        drop(b);
+        drop(c);
+        assert_eq!(slots.permits.available_permits(), 2);
     }
 }

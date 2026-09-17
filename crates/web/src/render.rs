@@ -1,5 +1,6 @@
 //! Tool text (design doc 16 §2, §4.4): a `Searched …` header, one `## n. title`
-//! / URL section per hit with the excerpts of the pages that were read, then
+//! / URL section per hit with the excerpts of the pages that were read (the
+//! domain line ends ` · rendered` when a browser produced them), then
 //! `Features:` blocks in [`FeatureKind::ORDER`] each capped at
 //! `feature_max_chars`, then one `Failed:` line. The desktop and TUI parse the
 //! header/URL pairs, so the line shapes here are a contract. The same data
@@ -95,6 +96,7 @@ fn render_search(resp: &SearchResponse, feature_max_chars: usize, keep: usize) -
         resp.took_ms % 1000 / 100
     );
     for r in &resp.results {
+        let page = resp.pages.iter().enumerate().find(|(_, p)| p.url == r.url);
         s.push('\n');
         let _ = writeln!(s, "## {}. {}", r.rank, r.title.trim());
         let _ = writeln!(s, "{}", r.url);
@@ -105,11 +107,14 @@ fn render_search(resp: &SearchResponse, feature_max_chars: usize, keep: usize) -
         if r.providers.len() > 1 {
             let _ = write!(s, " · {}", r.providers.join(", "));
         }
+        if page.is_some_and(|(_, p)| p.tier == "render") {
+            s.push_str(" · rendered");
+        }
         s.push('\n');
         if !r.snippet.trim().is_empty() {
             let _ = writeln!(s, "{}", r.snippet.trim());
         }
-        let Some((i, page)) = resp.pages.iter().enumerate().find(|(_, p)| p.url == r.url) else {
+        let Some((i, page)) = page else {
             continue;
         };
         if let Some(e) = &page.error {
@@ -185,6 +190,7 @@ mod tests {
             excerpts: excerpts.iter().map(|e| (*e).to_owned()).collect(),
             error: None,
             took_ms: 0,
+            tier: "fetch".into(),
         }
     }
 
@@ -265,6 +271,27 @@ mod tests {
              \n## 2. B\nhttps://b.example/\nb.example\nsb\n(could not read: timed out)\n\
              \n## 3. C\nhttps://c.example/\nc.example\nsc"
         );
+    }
+
+    #[test]
+    fn rendered_pages_are_marked_on_the_domain_line() {
+        let mut r = resp();
+        r.features.clear();
+        r.failed.clear();
+        r.results = vec![
+            hit(1, "A", "https://example.com/a", "sa"),
+            hit(2, "B", "https://b.example/", "sb"),
+        ];
+        r.pages = vec![
+            ReadPage {
+                tier: "render".into(),
+                ..page("https://example.com/a", &["para"])
+            },
+            page("https://b.example/", &["para"]),
+        ];
+        let s = search_text(&r, 600);
+        assert!(s.contains("\nexample.com · rendered\nsa\n"), "{s}");
+        assert!(s.contains("\nb.example\nsb\n"), "{s}");
     }
 
     #[test]

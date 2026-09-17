@@ -1,5 +1,6 @@
-//! Local `web::Provider` with `renders: true` so `read_url {rendered: true}`
-//! and `search_web`'s top-hit reads resolve in-process (38 §5).
+//! Local `web::Provider` with `renders: true` (38 §5). `render` is always the
+//! browser (`read_url {rendered: true}` relies on it); `read` is the two-tier
+//! fetch-then-browser path `search_web`'s top-hit reads go through.
 
 use std::sync::Arc;
 
@@ -46,15 +47,30 @@ impl Provider for ScrapeProvider {
         _client: &reqwest::Client,
         url: &url::Url,
     ) -> Result<Rendered, ProviderError> {
+        self.page(url, true).await
+    }
+
+    async fn read(
+        &self,
+        _client: &reqwest::Client,
+        url: &url::Url,
+    ) -> Result<Rendered, ProviderError> {
+        self.page(url, false).await
+    }
+}
+
+impl ScrapeProvider {
+    async fn page(&self, url: &url::Url, force_render: bool) -> Result<Rendered, ProviderError> {
         let page = self
             .scrape
-            .fetch_page(url, false, true)
+            .fetch_page(url, force_render, true)
             .await
             .map_err(|e| ProviderError::Http(e.to_string()))?;
         Ok(Rendered {
             url: page.url,
             title: page.title,
             markdown: page.markdown,
+            tier: page.tier.to_owned(),
         })
     }
 }

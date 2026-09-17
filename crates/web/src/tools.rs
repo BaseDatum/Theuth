@@ -18,8 +18,8 @@ use tokio::task::JoinSet;
 use tools::{Risk, Tool, ToolCx, ToolOutput};
 
 use crate::WebConfig;
-use crate::actor::{ProviderMetas, Render, Search, WebActor};
-use crate::aggregate::{ReadPage, category_name};
+use crate::actor::{ProviderMetas, Read, Render, Search, WebActor};
+use crate::aggregate::{RankedResult, ReadPage, category_name};
 use crate::engines::BUILTIN;
 use crate::fetch::{FetchFormat, FetchResponse, Fetcher, check_url};
 use crate::progress::{ProgressCx, report};
@@ -195,8 +195,16 @@ fn elapsed_ms(start: Instant) -> u64 {
     u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
-/// Read `url` through the render provider, falling back to the raw fetcher,
-/// all within `deadline`; excerpt the page for `query`.
+/// Fewer prose chars than this and the page is a client-rendered shell or a
+/// bot wall: reported as an error, not excerpted (a junk excerpt reads as an
+/// answer).
+const MIN_PROSE: usize = 100;
+
+/// Read `url` through the render provider ([`Read`]: its cheapest tier that
+/// yields real content) within `deadline`; excerpt the page for `query`. A
+/// provider error falls back to the raw fetcher; a timeout does not - the
+/// provider already tried the fetch tier and found it thin, so the raw page
+/// is the same shell, and the model is told the page needs the browser.
 async fn read_page(
     actor: ActorRef<WebActor>,
     fetcher: Arc<Fetcher>,
@@ -206,36 +214,46 @@ async fn read_page(
     deadline: Duration,
 ) -> ReadPage {
     let start = Instant::now();
-    let rendered = match url::Url::parse(&url) {
-        Ok(parsed) => tokio::time::timeout(deadline, actor.ask(Render(parsed)))
-            .await
-            .ok()
-            .and_then(Result::ok),
-        Err(_) => None,
-    };
-    let page = match rendered {
-        Some(r) => Ok((r.title, r.markdown)),
-        None => {
-            let remaining = deadline.saturating_sub(start.elapsed());
-            match tokio::time::timeout(
-                remaining,
-                fetcher.fetch(&url, FetchFormat::Markdown, render::SEARCH_MAX_CHARS),
-            )
-            .await
-            {
-                Ok(Ok(f)) => Ok((f.title, f.content)),
-                Ok(Err(e)) => Err(e.to_string()),
-                Err(_) => Err(format!("timed out after {}ms", deadline.as_millis())),
+    let page = match url::Url::parse(&url) {
+        Err(e) => Err(format!("bad url: {e}")),
+        Ok(parsed) => match tokio::time::timeout(deadline, actor.ask(Read(parsed))).await {
+            Ok(Ok(r)) => Ok((r.title, r.markdown, r.tier)),
+            Err(_) => Err(format!(
+                "timed out after {}s rendering a JavaScript page; read_url with rendered: true waits for it",
+                deadline.as_secs()
+            )),
+            Ok(Err(e)) => {
+                tracing::debug!(url = %url, error = %e, "read provider failed; raw fetch");
+                let remaining = deadline.saturating_sub(start.elapsed());
+                match tokio::time::timeout(
+                    remaining,
+                    fetcher.fetch(&url, FetchFormat::Markdown, render::SEARCH_MAX_CHARS),
+                )
+                .await
+                {
+                    Ok(Ok(f)) => Ok((f.title, f.content, "fetch".to_owned())),
+                    Ok(Err(e)) => Err(e.to_string()),
+                    Err(_) => Err(format!("timed out after {}s", deadline.as_secs())),
+                }
             }
-        }
+        },
     };
     match page {
-        Ok((title, markdown)) => ReadPage {
+        Ok((_, markdown, tier)) if crate::excerpt::prose_chars(&markdown) < MIN_PROSE => ReadPage {
+            url,
+            title: None,
+            excerpts: Vec::new(),
+            error: Some("no readable text (JavaScript-only page or bot wall)".into()),
+            took_ms: elapsed_ms(start),
+            tier,
+        },
+        Ok((title, markdown, tier)) => ReadPage {
             url,
             title: title.filter(|t| !t.trim().is_empty()),
             excerpts: crate::excerpt::best_passages(&markdown, &query, chars),
             error: None,
             took_ms: elapsed_ms(start),
+            tier,
         },
         Err(e) => ReadPage {
             url,
@@ -243,8 +261,46 @@ async fn read_page(
             excerpts: Vec::new(),
             error: Some(e),
             took_ms: elapsed_ms(start),
+            tier: String::new(),
         },
     }
+}
+
+/// Up to `read` hit URLs worth a read slot, in rank order. A hit whose title,
+/// snippet and URL share fewer than two query tokens (one for a one-token
+/// query) is a decoy or a homonym. Two passes: hits whose *title* alone
+/// matches first (an encyclopedia page whose snippet happens to mention the
+/// terms should not take a slot from the page that is about them), then, if
+/// slots remain, hits matching on title + snippet + URL. Non-http and
+/// duplicate URLs are skipped.
+fn pick_reads(results: &[RankedResult], terms: &[String], read: usize) -> Vec<String> {
+    let need = terms.len().min(2);
+    let hits = |hay: &str| {
+        let hay = hay.to_lowercase();
+        terms.iter().filter(|t| hay.contains(t.as_str())).count() >= need
+    };
+    let mut picked: Vec<String> = Vec::with_capacity(read);
+    for title_only in [true, false] {
+        for r in results {
+            if picked.len() == read {
+                return picked;
+            }
+            if !(r.url.starts_with("http://") || r.url.starts_with("https://"))
+                || picked.contains(&r.url)
+            {
+                continue;
+            }
+            let on_topic = if title_only {
+                hits(&r.title)
+            } else {
+                hits(&format!("{} {} {}", r.title, r.snippet, r.url))
+            };
+            if on_topic {
+                picked.push(r.url.clone());
+            }
+        }
+    }
+    picked
 }
 
 #[async_trait::async_trait]
@@ -304,27 +360,8 @@ impl Tool for SearchTool {
             Err(e) => anyhow::bail!("web actor unavailable: {e}"),
         };
 
-        // Read the top hits that look on-topic: a hit whose title, snippet and
-        // URL share fewer than two query tokens (one for a one-token query) is
-        // a decoy or a homonym, and a read slot is worth more than it.
         let terms = crate::excerpt::tokens(text);
-        let need = terms.len().min(2);
-        let mut inflight: Vec<String> = Vec::with_capacity(read);
-        for r in &resp.results {
-            if inflight.len() == read {
-                break;
-            }
-            if !(r.url.starts_with("http://") || r.url.starts_with("https://"))
-                || inflight.contains(&r.url)
-            {
-                continue;
-            }
-            let hay = format!("{} {} {}", r.title, r.snippet, r.url).to_lowercase();
-            if terms.iter().filter(|t| hay.contains(t.as_str())).count() < need {
-                continue;
-            }
-            inflight.push(r.url.clone());
-        }
+        let mut inflight = pick_reads(&resp.results, &terms, read);
         if !inflight.is_empty() {
             let mut done: Vec<String> = Vec::with_capacity(inflight.len());
             report(self.rt.as_ref(), Some(&pcx), &inflight, &done, read).await;
@@ -479,5 +516,78 @@ mod tests {
         assert!(fetch_description(&[]).contains("No rendering provider"));
         let d = fetch_description(&[meta("firecrawl", &[], true)]);
         assert!(d.contains("via firecrawl") && d.contains("(billed)"), "{d}");
+    }
+
+    fn hit(rank: u32, title: &str, url: &str, snippet: &str) -> RankedResult {
+        RankedResult {
+            rank,
+            title: title.into(),
+            url: url.into(),
+            snippet: snippet.into(),
+            providers: vec!["a".into()],
+            published: None,
+        }
+    }
+
+    fn terms(q: &str) -> Vec<String> {
+        crate::excerpt::tokens(q)
+    }
+
+    #[test]
+    fn title_matches_beat_snippet_matches_regardless_of_rank() {
+        let results = [
+            hit(1, "Best Monitors 2026", "https://a.example/", "monitors"),
+            hit(
+                2,
+                "Encyclopedia: Monitor",
+                "https://b.example/",
+                "rtings monitor review methodology",
+            ),
+            hit(3, "Unrelated", "https://c.example/", "nothing here"),
+            hit(4, "RTINGS monitor review", "https://d.example/", ""),
+        ];
+        let picked = pick_reads(&results, &terms("rtings monitor review"), 1);
+        assert_eq!(picked, vec!["https://d.example/".to_owned()]);
+    }
+
+    #[test]
+    fn fills_from_snippet_matches_when_titles_are_too_few() {
+        let results = [
+            hit(1, "Best Monitors 2026", "https://a.example/", "monitors"),
+            hit(
+                2,
+                "Encyclopedia: Monitor",
+                "https://b.example/",
+                "rtings monitor review methodology",
+            ),
+            hit(3, "Unrelated", "https://c.example/", "nothing here"),
+            hit(4, "RTINGS monitor review", "https://d.example/", ""),
+        ];
+        let picked = pick_reads(&results, &terms("rtings monitor review"), 3);
+        assert_eq!(
+            picked,
+            vec![
+                "https://d.example/".to_owned(),
+                "https://b.example/".to_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn skips_non_http_and_duplicate_urls() {
+        let results = [
+            hit(1, "rust borrow checker", "ftp://a.example/", ""),
+            hit(2, "rust borrow checker", "https://b.example/", ""),
+            hit(3, "rust borrow checker again", "https://b.example/", ""),
+            hit(4, "rust borrow checker", "https://c.example/", ""),
+        ];
+        let picked = pick_reads(&results, &terms("rust borrow checker"), 8);
+        assert_eq!(
+            picked,
+            vec![
+                "https://b.example/".to_owned(),
+                "https://c.example/".to_owned()
+            ]
+        );
     }
 }

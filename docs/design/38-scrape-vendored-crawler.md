@@ -31,14 +31,22 @@ the as-built status; §12 lists what review changed between draft and build.
    image strip → `post_process_markdown` (`crates/scrape/src/engine.rs:298-315`).
    An empty main-content result re-runs on the whole page
    (`engine.rs:311-313`). Tier two is obscura via `browser::Browsers`
-   (`browser_navigate → browser_markdown → browser_close`,
-   `engine.rs:134-160`), taken when `rendered: true`, when the fetch failed, or
-   when the fetch came back **thin** (`is_thin`, `engine.rs:263-281`: <200 chars
-   of markdown, or <800 alongside an SPA root marker in the first 4 KiB). The
-   browser actor is looked up at call time (`engine.rs:202-206`), so there is no
-   plugin start-order dependency and no read of `web`'s config
-   (`plugins.md` §3.6). Their 16-engine ladder is a hosted-service dispatcher
-   and did not port; `engpicker.rs` was dropped with it (§2).
+   (`browser_navigate → browser_markdown → browser_close`, `engine.rs`
+   `render_with`), taken when `rendered: true`, when the fetch failed, or
+   when the fetch came back **thin**. `is_thin` (`engine.rs`) is
+   **prose-based** since 2026-09-17 (§12.15): thin when
+   `web::excerpt::prose_chars(markdown)` — the chars of the paragraphs 16 §4.7
+   would score, after its noise filter drops nav, link lists, image-only and
+   link-dense blocks — is < 800, or < 2500 together with an SPA root marker
+   (`id="root"`, `id="app"`, `__next`) in the first 4 KiB of HTML. Until that
+   day the gate measured raw markdown length (<200, or <800 with a marker),
+   and rtings.com's server-rendered nav + product list — thousands of chars
+   of link markdown around a client-rendered article — passed it as a real
+   page. The browser actor is looked up at call time (`engine.rs`
+   `browser_actor`), so there is no plugin start-order dependency and no read
+   of `web`'s config (`plugins.md` §3.6). Their 16-engine ladder is a
+   hosted-service dispatcher and did not port; `engpicker.rs` was dropped
+   with it (§2).
 4. **One converter per path, one shared post-processor.** Fetch path keeps
    `html-to-markdown-rs` (already a `web` dependency); render path uses
    obscura's own `browser_markdown`; both then run `post_process_markdown`
@@ -164,7 +172,7 @@ What we wrote, `crates/scrape` (2,060 lines incl. tests):
 | Piece | Where | Notes |
 |---|---|---|
 | fetch adapter | `engine.rs:94-125` | `Fetcher::new_with_timeouts` with an 8 MiB body cap and `page_timeout_ms` (`lib.rs:110-117`); `fetch_html` returns the raw body so `transform_html` sees the real DOM; a non-HTML body (already-converted PDF/Office markdown) skips straight to `post_process_markdown` |
-| engine pick | `engine.rs:58-90` | fetch → `is_thin` → obscura; render failure keeps the thin fetch; one `render_lock` serialises the shared isolate (`engine.rs:139`) |
+| engine pick | `engine.rs` `fetch_page` | fetch → `is_thin` (prose gate, §0.3) → obscura; render failure keeps the thin fetch; `Fetched.tier` says which tier answered. Renders run on `RenderSlots` — a `Semaphore` over `scrape.concurrency` browser sessions (ids = `RENDER_SESSION` base + slot index) — so `search_web`'s five parallel reads and a crawl render concurrently; until 2026-09-17 one `render_lock` mutex serialised a single isolate (§12.15) |
 | markdown pipeline | `engine.rs:298-373` | `transform_html` → `html-to-markdown-rs` → `strip_base64_images` (`](<base64-image-removed>)`, upstream `removeBase64Images`) → `post_process_markdown`; empty main-content retries whole-page |
 | `normalize` | `crawl.rs:599-620` | visited key: fragment off, `www.` off, `/index.html` → `/`, `web::url::canonical_key` (tracking params, trailing slash), whole query off when `ignore_query_parameters` |
 | scope | `crawl.rs:136-166` | one `FilterLinksCall` per batch: `base_url` = seed **origin**, `initial_url` = seed, `robots_user_agent: Some("wth")`, `max_depth: 100` (our own hop-depth cap is separate) |
@@ -175,7 +183,7 @@ What we wrote, `crates/scrape` (2,060 lines incl. tests):
 | sitemap discovery | `crawl.rs:462-505` | candidates: the seed when it is `*.xml(.gz)`, robots `Sitemap:`, `{seed dir}/sitemap.xml`, `/sitemap.xml`, `/sitemap_index.xml`; `sitemapindex` recursed 3 deep; 5,000-URL cap; fetched raw, gzip inflated by the fetcher (`fetch/mod.rs:270-280`, `flate2`); results scoped through `filter_links` like any link |
 | `<loc>` salvage | `crawl.rs:510-538` | a body `process_sitemap` rejects (truncated, odd namespaces) still yields what a plain `<loc>…</loc>` scan finds |
 | `map_site` (`Scrape::map`) | `crawl.rs:349-416` | site-restricted `search_web` through the `web` actor first (`site_search`, `:420-456`), then sitemap URLs, then a link walk whose pages *and* outbound links count; titles only where a page was fetched |
-| render provider | `provider.rs` | `web::Provider { name: "scrape", renders: true }` (§5) |
+| render provider | `provider.rs` | `web::Provider { name: "scrape", renders: true }`; `render` = forced browser, `read` = two-tier pick (§5) |
 | tools + config + event | `tools.rs`, `lib.rs` | §6 |
 
 ## 4. Why the napi layer was not a problem
@@ -189,19 +197,44 @@ that had to change for `cargo test` and `cargo doc` to work.
 ## 5. Search and render wiring
 
 `scrape` registers a `web::Provider` named `scrape` with `renders: true` once
-the `web` actor is up (`crates/scrape/src/provider.rs:63-75`); its `render`
-is `fetch_page(url, force_render: false, only_main_content: false)`
-(`provider.rs:49-53`) — the two-tier pick, so a plain page never touches the
-browser. `web`'s `Render` prefers it **by name**, then any other renderer in
-registration order (`crates/web/src/actor.rs:154-159`); `browser`'s
-`ObscuraRender` (`crates/browser/src/render.rs:86-89`) stays registered as the
+the `web` actor is up (`crates/scrape/src/provider.rs`). Two entry points
+since 2026-09-17 (§12.15; 16 §5):
+
+- `render` is `fetch_page(url, force_render: true, only_main_content: true)` —
+  **always obscura**, `browser not available for rendered fetch` when there is
+  none. `web`'s `Render` message calls it; `read_url {rendered: true}`
+  (`crates/web/src/tools.rs`) is its consumer.
+- `read` is `fetch_page(url, false, true)` — the two-tier pick, plain fetch
+  first, obscura only when `is_thin` says the fetch was a shell (§0.3). It
+  overrides `web::Provider::read`, whose default is `render`. `web`'s `Read`
+  message calls it; `search_web`'s top-`read` hits (default 5) go through it
+  in one call, with a plain markdown fetch as fallback when it fails.
+
+Until that day there was one method, and it passed `force_render: false`: a
+"rendered" read of a page whose plain fetch cleared the length gate never
+opened the browser, so `read_url {rendered: true}` on rtings.com returned the
+same nav shell as an unrendered read and only `scrape_url {rendered: true}`
+(which calls `fetch_page` directly with the flag) ever rendered. Each `Fetched`
+/ `Rendered` now carries `tier: "fetch" | "render"` so callers can see which
+one answered; `search_web` shows it as ` · rendered` on the domain line.
+
+`web`'s `Render` and `Read` both prefer this provider **by name**, then any
+other renderer in registration order (`crates/web/src/actor.rs`); `browser`'s
+`ObscuraRender` (`crates/browser/src/render.rs`) stays registered as the
 fallback when `scrape` is disabled, and Firecrawl / OpenSERP remain optional
-renderers behind `search_providers` (`crates/search-providers/src/firecrawl.rs:219`,
-`openserp.rs:215`). With none: `rendered fetch needs a rendering provider:
-scrape, browser, or firecrawl` (`actor.rs:22-23`). Consumers: `read_url
-{rendered: true}` (`crates/web/src/tools.rs:313-319`) and `search_web`, which
-reads its top `read` hits (default 5) through this provider in one call, with
-a plain markdown fetch as fallback when render fails (16 §5, §4.7).
+renderers behind `search_providers` (`crates/search-providers/src/firecrawl.rs`,
+`openserp.rs`) — all three always report `tier: "render"`. With none:
+`rendered fetch needs a rendering provider: scrape, browser, or firecrawl`
+(`actor.rs`).
+
+Alternative beaten: Firecrawl's engine order. Its `scrapeURL` runs engines by
+quality — `chrome-cdp` at 50 above `fetch` at 5
+(`apps/api/src/scraper/scrapeURL/engines/index.ts`) — so the browser goes
+first and a shell can never be mistaken for a page; its per-engine success
+check is just `markdown.trim().length > 0`. Rejected for latency: every
+server-rendered page would pay a browser render, and a `search_web` five of
+them in parallel. Kept fetch-first, and fixed the gate so the fallthrough
+fires on a shell (§0.3).
 
 Search: provider order is `web`'s built-ins (`engines/mod.rs:32-40`) → whatever
 `search-providers` registers (`brave_api`, `firecrawl`, `searxng`, `openserp`,
@@ -360,8 +393,28 @@ smoke below (2026-09-17, author's network, debug build).
   before `reject_decoys`, Bing returned five confidently unrelated hits
   (LinkedIn, zhihu) with HTTP 200 and the right `<title>`, reproducible with
   `curl` (16 §10).
-- Not exercised: the obscura render tier (no browser in the example; needs a
-  full harness turn), a `crawl`/`map_site` call from the Python runtime with a
+- Live smoke, read tier (2026-09-17, an agent using `search_web best
+  mechanical keyboard 2026` through a full harness turn): rtings.com came
+  back as a navigation shell and is the live case the prose gate (§0.3) is
+  measured against — its plain fetch is thousands of chars of nav/product
+  markdown with < 800 chars of prose, so `is_thin` must now say thin and the
+  read must show ` · rendered`.
+  Live smoke 2026-09-17 (throwaway example with the `browser` actor spawned,
+  debug build): `Read` on rtings.com logs `fetch thin; trying obscura`, comes
+  back `tier=render`, 28 188 chars, **15 761 prose chars** (the shell had
+  ~150); `Render` on the same URL is identical, so `read_url {rendered:
+  true}` now renders. `search_web best mechanical keyboard 2026` one call:
+  21-24 s, 5 pages read, rtings.com marked `· rendered` with the pick list
+  ("Keychron V5 Max is our new mid-range pick", "Aula F99/F75 as our budget
+  pick"), PCMag/Wirecutter `fetch`; Banco Best/Bestway rows shown but not
+  read. Obscura settles rtings.com in 19.9-20.7 s under `load`,
+  `domcontentloaded` and `networkidle0` alike - the per-page floor for a
+  heavy client-rendered page and the reason `web.read_timeout_ms` is 25 000;
+  the settle budget is an obscura knob, not ours. Wirecutter's compact
+  keyboards page read fine from this network (41 400 prose chars), so the
+  bot wall the agent hit is network-dependent; it now surfaces as `(could not
+  read: no readable text …)` by construction (prose < 100).
+- Not exercised: a `crawl`/`map_site` call from the Python runtime with a
   real model (scratch data dir has no provider key), gzip sitemaps against a
   real site, the desktop card and TUI progress row on a live run (unit tests
   only), `map_site search=` through the aggregator.
@@ -430,3 +483,29 @@ Review findings that changed the design between draft and HEAD:
    hits it reads, so the desktop `ScrapeCard` and the TUI row show `reading
    n/N` for a search exactly as for a crawl. Alternative beaten: a second
    event type per tool — one card in every frontend needs one event.
+15. **`read` vs `render`, a prose gate, parallel isolates** (2026-09-17).
+   Field report from an agent using the tools (16 §13.17): `search_web best
+   mechanical keyboard 2026` read rtings.com as a nav shell. Three causes in
+   this crate. (a) `is_thin` (`engine.rs`) accepted any fetch ≥ 800 chars of
+   markdown, and a server-rendered nav + product list is thousands of chars
+   around a client-rendered article; now prose-based —
+   `web::excerpt::prose_chars(markdown) < 800`, or `< 2500` with an SPA root
+   marker in the first 4 KiB (§0.3). Alternative beaten: upstream's
+   engine-picker heuristics (text/HTML ratio, status codes) — a ratio still
+   counts link text as text, which is exactly what a nav shell is made of;
+   the §4.7 paragraph filter already knows what is not prose. (b)
+   `ScrapeProvider::render` passed `force_render: false`, so
+   `read_url {rendered: true}` and `search_web`'s reads never used the browser
+   — only `scrape_url {rendered: true}` did. Now `render` forces it and a
+   separate `read` (overriding `web::Provider::read`) is the two-tier pick;
+   `web` calls `Read` from `search_web` and `Render` from `read_url` (§5).
+   Alternative beaten: Firecrawl's browser-first order (§5) — right by
+   construction, five renders per search. (c) One `render_lock` mutex
+   serialised every render on one isolate, so five thin reads in a search
+   would have rendered one after another under a 8 s deadline. Replaced by
+   `RenderSlots`: a `tokio::sync::Semaphore` over `scrape.concurrency`
+   sessions with a free list of `SessionId`s derived from the `RENDER_SESSION`
+   base; `call()` takes the session as a parameter (`engine.rs`). `Fetched`
+   gained `tier` (`"fetch"` | `"render"`) and `ScrapeProvider` copies it into
+   `web::Rendered.tier` (16 §5). `web.read_timeout_ms` default 8000 → 25000 (obscura settles rtings.com in ~20s, 16 §13.17)
+   so a render after a thin fetch fits. Status: §11, read tier.

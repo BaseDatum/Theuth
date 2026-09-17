@@ -199,7 +199,7 @@ pub struct Feature {
     pub attributes: Vec<(String, String)>,
 }
 
-/// A page fetched through a provider's browser (16 §5 `rendered`).
+/// A page read through a provider (16 §5 `rendered`).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Rendered {
     /// Final URL after the provider's redirects.
@@ -208,6 +208,10 @@ pub struct Rendered {
     pub title: Option<String>,
     /// Page body as markdown.
     pub markdown: String,
+    /// How the body was obtained: `fetch` (plain HTTP + converter) or
+    /// `render` (a browser). `search_web` shows it so the model knows when a
+    /// thin page is worth `read_url {rendered: true}`.
+    pub tier: String,
 }
 
 /// Static facts about a provider; drives selection and the tool description.
@@ -278,7 +282,8 @@ pub trait Provider: Send + Sync + 'static {
         q: &Query,
     ) -> Result<(Vec<RawResult>, Vec<Feature>), ProviderError>;
 
-    /// Fetch `url` through the provider's browser. Only when `meta().renders`.
+    /// Fetch `url` through the provider's browser (always the browser —
+    /// `read_url {rendered: true}` relies on it). Only when `meta().renders`.
     async fn render(
         &self,
         client: &reqwest::Client,
@@ -286,6 +291,17 @@ pub trait Provider: Send + Sync + 'static {
     ) -> Result<Rendered, ProviderError> {
         let _ = (client, url);
         Err(ProviderError::Unsupported)
+    }
+
+    /// Read `url` the cheapest way that yields the page's real content;
+    /// providers with a fast path override it (scrape: fetch, browser only
+    /// when the fetch is thin). `render` must always be the browser.
+    async fn read(
+        &self,
+        client: &reqwest::Client,
+        url: &url::Url,
+    ) -> Result<Rendered, ProviderError> {
+        self.render(client, url).await
     }
 }
 

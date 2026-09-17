@@ -50,7 +50,8 @@ pub struct WebConfig {
     pub read_top: usize,
     /// Passage budget in characters per read page.
     pub read_chars: usize,
-    /// Per-page read deadline for `search_web`.
+    /// Per-page read deadline for `search_web`. Covers a plain fetch plus the
+    /// browser render that follows when the fetch is thin (client-rendered page).
     pub read_timeout_ms: u64,
     /// Per-feature cap in the search text (16 §4.4).
     pub feature_max_chars: usize,
@@ -72,7 +73,7 @@ impl Default for WebConfig {
             fetch_max_chars: 4000,
             read_top: 5,
             read_chars: 2500,
-            read_timeout_ms: 8000,
+            read_timeout_ms: 25000,
             feature_max_chars: 600,
             max_fetch_bytes: 2_097_152,
             max_redirects: 5,

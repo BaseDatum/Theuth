@@ -71,6 +71,16 @@ pub fn best_passages(markdown: &str, query: &str, max_chars: usize) -> Vec<Strin
     chosen.into_iter().map(|i| paras[i].clone()).collect()
 }
 
+/// Total chars of the paragraphs [`best_passages`] would score: the page's
+/// prose after nav / image / link-list noise and short blocks are dropped and
+/// headings folded. 0 for a page that is only navigation, which is how the
+/// scrape engine tells a client-rendered shell from a real article even when
+/// the shell's link lists run to thousands of chars of markdown.
+#[must_use]
+pub fn prose_chars(markdown: &str) -> usize {
+    paragraphs(markdown).iter().map(|p| p.chars().count()).sum()
+}
+
 /// Blank-line separated blocks, noise removed, headings folded, merged and capped.
 fn paragraphs(markdown: &str) -> Vec<String> {
     let mut blocks: Vec<String> = Vec::new();
@@ -375,5 +385,18 @@ mod tests {
     fn blank_input_is_empty() {
         assert!(best_passages("", "anything", 500).is_empty());
         assert!(best_passages("  \n\n ", "anything", 500).is_empty());
+    }
+
+    #[test]
+    fn prose_chars_ignores_navigation() {
+        let nav = "![logo](https://example.com/logo.png)\n\n\
+                   - [Home](https://example.com/)\n- [Reviews](https://example.com/reviews)\n\
+                   - [Blog](https://example.com/blog)\n- [Pricing](https://example.com/pricing)\n\n\
+                   ---\n\n[Sign in](https://example.com/login) · [Register](https://example.com/join)";
+        assert_eq!(prose_chars(nav), 0);
+        let article = doc(&[filler("battery"), filler("display")]);
+        let got = prose_chars(&format!("{nav}\n\n{article}"));
+        let len = article.chars().count();
+        assert!(got > 0 && got.abs_diff(len) <= 2, "{got} vs {len}");
     }
 }

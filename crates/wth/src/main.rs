@@ -133,7 +133,7 @@ agent:
 #   fetch_max_chars: 4000
 #   read_top: 5              # search_web reads this many top hits
 #   read_chars: 2500         # passage budget per read page
-#   read_timeout_ms: 8000
+#   read_timeout_ms: 25000        # a client-rendered page takes obscura ~20s
 
 # scrape:                    # scrape_url / crawl / map_site (design doc 38)
 #   concurrency: 5

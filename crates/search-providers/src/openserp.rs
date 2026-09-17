@@ -252,6 +252,7 @@ impl Provider for Openserp {
             url: non_empty(e.url).unwrap_or_else(|| url.to_string()),
             title: non_empty(e.title),
             markdown: e.markdown.unwrap_or_default(),
+            tier: "render".into(),
         })
     }
 }

@@ -120,6 +120,7 @@ impl Provider for ObscuraRender {
             url: final_url.to_owned(),
             title: title.map(str::to_owned),
             markdown,
+            tier: "render".into(),
         })
     }
 }

@@ -1,7 +1,7 @@
 //! The `web` actor (design doc 16 §3.1), registered as
 //! [`crate::provider::WEB_ACTOR`]: owns the provider set in registration
-//! order and answers `Search` / `Render` off the mailbox, so a slow provider
-//! never blocks a `RegisterProvider` from `search-providers`.
+//! order and answers `Search` / `Read` / `Render` off the mailbox, so a slow
+//! provider never blocks a `RegisterProvider` from `search-providers`.
 
 use std::sync::{Arc, RwLock};
 
@@ -18,7 +18,7 @@ use crate::provider::{
 /// `Tool::description` (sync) reflects the current set without a mailbox hop.
 pub type ProviderMetas = Arc<RwLock<Vec<ProviderMeta>>>;
 
-/// Error text when `Render` finds no rendering provider (16 §5).
+/// Error text when `Read` / `Render` finds no rendering provider (16 §5).
 pub const NO_RENDERER: &str =
     "rendered fetch needs a rendering provider: scrape, browser, or firecrawl";
 
@@ -58,6 +58,16 @@ impl WebActor {
             *m = self.providers.iter().map(|p| p.meta()).collect();
         }
     }
+
+    /// The provider `Read` / `Render` go through: `scrape` when registered,
+    /// else the first that renders.
+    fn renderer(&self) -> Option<Arc<dyn Provider>> {
+        self.providers
+            .iter()
+            .find(|p| p.meta().renders && p.meta().name == "scrape")
+            .or_else(|| self.providers.iter().find(|p| p.meta().renders))
+            .cloned()
+    }
 }
 
 /// `ask` → `Vec<ProviderMeta>` in registration order.
@@ -74,10 +84,19 @@ pub struct Search {
     pub providers: Option<Vec<String>>,
 }
 
-/// `ask` → `Result<Rendered, String>` through the first provider whose
-/// `meta().renders`; [`NO_RENDERER`] when none. Runs off the mailbox.
+/// `ask` → `Result<Rendered, String>` through the browser of the `scrape`
+/// provider, else the first whose `meta().renders`; [`NO_RENDERER`] when
+/// none. Always a browser render (`read_url {rendered: true}`). Runs off the
+/// mailbox.
 #[derive(Clone, Debug)]
 pub struct Render(pub url::Url);
+
+/// `ask` → `Result<Rendered, String>`: the page's real content the cheapest
+/// way the same provider `Render` would pick offers ([`Provider::read`]:
+/// scrape fetches first, browser only when the fetch is thin). What
+/// `search_web` reads hits with. Runs off the mailbox.
+#[derive(Clone, Debug)]
+pub struct Read(pub url::Url);
 
 impl Message<RegisterProvider> for WebActor {
     type Reply = ();
@@ -151,13 +170,7 @@ impl Message<Render> for WebActor {
     ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        let Some(p) = self
-            .providers
-            .iter()
-            .find(|p| p.meta().renders && p.meta().name == "scrape")
-            .or_else(|| self.providers.iter().find(|p| p.meta().renders))
-            .cloned()
-        else {
+        let Some(p) = self.renderer() else {
             tx.send(Err(NO_RENDERER.to_owned()));
             return reply;
         };
@@ -165,6 +178,32 @@ impl Message<Render> for WebActor {
         tokio::spawn(async move {
             tx.send(
                 p.render(&client, &url)
+                    .await
+                    .map_err(|e| format!("{}: {e}", p.meta().name)),
+            );
+        });
+        reply
+    }
+}
+
+impl Message<Read> for WebActor {
+    type Reply = DelegatedReply<Result<Rendered, String>>;
+
+    async fn handle(
+        &mut self,
+        Read(url): Read,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let Some(p) = self.renderer() else {
+            tx.send(Err(NO_RENDERER.to_owned()));
+            return reply;
+        };
+        let client = self.client.clone();
+        tokio::spawn(async move {
+            tx.send(
+                p.read(&client, &url)
                     .await
                     .map_err(|e| format!("{}: {e}", p.meta().name)),
             );

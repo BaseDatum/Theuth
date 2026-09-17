@@ -359,41 +359,75 @@ are the best-tested part of the crate. `fetch/clean.rs` is replaced by
   (markdown) or token-cheap prose (text) from one tree.
 - `rendered: true` → `WebActor`'s `Render` picks the provider named `scrape`
   when it has `renders: true`, else the first registered renderer in
-  registration order (`crates/web/src/actor.rs:154-159`). Order as built:
-  `scrape` (38 §5: plain fetch → `transform_html` → markdown, obscura only
-  when the page comes back thin or the fetch fails — so a rendered read of a
-  static page never opens a browser), then `browser` (23: the embedded
-  obscura isolate, `browser_navigate` → `browser_markdown` → `browser_close`,
-  `crates/browser/src/render.rs:86-89`), then Firecrawl (`/v2/scrape` with
-  `formats: ["markdown"]`) and OpenSERP extract when `search-providers`
-  registers them. The SSRF check still runs on the URL before it is sent
-  anywhere (`tools.rs:313-317`); the browser's own private-network guard is a
-  separate setting (`browser.allow_private_network`, 23 §0.8) and does not
-  loosen this fetcher's. With none registered: `rendered fetch needs a
-  rendering provider: scrape, browser, or firecrawl` (`actor.rs:22-23`).
+  registration order (`crates/web/src/actor.rs`). `Render` **always means the
+  browser** (2026-09-17, §13.17): `Provider::render` is documented as "always
+  the browser" (`crates/web/src/provider.rs`), and `ScrapeProvider::render` is
+  `fetch_page(url, force_render: true, …)` — before that day it passed
+  `false`, so `read_url {rendered: true}` ran the two-tier pick and a page
+  whose plain fetch was not "thin" never saw obscura. Order as built:
+  `scrape` (38 §5: obscura through `scrape.concurrency` isolate slots,
+  `browser_navigate` → `browser_markdown` → `browser_close`), then `browser`
+  (23: the embedded obscura isolate, `crates/browser/src/render.rs`), then
+  Firecrawl (`/v2/scrape` with `formats: ["markdown"]`) and OpenSERP extract
+  when `search-providers` registers them. The SSRF check still runs on the
+  URL before it is sent anywhere (`tools.rs`); the browser's own
+  private-network guard is a separate setting
+  (`browser.allow_private_network`, 23 §0.8) and does not loosen this
+  fetcher's. With none registered: `rendered fetch needs a rendering
+  provider: scrape, browser, or firecrawl` (`actor.rs`).
+- `Provider::read` (2026-09-17) is the second entry point: "read `url` the
+  cheapest way that yields the page's real content". Default impl calls
+  `render`; `scrape` overrides it with `fetch_page(url, false, true)` — plain
+  fetch, obscura only when the fetch is thin (38 §0.3). `WebActor::Read`
+  picks the provider exactly as `Render` does and calls `read`. Every
+  `Rendered` carries `tier: "fetch" | "render"` naming which one answered
+  (`browser`, Firecrawl and OpenSERP always `"render"`).
 - `search_web` reads its top `read` hits (0..=8, default `read_top: 5`,
-  `tools.rs`) through the same `Render` path, all pages concurrently, each
-  under `read_timeout_ms` (default 8000): the `scrape` provider's two-tier pick
-  with `only_main_content: true`, so a JS-only hit reads correctly and a static
-  page never opens a browser; a plain markdown fetch is the fallback when
-  render fails, and a page that fails both is reported inline as `(could not
-  read: …)` rather than failing the call. Each page's markdown goes through
-  §4.7 into a `read_chars` budget. While pages are in flight the tool
-  publishes `ScrapeProgress { inflight, done, limit: read }`
-  (`crates/web/src/progress.rs` — moved there from `scrape`, 38 §12.14): once
-  before the SERP with both lists empty ("searching…"), once right after it
-  with the URLs about to be read, then after each page completes, so the
-  frontends show `reading n/N · host` (TUI) and the sources card with read
-  pages first (desktop).
-- **Which hits get a read slot** (found in live smoke 2026-09-17): a hit
-  whose title, snippet and URL together share fewer than two query tokens
-  (one for a one-token query; `excerpt::tokens`, stopwords out) is skipped
-  for reading but stays in the list. Bing's SERP for `best mechanical
+  `tools.rs`) through `Read` (not `Render`), all pages concurrently, each
+  under `read_timeout_ms` (default 25000, §6): a static page never opens a
+  browser, a shell does; a plain markdown fetch is the fallback when the
+  provider fails (`tier: "fetch"`), and a page that fails both is reported
+  inline as `(could not read: …)` rather than failing the call. A page whose
+  markdown has fewer than 100 chars of prose (`excerpt::prose_chars`, the
+  §4.7 paragraph filter) is reported as `(could not read: no readable text
+  (JavaScript-only page or bot wall))`, not as a read page with a junk
+  excerpt — the NYT bot wall came back as a success titled `nyt.net` with
+  empty excerpts before this. `ReadPage.tier` carries the tier to RPC
+  consumers and the domain line shows ` · rendered` when it is `"render"`
+  (`render.rs` `search_text`), so the model can see a hit was read through
+  the browser and judge a thin excerpt accordingly. Each page's markdown
+  goes through §4.7 into a `read_chars` budget. While pages are in flight
+  the tool publishes `ScrapeProgress { inflight, done, limit: read }`
+  (`crates/web/src/progress.rs` — moved there from `scrape`, 38 §12.14):
+  once before the SERP with both lists empty ("searching…"), once right
+  after it with the URLs about to be read, then after each page completes,
+  so the frontends show `reading n/N · host` (TUI) and the sources card
+  with read pages first (desktop).
+- **Which hits get a read slot** (found in live smoke 2026-09-17, revised
+  the same day): two passes over the ranked hits. First, hits whose
+  **title alone** shares ≥ min(2, query tokens) tokens with the query
+  (`excerpt::tokens`, stopwords out); if fewer than `read` were chosen, fill
+  in rank order with hits whose title + snippet + URL together share that
+  many. Skipped hits stay in the list. Bing's SERP for `best mechanical
   keyboard 2026` carried `Banco Best` and `Bestway` rows that passed
-  `reject_decoys` (they share `best`); before the rule two of five read slots
-  went to a Portuguese bank. Alternative beaten: dropping such hits from the
-  results — the model can still judge them from the snippet, and the rule is
-  a heuristic that should cost a read, not a result.
+  `reject_decoys` (they share `best`); before the first rule two of five
+  read slots went to a Portuguese bank. The title pass was added when the
+  same query's Wikipedia hits (`Mechanical keyboard`, `Keyboard technology`)
+  took slots that the review articles — whose titles carry `best`,
+  `mechanical`, `keyboard` — should have had; a snippet matches almost any
+  query it was retrieved for, a title only when the page is about it.
+  Alternative beaten: dropping such hits from the results — the model can
+  still judge them from the snippet, and the rule is a heuristic that
+  should cost a read, not a result.
+- **Fetch-first, not browser-first** (2026-09-17). Firecrawl runs its
+  engines in quality order — `chrome-cdp` at quality 50 above `fetch` at 5
+  (`apps/api/src/scraper/scrapeURL/engines/index.ts`) — so every page pays a
+  browser render and the question "was the fetch a shell?" never arises; its
+  per-engine success check is only `markdown.trim().length > 0`. Rejected:
+  five parallel browser renders per `search_web` on pages that are
+  server-rendered anyway. Kept fetch-first behind `scrape`'s prose gate
+  (`is_thin`, 38 §0.3), which after that day measures prose, not markdown
+  length, and so actually detects a shell.
 
 ## 6. Config and credentials
 
@@ -408,7 +442,7 @@ web:                          # design doc 16 - built-in engines, fetch, tools
   fetch_max_chars: 4000
   read_top: 5                 # search_web reads this many top hits (`read` overrides per call)
   read_chars: 2500            # passage budget per read page (§4.7)
-  read_timeout_ms: 8000       # per-page read deadline
+  read_timeout_ms: 25000      # per-page read deadline: obscura needs ~20s on a heavy client-rendered page (rtings.com, measured 2026-09-17); was 8000, §13.17
   feature_max_chars: 600
   user_agent: "wth/0.1 (+https://github.com/skymoore/wth)"
 
@@ -672,3 +706,31 @@ Each step leaves `wth` runnable.
     §1); (c) inlining whole pages as `fetch_top` did — 4000 chars of page top
     per hit, mostly chrome, where 2500 chars of ranked passages carry the
     part that answers the query.
+17. **`read` vs `render`, a prose gate, and a visible tier** (2026-09-17).
+    Field report from an agent using the tools: `search_web best mechanical
+    keyboard 2026` read rtings.com as a navigation shell — a server-rendered
+    nav + product list is thousands of chars of markdown, and `scrape`'s
+    `is_thin` (`crates/scrape/src/engine.rs`) accepted anything ≥ 800 chars,
+    so the browser tier never fired although the article is client-rendered;
+    `ScrapeProvider::render` passed `force_render: false`, so
+    `read_url {rendered: true}` and `search_web`'s reads never used the
+    browser at all (only `scrape_url {rendered: true}` did); the NYT bot wall
+    surfaced as a successful page titled `nyt.net` with empty excerpts; and
+    two Wikipedia hits took read slots the review articles should have had.
+    Fixes, all §5: (a) `Provider::read` (cheapest real content; default =
+    `render`) beside `Provider::render` (always the browser),
+    `WebActor::Read` for `search_web`, `Render` for `read_url {rendered:
+    true}`; `ScrapeProvider::render` forces the browser, its `read` is the
+    two-tier pick (38 §5). (b) `is_thin` is prose-based:
+    `web::excerpt::prose_chars` — the chars of the paragraphs §4.7 would
+    score, after its noise filter — < 800, or < 2500 with an SPA root marker
+    in the first 4 KiB (38 §0.3). (c) `Rendered.tier` / `ReadPage.tier`
+    (`fetch` | `render`), shown as ` · rendered` on the domain line. (d) a
+    read with < 100 chars of prose is `(could not read: no readable text
+    (JavaScript-only page or bot wall))`. (e) read slots: title-overlap
+    pass first, then title+snippet+url fill. (f) `scrape`'s renders run on
+    `scrape.concurrency` isolate slots (`engine.rs` `RenderSlots`) instead of
+    one mutex-serialised session, so five reads render in parallel (38
+    §12.15). (g) `read_timeout_ms` default 8000 → 25000: obscura settles rtings.com in 19.9-20.7s whatever `waitUntil` is passed (`load`, `domcontentloaded`, `networkidle0` all measured), so a 12s deadline would have cut every heavy render and handed back the shell; a timed-out read is now reported as an error naming `read_url rendered: true` instead of falling back to the raw fetch of the same shell. Alternative beaten:
+    Firecrawl's browser-first engine order (§5, last bullet) — correct by
+    construction, but every SSR page pays a render and a search pays five.
