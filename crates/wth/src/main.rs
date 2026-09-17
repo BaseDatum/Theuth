@@ -100,6 +100,10 @@ struct Cli {
     /// List secrets: names, versions, notes, dates. Never values.
     #[arg(long, conflicts_with_all = ["headless", "serve", "acp", "prompt", "resume", "link_signal", "slack_manifest", "slack_setup", "link", "install_service", "uninstall_service"])]
     secret_list: bool,
+    /// Check the release manifest once, verify, replace this binary on disk
+    /// (or `brew upgrade wth` for a Homebrew install), print one line, exit (39 §3.2).
+    #[arg(long, conflicts_with_all = ["headless", "serve", "acp", "prompt", "resume", "link_signal", "slack_manifest", "slack_setup", "link", "install_service", "uninstall_service", "secret_set", "secret_rm", "secret_list"])]
+    update: bool,
 }
 
 const DEFAULT_CONFIG: &str = "# wth configuration. Every plugin reads its own section.
@@ -178,6 +182,11 @@ agent:
 # schedule:                  # scheduled runs from <data_dir>/schedules/*.md files (design doc 34); `/schedules` lists them
 #   enabled: true            # false: no watcher, no actor, no tool, no prompt block
 #   run_timeout_secs: 1800   # a run still going after this is cancelled and reported as `timeout`
+
+# update:                    # self-update (design doc 39): check the release bucket, verify the signature, replace this
+#                            # binary on disk; takes effect at the next start. Nothing is ever asked. `wth --update` forces a check.
+#   enabled: true
+#   url: https://s3.rwx.dev/wth/releases/latest.json
 
 # artifact:                  # `show` tool: files the agent makes for the user, as cards in the chat (design doc 35); `/artifacts` lists them
 #   enabled: true            # false: no `show` tool, no prompt block, no /artifacts; blobs and index kept
@@ -300,6 +309,10 @@ async fn run() -> anyhow::Result<()> {
     let config = Figment::new()
         .merge(Yaml::file(&config_path))
         .merge(Env::prefixed("WTH_").split("__"));
+    if cli.update {
+        let cfg: update::UpdateConfig = config.extract_inner("update").unwrap_or_default();
+        return update_cli(&cfg, &data_dir).await;
+    }
     if let Some(name) = cli.secret_set {
         let op = secret_cli::Op::Set {
             name,
@@ -419,6 +432,7 @@ async fn run() -> anyhow::Result<()> {
         plugins.push(Box::new(link::LinkPlugin));
         plugins.push(Box::new(nodes::NodesPlugin));
         plugins.push(Box::new(schedule::SchedulePlugin));
+        plugins.push(Box::new(update::UpdatePlugin));
         if cli.serve || cli.headless {
             plugins.push(Box::new(rpc::RpcPlugin));
         }
@@ -454,4 +468,26 @@ async fn run() -> anyhow::Result<()> {
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     drop(_guard);
     std::process::exit(0)
+}
+
+/// `wth --update` (39 §3.2): one foreground check, one line on stdout.
+/// Logs go to stderr so `RUST_LOG=debug wth --update` shows the debug lines.
+async fn update_cli(cfg: &update::UpdateConfig, data_dir: &Path) -> anyhow::Result<()> {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_writer(std::io::stderr)
+        .try_init();
+    match update::run_once(cfg, data_dir).await {
+        Ok(update::Outcome::UpToDate) => println!("up to date ({})", env!("CARGO_PKG_VERSION")),
+        Ok(update::Outcome::Applied { from, to }) => println!("wth {from} → {to}"),
+        Ok(update::Outcome::Available { version, path }) => println!(
+            "wth {version} available; {} is not writable — run `sudo wth --update`",
+            path.display()
+        ),
+        Err(e) => {
+            eprintln!("update: {e:#}");
+            std::process::exit(1);
+        }
+    }
+    Ok(())
 }

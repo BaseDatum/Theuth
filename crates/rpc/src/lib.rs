@@ -60,14 +60,29 @@ impl runtime::Plugin for RpcPlugin {
         // The link plugin dispatches decrypted device requests into our
         // methods and serves ACP over mode-1 conns (32 §4.3); it registers
         // in its own start, so hand it the dispatch once it is there.
-        let rt = rt.clone();
+        let link_rt = rt.clone();
         tokio::spawn(async move {
+            let rt = link_rt;
             let methods = methods(rt.clone()).await;
             if let Some(link) = rt.lookup_when::<link::LinkActor>(link::LINK_ACTOR).await {
                 let acp: link::AcpServe = Arc::new(|rt, ch: link::RecordChannel| {
                     Box::pin(acp::serve_records(rt, ch.inbound, ch.outbound))
                 });
                 let _ = link.tell(link::SetDispatch { methods, acp }).await;
+            }
+        });
+        // 39 §3.4: how many frontends hold a receiver; the updater only
+        // restarts a service daemon when this is 0.
+        let rt = rt.clone();
+        tokio::spawn(async move {
+            let tx = bridge::start(&rt).await;
+            if let Some(u) = rt
+                .lookup_when::<update::UpdateActor>(update::UPDATE_ACTOR)
+                .await
+            {
+                let _ = u
+                    .tell(update::SetAttached(Arc::new(move || tx.receiver_count())))
+                    .await;
             }
         });
         Ok(())

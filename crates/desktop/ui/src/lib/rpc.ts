@@ -37,6 +37,7 @@ export const queryKeys = {
   slack: ['slack'] as const,
   computer: ['computer'] as const,
   secrets: ['secrets'] as const,
+  updateStatus: ['update-status'] as const,
 }
 
 const SESSIONS_DEBOUNCE_MS = 500

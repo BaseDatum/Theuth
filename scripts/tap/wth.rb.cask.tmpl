@@ -1,0 +1,13 @@
+cask "wth" do
+  version "@VERSION@"
+  sha256 "@SHA_DMG@"
+  url "@BASE_URL@/#{version}/wth_#{version}_macos-aarch64.dmg"
+  name "wth"
+  desc "Desktop app for the wth harness"
+  homepage "https://github.com/skymoore/wth"
+  depends_on arch: :arm64
+  depends_on macos: ">= :monterey"
+  auto_updates true
+  app "wth.app"
+  zap trash: "~/Library/Application Support/wth.rwx.dev"
+end

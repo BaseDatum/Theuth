@@ -1,0 +1,35 @@
+[package]
+name = "update"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Self-update: check the release manifest, verify, replace the running binary on disk; never ask (design doc 39)"
+
+[dependencies]
+runtime = { workspace = true }
+agent = { workspace = true }
+kameo = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+tracing = { workspace = true }
+base64 = { workspace = true }
+reqwest = { workspace = true }
+semver = { workspace = true }
+minisign-verify = { workspace = true }
+flate2 = { workspace = true }
+tar = { workspace = true }
+rand = { workspace = true }
+ts-rs = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[features]
+ts = ["dep:ts-rs", "runtime/ts", "agent/ts"]
+
+[lints]
+workspace = true

@@ -1,4 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { getVersion } from '@tauri-apps/api/app'
 import { disable, enable, isEnabled } from '@tauri-apps/plugin-autostart'
 import { useState } from 'react'
 import { Row, Section, refreshInfo, useAction } from '@/components/settings/shared'
@@ -13,6 +14,8 @@ import {
 import { Switch } from '@/components/ui/switch'
 import { container } from '@/lib/platform'
 import { queryKeys, useApi } from '@/lib/rpc'
+import { isTauri } from '@/lib/tauri'
+import { useUpdate } from '@/lib/update'
 import { LOCAL, useHarnesses } from '@/link/harnesses'
 import { type Theme, currentTheme, setTheme } from '@/lib/theme'
 import type { CompactStyle } from '@/rpc/bindings/CompactStyle'
@@ -31,6 +34,7 @@ const COMPACT: [CompactStyle, string][] = [
 ]
 
 const AUTOSTART = ['autostart'] as const
+const APP_VERSION = ['app-version'] as const
 
 export function General() {
   const api = useApi()
@@ -51,6 +55,19 @@ export function General() {
     queryKey: AUTOSTART,
     queryFn: isEnabled,
     enabled: desktop,
+  })
+  // 39 §4.2: the bundle's version and the one that installs at quit.
+  const pending = useUpdate((s) => s.pending)
+  const appVersion = useQuery({
+    queryKey: APP_VERSION,
+    queryFn: getVersion,
+    enabled: desktop && isTauri(),
+  })
+  // 39 §4.3: the daemon's own updater; `wth` on a terminal harness is not the bundled sidecar.
+  const update = useQuery({
+    queryKey: queryKeys.updateStatus,
+    queryFn: () => api.update_status(),
+    enabled: !!info,
   })
 
   const setTitleModel = useAction((id: string) => api.set_title_model(id === 'off' ? null : id), {
@@ -163,6 +180,14 @@ export function General() {
             <Row label="Toggle window" description="Fixed in this version.">
               <kbd className="rounded-md border px-2 py-0.5 font-sans text-sm">⌥Space</kbd>
             </Row>
+            <Row
+              label="App"
+              description={
+                pending
+                  ? `wth ${appVersion.data ?? ''} · ${pending} installs when you quit`
+                  : `wth ${appVersion.data ?? ''}`
+              }
+            />
           </>
         )}
       </Section>
@@ -176,6 +201,12 @@ export function General() {
               {info.data_dir}
             </code>
           </Row>
+          {update.data && (
+            <Row
+              label="Update"
+              description={`${update.data.version} ${update.data.applied ? 'ready · restarts with the daemon' : 'available · `wth --update` on the harness'}`}
+            />
+          )}
         </Section>
       )}
     </>

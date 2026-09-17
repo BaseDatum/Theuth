@@ -11,6 +11,8 @@
 mod commands;
 #[cfg(desktop)]
 mod launch;
+#[cfg(desktop)]
+mod update;
 
 /// Build and run the app. Desktop and mobile share the opener/notification
 /// plugins; everything else is one `cfg` side or the other.
@@ -31,7 +33,9 @@ pub fn run() {
     app.run(|app, event| {
         if let tauri::RunEvent::Exit = event {
             use tauri::Manager;
+            // 39 §3.3: stop the sidecar first, then swap the bundle it ran from.
             app.state::<launch::Launch>().shutdown();
+            update::install_pending(app);
         }
     });
     #[cfg(mobile)]
@@ -139,7 +143,7 @@ mod desktop {
     use tauri::{AppHandle, Builder, Emitter, Manager, WebviewWindow, WindowEvent, Wry};
     use tauri_plugin_positioner::{Position, WindowExt};
 
-    use crate::{commands, launch};
+    use crate::{commands, launch, update};
 
     /// The webview acknowledges `quit-requested` with `quit_ack` (after RPC
     /// `shutdown` when it owns the daemon); this is the fallback.
@@ -164,7 +168,9 @@ mod desktop {
             .plugin(tauri_plugin_positioner::init())
             .plugin(tauri_plugin_window_state::Builder::new().build())
             .plugin(tauri_plugin_dialog::init())
+            .plugin(update::plugin())
             .manage(launch::Launch::default())
+            .manage(update::Pending::default())
             .manage(Flags::default())
             .invoke_handler(tauri::generate_handler![
                 commands::connection,
@@ -225,6 +231,7 @@ mod desktop {
                 toggle(tray.app_handle());
             }
         });
+        update::start(app);
         Ok(())
     }
 

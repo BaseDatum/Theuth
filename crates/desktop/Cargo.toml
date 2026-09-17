@@ -36,6 +36,12 @@ portable-pty = { workspace = true }
 anyhow = { workspace = true }
 serde_yaml = { workspace = true }
 dirs = { workspace = true }
+# 39 §3.3: background check + verify, install at quit; tokio for `sleep`, rand for the
+# jitter, nix `access(2)` to skip a bundle we cannot rename without a password prompt.
+tauri-plugin-updater = { workspace = true }
+tokio = { workspace = true }
+rand = { workspace = true }
+nix = { workspace = true, features = ["fs"] }
 
 # Mobile only: QR scanning for `/link` and the universal-link handoff (31 §8.2).
 # Direct versions: these have no other consumer, so they are not in the

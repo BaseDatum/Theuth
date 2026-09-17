@@ -13,6 +13,7 @@ import { notifyIfHidden, primeNotifications } from '@/lib/notify'
 import { container } from '@/lib/platform'
 import { queryKeys, useInvalidateOn } from '@/lib/rpc'
 import { connection, onNavigate, onQuitRequested, quitAck, relaunch } from '@/lib/tauri'
+import { startUpdateListener } from '@/lib/update'
 import { LOCAL, hasLocal, hydrateHarnesses, useHarnesses, useNeedsPairing } from '@/link/harnesses'
 import { autoPair, watchNodes } from '@/link/nodes'
 import { LinkTransport } from '@/link/transport'
@@ -186,6 +187,7 @@ function useTauri(): void {
     const desktop = container() === 'macos'
     void primeNotifications()
     if (desktop) {
+      startUpdateListener()
       void register(TOGGLE_SHORTCUT, async (e) => {
         if (e.state !== 'Pressed') return
         const win = getCurrentWindow()

@@ -140,6 +140,8 @@ pub enum UiEvent {
     Pairing(link::Pairing),
     /// Link plugin traffic (bus event).
     LinkEvent(link::LinkEvent),
+    /// The self-updater staged a newer version (39 §4.1).
+    UpdateReady(update::UpdateReady),
     /// Reply to [`Command::ListNodes`] and the node commands that change the list.
     Nodes(Vec<nodes::Node>),
     /// Reply to [`Command::InviteNode`]: the node's name and the string its QR card encodes.
@@ -1800,6 +1802,8 @@ pub struct Model {
     pub width: usize,
     /// Latest `link_status` (badge and `/link` menu); `None` until fetched.
     pub link: Option<link::LinkStatus>,
+    /// Latest [`update::UpdateReady`]; header tag and one transcript line (39 §4.1).
+    pub update: Option<update::UpdateReady>,
     /// `/link` was typed (or a flow that reopens it ran); the next
     /// `UiEvent::Link` opens the menu (same rule as `awaiting_mcp`).
     awaiting_link: bool,
@@ -1850,6 +1854,7 @@ impl Model {
             secrets: self.secrets.take(),
             link: self.link.take(),
             nodes: self.nodes.take(),
+            update: self.update.take(),
             ..Self::new(std::mem::take(&mut self.model_id), self.approvals_global)
         };
     }
@@ -2822,6 +2827,24 @@ impl Model {
                 self.pairing = Some(card);
             }
             UiEvent::LinkEvent(ev) => self.apply_link(ev),
+            UiEvent::UpdateReady(ev) => {
+                // Once per version: the actor may re-emit the same fact.
+                if self.update.as_ref() != Some(&ev) {
+                    let text = if ev.applied {
+                        format!(
+                            "wth {} is installed; it runs the next time you start wth.",
+                            ev.version
+                        )
+                    } else {
+                        format!(
+                            "wth {} is available; `wth --update` installs it (the binary's directory is not writable).",
+                            ev.version
+                        )
+                    };
+                    self.update = Some(ev);
+                    self.interject(Entry::Info(text));
+                }
+            }
             UiEvent::Nodes(list) => {
                 // Never a transcript line: every node event refetches, and a
                 // presence flip is not worth a row. The verbs report themselves.
@@ -3934,21 +3957,23 @@ impl Model {
                 };
                 (
                     format!(
-                        "{model}{effort}  ·  ctx {used} / {} ({pct}%){cache}{}{}{}",
+                        "{model}{effort}  ·  ctx {used} / {} ({pct}%){cache}{}{}{}{}",
                         k(limit),
                         self.approvals_tag(),
                         self.link_tag(),
-                        self.nodes_tag()
+                        self.nodes_tag(),
+                        self.update_tag()
                     ),
                     level,
                 )
             }
             _ => (
                 format!(
-                    "{model}{effort}  ·  ctx {used}{cache}{}{}{}",
+                    "{model}{effort}  ·  ctx {used}{cache}{}{}{}{}",
                     self.approvals_tag(),
                     self.link_tag(),
-                    self.nodes_tag()
+                    self.nodes_tag(),
+                    self.update_tag()
                 ),
                 Level::Normal,
             ),
@@ -3982,6 +4007,16 @@ impl Model {
         match self.nodes.as_deref() {
             Some([]) | None => String::new(),
             Some(list) => format!("  ·  nodes ●{}", list.iter().filter(|n| n.online).count()),
+        }
+    }
+
+    /// `  ·  0.2.0 ready` once a newer binary is installed, `  ·  0.2.0
+    /// available` when only staged; empty otherwise (39 §4.1).
+    fn update_tag(&self) -> String {
+        match &self.update {
+            Some(u) if u.applied => format!("  ·  {} ready", u.version),
+            Some(u) => format!("  ·  {} available", u.version),
+            None => String::new(),
         }
     }
 
@@ -6291,6 +6326,26 @@ mod tests {
         }));
         assert!(m.menu.is_none());
         assert!(matches!(m.entries.last(), Some(Entry::Info(t)) if t == "link off"));
+    }
+
+    #[test]
+    fn update_ready_tags_header_and_lines_once() {
+        let catalog = Catalog::load(std::env::temp_dir().join("wth-tui-no-user-file").as_path());
+        let mut m = Model::new("m".into(), true);
+        let ev = update::UpdateReady {
+            version: "0.2.0".into(),
+            applied: true,
+        };
+        m.apply(UiEvent::UpdateReady(ev.clone()));
+        m.apply(UiEvent::UpdateReady(ev));
+        assert!(m.header(&catalog).0.ends_with("  ·  0.2.0 ready"));
+        let lines = m
+            .entries
+            .iter()
+            .filter(|e| matches!(e, Entry::Info(t) if t.contains("is installed")))
+            .count();
+        assert_eq!(lines, 1);
+        assert!(m.menu.is_none());
     }
 
     #[test]

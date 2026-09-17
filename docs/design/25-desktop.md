@@ -383,7 +383,9 @@ Python stand-in. This section is the bundle around it.
   the terminal's `~/.cargo/bin/wth` from `just install` may differ. Both
   read `~/.wth`; `sessions.sqlite` is WAL and the schema is additive so far.
   Settings › General shows the daemon version from `info()` (version string
-  only; no name).
+  only; no name). Both `~/.cargo/bin/wth` and the sidecar update themselves
+  to the same `latest.json`; skew lasts until the next restart of whichever
+  is behind (39).
 - **Signing / notarization.** `scripts/package-macos.sh` codesigns
   inside-out (sidecar `wth.rwx.dev.wth`, then the `.app`) with hardened
   runtime after Tauri bundles, then `hdiutil` builds the DMG so the
@@ -393,12 +395,15 @@ Python stand-in. This section is the bundle around it.
   hardened runtime). Nested helpers keep the `wth.rwx.dev.*` identifier
   prefix so macOS 15+ Local Network Privacy attributes to the app.
 - **Targets.** Overlay `bundle.targets: ["app"]` (DMG is hdiutil);
-  `macOS.minimumSystemVersion` 12.0; arm64 host-only in v0.
+  `macOS.minimumSystemVersion` 12.0; arm64 host-only in v0. The CLI also
+  ships for `linux-x86_64` / `linux-aarch64` (39 §5.1); the `.app` stays
+  arm64 macOS.
 - **Data dir.** `~/.wth` by default (18: same as the terminal). The app
   never writes outside it except its own window state
   (`~/Library/Application Support/wth.rwx.dev/`, Tauri's default).
-- **Updater.** Not in v0 (no channel to serve from). `tauri-plugin-updater`
-  is the one-line add when there is one.
+- **Updater.** 39: `tauri-plugin-updater` for the bundle, installed at quit
+  (`RunEvent::Exit`, after the sidecar is stopped); the harness updates its
+  own binary. No prompt, no relaunch. (Was "Not in v0" until 2026-09-17.)
 - **just recipes.** `package-macos` / `install-macos` / `notarize-macos`;
   `desktop-bundle` is an alias of `package-macos`. `cargo-tauri` is a
   `just setup` addition (`cargo install tauri-cli --locked`).

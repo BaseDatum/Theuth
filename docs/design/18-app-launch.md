@@ -97,7 +97,9 @@ The daemon then spawns `shell`, MCP servers, ACP harnesses and the 01 §1.4
   the pty.
 - **Daemon dies → app notices** the WebSocket close and the pty EOF; it
   shows the pty log tail (the shell's or `wth`'s last words) and offers
-  relaunch. No auto-restart loop in v0.
+  relaunch. No auto-restart loop in v0. Still true for a desktop-spawned
+  daemon; a service-managed daemon exits `75` after an update when nothing
+  is attached and the service manager restarts it (39 §3.4).
 - **Second app instance / a terminal `wth` already running** on the same
   data dir: nothing enforces one process per data dir today. The app
   should first try the configured port with the token; a live daemon is

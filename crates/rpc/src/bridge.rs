@@ -24,6 +24,7 @@ use tokio::sync::broadcast;
 use tools::{
     ApprovalRequested, ApprovalResolved, AskRequested, AskResolved, JobEvent, McpProgress,
 };
+use update::UpdateReady;
 use web::progress::ScrapeProgress;
 
 /// One serialized event; shared across every subscription without copying.
@@ -98,7 +99,8 @@ forward!(
     ScheduleEvent,
     ArtifactShown,
     SecretsEvent,
-    ScrapeProgress
+    ScrapeProgress,
+    UpdateReady
 );
 
 /// The process-wide event feed. The first caller spawns the bridge,
@@ -134,5 +136,6 @@ pub async fn start(rt: &Runtime) -> broadcast::Sender<Event> {
     rt.subscribe::<Bridge, ArtifactShown>(&actor).await;
     rt.subscribe::<Bridge, SecretsEvent>(&actor).await;
     rt.subscribe::<Bridge, ScrapeProgress>(&actor).await;
+    rt.subscribe::<Bridge, UpdateReady>(&actor).await;
     tx
 }

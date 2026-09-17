@@ -5,6 +5,11 @@ crates talking over a typed message bus; any frontend attaches over JSON-RPC.
 Design: [`docs/design/00-architecture.md`](docs/design/00-architecture.md).
 Adding a plugin: [`docs/plugins.md`](docs/plugins.md).
 
+Install without building: `brew install skymoore/tap/wth` (the CLI, macOS
+arm64 and Linux) or `brew install --cask skymoore/tap/wth` (the macOS app).
+Both keep themselves current ([`docs/design/39-update.md`](docs/design/39-update.md));
+`wth --update` forces a check. Building from source:
+
 ```sh
 just setup                 # rustup toolchain; `just toolchain` prints its bin dir
 export ANTHROPIC_API_KEY=… # any genai provider works; default model in config   # or: wth --secret-set anthropic
@@ -106,7 +111,7 @@ Typst; a content-addressed store under `~/.wth/artifacts/` —
 Config (`~/.wth/`, created on first run; details in
 [`docs/design/01-config-and-subagents.md`](docs/design/01-config-and-subagents.md) §1):
 
-- `config.yaml` — every plugin reads its own section; `WTH_<SECTION>__<KEY>` env overrides. `agent.model` is a models.dev id (`anthropic/claude-sonnet-4-5`); `/model` rewrites that one line in place. The `agent`, `tools`, `secrets`, `knowledge`, `web`, `scrape`, `search_providers`, `browser`, `computer`, `link`, `nodes`, `schedule`, `artifact` and `slack` sections with their defaults:
+- `config.yaml` — every plugin reads its own section; `WTH_<SECTION>__<KEY>` env overrides. `agent.model` is a models.dev id (`anthropic/claude-sonnet-4-5`); `/model` rewrites that one line in place. The `agent`, `tools`, `secrets`, `knowledge`, `web`, `scrape`, `search_providers`, `browser`, `computer`, `link`, `nodes`, `schedule`, `update`, `artifact` and `slack` sections with their defaults:
 
   ```yaml
   agent:
@@ -171,6 +176,9 @@ Config (`~/.wth/`, created on first run; details in
   schedule:                       # design docs 34 + 33; `~/.wth/schedules/*.md` files, `/schedules` lists them
     enabled: true                 # false: no watcher, no actor, no `schedule` tool, no prompt block
     run_timeout_secs: 1800        # a run still going after this is cancelled and reported as `timeout`
+  update:                         # design doc 39; self-update, silent: verify the signature, replace the binary on disk, live at the next start
+    enabled: true                 # false: never checks; `wth --update` still works
+    url: https://s3.rwx.dev/wth/releases/latest.json   # the release manifest; point at a scratch bucket to test
   artifact:                       # design doc 35; the `show` tool, `/artifacts` lists a session's
     enabled: true                 # false: no `show` tool, no prompt block, no /artifacts; blobs and index kept
     fonts: []                     # extra directories searched for PDF fonts, besides system fonts and the embedded set
@@ -365,7 +373,7 @@ Give the model, and your phone, another machine. Four lines on the box:
 
 ```sh
 ssh box
-just install                          # release `wth` into ~/.cargo/bin (or copy the binary over)
+brew install skymoore/tap/wth         # or `just install` (release `wth` into ~/.cargo/bin), or copy the binary over
 wth --secret-set anthropic            # a model key, typed without echo (or piped: `printf %s "$KEY" | wth --secret-set anthropic`)
 wth --install-service --relay wss://relay.example.com   # writes a launchd LaunchAgent / systemd user unit running `$SHELL -l -i -c 'exec wth --headless'`, sets link.enabled, starts it, prints a QR + key
 ```

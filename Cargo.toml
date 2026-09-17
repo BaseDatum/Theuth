@@ -37,6 +37,12 @@ nodes = { path = "crates/nodes" }
 schedule = { path = "crates/schedule" }
 artifact = { path = "crates/artifact" }
 secrets = { path = "crates/secrets" }  # secrets vault (37)
+update = { path = "crates/update" }  # self-update from the release bucket (39)
+# Update (design doc 39): semver compare, the updater plugin's own minisign verifier, tar for the
+# single-file CLI payload. The desktop side is tauri-plugin-updater below.
+semver = "1"
+minisign-verify = "0.2"
+tar = "0.4"
 # Artifacts (design doc 35): in-process Typst for markdown/Typst → PDF, page render for the model's
 # preview; `csv` parses table artifacts; `resvg` (already transitive via typst) rasterises SVG artifacts.
 # typst-as-lib's kit features = embedded fonts + system font scan through typst-kit; `typst-layout`
@@ -172,6 +178,7 @@ tauri-plugin-autostart = "2"
 tauri-plugin-positioner = { version = "2", features = ["tray-icon"] }
 tauri-plugin-window-state = "2"
 tauri-plugin-dialog = "2"
+tauri-plugin-updater = "2"  # 39 §3.3: the .app swaps itself at quit
 # Link (design doc 31): the harness pairs with phones through a stateless relay.
 # snow = Noise handshakes (NK registration, IKpsk2 pairing, IK sessions; suite
 # 25519_AESGCM_SHA256 so the device side is pure WebCrypto). tokio-tungstenite =

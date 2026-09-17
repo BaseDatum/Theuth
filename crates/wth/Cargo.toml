@@ -24,6 +24,7 @@ rpc = { workspace = true }
 link = { workspace = true }
 nodes = { workspace = true }
 schedule = { workspace = true }
+update = { workspace = true }
 artifact = { workspace = true }
 secrets = { workspace = true }
 rpassword = { workspace = true }

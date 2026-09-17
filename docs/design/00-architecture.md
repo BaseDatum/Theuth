@@ -57,7 +57,8 @@ produced. Design doc 18; the bundle around it (sidecar, signing, tray) is
 LaunchAgent or a systemd user unit whose command is the same
 `$SHELL -l -i -c 'exec wth --headless'` without the pty (the journal /
 `logs/service.log` is the transcript), starts it, and pairs the box to the
-user's main harness as a node; 32 §5.1.
+user's main harness as a node; 32 §5.1. How any of them stays current: 39
+(added in 39, 2026-09-17).
 
 ## 3. Message bus: kameo
 
@@ -139,9 +140,10 @@ Shared crate `runtime` contains exactly `Plugin`, `Runtime` (+ the three
 helpers above), `SessionId`, `TurnId`. Nothing else. The tool and approval
 contracts live in `tools`; the agent's commands and its `AgentEvent` live in
 `agent`. Plugins depend on each other's crates for those types along the
-`runtime ← tools ← secrets ← knowledge ← agent ← link ← {signal, slack, nodes, schedule, artifact} ← rpc ← tui ← wth`
+`runtime ← tools ← secrets ← knowledge ← agent ← link ← {signal, slack, nodes, schedule, artifact, update} ← rpc ← tui ← wth`
 (`knowledge` joins the chain in 12 §9; `secrets` in 37 §0.10 — `web`,
-`search-providers`, `agent`, `slack`, `rpc`, `signal` depend on it). This keeps the shared crate under
+`search-providers`, `agent`, `slack`, `rpc`, `signal` depend on it; `update`
+in 39: depends on `agent` only, `rpc` forwards its `UpdateReady`). This keeps the shared crate under
 its 400-line ceiling and puts each contract next to the code that enforces
 it. (Earlier draft put the tool contract in `runtime`; dropped once the
 agent needed `tools` anyway for the registry actor type.)
@@ -592,6 +594,7 @@ crates/
   nodes/              plugin: paired remote harnesses — control conns, dial transport for ACP children (32)
   schedule/           plugin: scheduled runs from `schedules/*.md` — tick, one session per schedule, delivery (34)
   artifact/           plugin: show tool, content-addressed artifact store + index, Typst PDF compile and page render, SVG rasterise, prompt block + pdf skill (35)
+  update/             plugin: silent self-update of the `wth` binary — manifest GET, minisign verify, atomic rename; `--update` (added in 39)
   relay/              bin: wth-relay, stateless encrypted-frame relay (31)
   tui/                plugin: iocraft frontend (§8)
   desktop/            app: Tauri menubar frontend, RPC client of `Api` - not a plugin (designed in 25)
@@ -606,8 +609,10 @@ the `wth` bin; the rest were added by the docs named beside them, each as the ki
 the loop must own (store, frame, compact, repl); frontends do not grow it.
 New subsystems earn a plugin. `agent/src/lib.rs` re-exports; command structs
 live next to the handler that answers them (12 §8). Dependency order:
-`runtime ← tools ← secrets ← knowledge ← agent ← link ← {signal, slack, nodes, schedule, artifact} ← rpc ← tui ← wth`
-(`web`, `search-providers`, `agent`, `slack`, `rpc`, `signal` depend on
+`runtime ← tools ← secrets ← knowledge ← agent ← link ← {signal, slack, nodes, schedule, artifact, update} ← rpc ← tui ← wth`
+(`update` depends on `agent` and `runtime` only, `rpc` forwards
+`UpdateReady` and answers `update_status`, 39 §4.3;
+`web`, `search-providers`, `agent`, `slack`, `rpc`, `signal` depend on
 `secrets`; `agent` calls `tools::secrets::redact` from `tools`, 37 §0.10;
 `rpc` names `link`'s and `nodes`' types like every plugin's; `signal`
 imports `link::qr`; `nodes` imports `link`'s identity, initiator and record
@@ -646,7 +651,7 @@ Workspace dependencies (versions verified 2026-09-09 via `cargo info`):
 | psl | 2.1 | public-suffix list: registrable-domain checks in link filtering (firecrawl-native; 38) |
 | roxmltree | 0.20 | sitemap `urlset` / `sitemapindex` parsing (firecrawl-native; 38) |
 | texting_robots | 0.2 | robots.txt: disallows, `Crawl-delay`, `Sitemap:` (firecrawl-native; 38) |
-| flate2 | 1 | gzip sitemaps inflated in the web fetcher (38) |
+| flate2 | 1 | gzip sitemaps inflated in the web fetcher (38); CLI update tarballs (39) |
 | slack-morphism | 2.28 (patched, 21 §2.1) | Slack Socket Mode + Web API |
 | portable-pty | 0.9 | pty open/spawn/read/write for PTY jobs (22) |
 | vt100 | 0.16 | rendered screen of a PTY job (22) |
@@ -673,6 +678,10 @@ Workspace dependencies (versions verified 2026-09-09 via `cargo info`):
 | zeroize | 1 | secret values in memory (37) |
 | aho-corasick | 1 | one-pass output scrub (37; already transitive via regex) |
 | rpassword | 7 | --secret-set without echo (37) |
+| semver | 1 | update version rule `remote > current ∧ same major` (39; already transitive) |
+| minisign-verify | 0.2 | update payload signatures, the updater plugin's own verifier (39) |
+| tar | 0.4 | extract the one-file CLI update tarball (39) |
+| tauri-plugin-updater | 2 | desktop: check + download at tick, install at quit (39; desktop only) |
 | wiremock | 0.6 dev | provider contract tests |
 
 Build prerequisites (23 §9): `cmake`, `clang`/`libclang` and `llvm-objcopy`/`llvm-nm` (brew `llvm`) for BoringSSL
@@ -778,6 +787,7 @@ Each phase ends with a runnable check, not a test suite.
 | 23 | loops (33) | a `0s` file with `until` runs until the check passes and removes itself; `schedule_done` from a run ends it; `pause`/`resume` flips the line; a run with a live child stays open; `schedule_status` reports from chat | done 2026-09-16 (all five headless; also `max_runs` cap, broken check, `removed`, restart → `lost` + resume, status from history after the file is gone; three defects found and fixed in smoke — tick wake, pending children, settle; owner-DM delivery, subtree timeout, the §2 port loop with an external harness not exercised; 33 §11) |
 | 24 | secrets (37) | a `shell` echoing `{{secret:T}}` shows the placeholder in every frontend and in `messages.body`; `secret_capture` stores a token the transcript never contains; a rotated key is reachable as `:-1` and restorable; a data dir with `credentials.yaml` starts with the file imported and gone; a placeholder in `read_url` asks | done 2026-09-16 (all headless with a real model, plus the TUI on a pty; three leaks found and fixed in smoke — expanded job `command` in `JobEvent`, capture output through `JobEvent`, pty tail; keychain key store and the desktop panes not exercised; 37 §15) |
 | 25 | scrape (38) + in-tree SERP (16 §3.2) | crawl a docs site scoped to its directory; `map_site` via sitemap; `search_web` keyless on google/bing/brave/qwant/duckduckgo | done 2026-09-17 (fetch tier live: docs.rs and tokio.rs crawls fill their budgets in scope, `map_site` 11 URLs with titles; SERP live: brave + duckduckgo answer, google/qwant walled, bing served decoys → `reject_decoys`; two crawl defects found and fixed in smoke — duplicate links eating the budget, nav chrome surviving `only_main_content`; headless `list_tools`/`get_prompt` checked; render tier, a real model turn and the UI on a live run not exercised; 38 §11; search_web one-call read+passages 2026-09-17, 16 §4.7) |
+| 26 | update (39): `wth` and `wth.app` update themselves, silently; Homebrew tap; Linux CLI tarballs | 39 §12 steps 1–10 | in progress 2026-09-17 |
 
 Known gaps carried forward: cancel/error paths in the loop are code-reviewed,
 not smoke-tested; the `Jobs` actor kills every process group on shutdown
@@ -812,3 +822,4 @@ captured `Blocked` fixtures; 16 §10).
   | okf | `knowledge` crate: store, FTS index, gix history, `knowledge_*` tools | plugin | 10, 12 §9 (the harvest *model call* stays in `agent`: it is a continuation of the live frame, 07; keep-it-all-in-agent rejected by the user) |
   | control | `computer` crate | plugin | 27 (safety engine not ported: `Risk` covers it) |
   | scheduler | `schedule` crate: files, tick, one session per schedule, `Deliver` | plugin | 34 (heartbeat, goals briefings, task DAG, notify flags, phase plumbing not ported: each is a file the user writes or a primitive the harness already has) |
+  | updater (Tauri shell only, 966 lines) | `update` crate: manifest, minisign, atomic rename over `current_exe()`; the `.app` via `tauri-plugin-updater` at quit | plugin | 39 (toast, modal, snooze, phases, relaunch, daemon hunting not ported: silent by construction) |

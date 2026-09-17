@@ -12,10 +12,10 @@ use agent::{
     CompactStyle, DeleteSession, EditTurn, ForkSession, GetCompactStyle, GetSubagentTimeout,
     GetTitleModel, Harvest, ListAcp, ListAgents, ListLogins, ListModels, ListProviders, ListQueued,
     ListRegistry, ListSessions, ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginInfo,
-    Logout, ModelInfo, NewSession, ProviderInfo, QueuedInput, Redo, Regenerate, RemoveAcp,
-    PinSession, RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession, SearchSessions, SendInput,
-    SessionSummary, SetCompactStyle, SetEffort, SetModel, SetSubagentTimeout, SetTitleModel,
-    ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw,
+    Logout, ModelInfo, NewSession, PinSession, ProviderInfo, QueuedInput, Redo, Regenerate,
+    RemoveAcp, RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession, SearchSessions,
+    SendInput, SessionSummary, SetCompactStyle, SetEffort, SetModel, SetSubagentTimeout,
+    SetTitleModel, ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw,
 };
 use base64::Engine as _;
 use browser::{BROWSER_ACTOR, Browsers, Screenshot};
@@ -498,6 +498,10 @@ pub trait Api {
     /// Every schedule file with its next/last fire and parse state (34 §8).
     #[method(name = "list_schedules")]
     async fn list_schedules(&self) -> RpcResult<Vec<schedule::ScheduleInfo>>;
+    /// The self-updater's latest state: `null`, or the version that is on disk
+    /// (`applied`) / available but not writable (39 §4.3).
+    #[method(name = "update_status")]
+    async fn update_status(&self) -> RpcResult<Option<update::UpdateReady>>;
     /// Fire a schedule now, ignoring `next`; returns its session (34 §8).
     /// Refused while a run is in flight (`busy`) or the file does not parse.
     #[method(name = "fire_schedule")]
@@ -631,6 +635,14 @@ fn nodes() -> RpcResult<ActorRef<nodes::NodesActor>> {
 fn schedule() -> RpcResult<ActorRef<schedule::Schedule>> {
     lookup::<schedule::Schedule>(schedule::SCHEDULE_ACTOR).map_err(|e| match e.code() {
         NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "schedule is disabled", None::<()>),
+        _ => e,
+    })
+}
+
+/// The update actor; absent when `update.enabled: false` or the plugin is not loaded.
+fn update_actor() -> RpcResult<ActorRef<update::UpdateActor>> {
+    lookup::<update::UpdateActor>(update::UPDATE_ACTOR).map_err(|e| match e.code() {
+        NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "update is disabled", None::<()>),
         _ => e,
     })
 }
@@ -1293,6 +1305,10 @@ impl ApiServer for Server {
 
     async fn list_schedules(&self) -> RpcResult<Vec<schedule::ScheduleInfo>> {
         send(&schedule()?, schedule::ListSchedules).await
+    }
+
+    async fn update_status(&self) -> RpcResult<Option<update::UpdateReady>> {
+        send(&update_actor()?, update::Status).await
     }
 
     async fn fire_schedule(&self, name: String) -> RpcResult<SessionId> {

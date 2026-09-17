@@ -39,6 +39,7 @@ import type { SlackStatus } from '@/rpc/bindings/SlackStatus'
 import type { Sync } from '@/rpc/bindings/Sync'
 import type { SyncResult } from '@/rpc/bindings/SyncResult'
 import type { ToolSpec } from '@/rpc/bindings/ToolSpec'
+import type { UpdateReady } from '@/rpc/bindings/UpdateReady'
 import type { JsonValue } from '@/rpc/bindings/serde_json/JsonValue'
 import type { RpcClient } from '@/rpc/client'
 import type { AgentInfo, Artifact, Info, LoadedPage, LoginInfo, ProviderInfo } from '@/rpc/extra'
@@ -206,6 +207,8 @@ export interface Api {
   sync_skills(): Promise<SyncResult[]>
   title_model(): Promise<ModelInfo | null>
   undo(session: SessionId): Promise<string>
+  /** The self-updater's latest state (39 §4.3). */
+  update_status(): Promise<UpdateReady | null>
   use_skill(session: SessionId | null, name: string, args: string): Promise<SessionId>
   withdraw(session: SessionId, id: InputId): Promise<string>
 }
@@ -321,6 +324,7 @@ export const METHODS = [
   'sync_skills',
   'title_model',
   'undo',
+  'update_status',
   'use_skill',
   'withdraw',
 ] as const satisfies readonly (keyof Api)[]

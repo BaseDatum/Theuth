@@ -15,6 +15,7 @@ import {
 } from '@/components/ui/sidebar'
 import { settings } from '@/components/chat/slash'
 import { isMacDesktop, modKey } from '@/lib/hotkeys'
+import { useUpdate } from '@/lib/update'
 import { cn } from '@/lib/utils'
 import { SearchDialog } from './SearchDialog'
 import { SessionList } from './SessionList'
@@ -33,6 +34,8 @@ export function AppSidebar({ session }: { session: string | undefined }) {
   // which runs before this parent's ref would attach; the state change re-renders it with the element.
   const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null)
   const [search, setSearch] = useState(false)
+  // 39 §4.2: the "subtle indicator" — a muted dot while an app update waits for quit.
+  const pending = useUpdate((s) => s.pending)
 
   useEffect(() => {
     const open = () => setSearch(true)
@@ -100,6 +103,9 @@ export function AppSidebar({ session }: { session: string | undefined }) {
               onClick={() => void settings(navigate, 'general', session)}
             >
               <Settings /> Settings
+              {pending !== null && (
+                <span className="ml-auto size-1.5 rounded-full bg-fg-tertiary" aria-label="update ready" />
+              )}
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>

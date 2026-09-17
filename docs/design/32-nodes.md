@@ -396,6 +396,11 @@ Both conflict with every other mode flag (`headless`, `serve`, `acp`,
 `data_dir`, `link/identity`, `devices.yaml` untouched — the harness can be
 run by hand or re-installed and every pairing survives.
 
+The unit's non-zero-exit restart policy (`KeepAlive.SuccessfulExit false`,
+`Restart=on-failure`) is what 39 §3.4 relies on: an updated idle daemon
+exits `75` to come back on the new binary. Do not change it to restart on
+any exit.
+
 A node has no TUI, so its provider key is entered with `wth --secret-set
 anthropic` on the box (value from the tty with echo off, or piped on
 stdin; 37 §3.9); the running service sees it on its next model call.

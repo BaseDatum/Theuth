@@ -1,0 +1,33 @@
+class Wth < Formula
+  desc "Harness that does things for the user"
+  homepage "https://github.com/skymoore/wth"
+  version "@VERSION@"
+  license "MIT"
+
+  on_macos do
+    on_arm do
+      url "@BASE_URL@/@VERSION@/wth_@VERSION@_macos-aarch64.tar.gz"
+      sha256 "@SHA_MACOS_CLI@"
+    end
+  end
+# @LINUX_BEGIN@
+  on_linux do
+    on_arm do
+      url "@BASE_URL@/@VERSION@/wth_@VERSION@_linux-aarch64.tar.gz"
+      sha256 "@SHA_LINUX_ARM@"
+    end
+    on_intel do
+      url "@BASE_URL@/@VERSION@/wth_@VERSION@_linux-x86_64.tar.gz"
+      sha256 "@SHA_LINUX_X86@"
+    end
+  end
+# @LINUX_END@
+
+  def install
+    bin.install "wth"
+  end
+
+  test do
+    assert_match version.to_s, shell_output("#{bin}/wth --version")
+  end
+end

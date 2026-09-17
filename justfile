@@ -69,6 +69,31 @@ install-macos:
 notarize-macos:
     ./scripts/notarize-macos.sh
 
+# Update payloads from the notarized wth.app: .app.tar.gz, CLI tar.gz, DMG → target/release/dist (39 §5.1).
+package-update-macos:
+    ./scripts/package-update-macos.sh
+
+# Linux CLI tarball, built natively in Docker and staged at s3://wth/staging/<ver>/ (39 §5.1).
+# Run on an arm64 Mac for linux-aarch64 and on an x86_64 Linux box for linux-x86_64; never QEMU.
+stage-linux:
+    ./scripts/stage-linux.sh
+
+# Gates, sign, upload <ver>/, verify, latest.json, tap bump (39 §5.2-5.4). Needs WTH_S3_*/WTH_UPDATE_KEY in .env.signing.
+release-s3:
+    ./scripts/release-s3.sh
+
+# Annotated tag v<ver> pushed to origin. WTH_RELEASE_NO_PUSH=1 keeps it local.
+tag-release:
+    ./scripts/tag-release.sh
+
+# Full macOS release (39 §5.1): package, notarize, update payloads, publish, tag.
+release:
+    just package-macos
+    just notarize-macos
+    just package-update-macos
+    just release-s3
+    just tag-release
+
 # Signed IPA for iOS/iPadOS TestFlight (scripts/package-ios.sh).
 # Signing: Apple Distribution + automatic provisioning. See .env.signing.
 package-ios:

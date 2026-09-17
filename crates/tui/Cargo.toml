@@ -19,6 +19,7 @@ schedule = { workspace = true }
 artifact = { workspace = true }
 web = { workspace = true }
 secrets = { workspace = true }
+update = { workspace = true }
 jsonrpsee = { workspace = true }
 chrono = { workspace = true }
 models = { workspace = true }
