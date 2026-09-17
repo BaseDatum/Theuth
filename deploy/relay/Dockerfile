@@ -9,7 +9,9 @@
 
 # ── UI (always native) ────────────────────────────────────────────────────────
 FROM --platform=$BUILDPLATFORM oven/bun:1.4-alpine AS web
-WORKDIR /ui
+# vite.config.ts reads ../tauri.conf.json for __APP_VERSION__.
+WORKDIR /desktop/ui
+COPY crates/desktop/tauri.conf.json /desktop/tauri.conf.json
 COPY crates/desktop/ui/package.json crates/desktop/ui/bun.lock ./
 RUN bun install --frozen-lockfile
 COPY crates/desktop/ui/ ./
@@ -40,7 +42,7 @@ RUN --mount=type=cache,id=wth-relay-cargo-registry-${TARGETPLATFORM},target=/usr
 # ── runtime ───────────────────────────────────────────────────────────────────
 FROM scratch
 COPY --from=build /wth-relay /wth-relay
-COPY --from=web --chown=65532:65532 /ui/dist /web
+COPY --from=web --chown=65532:65532 /desktop/ui/dist /web
 USER 65532
 EXPOSE 8787
 ENTRYPOINT ["/wth-relay"]
