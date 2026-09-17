@@ -1,4 +1,5 @@
 import { useEffect } from 'react'
+import { container } from '@/lib/platform'
 
 /** Window `CustomEvent` names the shell dispatches; consumers `addEventListener` on `window`. */
 export type Hotkey =
@@ -81,8 +82,7 @@ export const modKey = (): '⌘' | 'Ctrl' => (isApple() ? '⌘' : 'Ctrl')
 export const touch = (): boolean => window.matchMedia('(pointer: coarse)').matches
 
 /** The macOS Tauri window: traffic lights to inset around, a title bar to drag by. False in iOS Tauri and every browser. */
-export const isMacDesktop = (): boolean =>
-  '__TAURI_INTERNALS__' in window && !/iPhone|iPad/.test(navigator.userAgent)
+export const isMacDesktop = (): boolean => container() === 'macos'
 
 /** One `keydown` listener for the whole window; mount once in the root shell. Registers nothing on touch devices. */
 export function useHotkeys(): void {
