@@ -10,7 +10,7 @@ resources:
 
 images:
   - name: ghcr.io/skymoore/wth/relay
-    newTag: latest
+    newTag: 46d62e5
 
 patches:
   - target:
