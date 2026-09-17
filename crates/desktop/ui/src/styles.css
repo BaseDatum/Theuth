@@ -280,3 +280,13 @@
   height: 100%;
   max-width: 100%;
 }
+
+/* Fullscreen portals are `fixed inset-0`: pad them by the safe areas so their controls clear the status bar and home indicator. The mermaid actions are absolute, so they move separately. */
+[data-streamdown="mermaid-fullscreen"],
+[data-streamdown="table-fullscreen"] {
+  padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left);
+}
+[data-streamdown="mermaid-fullscreen"] > .absolute {
+  top: calc(1rem + var(--safe-top));
+  right: calc(1rem + var(--safe-right));
+}
