@@ -97,7 +97,7 @@ async fn brave_maps_results_features_and_statuses() {
         .find(|f| f.kind == FeatureKind::News)
         .expect("news");
     assert_eq!(news.items[0].date.as_deref(), Some("2 years ago"));
-    assert!(features.iter().all(|f| f.provider == "brave"));
+    assert!(features.iter().all(|f| f.provider == "brave_api"));
 
     server.reset().await;
     Mock::given(method("GET"))

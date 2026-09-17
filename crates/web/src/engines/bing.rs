@@ -2,8 +2,12 @@
 //! endpoint (`GET www.bing.com/search`). No Instant Answer / news JSON.
 //!
 //! The HTML endpoint 403s product user agents, so the request carries a
-//! browser-like `User-Agent`. Organic rows are `li.b_algo`; click-tracking
-//! `/ck/a?u=a1…` hrefs are base64url-decoded. An empty SERP is `Ok([])`.
+//! browser-like `User-Agent`. Organic rows are `li.b_algo` with an `h2 > a`
+//! link; click-tracking `/ck/a?u=a1…` hrefs are base64url-decoded by
+//! [`crate::url::unwrap_bing_redirect`]. An empty SERP is `Ok([])`; only a
+//! `/rewardsapp` or `/challenge` landing page, a `b_captcha` body or a 403
+//! is `Blocked`. Bing has no time filter (SearXNG has none either), so a
+//! recency query is `Unsupported`.
 
 use std::collections::HashSet;
 
@@ -12,7 +16,7 @@ use url::Url;
 
 use crate::provider::{Category, Feature, Provider, ProviderError, ProviderMeta, Query, RawResult};
 
-use super::{decode_entities, plain_text};
+use super::{attr, decode_entities, elements_with_class, http_url, plain_text, reject_decoys};
 
 /// Provider name.
 pub const NAME: &str = "bing";
@@ -67,6 +71,9 @@ impl Provider for Bing {
         client: &reqwest::Client,
         q: &Query,
     ) -> Result<(Vec<RawResult>, Vec<Feature>), ProviderError> {
+        if q.recent.is_some() {
+            return Err(ProviderError::Unsupported);
+        }
         let text = match &q.site {
             Some(site) => format!("site:{site} {}", q.text),
             None => q.text.clone(),
@@ -79,37 +86,37 @@ impl Provider for Bing {
             .query(&[("q", text.as_str()), ("adlt", "off"), ("setlang", "en")])
             .send()
             .await?;
+        let url = response.url().clone();
         let status = response.status().as_u16();
         let body = response.text().await?;
-        let mut results = classify(status, &body, &self.base)?;
+        let mut results = reject_decoys(classify(&url, status, &body)?, &q.text)?;
         results.truncate(q.limit);
         Ok((results, Vec::new()))
     }
 }
 
-/// Status + body → parsed hits, `Blocked`, or an HTTP error. An empty SERP
-/// (2xx, zero rows) is `Ok([])`.
-fn classify(status: u16, body: &str, base: &str) -> Result<Vec<RawResult>, ProviderError> {
+/// Final URL + status + body → parsed hits, `Blocked`, or an HTTP error.
+/// An empty SERP (2xx, zero rows) is `Ok([])`.
+fn classify(url: &Url, status: u16, body: &str) -> Result<Vec<RawResult>, ProviderError> {
+    let path = url.path();
+    if path.starts_with("/rewardsapp") || path.starts_with("/challenge") {
+        return Err(ProviderError::Blocked(format!("landed on {path}")));
+    }
+    if body.contains("b_captcha") {
+        return Err(ProviderError::Blocked("b_captcha".to_owned()));
+    }
     if status == 403 {
         return Err(ProviderError::Blocked("HTTP 403".to_owned()));
     }
     if !(200..300).contains(&status) {
         return Err(ProviderError::Http(format!("HTTP {status}")));
     }
-    let results = parse_results(body, base);
-    if results.is_empty() && is_challenge(body) {
-        return Err(ProviderError::Blocked("captcha/sorry".to_owned()));
-    }
-    Ok(results)
+    Ok(parse_results(body))
 }
 
-fn is_challenge(body: &str) -> bool {
-    let lower = body.to_ascii_lowercase();
-    lower.contains("captcha") || lower.contains("sorry")
-}
-
-/// Organic rows: each `li` whose class contains the token `b_algo`.
-fn parse_results(body: &str, base: &str) -> Vec<RawResult> {
+/// Organic rows: each `li` whose class contains the token `b_algo` and has
+/// an `h2 > a` link. Rows without one (ads, sidebars) are skipped.
+fn parse_results(body: &str) -> Vec<RawResult> {
     let mut out = Vec::new();
     let mut seen = HashSet::new();
     for item in elements_with_class(body, "b_algo") {
@@ -118,13 +125,13 @@ fn parse_results(body: &str, base: &str) -> Vec<RawResult> {
             continue;
         }
         let inner = inner_html(full);
-        let Some((title, href)) = title_and_href(inner) else {
+        let Some((title, href)) = first_element_inner(inner, "h2").and_then(first_anchor) else {
             continue;
         };
-        let Some(url) = resolve_url(&href, base) else {
+        let Some(url) = resolve_url(&href) else {
             continue;
         };
-        if title.is_empty() || !seen.insert(url.clone()) {
+        if !seen.insert(url.clone()) {
             continue;
         }
         out.push(RawResult {
@@ -136,13 +143,6 @@ fn parse_results(body: &str, base: &str) -> Vec<RawResult> {
         });
     }
     out
-}
-
-/// Title + href from the first `a` inside `h2`, else the first `a` with href.
-fn title_and_href(inner: &str) -> Option<(String, String)> {
-    first_element_inner(inner, "h2")
-        .and_then(first_anchor)
-        .or_else(|| first_anchor(inner))
 }
 
 fn snippet(inner: &str) -> String {
@@ -160,6 +160,7 @@ fn snippet(inner: &str) -> String {
     parts.join(" ")
 }
 
+/// First `<a>` with a non-blank `href` and non-empty text: `(text, href)`.
 fn first_anchor(hay: &str) -> Option<(String, String)> {
     let mut from = 0;
     while let Some((tag_start, tag_end)) = find_open_tag(&hay[from..], "a") {
@@ -217,97 +218,21 @@ fn tag_name(full: &str) -> &str {
         .unwrap_or_default()
 }
 
-/// Unwrap Bing `/ck/a?u=a1…` click-tracking and require an absolute http(s) URL.
-fn resolve_url(href: &str, base: &str) -> Option<String> {
+/// Resolve a SERP href against `www.bing.com`, unwrap `/ck/a?u=a1…` click
+/// tracking, and require an absolute http(s) URL.
+fn resolve_url(href: &str) -> Option<String> {
     let href = href.trim();
     if href.is_empty() {
         return None;
     }
-    let absolute = if href.starts_with("http://") || href.starts_with("https://") {
-        href.to_owned()
-    } else if let Some(rest) = href.strip_prefix("//") {
+    let absolute = if let Some(rest) = href.strip_prefix("//") {
         format!("https://{rest}")
     } else if href.starts_with('/') {
-        format!("{base}{href}")
+        format!("{BING_HOST}{href}")
     } else {
         href.to_owned()
     };
-    http_url(&unwrap_ck(&absolute, base))
-}
-
-fn unwrap_ck(href: &str, base: &str) -> String {
-    let ck_here = format!("{base}/ck/a?");
-    if !href.starts_with(&ck_here) && !href.starts_with("https://www.bing.com/ck/a?") {
-        return href.to_owned();
-    }
-    let Ok(parsed) = Url::parse(href) else {
-        return href.to_owned();
-    };
-    let Some(u) = parsed
-        .query_pairs()
-        .find_map(|(k, v)| (k == "u").then(|| v.into_owned()))
-    else {
-        return href.to_owned();
-    };
-    let Some(rest) = u.strip_prefix("a1") else {
-        return href.to_owned();
-    };
-    match decode_base64url_utf8(rest) {
-        Some(url) if !url.is_empty() => url,
-        _ => href.to_owned(),
-    }
-}
-
-fn http_url(s: &str) -> Option<String> {
-    let parsed = Url::parse(s).ok()?;
-    if !matches!(parsed.scheme(), "http" | "https") {
-        return None;
-    }
-    parsed.host_str()?;
-    Some(parsed.into())
-}
-
-fn decode_base64url_utf8(input: &str) -> Option<String> {
-    let bytes = decode_base64url(input)?;
-    Some(String::from_utf8_lossy(&bytes).into_owned())
-}
-
-fn decode_base64url(input: &str) -> Option<Vec<u8>> {
-    fn digit(c: u8) -> Option<u8> {
-        Some(match c {
-            b'A'..=b'Z' => c - b'A',
-            b'a'..=b'z' => c - b'a' + 26,
-            b'0'..=b'9' => c - b'0' + 52,
-            b'-' | b'+' => 62,
-            b'_' | b'/' => 63,
-            _ => return None,
-        })
-    }
-    let chars: Vec<u8> = input
-        .bytes()
-        .filter(|c| *c != b'=' && !c.is_ascii_whitespace())
-        .collect();
-    if chars.is_empty() {
-        return Some(Vec::new());
-    }
-    let mut out = Vec::with_capacity(chars.len() * 3 / 4);
-    for chunk in chars.chunks(4) {
-        if chunk.len() < 2 {
-            return None;
-        }
-        let a = digit(chunk[0])?;
-        let b = digit(chunk[1])?;
-        out.push((a << 2) | (b >> 4));
-        if chunk.len() >= 3 {
-            let c = digit(chunk[2])?;
-            out.push(((b & 0x0f) << 4) | (c >> 2));
-            if chunk.len() >= 4 {
-                let d = digit(chunk[3])?;
-                out.push(((c & 0x03) << 6) | d);
-            }
-        }
-    }
-    Some(out)
+    http_url(&crate::url::unwrap_bing_redirect(&absolute).unwrap_or(absolute))
 }
 
 fn find_open_tag(hay: &str, name: &str) -> Option<(usize, usize)> {
@@ -359,81 +284,13 @@ fn find_ci(hay: &str, needle: &str) -> Option<usize> {
         .position(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
 }
 
-/// One element found by class: byte span of the matched tag.
-struct Elem {
-    start: usize,
-    end: usize,
-}
-
-/// Every element whose `class` attribute contains the whole token `class`,
-/// in document order. Tolerant: quotes, attribute order and nesting of
-/// *other* tags do not matter; an element nesting its own tag name is cut
-/// at the first closer.
-fn elements_with_class(body: &str, class: &str) -> Vec<Elem> {
-    let mut out = Vec::new();
-    let mut from = 0;
-    while let Some(rel) = body[from..].find(class) {
-        let at = from + rel;
-        from = at + class.len();
-        let Some(lt) = body[..at].rfind('<') else {
-            continue;
-        };
-        if body[lt..at].contains('>') {
-            continue; // text, not an attribute
-        }
-        let edge = |c: char| c.is_whitespace() || matches!(c, '"' | '\'');
-        if !body[..at].ends_with(edge) || !body[from..].starts_with(edge) {
-            continue;
-        }
-        let Some(gt) = body[at..].find('>') else {
-            break;
-        };
-        let tag_end = at + gt + 1;
-        let tag = &body[lt..tag_end];
-        let name = tag[1..]
-            .split(|c: char| c.is_whitespace() || matches!(c, '>' | '/'))
-            .next()
-            .unwrap_or_default();
-        let end = if tag.ends_with("/>") {
-            tag_end
-        } else {
-            match body[tag_end..].find(&format!("</{name}")) {
-                Some(c) => {
-                    let inner_end = tag_end + c;
-                    body[inner_end..]
-                        .find('>')
-                        .map_or(body.len(), |g| inner_end + g + 1)
-                }
-                None => tag_end,
-            }
-        };
-        out.push(Elem { start: lt, end });
-        from = end;
-    }
-    out
-}
-
-/// Quoted attribute value inside one tag; attribute order does not matter.
-fn attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
-    let key = format!("{name}=");
-    let mut from = 0;
-    while let Some(rel) = tag[from..].find(&key) {
-        let at = from + rel;
-        from = at + key.len();
-        if !tag[..at].ends_with(char::is_whitespace) {
-            continue; // `data-href=`
-        }
-        let after = &tag[from..];
-        let quote = after.chars().next().filter(|c| matches!(c, '"' | '\''))?;
-        let value = &after[1..];
-        return Some(&value[..value.find(quote)?]);
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn bing_url() -> Url {
+        Url::parse("https://www.bing.com/search?q=rust").unwrap()
+    }
 
     const TWO_HITS: &str = r#"<ol id="b_results">
 <li class="b_algo">
@@ -441,14 +298,18 @@ mod tests {
 <p>First snippet</p>
 </li>
 <li class="b_algo">
+<div class="b_tpcn"><a class="tilk" href="https://www.bing.com/ck/a?u=a1aHR0cHM6Ly9leGFtcGxlLmNvbS90d28">example.com</a></div>
 <h2><a href="https://www.bing.com/ck/a?u=a1aHR0cHM6Ly9leGFtcGxlLmNvbS90d28">Second title</a></h2>
 <p><span class="algoSlug_icon"></span>Second snippet</p>
+</li>
+<li class="b_algo b_ad">
+<a href="https://ads.example/">Sidebar ad without h2</a>
 </li>
 </ol>"#;
 
     #[test]
-    fn parse_two_b_algo_hits_and_ck_href() {
-        let hits = classify(200, TWO_HITS, BING_HOST).expect("serp");
+    fn parse_h2_hits_unwrap_ck_and_skip_rows_without_h2() {
+        let hits = classify(&bing_url(), 200, TWO_HITS).expect("serp");
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].title, "First title");
         assert_eq!(hits[0].url, "https://example.org/a");
@@ -459,39 +320,64 @@ mod tests {
     }
 
     #[test]
-    fn ck_a1_base64url_decodes_against_at_base() {
+    fn relative_ck_href_resolves_against_bing_host() {
         let html = r#"<ol id="b_results"><li class="b_algo">
-<h2><a href="https://serp.test/ck/a?u=a1aHR0cHM6Ly9leGFtcGxlLmNvbS9kZWNvZGVk">T</a></h2>
+<h2><a href="/ck/a?u=a1aHR0cHM6Ly9leGFtcGxlLmNvbS90d28">T</a></h2>
 <p>S</p>
 </li></ol>"#;
-        let hits = parse_results(html, "https://serp.test");
+        let hits = parse_results(html);
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].url, "https://example.com/decoded");
+        assert_eq!(hits[0].url, "https://example.com/two");
     }
 
     #[test]
-    fn empty_serp_is_ok() {
-        let hits = classify(200, r#"<ol id="b_results"></ol>"#, BING_HOST).expect("empty");
-        assert!(hits.is_empty());
+    fn empty_serp_is_ok_even_when_it_says_sorry() {
+        assert!(
+            classify(&bing_url(), 200, r#"<ol id="b_results"></ol>"#)
+                .expect("empty")
+                .is_empty()
+        );
+        assert!(
+            classify(
+                &bing_url(),
+                200,
+                "<html>Sorry, there are no results for captcha</html>"
+            )
+            .expect("no results")
+            .is_empty()
+        );
     }
 
     #[test]
-    fn captcha_or_sorry_is_blocked() {
+    fn captcha_id_and_challenge_paths_are_blocked() {
         assert!(matches!(
-            classify(200, "<html>captcha</html>", BING_HOST),
+            classify(&bing_url(), 200, r#"<div id="b_captcha"></div>"#),
+            Err(ProviderError::Blocked(_))
+        ));
+        for landing in [
+            "https://www.bing.com/rewardsapp/flyout",
+            "https://www.bing.com/challenge?x=1",
+        ] {
+            let url = Url::parse(landing).unwrap();
+            assert!(
+                matches!(
+                    classify(&url, 200, TWO_HITS),
+                    Err(ProviderError::Blocked(_))
+                ),
+                "{landing}"
+            );
+        }
+    }
+
+    #[test]
+    fn http_403_is_blocked_and_500_is_http() {
+        assert!(matches!(
+            classify(&bing_url(), 403, TWO_HITS),
             Err(ProviderError::Blocked(_))
         ));
         assert!(matches!(
-            classify(200, "<html>Sorry</html>", BING_HOST),
-            Err(ProviderError::Blocked(_))
-        ));
-    }
-
-    #[test]
-    fn http_403_is_blocked() {
-        assert!(matches!(
-            classify(403, TWO_HITS, BING_HOST),
-            Err(ProviderError::Blocked(_))
+            classify(&bing_url(), 500, ""),
+            Err(ProviderError::Http(_))
         ));
     }
 
@@ -506,16 +392,5 @@ mod tests {
             assert!(!META.renders);
             assert!(!META.billable);
         }
-    }
-
-    #[test]
-    fn relative_ck_href_uses_engine_base() {
-        let html = r#"<ol id="b_results"><li class="b_algo">
-<h2><a href="/ck/a?u=a1aHR0cHM6Ly9leGFtcGxlLmNvbS90d28">T</a></h2>
-<p>S</p>
-</li></ol>"#;
-        let hits = parse_results(html, BING_HOST);
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].url, "https://example.com/two");
     }
 }

@@ -1,24 +1,22 @@
-//! Vendored Firecrawl native HTML, crawler, PDF and document heuristics
-//! (design doc 38). Copied from `apps/api/native` and stripped of the napi
-//! layer; the tuned logic and its tests are otherwise intact.
+//! Vendored Firecrawl native HTML and crawler heuristics (design doc 38).
+//! Copied from `apps/api/native` and stripped of the napi layer; the tuned
+//! logic and its tests are otherwise intact, with two exceptions:
+//!
+//! - `nodesig` was inlined into `html.rs` (the only non-subtraction edit).
+//! - `document`, `pdf`, `engpicker`, `logging` and `utils` were dropped:
+//!   PDFs already go through `web`'s fetcher (`tools::doc`), engine picking
+//!   and logging belong to the TS host, and nothing that remains used them.
+// Vendored code: upstream ships no item docs and we only subtract.
 #![allow(missing_docs)]
-#![allow(clippy::all)]
+// Vendored, upstream is edition 2021; 2024 let-chains make clippy want ~20
+// nested `if let`s collapsed. Allowing beats rewriting vendored logic.
+#![allow(clippy::collapsible_if)]
 
 pub use crate::crawler::*;
-pub use crate::document::*;
-pub use crate::engpicker::*;
 pub use crate::html::*;
-pub use crate::logging::*;
-pub use crate::pdf::*;
-pub use crate::utils::*;
 
 mod crawler;
-mod document;
-mod engpicker;
 mod html;
-mod logging;
-mod pdf;
-mod utils;
 
 pub use serde::{Deserialize, Serialize};
 

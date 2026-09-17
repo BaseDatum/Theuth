@@ -1,4 +1,4 @@
-const URL_RE = /https?:\/\/[^\s\]\)>'"]+/g
+const TRAIL = /[.,;:!?)]+$/
 
 /** Hostname without a leading `www.`, empty when `url` does not parse. */
 export function domainOf(url: string): string {
@@ -24,21 +24,27 @@ export function uniqueDomains(urls: string[], max: number): string[] {
   return out
 }
 
-/** Seed URL from tool args plus every http(s) URL in the tool output. */
-export function urlsFromResult(args: unknown, output?: string): string[] {
+/**
+ * URLs a finished `crawl` / `map_site` / `scrape_url` call produced, from the
+ * tool's text output (`crawl`: `# <url>` headers or bare `<url>` lines with
+ * `format: links`; `map_site`: `<url>  <title>` lines; `scrape_url`:
+ * `args.url`). Empty for an error result or while the call is pending.
+ */
+export function urlsFromResult(name: string, result: { output: string; isError: boolean } | undefined, args: unknown): string[] {
+  if (!result || result.isError) return []
+  if (name === 'scrape_url') {
+    const url = typeof args === 'object' && args !== null && !Array.isArray(args) ? (args as Record<string, unknown>).url : undefined
+    return typeof url === 'string' && /^https?:\/\//.test(url) ? [url] : []
+  }
   const seen = new Set<string>()
   const out: string[] = []
-  const add = (u: string) => {
-    if (seen.has(u)) return
-    seen.add(u)
-    out.push(u)
-  }
-  if (typeof args === 'object' && args !== null && !Array.isArray(args)) {
-    const url = (args as Record<string, unknown>).url
-    if (typeof url === 'string' && /^https?:\/\//.test(url)) add(url)
-  }
-  if (output) {
-    for (const m of output.matchAll(URL_RE)) add(m[0])
+  for (const line of result.output.split('\n')) {
+    const m = name === 'map_site' ? /^(https?:\/\/\S+)/.exec(line) : /^(?:# )?(https?:\/\/\S+)$/.exec(line)
+    if (!m?.[1]) continue
+    const url = m[1].replace(TRAIL, '')
+    if (seen.has(url)) continue
+    seen.add(url)
+    out.push(url)
   }
   return out
 }

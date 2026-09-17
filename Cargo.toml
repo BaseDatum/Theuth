@@ -106,6 +106,7 @@ html-to-markdown-rs = { version = "3.12", default-features = false }
 url = "2"
 wiremock = "0.6"
 http = "1"
+flate2 = "1"  # 38: gzip sitemaps
 # Documents as Markdown (design doc 20): PDF/Office/ODF/RTF/EPUB, pure Rust, no external binaries.
 anydoc = "0.2"
 # Python runtime (design doc 08): pool of `monty` worker subprocesses.

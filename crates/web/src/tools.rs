@@ -22,7 +22,7 @@ use crate::provider::{Category, FeatureKind, ProviderMeta, Query, Recency};
 use crate::render;
 
 /// Appended to the search description when only built-in engines are registered.
-pub const NO_EXTERNAL_PROVIDER: &str = "No external search provider is configured; Firecrawl's free tier works out of the box once the `firecrawl` secret is set (/secrets add firecrawl; key from firecrawl.dev).";
+pub const NO_EXTERNAL_PROVIDER: &str = "Search runs on the built-in keyless engines; a SearXNG instance or a brave_api/firecrawl secret under search_providers adds SERP features.";
 
 /// Arguments for [`SearchTool`].
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -78,11 +78,14 @@ fn names<'a>(metas: impl Iterator<Item = &'a ProviderMeta>) -> Vec<&'a str> {
 }
 
 /// `search_web` description for `metas` (16 §2, §4.5): what it does, each
-/// provider with its categories and feature kinds, the union of feature kinds,
-/// a billing note when any provider is metered, and [`NO_EXTERNAL_PROVIDER`]
-/// when no provider came from outside [`BUILTIN`].
+/// *searching* provider (render-only ones such as `scrape`/`browser` answer no
+/// category and are left out) with its categories and feature kinds, the union
+/// of feature kinds, a billing note when any provider is metered, and
+/// [`NO_EXTERNAL_PROVIDER`] when no searching provider came from outside
+/// [`BUILTIN`].
 #[must_use]
-pub fn search_description(metas: &[ProviderMeta]) -> String {
+pub fn search_description(all: &[ProviderMeta]) -> String {
+    let metas: Vec<&ProviderMeta> = all.iter().filter(|m| !m.categories.is_empty()).collect();
     let mut s = String::from(
         "Search the web through the configured providers and merge the results: one ranked list \
          (title, URL, snippet, which providers agreed), then any SERP features. Prefer this over \
@@ -116,7 +119,7 @@ pub fn search_description(metas: &[ProviderMeta]) -> String {
                 .collect();
             s.push_str(&format!(" Features it can return: {}.", kinds.join(", ")));
         }
-        let billable = names(metas.iter().filter(|m| m.billable));
+        let billable = names(metas.iter().copied().filter(|m| m.billable));
         if !billable.is_empty() {
             s.push_str(&format!(
                 " fetch_top and rendered fetch are billed by {}.",
@@ -229,6 +232,7 @@ impl Tool for SearchTool {
                     self.cfg.fetch_top_chars,
                 );
                 set.spawn(async move {
+                    let start = Instant::now();
                     let page = match url::Url::parse(&url) {
                         Ok(parsed) => match actor.ask(Render(parsed)).await {
                             Ok(rendered) => {
@@ -243,7 +247,8 @@ impl Tool for SearchTool {
                                     title: rendered.title,
                                     content,
                                     truncated,
-                                    took_ms: 0,
+                                    took_ms: u64::try_from(start.elapsed().as_millis())
+                                        .unwrap_or(u64::MAX),
                                 })
                             }
                             Err(_) => f
@@ -365,16 +370,16 @@ mod tests {
     }
 
     #[test]
-    fn firecrawl_hint_iff_only_builtins() {
+    fn external_hint_iff_only_builtins() {
         let google = meta("google", &[FeatureKind::Answer], false);
         assert!(search_description(&[]).ends_with(NO_EXTERNAL_PROVIDER));
         assert!(search_description(&[google]).ends_with(NO_EXTERNAL_PROVIDER));
-        let brave = meta("brave", &[FeatureKind::Faq, FeatureKind::News], true);
-        let ddg = meta("duckduckgo", &[FeatureKind::Answer], false);
-        let d = search_description(&[ddg, brave]);
+        let brave_api = meta("brave_api", &[FeatureKind::Faq, FeatureKind::News], true);
+        let bing = meta("bing", &[], false);
+        let d = search_description(&[bing, brave_api]);
         assert!(!d.contains(NO_EXTERNAL_PROVIDER), "{d}");
-        assert!(d.contains("fetch_top and rendered fetch are billed by brave."));
-        assert!(d.contains("Features it can return: answer, faq, news."));
+        assert!(d.contains("fetch_top and rendered fetch are billed by brave_api."));
+        assert!(d.contains("Features it can return: faq, news."));
     }
 
     #[test]

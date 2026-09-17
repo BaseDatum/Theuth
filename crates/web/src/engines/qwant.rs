@@ -1,16 +1,26 @@
 //! Qwant (design doc 16 §3.2): organic web results from the keyless JSON
 //! API (`GET api.qwant.com/v3/search/web`). Web category only; ads and
-//! other mainline types are dropped.
+//! other mainline types are dropped. Query parameters follow SearXNG's
+//! order exactly (the API fingerprints on it), and the `datadome` cookie
+//! each response sets is replayed on the next request, as SearXNG caches
+//! it. Qwant has no time filter, so a recency query is `Unsupported`.
 
-use reqwest::header::{ACCEPT, ORIGIN, REFERER};
+use std::sync::Mutex;
+
+use reqwest::header::{ACCEPT, COOKIE, ORIGIN, REFERER, SET_COOKIE};
 use serde_json::Value;
 
 use crate::provider::{Category, Feature, Provider, ProviderError, ProviderMeta, Query, RawResult};
 
-use super::{json_str, plain_text};
+use super::{json_str, plain_text, reject_decoys};
 
 /// Provider name.
 pub const NAME: &str = "qwant";
+
+/// Results per page; the API expects exactly this, the limit is applied locally.
+const COUNT: &str = "10";
+/// SearXNG's "test group" value: any small constant, sent at the right position.
+const TGP: &str = "1";
 
 const META: ProviderMeta = ProviderMeta {
     name: NAME,
@@ -22,10 +32,12 @@ const META: ProviderMeta = ProviderMeta {
 
 /// Qwant web search. [`Default`] uses the real API; [`Qwant::at`] serves
 /// `/web` from `base` for tests.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Qwant {
     /// `GET {api}` — production is `https://api.qwant.com/v3/search/web`.
     api: String,
+    /// Last `datadome` cookie value the API set; sent back on the next request.
+    datadome: Mutex<Option<String>>,
 }
 
 impl Default for Qwant {
@@ -41,6 +53,7 @@ impl Qwant {
         let base = base.trim_end_matches('/');
         Self {
             api: format!("{base}/web"),
+            datadome: Mutex::new(None),
         }
     }
 }
@@ -56,35 +69,53 @@ impl Provider for Qwant {
         client: &reqwest::Client,
         q: &Query,
     ) -> Result<(Vec<RawResult>, Vec<Feature>), ProviderError> {
+        if q.recent.is_some() {
+            return Err(ProviderError::Unsupported);
+        }
         let text = match &q.site {
             Some(site) => format!("site:{site} {}", q.text),
             None => q.text.clone(),
         };
-        let count = q.limit.min(10).to_string();
-        let response = client
+        let mut request = client
             .get(&self.api)
             .header(ACCEPT, "application/json")
             .header(REFERER, "https://www.qwant.com/")
             .header(ORIGIN, "https://www.qwant.com")
             .query(&[
                 ("q", text.as_str()),
-                ("count", count.as_str()),
+                ("count", COUNT),
                 ("locale", "en_US"),
                 ("offset", "0"),
+                ("tgp", TGP),
                 ("device", "desktop"),
                 ("safesearch", "0"),
                 ("displayed", "true"),
                 ("llm", "true"),
-                ("tgp", "1"),
-            ])
-            .send()
-            .await?;
+            ]);
+        if let Some(v) = self.datadome.lock().ok().and_then(|d| (*d).clone()) {
+            request = request.header(COOKIE, format!("datadome={v}"));
+        }
+        let response = request.send().await?;
+        if let Some(v) = datadome_cookie(response.headers())
+            && let Ok(mut slot) = self.datadome.lock()
+        {
+            *slot = Some(v);
+        }
         let status = response.status().as_u16();
         let body = response.text().await?;
-        let mut results = parse_response(status, &body)?;
+        let mut results = reject_decoys(parse_response(status, &body)?, &q.text)?;
         results.truncate(q.limit);
         Ok((results, Vec::new()))
     }
+}
+
+/// Value of a `datadome=` cookie among the `Set-Cookie` headers.
+fn datadome_cookie(headers: &reqwest::header::HeaderMap) -> Option<String> {
+    headers.get_all(SET_COOKIE).iter().find_map(|h| {
+        let v = h.to_str().ok()?.trim().strip_prefix("datadome=")?;
+        let v = v.split(';').next().unwrap_or(v).trim();
+        (!v.is_empty()).then(|| v.to_owned())
+    })
 }
 
 /// Status + JSON body → web hits, `RateLimited`, `Blocked`, or an HTTP error.
@@ -151,14 +182,15 @@ fn http_status(status: u16) -> ProviderError {
         .unwrap_or_else(|_| ProviderError::Http(format!("HTTP {status}")))
 }
 
-/// `data.result.items.mainline[]` rows with `type == "web"`; ads and other
-/// types are skipped. Items missing title or url are dropped.
+/// `data.result.items.mainline[]` rows with `type == "web"` (a missing
+/// `type` is `web`, as in SearXNG); ads and other types are skipped. Items
+/// missing title or url are dropped.
 fn web_results(doc: &Value) -> Vec<RawResult> {
     doc["data"]["result"]["items"]["mainline"]
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|row| row["type"].as_str() == Some("web"))
+        .filter(|row| row["type"].as_str().is_none_or(|t| t == "web"))
         .flat_map(|row| {
             row["items"]
                 .as_array()
@@ -214,6 +246,11 @@ mod tests {
                                 },
                                 {"title": "", "url": "https://skip.example/", "desc": "no title"}
                             ]
+                        },
+                        {
+                            "items": [
+                                {"title": "Untyped", "url": "https://untyped.example/", "desc": "web by default"}
+                            ]
                         }
                     ]
                 }
@@ -231,14 +268,15 @@ mod tests {
     }
 
     #[test]
-    fn parses_web_items_and_skips_ads() {
+    fn parses_web_items_skips_ads_and_defaults_missing_type_to_web() {
         let hits = parse_response(200, SUCCESS).expect("ok");
-        assert_eq!(hits.len(), 2);
+        assert_eq!(hits.len(), 3);
         assert_eq!(hits[0].title, "Rust");
         assert_eq!(hits[0].url, "https://www.rust-lang.org/");
         assert_eq!(hits[0].snippet, "A language.");
         assert_eq!(hits[1].title, "Cargo");
         assert_eq!(hits[1].url, "https://doc.rust-lang.org/cargo/");
+        assert_eq!(hits[2].title, "Untyped");
     }
 
     #[test]
@@ -287,5 +325,19 @@ mod tests {
             parse_response(403, body),
             Err(ProviderError::Blocked(_))
         ));
+    }
+
+    #[test]
+    fn datadome_cookie_is_extracted_from_set_cookie() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.append(SET_COOKIE, "other=1; Path=/".parse().unwrap());
+        headers.append(
+            SET_COOKIE,
+            "datadome=abc~def; Max-Age=31536000; Domain=.qwant.com; Path=/; Secure"
+                .parse()
+                .unwrap(),
+        );
+        assert_eq!(datadome_cookie(&headers).as_deref(), Some("abc~def"));
+        assert_eq!(datadome_cookie(&reqwest::header::HeaderMap::new()), None);
     }
 }

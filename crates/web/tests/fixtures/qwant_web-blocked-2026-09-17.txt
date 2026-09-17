@@ -1,0 +1,7 @@
+captured 2026-09-17
+GET https://api.qwant.com/v3/search/web?q=rust%20programming&count=10&locale=en_US&offset=0&tgp=1&device=desktop&safesearch=1&displayed=true&llm=true
+UA: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36
+Accept: application/json; Referer: https://www.qwant.com/; Origin: https://www.qwant.com
+HTTP 403 with x-datadome: protected and a Set-Cookie: datadome=... header; body is the
+DataDome captcha redirect ({"url": "https://geo.captcha-delivery.com/captcha/?..."}), i.e. the
+Blocked path. A happy-path web JSON could not be captured from this network.

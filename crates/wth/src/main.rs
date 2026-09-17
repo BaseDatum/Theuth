@@ -129,10 +129,10 @@ agent:
 
 # web:                       # search_web / read_url (design doc 16)
 #   enabled: true
-#   engines: [google, bing, brave, qwant, wikipedia, arxiv, github]   # keyless built-ins
+#   engines: [google, bing, brave, qwant, duckduckgo, wikipedia, arxiv, github]   # keyless built-ins
 #   fetch_max_chars: 4000
 
-# scrape:                    # scrape_url / crawl / map (design doc 38)
+# scrape:                    # scrape_url / crawl / map_site (design doc 38)
 #   concurrency: 5
 #   max_pages: 50
 #   max_depth: 3
@@ -140,16 +140,18 @@ agent:
 #   page_timeout_ms: 8000
 #   run_timeout_ms: 60000
 #   robots: true
+#   delay_ms: 100            # per-host gap between requests; a larger robots Crawl-delay wins
 
-# search_providers:          # external engines registered with `web` (design doc 16 §3)
-#   searxng:                 # on by default; keyless in-cluster instance
-#     base_url: http://127.0.0.1:8080
-#   firecrawl:               # optional; needs the `firecrawl` secret (`wth --secret-set firecrawl`)
+# search_providers:          # optional external engines registered with `web` (design doc 16 §3); the
+#                            # built-in keyless engines above need none of these
+#   firecrawl:               # inert until the `firecrawl` secret exists (`wth --secret-set firecrawl`)
 #     base_url: https://api.firecrawl.dev
+#   searxng:                 # a SearXNG instance you run
+#     base_url: http://127.0.0.1:8080
 #   openserp:
 #     base_url: http://127.0.0.1:7000
 #     engines: [google, bing]
-#   brave: {}                # needs the `brave` secret (Brave Search API key)
+#   brave: {}                # Brave Search API (provider `brave_api`); needs the `brave` secret
 
 # browser:                   # embedded headless browser, browser_* tools (design doc 23)
 #   enabled: true

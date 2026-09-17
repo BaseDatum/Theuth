@@ -1,5 +1,5 @@
-//! External search providers (design doc 16 §3, §6; 38 §5): SearXNG first
-//! (keyless), then optional Firecrawl, OpenSERP and Brave.
+//! External search providers (design doc 16 §3, §6; 38 §5): optional SearXNG,
+//! Firecrawl, OpenSERP and the Brave API (`brave_api`), all off unless configured.
 //! [`SearchProvidersPlugin`] reads the `search_providers` config section and
 //! the secrets vault (37 §3.6: keys `firecrawl`, `brave`, `openserp`), builds
 //! every enabled provider, and registers each with the `web` plugin's actor
@@ -16,9 +16,10 @@ pub mod firecrawl;
 pub mod openserp;
 pub mod searxng;
 
-/// `search_providers:` section (16 §6). Each block's presence enables it;
-/// SearXNG is on by default (keyless). Firecrawl stays registered but needs
-/// the `firecrawl` secret.
+/// `search_providers:` section (16 §6). Each block's presence enables it.
+/// Nothing is on by default except the Firecrawl block, which stays inert
+/// until the `firecrawl` secret exists; the keyless engines built into `web`
+/// (38 §5) cover search without any of these.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
 pub struct SearchProvidersConfig {
@@ -36,9 +37,7 @@ impl Default for SearchProvidersConfig {
     fn default() -> Self {
         Self {
             firecrawl: Some(FirecrawlConfig::default()),
-            searxng: Some(SearxngConfig {
-                base_url: "http://127.0.0.1:8080".into(),
-            }),
+            searxng: None,
             openserp: None,
             brave: None,
         }
@@ -116,8 +115,9 @@ fn key<'a>(credentials: &'a HashMap<String, String>, name: &str) -> Option<&'a s
 }
 
 /// Every provider the config enables and the credentials allow, in
-/// registration order (SearXNG first: keyless). Firecrawl is optional behind
-/// its secret. Blocks that need a key and have none are skipped with a log line.
+/// registration order (SearXNG first when configured, then Firecrawl,
+/// OpenSERP, Brave). Blocks that need a key and have none are skipped with a
+/// log line.
 #[must_use]
 pub fn build(
     cfg: &SearchProvidersConfig,
@@ -131,7 +131,7 @@ pub fn build(
         match key(credentials, "firecrawl") {
             Some(k) => out.push(Arc::new(firecrawl::Firecrawl::new(&fc.base_url, k))),
             None => tracing::info!(
-                "firecrawl: no `firecrawl` secret; optional. SearXNG and built-in engines cover search without it"
+                "firecrawl: no `firecrawl` secret; optional — the built-in engines cover search without it"
             ),
         }
     }
@@ -248,7 +248,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn searxng_first_zero_keys_firecrawl_optional() {
+    fn nothing_registers_by_default_until_a_firecrawl_key_exists() {
         let cfg = SearchProvidersConfig::default();
         let fc = cfg
             .firecrawl
@@ -256,21 +256,15 @@ mod tests {
             .expect("firecrawl block present by default");
         assert!(fc.enabled);
         assert_eq!(fc.base_url, "https://api.firecrawl.dev");
-        assert_eq!(
-            cfg.searxng.as_ref().map(|s| s.base_url.as_str()),
-            Some("http://127.0.0.1:8080")
-        );
+        assert!(cfg.searxng.is_none(), "searxng is opt-in");
 
-        let zero = build(&cfg, &HashMap::new());
-        assert_eq!(zero.len(), 1);
-        assert_eq!(zero[0].meta().name, "searxng");
+        assert!(build(&cfg, &HashMap::new()).is_empty());
 
         let creds = HashMap::from([("firecrawl".to_string(), "fc-key".to_string())]);
         let built = build(&cfg, &creds);
-        assert_eq!(built.len(), 2);
-        assert_eq!(built[0].meta().name, "searxng");
-        assert_eq!(built[1].meta().name, "firecrawl");
-        assert!(built[1].meta().renders);
+        assert_eq!(built.len(), 1);
+        assert_eq!(built[0].meta().name, "firecrawl");
+        assert!(built[0].meta().renders);
     }
 
     #[test]
@@ -302,9 +296,6 @@ mod tests {
         );
         assert!(cfg.brave.as_ref().is_some_and(|b| b.enabled));
         assert_eq!(cfg.openserp.as_ref().map(|o| o.engines.len()), Some(2));
-        assert_eq!(
-            cfg.searxng.as_ref().map(|s| s.base_url.as_str()),
-            Some("http://127.0.0.1:8080")
-        );
+        assert!(cfg.searxng.is_none());
     }
 }

@@ -20,7 +20,7 @@ use crate::provider::{
     Query, RawResult, Recency,
 };
 
-use super::{decode_entities, json_str, plain_text};
+use super::{elements_with_class, http_url, json_str};
 
 /// Provider name.
 pub const NAME: &str = "duckduckgo";
@@ -228,86 +228,6 @@ fn classify(
     Ok(results)
 }
 
-/// One element found by class: byte span, `href`, and its plain text.
-struct Elem {
-    start: usize,
-    end: usize,
-    href: Option<String>,
-    text: String,
-}
-
-/// Every element whose `class` attribute contains the whole token `class`,
-/// in document order. Tolerant: quotes, attribute order and nesting of
-/// *other* tags do not matter; an element nesting its own tag name is cut
-/// at the first closer.
-fn elements_with_class(body: &str, class: &str) -> Vec<Elem> {
-    let mut out = Vec::new();
-    let mut from = 0;
-    while let Some(rel) = body[from..].find(class) {
-        let at = from + rel;
-        from = at + class.len();
-        let Some(lt) = body[..at].rfind('<') else {
-            continue;
-        };
-        if body[lt..at].contains('>') {
-            continue; // text, not an attribute
-        }
-        let edge = |c: char| c.is_whitespace() || matches!(c, '"' | '\'');
-        if !body[..at].ends_with(edge) || !body[from..].starts_with(edge) {
-            continue; // `result__abc`, not `result__a`
-        }
-        let Some(gt) = body[at..].find('>') else {
-            break;
-        };
-        let tag_end = at + gt + 1;
-        let tag = &body[lt..tag_end];
-        let name = tag[1..]
-            .split(|c: char| c.is_whitespace() || matches!(c, '>' | '/'))
-            .next()
-            .unwrap_or_default();
-        let (inner, end) = if tag.ends_with("/>") {
-            ("", tag_end)
-        } else {
-            match body[tag_end..].find(&format!("</{name}")) {
-                Some(c) => {
-                    let inner_end = tag_end + c;
-                    let end = body[inner_end..]
-                        .find('>')
-                        .map_or(body.len(), |g| inner_end + g + 1);
-                    (&body[tag_end..inner_end], end)
-                }
-                None => ("", tag_end),
-            }
-        };
-        out.push(Elem {
-            start: lt,
-            end,
-            href: attr(tag, "href").map(decode_entities),
-            text: plain_text(inner),
-        });
-        from = end;
-    }
-    out
-}
-
-/// Quoted attribute value inside one tag; attribute order does not matter.
-fn attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
-    let key = format!("{name}=");
-    let mut from = 0;
-    while let Some(rel) = tag[from..].find(&key) {
-        let at = from + rel;
-        from = at + key.len();
-        if !tag[..at].ends_with(char::is_whitespace) {
-            continue; // `data-href=`
-        }
-        let after = &tag[from..];
-        let quote = after.chars().next().filter(|c| matches!(c, '"' | '\''))?;
-        let value = &after[1..];
-        return Some(&value[..value.find(quote)?]);
-    }
-    None
-}
-
 /// Organic rows: each link, its snippet (the first snippet element before
 /// the next link), minus ad rows (an opening tag between the previous row's
 /// end and this link whose attributes carry `result--ad`; comments and text
@@ -369,15 +289,6 @@ fn resolve_url(href: &str) -> Option<String> {
         None if href.starts_with('/') && !href.starts_with("//") => None,
         None => http_url(&candidate),
     }
-}
-
-fn http_url(s: &str) -> Option<String> {
-    let parsed = Url::parse(s).ok()?;
-    if !matches!(parsed.scheme(), "http" | "https") {
-        return None;
-    }
-    parsed.host_str()?;
-    Some(parsed.into())
 }
 
 /// SERP features from one Instant Answer document (`format=json&no_html=1`).

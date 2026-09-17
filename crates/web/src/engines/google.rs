@@ -1,8 +1,9 @@
 //! Google WEB (SearXNG-style WML scrape): organic results from
 //! `GET {base}/wml/search` with a Nokia mobile user agent. No API key.
 //! The parser is a tolerant class-token scan (`zMzFAb` rows, `fuLhoc`
-//! links, `CVA68e` titles, `FrIlee` snippets) rather than a DOM.
-//! `/url?q=` redirectors are unwrapped; sorry/CAPTCHA pages are `Blocked`.
+//! links, `CVA68e` titles, `FrIlee` snippets, `ZWRArf` suggestions inside
+//! the `HExoMb` table) rather than a DOM. `/url?q=` redirectors are
+//! unwrapped; sorry/CAPTCHA pages are `Blocked`.
 
 use std::collections::HashSet;
 
@@ -10,22 +11,32 @@ use reqwest::header::{ACCEPT, USER_AGENT};
 use url::Url;
 
 use crate::provider::{
-    Category, Feature, Provider, ProviderError, ProviderMeta, Query, RawResult, Recency,
+    Category, Feature, FeatureItem, FeatureKind, Provider, ProviderError, ProviderMeta, Query,
+    RawResult, Recency,
 };
 
-use super::{decode_entities, plain_text};
+use super::{Elem, elements_with_class, http_url, reject_decoys};
 
 /// Provider name.
 pub const NAME: &str = "google";
 
-/// Nokia Series 60 UA from SearXNG `nokia_useragents` (WML endpoint).
-pub const BROWSER_UA: &str =
-    "Nokia7610/2.0 (5.0509.0) SymbianOS/7.0s Series60/2.1 Profile/MIDP-2.0 Configuration/CLDC-1.0";
+/// Nokia user agents from SearXNG `nokia_useragents`: the WML endpoint only
+/// serves the XML layout to these. One is picked per request.
+pub const NOKIA_UAS: &[&str] = &[
+    "Nokia7610/2.0 (5.0509.0) SymbianOS/7.0s Series60/2.1 Profile/MIDP-2.0 Configuration/CLDC-1.0",
+    "Nokia7610/2.0 (7.0642.0) SymbianOS/7.0s Series60/2.1 Profile/MIDP-2.0 Configuration/CLDC-1.0",
+    "Nokia6230/2.0 (05.50) Profile/MIDP-2.0 Configuration/CLDC-1.1",
+    "Nokia6230i/2.0 (03.80) Profile/MIDP-2.0 Configuration/CLDC-1.1",
+    "Nokia6280/2.0 (03.60) Profile/MIDP-2.0 Configuration/CLDC-1.1",
+    "NokiaN72/2.0617.1.0.3 Series60/2.8 Profile/MIDP-2.0 Configuration/CLDC-1.1",
+];
+
+const RELATED_CAP: usize = 8;
 
 const META: ProviderMeta = ProviderMeta {
     name: NAME,
     categories: &[Category::General],
-    features: &[],
+    features: &[FeatureKind::Related],
     renders: false,
     billable: false,
 };
@@ -72,6 +83,7 @@ impl Provider for Google {
         let mut params: Vec<(&str, &str)> = vec![
             ("q", text.as_str()),
             ("hl", "en"),
+            ("lr", "lang_en"),
             ("ie", "utf8"),
             ("oe", "utf8"),
             ("sca_esv", "1"),
@@ -79,9 +91,10 @@ impl Provider for Google {
         if let Some(tbs) = tbs {
             params.push(("tbs", tbs));
         }
+        let ua = NOKIA_UAS[rand::random_range(0..NOKIA_UAS.len())];
         let response = client
             .get(format!("{}/wml/search", self.base))
-            .header(USER_AGENT, BROWSER_UA)
+            .header(USER_AGENT, ua)
             .header(ACCEPT, "*/*")
             .query(&params)
             .send()
@@ -89,9 +102,10 @@ impl Provider for Google {
         let url = response.url().clone();
         let status = response.status().as_u16();
         let body = response.text().await?;
-        let mut results = classify(&url, status, &body)?;
+        let (results, features) = classify(&url, status, &body)?;
+        let mut results = reject_decoys(results, &q.text)?;
         results.truncate(q.limit);
-        Ok((results, Vec::new()))
+        Ok((results, features))
     }
 }
 
@@ -104,12 +118,18 @@ fn tbs_filter(recent: Recency) -> &'static str {
     }
 }
 
-/// Status + final URL + body → parsed hits, `Blocked`, or an HTTP error.
-/// An empty SERP (2xx, zero rows) is `Ok([])`.
-fn classify(url: &Url, status: u16, body: &str) -> Result<Vec<RawResult>, ProviderError> {
+/// Status + final URL + body → parsed hits and suggestions, `Blocked`, or an
+/// HTTP error. An empty SERP (2xx, zero rows) is `Ok(([], []))`. The shared
+/// client follows redirects, so a sorry page shows up as the final URL
+/// (`sorry.google.com` or `/sorry…`) or as a short stub linking `/sorry/`.
+fn classify(
+    url: &Url,
+    status: u16,
+    body: &str,
+) -> Result<(Vec<RawResult>, Vec<Feature>), ProviderError> {
     let sorry_url = url.host_str() == Some("sorry.google.com") || url.path().starts_with("/sorry");
     let sorry_stub = body.len() < 2000 && body.contains("/sorry/");
-    if sorry_url || status == 302 || status == 403 || sorry_stub {
+    if sorry_url || status == 403 || sorry_stub {
         return Err(ProviderError::Blocked(format!("HTTP {status} sorry")));
     }
     if !(200..300).contains(&status) {
@@ -119,85 +139,7 @@ fn classify(url: &Url, status: u16, body: &str) -> Result<Vec<RawResult>, Provid
             code => ProviderError::Http(format!("HTTP {code}")),
         });
     }
-    Ok(parse_results(body))
-}
-
-/// One element found by class: start offset, `href`, and its plain text.
-struct Elem {
-    start: usize,
-    href: Option<String>,
-    text: String,
-}
-
-/// Every element whose `class` attribute contains the whole token `class`,
-/// in document order. Tolerant: quotes, attribute order and nesting of
-/// *other* tags do not matter; an element nesting its own tag name is cut
-/// at the first closer.
-fn elements_with_class(body: &str, class: &str) -> Vec<Elem> {
-    let mut out = Vec::new();
-    let mut from = 0;
-    while let Some(rel) = body[from..].find(class) {
-        let at = from + rel;
-        from = at + class.len();
-        let Some(lt) = body[..at].rfind('<') else {
-            continue;
-        };
-        if body[lt..at].contains('>') {
-            continue; // text, not an attribute
-        }
-        let edge = |c: char| c.is_whitespace() || matches!(c, '"' | '\'');
-        if !body[..at].ends_with(edge) || !body[from..].starts_with(edge) {
-            continue; // `result__abc`, not `result__a`
-        }
-        let Some(gt) = body[at..].find('>') else {
-            break;
-        };
-        let tag_end = at + gt + 1;
-        let tag = &body[lt..tag_end];
-        let name = tag[1..]
-            .split(|c: char| c.is_whitespace() || matches!(c, '>' | '/'))
-            .next()
-            .unwrap_or_default();
-        let (inner, end) = if tag.ends_with("/>") {
-            ("", tag_end)
-        } else {
-            match body[tag_end..].find(&format!("</{name}")) {
-                Some(c) => {
-                    let inner_end = tag_end + c;
-                    let end = body[inner_end..]
-                        .find('>')
-                        .map_or(body.len(), |g| inner_end + g + 1);
-                    (&body[tag_end..inner_end], end)
-                }
-                None => ("", tag_end),
-            }
-        };
-        out.push(Elem {
-            start: lt,
-            href: attr(tag, "href").map(decode_entities),
-            text: plain_text(inner),
-        });
-        from = end;
-    }
-    out
-}
-
-/// Quoted attribute value inside one tag; attribute order does not matter.
-fn attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
-    let key = format!("{name}=");
-    let mut from = 0;
-    while let Some(rel) = tag[from..].find(&key) {
-        let at = from + rel;
-        from = at + key.len();
-        if !tag[..at].ends_with(char::is_whitespace) {
-            continue; // `data-href=`
-        }
-        let after = &tag[from..];
-        let quote = after.chars().next().filter(|c| matches!(c, '"' | '\''))?;
-        let value = &after[1..];
-        return Some(&value[..value.find(quote)?]);
-    }
-    None
+    Ok((parse_results(body), parse_related(body)))
 }
 
 /// Organic rows: each `zMzFAb` container's `fuLhoc` href, `CVA68e` title
@@ -245,6 +187,35 @@ fn parse_results(body: &str) -> Vec<RawResult> {
     out
 }
 
+/// Related searches: `ZWRArf` anchors inside a `HExoMb` table
+/// (SearXNG `suggestion_xpath`), as one [`FeatureKind::Related`].
+fn parse_related(body: &str) -> Vec<Feature> {
+    let tables = elements_with_class(body, "HExoMb");
+    if tables.is_empty() {
+        return Vec::new();
+    }
+    let mut seen = HashSet::new();
+    let items: Vec<FeatureItem> = elements_with_class(body, "ZWRArf")
+        .into_iter()
+        .filter(|a| tables.iter().any(|t| a.start > t.start && a.start < t.end))
+        .filter(|a| !a.text.is_empty() && seen.insert(a.text.clone()))
+        .take(RELATED_CAP)
+        .map(|a| FeatureItem {
+            title: a.text,
+            ..Default::default()
+        })
+        .collect();
+    if items.is_empty() {
+        return Vec::new();
+    }
+    vec![Feature {
+        kind: FeatureKind::Related,
+        provider: NAME.to_owned(),
+        items,
+        ..Default::default()
+    }]
+}
+
 /// Unwrap `/url?q=` (unquote until `&sa=U`) and require an absolute
 /// `http(s)` URL with a host. Bare relative paths are dropped.
 fn unwrap_google_url(raw: &str) -> Option<String> {
@@ -289,15 +260,6 @@ fn hex_nibble(c: u8) -> Option<u8> {
     }
 }
 
-fn http_url(s: &str) -> Option<String> {
-    let parsed = Url::parse(s).ok()?;
-    if !matches!(parsed.scheme(), "http" | "https") {
-        return None;
-    }
-    parsed.host_str()?;
-    Some(parsed.into())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -317,17 +279,23 @@ mod tests {
     <span class="CVA68e">Direct Link</span>
   </a>
   <span class="FrIlee">No redirector.</span>
-</div>"#;
+</div>
+<table class="HExoMb"><tr><td>
+  <a class="ZWRArf" href="/search?q=rust+book">rust book</a>
+  <a class="ZWRArf" href="/search?q=rust+lang">rust lang</a>
+</td></tr></table>
+<a class="ZWRArf" href="/search?q=outside">outside table</a>"#;
 
     #[test]
     fn at_trims_slash_and_default_is_google() {
         assert_eq!(Google::default().base, "https://www.google.com");
         assert_eq!(Google::at("http://127.0.0.1:9/").base, "http://127.0.0.1:9");
+        assert_eq!(META.features, &[FeatureKind::Related]);
     }
 
     #[test]
-    fn parses_organic_rows_and_unwraps_redirect() {
-        let hits = classify(&google_url(), 200, SERP).expect("serp");
+    fn parses_organic_rows_related_and_unwraps_redirect() {
+        let (hits, features) = classify(&google_url(), 200, SERP).expect("serp");
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].title, "Example Title");
         assert_eq!(hits[0].url, "https://example.com/page?id=1");
@@ -335,13 +303,18 @@ mod tests {
         assert_eq!(hits[1].title, "Direct Link");
         assert_eq!(hits[1].url, "https://crates.io/crates/async-trait");
         assert_eq!(hits[1].snippet, "No redirector.");
+        assert_eq!(features.len(), 1);
+        assert_eq!(features[0].kind, FeatureKind::Related);
+        let titles: Vec<&str> = features[0].items.iter().map(|i| i.title.as_str()).collect();
+        assert_eq!(titles, ["rust book", "rust lang"]);
     }
 
     #[test]
     fn empty_serp_is_ok() {
-        let hits =
+        let (hits, features) =
             classify(&google_url(), 200, "<html><body>no hits</body></html>").expect("empty");
         assert!(hits.is_empty());
+        assert!(features.is_empty());
     }
 
     #[test]
@@ -397,31 +370,28 @@ mod tests {
         ));
         let path = Url::parse("https://www.google.com/sorry/index?q=1").unwrap();
         assert!(matches!(
-            classify(&path, 200, "<html></html>"),
+            classify(&path, 429, "<html></html>"),
             Err(ProviderError::Blocked(_))
         ));
     }
 
     #[test]
-    fn http_302_and_403_are_blocked() {
-        assert!(matches!(
-            classify(&google_url(), 302, ""),
-            Err(ProviderError::Blocked(_))
-        ));
+    fn http_403_is_blocked_and_429_is_rate_limited() {
         assert!(matches!(
             classify(&google_url(), 403, "forbidden"),
             Err(ProviderError::Blocked(_))
+        ));
+        assert!(matches!(
+            classify(&google_url(), 429, "slow down"),
+            Err(ProviderError::RateLimited)
         ));
     }
 
     #[test]
     fn long_body_mentioning_sorry_is_not_blocked() {
         let body = format!("{} /sorry/", "x".repeat(2000));
-        assert!(
-            classify(&google_url(), 200, &body)
-                .expect("long")
-                .is_empty()
-        );
+        let (hits, _) = classify(&google_url(), 200, &body).expect("long");
+        assert!(hits.is_empty());
     }
 
     #[test]

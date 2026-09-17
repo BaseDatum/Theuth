@@ -148,6 +148,8 @@ pub enum UiEvent {
     NodeEvent(nodes::NodeEvent),
     /// A `show` call produced a file (bus event, design doc 35).
     ArtifactShown(artifact::ArtifactShown),
+    /// Live URLs of a `crawl` / `map_site` / `scrape_url` call (bus event, design doc 38).
+    ScrapeProgress(scrape::ScrapeProgress),
     /// Reply to [`Command::ListArtifacts`]: the session subtree's artifacts, newest first;
     /// `pick` opens the `/artifacts` menu, else the rows only join their `show` cards.
     Artifacts {
@@ -653,6 +655,9 @@ pub enum Entry {
         /// The file a `show` call produced (`ArtifactShown`, design doc 35);
         /// the card renders as an artifact card once set.
         artifact: Option<Box<artifact::Artifact>>,
+        /// Spinner row of a running `crawl` / `map_site` / `scrape_url`
+        /// (`ScrapeProgress`, design doc 38); cleared when the result lands.
+        scrape: Option<String>,
     },
     /// A compaction boundary (design doc 07 §8.4): a divider, expandable with
     /// Ctrl+O to the summary when loaded from history (the live event has none).
@@ -2315,8 +2320,11 @@ impl Model {
         // Parallel calls: a running card need not be the last entry.
         let busy = self.entries.iter().rev().find_map(|e| match e {
             Entry::Tool {
-                name, result: None, ..
-            } => Some(format!("running {name}…")),
+                name,
+                result: None,
+                scrape,
+                ..
+            } => Some(scrape.clone().unwrap_or_else(|| format!("running {name}…"))),
             Entry::Pending {
                 name,
                 progress: Some(p),
@@ -2693,6 +2701,14 @@ impl Model {
                     self.attach_artifact(ev.artifact);
                 }
             }
+            UiEvent::ScrapeProgress(ev) if self.session == Some(ev.session) => {
+                if let Some(Entry::Tool { name, scrape, .. }) = self.entries.iter_mut().rev().find(
+                    |e| matches!(e, Entry::Tool { call_id, result: None, .. } if *call_id == ev.call_id),
+                ) {
+                    *scrape = Some(scrape_line(name, &ev));
+                }
+            }
+            UiEvent::ScrapeProgress(_) => {}
             UiEvent::Artifacts { items, pick } => {
                 if !pick {
                     for a in items {
@@ -3163,6 +3179,7 @@ impl Model {
                     expanded: None,
                     job: None,
                     artifact: None,
+                    scrape: None,
                 };
                 match self
                     .entries
@@ -3182,7 +3199,10 @@ impl Model {
                 match self.entries.iter_mut().rev().find(
                     |e| matches!(e, Entry::Tool { call_id: c, result: None, .. } if *c == call_id),
                 ) {
-                    Some(Entry::Tool { result, .. }) => *result = Some((output, is_error)),
+                    Some(Entry::Tool { result, scrape, .. }) => {
+                        *result = Some((output, is_error));
+                        *scrape = None;
+                    }
                     _ => self.entries.push(Entry::Info(format!(
                         "{} {}",
                         if is_error { "✗" } else { "✓" },
@@ -5446,6 +5466,7 @@ fn from_history(h: HistoryEntry, opts: &markdown::Options) -> Vec<Entry> {
             call_id,
             job: None,
             artifact: None,
+            scrape: None,
             result,
             expanded: None,
         }],
@@ -5505,6 +5526,28 @@ pub fn progress_line(tool: &str, p: &Progress) -> String {
         },
         _ => format!("preparing {tool}… {size}"),
     }
+}
+
+/// The spinner row of a running scrape tool from its latest `ScrapeProgress`
+/// (design doc 38): `crawling… 3/50 · example.com` (host of the first URL in
+/// flight), `mapping… 120/500` for `map_site`, `reading example.com…` for
+/// `scrape_url`; `running <tool>…` for anything else.
+pub fn scrape_line(tool: &str, p: &scrape::ScrapeProgress) -> String {
+    let at = p.inflight.first().or(p.done.last()).map_or("", |u| host(u));
+    let n = p.done.len();
+    match tool.strip_prefix("↳ ").unwrap_or(tool) {
+        "crawl" if at.is_empty() => format!("crawling… {n}/{}", p.limit),
+        "crawl" => format!("crawling… {n}/{} · {at}", p.limit),
+        "map_site" => format!("mapping… {n}/{}", p.limit),
+        "scrape_url" => format!("reading {at}…"),
+        _ => format!("running {tool}…"),
+    }
+}
+
+/// `example.com` from `https://example.com/a/b`; the input when it has no scheme or path.
+fn host(url: &str) -> &str {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    rest.split('/').next().unwrap_or(rest)
 }
 
 /// The kind-specific size of an artifact card header (35 §6.1): pages for a
@@ -7263,6 +7306,7 @@ mod tests {
             expanded: None,
             job: None,
             artifact: None,
+            scrape: None,
         }
         .height(80);
         let tool = m
@@ -8230,5 +8274,66 @@ mod tests {
             Some(Entry::Tool { expanded: None, .. })
         ));
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn scrape_progress_rides_the_running_card_and_clears_on_finish() {
+        let s = SessionId::new();
+        let turn = TurnId::new();
+        let mut m = Model {
+            session: Some(s),
+            streaming: true,
+            ..Model::default()
+        };
+        m.apply_agent(AgentEvent::ToolCallStarted {
+            session: s,
+            turn,
+            call_id: "c1".into(),
+            name: "crawl".into(),
+            args: serde_json::json!({"url": "https://example.com"}),
+        });
+        let ev = |session| scrape::ScrapeProgress {
+            session,
+            call_id: "c1".into(),
+            inflight: vec!["https://example.com/docs/a".into()],
+            done: vec![
+                "https://example.com/".into(),
+                "https://example.com/docs".into(),
+            ],
+            limit: 50,
+        };
+        // Another session's crawl is not ours.
+        m.apply(UiEvent::ScrapeProgress(ev(SessionId::new())));
+        assert!(matches!(
+            m.entries.last(),
+            Some(Entry::Tool { scrape: None, .. })
+        ));
+        m.apply(UiEvent::ScrapeProgress(ev(s)));
+        assert!(matches!(
+            m.entries.last(),
+            Some(Entry::Tool { scrape: Some(row), .. }) if row == "crawling… 2/50 · example.com"
+        ));
+        assert_eq!(
+            m.activity().as_deref(),
+            Some("crawling… 2/50 · example.com")
+        );
+        assert_eq!(scrape_line("↳ map_site", &ev(s)), "mapping… 2/50");
+        assert_eq!(scrape_line("scrape_url", &ev(s)), "reading example.com…");
+        m.apply_agent(AgentEvent::ToolCallFinished {
+            session: s,
+            turn,
+            call_id: "c1".into(),
+            output: "# https://example.com/".into(),
+            is_error: false,
+            files: Vec::new(),
+        });
+        assert!(matches!(
+            m.entries.last(),
+            Some(Entry::Tool {
+                result: Some(_),
+                scrape: None,
+                ..
+            })
+        ));
     }
 }

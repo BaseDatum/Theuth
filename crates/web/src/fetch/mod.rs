@@ -7,6 +7,7 @@
 mod ssrf;
 mod text;
 
+use std::io::Read;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
@@ -266,6 +267,17 @@ impl Fetcher {
                 break;
             }
         }
+        // Gzip container (`sitemap.xml.gz`); a failed decode keeps the raw bytes.
+        if raw.starts_with(&[0x1f, 0x8b]) {
+            let mut inflated = Vec::new();
+            if flate2::read::GzDecoder::new(raw.as_slice())
+                .take(u64::try_from(self.max_bytes).unwrap_or(u64::MAX))
+                .read_to_end(&mut inflated)
+                .is_ok()
+            {
+                raw = inflated;
+            }
+        }
         // A document body (PDF, Office, …) is rendered with anydoc (20 §2.3);
         // a truncated container is unparseable, so it is refused, not half-read.
         if let Some(fmt) = tools::doc::format(&raw) {
@@ -349,10 +361,7 @@ fn is_binary(ct: Option<&str>) -> bool {
     ["image/", "audio/", "video/", "font/"]
         .iter()
         .any(|p| ct.starts_with(p))
-        || matches!(
-            ct,
-            "application/octet-stream" | "application/zip" | "application/gzip"
-        )
+        || matches!(ct, "application/octet-stream" | "application/zip")
 }
 
 fn looks_like_html(body: &str) -> bool {

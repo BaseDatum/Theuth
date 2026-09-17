@@ -69,6 +69,8 @@ impl runtime::Plugin for TuiPlugin {
         rt.subscribe::<Bridge, artifact::ArtifactShown>(&bridge)
             .await;
         rt.subscribe::<Bridge, secrets::SecretsEvent>(&bridge).await;
+        rt.subscribe::<Bridge, scrape::ScrapeProgress>(&bridge)
+            .await;
         let api = Arc::new(Server::new(rt.clone()));
         tokio::spawn(run_commands(api, commands_rx, events_tx));
 
@@ -141,6 +143,7 @@ forward!(
     nodes::NodeEvent => NodeEvent,
     artifact::ArtifactShown => ArtifactShown,
     secrets::SecretsEvent => SecretsEvent,
+    scrape::ScrapeProgress => ScrapeProgress,
 );
 
 /// The one place commands become `rpc::Api` calls. Each command runs in its
@@ -668,6 +671,7 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             ev.artifact.name,
             ev.artifact.path.display()
         ),
+        UiEvent::ScrapeProgress(_) => Ok(()),
         UiEvent::Artifacts { items, .. } => items
             .iter()
             .try_for_each(|a| writeln!(out, "{}", model::artifact_row(a))),

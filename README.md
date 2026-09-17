@@ -62,7 +62,7 @@ output; holds the provider, web and Slack keys too —
 real cookies so the agent acts as the signed-in user; `browser_show` opens a
 live view of the session's browser in the desktop app); one
 isolate per session, screenshots come back as images in the
-tool result — [`docs/design/23-browser.md`](docs/design/23-browser.md)), `scrape` (`scrape_url`, `crawl`, `map`: a crawler built on the vendored `firecrawl-native` crate, with `web`'s fetcher and obscura as its two engine tiers — [`docs/design/38-scrape-vendored-crawler.md`](docs/design/38-scrape-vendored-crawler.md)), `computer`
+tool result — [`docs/design/23-browser.md`](docs/design/23-browser.md)), `scrape` (`scrape_url`, `crawl`, `map_site`: a crawler built on the vendored `firecrawl-native` crate, with `web`'s fetcher and obscura as its two engine tiers; `crawl` stays under the seed's directory, honours `robots.txt` and seeds from the site's sitemaps, `map_site` lists a site's URLs from sitemap + links without page bodies — [`docs/design/38-scrape-vendored-crawler.md`](docs/design/38-scrape-vendored-crawler.md)), `computer`
 (eight `computer_*` tools: `computer_screenshot`, `_move`, `_click`, `_drag`,
 `_scroll`, `_type`, `_key`, `_open` — one composite screenshot of every
 display as an image, then native mouse and keyboard on the user's own desktop —
@@ -77,9 +77,9 @@ and files to the user on Slack or Signal out of band —
 puts one or more multiple-choice questions to the user — pick, type your own,
 skip one, or dismiss the set to end the turn — in the TUI, the desktop app, a
 Slack thread (Block Kit) or over Signal one question at a time), `web` (`search_web` and
-`read_url`: SSRF-guarded fetch, keyless duckduckgo/wikipedia/arxiv/github
+`read_url`: SSRF-guarded fetch, keyless google/bing/brave/qwant/wikipedia/arxiv/github
 merged by RRF with SERP features — [`docs/design/16-web.md`](docs/design/16-web.md)),
-`search-providers` (Firecrawl, SearXNG, OpenSERP, Brave; registered with `web`
+`search-providers` (optional Firecrawl, SearXNG, OpenSERP, Brave API as `brave_api`; registered with `web`
 over the bus), `acp` (external
 harnesses over the Agent Client Protocol: agents.yaml, registry, harness
 connection), `signal` (phone frontend
@@ -105,7 +105,7 @@ Typst; a content-addressed store under `~/.wth/artifacts/` —
 Config (`~/.wth/`, created on first run; details in
 [`docs/design/01-config-and-subagents.md`](docs/design/01-config-and-subagents.md) §1):
 
-- `config.yaml` — every plugin reads its own section; `WTH_<SECTION>__<KEY>` env overrides. `agent.model` is a models.dev id (`anthropic/claude-sonnet-4-5`); `/model` rewrites that one line in place. The `agent`, `tools`, `secrets`, `knowledge`, `web`, `search_providers`, `browser`, `computer`, `link`, `nodes`, `schedule`, `artifact` and `slack` sections with their defaults:
+- `config.yaml` — every plugin reads its own section; `WTH_<SECTION>__<KEY>` env overrides. `agent.model` is a models.dev id (`anthropic/claude-sonnet-4-5`); `/model` rewrites that one line in place. The `agent`, `tools`, `secrets`, `knowledge`, `web`, `scrape`, `search_providers`, `browser`, `computer`, `link`, `nodes`, `schedule`, `artifact` and `slack` sections with their defaults:
 
   ```yaml
   agent:
@@ -130,12 +130,21 @@ Config (`~/.wth/`, created on first run; details in
   knowledge:
     enabled: true          # false: no store, no knowledge_* tools, no hints, no harvest
   web:
-    engines: [google, bing, brave, qwant, wikipedia, arxiv, github]   # keyless; search_web / read_url
-  search_providers:
-    firecrawl: { enabled: true }   # on by default; active once a `firecrawl` secret is in the vault (free tier at firecrawl.dev)
-    # searxng: { base_url: http://127.0.0.1:8080 }
+    engines: [google, bing, brave, qwant, duckduckgo, wikipedia, arxiv, github]   # keyless; search_web / read_url
+  scrape:                         # design doc 38; scrape_url / crawl / map_site
+    concurrency: 5
+    max_pages: 50                 # default limit for crawl / map_site
+    max_depth: 3
+    same_domain: true
+    page_timeout_ms: 8000
+    run_timeout_ms: 60000
+    robots: true
+    delay_ms: 100                 # per-host gap between requests; a larger robots Crawl-delay wins
+  search_providers:               # optional external engines registered with `web`; the built-ins above need none of these
+    firecrawl: { base_url: https://api.firecrawl.dev }   # present by default; inert until a `firecrawl` secret is in the vault
+    # searxng: { base_url: http://127.0.0.1:8080 }     # a SearXNG instance you run
     # openserp: { base_url: http://127.0.0.1:7000 }
-    # brave: {}                    # secret `brave` in the vault
+    # brave: {}                    # Brave Search API (provider `brave_api`); secret `brave` in the vault
   browser:                        # design doc 23
     enabled: true
     stealth: true                 # wreq TLS fingerprint + tracker blocklist (§0.4)

@@ -1,14 +1,16 @@
-//! Keyless built-in engines (design doc 16 §3.2): Google, Bing, Brave and
-//! Qwant SERP scrapes, plus Wikipedia, arXiv and GitHub. DuckDuckGo remains
-//! constructible by name. [`builtin`] constructs one by its config name; the
-//! small HTML/entity helpers every engine's parser needs live here.
+//! Keyless built-in engines (design doc 16 §3.2): Google, Bing, Brave, Qwant
+//! and DuckDuckGo SERP scrapes, plus Wikipedia, arXiv and GitHub — five
+//! general indexes so an out-of-box install still answers when some block
+//! this network (2026-09-17: Google, Bing and Qwant did; Brave and DDG did
+//! not). [`builtin`] constructs one by its config name; the small
+//! HTML/entity helpers every engine's parser needs live here.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use serde_json::Value;
 
-use crate::provider::{Provider, ProviderError};
+use crate::provider::{Provider, ProviderError, RawResult};
 
 pub mod arxiv;
 pub mod bing;
@@ -28,12 +30,13 @@ pub use google::Google;
 pub use qwant::Qwant;
 pub use wikipedia::Wikipedia;
 
-/// Default `web.engines` list. [`builtin`] also constructs `duckduckgo`.
+/// Default `web.engines` list; every name [`builtin`] accepts.
 pub const BUILTIN: &[&str] = &[
     "google",
     "bing",
     "brave",
     "qwant",
+    "duckduckgo",
     "wikipedia",
     "arxiv",
     "github",
@@ -69,6 +72,37 @@ fn http_error(status: reqwest::StatusCode) -> ProviderError {
     }
 }
 
+/// `Blocked` when a non-empty SERP shares no query word with any hit:
+/// Bing (observed 2026-09-17) answers flagged clients with HTTP 200, the
+/// right `<title>`, and ten cached results for some other query. Better a
+/// reported block than confident garbage. Words under three chars and the
+/// `site:` operator are ignored; one match anywhere clears the page.
+fn reject_decoys(results: Vec<RawResult>, query: &str) -> Result<Vec<RawResult>, ProviderError> {
+    let words: Vec<String> = query
+        .split_whitespace()
+        .filter(|w| !w.starts_with("site:"))
+        .map(|w| {
+            w.trim_matches(|c: char| !c.is_alphanumeric())
+                .to_lowercase()
+        })
+        .filter(|w| w.chars().count() >= 3)
+        .collect();
+    if results.is_empty() || words.is_empty() {
+        return Ok(results);
+    }
+    let relevant = results.iter().any(|r| {
+        let hay = format!("{} {} {}", r.title, r.snippet, r.url).to_lowercase();
+        words.iter().any(|w| hay.contains(w.as_str()))
+    });
+    if relevant {
+        Ok(results)
+    } else {
+        Err(ProviderError::Blocked(
+            "decoy results: no hit mentions the query".to_owned(),
+        ))
+    }
+}
+
 /// Non-empty, trimmed string at a JSON position; `None` for anything else.
 fn json_str(v: &Value) -> Option<String> {
     v.as_str()
@@ -80,6 +114,101 @@ fn json_str(v: &Value) -> Option<String> {
 /// Tags stripped, entities decoded, whitespace collapsed.
 fn plain_text(html: &str) -> String {
     collapse_ws(&decode_entities(&strip_tags(html)))
+}
+
+/// One element found by class: byte span of the whole element, its `href`
+/// (entity-decoded) and its plain text.
+pub(crate) struct Elem {
+    /// Offset of the opening `<`.
+    pub(crate) start: usize,
+    /// Offset just past the closing tag (or the self-closing `>`).
+    pub(crate) end: usize,
+    /// `href` attribute, entity-decoded.
+    pub(crate) href: Option<String>,
+    /// Inner plain text.
+    pub(crate) text: String,
+}
+
+/// Every element whose `class` attribute contains the whole token `class`,
+/// in document order. Tolerant: quotes, attribute order and nesting of
+/// *other* tags do not matter; an element nesting its own tag name is cut
+/// at the first closer.
+pub(crate) fn elements_with_class(body: &str, class: &str) -> Vec<Elem> {
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(rel) = body[from..].find(class) {
+        let at = from + rel;
+        from = at + class.len();
+        let Some(lt) = body[..at].rfind('<') else {
+            continue;
+        };
+        if body[lt..at].contains('>') {
+            continue; // text, not an attribute
+        }
+        let edge = |c: char| c.is_whitespace() || matches!(c, '"' | '\'');
+        if !body[..at].ends_with(edge) || !body[from..].starts_with(edge) {
+            continue; // `result__abc`, not `result__a`
+        }
+        let Some(gt) = body[at..].find('>') else {
+            break;
+        };
+        let tag_end = at + gt + 1;
+        let tag = &body[lt..tag_end];
+        let name = tag[1..]
+            .split(|c: char| c.is_whitespace() || matches!(c, '>' | '/'))
+            .next()
+            .unwrap_or_default();
+        let (inner, end) = if tag.ends_with("/>") {
+            ("", tag_end)
+        } else {
+            match body[tag_end..].find(&format!("</{name}")) {
+                Some(c) => {
+                    let inner_end = tag_end + c;
+                    let end = body[inner_end..]
+                        .find('>')
+                        .map_or(body.len(), |g| inner_end + g + 1);
+                    (&body[tag_end..inner_end], end)
+                }
+                None => ("", tag_end),
+            }
+        };
+        out.push(Elem {
+            start: lt,
+            end,
+            href: attr(tag, "href").map(decode_entities),
+            text: plain_text(inner),
+        });
+        from = end;
+    }
+    out
+}
+
+/// Quoted attribute value inside one tag; attribute order does not matter.
+pub(crate) fn attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
+    let key = format!("{name}=");
+    let mut from = 0;
+    while let Some(rel) = tag[from..].find(&key) {
+        let at = from + rel;
+        from = at + key.len();
+        if !tag[..at].ends_with(char::is_whitespace) {
+            continue; // `data-href=`
+        }
+        let after = &tag[from..];
+        let quote = after.chars().next().filter(|c| matches!(c, '"' | '\''))?;
+        let value = &after[1..];
+        return Some(&value[..value.find(quote)?]);
+    }
+    None
+}
+
+/// Absolute `http(s)` URL with a host, normalised by the `url` crate.
+pub(crate) fn http_url(s: &str) -> Option<String> {
+    let parsed = url::Url::parse(s.trim()).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return None;
+    }
+    parsed.host_str()?;
+    Some(parsed.into())
 }
 
 fn collapse_ws(s: &str) -> String {
@@ -162,5 +291,29 @@ mod tests {
             "Rust & a < b 'x'"
         );
         assert_eq!(plain_text("a < b &unknown; c"), "a < b &unknown; c");
+    }
+
+    #[test]
+    fn decoy_serp_is_blocked_relevant_one_passes() {
+        let hit = |title: &str, url: &str| RawResult {
+            title: title.into(),
+            url: url.into(),
+            ..RawResult::default()
+        };
+        let decoys = vec![
+            hit("LinkedIn", "https://fr.linkedin.com/"),
+            hit("知乎", "https://zhihu.com/q"),
+        ];
+        assert!(matches!(
+            reject_decoys(decoys.clone(), "site:tokio.rs tokio async runtime"),
+            Err(ProviderError::Blocked(_))
+        ));
+        // One hit mentioning one query word (in the URL is enough) clears the page.
+        let mut ok = decoys;
+        ok.push(hit("Home", "https://tokio.rs/"));
+        assert_eq!(reject_decoys(ok, "tokio async runtime").unwrap().len(), 3);
+        // Short words and an empty SERP never trigger it.
+        assert!(reject_decoys(vec![hit("x", "https://a/")], "go io").is_ok());
+        assert!(reject_decoys(Vec::new(), "anything").unwrap().is_empty());
     }
 }

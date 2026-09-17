@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 
+use web::RawResult;
 use web::engines::{self, Arxiv, Bing, Brave, DuckDuckGo, Github, Google, Qwant, Wikipedia};
 use web::{Category, FeatureKind, Provider, ProviderError, Query, Recency};
 use wiremock::matchers::{body_string_contains, header, method, path, query_param};
@@ -15,6 +16,15 @@ const WIKI_SEARCH: &str = include_str!("fixtures/wikipedia_search.json");
 const WIKI_SUMMARY: &str = include_str!("fixtures/wikipedia_summary.json");
 const ARXIV: &str = include_str!("fixtures/arxiv_atom.xml");
 const GITHUB: &str = include_str!("fixtures/github_repos.json");
+
+/// Live captures (16 §4.1), dated in their leading comment / sibling `.txt`.
+/// Google and Qwant answered this network with their bot walls and Bing with
+/// a decoy SERP, so those three fixtures drive the `Blocked` paths and their
+/// happy paths stay inline; Brave is the one real organic capture.
+const BING_DECOY: &str = include_str!("fixtures/bing_search-decoy-2026-09-17.html");
+const BRAVE_SERP: &str = include_str!("fixtures/brave_search-2026-09-17.html");
+const GOOGLE_SORRY: &str = include_str!("fixtures/google_wml-blocked-2026-09-17.html");
+const QWANT_CAPTCHA: &str = include_str!("fixtures/qwant_web-blocked-2026-09-17.json");
 
 fn query(text: &str) -> Query {
     Query {
@@ -40,8 +50,26 @@ async fn header_of(server: &MockServer, index: usize, name: &str) -> String {
         .to_owned()
 }
 
+/// At least `min` hits with a snippet; every hit has a non-empty title and
+/// an absolute `https` URL that is not a SERP redirector. (Real SERPs carry
+/// the odd snippet-less row, e.g. Brave's Reddit cards.)
+fn assert_clean_hits(hits: &[RawResult], min: usize) {
+    let with_snippet = hits.iter().filter(|h| !h.snippet.is_empty()).count();
+    assert!(
+        with_snippet >= min,
+        "expected >= {min} hits with snippets, got {with_snippet} of {}",
+        hits.len()
+    );
+    for h in hits {
+        assert!(!h.title.is_empty(), "{h:?}");
+        assert!(h.url.starts_with("https://"), "{h:?}");
+        assert!(!h.url.contains("bing.com/ck/a"), "{h:?}");
+        assert!(!h.url.contains("/url?q="), "{h:?}");
+    }
+}
+
 #[test]
-fn builtin_constructs_the_four_engines() {
+fn builtin_constructs_every_default_engine() {
     let none = HashMap::new();
     assert_eq!(
         engines::BUILTIN,
@@ -50,6 +78,7 @@ fn builtin_constructs_the_four_engines() {
             "bing",
             "brave",
             "qwant",
+            "duckduckgo",
             "wikipedia",
             "arxiv",
             "github"
@@ -60,7 +89,6 @@ fn builtin_constructs_the_four_engines() {
         assert_eq!(provider.meta().name, *name);
     }
     let ddg = engines::builtin("duckduckgo", &none).expect("ddg");
-    assert_eq!(ddg.meta().name, "duckduckgo");
     assert_eq!(
         ddg.meta().features,
         &[
@@ -515,17 +543,19 @@ async fn github_403_with_rate_limit_body_is_rate_limited() {
 }
 
 #[tokio::test]
-async fn google_parses_wml_serp() {
+async fn google_parses_wml_serp_with_nokia_ua_and_english_filter() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/wml/search"))
         .and(query_param("q", "rust"))
+        .and(query_param("lr", "lang_en"))
         .respond_with(ok(r#"<div class="zMzFAb">
   <a class="fuLhoc" href="https://www.rust-lang.org/">
     <span class="CVA68e">Rust</span>
   </a>
   <span class="FrIlee">A language.</span>
-</div>"#))
+</div>
+<table class="HExoMb"><tr><td><a class="ZWRArf" href="/search?q=rust+book">rust book</a></td></tr></table>"#))
         .expect(1)
         .mount(&server)
         .await;
@@ -533,35 +563,138 @@ async fn google_parses_wml_serp() {
         .search(&reqwest::Client::new(), &query("rust"))
         .await
         .expect("google");
-    assert!(features.is_empty());
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].title, "Rust");
     assert_eq!(hits[0].url, "https://www.rust-lang.org/");
     assert_eq!(hits[0].snippet, "A language.");
+    assert_eq!(features.len(), 1);
+    assert_eq!(features[0].kind, FeatureKind::Related);
+    assert_eq!(features[0].items[0].title, "rust book");
+    let ua = header_of(&server, 0, "user-agent").await;
+    assert!(
+        engines::google::NOKIA_UAS.contains(&ua.as_str()),
+        "Nokia UA required: {ua}"
+    );
 }
 
 #[tokio::test]
-async fn bing_parses_b_algo_serp() {
+async fn google_sorry_redirect_is_blocked() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path("/search"))
-        .and(query_param("q", "rust"))
-        .respond_with(ok(r#"<ol id="b_results"><li class="b_algo">
-<h2><a href="https://www.rust-lang.org/">Rust</a></h2>
-<p>A language.</p>
-</li></ol>"#))
+        .and(path("/wml/search"))
+        .respond_with(
+            ResponseTemplate::new(302)
+                .insert_header("Location", "/sorry/index?continue=https://www.google.com/"),
+        )
         .expect(1)
         .mount(&server)
         .await;
-    let (hits, features) = Bing::at(&server.uri())
+    Mock::given(method("GET"))
+        .and(path("/sorry/index"))
+        .respond_with(ResponseTemplate::new(429).set_body_string(GOOGLE_SORRY))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let err = Google::at(&server.uri())
         .search(&reqwest::Client::new(), &query("rust"))
         .await
-        .expect("bing");
-    assert!(features.is_empty());
-    assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0].title, "Rust");
-    assert_eq!(hits[0].url, "https://www.rust-lang.org/");
-    assert_eq!(hits[0].snippet, "A language.");
+        .expect_err("sorry page");
+    assert!(matches!(err, ProviderError::Blocked(_)), "{err}");
+}
+
+/// The captured Bing page is what a flagged client gets: HTTP 200, the right
+/// `<title>`, ten `b_algo` rows for an unrelated query (som.today). The rows
+/// parse and unwrap cleanly; `reject_decoys` then reports the page as blocked
+/// instead of handing the model confident garbage.
+#[tokio::test]
+async fn bing_decoy_serp_is_blocked() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/search"))
+        .and(query_param("q", "rust programming"))
+        .and(query_param("setlang", "en"))
+        .respond_with(ok(BING_DECOY))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let mut q = query("rust programming");
+    q.limit = 20;
+    let err = Bing::at(&server.uri())
+        .search(&reqwest::Client::new(), &q)
+        .await
+        .expect_err("decoy page");
+    assert!(
+        matches!(&err, ProviderError::Blocked(m) if m.contains("decoy")),
+        "{err}"
+    );
+    assert_eq!(
+        header_of(&server, 0, "user-agent").await,
+        engines::bing::BROWSER_UA
+    );
+}
+
+#[tokio::test]
+async fn bing_403_is_blocked_and_recency_is_unsupported() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/search"))
+        .respond_with(ResponseTemplate::new(403).set_body_string("<html>forbidden</html>"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let bing = Bing::at(&server.uri());
+    let err = bing
+        .search(&reqwest::Client::new(), &query("rust"))
+        .await
+        .expect_err("403");
+    assert!(matches!(err, ProviderError::Blocked(_)), "{err}");
+
+    let mut q = query("rust");
+    q.recent = Some(Recency::Week);
+    let err = bing
+        .search(&reqwest::Client::new(), &q)
+        .await
+        .expect_err("no time filter");
+    assert!(matches!(err, ProviderError::Unsupported), "{err}");
+}
+
+#[tokio::test]
+async fn brave_fixture_yields_rows_dates_and_related() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/search"))
+        .and(query_param("q", "rust programming"))
+        .and(query_param("source", "web"))
+        .respond_with(ok(BRAVE_SERP))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let mut q = query("rust programming");
+    q.limit = 20;
+    let (hits, features) = Brave::at(&server.uri())
+        .search(&reqwest::Client::new(), &q)
+        .await
+        .expect("brave");
+    assert_clean_hits(&hits, 3);
+    let wiki = hits
+        .iter()
+        .find(|h| h.url == "https://en.wikipedia.org/wiki/Rust_(programming_language)")
+        .expect("wikipedia row");
+    assert_eq!(wiki.title, "Rust (programming language) - Wikipedia");
+    assert_eq!(wiki.published.as_deref(), Some("3 weeks ago"));
+    assert!(
+        wiki.snippet
+            .starts_with("Rust is a general-purpose programming language"),
+        "date stripped from snippet: {}",
+        wiki.snippet
+    );
+    assert_eq!(features.len(), 1);
+    assert_eq!(features[0].kind, FeatureKind::Related);
+    assert_eq!(features[0].items.len(), 8);
+    assert_eq!(
+        features[0].items[0].title,
+        "programming rust 2nd edition pdf"
+    );
 }
 
 #[tokio::test]
@@ -587,10 +720,11 @@ async fn brave_parses_snippet_serp() {
     assert_eq!(hits[0].title, "Rust");
     assert_eq!(hits[0].url, "https://www.rust-lang.org/");
     assert_eq!(hits[0].snippet, "A language.");
+    assert_eq!(hits[0].published, None);
 }
 
 #[tokio::test]
-async fn qwant_parses_web_json() {
+async fn qwant_parses_web_json_with_searxng_param_order() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/web"))
@@ -614,4 +748,72 @@ async fn qwant_parses_web_json() {
     assert_eq!(hits[0].title, "Rust");
     assert_eq!(hits[0].url, "https://www.rust-lang.org/");
     assert_eq!(hits[0].snippet, "A language.");
+    let requests = server.received_requests().await.expect("recording on");
+    assert_eq!(
+        requests[0].url.query(),
+        Some(
+            "q=rust&count=10&locale=en_US&offset=0&tgp=1&device=desktop&safesearch=0&displayed=true&llm=true"
+        )
+    );
+    assert!(requests[0].headers.get("cookie").is_none());
+}
+
+#[tokio::test]
+async fn qwant_datadome_captcha_is_blocked_and_cookie_is_replayed() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/web"))
+        .respond_with(
+            ResponseTemplate::new(403)
+                .insert_header(
+                    "set-cookie",
+                    "datadome=9CAGUy9c~B7ACmzWB00F8; Max-Age=31536000; Domain=.qwant.com; Path=/; Secure; SameSite=Lax",
+                )
+                .set_body_string(QWANT_CAPTCHA),
+        )
+        .expect(2)
+        .mount(&server)
+        .await;
+    let qwant = Qwant::at(&server.uri());
+    let client = reqwest::Client::new();
+    let err = qwant
+        .search(&client, &query("rust"))
+        .await
+        .expect_err("captcha");
+    assert!(matches!(err, ProviderError::Blocked(_)), "{err}");
+    let _ = qwant.search(&client, &query("rust")).await;
+    assert_eq!(
+        header_of(&server, 1, "cookie").await,
+        "datadome=9CAGUy9c~B7ACmzWB00F8"
+    );
+}
+
+#[tokio::test]
+async fn qwant_api_error_is_an_error_and_recency_is_unsupported() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/web"))
+        .respond_with(ok(
+            r#"{"status":"error","data":{"error_code":7,"message":["invalid query"]}}"#,
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let qwant = Qwant::at(&server.uri());
+    let err = qwant
+        .search(&reqwest::Client::new(), &query("rust"))
+        .await
+        .expect_err("api error");
+    assert!(
+        matches!(&err, ProviderError::Parse(m) if m.contains("invalid query") && m.contains('7')),
+        "{err}"
+    );
+
+    let mut q = query("rust");
+    q.recent = Some(Recency::Month);
+    let err = qwant
+        .search(&reqwest::Client::new(), &q)
+        .await
+        .expect_err("no time filter");
+    assert!(matches!(err, ProviderError::Unsupported), "{err}");
 }

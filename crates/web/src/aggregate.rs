@@ -71,7 +71,8 @@ pub struct FanoutOutcome {
     pub features: Vec<Feature>,
     /// Providers that returned `Ok` (empty lists included).
     pub ok: Vec<String>,
-    /// Providers that errored or timed out.
+    /// Providers that errored or timed out. One returning
+    /// [`ProviderError::Unsupported`] appears in neither list.
     pub failed: Vec<(String, String)>,
 }
 
@@ -263,6 +264,12 @@ fn absorb(
             outcome.ok.push(name.clone());
             outcome.hits.push((name, hits));
             outcome.features.extend(features);
+        }
+        // The provider cannot serve this query shape (e.g. a recency filter
+        // it has no syntax for): neither ok nor failed, so the drift detector
+        // and the `Failed:` list ignore it.
+        Err(ProviderError::Unsupported) => {
+            tracing::debug!(provider = %name, "provider skipped: query shape unsupported");
         }
         Err(e) => {
             tracing::debug!(provider = %name, error = %e, "provider failed");

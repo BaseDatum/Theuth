@@ -115,8 +115,8 @@ fn is_tracking_param(name: &str) -> bool {
 }
 
 /// Unwrap a Bing click redirect (`bing.com/ck/a?...&u=a1<base64url>`); the
-/// decoded payload must be an absolute http(s) URL.
-fn unwrap_bing_redirect(raw: &str) -> Option<String> {
+/// decoded payload must be an absolute http(s) URL. `None` for anything else.
+pub(crate) fn unwrap_bing_redirect(raw: &str) -> Option<String> {
     if !raw.to_ascii_lowercase().contains("bing.com/ck/a") {
         return None;
     }

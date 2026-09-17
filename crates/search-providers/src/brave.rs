@@ -1,7 +1,8 @@
 //! Brave Search API (16 §3.2): `GET /res/v1/web/search`, header
 //! `X-Subscription-Token`. Results from `web.results[]`; features from the
 //! `infobox`, `faq`, `news`, `videos`, `discussions` blocks and
-//! `query.altered`. JSON fields only, no scraping.
+//! `query.altered`. JSON fields only, no scraping. Provider name `brave_api`:
+//! `brave` is the keyless `search.brave.com` scraper built into `web`.
 
 use serde::Deserialize;
 use web::{
@@ -14,7 +15,7 @@ use crate::{http_error, non_empty, parse, site_query, unescape};
 /// Hosted endpoint.
 pub const SEARCH_URL: &str = "https://api.search.brave.com/res/v1/web/search";
 
-const NAME: &str = "brave";
+const NAME: &str = "brave_api";
 /// Brave's `count` hard maximum.
 const MAX_COUNT: usize = 20;
 

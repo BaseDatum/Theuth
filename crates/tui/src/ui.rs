@@ -1070,6 +1070,7 @@ fn entry(e: &Entry, spinner: &str, skip: usize, width: u16) -> AnyElement<'stati
             result,
             expanded,
             job,
+            scrape,
             ..
         } => {
             // Live job output: rows clipped, not wrapped, so the block never
@@ -1084,7 +1085,10 @@ fn entry(e: &Entry, spinner: &str, skip: usize, width: u16) -> AnyElement<'stati
                 }
             });
             let summary = match result {
-                None => (format!("{spinner} running…"), Color::DarkGrey),
+                None => (
+                    format!("{spinner} {}", scrape.as_deref().unwrap_or("running…")),
+                    Color::DarkGrey,
+                ),
                 Some((output, is_error)) => {
                     let mark = if *is_error { "✗" } else { "✓" };
                     let hint = match (expanded.is_some(), output.lines().count() > 1) {

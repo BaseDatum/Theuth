@@ -1,7 +1,8 @@
 # 16 — Web: search and fetch as a plugin
 
-Status: as-built v0 · 2026-09-12 (draft v0 same day) · extends
-`00-architecture.md` §1, §4, §6; `01-config-and-subagents.md` §1.1;
+Status: as-built v0 · 2026-09-12 (draft v0 same day) · revised 2026-09-17
+(keyless SERP engines, `scrape` render provider — §0.4, §3.2, §5, §13.10-14) ·
+extends `00-architecture.md` §1, §4, §6; `01-config-and-subagents.md` §1.1;
 `07-context.md` §6 (spill). Source material:
 `../jarvis/crates/jarvis-search` (19,268 lines) and its two `jarvis-agent`
 tools, re-verified against the tree today; every claim about it cites
@@ -27,6 +28,16 @@ tests from documented response shapes only), the `Images`/`News`/`Faq`/
 covers it). Tests: web 17 unit + 7 ssrf + 7 url + 13 engines + 12
 aggregate; search-providers 4 unit + 12 wiremock; clippy `-D warnings`.
 
+2026-09-17 (HEAD `feat: in tree serp and firecrawl` + review fixes): the
+default engine set became `google, bing, brave, qwant, duckduckgo, wikipedia,
+arxiv, github` (`crates/web/src/engines/mod.rs` `BUILTIN`); verified by
+wiremock tests on dated captures (`crates/web/tests/engines.rs:23-26`), clippy,
+and a live run of the five general engines against `tokio async runtime rust`
+from the author's network: brave 5 hits + `related`, duckduckgo 5 hits,
+google `Blocked (HTTP 429 sorry)`, qwant `Blocked (captcha)`, bing `Blocked
+(decoy results)` — the last only after `reject_decoys` landed; before it Bing
+returned five confidently unrelated hits (§10).
+
 ## 0. Decisions in one screen
 
 1. **Two plugins.** `web` owns the tools (`search_web`, `read_url`), the
@@ -50,13 +61,24 @@ aggregate; search-providers 4 unit + 12 wiremock; clippy `-D warnings`.
    nothing: jarvis exposed `features`, `extract`, `mode=fast`,
    `extract_mode=rendered` and six result fields that were stubs
    (§7). Here a capability is either implemented or absent from the schema.
-4. **Port 25 %, drop 75 %.** Keep the fetcher + SSRF guard, the fan-out/RRF
-   aggregator, URL canonicalisation, and the engines that are APIs or
-   proven scrapes. Drop the five raw-HTTP SERP scrapers, the dead layers,
-   three of four output formats, and the twenty-parameter schema (§7).
-5. **Rendered pages come from a provider, not a browser in wth.** Firecrawl
-   `/scrape` (or OpenSERP extraction) is the `rendered` path; without one
-   registered the call fails with a message naming the plugin to configure.
+4. **Port 25 %, drop 75 % — then bring the SERP scrapers back on SearXNG's
+   terms.** Keep the fetcher + SSRF guard, the fan-out/RRF aggregator, URL
+   canonicalisation, and the engines that are APIs or proven scrapes. Drop
+   jarvis's five raw-HTTP SERP scrapers, the dead layers, three of four
+   output formats, and the twenty-parameter schema (§7). Revised 2026-09-17:
+   `google`, `bing`, `brave`, `qwant` are back as built-ins — not jarvis's
+   code, but the request shapes SearXNG's maintained engine modules use
+   (Google WML endpoint + Nokia UA, Qwant v3 JSON + datadome cookie, Bing
+   `/ck/a` unwrap, Brave `search.brave.com` HTML), each with per-engine
+   `Blocked` detection and the §4.6 zero-yield detector as the drift alarm.
+   Alternative beaten: SearXNG as a required sidecar — a second process for a
+   single-binary goal (00 §1; 38 §0.5). Why the draft was wrong to drop them
+   outright is in §3.2.
+5. **Rendered pages come from a provider.** Draft: Firecrawl `/scrape` or
+   OpenSERP. As built (23, then 38): the `scrape` plugin's two-tier engine is
+   the preferred renderer, `browser`'s obscura isolate the fallback, Firecrawl
+   and OpenSERP optional behind `search_providers` (§5); without any the call
+   fails naming the three (`crates/web/src/actor.rs:22-23`).
 6. **Risk `ReadOnly`** for both tools: under the default `tools.policy`
    they run without prompting. The SSRF guard is mandatory and not
    configurable off (00 §1: security is never simplified away).
@@ -153,26 +175,37 @@ register with") and does nothing — it owns no tools.
 
 | provider | plugin | kind | key | results | features it produces | notes |
 |---|---|---|---|---|---|---|
-| `duckduckgo` | web | HTML `html.duckduckgo.com` + lite fallback (`engines/duckduckgo.rs:29-33,158-192`) **and** Instant Answer JSON `api.duckduckgo.com/?q&format=json&no_html=1` | none | general, news | `answer` (Answer), `knowledge_panel` (Abstract + Infobox), `related` (RelatedTopics), `definition` | the JSON endpoint is stable and keyless; the HTML endpoint is the one keyless general web index |
+| `google` | web | `GET www.google.com/wml/search` with one of SearXNG's Nokia user agents per request (`engines/google.rs:23-32,94-99`); `hl=en`, `lr=lang_en`, `tbs=qdr:*` for `recent` | none | general | `related` (`ZWRArf` anchors in the `HExoMb` table, `google.rs:189-216`) | class-token scan of `zMzFAb` rows, `/url?q=` unwrapped (`:144-228`); a `sorry.google.com` / `/sorry` landing, 403 or short `/sorry/` stub is `Blocked` (`:124-142`) |
+| `bing` | web | `GET www.bing.com/search` with a browser UA (`engines/bing.rs:24-26,81-88`) | none | general | — | `li.b_algo` rows, `/ck/a?u=a1…` click tracking base64url-decoded (`crate::url::unwrap_bing_redirect`); `/rewardsapp`, `/challenge`, `b_captcha` or 403 is `Blocked` (`:100-115`); no time filter → `recent` is `Unsupported` (`:74-76`) |
+| `brave` | web | `GET search.brave.com/search?q&source=web[&tf=]` with a browser UA and SearXNG's region/SafeSearch cookies (`engines/brave.rs:24-30,81-93`) | none | general | `related` (`a.related-query`, `brave.rs:191-210`) | `div.snippet` rows with `title`/`content`, `t-secondary` date split off (`:129-189`); 403 `Blocked`, 429 `RateLimited`, empty 2xx is `Ok([])` (`:113-121`) |
+| `qwant` | web | `GET api.qwant.com/v3/search/web` JSON, SearXNG's exact parameter order (the API fingerprints on it), `datadome` cookie replayed from the last response (`engines/qwant.rs:79-103`) | none | general | — | `mainline[].type == "web"` rows only (`:185-210`); `error_code 24` → `RateLimited`, a captcha redirect body → `Blocked` (`:135-155`); no time filter → `recent` is `Unsupported` |
+| `duckduckgo` | web | HTML `html.duckduckgo.com` + lite fallback **and** Instant Answer JSON `api.duckduckgo.com/?q&format=json&no_html=1` | none | general, news | `answer`, `knowledge_panel`, `related`, `definition` | back in the default `web.engines` (2026-09-17 live smoke: it and Brave were the two general indexes that answered this network while Google, Bing and Qwant walled it); five general indexes fan out per query |
 | `wikipedia` | web | MediaWiki search API (`engines/wikipedia.rs:3-9`) + REST `page/summary/{title}` | none | general, science | `knowledge_panel` (summary extract, thumbnail, description) | summary replaces jarvis's `answer_from_top_hit` hack (`aggregate/mod.rs:281-290`) |
 | `arxiv` | web | Atom API (`engines/arxiv.rs:3-8`) | none | science | — | keep the hand-rolled Atom scan (no XML dep) |
 | `github` | web | `api.github.com/search/repositories` (`engines/github.rs:26-32`) | optional `github` (raises the rate limit) | it | — | keyless by default, so it stays in `web` |
-| `brave` | search-providers | `api.search.brave.com/res/v1/web/search` (`engines/brave.rs:9-19`) | `brave` | general, news, it | `knowledge_panel` (infobox), `faq`, `news`, `videos`, `discussions`, `spelling` (query.altered) | JSON fields, no scraping; free tier exists |
-| `firecrawl` | search-providers | hosted or self-hosted, `POST {base}/v2/search`, `sources: [web|news|images]`, `tbs`, `includeDomains`; `POST {base}/v2/scrape` | `firecrawl` | general, news, science (`categories: research`), it (`developer`) | `news`, `images`; per-result `markdown` when `scrapeOptions` set | **renders**; `base_url` for self-hosted |
-| `searxng` | search-providers | self-hosted, `GET {base}/search?q&format=json&categories&time_range` | none (instance-local) | all | `answer` (answers[]), `knowledge_panel` (infoboxes[]), `related` (suggestions[]), `spelling` (corrections[]) | the off-the-shelf metasearch; 70+ upstream engines with anti-bot handled by a maintained project |
+| `brave_api` | search-providers | `api.search.brave.com/res/v1/web/search` (`crates/search-providers/src/brave.rs:18`) | `brave` | general, news, it | `knowledge_panel` (infobox), `faq`, `news`, `videos`, `discussions`, `spelling` (query.altered) | JSON fields, no scraping; free tier exists. Provider name `brave_api` because the keyless scraper owns `brave`; config block `brave:` and secret `brave` unchanged (§13.14) |
+| `firecrawl` | search-providers | hosted or self-hosted, `POST {base}/v2/search`, `sources: [web|news|images]`, `tbs`, `includeDomains`; `POST {base}/v2/scrape` | `firecrawl` | general, news, science (`categories: research`), it (`developer`) | `news`, `images`; per-result `markdown` when `scrapeOptions` set | **renders**; block present by default, inert without its secret (`search-providers/src/lib.rs:36-44`) |
+| `searxng` | search-providers | self-hosted, `GET {base}/search?q&format=json&categories&time_range` | none (instance-local) | all | `answer` (answers[]), `knowledge_panel` (infoboxes[]), `related` (suggestions[]), `spelling` (corrections[]) | **opt-in** (`searxng: None` by default, `lib.rs:40`); the off-the-shelf metasearch when you already run one — its engine modules are also where our four scrapers' techniques come from |
 | `openserp` | search-providers | self-hosted, `GET {base}/mega/search?engines&text&extract` | optional (hosted) | general, news, images | everything in its `serp_features[]`: `ai_summary`, `answer`, `people_also_ask`, `related`, `top_stories`, `knowledge_panel` … | **browser-rendered** Google/Bing/Yandex/Baidu — the only way to get JS-only SERP modules honestly; **renders** via `extract` |
 
-Not ported: jarvis's raw-HTTP `google`, `bing`, `yandex`, `baidu`, `ecosia`
-scrapers (`src/engines/{google,bing,yandex,baidu,ecosia}/`, ~3,000 lines).
-Their fixtures are synthetic (`bing/tests/fixtures/basic_search.html:4`),
-their anti-bot handling is a string match for "captcha", and the SERP
-modules they were supposed to feed are JS-rendered on those engines —
-which is exactly why jarvis's selector tables stayed empty
-(`traits.rs:104`; only `#[cfg(test)]` selectors in `features.rs:614-680`).
-OpenSERP exists to solve that with a browser pool; we configure it rather
-than reimplement a quarter of it. Rejected alternative: keep the scrapers
-"as a fallback" — a fallback that returns consent pages is worse than a
-missing provider the description does not list.
+**On the SERP scrapers.** The 2026-09-12 build dropped jarvis's raw-HTTP
+`google`, `bing`, `yandex`, `baidu`, `ecosia` scrapers
+(`src/engines/{google,bing,yandex,baidu,ecosia}/`, ~3,000 lines): synthetic
+fixtures (`bing/tests/fixtures/basic_search.html:4`), anti-bot handling that
+was a string match for "captcha", and empty selector tables (`traits.rs:104`)
+— a fallback that returns consent pages is worse than a missing provider. That
+reasoning still holds for *jarvis's* scrapers. What changed on 2026-09-17: the
+goal is one binary with no external API, and one keyless HTML endpoint
+(DuckDuckGo) was not enough of an index. SearXNG solves the same problem in
+the open with maintained, keyless engine modules, so their request shapes were
+ported from `~/Develop/searxng` — Google's WML endpoint served only to Nokia
+user agents (`google.rs:23-32`), Qwant's fingerprinted parameter order and
+datadome cookie (`qwant.rs:3-6,84-97`), Bing's `/ck/a` unwrap, Brave's
+cookies (`brave.rs:30`) — with per-engine `Blocked` classification and
+captured, dated fixtures (`crates/web/tests/fixtures/*-2026-09-17.*`). The
+features they were "supposed to feed" are still not scraped: only `related`
+(Google, Brave) comes from the SERP HTML. Alternative beaten: run SearXNG as a
+required sidecar (38 §0.5). Not revisited: yandex, baidu, ecosia.
 
 Selection per query: configured providers whose categories include the
 requested one; `providers:` narrows. Fan-out is jarvis's
@@ -257,19 +290,24 @@ are the best-tested part of the crate. `fetch/clean.rs` is replaced by
   follow up; `format: text` is a projection of that markdown (headings,
   links and emphasis stripped), not a second parse. Agents get links
   (markdown) or token-cheap prose (text) from one tree.
-- `rendered: true` → the first registered provider whose `meta().renders`
-  is true, in registration order. `browser` (23) registers one at start —
-  the embedded obscura isolate: `browser_navigate` → `browser_markdown` →
-  `browser_close` — so rendered fetches work keyless; Firecrawl (`/v2/scrape`
-  with `formats: ["markdown"]`) and OpenSERP extract remain as alternatives
-  when `search-providers` registers them. The SSRF check still runs on the
-  URL before it is sent anywhere; the browser's own private-network guard is
-  a separate setting (`browser.allow_private_network`, 23 §0.8) and does not
-  loosen this fetcher's. With none registered: `Err("rendered fetch needs a
-  rendering provider: configure firecrawl or openserp under
-  search_providers")`.
-- `fetch_top` on search reuses the same path for the top N ranked URLs,
-  concurrently, each capped at `fetch_top_chars` (default 1500).
+- `rendered: true` → `WebActor`'s `Render` picks the provider named `scrape`
+  when it has `renders: true`, else the first registered renderer in
+  registration order (`crates/web/src/actor.rs:154-159`). Order as built:
+  `scrape` (38 §5: plain fetch → `transform_html` → markdown, obscura only
+  when the page comes back thin or the fetch fails — so a rendered read of a
+  static page never opens a browser), then `browser` (23: the embedded
+  obscura isolate, `browser_navigate` → `browser_markdown` → `browser_close`,
+  `crates/browser/src/render.rs:86-89`), then Firecrawl (`/v2/scrape` with
+  `formats: ["markdown"]`) and OpenSERP extract when `search-providers`
+  registers them. The SSRF check still runs on the URL before it is sent
+  anywhere (`tools.rs:313-317`); the browser's own private-network guard is a
+  separate setting (`browser.allow_private_network`, 23 §0.8) and does not
+  loosen this fetcher's. With none registered: `rendered fetch needs a
+  rendering provider: scrape, browser, or firecrawl` (`actor.rs:22-23`).
+- `fetch_top` on search (0..=5, `tools.rs:195-200`) sends each of the top N
+  ranked URLs through the same `Render` path concurrently, falling back to a
+  plain text fetch when render fails (`tools.rs:222-262`); each page is capped
+  at `fetch_top_chars` (default 4000, `crates/web/src/lib.rs:65`).
 
 ## 6. Config and credentials
 
@@ -278,23 +316,29 @@ Two sections, one per plugin (00 §5: every plugin reads its own).
 ```yaml
 web:                          # design doc 16 - built-in engines, fetch, tools
   enabled: true
-  engines: [duckduckgo, wikipedia, arxiv, github]
+  engines: [google, bing, brave, qwant, duckduckgo, wikipedia, arxiv, github]   # engines::BUILTIN
   timeout_ms: 4000            # per provider, built-in or registered
   overall_timeout_ms: 6000
   fetch_max_chars: 4000
+  fetch_top_chars: 4000
   feature_max_chars: 600
   user_agent: "wth/0.1 (+https://github.com/skymoore/wth)"
 
 search_providers:             # design doc 16 §3 - external engines; each block's presence enables it
-  firecrawl:
+  firecrawl:                  # the one block present by default; inert without the `firecrawl` secret
     base_url: https://api.firecrawl.dev   # self-hosted: http://127.0.0.1:3002
-  searxng:
-    base_url: http://127.0.0.1:8080
-  openserp:
-    base_url: http://127.0.0.1:7000
-    engines: [google, bing]
-  brave: {}
+  # searxng:                  # opt-in: no default base_url (search-providers/src/lib.rs:36-44)
+  #   base_url: http://127.0.0.1:8080
+  # openserp:
+  #   base_url: http://127.0.0.1:7000
+  #   engines: [google, bing]
+  # brave: {}                 # Brave Search API; registers as `brave_api`, needs the `brave` secret
 ```
+
+Defaults are `WebConfig::default()` (`crates/web/src/lib.rs:57-72`) and
+`SearchProvidersConfig::default()` (`crates/search-providers/src/lib.rs:36-44`):
+only `firecrawl` is on, and only once its secret exists. The built-in engines
+need no block under `search_providers`.
 
 Keys are secrets in the encrypted vault next to the provider keys (37;
 `/secrets add`, Settings › Secrets or `wth --secret-set`), under the names
@@ -310,7 +354,7 @@ start and is skipped, mirroring how `mcp/` handles a broken entry.
 
 | jarvis piece | lines | disposition |
 |---|---|---|
-| `engines/{google,bing,yandex,baidu,ecosia}` | ~3,000 | dropped (§3): raw-HTTP scrapes of JS-first SERPs; synthetic fixtures; OpenSERP provider covers the need |
+| `engines/{google,bing,yandex,baidu,ecosia}` | ~3,000 | dropped 2026-09-12 (§3.2): raw-HTTP scrapes with synthetic fixtures and no anti-bot classification. **Superseded 2026-09-17**: `google`, `bing`, `brave`, `qwant` rewritten in `web` from SearXNG's engine modules — different endpoints (Google WML, Qwant v3 JSON), per-engine `Blocked`, captured fixtures. jarvis's code was still not ported; yandex/baidu/ecosia were not revisited |
 | `features.rs` selector walker | 1,099 | dropped (§4.2): never had a production selector; providers hand us structured features |
 | `extract.rs` Auto/Rendered modes | 916 | dropped: `Rendered` always errored "browser not available" (`extract.rs:283-289`); replaced by the Firecrawl/OpenSERP fetch path |
 | `aggregate/clusters.rs` | 305 | dropped: duplicates dedupe's grouping; no consumer |
@@ -337,21 +381,24 @@ crates/web/                       plugin "web" - depends on runtime, tools
   src/render.rs     result list + features -> tool text
   src/fetch/        mod.rs (limits, manual redirects), ssrf.rs (guard + GuardedResolver), text.rs (markdown -> text)
   src/url.rs        canonicalize_url, DisplayUrl (ported normalize/url.rs)
-  src/engines/      duckduckgo.rs wikipedia.rs arxiv.rs github.rs
-  tests/            ssrf matrix, rank/dedupe, url normalisation, engines (fixtures), aggregate
+  src/engines/      mod.rs (BUILTIN, Elem class-token scanner, entity decode) google.rs bing.rs brave.rs qwant.rs duckduckgo.rs wikipedia.rs arxiv.rs github.rs
+  tests/            ssrf matrix, rank/dedupe, url normalisation, engines (dated fixtures under tests/fixtures/), aggregate
 
 crates/search-providers/          plugin "search-providers" - depends on runtime, web (library half)
   src/lib.rs        SearchProvidersPlugin: reads `search_providers`, builds clients, lookup_when("web"), registers
-  src/{brave,firecrawl,searxng,openserp}.rs
+  src/{brave,firecrawl,searxng,openserp}.rs   (brave.rs registers as `brave_api`)
   tests/            wiremock contract tests per provider (documented response shapes)
 ```
 
 `web` dependencies: `reqwest` (workspace, now with the `query` feature),
 `schemars`, `serde*`, `tokio`, `thiserror`, `tracing`, `kameo`. New to the
 workspace: `url`, `html-to-markdown-rs` 3.12 (default features off; the
-only HTML parser - §13). Dev: `wiremock`. `scraper`, `async-trait`,
-`bitflags`, `base64`, `chrono`, `parking_lot`, `html-escape` from jarvis
-are not used. Keys come from the secrets vault through `secrets::Handle`
+only HTML parser - §13). Added 2026-09-17: `rand` (already in the workspace;
+Google's per-request Nokia UA pick) and `flate2` (gzip sitemaps for 38,
+inflated in the fetcher) — `crates/web/Cargo.toml:24-25`. Dev: `wiremock`.
+`scraper`, `bitflags`, `base64`, `chrono`, `parking_lot`, `html-escape` from
+jarvis are not used; Bing's `/ck/a` base64url is decoded by hand in
+`url.rs`. Keys come from the secrets vault through `secrets::Handle`
 (37 §3.6; `runtime::credentials` is gone).
 
 `search-providers` dependencies: `reqwest`, `serde*`, `web`. No HTML
@@ -367,12 +414,23 @@ different reason (§13).
 
 ## 10. Risks and known gaps
 
-- **Keyless general search is one HTML endpoint** (`html.duckduckgo.com`).
-  It blocks occasionally (jarvis handles 403/202 with a lite retry,
-  `duckduckgo.rs:53-61,232-257`). When it fails and no provider is
-  configured, search returns a clear failure, and the description already
-  told the user how to add a provider. SearXNG is the recommended
-  self-hosted answer; Brave the cheapest hosted one.
+- **Keyless SERP scrapes can be blocked, and one blocks by lying.** Live on
+  2026-09-17 from the author's network: Google answered `/wml/search` with
+  its `sorry` wall (HTTP 429), Qwant with a DataDome captcha
+  (`crates/web/tests/fixtures/google_wml-blocked-2026-09-17.html`,
+  `qwant_web-blocked-2026-09-17.txt`), and **Bing returned HTTP 200 with the
+  right `<title>` and ten cached results for an unrelated query** — the
+  decoy SERP flagged clients get, also reproducible with `curl`
+  (`bing_search-decoy-2026-09-17.html`). Brave and DuckDuckGo answered
+  correctly. Defences: per-engine `Blocked` classification (`Failed: google
+  (HTTP 429 sorry)`), `engines::reject_decoys` — a non-empty SERP in which
+  no hit's title, snippet or URL contains any query word ≥ 3 chars is
+  `Blocked("decoy results…")` rather than handed to the model
+  (`crates/web/src/engines/mod.rs`), and §4.6's zero-yield detector for a
+  SERP that parses but yields nothing. Five general indexes fan out per query
+  so one wall does not empty the result; when all fail, search returns a
+  clear failure and the description points at SearXNG or a keyed provider
+  (`NO_EXTERNAL_PROVIDER`, `crates/web/src/tools.rs:25`).
 - ~~**DNS rebinding TOCTOU** in the SSRF guard (`ssrf.rs:4-6`)~~ — closed
   at build time by `GuardedResolver` (§5, §13): the client never resolves
   on its own.
@@ -462,8 +520,39 @@ Each step leaves `wth` runnable.
 7. **Brave.** Snippet cleanup is HTML entity decoding only; no tag
    stripping was needed on the documented shapes.
 8. **`rendered` always in the schema.** Confirmed as §3.1 states: the field
-   is static and, with no rendering provider, fails with `rendered fetch
-   needs a rendering provider: configure firecrawl or openserp under
-   search_providers`.
+   is static and, with no rendering provider, fails with a message naming
+   the renderers — since 2026-09-17 `rendered fetch needs a rendering
+   provider: scrape, browser, or firecrawl` (`crates/web/src/actor.rs:22-23`).
 9. **`ListProviders`** was added to `WebActor` so the tool description and
    `search-providers`' startup can read the live set without a `Search`.
+10. **`NO_EXTERNAL_PROVIDER` rewritten** (2026-09-17). The built-ins are real
+    indexes now, so the description no longer says "add Firecrawl to get web
+    search"; it says search runs on the keyless engines and that a SearXNG
+    instance or a `brave_api`/`firecrawl` secret adds SERP features
+    (`crates/web/src/tools.rs:25`; appended only when no provider came from
+    outside `BUILTIN`, `tools.rs:126-130`).
+11. **`fetch_top` is 0..=5 and goes through `Render`.** Draft: 0..=3, plain
+    fetch, 1500 chars. Built: `fetch_top` 0..=5 (`tools.rs:195-200`), each URL
+    through `WebActor::Render` — the `scrape` provider's two-tier pick, so a
+    JS-only hit reads correctly — with a plain text fetch as fallback
+    (`tools.rs:222-262`); `fetch_top_chars` default 4000 (`lib.rs:65`), the
+    same as `fetch_max_chars`, because the Firecrawl-billing reason for a
+    small cap no longer applies to the default renderer.
+12. **`ProviderError::Unsupported` from `search` is a silent skip.** A
+    provider that cannot serve the query shape (Bing and Qwant on `recent`,
+    `bing.rs:74-76`, `qwant.rs:72-74`) appears in neither `ok` nor `failed`
+    (`crates/web/src/aggregate.rs:74-76,271-273`;
+    `tests/aggregate.rs:261`). Alternative beaten: reporting it under
+    `Failed:` — the model would read a capability gap as an outage.
+13. **Engine parsers share one scanner.** `elements_with_class`, `attr`,
+    `http_url`, `decode_entities` in `engines/mod.rs:85-228` serve Google,
+    Bing, Brave and DDG; no DOM crate (§13.2 still holds).
+14. **Brave API is `brave_api`.** The keyless `search.brave.com` scraper in
+    `web` took the name `brave` (`engines/brave.rs:22`); the keyed
+    `search-providers` provider is `brave_api` (`search-providers/src/brave.rs:18`).
+    Config block `brave:` and vault secret `brave` are unchanged so existing
+    installs keep working; only the provider name in descriptions,
+    `providers: [...]` and `Failed:` lines changed.
+15. **SearXNG is opt-in.** Draft §5 of 38 made it the first provider; built
+    with no default block (`search-providers/src/lib.rs:40`) once the in-tree
+    engines covered `general` without a sidecar.

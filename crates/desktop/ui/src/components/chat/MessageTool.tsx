@@ -76,10 +76,10 @@ function Diff({ old, new: next }: { old: string; new: string }) {
   )
 }
 
-/** `⚙ name` row with the described arguments; ✓/✗ + first result line when done, click shows the whole output. A `show` call is an artifact card; `crawl`/`map`/`scrape_url` show stacked site favicons. */
+/** `⚙ name` row with the described arguments; ✓/✗ + first result line when done, click shows the whole output. A `show` call is an artifact card; `crawl`/`map_site`/`scrape_url` show stacked site favicons. */
 export const MessageTool = memo(function MessageTool({ tool, session }: { tool: Tool; session: string }) {
   if (tool.name === 'show') return <ArtifactCard tool={tool} session={session} />
-  if (tool.name === 'crawl' || tool.name === 'map' || tool.name === 'scrape_url') return <ScrapeCard tool={tool} session={session} />
+  if (tool.name === 'crawl' || tool.name === 'map_site' || tool.name === 'scrape_url') return <ScrapeCard tool={tool} session={session} />
   return <PlainTool tool={tool} session={session} />
 })
 

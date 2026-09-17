@@ -246,7 +246,9 @@ pub enum ProviderError {
     /// Per-provider timeout.
     #[error("timed out")]
     Timeout,
-    /// `render` on a provider that does not render.
+    /// `render` on a provider that does not render, or a query shape the
+    /// provider cannot serve (e.g. `recent` on an engine without a time
+    /// filter); the aggregator skips it silently rather than reporting a failure.
     #[error("not supported by this provider")]
     Unsupported,
 }

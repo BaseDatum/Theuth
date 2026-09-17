@@ -10,29 +10,17 @@ type Tool = Extract<Entry, { kind: 'tool' }>
 const STACK = 5
 const SETTLED = 3
 
+/** Letter avatar for a host; no network favicon lookup so crawled hosts never leak to a third party. */
 function Favicon({ domain, className }: { domain: string; className?: string }) {
-  const [failed, setFailed] = useState(false)
-  const letter = domain.slice(0, 1).toUpperCase() || '?'
-  if (failed || !domain) {
-    return (
-      <span
-        className={cn(
-          'inline-flex size-4 shrink-0 items-center justify-center rounded-full bg-layer-3 text-[8px] font-medium text-fg-tertiary',
-          className,
-        )}
-      >
-        {letter}
-      </span>
-    )
-  }
   return (
-    <img
-      src={`https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=32`}
-      alt=""
-      className={cn('size-4 shrink-0 rounded-full', className)}
-      loading="lazy"
-      onError={() => setFailed(true)}
-    />
+    <span
+      className={cn(
+        'inline-flex size-4 shrink-0 items-center justify-center rounded-full bg-layer-3 text-[8px] font-medium text-fg-tertiary',
+        className,
+      )}
+    >
+      {domain.slice(0, 1).toUpperCase() || '?'}
+    </span>
   )
 }
 
@@ -69,7 +57,7 @@ function SourceStack({ urls }: { urls: string[] }) {
 
 function label(name: string, done: number, limit: number, running: boolean): string {
   if (name === 'scrape_url') return running ? 'Reading page' : done ? 'Read page' : 'No page'
-  if (name === 'map') {
+  if (name === 'map_site') {
     if (running) return limit ? `Mapping… ${done}/${limit}` : `Mapping… ${done}`
     return done === 1 ? 'Mapped 1 URL' : `Mapped ${done} URLs`
   }
@@ -77,16 +65,16 @@ function label(name: string, done: number, limit: number, running: boolean): str
   return done === 1 ? 'Crawled 1 page' : `Crawled ${done} pages`
 }
 
-/** `crawl` / `map` / `scrape_url`: overlapping favicons of in-flight URLs, then a settled stack. */
+/** `crawl` / `map_site` / `scrape_url`: overlapping favicons of in-flight URLs, then a settled stack. */
 export const ScrapeCard = memo(function ScrapeCard({ tool, session }: { tool: Tool; session: string }) {
   const [expanded, setExpanded] = useState(false)
   const live = useSessions((s) => s.sessions[session]?.scrape.get(tool.callId))
   const lines = useMemo(() => describe(tool.name, tool.args), [tool.name, tool.args])
   const { result } = tool
   const running = tool.pending || !result
-  const fallback = useMemo(() => urlsFromResult(tool.args, result?.output), [tool.args, result?.output])
-  const inflight = live?.inflight ?? []
-  const done = live?.done?.length ? live.done : fallback
+  const parsed = useMemo(() => urlsFromResult(tool.name, result, tool.args), [tool.name, result, tool.args])
+  const inflight = running ? (live?.inflight ?? []) : []
+  const done = running ? (live?.done ?? []) : parsed
   const limit = live?.limit ?? 0
   const stack = inflight.length ? inflight : done
   const text = label(tool.name, done.length, limit, running)

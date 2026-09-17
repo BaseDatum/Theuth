@@ -82,12 +82,12 @@ fn get_node_self_signature(node: &kuchikiki::NodeRef, mode: SignatureMode) -> St
         let attributes = element.attributes.borrow();
         if mode.id {
             if let Some(id) = attributes.get("id") {
-                signature.push_str(&id);
+                signature.push_str(id);
             }
         }
         if mode.class {
             if let Some(class) = attributes.get("class") {
-                signature.push_str(&class);
+                signature.push_str(class);
             }
         }
     }

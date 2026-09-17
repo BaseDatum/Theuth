@@ -280,7 +280,10 @@ flowchart LR
   pseudo-terminal with a rendered 120×40 screen the model reads instead of
   the bytes; same `Jobs` actor, stdin, no deadline. Browser (23): fifteen
   `browser_*` tools drive an embedded obscura isolate per session;
-  screenshots return as image parts of the tool result. `message_user`
+  screenshots return as image parts of the tool result; alongside it
+  `scrape_url` / `crawl` / `map_site` (38, added 2026-09-17) read a page or
+  walk a site to markdown as runtime functions — plain fetch first, that
+  isolate only for thin pages. `message_user`
   (24, added 2026-09-14): text plus files to the user on Slack or Signal,
   out of band; the session's bound thread, else every channel's owner,
   via a `UserSink` registry the two plugins fill at start
@@ -576,8 +579,10 @@ crates/
   secrets/            plugin: encrypted versioned vault (provider keys included), keychain key, {{secret:NAME[:-N]}} expansion + output scrub hook, secret_* tools, masked request, --secret-* CLI (37)
   knowledge/          plugin: OKF bundle, FTS index, gix history, knowledge_* tools (added in 10; extracted from agent in 12 §9)
   agent/              plugin: genai loop, session store, frame/compaction, skills, subagents, repl, session search (§5, 07, 08, 26)
-  web/                plugin: search_web / read_url, SSRF-guarded fetcher, RRF aggregator, keyless engines (16)
-  search-providers/   plugin: Firecrawl, SearXNG, OpenSERP, Brave registered with web over the bus (16)
+  web/                plugin: search_web / read_url, SSRF-guarded fetcher, RRF aggregator, keyless engines google/bing/brave/qwant/wikipedia/arxiv/github (16)
+  search-providers/   plugin: optional Firecrawl, SearXNG, OpenSERP, Brave API (`brave_api`) registered with web over the bus; only firecrawl present by default, key-gated (16)
+  firecrawl-native/   library: vendored Firecrawl crawler/html heuristics (AGPL; 38)
+  scrape/             plugin: scrape_url / crawl / map_site, two-tier engine, BFS crawler, `scrape` render provider (38)
   signal/             plugin: Signal channel and device pairing (added in 09)
   slack/              plugin: Slack channel over Socket Mode (added in 21)
   computer/           plugin: screenshot + pointer/keyboard tools (27)
@@ -610,7 +615,10 @@ codec; `tui` renders `link`'s status and QR; `rpc` sends `link` its
 dispatch as a `SetDispatch` message at start, 32 §3.1 — never a handle
 threaded through `wth`; `artifact` depends on `agent` for
 `AgentEvent::SessionDeleted` — subscribed, never asked — and on
-`tools`/`runtime`; nothing below `rpc` depends on it, 35 §13).
+`tools`/`runtime`; nothing below `rpc` depends on it, 35 §13;
+`scrape → {firecrawl-native, web, browser}` and `browser → web`, so there is
+no cycle; `rpc` and `tui` depend on `scrape` only for the `ScrapeProgress`
+event type they forward and render, 38 §0.2).
 
 Workspace dependencies (versions verified 2026-09-09 via `cargo info`):
 
@@ -634,6 +642,11 @@ Workspace dependencies (versions verified 2026-09-09 via `cargo info`):
 | clap | 4 | CLI |
 | agent-client-protocol | 2.1 (pinned) | ACP client + agent (acp, agent, rpc) |
 | html-to-markdown-rs | 3.12 | HTML → markdown/text (web) |
+| kuchikiki | 0.8 | HTML DOM for the vendored Firecrawl heuristics (firecrawl-native; 38) |
+| psl | 2.1 | public-suffix list: registrable-domain checks in link filtering (firecrawl-native; 38) |
+| roxmltree | 0.20 | sitemap `urlset` / `sitemapindex` parsing (firecrawl-native; 38) |
+| texting_robots | 0.2 | robots.txt: disallows, `Crawl-delay`, `Sitemap:` (firecrawl-native; 38) |
+| flate2 | 1 | gzip sitemaps inflated in the web fetcher (38) |
 | slack-morphism | 2.28 (patched, 21 §2.1) | Slack Socket Mode + Web API |
 | portable-pty | 0.9 | pty open/spawn/read/write for PTY jobs (22) |
 | vt100 | 0.16 | rendered screen of a PTY job (22) |
@@ -764,6 +777,7 @@ Each phase ends with a runnable check, not a test suite.
 | 22 | artifacts (35) | 35 §11 checks: a `.pdf` show compiles and its page-1 image comes back to the model; the card, panel and Slack thread each show it; a phone fetches it through the relay | done 2026-09-16 (headless: md/csv/svg/pdf shown, page-1 PNG to the model, compile error located `5:16`, v2 on re-show, list/get/export over RPC; TUI card, Ctrl+O and `/artifacts` on a pty; desktop webview, Slack/Signal live and the relay not exercised; 35 §14) |
 | 23 | loops (33) | a `0s` file with `until` runs until the check passes and removes itself; `schedule_done` from a run ends it; `pause`/`resume` flips the line; a run with a live child stays open; `schedule_status` reports from chat | done 2026-09-16 (all five headless; also `max_runs` cap, broken check, `removed`, restart → `lost` + resume, status from history after the file is gone; three defects found and fixed in smoke — tick wake, pending children, settle; owner-DM delivery, subtree timeout, the §2 port loop with an external harness not exercised; 33 §11) |
 | 24 | secrets (37) | a `shell` echoing `{{secret:T}}` shows the placeholder in every frontend and in `messages.body`; `secret_capture` stores a token the transcript never contains; a rotated key is reachable as `:-1` and restorable; a data dir with `credentials.yaml` starts with the file imported and gone; a placeholder in `read_url` asks | done 2026-09-16 (all headless with a real model, plus the TUI on a pty; three leaks found and fixed in smoke — expanded job `command` in `JobEvent`, capture output through `JobEvent`, pty tail; keychain key store and the desktop panes not exercised; 37 §15) |
+| 25 | scrape (38) + in-tree SERP (16 §3.2) | crawl a docs site scoped to its directory; `map_site` via sitemap; `search_web` keyless on google/bing/brave/qwant/duckduckgo | done 2026-09-17 (fetch tier live: docs.rs and tokio.rs crawls fill their budgets in scope, `map_site` 11 URLs with titles; SERP live: brave + duckduckgo answer, google/qwant walled, bing served decoys → `reject_decoys`; two crawl defects found and fixed in smoke — duplicate links eating the budget, nav chrome surviving `only_main_content`; headless `list_tools`/`get_prompt` checked; render tier, a real model turn and the UI on a live run not exercised; 38 §11) |
 
 Known gaps carried forward: cancel/error paths in the loop are code-reviewed,
 not smoke-tested; the `Jobs` actor kills every process group on shutdown
@@ -774,8 +788,11 @@ knowledge` hung once (2026-09-11, 0% CPU, parallel threads; 1/7 runs), not
 reproduced - run with `--test-threads=1` if it recurs and bisect gix vs sqlite.
 ACP: binary registry installs and terminal-type login messages are not
 smoke-tested; ACP children cannot message their parent (no MCP back-channel,
-06 §3.8). web: hosted providers (Firecrawl, Brave, SearXNG, OpenSERP)
-verified only against documented response shapes, not live.
+06 §3.8). web: hosted providers (Firecrawl, Brave API, SearXNG, OpenSERP)
+verified only against documented response shapes, not live; keyless SERP
+engines: bing/brave parsers driven by captured 2026-09-17 fixtures,
+google/qwant blocked from the capture network (inline happy-path fixtures,
+captured `Blocked` fixtures; 16 §10).
 
 ## 13. Lessons carried from jarvis (design only, no code)
 

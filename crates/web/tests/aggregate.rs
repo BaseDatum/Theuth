@@ -16,7 +16,7 @@ struct MockProvider {
     delay: Duration,
     results: Vec<RawResult>,
     features: Vec<Feature>,
-    error: Option<String>,
+    error: Option<ProviderError>,
 }
 
 impl MockProvider {
@@ -40,7 +40,14 @@ impl MockProvider {
 
     fn fail(name: &'static str, message: &str) -> Self {
         Self {
-            error: Some(message.to_owned()),
+            error: Some(ProviderError::Http(message.to_owned())),
+            ..Self::ok(name, vec![])
+        }
+    }
+
+    fn unsupported(name: &'static str) -> Self {
+        Self {
+            error: Some(ProviderError::Unsupported),
             ..Self::ok(name, vec![])
         }
     }
@@ -80,8 +87,11 @@ impl Provider for MockProvider {
         if !self.delay.is_zero() {
             tokio::time::sleep(self.delay).await;
         }
-        if let Some(m) = &self.error {
-            return Err(ProviderError::Http(m.clone()));
+        if let Some(e) = &self.error {
+            return Err(match e {
+                ProviderError::Unsupported => ProviderError::Unsupported,
+                other => ProviderError::Http(other.to_string()),
+            });
         }
         Ok((self.results.clone(), self.features.clone()))
     }
@@ -245,6 +255,18 @@ async fn partial_failure_returns_ok_results() {
     assert_eq!(resp.failed.len(), 1);
     assert_eq!(resp.failed[0].0, "broken");
     assert!(resp.failed[0].1.contains("bot wall"));
+}
+
+#[tokio::test]
+async fn unsupported_provider_is_skipped_silently() {
+    let providers = [
+        MockProvider::ok("fast", vec![hit("One", "https://example.com/1", "s")]).arc(),
+        MockProvider::unsupported("no_recency").arc(),
+    ];
+    let resp = run(&providers, &query("rust"), &cfg(1000, 2000)).await;
+    assert_eq!(resp.results.len(), 1);
+    assert_eq!(resp.ok, vec!["fast"]);
+    assert!(resp.failed.is_empty(), "{:?}", resp.failed);
 }
 
 #[tokio::test]

@@ -327,7 +327,7 @@ export function apply(slice: SessionSlice, e: WireEvent, ctx: Ctx): SessionSlice
         next === s
           ? [...s.entries, { id: nextId(), kind: 'info' as const, text: `${e.is_error ? '✗' : '✓'} ${resultLine(e.output)}` }]
           : next.entries
-      return { ...s, entries, activity: 'thinking' }
+      return { ...s, entries, scrape: without(s.scrape, e.call_id), activity: 'thinking' }
     }
     case 'TurnFinished':
       return {
