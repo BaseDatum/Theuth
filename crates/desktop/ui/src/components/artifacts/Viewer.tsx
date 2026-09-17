@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Link, getRouteApi, useNavigate } from '@tanstack/react-router'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { ChevronLeft, Copy, Download, MessageSquare, PanelRight } from 'lucide-react'
-import { type MouseEvent, type ReactNode, useEffect, useMemo, useState } from 'react'
+import { type MouseEvent, type ReactNode, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { Streamdown } from 'streamdown'
 import { sessionLabel, useArtifactList } from '@/components/artifacts/List'
@@ -16,11 +16,13 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { useIsMobile } from '@/hooks/use-mobile'
 import { parseCsv } from '@/lib/csv'
 import { extOf, fmtBytes, isLocal } from '@/lib/files'
+import { touch } from '@/lib/platform'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import { useHarnesses } from '@/link/harnesses'
 import type { Artifact } from '@/rpc/extra'
+import type { PDFDocumentLoadingTask, PDFPageProxy, RenderTask } from 'pdfjs-dist'
 
 /** Prepended to HTML artifacts: no request leaves the frame, even for an `<img src=https://…>` (35 §9). */
 const CSP = '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; img-src data:">'
@@ -83,10 +85,180 @@ function Csv({ text, tsv }: { text: string; tsv: boolean }) {
   )
 }
 
-/** `<iframe src={url}>` of the blob: WKWebView's own PDF viewer. */
+const MAX_ZOOM = 5
+
+/**
+ * Scroll area whose child is laid out at `scale × 100%` width: two fingers pinch
+ * (the shell locks the viewport, `index.html`, so the page cannot), one finger
+ * scrolls natively, `⌃`/trackpad wheel zooms on desktop. The focal point stays
+ * under the fingers by shifting the scroll offsets after the child resizes.
+ */
+function Zoom({ className, children }: { className?: string; children: (scale: number) => ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null)
+  const [scale, setScale] = useState(1)
+  const live = useRef(1)
+  /** Focal point (container-relative) and ratio of the pending scale change, applied once the child has its new width. */
+  const focal = useRef<{ x: number; y: number; r: number } | null>(null)
+
+  const zoomTo = (next: number, x: number, y: number) => {
+    next = Math.min(MAX_ZOOM, Math.max(1, next))
+    if (next === live.current) return
+    focal.current = { x, y, r: next / live.current }
+    live.current = next
+    setScale(next)
+  }
+
+  useLayoutEffect(() => {
+    const el = ref.current
+    const f = focal.current
+    if (!el || !f) return
+    focal.current = null
+    el.scrollLeft = (el.scrollLeft + f.x) * f.r - f.x
+    el.scrollTop = (el.scrollTop + f.y) * f.r - f.y
+  }, [scale])
+
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    // React registers touch/wheel listeners passive; `preventDefault` needs our own.
+    let start: { dist: number; scale: number } | null = null
+    const pair = (t: TouchList): [Touch, Touch] => [t.item(0) as Touch, t.item(1) as Touch]
+    const dist = (t: TouchList) => {
+      const [a, b] = pair(t)
+      return Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY)
+    }
+    const mid = (t: TouchList) => {
+      const [a, b] = pair(t)
+      const r = el.getBoundingClientRect()
+      return { x: (a.clientX + b.clientX) / 2 - r.left, y: (a.clientY + b.clientY) / 2 - r.top }
+    }
+    const onStart = (e: TouchEvent) => {
+      if (e.touches.length !== 2) return
+      e.preventDefault()
+      start = { dist: dist(e.touches), scale: live.current }
+    }
+    const onMove = (e: TouchEvent) => {
+      if (!start || e.touches.length !== 2) return
+      e.preventDefault()
+      const m = mid(e.touches)
+      zoomTo((start.scale * dist(e.touches)) / start.dist, m.x, m.y)
+    }
+    const onEnd = () => {
+      start = null
+    }
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey) return
+      e.preventDefault()
+      const b = el.getBoundingClientRect()
+      zoomTo(live.current * Math.exp(-e.deltaY / 100), e.clientX - b.left, e.clientY - b.top)
+    }
+    el.addEventListener('touchstart', onStart, { passive: false })
+    el.addEventListener('touchmove', onMove, { passive: false })
+    el.addEventListener('touchend', onEnd)
+    el.addEventListener('touchcancel', onEnd)
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => {
+      el.removeEventListener('touchstart', onStart)
+      el.removeEventListener('touchmove', onMove)
+      el.removeEventListener('touchend', onEnd)
+      el.removeEventListener('touchcancel', onEnd)
+      el.removeEventListener('wheel', onWheel)
+    }
+  }, [])
+
+  return (
+    <div ref={ref} className={cn('h-full overflow-auto', className)}>
+      {children(scale)}
+    </div>
+  )
+}
+
+/** Largest canvas edge we ask pdf.js for: keeps a letter page under iOS's 16 M-pixel canvas cap. */
+const MAX_PAGE_PX = 3000
+
+/** One page, rendered when it scrolls near and re-rendered at the new density after a zoom. */
+const Page = memo(function Page({ page, scale }: { page: PDFPageProxy; scale: number }) {
+  const ref = useRef<HTMLCanvasElement>(null)
+  const [near, setNear] = useState(false)
+  const { width, height } = page.getViewport({ scale: 1 })
+
+  useEffect(() => {
+    const canvas = ref.current
+    if (!canvas) return
+    const io = new IntersectionObserver((es) => setNear(es.some((e) => e.isIntersecting)), { rootMargin: '100%' })
+    io.observe(canvas)
+    return () => io.disconnect()
+  }, [])
+
+  useEffect(() => {
+    const canvas = ref.current
+    if (!near || !canvas) return
+    let task: RenderTask | undefined
+    // Settle 150 ms after the last zoom step so a pinch does not re-render every frame.
+    const t = setTimeout(() => {
+      const px = Math.min((canvas.clientWidth * devicePixelRatio) / width, MAX_PAGE_PX / width)
+      const viewport = page.getViewport({ scale: px })
+      canvas.width = viewport.width
+      canvas.height = viewport.height
+      task = page.render({ canvas, viewport })
+      task.promise.catch(() => {}) // cancelled by a newer render
+    }, 150)
+    return () => {
+      clearTimeout(t)
+      task?.cancel()
+    }
+  }, [near, scale, page, width])
+
+  return <canvas ref={ref} className="block w-full bg-white shadow-sm" style={{ aspectRatio: `${width} / ${height}` }} />
+})
+
+/**
+ * pdf.js pages in a pinch-zoomable column (35 §7.2's `ponytail:` path): iOS
+ * WKWebView draws only page 1 of a PDF in an `<iframe>` and Android has no
+ * inline viewer at all.
+ */
+function PdfPages({ url }: { url: string }) {
+  const [pages, setPages] = useState<PDFPageProxy[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  useEffect(() => {
+    let task: PDFDocumentLoadingTask | undefined
+    let live = true
+    setPages(null)
+    setError(null)
+    import('pdfjs-dist')
+      .then(async (pdfjs) => {
+        pdfjs.GlobalWorkerOptions.workerSrc ||= new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).href
+        task = pdfjs.getDocument({ url })
+        const doc = await task.promise
+        const all = await Promise.all(Array.from({ length: doc.numPages }, (_, i) => doc.getPage(i + 1)))
+        if (live) setPages(all)
+      })
+      .catch((e: unknown) => live && setError(e instanceof Error ? e.message : String(e)))
+    return () => {
+      live = false
+      void task?.destroy()
+    }
+  }, [url])
+  if (error) return <div className="p-6 text-sm text-danger">{error}</div>
+  if (!pages) return <div className="m-6 h-64 animate-pulse rounded-xl bg-layer-2" />
+  return (
+    <Zoom className="bg-layer-1">
+      {(scale) => (
+        <div className="flex flex-col gap-3 p-3" style={{ width: `${scale * 100}%` }}>
+          {pages.map((p) => (
+            <Page key={p.pageNumber} page={p} scale={scale} />
+          ))}
+        </div>
+      )}
+    </Zoom>
+  )
+}
+
+/** `<iframe src={url}>` of the blob — WKWebView's own PDF viewer — where a mouse drives it; pdf.js pages under a finger. */
 function Pdf({ a }: { a: Artifact }) {
   const url = useFileUrl(a.path)
   if (!url) return <div className="m-6 h-64 animate-pulse rounded-xl bg-layer-2" />
+  if (touch()) return <PdfPages url={url} />
   return <iframe src={url} title={a.name} className="h-full w-full border-0" />
 }
 
@@ -105,9 +277,13 @@ function Body({ a }: { a: Artifact }) {
   const text = useText(TEXT_KINDS[a.kind] ? a.path : null)
   if (a.kind === 'image' || a.kind === 'svg') {
     return (
-      <div className="flex h-full items-start justify-center overflow-auto p-6">
-        <Img path={a.path} className="max-w-full rounded-lg" />
-      </div>
+      <Zoom>
+        {(scale) => (
+          <div className="flex items-start justify-center p-6" style={scale > 1 ? { width: `${scale * 100}%` } : undefined}>
+            <Img path={a.path} className={scale > 1 ? 'w-full rounded-lg' : 'max-w-full rounded-lg'} />
+          </div>
+        )}
+      </Zoom>
     )
   }
   if (a.kind === 'pdf') return <Pdf a={a} />
