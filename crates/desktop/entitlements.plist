@@ -5,5 +5,8 @@
   <!-- V8 (obscura) JIT under the hardened runtime. -->
   <key>com.apple.security.cs.allow-jit</key>
   <true/>
+  <!-- Voice notes (design doc 45): the hardened runtime denies getUserMedia without this, no prompt. -->
+  <key>com.apple.security.device.audio-input</key>
+  <true/>
 </dict>
 </plist>
