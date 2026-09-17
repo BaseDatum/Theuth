@@ -17,7 +17,7 @@
 	<key>CFBundleShortVersionString</key>
 	<string>1.0.3</string>
 	<key>CFBundleVersion</key>
-	<string>1.0.3.173</string>
+	<string>1.0.3.184</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>UILaunchStoryboardName</key>
@@ -44,5 +44,7 @@
 	<string>wth scans pairing QR codes to link this phone to your harness.</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>wth records voice notes you send to your harness.</string>
 </dict>
 </plist>
