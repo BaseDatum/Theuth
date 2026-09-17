@@ -44,9 +44,10 @@ the as-built status; §12 lists what review changed between draft and build.
    of link markdown around a client-rendered article — passed it as a real
    page. The browser actor is looked up at call time (`engine.rs`
    `browser_actor`), so there is no plugin start-order dependency and no read
-   of `web`'s config (`plugins.md` §3.6). Their 16-engine ladder is a
-   hosted-service dispatcher and did not port; `engpicker.rs` was dropped
-   with it (§2).
+   of `web`'s config (`plugins.md` §3.6). A domain with learned routes is the
+   model's third option (42): picked by the prompt block, not by this
+   engine. Their 16-engine ladder is a hosted-service dispatcher and did not
+   port; `engpicker.rs` was dropped with it (§2).
 4. **One converter per path, one shared post-processor.** Fetch path keeps
    `html-to-markdown-rs` (already a `web` dependency); render path uses
    obscura's own `browser_markdown`; both then run `post_process_markdown`

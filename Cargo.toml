@@ -30,6 +30,7 @@ search-providers = { path = "crates/search-providers" }
 browser = { path = "crates/browser" }
 firecrawl-native = { path = "crates/firecrawl-native" }
 scrape = { path = "crates/scrape" }
+routes = { path = "crates/routes" }
 computer = { path = "crates/computer" }
 surface = { path = "crates/surface" }
 link = { path = "crates/link" }
@@ -147,12 +148,15 @@ arboard = { version = "3.6", default-features = false, features = ["image-data"]
 # Attachment mime check (17 §3.1); already in the tree via genai.
 mime_guess = "2"
 # Embedded headless browser (design doc 23 §3.3, §9): obscura's agent tool layer, in-process.
-# Fork `main` = tag v0.2.2 + one commit exposing `tools()`/`call_tool()`; `run()` upstream is
-# stdio-bound. `stealth` = wreq/BoringSSL TLS fingerprint (needs cmake + clang to build);
-# `render` = layout/paint for `browser_screenshot`. obscura-js only for the main-thread warmup.
-obscura-mcp = { git = "https://github.com/skymoore/obscura", branch = "main", features = ["stealth", "render"] }
-obscura-js = { git = "https://github.com/skymoore/obscura", branch = "main", features = ["stealth", "render"] }
+# Fork branch `network-capture` = tag v0.2.2 + `tools()`/`call_tool()` (23 §3.3) + the
+# `browser_network_capture` tool (42 §3.1: on_response exchanges with request headers and
+# bodies, documents and fetch/XHR only). Merge into `main` and point back when it lands.
+# `stealth` = wreq/BoringSSL TLS fingerprint (needs cmake + clang to build); `render` =
+# layout/paint for `browser_screenshot`. obscura-js only for the main-thread warmup.
+obscura-mcp = { git = "https://github.com/skymoore/obscura", branch = "network-capture", features = ["stealth", "render"] }
+obscura-js = { git = "https://github.com/skymoore/obscura", branch = "network-capture", features = ["stealth", "render"] }
 iana-time-zone = "0.1"
+psl = "2"  # routes (42): registrable domain
 # unjar (design doc 23 §7): read the user's real cookies from local browser
 # profiles (Chrome/Firefox/Edge/Brave/Chromium/Safari) so the agent can act as
 # the signed-in user. Library only (no CLI). Fork `main` = upstream + one commit
@@ -242,8 +246,8 @@ pdf-inspector = { git = "https://github.com/firecrawl/pdf-inspector", tag = "v1.
 slack-morphism = { git = "https://github.com/skymoore/slack-morphism-rust", branch = "master" }
 # obscura vendors corrected taffy/cosmic-text under `vendor/` and patches them in its own
 # workspace; a git dependency's patches do not propagate, so we point at the same copies (23 §2).
-taffy = { git = "https://github.com/skymoore/obscura", branch = "main" }
-cosmic-text = { git = "https://github.com/skymoore/obscura", branch = "main" }
+taffy = { git = "https://github.com/skymoore/obscura", branch = "network-capture" }
+cosmic-text = { git = "https://github.com/skymoore/obscura", branch = "network-capture" }
 # genai: `ToolResponse.images` so screenshots ride inside tool results (Anthropic tool_result
 # content array; OpenAI trailing user turn; Gemini inline_data). Fork `main` = v0.7.0-beta.23 + one commit (23 §5).
 genai = { git = "https://github.com/skymoore/rust-genai", branch = "main" }

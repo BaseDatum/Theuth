@@ -56,6 +56,11 @@ pub struct BrowserConfig {
     pub max_chars: usize,
     /// `OBSCURA_SCRIPT_DEADLINE_MS` for heavy SPAs.
     pub script_deadline_ms: u64,
+    /// Request/response exchanges the isolate keeps per page for
+    /// `browser_network_capture` (42 §3.1); `OBSCURA_NETWORK_BODY_BUFFER_ENTRIES`.
+    pub capture_entries: usize,
+    /// Per-body cap of a captured exchange; `OBSCURA_NETWORK_BODY_BUFFER_BYTES`.
+    pub capture_body_bytes: usize,
 }
 
 impl Default for BrowserConfig {
@@ -72,6 +77,8 @@ impl Default for BrowserConfig {
             idle_secs: 300,
             max_chars: 4000,
             script_deadline_ms: 30_000,
+            capture_entries: 256,
+            capture_body_bytes: 2 * 1024 * 1024,
         }
     }
 }
@@ -106,6 +113,14 @@ pub fn warmup(cfg: &BrowserConfig) {
         (
             "OBSCURA_SCRIPT_DEADLINE_MS",
             Some(cfg.script_deadline_ms.to_string()),
+        ),
+        (
+            "OBSCURA_NETWORK_BODY_BUFFER_ENTRIES",
+            Some(cfg.capture_entries.to_string()),
+        ),
+        (
+            "OBSCURA_NETWORK_BODY_BUFFER_BYTES",
+            Some(cfg.capture_body_bytes.to_string()),
         ),
     ];
     for (key, value) in knobs {

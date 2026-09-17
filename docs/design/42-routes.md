@@ -1,12 +1,12 @@
 # 42 — Routes: learn a site's API in the browser, call it without one
 
-Status: draft v0 · 2026-09-17 · extends `23-browser.md` §3.3 (the fork) and
+Status: as-built v0 · 2026-09-17 (draft v0 same day) · extends `23-browser.md` §3.3 (the fork) and
 §4 (tool surface), `16-web.md` §5 (fetcher), `38-scrape-vendored-crawler.md`
 §0.3 (two tiers), `28-untrusted-content.md` §3 (labels), `00-architecture.md`
 §4 (tools), §6 (risk), §10 (crates). Measured against
 `~/Develop/unbrowse` (514 source files, 144,119 lines, today), obscura at
 `skymoore/obscura` `main` (`~/.cargo/git/checkouts/obscura-9d787776d7b5fca7/002c5c6`)
-and this tree today. §12 is the status to fill in after the build.
+and this tree today. §12 is the as-built status and what review changed.
 
 ## 0. Decisions in one screen
 
@@ -201,7 +201,7 @@ exposed" list keeps `network_requests`; this is a different tool with bodies.
 `Routes` asks `browser::Call { session, name: "browser_network_capture",
 args: {} }` on `BROWSER_ACTOR`, parses the text block, and returns
 `Vec<Exchange>`. With `url` given, `site_learn` first runs `browser_navigate
-{url, wait: "networkidle0"}` through the same actor and then
+{url, waitUntil: "networkidle0"}` through the same actor and then
 `browser_wait_for`-less `settle` by sleeping `routes.settle_ms` — obscura's
 loop is pumped between commands (`session.rs:100-118`), so timers and late
 fetches land before the read. No page interaction is scripted here: clicking
@@ -473,10 +473,85 @@ Per step, runnable:
    read_only`; `get_prompt` carries the block; `routes.enabled: false`
    removes all of it.
 
-## 12. Status
+## 12. Status (as-built, 2026-09-17)
 
-Unbuilt. Fill in after §11 with what was exercised and what was not, 38 §11
-style.
+Shipped on branch `routes`: `crates/routes` (1,985 lines incl. tests:
+`classify.rs` 863, `lib.rs` 473, `tools.rs` 273, `store.rs` 166,
+`replay.rs` 121, `capture.rs` 89), `web::Fetcher::request` + `RawResponse`
+(`crates/web/src/fetch/mod.rs`, byte-cap loop factored into `read_capped`
+shared with `read_body`), `browser.capture_entries` / `capture_body_bytes`
+(`crates/browser/src/lib.rs`), `RoutesPlugin` in both plugin vectors
+(`crates/wth/src/main.rs`). Fork branch `skymoore/obscura` `network-capture`
+= `002c5c6` + two commits (`95f87e0`, `accc198`; 186 lines): the tool, the
+capture buffer, and a two-line `obscura-js/src/ops.rs` fix — `op_fetch`
+fired `on_response` with the *response* headers in `RequestInfo.headers`,
+so request-header (auth) capture was impossible before it. Root
+`Cargo.toml` points all four obscura rows at that branch; flip to `main`
+when it merges.
+
+Verified by: `cargo clippy --workspace --all-targets -D warnings` clean;
+`cargo test -p routes -p web -p browser -p scrape` green (routes 18 unit +
+2 tokio: classifier fixtures of §11.3 plus the page-path rule below, store
+merge/mark, `absorb` grouping with secrets kept off disk and out of
+`LearnReply`, cred sweep; `web/tests/request.rs` 7 wiremock cases of §11.2);
+`cargo test -p obscura-mcp` 12/12 incl.
+`network_capture_reports_request_headers_and_bodies_then_drains`;
+obscura-js 382/382 with the pre-existing `heap_limit` V8-flag abort skipped
+(fails identically on `002c5c6`). Live smoke (throwaway example, deleted;
+debug build, author's network):
+
+- `learn https://crates.io/crates/tokio` → 22 exchanges captured, 6.9 s,
+  three routes: `GET /api/v1/crates/{id}/downloads?include={include}`
+  (367 records at `/version_downloads`), `GET /api/v1/crates/{id}?include=`
+  (`/keywords`), `GET /api/v1/crates/{id}/owners` (`/users`). Then
+  `call(…downloads, {id: "serde"})` → `https://crates.io/api/v1/crates/serde/downloads?include=versions`,
+  200, **422 records in 0.66 s**, no browser. The first run learned
+  `…/crates/tokio/…` with no hole and `{id: serde}` fell through as a query
+  param — two fixes below (§12.3, §12.4).
+- `learn https://news.ycombinator.com/` → 1 exchange, no routes, `top_urls`
+  = the page: the *no XHR, use `scrape_url`* case as designed.
+- `learn https://www.npmjs.com/package/react` → Cloudflare Turnstile
+  (`/cdn-cgi/challenge-platform/…`), no routes — the §8 anti-bot class.
+- `learn https://hn.algolia.com/?q=rust` → obscura fails the 2.6 MB bundle
+  (`Dynamic script fetch error: HTTP 0`); `learn https://data.europa.eu/data/datasets`
+  → `ReferenceError: XPathEvaluator is not defined` in the app bundle.
+  Both engine gaps, not ours; §11.6's Algolia expectation is withdrawn.
+- Not exercised: `site_*` from a real model turn (scratch data dir has no
+  provider key); §11.7 headless `list_tools` (binary builds; not driven);
+  an authenticated site (`browser.import_cookies` path → cookie header →
+  replay); `replay: false` refusal and drift against a live site.
+
+Revisions at build time:
+
+1. **No kameo actor.** Nothing outside the crate asks `routes`; the §6
+   messages are methods on `Arc<Routes>` held by the three tools, exactly
+   `scrape`'s `Arc<Scrape>` shape (38). `Forget` is gone: credentials expire
+   by a 30 s sweep at `CREDS_IDLE` = 300 s (mirrors `browser.idle_secs`).
+2. **Capture buffers documents and fetch/XHR only** (`accc198`). The first
+   crates.io run hit the 256-entry cap exactly: ~250 script/image/font
+   exchanges evicted the `Document` navigation. Scripts, styles, images and
+   fonts are never routes; they no longer enter the deque.
+3. **Page-path resource/id pairs are holes.** One visit gives no sibling and
+   `tokio` is not id-shaped, so the first template was `/crates/tokio/…`.
+   Now a segment whose predecessor *and* itself appear in a captured
+   `Document` path (`/crates/tokio` ↔ `/api/v1/crates/tokio/downloads`)
+   becomes `{id}` (`classify.rs`, `page_path_resource_id_pair_becomes_hole`).
+   `ponytail:` pairs only — `/users/alice/posts` also holes `posts`.
+4. **Sibling merge has two guards**: the differing segment is never the
+   first, and both replies must share ≥ 50 % record keys (`same_shape`, the
+   one overlap rule, also used by `drift`). Without them `/graphql` and
+   `/gql` merged into `/{id}`.
+5. **Cookie header comes from the jar.** obscura never puts `cookie` in
+   `RequestInfo.headers`; `learn` calls `browser_storage_state` per learned
+   domain, joins matching cookies (domain equal or subdomain, leading dot
+   stripped), arms `cookie` in the session map and marks the routes
+   `cookies: true`. Domains with nothing to arm get no map entry.
+6. **`browser_navigate` takes `waitUntil`**, not `wait` (obscura-mcp schema);
+   §3.2's spelling was wrong and would have silently defaulted to `load`.
+7. `web::url::is_tracking_param` made `pub` so `routes` reuses `web`'s list
+   instead of a second one (§3.3.4).
+8. Labels of 28 §3 are recorded in that doc's table; 28's `UNTRUSTED`/`SINK`
+   consts are not implemented in `tools` yet, so nothing is set in code.
 
 ## 13. Edits to other docs
 

@@ -1,5 +1,6 @@
 //! Page fetch (design doc 16 §5): HTTP GET behind the SSRF guard, manual
-//! redirects re-checked per hop, body caps, and HTML → markdown / text.
+//! redirects re-checked per hop, body caps, and HTML → markdown / text; plus
+//! the raw [`Fetcher::request`] used for route replay (42 §0.6).
 //!
 //! - `ssrf`: the mandatory guard; [`check_url`] for callers outside the fetcher.
 //! - `text`: one HTML parser for both [`FetchFormat`]s, plus truncation.
@@ -46,6 +47,23 @@ pub struct FetchResponse {
     /// Whether the content or the raw body was cut at a cap.
     pub truncated: bool,
     /// Wall time of the fetch in milliseconds.
+    pub took_ms: u64,
+}
+
+/// Raw reply of [`Fetcher::request`]; non-2xx is `Ok`, read `status`.
+#[derive(Clone, Debug)]
+pub struct RawResponse {
+    /// Final URL after redirects.
+    pub url: String,
+    /// HTTP status code.
+    pub status: u16,
+    /// Response headers as `(lowercase name, value)`; non-UTF-8 values skipped.
+    pub headers: Vec<(String, String)>,
+    /// Raw body bytes, cut at the fetcher's byte cap.
+    pub body: Vec<u8>,
+    /// Whether `body` was cut at the cap.
+    pub truncated: bool,
+    /// Wall time of the request in milliseconds.
     pub took_ms: u64,
 }
 
@@ -215,9 +233,124 @@ impl Fetcher {
         }
     }
 
-    async fn read_body(
+    /// `method` `url` with `headers` and optional `body`, redirects re-checked
+    /// per hop like [`Self::fetch`] (42 §0.6). 301/302/303 turn into a bodyless
+    /// GET; 307/308 keep method and body. Caller `host` / `content-length`
+    /// headers are skipped. The body is raw bytes: no gzip inflate, no
+    /// document or HTML conversion.
+    ///
+    /// # Errors
+    /// [`FetchError::Rejected`] for an invalid method, the guard or too many
+    /// redirects; [`FetchError::Failed`] for transport errors or an oversize
+    /// `Content-Length`. Non-2xx is `Ok`.
+    pub async fn request(
+        &self,
+        method: &str,
+        url: &str,
+        headers: &[(String, String)],
+        mut body: Option<Vec<u8>>,
+    ) -> Result<RawResponse, FetchError> {
+        let started = Instant::now();
+        let mut method = reqwest::Method::from_bytes(method.as_bytes())
+            .map_err(|_| FetchError::Rejected(format!("invalid method: {method}")))?;
+        let mut current = ssrf::parse_absolute(url)?;
+        let mut redirects = 0usize;
+        loop {
+            ssrf::check_static(&current, &self.allow)?;
+            tracing::debug!(url = %current, %method, redirects, "request hop");
+            let mut req = self.client.request(method.clone(), current.as_str());
+            for (name, value) in headers {
+                if name.eq_ignore_ascii_case("host") || name.eq_ignore_ascii_case("content-length")
+                {
+                    continue;
+                }
+                req = req.header(name.as_str(), value.as_str());
+            }
+            if let Some(b) = &body {
+                req = req.body(b.clone());
+            }
+            let response = req.send().await.map_err(|e| FetchError::from_reqwest(&e))?;
+            let status = response.status();
+            if status.is_redirection() {
+                if redirects >= self.max_redirects {
+                    return Err(FetchError::Rejected(format!(
+                        "too many redirects (max {})",
+                        self.max_redirects
+                    )));
+                }
+                let location = response
+                    .headers()
+                    .get(reqwest::header::LOCATION)
+                    .and_then(|v| v.to_str().ok())
+                    .ok_or_else(|| FetchError::Failed("redirect missing Location header".into()))?;
+                current = current
+                    .join(location)
+                    .map_err(|e| FetchError::Failed(format!("invalid redirect Location: {e}")))?;
+                if !matches!(
+                    status,
+                    reqwest::StatusCode::TEMPORARY_REDIRECT
+                        | reqwest::StatusCode::PERMANENT_REDIRECT
+                ) {
+                    method = reqwest::Method::GET;
+                    body = None;
+                }
+                redirects += 1;
+                continue;
+            }
+            let headers = response
+                .headers()
+                .iter()
+                .filter_map(|(k, v)| Some((k.as_str().to_owned(), v.to_str().ok()?.to_owned())))
+                .collect();
+            let (body, truncated) = self.read_capped(response).await?;
+            return Ok(RawResponse {
+                url: current.to_string(),
+                status: status.as_u16(),
+                headers,
+                body,
+                truncated,
+                took_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            });
+        }
+    }
+
+    /// Refuse an oversize `Content-Length`, then read the body cut at `max_bytes`.
+    async fn read_capped(
         &self,
         mut response: reqwest::Response,
+    ) -> Result<(Vec<u8>, bool), FetchError> {
+        if let Some(len) = response.content_length()
+            && usize::try_from(len).is_ok_and(|len| len > self.max_bytes)
+        {
+            return Err(FetchError::Failed(format!(
+                "body too large (Content-Length {len} > max {})",
+                self.max_bytes
+            )));
+        }
+        let mut raw = Vec::new();
+        let mut truncated = false;
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|e| FetchError::from_reqwest(&e))?
+        {
+            raw.extend_from_slice(&chunk);
+            if raw.len() > self.max_bytes {
+                raw.truncate(self.max_bytes);
+                truncated = true;
+                tracing::warn!(
+                    max = self.max_bytes,
+                    "fetch body exceeded max_fetch_bytes; truncating"
+                );
+                break;
+            }
+        }
+        Ok((raw, truncated))
+    }
+
+    async fn read_body(
+        &self,
+        response: reqwest::Response,
         url: Url,
         format: Option<FetchFormat>,
         max_chars: usize,
@@ -241,32 +374,7 @@ impl Fetcher {
                 ct.unwrap_or("unknown")
             )));
         }
-        if let Some(len) = response.content_length()
-            && usize::try_from(len).is_ok_and(|len| len > self.max_bytes)
-        {
-            return Err(FetchError::Failed(format!(
-                "body too large (Content-Length {len} > max {})",
-                self.max_bytes
-            )));
-        }
-        let mut raw = Vec::new();
-        let mut body_truncated = false;
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|e| FetchError::from_reqwest(&e))?
-        {
-            raw.extend_from_slice(&chunk);
-            if raw.len() > self.max_bytes {
-                raw.truncate(self.max_bytes);
-                body_truncated = true;
-                tracing::warn!(
-                    max = self.max_bytes,
-                    "fetch body exceeded max_fetch_bytes; truncating"
-                );
-                break;
-            }
-        }
+        let (mut raw, body_truncated) = self.read_capped(response).await?;
         // Gzip container (`sitemap.xml.gz`); a failed decode keeps the raw bytes.
         if raw.starts_with(&[0x1f, 0x8b]) {
             let mut inflated = Vec::new();
