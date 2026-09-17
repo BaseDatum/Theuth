@@ -57,22 +57,13 @@ pub async fn callback(
             }
             let head = String::from_utf8_lossy(&head);
             let target = head.split_whitespace().nth(1).unwrap_or("/").to_owned();
-            let (status, body) = if !target.contains('?') {
-                ("404 Not Found", "")
+            let (status, page) = if !target.contains('?') {
+                ("404 Not Found", Cow::Borrowed(""))
             } else if target.contains("error=") {
-                (
-                    "400 Bad Request",
-                    "<h2>Login failed.</h2><p>Return to wth for details.</p>",
-                )
+                ("400 Bad Request", Cow::Owned(PAGE.replace("{state}", "err")))
             } else {
-                (
-                    "200 OK",
-                    "<h2>Logged in.</h2><p>You can close this tab.</p>",
-                )
+                ("200 OK", Cow::Owned(PAGE.replace("{state}", "ok")))
             };
-            let page = format!(
-                "<!doctype html><html><body style=\"font-family:system-ui;text-align:center;padding-top:4em\">{body}</body></html>"
-            );
             let resp = format!(
                 "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{page}",
                 page.len()
@@ -85,6 +76,9 @@ pub async fn callback(
         }
     }))
 }
+
+/// Completion page served on the loopback redirect; `{state}` is `ok` or `err`.
+const PAGE: &str = include_str!("callback.html");
 
 /// Open `url` in the user's browser; best effort, never fails the login.
 pub fn open_browser(url: &str) {
