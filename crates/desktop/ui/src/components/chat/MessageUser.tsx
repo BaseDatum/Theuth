@@ -1,8 +1,9 @@
-import { GitFork, Pencil } from 'lucide-react'
+import { GitFork, Mic, Pencil } from 'lucide-react'
 import { memo, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { useApi } from '@/lib/rpc'
+import { parseNote } from '@/lib/voice-note'
 import { useSessionField } from '@/store/sessions'
 import { Attachments } from './Attachments'
 import { ActionButton, rewind, useFork } from './MessageAssistant'
@@ -67,6 +68,8 @@ export const MessageUser = memo(function MessageUser({
   const running = useSessionField(session, 'running')
   const fork = useFork(session)
   const [editing, setEditing] = useState(false)
+  // 45 §7.4: the marker is the text, so own sends and history render alike.
+  const note = parseNote(text)
   return (
     <div className="group flex flex-col items-end gap-2 py-2">
       {skill && (
@@ -75,6 +78,11 @@ export const MessageUser = memo(function MessageUser({
         </span>
       )}
       {files && <Attachments files={files} className="justify-end" />}
+      {note && (
+        <span className="flex items-center gap-1 text-xs text-fg-secondary">
+          <Mic className="size-3" /> {note.secs} s
+        </span>
+      )}
       {editing && turn != null ? (
         <EditBubble
           text={text}
@@ -87,7 +95,7 @@ export const MessageUser = memo(function MessageUser({
       ) : (
         text && (
           <div className="max-w-[85%] rounded-[22px] bg-layer-3 px-4 py-2.5 whitespace-pre-wrap break-words md:max-w-[70%]">
-            {text}
+            {note ? note.body : text}
           </div>
         )
       )}

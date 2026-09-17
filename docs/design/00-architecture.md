@@ -558,7 +558,8 @@ without a keychain), `mcp/`, `skills/`,
 `artifacts.sqlite` (its index; deleting it orphans the blobs, swept at the
 next start — 35 §3.4), `models/pocket-tts/` (the Pocket TTS checkpoint and
 `voices/*.safetensors` the `voice` plugin reads; `voice.model_dir` points
-elsewhere — 43 §4.2)
+elsewhere — 43 §4.2), `models/parakeet-tdt/` (the Parakeet TDT ONNX
+checkpoint plus `libonnxruntime.{dylib,so}`; `voice.stt_model_dir` — 45 §4.6)
 beside it — `10-knowledge.md`. No shared `Config` struct: each plugin
 extracts its own section
 (`rt.config.extract_inner::<AgentConfig>("agent")`), so `runtime` never knows
@@ -692,6 +693,10 @@ Workspace dependencies (versions verified 2026-09-09 via `cargo info`):
 | tauri-plugin-updater | 2 | desktop: check + download at tick, install at quit (39; desktop only) |
 | ptts | 0.2 (git-pinned until 0.2.4 publishes `synth`) | Pocket TTS inference on CPU via `xn`, streaming, drop-to-cancel (43) |
 | opus | 0.3 | libopus encoder: 80 ms packets at 32 kbps for `SpeechAudio` (43; needs `CMAKE_POLICY_VERSION_MINIMUM=3.5`, set in `.cargo/config.toml`) |
+| parakeet-rs | 0.3 (`load-dynamic`: `libonnxruntime` found at run time beside the checkpoint) | Parakeet TDT speech-to-text for voice notes (45; static ORT clashes with sentencepiece's protobuf) |
+| symphonia | 0.5 (aac, isomp4, mp3, ogg, wav, mkv) | demux/decode inbound voice notes; Opus packets go to `opus` (45) |
+| rubato | 0.16 | resample voice notes to 16 kHz (45) |
+| mp3lame-encoder | 0.2 | MP3 clips for Signal and Slack voice replies (45) |
 | wiremock | 0.6 dev | provider contract tests |
 
 Build prerequisites (23 §9): `cmake`, `clang`/`libclang` and `llvm-objcopy`/`llvm-nm` (brew `llvm`) for BoringSSL
@@ -835,4 +840,4 @@ captured `Blocked` fixtures; 16 §10).
   | control | `computer` crate | plugin | 27 (safety engine not ported: `Risk` covers it) |
   | scheduler | `schedule` crate: files, tick, one session per schedule, `Deliver` | plugin | 34 (heartbeat, goals briefings, task DAG, notify flags, phase plumbing not ported: each is a file the user writes or a primitive the harness already has) |
   | updater (Tauri shell only, 966 lines) | `update` crate: manifest, minisign, atomic rename over `current_exe()`; the `.app` via `tauri-plugin-updater` at quit | plugin | 39 (toast, modal, snooze, phases, relaunch, daemon hunting not ported: silent by construction) |
-  | voice | `voice` crate: Pocket TTS in process (`ptts`), one Opus packet per bus event, `speak`/`stop_speaking`/`voice_status` | plugin | 43 (system-voice fallback, per-message audio cache and TUI playback not ported) |
+  | voice | `voice` crate: Pocket TTS in process (`ptts`), one Opus packet per bus event, `speak`/`stop_speaking`/`voice_status`; Parakeet TDT speech-to-text (`parakeet-rs`), `[voice note, N s]` inputs and MP3 voice replies per prose block on Signal and Slack | plugin | 43, 45 (system-voice fallback, per-message audio cache and TUI playback not ported) |

@@ -28,6 +28,7 @@ kameo = { workspace = true }
 presage = { workspace = true }
 presage-store-sqlite = { workspace = true }
 link = { workspace = true }
+voice = { workspace = true }
 ts-rs = { workspace = true, optional = true }
 
 [dev-dependencies]

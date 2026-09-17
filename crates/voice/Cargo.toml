@@ -3,7 +3,7 @@ name = "voice"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
-description = "Read replies aloud: Pocket TTS in-process, Opus packets streamed to the frontend (design doc 43)"
+description = "Read replies aloud: Pocket TTS in-process, Opus packets streamed to the frontend (design doc 43); voice notes in, MP3 clips out (design doc 45)"
 
 [dependencies]
 runtime = { workspace = true }
@@ -21,6 +21,13 @@ base64 = { workspace = true }
 ptts = { workspace = true }
 opus = { workspace = true }
 xn = { workspace = true }
+tools = { workspace = true }
+parakeet-rs = { workspace = true }
+ort = { workspace = true }
+symphonia = { workspace = true }
+rubato = { workspace = true }
+mp3lame-encoder = { workspace = true }
+parking_lot = { workspace = true }
 ts-rs = { workspace = true, optional = true }
 
 [features]

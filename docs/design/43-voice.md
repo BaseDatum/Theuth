@@ -450,7 +450,12 @@ barge-in. Each is a line in a later doc, not a stub here.
 
 ## 9. Seams phase 1 leaves for the voice agent
 
-Named so phase 1 does not paint over them; none is built now.
+Named so phase 1 does not paint over them; none is built now. Phase 2 is
+`45-voice-notes.md` (2026-09-17): voice notes in on every channel,
+`Synthesize` → MP3 clips per prose block out, the desktop's microphone; it
+took the "streaming text has a natural spoken unit" seam (the block boundary
+is `ToolCallPending`) and left the queue flag to the client (`speech.ts
+enqueue`). The live, interruptible agent is still phase 3.
 
 - **`Speak` is the primitive; a queue is a flag on it.** Phase 2 adds
   `append: bool` (or a `Queue` message) so sentences are spoken in order as

@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { open as pickFiles } from '@tauri-apps/plugin-dialog'
-import { ArrowUp, Paperclip, Plus, Square, X } from 'lucide-react'
+import { ArrowUp, Mic, Paperclip, Plus, Square, X } from 'lucide-react'
 import {
   type ClipboardEvent,
   type DragEvent,
@@ -19,7 +19,9 @@ import { extFor, putAttachment } from '@/lib/files'
 import { attach, expand, type Pastes, prune, token, tokenize } from '@/lib/pastes'
 import { container, touch } from '@/lib/platform'
 import { queryKeys, useApi } from '@/lib/rpc'
+import * as speech from '@/lib/speech'
 import { cn } from '@/lib/utils'
+import { noteText } from '@/lib/voice-note'
 import { LOCAL, useHarnesses } from '@/link/harnesses'
 import { useConnection } from '@/store/connection'
 import { useSessionField, useSessions } from '@/store/sessions'
@@ -29,6 +31,8 @@ import { type Ctx, FRESH, matches, run } from './slash'
 
 const NONE: Pastes = new Map()
 const IMAGE = /\.(png|jpe?g|gif|webp|bmp)$/i
+/** Recorder containers in preference order (45 §7.2): WebKit gives AAC in MP4, Chromium Opus in WebM; the harness decodes all. */
+const AUDIO_MIMES = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/webm']
 
 /** The slash popup: commands matching the typed word, one highlighted. */
 function SlashList({
@@ -93,6 +97,12 @@ export function Composer({
   const [pastes, setPastes] = useState<Pastes>(NONE)
   const [selected, setSelected] = useState(0)
   const [busy, setBusy] = useState(false)
+  const voice = speech.useVoice()
+  const recorder = useRef<{ rec: MediaRecorder; discard: boolean } | null>(null)
+  const [recording, setRecording] = useState(false)
+  const [secs, setSecs] = useState(0)
+  /** Uploading + transcribing a finished note. */
+  const [transcribing, setTranscribing] = useState(false)
   const ref = useRef<HTMLTextAreaElement>(null)
 
   const slashWord = /^\/\S*$/.test(text) ? text : null
@@ -207,10 +217,12 @@ export function Composer({
     },
   }
 
-  const submit = async () => {
-    const line = text.trim()
+  /** Send `spoken` (a `[voice note …]` line) or the textarea; a voice send enters voice mode, a typed one leaves it (45 §7.2). */
+  const submit = async (spoken?: string) => {
+    const line = spoken ?? text.trim()
     if (!line || busy) return
     setBusy(true)
+    const mode = (id: string) => speech.setVoiceMode(id, spoken !== undefined)
     try {
       if (line.startsWith('/')) {
         await run(line, ctx)
@@ -223,9 +235,11 @@ export function Composer({
       if (session && running) {
         const id = crypto.randomUUID()
         applyEvents([{ type: 'InputQueued', session, id, text: body }])
+        mode(session)
         await api.steer(session, body, id, files)
       } else if (session) {
         markSent(session, body, files)
+        mode(session)
         await api.send_input(session, body, files)
       } else {
         let id: string
@@ -244,6 +258,7 @@ export function Composer({
           'replace',
         )
         markSent(id, body, files)
+        mode(id)
         await navigate({ to: '/c/$session', params: { session: id } })
       }
     } catch (e) {
@@ -252,6 +267,70 @@ export function Composer({
       setBusy(false)
     }
   }
+
+  // Mic (45 §7.2): click to record, click again to upload → `transcribe` → send as `[voice note, N s] …`; Escape discards.
+  const stopRecording = (discard: boolean) => {
+    const r = recorder.current
+    if (!r) return
+    r.discard = discard
+    r.rec.stop()
+  }
+
+  const sendNote = async (blob: Blob) => {
+    setTranscribing(true)
+    try {
+      const t = await api.transcribe(await putAttachment(api, blob, extFor(blob)))
+      if (!t.text.trim()) {
+        toast('Nothing recognized')
+        return
+      }
+      await submit(noteText(t.text, Number(t.duration_ms)))
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e))
+    } finally {
+      setTranscribing(false)
+    }
+  }
+
+  const record = async () => {
+    // A user gesture: the one moment iOS lets the reply's `AudioContext` start (45 §7.3).
+    speech.unlock()
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const rec = new MediaRecorder(stream, {
+        mimeType: AUDIO_MIMES.find((m) => MediaRecorder.isTypeSupported(m)) ?? '',
+        audioBitsPerSecond: 32_000,
+      })
+      const chunks: Blob[] = []
+      rec.ondataavailable = (e) => chunks.push(e.data)
+      rec.onstop = () => {
+        for (const track of stream.getTracks()) track.stop()
+        const discard = recorder.current?.discard ?? true
+        recorder.current = null
+        setRecording(false)
+        if (!discard) void sendNote(new Blob(chunks, { type: rec.mimeType }))
+      }
+      recorder.current = { rec, discard: false }
+      rec.start()
+      setRecording(true)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  useEffect(() => {
+    if (!recording) return
+    setSecs(0)
+    const tick = setInterval(() => setSecs((s) => s + 1), 1000)
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key === 'Escape') stopRecording(true)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => {
+      clearInterval(tick)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [recording])
 
   const pick = (name: string) => {
     const hint = matches(name)[0]?.hint ?? ''
@@ -386,6 +465,22 @@ export function Composer({
               onClick={() => void api.cancel(session)}
             >
               <Square className="size-4 fill-current" />
+            </Button>
+          ) : voice && (recording || !text.trim()) ? (
+            <Button
+              variant={recording ? 'destructive' : 'default'}
+              className={cn('size-9 shrink-0 rounded-full', recording && 'w-auto gap-1 px-3 tabular-nums')}
+              aria-label={recording ? 'Stop recording' : 'Record voice note'}
+              disabled={busy || transcribing}
+              onClick={() => (recording ? stopRecording(false) : void record())}
+            >
+              {recording ? (
+                <>
+                  <Square className="size-4 fill-current" /> {secs} s
+                </>
+              ) : (
+                <Mic className="size-5" />
+              )}
             </Button>
           ) : (
             <Button

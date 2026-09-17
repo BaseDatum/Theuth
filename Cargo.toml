@@ -47,6 +47,15 @@ voice = { path = "crates/voice" }  # read replies aloud: Pocket TTS in-process (
 ptts = { git = "https://github.com/gradium-ai/xn-ptts", rev = "5d50b5209ff9bbd7d3bac5a26f3c3bc1934fca89", features = ["sp"] }
 xn = "0.2.4"  # ptts's tensor library; only `set_num_threads` is called directly
 opus = "0.3"
+# Voice notes (design doc 45): `parakeet-rs` = Parakeet TDT speech-to-text on ONNX Runtime. `load-dynamic`, not
+# pyke's static build: that archive carries protobuf 3.21 with default visibility, `sentencepiece` (ptts) carries
+# protobuf-lite 3.14, and one process cannot hold both — the TTS load aborts. The dylib lives beside the checkpoint.
+parakeet-rs = { version = "0.3", default-features = false, features = ["cpu", "load-dynamic"] }
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["load-dynamic"] }  # parakeet-rs's pin; only `init_from` is called
+symphonia = { version = "0.5", default-features = false, features = ["aac", "isomp4", "mp3", "ogg", "wav", "pcm", "mkv"] }  # demux/decode inbound voice notes (45 §0.5); Opus packets go to `opus`
+rubato = "0.16"  # resample inbound audio to the model's 16 kHz (45 §0.5)
+mp3lame-encoder = "0.2"  # outbound clips: MP3 24 kHz mono 48 kbit/s, the one container every client plays (45 §0.4)
+parking_lot = "0.12"  # the STT model slot: locked only inside `spawn_blocking`, no poisoning to unwrap
 # Update (design doc 39): semver compare, the updater plugin's own minisign verifier, tar for the
 # single-file CLI payload. The desktop side is tauri-plugin-updater below.
 semver = "1"

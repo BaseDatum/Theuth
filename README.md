@@ -182,10 +182,12 @@ Config (`~/.wth/`, created on first run; details in
   artifact:                       # design doc 35; the `show` tool, `/artifacts` lists a session's
     enabled: true                 # false: no `show` tool, no prompt block, no /artifacts; blobs and index kept
     fonts: []                     # extra directories searched for PDF fonts, besides system fonts and the embedded set
-  voice:                          # design doc 43; the desktop's Read-aloud button: Pocket TTS in the harness, Opus to the frontend
-    enabled: true                 # false: no actor, `speak` answers "not running", the desktop shows no button
+  voice:                          # design docs 43 + 45; Read-aloud and voice notes: Pocket TTS and Parakeet STT in the harness
+    enabled: true                 # false: no actors, `speak`/`transcribe` answer "not running", the desktop shows no speaker or mic
     voice: peter_yearsley         # a `voices/<name>.safetensors` in the checkpoint directory
     # model_dir: ~/.wth/models/pocket-tts   # the Pocket TTS checkpoint (weights, tokenizer.model, voices/); this is the default
+    # stt_model_dir: ~/.wth/models/parakeet-tdt  # Parakeet TDT ONNX (encoder-model.onnx, decoder_joint-model.onnx, vocab.txt) plus libonnxruntime.{dylib,so}; this is the default
+    stt_idle_secs: 600            # unload the speech-to-text model (1.7 GB resident) after this long unused; 0 keeps it resident
   slack:
     # owner: U0123456789           # owner-only commands, may click any approval, receives unbound approvals
     allowed: []                    # more user ids; each owns their threads

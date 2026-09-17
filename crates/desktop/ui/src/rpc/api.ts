@@ -40,6 +40,7 @@ import type { Sync } from '@/rpc/bindings/Sync'
 import type { SyncResult } from '@/rpc/bindings/SyncResult'
 import type { ToolSpec } from '@/rpc/bindings/ToolSpec'
 import type { UpdateReady } from '@/rpc/bindings/UpdateReady'
+import type { Transcript } from '@/rpc/bindings/Transcript'
 import type { JsonValue } from '@/rpc/bindings/serde_json/JsonValue'
 import type { RpcClient } from '@/rpc/client'
 import type { AgentInfo, Artifact, Info, LoadedPage, LoginInfo, ProviderInfo, VoiceStatus } from '@/rpc/extra'
@@ -211,6 +212,8 @@ export interface Api {
   sync_mcp(): Promise<SyncResult[]>
   sync_skills(): Promise<SyncResult[]>
   title_model(): Promise<ModelInfo | null>
+  /** Transcribe an audio file stored by `put_attachment` (45 §7.1); `-32001` when the voice plugin is disabled, a message when the STT model is missing. */
+  transcribe(path: string): Promise<Transcript>
   undo(session: SessionId): Promise<string>
   /** The self-updater's latest state (39 §4.3). */
   update_status(): Promise<UpdateReady | null>
@@ -333,6 +336,7 @@ export const METHODS = [
   'sync_mcp',
   'sync_skills',
   'title_model',
+  'transcribe',
   'undo',
   'update_status',
   'use_skill',

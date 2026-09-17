@@ -19,6 +19,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { parseNote } from '@/lib/voice-note'
 import { Input } from '@/components/ui/input'
 import { SidebarMenuAction, SidebarMenuButton } from '@/components/ui/sidebar'
 import { touch } from '@/lib/hotkeys'
@@ -52,7 +53,9 @@ export const SessionItem = memo(function SessionItem({
   const qc = useQueryClient()
   const navigate = useNavigate()
   const live = useSessionField(id, 'title')
-  const shown = live || title || id.slice(0, 8)
+  const raw = live || title || id.slice(0, 8)
+  // A session opened by a voice note is titled from its input; the `[voice note, N s]` marker is not a title (45 §7.4).
+  const shown = parseNote(raw)?.body || raw
   const [editing, setEditing] = useState<string | null>(null)
   const [confirming, setConfirming] = useState(false)
 

@@ -475,8 +475,9 @@ pub trait Api {
     #[method(name = "link_revoke_device")]
     async fn link_revoke_device(&self, id: String) -> RpcResult<()>;
     /// Store base64 `bytes` as `<data_dir>/attachments/<sha256[..16]>.<ext>`
-    /// and return the path, for `send_input { files }`. `ext` ∈ png, jpg,
-    /// jpeg, gif, webp, pdf; images ≤ 5 MB, PDFs ≤ 32 MB decoded.
+    /// and return the path, for `send_input { files }` or `transcribe`. `ext`
+    /// ∈ png, jpg, jpeg, gif, webp, pdf, m4a, mp4, webm, ogg, opus, mp3, wav;
+    /// images ≤ 5 MB, PDFs ≤ 32 MB, audio ≤ 16 MB decoded.
     #[method(name = "put_attachment")]
     async fn put_attachment(&self, bytes: String, ext: String) -> RpcResult<PathBuf>;
     /// Read a file the harness produced or stored, base64-encoded. Only
@@ -521,6 +522,11 @@ pub trait Api {
     /// progress (43 §5).
     #[method(name = "voice_status")]
     async fn voice_status(&self) -> RpcResult<VoiceStatus>;
+    /// Transcribe an audio file stored by `put_attachment` (45 §7.1); `path`
+    /// must be under `<data_dir>/attachments`. `NOT_RUNNING` when the voice
+    /// plugin is off; a missing STT checkpoint is an error string.
+    #[method(name = "transcribe")]
+    async fn transcribe(&self, path: PathBuf) -> RpcResult<voice::Transcript>;
     /// Fire a schedule now, ignoring `next`; returns its session (34 §8).
     /// Refused while a run is in flight (`busy`) or the file does not parse.
     #[method(name = "fire_schedule")]
@@ -674,6 +680,14 @@ fn voice() -> RpcResult<ActorRef<voice::Voice>> {
     })
 }
 
+/// The STT actor; absent when `voice.enabled: false` or the plugin is not loaded.
+fn transcriber() -> RpcResult<ActorRef<voice::Transcriber>> {
+    lookup::<voice::Transcriber>(voice::TRANSCRIBER_ACTOR).map_err(|e| match e.code() {
+        NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "voice is disabled", None::<()>),
+        _ => e,
+    })
+}
+
 /// The artifact actor; absent when `artifact.enabled: false` or the plugin is not loaded.
 fn artifact() -> RpcResult<ActorRef<artifact::ArtifactActor>> {
     lookup::<artifact::ArtifactActor>(artifact::ARTIFACT_ACTOR).map_err(|e| match e.code() {
@@ -741,6 +755,8 @@ fn failed(msg: impl Into<String>) -> ErrorObjectOwned {
 const MAX_IMAGE: usize = 5 * 1024 * 1024;
 /// Largest decoded PDF `put_attachment` accepts (20 §2.5: Anthropic's 32 MB).
 const MAX_PDF: usize = 32 * 1024 * 1024;
+/// Largest decoded audio note `put_attachment` accepts (45 §7.1).
+const MAX_AUDIO: usize = 16 * 1024 * 1024;
 
 #[async_trait]
 impl ApiServer for Server {
@@ -1356,6 +1372,16 @@ impl ApiServer for Server {
         send(&voice()?, voice::Status).await
     }
 
+    async fn transcribe(&self, path: PathBuf) -> RpcResult<voice::Transcript> {
+        let real =
+            std::fs::canonicalize(&path).map_err(|e| failed(format!("{}: {e}", path.display())))?;
+        let inbox = std::fs::canonicalize(self.rt.data_dir.join("attachments"));
+        if !inbox.is_ok_and(|dir| real.starts_with(dir)) {
+            return Err(failed(format!("{}: not an attachment", path.display())));
+        }
+        send(&transcriber()?, voice::Transcribe { path: real }).await
+    }
+
     async fn fire_schedule(&self, name: String) -> RpcResult<SessionId> {
         send(&schedule()?, schedule::Fire { name }).await
     }
@@ -1435,6 +1461,7 @@ impl ApiServer for Server {
         let (ext, cap) = match ext.as_str() {
             "png" | "jpg" | "jpeg" | "gif" | "webp" => (ext.as_str(), MAX_IMAGE),
             "pdf" => ("pdf", MAX_PDF),
+            "m4a" | "mp4" | "webm" | "ogg" | "opus" | "mp3" | "wav" => (ext.as_str(), MAX_AUDIO),
             _ => return Err(failed(format!("unsupported attachment type .{ext}"))),
         };
         let bytes = base64::engine::general_purpose::STANDARD

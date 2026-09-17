@@ -1,9 +1,12 @@
 //! Read replies aloud (design doc 43): Pocket TTS runs in the harness via
 //! `ptts`; audio leaves as [`VoiceEvent::SpeechAudio`] — one Opus packet per
-//! 80 ms Mimi frame, base64 in JSON — over the bus.
+//! 80 ms Mimi frame, base64 in JSON — over the bus. Voice notes (design doc
+//! 45): [`Transcriber`] turns a recorded file into text for the channels, and
+//! [`Synthesize`] renders one prose block into an MP3 [`Clip`] they can send back.
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use kameo::actor::{ActorRef, Spawn as _};
 use kameo::message::{Context, Message};
@@ -12,10 +15,80 @@ use runtime::{Runtime, SessionId};
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
+mod clip;
 pub mod model;
 mod speak;
+mod stt;
 
+use kameo::reply::ReplySender;
 use speak::{Progress, Report};
+pub use stt::Transcriber;
+
+/// Actor name the channels look up for speech-to-text (45 §4.2).
+pub const TRANSCRIBER_ACTOR: &str = "transcriber";
+
+/// Transcribe the audio file at `path` (any container symphonia demuxes, or
+/// Opus in webm/ogg). Replies once inference is done; `Err` is a message.
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct Transcribe {
+    /// Audio file on this machine; the extension picks the demuxer.
+    pub path: PathBuf,
+}
+
+/// Reply to [`Transcribe`].
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct Transcript {
+    /// What was said; empty when nothing was recognized.
+    pub text: String,
+    /// Length of the audio.
+    pub duration_ms: u64,
+}
+
+/// Render one prose block (markdown) into a [`Clip`] (45 §4.3). Waits for the
+/// model to load if it has not; `Ok(None)` when there is nothing to say.
+#[derive(Clone, Debug)]
+pub struct Synthesize {
+    /// Markdown; `markdown::spoken` turns it into sentences.
+    pub text: String,
+}
+
+/// One voice message: MP3, 24 kHz mono, 48 kbit/s.
+#[derive(Clone, Debug, kameo::Reply)]
+pub struct Clip {
+    /// The encoded file.
+    pub bytes: Vec<u8>,
+    /// Always `audio/mpeg`.
+    pub mime: &'static str,
+    /// Length of the audio.
+    pub duration_ms: u64,
+}
+
+/// The user line a channel sends for a transcribed note (45 §4.4):
+/// `[voice note, 12 s] <transcript>`. The prompt block explains the prefix.
+pub fn note_text(transcript: &str, duration_ms: u64) -> String {
+    format!(
+        "[voice note, {} s] {transcript}",
+        duration_ms.div_ceil(1000).max(1)
+    )
+}
+
+/// Whether a user line came from [`note_text`].
+pub fn is_note(text: &str) -> bool {
+    text.trim_start().starts_with("[voice note")
+}
+
+/// Prompt block registered as `RegisterPrompt { plugin: "voice" }` (45 §4.4).
+const PROMPT: &str = "## Voice notes\n\
+A user message that starts with `[voice note, N s]` was spoken, not typed; what follows is a \
+transcript, so read through recognition slips and do not quote them back. Your prose goes back to \
+the user as speech on the same channel, block by block: everything you write before a batch of \
+tool calls is delivered the moment those calls start, and the rest when the turn ends. Write for \
+the ear — short and conversational, a few sentences, just enough to carry the point. No markdown, \
+lists, headings, tables, code blocks, URLs or file paths; say names the way you would say them \
+aloud. On work that takes several steps, say one short sentence about what you are about to do \
+before each batch of tool calls, so the user hears progress instead of silence. Keep this spoken \
+style while the user keeps sending voice notes; go back to your normal style when they type.";
 
 /// Actor name the RPC layer looks up.
 pub const VOICE_ACTOR: &str = "voice";
@@ -177,6 +250,11 @@ pub struct VoiceConfig {
     pub voice: String,
     /// A local Pocket TTS checkpoint directory; `None` → `<data_dir>/models/pocket-tts`.
     pub model_dir: Option<PathBuf>,
+    /// A local Parakeet TDT ONNX checkpoint (encoder-model.onnx, decoder_joint-model.onnx,
+    /// vocab.txt); `None` → `<data_dir>/models/parakeet-tdt` (45 §4.6).
+    pub stt_model_dir: Option<PathBuf>,
+    /// Unload the speech-to-text model after this long unused; `0` keeps it resident (45 §0.7).
+    pub stt_idle_secs: u64,
 }
 
 impl Default for VoiceConfig {
@@ -185,6 +263,8 @@ impl Default for VoiceConfig {
             enabled: true,
             voice: "peter_yearsley".into(),
             model_dir: None,
+            stt_model_dir: None,
+            stt_idle_secs: 600,
         }
     }
 }
@@ -212,7 +292,13 @@ pub struct Voice {
     model_state: ModelState,
     voices: Vec<String>,
     current: Option<Current>,
+    /// [`Synthesize`] requests that arrived before the model loaded (45 §4.3).
+    pending_clips: Vec<(String, ClipReply)>,
+    /// One clip renders at a time; two channels talking at once share the CPU in turn, not in halves.
+    clip_gate: Arc<tokio::sync::Semaphore>,
 }
+
+type ClipReply = ReplySender<Result<Option<Clip>, String>>;
 
 impl Voice {
     /// Publish `Stopped` for the current utterance (running or pending) and forget it.
@@ -230,6 +316,21 @@ impl Voice {
                 reason: FinishReason::Stopped,
             })
             .await;
+    }
+
+    /// Render `spoken` into a clip on the loaded model, off the actor, one at a time.
+    fn clip(&self, synth: Arc<Synth>, spoken: String, tx: ClipReply) {
+        let voice = self.cfg.voice.clone();
+        let gate = self.clip_gate.clone();
+        tokio::spawn(async move {
+            let Ok(_permit) = gate.acquire_owned().await else {
+                return;
+            };
+            let r = tokio::task::spawn_blocking(move || clip::render(&synth, &voice, &spoken))
+                .await
+                .unwrap_or_else(|e| Err(anyhow::anyhow!("clip task panicked: {e}")));
+            tx.send(r.map(Some).map_err(|e| format!("{e:#}")));
+        });
     }
 
     /// Start synthesizing `text` for the utterance `id` on the loaded model.
@@ -271,6 +372,29 @@ impl Voice {
                 .unwrap_or_else(|e| Err(anyhow::anyhow!("model load task panicked: {e}")));
             let _ = me.tell(Loaded(loaded)).await;
         });
+    }
+}
+
+impl Message<Synthesize> for Voice {
+    type Reply = kameo::reply::DelegatedReply<Result<Option<Clip>, String>>;
+    async fn handle(&mut self, m: Synthesize, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let spoken = markdown::spoken(&m.text);
+        if spoken.is_empty() {
+            tx.send(Ok(None));
+            return reply;
+        }
+        match self.model.clone() {
+            Some(synth) => self.clip(synth, spoken, tx),
+            None => {
+                self.pending_clips.push((spoken, tx));
+                if self.model_state != ModelState::Loading {
+                    self.load(ctx.actor_ref().clone()).await;
+                }
+            }
+        }
+        reply
     }
 }
 
@@ -337,12 +461,24 @@ impl Message<Loaded> for Voice {
                 if let Some(cur) = self.current.take()
                     && let Some(text) = cur.text
                 {
-                    self.start(synth, cur.id, cur.session, text, ctx.actor_ref().clone());
+                    self.start(
+                        synth.clone(),
+                        cur.id,
+                        cur.session,
+                        text,
+                        ctx.actor_ref().clone(),
+                    );
+                }
+                for (spoken, tx) in std::mem::take(&mut self.pending_clips) {
+                    self.clip(synth.clone(), spoken, tx);
                 }
             }
             Err(e) => {
                 let message = format!("{e:#}");
                 tracing::warn!("voice: {message}");
+                for (_, tx) in self.pending_clips.drain(..) {
+                    tx.send(Err(message.clone()));
+                }
                 self.model_state = ModelState::Failed {
                     message: message.clone(),
                 };
@@ -418,6 +554,15 @@ impl runtime::Plugin for VoicePlugin {
             tracing::info!("voice disabled by config");
             return Ok(());
         }
+        let stt_dir = cfg
+            .stt_model_dir
+            .clone()
+            .unwrap_or_else(|| rt.data_dir.join("models/parakeet-tdt"));
+        let stt = Transcriber::spawn(Transcriber::new(
+            stt_dir,
+            Duration::from_secs(cfg.stt_idle_secs),
+        ));
+        stt.register(TRANSCRIBER_ACTOR)?;
         let actor = Voice::spawn(Voice {
             rt: rt.clone(),
             cfg,
@@ -425,8 +570,38 @@ impl runtime::Plugin for VoicePlugin {
             model_state: ModelState::Missing,
             voices: Vec::new(),
             current: None,
+            pending_clips: Vec::new(),
+            clip_gate: Arc::new(tokio::sync::Semaphore::new(1)),
         });
         actor.register(VOICE_ACTOR)?;
+        // What `[voice note, N s]` means (45 §4.4); static, so cache-safe.
+        let rt = rt.clone();
+        tokio::spawn(async move {
+            if let Some(reg) = rt
+                .lookup_when::<tools::ToolRegistry>(tools::REGISTRY_ACTOR)
+                .await
+            {
+                let _ = reg
+                    .ask(tools::RegisterPrompt {
+                        plugin: "voice",
+                        text: PROMPT.to_owned(),
+                    })
+                    .await;
+            }
+        });
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn note_marker() {
+        assert_eq!(note_text("hi", 12_400), "[voice note, 13 s] hi");
+        assert_eq!(note_text("", 0), "[voice note, 1 s] ");
+        assert!(is_note("  [voice note, 3 s] x"));
+        assert!(!is_note("[attachment: a.m4a]"));
     }
 }

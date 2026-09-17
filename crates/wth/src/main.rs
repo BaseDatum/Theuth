@@ -192,10 +192,14 @@ agent:
 #   enabled: true            # false: no `show` tool, no prompt block, no /artifacts; blobs and index kept
 #   fonts: []                # extra directories searched for PDF fonts, besides system fonts and the embedded set
 
-# voice:                     # read replies aloud (design doc 43): Pocket TTS in-process, audio streamed to the frontend
-#   enabled: true            # false: no actor, `speak` answers \"not running\", the desktop shows no button
+# voice:                     # read replies aloud (design doc 43): Pocket TTS in-process, audio streamed to the frontend;
+#                            # voice notes in, spoken replies out on Signal/Slack (design doc 45)
+#   enabled: true            # false: no actor, `speak` answers \"not running\", the desktop shows no button or mic
 #   voice: peter_yearsley    # one of the checkpoint's voices; `voice_status` lists them
 #   model_dir: ~             # a local Pocket TTS checkpoint directory; default <data_dir>/models/pocket-tts
+#   stt_model_dir: ~         # Parakeet TDT ONNX checkpoint (encoder-model.onnx, decoder_joint-model.onnx, vocab.txt) plus ONNX Runtime's
+#                            # libonnxruntime.*.dylib/.so (1.17+, from its GitHub release); default <data_dir>/models/parakeet-tdt
+#   stt_idle_secs: 600       # unload the speech-to-text model after this long unused; 0 keeps it resident
 
 tools:
   policy:

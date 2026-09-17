@@ -28,12 +28,16 @@ export const extOf = (name: string): string => {
 export const fmtBytes = (n: number): string =>
   n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(n < 10240 ? 1 : 0)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`
 
-/** `put_attachment` ext for a file: from its name, else from its MIME type (pasted images have no name). */
+/** MIME subtypes whose `put_attachment` ext differs (45 §7.1: files are named by container). */
+const EXT: Record<string, string> = { jpeg: 'jpg', mp4: 'm4a', mpeg: 'mp3' }
+
+/** `put_attachment` ext for a file: from its name, else from its MIME type (pasted images and voice recordings have no name). */
 export const extFor = (file: Blob & { name?: string }): string => {
   const byName = file.name ? extOf(file.name) : ''
   if (byName) return byName
-  const sub = file.type.split('/')[1] ?? ''
-  return sub === 'jpeg' ? 'jpg' : sub
+  // `audio/webm;codecs=opus` → `webm`.
+  const sub = file.type.split(/[/;]/)[1] ?? ''
+  return EXT[sub] ?? sub
 }
 
 const toBase64 = (bytes: Uint8Array): string => {

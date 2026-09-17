@@ -272,8 +272,9 @@ pub enum Inbound {
 /// Router → worker.
 enum Out {
     Agent(AgentEvent),
-    /// A user message `ts` awaiting the terminal reaction (21 §8.6).
-    Mark(String),
+    /// A user message `ts` awaiting the terminal reaction (21 §8.6); `voice`
+    /// when it was a voice note (45 §4.5.2).
+    Mark(String, bool),
     /// An approval for this thread's session: post the card (21 §10.1).
     Approval(Box<ApprovalRequested>),
     /// The card for this id was answered: replace it with the outcome; `by` = the clicker.
@@ -1064,7 +1065,12 @@ impl Channel {
         let team = ev.team_id.0;
         match ev.event {
             SlackEventCallbackBody::Message(m) => {
-                if m.sender.bot_id.is_some() || m.subtype.is_some() {
+                // 45 §6: `file_share` is how voice clips arrive on some workspaces.
+                if m.sender.bot_id.is_some()
+                    || m.subtype
+                        .as_ref()
+                        .is_some_and(|s| *s != SlackMessageEventType::FileShare)
+                {
                     return;
                 }
                 if m.origin.channel_type.as_ref().map(|t| t.0.as_str()) != Some("im") {
@@ -1139,7 +1145,7 @@ impl Channel {
         if !text.is_empty() {
             lines.push(text);
         }
-        let (file_lines, files) = self.save_files(&m.ts, &m.files).await;
+        let (file_lines, files, voice) = self.save_files(&m.ts, &m.files).await;
         lines.extend(file_lines);
         if lines.is_empty() {
             return;
@@ -1178,7 +1184,7 @@ impl Channel {
                         s.threads.bind(key.clone(), thread.clone());
                     }
                 }
-                let _ = self.worker(&key, &thread).send(Out::Mark(m.ts));
+                let _ = self.worker(&key, &thread).send(Out::Mark(m.ts, voice));
             }
             Err(e) => {
                 tracing::warn!(error = %e, "agent ask failed");
@@ -1191,16 +1197,19 @@ impl Channel {
 
     /// Downloads `files` to `<data_dir>/slack/inbox/<ts>-<name>`; one
     /// `[attachment: …]` line each plus the paths of images and PDFs (21 §7.1).
-    async fn save_files(&self, ts: &str, files: &[SlackFile]) -> (Vec<String>, Vec<PathBuf>) {
+    /// Audio is transcribed into a `[voice note, N s]` line (45 §4.5.1); the
+    /// flag says at least one was.
+    async fn save_files(&self, ts: &str, files: &[SlackFile]) -> (Vec<String>, Vec<PathBuf>, bool) {
         let mut lines = Vec::with_capacity(files.len());
         let mut paths = Vec::new();
+        let mut voice = false;
         if files.is_empty() {
-            return (lines, paths);
+            return (lines, paths, voice);
         }
         let dir = self.rt.data_dir.join("slack").join("inbox");
         if let Err(e) = tokio::fs::create_dir_all(&dir).await {
             tracing::warn!(error = %e, "failed to create slack inbox dir");
-            return (lines, paths);
+            return (lines, paths, voice);
         }
         for f in files {
             let name: String = f
@@ -1233,6 +1242,27 @@ impl Channel {
             };
             match saved {
                 Ok((path, len)) => {
+                    if mime.starts_with("audio/") {
+                        match transcribe(&path).await {
+                            Ok(t) if t.text.is_empty() => lines.push(format!(
+                                "[voice note, {} s] (nothing recognized)",
+                                t.duration_ms.div_ceil(1000).max(1)
+                            )),
+                            Ok(t) => {
+                                lines.push(voice::note_text(&t.text, t.duration_ms));
+                                voice = true;
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, path = %path.display(), "voice note not transcribed");
+                                lines.push(format!(
+                                    "[attachment: {} ({mime}, {})] (transcription unavailable)",
+                                    path.display(),
+                                    fmt_size(len)
+                                ));
+                            }
+                        }
+                        continue;
+                    }
                     lines.push(format!(
                         "[attachment: {} ({mime}, {})]",
                         path.display(),
@@ -1245,7 +1275,7 @@ impl Channel {
                 Err(e) => lines.push(format!("[attachment: {name} — download failed: {e}]")),
             }
         }
-        (lines, paths)
+        (lines, paths, voice)
     }
 
     // -- outbound (21 §8) ------------------------------------------------
@@ -1609,6 +1639,9 @@ impl Channel {
             rows: Vec::new(),
             rows_dirty: false,
             board: None,
+            voice: false,
+            unspoken: String::new(),
+            clip_tail: None,
         };
         tokio::spawn(worker.run(rx));
         s.workers.insert(key.to_owned(), tx.clone());
@@ -1619,6 +1652,19 @@ impl Channel {
 /// `"C…:ts"` → `(channel, ts)`.
 pub(crate) fn split_key(key: &str) -> (&str, &str) {
     key.split_once(':').map_or((key, ""), |(c, t)| (c, t))
+}
+
+/// `Transcribe` on the `voice` plugin's actor; `Err` when it is not running (45 §4.5.1).
+async fn transcribe(path: &Path) -> Result<voice::Transcript, String> {
+    let stt = ActorRef::<voice::Transcriber>::lookup(voice::TRANSCRIBER_ACTOR)
+        .ok()
+        .flatten()
+        .ok_or("voice plugin not running")?;
+    stt.ask(voice::Transcribe {
+        path: path.to_path_buf(),
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// An ephemeral slash-command ack; blocks that morphism cannot type are
@@ -1682,6 +1728,12 @@ struct Worker {
     rows_dirty: bool,
     /// The board message `(ts, last edit)` while a descendant is live.
     board: Option<(String, Instant)>,
+    /// The last input was a voice note: prose blocks also go out as clips (45 §4.5.2).
+    voice: bool,
+    /// Markdown streamed since the last clip (45 §6).
+    unspoken: String,
+    /// The previous block's clip upload; the next waits for it (45 §4.5.4).
+    clip_tail: Option<tokio::task::JoinHandle<()>>,
 }
 
 /// `agents.sessions.setStatus` codes meaning "not an agent app" (21 §8.6).
@@ -1700,7 +1752,10 @@ impl Worker {
             tokio::select! {
                 m = rx.recv() => match m {
                     None => return,
-                    Some(Out::Mark(ts)) => self.marks.push(ts),
+                    Some(Out::Mark(ts, voice)) => {
+                        self.marks.push(ts);
+                        self.voice = voice;
+                    }
                     Some(Out::Agent(ev)) => self.apply(ev).await,
                     Some(Out::Approval(req)) => self.approval(*req).await,
                     Some(Out::Resolved(res, by)) => self.resolved(res, by.as_deref()).await,
@@ -1979,6 +2034,7 @@ impl Worker {
                 if let Some(t) = &mut self.turn {
                     t.text(&text).await;
                 }
+                self.unspoken.push_str(&text);
             }
             AgentEvent::ReasoningDelta { text, .. } => {
                 if let Some(t) = &mut self.turn {
@@ -1989,6 +2045,7 @@ impl Worker {
                 if let Some(t) = &mut self.turn {
                     t.tool_pending(&call_id, &name).await;
                 }
+                self.speak();
             }
             AgentEvent::ToolCallStarted {
                 call_id,
@@ -2013,6 +2070,7 @@ impl Worker {
             AgentEvent::TurnFinished {
                 stop_reason, usage, ..
             } => {
+                self.speak();
                 if let Some(mut t) = self.turn.take() {
                     let streamed = t.open_stream().is_some();
                     let footer = Footer {
@@ -2038,6 +2096,7 @@ impl Worker {
                 self.title().await;
             }
             AgentEvent::Error { message, .. } => {
+                self.speak();
                 self.post_markdown_in_thread(&format!("⚠️ {message}")).await;
                 self.react_marks(FAILED).await;
             }
@@ -2083,6 +2142,48 @@ impl Worker {
         for ts in &self.marks {
             self.chan.react(&self.channel, ts, name).await;
         }
+    }
+
+    /// End of a prose block (45 §4.5.3-4): the text is already in the bubble;
+    /// on a voice turn the block is synthesized now and uploaded as `reply.mp3`
+    /// after the previous block's clip.
+    fn speak(&mut self) {
+        let text = std::mem::take(&mut self.unspoken);
+        if !self.voice || text.trim().is_empty() {
+            return;
+        }
+        let Ok(Some(voice)) = ActorRef::<voice::Voice>::lookup(voice::VOICE_ACTOR) else {
+            return;
+        };
+        let prev = self.clip_tail.take();
+        let api = Arc::clone(&self.chan.api);
+        let channel = self.channel.clone();
+        let thread_ts = self.thread_ts.clone();
+        self.clip_tail = Some(tokio::spawn(async move {
+            let clip = voice.ask(voice::Synthesize { text }).await;
+            if let Some(p) = prev {
+                let _ = p.await;
+            }
+            let c = match clip.map_err(|e| e.to_string()) {
+                Ok(Some(c)) => c,
+                Ok(None) => return,
+                Err(e) => {
+                    tracing::warn!(error = %e, "voice clip synthesis failed");
+                    return;
+                }
+            };
+            let file = crate::api::UploadFile {
+                name: "reply.mp3".to_owned(),
+                mime: c.mime.to_owned(),
+                bytes: c.bytes,
+            };
+            if let Err(e) = api
+                .upload_file(&channel, Some(&thread_ts), &[file], None)
+                .await
+            {
+                tracing::warn!(error = %e, "voice clip upload failed");
+            }
+        }));
     }
 
     /// `agents.sessions.setStatus`, latching off on "not an agent app" (21 §8.6).
@@ -2671,6 +2772,27 @@ pub(crate) mod tests {
         push(json!({
             "type": "app_mention", "channel": channel, "user": user, "text": text, "ts": ts,
         }))
+    }
+
+    #[tokio::test]
+    async fn audio_file_without_the_voice_plugin_is_an_attachment_line_and_not_a_voice_turn() {
+        let f = fixture();
+        let file: SlackFile = serde_json::from_value(json!({
+            "id": "F1",
+            "name": "clip.m4a",
+            "mimetype": "audio/mp4",
+            "url_private_download": "https://files.slack.com/clip.m4a",
+        }))
+        .unwrap();
+        let (lines, paths, voice) = f.chan.save_files("1.1", &[file]).await;
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].starts_with("[attachment: "), "{}", lines[0]);
+        assert!(
+            lines[0].ends_with("(audio/mp4, 5 B)] (transcription unavailable)"),
+            "{}",
+            lines[0]
+        );
+        assert!(paths.is_empty() && !voice);
     }
 
     #[tokio::test]

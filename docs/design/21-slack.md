@@ -282,10 +282,11 @@ list §11).
 
 ```
 Inbound (already acked and deduped)
-  Push app_mention | message.im (skip bot_id, subtype, message_changed) →
+  Push app_mention | message.im (skip bot_id, subtype other than file_share, message_changed) →
     user allowed? no → drop (DM) / ephemeral (channel)
     thread_key = channel:(thread_ts ?? ts)
-    text = strip_mentions(text) + one `[attachment: …]` line per file (§7.1); empty → drop
+    text = strip_mentions(text) + one `[attachment: …]` line per file (§7.1); an
+      `audio/*` file is transcribed instead → `[voice note, N s] …` (45 §4.5); empty → drop
     reactions.add 👀 on (channel, ts)                            "seen, working"
     session = threads[thread_key] (create per §6)
     turn in flight? Steer : SendInput (files → `files` param for images/PDFs)
@@ -340,6 +341,11 @@ Worker loop: `select! { ev = rx.recv() => apply(ev), _ = tick(750 ms) => flush()
 Slack's agent stream is one message with a **timeline** of task cards and a
 markdown body. That is the turn: tool calls above, answer below. So the
 unit is one `Bubble` per turn, not one per text segment:
+
+Voice turns (45 §6, added 2026-09-17): when the input was a voice note, each
+prose block — the text before a batch of tool calls, and the tail — is also
+synthesized and uploaded in the thread as `reply.mp3`, in order, as soon as
+the clip is ready. The bubble is unchanged; the clips sit beside it.
 
 ```rust
 pub struct Bubble {

@@ -21,7 +21,7 @@ use kameo::message::{Context, Message};
 use runtime::{InputId, Runtime, SessionId};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use tokio::sync::{mpsc, oneshot};
-use tokio::task::AbortHandle;
+use tokio::task::{AbortHandle, JoinHandle};
 use tokio::time::Instant;
 use tools::{
     APPROVAL_ACTOR, Answer, Approval, ApprovalId, ApprovalRequested, ApprovalResolved, AskId,
@@ -378,6 +378,7 @@ struct AciDirectory {
 }
 
 /// Per-session outbound state between `TurnStarted` and `TurnFinished`.
+/// `text` is the *unflushed* markdown (45 §4.5.3).
 #[derive(Default)]
 struct Turn {
     in_flight: bool,
@@ -385,6 +386,10 @@ struct Turn {
     /// User messages (author, ts) waiting for the terminal reaction (§8.2).
     marks: Vec<(Recipient, u64)>,
     typing: Option<AbortHandle>,
+    /// The last input was a voice note: flushed blocks also go out as clips (45 §4.5.2).
+    voice: bool,
+    /// The previous block's clip send; the next clip waits for it (45 §4.5.4).
+    clip_tail: Option<JoinHandle<()>>,
 }
 
 pub(crate) struct State {
@@ -1064,7 +1069,7 @@ impl Channel {
         if !body.is_empty() {
             lines.push(body.to_owned());
         }
-        let (attachment_lines, files) =
+        let (attachment_lines, files, voice) =
             self.save_attachments(env.timestamp, &env.attachments).await;
         lines.extend(attachment_lines);
         if lines.is_empty() {
@@ -1098,11 +1103,11 @@ impl Channel {
             Ok(id) => {
                 let mut s = self.lock();
                 s.threads.bind(&sender, id);
-                s.turns
-                    .entry(id)
-                    .or_default()
-                    .marks
-                    .push((sender.clone(), env.timestamp));
+                // The entry outlives this call: `TurnStarted` picks it up, and a
+                // steer updates the running turn in place (last input wins).
+                let turn = s.turns.entry(id).or_default();
+                turn.voice = voice;
+                turn.marks.push((sender.clone(), env.timestamp));
             }
             Err(e) => {
                 tracing::warn!(error = %e, "agent ask failed");
@@ -1175,21 +1180,23 @@ impl Channel {
     /// Writes attachments to `<data_dir>/signal/inbox/<ts>-<n>.<ext>` and
     /// returns one `[attachment: …]` line each (09 §7.4) plus the paths of
     /// the `image/*` ones and PDFs up to 32 MB, which ride along as model
-    /// input (17 §5, 20 §2.5).
+    /// input (17 §5, 20 §2.5), plus whether the message was a voice note:
+    /// audio is transcribed into a `[voice note, N s] …` line (45 §4.5.1).
     async fn save_attachments(
         &self,
         ts: u64,
         attachments: &[IncomingAttachment],
-    ) -> (Vec<String>, Vec<PathBuf>) {
+    ) -> (Vec<String>, Vec<PathBuf>, bool) {
         let mut lines = Vec::with_capacity(attachments.len());
         let mut images = Vec::new();
+        let mut voice = false;
         if attachments.is_empty() {
-            return (lines, images);
+            return (lines, images, voice);
         }
         let dir = self.rt.data_dir.join("signal").join("inbox");
         if let Err(e) = tokio::fs::create_dir_all(&dir).await {
             tracing::warn!(error = %e, "failed to create signal inbox dir");
-            return (lines, images);
+            return (lines, images, voice);
         }
         for (n, a) in attachments.iter().enumerate() {
             let mime = effective_mime(&a.mime, &a.bytes);
@@ -1205,19 +1212,51 @@ impl Channel {
                     detail.push_str(&format!(", {} s", ms.div_ceil(1000)));
                 }
             }
-            lines.push(format!("[attachment: {} ({detail})]", path.display()));
+            let mut suffix = "";
+            if a.voice_note || mime.starts_with("audio/") {
+                let heard = match ActorRef::<voice::Transcriber>::lookup(voice::TRANSCRIBER_ACTOR) {
+                    Ok(Some(stt)) => stt
+                        .ask(voice::Transcribe { path: path.clone() })
+                        .await
+                        .map_err(|e| e.to_string()),
+                    _ => Err("voice plugin is not running".to_owned()),
+                };
+                match heard {
+                    Ok(t) if !t.text.trim().is_empty() => {
+                        voice = true;
+                        lines.push(voice::note_text(&t.text, t.duration_ms));
+                        continue;
+                    }
+                    Ok(t) => {
+                        voice = true;
+                        lines.push(format!(
+                            "[voice note, {} s] (nothing recognized)",
+                            t.duration_ms.div_ceil(1000).max(1)
+                        ));
+                        continue;
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, path = %path.display(), "voice note not transcribed");
+                        suffix = " (transcription unavailable)";
+                    }
+                }
+            }
+            lines.push(format!(
+                "[attachment: {} ({detail})]{suffix}",
+                path.display()
+            ));
             if mime.starts_with("image/")
                 || (mime == "application/pdf" && a.bytes.len() <= 32 * 1024 * 1024)
             {
                 images.push(path);
             }
         }
-        (lines, images)
+        (lines, images, voice)
     }
 
     // -- outbound (09 §8, §10) -------------------------------------------
 
-    async fn handle_event(&self, ev: Event) {
+    async fn handle_event(self: &Arc<Self>, ev: Event) {
         match ev {
             Event::Agent(ev) => self.handle_agent(ev).await,
             Event::Requested(req) => {
@@ -1316,7 +1355,7 @@ impl Channel {
         }
     }
 
-    async fn handle_agent(&self, ev: AgentEvent) {
+    async fn handle_agent(self: &Arc<Self>, ev: AgentEvent) {
         match ev {
             AgentEvent::TurnStarted { session, .. } => {
                 let to = {
@@ -1350,33 +1389,48 @@ impl Channel {
                     s.turns.entry(session).or_default().text.push_str(&text);
                 }
             }
+            // 45 §0.3: the prose before a tool batch is a block of its own, for
+            // every turn, spoken or typed. The typing indicator keeps running.
+            AgentEvent::ToolCallPending { session, .. } => {
+                let to = self.lock().threads.recipient_for(session);
+                if let Some(to) = to {
+                    self.flush(&to, session).await;
+                }
+            }
             AgentEvent::TurnFinished {
                 session,
                 stop_reason,
                 ..
             } => {
-                let (to, turn) = {
+                let (to, typing) = {
                     let mut s = self.lock();
-                    (s.threads.recipient_for(session), s.turns.remove(&session))
+                    let Some(turn) = s.turns.get_mut(&session) else {
+                        return;
+                    };
+                    let typing = turn.typing.take();
+                    (s.threads.recipient_for(session), typing)
                 };
-                let Some(mut turn) = turn else { return };
-                if let Some(h) = turn.typing.take() {
+                if let Some(h) = typing {
                     h.abort();
                 }
-                let Some(to) = to else { return };
+                let Some(to) = to else {
+                    self.lock().turns.remove(&session);
+                    return;
+                };
                 self.typing(&to, false).await;
-                // 30 §9: json-render fences as their rendering; `markdown_to_plain`
-                // keeps the ``` lines, so the box arrives monospace-readable.
-                let plain = text::markdown_to_plain(&surface::flatten(&turn.text, 60));
-                if !plain.trim().is_empty() {
-                    self.send_chunks(&to, &plain).await;
-                }
+                self.flush(&to, session).await;
+                let marks = self
+                    .lock()
+                    .turns
+                    .remove(&session)
+                    .map(|t| t.marks)
+                    .unwrap_or_default();
                 let emoji = match stop_reason.as_str() {
                     "cancelled" => "🛑",
                     "error" => "❌",
                     _ => "✅",
                 };
-                for (author, ts) in &turn.marks {
+                for (author, ts) in &marks {
                     self.react(&to, emoji, author, *ts).await;
                 }
             }
@@ -1394,6 +1448,7 @@ impl Channel {
                     )
                 };
                 let Some(to) = to else { return };
+                self.flush(&to, session).await;
                 self.send_chunks(&to, &format!("⚠️ {message}")).await;
                 for (author, ts) in &marks {
                     self.react(&to, "❌", author, *ts).await;
@@ -1401,6 +1456,66 @@ impl Channel {
             }
             _ => {}
         }
+    }
+
+    /// One prose block out (45 §4.5.3–4): the buffered markdown as text now
+    /// and, on a voice turn, as a voice message once synthesized — after the
+    /// previous block's clip, never before it.
+    async fn flush(self: &Arc<Self>, to: &Recipient, session: SessionId) {
+        let (md, voice) = {
+            let mut s = self.lock();
+            let Some(turn) = s.turns.get_mut(&session) else {
+                return;
+            };
+            if turn.text.trim().is_empty() {
+                return;
+            }
+            (std::mem::take(&mut turn.text), turn.voice)
+        };
+        // 30 §9: json-render fences as their rendering; `markdown_to_plain`
+        // keeps the ``` lines, so the box arrives monospace-readable.
+        let plain = text::markdown_to_plain(&surface::flatten(&md, 60));
+        if !plain.trim().is_empty() {
+            self.send_chunks(to, &plain).await;
+        }
+        if !voice {
+            return;
+        }
+        let Ok(Some(tts)) = ActorRef::<voice::Voice>::lookup(voice::VOICE_ACTOR) else {
+            return;
+        };
+        let chan = Arc::clone(self);
+        let to = to.clone();
+        let mut s = self.lock();
+        let Some(turn) = s.turns.get_mut(&session) else {
+            return;
+        };
+        let prev = turn.clip_tail.take();
+        // ponytail: the chain ends with the turn; a clip still uploading when the
+        // next turn's first block is ready may land after it. Park the tail on
+        // the session if that is ever heard.
+        turn.clip_tail = Some(tokio::spawn(async move {
+            // Synthesis starts at once; only the send waits for the previous clip.
+            let clip = tts
+                .ask(voice::Synthesize { text: md })
+                .await
+                .map_err(|e| e.to_string());
+            if let Some(p) = prev {
+                let _ = p.await;
+            }
+            match clip {
+                Ok(Some(c)) => {
+                    if !chan
+                        .send_attachment(&to, &c.bytes, c.mime, None, None)
+                        .await
+                    {
+                        tracing::warn!(to = %to.number, "voice clip send failed");
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => tracing::warn!(error = %e, "voice clip synthesis failed"),
+            }
+        }));
     }
 }
 
@@ -2014,6 +2129,61 @@ mod tests {
         assert!(
             matches!(f.transport.sent().last(), Some(SentItem::Reaction { emoji, target_ts: 12, .. }) if emoji == "🛑")
         );
+    }
+
+    /// 45 §0.3: the prose before a tool batch is its own message; the
+    /// typing indicator survives the mid-turn flush; the tail goes at the end.
+    #[tokio::test]
+    async fn prose_before_tool_batch_is_flushed_as_its_own_message() {
+        let f = fixture().await;
+        let session = f.stub.session;
+        let delta = |text: &str| {
+            Event::Agent(AgentEvent::TextDelta {
+                session,
+                turn: runtime::TurnId(Uuid::nil()),
+                text: text.into(),
+            })
+        };
+        let pending = || {
+            Event::Agent(AgentEvent::ToolCallPending {
+                session,
+                turn: runtime::TurnId(Uuid::nil()),
+                call_id: "c1".into(),
+                name: "shell".into(),
+            })
+        };
+        f.chan.handle_envelope(env(OWNER, 10, "hi")).await;
+        f.chan.handle_event(Event::Agent(started(session))).await;
+        f.chan.handle_event(pending()).await; // nothing buffered: no message
+        f.chan.handle_event(delta("Let me check.")).await;
+        f.chan.handle_event(pending()).await;
+        f.chan.handle_event(pending()).await; // second call of the batch: nothing new
+        let texts = |sent: &[SentItem]| {
+            sent.iter()
+                .filter_map(|s| match s {
+                    SentItem::Text { text, .. } => Some(text.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(texts(&f.transport.sent()), ["Let me check."]);
+        assert!(
+            f.chan
+                .lock()
+                .turns
+                .get(&session)
+                .is_some_and(|t| t.typing.is_some())
+        );
+        assert!(!f.transport.sent().contains(&SentItem::Typing {
+            to: OWNER.into(),
+            active: false
+        }));
+        f.chan.handle_event(delta("Done.")).await;
+        f.chan
+            .handle_event(Event::Agent(finished(session, "end_turn")))
+            .await;
+        assert_eq!(texts(&f.transport.sent()), ["Let me check.", "Done."]);
+        assert!(!f.chan.lock().turns.contains_key(&session));
     }
 
     /// 30 §9: a `json-render` fence arrives as a monospace block of its

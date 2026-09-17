@@ -226,7 +226,7 @@ ChatGPT affordances with no TUI counterpart:
 | rename chat | **add** `rename_session` (§7, 5 lines over `store.set_title`) - the sidebar item menu without it looks broken |
 | delete / archive chat | delete: yes (2026-09-15) — item menu › Delete with a confirm; `delete_session` removes the subtree (rows, messages, epochs, actors) and emits `SessionDeleted` per id; refused while a turn runs. Archive: no. |
 | share, temporary chat, projects, GPTs, plans | not shown |
-| voice | read aloud: yes (43) — a speaker button first in every reply's action bar; Pocket TTS in the harness, Opus over the event subscription, `lib/speech.ts` plays it. Dictation: no. |
+| voice | read aloud: yes (43) — a speaker button first in every reply's action bar; Pocket TTS in the harness, Opus over the event subscription, `lib/speech.ts` plays it. Voice notes: yes (45) — a microphone in the composer, `MediaRecorder` → `put_attachment` → `transcribe`, the session then speaks every prose block until the user types. Dictation to text: no. |
 | search chat contents | yes since 26: ⌘K asks `search_sessions` (nucleo, fzf syntax) over titles and user/assistant messages; snippet with the matched ranges marked. Was titles-only in v0. |
 | light / dark / system theme | Settings › General, default system (`prefers-color-scheme`), tokens from §2.4 |
 | shortcuts dialog `⌘/` | yes, the table in §2.4 plus ours (⌥Space toggle window) |
