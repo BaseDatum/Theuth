@@ -82,13 +82,17 @@ export function resolveFile(api: Api, path: string, active: string): string | Pr
   return p
 }
 
+/** Bytes of a harness file via `get_attachment`; uncached (pdf.js transfers the buffer to its worker). */
+export const readBytes = (api: Api, path: string): Promise<Uint8Array> =>
+  api.get_attachment(path).then((b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)))
+
 const texts = new Map<string, Promise<string>>()
 
 /** UTF-8 text of a harness file via `get_attachment` (works locally and through the relay); cached, failures are not. */
 export function readText(api: Api, path: string): Promise<string> {
   const hit = texts.get(path)
   if (hit) return hit
-  const p = api.get_attachment(path).then((b64) => new TextDecoder().decode(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))))
+  const p = readBytes(api, path).then((b) => new TextDecoder().decode(b))
   p.catch(() => texts.delete(path))
   texts.set(path, p)
   // ponytail: unbounded by count, keyed by content-addressed path; an LRU when a session shows hundreds of documents.

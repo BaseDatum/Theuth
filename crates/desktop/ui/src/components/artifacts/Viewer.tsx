@@ -15,7 +15,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { parseCsv } from '@/lib/csv'
-import { extOf, fmtBytes, isLocal } from '@/lib/files'
+import { extOf, fmtBytes, isLocal, readBytes } from '@/lib/files'
 import { touch } from '@/lib/platform'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { queryKeys, useApi } from '@/lib/rpc'
@@ -215,9 +215,11 @@ const Page = memo(function Page({ page, scale }: { page: PDFPageProxy; scale: nu
 /**
  * pdf.js pages in a pinch-zoomable column (35 §7.2's `ponytail:` path): iOS
  * WKWebView draws only page 1 of a PDF in an `<iframe>` and Android has no
- * inline viewer at all.
+ * inline viewer at all. Bytes over RPC, not a blob URL: pdf.js loads non-http
+ * URLs by XHR, which WKWebView answers with status 0 for `blob:tauri://`.
  */
-function PdfPages({ url }: { url: string }) {
+function PdfPages({ path }: { path: string }) {
+  const api = useApi()
   const [pages, setPages] = useState<PDFPageProxy[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   useEffect(() => {
@@ -225,10 +227,11 @@ function PdfPages({ url }: { url: string }) {
     let live = true
     setPages(null)
     setError(null)
-    import('pdfjs-dist')
-      .then(async (pdfjs) => {
+    Promise.all([import('pdfjs-dist'), readBytes(api, path)])
+      .then(async ([pdfjs, data]) => {
+        if (!live) return
         pdfjs.GlobalWorkerOptions.workerSrc ||= new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).href
-        task = pdfjs.getDocument({ url })
+        task = pdfjs.getDocument({ data })
         const doc = await task.promise
         const all = await Promise.all(Array.from({ length: doc.numPages }, (_, i) => doc.getPage(i + 1)))
         if (live) setPages(all)
@@ -238,7 +241,7 @@ function PdfPages({ url }: { url: string }) {
       live = false
       void task?.destroy()
     }
-  }, [url])
+  }, [api, path])
   if (error) return <div className="p-6 text-sm text-danger">{error}</div>
   if (!pages) return <div className="m-6 h-64 animate-pulse rounded-xl bg-layer-2" />
   return (
@@ -254,13 +257,15 @@ function PdfPages({ url }: { url: string }) {
   )
 }
 
-/** `<iframe src={url}>` of the blob — WKWebView's own PDF viewer — where a mouse drives it; pdf.js pages under a finger. */
-function Pdf({ a }: { a: Artifact }) {
+/** `<iframe src={url}>` of the blob — WKWebView's own PDF viewer — where a mouse drives it. */
+function PdfFrame({ a }: { a: Artifact }) {
   const url = useFileUrl(a.path)
   if (!url) return <div className="m-6 h-64 animate-pulse rounded-xl bg-layer-2" />
-  if (touch()) return <PdfPages url={url} />
   return <iframe src={url} title={a.name} className="h-full w-full border-0" />
 }
+
+/** pdf.js pages under a finger, the native viewer under a mouse. */
+const Pdf = ({ a }: { a: Artifact }) => (touch() ? <PdfPages path={a.path} /> : <PdfFrame a={a} />)
 
 /** The viewer for one artifact by kind (35 §3.2); the panel and the explorer both render through it. */
 export function ArtifactView({ artifact, className }: { artifact: Artifact; className?: string }) {

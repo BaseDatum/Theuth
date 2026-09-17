@@ -4,12 +4,14 @@ import { createRoot } from 'react-dom/client'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { toast } from 'sonner'
 import { App } from '@/App'
+import { trackPinch } from '@/lib/pinch'
 import { container } from '@/lib/platform'
 import { initTheme } from '@/lib/theme'
 import { trackViewport } from '@/lib/viewport'
 
 initTheme()
 trackViewport()
+trackPinch()
 // The webview has no popup handler, so `window.open` (Streamdown's link-safety modal, etc.) is a silent no-op; hand it to the system browser.
 if (container() !== 'web') {
   window.open = (url) => {
