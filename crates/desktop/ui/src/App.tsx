@@ -59,9 +59,8 @@ function loadInfo(st: Stores, api: Api): Promise<void> {
 
 /**
  * After a reconnect or `Lagged`: the gap is lost, so refetch what the screen shows (25 §4.3).
- * On a reconnect the router is still unmounted (`Shell` shows the startup screen while
- * `reconnecting`), so the event below finds no listener; `unload` makes the chat route
- * fetch again when it mounts. `Lagged` arrives with the route mounted and takes the event.
+ * The chat route takes the event when mounted; `unload` covers a route that mounts later
+ * (a local reconnect shows the startup screen meanwhile).
  */
 function reload(st: Stores): void {
   const sessions = st.sessions.getState()
@@ -248,9 +247,15 @@ function useEventSideEffects(st: Stores): void {
   }, [st, qc])
 }
 
-/** Everything under the active harness's provider: the router once connected, the startup screen before. */
+/**
+ * Everything under the active harness's provider: the router once connected, the startup screen before.
+ * A link harness stays on the router through a reconnect: iOS kills the socket on every background,
+ * so a resume would otherwise swap in the startup screen and remount the router each time (31 §7.3).
+ * `refused` needs the user (re-pair or forget), so that still gets the screen.
+ */
 function Shell({ harness, onRelaunch }: { harness: string; onRelaunch(): void }) {
-  const ready = useConnection((s) => s.state === 'open' && s.info !== null)
+  const refused = useHarnesses((s) => s.presence[harness] === 'refused')
+  const ready = useConnection((s) => s.info !== null && (s.state === 'open' || (harness !== LOCAL && !refused)))
   useInvalidateOn()
   useEventSideEffects(scope(harness))
   return ready ? (
