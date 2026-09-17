@@ -84,6 +84,8 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
         move || {
             let mut m = Model::new(default_model, approvals);
             m.catalog = Some(catalog);
+            m.entries
+                .push(Entry::Info(concat!("wth ", env!("CARGO_PKG_VERSION")).into()));
             m
         }
     });

@@ -86,6 +86,10 @@ release-s3:
 tag-release:
     ./scripts/tag-release.sh
 
+# Bump the product version (major | minor | patch | x.y.z): Cargo.toml, tauri.conf.json, Cargo.lock.
+bump-version part:
+    ./scripts/bump-version.sh {{part}}
+
 # Full macOS release (39 §5.1): package, notarize, update payloads, publish, tag.
 release:
     just package-macos
