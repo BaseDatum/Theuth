@@ -47,6 +47,7 @@ struct SessionRow {
     effort: Option<String>,
     agent: Option<String>,
     cwd: Option<String>,
+    pinned: bool,
 }
 
 impl TryFrom<SessionRow> for SessionSummary {
@@ -69,6 +70,7 @@ impl TryFrom<SessionRow> for SessionSummary {
             effort: r.effort,
             agent: r.agent,
             cwd: r.cwd,
+            pinned: r.pinned,
         })
     }
 }
@@ -120,6 +122,16 @@ impl Store {
     pub async fn set_title(&self, id: SessionId, title: &str) -> anyhow::Result<()> {
         sqlx::query("UPDATE sessions SET title = ? WHERE id = ?")
             .bind(title)
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Pin (or unpin) a session: pinned rows sort first in `list_sessions`.
+    pub async fn set_pinned(&self, id: SessionId, pinned: bool) -> anyhow::Result<()> {
+        sqlx::query("UPDATE sessions SET pinned = ? WHERE id = ?")
+            .bind(pinned)
             .bind(id.to_string())
             .execute(&self.pool)
             .await?;
@@ -532,7 +544,7 @@ impl Store {
     /// One session, if it exists.
     pub async fn session(&self, id: SessionId) -> anyhow::Result<Option<SessionSummary>> {
         let row: Option<SessionRow> = sqlx::query_as(
-            "SELECT id, created_at, updated_at, title, model, parent, name, effort, agent, cwd FROM sessions WHERE id = ?",
+            "SELECT id, created_at, updated_at, title, model, parent, name, effort, agent, cwd, pinned FROM sessions WHERE id = ?",
         )
         .bind(id.to_string())
         .fetch_optional(&self.pool)
@@ -540,10 +552,10 @@ impl Store {
         row.map(SessionSummary::try_from).transpose()
     }
 
-    /// Every session, most recently active first.
+    /// Every session, pinned first, then most recently active first.
     pub async fn list_sessions(&self) -> anyhow::Result<Vec<SessionSummary>> {
         let rows: Vec<SessionRow> = sqlx::query_as(
-            "SELECT id, created_at, updated_at, title, model, parent, name, effort, agent, cwd FROM sessions ORDER BY updated_at DESC, id DESC",
+            "SELECT id, created_at, updated_at, title, model, parent, name, effort, agent, cwd, pinned FROM sessions ORDER BY pinned DESC, updated_at DESC, id DESC",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -568,7 +580,7 @@ impl Store {
                  UNION ALL \
                  SELECT s.id, t.depth + 1, t.path || '/' || s.created_at || s.id \
                  FROM sessions s JOIN tree t ON s.parent = t.id) \
-             SELECT s.id, s.created_at, s.updated_at, s.title, s.model, s.parent, s.name, s.effort, s.agent, s.cwd, t.depth \
+             SELECT s.id, s.created_at, s.updated_at, s.title, s.model, s.parent, s.name, s.effort, s.agent, s.cwd, s.pinned, t.depth \
              FROM sessions s JOIN tree t ON s.id = t.id ORDER BY t.path",
         )
         .bind(root.to_string())
@@ -769,6 +781,13 @@ mod tests {
         let list = store.list_sessions().await.unwrap();
         assert_eq!(list.iter().map(|s| s.id).collect::<Vec<_>>(), [id, child]);
         assert!(list[0].updated_at > list[0].created_at);
+        // A pin outranks activity; unpinning restores the activity order.
+        store.set_pinned(child, true).await.unwrap();
+        let list = store.list_sessions().await.unwrap();
+        assert_eq!(list.iter().map(|s| (s.id, s.pinned)).collect::<Vec<_>>(), [(child, true), (id, false)]);
+        store.set_pinned(child, false).await.unwrap();
+        let list = store.list_sessions().await.unwrap();
+        assert_eq!(list.iter().map(|s| s.id).collect::<Vec<_>>(), [id, child]);
         assert_eq!(
             store
                 .descendants(id)

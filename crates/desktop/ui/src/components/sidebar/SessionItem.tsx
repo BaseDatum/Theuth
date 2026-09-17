@@ -29,11 +29,12 @@ import { useSessionField } from '@/store/sessions'
 
 /**
  * One chat in the list: title (live from `TitleChanged`), active highlight, hover `…` menu with
- * inline rename and delete. ⌘-click / ⇧-click / menu > Select feed the list's multi-selection.
+ * pin, inline rename and delete. ⌘-click / ⇧-click / menu > Select feed the list's multi-selection.
  */
 export const SessionItem = memo(function SessionItem({
   id,
   title,
+  pinned,
   active,
   selected,
   selecting,
@@ -41,6 +42,7 @@ export const SessionItem = memo(function SessionItem({
 }: {
   id: string
   title: string
+  pinned: boolean
   active: boolean
   selected: boolean
   selecting: boolean
@@ -68,6 +70,15 @@ export const SessionItem = memo(function SessionItem({
     if (!value.trim() || value === shown) return
     try {
       await api.rename_session(id, value.trim())
+      void qc.invalidateQueries({ queryKey: queryKeys.sessions })
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  const pin = async () => {
+    try {
+      await api.pin_session(id, !pinned)
       void qc.invalidateQueries({ queryKey: queryKeys.sessions })
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e))
@@ -130,6 +141,7 @@ export const SessionItem = memo(function SessionItem({
             </DropdownMenuTrigger>
             <DropdownMenuContent side="right" align="start" className="w-48">
               <DropdownMenuItem onSelect={() => setEditing(shown)}>Rename</DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => void pin()}>{pinned ? 'Unpin' : 'Pin'}</DropdownMenuItem>
               <DropdownMenuItem onSelect={() => select(id, 'toggle')}>
                 {selected ? 'Deselect' : 'Select'}
               </DropdownMenuItem>

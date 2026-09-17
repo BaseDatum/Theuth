@@ -160,6 +160,8 @@ export interface Api {
   remove_skill(name: string): Promise<null>
   remove_skill_repo(name: string): Promise<null>
   rename_session(session: SessionId, title: string): Promise<null>
+  /** Pin or unpin a session; pinned sessions lead `list_sessions`. */
+  pin_session(session: SessionId, pinned: boolean): Promise<null>
   /** Delete a session and its subagents; `SessionDeleted` per removed id follows. Refused mid-turn. */
   delete_session(session: SessionId): Promise<null>
   resolve_approval(id: ApprovalId, decision: Decision): Promise<boolean>
@@ -277,6 +279,7 @@ export const METHODS = [
   'mcp_logout',
   'mcp_status',
   'new_session',
+  'pin_session',
   'put_attachment',
   'redo',
   'regenerate',

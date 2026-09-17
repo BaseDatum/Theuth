@@ -276,6 +276,16 @@ pub struct RenameSession {
     pub title: String,
 }
 
+/// `ask` → `Result<(), String>`: pin or unpin a session; pinned rows lead
+/// [`ListSessions`].
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PinSession {
+    /// Target session.
+    pub session: SessionId,
+    /// `true` to pin, `false` to unpin.
+    pub pinned: bool,
+}
+
 /// `ask` → `Result<(), String>`: delete a session and every descendant — rows,
 /// messages, epochs — and drop their actors; one [`AgentEvent::SessionDeleted`]
 /// per removed session. `Err` while any of them has a turn in flight.
@@ -726,6 +736,9 @@ pub struct SessionSummary {
     pub agent: Option<String>,
     /// Working directory recorded by ACP (`session/new` or `spawn_subagent.cwd`).
     pub cwd: Option<String>,
+    /// Kept at the top of the list.
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 /// Rendered history for UIs (tool traffic collapsed to summaries).

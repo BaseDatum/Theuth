@@ -44,7 +44,7 @@ use crate::{
     ListAcp, ListAgents, ListLogins, ListModels, ListProviders, ListQueued, ListRegistry,
     ListSessions, ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginFinished, LoginInfo,
     Logout, ModelInfo, NewSession, ProviderInfo, QueuedInput, Redo, Regenerate, RemoveAcp,
-    RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession, SearchSessions, SendInput,
+    PinSession, RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession, SearchSessions, SendInput,
     SessionSummary, SetCompactStyle, SetEffort, SetModel, SetSubagentTimeout, SetTitleModel,
     ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw, effort_of,
 };
@@ -1687,6 +1687,17 @@ impl Message<RenameSession> for Agents {
             })
             .await;
         Ok(())
+    }
+}
+
+impl Message<PinSession> for Agents {
+    type Reply = Result<(), String>;
+
+    async fn handle(&mut self, m: PinSession, _: &mut Context<Self, Self::Reply>) -> Result<(), String> {
+        self.store
+            .set_pinned(m.session, m.pinned)
+            .await
+            .map_err(|e| e.to_string())
     }
 }
 

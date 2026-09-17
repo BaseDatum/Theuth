@@ -13,7 +13,7 @@ use agent::{
     GetTitleModel, Harvest, ListAcp, ListAgents, ListLogins, ListModels, ListProviders, ListQueued,
     ListRegistry, ListSessions, ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginInfo,
     Logout, ModelInfo, NewSession, ProviderInfo, QueuedInput, Redo, Regenerate, RemoveAcp,
-    RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession, SearchSessions, SendInput,
+    PinSession, RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession, SearchSessions, SendInput,
     SessionSummary, SetCompactStyle, SetEffort, SetModel, SetSubagentTimeout, SetTitleModel,
     ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw,
 };
@@ -209,6 +209,9 @@ pub trait Api {
     /// Set a session's title by hand; `TitleChanged` follows on the stream.
     #[method(name = "rename_session")]
     async fn rename_session(&self, session: SessionId, title: String) -> RpcResult<()>;
+    /// Pin or unpin a session; pinned sessions lead `list_sessions`.
+    #[method(name = "pin_session")]
+    async fn pin_session(&self, session: SessionId, pinned: bool) -> RpcResult<()>;
     /// Delete a session and its subagents for good; a `SessionDeleted` per removed session
     /// follows on the stream. Refused while any of them is mid-turn.
     #[method(name = "delete_session")]
@@ -898,6 +901,10 @@ impl ApiServer for Server {
 
     async fn rename_session(&self, session: SessionId, title: String) -> RpcResult<()> {
         ask::<Agents, _>(agent::AGENT_ACTOR, RenameSession { session, title }).await
+    }
+
+    async fn pin_session(&self, session: SessionId, pinned: bool) -> RpcResult<()> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, PinSession { session, pinned }).await
     }
 
     async fn delete_session(&self, session: SessionId) -> RpcResult<()> {

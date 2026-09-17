@@ -660,6 +660,7 @@ mod tests {
             effort: None,
             agent: None,
             cwd: None,
+            pinned: false,
         }
     }
 

@@ -44,14 +44,17 @@ function rootOf(sessions: SessionSummary[], id: string | undefined): string | un
   }
 }
 
-/** Top-level sessions newest first with group headers; the active one's root is followed by its agent tree. */
+/** Pinned top-level sessions first, then the rest newest first with day-group headers; the active one's root is followed by its agent tree. */
 function buildRows(sessions: SessionSummary[], active: string | undefined): Row[] {
   const now = Date.now()
   const root = rootOf(sessions, active)
   const rows: Row[] = []
   let label = ''
-  for (const s of sessions.filter((s) => s.parent === null).sort((a, b) => b.updated_at.localeCompare(a.updated_at))) {
-    const g = group(s.updated_at, now)
+  const top = sessions
+    .filter((s) => s.parent === null)
+    .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updated_at.localeCompare(a.updated_at))
+  for (const s of top) {
+    const g = s.pinned ? 'Pinned' : group(s.updated_at, now)
     if (g !== label) rows.push({ key: `h:${g}`, label: (label = g) })
     rows.push({ key: s.id, session: s })
     if (s.id === root) rows.push({ key: `t:${s.id}`, tree: s.id })
@@ -133,6 +136,7 @@ export function SessionList({ scrollEl, active }: { scrollEl: HTMLDivElement | n
                 <SessionItem
                   id={row.session.id}
                   title={row.session.title}
+                  pinned={row.session.pinned}
                   active={row.session.id === active}
                   selected={selected.has(row.session.id)}
                   selecting={selected.size > 0}
