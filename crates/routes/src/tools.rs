@@ -1,4 +1,4 @@
-//! `site_learn`, `site_routes`, `site_call` (design doc 42 §4). Risk
+//! `site_learn`, `site_routes`, `site_call` (design doc 44 §4). Risk
 //! `ReadOnly`; http(s) only. Rows are [`Route`]s: header names, never values.
 
 use std::sync::Arc;
@@ -13,7 +13,7 @@ use url::Url;
 
 use crate::{CallReply, Route, Routes};
 
-/// Plugin prompt block (42 §4): when to learn routes instead of scraping.
+/// Plugin prompt block (44 §4): when to learn routes instead of scraping.
 pub const PROMPT: &str = "site_learn, site_routes, site_call are runtime functions. \
 When a page is an app (search, tables, feeds, dashboards), site_learn(url=…) once: \
 it opens the page in your browser session and returns the JSON routes the page itself called, \

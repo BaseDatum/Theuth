@@ -175,9 +175,9 @@ the source of truth and the test in §8.2 pins it:
 | `search_web` | ReadOnly | ✓ | ✓ | results are the web; the query carries bytes out |
 | `browser_open`, `browser_read`/snapshot/screenshot family | ReadOnly | ✓ | ✓ (`open`, `goto`) / — (pure readers) | page content; navigation is a GET |
 | `browser_type`, `browser_click`, `browser_press`, `browser_eval`, `browser_fill`… | ReadOnly | ✓ (they return page state) | ✓ | submit forms, run JS with the page's cookies |
-| `site_learn` (42) | ReadOnly | ✓ | ✓ | route templates and keys are the web's strings; navigation is a GET |
-| `site_routes` (42) | ReadOnly | ✓ | — | stored web-derived strings |
-| `site_call` (42) | ReadOnly | ✓ | ✓ | records are the web; params carry bytes out |
+| `site_learn` (44) | ReadOnly | ✓ | ✓ | route templates and keys are the web's strings; navigation is a GET |
+| `site_routes` (44) | ReadOnly | ✓ | — | stored web-derived strings |
+| `site_call` (44) | ReadOnly | ✓ | ✓ | records are the web; params carry bytes out |
 | `browser_import_cookies` | Mutating | — | — | already asks |
 | `computer_open` | Mutating | — | ✓ | URL to the user's signed-in browser |
 | `computer_type`, `computer_key`, `computer_click`… | Mutating | — | — | already ask; screen content returns via `computer_screenshot` (image: §9) |

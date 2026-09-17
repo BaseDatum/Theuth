@@ -1,4 +1,4 @@
-# 42 — Routes: learn a site's API in the browser, call it without one
+# 44 — Routes: learn a site's API in the browser, call it without one
 
 Status: as-built v0 · 2026-09-17 (draft v0 same day) · extends `23-browser.md` §3.3 (the fork) and
 §4 (tool surface), `16-web.md` §5 (fetcher), `38-scrape-vendored-crawler.md`
@@ -338,7 +338,7 @@ Prompt block (registered as the `routes` plugin's `RegisterPrompt`):
 ## 5. Config and disk
 
 ```yaml
-routes:                     # design doc 42
+routes:                     # design doc 44
   enabled: true             # false: no tools, no prompt block, no directory touched
   settle_ms: 4000           # after networkidle0, for late fetches
   call_timeout_ms: 15000    # one site_call
@@ -555,9 +555,9 @@ Revisions at build time:
 
 ## 13. Edits to other docs
 
-- **00 §10**: row `routes` — plugin, doc 42, "learn a site's JSON routes from
+- **00 §10**: row `routes` — plugin, doc 44, "learn a site's JSON routes from
   the browser session; replay them over `web::Fetcher`".
-- **00 §6**: after the browser sentence: "Routes (42): three `site_*`
+- **00 §6**: after the browser sentence: "Routes (44): three `site_*`
   runtime functions learn a page's XHR routes from the isolate and call them
   without one; `ReadOnly`, safe methods only."
 - **23 §3.3**: fork is `v0.2.2` + two commits; list `browser_network_capture`.

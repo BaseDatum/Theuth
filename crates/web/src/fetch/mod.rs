@@ -1,6 +1,6 @@
 //! Page fetch (design doc 16 §5): HTTP GET behind the SSRF guard, manual
 //! redirects re-checked per hop, body caps, and HTML → markdown / text; plus
-//! the raw [`Fetcher::request`] used for route replay (42 §0.6).
+//! the raw [`Fetcher::request`] used for route replay (44 §0.6).
 //!
 //! - `ssrf`: the mandatory guard; [`check_url`] for callers outside the fetcher.
 //! - `text`: one HTML parser for both [`FetchFormat`]s, plus truncation.
@@ -234,7 +234,7 @@ impl Fetcher {
     }
 
     /// `method` `url` with `headers` and optional `body`, redirects re-checked
-    /// per hop like [`Self::fetch`] (42 §0.6). 301/302/303 turn into a bodyless
+    /// per hop like [`Self::fetch`] (44 §0.6). 301/302/303 turn into a bodyless
     /// GET; 307/308 keep method and body. Caller `host` / `content-length`
     /// headers are skipped. The body is raw bytes: no gzip inflate, no
     /// document or HTML conversion.

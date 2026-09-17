@@ -1,4 +1,4 @@
-//! `Fetcher::request` (design doc 42 §0.6): arbitrary method + headers + body
+//! `Fetcher::request` (design doc 44 §0.6): arbitrary method + headers + body
 //! behind the same guard as `fetch`, non-2xx returned as `Ok`, redirects
 //! rewritten per RFC 9110 (301/302/303 → GET, 307/308 keep method and body).
 //! Happy paths use wiremock on loopback, allowlisted by exact `ip:port`.

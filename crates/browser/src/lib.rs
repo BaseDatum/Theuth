@@ -57,7 +57,7 @@ pub struct BrowserConfig {
     /// `OBSCURA_SCRIPT_DEADLINE_MS` for heavy SPAs.
     pub script_deadline_ms: u64,
     /// Request/response exchanges the isolate keeps per page for
-    /// `browser_network_capture` (42 §3.1); `OBSCURA_NETWORK_BODY_BUFFER_ENTRIES`.
+    /// `browser_network_capture` (44 §3.1); `OBSCURA_NETWORK_BODY_BUFFER_ENTRIES`.
     pub capture_entries: usize,
     /// Per-body cap of a captured exchange; `OBSCURA_NETWORK_BODY_BUFFER_BYTES`.
     pub capture_body_bytes: usize,

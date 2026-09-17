@@ -1,8 +1,8 @@
-//! Routes (design doc 42): learn a site's JSON routes from the browser
+//! Routes (design doc 44): learn a site's JSON routes from the browser
 //! session's XHR/fetch traffic and replay them over `web::Fetcher` without a
 //! browser. `classify` and `store` are the pure core; [`Routes`] is the shared
-//! handle behind the `site_*` tools (42 §3, §4). No actor: nothing outside
-//! this crate asks it, so 42 §6's messages are methods.
+//! handle behind the `site_*` tools (44 §3, §4). No actor: nothing outside
+//! this crate asks it, so 44 §6's messages are methods.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
@@ -29,7 +29,7 @@ pub use classify::{
 };
 pub use store::{SiteRoutes, Store};
 
-/// `routes:` config section (42 §5). Every field has a default; the section
+/// `routes:` config section (44 §5). Every field has a default; the section
 /// may be absent.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -55,14 +55,14 @@ impl Default for RoutesConfig {
     }
 }
 
-/// Credentials untouched this long are dropped (42 §3.6; mirrors
+/// Credentials untouched this long are dropped (44 §3.6; mirrors
 /// `browser.idle_secs`' default).
 pub const CREDS_IDLE: Duration = Duration::from_secs(300);
 
 /// How often [`Routes::sweep`] runs.
 const SWEEP_EVERY: Duration = Duration::from_secs(30);
 
-/// Session-scoped credential values for one domain (42 §3.6); never serialised.
+/// Session-scoped credential values for one domain (44 §3.6); never serialised.
 struct CredEntry {
     touched: Instant,
     /// `(lowercase header name, value)`, `cookie` included when known.
@@ -77,7 +77,7 @@ pub struct Routes {
     creds: tokio::sync::Mutex<HashMap<(SessionId, String), CredEntry>>,
 }
 
-/// `site_learn` result (42 §4).
+/// `site_learn` result (44 §4).
 #[derive(Debug, Serialize)]
 pub struct LearnReply {
     /// Registrable domain the rows belong to.
@@ -91,7 +91,7 @@ pub struct LearnReply {
     pub top_urls: Vec<String>,
 }
 
-/// `site_call` result (42 §3.5).
+/// `site_call` result (44 §3.5).
 #[derive(Debug, Serialize)]
 pub struct CallReply {
     /// The filled URL that was requested.
@@ -120,7 +120,7 @@ impl Routes {
         }
     }
 
-    /// 42 §3.2–§3.4, §3.6: with `url`, navigate this session's isolate there
+    /// 44 §3.2–§3.4, §3.6: with `url`, navigate this session's isolate there
     /// (`networkidle0`) and settle; drain the capture buffer, classify, merge
     /// per registrable domain, arm the session's credentials. Replies for the
     /// domain of `url`, else the domain with most routes.
@@ -225,7 +225,7 @@ impl Routes {
         self.store.load(&registrable_domain(url)).await
     }
 
-    /// 42 §3.5: fill, arm, request, drift-check (`replay::call`).
+    /// 44 §3.5: fill, arm, request, drift-check (`replay::call`).
     ///
     /// # Errors
     /// Unknown or non-replayable route, missing path params, transport

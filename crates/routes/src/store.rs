@@ -1,4 +1,4 @@
-//! `<data_dir>/routes/<registrable-domain>.json` (42 §3.4): one pretty JSON
+//! `<data_dir>/routes/<registrable-domain>.json` (44 §3.4): one pretty JSON
 //! file per domain, written whole via `.tmp` + rename. Delete the file to
 //! forget a site.
 

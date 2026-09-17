@@ -3,7 +3,7 @@ name = "routes"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
-description = "Learn a site's JSON routes from the browser session and replay them without one (design doc 42)"
+description = "Learn a site's JSON routes from the browser session and replay them without one (design doc 44)"
 
 [dependencies]
 runtime = { workspace = true }

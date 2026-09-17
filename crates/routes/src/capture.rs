@@ -1,4 +1,4 @@
-//! Browser side of a learn (42 §3.2): navigate, drain
+//! Browser side of a learn (44 §3.2): navigate, drain
 //! `browser_network_capture`, read the jar. The `browser` actor is looked up
 //! at call time (38 §0.3); no actor → a clear error, never a panic.
 

@@ -110,7 +110,7 @@ pub fn display_url(raw: &str) -> String {
 }
 
 /// `true` for a tracking / analytics query parameter (`utm_*`, `fbclid`, …).
-/// Shared with `routes` (42 §3.3) so both strip the same list.
+/// Shared with `routes` (44 §3.3) so both strip the same list.
 #[must_use]
 pub fn is_tracking_param(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();

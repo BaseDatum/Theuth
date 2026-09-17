@@ -1,4 +1,4 @@
-//! Replay (42 §3.5): route + params + the session's credentials →
+//! Replay (44 §3.5): route + params + the session's credentials →
 //! `Fetcher::request` → drift check → records. Errors carry status and
 //! reason, never the request.
 
@@ -31,7 +31,7 @@ pub async fn call(
         anyhow::bail!("unknown route {route_id:?}; site_routes lists the learned ones");
     };
     if !route.replay {
-        anyhow::bail!("route {route_id} is not replayable: POST body is not captured (42 §2)");
+        anyhow::bail!("route {route_id} is not replayable: POST body is not captured (44 §2)");
     }
     let url = fill(route, params).map_err(|e| anyhow::anyhow!(e))?;
 

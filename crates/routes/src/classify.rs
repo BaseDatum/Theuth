@@ -1,4 +1,4 @@
-//! Exchange → Route (42 §3.3): admit, decode, find the record collection,
+//! Exchange → Route (44 §3.3): admit, decode, find the record collection,
 //! template the URL, split auth header names from values, rank. Pure
 //! functions, no I/O.
 
@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use url::{Position, Url};
 
-/// One captured request/response row as `browser_network_capture` emits it (42 §3.1).
+/// One captured request/response row as `browser_network_capture` emits it (44 §3.1).
 #[derive(Clone, Debug, Deserialize)]
 pub struct Exchange {
     /// Request URL.
@@ -63,7 +63,7 @@ pub struct Hole {
     pub example: String,
 }
 
-/// A learned data route (42 §3.4). Structure only: header names, never values.
+/// A learned data route (44 §3.4). Structure only: header names, never values.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct Route {
     /// `{domain}:{METHOD}:{template path}`.
@@ -533,7 +533,7 @@ fn build(
     (rank, Learned { route, creds })
 }
 
-/// Drift check (42 §3.5.5): the collection must sit at `route.collection`
+/// Drift check (44 §3.5.5): the collection must sit at `route.collection`
 /// with ≥ 1 record and ≥ 50 % key overlap with `route.keys`. `Ok(records)`.
 pub fn drift(route: &Route, body: &Value) -> Result<Vec<Value>, String> {
     let ptr = &route.collection;
