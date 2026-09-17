@@ -15,6 +15,7 @@ tools = { workspace = true }
 knowledge = { workspace = true }
 web = { workspace = true }
 browser = { workspace = true }
+scrape = { workspace = true }
 computer = { workspace = true }
 search-providers = { workspace = true }
 agent = { workspace = true }

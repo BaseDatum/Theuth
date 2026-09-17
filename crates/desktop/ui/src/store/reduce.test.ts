@@ -176,6 +176,29 @@ test('job tail attaches to the tool card by call id, follows output, freezes or 
   expect(apply(s, { type: 'JobOutput', session: S, id: 'j9', chunk: 'x' }, ctx())).toBe(s)
 })
 
+test('ScrapeProgress attaches inflight URLs to the crawl card by call id', () => {
+  let s = run([{ type: 'ToolCallStarted', session: S, turn: T, call_id: 'c1', name: 'crawl', args: { url: 'https://a.example' } }])
+  s = apply(
+    s,
+    {
+      type: 'ScrapeProgress',
+      session: S,
+      call_id: 'c1',
+      inflight: ['https://a.example/1', 'https://b.example/2'],
+      done: ['https://a.example/'],
+      limit: 50,
+    },
+    ctx(),
+  )
+  expect(s.scrape.get('c1')).toEqual({
+    inflight: ['https://a.example/1', 'https://b.example/2'],
+    done: ['https://a.example/'],
+    limit: 50,
+  })
+  s = apply(s, { type: 'ToolCallFinished', session: S, turn: T, call_id: 'c1', output: 'ok', is_error: false, files: [] }, ctx())
+  expect(s.scrape.get('c1')?.done).toEqual(['https://a.example/'])
+})
+
 test('fromHistory maps roles; a tool result tuple becomes a result', () => {
   expect(fromHistory({ role: 'tool', call_id: 'c.1', name: 'read', args: { p: 1 }, result: ['out', true], files: ['/s.png'] })[0]).toMatchObject({
     kind: 'tool',

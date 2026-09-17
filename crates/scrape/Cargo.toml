@@ -1,0 +1,36 @@
+[package]
+name = "scrape"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Local scrape/crawl/map tools on vendored firecrawl-native (design doc 38)"
+
+[dependencies]
+firecrawl-native = { workspace = true }
+runtime = { workspace = true }
+tools = { workspace = true }
+web = { workspace = true }
+browser = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+tracing = { workspace = true }
+kameo = { workspace = true }
+url = { workspace = true }
+html-to-markdown-rs = { workspace = true }
+uuid = { workspace = true }
+reqwest = { workspace = true }
+ts-rs = { workspace = true, optional = true }
+
+[dev-dependencies]
+wiremock = { workspace = true }
+
+[features]
+ts = ["dep:ts-rs", "runtime/ts"]
+
+[lints]
+workspace = true

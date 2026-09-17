@@ -28,6 +28,8 @@ acp = { path = "crates/acp" }
 web = { path = "crates/web" }
 search-providers = { path = "crates/search-providers" }
 browser = { path = "crates/browser" }
+firecrawl-native = { path = "crates/firecrawl-native" }
+scrape = { path = "crates/scrape" }
 computer = { path = "crates/computer" }
 surface = { path = "crates/surface" }
 link = { path = "crates/link" }

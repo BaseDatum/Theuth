@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use web::engines::{self, Arxiv, DuckDuckGo, Github, Wikipedia};
+use web::engines::{self, Arxiv, Bing, Brave, DuckDuckGo, Github, Google, Qwant, Wikipedia};
 use web::{Category, FeatureKind, Provider, ProviderError, Query, Recency};
 use wiremock::matchers::{body_string_contains, header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -41,14 +41,26 @@ async fn header_of(server: &MockServer, index: usize, name: &str) -> String {
 }
 
 #[test]
-fn builtin_constructs_the_four_engines_and_nothing_else() {
+fn builtin_constructs_the_four_engines() {
     let none = HashMap::new();
+    assert_eq!(
+        engines::BUILTIN,
+        &[
+            "google",
+            "bing",
+            "brave",
+            "qwant",
+            "wikipedia",
+            "arxiv",
+            "github"
+        ]
+    );
     for name in engines::BUILTIN {
         let provider = engines::builtin(name, &none).expect(name);
         assert_eq!(provider.meta().name, *name);
     }
-    assert!(engines::builtin("google", &none).is_none());
     let ddg = engines::builtin("duckduckgo", &none).expect("ddg");
+    assert_eq!(ddg.meta().name, "duckduckgo");
     assert_eq!(
         ddg.meta().features,
         &[
@@ -500,4 +512,106 @@ async fn github_403_with_rate_limit_body_is_rate_limited() {
         .await
         .expect_err("unauthorized");
     assert!(matches!(err, ProviderError::Unauthorized), "{err}");
+}
+
+#[tokio::test]
+async fn google_parses_wml_serp() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/wml/search"))
+        .and(query_param("q", "rust"))
+        .respond_with(ok(r#"<div class="zMzFAb">
+  <a class="fuLhoc" href="https://www.rust-lang.org/">
+    <span class="CVA68e">Rust</span>
+  </a>
+  <span class="FrIlee">A language.</span>
+</div>"#))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let (hits, features) = Google::at(&server.uri())
+        .search(&reqwest::Client::new(), &query("rust"))
+        .await
+        .expect("google");
+    assert!(features.is_empty());
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].title, "Rust");
+    assert_eq!(hits[0].url, "https://www.rust-lang.org/");
+    assert_eq!(hits[0].snippet, "A language.");
+}
+
+#[tokio::test]
+async fn bing_parses_b_algo_serp() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/search"))
+        .and(query_param("q", "rust"))
+        .respond_with(ok(r#"<ol id="b_results"><li class="b_algo">
+<h2><a href="https://www.rust-lang.org/">Rust</a></h2>
+<p>A language.</p>
+</li></ol>"#))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let (hits, features) = Bing::at(&server.uri())
+        .search(&reqwest::Client::new(), &query("rust"))
+        .await
+        .expect("bing");
+    assert!(features.is_empty());
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].title, "Rust");
+    assert_eq!(hits[0].url, "https://www.rust-lang.org/");
+    assert_eq!(hits[0].snippet, "A language.");
+}
+
+#[tokio::test]
+async fn brave_parses_snippet_serp() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/search"))
+        .and(query_param("q", "rust"))
+        .and(query_param("source", "web"))
+        .respond_with(ok(r#"<div class="snippet">
+  <a href="https://www.rust-lang.org/"><span class="title">Rust</span></a>
+  <span class="content">A language.</span>
+</div>"#))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let (hits, features) = Brave::at(&server.uri())
+        .search(&reqwest::Client::new(), &query("rust"))
+        .await
+        .expect("brave");
+    assert!(features.is_empty());
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].title, "Rust");
+    assert_eq!(hits[0].url, "https://www.rust-lang.org/");
+    assert_eq!(hits[0].snippet, "A language.");
+}
+
+#[tokio::test]
+async fn qwant_parses_web_json() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/web"))
+        .and(query_param("q", "rust"))
+        .respond_with(ok(
+            r#"{"status":"success","data":{"result":{"items":{"mainline":[
+              {"type":"web","items":[
+                {"title":"Rust","url":"https://www.rust-lang.org/","desc":"A language."}
+              ]}
+            ]}}}}"#,
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let (hits, features) = Qwant::at(&server.uri())
+        .search(&reqwest::Client::new(), &query("rust"))
+        .await
+        .expect("qwant");
+    assert!(features.is_empty());
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].title, "Rust");
+    assert_eq!(hits[0].url, "https://www.rust-lang.org/");
+    assert_eq!(hits[0].snippet, "A language.");
 }

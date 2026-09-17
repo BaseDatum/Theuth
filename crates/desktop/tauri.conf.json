@@ -31,7 +31,7 @@
       "showMenuOnLeftClick": false
     },
     "security": {
-      "csp": "default-src 'self' ipc: http://ipc.localhost; connect-src 'self' ipc: http://ipc.localhost ws://127.0.0.1:* ws://localhost:* wss: ws:; img-src 'self' asset: http://asset.localhost data: blob:; frame-src 'self' asset: http://asset.localhost blob:; style-src 'self' 'unsafe-inline'",
+      "csp": "default-src 'self' ipc: http://ipc.localhost; connect-src 'self' ipc: http://ipc.localhost ws://127.0.0.1:* ws://localhost:* wss: ws:; img-src 'self' asset: http://asset.localhost data: blob: https://www.google.com; frame-src 'self' asset: http://asset.localhost blob:; style-src 'self' 'unsafe-inline'",
       "assetProtocol": {
         "enable": true
       }

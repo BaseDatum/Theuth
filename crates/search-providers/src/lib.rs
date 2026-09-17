@@ -1,9 +1,9 @@
-//! External search providers (design doc 16 §3, §6): Brave, Firecrawl,
-//! SearXNG and OpenSERP. [`SearchProvidersPlugin`] reads the
-//! `search_providers` config section and the secrets vault (37 §3.6: keys
-//! `firecrawl`, `brave`, `openserp`), builds every enabled provider, and
-//! registers each with the `web` plugin's actor over the bus
-//! ([`web::RegisterProvider`]). This crate owns no tools.
+//! External search providers (design doc 16 §3, §6; 38 §5): SearXNG first
+//! (keyless), then optional Firecrawl, OpenSERP and Brave.
+//! [`SearchProvidersPlugin`] reads the `search_providers` config section and
+//! the secrets vault (37 §3.6: keys `firecrawl`, `brave`, `openserp`), builds
+//! every enabled provider, and registers each with the `web` plugin's actor
+//! over the bus ([`web::RegisterProvider`]). This crate owns no tools.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -17,8 +17,8 @@ pub mod openserp;
 pub mod searxng;
 
 /// `search_providers:` section (16 §6). Each block's presence enables it;
-/// Firecrawl is present by default so an installation with no other provider
-/// gets a real web index as soon as a `firecrawl:` key exists.
+/// SearXNG is on by default (keyless). Firecrawl stays registered but needs
+/// the `firecrawl` secret.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
 pub struct SearchProvidersConfig {
@@ -36,7 +36,9 @@ impl Default for SearchProvidersConfig {
     fn default() -> Self {
         Self {
             firecrawl: Some(FirecrawlConfig::default()),
-            searxng: None,
+            searxng: Some(SearxngConfig {
+                base_url: "http://127.0.0.1:8080".into(),
+            }),
             openserp: None,
             brave: None,
         }
@@ -114,24 +116,24 @@ fn key<'a>(credentials: &'a HashMap<String, String>, name: &str) -> Option<&'a s
 }
 
 /// Every provider the config enables and the credentials allow, in
-/// registration order (Firecrawl first: it is the default `rendered` path).
-/// Blocks that need a key and have none are skipped with a log line.
+/// registration order (SearXNG first: keyless). Firecrawl is optional behind
+/// its secret. Blocks that need a key and have none are skipped with a log line.
 #[must_use]
 pub fn build(
     cfg: &SearchProvidersConfig,
     credentials: &HashMap<String, String>,
 ) -> Vec<Arc<dyn Provider>> {
     let mut out: Vec<Arc<dyn Provider>> = Vec::new();
+    if let Some(sx) = &cfg.searxng {
+        out.push(Arc::new(searxng::Searxng::new(&sx.base_url)));
+    }
     if let Some(fc) = cfg.firecrawl.as_ref().filter(|c| c.enabled) {
         match key(credentials, "firecrawl") {
             Some(k) => out.push(Arc::new(firecrawl::Firecrawl::new(&fc.base_url, k))),
             None => tracing::info!(
-                "firecrawl: no `firecrawl` secret; add one (free tier at firecrawl.dev) with /secrets add or `wth --secret-set firecrawl` to enable web search through it"
+                "firecrawl: no `firecrawl` secret; optional. SearXNG and built-in engines cover search without it"
             ),
         }
-    }
-    if let Some(sx) = &cfg.searxng {
-        out.push(Arc::new(searxng::Searxng::new(&sx.base_url)));
     }
     if let Some(os) = cfg.openserp.as_ref().filter(|c| c.enabled) {
         out.push(Arc::new(openserp::Openserp::new(
@@ -246,7 +248,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn firecrawl_on_by_default_but_needs_a_key() {
+    fn searxng_first_zero_keys_firecrawl_optional() {
         let cfg = SearchProvidersConfig::default();
         let fc = cfg
             .firecrawl
@@ -254,14 +256,21 @@ mod tests {
             .expect("firecrawl block present by default");
         assert!(fc.enabled);
         assert_eq!(fc.base_url, "https://api.firecrawl.dev");
+        assert_eq!(
+            cfg.searxng.as_ref().map(|s| s.base_url.as_str()),
+            Some("http://127.0.0.1:8080")
+        );
 
-        assert!(build(&cfg, &HashMap::new()).is_empty());
+        let zero = build(&cfg, &HashMap::new());
+        assert_eq!(zero.len(), 1);
+        assert_eq!(zero[0].meta().name, "searxng");
 
         let creds = HashMap::from([("firecrawl".to_string(), "fc-key".to_string())]);
         let built = build(&cfg, &creds);
-        assert_eq!(built.len(), 1);
-        assert_eq!(built[0].meta().name, "firecrawl");
-        assert!(built[0].meta().renders);
+        assert_eq!(built.len(), 2);
+        assert_eq!(built[0].meta().name, "searxng");
+        assert_eq!(built[1].meta().name, "firecrawl");
+        assert!(built[1].meta().renders);
     }
 
     #[test]
@@ -293,6 +302,9 @@ mod tests {
         );
         assert!(cfg.brave.as_ref().is_some_and(|b| b.enabled));
         assert_eq!(cfg.openserp.as_ref().map(|o| o.engines.len()), Some(2));
-        assert!(cfg.searxng.is_none());
+        assert_eq!(
+            cfg.searxng.as_ref().map(|s| s.base_url.as_str()),
+            Some("http://127.0.0.1:8080")
+        );
     }
 }

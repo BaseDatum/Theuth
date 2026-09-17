@@ -16,6 +16,7 @@ use link::LinkEvent;
 use nodes::NodeEvent;
 use runtime::Runtime;
 use schedule::ScheduleEvent;
+use scrape::ScrapeProgress;
 use secrets::SecretsEvent;
 use serde::Serialize;
 use signal::SignalEvent;
@@ -96,7 +97,8 @@ forward!(
     NodeEvent,
     ScheduleEvent,
     ArtifactShown,
-    SecretsEvent
+    SecretsEvent,
+    ScrapeProgress
 );
 
 /// The process-wide event feed. The first caller spawns the bridge,
@@ -131,5 +133,6 @@ pub async fn start(rt: &Runtime) -> broadcast::Sender<Event> {
     rt.subscribe::<Bridge, ScheduleEvent>(&actor).await;
     rt.subscribe::<Bridge, ArtifactShown>(&actor).await;
     rt.subscribe::<Bridge, SecretsEvent>(&actor).await;
+    rt.subscribe::<Bridge, ScrapeProgress>(&actor).await;
     tx
 }

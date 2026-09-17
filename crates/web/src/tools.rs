@@ -44,7 +44,7 @@ pub struct SearchArgs {
     /// Subset of the configured providers by name (default: all serving the category).
     #[serde(default)]
     pub providers: Option<Vec<String>>,
-    /// Inline the cleaned text of the top N results, 0..=3 (default 0).
+    /// Inline the cleaned text of the top N results, 0..=5 (default 0).
     #[serde(default)]
     pub fetch_top: Option<u8>,
 }
@@ -193,9 +193,9 @@ impl Tool for SearchTool {
             )));
         }
         let fetch_top = a.fetch_top.unwrap_or(0);
-        if fetch_top > 3 {
+        if fetch_top > 5 {
             return Ok(ToolOutput::err(format!(
-                "fetch_top must be 0..=3, got {fetch_top}"
+                "fetch_top must be 0..=5, got {fetch_top}"
             )));
         }
         let q = Query {
@@ -222,16 +222,40 @@ impl Tool for SearchTool {
         if fetch_top > 0 {
             let mut set = JoinSet::new();
             for (i, r) in resp.results.iter().take(usize::from(fetch_top)).enumerate() {
-                let (f, url, max) = (
+                let (actor, f, url, max) = (
+                    self.actor.clone(),
                     Arc::clone(&self.fetcher),
                     r.url.clone(),
                     self.cfg.fetch_top_chars,
                 );
                 set.spawn(async move {
-                    let page = f
-                        .fetch(&url, FetchFormat::Text, max)
-                        .await
-                        .map_err(|e| e.to_string());
+                    let page = match url::Url::parse(&url) {
+                        Ok(parsed) => match actor.ask(Render(parsed)).await {
+                            Ok(rendered) => {
+                                let truncated = rendered.markdown.chars().count() > max;
+                                let content = if truncated {
+                                    rendered.markdown.chars().take(max).collect()
+                                } else {
+                                    rendered.markdown
+                                };
+                                Ok(FetchResponse {
+                                    url: rendered.url,
+                                    title: rendered.title,
+                                    content,
+                                    truncated,
+                                    took_ms: 0,
+                                })
+                            }
+                            Err(_) => f
+                                .fetch(&url, FetchFormat::Text, max)
+                                .await
+                                .map_err(|e| e.to_string()),
+                        },
+                        Err(_) => f
+                            .fetch(&url, FetchFormat::Text, max)
+                            .await
+                            .map_err(|e| e.to_string()),
+                    };
                     (i, url, page)
                 });
             }
@@ -342,10 +366,11 @@ mod tests {
 
     #[test]
     fn firecrawl_hint_iff_only_builtins() {
-        let ddg = meta("duckduckgo", &[FeatureKind::Answer], false);
+        let google = meta("google", &[FeatureKind::Answer], false);
         assert!(search_description(&[]).ends_with(NO_EXTERNAL_PROVIDER));
-        assert!(search_description(&[ddg]).ends_with(NO_EXTERNAL_PROVIDER));
+        assert!(search_description(&[google]).ends_with(NO_EXTERNAL_PROVIDER));
         let brave = meta("brave", &[FeatureKind::Faq, FeatureKind::News], true);
+        let ddg = meta("duckduckgo", &[FeatureKind::Answer], false);
         let d = search_description(&[ddg, brave]);
         assert!(!d.contains(NO_EXTERNAL_PROVIDER), "{d}");
         assert!(d.contains("fetch_top and rendered fetch are billed by brave."));

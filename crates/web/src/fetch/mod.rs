@@ -94,10 +94,30 @@ impl Fetcher {
     /// # Errors
     /// When the `reqwest` client cannot be built.
     pub fn new(user_agent: &str, max_bytes: usize, max_redirects: usize) -> anyhow::Result<Self> {
+        Self::new_with_timeouts(
+            user_agent,
+            max_bytes,
+            max_redirects,
+            TIMEOUT,
+            CONNECT_TIMEOUT,
+        )
+    }
+
+    /// Like [`Self::new`] with explicit whole-request and connect timeouts.
+    ///
+    /// # Errors
+    /// When the `reqwest` client cannot be built.
+    pub fn new_with_timeouts(
+        user_agent: &str,
+        max_bytes: usize,
+        max_redirects: usize,
+        timeout: Duration,
+        connect_timeout: Duration,
+    ) -> anyhow::Result<Self> {
         let client = reqwest::Client::builder()
             .user_agent(user_agent)
-            .timeout(TIMEOUT)
-            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(timeout)
+            .connect_timeout(connect_timeout)
             .redirect(reqwest::redirect::Policy::none())
             .dns_resolver(ssrf::GuardedResolver)
             .build()?;
@@ -129,6 +149,29 @@ impl Fetcher {
         &self,
         url: &str,
         format: FetchFormat,
+        max_chars: usize,
+    ) -> Result<FetchResponse, FetchError> {
+        self.fetch_kind(url, Some(format), max_chars).await
+    }
+
+    /// GET `url` and return the decoded body without HTML→markdown conversion.
+    /// Tool-sized truncation is the caller's `max_chars`; pass a large value
+    /// for crawl/scrape.
+    ///
+    /// # Errors
+    /// Same as [`Self::fetch`].
+    pub async fn fetch_html(
+        &self,
+        url: &str,
+        max_chars: usize,
+    ) -> Result<FetchResponse, FetchError> {
+        self.fetch_kind(url, None, max_chars).await
+    }
+
+    async fn fetch_kind(
+        &self,
+        url: &str,
+        format: Option<FetchFormat>,
         max_chars: usize,
     ) -> Result<FetchResponse, FetchError> {
         let started = Instant::now();
@@ -175,7 +218,7 @@ impl Fetcher {
         &self,
         mut response: reqwest::Response,
         url: Url,
-        format: FetchFormat,
+        format: Option<FetchFormat>,
         max_chars: usize,
         started: Instant,
     ) -> Result<FetchResponse, FetchError> {
@@ -247,13 +290,19 @@ impl Fetcher {
         let body = String::from_utf8_lossy(&raw);
         let is_html = is_html_type(ct) || (!is_plain_type(ct) && looks_like_html(&body));
         let (title, content) = if is_html {
-            let md = text::html_to_markdown(&body);
-            let title = text::html_title(&body).or_else(|| text::first_heading(&md));
-            let content = match format {
-                FetchFormat::Markdown => md,
-                FetchFormat::Text => text::markdown_to_text(&md),
-            };
-            (title, content)
+            match format {
+                None => (text::html_title(&body), body.to_string()),
+                Some(FetchFormat::Markdown) => {
+                    let md = text::html_to_markdown(&body);
+                    let title = text::html_title(&body).or_else(|| text::first_heading(&md));
+                    (title, md)
+                }
+                Some(FetchFormat::Text) => {
+                    let md = text::html_to_markdown(&body);
+                    let title = text::html_title(&body).or_else(|| text::first_heading(&md));
+                    (title, text::markdown_to_text(&md))
+                }
+            }
         } else {
             (None, body.trim().to_owned())
         };

@@ -129,14 +129,23 @@ agent:
 
 # web:                       # search_web / read_url (design doc 16)
 #   enabled: true
-#   engines: [duckduckgo, wikipedia, arxiv, github]   # keyless built-ins
+#   engines: [google, bing, brave, qwant, wikipedia, arxiv, github]   # keyless built-ins
 #   fetch_max_chars: 4000
 
+# scrape:                    # scrape_url / crawl / map (design doc 38)
+#   concurrency: 5
+#   max_pages: 50
+#   max_depth: 3
+#   same_domain: true
+#   page_timeout_ms: 8000
+#   run_timeout_ms: 60000
+#   robots: true
+
 # search_providers:          # external engines registered with `web` (design doc 16 §3)
-#   firecrawl:               # on by default; needs the `firecrawl` secret (`wth --secret-set firecrawl`; free tier at firecrawl.dev)
-#     base_url: https://api.firecrawl.dev
-#   searxng:
+#   searxng:                 # on by default; keyless in-cluster instance
 #     base_url: http://127.0.0.1:8080
+#   firecrawl:               # optional; needs the `firecrawl` secret (`wth --secret-set firecrawl`)
+#     base_url: https://api.firecrawl.dev
 #   openserp:
 #     base_url: http://127.0.0.1:7000
 #     engines: [google, bing]
@@ -370,6 +379,7 @@ async fn run() -> anyhow::Result<()> {
             Box::new(knowledge::KnowledgePlugin),
             Box::new(web::WebPlugin),
             Box::new(browser::BrowserPlugin),
+            Box::new(scrape::ScrapePlugin),
             Box::new(computer::ComputerPlugin),
             Box::new(artifact::ArtifactPlugin),
             Box::new(search_providers::SearchProvidersPlugin),
@@ -388,6 +398,7 @@ async fn run() -> anyhow::Result<()> {
             Box::new(knowledge::KnowledgePlugin),
             Box::new(web::WebPlugin),
             Box::new(browser::BrowserPlugin),
+            Box::new(scrape::ScrapePlugin),
             Box::new(computer::ComputerPlugin),
             Box::new(artifact::ArtifactPlugin),
             Box::new(search_providers::SearchProvidersPlugin),

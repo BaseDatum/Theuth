@@ -19,7 +19,8 @@ use crate::provider::{
 pub type ProviderMetas = Arc<RwLock<Vec<ProviderMeta>>>;
 
 /// Error text when `Render` finds no rendering provider (16 §5).
-pub const NO_RENDERER: &str = "rendered fetch needs a rendering provider: configure firecrawl or openserp under search_providers";
+pub const NO_RENDERER: &str =
+    "rendered fetch needs a rendering provider: scrape, browser, or firecrawl";
 
 /// The provider registry actor, registered as [`crate::provider::WEB_ACTOR`].
 #[derive(kameo::Actor)]
@@ -150,7 +151,13 @@ impl Message<Render> for WebActor {
     ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        let Some(p) = self.providers.iter().find(|p| p.meta().renders).cloned() else {
+        let Some(p) = self
+            .providers
+            .iter()
+            .find(|p| p.meta().renders && p.meta().name == "scrape")
+            .or_else(|| self.providers.iter().find(|p| p.meta().renders))
+            .cloned()
+        else {
             tx.send(Err(NO_RENDERER.to_owned()));
             return reply;
         };

@@ -36,6 +36,7 @@ export function empty(id: string): SessionSlice {
     browserLive: false,
     artifacts: new Map(),
     progress: new Map(),
+    scrape: new Map(),
     artifactPanel: null,
   }
 }
@@ -221,6 +222,8 @@ export function apply(slice: SessionSlice, e: WireEvent, ctx: Ctx): SessionSlice
       return { ...slice, progress: new Map(slice.progress).set(e.call_id, { ...partialShow(e.args), bytes: e.args.length }) }
     case 'ArtifactShown':
       return { ...slice, artifacts: new Map(slice.artifacts).set(e.call_id, e.artifact), progress: without(slice.progress, e.call_id) }
+    case 'ScrapeProgress':
+      return { ...slice, scrape: new Map(slice.scrape).set(e.call_id, { inflight: e.inflight, done: e.done, limit: e.limit }) }
   }
   const s = closeTail(slice, e)
   const idle = s.running ? 'thinking' : 'idle'

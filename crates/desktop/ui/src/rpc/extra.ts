@@ -134,3 +134,13 @@ export type ToolCallProgress = {
   call_id: string
   args: string
 }
+
+/** Live URLs for one `scrape_url` / `crawl` / `map` call. */
+export type ScrapeProgress = {
+  type: 'ScrapeProgress'
+  session: SessionId
+  call_id: string
+  inflight: string[]
+  done: string[]
+  limit: number
+}

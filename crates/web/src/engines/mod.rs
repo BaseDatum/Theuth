@@ -1,5 +1,6 @@
-//! Keyless built-in engines (design doc 16 §3.2): DuckDuckGo, Wikipedia,
-//! arXiv and GitHub. [`builtin`] constructs one by its config name; the
+//! Keyless built-in engines (design doc 16 §3.2): Google, Bing, Brave and
+//! Qwant SERP scrapes, plus Wikipedia, arXiv and GitHub. DuckDuckGo remains
+//! constructible by name. [`builtin`] constructs one by its config name; the
 //! small HTML/entity helpers every engine's parser needs live here.
 
 use std::collections::HashMap;
@@ -10,17 +11,33 @@ use serde_json::Value;
 use crate::provider::{Provider, ProviderError};
 
 pub mod arxiv;
+pub mod bing;
+pub mod brave;
 pub mod duckduckgo;
 pub mod github;
+pub mod google;
+pub mod qwant;
 pub mod wikipedia;
 
 pub use arxiv::Arxiv;
+pub use bing::Bing;
+pub use brave::Brave;
 pub use duckduckgo::DuckDuckGo;
 pub use github::Github;
+pub use google::Google;
+pub use qwant::Qwant;
 pub use wikipedia::Wikipedia;
 
-/// Names accepted by [`builtin`]; also the default `web.engines` list.
-pub const BUILTIN: &[&str] = &["duckduckgo", "wikipedia", "arxiv", "github"];
+/// Default `web.engines` list. [`builtin`] also constructs `duckduckgo`.
+pub const BUILTIN: &[&str] = &[
+    "google",
+    "bing",
+    "brave",
+    "qwant",
+    "wikipedia",
+    "arxiv",
+    "github",
+];
 
 /// Identifiable user agent for APIs that require one (Wikimedia, GitHub).
 pub const USER_AGENT: &str = "wth/0.1 (+https://github.com/skymoore/wth)";
@@ -30,6 +47,10 @@ pub const USER_AGENT: &str = "wth/0.1 (+https://github.com/skymoore/wth)";
 #[must_use]
 pub fn builtin(name: &str, credentials: &HashMap<String, String>) -> Option<Arc<dyn Provider>> {
     Some(match name {
+        "google" => Arc::new(Google::default()),
+        "bing" => Arc::new(Bing::default()),
+        "brave" => Arc::new(Brave::default()),
+        "qwant" => Arc::new(Qwant::default()),
         "duckduckgo" => Arc::new(DuckDuckGo::default()),
         "wikipedia" => Arc::new(Wikipedia::default()),
         "arxiv" => Arc::new(Arxiv::default()),
@@ -91,7 +112,7 @@ fn strip_tags(input: &str) -> String {
 
 /// Decode the named and numeric entities that search APIs actually emit;
 /// unknown `&…;` sequences are kept verbatim.
-fn decode_entities(input: &str) -> String {
+pub(crate) fn decode_entities(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut rest = input;
     while let Some(amp) = rest.find('&') {

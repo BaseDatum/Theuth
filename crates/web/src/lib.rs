@@ -62,7 +62,7 @@ impl Default for WebConfig {
             timeout_ms: 4000,
             overall_timeout_ms: 6000,
             fetch_max_chars: 4000,
-            fetch_top_chars: 1500,
+            fetch_top_chars: 4000,
             feature_max_chars: 600,
             max_fetch_bytes: 2_097_152,
             max_redirects: 5,

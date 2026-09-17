@@ -110,6 +110,8 @@ export type SessionSlice = {
   /** Tool calls whose arguments are still streaming (`ToolCallProgress`), by `call_id`; cleared on `ToolCallStarted`.
    * `writing` = a `show` call carrying `content` (writing a file) rather than a `path` (showing one). */
   progress: Map<string, { name?: string; writing?: boolean; bytes: number }>
+  /** Live crawl/scrape URLs by `call_id`; kept after finish so the card can show the stack. */
+  scrape: Map<string, { inflight: string[]; done: string[]; limit: number }>
   /** `call_id` of the artifact open in the side panel; `null` when closed. */
   artifactPanel: string | null
 }

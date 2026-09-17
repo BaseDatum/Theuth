@@ -94,6 +94,7 @@ async fn export_bindings() {
         secrets::SecretsList,
         secrets::SecretsEvent,
         secrets::RequestId,
+        scrape::ScrapeProgress,
         surface::Spec,
         surface::Element,
         surface::Component

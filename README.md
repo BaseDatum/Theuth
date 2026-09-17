@@ -62,7 +62,7 @@ output; holds the provider, web and Slack keys too —
 real cookies so the agent acts as the signed-in user; `browser_show` opens a
 live view of the session's browser in the desktop app); one
 isolate per session, screenshots come back as images in the
-tool result — [`docs/design/23-browser.md`](docs/design/23-browser.md)), `computer`
+tool result — [`docs/design/23-browser.md`](docs/design/23-browser.md)), `scrape` (`scrape_url`, `crawl`, `map`: a crawler built on the vendored `firecrawl-native` crate, with `web`'s fetcher and obscura as its two engine tiers — [`docs/design/38-scrape-vendored-crawler.md`](docs/design/38-scrape-vendored-crawler.md)), `computer`
 (eight `computer_*` tools: `computer_screenshot`, `_move`, `_click`, `_drag`,
 `_scroll`, `_type`, `_key`, `_open` — one composite screenshot of every
 display as an image, then native mouse and keyboard on the user's own desktop —
@@ -130,7 +130,7 @@ Config (`~/.wth/`, created on first run; details in
   knowledge:
     enabled: true          # false: no store, no knowledge_* tools, no hints, no harvest
   web:
-    engines: [duckduckgo, wikipedia, arxiv, github]   # keyless; search_web / read_url
+    engines: [google, bing, brave, qwant, wikipedia, arxiv, github]   # keyless; search_web / read_url
   search_providers:
     firecrawl: { enabled: true }   # on by default; active once a `firecrawl` secret is in the vault (free tier at firecrawl.dev)
     # searxng: { base_url: http://127.0.0.1:8080 }
