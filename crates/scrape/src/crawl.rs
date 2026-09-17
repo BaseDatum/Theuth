@@ -7,14 +7,14 @@ use std::time::{Duration, Instant};
 use firecrawl_native::{FilterLinksCall, build_robot, filter_links, process_sitemap};
 use futures::StreamExt;
 use kameo::actor::ActorRef;
-use runtime::Runtime;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use url::Url;
 
+use crate::ProgressCx;
 use crate::engine::Scrape;
-use crate::{ProgressCx, ScrapeProgress};
+use web::progress::report;
 
 /// Token our requests present to `robots.txt` (`User-agent: wth`).
 const ROBOTS_UA: &str = "wth";
@@ -678,26 +678,6 @@ impl HostGate {
         };
         tokio::time::sleep_until(slot.into()).await;
     }
-}
-
-async fn report(
-    rt: Option<&Runtime>,
-    cx: Option<&ProgressCx>,
-    inflight: &[String],
-    done: &[String],
-    limit: usize,
-) {
-    let (Some(rt), Some(cx)) = (rt, cx) else {
-        return;
-    };
-    rt.publish(ScrapeProgress {
-        session: cx.session,
-        call_id: cx.call_id.clone(),
-        inflight: inflight.to_vec(),
-        done: done.to_vec(),
-        limit,
-    })
-    .await;
 }
 
 #[cfg(test)]

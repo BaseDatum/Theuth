@@ -23,10 +23,14 @@ url = { workspace = true }
 html-to-markdown-rs = { workspace = true }
 rand = { workspace = true }
 flate2 = { workspace = true }
+ts-rs = { workspace = true, optional = true }
 
 [dev-dependencies]
 wiremock = { workspace = true }
 figment = { workspace = true }
+
+[features]
+ts = ["dep:ts-rs", "runtime/ts"]
 
 [lints]
 workspace = true

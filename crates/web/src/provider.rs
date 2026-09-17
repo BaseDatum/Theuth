@@ -221,7 +221,7 @@ pub struct ProviderMeta {
     pub features: &'static [FeatureKind],
     /// Implements [`Provider::render`].
     pub renders: bool,
-    /// Hosted and metered: the description says so next to `fetch_top`/`rendered`.
+    /// Hosted and metered: the description says so next to reading hits / `rendered`.
     pub billable: bool,
 }
 

@@ -1,6 +1,6 @@
 import { ChevronDown, Globe, Loader2 } from 'lucide-react'
 import { memo, useMemo, useState } from 'react'
-import { domainOf, uniqueDomains, urlsFromResult } from '@/lib/scrape'
+import { type Source, domainOf, sourcesFromResult, uniqueDomains, urlsFromResult } from '@/lib/scrape'
 import { describe, resultLine } from '@/lib/describe'
 import { cn } from '@/lib/utils'
 import { type Entry, useSessions } from '@/store/sessions'
@@ -55,7 +55,11 @@ function SourceStack({ urls }: { urls: string[] }) {
   )
 }
 
-function label(name: string, done: number, limit: number, running: boolean): string {
+function label(name: string, done: number, limit: number, running: boolean, inflight: number, read: number): string {
+  if (name === 'search_web') {
+    if (running) return done + inflight ? `Reading ${done}/${limit} pages…` : 'Searching…'
+    return `Searched · ${done === 1 ? '1 source' : `${done} sources`}, ${read} read`
+  }
   if (name === 'scrape_url') return running ? 'Reading page' : done ? 'Read page' : 'No page'
   if (name === 'map_site') {
     if (running) return limit ? `Mapping… ${done}/${limit}` : `Mapping… ${done}`
@@ -65,19 +69,43 @@ function label(name: string, done: number, limit: number, running: boolean): str
   return done === 1 ? 'Crawled 1 page' : `Crawled ${done} pages`
 }
 
-/** `crawl` / `map_site` / `scrape_url`: overlapping favicons of in-flight URLs, then a settled stack. */
+function SourceRow({ source, first }: { source: Source; first: boolean }) {
+  const domain = domainOf(source.url)
+  return (
+    <div className={cn('flex items-center gap-2.5 px-3 py-2 transition-colors hover:bg-layer-2', !first && 'border-t border-border-subtle')}>
+      <Favicon domain={domain} className="size-4 shrink-0 rounded-sm" />
+      <a href={source.url} target="_blank" rel="noreferrer" className="min-w-0 flex-1 truncate text-xs font-medium hover:underline">
+        {source.title || source.url.replace(/^https?:\/\//, '')}
+      </a>
+      <span className="shrink-0 text-[11px] text-fg-tertiary">{domain}</span>
+      {source.read && <span className="shrink-0 rounded-md bg-layer-2 px-1.5 py-0.5 text-[11px] text-fg-secondary">read</span>}
+    </div>
+  )
+}
+
+/**
+ * `crawl` / `map_site` / `scrape_url` / `search_web`: overlapping favicons of
+ * in-flight URLs, then a settled stack. `search_web` lists its sources when
+ * expanded, read ones first, above the raw result text.
+ */
 export const ScrapeCard = memo(function ScrapeCard({ tool, session }: { tool: Tool; session: string }) {
   const [expanded, setExpanded] = useState(false)
   const live = useSessions((s) => s.sessions[session]?.scrape.get(tool.callId))
   const lines = useMemo(() => describe(tool.name, tool.args), [tool.name, tool.args])
   const { result } = tool
   const running = tool.pending || !result
-  const parsed = useMemo(() => urlsFromResult(tool.name, result, tool.args), [tool.name, result, tool.args])
+  const sources = useMemo(() => {
+    if (tool.name !== 'search_web') return null
+    const all = sourcesFromResult(result)
+    return [...all.filter((s) => s.read), ...all.filter((s) => !s.read)]
+  }, [tool.name, result])
+  const parsed = useMemo(() => sources?.map((s) => s.url) ?? urlsFromResult(tool.name, result, tool.args), [sources, tool.name, result, tool.args])
   const inflight = running ? (live?.inflight ?? []) : []
   const done = running ? (live?.done ?? []) : parsed
   const limit = live?.limit ?? 0
   const stack = inflight.length ? inflight : done
-  const text = label(tool.name, done.length, limit, running)
+  const read = sources?.filter((s) => s.read).length ?? 0
+  const text = label(tool.name, done.length, limit, running, inflight.length, read)
   const expandable = done.length > 0 || !!result
   return (
     <div className="my-2 min-w-0 rounded-xl border border-border-subtle bg-layer-1 px-4 py-3 text-sm">
@@ -115,7 +143,14 @@ export const ScrapeCard = memo(function ScrapeCard({ tool, session }: { tool: To
           </div>
         )}
       </button>
-      {expanded && done.length > 0 && (
+      {expanded && sources && sources.length > 0 && (
+        <div className="my-2 max-h-[280px] overflow-y-auto rounded-lg border border-border-subtle">
+          {sources.map((s, i) => (
+            <SourceRow key={`${s.url}:${i}`} source={s} first={i === 0} />
+          ))}
+        </div>
+      )}
+      {expanded && !sources && done.length > 0 && (
         <div className="my-2 max-h-[280px] overflow-y-auto rounded-lg border border-border-subtle">
           {done.map((url, i) => {
             const domain = domainOf(url)

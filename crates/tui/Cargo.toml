@@ -17,7 +17,7 @@ link = { workspace = true }
 nodes = { workspace = true }
 schedule = { workspace = true }
 artifact = { workspace = true }
-scrape = { workspace = true }
+web = { workspace = true }
 secrets = { workspace = true }
 jsonrpsee = { workspace = true }
 chrono = { workspace = true }

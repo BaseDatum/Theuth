@@ -1,7 +1,8 @@
 # 16 — Web: search and fetch as a plugin
 
 Status: as-built v0 · 2026-09-12 (draft v0 same day) · revised 2026-09-17
-(keyless SERP engines, `scrape` render provider — §0.4, §3.2, §5, §13.10-14) ·
+(keyless SERP engines, `scrape` render provider — §0.4, §3.2, §5, §13.10-14;
+one-call search: read top hits + relevant passages — §2, §4.7, §5, §13.16) ·
 extends `00-architecture.md` §1, §4, §6; `01-config-and-subagents.md` §1.1;
 `07-context.md` §6 (spill). Source material:
 `../jarvis/crates/jarvis-search` (19,268 lines) and its two `jarvis-agent`
@@ -17,7 +18,8 @@ telling the user how to enable Firecrawl; `"Ada Lovelace"` merges wikipedia
 + duckduckgo (rank 1 `[duckduckgo, wikipedia]`) with a `knowledge_panel`;
 `"uuid"` yields an `answer` plus a knowledge panel; `category: it "tokio"`
 returns GitHub repos, `category: science` arXiv; `site: docs.rs, fetch_top:
-1` appends a `Fetched:` section truncated at 1500 chars; `read_url
+1` appended a `Fetched:` section truncated at 1500 chars (that knob predates
+the 2026-09-17 one-call shape, §13.16); `read_url
 https://example.com/` returns markdown and text; `http://localhost:7799/`
 is `rejected: hostname `localhost` is not allowed`; `rendered: true` with no
 provider errors naming `firecrawl or openserp under search_providers`.
@@ -37,6 +39,15 @@ from the author's network: brave 5 hits + `related`, duckduckgo 5 hits,
 google `Blocked (HTTP 429 sorry)`, qwant `Blocked (captcha)`, bing `Blocked
 (decoy results)` — the last only after `reject_decoys` landed; before it Bing
 returned five confidently unrelated hits (§10).
+
+2026-09-17, later the same day: `search_web` became one call modelled on
+LibreChat's `web_search` (SERP → read the top 5 hits in parallel → the
+passages of each page relevant to the query → one document). The model no
+longer chains `search_web` → `read_url`; the user sees one "Searched the web"
+card listing the sources read. `fetch_top` / `fetch_top_chars` are gone,
+replaced by `read` / `read_top`, `read_chars`, `read_timeout_ms` (§2, §4.7,
+§5, §6, §13.16). Page reading stays in-tree (`scrape` provider), ranking is a
+local BM25 — no external API was added.
 
 ## 0. Decisions in one screen
 
@@ -103,11 +114,28 @@ struct SearchArgs {
     site: Option<String>,           // hostname restriction
     recent: Option<Recency>,        // day | week | month | year (maps to each provider's date filter)
     providers: Option<Vec<String>>, // subset of configured providers; default all for the category
-    fetch_top: Option<u8>,          // 0..=3: inline the cleaned text of the top N results (default 0)
+    read: Option<u8>,               // 0..=8, default web.read_top (5): top hits to read and excerpt; 0 = SERP only
 }
-// -> text: ranked list "1. title — url\n   snippet"; then "Features:" blocks (§4); then
-//    "Fetched:" sections when fetch_top > 0; then "Failed: brave (rate limited)" if any.
-//    structured: SearchResponse (JSON, for RPC/TUI consumers).
+// -> text, exact line shapes (the desktop and TUI parse them):
+//    Searched "<query>": <N> results, <R> pages read, <took>s
+//
+//    ## 1. <title>
+//    <url>
+//    <domain>[ · <published>][ · <providers joined ", "> when >1]
+//    <snippet>
+//    > <excerpt paragraph 1, inner newlines become "\n> ">
+//    > <excerpt 2>
+//
+//    ## 2. <title>
+//    <url>
+//    ...
+//    Every result gets `## n. title` followed immediately by a line that is exactly the URL.
+//    Read pages add blockquoted excerpts (§4.7); a read failure adds `(could not read: <error>)`;
+//    unread hits show only the snippet. Then "Features:" blocks (§4) and "Failed: brave (rate
+//    limited)" as before; nothing at all → "No results.". Whole text capped at 60_000 chars:
+//    excerpts are dropped from the last read pages first (`[N excerpts omitted]`), never inside
+//    a header/URL pair. structured: SearchResponse incl. `pages: Vec<ReadPage { url, title,
+//    excerpts, error, took_ms }>` (always present, empty when read = 0).
 
 // read_url - Risk::ReadOnly
 struct FetchArgs {
@@ -122,7 +150,7 @@ struct FetchArgs {
 Dropped from jarvis's search tool schema (`jarvis-agent/src/tools/web_search.rs:197-329`):
 `snippet_max`, `format`, `lang/language`, `region`, `date` (replaced by
 `recent`), `file`, `start`, `mode`, `features` (always on), `extract*`
-(replaced by `fetch_top`), `min_runes`, `output_format`. Models used
+(replaced by `read`), `min_runes`, `output_format`. Models used
 `query`, `limit`, `site`, `date` in jarvis transcripts; the rest was
 OpenSERP's HTTP API surface, not an agent's.
 
@@ -134,6 +162,17 @@ search tool at all (fetch still registers).
 
 Output goes through the registry's spill (07 §6) like every tool; the
 `max_chars` default keeps fetch under the cap.
+
+The `web` plugin also registers one prompt block (`RegisterPrompt`, plugin
+`web`, `crates/web/src/lib.rs`) so the model treats search as terminal, not
+as step one of a chain: "search_web is the one call for anything current or
+outside your knowledge: it searches, reads the top pages and returns the
+relevant passages, so answer from a single call without preface. Cite as
+markdown links to the URLs it returns. Reach for read_url only when you need
+one specific page in full, scrape_url/crawl for whole sites." The description
+(`search_description`, `tools.rs`) opens the same way and says `read: 0` is
+the cheaper SERP-only pass; when a hosted renderer is the one that reads
+pages it says "reading hits through {names} is billed".
 
 ## 3. Providers
 
@@ -269,6 +308,34 @@ pub struct Feature {
    response shape may have changed)` and logged at `warn` — jarvis's
    roadmap called this `selector_drift` and never built it.
 
+### 4.7 Passage selection (2026-09-17)
+
+`web::excerpt::best_passages(markdown, query, max_chars)`
+(`crates/web/src/excerpt.rs`) picks what the model sees of each read page:
+
+- Units are blank-line paragraphs of the page markdown. Nav / link-list /
+  image-only blocks are dropped, and so is any block whose chars are more
+  than half link targets (reference lists, affiliate rows — Wikipedia's
+  `References` and PCMag's tracking URLs won every BM25 slot in smoke before
+  this rule); link titles (`(url "title")`) and runs of blanks are stripped
+  from every line; a heading is folded into the paragraph that follows it;
+  adjacent short blocks are merged to ≥ ~200 chars; one passage is capped at
+  ~1200 chars with a trailing `…`.
+- Scoring is a local BM25 (k1 1.2, b 0.75) of the paragraph against the query
+  tokens. Passages are taken greedily by score until their total reaches the
+  `read_chars` budget (default 2500, §6), then returned in **document order**
+  so the excerpt reads as the page does, not as a score list.
+- No query token matches anywhere → the leading paragraphs, so a non-blank
+  page never yields an empty excerpt.
+
+Alternative beaten: LibreChat's rerankers. Its `web_search` chunks the page
+150/50 and reranks the chunks with Cohere or Jina — a hosted API and a key,
+which 00 §1 rules out for the default path — and its `none` mode keeps the
+first chunks, which hands the model the top of the page (cookie banner,
+intro) rather than the part that answers the query. BM25 over paragraphs is a
+small keyless function that reads the whole page and picks by relevance —
+the same job the reranker does, minus the API.
+
 ## 5. Fetch
 
 Port `fetch/mod.rs` + `fetch/ssrf.rs` (and the tests) nearly verbatim; they
@@ -304,10 +371,29 @@ are the best-tested part of the crate. `fetch/clean.rs` is replaced by
   separate setting (`browser.allow_private_network`, 23 §0.8) and does not
   loosen this fetcher's. With none registered: `rendered fetch needs a
   rendering provider: scrape, browser, or firecrawl` (`actor.rs:22-23`).
-- `fetch_top` on search (0..=5, `tools.rs:195-200`) sends each of the top N
-  ranked URLs through the same `Render` path concurrently, falling back to a
-  plain text fetch when render fails (`tools.rs:222-262`); each page is capped
-  at `fetch_top_chars` (default 4000, `crates/web/src/lib.rs:65`).
+- `search_web` reads its top `read` hits (0..=8, default `read_top: 5`,
+  `tools.rs`) through the same `Render` path, all pages concurrently, each
+  under `read_timeout_ms` (default 8000): the `scrape` provider's two-tier pick
+  with `only_main_content: true`, so a JS-only hit reads correctly and a static
+  page never opens a browser; a plain markdown fetch is the fallback when
+  render fails, and a page that fails both is reported inline as `(could not
+  read: …)` rather than failing the call. Each page's markdown goes through
+  §4.7 into a `read_chars` budget. While pages are in flight the tool
+  publishes `ScrapeProgress { inflight, done, limit: read }`
+  (`crates/web/src/progress.rs` — moved there from `scrape`, 38 §12.14): once
+  before the SERP with both lists empty ("searching…"), once right after it
+  with the URLs about to be read, then after each page completes, so the
+  frontends show `reading n/N · host` (TUI) and the sources card with read
+  pages first (desktop).
+- **Which hits get a read slot** (found in live smoke 2026-09-17): a hit
+  whose title, snippet and URL together share fewer than two query tokens
+  (one for a one-token query; `excerpt::tokens`, stopwords out) is skipped
+  for reading but stays in the list. Bing's SERP for `best mechanical
+  keyboard 2026` carried `Banco Best` and `Bestway` rows that passed
+  `reject_decoys` (they share `best`); before the rule two of five read slots
+  went to a Portuguese bank. Alternative beaten: dropping such hits from the
+  results — the model can still judge them from the snippet, and the rule is
+  a heuristic that should cost a read, not a result.
 
 ## 6. Config and credentials
 
@@ -320,7 +406,9 @@ web:                          # design doc 16 - built-in engines, fetch, tools
   timeout_ms: 4000            # per provider, built-in or registered
   overall_timeout_ms: 6000
   fetch_max_chars: 4000
-  fetch_top_chars: 4000
+  read_top: 5                 # search_web reads this many top hits (`read` overrides per call)
+  read_chars: 2500            # passage budget per read page (§4.7)
+  read_timeout_ms: 8000       # per-page read deadline
   feature_max_chars: 600
   user_agent: "wth/0.1 (+https://github.com/skymoore/wth)"
 
@@ -378,7 +466,9 @@ crates/web/                       plugin "web" - depends on runtime, tools
   src/provider.rs   Provider trait, ProviderMeta, Query, RawResult, Feature, FeatureKind, Rendered, ProviderError (pub - the contract)
   src/tools.rs      SearchTool, FetchTool (tools::Tool impls, description from the live provider set)
   src/aggregate.rs  fan-out (JoinSet, semaphore 6, per-provider + overall timeout), RRF k=60 α=0.001, feature dedupe/order, zero-yield detector
-  src/render.rs     result list + features -> tool text
+  src/render.rs     result list + read-page excerpts + features -> tool text (§2 shapes, 60k cap)
+  src/excerpt.rs    best_passages: paragraph split, BM25, greedy budget, document order (§4.7)
+  src/progress.rs   ProgressCx, ScrapeProgress, report — the "reading n/N" event shared with `scrape` (38 §6)
   src/fetch/        mod.rs (limits, manual redirects), ssrf.rs (guard + GuardedResolver), text.rs (markdown -> text)
   src/url.rs        canonicalize_url, DisplayUrl (ported normalize/url.rs)
   src/engines/      mod.rs (BUILTIN, Elem class-token scanner, entity decode) google.rs bing.rs brave.rs qwant.rs duckduckgo.rs wikipedia.rs arxiv.rs github.rs
@@ -437,9 +527,11 @@ different reason (§13).
 - **Provider response drift** (Brave/Firecrawl schema versions,
   OpenSERP's `serp_features` shapes): contract tests against dated
   fixtures, and §4.6's zero-yield detector at runtime.
-- **Cost**: Firecrawl bills per search/scrape; `fetch_top` multiplies it.
-  Default `fetch_top: 0`; the description says fetch is billable when the
-  configured rendered provider is hosted.
+- **Cost**: Firecrawl bills per search/scrape; reading the top hits
+  multiplies it. Reading is on by default (`read_top: 5`) because the default
+  renderer is the in-tree `scrape` provider and costs nothing; when a hosted
+  renderer is the one that renders, the description names it as billed
+  ("reading hits through {names} is billed"), and `read: 0` is the cheap pass.
 - **Multi-user (15)**: these tools make network egress from the control
   plane and touch no host state, so they stay control-plane side; the
   provider keys are the operator's.
@@ -458,8 +550,8 @@ Each step leaves `wth` runnable.
    `Feature` rendering. Checked: `"Ada Lovelace"` merges wikipedia +
    duckduckgo with a `knowledge_panel`; `"uuid"` yields an `answer` (DDG
    IA `Answer` - §13; `"2^32"` does not); `category: it "tokio"` → GitHub,
-   `category: science` → arXiv; `fetch_top: 1` appends `Fetched:`. Not
-   checked: network unplugged.
+   `category: science` → arXiv; `fetch_top: 1` appended `Fetched:` (pre-§13.16
+   shape). Not checked: network unplugged.
 3. `search-providers` crate: `brave`, `firecrawl` (search + render),
    `searxng`, `openserp`; registration over the bus; descriptions reflect
    the live set. Checked: wiremock contract test per provider (documented
@@ -477,8 +569,11 @@ Each step leaves `wth` runnable.
 
 1. Default `format` for fetch: markdown (links, more tokens) vs text. Leaning
    markdown; measure token cost on ten typical pages during step 1.
-2. Should `fetch_top` default to 1 when a self-hosted (free) rendered
-   provider is configured? Leaning no: one knob, explicit.
+2. ~~Should `fetch_top` default to 1 when a self-hosted (free) rendered
+   provider is configured?~~ Resolved 2026-09-17 the other way round: reading
+   is on by default (`read_top: 5`) because the default renderer is in-tree
+   and free; hosted renderers are named as billed in the description, and
+   `read: 0` opts out per call (§13.16).
 3. Per-session result cache (same query within a turn is common with
    subagents fanning out): none in v0; add if transcripts show repeats.
 4. `Images` kind: rendered as URLs only; is it worth carrying at all
@@ -531,7 +626,8 @@ Each step leaves `wth` runnable.
     instance or a `brave_api`/`firecrawl` secret adds SERP features
     (`crates/web/src/tools.rs:25`; appended only when no provider came from
     outside `BUILTIN`, `tools.rs:126-130`).
-11. **`fetch_top` is 0..=5 and goes through `Render`.** Draft: 0..=3, plain
+11. **`fetch_top` is 0..=5 and goes through `Render`** (superseded by §13.16
+    the same day: `fetch_top` is gone). Draft: 0..=3, plain
     fetch, 1500 chars. Built: `fetch_top` 0..=5 (`tools.rs:195-200`), each URL
     through `WebActor::Render` — the `scrape` provider's two-tier pick, so a
     JS-only hit reads correctly — with a plain text fetch as fallback
@@ -556,3 +652,23 @@ Each step leaves `wth` runnable.
 15. **SearXNG is opt-in.** Draft §5 of 38 made it the first provider; built
     with no default block (`search-providers/src/lib.rs:40`) once the in-tree
     engines covered `general` without a sidecar.
+16. **One-call search: read top hits + relevant passages** (2026-09-17).
+    `fetch_top` (arg), `fetch_top_chars` (config) and the `Fetched:` section
+    are removed, no alias. `SearchArgs.read` (0..=8, default `read_top: 5`)
+    reads the top hits through `Render` concurrently under `read_timeout_ms`,
+    runs each page through `excerpt::best_passages` (§4.7) into `read_chars`,
+    and renders every hit as `## n. title` / URL / domain·date·providers /
+    snippet / `> excerpt…` (§2), capped at 60k chars with excerpts dropped
+    from the last read pages first. `SearchResponse.pages: Vec<ReadPage>`
+    carries the same for RPC consumers; `ScrapeProgress` (now
+    `crates/web/src/progress.rs`) drives the "reading n/N" card; a `web`
+    prompt block tells the model to answer from the one call and cite the
+    URLs. Modelled on LibreChat's `web_search` (SERP → scrape top 5 → rerank
+    → highlights → one formatted document). Alternatives beaten: (a) keeping
+    `fetch_top` off by default and letting the model chain `search_web` →
+    `read_url` — two or more round trips per question and a page pick the
+    model makes from a snippet; (b) Firecrawl for the reads and Cohere/Jina
+    for ranking as LibreChat does — external APIs for the default path (00
+    §1); (c) inlining whole pages as `fetch_top` did — 4000 chars of page top
+    per hit, mostly chrome, where 2500 chars of ranked passages carry the
+    part that answers the query.

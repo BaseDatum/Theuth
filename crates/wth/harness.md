@@ -55,7 +55,7 @@ tools:
   policy: {read_only: allow, mutating: ask, destructive: ask}   # allow | ask | deny per risk
   approvals: true                      # false: never prompt (`/approvals off always` writes this)
 rpc: {listen: 127.0.0.1:7777}
-web: {enabled: true, engines: [google, bing, brave, qwant, duckduckgo, wikipedia, arxiv, github], fetch_max_chars: 4000}
+web: {enabled: true, engines: [google, bing, brave, qwant, duckduckgo, wikipedia, arxiv, github], fetch_max_chars: 4000, read_top: 5}
 search_providers: {firecrawl: {base_url: https://api.firecrawl.dev}}   # key = the `firecrawl` secret in the vault
 secrets: {key_store: auto, tools: true, request_timeout_secs: 1800}   # encrypted vault; key_store auto = OS keychain, else secrets.key; tools false = no secret_* tools and `{{secret:…}}` stays literal (37)
 knowledge: {enabled: true}

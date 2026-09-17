@@ -1,7 +1,9 @@
-//! Tool text (design doc 16 §2, §4.4): ranked list, then `Features:` blocks in
-//! [`FeatureKind::ORDER`] each capped at `feature_max_chars`, then `Fetched:`
-//! pages, then one `Failed:` line. The same data goes out as JSON in
-//! `ToolOutput::structured`; this is the model-facing half.
+//! Tool text (design doc 16 §2, §4.4): a `Searched …` header, one `## n. title`
+//! / URL section per hit with the excerpts of the pages that were read, then
+//! `Features:` blocks in [`FeatureKind::ORDER`] each capped at
+//! `feature_max_chars`, then one `Failed:` line. The desktop and TUI parse the
+//! header/URL pairs, so the line shapes here are a contract. The same data
+//! goes out as JSON in `ToolOutput::structured`; this is the model-facing half.
 
 use std::fmt::Write as _;
 
@@ -51,27 +53,77 @@ fn feature_block(f: &Feature) -> String {
     s
 }
 
-/// The `search_web` text. `fetched` pairs each top URL with its page text or
-/// the failure to fetch it.
+/// Cap on the whole `search_web` text; over it, excerpts of the last read
+/// pages are dropped first.
+pub const SEARCH_MAX_CHARS: usize = 60_000;
+
+/// Host of `url` without a leading `www.`; the URL itself when it does not parse.
+fn domain(url: &str) -> String {
+    url::Url::parse(url)
+        .ok()
+        .and_then(|u| {
+            u.host_str()
+                .map(|h| h.trim_start_matches("www.").to_owned())
+        })
+        .unwrap_or_else(|| url.to_owned())
+}
+
+/// The `search_web` text: header, ranked sections with excerpts for the hits
+/// in `resp.pages`, features, failures; at most [`SEARCH_MAX_CHARS`].
 #[must_use]
-pub fn search_text(
-    resp: &SearchResponse,
-    feature_max_chars: usize,
-    fetched: &[(String, Result<FetchResponse, String>)],
-) -> String {
-    let mut s = String::new();
+pub fn search_text(resp: &SearchResponse, feature_max_chars: usize) -> String {
+    let mut keep = resp.pages.len();
+    loop {
+        let s = render_search(resp, feature_max_chars, keep);
+        if keep == 0 || s.chars().count() <= SEARCH_MAX_CHARS {
+            return s;
+        }
+        keep -= 1;
+    }
+}
+
+/// `keep`: how many of `resp.pages` (rank order) show their excerpts; the rest
+/// get an `[N excerpts omitted]` line instead.
+fn render_search(resp: &SearchResponse, feature_max_chars: usize, keep: usize) -> String {
+    let read = resp.pages.iter().filter(|p| p.error.is_none()).count();
+    let mut s = format!(
+        "Searched \"{}\": {} results, {} pages read, {}.{}s\n",
+        resp.query,
+        resp.results.len(),
+        read,
+        resp.took_ms / 1000,
+        resp.took_ms % 1000 / 100
+    );
     for r in &resp.results {
-        let _ = write!(s, "{}. {} — {}", r.rank, r.title.trim(), r.url);
+        s.push('\n');
+        let _ = writeln!(s, "## {}. {}", r.rank, r.title.trim());
+        let _ = writeln!(s, "{}", r.url);
+        s.push_str(&domain(&r.url));
+        if let Some(p) = r.published.as_deref().filter(|p| !p.trim().is_empty()) {
+            let _ = write!(s, " · {}", p.trim());
+        }
         if r.providers.len() > 1 {
-            let _ = write!(s, " [{}]", r.providers.join(", "));
+            let _ = write!(s, " · {}", r.providers.join(", "));
         }
         s.push('\n');
         if !r.snippet.trim().is_empty() {
-            let _ = writeln!(s, "   {}", r.snippet.trim());
+            let _ = writeln!(s, "{}", r.snippet.trim());
+        }
+        let Some((i, page)) = resp.pages.iter().enumerate().find(|(_, p)| p.url == r.url) else {
+            continue;
+        };
+        if let Some(e) = &page.error {
+            let _ = writeln!(s, "(could not read: {e})");
+        } else if i < keep {
+            for ex in &page.excerpts {
+                let _ = writeln!(s, "> {}", ex.trim().replace('\n', "\n> "));
+            }
+        } else if !page.excerpts.is_empty() {
+            let _ = writeln!(s, "[{} excerpts omitted]", page.excerpts.len());
         }
     }
     if resp.results.is_empty() && resp.features.is_empty() {
-        s.push_str("No results.\n");
+        s.push_str("\nNo results.\n");
     }
     if !resp.features.is_empty() {
         s.push_str("\nFeatures:\n");
@@ -80,24 +132,6 @@ pub fn search_text(
                 s.push_str(&cap(&feature_block(f), feature_max_chars));
                 s.push('\n');
             }
-        }
-    }
-    if !fetched.is_empty() {
-        s.push_str("\nFetched:\n");
-        for (url, page) in fetched {
-            let _ = writeln!(s, "## {url}");
-            match page {
-                Ok(p) => {
-                    s.push_str(p.content.trim());
-                    if p.truncated {
-                        s.push_str(" […]");
-                    }
-                }
-                Err(e) => {
-                    let _ = write!(s, "(fetch failed: {e})");
-                }
-            }
-            s.push('\n');
         }
     }
     if !resp.failed.is_empty() {
@@ -130,20 +164,41 @@ pub fn fetch_text(r: &FetchResponse) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::aggregate::RankedResult;
+    use crate::aggregate::{RankedResult, ReadPage};
     use crate::provider::FeatureItem;
+
+    fn hit(rank: u32, title: &str, url: &str, snippet: &str) -> RankedResult {
+        RankedResult {
+            rank,
+            title: title.into(),
+            url: url.into(),
+            snippet: snippet.into(),
+            providers: vec!["a".into()],
+            published: None,
+        }
+    }
+
+    fn page(url: &str, excerpts: &[&str]) -> ReadPage {
+        ReadPage {
+            url: url.into(),
+            title: None,
+            excerpts: excerpts.iter().map(|e| (*e).to_owned()).collect(),
+            error: None,
+            took_ms: 0,
+        }
+    }
 
     fn resp() -> SearchResponse {
         SearchResponse {
             query: "q".into(),
-            took_ms: 1,
+            took_ms: 1900,
             results: vec![RankedResult {
                 rank: 1,
                 title: "Rust".into(),
-                url: "https://rust-lang.org/".into(),
+                url: "https://www.rust-lang.org/".into(),
                 snippet: "A language".into(),
                 providers: vec!["a".into(), "b".into()],
-                published: None,
+                published: Some("2026-01-02".into()),
             }],
             features: vec![
                 Feature {
@@ -164,39 +219,94 @@ mod tests {
             ],
             ok: vec!["a".into(), "b".into()],
             failed: vec![("c".into(), "rate limited".into())],
+            pages: Vec::new(),
         }
     }
 
     #[test]
-    fn sections_in_order_and_feature_capped() {
-        let s = search_text(&resp(), 20, &[]);
+    fn header_sections_features_failed_in_order() {
+        let s = search_text(&resp(), 20);
+        assert!(
+            s.starts_with(
+                "Searched \"q\": 1 results, 0 pages read, 1.9s\n\n## 1. Rust\nhttps://www.rust-lang.org/\nrust-lang.org · 2026-01-02 · a, b\nA language\n\nFeatures:\n"
+            ),
+            "{s}"
+        );
         let answer = s.find("[answer]").expect("answer");
         let related = s.find("[related]").expect("related");
         assert!(answer < related, "answer renders before related");
-        assert!(s.starts_with("1. Rust — https://rust-lang.org/ [a, b]\n   A language"));
         assert!(s.ends_with("Failed: c (rate limited)"));
         let line = s.lines().find(|l| l.contains("[answer]")).expect("line");
         assert!(line.ends_with('…') && line.chars().count() <= 21, "{line}");
     }
 
     #[test]
-    fn fetched_pages_and_failures_inline() {
-        let page = FetchResponse {
-            url: "https://a".into(),
-            title: None,
-            content: "body".into(),
-            truncated: false,
-            took_ms: 0,
-        };
-        let s = search_text(
-            &resp(),
-            600,
-            &[
-                ("https://a".into(), Ok(page)),
-                ("https://b".into(), Err("boom".into())),
-            ],
+    fn read_pages_quote_excerpts_and_failures_say_so() {
+        let mut r = resp();
+        r.features.clear();
+        r.failed.clear();
+        r.results = vec![
+            hit(1, "A", "https://a.example/", "sa"),
+            hit(2, "B", "https://b.example/", "sb"),
+            hit(3, "C", "https://c.example/", "sc"),
+        ];
+        r.pages = vec![
+            page("https://a.example/", &["first para", "second\nline"]),
+            ReadPage {
+                error: Some("timed out".into()),
+                ..page("https://b.example/", &[])
+            },
+        ];
+        let s = search_text(&r, 600);
+        assert_eq!(
+            s,
+            "Searched \"q\": 3 results, 1 pages read, 1.9s\n\
+             \n## 1. A\nhttps://a.example/\na.example\nsa\n> first para\n> second\n> line\n\
+             \n## 2. B\nhttps://b.example/\nb.example\nsb\n(could not read: timed out)\n\
+             \n## 3. C\nhttps://c.example/\nc.example\nsc"
         );
-        assert!(s.contains("Fetched:\n## https://a\nbody\n## https://b\n(fetch failed: boom)"));
+    }
+
+    #[test]
+    fn over_cap_drops_last_pages_excerpts_first() {
+        let mut r = resp();
+        r.features.clear();
+        r.failed.clear();
+        r.results = vec![
+            hit(1, "A", "https://a.example/", ""),
+            hit(2, "B", "https://b.example/", ""),
+        ];
+        let big_a = "a".repeat(40_000);
+        let big_b = "b".repeat(30_000);
+        r.pages = vec![
+            page("https://a.example/", &[&big_a]),
+            page("https://b.example/", &[&big_b, "tail"]),
+        ];
+        let s = search_text(&r, 600);
+        assert!(s.chars().count() <= SEARCH_MAX_CHARS);
+        assert!(
+            s.contains(&format!("> {big_a}\n")),
+            "first page keeps its excerpt"
+        );
+        assert!(!s.contains(&big_b), "last page loses its excerpts");
+        assert!(
+            s.ends_with("## 2. B\nhttps://b.example/\nb.example\n[2 excerpts omitted]"),
+            "{}",
+            &s[s.len() - 80..]
+        );
+    }
+
+    #[test]
+    fn nothing_found_says_no_results() {
+        let r = SearchResponse {
+            query: "q".into(),
+            took_ms: 40,
+            ..SearchResponse::default()
+        };
+        assert_eq!(
+            search_text(&r, 600),
+            "Searched \"q\": 0 results, 0 pages read, 0.0s\n\nNo results."
+        );
     }
 
     #[test]

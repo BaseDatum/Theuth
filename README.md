@@ -78,7 +78,8 @@ puts one or more multiple-choice questions to the user — pick, type your own,
 skip one, or dismiss the set to end the turn — in the TUI, the desktop app, a
 Slack thread (Block Kit) or over Signal one question at a time), `web` (`search_web` and
 `read_url`: SSRF-guarded fetch, keyless google/bing/brave/qwant/wikipedia/arxiv/github
-merged by RRF with SERP features — [`docs/design/16-web.md`](docs/design/16-web.md)),
+merged by RRF with SERP features; `search_web` also reads the top hits and returns
+the passages relevant to the query in the same call — [`docs/design/16-web.md`](docs/design/16-web.md)),
 `search-providers` (optional Firecrawl, SearXNG, OpenSERP, Brave API as `brave_api`; registered with `web`
 over the bus), `acp` (external
 harnesses over the Agent Client Protocol: agents.yaml, registry, harness

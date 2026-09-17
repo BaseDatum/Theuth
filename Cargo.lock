@@ -11936,7 +11936,6 @@ dependencies = [
  "runtime",
  "schedule",
  "schemars 1.2.2",
- "scrape",
  "secrets",
  "serde",
  "serde_json",
@@ -11950,6 +11949,7 @@ dependencies = [
  "tracing",
  "ts-rs",
  "uuid",
+ "web",
 ]
 
 [[package]]
@@ -12703,7 +12703,6 @@ dependencies = [
  "tokio",
  "tools",
  "tracing",
- "ts-rs",
  "url",
  "uuid",
  "web",
@@ -15806,7 +15805,6 @@ dependencies = [
  "rpc",
  "runtime",
  "schedule",
- "scrape",
  "secrets",
  "serde_json",
  "sha2 0.10.9",
@@ -15814,6 +15812,7 @@ dependencies = [
  "tokio",
  "tools",
  "tracing",
+ "web",
 ]
 
 [[package]]
@@ -17432,6 +17431,7 @@ dependencies = [
  "tokio",
  "tools",
  "tracing",
+ "ts-rs",
  "url",
  "wiremock",
 ]

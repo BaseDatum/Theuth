@@ -16,7 +16,6 @@ use link::LinkEvent;
 use nodes::NodeEvent;
 use runtime::Runtime;
 use schedule::ScheduleEvent;
-use scrape::ScrapeProgress;
 use secrets::SecretsEvent;
 use serde::Serialize;
 use signal::SignalEvent;
@@ -25,6 +24,7 @@ use tokio::sync::broadcast;
 use tools::{
     ApprovalRequested, ApprovalResolved, AskRequested, AskResolved, JobEvent, McpProgress,
 };
+use web::progress::ScrapeProgress;
 
 /// One serialized event; shared across every subscription without copying.
 pub type Event = Arc<serde_json::Value>;

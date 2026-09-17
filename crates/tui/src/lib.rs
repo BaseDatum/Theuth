@@ -69,7 +69,7 @@ impl runtime::Plugin for TuiPlugin {
         rt.subscribe::<Bridge, artifact::ArtifactShown>(&bridge)
             .await;
         rt.subscribe::<Bridge, secrets::SecretsEvent>(&bridge).await;
-        rt.subscribe::<Bridge, scrape::ScrapeProgress>(&bridge)
+        rt.subscribe::<Bridge, web::progress::ScrapeProgress>(&bridge)
             .await;
         let api = Arc::new(Server::new(rt.clone()));
         tokio::spawn(run_commands(api, commands_rx, events_tx));
@@ -143,7 +143,7 @@ forward!(
     nodes::NodeEvent => NodeEvent,
     artifact::ArtifactShown => ArtifactShown,
     secrets::SecretsEvent => SecretsEvent,
-    scrape::ScrapeProgress => ScrapeProgress,
+    web::progress::ScrapeProgress => ScrapeProgress,
 );
 
 /// The one place commands become `rpc::Api` calls. Each command runs in its

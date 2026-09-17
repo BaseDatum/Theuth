@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { domainOf, uniqueDomains, urlsFromResult } from './scrape'
+import { domainOf, sourcesFromResult, uniqueDomains, urlsFromResult } from './scrape'
 
 test('domainOf strips www and scheme', () => {
   expect(domainOf('https://www.example.com/docs')).toBe('example.com')
@@ -49,4 +49,56 @@ test('scrape_url: args.url, never the markdown', () => {
 test('error or pending result yields nothing', () => {
   expect(urlsFromResult('scrape_url', { output: 'fetch failed', isError: true }, { url: 'https://seed.example/p' })).toEqual([])
   expect(urlsFromResult('crawl', undefined, { url: 'https://seed.example' })).toEqual([])
+})
+
+const SEARCH = [
+  'Searched "rust async": 3 results, 2 pages read, 1.2s',
+  '',
+  '## 1. Async Book',
+  'https://rust-lang.github.io/async-book/',
+  'rust-lang.github.io',
+  'The async book.',
+  '> Futures are lazy.',
+  '> They do nothing until polled.',
+  '',
+  '## 2. Tokio',
+  'https://tokio.rs/',
+  'tokio.rs',
+  'A runtime.',
+  '(could not read: timeout)',
+  '',
+  '## 3. Blog post',
+  'https://example.com/post?x=1',
+  'example.com · 2024-01-02',
+  'Snippet only.',
+  '> Excerpt.',
+  '',
+  'Features:',
+  '> not a source',
+].join('\n')
+
+test('search_web: header + URL pairs, read when the section has a blockquote', () => {
+  expect(sourcesFromResult(ok(SEARCH))).toEqual([
+    { url: 'https://rust-lang.github.io/async-book/', title: 'Async Book', read: true },
+    { url: 'https://tokio.rs/', title: 'Tokio', read: false },
+    { url: 'https://example.com/post?x=1', title: 'Blog post', read: true },
+  ])
+  expect(urlsFromResult('search_web', ok(SEARCH), { query: 'rust async' })).toEqual([
+    'https://rust-lang.github.io/async-book/',
+    'https://tokio.rs/',
+    'https://example.com/post?x=1',
+  ])
+})
+
+test('search_web: error result yields nothing', () => {
+  expect(sourcesFromResult({ output: SEARCH, isError: true })).toEqual([])
+  expect(sourcesFromResult(undefined)).toEqual([])
+})
+
+test('search_web: header without a URL line is skipped and closes the previous section', () => {
+  const body = ['## 1. Real', 'https://a.example/', '## 2. Orphan', 'no url here', '> stray quote', '## 3. Next', 'https://b.example/'].join('\n')
+  expect(sourcesFromResult(ok(body))).toEqual([
+    { url: 'https://a.example/', title: 'Real', read: false },
+    { url: 'https://b.example/', title: 'Next', read: false },
+  ])
 })

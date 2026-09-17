@@ -131,6 +131,9 @@ agent:
 #   enabled: true
 #   engines: [google, bing, brave, qwant, duckduckgo, wikipedia, arxiv, github]   # keyless built-ins
 #   fetch_max_chars: 4000
+#   read_top: 5              # search_web reads this many top hits
+#   read_chars: 2500         # passage budget per read page
+#   read_timeout_ms: 8000
 
 # scrape:                    # scrape_url / crawl / map_site (design doc 38)
 #   concurrency: 5

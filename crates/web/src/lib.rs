@@ -1,13 +1,17 @@
 //! Web search and fetch (design doc 16). `WebPlugin` reads the `web` config
 //! section, spawns the provider registry actor ([`actor::WebActor`] as
-//! [`provider::WEB_ACTOR`]), and registers `search_web` / `read_url` on the
-//! tool registry. External providers arrive over the bus
-//! ([`provider::RegisterProvider`]) from the `search-providers` plugin.
+//! [`provider::WEB_ACTOR`]), and registers `search_web` (SERP plus the
+//! query-relevant passages of the top hits, read in one call) and `read_url`
+//! on the tool registry, with the plugin's prompt block. External providers
+//! arrive over the bus ([`provider::RegisterProvider`]) from the
+//! `search-providers` plugin.
 
 pub mod actor;
 pub mod aggregate;
 pub mod engines;
+pub mod excerpt;
 pub mod fetch;
+pub mod progress;
 pub mod provider;
 pub mod render;
 pub mod tools;
@@ -23,7 +27,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use ::tools::{REGISTRY_ACTOR, RegisterTool, ToolRegistry};
+use ::tools::{REGISTRY_ACTOR, RegisterPrompt, RegisterTool, ToolRegistry};
 use kameo::actor::Spawn;
 use runtime::Runtime;
 use serde::{Deserialize, Serialize};
@@ -42,8 +46,12 @@ pub struct WebConfig {
     pub overall_timeout_ms: u64,
     /// Default `max_chars` of `read_url`.
     pub fetch_max_chars: usize,
-    /// Per-page cap for `fetch_top`.
-    pub fetch_top_chars: usize,
+    /// Top hits `search_web` reads and excerpts by default (the `read` argument).
+    pub read_top: usize,
+    /// Passage budget in characters per read page.
+    pub read_chars: usize,
+    /// Per-page read deadline for `search_web`.
+    pub read_timeout_ms: u64,
     /// Per-feature cap in the search text (16 §4.4).
     pub feature_max_chars: usize,
     /// Body cap of the fetcher.
@@ -62,7 +70,9 @@ impl Default for WebConfig {
             timeout_ms: 4000,
             overall_timeout_ms: 6000,
             fetch_max_chars: 4000,
-            fetch_top_chars: 4000,
+            read_top: 5,
+            read_chars: 2500,
+            read_timeout_ms: 8000,
             feature_max_chars: 600,
             max_fetch_bytes: 2_097_152,
             max_redirects: 5,
@@ -145,6 +155,7 @@ impl runtime::Plugin for WebPlugin {
                         fetcher: Arc::clone(&fetcher),
                         providers: Arc::clone(&metas),
                         cfg: cfg.clone(),
+                        rt: Some(rt.clone()),
                     })))
                     .await;
                 let _ = reg
@@ -154,6 +165,12 @@ impl runtime::Plugin for WebPlugin {
                         providers: metas,
                         cfg,
                     })))
+                    .await;
+                let _ = reg
+                    .ask(RegisterPrompt {
+                        plugin: "web",
+                        text: tools::PROMPT.to_owned(),
+                    })
                     .await;
             }
         });

@@ -199,8 +199,9 @@ fallback when `scrape` is disabled, and Firecrawl / OpenSERP remain optional
 renderers behind `search_providers` (`crates/search-providers/src/firecrawl.rs:219`,
 `openserp.rs:215`). With none: `rendered fetch needs a rendering provider:
 scrape, browser, or firecrawl` (`actor.rs:22-23`). Consumers: `read_url
-{rendered: true}` (`crates/web/src/tools.rs:313-319`) and `search_web
-{fetch_top}` (`tools.rs:222-262`, fetch fallback when render fails).
+{rendered: true}` (`crates/web/src/tools.rs:313-319`) and `search_web`, which
+reads its top `read` hits (default 5) through this provider in one call, with
+a plain markdown fetch as fallback when render fails (16 §5, §4.7).
 
 Search: provider order is `web`'s built-ins (`engines/mod.rs:32-40`) → whatever
 `search-providers` registers (`brave_api`, `firecrawl`, `searxng`, `openserp`,
@@ -250,8 +251,10 @@ scrape:
 ```
 
 Event: `ScrapeProgress { session, call_id, inflight: [url], done: [url],
-limit }` (`lib.rs:32-46`), published after every batch change
-(`crawl.rs:673-691`), forwarded by the RPC bridge (`crates/rpc/src/bridge.rs:101,136`)
+limit }` — since 2026-09-17 defined in `crates/web/src/progress.rs` (with
+`ProgressCx` and `report`), not in `scrape`, so `search_web` publishes the same
+event while it reads its top hits (§12.14); `crawl` publishes it after every
+batch change (`crawl.rs`), forwarded by the RPC bridge (`crates/rpc/src/bridge.rs:101,136`)
 and exported to TS (`crates/rpc/src/export.rs:97`). Surfaces: the desktop
 `ScrapeCard` (`crates/desktop/ui/src/components/chat/ScrapeCard.tsx:69-81`:
 stacked host avatars of in-flight URLs, `Crawling… n/limit`, expandable list of
@@ -421,3 +424,9 @@ Review findings that changed the design between draft and HEAD:
 13. **`search_web`'s description lists searching providers only** — render-only
    `scrape`/`browser` (empty `categories`) showed up as `scrape ()` in the
    model-facing text (`web/src/tools.rs` `search_description`).
+14. **Progress event moved to `web`** (2026-09-17). `ScrapeProgress`,
+   `ProgressCx` and `report` live in `crates/web/src/progress.rs`; `scrape`
+   imports them. `search_web` publishes the event with `limit` = number of
+   hits it reads, so the desktop `ScrapeCard` and the TUI row show `reading
+   n/N` for a search exactly as for a crawl. Alternative beaten: a second
+   event type per tool — one card in every frontend needs one event.

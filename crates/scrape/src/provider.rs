@@ -1,5 +1,5 @@
 //! Local `web::Provider` with `renders: true` so `read_url {rendered: true}`
-//! and `search_web {fetch_top}` resolve in-process (38 §5).
+//! and `search_web`'s top-hit reads resolve in-process (38 §5).
 
 use std::sync::Arc;
 
@@ -48,7 +48,7 @@ impl Provider for ScrapeProvider {
     ) -> Result<Rendered, ProviderError> {
         let page = self
             .scrape
-            .fetch_page(url, false, false)
+            .fetch_page(url, false, true)
             .await
             .map_err(|e| ProviderError::Http(e.to_string()))?;
         Ok(Rendered {

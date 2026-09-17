@@ -149,7 +149,7 @@ pub enum UiEvent {
     /// A `show` call produced a file (bus event, design doc 35).
     ArtifactShown(artifact::ArtifactShown),
     /// Live URLs of a `crawl` / `map_site` / `scrape_url` call (bus event, design doc 38).
-    ScrapeProgress(scrape::ScrapeProgress),
+    ScrapeProgress(web::progress::ScrapeProgress),
     /// Reply to [`Command::ListArtifacts`]: the session subtree's artifacts, newest first;
     /// `pick` opens the `/artifacts` menu, else the rows only join their `show` cards.
     Artifacts {
@@ -5531,8 +5531,9 @@ pub fn progress_line(tool: &str, p: &Progress) -> String {
 /// The spinner row of a running scrape tool from its latest `ScrapeProgress`
 /// (design doc 38): `crawling… 3/50 · example.com` (host of the first URL in
 /// flight), `mapping… 120/500` for `map_site`, `reading example.com…` for
-/// `scrape_url`; `running <tool>…` for anything else.
-pub fn scrape_line(tool: &str, p: &scrape::ScrapeProgress) -> String {
+/// `scrape_url`, `searching…` then `reading 2/5 · example.com` for
+/// `search_web` (16 §2); `running <tool>…` for anything else.
+pub fn scrape_line(tool: &str, p: &web::progress::ScrapeProgress) -> String {
     let at = p.inflight.first().or(p.done.last()).map_or("", |u| host(u));
     let n = p.done.len();
     match tool.strip_prefix("↳ ").unwrap_or(tool) {
@@ -5540,6 +5541,8 @@ pub fn scrape_line(tool: &str, p: &scrape::ScrapeProgress) -> String {
         "crawl" => format!("crawling… {n}/{} · {at}", p.limit),
         "map_site" => format!("mapping… {n}/{}", p.limit),
         "scrape_url" => format!("reading {at}…"),
+        "search_web" if at.is_empty() => "searching…".to_owned(),
+        "search_web" => format!("reading {n}/{} · {at}", p.limit),
         _ => format!("running {tool}…"),
     }
 }
@@ -8292,7 +8295,7 @@ mod tests {
             name: "crawl".into(),
             args: serde_json::json!({"url": "https://example.com"}),
         });
-        let ev = |session| scrape::ScrapeProgress {
+        let ev = |session| web::progress::ScrapeProgress {
             session,
             call_id: "c1".into(),
             inflight: vec!["https://example.com/docs/a".into()],
@@ -8319,6 +8322,16 @@ mod tests {
         );
         assert_eq!(scrape_line("↳ map_site", &ev(s)), "mapping… 2/50");
         assert_eq!(scrape_line("scrape_url", &ev(s)), "reading example.com…");
+        assert_eq!(
+            scrape_line("search_web", &ev(s)),
+            "reading 2/50 · example.com"
+        );
+        let idle = web::progress::ScrapeProgress {
+            inflight: vec![],
+            done: vec![],
+            ..ev(s)
+        };
+        assert_eq!(scrape_line("search_web", &idle), "searching…");
         m.apply_agent(AgentEvent::ToolCallFinished {
             session: s,
             turn,

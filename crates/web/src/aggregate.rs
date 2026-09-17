@@ -45,6 +45,22 @@ pub struct RankedResult {
     pub published: Option<String>,
 }
 
+/// One top hit `search_web` read: the passages of its page most relevant to
+/// the query, or why it could not be read.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ReadPage {
+    /// The hit's URL as searched (joins [`RankedResult::url`]).
+    pub url: String,
+    /// Page title when the read produced one.
+    pub title: Option<String>,
+    /// Query-relevant paragraphs in document order; empty on failure.
+    pub excerpts: Vec<String>,
+    /// Why the page could not be read.
+    pub error: Option<String>,
+    /// Wall time of the read in milliseconds.
+    pub took_ms: u64,
+}
+
 /// What one search produced; the `structured` half of the tool output.
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct SearchResponse {
@@ -60,6 +76,8 @@ pub struct SearchResponse {
     pub ok: Vec<String>,
     /// `(provider, why)` for every provider that did not, sorted.
     pub failed: Vec<(String, String)>,
+    /// Top hits read by the tool, in rank order; empty from [`search`] and when `read: 0`.
+    pub pages: Vec<ReadPage>,
 }
 
 /// Raw outcome of [`fan_out`], before merging.
@@ -442,5 +460,6 @@ pub async fn search(
         features: merge_features(outcome.features, &order),
         ok: outcome.ok,
         failed: outcome.failed,
+        pages: Vec::new(),
     })
 }

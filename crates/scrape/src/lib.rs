@@ -6,9 +6,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ::tools::{REGISTRY_ACTOR, ToolRegistry};
-use runtime::{Runtime, SessionId};
+use runtime::Runtime;
 use serde::{Deserialize, Serialize};
 use web::fetch::Fetcher;
+pub(crate) use web::progress::ProgressCx;
 
 mod crawl;
 mod engine;
@@ -17,33 +18,6 @@ mod tools;
 
 pub use crawl::{CrawlOpts, MapHit, Page, SitemapMode};
 pub use engine::Scrape;
-
-/// Joins a [`ScrapeProgress`] to the tool call that is fetching; `None` in
-/// library use (no events).
-#[derive(Clone, Debug)]
-pub struct ProgressCx {
-    /// Owning session.
-    pub session: SessionId,
-    /// Provider call id (`ToolCallStarted.call_id`).
-    pub call_id: String,
-}
-
-/// Live URLs for one scrape/crawl/map call. Wire `{ "type": "ScrapeProgress", … }`.
-#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
-#[serde(tag = "type")]
-pub struct ScrapeProgress {
-    /// Owning session.
-    pub session: SessionId,
-    /// The tool call (joins the card).
-    pub call_id: String,
-    /// URLs in the current fetch batch (≤ `scrape.concurrency`).
-    pub inflight: Vec<String>,
-    /// Completed page URLs, oldest first.
-    pub done: Vec<String>,
-    /// Page budget for this run.
-    pub limit: usize,
-}
 
 /// `scrape:` config section (38 §6). Every field has a default; the section
 /// may be absent.
