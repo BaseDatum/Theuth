@@ -105,7 +105,7 @@ impl Tool for ScrapeUrlTool {
     type Args = ScrapeUrlArgs;
 
     fn description(&self) -> String {
-        "Fetch one page to markdown (and optionally html/links); only_main_content drops chrome, rendered: true uses the embedded browser for JS-only pages. Use crawl for a site, map_site for its URLs.".into()
+        "Fetch one page to markdown. Returns {url, title, tier, markdown} plus html/links when asked in formats. only_main_content drops chrome; rendered: true uses the embedded browser for JS-only pages. Use crawl for a site, map_site for its URLs.".into()
     }
 
     async fn call(&self, a: ScrapeUrlArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
@@ -216,7 +216,7 @@ impl Tool for CrawlTool {
     type Args = CrawlArgs;
 
     fn description(&self) -> String {
-        "Crawl a site from a seed URL and return each page as markdown. Bounded by limit and max_depth; include_paths/ignore_paths scope the walk; sitemap include|skip|only; honours robots.txt. Stays under the seed directory unless crawl_entire_domain.".into()
+        "Crawl a site from a seed URL. Returns one {url, title, markdown, tier} per page (url/title only with format: links). Bounded by limit and max_depth; include_paths/ignore_paths scope the walk; sitemap include|skip|only; honours robots.txt. Stays under the seed directory unless crawl_entire_domain.".into()
     }
 
     async fn call(&self, a: CrawlArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
@@ -319,7 +319,7 @@ impl Tool for MapTool {
     type Args = MapArgs;
 
     fn description(&self) -> String {
-        "List a site's URLs without fetching bodies: sitemap, then links from a short walk; search=\"…\" puts URLs relevant to a query first. Returns url and title (title only where a page was fetched).".into()
+        "List a site's URLs without fetching bodies: sitemap, then links from a short walk; search=\"…\" puts URLs relevant to a query first. Returns one {url, title} per hit (title only where a page was fetched).".into()
     }
 
     async fn call(&self, a: MapArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
