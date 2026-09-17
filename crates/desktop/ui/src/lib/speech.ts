@@ -12,9 +12,14 @@ import type { FinishReason, ModelState } from '@/rpc/extra'
 import { useConnection } from '@/store/connection'
 import { on, useSessions } from '@/store/sessions'
 
+/** PCM rate `ptts` produces and the packets decode to (43 §0.5). */
+const SAMPLE_RATE = 24_000
+
 let ctx: AudioContext | null = null
 /** The module's one reusable context, made inside a user gesture (45 §7.3): iOS WKWebView will not start one made outside. */
 let audioCtx: AudioContext | null = null
+/** Master tap so a new utterance can mute in-flight BufferSources without closing `ctx`. */
+let out: GainNode | null = null
 let dec: OpusDecoder<OpusDecoderSampleRate> | null = null
 /** `ctx` time the next packet starts at. */
 let next = 0
@@ -23,17 +28,47 @@ let id: string | null = null
 
 /** Create (once) and resume the shared context; call from a click. The wire is 24 kHz (43 §0.5). */
 export function unlock(): void {
-  audioCtx ??= new AudioContext({ sampleRate: 24_000 })
+  audioCtx ??= new AudioContext({ sampleRate: SAMPLE_RATE })
   void audioCtx.resume()
 }
 
-/** Begin utterance `speech`: stop the previous one, take the shared context when its rate matches (else open one) and a decoder at `sampleRate`. */
-export function start(speech: string, sampleRate: number): void {
-  stop()
+function graph(sampleRate: number): AudioContext {
+  if (ctx && ctx.state !== 'closed' && ctx.sampleRate === sampleRate && out) return ctx
+  if (ctx && ctx !== audioCtx) void ctx.close()
   ctx = audioCtx?.sampleRate === sampleRate ? audioCtx : new AudioContext({ sampleRate })
+  out = ctx.createGain()
+  out.connect(ctx.destination)
+  return ctx
+}
+
+function cut(): void {
+  if (!ctx || !out) {
+    next = 0
+    return
+  }
+  out.disconnect()
+  out = ctx.createGain()
+  out.connect(ctx.destination)
   next = 0
+}
+
+/**
+ * Unlock Web Audio on the click that starts speak (43 §2.3). WKWebView starts a
+ * context created later on `SpeechStarted` as `suspended`; `BufferSource.start` is then a no-op.
+ */
+export function prime(sampleRate = SAMPLE_RATE): void {
+  void graph(sampleRate).resume()
+  // Warm the wasm compile during the RPC round-trip; `start` replaces this instance.
+  if (!dec) dec = new OpusDecoder({ channels: 1, sampleRate: sampleRate as OpusDecoderSampleRate })
+}
+
+/** Begin utterance `speech`: cut previous audio, keep the primed context, open a decoder. */
+export function start(speech: string, sampleRate: number): void {
+  graph(sampleRate)
+  cut()
+  void ctx!.resume()
   id = speech
-  // The wire is 24 kHz (43 §0.5); the decoder accepts only libopus rates, anything else falls back to 48 kHz.
+  dec?.free()
   dec = new OpusDecoder({ channels: 1, sampleRate: sampleRate as OpusDecoderSampleRate })
 }
 
@@ -44,7 +79,7 @@ export function push(speech: string, b64: string): void {
   // `ready` is the wasm instantiation (ms; cached after the first utterance). `.then` on a settled
   // promise keeps packet order, and lets the first packets of an utterance queue behind it.
   void d.ready.then(() => {
-    if (dec !== d || !ctx) return
+    if (dec !== d || !ctx || !out) return
     const { channelData } = d.decodeFrame(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)))
     const pcm = channelData[0]
     if (!pcm?.length) return
@@ -53,7 +88,7 @@ export function push(speech: string, b64: string): void {
     buf.copyToChannel(pcm as Float32Array<ArrayBuffer>, 0)
     const src = ctx.createBufferSource()
     src.buffer = buf
-    src.connect(ctx.destination)
+    src.connect(out)
     const at = Math.max(ctx.currentTime + 0.02, next)
     src.start(at)
     next = at + buf.duration
@@ -67,9 +102,10 @@ export function remaining(): number {
 
 /** Halt playback now and release the decoder and the context (the shared one stays open). */
 export function stop(): void {
+  cut()
   if (ctx !== audioCtx) void ctx?.close()
   dec?.free()
-  ctx = dec = null
+  ctx = out = dec = null
   id = null
 }
 

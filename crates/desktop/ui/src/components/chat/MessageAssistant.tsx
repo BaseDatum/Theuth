@@ -139,6 +139,7 @@ export const MessageAssistant = memo(function MessageAssistant({
       speech.setSpeaking(null)
       void api.stop_speaking(speaking.id)
     } else {
+      speech.prime()
       api.speak(session, text).then(
         (sid) => speech.setSpeaking({ id: sid, entry: id }),
         (e: unknown) => toast.error(e instanceof Error ? e.message : String(e)),
