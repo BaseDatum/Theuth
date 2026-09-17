@@ -61,6 +61,9 @@ pub struct Hole {
     pub location: HoleIn,
     /// The value observed at capture.
     pub example: String,
+    /// Seen in only some captures of this route; omitted from a call unless passed.
+    #[serde(default)]
+    pub optional: bool,
 }
 
 /// A learned data route (44 §3.4). Structure only: header names, never values.
@@ -343,8 +346,10 @@ fn admit(ex: &Exchange) -> Option<(Url, Collection)> {
 }
 
 /// Admit, decode, find the collection, template (with sibling merge across
-/// exchanges), split auth, rank. Deduped by `(method, template)` keeping the
-/// larger `records_seen`; sorted by rank then `records_seen`, descending.
+/// exchanges), split auth, rank. One route per `id`: exchanges that share a
+/// path but differ in query keys are merged by [`union_query`], the member
+/// with the most `records_seen` supplying everything else. Sorted by rank
+/// then `records_seen`, descending.
 #[must_use]
 pub fn classify_all(exs: &[Exchange]) -> Vec<Learned> {
     let cands: Vec<(&Exchange, Url, Collection)> = exs
@@ -415,14 +420,11 @@ pub fn classify_all(exs: &[Exchange]) -> Vec<Learned> {
         .zip(&holes)
         .map(|(((ex, url, coll), segs), holes)| build(ex, url, coll, segs, holes))
         .collect();
-    built.sort_by(|a, b| {
-        (&a.1.route.method, &a.1.route.template).cmp(&(&b.1.route.method, &b.1.route.template))
-    });
+    built.sort_by(|a, b| a.1.route.id.cmp(&b.1.route.id));
     built.dedup_by(|later, kept| {
-        let same = later.1.route.method == kept.1.route.method
-            && later.1.route.template == kept.1.route.template;
-        if same && later.1.route.records_seen > kept.1.route.records_seen {
-            std::mem::swap(later, kept);
+        let same = later.1.route.id == kept.1.route.id;
+        if same {
+            merge_into(kept, later);
         }
         same
     });
@@ -431,6 +433,75 @@ pub fn classify_all(exs: &[Exchange]) -> Vec<Learned> {
             .then(b.1.route.records_seen.cmp(&a.1.route.records_seen))
     });
     built.into_iter().map(|(_, l)| l).collect()
+}
+
+/// Fold `other` (same id) into `kept`: the larger `records_seen` wins every
+/// scalar field and the path holes; query holes are unioned; credentials
+/// are unioned by header name.
+fn merge_into(kept: &mut (f64, Learned), other: &mut (f64, Learned)) {
+    if other.1.route.records_seen > kept.1.route.records_seen {
+        std::mem::swap(kept, other);
+    }
+    let (k, o) = (&mut kept.1, &mut other.1);
+    let query = union_query(&o.route.holes, &k.route.holes);
+    k.route.holes.retain(|h| h.location == HoleIn::Path);
+    k.route.holes.extend(query);
+    k.route.template = template_from(before_query(&k.route.template), &k.route.holes);
+    for (n, v) in o.creds.drain(..) {
+        if !k.creds.iter().any(|(c, _)| *c == n) {
+            k.creds.push((n, v));
+        }
+    }
+    k.creds.sort_unstable();
+    k.route.auth_headers = k.creds.iter().map(|(n, _)| n.clone()).collect();
+    k.route.cookies = k.route.auth_headers.iter().any(|h| h == "cookie");
+}
+
+/// `template` up to and excluding `?`.
+pub(crate) fn before_query(template: &str) -> &str {
+    template.split_once('?').map_or(template, |(b, _)| b)
+}
+
+/// Union the query holes of `a` and `b` by name: a name on both sides takes
+/// `b`'s example and is optional if either was; a name on one side only
+/// becomes optional. Path holes are ignored.
+pub(crate) fn union_query(a: &[Hole], b: &[Hole]) -> Vec<Hole> {
+    let mut out: Vec<Hole> = query_holes(b).cloned().collect();
+    for o in &mut out {
+        match query_holes(a).find(|h| h.name == o.name) {
+            Some(h) => o.optional |= h.optional,
+            None => o.optional = true,
+        }
+    }
+    out.extend(
+        query_holes(a)
+            .filter(|h| !query_holes(b).any(|x| x.name == h.name))
+            .map(|h| Hole {
+                optional: true,
+                ..h.clone()
+            }),
+    );
+    out
+}
+
+fn query_holes(holes: &[Hole]) -> impl Iterator<Item = &Hole> {
+    holes.iter().filter(|h| h.location == HoleIn::Query)
+}
+
+/// `base` (absolute URL up to and excluding `?`, path holes already rendered)
+/// plus `k={k}` for every query hole, sorted by name.
+pub(crate) fn template_from(base: &str, holes: &[Hole]) -> String {
+    let mut keys: Vec<&str> = query_holes(holes).map(|h| h.name.as_str()).collect();
+    keys.sort_unstable();
+    let mut out = base.to_owned();
+    for (i, k) in keys.iter().enumerate() {
+        out.push(if i == 0 { '?' } else { '&' });
+        out.push_str(k);
+        out.push_str("={");
+        out.push_str(k);
+        out.push('}');
+    }
+    out
 }
 
 fn build(
@@ -459,6 +530,7 @@ fn build(
                 name,
                 location: HoleIn::Path,
                 example: seg.to_owned(),
+                optional: false,
             });
         } else {
             path.push_str(seg);
@@ -467,7 +539,6 @@ fn build(
             }
         }
     }
-    let mut query = String::new();
     let mut operation = None;
     let mut graphql = false;
     for (k, v) in url.query_pairs() {
@@ -478,19 +549,21 @@ fn build(
         if web::url::is_tracking_param(&k) || route_holes.iter().any(|h| h.name == k) {
             continue;
         }
-        query.push(if query.is_empty() { '?' } else { '&' });
-        query.push_str(&k);
-        query.push_str("={");
-        query.push_str(&k);
-        query.push('}');
         route_holes.push(Hole {
             name: k.into_owned(),
             location: HoleIn::Query,
             example: v.into_owned(),
+            optional: false,
         });
     }
     let domain = registrable_domain(url);
     let method = ex.method.to_ascii_uppercase();
+    // One id per path shape; a GraphQL operation is its own route even
+    // though it shares `/graphql` with every other operation.
+    let id = match &operation {
+        Some(op) => format!("{domain}:{method}:{path}#{op}"),
+        None => format!("{domain}:{method}:{path}"),
+    };
     let name = operation.unwrap_or_else(|| {
         if last_literal.is_empty() {
             domain.clone()
@@ -513,11 +586,14 @@ fn build(
         .sum();
     let rank = ex.body_len as f64 / (ex.url.len() + header_len).max(1) as f64;
     let route = Route {
-        id: format!("{domain}:{method}:{path}"),
+        id,
         name,
         replay: matches!(method.as_str(), "GET" | "HEAD" | "OPTIONS")
             || (method == "POST" && graphql),
-        template: format!("{}{path}{query}", &url[..Position::BeforePath]),
+        template: template_from(
+            &format!("{}{path}", &url[..Position::BeforePath]),
+            &route_holes,
+        ),
         method,
         holes: route_holes,
         collection: coll.pointer.clone(),
@@ -563,7 +639,8 @@ fn same_shape(a: &BTreeMap<String, String>, b: &BTreeMap<String, String>) -> boo
 }
 
 /// Fill `route.template` from `params`: every path hole required, query
-/// holes default to their `example`, extra params become extra query keys.
+/// holes default to their `example` unless `optional` (then omitted when
+/// absent), extra params become extra query keys.
 pub fn fill(route: &Route, params: &Map<String, Value>) -> Result<Url, String> {
     let (base, query) = route
         .template
@@ -598,7 +675,7 @@ pub fn fill(route: &Route, params: &Map<String, Value>) -> Result<Url, String> {
                         route
                             .holes
                             .iter()
-                            .find(|h| h.name == name)
+                            .find(|h| h.name == name && !h.optional)
                             .map(|h| h.example.clone())
                     });
                     if let Some(value) = value {
@@ -781,6 +858,51 @@ mod tests {
     }
 
     #[test]
+    fn query_variants_union_into_one_route_with_optional_holes() {
+        let out = classify_all(&[
+            ex(
+                "GET",
+                "https://h.co/models-json?pipeline_tag=text-generation&sort=trending&withCount=true",
+                ITEMS,
+            ),
+            ex(
+                "GET",
+                "https://h.co/models-json?sort=trending&search=llama&withCount=true",
+                ITEMS,
+            ),
+        ]);
+        assert_eq!(out.len(), 1);
+        let r = &out[0].route;
+        assert_eq!(r.id, "h.co:GET:/models-json");
+        assert_eq!(
+            r.template,
+            "https://h.co/models-json?pipeline_tag={pipeline_tag}&search={search}&sort={sort}&withCount={withCount}"
+        );
+        let opt = |n: &str| r.holes.iter().find(|h| h.name == n).expect(n).optional;
+        assert!(opt("pipeline_tag"));
+        assert!(opt("search"));
+        assert!(!opt("sort"));
+        assert!(!opt("withCount"));
+
+        let mut p = Map::new();
+        p.insert("search".to_owned(), json!("bert"));
+        assert_eq!(
+            fill(r, &p).expect("filled").as_str(),
+            "https://h.co/models-json?search=bert&sort=trending&withCount=true"
+        );
+        assert_eq!(
+            fill(r, &Map::new()).expect("filled").as_str(),
+            "https://h.co/models-json?sort=trending&withCount=true"
+        );
+        p.clear();
+        p.insert("pipeline_tag".to_owned(), json!("text-to-image"));
+        assert_eq!(
+            fill(r, &p).expect("filled").as_str(),
+            "https://h.co/models-json?pipeline_tag=text-to-image&sort=trending&withCount=true"
+        );
+    }
+
+    #[test]
     fn auth_names_recorded_values_kept_out() {
         let mut e = ex("GET", "https://x.io/me", ITEMS);
         e.request_headers
@@ -822,6 +944,17 @@ mod tests {
             .find(|l| l.route.name == "Foo")
             .expect("graphql post");
         assert!(gql.route.replay);
+    }
+
+    #[test]
+    fn graphql_operations_on_one_path_stay_separate_routes() {
+        let out = classify_all(&[
+            ex("GET", "https://x.io/graphql?operationName=A", ITEMS),
+            ex("GET", "https://x.io/graphql?operationName=B", ITEMS),
+        ]);
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().any(|l| l.route.id == "x.io:GET:/graphql#A"));
+        assert!(out.iter().any(|l| l.route.id == "x.io:GET:/graphql#B"));
     }
 
     #[test]

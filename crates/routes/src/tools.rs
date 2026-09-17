@@ -15,11 +15,14 @@ use crate::{CallReply, Route, Routes};
 
 /// Plugin prompt block (44 §4): when to learn routes instead of scraping.
 pub const PROMPT: &str = "site_learn, site_routes, site_call are runtime functions. \
-When a page is an app (search, tables, feeds, dashboards), site_learn(url=…) once: \
-it opens the page in your browser session and returns the JSON routes the page itself called, \
-as URL templates with holes. Then site_call(route=…, params={…}) returns records directly — \
-no page, no rendering — for any hole value. Click pagination or filters with browser_click first \
-and call site_learn() with no url to learn what those fired. \
+Listing pages (search, tables, feeds, dashboards) often render the first page as HTML: \
+site_learn(url=…) opens the page in your browser session and returns whatever JSON routes it called, \
+as URL templates with {holes}; if routes is empty, click one control that changes the list in place \
+(a filter, sort, search or next page) with browser_click, then site_learn() with no url — \
+the capture buffer is drained on every read, so learn right after the click. \
+Then site_call(route=…, params={…}) returns records directly, no page, no rendering, for any hole value; \
+optional holes are sent only when you pass them. \
+site_routes(url) lists what is already learned for a site. \
 Prefer this over scrape_url {rendered: true} when you need data, not prose; \
 a route that says drifted needs site_learn again.";
 
@@ -110,13 +113,13 @@ pub struct SiteLearnTool(pub Arc<Routes>);
 #[async_trait::async_trait]
 impl Tool for SiteLearnTool {
     const NAME: &'static str = "site_learn";
-    const RETURNS: &'static str = "list[dict]";
+    const RETURNS: &'static str = "dict";
     const RISK: Risk = Risk::ReadOnly;
     const DIRECT: bool = false;
     type Args = SiteLearnArgs;
 
     fn description(&self) -> String {
-        "Learn the JSON routes a page's own JavaScript calls. With url: opens it in this session's browser, waits for the network to settle, and returns the routes as URL templates with {holes}, record keys and a collection pointer. Without url: reads what this session's page has fetched so far (after you clicked pagination/filters). Then use site_call.".into()
+        "Learn the JSON routes a page's own JavaScript calls. First load is often HTML: if routes is empty, click a control that changes the list, then call again with no url (the capture buffer is drained on every read). With url: opens it in this session's browser and waits for the network to settle. Returns {domain, routes, captured, top_urls, hint}: routes are URL templates with {holes}, record keys and a collection pointer; hint says what was captured and what to do next. Then use site_call.".into()
     }
 
     async fn call(&self, a: SiteLearnArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
@@ -125,18 +128,12 @@ impl Tool for SiteLearnTool {
             Ok(r) => r,
             Err(e) => return Ok(ToolOutput::err(e.to_string())),
         };
-        let text = if reply.captured == 0 {
-            "no traffic captured — server-rendered page; use scrape_url".to_owned()
-        } else if reply.routes.is_empty() {
-            format!(
-                "{} requests, no record collections; seen: {}",
-                reply.captured,
-                reply.top_urls.join(", ")
-            )
-        } else {
-            rows(&reply.domain, &reply.routes)
-        };
-        Ok(structured(text, reply.routes))
+        let mut text = reply.hint.clone();
+        if !reply.routes.is_empty() {
+            text.push('\n');
+            text.push_str(&rows(&reply.domain, &reply.routes));
+        }
+        Ok(structured(text, &reply))
     }
 }
 
@@ -182,7 +179,7 @@ impl Tool for SiteRoutesTool {
 pub struct SiteCallArgs {
     /// Route id from site_learn/site_routes (`domain:METHOD:/path`).
     pub route: String,
-    /// Hole values by name; path holes required, query holes default to the learned example.
+    /// Hole values by name; path holes required, query holes default to the learned example, holes marked optional are omitted unless passed.
     pub params: Option<Map<String, Value>>,
 }
 
@@ -198,7 +195,7 @@ impl Tool for SiteCallTool {
     type Args = SiteCallArgs;
 
     fn description(&self) -> String {
-        "Call a learned route over plain HTTP, no browser: route is the id from site_learn/site_routes, params fills its {holes} (path holes required, query holes default to the learned example). Returns the records at the route's collection pointer; a 'drifted' error means site_learn again.".into()
+        "Call a learned route over plain HTTP, no browser: route is the id from site_learn/site_routes, params fills its {holes} (path holes required, query holes default to the learned example, holes marked optional are omitted unless passed). Returns the records at the route's collection pointer; a 'drifted' error means site_learn again.".into()
     }
 
     async fn call(&self, a: SiteCallArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {

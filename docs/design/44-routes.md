@@ -263,8 +263,12 @@ are the fixtures.
     "seen": 3, "last_ok": "2026-09-17T18:02:11Z", "stale": false, "example_url": "https://crates.io/api/v1/crates/tokio" } ] }
 ```
 
-Merge key is `(method, template)`; a re-learn bumps `seen`, refreshes keys
-and `example_url`, clears `stale`. Delete the file to forget the site. The
+Merge key is the route `id` — `{domain}:{METHOD}:{path}`, one row per
+path shape (§12.9). Query holes are the **union** across captures: a key
+present in every capture keeps its `example` as the default (`?include=
+versions`), a key seen in only some is `optional: true` and is sent only
+when passed. A re-learn bumps `seen`, refreshes keys and `example_url`,
+unions holes, clears `stale`. Delete the file to forget the site. The
 directory is rebuildable by browsing again; nothing else references it.
 
 ### 3.5 Replay (`replay.rs`)
@@ -272,9 +276,9 @@ directory is rebuildable by browsing again; nothing else references it.
 `site_call { route, params }`:
 
 1. Load the route; refuse `replay: false` with the reason.
-2. Fill holes: every path hole must be given; query holes default to
-   `example` when omitted (a route learned with `?page=1` is callable as
-   `site_call(route, {page: 2})`).
+2. Fill holes: every path hole must be given; required query holes default
+   to `example` when omitted (a route learned with `?page=1` is callable as
+   `site_call(route, {page: 2})`); optional ones are omitted unless passed.
 3. Headers: content-negotiation headers from the capture (`accept`,
    `accept-language`, `x-requested-with`, `referer` = page origin), then the
    session credential map for `(session, domain)` — the captured values for
@@ -309,14 +313,16 @@ all. Never serialised; never in a `ToolOutput`; never in an event.
 
 All three `Risk::ReadOnly`, `DIRECT: false`, `UNTRUSTED: true`; http(s) only.
 
-- `site_learn { url?: str }` → `list[dict]` of routes for the page's domain
-  (the §3.4 rows minus `example_url`'s query values). With `url`: navigate
-  in this session's isolate, settle, capture, classify, merge. Without:
-  capture what this session's page has done so far — after the model
-  clicked through pagination itself. `SINK: true`. Empty result text
-  distinguishes *no traffic captured* (server-rendered page; use
-  `scrape_url`) from *traffic, no collections* (lists the top three URLs
-  seen so the model can judge).
+- `site_learn { url?: str }` → `dict` `{domain, routes, captured, top_urls,
+  hint}` — the whole reply, not the rows alone (§12.9). `routes` are the
+  §3.4 rows for the page's domain. With `url`: navigate in this session's
+  isolate, settle, capture, classify, merge. Without: capture what this
+  session's page has done so far — after the model clicked a filter — for
+  the session's last domain. `SINK: true`. `hint` names the empty case:
+  *no traffic captured*; *HTML page + beacons only* (a full navigation or a
+  server-rendered list — click a control that updates the list in place);
+  *N requests, no record collections* (with `top_urls`); or *nothing new
+  captured; N stored routes*.
 - `site_routes { url: str }` → the stored rows for the URL's registrable
   domain, or `no routes learned for <domain>; site_learn first`. `SINK: false`.
 - `site_call { route: str, params?: dict }` → `list[dict]` records; text
@@ -552,6 +558,28 @@ Revisions at build time:
    instead of a second one (§3.3.4).
 8. Labels of 28 §3 are recorded in that doc's table; 28's `UNTRUSTED`/`SINK`
    consts are not implemented in `tools` yet, so nothing is set in code.
+9. **Hugging Face field report** (2026-09-17, an agent using the tools
+   against huggingface.co listings). What worked: filter/sort/search clicks
+   fire `GET /models-json?…`, `/datasets-json?…`,
+   `/api/spaces/semantic-search?…`; all learned and replayed with swapped
+   hole values. What looked broken, and the fixes: (a) `site_learn`'s
+   structured output was `routes` alone, so the runtime saw `[]` for three
+   different empty cases — now the whole reply with a `hint` (§4). (b)
+   `site_learn()` with no url and an empty capture set `domain = ""` —
+   now the session's last domain, so a quiet page returns its stored rows.
+   (c) Two `/models-json` query shapes shared one id; the store kept both
+   and replay took the first, so `{search: bert}` silently kept
+   `pipeline_tag=text-generation` — now one route per id with unioned
+   query holes, `optional` ones omitted unless passed (§3.4, §3.5).
+   Alternative beaten: id = path + hash of query names — two ids for what
+   the model thinks of as one route, and `search` unreachable from the
+   route it was handed. (d) "Files / Discussions captured zero": verified
+   false — a click-navigation captures its `Document` plus beacons (HF
+   gpt2 → Files: 7 exchanges); it was (a) hiding `captured`. The hint now
+   says *HTML page + beacons only*. (e) Prompt rewritten to lead with the
+   SSR first-load reality. Not changed: single-object responses (a model
+   card's `/api/models/{id}`) still do not classify — §0.4's rule is
+   record collections; `read_url` covers one object.
 
 ## 13. Edits to other docs
 

@@ -75,6 +75,10 @@ pub struct Routes {
     store: Store,
     fetcher: Fetcher,
     creds: tokio::sync::Mutex<HashMap<(SessionId, String), CredEntry>>,
+    /// Domain of each session's last `learn`, so `site_learn()` with no url
+    /// on a quiet page still answers for the site the session is on. Never
+    /// swept: one `String` per session ever seen is nothing.
+    last_domain: tokio::sync::Mutex<HashMap<SessionId, String>>,
 }
 
 /// `site_learn` result (44 §4).
@@ -89,6 +93,8 @@ pub struct LearnReply {
     /// ≤ 3 distinct captured URLs (query dropped) when traffic was seen but
     /// nothing classified; else empty.
     pub top_urls: Vec<String>,
+    /// One model-facing sentence: what was captured and what to do next.
+    pub hint: String,
 }
 
 /// `site_call` result (44 §3.5).
@@ -117,6 +123,7 @@ impl Routes {
             store: Store::new(data_dir),
             fetcher,
             creds: tokio::sync::Mutex::new(HashMap::new()),
+            last_domain: tokio::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -136,33 +143,48 @@ impl Routes {
         let exs = capture::exchanges(session).await?;
         let captured = exs.len();
         let grouped = group(classify_all(&exs));
-        let top_urls = if grouped.is_empty() {
-            first_urls(&exs)
-        } else {
+        let classified = !grouped.is_empty();
+        let top_urls = if classified {
             Vec::new()
+        } else {
+            first_urls(&exs)
         };
-        let domain = url.map(registrable_domain).or_else(|| {
-            grouped
-                .iter()
-                .max_by_key(|(_, v)| v.len())
-                .map(|(d, _)| d.clone())
+        // url → what was classified → the session's last domain → whatever
+        // the first stray exchange hit (a late beacon must not hide stored rows).
+        let domain = {
+            let mut last = self.last_domain.lock().await;
+            let d = url
+                .map(registrable_domain)
+                .or_else(|| {
+                    grouped
+                        .iter()
+                        .max_by_key(|(_, v)| v.len())
+                        .map(|(d, _)| d.clone())
+                })
+                .or_else(|| last.get(&session).cloned())
                 .or_else(|| {
                     exs.first()
                         .and_then(|e| Url::parse(&e.url).ok())
                         .map(|u| registrable_domain(&u))
                 })
-        });
+                .unwrap_or_default();
+            if !d.is_empty() {
+                last.insert(session, d.clone());
+            }
+            d
+        };
         for (d, learned) in grouped {
             let cookie = capture::cookie_header(session, &d).await;
             self.absorb(session, &d, learned, cookie).await?;
         }
-        let domain = domain.unwrap_or_default();
         let routes = self.store.load(&domain).await?.routes;
+        let hint = hint(&exs, classified, &top_urls, &domain, routes.len());
         Ok(LearnReply {
             domain,
             routes,
             captured,
             top_urls,
+            hint,
         })
     }
 
@@ -279,6 +301,43 @@ fn first_urls(exs: &[Exchange]) -> Vec<String> {
     out
 }
 
+/// The model-facing one-liner for a `learn` reply. Distinguishes the empty
+/// cases the model otherwise reads as one "zero": nothing captured, a full
+/// navigation (HTML + beacons, no JSON), or JSON with no record collections.
+fn hint(exs: &[Exchange], classified: bool, top_urls: &[String], domain: &str, n: usize) -> String {
+    let captured = exs.len();
+    if classified {
+        return format!("{n} routes for {domain}; call one with site_call");
+    }
+    if n > 0 {
+        return format!("nothing new captured; {n} stored routes for {domain}");
+    }
+    if captured == 0 {
+        return "no traffic captured — nothing loaded since the last site_learn; \
+                click a control that changes the list, then site_learn() again"
+            .to_owned();
+    }
+    let json = exs.iter().any(|e| {
+        (200..300).contains(&e.status)
+            && e.content_type
+                .as_deref()
+                .is_some_and(|c| c.contains("json"))
+            && e.body.as_deref().is_some_and(|b| !b.is_empty())
+    });
+    if json {
+        format!(
+            "{captured} requests, no record collections; seen: {}",
+            top_urls.join(", ")
+        )
+    } else {
+        format!(
+            "{captured} requests, HTML page + beacons only (a full navigation or server-rendered list); \
+             click a filter/sort/search that updates the list in place, then site_learn() with no url; \
+             scrape_url reads the HTML"
+        )
+    }
+}
+
 /// The plugin: reads `routes`, builds the fetcher, registers `site_learn` /
 /// `site_routes` / `site_call` once the tool registry is up, and sweeps idle
 /// credentials until shutdown.
@@ -370,11 +429,13 @@ mod tests {
     }
 
     fn tmp_routes() -> (std::path::PathBuf, Routes) {
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock")
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("wth-routes-lib-{nanos}"));
+        let dir = std::env::temp_dir().join(format!("wth-routes-lib-{n}-{nanos}"));
         let fetcher = Fetcher::new("test", 1024, 1).expect("fetcher");
         let routes = Routes::new(RoutesConfig::default(), &dir, fetcher);
         (dir, routes)
@@ -422,6 +483,7 @@ mod tests {
             routes: example.routes.clone(),
             captured: 2,
             top_urls: Vec::new(),
+            hint: String::new(),
         })
         .expect("json");
         assert!(!reply.contains("SECRET"));
@@ -469,5 +531,47 @@ mod tests {
         let creds = routes.creds.lock().await;
         assert!(!creds.contains_key(&(session, "old.io".to_owned())));
         assert!(creds.contains_key(&(session, "fresh.io".to_owned())));
+    }
+}
+
+#[cfg(test)]
+mod hint_tests {
+    use super::*;
+
+    fn ex(resource_type: &str, content_type: &str, body: Option<&str>) -> Exchange {
+        Exchange {
+            url: "https://x.io/p".to_owned(),
+            method: "GET".to_owned(),
+            resource_type: resource_type.to_owned(),
+            status: 200,
+            request_headers: HashMap::new(),
+            response_headers: HashMap::new(),
+            content_type: Some(content_type.to_owned()),
+            body: body.map(str::to_owned),
+            body_len: body.map_or(0, str::len),
+            truncated: false,
+            ts: 0,
+        }
+    }
+
+    #[test]
+    fn hint_separates_the_empty_cases() {
+        assert!(hint(&[], false, &[], "", 0).starts_with("no traffic captured"));
+        assert!(hint(&[], false, &[], "x.io", 2).starts_with("nothing new captured; 2 stored"));
+        let nav = [
+            ex("Document", "text/html", Some("<html>")),
+            ex("Fetch", "text/plain", None),
+        ];
+        assert!(hint(&nav, false, &[], "", 0).contains("HTML page + beacons only"));
+        let json = [ex("Xhr", "application/json", Some("{\"ok\":true}"))];
+        let seen = ["https://x.io/p".to_owned()];
+        assert_eq!(
+            hint(&json, false, &seen, "", 0),
+            "1 requests, no record collections; seen: https://x.io/p"
+        );
+        assert_eq!(
+            hint(&json, true, &[], "x.io", 1),
+            "1 routes for x.io; call one with site_call"
+        );
     }
 }
