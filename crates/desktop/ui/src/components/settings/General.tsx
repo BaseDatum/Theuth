@@ -79,6 +79,9 @@ export function General() {
   const setSubagentTimeout = useAction((seconds: number) =>
     api.set_subagent_timeout(seconds).then(() => refreshInfo(api)),
   )
+  const setMaxToolRounds = useAction((rounds: number) =>
+    api.set_max_tool_rounds(rounds).then(() => refreshInfo(api)),
+  )
   const setAutostart = useAction((on: boolean) => (on ? enable() : disable()), {
     onSuccess: (_, on) => qc.setQueryData(AUTOSTART, on),
   })
@@ -159,6 +162,26 @@ export function General() {
             onBlur={(e) => {
               const seconds = Number(e.currentTarget.value)
               if (seconds !== info?.subagent_timeout_secs) setSubagentTimeout.mutate(seconds)
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') e.currentTarget.blur()
+            }}
+          />
+        </Row>
+        <Row
+          label="Tool rounds per turn"
+          description="Tool-call rounds a turn may run before the model is asked to reply with text. New sessions only."
+        >
+          <Input
+            key={info?.max_tool_rounds}
+            type="number"
+            min={1}
+            defaultValue={info?.max_tool_rounds}
+            disabled={!info || setMaxToolRounds.isPending}
+            className="w-28 text-right"
+            onBlur={(e) => {
+              const rounds = Math.floor(Number(e.currentTarget.value))
+              if (rounds >= 1 && rounds !== info?.max_tool_rounds) setMaxToolRounds.mutate(rounds)
             }}
             onKeyDown={(e) => {
               if (e.key === 'Enter') e.currentTarget.blur()

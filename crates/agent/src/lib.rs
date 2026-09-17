@@ -227,6 +227,17 @@ pub struct SetSubagentTimeout {
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct GetSubagentTimeout;
 
+/// `ask` → `Result<(), String>`: persist `agent.max_tool_rounds` and use it for new sessions.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct SetMaxToolRounds {
+    /// Tool-call rounds per turn; `0` is rejected.
+    pub rounds: u32,
+}
+
+/// `ask` → `u32`: the live `agent.max_tool_rounds`.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct GetMaxToolRounds;
+
 /// `ask` → `Result<Option<ModelInfo>, String>`: persist `agent.title_model` and
 /// use it for every session's next title call; `None` clears it (session model).
 #[derive(Clone, Debug, Serialize, Deserialize)]

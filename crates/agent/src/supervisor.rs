@@ -40,12 +40,12 @@ use crate::user::{MessageUserTool, USER_ACTOR, UserChannels};
 use crate::{
     AGENT_ACTOR, AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentConfig, AgentEvent, AgentInfo,
     AgentState, AncestorInfo, Ancestors, Cancel, Compact, CompactStyle, DeleteSession, EditTurn,
-    ForkSession, GetCompactStyle, GetSubagentTimeout, GetTitleModel, Harvest, HistoryEntry,
+    ForkSession, GetCompactStyle, GetMaxToolRounds, GetSubagentTimeout, GetTitleModel, Harvest, HistoryEntry,
     ListAcp, ListAgents, ListLogins, ListModels, ListProviders, ListQueued, ListRegistry,
     ListSessions, ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginFinished, LoginInfo,
     Logout, ModelInfo, NewSession, ProviderInfo, QueuedInput, Redo, Regenerate, RemoveAcp,
     PinSession, RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession, SearchSessions, SendInput,
-    SessionSummary, SetCompactStyle, SetEffort, SetModel, SetSubagentTimeout, SetTitleModel,
+    SessionSummary, SetCompactStyle, SetEffort, SetMaxToolRounds, SetModel, SetSubagentTimeout, SetTitleModel,
     ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw, effort_of,
 };
 use crate::{frame, repl, search, spill};
@@ -1000,6 +1000,36 @@ impl Message<GetSubagentTimeout> for Agents {
 
     async fn handle(&mut self, _: GetSubagentTimeout, _: &mut Context<Self, Self::Reply>) -> u64 {
         self.cfg.subagents.max_runtime_secs
+    }
+}
+
+impl Message<SetMaxToolRounds> for Agents {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        m: SetMaxToolRounds,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<(), String> {
+        if m.rounds == 0 {
+            return Err("max_tool_rounds must be at least 1".into());
+        }
+        Arc::make_mut(&mut self.cfg).max_tool_rounds = m.rounds;
+        let path = self.rt.data_dir.join("config.yaml");
+        if let Err(e) =
+            runtime::write_config_value(&path, "agent", "max_tool_rounds", &m.rounds.to_string())
+        {
+            tracing::warn!("config.yaml: {e}");
+        }
+        Ok(())
+    }
+}
+
+impl Message<GetMaxToolRounds> for Agents {
+    type Reply = u32;
+
+    async fn handle(&mut self, _: GetMaxToolRounds, _: &mut Context<Self, Self::Reply>) -> u32 {
+        self.cfg.max_tool_rounds
     }
 }
 

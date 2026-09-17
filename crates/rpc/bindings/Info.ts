@@ -37,6 +37,10 @@ compact_style: CompactStyle,
  */
 subagent_timeout_secs: bigint, 
 /**
+ * `agent.max_tool_rounds`: tool-call rounds a turn may run before the loop lands.
+ */
+max_tool_rounds: number, 
+/**
  * Harness display name (`link.name`, else the hostname): what a linked
  * device shows in its harness switcher (31 §6.4).
  */
