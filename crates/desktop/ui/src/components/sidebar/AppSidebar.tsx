@@ -20,6 +20,9 @@ import { cn } from '@/lib/utils'
 import { SearchDialog } from './SearchDialog'
 import { SessionList } from './SessionList'
 
+/** Injected by vite `define` from tauri.conf.json. */
+declare const __APP_VERSION__: string
+
 /** ChatGPT's left rail: New chat, Search chats, Knowledge, Artifacts, the chat list, Settings. */
 export function AppSidebar({ session }: { session: string | undefined }) {
   const navigate = useNavigate()
@@ -103,9 +106,8 @@ export function AppSidebar({ session }: { session: string | undefined }) {
               onClick={() => void settings(navigate, 'general', session)}
             >
               <Settings /> Settings
-              {pending !== null && (
-                <span className="ml-auto size-1.5 rounded-full bg-fg-tertiary" aria-label="update ready" />
-              )}
+              <span className="ml-auto text-xs text-fg-tertiary">v{__APP_VERSION__}</span>
+              {pending !== null && <span className="size-1.5 rounded-full bg-fg-tertiary" aria-label="update ready" />}
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>

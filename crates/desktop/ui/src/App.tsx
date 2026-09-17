@@ -34,9 +34,6 @@ declare module '@tanstack/react-router' {
   }
 }
 
-/** Injected by vite `define` from tauri.conf.json. */
-declare const __APP_VERSION__: string
-
 /** rAF is paused while the window is hidden; a timer keeps events (and notifications) flowing then. */
 const HIDDEN_DRAIN_MS = 250
 const TOGGLE_SHORTCUT = 'Alt+Space'
@@ -348,10 +345,6 @@ export function App() {
         </HarnessProvider>
       )}
       <Toaster />
-      {/* Above the safe area on iOS; nothing under it is clickable-through. */}
-      <span className="pointer-events-none fixed right-2 bottom-[max(0.25rem,var(--safe-bottom))] z-50 text-[10px] leading-none text-muted-foreground/60 select-none">
-        v{__APP_VERSION__}
-      </span>
     </>
   )
 }
