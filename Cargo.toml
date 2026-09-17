@@ -39,6 +39,14 @@ schedule = { path = "crates/schedule" }
 artifact = { path = "crates/artifact" }
 secrets = { path = "crates/secrets" }  # secrets vault (37)
 update = { path = "crates/update" }  # self-update from the release bucket (39)
+voice = { path = "crates/voice" }  # read replies aloud: Pocket TTS in-process (43)
+# Voice (design doc 43): `ptts` = pure-Rust Pocket TTS (`sp` = SentencePiece `tokenizer.model`,
+# the file the checkpoint ships; needs cmake); `opus` = libopus for 80 ms packets on the wire.
+# crates.io 0.2.3 predates `ptts::synth::Synth` (the streaming API 43 §2.1 relies on); the rev is
+# main on 2026-09-16, still 0.2.3 + xn 0.2.4 from crates.io. Drop the git ref when 0.2.4 ships.
+ptts = { git = "https://github.com/gradium-ai/xn-ptts", rev = "5d50b5209ff9bbd7d3bac5a26f3c3bc1934fca89", features = ["sp"] }
+xn = "0.2.4"  # ptts's tensor library; only `set_num_threads` is called directly
+opus = "0.3"
 # Update (design doc 39): semver compare, the updater plugin's own minisign verifier, tar for the
 # single-file CLI payload. The desktop side is tauri-plugin-updater below.
 semver = "1"

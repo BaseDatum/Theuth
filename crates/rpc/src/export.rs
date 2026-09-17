@@ -96,6 +96,11 @@ async fn export_bindings() {
         secrets::RequestId,
         web::progress::ScrapeProgress,
         update::UpdateReady,
+        voice::VoiceEvent,
+        voice::VoiceStatus,
+        voice::ModelState,
+        voice::FinishReason,
+        voice::SpeechId,
         surface::Spec,
         surface::Element,
         surface::Component

@@ -27,6 +27,7 @@ nodes = { workspace = true }
 schedule = { workspace = true }
 update = { workspace = true }
 artifact = { workspace = true }
+voice = { workspace = true }
 secrets = { workspace = true }
 rpassword = { workspace = true }
 jsonrpsee = { workspace = true, features = ["ws-client"] }

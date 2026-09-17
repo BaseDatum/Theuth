@@ -9,13 +9,14 @@ use std::sync::LazyLock;
 
 use agent::{
     AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentConfig, AgentInfo, Agents, Cancel, Compact,
-    CompactStyle, DeleteSession, EditTurn, ForkSession, GetCompactStyle, GetSubagentTimeout,
-    GetTitleModel, Harvest, ListAcp, ListAgents, ListLogins, ListModels, ListProviders, ListQueued,
-    ListRegistry, ListSessions, ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginInfo,
-    Logout, ModelInfo, NewSession, PinSession, ProviderInfo, QueuedInput, Redo, Regenerate,
-    RemoveAcp, RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession, SearchSessions,
-    SendInput, SessionSummary, SetCompactStyle, SetEffort, SetModel, SetSubagentTimeout,
-    SetTitleModel, ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw,
+    CompactStyle, DeleteSession, EditTurn, ForkSession, GetCompactStyle, GetMaxToolRounds,
+    GetSubagentTimeout, GetTitleModel, Harvest, ListAcp, ListAgents, ListLogins, ListModels,
+    ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills, LoadSession, LoadSkill,
+    Loaded, Login, LoginInfo, Logout, ModelInfo, NewSession, PinSession, ProviderInfo, QueuedInput,
+    Redo, Regenerate, RemoveAcp, RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession,
+    SearchSessions, SendInput, SessionSummary, SetCompactStyle, SetEffort, SetMaxToolRounds,
+    SetModel, SetSubagentTimeout, SetTitleModel, ShowPrompt, SkillBody, SkillMeta, Steer,
+    SyncSkills, Undo, UseSkill, Withdraw,
 };
 use base64::Engine as _;
 use browser::{BROWSER_ACTOR, Browsers, Screenshot};
@@ -50,6 +51,7 @@ use tools::{
     McpLogin, McpLogout, McpProgress, McpServer, Progress, RemoveServer, RepoInfo, Resolve,
     SetApprovals, SetGate, SetHidden, SyncMcp, ToolRegistry, ToolSpec,
 };
+use voice::{SpeechId, VoiceStatus};
 
 use crate::bridge::Event;
 
@@ -78,6 +80,8 @@ pub struct Info {
     pub compact_style: CompactStyle,
     /// `agent.subagents.max_runtime_secs`.
     pub subagent_timeout_secs: u64,
+    /// `agent.max_tool_rounds`: tool-call rounds a turn may run before the loop lands.
+    pub max_tool_rounds: u32,
     /// Harness display name (`link.name`, else the hostname): what a linked
     /// device shows in its harness switcher (31 §6.4).
     pub name: String,
@@ -183,6 +187,9 @@ pub trait Api {
     /// Persist `agent.subagents.max_runtime_secs` and use it for newly spawned turns.
     #[method(name = "set_subagent_timeout")]
     async fn set_subagent_timeout(&self, seconds: u64) -> RpcResult<()>;
+    /// Persist `agent.max_tool_rounds`; new sessions use it.
+    #[method(name = "set_max_tool_rounds")]
+    async fn set_max_tool_rounds(&self, rounds: u32) -> RpcResult<()>;
     /// The live title model (`agent.title_model`), if set.
     #[method(name = "title_model")]
     async fn title_model(&self) -> RpcResult<Option<ModelInfo>>;
@@ -502,6 +509,18 @@ pub trait Api {
     /// (`applied`) / available but not writable (39 §4.3).
     #[method(name = "update_status")]
     async fn update_status(&self) -> RpcResult<Option<update::UpdateReady>>;
+    /// Read `text` (markdown) aloud in `session`'s name, stopping whatever is
+    /// speaking first (43 §5). Replies with the utterance's id at once; audio
+    /// follows as `SpeechAudio` events on `subscribe_events`.
+    #[method(name = "speak")]
+    async fn speak(&self, session: SessionId, text: String) -> RpcResult<SpeechId>;
+    /// Stop utterance `id`, or whatever is speaking when `null`. Idempotent.
+    #[method(name = "stop_speaking")]
+    async fn stop_speaking(&self, id: Option<SpeechId>) -> RpcResult<()>;
+    /// Model state, configured voice, available voices and the utterance in
+    /// progress (43 §5).
+    #[method(name = "voice_status")]
+    async fn voice_status(&self) -> RpcResult<VoiceStatus>;
     /// Fire a schedule now, ignoring `next`; returns its session (34 §8).
     /// Refused while a run is in flight (`busy`) or the file does not parse.
     #[method(name = "fire_schedule")]
@@ -647,6 +666,14 @@ fn update_actor() -> RpcResult<ActorRef<update::UpdateActor>> {
     })
 }
 
+/// The voice actor; absent when `voice.enabled: false` or the plugin is not loaded.
+fn voice() -> RpcResult<ActorRef<voice::Voice>> {
+    lookup::<voice::Voice>(voice::VOICE_ACTOR).map_err(|e| match e.code() {
+        NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "voice is disabled", None::<()>),
+        _ => e,
+    })
+}
+
 /// The artifact actor; absent when `artifact.enabled: false` or the plugin is not loaded.
 fn artifact() -> RpcResult<ActorRef<artifact::ArtifactActor>> {
     lookup::<artifact::ArtifactActor>(artifact::ARTIFACT_ACTOR).map_err(|e| match e.code() {
@@ -728,6 +755,7 @@ impl ApiServer for Server {
         let compact_style = ask::<Agents, _>(agent::AGENT_ACTOR, GetCompactStyle).await?;
         let subagent_timeout_secs =
             ask::<Agents, _>(agent::AGENT_ACTOR, GetSubagentTimeout).await?;
+        let max_tool_rounds = ask::<Agents, _>(agent::AGENT_ACTOR, GetMaxToolRounds).await?;
         let name = match self.rt.section::<LinkConfig>("link") {
             Ok(c) if !c.name.is_empty() => c.name,
             _ => HOSTNAME.clone(),
@@ -740,6 +768,7 @@ impl ApiServer for Server {
             approvals,
             compact_style,
             subagent_timeout_secs,
+            max_tool_rounds,
             name,
         })
     }
@@ -876,6 +905,10 @@ impl ApiServer for Server {
 
     async fn set_subagent_timeout(&self, seconds: u64) -> RpcResult<()> {
         ask::<Agents, _>(agent::AGENT_ACTOR, SetSubagentTimeout { seconds }).await
+    }
+
+    async fn set_max_tool_rounds(&self, rounds: u32) -> RpcResult<()> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, SetMaxToolRounds { rounds }).await
     }
 
     async fn title_model(&self) -> RpcResult<Option<ModelInfo>> {
@@ -1309,6 +1342,18 @@ impl ApiServer for Server {
 
     async fn update_status(&self) -> RpcResult<Option<update::UpdateReady>> {
         send(&update_actor()?, update::Status).await
+    }
+
+    async fn speak(&self, session: SessionId, text: String) -> RpcResult<SpeechId> {
+        send(&voice()?, voice::Speak { session, text }).await
+    }
+
+    async fn stop_speaking(&self, id: Option<SpeechId>) -> RpcResult<()> {
+        send(&voice()?, voice::Stop { id }).await
+    }
+
+    async fn voice_status(&self) -> RpcResult<VoiceStatus> {
+        send(&voice()?, voice::Status).await
     }
 
     async fn fire_schedule(&self, name: String) -> RpcResult<SessionId> {

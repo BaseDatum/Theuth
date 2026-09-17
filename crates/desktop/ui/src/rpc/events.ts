@@ -13,7 +13,15 @@ import type { ScheduleEvent } from '@/rpc/bindings/ScheduleEvent'
 import type { SecretsEvent } from '@/rpc/bindings/SecretsEvent'
 import type { SignalEvent } from '@/rpc/bindings/SignalEvent'
 import type { SlackEvent } from '@/rpc/bindings/SlackEvent'
-import type { ArtifactShown, LoginFinished, ScrapeProgress, SessionDeleted, TitleChanged, ToolCallProgress } from '@/rpc/extra'
+import type {
+  ArtifactShown,
+  LoginFinished,
+  ScrapeProgress,
+  SessionDeleted,
+  TitleChanged,
+  ToolCallProgress,
+  VoiceEvent,
+} from '@/rpc/extra'
 
 /**
  * `AgentEvent` with the 25 §7 additions the bindings do not carry yet:
@@ -50,4 +58,5 @@ export type WireEvent =
   | SecretsEvent
   | ArtifactShown
   | ScrapeProgress
+  | VoiceEvent
   | Lagged

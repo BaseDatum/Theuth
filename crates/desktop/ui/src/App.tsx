@@ -12,6 +12,7 @@ import { describe } from '@/lib/describe'
 import { notifyIfHidden, primeNotifications } from '@/lib/notify'
 import { container } from '@/lib/platform'
 import { queryKeys, useInvalidateOn } from '@/lib/rpc'
+import { installSpeechListeners } from '@/lib/speech'
 import { connection, onNavigate, onQuitRequested, quitAck, relaunch } from '@/lib/tauri'
 import { startUpdateListener } from '@/lib/update'
 import { LOCAL, hasLocal, hydrateHarnesses, useHarnesses, useNeedsPairing } from '@/link/harnesses'
@@ -282,6 +283,7 @@ export function App() {
 
   useEffect(() => void hydrateHarnesses(), [])
   useEffect(watchNodes, [])
+  useEffect(installSpeechListeners, [])
 
   // The desktop's own daemon (25's launch path), relaunched on demand from the startup screen.
   useEffect(() => {

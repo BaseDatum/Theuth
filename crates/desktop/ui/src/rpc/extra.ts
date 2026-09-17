@@ -15,6 +15,7 @@ export type Info = {
   approvals: ApprovalsState
   compact_style: CompactStyle
   subagent_timeout_secs: number
+  max_tool_rounds: number
   /** Harness display name (`link.name`, else the hostname; 31 §6.4). */
   name: string
   /** `std::env::consts::OS`: `macos`, `linux`, … (32 §15 row 2). */
@@ -144,3 +145,31 @@ export type ScrapeProgress = {
   done: string[]
   limit: number
 }
+
+/** `voice::ModelState` (43 §4.3): the Pocket TTS model's lifecycle (`#[serde(tag = "state", rename_all = "snake_case")]`). */
+export type ModelState =
+  | { state: 'missing' }
+  | { state: 'loading' }
+  | { state: 'ready' }
+  | { state: 'failed'; message: string }
+
+/** `voice::FinishReason` (43 §4.4): why synthesis ended (`#[serde(tag = "reason", rename_all = "snake_case")]`). */
+export type FinishReason = { reason: 'done' } | { reason: 'stopped' } | { reason: 'error'; message: string }
+
+/** `voice_status()` (43 §4.3); `speaking` is the utterance in flight, a `SpeechId` (uuid string). */
+export type VoiceStatus = {
+  model: ModelState
+  voice: string
+  voices: string[]
+  speaking: string | null
+}
+
+/** `voice::VoiceEvent` (43 §4.4): model lifecycle and one utterance's audio, one Opus packet per `SpeechAudio`. */
+export type VoiceEvent =
+  | { type: 'VoiceModel'; state: ModelState }
+  /** The first packet is about to arrive; `chars` is the spoken text's length. */
+  | { type: 'SpeechStarted'; id: string; session: SessionId; sample_rate: number; chars: number }
+  /** One Opus packet (mono, 80 ms = 1920 samples at `sample_rate`), base64; `seq` starts at 0, no gaps. */
+  | { type: 'SpeechAudio'; id: string; session: SessionId; seq: number; opus: string }
+  /** `done` means every packet was published — playback may still have seconds to go. */
+  | { type: 'SpeechFinished'; id: string; session: SessionId; reason: FinishReason }

@@ -38,6 +38,7 @@ export const queryKeys = {
   computer: ['computer'] as const,
   secrets: ['secrets'] as const,
   updateStatus: ['update-status'] as const,
+  voice: ['voice'] as const,
 }
 
 const SESSIONS_DEBOUNCE_MS = 500

@@ -141,6 +141,73 @@ pub fn urls(text: &str) -> Vec<std::ops::Range<usize>> {
     out
 }
 
+/// Markdown as text to be read aloud (43): what a listener needs, nothing
+/// they cannot hear. Emphasis and links keep their text, bare URLs become
+/// `link`, images their alt text, code blocks the sentence `Code block
+/// omitted.`, tables read cell by cell; every block ends a sentence (terminal
+/// punctuation added if missing) on its own line. Empty ⇒ nothing to say.
+pub fn spoken(md: &str) -> String {
+    use pulldown_cmark::Options as O;
+    let po = O::ENABLE_STRIKETHROUGH | O::ENABLE_TABLES | O::ENABLE_TASKLISTS | O::ENABLE_FOOTNOTES;
+    /// Flush the sentence: collapse whitespace, bare URLs → `link`, terminal
+    /// punctuation, newline. URLs are found on the whole sentence because
+    /// the parser splits `Text` at `_` / `*` inside them (as [`autolink`]).
+    fn close(line: &mut String, out: &mut String) {
+        let words: Vec<&str> = line.split_whitespace().collect();
+        let s = words.join(" ");
+        let mut at = 0;
+        for r in urls(&s) {
+            out.push_str(&s[at..r.start]);
+            out.push_str("link");
+            at = r.end;
+        }
+        out.push_str(&s[at..]);
+        if !s.is_empty() {
+            if !s.ends_with(['.', '!', '?', ':', ';']) {
+                out.push('.');
+            }
+            out.push('\n');
+        }
+        line.clear();
+    }
+    let mut out = String::new();
+    let mut line = String::new();
+    // Depth inside content that is never spoken.
+    let mut skip = 0usize;
+    for ev in Parser::new_ext(md, po) {
+        match ev {
+            Event::Start(Tag::CodeBlock(_)) => {
+                close(&mut line, &mut out);
+                out.push_str("Code block omitted.\n");
+                skip += 1;
+            }
+            Event::Start(Tag::FootnoteDefinition(_) | Tag::MetadataBlock(_)) => skip += 1,
+            Event::End(
+                TagEnd::CodeBlock | TagEnd::FootnoteDefinition | TagEnd::MetadataBlock(_),
+            ) => {
+                skip -= 1;
+            }
+            _ if skip > 0 => {}
+            Event::Text(t) => line.push_str(&t),
+            Event::Code(c) => line.push_str(&c),
+            Event::SoftBreak | Event::HardBreak => line.push(' '),
+            Event::End(TagEnd::TableCell) => line.push_str(", "),
+            Event::End(TagEnd::TableRow | TagEnd::TableHead) => {
+                let n = line.strip_suffix(", ").map_or(line.len(), str::len);
+                line.truncate(n);
+                close(&mut line, &mut out);
+            }
+            Event::End(
+                TagEnd::Paragraph | TagEnd::Heading(_) | TagEnd::Item | TagEnd::BlockQuote(_),
+            ) => close(&mut line, &mut out),
+            _ => {}
+        }
+    }
+    close(&mut line, &mut out);
+    out.truncate(out.trim_end().len());
+    out
+}
+
 /// Split spans that carry no link around the bare URLs they contain.
 pub fn autolink(line: &mut Line) {
     if !line
@@ -1038,5 +1105,55 @@ mod tests {
             format!("{:?}", Options::default()),
             "Options { width: 0, fence: None }"
         );
+    }
+
+    #[test]
+    fn spoken_reads_what_a_listener_needs() {
+        let md = "\
+# Title
+
+Some *em* and **strong** and ~~gone~~ text with [a link](https://x.io) and
+bare https://a.io/x_(y).  Call `foo()`  now[^1].\\
+Image: ![alt text](pic.png) <b>html</b>
+
+- [ ] task one
+- item two
+
+> quoted
+
+---
+
+| h1 | h2 |
+|---|---|
+| c1 | c2 |
+
+```rust
+let x = 1;
+```
+
+    indented
+
+<div>
+block html
+</div>
+
+Math $x$ and $$y$$ done!
+
+[^1]: footnote body
+";
+        assert_eq!(
+            spoken(md),
+            "Title.\n\
+             Some em and strong and gone text with a link and bare link. Call foo() now. Image: alt text html.\n\
+             task one.\n\
+             item two.\n\
+             quoted.\n\
+             h1, h2.\n\
+             c1, c2.\n\
+             Code block omitted.\n\
+             Code block omitted.\n\
+             Math $x$ and $$y$$ done!"
+        );
+        assert_eq!(spoken("  \n"), "");
     }
 }

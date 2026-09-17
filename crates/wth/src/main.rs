@@ -192,6 +192,11 @@ agent:
 #   enabled: true            # false: no `show` tool, no prompt block, no /artifacts; blobs and index kept
 #   fonts: []                # extra directories searched for PDF fonts, besides system fonts and the embedded set
 
+# voice:                     # read replies aloud (design doc 43): Pocket TTS in-process, audio streamed to the frontend
+#   enabled: true            # false: no actor, `speak` answers \"not running\", the desktop shows no button
+#   voice: peter_yearsley    # one of the checkpoint's voices; `voice_status` lists them
+#   model_dir: ~             # a local Pocket TTS checkpoint directory; default <data_dir>/models/pocket-tts
+
 tools:
   policy:
     read_only: allow
@@ -435,6 +440,7 @@ async fn run() -> anyhow::Result<()> {
         plugins.push(Box::new(nodes::NodesPlugin));
         plugins.push(Box::new(schedule::SchedulePlugin));
         plugins.push(Box::new(update::UpdatePlugin));
+        plugins.push(Box::new(voice::VoicePlugin));
         if cli.serve || cli.headless {
             plugins.push(Box::new(rpc::RpcPlugin));
         }

@@ -25,6 +25,7 @@ use tools::{
     ApprovalRequested, ApprovalResolved, AskRequested, AskResolved, JobEvent, McpProgress,
 };
 use update::UpdateReady;
+use voice::VoiceEvent;
 use web::progress::ScrapeProgress;
 
 /// One serialized event; shared across every subscription without copying.
@@ -100,7 +101,8 @@ forward!(
     ArtifactShown,
     SecretsEvent,
     ScrapeProgress,
-    UpdateReady
+    UpdateReady,
+    VoiceEvent
 );
 
 /// The process-wide event feed. The first caller spawns the bridge,
@@ -137,5 +139,6 @@ pub async fn start(rt: &Runtime) -> broadcast::Sender<Event> {
     rt.subscribe::<Bridge, SecretsEvent>(&actor).await;
     rt.subscribe::<Bridge, ScrapeProgress>(&actor).await;
     rt.subscribe::<Bridge, UpdateReady>(&actor).await;
+    rt.subscribe::<Bridge, VoiceEvent>(&actor).await;
     tx
 }

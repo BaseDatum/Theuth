@@ -29,6 +29,11 @@ renders newly committed blocks once and records where each ends in the raw
 buffer; `finish()` commits the tail; `Text::complete(md)` for history replay;
 `raw()` for the verbatim text (copy, line printer).
 
+A third, small half (added in 43, 2026-09-17): `spoken(md) -> String`, the
+same event walk reduced to what a listener needs — link text without URLs,
+`Code block omitted.` for fences, headings and items as sentences. The `voice`
+plugin calls it on a reply before synthesis; nothing in the TUI does.
+
 **Reveal cursor.** Provider deltas are word-sized chunks; the eye wants a
 steady flow. `reveal(chars)` advances a cursor over the raw buffer at whatever
 pace the UI ticks; `view()` returns the blocks whose end the cursor has passed

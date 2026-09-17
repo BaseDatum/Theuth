@@ -1,0 +1,4 @@
+# audiopus_sys (opus, design doc 43) bundles a libopus whose CMakeLists predates
+# cmake 4's minimum; this lets cmake ≥ 4 configure it. Drop when audiopus_sys updates.
+[env]
+CMAKE_POLICY_VERSION_MINIMUM = "3.5"

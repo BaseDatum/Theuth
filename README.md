@@ -111,7 +111,7 @@ Typst; a content-addressed store under `~/.wth/artifacts/` —
 Config (`~/.wth/`, created on first run; details in
 [`docs/design/01-config-and-subagents.md`](docs/design/01-config-and-subagents.md) §1):
 
-- `config.yaml` — every plugin reads its own section; `WTH_<SECTION>__<KEY>` env overrides. `agent.model` is a models.dev id (`anthropic/claude-sonnet-4-5`); `/model` rewrites that one line in place. The `agent`, `tools`, `secrets`, `knowledge`, `web`, `scrape`, `search_providers`, `browser`, `computer`, `link`, `nodes`, `schedule`, `update`, `artifact` and `slack` sections with their defaults:
+- `config.yaml` — every plugin reads its own section; `WTH_<SECTION>__<KEY>` env overrides. `agent.model` is a models.dev id (`anthropic/claude-sonnet-4-5`); `/model` rewrites that one line in place. The `agent`, `tools`, `secrets`, `knowledge`, `web`, `scrape`, `search_providers`, `browser`, `computer`, `link`, `nodes`, `schedule`, `update`, `artifact`, `voice` and `slack` sections with their defaults:
 
   ```yaml
   agent:
@@ -182,6 +182,10 @@ Config (`~/.wth/`, created on first run; details in
   artifact:                       # design doc 35; the `show` tool, `/artifacts` lists a session's
     enabled: true                 # false: no `show` tool, no prompt block, no /artifacts; blobs and index kept
     fonts: []                     # extra directories searched for PDF fonts, besides system fonts and the embedded set
+  voice:                          # design doc 43; the desktop's Read-aloud button: Pocket TTS in the harness, Opus to the frontend
+    enabled: true                 # false: no actor, `speak` answers "not running", the desktop shows no button
+    voice: peter_yearsley         # a `voices/<name>.safetensors` in the checkpoint directory
+    # model_dir: ~/.wth/models/pocket-tts   # the Pocket TTS checkpoint (weights, tokenizer.model, voices/); this is the default
   slack:
     # owner: U0123456789           # owner-only commands, may click any approval, receives unbound approvals
     allowed: []                    # more user ids; each owns their threads

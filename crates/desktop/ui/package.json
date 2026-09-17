@@ -37,6 +37,7 @@
     "jsonrepair": "^3.13.0",
     "lucide-react": "^1.46.0",
     "mermaid": "^11.12.2",
+    "opus-decoder": "^0.7.12",
     "papaparse": "^5.7.0",
     "pdfjs-dist": "^6.3.289",
     "qrcode.react": "^4.2.0",

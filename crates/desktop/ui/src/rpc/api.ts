@@ -42,7 +42,7 @@ import type { ToolSpec } from '@/rpc/bindings/ToolSpec'
 import type { UpdateReady } from '@/rpc/bindings/UpdateReady'
 import type { JsonValue } from '@/rpc/bindings/serde_json/JsonValue'
 import type { RpcClient } from '@/rpc/client'
-import type { AgentInfo, Artifact, Info, LoadedPage, LoginInfo, ProviderInfo } from '@/rpc/extra'
+import type { AgentInfo, Artifact, Info, LoadedPage, LoginInfo, ProviderInfo, VoiceStatus } from '@/rpc/extra'
 
 /** `computer::PermissionStatus` (27 §6); hand-written until the bindings are regenerated. */
 export type PermissionStatus = {
@@ -186,6 +186,7 @@ export interface Api {
   set_approvals(session: SessionId | null, enabled: boolean): Promise<ApprovalsState>
   set_compact_style(style: CompactStyle): Promise<null>
   set_effort(session: SessionId | null, effort: string | null): Promise<null>
+  set_max_tool_rounds(rounds: number): Promise<null>
   set_mcp_gate(server: string, tool: string | null, gate: Gate | null): Promise<null>
   set_mcp_hidden(session: SessionId, tools: string[], hidden: boolean): Promise<null>
   set_model(session: SessionId | null, model: string): Promise<ModelInfo>
@@ -202,7 +203,11 @@ export interface Api {
   slack_remove_allowed(user: string): Promise<null>
   slack_remove_channel(channel: string): Promise<null>
   slack_status(): Promise<SlackStatus>
+  /** Read `text` (markdown) aloud in `session`'s name (43 §6); stops the current utterance first. Returns the `SpeechId`; audio follows as `SpeechAudio` events. `-32001` when the voice plugin is disabled. */
+  speak(session: SessionId, text: string): Promise<string>
   steer(session: SessionId, text: string, id: InputId | null, files: string[]): Promise<InputId>
+  /** Stop utterance `id`, or whatever is speaking when `null`; idempotent (43 §6). */
+  stop_speaking(id: string | null): Promise<null>
   sync_mcp(): Promise<SyncResult[]>
   sync_skills(): Promise<SyncResult[]>
   title_model(): Promise<ModelInfo | null>
@@ -210,6 +215,8 @@ export interface Api {
   /** The self-updater's latest state (39 §4.3). */
   update_status(): Promise<UpdateReady | null>
   use_skill(session: SessionId | null, name: string, args: string): Promise<SessionId>
+  /** Model state, voices and the utterance in flight (43 §6); `-32001` when the voice plugin is disabled. */
+  voice_status(): Promise<VoiceStatus>
   withdraw(session: SessionId, id: InputId): Promise<string>
 }
 
@@ -302,6 +309,7 @@ export const METHODS = [
   'set_approvals',
   'set_compact_style',
   'set_effort',
+  'set_max_tool_rounds',
   'set_mcp_gate',
   'set_mcp_hidden',
   'set_model',
@@ -319,13 +327,16 @@ export const METHODS = [
   'slack_remove_allowed',
   'slack_remove_channel',
   'slack_status',
+  'speak',
   'steer',
+  'stop_speaking',
   'sync_mcp',
   'sync_skills',
   'title_model',
   'undo',
   'update_status',
   'use_skill',
+  'voice_status',
   'withdraw',
 ] as const satisfies readonly (keyof Api)[]
 

@@ -2,13 +2,14 @@ import { code } from '@streamdown/code'
 import { createMermaidPlugin } from '@streamdown/mermaid'
 import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
-import { Check, Copy, GitFork, type LucideIcon, RefreshCw } from 'lucide-react'
+import { Check, Copy, GitFork, type LucideIcon, RefreshCw, Square, Volume2 } from 'lucide-react'
 import { memo, useState } from 'react'
 import { toast } from 'sonner'
 import { type PluginConfig, Streamdown } from 'streamdown'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { queryKeys, useApi } from '@/lib/rpc'
+import * as speech from '@/lib/speech'
 import { useSessionField, useSessions } from '@/store/sessions'
 import { JsonRenderFence } from './surface/JsonRenderFence'
 
@@ -129,6 +130,21 @@ export const MessageAssistant = memo(function MessageAssistant({
   const api = useApi()
   const running = useSessionField(session, 'running')
   const fork = useFork(session)
+  const voice = speech.useVoice()
+  const speaking = speech.useSpeaking()
+  const mine = speaking?.entry === id
+  const readAloud = () => {
+    if (speaking && mine) {
+      speech.stop()
+      speech.setSpeaking(null)
+      void api.stop_speaking(speaking.id)
+    } else {
+      api.speak(session, text).then(
+        (sid) => speech.setSpeaking({ id: sid, entry: id }),
+        (e: unknown) => toast.error(e instanceof Error ? e.message : String(e)),
+      )
+    }
+  }
   return (
     <div className="py-2">
       <Streamdown
@@ -142,6 +158,7 @@ export const MessageAssistant = memo(function MessageAssistant({
       </Streamdown>
       {!open && (
         <div className="-ml-2 flex">
+          {voice && <ActionButton icon={mine ? Square : Volume2} label={mine ? 'Stop' : 'Read aloud'} onClick={readAloud} />}
           <CopyButton text={text} />
           {turn != null && !running && (
             <>

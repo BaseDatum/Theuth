@@ -140,7 +140,7 @@ Shared crate `runtime` contains exactly `Plugin`, `Runtime` (+ the three
 helpers above), `SessionId`, `TurnId`. Nothing else. The tool and approval
 contracts live in `tools`; the agent's commands and its `AgentEvent` live in
 `agent`. Plugins depend on each other's crates for those types along the
-`runtime ← tools ← secrets ← knowledge ← agent ← link ← {signal, slack, nodes, schedule, artifact, update} ← rpc ← tui ← wth`
+`runtime ← tools ← secrets ← knowledge ← agent ← link ← {signal, slack, nodes, schedule, artifact, update, voice} ← rpc ← tui ← wth`
 (`knowledge` joins the chain in 12 §9; `secrets` in 37 §0.10 — `web`,
 `search-providers`, `agent`, `slack`, `rpc`, `signal` depend on it; `update`
 in 39: depends on `agent` only, `rpc` forwards its `UpdateReady`). This keeps the shared crate under
@@ -556,7 +556,9 @@ without a keychain), `mcp/`, `skills/`,
 (its run history; deleting it forgets, does not rebuild — 34 §7),
 `artifacts/` (content-addressed blobs shown with `show`, 35) and
 `artifacts.sqlite` (its index; deleting it orphans the blobs, swept at the
-next start — 35 §3.4)
+next start — 35 §3.4), `models/pocket-tts/` (the Pocket TTS checkpoint and
+`voices/*.safetensors` the `voice` plugin reads; `voice.model_dir` points
+elsewhere — 43 §4.2)
 beside it — `10-knowledge.md`. No shared `Config` struct: each plugin
 extracts its own section
 (`rt.config.extract_inner::<AgentConfig>("agent")`), so `runtime` never knows
@@ -598,6 +600,7 @@ crates/
   schedule/           plugin: scheduled runs from `schedules/*.md` — tick, one session per schedule, delivery (34)
   artifact/           plugin: show tool, content-addressed artifact store + index, Typst PDF compile and page render, SVG rasterise, prompt block + pdf skill (35)
   update/             plugin: silent self-update of the `wth` binary — manifest GET, minisign verify, atomic rename; `--update` (added in 39)
+  voice/              plugin: read replies aloud — Pocket TTS via `ptts`, `markdown::spoken`, Opus packets as `SpeechAudio` events (43)
   relay/              bin: wth-relay, stateless encrypted-frame relay (31)
   tui/                plugin: iocraft frontend (§8)
   desktop/            app: Tauri menubar frontend, RPC client of `Api` - not a plugin (designed in 25)
@@ -612,9 +615,11 @@ the `wth` bin; the rest were added by the docs named beside them, each as the ki
 the loop must own (store, frame, compact, repl); frontends do not grow it.
 New subsystems earn a plugin. `agent/src/lib.rs` re-exports; command structs
 live next to the handler that answers them (12 §8). Dependency order:
-`runtime ← tools ← secrets ← knowledge ← agent ← link ← {signal, slack, nodes, schedule, artifact, update} ← rpc ← tui ← wth`
+`runtime ← tools ← secrets ← knowledge ← agent ← link ← {signal, slack, nodes, schedule, artifact, update, voice} ← rpc ← tui ← wth`
 (`update` depends on `agent` and `runtime` only, `rpc` forwards
-`UpdateReady` and answers `update_status`, 39 §4.3;
+`UpdateReady` and answers `update_status`, 39 §4.3; `voice` depends on
+`runtime` and `markdown` only, `rpc` forwards `VoiceEvent` and answers
+`speak`/`stop_speaking`/`voice_status`, 43 §6;
 `web`, `search-providers`, `agent`, `slack`, `rpc`, `signal` depend on
 `secrets`; `agent` calls `tools::secrets::redact` from `tools`, 37 §0.10;
 `rpc` names `link`'s and `nodes`' types like every plugin's; `signal`
@@ -685,6 +690,8 @@ Workspace dependencies (versions verified 2026-09-09 via `cargo info`):
 | minisign-verify | 0.2 | update payload signatures, the updater plugin's own verifier (39) |
 | tar | 0.4 | extract the one-file CLI update tarball (39) |
 | tauri-plugin-updater | 2 | desktop: check + download at tick, install at quit (39; desktop only) |
+| ptts | 0.2 (git-pinned until 0.2.4 publishes `synth`) | Pocket TTS inference on CPU via `xn`, streaming, drop-to-cancel (43) |
+| opus | 0.3 | libopus encoder: 80 ms packets at 32 kbps for `SpeechAudio` (43; needs `CMAKE_POLICY_VERSION_MINIMUM=3.5`, set in `.cargo/config.toml`) |
 | wiremock | 0.6 dev | provider contract tests |
 
 Build prerequisites (23 §9): `cmake`, `clang`/`libclang` and `llvm-objcopy`/`llvm-nm` (brew `llvm`) for BoringSSL
@@ -828,3 +835,4 @@ captured `Blocked` fixtures; 16 §10).
   | control | `computer` crate | plugin | 27 (safety engine not ported: `Risk` covers it) |
   | scheduler | `schedule` crate: files, tick, one session per schedule, `Deliver` | plugin | 34 (heartbeat, goals briefings, task DAG, notify flags, phase plumbing not ported: each is a file the user writes or a primitive the harness already has) |
   | updater (Tauri shell only, 966 lines) | `update` crate: manifest, minisign, atomic rename over `current_exe()`; the `.app` via `tauri-plugin-updater` at quit | plugin | 39 (toast, modal, snooze, phases, relaunch, daemon hunting not ported: silent by construction) |
+  | voice | `voice` crate: Pocket TTS in process (`ptts`), one Opus packet per bus event, `speak`/`stop_speaking`/`voice_status` | plugin | 43 (system-voice fallback, per-message audio cache and TUI playback not ported) |
