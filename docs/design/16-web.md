@@ -428,6 +428,10 @@ are the best-tested part of the crate. `fetch/clean.rs` is replaced by
   server-rendered anyway. Kept fetch-first behind `scrape`'s prose gate
   (`is_thin`, 38 §0.3), which after that day measures prose, not markdown
   length, and so actually detects a shell.
+- **`Fetcher::request(method, url, headers, body) -> RawResponse`** (2026-09-17,
+  44 §0.6) beside `fetch`/`fetch_html`: same per-hop SSRF guard; non-2xx is
+  `Ok`; 301/302/303 → GET, 307/308 keep method and body. `routes` replays
+  learned routes through it.
 
 ## 6. Config and credentials
 

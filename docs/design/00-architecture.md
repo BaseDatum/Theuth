@@ -285,7 +285,9 @@ flowchart LR
   screenshots return as image parts of the tool result; alongside it
   `scrape_url` / `crawl` / `map_site` (38, added 2026-09-17) read a page or
   walk a site to markdown as runtime functions — plain fetch first, that
-  isolate only for thin pages. `message_user`
+  isolate only for thin pages. Routes (44): three `site_*` runtime
+  functions learn a page's XHR routes from the isolate and call them
+  without one; `ReadOnly`, safe methods only. `message_user`
   (24, added 2026-09-14): text plus files to the user on Slack or Signal,
   out of band; the session's bound thread, else every channel's owner,
   via a `UserSink` registry the two plugins fill at start
@@ -585,6 +587,7 @@ crates/
   search-providers/   plugin: optional Firecrawl, SearXNG, OpenSERP, Brave API (`brave_api`) registered with web over the bus; only firecrawl present by default, key-gated (16)
   firecrawl-native/   library: vendored Firecrawl crawler/html heuristics (AGPL; 38)
   scrape/             plugin: scrape_url / crawl / map_site, two-tier engine, BFS crawler, `scrape` render provider (38)
+  routes/             plugin: learn a site's JSON routes from the browser session; replay them over `web::Fetcher` (44)
   signal/             plugin: Signal channel and device pairing (added in 09)
   slack/              plugin: Slack channel over Socket Mode (added in 21)
   computer/           plugin: screenshot + pointer/keyboard tools (27)
@@ -655,7 +658,7 @@ Workspace dependencies (versions verified 2026-09-09 via `cargo info`):
 | slack-morphism | 2.28 (patched, 21 §2.1) | Slack Socket Mode + Web API |
 | portable-pty | 0.9 | pty open/spawn/read/write for PTY jobs (22) |
 | vt100 | 0.16 | rendered screen of a PTY job (22) |
-| obscura-mcp | git v0.2.2 (fork, 23 §3.3) | embedded headless browser: per-session isolates, agent tool layer (stealth + render) |
+| obscura-mcp | git v0.2.2 + 2 (fork, 23 §3.3, 44 §3.1) | embedded headless browser: per-session isolates, agent tool layer (stealth + render), network capture |
 | taffy / cosmic-text | obscura's vendored copies via `[patch]` (23 §2) | render layer |
 | btls-sys | 0.5.6 (fork, 23 §9) | wreq's BoringSSL: `links = "btls"` + symbol prefixing on macOS so it coexists with libsignal's boring-sys |
 | xcap | 0.9 (no default features) | display enumeration; capture off-macOS (27) |

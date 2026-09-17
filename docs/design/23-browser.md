@@ -172,7 +172,7 @@ engine has no CDP socket.
 
 `obscura-mcp` keeps its dispatch `pub(crate)` and its only public entry
 point, `run()`, is wired to the process's stdin/stdout. Fork
-`github.com/skymoore/obscura` (`main` = tag `v0.2.2` + one commit) exposes:
+`github.com/skymoore/obscura` (`main` = tag `v0.2.2` + two commits) exposes:
 
 ```rust
 pub fn tools() -> Vec<serde_json::Value>;               // the tools/list array
@@ -180,6 +180,9 @@ pub async fn call_tool(state: &mut BrowserState, name: &str, args: &serde_json::
     -> Result<serde_json::Value, String>;                // the tools/call `result` object
 pub fn has_active_page_runtime(&self) -> bool;           // on BrowserState
 pub async fn advance_active_page_tasks(&mut self) -> Result<bool, String>;
+// second commit (44 §3.1): tool `browser_network_capture { clear?: bool }` — on_response
+// exchanges with request headers and textual bodies; obscura-js `op_fetch` fixed so
+// `RequestInfo.headers` carries the *request* headers
 ```
 
 Result shape is MCP's: `{ "content": [ {type:"text", text} | {type:"image",
@@ -222,7 +225,9 @@ Every tool is `Risk::ReadOnly` (§0.7) except `browser_import_cookies`
 (`Mutating`). Not exposed: cookie export (`browser_storage_state`), per-cookie
 `get`/`set`/`clear`, PDF, `network_requests`, `console_messages`, `links`,
 `extract`, `detect_forms`, `fill_form`, `get_attribute`, `count`, `search`,
-`forward`, `reload`. They are one table row each when wanted.
+`forward`, `reload`. They are one table row each when wanted. The fork's
+`browser_network_capture` is consumed by the `routes` plugin (44 §3.2), not
+registered as a `browser_*` tool.
 
 `BrowserEvent` is the crate's one wire event (`#[serde(tag = "type")]`, one
 variant `BrowserShowLive { session }`), published on the bus like
@@ -293,6 +298,8 @@ browser:                        # design doc 23
   idle_secs: 300                # isolate teardown after inactivity
   max_chars: 4000               # default cap of browser_read / browser_open replies
   script_deadline_ms: 30000     # OBSCURA_SCRIPT_DEADLINE_MS for heavy SPAs
+  capture_entries: 256          # OBSCURA_NETWORK_BODY_BUFFER_ENTRIES: exchanges kept per page (44 §5)
+  capture_body_bytes: 2097152   # OBSCURA_NETWORK_BODY_BUFFER_BYTES: per captured body (44 §5)
 ```
 
 No credentials. `timezone` defaults to the host zone via `iana-time-zone`
@@ -347,7 +354,7 @@ Root manifest additions:
 
 ```toml
 # obscura-mcp: the agent tool layer of the obscura headless browser (23 §3.3).
-# Fork `main` = tag v0.2.2 + one commit exposing `tools()`/`call_tool()`.
+# Fork `main` = tag v0.2.2 + two commits: `tools()`/`call_tool()`, then `browser_network_capture` (44 §3.1).
 obscura-mcp = { git = "https://github.com/skymoore/obscura", branch = "main", features = ["stealth", "render"] }
 
 [patch.crates-io]

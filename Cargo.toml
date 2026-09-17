@@ -30,6 +30,7 @@ search-providers = { path = "crates/search-providers" }
 browser = { path = "crates/browser" }
 firecrawl-native = { path = "crates/firecrawl-native" }
 scrape = { path = "crates/scrape" }
+routes = { path = "crates/routes" }
 computer = { path = "crates/computer" }
 surface = { path = "crates/surface" }
 link = { path = "crates/link" }
@@ -147,12 +148,15 @@ arboard = { version = "3.6", default-features = false, features = ["image-data"]
 # Attachment mime check (17 §3.1); already in the tree via genai.
 mime_guess = "2"
 # Embedded headless browser (design doc 23 §3.3, §9): obscura's agent tool layer, in-process.
-# Fork `main` = tag v0.2.2 + one commit exposing `tools()`/`call_tool()`; `run()` upstream is
-# stdio-bound. `stealth` = wreq/BoringSSL TLS fingerprint (needs cmake + clang to build);
-# `render` = layout/paint for `browser_screenshot`. obscura-js only for the main-thread warmup.
+# Fork `main` = tag v0.2.2 + `tools()`/`call_tool()` (23 §3.3) + the
+# `browser_network_capture` tool (44 §3.1: on_response exchanges with request headers and
+# bodies, documents and fetch/XHR only).
+# `stealth` = wreq/BoringSSL TLS fingerprint (needs cmake + clang to build); `render` =
+# layout/paint for `browser_screenshot`. obscura-js only for the main-thread warmup.
 obscura-mcp = { git = "https://github.com/skymoore/obscura", branch = "main", features = ["stealth", "render"] }
 obscura-js = { git = "https://github.com/skymoore/obscura", branch = "main", features = ["stealth", "render"] }
 iana-time-zone = "0.1"
+psl = "2"  # routes (44): registrable domain
 # unjar (design doc 23 §7): read the user's real cookies from local browser
 # profiles (Chrome/Firefox/Edge/Brave/Chromium/Safari) so the agent can act as
 # the signed-in user. Library only (no CLI). Fork `main` = upstream + one commit
