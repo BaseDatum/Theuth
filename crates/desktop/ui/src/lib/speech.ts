@@ -7,6 +7,7 @@ import { OpusDecoder, type OpusDecoderSampleRate } from 'opus-decoder'
 import { useSyncExternalStore } from 'react'
 import { toast } from 'sonner'
 import { queryKeys, useApi } from '@/lib/rpc'
+import type { Api } from '@/rpc/api'
 import { RpcError } from '@/rpc/client'
 import type { FinishReason, ModelState } from '@/rpc/extra'
 import { useConnection } from '@/store/connection'
@@ -135,6 +136,32 @@ function idle(): Promise<void> {
   return promise
 }
 
+/**
+ * Utterances this client asked for. The harness publishes every `Speech*` event to every subscriber
+ * (desktop and phone alike); only the requester plays them, or a phone's tap comes out of the laptop.
+ */
+const mine = new Set<string>()
+let inflight = 0
+/** A `SpeechStarted` that arrived while a `speak` reply was in flight: held until the id is claimed. */
+let held: { id: string; sampleRate: number; packets: string[] } | null = null
+
+/** `speak` over RPC, claiming the returned id for playback here; `entry` is the assistant entry it reads. */
+export async function speak(api: Api, session: string, entry: string, text: string): Promise<void> {
+  inflight++
+  try {
+    const sid = await api.speak(session, text)
+    mine.add(sid)
+    setSpeaking({ id: sid, entry })
+    if (held?.id === sid) {
+      start(sid, held.sampleRate)
+      for (const p of held.packets) push(sid, p)
+    }
+    held = null
+  } finally {
+    inflight--
+  }
+}
+
 let queue: Promise<void> = Promise.resolve()
 
 /**
@@ -147,7 +174,7 @@ export function enqueue(session: string, entry: string, text: string): void {
     .then(idle)
     .then(async () => {
       const api = useConnection.getState().api
-      if (api) setSpeaking({ id: await api.speak(session, text), entry })
+      if (api) await speak(api, session, entry, text)
     })
     .catch((e: unknown) => console.warn('speak block', e))
 }
@@ -200,6 +227,7 @@ function onModel(state: ModelState): void {
 }
 
 function onFinished(speech: string, reason: FinishReason): void {
+  mine.delete(speech)
   const clear = () => {
     if (speaking?.id === speech) setSpeaking(null)
     if (id === speech) stop()
@@ -217,9 +245,18 @@ function onFinished(speech: string, reason: FinishReason): void {
 export function installSpeechListeners(): () => void {
   const offs = [
     on('VoiceModel', (e) => onModel(e.state)),
-    on('SpeechStarted', (e) => start(e.id, e.sample_rate)),
-    on('SpeechAudio', (e) => push(e.id, e.opus)),
-    on('SpeechFinished', (e) => onFinished(e.id, e.reason)),
+    on('SpeechStarted', (e) => {
+      if (mine.has(e.id)) start(e.id, e.sample_rate)
+      else if (inflight > 0) held = { id: e.id, sampleRate: e.sample_rate, packets: [] }
+    }),
+    on('SpeechAudio', (e) => {
+      if (mine.has(e.id)) push(e.id, e.opus)
+      else if (held?.id === e.id) held.packets.push(e.opus)
+    }),
+    on('SpeechFinished', (e) => {
+      if (held?.id === e.id) held = null
+      if (mine.has(e.id) || speaking?.id === e.id) onFinished(e.id, e.reason)
+    }),
     on('ToolCallPending', (e) => speakBlock(e.session)),
     on('TurnFinished', (e) => speakBlock(e.session)),
   ]
