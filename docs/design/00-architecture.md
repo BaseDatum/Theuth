@@ -709,7 +709,7 @@ Workspace dependencies (versions verified 2026-09-09 via `cargo info`):
 | roxmltree | 0.20 | sitemap `urlset` / `sitemapindex` parsing (firecrawl-native; 38) |
 | texting_robots | 0.2 | robots.txt: disallows, `Crawl-delay`, `Sitemap:` (firecrawl-native; 38) |
 | flate2 | 1 | gzip sitemaps inflated in the web fetcher (38); CLI update tarballs (39) |
-| slack-morphism | 2.28 (patched, 21 §2.1) | Slack Socket Mode + Web API |
+| slack-morphism | upstream Git rev e2a4b014 (PR #388 merged, unreleased; 21 §2.1) | Slack Socket Mode + Web API |
 | portable-pty | 0.9 | pty open/spawn/read/write for PTY jobs (22) |
 | vt100 | 0.16 | rendered screen of a PTY job (22) |
 | obscura-mcp | git v0.2.2 + 2 (fork, 23 §3.3, 44 §3.1) | embedded headless browser: per-session isolates, agent tool layer (stealth + render), network capture |

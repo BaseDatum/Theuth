@@ -29,7 +29,7 @@ around decisions this doc changes.
 | Two markdown dialects: stream `markdown_text` + a regex md→mrkdwn converter for `postMessage` fallbacks (F:608-771) | 1 000 lines, unhandled cases (nested lists, quotes, `_italic_`) | `markdown_text` everywhere (`postMessage`, `update`, `*Stream` all take it, 12 000 chars); `fmt.rs` does not exist |
 | `task_update` cards with only title + status, args and output withheld (C:486-500) | native look, zero observability | title = described args; `details` = first output line; full output uploaded and linked as a `source` (§8.3) |
 | slack-morphism 2.22 without `.with_rate_control` (K:828); approval countdown `chat.update` storms starved `postMessage` (C:5536) | 429s became dropped cards and lost appends | rate control on; no countdowns; one pacer for `appendStream` (§4.2) |
-| morphism's closed event enum failed on `app_context_changed` → unacked → Slack retried ×3 (C:4895) | log noise, duplicate work | `#[serde(other)] Unknown` in our patch (§2.1); unknown events are acked and counted |
+| morphism's closed event enum failed on `app_context_changed` → unacked → Slack retried ×3 (C:4895) | log noise, duplicate work | upstream `Unknown(Value)` (§2.1); unknown events are acked and counted |
 | Approvals/questions/loop-ack cards with short codes, `/jarvis` operator CLI (~1 700 lines) | product surface, not a frontend | one approval card, two buttons whose `value` is the `ApprovalId` (restart-safe, C:1856); `/wth` mirrors the Signal command table |
 | Only `channel:thread_ts → conversation` persisted; live streams lost on restart → dangling "streaming…" bubbles (C:394) | | `threads.json` also lists open stream `ts`; boot stops them (§11) |
 | No subagent visibility | | a thread per child + a board message in the parent (§9) |
@@ -103,8 +103,9 @@ seams already named (board, owner DM), not before.
 
 ### 2.1 Dependencies
 
-**slack-morphism 2.28** (`features = ["hyper"]`; active — 2.25→2.28 shipped
-between 2026-08-20 and 2026-09-09; Apache-2.0). It gives Socket Mode with
+**slack-morphism upstream Git** (`features = ["hyper"]`; Apache-2.0), pinned
+to `e2a4b014b2bedc82c1ccfeae1706e0f2d6a184a3` on upstream `master` (its default
+branch). PR #388 is merged there but not yet released to crates.io. It gives Socket Mode with
 reconnect, ping (15 s, 5 misses), per-envelope ack, 2 connections and
 `disconnect`-frame handling (`socket_mode/`), a rate controller that
 honours 429 `Retry-After` and per-tier throttles
@@ -114,21 +115,21 @@ block, `files.getUploadURLExternal`/`completeUploadExternal`,
 and a generic `http_post(method, &Req, rate_ctl)` (client.rs:318) for
 anything it lacks.
 
-What it lacks as of 2.28, verified in source, and what we do (00 §1.3:
-*patch dependencies when needed, don't wait on upstream*):
+The gaps in release 2.28 that our PR #388 filled, now supplied by upstream:
 
-| missing | where | patch |
+| former gap | where | upstream support |
 |---|---|---|
-| `agent_session_stopped`, `agent_session_title_changed`, `app_context_changed` events; any unknown event fails the whole envelope (`SlackEventCallbackBody`, push.rs:52-81; `from_str::<SlackSocketModeEvent>`, clients_manager_listener.rs:88) | events | add the three variants + `#[serde(other)] Unknown` (internally tagged enums support it) |
+| `agent_session_stopped`, `agent_session_title_changed`, `app_context_changed` events; unknown events failed the whole envelope | events | typed variants plus `Unknown(serde_json::Value)` retaining unmodelled payloads |
 | `markdown_text` on `SlackMessageContent` (`chat.postMessage`, `chat.update`) | chat.rs | one `Option<String>` field |
 | `chat.startStream` / `appendStream` / `stopStream` | — | request/response structs + three methods, T2/T4/T2 rate configs |
 | `agents.sessions.setStatus` / `rename` | assistant.rs has only `assistant.threads.*` | two methods, T3 |
 
-The patch is a fork at a pinned rev in `[patch.crates-io]` with the diff
-and this table as its reason; the same diff goes upstream as a PR and the
-patch drops when a release carries it. Until the fork exists, `api.rs`
-calls the same methods through `http_post` with local structs — day-one
-code, and the shape the upstream PR needs anyway.
+The workspace dependency points directly to upstream with an exact Git `rev`;
+there is no fork or `[patch.crates-io]` entry for Slack. Keep the Git pin until
+a release contains PR #388. The merged API uses `SlackTaskId`,
+`SlackTaskCardStatus` and `SlackTaskCardSource::Url(SlackUrlSourceElement)`;
+source URLs are parsed before sending and invalid URLs return an error.
+`chat.stopStream` carries footer blocks through its flattened `SlackMessageContent`.
 
 Two known integration facts, so nobody rediscovers them: callbacks are
 `fn` pointers taking `SlackClientEventsUserState` (callbacks.rs:28), so
@@ -912,9 +913,9 @@ after (00 §11 pattern); results are folded into §8 before step 3 of §18.
    exact error codes (§8.6 latch).
 6. `files.completeUploadExternal` with `thread_ts`: appears in the thread,
    not the channel.
-7. slack-morphism patch: `#[serde(other)] Unknown` on
-   `SlackEventCallbackBody` deserialises `app_context_changed`; the fork
-   builds against the workspace rustls set without a provider panic.
+7. slack-morphism: upstream `Unknown(Value)` on `SlackEventCallbackBody`
+   accepts unmodelled events; the dependency builds against the workspace
+   rustls set without a provider panic.
 
 ## 17. Open
 
@@ -933,8 +934,8 @@ after (00 §11 pattern); results are folded into §8 before step 3 of §18.
 Each step leaves `wth` runnable; formatters and the suite once per step.
 
 1. **Spikes** (§16) on a sandbox workspace; fold results into §8.
-2. **Fork + skeleton**: slack-morphism fork with the §2.1 table
-   (`[patch.crates-io]`, PR opened); `Cargo.toml`, `lib.rs` (config, actor,
+2. **Dependency + skeleton**: slack-morphism with the §2.1 APIs
+   (originally a fork, now upstream Git); `Cargo.toml`, `lib.rs` (config, actor,
    `SlackEvent`, `SlackStatus`, `Unconfigured`/`DaemonOnly`), `api.rs`
    façade + pacer, `socket.rs` listener + dedup; `markdown::Text::committed()`.
    Check: §15 items 1–2; `wth --headless` with tokens logs `Connected`, a DM
@@ -960,8 +961,8 @@ Each step leaves `wth` runnable; formatters and the suite once per step.
 
 Shipped: `crates/slack` (`lib`, `api`, `socket`, `channel`, `bubble`,
 `threads`, `commands`, `ui`, `approvals`, `board`, `setup`; `manifest.yaml`),
-the slack-morphism fork (`skymoore/slack-morphism-rust` master = v2.28.0 +
-four commits, upstream PR #388), `markdown::Text::committed()`, `rpc`
+slack-morphism (originally the four-commit fork; now upstream `master` pinned
+at `e2a4b014`, containing PR #388), `markdown::Text::committed()`, `rpc`
 methods/bridge/export, `wth --slack-manifest` / `--slack-setup`, README and
 00 amendments. Steps 1–7 of §18 done; §16 spikes 1–7 answered (facts in
 §8.3–8.5 and `local` notes: stream dies at ~5 min wall, 45 s idle survives,
@@ -969,6 +970,11 @@ methods/bridge/export, `wth --slack-manifest` / `--slack-setup`, README and
 repairs, `task_update.output` unbounded, `markdown_text` 12 000 enforced,
 files v2 into a thread works, `getUploadURLExternal` is form-encoded,
 permalinks need `chat.getPermalink` on Enterprise Grid).
+
+Dependency cutover (2026-09-18): exact upstream Git pin, fork patch removed,
+glue migrated to the merged typed task/source models and stop-stream content.
+Verified: 89 Slack tests, offline connector/request/event smoke and `wth` build.
+No live Slack API calls were made for this dependency change.
 
 Exercised: `cargo clippy --workspace -D warnings`, `cargo test --workspace`
 (slack: 73 tests — socket dedup, pacer spacing, bubble open/flush/keepalive/

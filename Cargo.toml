@@ -87,7 +87,8 @@ unicode-width = "0.2"
 jsonrepair-rs = "0.2"
 # OAuth login (design doc 05). reqwest major must match rmcp's.
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "form", "query", "http2", "stream"] }
-slack-morphism = { version = "2.28", features = ["hyper"] }  # Slack Socket Mode + Web API (design doc 21)
+# Upstream master includes PR #388; not yet in a crates.io release (21 §2.1).
+slack-morphism = { git = "https://github.com/abdolence/slack-morphism-rust", rev = "e2a4b014b2bedc82c1ccfeae1706e0f2d6a184a3", features = ["hyper"] }
 sha2 = "0.10"
 nucleo = "0.5"  # fzf/helix fuzzy scoring for session search (design doc 26)
 base64 = "0.22"
@@ -257,12 +258,6 @@ curve25519-dalek = { git = "https://github.com/signalapp/curve25519-dalek", tag 
 # crates (and of lopdf 0.44's `aes 0.9`, hence 1.15.0 → lopdf 0.42). Drop when that clears.
 anydoc = { git = "https://github.com/firecrawl/anydoc", tag = "v0.2.4" }
 pdf-inspector = { git = "https://github.com/firecrawl/pdf-inspector", tag = "v1.15.0" }
-# slack-morphism: chat.startStream/appendStream/stopStream, agents.sessions.setStatus/rename,
-# `markdown_text` on message content, agent_session_* events and an `Unknown` catch-all so an
-# unmodelled event no longer fails (and un-acks) the whole Socket Mode envelope. Fork `master`
-# = v2.28.0 + four commits (also branch `wth-agent-2.28`); the same commits are PR
-# https://github.com/abdolence/slack-morphism-rust/pull/388 upstream (design doc 21 §2.1).
-slack-morphism = { git = "https://github.com/skymoore/slack-morphism-rust", branch = "master" }
 # obscura vendors corrected taffy/cosmic-text under `vendor/` and patches them in its own
 # workspace; a git dependency's patches do not propagate, so we point at the same copies (23 §2).
 taffy = { git = "https://github.com/skymoore/obscura", branch = "main" }
