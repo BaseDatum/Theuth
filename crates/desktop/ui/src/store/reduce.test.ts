@@ -67,6 +67,17 @@ test('tool-only turns omit whitespace assistant rows', () => {
   expect(fromHistory({ role: 'assistant', text: ' \n', turn: 1 })).toEqual([])
 })
 
+test('stored todo continuation renders as a harness nudge with literal task text, not a user or tool', () => {
+  const body = 'Unfinished work:\n- Check &lt;button&gt; &amp; &amp;lt;literal&amp;gt;\nContinue working.'
+  const [entry] = fromHistory({ role: 'user', text: `<todo_continue>\n${body}\n</todo_continue>`, turn: null, context: msg(3) })
+  expect(entry).toMatchObject({
+    kind: 'nudge',
+    text: 'Unfinished work:\n- Check <button> & &lt;literal&gt;\nContinue working.',
+    context: msg(3),
+  })
+  expect(entry).not.toHaveProperty('turn')
+})
+
 test('pending tool is replaced by its start (same id), finished by call id, abandoned ones pruned', () => {
   let s = run([
     { type: 'TurnStarted', session: S, turn: T, text: 'x', model: 'm', turn_seq: 1 },

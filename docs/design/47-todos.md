@@ -154,6 +154,12 @@ markup into structural delimiters. Reuse the normal todo renderer where
 possible. The exact prose is not an API. Typed state, not this wrapper or an
 assistant's final sentence, controls eligibility.
 
+The desktop transcript renders this wrapper as a collapsible **Nudge** card
+with a bell icon and harness attribution, distinct from a user message or a
+model tool call. Expanding it shows the reminder body as literal text, with
+wrapper escaping decoded once. Stored nudges retain the usual context-removal
+and archive controls; other hidden harness notes remain hidden.
+
 ## 3. The quiescence contract
 
 ### 3.1 Scope and predicate

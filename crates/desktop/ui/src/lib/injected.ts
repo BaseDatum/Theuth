@@ -5,6 +5,7 @@ export type Injected =
   | { kind: 'subagent'; name: string; text: string }
   | { kind: 'job'; id: string; command: string; exit: string; secs: string; pty: boolean; text: string }
   | { kind: 'schedule'; name: string; at: string; quiet: boolean; text: string }
+  | { kind: 'nudge'; text: string }
 
 /** Wrappers that render a card, with the attribute naming the sender, and wrappers that render nothing. */
 const CARD: Record<string, string> = { subagent_result: 'name="', message: 'from="', job_result: 'id="', schedule: 'name="' }
@@ -19,7 +20,7 @@ const attr = (open: string, key: string) => open.split(key, 2)[1]?.split('"', 1)
  * plus the user's words) is one card; an input made entirely of harness
  * wrappers (`<subagent_result>`, `<message>`, `<job_result>`, `<schedule>` blocks joined
  * by newlines, harness notes such as `<context_summary>`) is one card per
- * block, notes yielding none. `null` for human text (or anything not
+ * block: todo nudges are visible, other notes yield none. `null` for human text (or anything not
  * entirely made of wrappers).
  */
 export function classify(text: string): Injected[] | null {
@@ -36,11 +37,17 @@ export function classify(text: string): Injected[] | null {
     const open = rest.slice(1, gt)
     const name = open.split(' ', 1)[0] as string
     const key = CARD[name]
-    if (key === undefined && !HIDDEN[name]) return null
+    if (key === undefined && !HIDDEN[name] && open !== 'todo_continue') return null
     const close = `</${name}>`
     const end = rest.indexOf(close, gt)
     if (end < 0) return null
-    if (key !== undefined) {
+    if (open === 'todo_continue') {
+      const body = rest.slice(gt + 1, end).trim()
+        .replaceAll('&lt;', '<')
+        .replaceAll('&gt;', '>')
+        .replaceAll('&amp;', '&')
+      out.push({ kind: 'nudge', text: body })
+    } else if (key !== undefined) {
       const from = attr(open, key)
       if (from === undefined) return null
       let body = rest.slice(gt + 1, end)

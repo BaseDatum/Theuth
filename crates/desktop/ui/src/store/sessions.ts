@@ -65,6 +65,7 @@ export type Entry = { id: string; context?: ContextEntry } & (
     }
   /** `⟵ from` card: a peer message, a subagent result or a job result. */
   | { kind: 'peer'; from: string; text: string }
+  | { kind: 'nudge'; text: string }
   | { kind: 'info'; text: string }
   | { kind: 'error'; text: string }
   | { kind: 'compacted'; epoch: number; style: CompactStyle; summary?: string }

@@ -16,6 +16,15 @@ test('harness notes render nothing', () => {
   expect(classify('<context_summary>\nfolded\n</context_summary>\n<todo>x</todo>')).toEqual([])
 })
 
+test('todo nudges compose with harness blocks but never swallow surrounding human text', () => {
+  expect(classify('<todo>x</todo>\n<todo_continue>\nContinue working\n</todo_continue>')).toEqual([
+    { kind: 'nudge', text: 'Continue working' },
+  ])
+  expect(classify('Explain this: <todo_continue>work</todo_continue>')).toBeNull()
+  expect(classify('<todo_continue>work</todo_continue> is what I saw')).toBeNull()
+  expect(classify('<todo_continue>unterminated')).toBeNull()
+})
+
 test('peer and subagent blocks joined by newlines are one card each', () => {
   expect(
     classify('<message from="parent">\nhi\n</message>\n<subagent_result name="Scout">\ndone\n\n</subagent_result>'),

@@ -1,4 +1,4 @@
-import { Trash2 } from 'lucide-react'
+import { BellRing, ChevronRight, Trash2 } from 'lucide-react'
 import { memo, type ReactNode, useState } from 'react'
 import type { Prompt } from '@/store/approvals'
 import type { Entry } from '@/store/sessions'
@@ -25,6 +25,8 @@ function body(entry: Entry, session: string) {
       return <MessageTool tool={entry} session={session} />
     case 'peer':
       return <MessagePeer from={entry.from} text={entry.text} />
+    case 'nudge':
+      return <HarnessNudge text={entry.text} />
     case 'info':
       return <MessageInfo text={entry.text} />
     case 'error':
@@ -32,6 +34,23 @@ function body(entry: Entry, session: string) {
     case 'compacted':
       return <MessageCompacted epoch={entry.epoch} style={entry.style} summary={entry.summary} />
   }
+}
+
+/** A harness continuation, not a user request or a model tool call. Task text stays literal. */
+function HarnessNudge({ text }: { text: string }) {
+  return (
+    <details className="group/nudge my-2 min-w-0 rounded-xl border border-info-border/30 bg-info-bg/40 px-4 py-3 text-sm">
+      <summary className="flex min-h-11 cursor-pointer list-none items-center gap-3 rounded-sm focus-visible:outline-2 [&::-webkit-details-marker]:hidden">
+        <BellRing className="size-4 shrink-0 text-info" aria-hidden="true" />
+        <span className="min-w-0 flex-1">
+          <span className="block font-medium text-info">Nudge</span>
+          <span className="block text-xs text-fg-secondary">The harness asked the model to continue unfinished todos.</span>
+        </span>
+        <ChevronRight className="size-4 shrink-0 text-info transition-transform group-open/nudge:rotate-90" aria-hidden="true" />
+      </summary>
+      <div className="mt-3 border-t border-info-border/20 pt-3 leading-6 wrap-anywhere whitespace-pre-wrap text-fg-secondary">{text}</div>
+    </details>
+  )
 }
 
 /** What the tombstone names. */
@@ -47,6 +66,8 @@ function describe(entry: Entry): string {
       return `tool ${entry.name}`
     case 'peer':
       return `message from ${entry.from}`
+    case 'nudge':
+      return 'nudge'
     case 'compacted':
       return 'summary'
     default:
@@ -83,7 +104,7 @@ function Tombstone({ entry, session }: { entry: Entry; session: string }) {
   )
 }
 
-/** Tool and peer cards keep their own layout (`show`/scrape cards included); the remove control sits over the card's
+/** Tool, peer and harness cards keep their own layout (`show`/scrape cards included); the remove control sits over the card's
  * top-right corner as a sibling, with the card padded so no text hides under it. Cards without stored membership
  * (live, unsaved rows) get nothing: a button without an authoritative target would only be guessing. */
 function Card({ entry, session, children }: { entry: Entry; session: string; children: ReactNode }) {
@@ -110,12 +131,12 @@ export function PromptCard({ prompt }: { prompt: Prompt }) {
 }
 
 /** One transcript row: the entry's card plus the prompts waiting on it. Entries are immutable and `session` is stable, so `memo` skips untouched rows.
- * A row removed from context (48 §2.2) collapses to a tombstone; user/assistant cards own their remove action, tool/peer cards get it from `Card`. */
+ * A row removed from context (48 §2.2) collapses to a tombstone; user/assistant cards own their remove action, tool/peer/harness cards get it from `Card`. */
 export const Message = memo(function Message({ entry, prompts, session }: { entry: Entry; prompts: Prompt[] | null; session: string }) {
   const card =
     entry.context?.removed ? (
       <Tombstone entry={entry} session={session} />
-    ) : entry.kind === 'tool' || entry.kind === 'peer' ? (
+    ) : entry.kind === 'tool' || entry.kind === 'peer' || entry.kind === 'nudge' ? (
       <Card entry={entry} session={session}>
         {body(entry, session)}
       </Card>

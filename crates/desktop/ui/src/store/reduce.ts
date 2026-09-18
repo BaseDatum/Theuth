@@ -138,6 +138,8 @@ function userEntries(text: string, cls: Injected[] | null, injected?: true, turn
         }
       case 'schedule':
         return { id: nextId(), kind: 'peer', from: `${c.name} · ${hhmm(c.at)}`, text: c.text, context }
+      case 'nudge':
+        return { id: nextId(), kind: 'nudge', text: c.text, context }
     }
   })
 }
