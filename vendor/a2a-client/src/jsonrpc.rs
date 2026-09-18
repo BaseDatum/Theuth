@@ -1,0 +1,2210 @@
+// Copyright AGNTCY Contributors (https://github.com/agntcy)
+// SPDX-License-Identifier: Apache-2.0
+use a2a::*;
+use a2a_pb::protojson_conv::{self, ProtoJsonPayload};
+use async_trait::async_trait;
+use futures::stream::{self, BoxStream, StreamExt};
+use reqwest::Client;
+use std::collections::VecDeque;
+
+use serde_json::Value;
+
+use crate::push_config_compat::{
+    deserialize_list_task_push_notification_configs_response,
+    deserialize_task_push_notification_config,
+    serialize_create_task_push_notification_config_request,
+};
+use crate::transport::{ServiceParams, Transport, TransportFactory};
+
+fn parse_jsonrpc_error(err: JsonRpcError) -> A2AError {
+    let details: Vec<TypedDetail> = err
+        .data
+        .and_then(|data| match data {
+            Value::Array(a) => Some(a),
+            _ => None,
+        })
+        .map(|arr| {
+            arr.into_iter()
+                .filter_map(|v| serde_json::from_value::<TypedDetail>(v).ok())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    crate::a2a_error_from_details(err.code, err.message, details)
+}
+
+/// JSON-RPC transport implementation.
+///
+/// Sends all requests as JSON-RPC 2.0 POSTs to a single endpoint.
+/// Streaming responses are received via Server-Sent Events (SSE).
+pub struct JsonRpcTransport {
+    client: Client,
+    endpoint: String,
+}
+
+impl JsonRpcTransport {
+    /// Build a `JsonRpcTransport` from a pre-constructed `reqwest::Client`.
+    pub fn new(client: Client, endpoint: String) -> Self {
+        JsonRpcTransport { client, endpoint }
+    }
+
+    async fn call_value_with_payload(
+        &self,
+        params: &ServiceParams,
+        method: &str,
+        payload: serde_json::Value,
+    ) -> Result<serde_json::Value, A2AError> {
+        let id = JsonRpcId::String(uuid::Uuid::now_v7().to_string());
+        let rpc_request = JsonRpcRequest::new(id, method, Some(payload));
+
+        let mut builder = self.client.post(&self.endpoint);
+        for (key, values) in params {
+            for v in values {
+                builder = builder.header(key, v);
+            }
+        }
+
+        let response = builder
+            .json(&rpc_request)
+            .send()
+            .await
+            .map_err(|e| A2AError::internal(format!("HTTP request failed: {e}")))?;
+
+        let rpc_response: JsonRpcResponse = read_bounded_json(response, "JSON-RPC response").await?;
+
+        if let Some(err) = rpc_response.error {
+            return Err(parse_jsonrpc_error(err));
+        }
+
+        rpc_response
+            .result
+            .ok_or_else(|| A2AError::internal("JSON-RPC response missing result"))
+    }
+
+    async fn call_value<Req>(
+        &self,
+        params: &ServiceParams,
+        method: &str,
+        request_params: &Req,
+    ) -> Result<serde_json::Value, A2AError>
+    where
+        Req: ProtoJsonPayload,
+    {
+        let payload = protojson_conv::to_value(request_params).map_err(|e| {
+            A2AError::internal(format!("failed to serialize request as ProtoJSON: {e}"))
+        })?;
+
+        self.call_value_with_payload(params, method, payload).await
+    }
+
+    async fn call<Req, Resp>(
+        &self,
+        params: &ServiceParams,
+        method: &str,
+        request_params: &Req,
+    ) -> Result<Resp, A2AError>
+    where
+        Req: ProtoJsonPayload,
+        Resp: ProtoJsonPayload,
+    {
+        let result = self.call_value(params, method, request_params).await?;
+
+        protojson_conv::from_value(result)
+            .map_err(|e| A2AError::internal(format!("failed to deserialize result: {e}")))
+    }
+
+    async fn call_streaming<Req>(
+        &self,
+        params: &ServiceParams,
+        method: &str,
+        request_params: &Req,
+    ) -> Result<BoxStream<'static, Result<StreamResponse, A2AError>>, A2AError>
+    where
+        Req: ProtoJsonPayload,
+    {
+        let id = JsonRpcId::String(uuid::Uuid::now_v7().to_string());
+        let payload = protojson_conv::to_value(request_params).map_err(|e| {
+            A2AError::internal(format!("failed to serialize request as ProtoJSON: {e}"))
+        })?;
+        let rpc_request = JsonRpcRequest::new(id, method, Some(payload));
+
+        let mut builder = self
+            .client
+            .post(&self.endpoint)
+            .header("Accept", "text/event-stream");
+        for (key, values) in params {
+            for v in values {
+                builder = builder.header(key, v);
+            }
+        }
+
+        let response = builder
+            .json(&rpc_request)
+            .send()
+            .await
+            .map_err(|e| A2AError::internal(format!("HTTP request failed: {e}")))?;
+
+        // A JSON-RPC error answering a streaming call arrives as a normal
+        // (non-SSE) JSON body with HTTP 200, since JSON-RPC reports failures
+        // in the envelope rather than via status code. Detect that case by
+        // content type before handing the body to the SSE parser, which
+        // would otherwise find no `data:` frames and yield an empty stream.
+        // A response with no content type is still treated as a stream:
+        // reading it to inspect it would hang on a stream that has not sent
+        // anything yet.
+        let is_event_stream = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .map(|v| v.as_bytes().starts_with(b"text/event-stream"))
+            .unwrap_or(true);
+
+        if is_event_stream {
+            let stream = response.bytes_stream();
+            Ok(parse_sse_stream(stream))
+        } else {
+            let rpc_response: JsonRpcResponse =
+                read_bounded_json(response, "JSON-RPC response").await?;
+
+            match rpc_response.error {
+                Some(err) => Err(parse_jsonrpc_error(err)),
+                None => Err(A2AError::internal(
+                    "expected streaming response but got non-streaming JSON-RPC result",
+                )),
+            }
+        }
+    }
+}
+
+/// Find the end of an SSE event boundary in a byte buffer.
+///
+/// SSE line terminators per https://html.spec.whatwg.org/multipage/server-sent-events.html#event-stream-interpretation:
+/// `\n\n`, `\r\r`, and `\r\n\r\n` are all valid event separators.
+pub(crate) fn find_event_boundary(buf: &[u8]) -> Option<(usize, usize)> {
+    for i in 0..buf.len().saturating_sub(1) {
+        if buf[i] == b'\n' && buf[i + 1] == b'\n' {
+            return Some((i, i + 2));
+        }
+        if buf[i] == b'\r' && buf[i + 1] == b'\r' {
+            return Some((i, i + 2));
+        }
+        if i + 3 < buf.len() && &buf[i..i + 4] == b"\r\n\r\n" {
+            return Some((i, i + 4));
+        }
+    }
+    None
+}
+
+/// Interpret whatever is left in the buffer when the byte stream ends.
+///
+/// Anything not terminated by an SSE event boundary would otherwise be
+/// dropped, turning a cut stream into an empty, successfully-closed one.
+/// Three shapes reach here:
+///
+/// 1. a final SSE event the server never terminated with a blank line —
+///    parsed through the same callback as a framed event, so it works for
+///    both the JSON-RPC and REST bindings;
+/// 2. a plain JSON-RPC envelope, from a server that answered a streaming
+///    call with an error and either omitted `Content-Type` (which
+///    [`send_streaming_message`] must assume is a stream, since inspecting
+///    the body would hang one that has not sent anything yet) or declared
+///    `text/event-stream` and sent an envelope anyway;
+/// 3. trailing whitespace, which servers commonly send and which means the
+///    stream ended cleanly.
+///
+/// Anything else is reported rather than swallowed: a non-empty tail that
+/// parses as neither means the stream was cut mid-message, and ending
+/// silently is the one answer that is always wrong.
+pub(crate) fn parse_stream_tail(
+    buf: &[u8],
+    parse_event: &dyn Fn(&str) -> Option<Result<StreamResponse, A2AError>>,
+) -> Option<Result<StreamResponse, A2AError>> {
+    let text = match std::str::from_utf8(buf) {
+        Ok(text) => text,
+        Err(error) => {
+            return Some(Err(A2AError::internal(format!(
+                "SSE UTF-8 decode error at end of stream: {error}"
+            ))));
+        }
+    };
+
+    if text.trim().is_empty() {
+        return None;
+    }
+
+    // An unterminated final event: same parse as the framed path.
+    if text.lines().any(|line| line.starts_with("data:")) {
+        return parse_event(text);
+    }
+
+    // A plain JSON-RPC envelope answering the streaming call.
+    if let Ok(response) = serde_json::from_str::<JsonRpcResponse>(text) {
+        if let Some(error) = response.error {
+            return Some(Err(parse_jsonrpc_error(error)));
+        }
+        if let Some(result) = response.result {
+            return Some(match protojson_conv::from_value::<StreamResponse>(result) {
+                Ok(event) => Ok(event),
+                Err(error) => Err(A2AError::internal(format!(
+                    "failed to parse JSON-RPC result at end of stream: {error}"
+                ))),
+            });
+        }
+    }
+
+    Some(Err(A2AError::internal(format!(
+        "stream ended with {} unparseable trailing byte(s); the connection was probably cut \
+         mid-message",
+        buf.len()
+    ))))
+}
+
+/// Upper bound on the raw bytes of one SSE event (everything before its
+/// blank-line terminator) that the shared parser will buffer before parsing
+/// it. A peer that never sends the terminator, or sends one enormous frame,
+/// otherwise grows the reassembly buffer without limit; post-decode domain
+/// caps run too late to help. Exceeding it yields one `A2AError` and ends the
+/// stream. The bound is on the event, not on HTTP chunk size: a chunk carrying
+/// many small events is drained event by event.
+pub const MAX_SSE_EVENT_BYTES: usize = 64 * 1024;
+
+/// Upper bound on the raw bytes of one unary (non-SSE) HTTP response body,
+/// enforced while the body is read and before any JSON decoding. Without it
+/// `Response::json()` buffers whatever the peer sends. Sized so a task carrying
+/// 1 MiB of artifact text plus its JSON envelope still fits.
+pub const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
+
+/// Read a unary response body, failing once it exceeds [`MAX_RESPONSE_BYTES`].
+/// A declared `Content-Length` over the cap is refused before the first byte.
+pub(crate) async fn read_bounded_body(response: reqwest::Response) -> Result<Vec<u8>, A2AError> {
+    let too_large = || A2AError::internal(format!("response body exceeds {MAX_RESPONSE_BYTES} bytes"));
+    if response.content_length().is_some_and(|n| n > MAX_RESPONSE_BYTES as u64) {
+        return Err(too_large());
+    }
+    let mut body = Vec::new();
+    let mut chunks = response.bytes_stream();
+    while let Some(chunk) = chunks.next().await {
+        let chunk = chunk.map_err(|e| A2AError::internal(format!("failed to read response body: {e}")))?;
+        if body.len() + chunk.len() > MAX_RESPONSE_BYTES {
+            return Err(too_large());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+/// [`read_bounded_body`] then `serde_json`; `what` names the payload in the error.
+pub(crate) async fn read_bounded_json<T: serde::de::DeserializeOwned>(
+    response: reqwest::Response,
+    what: &str,
+) -> Result<T, A2AError> {
+    let body = read_bounded_body(response).await?;
+    serde_json::from_slice(&body)
+        .map_err(|e| A2AError::internal(format!("failed to parse {what}: {e}")))
+}
+
+/// Longest SSE event terminator (`\r\n\r\n`), in bytes.
+const SSE_TERMINATOR_MAX: usize = 4;
+
+/// Shared SSE byte-stream parser that abstracts over the event-parse callback.
+///
+/// `parse_event` is invoked on each complete `\n\n`/`\r\r`/`\r\n\r\n`-delimited
+/// event; it should return `Some(result)` to emit the event or `None` to skip it.
+fn parse_sse_bytes<F>(
+    stream: impl futures::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send + 'static,
+    parse_event: F,
+) -> BoxStream<'static, Result<StreamResponse, A2AError>>
+where
+    F: Fn(&str) -> Option<Result<StreamResponse, A2AError>> + Clone + Send + 'static,
+{
+    let mapped = stream::unfold(
+        (
+            // Fused: after the tail is emitted the unfold polls once more,
+            // and polling a stream after it has returned `None` is allowed
+            // to panic.
+            Box::pin(stream.fuse()),
+            Vec::<u8>::new(),
+            VecDeque::new(),
+            parse_event,
+            // Set once an event exceeded `MAX_SSE_EVENT_BYTES`: the error is
+            // queued behind any events already parsed, then the stream ends
+            // without reading (or draining) any more of the body.
+            false,
+        ),
+        |(mut stream, mut buf, mut pending, parse_event, mut closed)| async move {
+            loop {
+                // Drain already-parsed events before reading more bytes.
+                // Ensures all events from a single chunk are delivered before
+                // polling the stream again.
+                if let Some(item) = pending.pop_front() {
+                    return Some((item, (stream, buf, pending, parse_event, closed)));
+                }
+                if closed {
+                    return None;
+                }
+                match stream.next().await {
+                    Some(Ok(chunk)) => {
+                        // Keep the buffer as raw bytes; defer UTF-8 decoding to event boundaries.
+                        let mut rest = &chunk[..];
+                        loop {
+                            // Append at most one maximal event plus its longest
+                            // terminator, so the buffer never holds more than
+                            // the cap before the check below, and a chunk of
+                            // many small events is measured per event.
+                            let room = MAX_SSE_EVENT_BYTES + SSE_TERMINATOR_MAX - buf.len();
+                            let n = rest.len().min(room);
+                            buf.extend_from_slice(&rest[..n]);
+                            rest = &rest[n..];
+                            while let Some((start, end)) = find_event_boundary(&buf) {
+                                if start > MAX_SSE_EVENT_BYTES {
+                                    closed = true;
+                                    break;
+                                }
+                                let event_bytes: Vec<u8> = buf.drain(..end).collect();
+                                let event_text = match std::str::from_utf8(&event_bytes[..start]) {
+                                    Ok(s) => s,
+                                    Err(e) => {
+                                        pending.push_back(Err(A2AError::internal(format!(
+                                            "SSE UTF-8 decode error: {e}"
+                                        ))));
+                                        continue;
+                                    }
+                                };
+
+                                if let Some(result) = parse_event(event_text) {
+                                    pending.push_back(result);
+                                }
+                            }
+                            // No boundary: at most `SSE_TERMINATOR_MAX - 1` trailing
+                            // bytes can be a partial terminator; the rest is event.
+                            if closed || buf.len() >= MAX_SSE_EVENT_BYTES + SSE_TERMINATOR_MAX {
+                                closed = true;
+                                buf = Vec::new();
+                                pending.push_back(Err(A2AError::internal(format!(
+                                    "SSE event exceeds {MAX_SSE_EVENT_BYTES} bytes; stream closed"
+                                ))));
+                                break;
+                            }
+                            if rest.is_empty() {
+                                break;
+                            }
+                        }
+                    }
+                    Some(Err(e)) => {
+                        pending
+                            .push_back(Err(A2AError::internal(format!("SSE stream error: {e}"))));
+                    }
+                    None => {
+                        // End of stream: interpret the residual buffer
+                        // rather than dropping it (#197).
+                        let tail = std::mem::take(&mut buf);
+                        return parse_stream_tail(&tail, &parse_event)
+                            .map(|item| (item, (stream, buf, pending, parse_event, closed)));
+                    }
+                }
+            }
+        },
+    );
+
+    Box::pin(mapped)
+}
+
+/// Parse an SSE byte stream into StreamResponse events (JSON-RPC envelope).
+fn parse_sse_stream(
+    stream: impl futures::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send + 'static,
+) -> BoxStream<'static, Result<StreamResponse, A2AError>> {
+    parse_sse_bytes(stream, |event_text| {
+        // Extract `data:` lines from the SSE event
+        let mut data = String::new();
+        for line in event_text.lines() {
+            if let Some(d) = line.strip_prefix("data: ") {
+                if !data.is_empty() {
+                    data.push('\n');
+                }
+                data.push_str(d);
+            } else if let Some(d) = line.strip_prefix("data:") {
+                if !data.is_empty() {
+                    data.push('\n');
+                }
+                data.push_str(d);
+            }
+        }
+        if data.is_empty() {
+            return None;
+        }
+
+        // Try JSON-RPC envelope first
+        match serde_json::from_str::<JsonRpcResponse>(&data) {
+            Ok(rpc_resp) => {
+                if let Some(err) = rpc_resp.error {
+                    return Some(Err(parse_jsonrpc_error(err)));
+                }
+                if let Some(result) = rpc_resp.result {
+                    match protojson_conv::from_value::<StreamResponse>(result) {
+                        Ok(sr) => Some(Ok(sr)),
+                        Err(e) => Some(Err(A2AError::internal(format!("SSE parse error: {e}")))),
+                    }
+                } else {
+                    None
+                }
+            }
+            Err(_) => {
+                // Fallback: parse directly as StreamResponse
+                match protojson_conv::from_str::<StreamResponse>(&data) {
+                    Ok(sr) => Some(Ok(sr)),
+                    Err(e) => Some(Err(A2AError::internal(format!("SSE parse error: {e}")))),
+                }
+            }
+        }
+    })
+}
+
+/// Parse an SSE byte stream into StreamResponse events (REST binding).
+/// Unlike the JSON-RPC variant, this expects data lines to contain
+/// raw StreamResponse JSON (not wrapped in a JSON-RPC envelope).
+pub(crate) fn parse_sse_stream_rest(
+    stream: impl futures::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send + 'static,
+) -> BoxStream<'static, Result<StreamResponse, A2AError>> {
+    parse_sse_bytes(stream, |event_text| {
+        let mut data = String::new();
+        for line in event_text.lines() {
+            if let Some(d) = line.strip_prefix("data: ") {
+                if !data.is_empty() {
+                    data.push('\n');
+                }
+                data.push_str(d);
+            } else if let Some(d) = line.strip_prefix("data:") {
+                if !data.is_empty() {
+                    data.push('\n');
+                }
+                data.push_str(d);
+            }
+        }
+        if data.is_empty() {
+            return None;
+        }
+
+        match protojson_conv::from_str::<StreamResponse>(&data) {
+            Ok(sr) => Some(Ok(sr)),
+            Err(e) => Some(Err(A2AError::internal(format!("SSE parse error: {e}")))),
+        }
+    })
+}
+
+#[async_trait]
+impl Transport for JsonRpcTransport {
+    async fn send_message(
+        &self,
+        params: &ServiceParams,
+        req: &SendMessageRequest,
+    ) -> Result<SendMessageResponse, A2AError> {
+        self.call(params, methods::SEND_MESSAGE, req).await
+    }
+
+    async fn send_streaming_message(
+        &self,
+        params: &ServiceParams,
+        req: &SendMessageRequest,
+    ) -> Result<BoxStream<'static, Result<StreamResponse, A2AError>>, A2AError> {
+        self.call_streaming(params, methods::SEND_STREAMING_MESSAGE, req)
+            .await
+    }
+
+    async fn get_task(
+        &self,
+        params: &ServiceParams,
+        req: &GetTaskRequest,
+    ) -> Result<Task, A2AError> {
+        self.call(params, methods::GET_TASK, req).await
+    }
+
+    async fn list_tasks(
+        &self,
+        params: &ServiceParams,
+        req: &ListTasksRequest,
+    ) -> Result<ListTasksResponse, A2AError> {
+        self.call(params, methods::LIST_TASKS, req).await
+    }
+
+    async fn cancel_task(
+        &self,
+        params: &ServiceParams,
+        req: &CancelTaskRequest,
+    ) -> Result<Task, A2AError> {
+        self.call(params, methods::CANCEL_TASK, req).await
+    }
+
+    async fn subscribe_to_task(
+        &self,
+        params: &ServiceParams,
+        req: &SubscribeToTaskRequest,
+    ) -> Result<BoxStream<'static, Result<StreamResponse, A2AError>>, A2AError> {
+        self.call_streaming(params, methods::SUBSCRIBE_TO_TASK, req)
+            .await
+    }
+
+    async fn create_push_config(
+        &self,
+        params: &ServiceParams,
+        req: &TaskPushNotificationConfig,
+    ) -> Result<TaskPushNotificationConfig, A2AError> {
+        let payload = serialize_create_task_push_notification_config_request(req)?;
+        let result = self
+            .call_value_with_payload(params, methods::CREATE_PUSH_CONFIG, payload)
+            .await?;
+        deserialize_task_push_notification_config(result)
+    }
+
+    async fn get_push_config(
+        &self,
+        params: &ServiceParams,
+        req: &GetTaskPushNotificationConfigRequest,
+    ) -> Result<TaskPushNotificationConfig, A2AError> {
+        let result = self
+            .call_value(params, methods::GET_PUSH_CONFIG, req)
+            .await?;
+        deserialize_task_push_notification_config(result)
+    }
+
+    async fn list_push_configs(
+        &self,
+        params: &ServiceParams,
+        req: &ListTaskPushNotificationConfigsRequest,
+    ) -> Result<ListTaskPushNotificationConfigsResponse, A2AError> {
+        let result = self
+            .call_value(params, methods::LIST_PUSH_CONFIGS, req)
+            .await?;
+        deserialize_list_task_push_notification_configs_response(result)
+    }
+
+    async fn delete_push_config(
+        &self,
+        params: &ServiceParams,
+        req: &DeleteTaskPushNotificationConfigRequest,
+    ) -> Result<(), A2AError> {
+        let id = JsonRpcId::String(uuid::Uuid::now_v7().to_string());
+        let request_params = protojson_conv::to_value(req).map_err(|e| {
+            A2AError::internal(format!("failed to serialize request as ProtoJSON: {e}"))
+        })?;
+        let rpc_request =
+            JsonRpcRequest::new(id, methods::DELETE_PUSH_CONFIG, Some(request_params));
+
+        let mut builder = self.client.post(&self.endpoint);
+        for (key, values) in params {
+            for v in values {
+                builder = builder.header(key, v);
+            }
+        }
+
+        let response = builder
+            .json(&rpc_request)
+            .send()
+            .await
+            .map_err(|e| A2AError::internal(format!("HTTP request failed: {e}")))?;
+
+        let rpc_response: JsonRpcResponse = read_bounded_json(response, "JSON-RPC response").await?;
+
+        if let Some(err) = rpc_response.error {
+            return Err(parse_jsonrpc_error(err));
+        }
+
+        Ok(())
+    }
+
+    async fn get_extended_agent_card(
+        &self,
+        params: &ServiceParams,
+        req: &GetExtendedAgentCardRequest,
+    ) -> Result<AgentCard, A2AError> {
+        self.call(params, methods::GET_EXTENDED_AGENT_CARD, req)
+            .await
+    }
+
+    async fn destroy(&self) -> Result<(), A2AError> {
+        Ok(())
+    }
+}
+
+/// Factory for creating [`JsonRpcTransport`] instances.
+pub struct JsonRpcTransportFactory {
+    client: Client,
+}
+
+impl JsonRpcTransportFactory {
+    pub fn new(client: Option<Client>) -> Self {
+        JsonRpcTransportFactory {
+            client: client
+                .unwrap_or_else(|| crate::default_reqwest_client(None).expect("default client")),
+        }
+    }
+
+    #[cfg(any(
+        feature = "rustls-tls",
+        feature = "rustls-no-provider",
+        feature = "native-tls"
+    ))]
+    pub fn with_root_certificates_pem(pem: &[u8]) -> Result<Self, A2AError> {
+        Ok(Self {
+            client: crate::default_reqwest_client(Some(pem))?,
+        })
+    }
+}
+
+#[async_trait]
+impl TransportFactory for JsonRpcTransportFactory {
+    fn protocol(&self) -> &str {
+        TRANSPORT_PROTOCOL_JSONRPC
+    }
+
+    async fn create(
+        &self,
+        _card: &AgentCard,
+        iface: &AgentInterface,
+    ) -> Result<Box<dyn Transport>, A2AError> {
+        Ok(Box::new(JsonRpcTransport::new(
+            self.client.clone(),
+            iface.url.clone(),
+        )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use a2a_pb::protojson_conv;
+    use futures::StreamExt;
+    use serde_json::{Value, json};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio::sync::oneshot;
+
+    /// Helper: build an SSE byte stream from raw text chunks.
+    fn byte_stream(
+        chunks: Vec<String>,
+    ) -> impl futures::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send + 'static {
+        stream::iter(
+            chunks
+                .into_iter()
+                .map(|s| Ok(bytes::Bytes::from(s)))
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    async fn spawn_jsonrpc_server(response_body: String) -> (String, oneshot::Receiver<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (request_tx, request_rx) = oneshot::channel();
+
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut socket).await;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                response_body.len(),
+                response_body,
+            );
+
+            let _ = request_tx.send(request);
+            socket.write_all(response.as_bytes()).await.unwrap();
+        });
+
+        (format!("http://{addr}"), request_rx)
+    }
+
+    async fn spawn_jsonrpc_sse_server(sse_body: String) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let _request = read_http_request(&mut socket).await;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\ncache-control: no-cache\r\nconnection: close\r\n\r\n{}",
+                sse_body.len(),
+                sse_body,
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+        });
+
+        format!("http://{addr}")
+    }
+
+    async fn read_http_request(socket: &mut TcpStream) -> String {
+        let mut buffer = Vec::new();
+        let mut chunk = [0_u8; 1024];
+        let mut expected_len = None;
+
+        loop {
+            let read = socket.read(&mut chunk).await.unwrap();
+            if read == 0 {
+                break;
+            }
+            buffer.extend_from_slice(&chunk[..read]);
+
+            if expected_len.is_none() {
+                if let Some(header_end) = find_header_end(&buffer) {
+                    let headers = String::from_utf8_lossy(&buffer[..header_end]);
+                    expected_len = Some(header_end + parse_content_length(&headers));
+                }
+            }
+
+            if let Some(total_len) = expected_len {
+                if buffer.len() >= total_len {
+                    break;
+                }
+            }
+        }
+
+        String::from_utf8(buffer).unwrap()
+    }
+
+    fn find_header_end(buffer: &[u8]) -> Option<usize> {
+        buffer
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .map(|position| position + 4)
+    }
+
+    fn parse_content_length(headers: &str) -> usize {
+        headers
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().ok())
+                    .flatten()
+            })
+            .unwrap_or(0)
+    }
+
+    fn sample_create_push_config_request() -> TaskPushNotificationConfig {
+        TaskPushNotificationConfig {
+            task_id: "task-1".into(),
+            url: "https://example.invalid/webhook".into(),
+            id: Some("cfg-1".into()),
+            token: Some("secret-token".into()),
+            authentication: Some(AuthenticationInfo {
+                scheme: "Bearer".into(),
+                credentials: Some("credential".into()),
+            }),
+            tenant: Some("tenant-1".into()),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_parse_sse_stream_jsonrpc_envelope() {
+        // Build a JSON-RPC response wrapping a StreamResponse (StatusUpdate)
+        let status_update = TaskStatusUpdateEvent {
+            task_id: "t1".into(),
+            context_id: "c1".into(),
+            status: TaskStatus {
+                state: TaskState::Working,
+                message: None,
+                timestamp: None,
+            },
+            metadata: None,
+        };
+        let sr = StreamResponse::StatusUpdate(status_update);
+        let result_val = protojson_conv::to_value(&sr).unwrap();
+        let rpc_resp = JsonRpcResponse::success(JsonRpcId::Number(1), result_val);
+        let data = serde_json::to_string(&rpc_resp).unwrap();
+        let sse_text = format!("data: {}\n\n", data);
+
+        let stream = byte_stream(vec![sse_text]);
+        let mut parsed = parse_sse_stream(stream);
+        let item = parsed.next().await.unwrap().unwrap();
+        assert!(matches!(item, StreamResponse::StatusUpdate(_)));
+        assert!(parsed.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_parse_sse_stream_jsonrpc_error() {
+        let rpc_resp = JsonRpcResponse::error(
+            JsonRpcId::Number(1),
+            JsonRpcError {
+                code: -32600,
+                message: "bad request".into(),
+                data: None,
+            },
+        );
+        let data = serde_json::to_string(&rpc_resp).unwrap();
+        let sse_text = format!("data: {}\n\n", data);
+
+        let stream = byte_stream(vec![sse_text]);
+        let mut parsed = parse_sse_stream(stream);
+        let item = parsed.next().await.unwrap();
+        assert!(item.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_parse_sse_stream_direct_stream_response() {
+        // When the data is not a valid JSON-RPC envelope, try parsing directly as StreamResponse
+        let status_update = TaskStatusUpdateEvent {
+            task_id: "t1".into(),
+            context_id: "c1".into(),
+            status: TaskStatus {
+                state: TaskState::Completed,
+                message: None,
+                timestamp: None,
+            },
+            metadata: None,
+        };
+        let sr = StreamResponse::StatusUpdate(status_update);
+        let data = serde_json::to_string(&protojson_conv::to_value(&sr).unwrap()).unwrap();
+        let sse_text = format!("data: {}\n\n", data);
+
+        let stream = byte_stream(vec![sse_text]);
+        let mut parsed = parse_sse_stream(stream);
+        let item = parsed.next().await.unwrap().unwrap();
+        assert!(matches!(item, StreamResponse::StatusUpdate(_)));
+    }
+
+    #[tokio::test]
+    async fn test_parse_sse_stream_rest_ok() {
+        let status_update = TaskStatusUpdateEvent {
+            task_id: "t1".into(),
+            context_id: "c1".into(),
+            status: TaskStatus {
+                state: TaskState::Working,
+                message: None,
+                timestamp: None,
+            },
+            metadata: None,
+        };
+        let sr = StreamResponse::StatusUpdate(status_update);
+        let data = serde_json::to_string(&protojson_conv::to_value(&sr).unwrap()).unwrap();
+        let sse_text = format!("data: {}\n\n", data);
+
+        let stream = byte_stream(vec![sse_text]);
+        let mut parsed = parse_sse_stream_rest(stream);
+        let item = parsed.next().await.unwrap().unwrap();
+        assert!(matches!(item, StreamResponse::StatusUpdate(_)));
+    }
+
+    #[tokio::test]
+    async fn test_parse_sse_stream_rest_parse_error() {
+        let sse_text = "data: not-valid-json\n\n".to_string();
+        let stream = byte_stream(vec![sse_text]);
+        let mut parsed = parse_sse_stream_rest(stream);
+        let item = parsed.next().await.unwrap();
+        assert!(item.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_parse_sse_stream_empty_data_lines_skipped() {
+        // Event with no data: lines should be skipped
+        let sr = StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
+            task_id: "t1".into(),
+            context_id: "c1".into(),
+            status: TaskStatus {
+                state: TaskState::Completed,
+                message: None,
+                timestamp: None,
+            },
+            metadata: None,
+        });
+        let data = serde_json::to_string(&protojson_conv::to_value(&sr).unwrap()).unwrap();
+        // First event has no data, second has data
+        let sse_text = format!("event: ping\n\ndata: {}\n\n", data);
+
+        let stream = byte_stream(vec![sse_text]);
+        let mut parsed = parse_sse_stream_rest(stream);
+        let item = parsed.next().await.unwrap().unwrap();
+        assert!(matches!(item, StreamResponse::StatusUpdate(_)));
+    }
+
+    #[tokio::test]
+    async fn test_parse_sse_stream_chunked_delivery() {
+        // Data arrives split across multiple chunks
+        let sr = StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
+            task_id: "t1".into(),
+            context_id: "c1".into(),
+            status: TaskStatus {
+                state: TaskState::Completed,
+                message: None,
+                timestamp: None,
+            },
+            metadata: None,
+        });
+        let data = serde_json::to_string(&protojson_conv::to_value(&sr).unwrap()).unwrap();
+        let full = format!("data: {}\n\n", data);
+        let mid = full.len() / 2;
+        let chunk1 = full[..mid].to_string();
+        let chunk2 = full[mid..].to_string();
+
+        let stream = byte_stream(vec![chunk1, chunk2]);
+        let mut parsed = parse_sse_stream_rest(stream);
+        let item = parsed.next().await.unwrap().unwrap();
+        assert!(matches!(item, StreamResponse::StatusUpdate(_)));
+    }
+
+    #[tokio::test]
+    async fn test_parse_sse_stream_data_no_space() {
+        // data:VALUE (no space after colon) is valid SSE
+        let sr = StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
+            task_id: "t1".into(),
+            context_id: "c1".into(),
+            status: TaskStatus {
+                state: TaskState::Completed,
+                message: None,
+                timestamp: None,
+            },
+            metadata: None,
+        });
+        let data = serde_json::to_string(&protojson_conv::to_value(&sr).unwrap()).unwrap();
+        let sse_text = format!("data:{}\n\n", data);
+
+        let stream = byte_stream(vec![sse_text]);
+        let mut parsed = parse_sse_stream_rest(stream);
+        let item = parsed.next().await.unwrap().unwrap();
+        assert!(matches!(item, StreamResponse::StatusUpdate(_)));
+    }
+
+    #[tokio::test]
+    async fn test_parse_sse_stream_multiple_events_separate_chunks() {
+        let make_sr = |state| {
+            StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
+                task_id: "t1".into(),
+                context_id: "c1".into(),
+                status: TaskStatus {
+                    state,
+                    message: None,
+                    timestamp: None,
+                },
+                metadata: None,
+            })
+        };
+        let sr1 =
+            serde_json::to_string(&protojson_conv::to_value(&make_sr(TaskState::Working)).unwrap())
+                .unwrap();
+        let sr2 = serde_json::to_string(
+            &protojson_conv::to_value(&make_sr(TaskState::Completed)).unwrap(),
+        )
+        .unwrap();
+        let chunk1 = format!("data: {}\n\n", sr1);
+        let chunk2 = format!("data: {}\n\n", sr2);
+
+        let stream = byte_stream(vec![chunk1, chunk2]);
+        let items: Vec<_> = parse_sse_stream_rest(stream).collect().await;
+        assert_eq!(items.len(), 2);
+        assert!(items[0].is_ok());
+        assert!(items[1].is_ok());
+    }
+
+    /// Regression: multiple complete SSE events packed into a single byte
+    /// chunk must all be delivered, even when the upstream byte stream ends
+    /// immediately after that chunk.
+    #[tokio::test]
+    async fn test_parse_sse_stream_multiple_events_single_chunk() {
+        let make_status = |state| {
+            StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
+                task_id: "t1".into(),
+                context_id: "c1".into(),
+                status: TaskStatus {
+                    state,
+                    message: None,
+                    timestamp: None,
+                },
+                metadata: None,
+            })
+        };
+        let rpc_payload = |sr: StreamResponse, id: i64| -> String {
+            let result = protojson_conv::to_value(&sr).unwrap();
+            serde_json::to_string(&JsonRpcResponse::success(JsonRpcId::Number(id), result)).unwrap()
+        };
+        let combined = format!(
+            "data: {}\n\ndata: {}\n\n",
+            rpc_payload(make_status(TaskState::Working), 1),
+            rpc_payload(make_status(TaskState::Completed), 2),
+        );
+
+        // All events in one chunk; stream ends immediately after.
+        let stream = byte_stream(vec![combined]);
+        let items: Vec<_> = parse_sse_stream(stream).collect().await;
+        assert_eq!(
+            items.len(),
+            2,
+            "both events must be delivered even when packed into a single \
+             byte chunk followed by end-of-stream; got {items:?}",
+        );
+        assert!(items[0].is_ok());
+        assert!(items[1].is_ok());
+    }
+
+    /// REST-binding counterpart of
+    /// [`test_parse_sse_stream_multiple_events_single_chunk`]. Same
+    /// drain-buffer bug existed in `parse_sse_stream_rest`.
+    #[tokio::test]
+    async fn test_parse_sse_stream_rest_multiple_events_single_chunk() {
+        let make_status = |state| {
+            StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
+                task_id: "t1".into(),
+                context_id: "c1".into(),
+                status: TaskStatus {
+                    state,
+                    message: None,
+                    timestamp: None,
+                },
+                metadata: None,
+            })
+        };
+        let encode = |sr: StreamResponse| -> String {
+            serde_json::to_string(&protojson_conv::to_value(&sr).unwrap()).unwrap()
+        };
+        let combined = format!(
+            "data: {}\n\ndata: {}\n\n",
+            encode(make_status(TaskState::Working)),
+            encode(make_status(TaskState::Completed)),
+        );
+
+        let stream = byte_stream(vec![combined]);
+        let items: Vec<_> = parse_sse_stream_rest(stream).collect().await;
+        assert_eq!(
+            items.len(),
+            2,
+            "both events must be delivered even when packed into a single \
+             byte chunk followed by end-of-stream; got {items:?}",
+        );
+        assert!(items[0].is_ok());
+        assert!(items[1].is_ok());
+    }
+
+    /// Regression: a multi-byte UTF-8 character split across two byte chunks
+    /// must be decoded intact.  Per-chunk `String::from_utf8_lossy` corrupts
+    /// it into U+FFFD; per-event strict decode reassembles it correctly.
+    #[tokio::test]
+    async fn test_parse_sse_stream_split_multibyte_utf8() {
+        // Build `data: {"statusUpdate":{..., "message":{..., "parts":[{"text":"中"}]}}}\n\n`
+        // and split the 3-byte UTF-8 encoding of "中" across two byte chunks.
+        let message = Message {
+            message_id: "m-1".into(),
+            role: Role::Agent,
+            parts: vec![Part::text("中")],
+            context_id: None,
+            task_id: Some("t1".into()),
+            metadata: None,
+            extensions: None,
+            reference_task_ids: None,
+        };
+        let status_update = TaskStatusUpdateEvent {
+            task_id: "t1".into(),
+            context_id: "c1".into(),
+            status: TaskStatus {
+                state: TaskState::Working,
+                message: Some(message),
+                timestamp: None,
+            },
+            metadata: None,
+        };
+        let sr = StreamResponse::StatusUpdate(status_update);
+        let result = protojson_conv::to_value(&sr).unwrap();
+        let rpc_resp = JsonRpcResponse::success(JsonRpcId::Number(1), result);
+        let data = serde_json::to_string(&rpc_resp).unwrap();
+        let sse_text = format!("data: {data}\n\n");
+        let bytes = sse_text.as_bytes();
+
+        // Find the first multi-byte UTF-8 sequence and split it down the middle.
+        let zhong_start = bytes
+            .windows(3)
+            .position(|w| w == [0xE4, 0xB8, 0xAD])
+            .expect("payload must contain the UTF-8 encoding of '中'");
+        let split = zhong_start + 1;
+        let chunk1 = String::from_utf8_lossy(&bytes[..split]).into_owned();
+        let chunk2 = String::from_utf8_lossy(&bytes[split..]).into_owned();
+        // Sanity: the naive per-chunk lossy decode we just used for the test
+        // setup really did corrupt the payload, so the assertion below is
+        // meaningful (the parser must do better).
+        assert!(
+            chunk1.ends_with(char::REPLACEMENT_CHARACTER)
+                || chunk2.starts_with(char::REPLACEMENT_CHARACTER),
+            "test setup should split a multi-byte char so naive decode corrupts it",
+        );
+
+        // But we feed the parser the ORIGINAL bytes, not the corrupted strings.
+        let raw1 = bytes[..split].to_vec();
+        let raw2 = bytes[split..].to_vec();
+        let raw_stream = stream::iter(vec![
+            Ok::<_, reqwest::Error>(bytes::Bytes::from(raw1)),
+            Ok::<_, reqwest::Error>(bytes::Bytes::from(raw2)),
+        ]);
+        let items: Vec<_> = parse_sse_stream(raw_stream).collect().await;
+        assert_eq!(items.len(), 1, "expected one event, got {items:?}");
+        let event = items.into_iter().next().unwrap().expect("decoded");
+        match event {
+            StreamResponse::StatusUpdate(su) => {
+                let msg = su.status.message.expect("message present");
+                let text = match &msg.parts[0].content {
+                    PartContent::Text(t) => t.clone(),
+                    other => panic!("expected text part, got {other:?}"),
+                };
+                assert_eq!(text, "中", "multi-byte char must survive chunk split");
+            }
+            other => panic!("expected StatusUpdate, got {other:?}"),
+        }
+    }
+
+    /// Invalid UTF-8 inside a complete event must surface an error rather
+    /// than silently producing U+FFFD replacement characters.
+    #[tokio::test]
+    async fn test_parse_sse_stream_invalid_utf8_surfaces_error() {
+        // "data: " prefix is ASCII; follow it with an invalid UTF-8 byte
+        // sequence (a lone continuation byte), then the \n\n terminator.
+        let mut bytes = b"data: ".to_vec();
+        bytes.push(0xFF); // never valid in UTF-8
+        bytes.extend_from_slice(b"\n\n");
+        let raw_stream = stream::iter(vec![Ok::<_, reqwest::Error>(bytes::Bytes::from(bytes))]);
+        let items: Vec<_> = parse_sse_stream(raw_stream).collect().await;
+        assert_eq!(items.len(), 1, "expected one error item, got {items:?}");
+        let err = items.into_iter().next().unwrap().expect_err("should error");
+        assert!(
+            err.to_string().contains("UTF-8"),
+            "error should mention UTF-8 decoding: {err}",
+        );
+    }
+
+    /// JSON-RPC envelope whose `result` is not a valid `StreamResponse`
+    /// must surface a parse error instead of silently dropping the event.
+    #[tokio::test]
+    async fn test_parse_sse_stream_invalid_protojson_result_surfaces_error() {
+        let rpc_resp = JsonRpcResponse::success(
+            JsonRpcId::Number(1),
+            serde_json::json!({"not_a_stream_response_field": 42}),
+        );
+        let data = serde_json::to_string(&rpc_resp).unwrap();
+        let sse_text = format!("data: {data}\n\n");
+        let stream = byte_stream(vec![sse_text]);
+        let items: Vec<_> = parse_sse_stream(stream).collect().await;
+        assert_eq!(items.len(), 1, "expected one error item, got {items:?}");
+        let err = items.into_iter().next().unwrap().expect_err("should error");
+        assert!(
+            err.to_string().contains("parse error"),
+            "error should mention parse error: {err}",
+        );
+    }
+
+    /// Direct `StreamResponse` JSON (JSON-RPC fallback path) that fails
+    /// protojson conversion must surface a parse error.
+    #[tokio::test]
+    async fn test_parse_sse_stream_direct_invalid_protojson_surfaces_error() {
+        // Not a JSON-RPC envelope (missing `jsonrpc`/`id`) and not a valid
+        // StreamResponse — exercises the `Err(_)` fallback branch.
+        let sse_text = "data: {\"foo\":\"bar\"}\n\n".to_string();
+        let stream = byte_stream(vec![sse_text]);
+        let items: Vec<_> = parse_sse_stream(stream).collect().await;
+        assert_eq!(items.len(), 1, "expected one error item, got {items:?}");
+        let err = items.into_iter().next().unwrap().expect_err("should error");
+        assert!(
+            err.to_string().contains("parse error"),
+            "error should mention parse error: {err}",
+        );
+    }
+
+    /// Errors yielded by the underlying byte stream must be surfaced to the
+    /// consumer rather than swallowed.  `futures::stream::iter` only accepts
+    /// `Ok` variants typed as `reqwest::Error`, so we need an actual
+    /// reqwest::Error instance — obtained by issuing a request against an
+    /// address that cannot accept a connection.
+    #[tokio::test]
+    async fn test_parse_sse_stream_surfaces_stream_errors() {
+        // Produce a real reqwest::Error by hitting a listener we bound and
+        // then dropped, so the connect fails immediately.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let err = crate::default_reqwest_client(None)
+            .unwrap()
+            .get(format!("http://{addr}/"))
+            .send()
+            .await
+            .expect_err("connection should fail");
+
+        let s = stream::iter(vec![Err::<bytes::Bytes, reqwest::Error>(err)]);
+        let items: Vec<_> = parse_sse_stream(s).collect().await;
+        assert_eq!(items.len(), 1, "expected one error item, got {items:?}");
+        let got = items.into_iter().next().unwrap().expect_err("should error");
+        assert!(
+            got.to_string().contains("SSE stream error"),
+            "error should mention SSE stream error: {got}",
+        );
+    }
+
+    /// REST variant of [`test_parse_sse_stream_surfaces_stream_errors`].
+    #[tokio::test]
+    async fn test_parse_sse_stream_rest_surfaces_stream_errors() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let err = crate::default_reqwest_client(None)
+            .unwrap()
+            .get(format!("http://{addr}/"))
+            .send()
+            .await
+            .expect_err("connection should fail");
+
+        let s = stream::iter(vec![Err::<bytes::Bytes, reqwest::Error>(err)]);
+        let items: Vec<_> = parse_sse_stream_rest(s).collect().await;
+        assert_eq!(items.len(), 1, "expected one error item, got {items:?}");
+        let got = items.into_iter().next().unwrap().expect_err("should error");
+        assert!(
+            got.to_string().contains("SSE stream error"),
+            "error should mention SSE stream error: {got}",
+        );
+    }
+
+    /// SSE spec allows `\r\n\r\n`, `\n\n`, and `\r\r` as event separators.
+    /// This test exercises the `\r\n\r\n` variant.
+    #[tokio::test]
+    async fn test_parse_sse_stream_crlf_line_endings() {
+        let sr = StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
+            task_id: "t1".into(),
+            context_id: "c1".into(),
+            status: TaskStatus {
+                state: TaskState::Working,
+                message: None,
+                timestamp: None,
+            },
+            metadata: None,
+        });
+        let data = serde_json::to_string(&protojson_conv::to_value(&sr).unwrap()).unwrap();
+        // Use \r\n\r\n instead of \n\n
+        let sse_text = format!("data: {}\r\n\r\n", data);
+
+        let stream = byte_stream(vec![sse_text]);
+        let mut parsed = parse_sse_stream(stream);
+        let item = parsed.next().await.unwrap().unwrap();
+        assert!(matches!(item, StreamResponse::StatusUpdate(_)));
+        assert!(parsed.next().await.is_none());
+    }
+
+    /// `\r\r` is also a valid SSE event separator per the spec.
+    #[tokio::test]
+    async fn test_parse_sse_stream_cr_line_endings() {
+        let sr = StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
+            task_id: "t1".into(),
+            context_id: "c1".into(),
+            status: TaskStatus {
+                state: TaskState::Completed,
+                message: None,
+                timestamp: None,
+            },
+            metadata: None,
+        });
+        let data = serde_json::to_string(&protojson_conv::to_value(&sr).unwrap()).unwrap();
+        let sse_text = format!("data: {}\r\r", data);
+
+        let stream = byte_stream(vec![sse_text]);
+        let mut parsed = parse_sse_stream_rest(stream);
+        let item = parsed.next().await.unwrap().unwrap();
+        assert!(matches!(item, StreamResponse::StatusUpdate(_)));
+    }
+
+    #[test]
+    fn test_find_event_boundary_lf() {
+        assert_eq!(find_event_boundary(b"foo\n\nbar"), Some((3, 5)));
+    }
+
+    #[test]
+    fn test_find_event_boundary_cr() {
+        assert_eq!(find_event_boundary(b"foo\r\rbar"), Some((3, 5)));
+    }
+
+    #[test]
+    fn test_find_event_boundary_crlf() {
+        assert_eq!(find_event_boundary(b"foo\r\n\r\nbar"), Some((3, 7)));
+    }
+
+    #[test]
+    fn test_find_event_boundary_none() {
+        assert!(find_event_boundary(b"no boundary here").is_none());
+    }
+
+    #[test]
+    fn test_jsonrpc_transport_new() {
+        let t = JsonRpcTransport::new(
+            crate::default_reqwest_client(None).unwrap(),
+            "http://localhost:8080".into(),
+        );
+        assert_eq!(t.endpoint, "http://localhost:8080");
+    }
+
+    #[test]
+    fn test_jsonrpc_transport_factory() {
+        let f = JsonRpcTransportFactory::new(None);
+        assert_eq!(f.protocol(), "JSONRPC");
+    }
+
+    #[tokio::test]
+    async fn test_jsonrpc_transport_factory_create() {
+        let f = JsonRpcTransportFactory::new(None);
+        let card = AgentCard {
+            name: "Test".into(),
+            description: "Test".into(),
+            version: "1.0".into(),
+            supported_interfaces: vec![],
+            capabilities: AgentCapabilities::default(),
+            default_input_modes: vec!["text/plain".into()],
+            default_output_modes: vec!["text/plain".into()],
+            skills: vec![],
+            provider: None,
+            documentation_url: None,
+            icon_url: None,
+            security_schemes: None,
+            security_requirements: None,
+            signatures: None,
+        };
+        let iface = AgentInterface::new("http://localhost:8080", "JSONRPC");
+        let transport = f.create(&card, &iface).await.unwrap();
+        // Just verify it was created (it's a real transport but we can't call it without a server)
+        transport.destroy().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_create_push_config_sends_flat_request_shape() {
+        let response = json!({
+            "jsonrpc": "2.0",
+            "id": "1",
+            "result": {
+                "taskId": "task-1",
+                "url": "https://example.invalid/webhook",
+                "id": "cfg-1",
+                "token": "secret-token",
+                "authentication": {
+                    "scheme": "Bearer",
+                    "credentials": "credential"
+                },
+                "tenant": "tenant-1"
+            }
+        })
+        .to_string();
+        let (endpoint, request_rx) = spawn_jsonrpc_server(response).await;
+        let transport =
+            JsonRpcTransport::new(crate::default_reqwest_client(None).unwrap(), endpoint);
+        let mut params = ServiceParams::new();
+        params.insert("x-trace".into(), vec!["alpha".into(), "beta".into()]);
+
+        let result = transport
+            .create_push_config(&params, &sample_create_push_config_request())
+            .await
+            .unwrap();
+
+        assert_eq!(result.task_id, "task-1");
+        assert_eq!(result.id.as_deref(), Some("cfg-1"));
+
+        let request = request_rx.await.unwrap();
+        let request_lower = request.to_ascii_lowercase();
+        assert!(request_lower.contains("x-trace: alpha"));
+        assert!(request_lower.contains("x-trace: beta"));
+
+        let body = request.split("\r\n\r\n").nth(1).unwrap();
+        let payload: Value = serde_json::from_str(body).unwrap();
+        assert_eq!(payload["method"], methods::CREATE_PUSH_CONFIG);
+        assert_eq!(
+            payload["params"],
+            json!({
+                "taskId": "task-1",
+                "url": "https://example.invalid/webhook",
+                "id": "cfg-1",
+                "token": "secret-token",
+                "authentication": {
+                    "scheme": "Bearer",
+                    "credentials": "credential"
+                },
+                "tenant": "tenant-1"
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_push_config_surfaces_jsonrpc_error() {
+        let response = json!({
+            "jsonrpc": "2.0",
+            "id": "1",
+            "error": {
+                "code": error_code::INVALID_PARAMS,
+                "message": "invalid params",
+                "data": null
+            }
+        })
+        .to_string();
+        let (endpoint, _request_rx) = spawn_jsonrpc_server(response).await;
+        let transport =
+            JsonRpcTransport::new(crate::default_reqwest_client(None).unwrap(), endpoint);
+
+        let error = transport
+            .create_push_config(&ServiceParams::new(), &sample_create_push_config_request())
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.code, error_code::INVALID_PARAMS);
+        assert_eq!(error.message, "invalid params");
+    }
+
+    #[tokio::test]
+    async fn test_subscribe_to_task_streams_on_text_event_stream_response() {
+        // A `text/event-stream` response is still handed to the SSE parser,
+        // end to end through the real HTTP call, not just via the parser's
+        // own unit tests.
+        let status_update = StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
+            task_id: "task-1".into(),
+            context_id: "ctx-1".into(),
+            status: TaskStatus {
+                state: TaskState::Working,
+                message: None,
+                timestamp: None,
+            },
+            metadata: None,
+        });
+        let rpc_resp = JsonRpcResponse::success(
+            JsonRpcId::Number(1),
+            protojson_conv::to_value(&status_update).unwrap(),
+        );
+        let sse_body = format!("data: {}\n\n", serde_json::to_string(&rpc_resp).unwrap());
+        let endpoint = spawn_jsonrpc_sse_server(sse_body).await;
+        let transport =
+            JsonRpcTransport::new(crate::default_reqwest_client(None).unwrap(), endpoint);
+
+        let req = SubscribeToTaskRequest {
+            id: "task-1".into(),
+            tenant: None,
+        };
+
+        let mut stream = transport
+            .subscribe_to_task(&ServiceParams::new(), &req)
+            .await
+            .unwrap();
+
+        let item = stream.next().await.unwrap().unwrap();
+        assert!(matches!(item, StreamResponse::StatusUpdate(_)));
+    }
+
+    #[tokio::test]
+    async fn test_subscribe_to_task_surfaces_jsonrpc_error_on_plain_json_response() {
+        // A JSON-RPC error answering a streaming call arrives as a plain
+        // `application/json` body (HTTP 200), not as an SSE `data:` frame.
+        // Regression test for https://github.com/a2aproject/a2a-rs/issues/134.
+        let response = json!({
+            "jsonrpc": "2.0",
+            "id": "1",
+            "error": {
+                "code": error_code::TASK_NOT_FOUND,
+                "message": "task already terminal",
+                "data": null
+            }
+        })
+        .to_string();
+        let (endpoint, _request_rx) = spawn_jsonrpc_server(response).await;
+        let transport =
+            JsonRpcTransport::new(crate::default_reqwest_client(None).unwrap(), endpoint);
+
+        let req = SubscribeToTaskRequest {
+            id: "task-1".into(),
+            tenant: None,
+        };
+
+        let error = match transport
+            .subscribe_to_task(&ServiceParams::new(), &req)
+            .await
+        {
+            Err(e) => e,
+            Ok(_) => panic!("expected error, got a stream"),
+        };
+
+        assert_eq!(error.code, error_code::TASK_NOT_FOUND);
+        assert_eq!(error.message, "task already terminal");
+    }
+
+    #[tokio::test]
+    async fn test_subscribe_to_task_rejects_non_streaming_success_result() {
+        // A plain `application/json` body with a `result` (no `error`) is not
+        // a valid answer to a streaming call, but it is not an SSE stream
+        // either — surface it as an error instead of silently yielding an
+        // empty stream.
+        let response = json!({
+            "jsonrpc": "2.0",
+            "id": "1",
+            "result": {}
+        })
+        .to_string();
+        let (endpoint, _request_rx) = spawn_jsonrpc_server(response).await;
+        let transport =
+            JsonRpcTransport::new(crate::default_reqwest_client(None).unwrap(), endpoint);
+
+        let req = SubscribeToTaskRequest {
+            id: "task-1".into(),
+            tenant: None,
+        };
+
+        let error = match transport
+            .subscribe_to_task(&ServiceParams::new(), &req)
+            .await
+        {
+            Err(e) => e,
+            Ok(_) => panic!("expected error, got a stream"),
+        };
+
+        assert_eq!(error.code, error_code::INTERNAL_ERROR);
+        assert_eq!(
+            error.message,
+            "expected streaming response but got non-streaming JSON-RPC result"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_subscribe_to_task_surfaces_unparseable_non_streaming_body() {
+        // A non-SSE body that isn't valid JSON-RPC either (e.g. a raw error
+        // page from a proxy) should surface as an error, not an empty stream.
+        let (endpoint, _request_rx) = spawn_jsonrpc_server("not json".into()).await;
+        let transport =
+            JsonRpcTransport::new(crate::default_reqwest_client(None).unwrap(), endpoint);
+
+        let req = SubscribeToTaskRequest {
+            id: "task-1".into(),
+            tenant: None,
+        };
+
+        let error = match transport
+            .subscribe_to_task(&ServiceParams::new(), &req)
+            .await
+        {
+            Err(e) => e,
+            Ok(_) => panic!("expected error, got a stream"),
+        };
+
+        assert_eq!(error.code, error_code::INTERNAL_ERROR);
+        assert!(error.message.contains("failed to parse JSON-RPC response"));
+    }
+
+    #[tokio::test]
+    async fn test_create_push_config_rejects_missing_result() {
+        let response = json!({
+            "jsonrpc": "2.0",
+            "id": "1"
+        })
+        .to_string();
+        let (endpoint, _request_rx) = spawn_jsonrpc_server(response).await;
+        let transport =
+            JsonRpcTransport::new(crate::default_reqwest_client(None).unwrap(), endpoint);
+
+        let error = transport
+            .create_push_config(&ServiceParams::new(), &sample_create_push_config_request())
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.code, error_code::INTERNAL_ERROR);
+        assert_eq!(error.message, "JSON-RPC response missing result");
+    }
+
+    /// A unary body over `MAX_RESPONSE_BYTES` is refused before decoding, both
+    /// when the peer declares its length and when it does not (read to EOF);
+    /// one exactly at the cap is decoded.
+    #[tokio::test]
+    async fn test_unary_response_body_is_bounded() {
+        fn envelope(padding: usize) -> String {
+            let head = r#"{"jsonrpc":"2.0","id":"1","result":{"id":"t","contextId":"c","status":{"state":"TASK_STATE_COMPLETED"},"metadata":{"p":""#;
+            let tail = r#""}}}"#;
+            format!("{head}{}{tail}", "x".repeat(padding - head.len() - tail.len()))
+        }
+        async fn spawn(body: String, declare_length: bool) -> String {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let _ = read_http_request(&mut socket).await;
+                let length = if declare_length {
+                    format!("content-length: {}\r\n", body.len())
+                } else {
+                    String::new()
+                };
+                let head = format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n{length}connection: close\r\n\r\n");
+                // The client may hang up before the body is written.
+                let _ = socket.write_all(head.as_bytes()).await;
+                let _ = socket.write_all(body.as_bytes()).await;
+            });
+            format!("http://{addr}")
+        }
+        let req = GetTaskRequest {
+            id: "t".into(),
+            history_length: None,
+            tenant: None,
+        };
+
+        for declare_length in [true, false] {
+            let endpoint = spawn(envelope(MAX_RESPONSE_BYTES + 1), declare_length).await;
+            let transport =
+                JsonRpcTransport::new(crate::default_reqwest_client(None).unwrap(), endpoint);
+            let error = transport.get_task(&ServiceParams::new(), &req).await.unwrap_err();
+            assert_eq!(error.code, error_code::INTERNAL_ERROR);
+            assert!(
+                error.message.starts_with("response body exceeds"),
+                "declared={declare_length}: {}",
+                error.message
+            );
+        }
+
+        let endpoint = spawn(envelope(MAX_RESPONSE_BYTES), false).await;
+        let transport = JsonRpcTransport::new(crate::default_reqwest_client(None).unwrap(), endpoint);
+        let task = transport.get_task(&ServiceParams::new(), &req).await.unwrap();
+        assert_eq!(task.id, "t");
+    }
+
+    #[tokio::test]
+    async fn test_get_push_config_uses_protojson_request_path() {
+        let response = json!({
+            "jsonrpc": "2.0",
+            "id": "1",
+            "result": {
+                "taskId": "task-1",
+                "url": "https://example.invalid/webhook",
+                "id": "cfg-1",
+                "token": "secret-token",
+                "tenant": "tenant-1"
+            }
+        })
+        .to_string();
+        let (endpoint, request_rx) = spawn_jsonrpc_server(response).await;
+        let transport =
+            JsonRpcTransport::new(crate::default_reqwest_client(None).unwrap(), endpoint);
+
+        let result = transport
+            .get_push_config(
+                &ServiceParams::new(),
+                &GetTaskPushNotificationConfigRequest {
+                    task_id: "task-1".into(),
+                    id: "cfg-1".into(),
+                    tenant: Some("tenant-1".into()),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.task_id, "task-1");
+        assert_eq!(result.id.as_deref(), Some("cfg-1"));
+
+        let request = request_rx.await.unwrap();
+        let body = request.split("\r\n\r\n").nth(1).unwrap();
+        let payload: Value = serde_json::from_str(body).unwrap();
+        assert_eq!(payload["method"], methods::GET_PUSH_CONFIG);
+        assert_eq!(
+            payload["params"],
+            json!({
+                "taskId": "task-1",
+                "id": "cfg-1",
+                "tenant": "tenant-1"
+            })
+        );
+    }
+
+    #[cfg(any(feature = "rustls-tls", feature = "native-tls"))]
+    #[test]
+    fn test_with_root_certificates_pem_valid() {
+        let pem = crate::test_utils::rcgen_self_signed_ca_pem();
+        let f = JsonRpcTransportFactory::with_root_certificates_pem(&pem).unwrap();
+        assert_eq!(f.protocol(), TRANSPORT_PROTOCOL_JSONRPC);
+    }
+
+    #[cfg(any(feature = "rustls-tls", feature = "native-tls"))]
+    #[tokio::test]
+    async fn test_with_root_certificates_pem_factory_create() {
+        let pem = crate::test_utils::rcgen_self_signed_ca_pem();
+        let f = JsonRpcTransportFactory::with_root_certificates_pem(&pem).unwrap();
+        let card = AgentCard {
+            name: "Test".into(),
+            description: "Test".into(),
+            version: "1.0".into(),
+            supported_interfaces: vec![],
+            capabilities: AgentCapabilities::default(),
+            default_input_modes: vec!["text/plain".into()],
+            default_output_modes: vec!["text/plain".into()],
+            skills: vec![],
+            provider: None,
+            documentation_url: None,
+            icon_url: None,
+            security_schemes: None,
+            security_requirements: None,
+            signatures: None,
+        };
+        let iface = AgentInterface::new("https://localhost:3443/jsonrpc", "JSONRPC");
+        let transport = f.create(&card, &iface).await.unwrap();
+        transport.destroy().await.unwrap();
+    }
+
+    #[test]
+    fn test_parse_jsonrpc_error_no_data() {
+        let err = JsonRpcError {
+            code: error_code::TASK_NOT_FOUND,
+            message: "task not found".into(),
+            data: None,
+        };
+        let a2a_err = parse_jsonrpc_error(err);
+        assert_eq!(a2a_err.code, error_code::TASK_NOT_FOUND);
+        assert_eq!(a2a_err.message, "task not found");
+        assert!(a2a_err.details.is_none());
+    }
+
+    #[test]
+    fn test_parse_jsonrpc_error_non_array_data() {
+        let err = JsonRpcError {
+            code: error_code::INTERNAL_ERROR,
+            message: "err".into(),
+            data: Some(json!("just a string")),
+        };
+        let a2a_err = parse_jsonrpc_error(err);
+        assert_eq!(a2a_err.code, error_code::INTERNAL_ERROR);
+        assert!(a2a_err.details.is_none());
+    }
+
+    #[test]
+    fn test_parse_jsonrpc_error_with_error_info() {
+        let err = JsonRpcError {
+            code: error_code::INTERNAL_ERROR,
+            message: "task not found: t1".into(),
+            data: Some(json!([
+                {
+                    "@type": errordetails::ERROR_INFO_TYPE,
+                    "reason": "TASK_NOT_FOUND",
+                    "domain": errordetails::PROTOCOL_DOMAIN,
+                    "metadata": {"taskId": "t1"}
+                }
+            ])),
+        };
+        let a2a_err = parse_jsonrpc_error(err);
+        assert_eq!(a2a_err.code, error_code::TASK_NOT_FOUND);
+        assert_eq!(a2a_err.message, "task not found: t1");
+        let details = a2a_err.details.unwrap();
+        assert_eq!(details.len(), 1);
+        assert_eq!(details[0].type_url, errordetails::ERROR_INFO_TYPE);
+    }
+
+    #[test]
+    fn test_parse_jsonrpc_error_with_bad_request() {
+        let err = JsonRpcError {
+            code: error_code::INTERNAL_ERROR,
+            message: "invalid params".into(),
+            data: Some(json!([
+                {
+                    "@type": errordetails::BAD_REQUEST_TYPE,
+                    "fieldViolations": [
+                        {"field": "message.parts", "description": "required"},
+                        {"field": "message.role", "description": "must be user or agent"}
+                    ]
+                }
+            ])),
+        };
+        let a2a_err = parse_jsonrpc_error(err);
+        assert_eq!(a2a_err.code, error_code::INVALID_PARAMS);
+        assert!(a2a_err.message.contains("message.parts: required"));
+        assert!(
+            a2a_err
+                .message
+                .contains("message.role: must be user or agent")
+        );
+    }
+
+    #[test]
+    fn test_parse_jsonrpc_error_bad_request_does_not_override_explicit_code() {
+        let err = JsonRpcError {
+            code: error_code::PARSE_ERROR,
+            message: "parse error".into(),
+            data: Some(json!([
+                {
+                    "@type": errordetails::BAD_REQUEST_TYPE,
+                    "fieldViolations": [
+                        {"field": "body", "description": "invalid json"}
+                    ]
+                }
+            ])),
+        };
+        let a2a_err = parse_jsonrpc_error(err);
+        // BadRequest only overrides INTERNAL_ERROR, not other codes
+        assert_eq!(a2a_err.code, error_code::PARSE_ERROR);
+    }
+
+    #[test]
+    fn test_parse_jsonrpc_error_error_info_overrides_bad_request_code() {
+        let err = JsonRpcError {
+            code: error_code::INTERNAL_ERROR,
+            message: "bad params".into(),
+            data: Some(json!([
+                {
+                    "@type": errordetails::BAD_REQUEST_TYPE,
+                    "fieldViolations": [
+                        {"field": "task.id", "description": "required"}
+                    ]
+                },
+                {
+                    "@type": errordetails::ERROR_INFO_TYPE,
+                    "reason": "INVALID_PARAMS",
+                    "domain": errordetails::PROTOCOL_DOMAIN,
+                    "metadata": {}
+                }
+            ])),
+        };
+        let a2a_err = parse_jsonrpc_error(err);
+        // ErrorInfo reason takes precedence
+        assert_eq!(a2a_err.code, error_code::INVALID_PARAMS);
+        assert!(a2a_err.message.contains("task.id: required"));
+    }
+
+    #[test]
+    fn test_parse_jsonrpc_error_ignores_non_protocol_domain() {
+        let err = JsonRpcError {
+            code: error_code::INTERNAL_ERROR,
+            message: "err".into(),
+            data: Some(json!([
+                {
+                    "@type": errordetails::ERROR_INFO_TYPE,
+                    "reason": "TASK_NOT_FOUND",
+                    "domain": "other.domain.com",
+                    "metadata": {}
+                }
+            ])),
+        };
+        let a2a_err = parse_jsonrpc_error(err);
+        // Should not override code since domain doesn't match
+        assert_eq!(a2a_err.code, error_code::INTERNAL_ERROR);
+    }
+
+    #[test]
+    fn test_parse_jsonrpc_error_bad_request_empty_violations() {
+        let err = JsonRpcError {
+            code: error_code::INTERNAL_ERROR,
+            message: "invalid".into(),
+            data: Some(json!([
+                {
+                    "@type": errordetails::BAD_REQUEST_TYPE,
+                    "fieldViolations": []
+                }
+            ])),
+        };
+        let a2a_err = parse_jsonrpc_error(err);
+        assert_eq!(a2a_err.code, error_code::INVALID_PARAMS);
+        // Message should not be modified when violations are empty
+        assert_eq!(a2a_err.message, "invalid");
+    }
+
+    // #197: bytes left in the buffer when the stream ends must be
+    // interpreted, not dropped — a dropped tail turns a cut stream into an
+    // empty, successfully-closed one.
+
+    /// A server that answers a streaming call with a plain JSON-RPC error
+    /// envelope and no SSE framing. `send_streaming_message` only routes
+    /// away from the SSE parser when `Content-Type` says so, and a
+    /// header-less response is deliberately assumed to be a stream — so
+    /// this body arrives here and must still surface its error.
+    #[tokio::test]
+    async fn test_stream_tail_surfaces_a_plain_jsonrpc_error_envelope() {
+        let body = serde_json::to_string(&JsonRpcResponse::error(
+            JsonRpcId::Number(1),
+            JsonRpcError {
+                code: error_code::UNSUPPORTED_OPERATION,
+                message: "streaming not supported".into(),
+                data: None,
+            },
+        ))
+        .unwrap();
+
+        let items: Vec<_> = parse_sse_stream(byte_stream(vec![body])).collect().await;
+
+        assert_eq!(items.len(), 1, "expected one item, got {items:?}");
+        let error = items.into_iter().next().unwrap().unwrap_err();
+        assert_eq!(error.code, error_code::UNSUPPORTED_OPERATION);
+        assert_eq!(error.message, "streaming not supported");
+    }
+
+    /// The same envelope split across chunks: the tail is assembled before
+    /// it is interpreted.
+    #[tokio::test]
+    async fn test_stream_tail_envelope_split_across_chunks() {
+        let body = serde_json::to_string(&JsonRpcResponse::error(
+            JsonRpcId::Number(1),
+            JsonRpcError {
+                code: error_code::TASK_NOT_FOUND,
+                message: "task not found".into(),
+                data: None,
+            },
+        ))
+        .unwrap();
+        let (head, rest) = body.split_at(body.len() / 2);
+
+        let items: Vec<_> = parse_sse_stream(byte_stream(vec![head.into(), rest.into()]))
+            .collect()
+            .await;
+
+        assert_eq!(items.len(), 1, "expected one item, got {items:?}");
+        assert_eq!(
+            items.into_iter().next().unwrap().unwrap_err().code,
+            error_code::TASK_NOT_FOUND
+        );
+    }
+
+    /// A final SSE event the server never terminated with a blank line.
+    /// This loses *data*, not just errors, and is why the tail is offered to
+    /// the same callback the framed path uses.
+    #[tokio::test]
+    async fn test_stream_tail_delivers_an_unterminated_final_event() {
+        let first = format!(
+            "data: {}\n\n",
+            serde_json::to_string(&JsonRpcResponse::success(
+                JsonRpcId::Number(1),
+                serde_json::json!({"task": {"id": "t-1", "contextId": "c-1",
+                    "status": {"state": "TASK_STATE_WORKING"}}}),
+            ))
+            .unwrap()
+        );
+        // No trailing blank line: the connection closed mid-frame.
+        let second = format!(
+            "data: {}",
+            serde_json::to_string(&JsonRpcResponse::success(
+                JsonRpcId::Number(2),
+                serde_json::json!({"task": {"id": "t-2", "contextId": "c-1",
+                    "status": {"state": "TASK_STATE_COMPLETED"}}}),
+            ))
+            .unwrap()
+        );
+
+        let items: Vec<_> = parse_sse_stream(byte_stream(vec![first, second]))
+            .collect()
+            .await;
+
+        assert_eq!(items.len(), 2, "the unterminated event must not be dropped");
+        assert!(items.iter().all(Result::is_ok), "{items:?}");
+    }
+
+    /// The REST binding shares the parser but its events are bare
+    /// `StreamResponse` JSON, so the tail has to go through *its* callback
+    /// rather than a JSON-RPC envelope parse.
+    #[tokio::test]
+    async fn test_stream_tail_delivers_an_unterminated_final_event_rest() {
+        let event = serde_json::json!({"task": {"id": "t-9", "contextId": "c-9",
+            "status": {"state": "TASK_STATE_COMPLETED"}}});
+        let body = format!("data: {}", serde_json::to_string(&event).unwrap());
+
+        let items: Vec<_> = parse_sse_stream_rest(byte_stream(vec![body]))
+            .collect()
+            .await;
+
+        assert_eq!(items.len(), 1, "expected one item, got {items:?}");
+        assert!(items.into_iter().next().unwrap().is_ok());
+    }
+
+    /// Servers commonly leave a trailing newline after the last event. That
+    /// is a clean end, not a cut stream.
+    #[tokio::test]
+    async fn test_stream_tail_whitespace_ends_cleanly() {
+        let body = format!(
+            "data: {}\n\n\n",
+            serde_json::to_string(&JsonRpcResponse::success(
+                JsonRpcId::Number(1),
+                serde_json::json!({"task": {"id": "t-1", "contextId": "c-1",
+                    "status": {"state": "TASK_STATE_COMPLETED"}}}),
+            ))
+            .unwrap()
+        );
+
+        let items: Vec<_> = parse_sse_stream(byte_stream(vec![body])).collect().await;
+
+        assert_eq!(items.len(), 1, "trailing whitespace must not add an item");
+        assert!(items.into_iter().next().unwrap().is_ok());
+    }
+
+    /// A tail that is neither an event nor an envelope means the connection
+    /// was cut mid-message. Reporting it is the point: ending the stream
+    /// silently is the one answer that is always wrong.
+    #[tokio::test]
+    async fn test_stream_tail_reports_an_unparseable_remainder() {
+        let items: Vec<_> = parse_sse_stream(byte_stream(vec!["{\"partial\": ".into()]))
+            .collect()
+            .await;
+
+        assert_eq!(items.len(), 1, "expected one item, got {items:?}");
+        let error = items.into_iter().next().unwrap().unwrap_err();
+        assert!(error.message.contains("cut"), "{}", error.message);
+    }
+
+    /// An empty stream is still a clean, empty stream.
+    #[tokio::test]
+    async fn test_stream_tail_empty_stream_yields_nothing() {
+        let items: Vec<_> = parse_sse_stream(byte_stream(vec![])).collect().await;
+        assert!(items.is_empty(), "{items:?}");
+    }
+
+    fn raw_byte_stream(
+        chunks: Vec<Vec<u8>>,
+    ) -> impl futures::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send + 'static {
+        stream::iter(
+            chunks
+                .into_iter()
+                .map(|c| Ok(bytes::Bytes::from(c)))
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    /// A tail cut mid-UTF-8-sequence is reported rather than dropped. The
+    /// framed path already reports a bad sequence inside an event; the tail
+    /// must not be the quiet exception.
+    #[tokio::test]
+    async fn test_stream_tail_reports_invalid_utf8() {
+        // 0xE2 0x82 starts a 3-byte sequence that never completes.
+        let items: Vec<_> = parse_sse_stream(raw_byte_stream(vec![vec![0xE2, 0x82]]))
+            .collect()
+            .await;
+
+        assert_eq!(items.len(), 1, "expected one item, got {items:?}");
+        let error = items.into_iter().next().unwrap().unwrap_err();
+        assert!(error.message.contains("UTF-8"), "{}", error.message);
+    }
+
+    /// A tail envelope carrying a *result* rather than an error is a normal
+    /// event and is delivered as one.
+    #[tokio::test]
+    async fn test_stream_tail_delivers_an_envelope_result() {
+        let body = serde_json::to_string(&JsonRpcResponse::success(
+            JsonRpcId::Number(1),
+            serde_json::json!({"task": {"id": "t-tail", "contextId": "c-1",
+                "status": {"state": "TASK_STATE_COMPLETED"}}}),
+        ))
+        .unwrap();
+
+        let items: Vec<_> = parse_sse_stream(byte_stream(vec![body])).collect().await;
+
+        assert_eq!(items.len(), 1, "expected one item, got {items:?}");
+        match items.into_iter().next().unwrap() {
+            Ok(StreamResponse::Task(task)) => assert_eq!(task.id, "t-tail"),
+            other => panic!("expected a Task event, got {other:?}"),
+        }
+    }
+
+    /// A tail envelope whose `result` is well-formed JSON but not a
+    /// `StreamResponse` is reported, not silently dropped.
+    #[tokio::test]
+    async fn test_stream_tail_reports_an_unconvertible_envelope_result() {
+        let body = serde_json::to_string(&JsonRpcResponse::success(
+            JsonRpcId::Number(1),
+            serde_json::json!({"notAStreamResponse": true}),
+        ))
+        .unwrap();
+
+        let items: Vec<_> = parse_sse_stream(byte_stream(vec![body])).collect().await;
+
+        assert_eq!(items.len(), 1, "expected one item, got {items:?}");
+        let error = items.into_iter().next().unwrap().unwrap_err();
+        assert!(error.message.contains("end of stream"), "{}", error.message);
+    }
+
+    /// An envelope with neither result nor error is not a usable event, so
+    /// it falls through to the cut-stream report rather than ending quietly.
+    #[tokio::test]
+    async fn test_stream_tail_empty_envelope_is_reported() {
+        let items: Vec<_> =
+            parse_sse_stream(byte_stream(vec![r#"{"jsonrpc":"2.0","id":1}"#.into()]))
+                .collect()
+                .await;
+
+        assert_eq!(items.len(), 1, "expected one item, got {items:?}");
+        assert!(items.into_iter().next().unwrap().is_err());
+    }
+
+    /// A REST-binding SSE event whose content (before the terminator) is
+    /// exactly `content_len` bytes; the task id absorbs the padding.
+    const SIZED_EVENT_TEMPLATE: &str =
+        r#"data: {"task":{"id":"","contextId":"c","status":{"state":"TASK_STATE_COMPLETED"}}}"#;
+
+    fn sized_event(content_len: usize) -> String {
+        let id = "a".repeat(content_len - SIZED_EVENT_TEMPLATE.len());
+        let event = SIZED_EVENT_TEMPLATE.replacen("\"id\":\"\"", &format!("\"id\":\"{id}\""), 1);
+        assert_eq!(event.len(), content_len);
+        event
+    }
+
+    /// `raw_byte_stream` that also counts how many chunks the parser pulled,
+    /// so a test can prove the body was not drained after the cap tripped.
+    fn counted_stream(
+        chunks: Vec<Vec<u8>>,
+    ) -> (
+        impl futures::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send + 'static,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        let polled = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = polled.clone();
+        let stream = raw_byte_stream(chunks).inspect(move |_| {
+            counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        });
+        (stream, polled)
+    }
+
+    /// An event of exactly `MAX_SSE_EVENT_BYTES` is legal, including when the
+    /// `\r\n\r\n` terminator is fragmented so the buffer briefly holds the
+    /// content plus three terminator bytes; the following event still arrives.
+    #[tokio::test]
+    async fn test_sse_event_exactly_at_cap_is_delivered() {
+        let big = sized_event(MAX_SSE_EVENT_BYTES);
+        let small = sized_event(96);
+        let mut chunks: Vec<Vec<u8>> = big.as_bytes().chunks(4096).map(<[u8]>::to_vec).collect();
+        chunks.last_mut().unwrap().push(b'\r');
+        chunks.push(b"\n\r".to_vec());
+        chunks.push(format!("\n{small}\n\n").into_bytes());
+
+        let items: Vec<_> = parse_sse_stream_rest(raw_byte_stream(chunks)).collect().await;
+
+        assert_eq!(items.len(), 2, "{items:?}");
+        let ids: Vec<usize> = items
+            .into_iter()
+            .map(|item| match item.unwrap() {
+                StreamResponse::Task(task) => task.id.len(),
+                other => panic!("unexpected {other:?}"),
+            })
+            .collect();
+        let pad = |content_len: usize| content_len - SIZED_EVENT_TEMPLATE.len();
+        assert_eq!(ids, vec![pad(MAX_SSE_EVENT_BYTES), pad(96)]);
+    }
+
+    /// One byte over the cap, terminated within the same chunk: exactly one
+    /// error, and the stream ends without reading the events behind it.
+    #[tokio::test]
+    async fn test_sse_event_one_over_cap_is_rejected_and_stream_ends() {
+        let (stream, polled) = counted_stream(vec![
+            format!("{}\n\n", sized_event(MAX_SSE_EVENT_BYTES + 1)).into_bytes(),
+            format!("{}\n\n", sized_event(96)).into_bytes(),
+            format!("{}\n\n", sized_event(96)).into_bytes(),
+        ]);
+
+        let items: Vec<_> = parse_sse_stream_rest(stream).collect().await;
+
+        assert_eq!(items.len(), 1, "{items:?}");
+        let error = items.into_iter().next().unwrap().unwrap_err();
+        assert!(error.message.contains("exceeds 65536 bytes"), "{}", error.message);
+        assert_eq!(polled.load(std::sync::atomic::Ordering::Relaxed), 1);
+    }
+
+    /// A body that never sends a terminator is cut once the cap is reached,
+    /// not buffered until the peer hangs up. Events parsed before the
+    /// oversized one are still delivered ahead of the error.
+    #[tokio::test]
+    async fn test_sse_unterminated_body_is_cut_at_cap() {
+        let mut chunks = vec![format!("{}\n\n", sized_event(96)).into_bytes()];
+        chunks.extend((0..1024).map(|_| vec![b'x'; 1024]));
+        let (stream, polled) = counted_stream(chunks);
+
+        let items: Vec<_> = parse_sse_stream(stream).collect().await;
+
+        assert_eq!(items.len(), 2, "{items:?}");
+        assert!(items[0].is_ok(), "{:?}", items[0]);
+        let error = items[1].as_ref().unwrap_err();
+        assert!(error.message.contains("exceeds"), "{}", error.message);
+        // 1 event chunk + 64 KiB of filler + the chunk that crosses the cap.
+        assert_eq!(polled.load(std::sync::atomic::Ordering::Relaxed), 1 + 64 + 1);
+    }
+
+    /// The bound is per event, not per HTTP chunk: one 200 KiB chunk holding
+    /// two thousand small events is drained event by event.
+    #[tokio::test]
+    async fn test_sse_many_small_events_in_one_large_chunk() {
+        let event = format!("{}\n\n", sized_event(100));
+        let chunk = event.repeat(2000).into_bytes();
+        assert!(chunk.len() > 3 * MAX_SSE_EVENT_BYTES);
+
+        let items: Vec<_> = parse_sse_stream_rest(raw_byte_stream(vec![chunk])).collect().await;
+
+        assert_eq!(items.len(), 2000);
+        assert!(items.iter().all(Result::is_ok), "{:?}", items.iter().find(|i| i.is_err()));
+    }
+}

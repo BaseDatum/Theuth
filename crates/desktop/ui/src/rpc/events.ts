@@ -1,14 +1,18 @@
 import type { AgentEvent as Bound } from '@/rpc/bindings/AgentEvent'
+import type { A2aChanged } from '@/rpc/bindings/A2aChanged'
 import type { ApprovalRequested } from '@/rpc/bindings/ApprovalRequested'
 import type { ApprovalResolved } from '@/rpc/bindings/ApprovalResolved'
 import type { AskRequested } from '@/rpc/bindings/AskRequested'
 import type { AskResolved } from '@/rpc/bindings/AskResolved'
 import type { BrowserEvent } from '@/rpc/bindings/BrowserEvent'
+import type { CommunicationChanged } from '@/rpc/bindings/CommunicationChanged'
 import type { JobEvent } from '@/rpc/bindings/JobEvent'
 import type { KnowledgeChanged } from '@/rpc/bindings/KnowledgeChanged'
 import type { LinkEvent } from '@/rpc/bindings/LinkEvent'
 import type { McpProgress } from '@/rpc/bindings/McpProgress'
 import type { NodeEvent } from '@/rpc/bindings/NodeEvent'
+import type { PeerDelivered } from '@/rpc/bindings/PeerDelivered'
+import type { PeerMessageChanged } from '@/rpc/bindings/PeerMessageChanged'
 import type { ScheduleEvent } from '@/rpc/bindings/ScheduleEvent'
 import type { SecretsEvent } from '@/rpc/bindings/SecretsEvent'
 import type { SignalEvent } from '@/rpc/bindings/SignalEvent'
@@ -59,4 +63,9 @@ export type WireEvent =
   | ArtifactShown
   | ScrapeProgress
   | VoiceEvent
+  /** 50 §10: settings (global or a subtree's opt-out/scope), a receipt's state, a consumed peer exchange, the A2A network. */
+  | CommunicationChanged
+  | PeerMessageChanged
+  | PeerDelivered
+  | A2aChanged
   | Lagged

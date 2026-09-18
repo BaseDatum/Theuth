@@ -30,12 +30,18 @@ use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
 use tokio_util::sync::CancellationToken;
 use tools::{Decision, ExternalApproval, REGISTRY_ACTOR, ToolRegistry};
+use uuid::Uuid;
 
+use crate::communication::{PeerConsumed, PeerTurnFinished};
 use crate::continuation::{
-    self, InputConsumed, InputTicket, SessionUnknown, TurnEntered, TurnReturned,
+    self, InputConsumed, InputDropped, InputTicket, SessionUnknown, TurnEntered, TurnReturned,
 };
-use crate::loop_::{CancelTurn, IsRunning, UserInput};
+use crate::loop_::{
+    CancelPeerScope, CancelTurn, IsRunning, PEER_INTAKE, PeerInput, PeerMeta, SuppressPeerInputs,
+    UserInput, peer_wrapper, refuse_peer,
+};
 use crate::store::Store;
+use crate::store::communication::CommError;
 use crate::todo::{Status, Todo, TodoSource};
 use crate::{AgentEvent, Usage};
 
@@ -72,11 +78,15 @@ pub struct AcpChild {
 }
 
 /// One input waiting its turn: the caller's [`InputId`], the supervisor's
-/// admission ticket (47 §4.3; consumed when the turn persists the text) and the text.
+/// admission ticket (47 §4.3; consumed when the turn persists the text), the
+/// text and, for a peer exchange, its durable identity (50 §7).
 struct Queued {
     id: Option<InputId>,
     ticket: Option<InputTicket>,
     text: String,
+    /// Owning A2A request scope, if any (50 §6.3).
+    scope: Option<Uuid>,
+    peer: Option<PeerMeta>,
 }
 
 /// Per-turn state the translation accumulates into (06 §3.3).
@@ -96,10 +106,13 @@ pub(crate) struct Turn {
     cancel: CancellationToken,
     /// Kill timer armed by [`CancelTurn`].
     kill: Option<AbortHandle>,
+    /// Owning A2A request scope of the input that opened the turn (50 §6.3):
+    /// the turn is that task's work and reports as such.
+    scope: Option<Uuid>,
 }
 
 impl Turn {
-    pub(crate) fn new(session: SessionId, id: TurnId) -> Self {
+    pub(crate) fn new(session: SessionId, id: TurnId, scope: Option<Uuid>) -> Self {
         Self {
             session,
             id,
@@ -108,6 +121,7 @@ impl Turn {
             context: 0,
             cancel: CancellationToken::new(),
             kill: None,
+            scope,
         }
     }
 }
@@ -194,14 +208,119 @@ impl AcpChild {
         }
     }
 
+    /// Persist `q` as the turn's user message and acknowledge its ticket
+    /// (47 §4.3): a plain append, or for a peer exchange the durable
+    /// consumption of 50 §7 — generation rechecked, row linked once, refused
+    /// exchanges suppressed/failed and their tickets released through
+    /// [`crate::communication::PeerIntakeFailed`]. `Ok(seq)`; `Err(Some(why))` when the store
+    /// refused a write; `Err(None)` when a peer exchange was refused (already
+    /// reported; nothing to run).
+    async fn persist_input(&self, q: &Queued, turn: TurnId) -> Result<i64, Option<String>> {
+        let msg = ChatMessage::user(&q.text);
+        let Some(p) = &q.peer else {
+            let seq = self
+                .store
+                .append(self.id, &msg)
+                .await
+                .map_err(|e| Some(format!("{e:#}")))?;
+            if let Some(t) = q.ticket {
+                continuation::notify(InputConsumed {
+                    session: self.id,
+                    id: t.id,
+                    turn,
+                })
+                .await;
+            }
+            return Ok(seq);
+        };
+        // 50 §8 barrier: live check and store transaction as one admission.
+        let _admitted = PEER_INTAKE.read().await;
+        if !p.generation.live() {
+            refuse_peer(
+                &self.store,
+                self.id,
+                p.id,
+                q.ticket,
+                "communication_disabled",
+                true,
+            )
+            .await;
+            return Err(None);
+        }
+        let generation = i64::try_from(p.generation.revision()).unwrap_or(i64::MAX);
+        match self
+            .store
+            .consume_exchange(p.id, self.id, generation, msg)
+            .await
+        {
+            Ok(Some((seq, _))) => {
+                if let Some(t) = q.ticket {
+                    continuation::notify(InputConsumed {
+                        session: self.id,
+                        id: t.id,
+                        turn,
+                    })
+                    .await;
+                }
+                continuation::notify(PeerConsumed {
+                    session: self.id,
+                    id: p.id,
+                    turn,
+                    seq,
+                })
+                .await;
+                Ok(seq)
+            }
+            Ok(None) => {
+                refuse_peer(
+                    &self.store,
+                    self.id,
+                    p.id,
+                    q.ticket,
+                    "already settled",
+                    false,
+                )
+                .await;
+                Err(None)
+            }
+            Err(e) if matches!(e.downcast_ref::<CommError>(), Some(CommError::Revoked)) => {
+                refuse_peer(
+                    &self.store,
+                    self.id,
+                    p.id,
+                    q.ticket,
+                    "communication_disabled",
+                    true,
+                )
+                .await;
+                Err(None)
+            }
+            Err(e) => {
+                let why = format!("{e:#}");
+                if let Err(e) = self.store.fail_exchange(p.id, &why).await {
+                    tracing::debug!(session = %self.id, id = %p.id, "fail_exchange: {e:#}");
+                }
+                refuse_peer(&self.store, self.id, p.id, q.ticket, &why, false).await;
+                Err(None)
+            }
+        }
+    }
+
     /// Claim the turn with the supervisor, persist `text` as the user message
     /// and acknowledge its ticket as consumed, then publish `TurnStarted`; the
     /// row exists when it is delivered (design doc 29 §4.2, 47 §4.3).
     /// `Err` when the row could not be written: the turn is already open and
     /// finished as an error, and the ticket stays pending — failed
-    /// persistence never certifies a delivered input.
+    /// persistence never certifies a delivered input. A refused peer exchange
+    /// (50 §7) opens no turn at all: its ticket is already released.
     async fn open(&mut self, q: &Queued) -> Result<TurnId, ()> {
         let turn = TurnId::new();
+        // The durable link precedes the claim so a refusal costs no turn.
+        let persisted = match self.persist_input(q, turn).await {
+            Ok(seq) => Ok(seq),
+            Err(None) => return Err(()),
+            Err(Some(why)) => Err(why),
+        };
         continuation::notify(TurnEntered {
             session: self.id,
             turn: Some(turn),
@@ -216,18 +335,6 @@ impl AcpChild {
             .await;
         }
         self.title(&q.text).await;
-        let persisted = self
-            .store
-            .append(self.id, &ChatMessage::user(&q.text))
-            .await;
-        if let (Ok(_), Some(t)) = (&persisted, q.ticket) {
-            continuation::notify(InputConsumed {
-                session: self.id,
-                id: t.id,
-                turn,
-            })
-            .await;
-        }
         self.publish(AgentEvent::TurnStarted {
             session: self.id,
             turn,
@@ -236,12 +343,12 @@ impl AcpChild {
             turn_seq: *persisted.as_ref().unwrap_or(&0),
         })
         .await;
-        self.turn = Some(Turn::new(self.id, turn));
+        self.turn = Some(Turn::new(self.id, turn, q.scope));
         match persisted {
             Ok(_) => Ok(turn),
             Err(e) => {
-                tracing::error!(session = %self.id, "append: {e:#}");
-                self.finish("error", Some(format!("persist input: {e:#}")))
+                tracing::error!(session = %self.id, "append: {e}");
+                self.finish("error", Some(format!("persist input: {e}")))
                     .await;
                 Err(())
             }
@@ -263,7 +370,8 @@ impl AcpChild {
     }
 
     /// Close the turn in flight: persist the assistant text (or `error`, the
-    /// last tool result, or `"(no text)"`), publish `Error` when given, then
+    /// last tool result, or `"(no text)"`), publish `Error` when given, report
+    /// the persisted result by turn ([`PeerTurnFinished`], 50 §6.3), then
     /// `TurnFinished`, then hand the state back to the supervisor
     /// ([`TurnReturned`]; it keeps this child counted until the parent holds
     /// the result).
@@ -291,8 +399,16 @@ impl AcpChild {
         } else {
             turn.text
         };
-        self.append(ChatMessage::assistant(MessageContent::from_text(text)))
+        self.append(ChatMessage::assistant(MessageContent::from_text(&text)))
             .await;
+        continuation::notify(PeerTurnFinished {
+            session: self.id,
+            turn: turn.id,
+            scope: turn.scope,
+            text,
+            stop_reason: stop_reason.to_owned(),
+        })
+        .await;
         self.publish(AgentEvent::TurnFinished {
             session: self.id,
             turn: turn.id,
@@ -306,6 +422,33 @@ impl AcpChild {
             turn: Some(turn.id),
         })
         .await;
+    }
+
+    /// Remove every queued peer input matching `pick` and release it (50 §8):
+    /// its ticket through [`crate::communication::PeerIntakeFailed`], its row suppressed only when
+    /// `suppress`.
+    async fn drop_queued(&mut self, pick: impl Fn(&Queued) -> bool, reason: &str, suppress: bool) {
+        let mut i = 0;
+        while i < self.queue.len() {
+            if pick(&self.queue[i]) {
+                let q = self.queue.remove(i).expect("index checked");
+                match (q.peer, q.ticket) {
+                    (Some(p), _) => {
+                        refuse_peer(&self.store, self.id, p.id, q.ticket, reason, suppress).await;
+                    }
+                    (None, Some(ticket)) => {
+                        continuation::notify(InputDropped {
+                            session: self.id,
+                            ticket,
+                        })
+                        .await;
+                    }
+                    (None, None) => {}
+                }
+            } else {
+                i += 1;
+            }
+        }
     }
 
     /// A turn that never reached the harness (06 §8.7): the error is the
@@ -687,10 +830,17 @@ impl Message<UserInput> for AcpChild {
             text,
             files: _,
             ticket,
+            scope,
         }: UserInput,
         ctx: &mut Context<Self, Self::Reply>,
     ) {
-        let q = Queued { id, ticket, text };
+        let q = Queued {
+            id,
+            ticket,
+            text,
+            scope,
+            peer: None,
+        };
         if let Some(why) = self.dead.clone() {
             self.fail(q, &why).await;
             ctx.stop();
@@ -710,6 +860,72 @@ impl Message<UserInput> for AcpChild {
         }
         let me = ctx.actor_ref().clone();
         self.start(q, &me).await;
+    }
+}
+
+/// 50 §6.4: an ACP child receives enabled peer messages like any session,
+/// queued behind the prompt in flight, and consumes them durably. It is not
+/// an exportable A2A backend — native request ownership and cancellation
+/// cannot be imposed on an opaque harness loop — so a task input
+/// (`isolated`) is refused at the ask and never accepted into its queue; the
+/// supervisor fails the exchange visibly. It also has no reverse peer tools:
+/// nothing here pretends it can answer.
+impl Message<PeerInput> for AcpChild {
+    type Reply = Result<(), String>;
+
+    async fn handle(&mut self, m: PeerInput, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        if m.record.session != self.id {
+            return Err(format!(
+                "exchange {} is addressed to {}, not this session",
+                m.record.receipt.id, m.record.session
+            ));
+        }
+        if m.isolated {
+            return Err("ACP child is not an exportable A2A backend (50 §6.3)".into());
+        }
+        let q = Queued {
+            id: None,
+            ticket: Some(m.ticket),
+            text: peer_wrapper(&m.record, m.reply_expected),
+            scope: m.request_scope,
+            peer: Some(PeerMeta {
+                id: m.record.receipt.id,
+                generation: m.generation,
+                isolated: false,
+            }),
+        };
+        if let Some(why) = self.dead.clone() {
+            self.fail(q, &why).await;
+            ctx.stop();
+            return Ok(());
+        }
+        if self.harness.is_none() || self.turn.is_some() {
+            self.queue.push_back(q);
+            return Ok(());
+        }
+        let me = ctx.actor_ref().clone();
+        self.start(q, &me).await;
+        Ok(())
+    }
+}
+
+impl Message<CancelPeerScope> for AcpChild {
+    type Reply = ();
+
+    async fn handle(&mut self, m: CancelPeerScope, _: &mut Context<Self, Self::Reply>) {
+        // No task ever opens an ACP turn (isolated input is refused), so only
+        // queued inputs of that scope can exist.
+        self.drop_queued(|q| q.scope == Some(m.scope), "canceled", false)
+            .await;
+    }
+}
+
+impl Message<SuppressPeerInputs> for AcpChild {
+    type Reply = ();
+
+    async fn handle(&mut self, _: SuppressPeerInputs, _: &mut Context<Self, Self::Reply>) {
+        self.drop_queued(|q| q.peer.is_some(), "communication_disabled", true)
+            .await;
     }
 }
 
@@ -821,7 +1037,7 @@ mod tests {
     use super::*;
 
     fn turn() -> Turn {
-        Turn::new(SessionId::new(), TurnId::new())
+        Turn::new(SessionId::new(), TurnId::new(), None)
     }
 
     #[test]

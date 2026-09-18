@@ -8,6 +8,7 @@ description = "Signal messenger frontend for the daemon (design doc 09)"
 [dependencies]
 runtime = { workspace = true }
 agent = { workspace = true }
+a2a = { workspace = true }
 tools = { workspace = true }
 artifact = { workspace = true }
 secrets = { workspace = true }

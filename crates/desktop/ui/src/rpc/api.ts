@@ -1,10 +1,12 @@
 import type { EntryInfo } from '@/rpc/bindings/EntryInfo'
+import type { A2aStatus } from '@/rpc/bindings/A2aStatus'
 import type { Answer } from '@/rpc/bindings/Answer'
 import type { ApprovalId } from '@/rpc/bindings/ApprovalId'
 import type { ApprovalsState } from '@/rpc/bindings/ApprovalsState'
 import type { AskId } from '@/rpc/bindings/AskId'
 import type { Change } from '@/rpc/bindings/Change'
 import type { CompactStyle } from '@/rpc/bindings/CompactStyle'
+import type { CommunicationState } from '@/rpc/bindings/CommunicationState'
 import type { Concept } from '@/rpc/bindings/Concept'
 import type { ContextRemoval } from '@/rpc/bindings/ContextRemoval'
 import type { ContextSnapshot } from '@/rpc/bindings/ContextSnapshot'
@@ -25,6 +27,11 @@ import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
 import type { Node } from '@/rpc/bindings/Node'
 import type { Pairing } from '@/rpc/bindings/Pairing'
 import type { Put } from '@/rpc/bindings/Put'
+import type { PeerMessagePage } from '@/rpc/bindings/PeerMessagePage'
+import type { PeerPage } from '@/rpc/bindings/PeerPage'
+import type { PeerReceipt } from '@/rpc/bindings/PeerReceipt'
+import type { PeerRecord } from '@/rpc/bindings/PeerRecord'
+import type { PeerScope } from '@/rpc/bindings/PeerScope'
 import type { QueuedInput } from '@/rpc/bindings/QueuedInput'
 import type { RegistryAgent } from '@/rpc/bindings/RegistryAgent'
 import type { RepoInfo } from '@/rpc/bindings/RepoInfo'
@@ -80,6 +87,8 @@ export type PermissionStatus = {
  * `RpcClient.subscribe`.
  */
 export interface Api {
+  /** `/a2a`: listener, configured peers and exports (50 §10); `enabled: false` with an empty status when `a2a.enabled` is off. */
+  a2a_status(): Promise<A2aStatus>
   add_acp(id: string): Promise<EntryInfo>
   /** Pair this harness with a node from the key `wth --install-service` printed (32 §6.6); `NodeAdded` follows. */
   add_node(key: string, name: string | null): Promise<Node>
@@ -90,6 +99,8 @@ export interface Api {
   add_skill_repo(url: string, name: string | null): Promise<SkillMeta[]>
   /** PNG (base64) of the session's browser page; `null` when it has no isolate or no open page. */
   browser_screenshot(session: SessionId): Promise<string | null>
+  /** The human resolves pending request `reply_to` on behalf of `session` — as its recipient (answer travels to the sender) or as its blocked sender (its own wait resolves); exact id, never an arbitrary waiter (50 §5.3). Rejects when `session` is neither side or nothing is pending. */
+  answer_peer_request(session: SessionId, reply_to: string, text: string): Promise<PeerReceipt>
   cancel(session: SessionId): Promise<null>
   cancel_job(session: SessionId, id: JobId): Promise<null>
   compact(session: SessionId, style: CompactStyle | null): Promise<number>
@@ -109,6 +120,8 @@ export interface Api {
   /** New session with the conversation through the turn opened at `through` (all when `null`); `reply` stops at that 0-based assistant text of the turn instead. */
   fork_session(session: SessionId, through: number | null, reply: number | null): Promise<SessionId>
   get_prompt(session: SessionId | null): Promise<string>
+  /** Effective communication state of `session`, or the global switch alone when `null` (50 §2.1); authoritative — render `effective`/`inherited_from`, never guess. */
+  get_communication(session: SessionId | null): Promise<CommunicationState>
   /** Base64 of a file under `<data_dir>/{attachments,browser,computer,artifacts}` (31 §6.4); `-32000` elsewhere. */
   get_attachment(path: string): Promise<string>
   /** Latest committed plan of `session` (47 §5.1); works mid-turn; unknown session / failed read rejects, never an empty list. */
@@ -137,6 +150,15 @@ export interface Api {
   /** Artifacts newest first: one session's (`descendants` widens to its subtree) or, with `null`, every session's (35 §3.5). */
   list_artifacts(session: SessionId | null, descendants?: boolean | null): Promise<Artifact[]>
   list_jobs(session: SessionId): Promise<JobView[]>
+  /** Permitted peer directory of `session` (50 §5.1), paged by the opaque `cursor`; `query` narrows by name/address. */
+  list_peers(session: SessionId, query: string | null, cursor: string | null, limit: number | null): Promise<PeerPage>
+  /** `session`'s own sent/received records newest first plus the exact ids it can answer or resolve; `pending_only` keeps only those (50 §5.3). */
+  list_peer_messages(
+    session: SessionId,
+    cursor: string | null,
+    limit: number | null,
+    pending_only: boolean,
+  ): Promise<PeerMessagePage>
   /** AWS profiles the SDK finds on the harness and the one Bedrock signs with. */
   list_aws_profiles(): Promise<AwsProfiles>
   list_logins(): Promise<LoginInfo[]>
@@ -179,11 +201,15 @@ export interface Api {
   mcp_logout(server: string): Promise<null>
   mcp_status(): Promise<McpProgress>
   new_session(): Promise<SessionId>
+  /** One exchange as `session` recorded it (50 §5.2); never another session's history. */
+  peer_message(session: SessionId, id: string): Promise<PeerRecord>
   /** Write base64 `bytes` to `<data_dir>/attachments/<sha256[..16]>.<ext>`; returns the path for `send_input.files`. */
   put_attachment(bytes_b64: string, ext: string): Promise<string>
   redo(session: SessionId): Promise<string>
   /** Regenerate the reply to the turn opened at `turn` (29 §3); refused mid-turn. */
   regenerate(session: SessionId, turn: number): Promise<null>
+  /** Re-read and atomically replace the A2A peer/export configuration (50 §6.1); a failed reload keeps the old one live and reports in `error`. */
+  reload_a2a(): Promise<A2aStatus>
   remove_acp(name: string): Promise<null>
   /** Exclude `targets` from the model's context at `expected_revision` (48 §3.2); stale, foreign or incomplete sets refuse atomically. */
   remove_context(
@@ -221,12 +247,16 @@ export interface Api {
   /** Sign every Bedrock call on the harness as `profile` from the next request on; `null` restores the default credential chain. */
   set_aws_profile(profile: string | null): Promise<AwsProfiles>
   set_approvals(session: SessionId | null, enabled: boolean): Promise<ApprovalsState>
+  /** Global switch (`session: null`, persisted) or one session's memory-only opt-out (50 §2.1); `enabled: true` on a session lifts its own opt-out only, never an ancestor's or the global ceiling. */
+  set_communication(session: SessionId | null, enabled: boolean): Promise<CommunicationState>
   set_compact_style(style: CompactStyle): Promise<null>
   set_effort(session: SessionId | null, effort: string | null): Promise<null>
   set_max_tool_rounds(rounds: number): Promise<null>
   set_mcp_gate(server: string, tool: string | null, gate: Gate | null): Promise<null>
   set_mcp_hidden(session: SessionId, tools: string[], hidden: boolean): Promise<null>
   set_model(session: SessionId | null, model: string): Promise<ModelInfo>
+  /** Set a root's scope and owner alias (50 §2.3); roots only, `alias: null` clears it. */
+  set_peer_scope(root: SessionId, scope: PeerScope, alias: string | null): Promise<CommunicationState>
   set_subagent_timeout(seconds: number): Promise<null>
   set_title_model(model: string | null): Promise<ModelInfo | null>
   shutdown(): Promise<null>
@@ -261,6 +291,7 @@ export interface Api {
 
 /** Every request method name, sorted; `api.test.ts` checks it against `bindings/methods.json`. */
 export const METHODS = [
+  'a2a_status',
   'add_acp',
   'add_mcp_repo',
   'add_mcp_server',
@@ -269,6 +300,7 @@ export const METHODS = [
   'add_skill',
   'add_skill_repo',
   'answer_ask',
+  'answer_peer_request',
   'answer_secret',
   'browser_screenshot',
   'cancel',
@@ -285,6 +317,7 @@ export const METHODS = [
   'fire_schedule',
   'fork_session',
   'get_attachment',
+  'get_communication',
   'get_prompt',
   'get_todos',
   'info',
@@ -317,6 +350,8 @@ export const METHODS = [
   'list_mcp',
   'list_models',
   'list_nodes',
+  'list_peer_messages',
+  'list_peers',
   'list_providers',
   'list_queued',
   'list_schedules',
@@ -332,10 +367,12 @@ export const METHODS = [
   'mcp_logout',
   'mcp_status',
   'new_session',
+  'peer_message',
   'pin_session',
   'put_attachment',
   'redo',
   'regenerate',
+  'reload_a2a',
   'remove_acp',
   'remove_context',
   'remove_mcp_server',
@@ -352,12 +389,14 @@ export const METHODS = [
   'send_input',
   'set_approvals',
   'set_aws_profile',
+  'set_communication',
   'set_compact_style',
   'set_effort',
   'set_max_tool_rounds',
   'set_mcp_gate',
   'set_mcp_hidden',
   'set_model',
+  'set_peer_scope',
   'set_secret',
   'set_subagent_timeout',
   'set_title_model',

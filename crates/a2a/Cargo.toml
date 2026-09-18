@@ -1,0 +1,40 @@
+[package]
+name = "a2a"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "A2A network boundary: official SDK client/server behind configured peers and exports (design doc 50 §6)"
+
+[dependencies]
+runtime = { workspace = true }
+agent = { workspace = true }
+secrets = { workspace = true }
+a2a-types = { workspace = true }
+a2a-client = { workspace = true }
+a2a-server = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true, features = ["limit"] }
+reqwest = { workspace = true }
+url = { workspace = true }
+kameo = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+schemars = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+zeroize = { workspace = true }
+ts-rs = { workspace = true, optional = true }
+
+[features]
+ts = ["dep:ts-rs", "runtime/ts", "agent/ts"]
+
+[lints]
+workspace = true

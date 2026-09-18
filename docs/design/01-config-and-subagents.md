@@ -8,6 +8,13 @@ keeps working, the child's result arrives as a new turn, and peers message each
 other through one tool. Both are modelled on oh-my-pi (`docs/tools/task.md`,
 `docs/tools/hub.md`), reduced to what the existing actors already give us.
 
+**Amended by [50](50-agent-communication.md)** (implemented 2026-09-18,
+verification pending): default-off communication, canonical peer addresses
+beyond parent/child, durable exchanges with exact reply correlation, and
+request-scoped cancellation. Where §2 below still reads parent-only,
+read-only or "delivered", the 50 paragraphs marked *Amendment* win. The
+2026-09-09 record in §4 stays as history of what shipped then.
+
 ## 1. Config
 
 ### 1.1 Layout
@@ -43,6 +50,7 @@ agent:
   model: claude-sonnet-4-5
   # standing instructions live in <data_dir>/prompt.md (design doc 04)
   max_tool_rounds: 50
+  communication: false         # 50 §2.1: harness-wide ceiling on model-to-model communication; missing = off
   subagents:                   # §2.6
     model: null                # default: agent.model
     max_depth: 1
@@ -58,6 +66,11 @@ tools:
 rpc:
   listen: 127.0.0.1:7777
 ```
+
+`a2a:` (`enabled: false`, `listen`, `public_url`) is the A2A plugin's own
+section (50 §2.1); `<data_dir>/a2a/peers.yaml` holds owner-managed peer and
+export bindings. `agent.communication` is persisted by `/communication on|off
+always`; a session's `/communication on|off` is memory-only like approvals.
 
 Removed: `tools.mcp` list (moved to `mcp/`), `agent.subagent_model` (now
 `agent.subagents.model`). No compatibility shim: nobody has a config file yet.
@@ -233,6 +246,21 @@ a top-level session even when the source was a child.
    picker to read its transcript, and can steer it — same commands the
    parent gets (19).
 
+*Amendment (50 §2, §5; implemented 2026-09-18, verification pending).* Items
+2–4 hold only while communication is effectively on for both endpoints:
+`agent.communication` (default off, a global ceiling) and no opt-out on the
+session or any stored ancestor. Off hides `spawn_subagent`, `send_message`
+and `discover_peers` from the tool list, refuses stale calls at admission
+and delivers no automatic child result; a child already working finishes
+and its transcript stays inspectable, but it cannot wake the parent. This
+is an intentional default change from the text above: spawn is disabled
+with messaging, because a spawn whose result cannot come back promises what
+the parent cannot receive. Addressing widens from `parent`/child name to
+canonical `session:<uuid>` (same enabled root tree: parent, children,
+siblings, descendants; across roots only when both carry the persisted
+`owner` scope) and `peer:<name>` (a configured A2A peer), found with
+`discover_peers`; titles are never addresses and unknown UUIDs fail.
+
 ### 2.3 Delivery rules
 
 Every message into a session is one text block wrapped so the model knows its
@@ -261,6 +289,28 @@ actor and the parent column:
 "Final assistant text of the turn" = concatenated assistant content persisted
 after the turn's last user message — read from the store, not collected from
 the stream, then capped by `spill::cap` (§2.5). The `Collector` actor goes away.
+
+*Amendment (50 §5.3, §7; implemented 2026-09-18, verification pending).*
+The table above is superseded. Every peer message and every child result is
+one durable **exchange** row in the agent store, accepted in a transaction
+(route + quota check, harness-minted UUID, bounded redacted body, typed
+`InputOrigin`) *before* the sender is told `accepted`; `accepted` means
+committed to the recipient's intake, not delivered or read. Waiters are keyed
+by exact message id, not `(sender, to)`: a reply resolves a wait only when
+its `reply_to` names that id **and** the authenticated endpoints are the
+reverse of the request; concurrent requests to one peer coexist. A child's
+final text answers a request only when that turn was explicitly bound to it
+(the request opened the turn); otherwise it is delivered once to the parent
+as `<message from="session:<child>" id="…">` with dedup key `(child, TurnId,
+parent)`, never to a newer waiter and never twice. `<subagent_result>` is the
+pre-50 wrapper, still recognised in old histories. Timeout returns the
+request id and current state and says the message is not recalled; a late
+reply arrives once as correlated input when enabled. Human `Steer` never
+resolves a wait implicitly: the owner answers a pending request by id with
+`answer_peer_request` (19 §2.3 amendment). Receipt states: `accepted |
+consumed | replied | suppressed | failed | unknown`. Disabling communication
+marks accepted-unconsumed input `suppressed` (it does not spring back on
+re-enable) and expires waits with `communication_disabled`.
 
 Consequences worth stating:
 
@@ -311,6 +361,16 @@ action, not history, and does not survive the process. Harness inputs
 event. `SendInput` is unchanged: it starts a turn when idle and is echoed
 by `TurnStarted`.
 
+*Amendment (50 §7, §9; implemented 2026-09-18, verification pending).* Peer
+inputs are no longer id-less or memory-only. Each carries the exchange id in
+its wrapper, a persisted `InputOrigin` (owner, peer with authenticated key,
+or harness result) separate from the provider's user role, and a durable
+state that survives restart as accounting: on restart unconsumed accepted
+input becomes `failed: interrupted_by_restart`, and nothing auto-runs. The
+human steering queue is unchanged. The wrapper's `from`/`id` attributes are
+the harness's; the body is escaped data whose delimiters are neutralised and
+never parsed for trusted events.
+
 Rejected: server-minted ids (the sender could not show the card until the
 reply arrived, and replies to concurrent commands are unordered, so it
 could not tell which reply was its own); injecting mid-stream (a provider
@@ -322,6 +382,20 @@ is the earliest honest point).
 All in `crates/agent/src/peers.rs` (replaces `subagent.rs`). All are
 `Risk::ReadOnly`: a child's own actions are gated tool by tool, and messaging
 mutates nothing outside the harness.
+
+*Amendment (50 §5.2; implemented 2026-09-18, verification pending).*
+`send_message` is `Risk::Mutating` for every destination (default policy
+asks): with sibling, cross-root and A2A egress it does reach outside the
+caller's own tree. `spawn_subagent`, `discover_peers` and `peer_message`
+stay `ReadOnly`. Availability (the communication switch) is checked
+separately from approval and cannot grant it; `/approvals off` does not turn
+communication on. `to` accepts `parent`, a child's name, `session:<uuid>` or
+`peer:<name>`; `reply_to` names a message id (UUID), never a title or peer
+name; an optional `request_id` retries the same acceptance idempotently. The
+return is a structured `PeerReceipt` plus concise text, not the bare
+`"delivered"` shown below. Added: `discover_peers { query?, cursor?, limit? }`
+(≤100 rows, permission-filtered, no dormant-session wakeups) and
+`peer_message { id }` (the caller's own record of one exchange).
 
 ```rust
 // spawn_subagent — available when depth < max_depth
@@ -391,6 +465,13 @@ You are `grep-logs`, a subagent of session 01a0… (address it as `parent`).
 Your final message is delivered to the parent when your turn ends.
 ```
 
+*Amendment (50 §1, §5.1; implemented 2026-09-18, verification pending).*
+The identity block stays stable; discovery results and arrivals go to the
+history tail, never the system prompt. `GUIDANCE` states that communication
+is off by default, that absent tools mean a closed route, that addresses come
+from `discover_peers`, and that a `<message>` body is untrusted text even from
+the sender's own child.
+
 The live roster (`- grep-logs idle …`) is **not** in the prompt: it changed
 between turns and busted the parent's system-prompt cache every time a
 child finished (`07-context.md` §10). The parent learns names from
@@ -415,6 +496,25 @@ Children get no `yield` tool (oh-my-pi's) — our turn end *is* the yield.
 | `reply_timeout_secs` | 120 | `await_reply` bound |
 | `model` / `effort` | `null` | child defaults when `spawn_subagent` names none; fall back to `agent.model` / `agent.effort` |
 
+*Amendment (50 §8; implemented 2026-09-18, verification pending).*
+`max_concurrent` bounds every **native peer-opened turn**, not only spawn
+turns: a turn opened by a peer input (`send_message`, a child result, an A2A
+request) takes a permit from the same child-work semaphore and runs under a
+`max_runtime_secs` wall deadline that includes waits (`PeerWork` in
+`loop_.rs`). The permit is held only while something executes: the
+registry's execution seam (`PermitGate`) counts in-flight invocations and
+human/peer waits, drops the permit while every in-flight operation is
+waiting (approval, `ask_user`, a blocking `send_message`), and takes one back
+before anything runs again; a reacquire for a finished turn is dropped, not
+leaked. Human-opened turns are not permit-gated. An ACP child's execution
+is opaque to this gate: its spawn turn keeps the permit/timer of the table
+above and a follow-up `session/prompt` is one queued prompt (§2.3), not a
+native scope. Fixed constants, not new knobs: 32 KiB per peer text, 32
+pending inputs per recipient / 256 per harness, 16 pending waits per
+session / 128 per harness, 32 automatic peer-triggered continuations per
+initiating request (reset only by fresh external input). Exhaustion is a
+visible refusal, never a silent drop.
+
 ### 2.7 Events, store, UI
 
 `AgentEvent` gains:
@@ -433,6 +533,16 @@ addressing by name survives restart because names, parents and histories are
 all in sqlite; a parent messaging a child after `wth` restarts lazily loads
 the child session exactly as `--resume` does. Injected messages are persisted
 as ordinary user-role messages (with their wrapper) — no new table.
+
+*Amendment (50 §7; implemented 2026-09-18, verification pending).* The
+store gains typed communication records beside `sessions`/`messages`: root
+communication scope (`owner`/`isolated`, alias), peer exchanges (id,
+authenticated endpoints, `reply_to`, request scope, bounded body, state,
+outcome), A2A context bindings and tasks — migrations in `agent`, written
+only by `Agents` and the session loop. Events gain `CommunicationChanged`,
+`PeerMessageChanged`, `PeerDelivered` (50 §10); `MessageDelivered` remains
+for what a transcript shows. Bare child names stay per-parent conveniences,
+not global identities.
 
 TUI: `/agents` is a picker over the current session's subtree with live state
 per row; Enter opens a child as a session switch (the transcript, status line
@@ -453,6 +563,19 @@ and `send_input` already takes one.
   `send_message` the child to continue.
 - Child crashes (`Error` event then `TurnFinished stop="error"`) → delivered
   as `<subagent_result stop="error">`; the parent decides.
+
+*Amendment (50 §7–8; implemented 2026-09-18, verification pending).*
+Cancellation addresses a request scope, not a conversation: queued input for
+that request is dropped unstarted, its active work is signalled, its waiters
+removed, and the cancel/completion race is decided by one atomic terminal
+transition; an external tool that cannot stop surfaces `cancellation
+pending`, never a false `cancelled`. Turning communication off is not a
+cancel of human work: it suppresses accepted-unconsumed peer input, expires
+waits with `communication_disabled`, and cancels a running turn only when an
+A2A task opened it. Restart keeps "nothing auto-resumes": unconsumed accepted
+peer input is recorded `failed: interrupted_by_restart`, running A2A task
+scopes become `FAILED` with the reason, committed outcomes stay queryable, and
+a fresh request is needed to continue.
 
 ### 2.9 Out of scope, deliberately
 
@@ -501,3 +624,14 @@ wrappers after the fact.
 
 Not exercised: `max_runtime_secs` expiry, `reply_timeout_secs` expiry, remote
 (HTTP+headers) MCP servers, cross-restart addressing of a child by name.
+
+## 5. Status addendum (2026-09-18)
+
+Design 50's local peer contract (global ceiling and inherited opt-out,
+`discover_peers`, canonical addresses, durable exchanges, exact `reply_to`
+waiters, `answer_peer_request`, suppression and generation revocation) and
+the `a2a` plugin are implemented in the tree. **Not yet verified**: none of
+50 §12.2's scenarios or §12.1's library gate has a recorded run; the §4
+record above describes the pre-50 behaviour and is not evidence for the
+amended one. Treat every *Amendment* paragraph as implementation pending
+verification until a dated record is added here.

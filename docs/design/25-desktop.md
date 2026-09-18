@@ -191,6 +191,7 @@ Every row is an `Api` call already present unless marked **new** (§7).
 | `/effort`, `/effort <lvl>` | second column in the same dropdown, from `ModelInfo.efforts` (**not** the catalog - `list_models` already carries `efforts`, `context`, `image`) → `set_effort` |
 | `/title [model|off|clear]` | Settings › General › "Title model" |
 | `/approvals [on|off] [always]` | Settings › Approvals (global + this session toggles) → `set_approvals`; state read from **new** `info()` |
+| `/communication [on\|off] [always]` (bare = status), `/peers [scope owner\|isolated [alias]]` (bare = picker + pending requests by id: `i` inspect, `a` answer), `/a2a [reload]` (50, 2026-09-18) | Settings › Communication beside Approvals: global and this-session switches with 50 §2's precedence (session-on cannot defeat global-off or an ancestor's off; a disabled row names the blocking session), root scope `owner`/`isolated` + alias, network status from `a2a_status()` and **Reload** → `reload_a2a`; state from `get_communication`, never guessed. Peer picker over `list_peers` (the model's permitted directory, not `/agents`); `⟵ name` cards carry structured provenance (`PeerRecord`: sender/recipient keys, `reply_to`, state), and pending requests come from `list_peer_messages(…, pending_only)` with **Answer** → `answer_peer_request(session, reply_to, text)` by explicit id. Implemented; pending §12.2 verification |
 | approval modal `y/n/o` | inline card at the tool row: `approval: tool (risk)`, described args, **Allow** / **Deny** buttons; also a sheet listing all pending approvals across sessions (badge on tray title); `o` = the card's "open session" link; macOS notification when the window is hidden |
 | `/mcp` menu (switch, scope prompt, gate cycle, expand, `l`, `s`) | Settings › Tools: server rows with connect state, `On / Off here / Off always` segmented control (→ `set_mcp_hidden` / `set_mcp_gate`), tool sub-rows with risk select (→ `set_mcp_gate`), Login/Logout, Sync, Add (JSON or git URL), Remove (**exposes `remove_mcp_server`, which the TUI never did**); refreshed on `McpProgress` |
 | `/acp` (`p` probe, add, remove) | Settings › Agents (was "Harnesses" until 31; "harness" now means a wth harness): installed + registry, Probe, Add, Remove |
@@ -774,3 +775,46 @@ switching back reloaded the masks with no old image restored. All of this
 is DOM state: no screenshots or visual review, no real iOS device or
 simulator, and the harness switch exercised the per-harness store
 lifecycle, not a Noise/relay pairing.
+
+### 12.2 Agent communication (50), as-built 2026-09-18 — pending verification
+
+The shared React surface gained the 50 §10 parity row above. Rules the build
+follows, stated as contract because no visual review has been performed:
+
+- **Same transport, same client.** Everything is `rpc::Api` over the
+  existing WebSocket (`get_communication`, `set_communication`,
+  `set_peer_scope`, `list_peers`, `list_peer_messages`, `peer_message`,
+  `answer_peer_request`, `a2a_status`, `reload_a2a`) plus three events on the
+  one subscription (`CommunicationChanged`, `PeerMessageChanged`,
+  `A2aChanged`). No Tauri command, no second socket, no desktop-only logic;
+  the Link container (31 §9) gets the identical pane.
+- **Authoritative on open, invalidated on change.** `Info.communication`
+  and `Loaded.communication` carry the effective state; queries keyed
+  `['communication', session]`, `['peers', session, query]`,
+  `['peer-messages', session, pendingOnly]`, `['peer-message', session,
+  id]`, `['a2a']` are invalidated centrally (`lib/rpc.ts`
+  `useInvalidateOn`): `CommunicationChanged` → communication + peers + info;
+  `PeerMessageChanged{session,id}` → that session's messages and record;
+  `A2aChanged` → a2a + communication + peers. `Lagged`, reconnect and
+  harness switch invalidate the same keys next to the sessions/knowledge
+  lines. `revision` is a `u64` (ts-rs `bigint`, JSON number on the wire);
+  compare with `BigInt(x)` on both sides. No optimistic toggle: the switch
+  shows pending until the reply or event lands, and a remote failure shows
+  on the row, not as a frozen chat.
+- **Not copied from Approvals.** The approvals pane's guessed session value
+  and "overrides the default" wording (50 §10) are not reused; the
+  communication switches render what `CommunicationState` says (`global`,
+  `source`, `opted_out`, `inherited_from`, `effective`).
+- **Peer bodies are display data.** A card renders the redacted, bounded
+  body the daemon stored; provenance comes from `PeerRecord` fields, never
+  parsed out of the text. The client does not infer an active A2A request
+  from card content; `A2aStatus` lists exports (`name`, `session`, `url`,
+  `peer`) and does not yet list active tasks, so the pane shows no per-task
+  state it cannot get authoritatively.
+
+Not verified: no browser or Tauri session has driven the pane; no
+screenshots; no second-client convergence run after a toggle, `Lagged` or
+reconnect; no mobile viewport pass for the new switches (44 px targets are
+the §12.1 convention, asserted only by the shared components' existing
+tests). The 2026-09-15 and §12.1 verifications above are unaffected. User
+visual approval is owed before this subsection drops "pending".

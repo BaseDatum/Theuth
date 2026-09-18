@@ -4,7 +4,7 @@
 //! hot-reloaded; `mcp/config.yaml` overrides a tool's [`Risk`] with a [`Gate`]).
 //!
 //! Public surface consumed by other plugins:
-//! - commands on the `"tools"` actor ([`ToolRegistry`]): [`ListTools`], [`Invoke`], [`ExternalApproval`], [`RegisterTool`], [`UnregisterTool`], [`RegisterActivity`], [`ActivityRecipient`]
+//! - commands on the `"tools"` actor ([`ToolRegistry`]): [`ListTools`], [`Invoke`], [`ExternalApproval`], [`RegisterTool`], [`UnregisterTool`], [`RegisterActivity`], [`ActivityRecipient`], [`InstallCommunicationAccess`]
 //! - commands on the `"approval"` actor ([`Approval`]): [`Resolve`]
 //! - commands on the `"ask"` actor ([`AskUser`]): [`AnswerAsk`]
 //! - commands on the `"mcp"` actor ([`Mcp`]): [`ListServers`], [`SetGate`], [`Restart`], [`AddServer`], [`RemoveServer`], [`AddRepo`], [`SyncMcp`], [`McpLogin`], [`McpLogout`]
@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 pub mod activity;
 pub mod approval;
 pub mod ask;
+pub mod communication;
 pub mod doc;
 pub mod fs;
 pub mod git;
@@ -43,6 +44,7 @@ pub use approval::{Approval, ApprovalId, ApprovalRequested, ApprovalResolved, De
 pub use ask::{
     Answer, AnswerAsk, AskId, AskRequested, AskResolved, AskUser, Choice, PendingAsks, Question,
 };
+pub use communication::{CommunicationAccess, Disabled};
 pub use jobs::{
     CancelJob, InstallActivity, JOBS_ACTOR, JobEvent, JobExit, JobId, JobView, Jobs, ListJobs,
 };
@@ -51,9 +53,10 @@ pub use mcp::{
     McpToolInfo, Progress, RemoveServer, RepoInfo, Restart, SetGate, SyncMcp,
 };
 pub use registry::{
-    ActivityRecipient, ApprovalsState, ExternalApproval, GetApprovals, HiddenTools, Invoke,
-    ListPrompts, ListTools, RegisterActivity, RegisterPrompt, RegisterTool, SetApprovals,
-    SetHidden, SetParent, ToolRegistry, UnregisterPrompt, UnregisterTool,
+    ActivityRecipient, ApprovalsState, ExternalApproval, GetApprovals, HiddenTools,
+    InstallCommunicationAccess, Invoke, ListPrompts, ListTools, RegisterActivity, RegisterPrompt,
+    RegisterTool, SetApprovals, SetHidden, SetParent, ToolRegistry, UnregisterPrompt,
+    UnregisterTool,
 };
 
 /// Registry name of the [`ToolRegistry`] actor.

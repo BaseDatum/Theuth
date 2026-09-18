@@ -127,6 +127,8 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             let _ = commands.send(Command::McpStatus);
             // Skill names so `/<skill> [args]` resolves before `/skills` was ever opened.
             let _ = commands.send(Command::ListSkills);
+            // The global communication default, before any session is shown (50 §10).
+            let _ = commands.send(Command::GetCommunication(None));
             let mut frames = tokio::time::interval(std::time::Duration::from_millis(16));
             frames.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             let mut pending = Vec::new();
@@ -183,6 +185,16 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                         session,
                         settled_only: true,
                     });
+                }
+                if std::mem::take(&mut m.refresh_communication) {
+                    let _ = commands.send(Command::GetCommunication(m.session));
+                }
+                // Only the open `/peers` menu sets this; a stale flag after it closed is dropped.
+                if std::mem::take(&mut m.refresh_peers)
+                    && let Some(Menu::Peers { session, .. }) = &m.menu
+                {
+                    let _ = commands.send(Command::ListPeers(*session));
+                    let _ = commands.send(Command::ListPeerRequests(*session));
                 }
             }
         }
@@ -873,6 +885,11 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
             *cursor,
         ),
         Menu::Shake(s) => (s.title(), s.rows(), s.cursor),
+        Menu::Peers { cursor, .. } => (
+            m.peers_title(),
+            m.peers_rows().iter().map(|r| r.line()).collect(),
+            *cursor,
+        ),
         Menu::Knowledge { items, cursor } => (
             "knowledge  ⏎/h history of concept  H history of all  esc close".to_owned(),
             if items.is_empty() {

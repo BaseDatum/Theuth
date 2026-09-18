@@ -5,6 +5,13 @@ Status: shipped 2026-09-13 · steps 1–6 of §7 · extends `01-config-and-subag
 Where this doc disagrees with those, this doc wins; §9 lists the edits.
 Every file:line below was read on 2026-09-13.
 
+**Amended by [50](50-agent-communication.md)** (implemented 2026-09-18,
+verification pending): the model-side facts in §0 and §6 ("stays as is",
+"any child turn delivers a `<subagent_result>`", a human steer resolves the
+waiter) describe the pre-50 shipped behaviour and are kept as the
+2026-09-13 record. The *Amendment* paragraphs below state the current
+contract; where they disagree with older text, they win.
+
 ## 0. The problem, in the tree
 
 01 §2.2 item 5 promised: *the human sees children in the TUI roster, can
@@ -33,6 +40,18 @@ behaviour the whole design leans on; it is not new, it is verified in §7.
 The model side is fine and stays as is: children are detached, results
 arrive as `<subagent_result>`, peers talk through `send_message`, the roster
 is not in the prompt (07 §10). This doc is about the **human** side.
+
+*Amendment (50 §2, §5.3, §7; implemented 2026-09-18, verification pending).*
+Three of those model-side facts changed. (1) Delivery is conditional: a
+child's result reaches the parent only while communication is effectively on
+for both sessions (`agent.communication` global ceiling, no opt-out on either
+or a stored ancestor); off leaves the child's transcript inspectable and
+the parent unwoken. (2) The wrapper is `<message from="session:<child>"
+id="…">`, one durable exchange with dedup key `(child, TurnId, parent)`,
+delivered once; `<subagent_result>` survives only in old histories. (3)
+Peers are not parent/child only: siblings, descendants and, with `owner`
+scope on both roots, other roots are addressable by `session:<uuid>` from
+`discover_peers`; A2A peers by `peer:<name>`.
 
 ## 1. The shape
 
@@ -99,6 +118,15 @@ pub enum AgentState {
 }
 ```
 
+*Amendment (50 §5.3; implemented 2026-09-18, verification pending).*
+`Awaiting { from }` derives from the exact-id waiter table (awaited message
+id → waiting session, addressee), not from `(waiter, from)` pair keys;
+`from` is rendered as `parent`, the child's name, or the canonical address
+when there is no convenience name. Several pending waits in one session are
+possible; the board shows the state, `list_peer_messages(session,
+pending_only: true)` lists the exact ids (`awaiting_answer` /
+`awaiting_reply`) a human may resolve.
+
 Sources, all already held by `Agents`: `running` set (`supervisor.rs:495-504`),
 `waiters` keys `(waiter, from)` → `Awaiting` for the `waiter` (`:74`),
 `child_turns` gains `started_at: Instant` next to its timer (`:149-152`;
@@ -142,6 +170,20 @@ is the one it would miss.)
 - `Loaded` gains `name: Option<String>` and `parent: Option<SessionId>` so a
   child's view can head itself and `/parent` knows where to go without a
   roster lookup.
+
+*Amendment (50 §5.3; implemented 2026-09-18, verification pending).* The
+first rule is superseded: **a plain `steer`/`send_input` never resolves a
+peer wait.** It steers, as everywhere else. The owner answers a pending
+request by exact id with `answer_peer_request(session, reply_to, text)`
+(`AnswerPeerRequest` on `Agents`): the durable exchange decides which side
+the human acts for (answering a request the session received, or supplying
+the reply a session is awaiting), the awaiting tool call returns the text
+without a new model turn, and `MessageDelivered { from: "you" }` still marks
+the transcript. With exactly one pending wait a frontend may offer "answer
+this request"; with several it must pick by id — never an arbitrary map
+entry. A peer message never takes the human-answer path. `cancel(session)`
+still fans out to running descendants; A2A request scopes are cancelled by
+scope, not by cancelling the whole session (50 §8).
 
 ### 2.4 Not added
 
@@ -200,6 +242,13 @@ input answers it (§2.3) and the editor's placeholder says so beforehand:
 child. `/agents` here lists *this* child's subtree (usually empty →
 `no subagents`). `/model`, `/effort`, `/compact`, `/undo` act on the child
 exactly as on any session — it is one.
+
+*Amendment (50 §5.3; implemented 2026-09-18, verification pending).* Plain
+input in an `Awaiting` child steers it; it does not answer the wait. The
+answer goes through `answer_peer_request` with the exact request id — one
+pending wait may be offered as "answer this request", several require a
+choice by id. The TUI/desktop rendering of that choice is frontend work
+recorded in 25/31's parity tables, not here.
 
 **`/parent`** opens the parent (`Loaded.parent`), i.e. the top-level session
 at the default depth; at depth 2 it climbs one level and a second `/parent`
@@ -289,6 +338,13 @@ an awaiting child arrives as the tool's return value, exactly as the
 parent's would. The parent sees a `<subagent_result>` when the steered turn
 ends, exactly as after the spawn turn — it does not know a human intervened,
 and does not need to: the result speaks for itself.
+
+*Amendment (50; implemented 2026-09-18, verification pending).* "Unchanged"
+no longer holds: `discover_peers` and `peer_message` exist when
+communication is on, the result wrapper is `<message from="session:<child>"
+id="…">`, a human answer arrives through `answer_peer_request` rather than a
+steer, and no result is delivered while communication is off (§0
+amendment). The parent still does not learn that a human intervened.
 
 ## 7. Implementation order
 
@@ -380,6 +436,13 @@ Deviations: `Model.agents` is a `HashMap<SessionId, AgentInfo>`, not a
 - `06-acp.md` §3.6: ACP children appear in the picker/board with
   `Running`/`Idle`/`Approval` only (no `Awaiting`: they have no
   `send_message`, §3.8).
+
+*Amendment (2026-09-18).* 00 §5/§8, 01 §2 and this doc carry 50's
+amendments as *implementation pending verification*; the 2026-09-13
+verification record in §7 step 1 covers the pre-50 waiter and steer
+behaviour and is not evidence for `answer_peer_request` or conditional
+delivery. 06 §3.8's limitation stands: ACP children remain result-only
+proxies with no wth peer tools (50 §6.4).
 
 ## 10. Not in this doc
 

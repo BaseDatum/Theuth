@@ -58,7 +58,7 @@ const OVERFLOW_NEEDLES: [&str; 15] = [
 const RATE_LIMIT_NEEDLES: [&str; 2] = ["rate limit", "too many requests"];
 
 /// Substrings (lowercase) of an error the same request would hit again (36 §2.1).
-const DETERMINISTIC_NEEDLES: [&str; 7] = [
+const DETERMINISTIC_NEEDLES: [&str; 8] = [
     "unauthorized",
     "forbidden",
     "invalid_request",
@@ -66,6 +66,9 @@ const DETERMINISTIC_NEEDLES: [&str; 7] = [
     "authentication",
     "schema",
     "not found",
+    // genai's own pre-request failure (missing key env, target resolver): no
+    // request was sent, and the same config yields the same answer.
+    "resolver error",
 ];
 
 /// Flat token charge for one image part in [`est`] (17 §3.4): a ≤1568 px PNG lands near this.
@@ -483,6 +486,10 @@ mod tests {
             ("status: 408 request timeout", Transient),
             ("status: 503 service unavailable", Transient),
             ("http 422 schema validation failed", Deterministic),
+            (
+                "Resolver error for model 'Omlx::x'.\nCause: ApiKeyEnvNotFound { env_name: \"OMLX_API_KEY\" }",
+                Deterministic,
+            ),
         ] {
             assert_eq!(classify(err), want, "{err}");
         }

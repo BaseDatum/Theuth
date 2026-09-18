@@ -139,7 +139,16 @@ per-transport difference.
    cache miss can always be explained from the log.
 8. **Harness inputs are plain user messages.** `<subagent_result>`,
    `<job_result>` (14 §3) and peer `<message>` are appended like typed
-   input; they carry no id and publish no `Input*` event (01 §2.3).
+   input; they carry no steering `InputId` and publish no `Input*` event
+   (01 §2.3). *Amendment (50 §7, §9; implemented 2026-09-18, verification
+   pending):* a peer message or child result is one durable exchange row
+   accepted before it is acknowledged, carries its exchange id in the
+   wrapper (`<message from="session:…" id="…">`; `<subagent_result>` is the
+   pre-50 wrapper) and a persisted `InputOrigin` separate from the provider's
+   user role. The consumption transaction links the intake row to the
+   appended history row before the model call, so a repeated wakeup cannot
+   append it twice. Still a plain user message on the wire; the cache
+   invariant does not change.
 
 ### 2.3 What changes, where it lives, what happens
 
@@ -160,6 +169,7 @@ per-transport difference.
 | runtime inventory (`08-repl.md` §6) | `Repl` state; visible in cell results and the compaction head | every `python` cell | append; harness truth |
 | epoch summary | head | compaction | new epoch |
 | model | request param | `/model` | outside the cached prefix; a different model is a different cache anyway |
+| peer directory (`discover_peers`), peer receipts (`peer_message`) | history tail, as tool results | on demand | append; never a live roster, card, heartbeat or remote skill list in the system prompt (50 §1) |
 
 ## 3. Provider facts we rely on
 
@@ -863,6 +873,20 @@ message is its task. Two changes from `01 §2.5`:
 2. **Children carry their own compaction.** A child running 40 rounds
    compacts like any session. The parent receives only the child's final
    text, as before.
+
+*Amendment (50 §1, §5, §7; implemented 2026-09-18, verification pending).*
+Peers beyond parent/child change nothing about the frame: the identity line
+stays stable and discovery is a tool result at the tail. What changes is how
+a child result reaches the parent — as an exchange row with dedup key
+`(child, TurnId, parent)`, extracted by the associated turn rather than
+"assistant text since the latest user row", delivered once, and only while
+communication is effectively on for both sessions; a turn explicitly bound to
+a request answers that request's waiter instead of starting a parent turn.
+Disabling communication marks accepted-unconsumed input `suppressed`;
+restart marks it `failed: interrupted_by_restart`; neither re-injects.
+Fork, undo/redo, `/clear` and compaction never replay an exchange or revive
+suppressed input, and exchange ids are never message-row sequence numbers
+(which rewind can reuse).
 
 Cross-session sharing of the *system* cache entry is real but partial: two
 top-level sessions on the same day with the same `prompt.md` and skills

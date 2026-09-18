@@ -1,6 +1,6 @@
 # Agent Client Protocol: external harnesses as subagents, wth as an agent
 
-Status: as-built v0 · 2026-09-12 (draft v0 2026-09-09) · extends `00-architecture.md` §5, §7; `01-config-and-subagents.md` §2. §8 lists what the build changed against the draft; where §8 disagrees with §1-§7, §8 wins.
+Status: as-built v0 · 2026-09-12 (draft v0 2026-09-09) · extends `00-architecture.md` §5, §7; `01-config-and-subagents.md` §2. §8 lists what the build changed against the draft; where §8 disagrees with §1-§7, §8 wins. §8.1 (2026-09-18) records the boundary with agent communication (50); its integration is implemented but not yet verified against a running harness.
 
 Verified 2026-09-12. Client half (headless, real models; harness `opencode acp` 1.18.20 from `agents.yaml`, parent claude-sonnet-4-5): `spawn_subagent{agent:"opencode"}` → `SubagentSpawned`, child `TurnStarted{model:"opencode"}`, `ToolCallStarted bash`, `ToolCallFinished`, `TextDelta "ACP-OK-17"`, `TurnFinished end_turn`, parent turn with `<subagent_result stop="end_turn">ACP-OK-17</subagent_result>`; `send_message` with `await_reply` → second `session/prompt` on the same ACP session, answered from the child's context, `MessageDelivered` published; an entry with `OPENCODE_CONFIG` permission `bash: ask` → `ApprovalRequested{tool:"echo PERM-OK-5", risk: mutating, args:{command, kind:"execute"}}` on the child session, `resolve_approval allow` ran it, `deny` gave the harness `The user rejected permission to use this specific tool call.` and a silent turn end (result falls back to `[no reply; last tool result]`, §8.17); `cancel` on a child running `sleep 120` → `session/cancel` → `TurnFinished cancelled`, `<subagent_result stop="cancelled">`, process stays (idle child); RPC `shutdown` → zero `opencode acp` processes; restart + `send_message` to a store-only child respawned and `session/load`ed (harness recalled its first turn); unknown agent → tool error `unknown agent \`nope\`; configured: opencode, opencode-ask`; `list_acp(probe:true)` → `ok` for both; `command: /nonexistent/harness` → child `Error "spawn failed: Internal error: No such file or directory (os error 2)"` + `TurnFinished error`, parent `<subagent_result stop="error">` with that text.
 Registry: `list_acp_registry` → 40 agents; `add_acp("codex-acp")` wrote `codex-acp: {command: npx, args: [-y, "@agentclientprotocol/codex-acp@1.11.0"], description: "ACP adapter for OpenAI's coding assistant"}`; `spawn_subagent{agent:"codex-acp"}` streamed `CODEX-OK` and delivered the result (codex login already on disk); `remove_acp` removed entries.
@@ -267,7 +267,8 @@ parent or resolves an `await_reply` waiter. What differs:
 - **Child → parent.** The harness has no `send_message` tool, so an ACP child
   cannot ask the parent; its turn either finishes or times out. Upgrade
   (§3.8): pass a wth MCP server in `session/new.mcpServers` that exposes
-  `send_message`.
+  `send_message`. 50 does not change this (§8.1): A2A gives *independently
+  operated* agents a channel, not an ACP child a reverse tool.
 - **Cancel** → `session/cancel`; the prompt response then arrives with
   `cancelled` and the normal `TurnFinished` path runs. If no response within
   5 s the process is killed and `TurnFinished{stop_reason: "cancelled"}` is
@@ -579,3 +580,47 @@ decision.
 17. **Turn with no text: the result carries the last tool output**
     (`[no reply; last tool result]`) - found in smoke: opencode ends a turn
     silently after a rejected permission.
+
+### 8.1 Agent communication (50), 2026-09-18 — pending integration verification
+
+What 50 decided about ACP, recorded here so §3.5/§3.8 are not read as
+superseded. Nothing in this subsection has been exercised end to end; the
+2026-09-12 verification above stands for the ACP paths only.
+
+- **Same transport, no reverse tools.** `AcpChild`, `Transport::{Process,
+  Dial}`, the `session/prompt` queue and the §3.3 translation are unchanged.
+  50 adds no ACP method, injects nothing into `session/new.mcpServers`, and
+  does not translate ACP tool calls into wth peer tools. An ACP child still
+  cannot `discover_peers`/`send_message`/`spawn_subagent`; `PeerInfo` for a
+  `PeerKind::Acp` row says so (`send: true`, `reply: false` — it cannot
+  answer with `reply_to`; `supervisor.rs::directory`) and it is still never
+  `awaiting` (§3.6). Claiming otherwise is listed in 50 §13 as a non-goal.
+- **The switch gates delegation, not the process.** `spawn_subagent{agent}`
+  and `send_message` to an ACP child run under the same agent-owned
+  communication policy as any peer (50 §2; `agent/src/peers.rs` gates all
+  three tools on `SharedPolicy`). Communication off (global, or inherited
+  from an ancestor) refuses the spawn/send with the blocker named; it does
+  not kill a running child or bypass the result path — with communication
+  off there is no `<message from="session:…">` result injection either.
+  Enabled peer messages to an ACP child queue behind an active prompt as in
+  §3.5.
+- **A2A is a separate, optional plugin.** `crates/a2a` (SDK client/server,
+  `a2a.enabled: false` by default; only in the default plugin vector of
+  `wth/src/main.rs`, not `--acp`'s) is not a mode of `acp`, of `wth --acp`
+  or of `agents.yaml`. An external harness that implements A2A itself is
+  configured as an A2A peer in `<data_dir>/a2a/peers.yaml`, with its own
+  credential and export grants; bidirectionality then comes from *its*
+  endpoint, not from the ACP session. ACP session ids (`acp_session`,
+  §8.10) and A2A context ids stay separate; an `agents.yaml` name and an
+  A2A peer name are different namespaces and one entry never implies the
+  other.
+- **`wth --acp` agent half.** Serves ACP to the editor as before. It does
+  not expose A2A (no `a2a` plugin in that vector) and an ACP client's
+  `session/prompt` is not a peer message: no `PeerRecord`, no
+  provenance wrapper, no communication switch consulted.
+
+Verification owed before this subsection is "as built": with communication
+off, `spawn_subagent{agent: "opencode"}` is refused with the inherited/global
+reason and no child process starts; with it on, the 2026-09-12 flow above
+repeats unchanged and an enabled `send_message` to the child during a prompt
+is queued, not dropped.

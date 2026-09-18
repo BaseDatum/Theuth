@@ -25,6 +25,7 @@ rpc = { workspace = true }
 link = { workspace = true }
 nodes = { workspace = true }
 schedule = { workspace = true }
+a2a = { workspace = true }
 update = { workspace = true }
 artifact = { workspace = true }
 voice = { workspace = true }

@@ -6,6 +6,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -18,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use crate::activity::{self, Activity, ActivitySink, Kind, OperationId};
 use crate::approval::{Approval, Decision, RequestApproval};
 use crate::ask::{AskUser, AskUserTool};
+use crate::communication::{self, Admitted, CommunicationAccess};
 use crate::jobs::{InstallActivity, JOBS_ACTOR, Jobs, lock};
 use crate::{
     APPROVAL_ACTOR, ASK_ACTOR, DynTool, Policy, PolicyAction, REGISTRY_ACTOR, Risk, ToolCall,
@@ -59,6 +61,14 @@ pub struct ToolRegistry {
     /// ledger it would wrongly certify. Entries are inserted in the mailbox,
     /// so a registration queued behind an [`Invoke`] always sees it.
     untracked: Arc<Mutex<HashMap<OperationId, Activity>>>,
+    /// Availability source for the communication tools (50 §2.2), from
+    /// [`InstallCommunicationAccess`]. `None`: those tools are disabled
+    /// fail-closed for every session. Not a permission input: `policy`
+    /// still runs for every call this lets through.
+    communication: Option<Arc<dyn CommunicationAccess>>,
+    /// The caller's execution bound (50 §8), from [`InstallExecutionGate`];
+    /// `None`: waits are not reported to anyone.
+    gate: Option<Arc<dyn ExecutionGate>>,
 }
 
 /// `ask` → `Vec<ToolSpec>` for every registered tool, sorted by name; with a
@@ -109,6 +119,68 @@ pub struct RegisterActivity(pub ActivitySink);
 /// an invocation use [`activity::current`] instead.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ActivityRecipient;
+
+/// `ask` → `()`. Install the agent-owned [`CommunicationAccess`] the
+/// registry consults for `discover_peers`, `send_message` and
+/// `spawn_subagent` ([`communication::GATED`]): absent from
+/// [`ListTools`]`(Some(session))` and refused by [`Invoke`] with a
+/// [`communication::DISABLED`] error unless it says the session is enabled,
+/// both when the call arrives and again after any approval resolves. Until
+/// installed those names are disabled for everyone. Installing again
+/// replaces the source for new calls; calls already admitted keep the token
+/// they were admitted under.
+pub struct InstallCommunicationAccess(pub Arc<dyn CommunicationAccess>);
+
+/// The caller's execution bound (50 §8), consulted by [`Invoke`]: once when
+/// an invocation starts executing and around the points where it stops to
+/// wait on a human — the approval ask, and the body of a tool that *is*
+/// such a wait (`ask_user`). Not a permission input: it never decides
+/// whether the tool runs, only whether the caller counts it as running.
+pub trait ExecutionGate: Send + Sync {
+    /// An invocation of `session` starts: `tool` and its raw arguments let
+    /// the caller recognise a call that waits from the start (a blocking
+    /// peer send). `None` when the caller bounds nothing for this session;
+    /// `Some` is held until the body stopped, however it stopped.
+    fn begin(&self, session: SessionId, tool: &str, args: &serde_json::Value) -> Option<Running>;
+
+    /// An invocation of `session` is about to wait. `None` when the caller
+    /// bounds nothing for this session (an ordinary human turn); `Some` is
+    /// the suspension to [`Suspension::resume`] before anything executes
+    /// again. Dropping it unresumed means the invocation ended in the wait
+    /// (denied, timed out, cancelled): the caller retracts the wait and
+    /// acquires nothing.
+    fn suspend(&self, session: SessionId) -> Option<Suspension>;
+}
+
+/// A running invocation as the caller counts it; dropping it is the end.
+pub type Running = Box<dyn Send>;
+
+/// One suspended wait of an invocation; see [`ExecutionGate`].
+pub struct Suspension(Box<dyn Suspended>);
+
+/// The caller's side of a [`Suspension`].
+pub trait Suspended: Send {
+    /// The wait resolved and the invocation is about to execute again:
+    /// complete once it may. `false` when the caller's turn is over and the
+    /// invocation should not run.
+    fn resume(self: Box<Self>) -> Pin<Box<dyn Future<Output = bool> + Send>>;
+}
+
+impl Suspension {
+    /// Wrap a caller's [`Suspended`].
+    pub fn new(inner: impl Suspended + 'static) -> Self {
+        Self(Box::new(inner))
+    }
+
+    /// See [`Suspended::resume`].
+    pub async fn resume(self) -> bool {
+        self.0.resume().await
+    }
+}
+
+/// `ask` → `()`. Install the caller's [`ExecutionGate`]; installing again
+/// replaces it for new invocations.
+pub struct InstallExecutionGate(pub Arc<dyn ExecutionGate>);
 
 /// `ask` → [`Decision`]: the same gate as [`Invoke`] for a tool call wth does
 /// not run itself — an external harness's `session/request_permission`
@@ -268,6 +340,28 @@ impl ToolRegistry {
         }
     }
 
+    /// Communication admission for `name` (50 §2.2): `Ok(None)` for a tool
+    /// the seam does not govern, `Ok(Some(_))` for a gated tool the installed
+    /// source enables for `session`, `Err` otherwise (including "nothing
+    /// installed"). Consulted, never computed, here: enablement, ancestry
+    /// and scope are `agent`'s.
+    fn admit(
+        &self,
+        session: SessionId,
+        name: &str,
+    ) -> Result<Option<Admitted>, communication::Disabled> {
+        if !communication::gated(name) {
+            return Ok(None);
+        }
+        Admitted::check(self.communication.as_ref(), session).map(Some)
+    }
+
+    /// `name` is visible to `session` as far as communication goes: ungated,
+    /// or gated and currently enabled.
+    fn communicable(&self, session: SessionId, name: &str) -> bool {
+        self.admit(session, name).is_ok()
+    }
+
     /// The one permission decision (12 §5), shared by [`Invoke`] and
     /// [`ExternalApproval`]: `Ok(None)` run now, `Ok(Some(approval))` ask the
     /// human first, `Err(why)` refuse. `mentions` = the args carry a secret
@@ -354,7 +448,9 @@ impl Message<ListTools> for ToolRegistry {
         let mut specs: Vec<ToolSpec> = self
             .tools
             .iter()
-            .filter(|(name, _)| !session.is_some_and(|s| self.is_hidden(s, name)))
+            .filter(|(name, _)| {
+                session.is_none_or(|s| !self.is_hidden(s, name) && self.communicable(s, name))
+            })
             .map(|(_, t)| t.spec())
             .collect();
         specs.sort_by(|a, b| a.name.cmp(&b.name));
@@ -375,6 +471,32 @@ impl Message<SetHidden> for ToolRegistry {
         if set.is_empty() {
             self.hidden.remove(&m.session);
         }
+    }
+}
+
+impl Message<InstallCommunicationAccess> for ToolRegistry {
+    type Reply = ();
+
+    async fn handle(
+        &mut self,
+        InstallCommunicationAccess(access): InstallCommunicationAccess,
+        _: &mut Context<Self, Self::Reply>,
+    ) {
+        tracing::info!("installed communication access");
+        self.communication = Some(access);
+    }
+}
+
+impl Message<InstallExecutionGate> for ToolRegistry {
+    type Reply = ();
+
+    async fn handle(
+        &mut self,
+        InstallExecutionGate(gate): InstallExecutionGate,
+        _: &mut Context<Self, Self::Reply>,
+    ) {
+        tracing::info!("installed execution gate");
+        self.gate = Some(gate);
     }
 }
 
@@ -509,6 +631,15 @@ impl Message<Invoke> for ToolRegistry {
             return reply;
         };
         let spec = tool.spec();
+        // Availability before permission (50 §0.5): a gated tool that is off
+        // does not exist for this session, so no approval card is ever shown.
+        let admitted = match self.admit(call.session, &call.name) {
+            Ok(a) => a,
+            Err(why) => {
+                tx.send(communication::refused(&call.name, why));
+                return reply;
+            }
+        };
         let mentions = crate::secrets::mentions(&call.args);
         let approval = match self.gate(call.session, spec.risk, mentions) {
             Ok(a) => a,
@@ -523,6 +654,7 @@ impl Message<Invoke> for ToolRegistry {
         // a caller dropping the ask or synthesizing a cancelled response does
         // not retire the entry; only this task finishing does (47 §4.2 rule 2).
         let sink = self.activity.clone();
+        let gate = self.gate.clone();
         let kind = Kind::Invoke {
             tool: call.name.clone(),
             call_id: call.id.clone(),
@@ -549,10 +681,16 @@ impl Message<Invoke> for ToolRegistry {
                     }
                 },
             };
+            // Counted as running from here until the body stopped (50 §8);
+            // the caller's bound sees the end before the output does.
+            let running = gate
+                .as_ref()
+                .and_then(|g| g.begin(call.session, &call.name, &call.args));
             let out = activity
                 .clone()
-                .scope(invoke(tool, spec, call, approval, activity))
+                .scope(invoke(tool, spec, call, approval, admitted, activity, gate))
                 .await;
+            drop(running);
             tx.send(out);
             // The map entry goes when this task ends; the last clone settles.
             drop(held);
@@ -576,14 +714,23 @@ impl Drop for Held {
 
 /// Approval, secret expansion and the tool body, all under `activity`'s scope
 /// so nested work can read [`activity::current`]. Returns only once the tool
-/// body has actually stopped (returned, failed or panicked).
+/// body has actually stopped (returned, failed or panicked). `admitted` is
+/// the communication admission for a gated tool: re-checked once approval
+/// has resolved, before anything is expanded or dispatched (50 §8). `gate`
+/// is the caller's execution bound: an approval wait, and the body of a tool
+/// that is itself a human wait (`ask_user`), run suspended, and nothing of
+/// the body runs before the suspension resumed.
 async fn invoke(
     tool: DynTool,
     spec: ToolSpec,
     mut call: ToolCall,
     approval: Option<ActorRef<Approval>>,
+    admitted: Option<Admitted>,
     activity: Activity,
+    gate: Option<Arc<dyn ExecutionGate>>,
 ) -> ToolOutput {
+    let session = call.session;
+    let suspend = || gate.as_ref().and_then(|g| g.suspend(session));
     if let Some(approval) = approval {
         let req = RequestApproval {
             session: call.session,
@@ -591,14 +738,28 @@ async fn invoke(
             args: call.args.clone(),
             risk: spec.risk,
         };
-        match approval.ask(req).await {
+        let suspended = suspend();
+        let answer = approval.ask(req).await;
+        match answer {
             Ok(r) if r.decision == Decision::Allow => {}
+            // Denied / timed out / unavailable: the suspension drops
+            // unresumed and nothing runs.
             Ok(r) if r.timed_out => {
                 return ToolOutput::err(format!("{}: approval timed out", spec.name));
             }
             Ok(_) => return ToolOutput::err(format!("{}: denied by user", spec.name)),
             Err(e) => return ToolOutput::err(format!("{}: approval unavailable: {e}", spec.name)),
         }
+        if let Some(s) = suspended
+            && !s.resume().await
+        {
+            return ToolOutput::err(format!("{}: cancelled before it ran", spec.name));
+        }
+    }
+    // The approval may have taken minutes; the route it was asked for may be
+    // gone. A revoked generation stays revoked even if the switch is on again.
+    if admitted.as_ref().is_some_and(|a| !a.live()) {
+        return communication::refused(&spec.name, communication::Disabled::Revoked);
     }
     // Placeholders become values after the gate (the approval card showed the
     // placeholder) and before the tool; an unknown name fails the whole call.
@@ -610,15 +771,30 @@ async fn invoke(
         call_id: call.id,
         quiet: call.quiet,
     };
+    // A tool whose whole body is a human wait executes nothing bounded; the
+    // suspension ends with the body (the next call in the batch, or the
+    // model, resumes under the caller's own accounting).
+    let waiting = (spec.name == <AskUserTool as crate::Tool>::NAME)
+        .then(suspend)
+        .flatten();
     // Own task so a panicking tool is an error output, not a dead registry.
-    // Task-locals do not cross `spawn`: re-enter the scope with a clone, so
-    // the body sees `current()` and a panic there marks the operation unknown.
-    let body = activity.scope(async move { tool.call(call.args, cx).await });
+    // Task-locals do not cross `spawn`: re-enter both scopes on the spawned
+    // future, so the body sees `current()` (a panic there marks the operation
+    // unknown) and a gated tool reads *this* admission at dispatch rather than
+    // a fresh generation minted by an off→on since the check above (50 §8).
+    let body = activity.scope(communication::scope(admitted, async move {
+        tool.call(call.args, cx).await
+    }));
     let mut out = match tokio::spawn(body).await {
         Ok(Ok(out)) => out,
         Ok(Err(e)) => ToolOutput::err(format!("{}: {e:#}", spec.name)),
         Err(e) => ToolOutput::err(format!("{}: tool panicked: {e}", spec.name)),
     };
+    if let Some(w) = waiting {
+        // Nothing runs after this in the invocation; resuming only puts the
+        // batch's accounting back (a cancelled turn makes it a no-op).
+        w.resume().await;
+    }
     // Every arm: an error string may echo the expanded args.
     crate::secrets::redact_output(&mut out);
     out
@@ -688,6 +864,8 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
             approval: None,
             activity: None,
             untracked: Arc::default(),
+            communication: None,
+            gate: None,
         },
         runtime::subscriber_mailbox(),
     );
@@ -716,18 +894,29 @@ mod tests {
     }
 
     fn registry(tools: Vec<DynTool>, activity: Option<ActivitySink>) -> ActorRef<ToolRegistry> {
+        registry_with(tools, activity, Policy::default(), None)
+    }
+
+    fn registry_with(
+        tools: Vec<DynTool>,
+        activity: Option<ActivitySink>,
+        policy: Policy,
+        approval: Option<ActorRef<Approval>>,
+    ) -> ActorRef<ToolRegistry> {
         ToolRegistry::spawn(ToolRegistry {
             tools: tools.into_iter().map(|t| (t.spec().name, t)).collect(),
             prompts: BTreeMap::new(),
-            policy: Policy::default(),
+            policy,
             approvals: true,
             bypass: HashSet::new(),
             hidden: HashMap::new(),
             parents: HashMap::new(),
             config_path: PathBuf::new(),
-            approval: None,
+            approval,
             activity,
             untracked: Arc::default(),
+            communication: None,
+            gate: None,
         })
     }
 
@@ -954,5 +1143,187 @@ mod tests {
             ["echo"]
         );
         assert!(!reg.ask(Invoke(call(child))).await.unwrap().is_error);
+    }
+
+    /// Stands in for the agent's `send_message`: counts body runs.
+    struct Peer(Arc<std::sync::atomic::AtomicUsize>);
+
+    #[async_trait::async_trait]
+    impl Tool for Peer {
+        const NAME: &'static str = "send_message";
+        const RISK: Risk = Risk::Mutating;
+        type Args = serde_json::Value;
+        fn description(&self) -> String {
+            String::new()
+        }
+        async fn call(&self, _: Self::Args, _: ToolCx) -> anyhow::Result<ToolOutput> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(ToolOutput::ok("sent"))
+        }
+    }
+
+    /// Fake agent-side source: one switch, a fresh generation token per enable,
+    /// the old one cancelled on disable before the switch reads off.
+    struct Switch {
+        on: std::sync::atomic::AtomicBool,
+        token: Mutex<tokio_util::sync::CancellationToken>,
+    }
+
+    impl Switch {
+        fn new(on: bool) -> Arc<Self> {
+            Arc::new(Self {
+                on: on.into(),
+                token: Mutex::new(tokio_util::sync::CancellationToken::new()),
+            })
+        }
+        fn set(&self, on: bool) {
+            if on {
+                *lock(&self.token) = tokio_util::sync::CancellationToken::new();
+            } else {
+                lock(&self.token).cancel();
+            }
+            self.on.store(on, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    impl CommunicationAccess for Switch {
+        fn enabled(&self, _: SessionId) -> bool {
+            self.on.load(std::sync::atomic::Ordering::SeqCst)
+        }
+        fn generation(&self, _: SessionId) -> Option<tokio_util::sync::CancellationToken> {
+            Some(lock(&self.token).clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn communication_tools_are_disabled_until_installed_and_when_off() {
+        let ran = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let allow = Policy {
+            mutating: PolicyAction::Allow,
+            ..Policy::default()
+        };
+        let reg = registry_with(
+            vec![Arc::new(Peer(ran.clone())), Arc::new(Echo)],
+            None,
+            allow,
+            None,
+        );
+        let s = SessionId::new();
+        let names = |specs: Vec<ToolSpec>| specs.into_iter().map(|s| s.name).collect::<Vec<_>>();
+        let send = || reg.ask(Invoke(call("send_message", s)));
+
+        // Nothing installed: gated names do not exist for a session, other tools do.
+        assert_eq!(names(reg.ask(ListTools(Some(s))).await.unwrap()), ["echo"]);
+        // Session-less inventory (RPC list, MCP name-clash check) is unfiltered.
+        assert_eq!(
+            names(reg.ask(ListTools(None)).await.unwrap()),
+            ["echo", "send_message"]
+        );
+        let out = send().await.unwrap();
+        assert!(
+            out.is_error && out.content.contains(communication::DISABLED),
+            "{out:?}"
+        );
+        assert!(out.content.contains("not configured"), "{out:?}");
+        assert!(!reg.ask(Invoke(call("echo", s))).await.unwrap().is_error);
+
+        let sw = Switch::new(false);
+        reg.ask(InstallCommunicationAccess(sw.clone()))
+            .await
+            .unwrap();
+        assert_eq!(names(reg.ask(ListTools(Some(s))).await.unwrap()), ["echo"]);
+        let out = send().await.unwrap();
+        assert!(
+            out.is_error && out.content.contains(communication::DISABLED),
+            "{out:?}"
+        );
+        assert_eq!(ran.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+        sw.set(true);
+        assert_eq!(
+            names(reg.ask(ListTools(Some(s))).await.unwrap()),
+            ["echo", "send_message"]
+        );
+        assert!(!send().await.unwrap().is_error);
+        assert_eq!(ran.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        sw.set(false);
+        assert!(send().await.unwrap().is_error);
+        assert_eq!(ran.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// Bus subscriber standing in for the human: on the first request flips
+    /// the switch as instructed, then allows; later requests are plain allows.
+    #[derive(kameo::Actor)]
+    struct Approver {
+        approval: ActorRef<Approval>,
+        flip: Option<(Arc<Switch>, bool)>,
+    }
+
+    impl Message<crate::approval::ApprovalRequested> for Approver {
+        type Reply = ();
+        async fn handle(
+            &mut self,
+            m: crate::approval::ApprovalRequested,
+            _: &mut Context<Self, ()>,
+        ) {
+            if let Some((sw, reenable)) = self.flip.take() {
+                sw.set(false);
+                if reenable {
+                    sw.set(true);
+                }
+            }
+            let _ = self
+                .approval
+                .ask(crate::approval::Resolve {
+                    id: m.id,
+                    decision: Decision::Allow,
+                })
+                .await;
+        }
+    }
+
+    #[tokio::test]
+    async fn approved_call_is_refused_when_its_generation_was_revoked_meanwhile() {
+        let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
+        let approval = Approval::spawn(Approval::new(rt.clone(), Duration::from_secs(5)));
+        let sw = Switch::new(true);
+        let ran = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let reg = registry_with(
+            vec![Arc::new(Peer(ran.clone()))],
+            None,
+            Policy::default(),
+            Some(approval.clone()),
+        );
+        reg.ask(InstallCommunicationAccess(sw.clone()))
+            .await
+            .unwrap();
+        let s = SessionId::new();
+
+        // Off then on again while the human deliberates: the switch reads on
+        // when the approval lands, but the admitted generation is gone.
+        let approver = Approver::spawn(Approver {
+            approval,
+            flip: Some((sw.clone(), true)),
+        });
+        rt.subscribe::<Approver, crate::approval::ApprovalRequested>(&approver)
+            .await;
+        let out = reg.ask(Invoke(call("send_message", s))).await.unwrap();
+        assert!(
+            out.is_error && out.content.contains(communication::DISABLED),
+            "{out:?}"
+        );
+        assert!(out.content.contains("while this call waited"), "{out:?}");
+        assert_eq!(ran.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(sw.enabled(s), "the switch itself is back on");
+
+        // A fresh call is admitted under the new generation and runs.
+        assert!(
+            !reg.ask(Invoke(call("send_message", s)))
+                .await
+                .unwrap()
+                .is_error
+        );
+        assert_eq!(ran.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 }

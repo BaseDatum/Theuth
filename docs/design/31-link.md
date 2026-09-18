@@ -882,6 +882,7 @@ rows that assume the client is on the harness host:
 | `message_user` desktop sink | none (25 §7) | none |
 | `browser_screenshot`, `computer_*` | base64 over RPC | unchanged — they were already remote-shaped |
 | Signal QR (`signal_link`) | `QRCodeSVG` | unchanged |
+| Settings › Communication, peer picker, peer cards, `a2a_status`/`reload_a2a` (50, 2026-09-18) | `Api` methods and `CommunicationChanged`/`PeerMessageChanged`/`A2aChanged` on the one subscription | unchanged: the same records over `raw_json_request`; a paired device sees the harness's effective switch state and peer requests, and toggling from the phone invalidates the desktop through the same events. Link carries no A2A frames: the relay is not an A2A transport and gains no mode for it (§13.2) |
 
 ## 10. Threat model
 
@@ -901,6 +902,8 @@ rows that assume the client is on the harness host:
 | Downgrade to pairing by an unknown device | `IKpsk2` is attempted only while a pairing is pending, and completes only with the PSK |
 | Cross-harness confusion on the device | stores keyed by harness id (§7.4); the transport is bound to one `/h/<id>` |
 | Timing side channel on the relay | nothing secret to leak: no compare, no keys held past `NK` |
+| A remote A2A agent uses link or the console token to reach `Api` | it cannot: A2A peers are served by the `a2a` plugin's own HTTPS listener with per-peer vault credentials (`a2a::config::stage` refuses a peer secret equal to `<data_dir>/token`); no A2A relay mode, no proxying of A2A through `Api` credentials, and an A2A principal is never a link device (50 §6.2, 32 §13.1) |
+| Peer text arriving over A2A forges console provenance | peer bodies are bounded (64 KiB before decode, `PEER_TEXT_MAX` after) and redacted before persistence; the device renders `PeerRecord` fields as provenance, never the body's own claims (50 §9, 37 §15.3) |
 
 ## 11. Performance budgets and how they are measured
 
@@ -1050,6 +1053,37 @@ with nothing restored. That exercised the per-harness store lifecycle and
 the invalidation rules above against `ws://127.0.0.1` transports — **not**
 a Noise/relay pairing, a real phone or the iOS container; those remain in
 §13's "not exercised" list.
+
+### 13.2 Agent communication (50), as-built 2026-09-18 — pending verification
+
+50 §11 asks this doc for "parity tables, settings/events and reload behaviour
+over the same existing console transports; no new link wire mode". As
+implemented, with nothing yet exercised through a Noise/relay pairing:
+
+- **No new wire mode.** `IK` message-1 payload is still `mode:u8 | empty`
+  with modes `0` (Api) and `1` (ACP, 32 §4.2). A2A is HTTPS between the
+  `a2a` plugin and an independently operated agent; it does not ride the
+  relay, is not proxied through a device's conn, and a device cannot reach
+  a peer's A2A endpoint through the harness. The relay learns nothing new.
+- **Same console methods over link.** The §9 row above is `Api` through
+  `raw_json_request`; the device side reuses the shared React surface's
+  communication queries (25 §12.2) with the per-harness `QueryClient`, so
+  keys carry no harness id and switching harnesses unloads them like every
+  other store (§7.4). A `LinkTransport` reconnect invalidates
+  `['communication']`, `['peers']`, `['peer-messages']` and `['a2a']` in the
+  same handler as sessions/knowledge (§13.1's rule, extended).
+- **Owner-only from a device.** A paired device is the owner (§10): it may
+  flip the global/session switches, set root scope and call `reload_a2a`.
+  Those are console methods, not model tools, and the events they raise are
+  owner subscriptions — never forwarded to an A2A client (50 §10).
+- **Credentials stay apart.** Link identity, `devices.yaml` and the console
+  token authenticate *devices*; A2A peers get their own random vault
+  secrets and see none of the former. Nothing here syncs credentials over
+  link (32 §15 row 3 still open).
+
+Not verified: the communication pane over a real relay pairing, a phone
+toggling while a desktop watches, iOS; the §13 "not exercised" list is
+unchanged. User visual approval is owed.
 
 ## 14. Amendments (same commit series)
 

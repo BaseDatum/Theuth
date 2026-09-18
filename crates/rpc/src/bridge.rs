@@ -5,7 +5,8 @@
 use std::convert::Infallible;
 use std::sync::Arc;
 
-use agent::{AgentEvent, LoginFinished};
+use a2a::A2aChanged;
+use agent::{AgentEvent, CommunicationChanged, LoginFinished, PeerDelivered, PeerMessageChanged};
 use artifact::ArtifactShown;
 use browser::BrowserEvent;
 use kameo::Actor;
@@ -85,6 +86,10 @@ macro_rules! forward {
 forward!(
     AgentEvent,
     LoginFinished,
+    CommunicationChanged,
+    PeerMessageChanged,
+    PeerDelivered,
+    A2aChanged,
     ApprovalRequested,
     ApprovalResolved,
     AskRequested,
@@ -122,6 +127,10 @@ pub async fn start(rt: &Runtime) -> broadcast::Sender<Event> {
     }
     rt.subscribe::<Bridge, AgentEvent>(&actor).await;
     rt.subscribe::<Bridge, LoginFinished>(&actor).await;
+    rt.subscribe::<Bridge, CommunicationChanged>(&actor).await;
+    rt.subscribe::<Bridge, PeerMessageChanged>(&actor).await;
+    rt.subscribe::<Bridge, PeerDelivered>(&actor).await;
+    rt.subscribe::<Bridge, A2aChanged>(&actor).await;
     rt.subscribe::<Bridge, ApprovalRequested>(&actor).await;
     rt.subscribe::<Bridge, ApprovalResolved>(&actor).await;
     rt.subscribe::<Bridge, AskRequested>(&actor).await;

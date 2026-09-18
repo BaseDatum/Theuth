@@ -35,6 +35,7 @@ computer = { path = "crates/computer" }
 surface = { path = "crates/surface" }
 link = { path = "crates/link" }
 nodes = { path = "crates/nodes" }
+a2a = { path = "crates/a2a" }  # A2A network boundary plugin (50 §6)
 schedule = { path = "crates/schedule" }
 artifact = { path = "crates/artifact" }
 secrets = { path = "crates/secrets" }  # secrets vault (37)
@@ -213,6 +214,14 @@ axum = { version = "0.8", features = ["ws"] }
 axum-server = { version = "0.8", features = ["tls-rustls"] }
 tower-http = { version = "0.6", features = ["fs", "set-header"] }
 dashmap = "6"
+# Agent communication (design doc 50 §3.1): the official A2A Rust SDK, exact pre-1.0 pins the user
+# accepted with an explicit maturity waiver; the conformance/interop gates of 50 §12 still apply.
+# Published names carry `-lf`; the future local plugin crate is `a2a`, so the core SDK is aliased
+# `a2a-types` (imports are `a2a_types::…`). Default `rustls-tls` = aws-lc-rs, the provider
+# `wth::main` installs. Both pull `a2a-pb` (prost/pbjson): the HTTP wire is ProtoJSON.
+a2a-types = { package = "a2a-lf", version = "=0.3.1" }
+a2a-client = { package = "a2a-client-lf", version = "=0.2.5" }
+a2a-server = { package = "a2a-server-lf", version = "=0.4.4" }
 rand = "0.9"
 # Schedule (design doc 34): croner = cron parsing + next occurrence in a chrono TimeZone
 # (local time, DST-correct) + `describe()`; humantime = `every:` durations.
@@ -275,3 +284,18 @@ genai = { path = "vendor/genai" }
 # `btls_sys_*`) now works on macOS/iOS via llvm-objcopy, not only on ELF. Fork `main` = 0.5.6 +
 # one commit (23 §9). Build needs `llvm-nm`/`llvm-objcopy` (brew llvm) on macOS.
 btls-sys = { git = "https://github.com/skymoore/btls", branch = "main" }
+# pbjson-types (under a2a-pb, the A2A SDK's ProtoJSON layer): `Timestamp` serializes with
+# `to_rfc3339()`, which emits `+00:00`; the protobuf JSON mapping requires Z-normalized output
+# with 0/3/6/9 fractional digits and the official a2a-tck checks for it (DM-SERIAL003).
+# `vendor/pbjson-types` = crates.io 0.9.0 (influxdata/pbjson 48ee598) + that one-line
+# serializer change in `src/timestamp.rs` (50 §3.4). Drop when a pbjson-types release
+# Z-normalizes and a2a-pb picks it up.
+pbjson-types = { path = "vendor/pbjson-types" }
+# a2a-client-lf (the A2A SDK client): its shared SSE parser appended every body chunk to an
+# unbounded reassembly buffer before looking for an event terminator, so a peer that never
+# sends the blank line (or sends one huge frame) could grow memory without limit ahead of
+# wth's post-decode caps (50 §8). `vendor/a2a-client` = crates.io 0.2.5 (a2aproject/a2a-rs
+# 365d056) + `MAX_SSE_EVENT_BYTES` (64 KiB) enforced in `parse_sse_bytes` before the
+# append; an oversized event yields one `A2AError` and ends the stream (50 §3.4). Drop when
+# an a2a-client-lf release bounds the frame.
+a2a-client-lf = { path = "vendor/a2a-client" }

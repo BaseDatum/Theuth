@@ -2,12 +2,14 @@ import { createFileRoute, redirect, useNavigate, useRouter } from '@tanstack/rea
 import { SettingsDialog, type Tab, isTab } from '@/components/settings/SettingsDialog'
 import { isMacDesktop } from '@/lib/hotkeys'
 
-/** `?session=<id>`: the chat the dialog was opened from, for per-session rows. */
-type Search = { session?: string }
+/** `?session=<id>`: the chat the dialog was opened from, for per-session rows; `?peer=<message id>` focuses one pending peer request on the communication tab. */
+type Search = { session?: string; peer?: string }
 
 export const Route = createFileRoute('/settings/$tab')({
-  validateSearch: (s: Record<string, unknown>): Search =>
-    typeof s.session === 'string' ? { session: s.session } : {},
+  validateSearch: (s: Record<string, unknown>): Search => ({
+    ...(typeof s.session === 'string' && { session: s.session }),
+    ...(typeof s.peer === 'string' && { peer: s.peer }),
+  }),
   beforeLoad: ({ params, search }) => {
     if (!isTab(params.tab))
       throw redirect({
@@ -21,7 +23,7 @@ export const Route = createFileRoute('/settings/$tab')({
 
 function Settings() {
   const tab = Route.useParams().tab as Tab
-  const { session } = Route.useSearch()
+  const { session, peer } = Route.useSearch()
   const router = useRouter()
   const navigate = useNavigate()
   // The inset behind the modal is otherwise empty; keep the header band draggable.
@@ -31,6 +33,7 @@ function Settings() {
       <SettingsDialog
         tab={tab}
         session={session ?? null}
+        peer={peer ?? null}
         onTab={(t) =>
           void navigate({
             to: '/settings/$tab',

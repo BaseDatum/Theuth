@@ -247,6 +247,22 @@ unrelated model calls never inherit it, and the session's approval switches are
 not changed. This supersedes 46's earlier press-mutating setting; it is not yet
 the behavior of the current `ToolCall`/gate implementation.
 
+**Availability is not approval (50 §0.5, §2; implemented 2026-09-18,
+verification pending):** `agent.communication` (default off; a persisted
+global ceiling, `/communication on|off always`) and an in-memory per-session
+opt-out inherited through *stored* ancestry (`/communication on|off`) decide
+whether `discover_peers`, `send_message` and `spawn_subagent` exist for a
+session at all: absent from the tool snapshot, refused at admission, and
+re-checked once an approval resolves (`tools::communication`, an agent-owned
+`CommunicationAccess` the registry consults). Same precedence as the two
+approval switches — global-off beats a session `on`, an ancestor's opt-out
+beats a descendant's `on` — but it is a capability switch, not a second
+allow/ask/deny policy: it can only remove a route, never grant permission.
+`Risk → PolicyAction` still runs for every call it lets through
+(`send_message` is `Mutating`: default policy asks); `/approvals off` does
+not turn communication on, `/communication on` skips no prompt, and `Deny`
+still wins.
+
 TUI: `/approvals [on|off] [always]`; RPC: `set_approvals`; header shows
 `approvals off` while either switch is off.
 
@@ -371,17 +387,36 @@ body as a `<skill name>`-wrapped user input); the set in the frame this
 epoch is `SkillsChanged` / `Loaded.skills`, shown as a status badge (04
 §2.4, added 2026-09-13).
 
-**Subagents**: detached — `spawn_subagent` returns at once, the child's result
-arrives in the parent as a new turn, peers talk via `send_message`. Design,
-limits and events: `01-config-and-subagents.md` §2.
+**Subagents and peers**: detached — `spawn_subagent` returns at once, the
+child's result arrives in the parent as an input, peers talk via
+`send_message`. Design, limits and events: `01-config-and-subagents.md` §2 as
+amended by 50.
 
-**Planned agent communication (49, not implemented):**
-[`49-agent-communication.md`](49-agent-communication.md) proposes direct
-sibling/cross-session discovery and messaging through `Agents`, default-off
-global and inherited session controls, and an optional A2A network plugin.
-The official Rust A2A SDK is selected conditionally; its present maturity and
-conformance evidence does not meet the proposal's release gates. Existing
-parent/child messaging remains unchanged until implementation.
+**Agent communication (50; implemented 2026-09-18, verification pending):**
+[`50-agent-communication.md`](50-agent-communication.md) supersedes 01's
+parent/direct-child-only addressing, pair-keyed reply waiters and
+unconditional result injection. Default-off `agent.communication` is a global
+ceiling with an inherited per-session opt-out (§4); while off there is no
+discovery, send, spawn or automatic child-result injection, and accepted but
+unconsumed peer input is `suppressed`. `discover_peers` returns canonical
+addresses (`session:<uuid>`, `peer:<name>`) within one enabled root tree, or
+across roots that both carry the persisted `owner` scope; unknown UUIDs fail
+rather than falling into `Agents::session`'s create-if-missing. Every peer
+message and child result is one durable exchange row in the agent store
+(`store::communication`): harness-minted UUID, authenticated endpoints from
+`ToolCx`/credentials (never message text), typed `InputOrigin`, acceptance
+committed before it is acknowledged, exact `reply_to` matching, and a
+`PeerReceipt` state `accepted | consumed | replied | suppressed | failed |
+unknown` where `accepted` means committed to the recipient's intake, not
+read. A live communication generation is rechecked at exposure, admission,
+consumption, network dispatch and reply routing (50 §8); cancellation is
+per request scope; restart makes unconsumed work `failed:
+interrupted_by_restart` and auto-runs nothing. The network boundary is the
+`a2a` plugin over the official Rust A2A SDK (§10; young, accepted by the
+user under 50 §3.4's waiver); its listener runs only when both `a2a.enabled`
+and the global switch are on. The code paths are in the tree; 50 §12's gates
+and runnable checks have not been recorded, so none of this is as-built
+until that record lands here.
 
 ## 6. Tools plugin
 
@@ -449,6 +484,14 @@ The RPC layer is generic glue, not a second protocol:
 - Method params/results and event payloads are the plugins' own types; the
   RPC crate defines none. TypeScript bindings for Tauri are generated with
   `ts-rs` 12 from the same types (`#[derive(TS)]` behind a feature).
+- Communication (50 §10; implemented 2026-09-18, verification pending):
+  `get_communication`/`set_communication`/`set_peer_scope`, `list_peers`,
+  `list_peer_messages`/`peer_message`, `answer_peer_request`,
+  `a2a_status`/`reload_a2a`; events `CommunicationChanged`,
+  `PeerMessageChanged`, `PeerDelivered`, `A2aChanged`. Same thin-ask shape;
+  effective state and blocked reasons come from `Agents`, never a frontend
+  guess. No per-session peer ACL rides on the console token: a remote agent
+  never receives it.
 
 Rejected: raw bus envelope over the wire (couples internal type layout to the
 wire, no request semantics without reinventing JSON-RPC); `tonic` (no
@@ -557,7 +600,8 @@ argument chunk of each call), `running <tool>…` inside the card until
 `ToolCallFinished`, `streaming…`/`reasoning…` while text arrives. The
 16 ms frame loop runs only while `Model::animating()`.
 
-Peer injections (`<subagent_result>`, `<message>`) never echo raw:
+Peer injections (`<message>`, and the pre-50 `<subagent_result>` still in
+old histories) never echo raw:
 `tui::model::injected` splits a `TurnStarted`/history text into one
 `(peer, body)` per wrapper (inputs queued during a turn arrive as several
 wrappers joined by newlines) and each becomes a `⟵ name` card, collapsed to
@@ -580,6 +624,11 @@ subtree with live state on every row (`list_agents`); Enter opens one — the
 shows the live rows only: board = live, transcript = history. A child's
 `Error` or cancelled `TurnFinished` interjects one line in the parent; its
 results keep arriving as `⟵ name` cards (19).
+With 50 (2026-09-18, verification pending) a child's result is itself a
+peer exchange, `<message from="session:<child>" id="…">`, so the same card;
+the picker/board `Awaiting` state comes from exact waiters and a human
+answers a pending request by id (`answer_peer_request`), never by plain
+steering (19 §2.3 amendment).
 
 Rejected: `ratatui` (immediate-mode; streaming markdown + approval modals
 are more code); line-oriented REPL (would be replaced immediately); an
@@ -607,6 +656,11 @@ extracts its own section
 (`rt.config.extract_inner::<AgentConfig>("agent")`), so `runtime` never knows
 the union of all config. Layout, first run, secrets and MCP drop-in files:
 `01-config-and-subagents.md` §1.
+`agent.communication` (default `false`; the global communication ceiling,
+50 §2.1) is agent config; `a2a.*` (`enabled: false` by default, `listen`,
+`public_url`; `<data_dir>/a2a/peers.yaml` for owner-managed peer/export
+bindings) belongs to the `a2a` plugin. Missing keys are off; a malformed
+section fails closed with a visible error.
 
 Hot reload (v0 read everything once; added in 01 §1.4 because MCP drop-ins
 are edited while `wth` runs): `mcp/` is watched (`notify`, 300 ms debounce).
@@ -646,6 +700,7 @@ crates/
   voice/              plugin: read replies aloud — Pocket TTS via `ptts`, `markdown::spoken`, Opus packets as `SpeechAudio` events (43)
   relay/              bin: wth-relay, stateless encrypted-frame relay (31)
   tui/                plugin: iocraft frontend (§8)
+  a2a/                plugin: A2A network boundary — official Rust SDK client/server, loopback listener gated by `a2a.enabled` and the global communication switch, `peers.yaml` bindings, `/a2a` status/reload (50 §6; implemented 2026-09-18, verification pending)
   desktop/            app: Tauri menubar frontend, RPC client of `Api` - not a plugin (designed in 25)
   wth/                bin: config load, plugin list from CLI flags, run (§2); service.rs: --install-service / --uninstall-service (32 §5.1)
 docs/design/          this file and per-plugin decisions
@@ -658,7 +713,7 @@ the `wth` bin; the rest were added by the docs named beside them, each as the ki
 the loop must own (store, frame, compact, repl); frontends do not grow it.
 New subsystems earn a plugin. `agent/src/lib.rs` re-exports; command structs
 live next to the handler that answers them (12 §8). Dependency order:
-`runtime ← tools ← secrets ← knowledge ← agent ← link ← {signal, slack, nodes, schedule, artifact, update, voice} ← rpc ← tui ← wth`
+`runtime ← tools ← secrets ← knowledge ← agent ← link ← {signal, slack, nodes, schedule, artifact, update, voice, a2a} ← rpc ← tui ← wth`
 (`update` depends on `agent` and `runtime` only, `rpc` forwards
 `UpdateReady` and answers `update_status`, 39 §4.3; `voice` depends on
 `runtime` and `markdown` only, `rpc` forwards `VoiceEvent` and answers
@@ -674,7 +729,9 @@ threaded through `wth`; `artifact` depends on `agent` for
 `tools`/`runtime`; nothing below `rpc` depends on it, 35 §13;
 `scrape → {firecrawl-native, web, browser}` and `browser → web`, so there is
 no cycle; `rpc` and `tui` depend on `scrape` only for the `ScrapeProgress`
-event type they forward and render, 38 §0.2).
+event type they forward and render, 38 §0.2; `a2a` depends on `agent`,
+`secrets` and `runtime` only — `agent` owns intake, exchange and task rows,
+the plugin owns the listener, clients and `peers.yaml`, 50 §4).
 
 Planned, not a workspace member yet: `app` (46) owns OpenUI artifacts,
 progressive frontend integration and action RPC. It depends downward on
@@ -853,6 +910,7 @@ Each phase ends with a runnable check, not a test suite.
 | 26 | update (39): `wth` and `wth.app` update themselves, silently; Homebrew tap; Linux CLI tarballs | 39 §12 steps 1–10 | in progress 2026-09-17 |
 | 27 | triggers (40): `on: hook` through the relay, `on: fs`, `when:` shell check on `every:` files | 40 §11 steps 1–6 | shelved 2026-09-17; preconditions in 40 §12 |
 | 28 | knowledge checks (41): `check:` on a concept, daily sweep, `(stale: …)` hints, `knowledge_verify`, picker/explorer run · edit · accept · fix with an agent | 41 §14 steps 1–6 | planned 2026-09-17 |
+| 29 | agent communication (50): default-off global ceiling + inherited opt-out; sibling/cross-root discovery; durable exchanges with exact `reply_to`; suppression/generation revocation; `a2a` plugin over the official SDK | 50 §12.2 scenarios; 50 §12.1 library gate | implemented 2026-09-18, verification pending — code paths landed in `agent`, `tools`, `a2a`, `rpc`, frontends; no runnable check or conformance run recorded yet; not as-built until that record lands |
 
 Known gaps carried forward: cancel/error paths in the loop are code-reviewed,
 not smoke-tested; the `Jobs` actor kills every process group on shutdown

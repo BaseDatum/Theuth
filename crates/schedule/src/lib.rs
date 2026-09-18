@@ -460,6 +460,9 @@ impl Schedule {
                 s
             }
             None => {
+                // Unattended automation roots are `isolated` (50 §2.3):
+                // `NewSession` is the isolated path; the owner promotes one
+                // with `SetPeerScope` if a schedule should reach owner roots.
                 let s = agents
                     .ask(agent::NewSession { cwd: cwd.clone() })
                     .await

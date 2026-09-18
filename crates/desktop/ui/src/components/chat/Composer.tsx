@@ -26,6 +26,7 @@ import { LOCAL, useHarnesses } from '@/link/harnesses'
 import { useConnection } from '@/store/connection'
 import { useSessionField, useSessions } from '@/store/sessions'
 import { Attachments } from './Attachments'
+import { CommunicationNotice, useCommunication } from './CommunicationNotice'
 import { ContextPicker } from './ContextPicker'
 import { QueuedChips } from './QueuedChips'
 import { type Ctx, FRESH, matches, run } from './slash'
@@ -105,6 +106,7 @@ export function Composer({
   /** Uploading + transcribing a finished note. */
   const [transcribing, setTranscribing] = useState(false)
   const ref = useRef<HTMLTextAreaElement>(null)
+  const { state: comm, exports } = useCommunication(session)
 
   const slashWord = /^\/\S*$/.test(text) ? text : null
   const slash = slashWord !== null && matches(slashWord).length > 0
@@ -368,6 +370,7 @@ export function Composer({
 
   return (
     <div className="mx-auto w-full max-w-[768px] px-4 pb-2">
+      <CommunicationNotice session={session} state={comm} exports={exports} />
       {session && <QueuedChips session={session} onEdit={(t) => setText(t)} />}
       {session && <ContextPicker session={session} />}
       <input
@@ -452,7 +455,8 @@ export function Composer({
               onKeyDown={onKeyDown}
               onPaste={onPaste}
               rows={1}
-              placeholder={running ? 'Send to steer…' : 'Ask anything'}
+              // An exported session's human input never joins a peer task; it steers a human turn or waits behind a task (50 §6.3).
+              placeholder={running ? (exports.length ? 'Send privately…' : 'Send to steer…') : 'Ask anything'}
               // ponytail: `field-sizing: content` grows the box (6 lines on touch, 8 on desktop, then scrolls); older WebKit keeps one line.
               className={cn(
                 'min-h-10 resize-none border-0 bg-transparent px-2 py-2 text-[17px] leading-6 shadow-none focus-visible:ring-0 md:text-[17px] dark:bg-transparent',

@@ -8,10 +8,15 @@
 use std::collections::HashMap;
 use std::fmt::Display;
 
+use agent::communication::{
+    AnswerPeerRequest, CommunicationState, GetCommunication, GetPeerMessage, ListPeerMessages,
+    ListPeers, PeerMessagePage, PeerRecord, PeerScope, SetCommunication, SetPeerScope,
+};
 use agent::{AGENT_ACTOR, Agents};
 use anyhow::Context as _;
 use kameo::actor::ActorRef;
 use runtime::SessionId;
+use uuid::Uuid;
 
 pub use crate::ui::Reply;
 use crate::ui::{self, short};
@@ -50,6 +55,14 @@ pub enum Cmd {
     Approvals(Vec<String>),
     /// `slack [status|allow <U>|rm <U>|channel add <C>|channel rm <C>]` (owner).
     Slack(Vec<String>),
+    /// `communication [on|off [always]]` (owner, 50 §2.1).
+    Communication(Vec<String>),
+    /// `peers [<query> | scope owner|isolated [alias]]` (owner, 50 §2.3/§5.1).
+    Peers(Vec<String>),
+    /// `requests [<id> | answer <id> <text>]` (owner, 50 §5.3).
+    Requests(Vec<String>),
+    /// `a2a [reload]` (owner, 50 §6).
+    A2a(Vec<String>),
     /// Unknown or ambiguous first word.
     Unknown(String),
 }
@@ -124,6 +137,26 @@ pub(crate) const COMMANDS: &[(&str, &str, &str)] = &[
         "tool approval prompts (owner)",
     ),
     (
+        "communication",
+        "[on|off [always]]",
+        "agent-to-agent messaging: state, this session's switch, `always` the global one (owner)",
+    ),
+    (
+        "peers",
+        "[<query>|scope owner|isolated [alias]]",
+        "who this thread's session may message; set its root scope (owner)",
+    ),
+    (
+        "requests",
+        "[<id>|answer <id> <text>]",
+        "pending peer requests by exact id: list, inspect, answer (owner)",
+    ),
+    (
+        "a2a",
+        "[reload]",
+        "network status; reload peers.yaml (owner)",
+    ),
+    (
         "slack",
         "[status|allow <U>|rm <U>|channel add <C>|channel rm <C>]",
         "this channel (owner)",
@@ -165,6 +198,10 @@ pub fn classify(text: &str) -> Cmd {
         Some("logout") => Cmd::Logout(opt()),
         Some("approvals") => Cmd::Approvals(words()),
         Some("slack") => Cmd::Slack(words()),
+        Some("communication") => Cmd::Communication(words()),
+        Some("peers") => Cmd::Peers(words()),
+        Some("requests") => Cmd::Requests(words()),
+        Some("a2a") => Cmd::A2a(words()),
         _ => Cmd::Unknown(word),
     }
 }
@@ -193,20 +230,37 @@ pub fn is_instant(cmd: &Cmd) -> bool {
         | Cmd::Model(None)
         | Cmd::Agents
         | Cmd::Unknown(_) => true,
-        Cmd::Approvals(args) => args.is_empty(),
+        Cmd::Approvals(args) | Cmd::Communication(args) => args.is_empty(),
         _ => false,
     }
 }
 
+/// Owner-only: approvals, this channel's allowlist and everything that
+/// widens who an agent may talk to (50 §10: a contact cannot grant scope,
+/// enable global communication or reload network credentials).
 fn owner_only(cmd: &Cmd) -> bool {
-    matches!(cmd, Cmd::Approvals(_) | Cmd::Slack(_))
+    matches!(
+        cmd,
+        Cmd::Approvals(_)
+            | Cmd::Slack(_)
+            | Cmd::Communication(_)
+            | Cmd::Peers(_)
+            | Cmd::Requests(_)
+            | Cmd::A2a(_)
+    )
 }
 
 /// Needs `cx.session` (21 §10.2's session-scoped set).
 fn session_scoped(cmd: &Cmd) -> bool {
     matches!(
         cmd,
-        Cmd::Cancel(None) | Cmd::Compact(None) | Cmd::Model(Some(_)) | Cmd::Agents | Cmd::Prompt
+        Cmd::Cancel(None)
+            | Cmd::Compact(None)
+            | Cmd::Model(Some(_))
+            | Cmd::Agents
+            | Cmd::Prompt
+            | Cmd::Peers(_)
+            | Cmd::Requests(_)
     )
 }
 
@@ -436,6 +490,10 @@ async fn run(cmd: Cmd, cx: &CommandCx<'_>) -> anyhow::Result<Outcome> {
         }
         Cmd::Approvals(args) => approvals_cmd(cx.session, &args).await,
         Cmd::Slack(args) => slack_cmd(cx, &args).await,
+        Cmd::Communication(args) => communication_cmd(cx.session, &args).await,
+        Cmd::Peers(args) => peers_cmd(cx.session.context(NO_SESSION)?, &args).await,
+        Cmd::Requests(args) => requests_cmd(cx.session.context(NO_SESSION)?, &args).await,
+        Cmd::A2a(args) => a2a_cmd(&args).await,
     }
 }
 
@@ -663,6 +721,381 @@ async fn slack_cmd(cx: &CommandCx<'_>, args: &[String]) -> anyhow::Result<Outcom
     }
 }
 
+/// `communication [on|off [always]]` (50 §2.1): bare reads; `on|off`
+/// moves this session's memory-only opt-out; `always` moves the persisted
+/// global ceiling. The reply is the authoritative state, blocker included.
+async fn communication_cmd(session: Option<SessionId>, args: &[String]) -> anyhow::Result<Outcome> {
+    let mut words = args.iter().map(String::as_str);
+    let enabled = match words.next() {
+        None => {
+            let state = agent()?
+                .ask(GetCommunication { session })
+                .await
+                .map_err(err)?;
+            return Ok(Outcome::Text(ui::code(&communication_text(&state))));
+        }
+        Some("on") => true,
+        Some("off") => false,
+        Some(_) => {
+            return Ok(Outcome::Text(Reply::text(
+                "usage: /wth communication [on|off [always]]",
+            )));
+        }
+    };
+    let target = match words.next() {
+        Some("always") => None,
+        None => Some(session.context(
+            "no active thread here; run it in a DM with the bot, or use `/wth communication on|off always` for the global switch",
+        )?),
+        Some(w) => {
+            return Ok(Outcome::Text(Reply::text(format!(
+                "communication: expected `always`, got {w:?}"
+            ))));
+        }
+    };
+    let state = agent()?
+        .ask(SetCommunication {
+            session: target,
+            enabled,
+        })
+        .await
+        .map_err(err)?;
+    let mut body = communication_text(&state);
+    if enabled && target.is_some() && !state.global {
+        body.insert_str(
+            0,
+            "still disabled globally; use /wth communication on always to enable the harness\n",
+        );
+    }
+    Ok(Outcome::Text(ui::code(&body)))
+}
+
+/// [`CommunicationState`] as lines: effective state, the global ceiling and
+/// its source, network, this session's switch and scope, then the exact
+/// blocker when off (50 §2.1 table) and the restart-lifetime note.
+fn communication_text(s: &CommunicationState) -> String {
+    let mut lines = vec![format!(
+        "communication: {} · global {} (from {}) · network {} · listener {}",
+        on_off(s.effective),
+        on_off(s.global),
+        s.source,
+        if s.network_enabled {
+            "enabled"
+        } else {
+            "disabled"
+        },
+        if s.listening { "up" } else { "down" },
+    )];
+    if let Some(session) = s.session {
+        let alias = s
+            .alias
+            .as_deref()
+            .map(|a| format!(" · alias {a}"))
+            .unwrap_or_default();
+        lines.push(format!(
+            "session {}: {} · scope {}{alias}",
+            short(session),
+            if s.opted_out { "opted out" } else { "on" },
+            s.scope.as_str(),
+        ));
+    }
+    match (s.global, s.inherited_from) {
+        (false, _) => lines.push(
+            "blocked: global off is a ceiling; /wth communication on always enables the harness"
+                .into(),
+        ),
+        (true, Some(from)) if Some(from) != s.session => lines.push(format!(
+            "blocked: ancestor {} opted out; /wth communication on in that thread lifts it",
+            short(from)
+        )),
+        (true, Some(_)) => {
+            lines.push("blocked: this session opted out; /wth communication on lifts it".into());
+        }
+        (true, None) => {}
+    }
+    if s.session.is_some() {
+        lines.push("session switches are memory-only: they last until the daemon restarts".into());
+    }
+    lines.join("\n")
+}
+
+/// `peers [<query> | scope owner|isolated [alias]]` (50 §5.1, §2.3): the
+/// directory `session` may address, or its root's scope and alias.
+async fn peers_cmd(session: SessionId, args: &[String]) -> anyhow::Result<Outcome> {
+    let words: Vec<&str> = args.iter().map(String::as_str).collect();
+    match words.as_slice() {
+        ["scope"] => Ok(Outcome::Text(Reply::text(
+            "usage: /wth peers scope owner|isolated [alias]",
+        ))),
+        ["scope", scope, alias @ ..] => {
+            let Ok(scope) = scope.parse::<PeerScope>() else {
+                return Ok(Outcome::Text(Reply::text(
+                    "usage: /wth peers scope owner|isolated [alias]",
+                )));
+            };
+            let alias = (!alias.is_empty()).then(|| alias.join(" "));
+            let state = agent()?
+                .ask(SetPeerScope {
+                    root: session,
+                    scope,
+                    alias,
+                })
+                .await
+                .map_err(err)?;
+            Ok(Outcome::Text(ui::code(&communication_text(&state))))
+        }
+        _ => {
+            let query = (!words.is_empty()).then(|| words.join(" "));
+            let page = agent()?
+                .ask(ListPeers {
+                    session,
+                    query,
+                    cursor: None,
+                    limit: None,
+                })
+                .await
+                .map_err(err)?;
+            let rows = page.peers.iter().map(|p| {
+                let caps: Vec<&str> = [(p.send, "send"), (p.reply, "reply"), (p.stream, "stream")]
+                    .into_iter()
+                    .filter_map(|(on, c)| on.then_some(c))
+                    .collect();
+                vec![
+                    p.name.clone(),
+                    p.address.clone(),
+                    lower(&p.kind),
+                    lower(&p.relationship),
+                    lower(&p.state),
+                    caps.join("+"),
+                ]
+            });
+            let mut body = table(rows);
+            if page.cursor.is_some() {
+                body.push_str("\n(more: narrow with /wth peers <query>)");
+            }
+            Ok(Outcome::Text(ui::result(&body)))
+        }
+    }
+}
+
+/// `requests [<id> | answer <id> <text>]` (50 §5.3): the requests a human
+/// may resolve for `session` now, one record, or an answer by exact id (a
+/// unique prefix of a pending id is accepted; never an arbitrary waiter).
+async fn requests_cmd(session: SessionId, args: &[String]) -> anyhow::Result<Outcome> {
+    let usage = || -> anyhow::Result<Outcome> {
+        Ok(Outcome::Text(Reply::text(
+            "usage: /wth requests [<id> | answer <id> <text>]",
+        )))
+    };
+    let words: Vec<&str> = args.iter().map(String::as_str).collect();
+    match words.as_slice() {
+        [] => {
+            let page = pending(session).await?;
+            let mut body = table(page.messages.iter().map(|m| {
+                let side = if page.awaiting_answer.contains(&m.receipt.id) {
+                    "answer for this session"
+                } else if page.awaiting_reply.contains(&m.receipt.id) {
+                    "resolve this session's wait"
+                } else {
+                    m.receipt.state.as_str()
+                };
+                vec![
+                    m.receipt.id.to_string(),
+                    side.to_owned(),
+                    format!("{} → {}", m.from, m.receipt.to),
+                    ui::age(m.created_at),
+                    crate::channel::clip(m.text.lines().next().unwrap_or(""), 60),
+                ]
+            }));
+            if !page.messages.is_empty() {
+                body.push_str(
+                    "\n/wth requests <id> shows one; /wth requests answer <id> <text> resolves it",
+                );
+            }
+            Ok(Outcome::Text(ui::result(&body)))
+        }
+        ["answer"] | ["answer", _] => usage(),
+        ["answer", id, text @ ..] => {
+            let reply_to = match request_id(session, id).await? {
+                Ok(id) => id,
+                Err(msg) => return Ok(Outcome::Text(Reply::text(msg))),
+            };
+            let receipt = agent()?
+                .ask(AnswerPeerRequest {
+                    session,
+                    reply_to,
+                    text: text.join(" "),
+                })
+                .await
+                .map_err(err)?;
+            Ok(Outcome::Text(ui::result(&format!(
+                "answered {} → {} · {} · by {}",
+                receipt.id,
+                receipt.to,
+                receipt.state.as_str(),
+                receipt.answered_by.as_deref().unwrap_or("?")
+            ))))
+        }
+        [id] => {
+            let id = match request_id(session, id).await? {
+                Ok(id) => id,
+                Err(msg) => return Ok(Outcome::Text(Reply::text(msg))),
+            };
+            let record = agent()?
+                .ask(GetPeerMessage { session, id })
+                .await
+                .map_err(err)?;
+            Ok(Outcome::Text(ui::code(&record_text(&record))))
+        }
+        _ => usage(),
+    }
+}
+
+async fn pending(session: SessionId) -> anyhow::Result<PeerMessagePage> {
+    agent()?
+        .ask(ListPeerMessages {
+            session,
+            cursor: None,
+            limit: None,
+            pending_only: true,
+        })
+        .await
+        .map_err(err)
+}
+
+/// `id` as a full UUID, else the one pending request id it prefixes; `Err` is reply text.
+async fn request_id(session: SessionId, id: &str) -> anyhow::Result<Result<Uuid, String>> {
+    if let Ok(id) = id.parse::<Uuid>() {
+        return Ok(Ok(id));
+    }
+    let page = pending(session).await?;
+    let mut hits = page
+        .messages
+        .iter()
+        .map(|m| m.receipt.id)
+        .filter(|u| u.to_string().starts_with(id));
+    Ok(match (hits.next(), hits.next()) {
+        (Some(u), None) => Ok(u),
+        (Some(_), Some(_)) => Err(format!("{id:?} matches several pending requests")),
+        (None, _) => Err(format!("no pending request {id:?}")),
+    })
+}
+
+/// One [`PeerRecord`] as `key: value` lines, the body last.
+fn record_text(r: &PeerRecord) -> String {
+    let mut lines = vec![
+        format!("id: {}", r.receipt.id),
+        format!("from: {}", r.from),
+        format!("to: {}", r.receipt.to),
+        format!("state: {}", r.receipt.state.as_str()),
+        format!("age: {}", ui::age(r.created_at)),
+    ];
+    let opt = |k: &str, v: Option<String>| v.map(|v| format!("{k}: {v}"));
+    lines.extend(
+        [
+            opt("reply_to", r.receipt.reply_to.map(|u| u.to_string())),
+            opt("request_scope", r.request_scope.map(|u| u.to_string())),
+            opt("task_id", r.receipt.task_id.clone()),
+            opt("answered_by", r.receipt.answered_by.clone()),
+            opt("error", r.receipt.error.clone()),
+            opt("reply", r.receipt.reply.clone()),
+        ]
+        .into_iter()
+        .flatten(),
+    );
+    lines.push(String::new());
+    lines.push(r.text.clone());
+    lines.join("\n")
+}
+
+/// `a2a [reload]` (50 §6): network status, or validate and swap
+/// `peers.yaml`. No actor with `a2a.enabled` off is "disabled"; no actor
+/// with it on is an error, never a silent off.
+async fn a2a_cmd(args: &[String]) -> anyhow::Result<Outcome> {
+    let reload = match args {
+        [] => false,
+        [w] if w == "reload" => true,
+        _ => return Ok(Outcome::Text(Reply::text("usage: /wth a2a [reload]"))),
+    };
+    let actor = ActorRef::<a2a::A2aActor>::lookup(a2a::A2A_ACTOR)?;
+    let Some(actor) = actor else {
+        let state = agent()?
+            .ask(GetCommunication { session: None })
+            .await
+            .map_err(err)?;
+        anyhow::ensure!(!state.network_enabled, "a2a actor is not running");
+        return Ok(Outcome::Text(ui::result(
+            "a2a: disabled (a2a.enabled is off; enable it in config and restart)",
+        )));
+    };
+    let status = if reload {
+        actor.ask(a2a::Reload).await.map_err(err)?
+    } else {
+        actor.ask(a2a::GetStatus).await.map_err(err)?
+    };
+    let mut lines = vec![format!(
+        "a2a: {} · listener {}{}{}",
+        if status.enabled {
+            "enabled"
+        } else {
+            "disabled"
+        },
+        if status.listening {
+            "up"
+        } else {
+            "down (needs global communication on)"
+        },
+        status
+            .address
+            .as_deref()
+            .map(|a| format!(" at {a}"))
+            .unwrap_or_default(),
+        status
+            .public_url
+            .as_deref()
+            .map(|u| format!(" · public {u}"))
+            .unwrap_or_default(),
+    )];
+    if let Some(e) = &status.error {
+        lines.push(format!("error: {e}"));
+    }
+    if reload {
+        lines.push("reloaded peers.yaml; listener settings need a restart".into());
+    }
+    lines.push(format!(
+        "peers:\n{}",
+        table(status.peers.iter().map(|p| vec![
+            p.name.clone(),
+            match (p.outbound, p.inbound) {
+                (true, true) => "in+out",
+                (true, false) => "out",
+                (false, true) => "in",
+                (false, false) => "-",
+            }
+            .to_owned(),
+            p.sessions.iter().map(|s| short(*s)).collect::<Vec<_>>().join(","),
+            p.exports.join(","),
+            p.card.clone().unwrap_or_default(),
+            p.error.clone().unwrap_or_default(),
+        ]))
+    ));
+    lines.push(format!(
+        "exports:\n{}",
+        table(status.exports.iter().map(|x| vec![
+            x.name.clone(),
+            short(x.session),
+            x.peer.clone().unwrap_or_else(|| "(no peer)".into()),
+            x.url.clone(),
+        ]))
+    ));
+    Ok(Outcome::Text(ui::result(&lines.join("\n"))))
+}
+
+/// A unit-variant enum's serde word: `Debug` lowercased (`A2a` → `a2a`).
+fn lower<T: std::fmt::Debug>(v: &T) -> String {
+    format!("{v:?}").to_lowercase()
+}
+
 /// Asks the `"slack"` actor so `lib.rs` keeps config persistence in one place.
 async fn ask_slack<M>(m: M) -> anyhow::Result<()>
 where
@@ -821,6 +1254,11 @@ mod tests {
         assert_eq!(classify("logo"), Cmd::Logout(None));
         assert_eq!(classify("log"), Cmd::Unknown("log".into()));
         assert_eq!(classify("zzz x"), Cmd::Unknown("zzz".into()));
+        assert_eq!(classify("comm on"), Cmd::Communication(vec!["on".into()]));
+        assert_eq!(classify("co"), Cmd::Unknown("co".into()));
+        assert_eq!(classify("pe"), Cmd::Peers(vec![]));
+        assert_eq!(classify("req"), Cmd::Requests(vec![]));
+        assert_eq!(classify("a2a reload"), Cmd::A2a(vec!["reload".into()]));
         assert_eq!(classify(""), Cmd::Help);
     }
 
@@ -840,6 +1278,11 @@ mod tests {
             Cmd::Approvals(vec![]),
             Cmd::Slack(vec!["status".into()]),
             Cmd::Slack(vec!["allow".into(), "U2".into()]),
+            Cmd::Communication(vec![]),
+            Cmd::Communication(vec!["on".into(), "always".into()]),
+            Cmd::Peers(vec!["scope".into(), "owner".into()]),
+            Cmd::Requests(vec!["answer".into(), "x".into(), "y".into()]),
+            Cmd::A2a(vec!["reload".into()]),
         ] {
             assert_eq!(
                 handle(cmd.clone(), cx("U5TRANGER", None)).await,
@@ -867,11 +1310,52 @@ mod tests {
                 "{cmd:?}"
             );
         }
+        // Owner-only and session-scoped: the owner still needs a thread.
+        for cmd in [Cmd::Peers(vec![]), Cmd::Requests(vec![])] {
+            assert_eq!(
+                handle(cmd.clone(), cx("U0WNER", None)).await,
+                text(NO_SESSION),
+                "{cmd:?}"
+            );
+        }
         // Help never needs a session.
         assert_eq!(
             handle(Cmd::Help, cx("U1", None)).await,
             Outcome::Text(ui::help())
         );
+    }
+
+    #[test]
+    fn communication_text_names_the_exact_blocker() {
+        let me = SessionId::new();
+        let parent = SessionId::new();
+        let state = |global, inherited_from| CommunicationState {
+            global,
+            source: "config".into(),
+            session: Some(me),
+            opted_out: inherited_from == Some(me),
+            inherited_from,
+            effective: global && inherited_from.is_none(),
+            scope: PeerScope::Isolated,
+            alias: None,
+            network_enabled: false,
+            listening: false,
+            revision: 1,
+        };
+        // Global off is the ceiling even when nothing else blocks.
+        let t = communication_text(&state(false, None));
+        assert!(t.contains("blocked: global off"), "{t}");
+        assert!(t.contains("on always"), "{t}");
+        // An ancestor's opt-out is named as the ancestor, not this session.
+        let t = communication_text(&state(true, Some(parent)));
+        assert!(t.contains(&format!("ancestor {}", short(parent))), "{t}");
+        // Own opt-out.
+        let t = communication_text(&state(true, Some(me)));
+        assert!(t.contains("this session opted out"), "{t}");
+        assert!(t.contains("memory-only"), "{t}");
+        // On: no blocker line.
+        let t = communication_text(&state(true, None));
+        assert!(!t.contains("blocked"), "{t}");
     }
 
     #[test]

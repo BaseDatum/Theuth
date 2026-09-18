@@ -8,6 +8,7 @@ description = "Slack frontend for the daemon over Socket Mode (design doc 21)"
 [dependencies]
 runtime = { workspace = true }
 agent = { workspace = true }
+a2a = { workspace = true }
 tools = { workspace = true }
 artifact = { workspace = true }
 secrets = { workspace = true }

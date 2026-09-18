@@ -78,7 +78,17 @@ pub fn help() -> Reply {
             "harness",
             &["help", "status", "skills", "mcp", "login", "logout"],
         ),
-        ("setup", &["approvals", "slack"]),
+        (
+            "setup",
+            &[
+                "approvals",
+                "communication",
+                "peers",
+                "requests",
+                "a2a",
+                "slack",
+            ],
+        ),
     ];
     let mut blocks = vec![header("wth")];
     for (group, names) in GROUPS {

@@ -83,6 +83,19 @@ pub struct InputConsumed {
     pub turn: TurnId,
 }
 
+/// `tell` (runner → `Agents`): a queued harness input holding `ticket` was
+/// dropped without entering a turn (its A2A request scope was cancelled,
+/// 50 §8). Nothing is owed for it: the ticket is released and the scope's
+/// work for it is over. Peer exchanges report through
+/// [`crate::communication::PeerIntakeFailed`] instead, which also settles the row.
+#[derive(Clone, Copy, Debug)]
+pub struct InputDropped {
+    /// The session the ticket was admitted for.
+    pub session: SessionId,
+    /// The admission that will never be consumed.
+    pub ticket: InputTicket,
+}
+
 /// `tell` (runner → `Agents`): the state came back to the actor (`TurnDone`
 /// in the loop, `finish` in an ACP child). `turn` matches the
 /// [`TurnEntered`]. Pending inputs are **not** retired by this: a queued
@@ -191,13 +204,16 @@ enum Busy {
     Delivering(TurnId),
 }
 
-/// Reminder budget of the current externally initiated request (47 §4.5).
+/// Reminder budget of the current externally initiated request (47 §4.5) and
+/// its automatic communication chain (50 §8).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Request {
     /// Reminders appended so far.
     reminders: u8,
     /// Todo version at the last reminder; the next needs a newer one.
     latch: Option<u64>,
+    /// Automatic (peer/result) inputs consumed since the last external one.
+    chain: u32,
 }
 
 #[derive(Debug, Default)]
@@ -208,8 +224,9 @@ struct SessionEntry {
     /// A child turn whose result reached the parent before the child's own
     /// `TurnReturned`.
     handed_off: Option<TurnId>,
-    /// Admitted inputs not yet consumed: ticket → (origin, caller's input id).
-    pending: BTreeMap<u64, (InputOrigin, Option<InputId>)>,
+    /// Admitted inputs not yet consumed: ticket → (origin, caller's input id,
+    /// chain length inherited from the sender at admission).
+    pending: BTreeMap<u64, (InputOrigin, Option<InputId>, u32)>,
     /// Last decided `(turn, checkpoint)`.
     checkpoint: Option<(TurnId, u64)>,
     request: Request,
@@ -279,16 +296,45 @@ impl Ledger {
 
     /// Admit an input for `session` before it is routed. Pending until
     /// [`Self::consumed`]; released with [`Self::release`] when routing failed
-    /// or [`Self::withdrawn`] when the user pulled it back by `input` id.
+    /// or [`Self::withdrawn`] when the user pulled it back by `input` id. An
+    /// automatic input continues the session's own chain (a job result, a
+    /// self-addressed continuation); one carried from another session goes
+    /// through [`Self::admit_chained`].
     pub fn admit(
         &mut self,
         session: SessionId,
         origin: InputOrigin,
         input: Option<InputId>,
     ) -> InputTicket {
+        let inherited = self.chain(session);
+        self.admit_with(session, origin, input, inherited)
+    }
+
+    /// 50 §8: admit an automatic input into `to` that continues the chain of
+    /// `from` (a peer message or child result; `from: None` for a remote
+    /// sender). The recipient's chain becomes the longer of its own and the
+    /// inherited one, plus this link, when the input is consumed.
+    pub fn admit_chained(
+        &mut self,
+        to: SessionId,
+        input: Option<InputId>,
+        from: Option<SessionId>,
+    ) -> InputTicket {
+        let inherited = from.map_or(0, |f| self.chain(f));
+        self.admit_with(to, InputOrigin::Automatic, input, inherited)
+    }
+
+    fn admit_with(
+        &mut self,
+        session: SessionId,
+        origin: InputOrigin,
+        input: Option<InputId>,
+        inherited: u32,
+    ) -> InputTicket {
         self.next_ticket += 1;
         let e = self.sessions.entry(session).or_default();
-        e.pending.insert(self.next_ticket, (origin, input));
+        e.pending
+            .insert(self.next_ticket, (origin, input, inherited));
         InputTicket {
             id: self.next_ticket,
             epoch: e.epoch,
@@ -306,20 +352,82 @@ impl Ledger {
     /// with it. Unknown ids are a no-op (already consumed or never ticketed).
     pub fn withdrawn(&mut self, session: SessionId, input: InputId) {
         if let Some(e) = self.sessions.get_mut(&session) {
-            e.pending.retain(|_, (_, id)| *id != Some(input));
+            e.pending.retain(|_, (_, id, _)| *id != Some(input));
         }
     }
 
-    /// [`InputConsumed`]: an external input opens a fresh reminder budget.
-    /// It does not clear `resumed`: a human asking again proves nothing about
-    /// processes an earlier owner lost (47 §4.5).
+    /// [`InputConsumed`]: an external input opens a fresh reminder budget
+    /// and communication chain; an automatic one continues the longer of the
+    /// session's own chain and the one it inherited at admission, one link
+    /// longer. It does not clear `resumed`: a human asking again proves
+    /// nothing about processes an earlier owner lost (47 §4.5).
     pub fn consumed(&mut self, m: InputConsumed) {
         let Some(e) = self.sessions.get_mut(&m.session) else {
             return;
         };
-        if e.pending.remove(&m.id).map(|(o, _)| o) == Some(InputOrigin::External) {
-            e.request = Request::default();
+        match e.pending.remove(&m.id) {
+            Some((InputOrigin::External, _, _)) => e.request = Request::default(),
+            Some((InputOrigin::Automatic, _, inherited)) => {
+                e.request.chain = e.request.chain.max(inherited).saturating_add(1);
+            }
+            None => {}
         }
+    }
+
+    /// 50 §8: links in the automatic communication chain behind `session`'s
+    /// current request (peer messages, replies, child/job results), inherited
+    /// across sessions through [`Self::admit_chained`]; 0 after a fresh
+    /// external input.
+    pub fn chain(&self, session: SessionId) -> u32 {
+        self.sessions.get(&session).map_or(0, |e| e.request.chain)
+    }
+
+    /// 50 §8: an automatic input from `from` into `to` would exceed
+    /// [`crate::communication::CHAIN_MAX`] links; the supervisor refuses it
+    /// visibly instead of admitting it. `from: None` is a non-session sender
+    /// (remote peer), which contributes no chain of its own.
+    pub fn chain_exhausted_for(&self, from: Option<SessionId>, to: SessionId) -> bool {
+        let inherited = from.map_or(0, |f| self.chain(f));
+        inherited.max(self.chain(to)) >= crate::communication::CHAIN_MAX
+    }
+
+    /// [`Self::chain_exhausted_for`] for a session's own continuation.
+    pub fn chain_exhausted(&self, session: SessionId) -> bool {
+        self.chain_exhausted_for(None, session)
+    }
+
+    /// The model turn owning `session`'s state, or still delivering its result.
+    pub fn turn_of(&self, session: SessionId) -> Option<TurnId> {
+        match self.sessions.get(&session)?.busy {
+            Busy::Turn(t) | Busy::Delivering(t) => Some(t),
+            Busy::Idle | Busy::Maintenance => None,
+        }
+    }
+
+    /// Nothing owns `session`'s state.
+    pub fn is_idle(&self, session: SessionId) -> bool {
+        self.sessions
+            .get(&session)
+            .is_none_or(|e| e.busy == Busy::Idle)
+    }
+
+    /// Admitted inputs of `session` not yet consumed.
+    pub fn pending_count(&self, session: SessionId) -> usize {
+        self.sessions.get(&session).map_or(0, |e| e.pending.len())
+    }
+
+    /// Admitted (running or unknown) operations owned by `session` itself.
+    pub fn operations_of(&self, session: SessionId) -> Vec<OperationId> {
+        self.ops
+            .iter()
+            .filter(|(_, (owner, _))| *owner == session)
+            .map(|(id, _)| *id)
+            .collect()
+    }
+
+    /// Owner of an admitted or unknown operation.
+    pub fn op_owner(&self, op: OperationId) -> Option<SessionId> {
+        self.ops.get(&op).map(|(owner, _)| *owner)
     }
 
     /// [`TurnEntered`].
@@ -424,7 +532,7 @@ impl Ledger {
 
     /// Owned or unresolved work under `session`: pending inputs, busy
     /// descendants, admitted or unknown operations. `None` = nothing.
-    pub(crate) fn activity(&self, session: SessionId) -> Option<String> {
+    pub fn activity(&self, session: SessionId) -> Option<String> {
         for d in self.subtree(session) {
             let Some(e) = self.sessions.get(&d) else {
                 continue;
@@ -432,7 +540,7 @@ impl Ledger {
             if let Some(why) = &e.unknown {
                 return Some(format!("{d} unknown: {why}"));
             }
-            if let Some((id, (origin, _))) = e.pending.iter().next() {
+            if let Some((id, (origin, _, _))) = e.pending.iter().next() {
                 return Some(format!("input {id} ({origin:?}) pending on {d}"));
             }
             if d != session && e.busy != Busy::Idle {
@@ -953,5 +1061,126 @@ mod tests {
         l.retire_op(o.id);
         c.checkpoint = 7;
         assert_eq!(l.decide(&c, false), YieldDecision::Continue { attempt: 2 });
+    }
+
+    /// 50 §8: automatic (peer/result) consumptions lengthen the request's
+    /// chain up to `CHAIN_MAX`; only a consumed external input resets it.
+    /// Admission alone counts nothing.
+    #[test]
+    fn chain_counts_consumed_automatic_inputs_until_external_reset() {
+        let (mut l, s, t) = quiescent();
+        let consume = |l: &mut Ledger, origin: InputOrigin| {
+            let ticket = l.admit(s, origin, None);
+            l.consumed(InputConsumed {
+                session: s,
+                id: ticket.id,
+                turn: t,
+            });
+        };
+        for _ in 0..crate::communication::CHAIN_MAX - 1 {
+            consume(&mut l, InputOrigin::Automatic);
+        }
+        assert!(!l.chain_exhausted(s));
+        // Pending, not consumed: no effect.
+        l.admit(s, InputOrigin::Automatic, None);
+        assert!(!l.chain_exhausted(s));
+        consume(&mut l, InputOrigin::Automatic);
+        assert!(l.chain_exhausted(s));
+        consume(&mut l, InputOrigin::External);
+        assert!(!l.chain_exhausted(s));
+        assert!(!l.chain_exhausted(SessionId::new()));
+    }
+
+    /// 50 §8: the chain belongs to the initiating request, not to one
+    /// session: a message from a session deep in a chain carries that depth
+    /// to its recipient, a bounce back carries it further, and the bound is
+    /// checked against the longer of sender and recipient before admission.
+    /// A fresh external input in the recipient resets only the recipient.
+    #[test]
+    fn chain_is_inherited_across_sessions() {
+        let max = crate::communication::CHAIN_MAX;
+        let mut l = Ledger::default();
+        let (a, b) = (SessionId::new(), SessionId::new());
+        l.register(a, None, false);
+        l.register(b, None, false);
+        let t = TurnId::new();
+        let relay = |l: &mut Ledger, from: SessionId, to: SessionId| {
+            let ticket = l.admit_chained(to, None, Some(from));
+            l.consumed(InputConsumed {
+                session: to,
+                id: ticket.id,
+                turn: t,
+            });
+        };
+        // a self-continues max-2 times, then messages b once: b inherits.
+        for _ in 0..max - 2 {
+            let ticket = l.admit(a, InputOrigin::Automatic, None);
+            l.consumed(InputConsumed {
+                session: a,
+                id: ticket.id,
+                turn: t,
+            });
+        }
+        assert_eq!(l.chain(a), max - 2);
+        relay(&mut l, a, b);
+        assert_eq!(l.chain(b), max - 1);
+        assert!(!l.chain_exhausted_for(Some(b), a));
+        // b answers a: a is now at the bound; nothing more may be relayed either way.
+        relay(&mut l, b, a);
+        assert_eq!(l.chain(a), max);
+        assert!(l.chain_exhausted_for(Some(a), b) && l.chain_exhausted_for(Some(b), a));
+        // A remote sender contributes nothing, but the exhausted recipient still refuses.
+        assert!(l.chain_exhausted_for(None, a) && !l.chain_exhausted_for(None, b));
+        // A human input in a resets a alone; b keeps its inherited depth.
+        let fresh = l.admit(a, InputOrigin::External, None);
+        l.consumed(InputConsumed {
+            session: a,
+            id: fresh.id,
+            turn: t,
+        });
+        assert_eq!((l.chain(a), l.chain(b)), (0, max - 1));
+        assert!(!l.chain_exhausted_for(Some(a), b));
+    }
+
+    /// The read API the network state binds request scopes with: the owning
+    /// turn survives the return of a child turn until its handoff, operations
+    /// list by owner, and pending counts drop only on consumption.
+    #[test]
+    fn busy_and_operation_queries_follow_the_ledger() {
+        let mut l = Ledger::default();
+        let (root, child) = (SessionId::new(), SessionId::new());
+        l.register(root, None, false);
+        l.register(child, Some(root), false);
+        assert!(l.is_idle(child) && l.turn_of(child).is_none());
+        let t = TurnId::new();
+        let ticket = l.admit(child, InputOrigin::External, None);
+        assert_eq!(l.pending_count(child), 1);
+        l.entered(TurnEntered {
+            session: child,
+            turn: Some(t),
+        });
+        assert_eq!(l.turn_of(child), Some(t));
+        assert!(!l.is_idle(child));
+        let o = op(child);
+        l.admit_op(&o);
+        assert_eq!(l.operations_of(child), vec![o.id]);
+        assert!(l.operations_of(root).is_empty());
+        assert_eq!(l.op_owner(o.id), Some(child));
+        l.consumed(InputConsumed {
+            session: child,
+            id: ticket.id,
+            turn: t,
+        });
+        assert_eq!(l.pending_count(child), 0);
+        // A child's return keeps the turn owned until the parent holds the result.
+        l.returned(TurnReturned {
+            session: child,
+            turn: Some(t),
+        });
+        assert_eq!(l.turn_of(child), Some(t));
+        l.handed_off(child, t);
+        assert!(l.turn_of(child).is_none() && l.is_idle(child));
+        l.retire_op(o.id);
+        assert!(l.operations_of(child).is_empty() && l.op_owner(o.id).is_none());
     }
 }

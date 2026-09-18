@@ -4,7 +4,7 @@
 
 use std::fmt::Display;
 
-use agent::{AGENT_ACTOR, Agents};
+use agent::{AGENT_ACTOR, Agents, PeerScope};
 use anyhow::Context as _;
 use chrono::{DateTime, Utc};
 use kameo::actor::ActorRef;
@@ -103,9 +103,38 @@ const COMMANDS: &[(&str, &str, &str)] = &[
         "[status|link|allow <n>|rm <n>|unlink]",
         "this channel (owner)",
     ),
+    (
+        "/communication",
+        "[on|off [always]]",
+        "peer messaging for this session or the default (owner)",
+    ),
+    (
+        "/peers",
+        "[<query> | scope owner|isolated [alias]]",
+        "this session's peer directory or root scope (owner)",
+    ),
+    (
+        "/requests",
+        "[<id> | answer <id> <text>]",
+        "pending peer requests: inspect or answer one (owner)",
+    ),
+    (
+        "/a2a",
+        "[reload]",
+        "network status or config reload (owner)",
+    ),
 ];
 
-const OWNER_ONLY: &[&str] = &["/approvals", "/approve", "/deny", "/signal"];
+const OWNER_ONLY: &[&str] = &[
+    "/approvals",
+    "/approve",
+    "/deny",
+    "/signal",
+    "/communication",
+    "/peers",
+    "/requests",
+    "/a2a",
+];
 const OWNER_MSG: &str = "This command is restricted to the owner.";
 const NO_SESSION: &str = "no session yet: send a message first";
 
@@ -421,6 +450,10 @@ async fn run(cx: &mut Cx<'_>, name: &'static str, arg: &str) -> anyhow::Result<R
                 _ => text("usage: /signal [status | link | allow <n> | rm <n> | unlink]".into()),
             }
         }
+        "/communication" => communication_cmd(cx.session, arg).await,
+        "/peers" => peers_cmd(cx.session, arg).await,
+        "/requests" => requests_cmd(cx.session, arg).await,
+        "/a2a" => a2a_cmd(arg).await,
         _ => text(help()),
     }
 }
@@ -766,6 +799,304 @@ async fn approvals_cmd(session: Option<SessionId>, arg: &str) -> anyhow::Result<
     )))
 }
 
+/// `/communication [on|off [always]]`: read, or switch this session's opt-out
+/// (`always`: the persisted global ceiling). The reply is the runtime's
+/// effective state, never a guess (50 §2.1).
+async fn communication_cmd(session: Option<SessionId>, arg: &str) -> anyhow::Result<Reply> {
+    let mut words = arg.split_whitespace();
+    let state = match words.next() {
+        None => agent()?
+            .ask(agent::GetCommunication { session })
+            .await
+            .map_err(err)?,
+        Some(w @ ("on" | "off")) => {
+            let target = match words.next() {
+                Some("always") => None,
+                None => Some(session.context(
+                    "no session yet: send a message first, or use `/communication on|off always`",
+                )?),
+                Some(w) => {
+                    return Ok(Reply::Text(format!(
+                        "/communication: expected `always`, got {w:?}"
+                    )));
+                }
+            };
+            agent()?
+                .ask(agent::SetCommunication {
+                    session: target,
+                    enabled: w == "on",
+                })
+                .await
+                .map_err(err)?
+        }
+        Some(_) => {
+            return Ok(Reply::Text(
+                "usage: /communication [on|off [always]]".into(),
+            ));
+        }
+    };
+    Ok(Reply::Text(communication_text(&state)))
+}
+
+/// [`agent::CommunicationState`] as the phone reads it: the effective answer
+/// first, then the exact blocker when it is off.
+fn communication_text(s: &agent::CommunicationState) -> String {
+    let mut out = format!("communication: {}", on_off(s.effective));
+    if !s.effective {
+        let why = if !s.global {
+            format!("global default is off ({})", s.source)
+        } else if s.opted_out {
+            "this session opted out".to_owned()
+        } else {
+            s.inherited_from.map_or_else(
+                || "blocked".to_owned(),
+                |id| format!("inherited from {}", short(id)),
+            )
+        };
+        out.push_str(&format!(" ({why})"));
+    }
+    out.push_str(&format!("\nglobal: {} ({})", on_off(s.global), s.source));
+    if s.session.is_some() {
+        out.push_str(&format!("\nscope: {}", s.scope.as_str()));
+        if let Some(alias) = &s.alias {
+            out.push_str(&format!(" · alias {alias}"));
+        }
+    }
+    out.push_str(&format!(
+        "\nnetwork: {}{}",
+        if s.network_enabled {
+            "enabled"
+        } else {
+            "disabled"
+        },
+        if s.listening { ", listening" } else { "" }
+    ));
+    out.push_str("\nsession opt-outs last until the daemon restarts; `always` persists");
+    out
+}
+
+/// `/peers [<query> | scope owner|isolated [alias]]`: the bounded permitted
+/// directory the bound session may address (50 §5.1), or the root's scope.
+async fn peers_cmd(session: Option<SessionId>, arg: &str) -> anyhow::Result<Reply> {
+    let session = session.context(NO_SESSION)?;
+    let (sub, rest) = arg
+        .split_once(char::is_whitespace)
+        .map_or((arg, ""), |(s, r)| (s, r.trim()));
+    if sub == "scope" {
+        let (name, alias) = rest
+            .split_once(char::is_whitespace)
+            .map_or((rest, ""), |(w, a)| (w, a.trim()));
+        let Ok(scope) = name.parse::<PeerScope>() else {
+            return Ok(Reply::Text(
+                "usage: /peers scope owner|isolated [alias]".into(),
+            ));
+        };
+        let state = agent()?
+            .ask(agent::SetPeerScope {
+                root: session,
+                scope,
+                alias: (!alias.is_empty()).then(|| alias.to_owned()),
+            })
+            .await
+            .map_err(err)?;
+        return Ok(Reply::Text(communication_text(&state)));
+    }
+    let page = agent()?
+        .ask(agent::ListPeers {
+            session,
+            query: (!arg.is_empty()).then(|| arg.to_owned()),
+            cursor: None,
+            limit: None,
+        })
+        .await
+        .map_err(err)?;
+    let mut out = table(page.peers.iter().map(|p| {
+        let caps: Vec<&str> = [(p.send, "send"), (p.reply, "reply"), (p.stream, "stream")]
+            .into_iter()
+            .filter_map(|(on, w)| on.then_some(w))
+            .collect();
+        vec![
+            p.name.clone(),
+            p.address.clone(),
+            word(&p.kind),
+            word(&p.relationship),
+            word(&p.state),
+            caps.join(","),
+        ]
+    }));
+    if page.cursor.is_some() {
+        out.push_str("\nmore; /peers <query> narrows");
+    }
+    Ok(Reply::Text(out))
+}
+
+/// `/requests [<id> | answer <id> <text>]`: the exact pending request ids the
+/// owner may resolve for the bound session (either side, 50 §5.3), one
+/// record, or an answer. `<id>` is a full or unique-prefix pending id, never
+/// an arbitrary waiter.
+async fn requests_cmd(session: Option<SessionId>, arg: &str) -> anyhow::Result<Reply> {
+    let session = session.context(NO_SESSION)?;
+    let pending = agent()?
+        .ask(agent::ListPeerMessages {
+            session,
+            cursor: None,
+            limit: None,
+            pending_only: true,
+        })
+        .await
+        .map_err(err)?;
+    let (sub, rest) = arg
+        .split_once(char::is_whitespace)
+        .map_or((arg, ""), |(s, r)| (s, r.trim()));
+    match (sub, rest) {
+        ("", _) => {
+            let side = |id: &uuid::Uuid| {
+                if pending.awaiting_answer.contains(id) {
+                    "awaiting our answer"
+                } else if pending.awaiting_reply.contains(id) {
+                    "awaiting their reply"
+                } else {
+                    ""
+                }
+            };
+            Ok(Reply::Text(table(pending.messages.iter().map(|m| {
+                vec![
+                    m.receipt.id.to_string(),
+                    m.from.clone(),
+                    m.receipt.state.as_str().to_owned(),
+                    side(&m.receipt.id).to_owned(),
+                    m.text.chars().take(40).collect(),
+                ]
+            }))))
+        }
+        ("answer", rest) => {
+            let Some((id, text)) = rest.split_once(char::is_whitespace) else {
+                return Ok(Reply::Text("usage: /requests answer <id> <text>".into()));
+            };
+            let id = pending_id(&pending, id)?;
+            let receipt = agent()?
+                .ask(agent::AnswerPeerRequest {
+                    session,
+                    reply_to: id,
+                    text: text.trim().to_owned(),
+                })
+                .await
+                .map_err(err)?;
+            Ok(Reply::Text(format!(
+                "answered {id}: {}{}",
+                receipt.state.as_str(),
+                receipt.error.map_or(String::new(), |e| format!(" ({e})"))
+            )))
+        }
+        (id, _) => {
+            let id = pending_id(&pending, id)?;
+            let m = agent()?
+                .ask(agent::GetPeerMessage { session, id })
+                .await
+                .map_err(err)?;
+            Ok(Reply::Text(format!(
+                "{id}\nfrom: {}\nto: {}\nstate: {}{}\nreply_to: {}\nat: {}\n\n{}",
+                m.from,
+                m.receipt.to,
+                m.receipt.state.as_str(),
+                m.receipt.error.map_or(String::new(), |e| format!(" ({e})")),
+                m.receipt.reply_to.map_or("-".to_owned(), |r| r.to_string()),
+                age(m.created_at),
+                m.text
+            )))
+        }
+    }
+}
+
+/// The one pending id `s` names exactly or as a unique prefix.
+fn pending_id(page: &agent::PeerMessagePage, s: &str) -> anyhow::Result<uuid::Uuid> {
+    let mut hits = page
+        .awaiting_answer
+        .iter()
+        .chain(&page.awaiting_reply)
+        .filter(|id| id.to_string().starts_with(s));
+    match (hits.next(), hits.next()) {
+        (Some(id), None) => Ok(*id),
+        (Some(_), Some(_)) => anyhow::bail!("{s:?} matches several pending requests"),
+        (None, _) => anyhow::bail!("no pending request {s:?}"),
+    }
+}
+
+/// `/a2a [reload]`: the network actor's status, or an atomic config reload.
+/// No actor and `a2a.enabled: false` is "disabled"; no actor while enabled is
+/// an error, never a silent off.
+async fn a2a_cmd(arg: &str) -> anyhow::Result<Reply> {
+    let actor = ActorRef::<a2a::A2aActor>::lookup(a2a::A2A_ACTOR)?;
+    let status = match (actor, arg) {
+        (Some(a), "") => a.ask(a2a::GetStatus).await.map_err(err)?,
+        (Some(a), "reload") => a.ask(a2a::Reload).await.map_err(err)?,
+        (None, "" | "reload") => {
+            let comm = agent()?
+                .ask(agent::GetCommunication { session: None })
+                .await
+                .map_err(err)?;
+            anyhow::ensure!(
+                !comm.network_enabled,
+                "a2a is enabled but its actor is not running"
+            );
+            a2a::A2aStatus::disabled()
+        }
+        _ => return Ok(Reply::Text("usage: /a2a [reload]".into())),
+    };
+    Ok(Reply::Text(a2a_text(&status)))
+}
+
+fn a2a_text(s: &a2a::A2aStatus) -> String {
+    let mut out = format!(
+        "a2a: {}{}",
+        if s.enabled { "enabled" } else { "disabled" },
+        s.address
+            .as_deref()
+            .filter(|_| s.listening)
+            .map_or(String::new(), |a| format!(", listening on {a}"))
+    );
+    if let Some(url) = &s.public_url {
+        out.push_str(&format!("\npublic: {url}"));
+    }
+    if let Some(e) = &s.error {
+        out.push_str(&format!("\nerror: {e}"));
+    }
+    if !s.peers.is_empty() {
+        out.push_str("\npeers:\n");
+        out.push_str(&table(s.peers.iter().map(|p| {
+            vec![
+                p.name.clone(),
+                match (p.outbound, p.inbound) {
+                    (true, true) => "in/out",
+                    (true, false) => "out",
+                    (false, true) => "in",
+                    (false, false) => "-",
+                }
+                .to_owned(),
+                p.card.clone().unwrap_or_default(),
+                p.error.clone().unwrap_or_default(),
+            ]
+        })));
+    }
+    if !s.exports.is_empty() {
+        out.push_str("\nexports:\n");
+        out.push_str(&table(s.exports.iter().map(|e| {
+            vec![
+                e.name.clone(),
+                short(e.session),
+                e.peer.clone().unwrap_or_default(),
+                e.url.clone(),
+            ]
+        })));
+    }
+    out
+}
+
+/// A unit-variant enum's serde word (`Native` → `native`).
+fn word<T: std::fmt::Debug>(v: &T) -> String {
+    format!("{v:?}").to_lowercase()
+}
+
 fn agent() -> anyhow::Result<ActorRef<Agents>> {
     ActorRef::<Agents>::lookup(AGENT_ACTOR)?.context("agent actor is not running")
 }
@@ -956,6 +1287,10 @@ mod tests {
             "/deny k7mq",
             "/approvals off",
             "/signal unlink",
+            "/communication on always",
+            "/peers scope owner",
+            "/requests",
+            "/a2a reload",
         ] {
             let cx = Cx {
                 session: None,

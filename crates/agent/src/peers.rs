@@ -1,11 +1,14 @@
-//! Peer tools (design doc 01 §2.4): `spawn_subagent` returns immediately;
-//! `send_message` routes text between a session and its parent/children;
+//! Peer tools (design docs 01 §2.4, 50 §5): `spawn_subagent` returns
+//! immediately; `send_message` routes a bounded body to a peer address and
+//! returns a durable [`PeerReceipt`]; `discover_peers` is the permitted
+//! directory; `peer_message` is the caller's own record of one exchange;
 //! `list_models` shows what a parent may pick for a child.
-//! All are `Risk::ReadOnly`: nothing outside the harness changes.
 //!
-//! ponytail: the registry is global, so both tools are visible to every
-//! session and depth/peer availability is enforced at call time; per-session
-//! tool visibility is the upgrade path.
+//! The registry gates `discover_peers`/`send_message`/`spawn_subagent` on
+//! the agent-owned [`crate::communication::SharedPolicy`] (50 §2.2) and runs
+//! their bodies under [`tools::communication::scope`]; `send_message` hands
+//! the generation token it was admitted under to [`Deliver`], so an off→on
+//! between approval and dispatch cannot revive it (50 §8).
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -16,9 +19,15 @@ use kameo::actor::ActorRef;
 use kameo::error::SendError;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use tools::communication::{Disabled, refused};
 use tools::{Risk, Tool, ToolCx, ToolOutput};
+use uuid::Uuid;
 
-use crate::supervisor::{Deliver, SpawnChild};
+use crate::communication::{
+    DISCOVER_DEFAULT_LIMIT, DISCOVER_MAX_LIMIT, GetPeerMessage, ListPeers, PeerMessageState,
+    PeerReceipt, PeerRecord,
+};
+use crate::supervisor::{Deliver, DropWait, SpawnChild};
 use crate::{AGENT_ACTOR, AgentConfig, Agents, ListModels};
 
 /// Arguments for [`SpawnSubagentTool`].
@@ -119,7 +128,7 @@ impl Tool for SpawnSubagentTool {
     fn description(&self) -> String {
         let mut s = String::from(
             "Delegate a complete, self-contained task to a subagent running in its own session while you continue. \
-             Returns immediately with its name; its final message arrives later as a <subagent_result> input, so do not poll. \
+             Returns immediately with its name and address; its final message arrives later as a <message from=\"session:<id>\"> input (when communication is on), so do not poll. \
              Several calls in one message run concurrently. Message it with send_message. \
              For a wth subagent you choose `model` and `effort`; pick a little more capability than the task seems to need.",
         );
@@ -162,7 +171,7 @@ impl Tool for SpawnSubagentTool {
                 .await
             {
                 Ok((name, id)) => ToolOutput::ok(format!(
-                    "Spawned `{name}` (session {id}). Its result will arrive as a <subagent_result> when it finishes; message it with send_message."
+                    "Spawned `{name}` (session:{id}). Its result will arrive as a <message from=\"session:{id}\"> when it finishes; message it with send_message to `{name}` or `session:{id}`."
                 )),
                 Err(SendError::HandlerError(e)) => ToolOutput::err(e),
                 Err(e) => ToolOutput::err(format!("agent supervisor: {e}")),
@@ -174,16 +183,19 @@ impl Tool for SpawnSubagentTool {
 /// Arguments for [`SendMessageTool`].
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct SendMessageArgs {
-    /// `parent` (when you are a subagent) or the name of one of your subagents.
+    /// Canonical address from discover_peers (`session:<uuid>` or `peer:<name>`), `parent`, or one of your subagents' names.
     pub to: String,
-    /// Body.
+    /// Body; at most 32 KiB.
     pub message: String,
-    /// Block until the addressee's next message to you (bounded by a timeout).
+    /// Block until the addressee answers with reply_to = this message's id (bounded by a timeout).
     #[serde(default)]
     pub await_reply: bool,
-    /// Id of the `<message>` you are answering.
+    /// Id of the `<message>` you are answering; the exact message id, never a name.
     #[serde(default)]
-    pub reply_to: Option<String>,
+    pub reply_to: Option<Uuid>,
+    /// Your idempotency key: repeating a call with the same request_id, addressee and body returns the original receipt instead of sending again.
+    #[serde(default)]
+    pub request_id: Option<String>,
 }
 
 /// Symmetric peer messaging.
@@ -192,50 +204,247 @@ pub struct SendMessageTool {
     pub cfg: Arc<AgentConfig>,
 }
 
+/// Receipt as text plus `structured`; `is_error` for a terminal failure.
+fn receipt_output(lead: &str, r: &PeerReceipt) -> ToolOutput {
+    let mut s = format!("{lead}id={} to={} state={}", r.id, r.to, r.state.as_str());
+    if let Some(t) = &r.task_id {
+        s.push_str(&format!(" task={t}"));
+    }
+    if let Some(e) = &r.error {
+        s.push_str(&format!(" error={e}"));
+    }
+    let mut out = if matches!(r.state, PeerMessageState::Failed) {
+        ToolOutput::err(s)
+    } else {
+        ToolOutput::ok(s)
+    };
+    out.structured = serde_json::to_value(r).ok();
+    out
+}
+
 #[async_trait::async_trait]
 impl Tool for SendMessageTool {
     const NAME: &'static str = "send_message";
-    const RISK: Risk = Risk::ReadOnly;
+    const RISK: Risk = Risk::Mutating;
     const DIRECT: bool = true;
+    const RETURNS: &'static str = "dict";
     type Args = SendMessageArgs;
 
     fn description(&self) -> String {
-        "Send a message to a peer: `parent` if you are a subagent, or one of your subagents by name. \
-         The text is injected into their conversation. With await_reply=true you block until they message you back \
-         (or the timeout passes). When answering a <message> that has reply_expected=\"true\", set reply_to to its id."
+        "Send a message to a peer: a canonical address from discover_peers (`session:<uuid>`, `peer:<name>`), \
+         `parent` if you are a subagent, or one of your subagents by name. Returns a receipt: `accepted` means \
+         committed to their intake, not read. With await_reply=true you block until they answer with reply_to set \
+         to this message's id (or the timeout passes; the message is not recalled). When answering a <message> \
+         with reply_expected=\"true\", set reply_to to its id. peer_message shows a message's current state."
             .into()
     }
 
     async fn call(&self, args: SendMessageArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        // The admission the registry dispatched this body under (50 §8): no
+        // admission means a bypassed gate, and a revoked one is refused here
+        // instead of re-reading the switch.
+        let Some(admitted) = tools::communication::current() else {
+            return Ok(refused(Self::NAME, Disabled::Uninstalled));
+        };
+        if !admitted.live() {
+            return Ok(refused(Self::NAME, Disabled::Revoked));
+        }
         let agents = match supervisor() {
             Ok(a) => a,
             Err(out) => return Ok(ToolOutput::err(out)),
         };
-        let to = args.to;
-        let rx = match agents
+        let delivered = match agents
             .ask(Deliver {
                 from: cx.session,
-                to: to.clone(),
+                to: args.to,
                 text: args.message,
                 await_reply: args.await_reply,
                 reply_to: args.reply_to,
+                request_id: args.request_id,
+                admitted: admitted.token().clone(),
             })
             .await
         {
-            Ok(rx) => rx,
+            Ok(d) => d,
             Err(SendError::HandlerError(e)) => return Ok(ToolOutput::err(e)),
             Err(e) => return Ok(ToolOutput::err(format!("agent supervisor: {e}"))),
         };
-        let Some(rx) = rx else {
-            return Ok(ToolOutput::ok("delivered"));
+        let Some(rx) = delivered.reply else {
+            return Ok(receipt_output("", &delivered.receipt));
         };
+        let id = delivered.receipt.id;
         let secs = self.cfg.subagents.reply_timeout_secs;
         Ok(
             match tokio::time::timeout(Duration::from_secs(secs), rx).await {
-                Ok(Ok(reply)) => ToolOutput::ok(reply),
-                _ => ToolOutput::ok(format!("no reply from {to} within {secs}s")),
+                Ok(Ok(r)) => match (&r.state, &r.reply) {
+                    (PeerMessageState::Replied, Some(text)) => {
+                        let mut out = ToolOutput::ok(text.clone());
+                        out.structured = serde_json::to_value(&r).ok();
+                        out
+                    }
+                    // Expired by the supervisor: disable, cancel, deletion.
+                    _ => receipt_output("no reply: ", &r),
+                },
+                Ok(Err(_)) => receipt_output("wait dropped: ", &delivered.receipt),
+                Err(_) => {
+                    // Timeout: the waiter is removed, the accepted message stands.
+                    let _ = agents.tell(DropWait(id)).await;
+                    let mut r = delivered.receipt;
+                    r.error = Some(format!(
+                        "no reply within {secs}s; the message was not recalled"
+                    ));
+                    receipt_output("timeout: ", &r)
+                }
             },
         )
+    }
+}
+
+/// Arguments for [`DiscoverPeersTool`].
+#[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct DiscoverPeersArgs {
+    /// Substring filter on name or address.
+    #[serde(default)]
+    pub query: Option<String>,
+    /// Cursor from a previous page.
+    #[serde(default)]
+    pub cursor: Option<String>,
+    /// Page size, default 25, max 100.
+    #[serde(default)]
+    pub limit: Option<u16>,
+}
+
+/// The permitted peer directory (50 §5.1).
+pub struct DiscoverPeersTool;
+
+#[async_trait::async_trait]
+impl Tool for DiscoverPeersTool {
+    const NAME: &'static str = "discover_peers";
+    const RISK: Risk = Risk::ReadOnly;
+    const RETURNS: &'static str = "dict";
+    type Args = DiscoverPeersArgs;
+
+    fn description(&self) -> String {
+        format!(
+            "List the peers you may message: parent, children, siblings, other sessions of the same tree, \
+             other owner roots and configured remote agents. Each row has the canonical address for send_message, \
+             a short name, kind, relationship, coarse state and capabilities. Default {DISCOVER_DEFAULT_LIMIT} rows, \
+             max {DISCOVER_MAX_LIMIT}; pass `cursor` for the next page. Listing wakes nobody and probes no network."
+        )
+    }
+
+    async fn call(&self, args: DiscoverPeersArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        let agents = match supervisor() {
+            Ok(a) => a,
+            Err(out) => return Ok(ToolOutput::err(out)),
+        };
+        let page = match agents
+            .ask(ListPeers {
+                session: cx.session,
+                query: args.query,
+                cursor: args.cursor,
+                limit: args.limit,
+            })
+            .await
+        {
+            Ok(p) => p,
+            Err(SendError::HandlerError(e)) => return Ok(ToolOutput::err(e)),
+            Err(e) => return Ok(ToolOutput::err(format!("agent supervisor: {e}"))),
+        };
+        let mut text = if page.peers.is_empty() {
+            "no peers".to_owned()
+        } else {
+            page.peers
+                .iter()
+                .map(|p| {
+                    format!(
+                        "{} — {} ({:?}, {:?}, {:?}{}{})",
+                        p.address,
+                        p.name,
+                        p.kind,
+                        p.relationship,
+                        p.state,
+                        if p.reply { ", replies" } else { "" },
+                        if p.stream { ", streams" } else { "" },
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        if let Some(c) = &page.cursor {
+            text.push_str(&format!("\nmore: cursor={c}"));
+        }
+        let mut out = ToolOutput::ok(text);
+        out.structured = serde_json::to_value(&page).ok();
+        Ok(out)
+    }
+}
+
+/// Arguments for [`PeerMessageTool`].
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct PeerMessageArgs {
+    /// Message id from a send_message receipt or a received <message>.
+    pub id: Uuid,
+}
+
+/// The caller's own record of one exchange (50 §5.2). Not gated: an agent
+/// may learn that its accepted message was suppressed after a disable.
+pub struct PeerMessageTool;
+
+#[async_trait::async_trait]
+impl Tool for PeerMessageTool {
+    const NAME: &'static str = "peer_message";
+    const RISK: Risk = Risk::ReadOnly;
+    const RETURNS: &'static str = "dict";
+    type Args = PeerMessageArgs;
+
+    fn description(&self) -> String {
+        "Inspect a peer message you sent or received: current state (accepted, consumed, replied, suppressed, \
+         failed, unknown), reply text when replied, task handle, error. Only your own exchanges; anything else is unknown."
+            .into()
+    }
+
+    async fn call(&self, args: PeerMessageArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        let agents = match supervisor() {
+            Ok(a) => a,
+            Err(out) => return Ok(ToolOutput::err(out)),
+        };
+        let rec: PeerRecord = match agents
+            .ask(GetPeerMessage {
+                session: cx.session,
+                id: args.id,
+            })
+            .await
+        {
+            Ok(r) => r,
+            Err(SendError::HandlerError(e)) => return Ok(ToolOutput::err(e)),
+            Err(e) => return Ok(ToolOutput::err(format!("agent supervisor: {e}"))),
+        };
+        let r = &rec.receipt;
+        let mut text = format!(
+            "id={} from={} to={} state={} at={}",
+            r.id,
+            rec.from,
+            r.to,
+            r.state.as_str(),
+            rec.created_at.to_rfc3339()
+        );
+        if let Some(rt) = r.reply_to {
+            text.push_str(&format!(" reply_to={rt}"));
+        }
+        if let Some(t) = &r.task_id {
+            text.push_str(&format!(" task={t}"));
+        }
+        if let Some(e) = &r.error {
+            text.push_str(&format!(" error={e}"));
+        }
+        text.push_str(&format!("\n{}", rec.text));
+        if let Some(reply) = &r.reply {
+            text.push_str(&format!("\n--- reply ---\n{reply}"));
+        }
+        let mut out = ToolOutput::ok(text);
+        out.structured = serde_json::to_value(&rec).ok();
+        Ok(out)
     }
 }
 

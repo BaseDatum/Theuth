@@ -863,6 +863,49 @@ revoke-cascade copy on a live revoke.
   dialling when the presence bit is off (`"<name> is offline"`), and waits
   up to 10 s for `PRESENCE 1` on the fresh socket otherwise.
 
+### 13.1 Agent communication (50), 2026-09-18 — pending integration verification
+
+50 §6.4 and §11 name this doc for "A2A is separate, not a migration of node
+transport". The decisions, as implemented in `crates/a2a` and
+`agent/src/communication`, none of them yet smoked against a paired node:
+
+- **Node children ride the same ACP conn.** Mode 1 over link (§4.2–4.3),
+  `AcpChild(Dial)`, `rpc::acp::serve_records` and the node's own store are
+  unchanged. A2A adds no link mode, no relay op, no frame and no second
+  dispatch on `SetDispatch`. A node child remains a leaf: it cannot
+  `discover_peers`/`send_message` back to the parent (06 §3.8 and §13 above
+  still hold), and its `PeerInfo` row says so (`PeerKind::Node`, `send:
+  true`, `reply: false`). The parent's communication switch (50 §2) gates
+  `spawn_subagent{agent: "<node>"}` and `send_message` to that child exactly
+  as for an ACP subprocess; off refuses with the blocker named and does not
+  touch the node's conn or its sessions.
+- **A remote wth is an A2A peer only when it publishes exports.** If a node
+  operator wants sibling-to-sibling or node-to-parent *model* messaging,
+  that node enables `a2a` itself and exports sessions with its own
+  credentials, and the parent lists it in `<data_dir>/a2a/peers.yaml` like
+  any independently operated agent (HTTPS card, per-peer bearer from the
+  vault). Pairing a node (`add_node`) grants none of this: no automatic
+  fleet-wide export, no token sync over the control conn, no mapping of a
+  node's subtree into the parent's peer namespace. `nodes.yaml` names and
+  A2A peer names are separate namespaces; a clash between them is not
+  checked because nothing joins them.
+- **Credentials.** A2A peer credentials are vault secrets distinct from the
+  link identity, `devices.yaml` and the RPC console token (`a2a::config::
+  stage` rejects a peer secret equal to the console token). The parent's
+  status as a device of the node (§0.1) is never presented to an A2A
+  endpoint, and an A2A principal never becomes a link device.
+- **Threat model delta (§9).** A node compromised *and* exporting A2A can
+  return text on two channels (`<subagent_result>` and A2A replies); both
+  are untrusted content (28, 50 §9), bounded and redacted before storage.
+  It still cannot reach the parent's `Api`: A2A exports are served by the
+  `a2a` listener behind its own auth, not by `raw_json_request`.
+
+Owed before "as built": a paired node with the parent's communication off
+refuses the spawn and the control conn stays up; with it on, the §12 step-3
+flow repeats unchanged; a node with `a2a.enabled: false` (the installer's
+default) presents no listener, and `link_status` on the node still lists the
+parent as an ordinary `wth` device.
+
 ## 14. Rejected
 
 - **Node dials the parent; parent issues requests back over that conn.**

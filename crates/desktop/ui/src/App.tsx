@@ -61,7 +61,9 @@ function loadInfo(st: Stores, api: Api): Promise<void> {
 /**
  * After a reconnect or `Lagged`: the gap is lost, so refetch what the screen shows (25 §4.3).
  * The chat route takes the event when mounted; `unload` covers a route that mounts later
- * (a local reconnect shows the startup screen meanwhile).
+ * (a local reconnect shows the startup screen meanwhile). Communication state, peer directories and
+ * request lists (50 §10) may have missed their change events too; a foreground return with a live
+ * socket needs none of this (events kept flowing; stale queries refetch on focus).
  */
 function reload(st: Stores): void {
   const sessions = st.sessions.getState()
@@ -69,6 +71,10 @@ function reload(st: Stores): void {
   sessions.unload()
   void st.qc.invalidateQueries({ queryKey: queryKeys.sessions })
   void st.qc.invalidateQueries({ queryKey: queryKeys.knowledge })
+  void st.qc.invalidateQueries({ queryKey: ['communication'] })
+  void st.qc.invalidateQueries({ queryKey: ['peers'] })
+  void st.qc.invalidateQueries({ queryKey: ['peer-messages'] })
+  void st.qc.invalidateQueries({ queryKey: queryKeys.a2a })
   const api = st.connection.getState().api
   if (api) void loadInfo(st, api).catch(() => undefined)
   if (useHarnesses.getState().active === st.id)

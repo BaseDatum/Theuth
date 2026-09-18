@@ -196,6 +196,19 @@ wrapping; the child's own session id is the spill file stem, so the parent's
 `read_file` retrieves it. The waiter branch (`spawn_subagent{wait}`) gets the
 capped text too: it becomes a tool result and is subject to the same bound.
 
+*Amendment (50 §7–8; implemented 2026-09-18, verification pending).* The cap
+stays and applies at the same point, but the result no longer travels as an
+uncorrelated `UserInput`: `child_finished` caps, redacts, then **accepts one
+durable exchange** keyed `(child, TurnId, parent)` in the agent store before
+anything is queued, and the recipient's consumption transaction links that
+row to the appended history row before the model call. The spill file stem
+is still the child's session id. One bounded intake contract covers child
+results, peer messages and A2A task input alike (32 KiB per peer text,
+bounded pending inputs per recipient and harness, busy rather than a silent
+drop); a result that cannot be delivered because communication is off is
+not injected and the parent is not woken — the child's transcript and the
+exchange record remain inspectable.
+
 ### 4.2 Batch budget
 
 After each result is capped (`loop_.rs:1623-1629`), bound the batch:
@@ -400,6 +413,42 @@ New config keys: none.
 - **Removing tools from the final soft-land call** (jarvis). Rewrites the
   prefix for one call; the note plus synthetic results (§5) keep the pair
   invariant without it.
+
+## 8a. Communication recovery (50 §7–8; implemented 2026-09-18, verification pending)
+
+Bounded, visible recovery extends to peer traffic without a second recovery
+system:
+
+- **Restart.** No accepted peer input or A2A task auto-runs. At start the
+  supervisor marks unconsumed accepted exchanges `failed:
+  interrupted_by_restart` and running task scopes `FAILED` with that reason
+  (`Store::fail_interrupted`); committed outcomes stay queryable; an already
+  committed but unlinked result notification reconciles by its dedup key
+  without a model call. A fresh request continues the work. This is durable
+  accounting, not an at-least-once execution promise.
+- **Disable.** Turning communication off is not an error path: accepted,
+  unconsumed input becomes `suppressed` and does not revive on re-enable;
+  pending waits expire with `communication_disabled`, distinct from a
+  timeout; a turn is cancelled only when an A2A task opened it. In-flight
+  network sends abort best effort and an unresolved remote outcome is
+  `unknown`, never "undelivered".
+- **Cancellation.** Per request scope, decided by one atomic terminal
+  transition against completion; an external tool that will not stop
+  surfaces `cancellation pending` and its remaining work rather than a false
+  `CANCELED`. Dropping an SSE stream or closing a frontend is not a cancel.
+- **Bounds instead of retries.** Pending inputs 32/recipient, 256/harness;
+  pending waits 16/session, 128/harness; 32 automatic peer-triggered
+  continuations per initiating request; every native peer-opened turn takes
+  a child-work permit (released while it only waits) under the
+  `max_runtime_secs` wall deadline, waits included (01 §2.6 amendment).
+  Exhaustion refuses visibly. Outbound A2A never blindly
+  replays `SendMessage`: without a task handle a transport failure after
+  bytes may have left is `unknown` and needs an explicit decision;
+  read/status reconnects reuse the existing bounded backoff and never mint a
+  new task silently.
+
+None of this has a recorded run yet; 50 §12.2 lists the scenarios that turn
+it into a verification entry in §10.
 
 ## 9. Edits to earlier docs
 

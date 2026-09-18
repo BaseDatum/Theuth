@@ -111,6 +111,9 @@ const DEFAULT_CONFIG: &str = "# wth configuration. Every plugin reads its own se
 
 agent:
   model: anthropic/claude-sonnet-4-5
+  communication: false       # model-to-model communication (design doc 50): spawn_subagent, discover_peers, send_message.
+                             # Off is a ceiling no session can override; `/communication on always` writes true here.
+                             # `/communication off` in a session is memory-only and ends with the process.
   # title_model: anthropic/claude-haiku-4-5   # names sessions in the history list (07 §15); default: the session's model
   # aws_profile: work          # Bedrock inference for every session; /aws or Settings → Connections
   # subagents:
@@ -201,6 +204,12 @@ agent:
 #   stt_model_dir: ~         # Parakeet TDT ONNX checkpoint (encoder-model.onnx, decoder_joint-model.onnx, vocab.txt) plus ONNX Runtime's
 #                            # libonnxruntime.*.dylib/.so (1.17+, from its GitHub release); default <data_dir>/models/parakeet-tdt
 #   stt_idle_secs: 600       # unload the speech-to-text model after this long unused; 0 keeps it resident
+
+# a2a:                       # remote agents over A2A 1.0 (design doc 50 §6); peers/exports live in <data_dir>/a2a/peers.yaml, `/a2a reload` applies edits
+#   enabled: false           # false: no actor, listener, card fetch or credential load. Needs agent.communication too.
+#   listen: 127.0.0.1:7780   # SDK HTTP listener; loopback only, restart to change
+#   public_url: null         # HTTPS base an existing reverse proxy publishes for exports. WARNING: without it the
+#                            # listener is plain HTTP for loopback development only; never forward that port to a network.
 
 tools:
   policy:
@@ -444,6 +453,10 @@ async fn run() -> anyhow::Result<()> {
         plugins.push(Box::new(link::LinkPlugin));
         plugins.push(Box::new(nodes::NodesPlugin));
         plugins.push(Box::new(schedule::SchedulePlugin));
+        // Off unless `a2a.enabled: true`: then it registers its actor and
+        // finishes in the background once `agent` and `secrets` answer, so
+        // its place in this list carries no ordering promise (50 §11 row 3).
+        plugins.push(Box::new(a2a::A2aPlugin));
         plugins.push(Box::new(update::UpdatePlugin));
         plugins.push(Box::new(voice::VoicePlugin));
         if cli.serve || cli.headless {

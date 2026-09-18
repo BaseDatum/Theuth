@@ -32,7 +32,7 @@ import {
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { CompactStyle } from '@/rpc/bindings/CompactStyle'
 import { useSessionField, useSessions } from '@/store/sessions'
-import { type Ctx, openSurface, run, type Surface, surfaceOf } from './slash'
+import { type Ctx, openSurface, run, settings, type Surface, surfaceOf } from './slash'
 
 const STYLES: CompactStyle[] = ['summary', 'cut', 'snap']
 
@@ -265,6 +265,9 @@ export function SessionMenu({ session }: { session: string }) {
           </DropdownMenuItem>
           <DropdownMenuItem onSelect={() => openSurface('prompt')}>Show prompt</DropdownMenuItem>
           <DropdownMenuItem onSelect={() => openSurface('jobs')}>Jobs</DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => void settings(navigate, 'communication', session)}>
+            Communication &amp; peers…
+          </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
       <RenameDialog session={session} open={rename} onOpenChange={setRename} />

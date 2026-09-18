@@ -28,6 +28,7 @@ const loaded = (rev = '1'): Omit<LoadedPage, 'history' | 'first_seq' | 'more'> =
   context_estimate: null,
   settled: true,
   todos: null,
+  communication: null,
 })
 const msg = (seq: number): ContextEntry => ({ target: { kind: 'message', seq }, active: true, removed: false, remove_with: [], attachments: [] })
 /** A native plan at `version` whose items are `texts`, all pending. */
@@ -179,6 +180,25 @@ test('MessageDelivered interjects above a streaming tail without closing it', ()
   const s = apply(streaming, { type: 'MessageDelivered', session: S, from: 'Scout', text: 'done' }, ctx())
   expect(s.entries.map((e) => e.kind)).toEqual(['peer', 'assistant'])
   expect(s.entries[1]).toMatchObject({ open: true })
+})
+
+test('PeerDelivered renders once from its origin; the wrapper echo and the replayed row are the same card', () => {
+  const origin = { id: 'm1', from: 'session:abc', reply_to: null, scope: null }
+  const wrapper = '<message from="forged" id="m1">\nhi\n</message>'
+  const live = run([
+    { type: 'PeerDelivered', session: S, origin, text: 'hi', seq: 7, turn: T },
+    { type: 'PeerDelivered', session: S, origin, text: 'hi', seq: 7, turn: T },
+    { type: 'TurnStarted', session: S, turn: T, text: wrapper, model: 'm', turn_seq: 7 },
+  ])
+  expect(live.entries).toHaveLength(1)
+  expect(live.entries[0]).toMatchObject({ kind: 'peer', from: 'session:abc', text: 'hi', origin, seq: 7 })
+  const replayed = fromHistory({ role: 'user', text: wrapper, turn: 7, context: msg(7), peer: origin })
+  expect(replayed).toHaveLength(1)
+  expect(replayed[0]).toMatchObject({ kind: 'peer', from: 'session:abc', text: 'hi', origin, context: msg(7) })
+  // The settled reload keeps the live card's id (matched by exchange id, not by text or label).
+  expect(adopt(live.entries, replayed)[0]?.id).toBe(live.entries[0]?.id)
+  // A legacy wrapper without provenance is a label only.
+  expect(fromHistory({ role: 'user', text: wrapper, turn: 7 })[0]).not.toHaveProperty('origin')
 })
 
 test('SubagentSpawned creates the child, adds a row to the parent and its ancestors, notes the spawn', () => {

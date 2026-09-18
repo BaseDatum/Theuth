@@ -7,18 +7,21 @@ use std::fmt::Display;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
+use a2a::{A2A_ACTOR, A2aActor, A2aStatus};
 use agent::todo::TodoSnapshot;
 use agent::{
-    AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentConfig, AgentInfo, Agents, Cancel, Compact,
-    CompactStyle, ContextItems, ContextRemoval, ContextSnapshot, ContextTarget, DeleteSession,
-    EditTurn, ForkSession, GetCompactStyle, GetMaxToolRounds, GetSubagentTimeout, GetTitleModel,
-    GetTodos, Harvest, ListAcp, ListAgents, ListLogins, ListModels, ListProviders, ListQueued,
-    ListRegistry, ListSessions, ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginInfo,
-    Logout, ModelInfo, NewSession, PinSession, ProviderInfo, QueuedInput, Redo, Regenerate,
+    AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentConfig, AgentInfo, Agents, AnswerPeerRequest,
+    Cancel, CommunicationState, Compact, CompactStyle, ContextItems, ContextRemoval,
+    ContextSnapshot, ContextTarget, DeleteSession, EditTurn, ForkSession, GetCommunication,
+    GetCompactStyle, GetMaxToolRounds, GetPeerMessage, GetSubagentTimeout, GetTitleModel, GetTodos,
+    Harvest, ListAcp, ListAgents, ListLogins, ListModels, ListPeerMessages, ListPeers,
+    ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills, LoadSession, LoadSkill,
+    Loaded, Login, LoginInfo, Logout, ModelInfo, NewRootSession, PeerMessagePage, PeerPage,
+    PeerReceipt, PeerRecord, PeerScope, PinSession, ProviderInfo, QueuedInput, Redo, Regenerate,
     RemoveAcp, RemoveContext, RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession,
-    SearchSessions, SendInput, SessionSummary, SetCompactStyle, SetEffort, SetMaxToolRounds,
-    SetModel, SetSubagentTimeout, SetTitleModel, ShowPrompt, SkillBody, SkillMeta, Steer,
-    SyncSkills, Undo, UseSkill, Withdraw,
+    SearchSessions, SendInput, SessionSummary, SetCommunication, SetCompactStyle, SetEffort,
+    SetMaxToolRounds, SetModel, SetPeerScope, SetSubagentTimeout, SetTitleModel, ShowPrompt,
+    SkillBody, SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw,
 };
 use agent::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 use base64::Engine as _;
@@ -54,6 +57,7 @@ use tools::{
     McpLogin, McpLogout, McpProgress, McpServer, Progress, RemoveServer, RepoInfo, Resolve,
     SetApprovals, SetGate, SetHidden, SyncMcp, ToolRegistry, ToolSpec,
 };
+use uuid::Uuid;
 use voice::{SpeechId, VoiceStatus};
 
 use crate::bridge::Event;
@@ -88,6 +92,9 @@ pub struct Info {
     /// Harness display name (`link.name`, else the hostname): what a linked
     /// device shows in its harness switcher (31 §6.4).
     pub name: String,
+    /// The global communication switch (50 §10): `session: None`, the
+    /// authoritative ceiling every per-session state inherits.
+    pub communication: CommunicationState,
 }
 
 /// The wire API. `#[rpc(server)]` generates `ApiServer` (+ `into_rpc()`).
@@ -97,12 +104,13 @@ pub trait Api {
     /// call: the client's startup snapshot.
     #[method(name = "info")]
     async fn info(&self) -> RpcResult<Info>;
-    /// Create an idle session (no turn) so per-session state can be set before
-    /// the first message; `send_input` to it afterwards.
+    /// Create an idle `owner`-scope root (50 §2.3; the caller authenticated
+    /// as the owner) so per-session state can be set before the first
+    /// message; `send_input` to it afterwards.
     #[method(name = "new_session")]
     async fn new_session(&self) -> RpcResult<SessionId>;
-    /// Start a turn; `session: None` creates a session. `files` are image files
-    /// (17 §2) attached to the message. Returns once queued.
+    /// Start a turn; `session: None` creates an `owner`-scope root first.
+    /// `files` are image files (17 §2) attached to the message. Returns once queued.
     #[method(name = "send_input")]
     async fn send_input(
         &self,
@@ -321,6 +329,66 @@ pub trait Api {
         session: Option<SessionId>,
         enabled: bool,
     ) -> RpcResult<ApprovalsState>;
+    /// Effective communication state (50 §10): the global switch alone with
+    /// `None`, else `session`'s inherited/opted-out view, scope and alias.
+    /// Authoritative: render it, never guess it.
+    #[method(name = "get_communication")]
+    async fn get_communication(&self, session: Option<SessionId>) -> RpcResult<CommunicationState>;
+    /// `/communication on|off` for `session` (memory-only opt-out), or the
+    /// persisted global ceiling with `None`. A session cannot override an
+    /// ancestor or global off; the returned state says what blocks it.
+    #[method(name = "set_communication")]
+    async fn set_communication(
+        &self,
+        session: Option<SessionId>,
+        enabled: bool,
+    ) -> RpcResult<CommunicationState>;
+    /// Owner-only root scope (`owner` | `isolated`) and alias (50 §2.3);
+    /// `alias: None` keeps, `Some("")` clears. `Err` for a non-root.
+    #[method(name = "set_peer_scope")]
+    async fn set_peer_scope(
+        &self,
+        root: SessionId,
+        scope: PeerScope,
+        alias: Option<String>,
+    ) -> RpcResult<CommunicationState>;
+    /// The directory `session` may address (50 §5.1), the same permission
+    /// filter the model's `discover_peers` sees; bounded fields only.
+    #[method(name = "list_peers")]
+    async fn list_peers(
+        &self,
+        session: SessionId,
+        query: Option<String>,
+        cursor: Option<String>,
+        limit: Option<u16>,
+    ) -> RpcResult<PeerPage>;
+    /// `session`'s own record of exchange `id` (50 §5.2); `Err` when it is
+    /// neither sender nor recipient.
+    #[method(name = "peer_message")]
+    async fn peer_message(&self, session: SessionId, id: Uuid) -> RpcResult<PeerRecord>;
+    /// `session`'s sent and received exchanges, newest first, with the exact
+    /// ids a human may resolve now (`awaiting_answer` / `awaiting_reply`);
+    /// `pending_only` restricts the rows to those. The durable snapshot a UI
+    /// reloads after `PeerMessageChanged` or a reconnect.
+    #[method(name = "list_peer_messages")]
+    async fn list_peer_messages(
+        &self,
+        session: SessionId,
+        cursor: Option<String>,
+        limit: Option<u16>,
+        pending_only: bool,
+    ) -> RpcResult<PeerMessagePage>;
+    /// Resolve pending request `reply_to` on behalf of `session` (50 §5.3):
+    /// as its recipient the answer travels to the sender as a peer message
+    /// from `session`; as its blocked sender its own wait resolves. Either
+    /// way `answered_by = owner:<session>`; never an arbitrary waiter.
+    #[method(name = "answer_peer_request")]
+    async fn answer_peer_request(
+        &self,
+        session: SessionId,
+        reply_to: Uuid,
+        text: String,
+    ) -> RpcResult<PeerReceipt>;
     /// The assembled system prompt; without `session` the peers section is omitted.
     #[method(name = "get_prompt")]
     async fn get_prompt(&self, session: Option<SessionId>) -> RpcResult<String>;
@@ -487,6 +555,16 @@ pub trait Api {
     /// Remove a channel id from `slack.channels`.
     #[method(name = "slack_remove_channel")]
     async fn slack_remove_channel(&self, channel: String) -> RpcResult<()>;
+    /// A2A network status (50 §10): listener, configured peers and exports,
+    /// and the config/listener/reload error when any. `a2a.enabled: false`
+    /// answers the disabled state; enabled without a live actor is an error.
+    #[method(name = "a2a_status")]
+    async fn a2a_status(&self) -> RpcResult<A2aStatus>;
+    /// Re-read `peers.yaml` and the `a2a` section, validate and swap
+    /// atomically (50 §6.1); a failed reload keeps the old configuration and
+    /// is the `Err`. `A2aChanged` follows on the stream.
+    #[method(name = "reload_a2a")]
+    async fn reload_a2a(&self) -> RpcResult<A2aStatus>;
     /// Stop the whole process.
     #[method(name = "shutdown")]
     async fn shutdown(&self) -> RpcResult<()>;
@@ -752,6 +830,47 @@ fn knowledge() -> RpcResult<ActorRef<KnowledgeActor>> {
     })
 }
 
+/// The A2A actor, or `None` for the one silent case: `a2a.enabled: false`
+/// (or no `a2a` section) and nothing registered. A malformed section, or
+/// `enabled: true` without a registered actor (plugin missing, crashed), is
+/// an error the owner must see, never a fake "disabled".
+fn a2a(rt: &Runtime) -> RpcResult<Option<ActorRef<A2aActor>>> {
+    match lookup::<A2aActor>(A2A_ACTOR) {
+        Ok(actor) => return Ok(Some(actor)),
+        Err(e) if e.code() != NOT_RUNNING => return Err(e),
+        Err(_) => {}
+    }
+    let enabled = if rt.config.find_value("a2a").is_ok() {
+        rt.section::<a2a::config::A2aConfig>("a2a")
+            .map_err(|e| failed(format!("a2a config: {e:#}")))?
+            .enabled
+    } else {
+        false
+    };
+    if enabled {
+        return Err(ErrorObjectOwned::owned(
+            NOT_RUNNING,
+            "a2a is enabled but its actor is not running",
+            None::<()>,
+        ));
+    }
+    Ok(None)
+}
+
+/// The owner console's root: `NewRootSession { scope: Owner }`, trusted
+/// because the caller authenticated as the owner over the socket or is the
+/// in-process TUI. Never promotes an existing root (50 §2.3).
+async fn owner_root() -> RpcResult<SessionId> {
+    ask::<Agents, _>(
+        agent::AGENT_ACTOR,
+        NewRootSession {
+            cwd: None,
+            scope: PeerScope::Owner,
+        },
+    )
+    .await
+}
+
 /// The link actor; absent when the plugin is not in this process's list.
 fn link() -> RpcResult<ActorRef<LinkActor>> {
     lookup::<LinkActor>(LINK_ACTOR).map_err(|e| match e.code() {
@@ -807,6 +926,8 @@ impl ApiServer for Server {
             Ok(c) if !c.name.is_empty() => c.name,
             _ => HOSTNAME.clone(),
         };
+        let communication =
+            ask::<Agents, _>(agent::AGENT_ACTOR, GetCommunication { session: None }).await?;
         Ok(Info {
             version: env!("CARGO_PKG_VERSION").into(),
             platform: std::env::consts::OS.into(),
@@ -817,11 +938,12 @@ impl ApiServer for Server {
             subagent_timeout_secs,
             max_tool_rounds,
             name,
+            communication,
         })
     }
 
     async fn new_session(&self) -> RpcResult<SessionId> {
-        ask::<Agents, _>(agent::AGENT_ACTOR, NewSession::default()).await
+        owner_root().await
     }
 
     async fn send_input(
@@ -830,10 +952,14 @@ impl ApiServer for Server {
         text: String,
         files: Vec<PathBuf>,
     ) -> RpcResult<SessionId> {
+        let session = match session {
+            Some(s) => s,
+            None => owner_root().await?,
+        };
         ask::<Agents, _>(
             agent::AGENT_ACTOR,
             SendInput {
-                session,
+                session: Some(session),
                 text,
                 files,
             },
@@ -1118,6 +1244,86 @@ impl ApiServer for Server {
         ask::<ToolRegistry, _>(tools::REGISTRY_ACTOR, SetApprovals { session, enabled }).await
     }
 
+    async fn get_communication(&self, session: Option<SessionId>) -> RpcResult<CommunicationState> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, GetCommunication { session }).await
+    }
+
+    async fn set_communication(
+        &self,
+        session: Option<SessionId>,
+        enabled: bool,
+    ) -> RpcResult<CommunicationState> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, SetCommunication { session, enabled }).await
+    }
+
+    async fn set_peer_scope(
+        &self,
+        root: SessionId,
+        scope: PeerScope,
+        alias: Option<String>,
+    ) -> RpcResult<CommunicationState> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, SetPeerScope { root, scope, alias }).await
+    }
+
+    async fn list_peers(
+        &self,
+        session: SessionId,
+        query: Option<String>,
+        cursor: Option<String>,
+        limit: Option<u16>,
+    ) -> RpcResult<PeerPage> {
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            ListPeers {
+                session,
+                query,
+                cursor,
+                limit,
+            },
+        )
+        .await
+    }
+
+    async fn peer_message(&self, session: SessionId, id: Uuid) -> RpcResult<PeerRecord> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, GetPeerMessage { session, id }).await
+    }
+
+    async fn list_peer_messages(
+        &self,
+        session: SessionId,
+        cursor: Option<String>,
+        limit: Option<u16>,
+        pending_only: bool,
+    ) -> RpcResult<PeerMessagePage> {
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            ListPeerMessages {
+                session,
+                cursor,
+                limit,
+                pending_only,
+            },
+        )
+        .await
+    }
+
+    async fn answer_peer_request(
+        &self,
+        session: SessionId,
+        reply_to: Uuid,
+        text: String,
+    ) -> RpcResult<PeerReceipt> {
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            AnswerPeerRequest {
+                session,
+                reply_to,
+                text,
+            },
+        )
+        .await
+    }
+
     async fn get_prompt(&self, session: Option<SessionId>) -> RpcResult<String> {
         ask::<Agents, _>(agent::AGENT_ACTOR, ShowPrompt { session }).await
     }
@@ -1136,10 +1342,14 @@ impl ApiServer for Server {
         name: String,
         args: String,
     ) -> RpcResult<SessionId> {
+        let session = match session {
+            Some(s) => s,
+            None => owner_root().await?,
+        };
         ask::<Agents, _>(
             agent::AGENT_ACTOR,
             UseSkill {
-                session,
+                session: Some(session),
                 name,
                 args,
             },
@@ -1367,6 +1577,20 @@ impl ApiServer for Server {
 
     async fn slack_remove_channel(&self, channel: String) -> RpcResult<()> {
         ask::<Slack, _>(SLACK_ACTOR, slack::RemoveChannel(channel)).await
+    }
+
+    async fn a2a_status(&self) -> RpcResult<A2aStatus> {
+        match a2a(&self.rt)? {
+            Some(actor) => send(&actor, a2a::GetStatus).await,
+            None => Ok(A2aStatus::disabled()),
+        }
+    }
+
+    async fn reload_a2a(&self) -> RpcResult<A2aStatus> {
+        match a2a(&self.rt)? {
+            Some(actor) => send(&actor, a2a::Reload).await,
+            None => Ok(A2aStatus::disabled()),
+        }
     }
 
     async fn shutdown(&self) -> RpcResult<()> {
@@ -1639,12 +1863,18 @@ impl ApiServer for Server {
 /// mode) an event passes when its `session` is in the tree, or it is a
 /// `SubagentSpawned` whose `parent` is — then `child` joins the tree.
 /// Without, everything passes unless both sides name a different session.
+/// `CommunicationChanged` always passes: a global or ancestor switch changes
+/// every descendant's effective state, the filter cannot see ancestry, and
+/// the event carries only a session id and a revision (50 §10).
 fn wanted(
     ev: &serde_json::Value,
     session: Option<&str>,
     tree: Option<&mut HashSet<String>>,
 ) -> bool {
     let field = |k: &str| ev.get(k).and_then(|v| v.as_str());
+    if field("type") == Some("CommunicationChanged") {
+        return true;
+    }
     let Some(tree) = tree else {
         return match (session, field("session")) {
             (Some(want), Some(have)) => want == have,
@@ -1662,4 +1892,25 @@ fn wanted(
         return true;
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn communication_changed_reaches_scoped_and_tree_subscribers() {
+        let global =
+            serde_json::json!({ "type": "CommunicationChanged", "session": null, "revision": 3 });
+        let root =
+            serde_json::json!({ "type": "CommunicationChanged", "session": "r", "revision": 4 });
+        let other = serde_json::json!({ "type": "TitleChanged", "session": "r", "title": "x" });
+        let mut tree: HashSet<String> = ["c".to_owned()].into();
+        assert!(wanted(&global, Some("c"), None));
+        assert!(wanted(&root, Some("c"), None));
+        assert!(wanted(&global, Some("c"), Some(&mut tree)));
+        assert!(wanted(&root, Some("c"), Some(&mut tree)));
+        assert!(!wanted(&other, Some("c"), None));
+        assert!(!wanted(&other, Some("c"), Some(&mut tree)));
+    }
 }

@@ -19,7 +19,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use agent::todo::{Status, Todo};
 use agent::{
-    AgentEvent, Agents, Cancel, HistoryEntry, ListSessions, LoadSession, NewSession, SendInput,
+    AgentEvent, Agents, Cancel, HistoryEntry, ListSessions, LoadSession, NewSession, PeerDelivered,
+    SendInput,
 };
 use agent_client_protocol::schema::v1::{
     AgentCapabilities, CancelNotification, ContentBlock, ContentChunk, EmbeddedResourceResource,
@@ -85,6 +86,7 @@ pub async fn relay(rt: &Runtime) -> ActorRef<Relay> {
     rt.subscribe::<Relay, AgentEvent>(&relay).await;
     rt.subscribe::<Relay, ApprovalRequested>(&relay).await;
     rt.subscribe::<Relay, ArtifactShown>(&relay).await;
+    rt.subscribe::<Relay, PeerDelivered>(&relay).await;
     relay
 }
 
@@ -589,6 +591,19 @@ impl Message<ArtifactShown> for Relay {
                     ContentBlock::ResourceLink(link),
                 )]),
             )),
+        );
+    }
+}
+
+/// A peer exchange consumed into a session's transcript (50 §10) is user
+/// input the ACP client did not type: shown as a user chunk once, from the
+/// typed event alone (`MessageDelivered` no longer echoes peer input).
+impl Message<PeerDelivered> for Relay {
+    type Reply = ();
+    async fn handle(&mut self, ev: PeerDelivered, _: &mut Context<Self, ()>) {
+        self.notify(
+            ev.session,
+            SessionUpdate::UserMessageChunk(ContentChunk::new(ev.text.into())),
         );
     }
 }

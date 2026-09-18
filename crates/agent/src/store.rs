@@ -13,6 +13,9 @@
 //! `sessions.context_revision` is the mutation handle: bumped in the same
 //! transaction as every append, epoch, exclusion edit, undo/redo and
 //! committed cut; never reset when seq/epoch numbers are reused.
+//!
+//! Communication accounting (50 §7: root scope, peer exchanges, A2A
+//! contexts/tasks, peer bindings) lives in [`communication`] on the same pool.
 
 use std::path::Path;
 use std::time::Duration;
@@ -30,6 +33,8 @@ use crate::context::{
 };
 use crate::loop_::text_of;
 use crate::todo::{Todo, TodoSnapshot, TodoSource};
+
+pub mod communication;
 
 /// Handle to `<data_dir>/sessions.sqlite`. Cheap to clone.
 #[derive(Clone)]
@@ -939,7 +944,8 @@ impl Store {
             .collect()
     }
 
-    /// Delete `root` and every descendant with their messages, epochs and plans.
+    /// Delete `root` and every descendant with their messages, epochs, plans
+    /// and communication accounting (exchanges, A2A contexts/tasks).
     /// Returns the removed ids, children before parents.
     pub async fn delete_session(&self, root: SessionId) -> anyhow::Result<Vec<SessionId>> {
         let mut ids: Vec<SessionId> = self
@@ -953,6 +959,7 @@ impl Store {
         let mut tx = self.pool.begin().await?;
         for id in &ids {
             let sid = id.to_string();
+            communication::delete_communication_in(&mut tx, &sid).await?;
             sqlx::query("DELETE FROM messages WHERE session_id = ?")
                 .bind(&sid)
                 .execute(&mut *tx)

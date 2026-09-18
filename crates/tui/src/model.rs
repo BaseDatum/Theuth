@@ -11,9 +11,11 @@ use acp::registry::RegistryAgent;
 use agent::search::SearchHit;
 use agent::todo::{Status as TodoStatus, TodoSnapshot, TodoSource};
 use agent::{
-    AgentEvent, AgentInfo, AgentState, AwsProfiles, CompactStyle, ContextAttachment, ContextEntry,
-    ContextItem, ContextKind, ContextRemoval, ContextSnapshot, ContextTarget, HistoryEntry, Loaded,
-    ModelInfo, ProviderInfo, QueuedInput, SessionSummary, SkillBody, SkillMeta, Usage,
+    AgentEvent, AgentInfo, AgentState, AwsProfiles, CommunicationChanged, CommunicationState,
+    CompactStyle, ContextAttachment, ContextEntry, ContextItem, ContextKind, ContextRemoval,
+    ContextSnapshot, ContextTarget, HistoryEntry, Loaded, ModelInfo, PeerDelivered, PeerInfo,
+    PeerMessageChanged, PeerMessagePage, PeerOrigin, PeerPage, PeerReceipt, PeerRecord, PeerScope,
+    ProviderInfo, QueuedInput, SessionSummary, SkillBody, SkillMeta, Usage,
 };
 use iocraft::KeyCode;
 use knowledge::{Change, ChangeStatus, HarvestResult, History, Meta, Revision};
@@ -26,6 +28,7 @@ use tools::{
     AskResolved, Decision, Gate, JobEvent, JobView, McpAuth, McpProgress, McpServer, McpToolInfo,
     PolicyAction, RepoInfo,
 };
+use uuid::Uuid;
 
 use crate::clip::Image;
 
@@ -210,6 +213,28 @@ pub enum UiEvent {
     SecretSet(secrets::SecretInfo),
     /// Secrets plugin traffic (bus event): a change, a `secret_request`, its resolution.
     SecretsEvent(secrets::SecretsEvent),
+    /// Reply to [`Command::GetCommunication`], [`Command::SetCommunication`]
+    /// and [`Command::SetPeerScope`]: the authoritative switches (50 §10);
+    /// `state.session` says whose, so a reply for a session left behind is dropped.
+    Communication(CommunicationState),
+    /// Reply to [`Command::ListPeers`]: the permitted directory of `session`,
+    /// or why there is none (communication off is an `Err`, not an empty page).
+    Peers(SessionId, Result<PeerPage, String>),
+    /// Reply to [`Command::ListPeerRequests`]: the requests a human may
+    /// resolve for `session` right now, by exact id.
+    PeerRequests(SessionId, PeerMessagePage),
+    /// Reply to [`Command::AnswerPeerRequest`].
+    PeerAnswered(PeerReceipt),
+    /// Reply to [`Command::A2aStatus`] / [`Command::ReloadA2a`].
+    A2a(a2a::A2aStatus),
+    /// Communication switches or a root's scope changed (bus event): reload the state.
+    CommunicationChanged(CommunicationChanged),
+    /// A peer receipt changed state (bus event): reload the pending requests.
+    PeerMessageChanged(PeerMessageChanged),
+    /// A peer exchange entered a transcript (bus event): typed provenance, never parsed from text.
+    PeerDelivered(PeerDelivered),
+    /// Network configuration or listener state changed (bus event).
+    A2aChanged(a2a::A2aChanged),
 }
 
 /// Everything the UI can ask of the rest of the process. One task turns
@@ -564,6 +589,45 @@ pub enum Command {
         /// The typed value.
         value: Option<String>,
     },
+    /// `get_communication`; `None` reads the global default alone.
+    GetCommunication(Option<SessionId>),
+    /// `set_communication`, then `get_communication(view)`: the reply is the
+    /// shown session's state, whichever switch moved (a global flip changes
+    /// what this session may do; a session flip under global-off changes nothing).
+    SetCommunication {
+        /// `None` = the persisted global switch (`always`).
+        session: Option<SessionId>,
+        /// On or off.
+        enabled: bool,
+        /// The shown session, whose state the reply carries.
+        view: Option<SessionId>,
+    },
+    /// `set_peer_scope`: owner-only root scope and alias (50 §2.3).
+    SetPeerScope {
+        /// The root.
+        root: SessionId,
+        /// New scope.
+        scope: PeerScope,
+        /// New alias; `None` keeps it.
+        alias: Option<String>,
+    },
+    /// `list_peers(session)`: the directory `session` may address.
+    ListPeers(SessionId),
+    /// `list_peer_messages(session, pending_only: true)`: requests a human may resolve.
+    ListPeerRequests(SessionId),
+    /// `answer_peer_request`: resolve one exact pending request for `session`.
+    AnswerPeerRequest {
+        /// The request's recipient, or its blocked sender.
+        session: SessionId,
+        /// The request.
+        reply_to: Uuid,
+        /// The answer.
+        text: String,
+    },
+    /// `a2a_status`.
+    A2aStatus,
+    /// `reload_a2a`: validate and swap the peer/export configuration.
+    ReloadA2a,
 }
 
 /// One row of the `/login` picker.
@@ -1074,6 +1138,21 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "[on|off] [always]",
         "tool approval prompts; `always` persists to config.yaml",
     ),
+    (
+        "/communication",
+        "[on|off] [always]",
+        "agent-to-agent communication: status with its exact blocker; `always` persists the global switch",
+    ),
+    (
+        "/peers",
+        "[scope owner|isolated [alias]]",
+        "peers this session may address and requests awaiting a human (picker: ⏎ opens, i inspects, a answers)",
+    ),
+    (
+        "/a2a",
+        "[reload]",
+        "network (A2A) status: listener, configured peers and exports; reload swaps peers.yaml",
+    ),
     ("/cancel", "", "abort the in-flight turn"),
     (
         "/compact",
@@ -1370,6 +1449,19 @@ pub enum Menu {
     },
     /// `/shake` picker and review (48 §2.4).
     Shake(Box<Shake>),
+    /// `/peers` (50 §5.1, §5.3): the directory `session` may address, then
+    /// the requests a human may resolve for it by exact id. Opened at once,
+    /// filled by the replies that name `session`; a switch drops the rest.
+    Peers {
+        /// Whose view.
+        session: SessionId,
+        /// `list_peers`: `None` until it arrives; `Err` is the blocker (communication off).
+        peers: Option<Result<PeerPage, String>>,
+        /// `list_peer_messages(pending_only)`; `None` until it arrives.
+        requests: Option<PeerMessagePage>,
+        /// Highlighted row of [`Model::peers_rows`].
+        cursor: usize,
+    },
 }
 
 /// The `/shake` argument: which kind of context item the picker lists.
@@ -1802,6 +1894,18 @@ pub enum Prompt {
         /// The name.
         name: String,
     },
+    /// `/peers` `a`: typing the answer to one exact pending request (50 §5.3).
+    PeerAnswer {
+        /// The session the human acts for.
+        session: SessionId,
+        /// The request.
+        reply_to: Uuid,
+        /// Its authenticated sender (the hint).
+        from: String,
+        /// `session` sent the request and is blocked on it: the answer
+        /// resolves its own wait instead of travelling to a peer.
+        resolve: bool,
+    },
 }
 
 impl Prompt {
@@ -1843,6 +1947,21 @@ impl Prompt {
             Prompt::SecretDelete { name } => {
                 format!("secrets  delete {name}?  type the name to confirm  (esc cancel)")
             }
+            Prompt::PeerAnswer {
+                reply_to,
+                from,
+                resolve,
+                ..
+            } => format!(
+                "peers  {} {} · {}  answer  (esc cancel)",
+                if *resolve {
+                    "resolve own wait on"
+                } else {
+                    "answer for this session to"
+                },
+                short_uuid(*reply_to),
+                from
+            ),
         }
     }
 
@@ -1862,6 +1981,7 @@ impl Prompt {
             | Prompt::SecretValue { .. }
             | Prompt::SecretNote { .. }
             | Prompt::SecretDelete { .. } => "secrets: cancelled",
+            Prompt::PeerAnswer { .. } => "peers: answer cancelled",
         }
     }
 
@@ -2339,6 +2459,21 @@ pub struct Model {
     pub todo_focus: bool,
     /// First wrapped body row shown while expanded.
     pub todo_scroll: usize,
+    /// Latest `get_communication` of the shown session (the global default
+    /// without one): the header tag and the `/communication` lines (50 §10).
+    /// `None` until fetched; never guessed.
+    pub communication: Option<CommunicationState>,
+    /// `/communication` (or a switch) was typed: the next state reply prints its lines.
+    awaiting_communication: bool,
+    /// The switches, a scope or the network changed: the event loop re-asks
+    /// `get_communication` for the shown session.
+    pub refresh_communication: bool,
+    /// The `/peers` menu is open and its inputs changed: the event loop
+    /// re-asks `list_peers` and `list_peer_messages`.
+    pub refresh_peers: bool,
+    /// Bodies `PeerDelivered` already carded: the legacy `MessageDelivered`
+    /// for the same input (50 §10) is not shown twice.
+    peer_shown: VecDeque<String>,
 }
 
 impl Model {
@@ -2363,6 +2498,9 @@ impl Model {
             nodes: self.nodes.take(),
             update: self.update.take(),
             todo_open: std::mem::take(&mut self.todo_open),
+            // Per session: the switch view belongs to whatever is shown next
+            // (the global default after `/new`).
+            refresh_communication: true,
             ..Self::new(std::mem::take(&mut self.model_id), self.approvals_global)
         };
     }
@@ -2407,6 +2545,11 @@ impl Model {
             self.context = n;
         }
         self.loaded_todos(loaded.todos);
+        // The load carries the switches too; a `get_communication` reply
+        // already in flight is reconciled by revision.
+        if let Some(c) = loaded.communication {
+            self.set_communication(c);
+        }
     }
 
     /// `Loaded.todos` (47 §5.4): a snapshot applies by version; none means the
@@ -3336,6 +3479,8 @@ impl Model {
                 self.awaiting_session = false;
                 if self.session.is_none() {
                     self.session = Some(id);
+                    // The global default was shown; now this session's own view.
+                    self.refresh_communication = true;
                 }
             }
             UiEvent::Models(items) => {
@@ -3409,6 +3554,68 @@ impl Model {
                     on_off(s.session && !self.approvals_off),
                     on_off(s.global)
                 )));
+            }
+            UiEvent::Communication(s) => {
+                // A reply for the session shown when it was asked, not now.
+                if s.session != self.session {
+                    return;
+                }
+                let print = std::mem::take(&mut self.awaiting_communication);
+                if self.set_communication(s) && print {
+                    let lines = communication_lines(self.communication.as_ref().expect("just set"));
+                    self.entries.extend(lines.into_iter().map(Entry::Info));
+                }
+            }
+            UiEvent::Peers(session, page) => {
+                if let Some(Menu::Peers {
+                    session: s, peers, ..
+                }) = &mut self.menu
+                    && *s == session
+                {
+                    *peers = Some(page);
+                }
+            }
+            UiEvent::PeerRequests(session, page) => {
+                if let Some(Menu::Peers {
+                    session: s,
+                    requests,
+                    ..
+                }) = &mut self.menu
+                    && *s == session
+                {
+                    *requests = Some(page);
+                }
+            }
+            UiEvent::PeerAnswered(r) => self.entries.push(Entry::Info(format!(
+                "peers: {} answered → {}{}{}",
+                short_uuid(r.reply_to.unwrap_or(r.id)),
+                r.state.as_str(),
+                r.answered_by
+                    .as_deref()
+                    .map_or_else(String::new, |by| format!(" · by {by}")),
+                r.error
+                    .as_deref()
+                    .map_or_else(String::new, |e| format!(" · {e}")),
+            ))),
+            UiEvent::A2a(status) => self
+                .entries
+                .extend(a2a_lines(&status).into_iter().map(Entry::Info)),
+            // Any subtree may be an ancestor of ours: the state is one cheap
+            // call, so every change reloads it (50 §10). The open picker's
+            // directory follows the switches too.
+            UiEvent::CommunicationChanged(_) | UiEvent::A2aChanged(_) => {
+                self.refresh_communication = true;
+                self.refresh_peers |= matches!(self.menu, Some(Menu::Peers { .. }));
+            }
+            UiEvent::PeerMessageChanged(ev) => {
+                self.refresh_peers |=
+                    matches!(&self.menu, Some(Menu::Peers { session, .. }) if *session == ev.session);
+            }
+            UiEvent::PeerDelivered(ev) => {
+                if self.session == Some(ev.session) {
+                    self.remember_peer(&ev.text);
+                    self.interject(peer_card(&ev.origin, ev.text));
+                }
             }
             UiEvent::McpProgress(p) => {
                 // Any change while the menu is open (a login settled, a server
@@ -3969,6 +4176,13 @@ impl Model {
                     } else {
                         CardKind::Peer
                     };
+                    // The typed `PeerDelivered` already carded this body (50 §10).
+                    if kind == CardKind::Peer
+                        && let Some(at) = self.peer_shown.iter().position(|t| t == text)
+                    {
+                        self.peer_shown.remove(at);
+                        return;
+                    }
                     self.interject(card(kind, from.clone(), text));
                 }
                 return;
@@ -4378,6 +4592,13 @@ impl Model {
                 Command::SetAwsProfile((arg != "clear").then(|| arg.to_owned())),
             ),
             "/approvals" => self.approvals_cmd(arg, tx),
+            "/communication" => self.communication_cmd(arg, tx),
+            "/peers" => self.peers_cmd(arg, tx),
+            "/a2a" if arg.is_empty() => send(tx, Command::A2aStatus),
+            "/a2a" if arg == "reload" => send(tx, Command::ReloadA2a),
+            "/a2a" => self
+                .entries
+                .push(Entry::Error("usage: /a2a [reload]".into())),
             "/mcp" if arg.is_empty() => {
                 self.awaiting_mcp = true;
                 send(tx, Command::ListMcp(self.session));
@@ -4899,9 +5120,10 @@ impl Model {
                 };
                 (
                     format!(
-                        "{model}{effort}  ·  ctx {used} / {} ({pct}%){cache}{}{}{}{}",
+                        "{model}{effort}  ·  ctx {used} / {} ({pct}%){cache}{}{}{}{}{}",
                         k(limit),
                         self.approvals_tag(),
+                        self.communication_tag(),
                         self.link_tag(),
                         self.nodes_tag(),
                         self.update_tag()
@@ -4911,8 +5133,9 @@ impl Model {
             }
             _ => (
                 format!(
-                    "{model}{effort}  ·  ctx {used}{cache}{}{}{}{}",
+                    "{model}{effort}  ·  ctx {used}{cache}{}{}{}{}{}",
                     self.approvals_tag(),
+                    self.communication_tag(),
                     self.link_tag(),
                     self.nodes_tag(),
                     self.update_tag()
@@ -4927,6 +5150,18 @@ impl Model {
             "  ·  approvals off"
         } else {
             ""
+        }
+    }
+
+    /// `  ·  communication off` while the authoritative state says the
+    /// shown session (or the global default) is not effectively enabled;
+    /// `  ·  communication on` when it is; empty until fetched. Never
+    /// inferred from a local toggle (50 §0.8).
+    fn communication_tag(&self) -> &'static str {
+        match &self.communication {
+            None => "",
+            Some(c) if c.effective => "  ·  communication on",
+            Some(_) => "  ·  communication off",
         }
     }
 
@@ -5032,6 +5267,276 @@ impl Model {
             self.approvals_off = !enabled;
         }
         send(tx, Command::SetApprovals { session, enabled });
+    }
+
+    /// Install an authoritative state for the shown session; an older
+    /// revision (a slow reply racing a change) is dropped. `true` when installed.
+    fn set_communication(&mut self, s: CommunicationState) -> bool {
+        if self
+            .communication
+            .as_ref()
+            .is_some_and(|c| c.session == s.session && c.revision > s.revision)
+        {
+            return false;
+        }
+        self.communication = Some(s);
+        true
+    }
+
+    /// Remember a body `PeerDelivered` carded, bounded.
+    fn remember_peer(&mut self, text: &str) {
+        if self.peer_shown.len() == 8 {
+            self.peer_shown.pop_front();
+        }
+        self.peer_shown.push_back(text.to_owned());
+    }
+
+    /// `/communication [on|off] [always]` (50 §2.1): bare asks for the state
+    /// and prints it; `always` moves the persisted global switch, otherwise
+    /// this session's memory-only opt-out. Nothing is assumed locally: the
+    /// reply says what is effective and why.
+    fn communication_cmd(&mut self, arg: &str, tx: &UnboundedSender<Command>) {
+        let mut words = arg.split_whitespace();
+        let enabled = match words.next() {
+            None => {
+                self.awaiting_communication = true;
+                send(tx, Command::GetCommunication(self.session));
+                return;
+            }
+            Some("on") => true,
+            Some("off") => false,
+            Some(w) => {
+                self.entries.push(Entry::Error(format!(
+                    "/communication: expected on|off, got {w:?}"
+                )));
+                return;
+            }
+        };
+        let session = match words.next() {
+            Some("always") => None,
+            None => match self.session {
+                Some(s) => Some(s),
+                None => {
+                    self.entries.push(Entry::Error(
+                        "no session yet: send a message first, or use `/communication on always`"
+                            .into(),
+                    ));
+                    return;
+                }
+            },
+            Some(w) => {
+                self.entries.push(Entry::Error(format!(
+                    "/communication: expected `always`, got {w:?}"
+                )));
+                return;
+            }
+        };
+        self.awaiting_communication = true;
+        send(
+            tx,
+            Command::SetCommunication {
+                session,
+                enabled,
+                view: self.session,
+            },
+        );
+    }
+
+    /// `/peers` opens the picker; `/peers scope owner|isolated [alias]` sets
+    /// the shown root's scope (50 §2.3): owner-only, roots only, so a child
+    /// is told where to go instead of guessing its root.
+    fn peers_cmd(&mut self, arg: &str, tx: &UnboundedSender<Command>) {
+        let Some(session) = self.session else {
+            self.entries.push(Entry::Info(
+                "no session — `/communication` shows the global default".into(),
+            ));
+            return;
+        };
+        let mut words = arg.split_whitespace();
+        match words.next() {
+            None => {
+                self.menu = Some(Menu::Peers {
+                    session,
+                    peers: None,
+                    requests: None,
+                    cursor: 0,
+                });
+                send(tx, Command::ListPeers(session));
+                send(tx, Command::ListPeerRequests(session));
+            }
+            Some("scope") => {
+                let scope = match words.next().map(str::parse::<PeerScope>) {
+                    Some(Ok(s)) => s,
+                    _ => {
+                        self.entries.push(Entry::Error(
+                            "usage: /peers scope owner|isolated [alias]".into(),
+                        ));
+                        return;
+                    }
+                };
+                if self.session_parent.is_some() {
+                    self.entries.push(Entry::Error(
+                        "scope belongs to the root session: `/parent` up to it, then `/peers scope …`"
+                            .into(),
+                    ));
+                    return;
+                }
+                let alias: String = words.collect::<Vec<_>>().join(" ");
+                self.awaiting_communication = true;
+                send(
+                    tx,
+                    Command::SetPeerScope {
+                        root: session,
+                        scope,
+                        alias: (!alias.is_empty()).then_some(alias),
+                    },
+                );
+            }
+            Some(_) => self.entries.push(Entry::Error(
+                "usage: /peers [scope owner|isolated [alias]]".into(),
+            )),
+        }
+    }
+
+    /// `/peers` menu title: the effective state and its blocker, then the keys.
+    pub fn peers_title(&self) -> String {
+        let state = match &self.communication {
+            None => "communication: …".to_owned(),
+            Some(c) => communication_lines(c).remove(0),
+        };
+        format!("peers · {state}   ⏎ open  i inspect  a answer  r refresh  esc")
+    }
+
+    /// `/peers` rows in cursor order: the directory (or its one-line
+    /// blocker), a separator, then pending requests by exact id.
+    pub fn peers_rows(&self) -> Vec<PeerRow<'_>> {
+        let Some(Menu::Peers {
+            peers, requests, ..
+        }) = &self.menu
+        else {
+            return Vec::new();
+        };
+        let mut rows: Vec<PeerRow<'_>> = match peers {
+            None => vec![PeerRow::Note("loading peers…".into())],
+            Some(Err(e)) => vec![PeerRow::Note(format!("no peers · {e}"))],
+            Some(Ok(p)) if p.peers.is_empty() => {
+                vec![PeerRow::Note("no peers this session may address".into())]
+            }
+            Some(Ok(p)) => p.peers.iter().map(PeerRow::Peer).collect(),
+        };
+        rows.push(PeerRow::Sep);
+        match requests {
+            None => rows.push(PeerRow::Note("loading pending requests…".into())),
+            Some(page) => {
+                let pending: Vec<PeerRow<'_>> = page
+                    .messages
+                    .iter()
+                    .filter_map(|r| {
+                        let id = r.receipt.id;
+                        if page.awaiting_answer.contains(&id) {
+                            Some(PeerRow::Request(r, false))
+                        } else if page.awaiting_reply.contains(&id) {
+                            Some(PeerRow::Request(r, true))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                if pending.is_empty() {
+                    rows.push(PeerRow::Note(
+                        "no requests await a human (a restart clears live waits)".into(),
+                    ));
+                } else {
+                    rows.extend(pending);
+                }
+            }
+        }
+        rows
+    }
+
+    /// `/peers` keys: ⏎ opens a native peer's session, `i`/⏎ on a request
+    /// cards its full record, `a` answers it (exact id), `r` refetches.
+    fn peers_key(&mut self, code: KeyCode, tx: &UnboundedSender<Command>) -> MenuKey {
+        enum Act {
+            Move(usize),
+            Open(SessionId),
+            Inspect(Entry),
+            Answer(Prompt),
+            Refresh,
+            Note(&'static str),
+            Close,
+            Nothing,
+        }
+        let Some(Menu::Peers {
+            session, cursor, ..
+        }) = &self.menu
+        else {
+            return MenuKey::Consumed;
+        };
+        let session = *session;
+        let rows = self.peers_rows();
+        let last = rows.len().saturating_sub(1);
+        let cursor = (*cursor).min(last);
+        // Up/Down step over the separator row.
+        let step = |to: usize, dir: isize| match rows.get(to) {
+            Some(PeerRow::Sep) => to.saturating_add_signed(dir).min(last),
+            _ => to,
+        };
+        let act = match (code, rows.get(cursor)) {
+            (KeyCode::Up, _) => Act::Move(step(cursor.saturating_sub(1), -1)),
+            (KeyCode::Down, _) => Act::Move(step((cursor + 1).min(last), 1)),
+            (KeyCode::Esc, _) => Act::Close,
+            (KeyCode::Char('r'), _) => Act::Refresh,
+            (KeyCode::Enter, Some(PeerRow::Peer(p))) => {
+                match agent::communication::PeerAddress::local(&p.address) {
+                    Some(id) => Act::Open(id),
+                    None => Act::Note("remote peer: no transcript here (/a2a shows its status)"),
+                }
+            }
+            (KeyCode::Enter | KeyCode::Char('i'), Some(PeerRow::Request(r, resolve))) => {
+                Act::Inspect(request_card(r, *resolve))
+            }
+            (KeyCode::Char('a'), Some(PeerRow::Request(r, resolve))) => {
+                Act::Answer(Prompt::PeerAnswer {
+                    session,
+                    reply_to: r.receipt.id,
+                    from: if *resolve {
+                        r.receipt.to.clone()
+                    } else {
+                        r.from.clone()
+                    },
+                    resolve: *resolve,
+                })
+            }
+            _ => Act::Nothing,
+        };
+        let Some(Menu::Peers { cursor: cur, .. }) = &mut self.menu else {
+            return MenuKey::Consumed;
+        };
+        *cur = cursor;
+        match act {
+            Act::Move(to) => *cur = to,
+            Act::Open(id) => {
+                self.menu = None;
+                self.resume(id, tx);
+            }
+            Act::Inspect(card) => {
+                self.menu = None;
+                self.entries.push(card);
+            }
+            Act::Answer(p) => {
+                self.menu = None;
+                self.prompt = Some(p);
+            }
+            Act::Refresh => {
+                send(tx, Command::ListPeers(session));
+                send(tx, Command::ListPeerRequests(session));
+            }
+            Act::Note(n) => self.entries.push(Entry::Info(n.into())),
+            Act::Close => self.menu = None,
+            Act::Nothing => {}
+        }
+        MenuKey::Consumed
     }
 
     /// `/skills add <url>` | `rm <name>` | `sync`.
@@ -5798,6 +6303,16 @@ impl Model {
                         .push(Entry::Info(format!("secrets: kept {name}")));
                 }
             }
+            Some(Prompt::PeerAnswer {
+                session, reply_to, ..
+            }) => send(
+                tx,
+                Command::AnswerPeerRequest {
+                    session,
+                    reply_to,
+                    text: line.to_owned(),
+                },
+            ),
             None => {}
         }
     }
@@ -5874,6 +6389,7 @@ impl Model {
             Some(Menu::Secrets { .. }) => self.secrets_key(code, tx),
             Some(Menu::Artifacts { .. }) => self.artifacts_key(code, tx),
             Some(Menu::Shake(_)) => self.shake_key(code, tx),
+            Some(Menu::Peers { .. }) => self.peers_key(code, tx),
             Some(Menu::Knowledge { .. }) => self.knowledge_key(code, tx),
             Some(Menu::KnowledgeHistory { .. }) => self.knowledge_history_key(code, tx),
         }
@@ -6807,11 +7323,24 @@ fn from_history(h: HistoryEntry, opts: &markdown::Options) -> Vec<Entry> {
             text,
             turn,
             context,
+            peer,
         } => {
             if removed(&context) {
                 return vec![removed_card("you", &text)];
             }
-            let mut out = user_entries(text, turn);
+            // Typed provenance (50 §9): the card is titled by the
+            // authenticated sender, the wrapper is only unwrapped for the
+            // body. A wrapper without `peer` stays the untrusted card
+            // `user_entries` always drew: no id, no controls.
+            let mut out = match peer {
+                Some(origin) => {
+                    let body = injected(&text)
+                        .and_then(|cards| cards.into_iter().next())
+                        .map_or(text, |(_, _, body)| body);
+                    vec![peer_card(&origin, body)]
+                }
+                None => user_entries(text, turn),
+            };
             // One row each: `Entry::height` counts an `Info` as one line.
             out.extend(attachment_labels(&context).into_iter().map(Entry::Info));
             out
@@ -6907,6 +7436,236 @@ pub fn attachment_label(a: &ContextAttachment) -> String {
 
 fn on_off(b: bool) -> &'static str {
     if b { "on" } else { "off" }
+}
+
+/// First eight hex digits of a message id: enough to tell rows apart in a
+/// menu; the exact id travels in the command, never re-parsed from this.
+fn short_uuid(id: Uuid) -> String {
+    id.simple().to_string()[..8].to_owned()
+}
+
+/// The peer card of a consumed exchange (live `PeerDelivered` or replayed
+/// `HistoryEntry::User { peer }`): titled by its authenticated origin.
+fn peer_card(origin: &PeerOrigin, body: String) -> Entry {
+    let mut title = format!("{} · {}", origin.from, short_uuid(origin.id));
+    if let Some(r) = origin.reply_to {
+        title.push_str(&format!(" · reply to {}", short_uuid(r)));
+    }
+    card(CardKind::Peer, title, &body)
+}
+
+/// The inspector card of one pending request (`/peers` `i`): every durable
+/// field above the body, expanded so it reads at once.
+fn request_card(r: &PeerRecord, resolve: bool) -> Entry {
+    let rc = &r.receipt;
+    let mut meta = vec![
+        format!("id: {}", rc.id),
+        format!("from: {}", r.from),
+        format!("to: {}", rc.to),
+        format!("state: {}", rc.state.as_str()),
+        format!(
+            "created: {}",
+            r.created_at
+                .with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M:%S")
+        ),
+        if resolve {
+            "pending: this session sent it and is blocked on the reply — `a` resolves its wait with your text".to_owned()
+        } else {
+            "pending: the sender awaits this session's answer — `a` answers on its behalf"
+                .to_owned()
+        },
+    ];
+    if let Some(rt) = rc.reply_to {
+        meta.push(format!("reply_to: {rt}"));
+    }
+    if let Some(s) = r.request_scope {
+        meta.push(format!("request scope: {s}"));
+    }
+    if let Some(e) = &rc.error {
+        meta.push(format!("error: {e}"));
+    }
+    Entry::Card {
+        kind: CardKind::Peer,
+        title: format!("request {} · {}", short_uuid(rc.id), r.from),
+        text: Box::new(markdown::Text::complete(&format!(
+            "{}\n\n{}",
+            meta.join("  \n"),
+            r.text
+        ))),
+        expanded: true,
+    }
+}
+
+/// `/communication` lines (50 §2.1): the effective state with its exact
+/// blocker first, then the switches it derives from, then the network. The
+/// global switch is a ceiling: a session `on` under global `off` says so.
+pub fn communication_lines(s: &CommunicationState) -> Vec<String> {
+    let first = match (s.session, s.effective) {
+        (None, _) => format!(
+            "communication: {} (global default · source {}){}",
+            on_off(s.global),
+            s.source,
+            if s.global {
+                ""
+            } else {
+                " — `/communication on always` enables the harness"
+            }
+        ),
+        (Some(_), true) => "communication: on (this session) — routes still need scope or a grant".to_owned(),
+        (Some(_), false) if !s.global => format!(
+            "communication: off — disabled globally (source {}); a session `on` cannot override it, `/communication on always` enables the harness",
+            s.source
+        ),
+        (Some(_), false) if s.opted_out => {
+            "communication: off — this session opted out (memory-only: cleared on daemon restart); `/communication on` re-enables it".to_owned()
+        }
+        (Some(_), false) => format!(
+            "communication: off — inherited: ancestor {} opted out (memory-only: cleared on daemon restart); `/communication on` there re-enables the tree",
+            s.inherited_from.map_or_else(|| "?".to_owned(), short)
+        ),
+    };
+    let mut out = vec![first];
+    if s.session.is_some() {
+        out.push(format!(
+            "  global {} ({})  ·  this session {}  ·  root scope {}{}",
+            on_off(s.global),
+            s.source,
+            if s.opted_out { "off" } else { "on" },
+            s.scope.as_str(),
+            s.alias
+                .as_deref()
+                .map_or_else(String::new, |a| format!(" · alias {a}"))
+        ));
+    }
+    out.push(match (s.network_enabled, s.listening) {
+        (false, _) => "  network (a2a): off — `a2a.enabled: false`".to_owned(),
+        (true, true) => "  network (a2a): on · listening".to_owned(),
+        (true, false) if !s.global => {
+            "  network (a2a): enabled · listener stopped while communication is off globally"
+                .to_owned()
+        }
+        (true, false) => "  network (a2a): enabled · not listening — `/a2a` shows why".to_owned(),
+    });
+    out
+}
+
+/// `/a2a` lines: the listener, then one row per configured peer and export,
+/// errors where they belong.
+pub fn a2a_lines(s: &a2a::A2aStatus) -> Vec<String> {
+    let mut out = vec![match (s.enabled, s.listening) {
+        (false, _) => "a2a: off — `a2a.enabled: false`; nothing listens, nothing dials".to_owned(),
+        (true, true) => format!(
+            "a2a: on · listening {}{}",
+            s.address.as_deref().unwrap_or("?"),
+            s.public_url
+                .as_deref()
+                .map_or_else(String::new, |u| format!(" · public {u}"))
+        ),
+        (true, false) => {
+            "a2a: enabled · not listening (communication off globally, or see error)".to_owned()
+        }
+    }];
+    if let Some(e) = &s.error {
+        out.push(format!("  error: {e}"));
+    }
+    for p in &s.peers {
+        out.push(format!(
+            "  peer {:<16} {}{}  sessions {}  exports {}{}{}",
+            p.name,
+            if p.outbound { "→out " } else { "" },
+            if p.inbound { "←in" } else { "" },
+            p.sessions.len(),
+            if p.exports.is_empty() {
+                "–".to_owned()
+            } else {
+                p.exports.join(",")
+            },
+            p.card
+                .as_deref()
+                .map_or_else(String::new, |c| format!("  card {c}")),
+            p.error
+                .as_deref()
+                .map_or_else(String::new, |e| format!("  error: {e}")),
+        ));
+    }
+    for e in &s.exports {
+        out.push(format!(
+            "  export {:<14} session {}  {}{}",
+            e.name,
+            short(e.session),
+            e.url,
+            e.peer
+                .as_deref()
+                .map_or_else(String::new, |p| format!("  peer {p}"))
+        ));
+    }
+    if s.enabled && s.peers.is_empty() && s.exports.is_empty() {
+        out.push(
+            "  no peers or exports configured (peers.yaml; `/a2a reload` applies edits)".to_owned(),
+        );
+    }
+    out
+}
+
+/// One row of the `/peers` menu.
+#[derive(Debug)]
+pub enum PeerRow<'a> {
+    /// A permitted peer; ⏎ opens a native one.
+    Peer(&'a PeerInfo),
+    /// Blank line between the directory and the requests; the cursor skips it.
+    Sep,
+    /// A request a human may resolve now: `true` when the shown session
+    /// sent it and awaits the reply, `false` when it must answer.
+    Request(&'a PeerRecord, bool),
+    /// A hint or blocker in place of rows.
+    Note(String),
+}
+
+impl PeerRow<'_> {
+    /// The row's text.
+    pub fn line(&self) -> String {
+        match self {
+            PeerRow::Peer(p) => format!(
+                "{} {:<20} {:<12} {:<10} {:<8} {}{}{}",
+                match p.state {
+                    agent::communication::PeerState::Running
+                    | agent::communication::PeerState::Awaiting => "●",
+                    agent::communication::PeerState::Idle => "○",
+                    _ => " ",
+                },
+                p.name.chars().take(20).collect::<String>(),
+                format!("{:?}", p.relationship).to_lowercase(),
+                format!("{:?}", p.state).to_lowercase(),
+                format!("{:?}", p.kind).to_lowercase(),
+                if p.send { "send " } else { "" },
+                if p.reply { "reply " } else { "" },
+                p.address
+            ),
+            PeerRow::Sep => String::new(),
+            PeerRow::Request(r, resolve) => format!(
+                "{} {}  {:<44}  {}",
+                if *resolve { "↑" } else { "?" },
+                short_uuid(r.receipt.id),
+                if *resolve {
+                    format!("to {} · awaiting their reply", r.receipt.to)
+                } else {
+                    format!("from {} · awaiting your answer", r.from)
+                }
+                .chars()
+                .take(44)
+                .collect::<String>(),
+                r.text
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
+                    .chars()
+                    .take(50)
+                    .collect::<String>()
+            ),
+            PeerRow::Note(n) => n.clone(),
+        }
+    }
 }
 
 /// The tool whose card is an artifact card (35 §0.3).
@@ -7847,6 +8606,7 @@ mod tests {
                 text: "secret plan".into(),
                 turn: Some(1),
                 context: entry(true, vec![shot(false)]),
+                peer: None,
             },
             &opts,
         );
@@ -7860,6 +8620,7 @@ mod tests {
                 text: "look".into(),
                 turn: Some(1),
                 context: entry(false, vec![shot(true)]),
+                peer: None,
             },
             &opts,
         );
@@ -10286,6 +11047,7 @@ mod tests {
                     text: "first question\nmore".into(),
                     turn: Some(1),
                     context: None,
+                    peer: None,
                 }],
                 ..Loaded::default()
             },
@@ -10717,5 +11479,117 @@ mod tests {
         let lines = m.todo_lines(0);
         assert_eq!(lines[1].1, "[blocked]     t");
         assert_eq!(lines[2], (None, format!("{}owner", " ".repeat(14))));
+    }
+
+    /// 50 §2.1: global-off is a ceiling the status names; a session reply
+    /// for another session is dropped; `/peers` `a` answers the exact id
+    /// the durable page marked pending, on the side the page says.
+    #[test]
+    fn communication_precedence_and_exact_answer() {
+        let (tx, mut rx) = unbounded_channel();
+        let s = SessionId::new();
+        let state = |session, global, opted_out, effective| CommunicationState {
+            global,
+            source: "config".into(),
+            session,
+            opted_out,
+            inherited_from: opted_out.then_some(s),
+            effective,
+            scope: PeerScope::Isolated,
+            alias: None,
+            network_enabled: false,
+            listening: false,
+            revision: 1,
+        };
+        let off = communication_lines(&state(Some(s), false, false, false));
+        assert!(off[0].contains("disabled globally") && off[0].contains("on always"));
+        let opted = communication_lines(&state(Some(s), true, true, false));
+        assert!(opted[0].contains("opted out") && opted[0].contains("restart"));
+        assert!(
+            communication_lines(&state(None, false, false, false))[0]
+                .starts_with("communication: off (global default")
+        );
+
+        let mut m = Model::new("m".into(), true);
+        m.session = Some(s);
+        m.submit("/communication on", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetCommunication { session: Some(x), enabled: true, view: Some(v) }) if x == s && v == s
+        ));
+        // A reply about a different session never lands here.
+        m.apply(UiEvent::Communication(state(
+            Some(SessionId::new()),
+            true,
+            false,
+            true,
+        )));
+        assert!(m.communication.is_none() && m.entries.is_empty());
+        m.apply(UiEvent::Communication(state(Some(s), false, false, false)));
+        let catalog = Catalog::load(std::env::temp_dir().join("wth-tui-no-user-file").as_path());
+        assert!(m.header(&catalog).0.contains("communication off"));
+        assert!(
+            matches!(m.entries.first(), Some(Entry::Info(l)) if l.contains("disabled globally"))
+        );
+
+        m.submit("/peers", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::ListPeers(x)) if x == s));
+        assert!(matches!(rx.try_recv(), Ok(Command::ListPeerRequests(x)) if x == s));
+        m.apply(UiEvent::Peers(s, Err("communication disabled".into())));
+        let id = Uuid::new_v4();
+        let record = PeerRecord {
+            receipt: PeerReceipt {
+                id,
+                to: format!("session:{s}"),
+                state: agent::PeerMessageState::Consumed,
+                reply_to: None,
+                reply: None,
+                task_id: None,
+                error: None,
+                answered_by: None,
+            },
+            from: "session:00000000-0000-0000-0000-000000000001".into(),
+            session: s,
+            text: "which port?".into(),
+            created_at: chrono::Utc::now(),
+            request_scope: None,
+        };
+        m.apply(UiEvent::PeerRequests(
+            s,
+            PeerMessagePage {
+                messages: vec![record],
+                awaiting_answer: vec![id],
+                awaiting_reply: Vec::new(),
+                cursor: None,
+            },
+        ));
+        let rows = m.peers_rows();
+        assert!(matches!(&rows[0], PeerRow::Note(n) if n.contains("communication disabled")));
+        assert!(matches!(&rows[2], PeerRow::Request(r, false) if r.receipt.id == id));
+        // Down skips the separator onto the request; `a` prompts for its answer.
+        m.menu_key(KeyCode::Down, "", &tx);
+        m.menu_key(KeyCode::Char('a'), "", &tx);
+        assert!(
+            matches!(&m.prompt, Some(Prompt::PeerAnswer { reply_to, resolve: false, .. }) if *reply_to == id)
+        );
+        m.submit("8080", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::AnswerPeerRequest { session, reply_to, text }) if session == s && reply_to == id && text == "8080"
+        ));
+        // A pending change for this session refreshes an open picker only.
+        assert!(!m.refresh_peers);
+        m.menu = Some(Menu::Peers {
+            session: s,
+            peers: None,
+            requests: None,
+            cursor: 0,
+        });
+        m.apply(UiEvent::PeerMessageChanged(PeerMessageChanged {
+            session: s,
+            id,
+            state: agent::PeerMessageState::Replied,
+        }));
+        assert!(m.refresh_peers);
     }
 }

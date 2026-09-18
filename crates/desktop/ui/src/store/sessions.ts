@@ -3,6 +3,7 @@ import { subscribeWithSelector } from 'zustand/middleware'
 import type { CompactStyle } from '@/rpc/bindings/CompactStyle'
 import type { ContextEntry } from '@/rpc/bindings/ContextEntry'
 import type { JobExit } from '@/rpc/bindings/JobExit'
+import type { PeerOrigin } from '@/rpc/bindings/PeerOrigin'
 import type { QueuedInput } from '@/rpc/bindings/QueuedInput'
 import type { TodoSnapshot } from '@/rpc/bindings/TodoSnapshot'
 import type { Usage } from '@/rpc/bindings/Usage'
@@ -63,8 +64,11 @@ export type Entry = { id: string; context?: ContextEntry } & (
       result?: ToolResult
       job?: JobTail
     }
-  /** `⟵ from` card: a peer message, a subagent result or a job result. */
-  | { kind: 'peer'; from: string; text: string }
+  /** `⟵ from` card: a peer message, a subagent result or a job result. `origin` is the harness-authenticated
+   * provenance (50 §9) of a peer exchange, from `PeerDelivered` live or `HistoryEntry::User.peer` on replay; a card
+   * parsed from a legacy `<message>` wrapper has none and renders a label only, never inspect/answer controls.
+   * `seq` is the stored row the live delivery became. */
+  | { kind: 'peer'; from: string; text: string; origin?: PeerOrigin; seq?: number }
   | { kind: 'nudge'; text: string }
   | { kind: 'info'; text: string }
   | { kind: 'error'; text: string }

@@ -14,8 +14,8 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
 
 use agent::{
-    AGENT_ACTOR, AgentEvent, AgentInfo, Agents, Cancel, ListAgents, ListSessions, SendInput,
-    SessionSummary, Steer,
+    AGENT_ACTOR, AgentEvent, AgentInfo, Agents, Cancel, ListAgents, ListSessions, NewRootSession,
+    SendInput, SessionSummary, Steer, communication::PeerScope,
 };
 use artifact::{Artifact, ArtifactShown};
 use async_trait::async_trait;
@@ -97,6 +97,9 @@ trait Port: Send + Sync {
         text: String,
         files: Vec<PathBuf>,
     ) -> Result<SessionId, String>;
+    /// `agent::NewRootSession`: an empty root with an explicit scope. Only
+    /// called after the channel authenticated the owner (50 §2.3).
+    async fn new_root(&self, scope: PeerScope) -> Result<SessionId, String>;
     async fn steer(
         &self,
         session: SessionId,
@@ -138,6 +141,13 @@ impl Port for Actors {
                 text,
                 files,
             })
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    async fn new_root(&self, scope: PeerScope) -> Result<SessionId, String> {
+        agents()?
+            .ask(NewRootSession { cwd: None, scope })
             .await
             .map_err(|e| e.to_string())
     }
@@ -1165,7 +1175,15 @@ impl Channel {
                 .steer(id, InputId::new(), input, files)
                 .await
                 .map(|()| id),
-            _ => self.port.send_input(session, input, files).await,
+            Some(id) => self.port.send_input(Some(id), input, files).await,
+            // A new root: the authenticated owner's is `owner` scope, anyone
+            // else's stays `isolated` (50 §2.3). An existing thread's session
+            // is never promoted here; `/wth peers scope` does that explicitly.
+            None if m.user == self.owner => match self.port.new_root(PeerScope::Owner).await {
+                Ok(id) => self.port.send_input(Some(id), input, files).await,
+                Err(e) => Err(e),
+            },
+            None => self.port.send_input(None, input, files).await,
         };
         match result {
             Ok(id) => {
@@ -2322,6 +2340,7 @@ pub(crate) mod tests {
     #[derive(Debug, PartialEq)]
     enum Call {
         SendInput(Option<SessionId>, String),
+        NewRoot(PeerScope),
         Steer(SessionId, String),
         Cancel(SessionId),
         Resolve(ApprovalId, Decision),
@@ -2352,6 +2371,10 @@ pub(crate) mod tests {
                 .unwrap()
                 .push(Call::SendInput(session, text));
             Ok(session.unwrap_or(self.session))
+        }
+        async fn new_root(&self, scope: PeerScope) -> Result<SessionId, String> {
+            self.calls.lock().unwrap().push(Call::NewRoot(scope));
+            Ok(self.session)
         }
         async fn steer(
             &self,
@@ -2802,7 +2825,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn top_level_dm_from_owner_starts_a_session_and_binds_the_thread() {
+    async fn top_level_dm_from_owner_opens_an_owner_root_and_binds_the_thread() {
         let f = fixture();
         f.chan
             .handle_inbound(Inbound::Push(Box::new(dm(
@@ -2812,7 +2835,10 @@ pub(crate) mod tests {
         assert_eq!(f.api.calls(), vec![format!("react {DM} 100.1 {EYES}")]);
         assert_eq!(
             f.stub.calls(),
-            vec![Call::SendInput(None, "hi there".into())]
+            vec![
+                Call::NewRoot(PeerScope::Owner),
+                Call::SendInput(Some(f.stub.session), "hi there".into())
+            ]
         );
         let key = thread_key(DM, "100.1");
         let s = f.chan.lock();

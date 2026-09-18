@@ -11,7 +11,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use agent::{AGENT_ACTOR, AgentEvent, Agents, Ancestors, SendInput, Steer};
+use agent::{
+    AGENT_ACTOR, AgentEvent, Agents, Ancestors, NewRootSession, PeerScope, SendInput, Steer,
+};
 use artifact::ArtifactShown;
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -208,6 +210,9 @@ impl Threads {
 /// inbound/outbound paths are testable without live actors.
 #[async_trait]
 trait Port: Send + Sync {
+    /// An empty root with an explicit scope (50 §2.3); only for an
+    /// authenticated owner, whose thread roots are `owner` from birth.
+    async fn new_root(&self, scope: PeerScope) -> Result<SessionId, String>;
     async fn send_input(
         &self,
         session: Option<SessionId>,
@@ -239,6 +244,13 @@ fn agents() -> Result<ActorRef<Agents>, String> {
 
 #[async_trait]
 impl Port for Actors {
+    async fn new_root(&self, scope: PeerScope) -> Result<SessionId, String> {
+        agents()?
+            .ask(NewRootSession { cwd: None, scope })
+            .await
+            .map_err(|e| e.to_string())
+    }
+
     async fn send_input(
         &self,
         session: Option<SessionId>,
@@ -1085,6 +1097,8 @@ impl Channel {
         };
         // Mid-turn text queues behind the running tool batch; the phone hears
         // `queued` now and the ✅ when the turn that took it finishes.
+        // A new thread root is `owner` only when the owner opened it; every
+        // other allowed contact gets the isolated default (50 §2.3).
         let result = match session {
             Some(id) if in_flight => {
                 let queued = self
@@ -1096,6 +1110,12 @@ impl Channel {
                     self.send_chunks(&sender, "queued").await;
                 }
                 queued
+            }
+            None if self.is_owner(&sender.number) => {
+                match self.port.new_root(PeerScope::Owner).await {
+                    Ok(root) => self.port.send_input(Some(root), input, files).await,
+                    Err(e) => Err(e),
+                }
             }
             _ => self.port.send_input(session, input, files).await,
         };
@@ -1619,6 +1639,7 @@ mod tests {
 
     #[derive(Debug, PartialEq)]
     enum Call {
+        NewRoot(PeerScope),
         SendInput(Option<SessionId>, String, Vec<PathBuf>),
         Steer(SessionId, String, Vec<PathBuf>),
         Resolve(ApprovalId, Decision),
@@ -1640,6 +1661,10 @@ mod tests {
 
     #[async_trait]
     impl Port for Stub {
+        async fn new_root(&self, scope: PeerScope) -> Result<SessionId, String> {
+            self.calls.lock().unwrap().push(Call::NewRoot(scope));
+            Ok(self.session)
+        }
         async fn send_input(
             &self,
             session: Option<SessionId>,
@@ -1995,12 +2020,21 @@ mod tests {
             f.chan.lock().aci.by_aci.get(&aci).map(String::as_str),
             Some(OWNER)
         );
-        // Unknown ACI: every configured number is tried, failures cached.
+        // Resolved to the owner: opens an owner-scoped root, dispatched once.
+        assert_eq!(
+            f.stub.calls(),
+            [
+                Call::NewRoot(PeerScope::Owner),
+                Call::SendInput(Some(f.stub.session), "hi".into(), vec![])
+            ]
+        );
+        // Unknown ACI: every configured number is tried, failures cached,
+        // nothing reaches the agent.
         let mut other = env("", 2, "hi");
         other.sender.uuid = Some(Uuid::new_v4());
         f.chan.handle_envelope(other).await;
         assert!(f.chan.lock().aci.failed_at.contains_key(FRIEND));
-        assert_eq!(f.stub.calls().len(), 1);
+        assert!(f.stub.calls().is_empty());
     }
 
     #[tokio::test]
@@ -2024,7 +2058,14 @@ mod tests {
                 target_ts: 42
             }
         );
-        assert_eq!(f.stub.calls(), [Call::SendInput(None, "hi".into(), vec![])]);
+        let session = f.stub.session;
+        assert_eq!(
+            f.stub.calls(),
+            [
+                Call::NewRoot(PeerScope::Owner),
+                Call::SendInput(Some(session), "hi".into(), vec![])
+            ]
+        );
         assert_eq!(f.chan.lock().threads.get(OWNER), Some(f.stub.session));
     }
 
@@ -2033,9 +2074,14 @@ mod tests {
         let f = fixture().await;
         f.chan.handle_envelope(env(OWNER, 1, "/help")).await;
         assert!(f.stub.calls().is_empty());
+        // Receipt, then only text replies to the sender: no 👀, nothing
+        // forwarded. Help may span several chunks; its wording is incidental.
         let sent = f.transport.sent();
-        assert!(matches!(sent[0], SentItem::Receipt { .. }));
-        assert!(matches!(&sent[1], SentItem::Text { text, .. } if text == &commands::help()));
+        assert!(matches!(&sent[0], SentItem::Receipt { to, ts: 1 } if to == OWNER));
+        assert!(sent.len() > 1);
+        assert!(sent[1..].iter().all(
+            |s| matches!(s, SentItem::Text { to, text, .. } if to == OWNER && !text.is_empty())
+        ));
     }
 
     #[tokio::test]
@@ -2055,14 +2101,17 @@ mod tests {
         assert!(path.exists());
         assert_eq!(
             f.stub.calls(),
-            [Call::SendInput(
-                None,
-                format!(
-                    "(replying to: \"earlier\")\nlook\n[attachment: {} (image/png, 8 B)]",
-                    path.display()
-                ),
-                vec![path]
-            )]
+            [
+                Call::NewRoot(PeerScope::Owner),
+                Call::SendInput(
+                    Some(f.stub.session),
+                    format!(
+                        "(replying to: \"earlier\")\nlook\n[attachment: {} (image/png, 8 B)]",
+                        path.display()
+                    ),
+                    vec![path]
+                )
+            ]
         );
     }
 
@@ -2078,7 +2127,8 @@ mod tests {
         assert_eq!(
             f.stub.calls(),
             [
-                Call::SendInput(None, "hi".into(), vec![]),
+                Call::NewRoot(PeerScope::Owner),
+                Call::SendInput(Some(session), "hi".into(), vec![]),
                 Call::Steer(session, "also".into(), vec![])
             ]
         );
@@ -2235,6 +2285,8 @@ mod tests {
         let mut e = env(FRIEND, 10, "hi");
         e.sender.uuid = Some(aci);
         f.chan.handle_envelope(e).await;
+        // An allowed contact is not the owner: its root keeps the isolated default.
+        assert_eq!(f.stub.calls(), [Call::SendInput(None, "hi".into(), vec![])]);
         // Restart: the ACI must come back from disk, not process memory.
         f.chan.lock().threads = Threads::load(&f.chan.rt.data_dir);
         f.chan.handle_event(Event::Agent(started(session))).await;

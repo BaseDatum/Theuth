@@ -12,6 +12,7 @@ import {
   type LucideIcon,
   MessageSquare,
   Monitor,
+  Radio,
   Server,
   Settings2,
   ShieldCheck,
@@ -24,6 +25,7 @@ import { Harnesses } from '@/components/link/Harnesses'
 import { Agents } from '@/components/settings/Agents'
 import { Approvals } from '@/components/settings/Approvals'
 import { Channels } from '@/components/settings/Channels'
+import { Communication } from '@/components/settings/Communication'
 import { Computer } from '@/components/settings/Computer'
 import { Connections } from '@/components/settings/Connections'
 import { General } from '@/components/settings/General'
@@ -42,6 +44,7 @@ import { useHasNodes } from '@/link/nodes'
 const TABS = [
   ['general', 'General', Settings2],
   ['approvals', 'Approvals', ShieldCheck],
+  ['communication', 'Communication', Radio],
   ['tools', 'Tools', Wrench],
   ['schedules', 'Schedules', CalendarClock],
   ['computer', 'Computer', Monitor],
@@ -66,15 +69,18 @@ type Props = {
   tab: Tab
   /** The chat the dialog was opened from; `null` from the empty state or the tray. */
   session: string | null
+  /** Pending peer request to focus on the communication tab (`?peer=`). */
+  peer: string | null
   onTab: (tab: Tab) => void
   onClose: () => void
 }
 
-function Pane({ tab, session, onClose }: Omit<Props, 'onTab'>) {
+function Pane({ tab, session, peer, onClose }: Omit<Props, 'onTab'>) {
   return (
     <>
       {tab === 'general' && <General />}
       {tab === 'approvals' && <Approvals session={session} onClose={onClose} />}
+      {tab === 'communication' && <Communication session={session} focus={peer} />}
       {tab === 'tools' && <Tools session={session} />}
       {tab === 'schedules' && <Schedules />}
       {tab === 'computer' && <Computer />}
@@ -96,7 +102,7 @@ function Pane({ tab, session, onClose }: Omit<Props, 'onTab'>) {
  * Under the mobile breakpoint (31 §8.1) it is a full-screen sheet: the tab
  * list first, a tap pushes the tab with a back chevron.
  */
-export function SettingsDialog({ tab, session, onTab, onClose }: Props) {
+export function SettingsDialog({ tab, session, peer, onTab, onClose }: Props) {
   const mobile = useIsMobile()
   const [pushed, setPushed] = useState(false)
   // Settings › Nodes only where the harness answers `list_nodes` (32 §8.3).
@@ -131,7 +137,7 @@ export function SettingsDialog({ tab, session, onTab, onClose }: Props) {
           </div>
           {pushed ? (
             <div className="min-h-0 flex-1 overflow-y-auto px-4 pt-4 pb-8">
-              <Pane tab={tab} session={session} onClose={onClose} />
+              <Pane tab={tab} session={session} peer={peer} onClose={onClose} />
             </div>
           ) : (
             <nav className="min-h-0 flex-1 overflow-y-auto p-2">
@@ -184,7 +190,7 @@ export function SettingsDialog({ tab, session, onTab, onClose }: Props) {
         {/* Not ScrollArea: Radix wraps the viewport in `display: table`, which never shrinks, so rows overflowed. */}
         <div className="min-w-0 flex-1 overflow-y-auto">
           <div className="px-8 pt-6 pb-8">
-            <Pane tab={tab} session={session} onClose={onClose} />
+            <Pane tab={tab} session={session} peer={peer} onClose={onClose} />
           </div>
         </div>
       </DialogContent>

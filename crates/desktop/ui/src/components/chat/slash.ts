@@ -4,6 +4,7 @@ import { gitUrl, mcpEntry } from '@/lib/mcpEntry'
 import { queryKeys } from '@/lib/rpc'
 import { LOCAL, useHarnesses } from '@/link/harnesses'
 import type { Api } from '@/rpc/api'
+import type { CommunicationState } from '@/rpc/bindings/CommunicationState'
 import type { CompactStyle } from '@/rpc/bindings/CompactStyle'
 import type { SyncResult } from '@/rpc/bindings/SyncResult'
 import type { LoadedPage } from '@/rpc/extra'
@@ -77,6 +78,13 @@ export const COMMANDS: readonly { name: string; hint: string; desc: string }[] =
     hint: '[on|off] [always]',
     desc: 'tool approval prompts; `always` persists to config.yaml',
   },
+  {
+    name: '/communication',
+    hint: '[on|off] [always]',
+    desc: 'model-to-model messaging; `always` persists the harness-wide switch',
+  },
+  { name: '/peers', hint: '', desc: 'peers this session may message (picker) and pending requests' },
+  { name: '/a2a', hint: '[reload]', desc: 'network A2A status; `reload` re-reads peers/exports' },
   { name: '/cancel', hint: '', desc: 'abort the in-flight turn' },
   {
     name: '/compact',
@@ -129,6 +137,7 @@ export function surfaceOf(e: Event): Surface | null {
 export type SettingsTab =
   | 'general'
   | 'approvals'
+  | 'communication'
   | 'tools'
   | 'schedules'
   | 'computer'
@@ -199,6 +208,7 @@ export const FRESH: LoadedPage = {
   context_estimate: null,
   settled: false,
   todos: null,
+  communication: null,
 }
 
 /**
@@ -250,6 +260,39 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       const approvals = await api.set_approvals(rest ? null : session, sub === 'on')
       const { info, setInfo } = useConnection.getState()
       if (info) setInfo({ ...info, approvals })
+      return
+    }
+    case '/communication': {
+      if (!arg) return settings(navigate, 'communication', session)
+      if (sub !== 'on' && sub !== 'off')
+        throw new Error(`/communication: expected on|off, got ${JSON.stringify(sub)}`)
+      if (rest && rest !== 'always')
+        throw new Error(`/communication: expected \`always\`, got ${JSON.stringify(rest)}`)
+      if (!rest && !session)
+        throw new Error('no session yet: send a message first, or use `/communication off always`')
+      const target = rest ? null : session
+      const state = await api.set_communication(target, sub === 'on')
+      active().qc.setQueryData(queryKeys.communication(target), state)
+      if (!target) {
+        const { info, setInfo } = useConnection.getState()
+        if (info) setInfo({ ...info, communication: state })
+      }
+      toast(communicationText(state))
+      return
+    }
+    case '/peers':
+      need(session)
+      return settings(navigate, 'communication', session)
+    case '/a2a': {
+      if (!arg) return settings(navigate, 'communication', session)
+      if (sub !== 'reload') throw new Error('usage: /a2a [reload]')
+      const status = await api.reload_a2a()
+      active().qc.setQueryData(queryKeys.a2a, status)
+      toast(
+        status.error
+          ? `a2a: reload failed, previous config kept: ${status.error}`
+          : `a2a: ${status.peers.length} peers, ${status.exports.length} exports${status.listening ? ` · listening on ${status.address ?? '?'}` : ''}`,
+      )
       return
     }
     case '/mcp':
@@ -467,4 +510,13 @@ function synced(results: SyncResult[]) {
   toast(
     results.length ? results.map((r) => `${r.name}: ${r.status}`).join('\n') : 'nothing to sync',
   )
+}
+
+/** One line for `/communication on|off`: the effective state and its exact blocker (50 §2.1). */
+function communicationText(s: CommunicationState): string {
+  if (s.effective) return `communication: on${s.session ? '' : ' (global)'}`
+  if (!s.global) return `communication: off — disabled globally (${s.source}); use \`/communication on always\``
+  if (s.inherited_from && s.inherited_from !== s.session)
+    return `communication: off — opted out by ancestor ${s.inherited_from}`
+  return 'communication: off — this session opted out (until restart)'
 }

@@ -105,8 +105,11 @@ unattended, `schedule_done` when the model decides —
 (the `show` tool: files the agent makes for you, shown as cards in the chat —
 markdown, code, CSV, images, SVG, PDFs compiled in-process from markdown or
 Typst; a content-addressed store under `~/.wth/artifacts/` —
-[`docs/design/35-artifacts.md`](docs/design/35-artifacts.md)), `tui` (iocraft),
-`wth` (binary).
+[`docs/design/35-artifacts.md`](docs/design/35-artifacts.md)), `a2a` (remote
+agents over A2A 1.0 on the official Rust SDK: configured peers and exports,
+off by default — Communication below,
+[`docs/design/50-agent-communication.md`](docs/design/50-agent-communication.md)),
+`tui` (iocraft), `wth` (binary).
 
 Bedrock: select an `amazon-bedrock/<model-id>` through `/model` (cross-region
 inference profile ids such as `us.anthropic.…` work too). Configure AWS normally;
@@ -123,11 +126,12 @@ AWS chain. The SDK owns region, credentials and SSO; sign in with
 Config (`~/.wth/`, created on first run; details in
 [`docs/design/01-config-and-subagents.md`](docs/design/01-config-and-subagents.md) §1):
 
-- `config.yaml` — every plugin reads its own section; `WTH_<SECTION>__<KEY>` env overrides. `agent.model` is a models.dev id (`anthropic/claude-sonnet-4-5`); `/model` rewrites that one line in place. The `agent`, `tools`, `secrets`, `knowledge`, `web`, `scrape`, `search_providers`, `browser`, `computer`, `link`, `nodes`, `schedule`, `update`, `artifact`, `voice` and `slack` sections with their defaults:
+- `config.yaml` — every plugin reads its own section; `WTH_<SECTION>__<KEY>` env overrides. `agent.model` is a models.dev id (`anthropic/claude-sonnet-4-5`); `/model` rewrites that one line in place. The `agent`, `tools`, `secrets`, `knowledge`, `web`, `scrape`, `search_providers`, `browser`, `computer`, `link`, `nodes`, `schedule`, `a2a`, `update`, `artifact`, `voice` and `slack` sections with their defaults:
 
   ```yaml
   agent:
     model: anthropic/claude-sonnet-4-5
+    communication: false   # model-to-model communication (design doc 50, below): off = no spawn_subagent, discover_peers or send_message; `/communication on always` writes true
     # effort: high        # low|medium|high|… per model (/model lists them); unset = provider default
     # aws_profile: work   # Bedrock inference; /aws or Settings → Connections selects it
     compact_at: 0.8        # compact when the context is this full; 0 disables
@@ -189,6 +193,10 @@ Config (`~/.wth/`, created on first run; details in
   schedule:                       # design docs 34 + 33; `~/.wth/schedules/*.md` files, `/schedules` lists them
     enabled: true                 # false: no watcher, no actor, no `schedule` tool, no prompt block
     run_timeout_secs: 1800        # a run still going after this is cancelled and reported as `timeout`
+  a2a:                            # design doc 50 §6; remote agents over A2A 1.0. `/a2a` shows status, `/a2a reload` re-reads ~/.wth/a2a/peers.yaml
+    enabled: false                # false: no actor, no listener, no card fetch, no credential load. Also needs agent.communication: true
+    listen: 127.0.0.1:7780        # loopback only; restart to change
+    public_url: null              # the HTTPS base your reverse proxy publishes; without it the listener is plain HTTP for loopback development only
   update:                         # design doc 39; self-update, silent: verify the signature, replace the binary on disk, live at the next start
     enabled: true                 # false: never checks; `wth --update` still works
     url: https://s3.rwx.dev/wth/releases/latest.json   # the release manifest; point at a scratch bucket to test
@@ -219,6 +227,7 @@ Config (`~/.wth/`, created on first run; details in
 - `mcp/*.json` — drop in any `mcp.json` (Claude Desktop, Cursor, OpenCode, …); hot-reloaded, tools registered under their own names — a name two servers both offer (four `grafana-*` entries) registers as `<server>__<name>` for each. `${VAR}` and `$(cmd)` in `command`/`args`/`env`/`url`/`headers` expand through your shell when the server starts (`"GITHUB_PERSONAL_ACCESS_TOKEN=$(gh auth token)"`); `{{secret:NAME}}` in the same fields is filled from the vault, so a token never sits in the file. `cwd` (relative → `mcp/`) points a server at a checkout under `mcp/repos/`, where `/mcp add <url>` clones and `/mcp sync` pulls. A remote entry's optional `oauth: {client_id, client_secret, scopes, redirect_uri}` shapes its login; `redirect_uri` (`http://localhost:8765/callback`) is for servers that only accept a registered loopback URL.
 - `mcp/config.yaml` — per-server / per-tool risk override (`read_only` | `mutating` | `destructive` | `off`); `/mcp` edits it (`off` on a server = disabled). An MCP tool's risk defaults to its annotations, and one without annotations prompts by default; set `risk: read_only` on a trusted server once.
 - `acp/agents.yaml` — one entry per external harness (`name: {command, args, env, description}`); `/acp` lists, probes, adds from the registry (`/acp add <id>`), removes. The model spawns one with `spawn_subagent{agent}`; it runs as a child session like a wth subagent.
+- `a2a/peers.yaml` — remote A2A agents and the local sessions published to them (see Communication below); owner-edited, `/a2a reload` validates and applies it atomically. No model tool writes it.
 - `skills/` — `<name>/SKILL.md` directories, loose `*.md`, or git clones (`/skills add <url>`, `/skills sync`); see [`docs/skills.md`](docs/skills.md). `harness.md` is written here on every start: the model's manual for this data dir and its config, loaded on demand.
 - `knowledge/` — the knowledge bundle (OKF markdown, one `<id>.md` per concept, a git repo kept in-process); `knowledge.sqlite` beside it is its search index and can be deleted.
 - `artifacts/` — content-addressed blobs of every file the agent has `show`n; `artifacts.sqlite` beside it is the index. Deleting the index orphans the blobs, which are swept at the next start.
@@ -238,6 +247,7 @@ forgets one; `/skills` lists skills (⏎ hands one to the model, `s` shows it; `
 `/artifacts` lists the files the agent has shown in this session and its subagents (⏎ opens one with the OS, `s` shows it inline, `e` exports it); a `▣` artifact card's path is a `file://` link, `o` opens the newest one, Ctrl+O renders markdown, code and CSV inline;
 `/secrets` lists the vault's secrets with their versions (`a` adds one into a masked field, `r` replaces the value as a new version, `h` shows history and restores an older version, `d` deletes); `/secrets add [name]`, `/secrets rm <name>`, `/secrets restore <name> [n]` skip the menu; when the agent calls `secret_request` a masked box asks you to type it;
 `/acp` manages external ACP harnesses;
+`/communication` shows whether this session may talk to other agents and why not (global switch, an ancestor's opt-out, network state), `/communication on|off` opts this session and its descendants out or back in until the daemon restarts, `/communication on|off always` flips the harness-wide switch and writes `agent.communication`; `/peers` lists the peers this session may message and the requests waiting for a human answer (⏎ opens, `i` inspects, `a` answers by exact id), `/peers scope owner|isolated [alias]` sets the shown root's reach; `/a2a` shows network status and configuration errors, `/a2a reload` re-reads `a2a/peers.yaml`;
 `/knowledge` browses the knowledge base (below); `/approvals off` stops
 approval prompts for this session, `/approvals off always` for good
 (`tools.approvals` in config.yaml). Typing while the model works queues the
@@ -390,6 +400,101 @@ upgrade is Noise-encrypted end to end between your device and your harness,
 so the relay (ours or anyone's) sees ciphertext, frame sizes, timing, IP
 addresses and the harness id — never your messages, keys or which device
 is connected. Design: [`docs/design/31-link.md`](docs/design/31-link.md).
+
+## Communication
+
+**Status: implemented, final verification pending.** Everything below is in
+the tree and has been exercised once on loopback: the native path by a
+57-check smoke over the real supervisor and store, the network path by a
+39-check smoke with the official Python SDK against a production export (plus
+3 checks with the export closed), the desktop surface by the user's eyes.
+What has not happened: the workspace compile and Rust tests have not been
+re-run since the last round of review corrections, and the official A2A
+conformance kit and Go CLI have only been run against the SDK probe, not the
+production adapter. The network side rides on the young official Rust SDK
+(`a2a-lf` 0.3.1 with two narrow vendored patches; accepted by the user with a
+maturity waiver, nothing here calls it mature). The as-built record and the
+open items are
+[`docs/design/50-agent-communication.md`](docs/design/50-agent-communication.md)
+§12.4–12.5; treat those, not this section, as the authority on what is proven.
+
+**Breaking default.** Model-to-model communication is now off unless you
+turn it on, and off means all of it: `spawn_subagent`, `discover_peers`
+and `send_message` disappear from the model's tools, no child result wakes a
+parent, no peer message is delivered. Existing configs without
+`agent.communication` behave as `false`; nothing is grandfathered from earlier
+spawns. To get subagents back:
+
+```text
+/communication on always      # writes agent.communication: true; same command in the TUI and desktop, `/wth communication …` on Slack, `/communication …` on Signal
+/communication off always     # turn it off again for good
+/communication off            # this session and its descendants only; in memory, gone at daemon restart
+/communication on             # undo that; cannot override a global off or an ancestor's off
+/communication                # show global, session, inherited blocker, effective and network state
+/peers                        # who this session may message, and requests waiting for your answer; `/requests` on Slack/Signal
+```
+
+Or set it in `config.yaml` (`agent.communication: true`) or the environment
+(`WTH_AGENT__COMMUNICATION=true`; an env value wins over the file on every
+start, and the status says where the value came from). The global switch is a
+ceiling, like `/approvals`: a session can opt out under it, never opt in above
+it. Session opt-outs are memory-only and end with the process. Approvals stay
+separate: `/approvals off` does not turn communication on, and `send_message`
+is a mutating tool that asks under the default policy.
+
+With communication on, sessions of one tree (parent, children, siblings) can
+discover and message each other by canonical address (`session:<uuid>`); a
+child's final message arrives at its parent as a
+`<message from="session:…" id="…">` input. Roots created from the owner
+console are `owner` scope and may also reach other owner roots; roots created
+by a scheduled run, an ACP client, or a non-owner Slack/Signal contact are
+`isolated` to their own tree. Promote a root from its communication settings
+(owner only; no model tool does this). `/peers` is the human view of the same
+list; the model never sees another root's title, cwd or transcript.
+
+**Network (A2A).** Remote agents are a second, separate switch. Nothing
+listens, dials, fetches a card or loads a credential until `a2a.enabled: true`
+is in `config.yaml` **and** communication is on; the default first-run config
+has the section commented out. Peers and exports are the owner's file
+`~/.wth/a2a/peers.yaml`:
+
+```yaml
+peers:
+  lab:
+    card_url: https://lab.example/agents/research/.well-known/agent-card.json
+    outbound_secret: a2a_lab_outbound   # vault names (`wth --secret-set a2a_lab_outbound`), never the value
+    inbound_secret: a2a_lab_inbound
+    sessions: ["<local-root-uuid>"]     # local roots whose enabled trees may send to `lab`
+    exports: [research]                 # exports `lab` may call
+exports:
+  research:
+    session: "<local-session-uuid>"     # that exact session, not its tree
+    name: Research
+    description: Answer explicitly submitted research requests.
+```
+
+`/a2a reload` validates the whole file (unknown sessions, missing secrets,
+duplicate names, non-HTTPS card URLs) and installs all of it or none;
+`/a2a` shows the result. The listener is loopback only (`a2a.listen`,
+restart to change). For anything beyond same-machine development put an
+HTTPS reverse proxy in front of it and set `a2a.public_url` to the base it
+publishes: without `public_url` the listener speaks plain HTTP and the
+harness treats the deployment as development. Never forward that port to a
+network directly. Cards are served at
+`<public_url>/agents/<export>/.well-known/agent-card.json` to holders of a
+matching inbound credential only; there is no public list of exports. Turning
+communication off (globally, or for an exported session) closes its routes at
+once; a global off also stops the listener. Setting `a2a.enabled: false` (or
+removing the section) and restarting removes the actor entirely.
+
+An exported session is still yours: what you type there never joins a peer's
+task, it waits behind one and runs as a private turn (the composer says “Send
+privately…” and the notice above it spells this out). The peer's messages can
+run the session's tools under its normal approvals, and the model may
+summarize anything already in that session into its reply to the peer, so
+export a session dedicated to that peer rather than a working conversation.
+The only way you take part in a peer exchange is answering a specific pending
+request from `/peers` (or `/requests answer <id> <text>` on Slack/Signal).
 
 ## Nodes
 

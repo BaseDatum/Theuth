@@ -4,6 +4,7 @@
 
 import type { ApprovalsState } from '@/rpc/bindings/ApprovalsState'
 import type { CompactStyle } from '@/rpc/bindings/CompactStyle'
+import type { CommunicationState } from '@/rpc/bindings/CommunicationState'
 import type { Loaded } from '@/rpc/bindings/Loaded'
 import type { SessionId } from '@/rpc/bindings/SessionId'
 
@@ -20,6 +21,8 @@ export type Info = {
   name: string
   /** `std::env::consts::OS`: `macos`, `linux`, … (32 §15 row 2). */
   platform: string
+  /** The global communication switch (50 §2.1): `session: null`, `scope: isolated`; the startup snapshot before any session query. */
+  communication: CommunicationState
 }
 
 /** `load_session` reply with paging (`before`/`limit`). */

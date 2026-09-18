@@ -11,6 +11,9 @@
 //!   [`ListProviders`], [`AddProvider`], [`RemoveProvider`], [`NewSession`],
 //!   [`ListAcp`], [`AddAcp`], [`RemoveAcp`], [`ListRegistry`], [`Ancestors`],
 //!   [`ContextItems`], [`RemoveContext`], [`GetTodos`]; continuation/activity transitions in [`continuation`]
+//! - communication policy and peer contracts (design doc 50) in [`communication`]:
+//!   [`GetCommunication`], [`SetCommunication`], [`SetPeerScope`], [`ListPeers`],
+//!   [`GetPeerMessage`], [`AnswerPeerRequest`]
 //! - the `"user"` actor ([`UserChannels`]) and the `message_user` tool (design doc 24) in [`user`].
 
 use std::path::PathBuf;
@@ -22,6 +25,7 @@ use serde::{Deserialize, Serialize};
 pub mod acp_child;
 mod aws;
 mod backend;
+pub mod communication;
 pub mod compact;
 pub mod context;
 pub mod continuation;
@@ -41,6 +45,12 @@ pub mod todo;
 pub mod user;
 
 pub use aws::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
+pub use communication::{
+    AnswerPeerRequest, CommunicationChanged, CommunicationState, GetCommunication, GetPeerMessage,
+    ListPeerMessages, ListPeers, PeerConsumed, PeerDelivered, PeerInfo, PeerIntakeFailed,
+    PeerMessageChanged, PeerMessagePage, PeerMessageState, PeerOrigin, PeerPage, PeerReceipt,
+    PeerRecord, PeerScope, PeerTurnFinished, SetCommunication, SetPeerScope,
+};
 pub use compact::CompactStyle;
 pub use context::{
     ContextAttachment, ContextEntry, ContextItem, ContextKind, ContextOwner, ContextRemoval,
@@ -416,6 +426,10 @@ pub struct Loaded {
     /// read failed — unavailable, not empty.
     #[serde(default)]
     pub todos: Option<todo::TodoSnapshot>,
+    /// Effective communication state of this session (50 §10); `None` when
+    /// the session is unknown to the policy (no row).
+    #[serde(default)]
+    pub communication: Option<CommunicationState>,
 }
 
 /// `ask` → `Vec<AgentInfo>`: the subtree under `session` (children,
@@ -737,6 +751,20 @@ pub struct NewSession {
     pub cwd: Option<PathBuf>,
 }
 
+/// `ask` → `Result<SessionId, String>`: a trusted creator (owner console,
+/// scheduler, a channel that authenticated the owner) opens a root with an
+/// explicit communication scope (50 §2.3). Deliberately not `Deserialize`:
+/// it is never an RPC method or a public input flag; [`NewSession`] and a
+/// root-creating [`SendInput`] stay `isolated`, and the owner promotes a
+/// root with [`SetPeerScope`].
+#[derive(Clone, Debug)]
+pub struct NewRootSession {
+    /// The client's working directory.
+    pub cwd: Option<PathBuf>,
+    /// Root scope declared by the trusted creator.
+    pub scope: PeerScope,
+}
+
 /// `ask` → `Vec<acp::EntryInfo>`: configured external harnesses
 /// (`<data_dir>/acp/agents.yaml`); `probe` runs `initialize` against each.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
@@ -845,6 +873,12 @@ pub enum HistoryEntry {
         #[serde(default)]
         #[cfg_attr(feature = "ts", ts(optional))]
         context: Option<ContextEntry>,
+        /// Set when a peer exchange produced this row (design doc 50 §9):
+        /// typed provenance for replay, the same shape [`PeerDelivered`]
+        /// carries live. `None` for the owner's own input and harness notes.
+        #[serde(default)]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        peer: Option<PeerOrigin>,
     },
     /// Assistant text.
     Assistant {
@@ -1249,6 +1283,11 @@ pub struct AgentConfig {
     /// direct definition as well - for models weak at code; MCP churn then
     /// rebases the prefix.
     pub runtime_only: bool,
+    /// Harness-wide permission for model-to-model communication (design doc
+    /// 50 §2.1): discovery, `send_message`, `spawn_subagent` and automatic
+    /// child-result injection. Off is a ceiling a session cannot override;
+    /// missing means off. `/communication on always` persists it.
+    pub communication: bool,
     /// Subagent limits and model.
     pub subagents: SubagentsConfig,
     /// Auto-compaction threshold as a fraction of the model's context window;
@@ -1276,6 +1315,7 @@ impl Default for AgentConfig {
             max_tool_rounds: 32,
             max_tool_output_chars: 32_000,
             runtime_only: true,
+            communication: false,
             subagents: SubagentsConfig::default(),
             compact_at: 0.8,
             compact_style: CompactStyle::Summary,

@@ -31,6 +31,7 @@ use serde_json::Value;
 use tools::{Invoke, ListTools, Risk, ToolOutput, ToolRegistry, ToolSpec};
 
 use crate::AgentEvent;
+use crate::loop_::{CellPermit, CellRunning};
 
 /// Tool name.
 pub const NAME: &str = "python";
@@ -114,6 +115,9 @@ pub struct RunCx {
     pub spill_dir: PathBuf,
     /// Mounted read-only at `/cwd`.
     pub cwd: PathBuf,
+    /// 50 §8: the turn's execution bound as the cell counts itself; `None`
+    /// for a turn that holds no permit (opened by a human or the harness).
+    pub(crate) permit: Option<CellPermit>,
 }
 
 // ---------------------------------------------------------------------------
@@ -948,6 +952,11 @@ impl Repl {
         let checkout = checkout.as_mut().ok_or(PoolError::Finished)?;
         let mut pending: HashMap<u32, PendingCall> = HashMap::new();
         let mut n = 0u32;
+        // 50 §8: the interpreter executes from the feed until it completes,
+        // except while it awaits its tool calls (`ResolveFutures`), where the
+        // guard is dropped and only those calls count. Holding one includes
+        // the permit; a dropped `drive` (cancelled cell) drops the guard.
+        let mut running = hold(cx.permit.as_ref()).await?;
         let mut ev = checkout
             .feed(
                 code,
@@ -1055,6 +1064,12 @@ impl Repl {
                         .iter()
                         .filter_map(|id| pending.remove(id).map(|c| (*id, c)))
                         .collect();
+                    // Suspended computation, not execution: the calls count
+                    // themselves through the registry's seam (a blocking peer
+                    // send or an approval alone releases the permit; a sibling
+                    // still running keeps it), and the interpreter resumes only
+                    // once a permit is held again.
+                    drop(running.take());
                     let outs = join_all(calls.iter().map(|(_, c)| {
                         cx.registry
                             .ask(Invoke(tools::ToolCall {
@@ -1067,6 +1082,7 @@ impl Repl {
                             .send()
                     }))
                     .await;
+                    running = hold(cx.permit.as_ref()).await?;
                     let mut results = Vec::with_capacity(calls.len());
                     for ((fid, call), out) in calls.into_iter().zip(outs) {
                         let out =
@@ -1112,6 +1128,19 @@ impl Repl {
                 },
             };
         }
+    }
+}
+
+/// 50 §8: count the interpreter as executing (permit held) until the guard
+/// drops; nothing to count outside a bounded turn. `Err` when the turn ended
+/// or was cancelled: the cell must not resume, and the worker — left
+/// mid-turn on our side — is discarded like any abandoned protocol turn.
+async fn hold(permit: Option<&CellPermit>) -> Result<Option<CellRunning<'_>>, PoolError> {
+    match permit {
+        None => Ok(None),
+        Some(p) => p.run().await.map(Some).ok_or(PoolError::Protocol(
+            "turn ended while the cell awaited its tool calls".into(),
+        )),
     }
 }
 
@@ -1387,6 +1416,7 @@ mod tests {
             registry,
             spill_dir: dir.join("spill"),
             cwd: dir.clone(),
+            permit: None,
         };
         let mut repl = Repl::open(&pool, session, &dir, cx.clone()).await;
         let out = repl

@@ -24,7 +24,7 @@ function body(entry: Entry, session: string) {
     case 'tool':
       return <MessageTool tool={entry} session={session} />
     case 'peer':
-      return <MessagePeer from={entry.from} text={entry.text} />
+      return <MessagePeer from={entry.from} text={entry.text} origin={entry.origin} seq={entry.seq} session={session} />
     case 'nudge':
       return <HarnessNudge text={entry.text} />
     case 'info':

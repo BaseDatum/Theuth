@@ -46,6 +46,12 @@ export const queryKeys = {
   secrets: ['secrets'] as const,
   updateStatus: ['update-status'] as const,
   voice: ['voice'] as const,
+  /** `get_communication(session)`; `null` is the global switch. Prefix `['communication']` covers every session (children inherit, so any change invalidates all). */
+  communication: (session: string | null) => ['communication', session] as const,
+  peers: (session: string, query: string | null) => ['peers', session, query] as const,
+  peerMessages: (session: string, pendingOnly: boolean) => ['peer-messages', session, pendingOnly] as const,
+  peerMessage: (session: string, id: string) => ['peer-message', session, id] as const,
+  a2a: ['a2a'] as const,
 }
 
 const SESSIONS_DEBOUNCE_MS = 500
@@ -77,6 +83,20 @@ export function useInvalidateOn(): void {
       on('ArtifactShown', () => void qc.invalidateQueries({ queryKey: queryKeys.artifacts })),
       on('SecretsChanged', () => void qc.invalidateQueries({ queryKey: queryKeys.secrets })),
       on('SecretResolved', () => void qc.invalidateQueries({ queryKey: queryKeys.secrets })),
+      on('CommunicationChanged', () => {
+        void qc.invalidateQueries({ queryKey: ['communication'] })
+        void qc.invalidateQueries({ queryKey: ['peers'] })
+        void qc.invalidateQueries({ queryKey: queryKeys.info })
+      }),
+      on('PeerMessageChanged', (e) => {
+        void qc.invalidateQueries({ queryKey: ['peer-messages', e.session] })
+        void qc.invalidateQueries({ queryKey: queryKeys.peerMessage(e.session, e.id) })
+      }),
+      on('A2aChanged', () => {
+        void qc.invalidateQueries({ queryKey: queryKeys.a2a })
+        void qc.invalidateQueries({ queryKey: ['communication'] })
+        void qc.invalidateQueries({ queryKey: ['peers'] })
+      }),
     ]
     return () => {
       clearTimeout(timer)

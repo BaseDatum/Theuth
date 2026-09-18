@@ -4,6 +4,7 @@ import { classify, type Injected } from '@/lib/injected'
 import { pushChunk } from '@/lib/jobTail'
 import type { ContextEntry } from '@/rpc/bindings/ContextEntry'
 import type { HistoryEntry } from '@/rpc/bindings/HistoryEntry'
+import type { PeerOrigin } from '@/rpc/bindings/PeerOrigin'
 import type { TodoSnapshot } from '@/rpc/bindings/TodoSnapshot'
 import type { WireEvent } from '@/rpc/events'
 import type { AgentInfo } from '@/rpc/extra'
@@ -151,11 +152,25 @@ function stampUser(entries: Entry[], turn: number): Entry[] {
   return u?.kind === 'user' ? replaceAt(entries, at, { ...u, turn }) : entries
 }
 
+/** The body of a stored peer row: the `<message>` wrapper's content when the row is exactly one wrapper (50 §9 stores
+ * the provider-visible form), the raw text otherwise. Display only; identity comes from the typed `PeerOrigin`. */
+function peerBody(text: string): string {
+  const cls = classify(text)
+  const only = cls?.length === 1 ? cls[0] : undefined
+  return only?.kind === 'peer' ? only.text : text
+}
+
+/** The card a peer exchange renders as, from its authenticated provenance; never from the wrapper's attributes. */
+function peerEntry(origin: PeerOrigin, text: string, seq?: number, context?: ContextEntry): Entry {
+  return { id: nextId(), kind: 'peer', from: origin.from, text, origin, seq, context }
+}
+
 /** Transcript entries for one history record; `context` (48 §3.3) rides along on every card the record becomes. */
 export function fromHistory(h: HistoryEntry): Entry[] {
   const context = h.context ?? undefined
   switch (h.role) {
     case 'user':
+      if (h.peer) return [peerEntry(h.peer, peerBody(h.text), undefined, context)]
       return userEntries(h.text, classify(h.text), undefined, h.turn ?? undefined, context)
     case 'assistant':
       return h.text.trim() ? [{ id: nextId(), kind: 'assistant', text: h.text, open: false, turn: h.turn ?? undefined, context }] : []
@@ -186,7 +201,7 @@ function signature(e: Entry): string {
     case 'compacted':
       return `c${e.epoch}`
     case 'peer':
-      return `p${e.from}\n${e.text}`
+      return e.origin ? `p${e.origin.id}` : `p${e.from}\n${e.text}`
     case 'user':
     case 'assistant':
       return `${e.kind[0]}${e.turn ?? ''}\n${e.text}`
@@ -270,6 +285,11 @@ export function apply(slice: SessionSlice, e: WireEvent, ctx: Ctx): SessionSlice
     case 'MessageDelivered':
       // Shown now, stored only once a turn injects it: a settled snapshot read meanwhile lacks the card.
       return interject({ ...slice, live: slice.live + 1 }, { id: nextId(), kind: 'peer', from: e.from, text: e.text })
+    // The consumed exchange as a typed card (50 §10). Its row is already stored, so a settled reload lands the same
+    // card: one shows once, whichever arrives first (matched by exchange id, the wrapper echo on `TurnStarted` is skipped).
+    case 'PeerDelivered':
+      if (slice.entries.some((x) => x.kind === 'peer' && x.origin?.id === e.origin.id)) return slice
+      return interject({ ...slice, live: slice.live + 1 }, peerEntry(e.origin, e.text, e.seq))
     case 'TitleChanged':
       return slice.title === e.title ? slice : { ...slice, title: e.title }
     case 'JobStarted':
@@ -324,8 +344,9 @@ function turn(s: SessionSlice, e: WireEvent, ctx: Ctx): SessionSlice | undefined
   switch (e.type) {
     // Echo the turn's input unless we sent it, it was a steer whose card
     // moved up on `InputInjected`, or the harness injected it
-    // (`MessageDelivered` already showed those). Own sends and injected
-    // steers are already on screen: stamp them with the turn instead.
+    // (`MessageDelivered`/`PeerDelivered` show those; a wrapper never renders
+    // as a plain `you` row). Own sends and injected steers are already on
+    // screen: stamp them with the turn instead.
     case 'TurnStarted': {
       const cls = classify(e.text)
       const wrapped = cls !== null && cls[0]?.kind !== 'skill'
@@ -533,7 +554,8 @@ export function route(draft: Record<string, SessionSlice>, e: WireEvent, ctx: Ct
     }
     return true
   }
-  if (!('session' in e)) return false
+  // Policy revisions (global `session: null` or a subtree) are query invalidations, not slice state: see `useInvalidateOn`.
+  if (e.type === 'CommunicationChanged' || !('session' in e)) return false
   const cur = draft[e.session] ?? empty(e.session)
   const next = apply(cur, e, ctx)
   if (next !== cur) draft[e.session] = next

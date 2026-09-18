@@ -623,6 +623,14 @@ keyboard, or delete one*.
 - **Nodes** (32): a subagent on another machine runs in *that* wth, whose
   placeholders resolve against *that* vault, filled with `--secret-set`
   on that box. Nothing crosses the link.
+- **Peers and A2A** (50, 2026-09-18; §15.3): a peer message body, answer or
+  remote reply is scrubbed with the same `Vault::redact` set *before* it is
+  persisted, published or sent, so a placeholder the model expanded into
+  `send_message` text never reaches another session's store or a remote
+  agent. Peer credentials are ordinary vault secrets named in
+  `<data_dir>/a2a/peers.yaml` (`outbound_secret`/`inbound_secret`) and
+  reach only the HTTP `Authorization` header; a peer never sees a
+  `{{secret:…}}` expanded, and inbound peer text is never expanded.
 
 ## 8. Security
 
@@ -689,6 +697,17 @@ that the gate does not see.
   capture at a time; acceptable.
 - **Phones.** `set_secret` from a paired device is the same trust as
   `add_provider` today (§1 table); the relay copies ciphertext (31).
+- **Peer egress** (50 §9). Model-to-model text is a C path the §3.4 table
+  did not have: `send_message` arguments are expanded before `tool.call`
+  like any tool's, so the body is redacted at the agent (`Supervisor::
+  redact`, the vault's scrub set) before storage, `PeerMessageChanged`,
+  injection into the recipient or the A2A client; the same call scrubs
+  remote errors, task status text and artifacts on the way in. Same ceiling
+  as "Scrub, and its ceiling": known values only; an unknown literal typed
+  into a message is the model's declared intent on the approval card.
+  Peer bearer tokens are `Zeroizing` `Token`s that live in the `a2a` auth
+  map and client interceptor, `Debug` as `Token(<redacted>)`, and are
+  refused when equal to the console token. Pending verification (§15.3).
 
 ## 9. Config
 
@@ -1002,3 +1021,36 @@ box; §2's ACL claim is from `keyring`'s docs); the desktop panes and
 `SecretRequestCard` beyond `tsc`/vitest (no Tauri session driven); Slack and
 Signal notices; `{{secret:…}}` in `mcp/*.json` headers against a live
 server; `WTH_SECRETS__TOOLS=false`; two writers racing on one vault.
+
+### 15.3 Agent communication (50), 2026-09-18 — pending verification
+
+50 §11 names this doc for "scrub-before-peer-egress boundary and credential
+references". Implemented, not yet smoked:
+
+- **One redaction point per direction.** Outbound: `agent/src/supervisor.rs`
+  `redact()` (the vault's scrub set through the `tools` hook) runs on the
+  `send_message` body, on human answers to peer requests and on child
+  results before any persistence, event or transport; oversize bodies
+  (`PEER_TEXT_MAX`, 32 KiB) are rejected, not truncated. Inbound:
+  `agent/src/communication/network.rs` redacts remote message text, task
+  status text, artifacts and error strings before they are stored or
+  rendered; `crates/a2a/src/client.rs` redacts what it publishes as
+  `RemoteUpdate` and what it sends. No peer path calls `expand`; a
+  `{{secret:NAME}}` arriving from a peer is literal text.
+- **Credentials are references.** `peers.yaml` carries vault *names*;
+  `a2a::config::stage` resolves them through a closure, rejects a missing
+  or empty secret, a value shared between two inbound peers, the same
+  secret on both sides of one peer, and any value equal to the RPC console
+  token. Tokens are `Zeroizing<String>` newtypes that only the auth map and
+  the client's bearer interceptor read. `reload_a2a` re-resolves them; a
+  rotated vault version takes effect on reload, not on the next request.
+- **Not extended.** ACP children (§7) and nodes (32) are unchanged: an
+  external harness still sees placeholders as text, and a node's child
+  resolves against the node's vault.
+
+Owed before "as built": a turn that `send_message`s `{{secret:T}}` to a
+native sibling leaves `messages.body` and the peer record with the
+placeholder and the sibling's tool call still expands it under its own
+approval; the same body sent to a loopback A2A peer arrives redacted; a
+`peers.yaml` naming the console token fails `reload_a2a` with the §15.3
+error and no listener change.

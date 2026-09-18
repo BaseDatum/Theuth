@@ -1,12 +1,13 @@
 //! `Agents` supervisor: registered as [`crate::AGENT_ACTOR`]; owns one
-//! session actor per live session, the sqlite store, and peer routing
-//! (design doc 01 §2.3): child results, peer messages and finished jobs
-//! (14 §3, via `Settle::FinishedWithResult`) are injected as [`UserInput`]
-//! into the addressee. It is also the single continuation authority (47 §4):
-//! every input is admitted here before routing, every runner reports its
-//! busy state, tools settle admitted work here, and [`DecideYield`] is
-//! answered from that state alone.
+//! session actor per live session, the sqlite store, the communication
+//! [`Policy`] and peer routing (design docs 01 §2.3, 50): child results,
+//! peer messages and finished jobs (14 §3, via `Settle::FinishedWithResult`)
+//! are injected as [`UserInput`] / `PeerInput` into the addressee. It is also
+//! the single continuation authority (47 §4): every input is admitted here
+//! before routing, every runner reports its busy state, tools settle admitted
+//! work here, and [`DecideYield`] is answered from that state alone.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -25,10 +26,21 @@ use models::{Catalog, Resolved};
 use runtime::{InputId, Runtime, SessionId, TurnId};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, oneshot};
 use tokio::task::AbortHandle;
+use tokio_util::sync::CancellationToken;
 use tools::{
-    ActivitySink, Admission, Admit, ApprovalId, ApprovalRequested, ApprovalResolved, JobEvent,
-    JobExit, JobId, ListPrompts, ListTools, REGISTRY_ACTOR, RegisterActivity, RegisterPrompt,
-    RegisterTool, SetParent, Settle, ToolRegistry,
+    ActivitySink, Admission, Admit, ApprovalId, ApprovalRequested, ApprovalResolved,
+    InstallCommunicationAccess, JobEvent, JobExit, JobId, ListPrompts, ListTools, REGISTRY_ACTOR,
+    RegisterActivity, RegisterPrompt, RegisterTool, SetParent, Settle, ToolRegistry,
+};
+use uuid::Uuid;
+
+use crate::communication::{
+    AnswerPeerRequest, CommunicationChanged, CommunicationState, DISCOVER_DEFAULT_LIMIT,
+    DISCOVER_MAX_LIMIT, Generation, GetCommunication, GetPeerMessage, ListPeerMessages, ListPeers,
+    PEER_TEXT_MAX, PeerAddress, PeerConsumed, PeerDelivered, PeerInfo, PeerIntakeFailed, PeerKind,
+    PeerMessageChanged, PeerMessagePage, PeerMessageState, PeerOrigin, PeerPage, PeerReceipt,
+    PeerRecord, PeerRelationship, PeerScope, PeerState, PeerTurnFinished, Policy, PolicyError,
+    SetCommunication, SetPeerScope, SharedPolicy, WAITS_PER_HARNESS, WAITS_PER_SESSION, network,
 };
 
 use crate::acp_child::AcpChild;
@@ -37,19 +49,24 @@ use crate::context::{
     save_blob,
 };
 use crate::continuation::{
-    DecideYield, InputConsumed, InputOrigin, InputTicket, Ledger, SessionUnknown, TurnEntered,
-    TurnReturned, YieldDecision,
+    DecideYield, InputConsumed, InputDropped, InputOrigin, InputTicket, Ledger, SessionUnknown,
+    TurnEntered, TurnReturned, YieldDecision,
 };
 use crate::loop_::{
-    CancelTurn, CompactNow, ContextHistoryNow, ContextItemsNow, HarvestNow, IsRunning,
-    QueuedInputs, RedoTurn, RemoveContextNow, RestartTurn, Session, SessionState, SetPendingEffort,
-    SwitchModel, UndoTurn, UserInput, WithdrawInput, text_of,
+    CancelPeerScope, CancelTurn, CompactNow, ContextHistoryNow, ContextItemsNow, HarvestNow,
+    IsRunning, PEER_INTAKE, PeerInput, QueuedInputs, RedoTurn, RemoveContextNow, RestartTurn,
+    Session, SessionState, SetPendingEffort, SuppressPeerInputs, SwitchModel, UndoTurn, UserInput,
+    WithdrawInput, text_of,
 };
-use crate::peers::{ListModelsTool, Nodes, SendMessageTool, SpawnSubagentTool, node_lines};
+use crate::peers::{
+    DiscoverPeersTool, ListModelsTool, Nodes, PeerMessageTool, SendMessageTool, SpawnSubagentTool,
+    node_lines,
+};
 use crate::skills::{
     self, AddSkillRepoTool, AddSkillTool, LoadSkillTool, RemoveSkillRepoTool, RemoveSkillTool,
     SyncSkillsTool,
 };
+use crate::store::communication::{AcceptExchange, CommError};
 use crate::store::{self, Epoch, Store};
 use crate::user::{MessageUserTool, USER_ACTOR, UserChannels};
 use crate::{
@@ -58,11 +75,12 @@ use crate::{
     DeleteSession, EditTurn, ForkSession, GetCompactStyle, GetMaxToolRounds, GetSubagentTimeout,
     GetTitleModel, GetTodos, Harvest, HistoryEntry, ListAcp, ListAgents, ListLogins, ListModels,
     ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills, LoadSession, LoadSkill,
-    Loaded, Login, LoginFinished, LoginInfo, Logout, ModelInfo, NewSession, PinSession,
-    ProviderInfo, QueuedInput, Redo, Regenerate, RemoveAcp, RemoveContext, RemoveProvider,
-    RemoveSkill, RemoveSkillRepo, RenameSession, SearchSessions, SendInput, SessionSummary,
-    SetCompactStyle, SetEffort, SetMaxToolRounds, SetModel, SetSubagentTimeout, SetTitleModel,
-    ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw, effort_of,
+    Loaded, Login, LoginFinished, LoginInfo, Logout, ModelInfo, NewRootSession, NewSession,
+    PinSession, ProviderInfo, QueuedInput, Redo, Regenerate, RemoveAcp, RemoveContext,
+    RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession, SearchSessions, SendInput,
+    SessionSummary, SetCompactStyle, SetEffort, SetMaxToolRounds, SetModel, SetSubagentTimeout,
+    SetTitleModel, ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw,
+    effort_of,
 };
 use crate::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 use crate::{frame, repl, search, spill};
@@ -70,7 +88,7 @@ use crate::{frame, repl, search, spill};
 /// The supervisor actor. Look up with `ActorRef::<Agents>::lookup(AGENT_ACTOR)`.
 #[derive(kameo::Actor)]
 pub struct Agents {
-    rt: Runtime,
+    pub(crate) rt: Runtime,
     cfg: Arc<AgentConfig>,
     /// `cfg.model` as last set by [`SetModel`]; new sessions start on it.
     default_model: String,
@@ -85,14 +103,35 @@ pub struct Agents {
     pool: Option<Arc<monty_pool::Pool>>,
     /// `configured(genai_namespace)`: whether genai can authenticate it.
     configured: Arc<dyn Fn(&str) -> bool + Send + Sync>,
-    store: Store,
+    pub(crate) store: Store,
     client: Client,
     auth: Auth,
     sessions: HashMap<SessionId, Live>,
     /// Sessions with a turn in flight (from `TurnStarted`/`TurnFinished`).
     running: HashSet<SessionId>,
-    /// `(waiter, from)` → resolves with `from`'s next message to `waiter`.
-    waiters: HashMap<(SessionId, SessionId), oneshot::Sender<String>>,
+    /// The communication policy (50 §2.1, §8), shared read-only with the
+    /// tool registry; every mutation and admission happens in this mailbox.
+    pub(crate) communication: SharedPolicy,
+    /// A2A request/subscription state (50 §6); handlers live in `communication::network`.
+    pub(crate) network: network::NetworkState,
+    /// Exact reply waiters (50 §5.3): awaited message id → its waiter.
+    /// Bounded by [`WAITS_PER_SESSION`] / [`WAITS_PER_HARNESS`]; removed on
+    /// reply, timeout, cancel, disable and deletion.
+    waits: HashMap<Uuid, Wait>,
+    /// Turns bound to an awaited request (50 §5.3): `(recipient, turn)` →
+    /// the message id that turn consumed while its sender was waiting. The
+    /// turn's final text answers exactly that request.
+    bound: HashMap<(SessionId, TurnId), Uuid>,
+    /// Final text per finished turn, from [`PeerTurnFinished`] (arrives
+    /// before `TurnFinished`); `child_finished` takes it by turn.
+    turn_text: HashMap<(SessionId, TurnId), String>,
+    /// Child results already answered explicitly, by `(child, turn)` → the
+    /// session that asked (50 §7 dedup): the parent's own answered request
+    /// blocks a second injection of the same result; a sibling's does not.
+    delivered: HashMap<(SessionId, TurnId), SessionId>,
+    /// Exchange ids handed to a runner in this process and not yet settled:
+    /// a retried `request_id` must not queue the same row twice.
+    enqueued: HashSet<Uuid>,
     /// Concurrent child turns.
     permits: Arc<Semaphore>,
     /// Every running child turn: `started_at` always; permit + runtime timer
@@ -100,6 +139,11 @@ pub struct Agents {
     child_turns: HashMap<SessionId, ChildTurn>,
     /// Children whose current turn was cancelled by the runtime cap.
     timed_out: HashSet<SessionId>,
+    /// Children spawned by a turn an A2A request scope owns (50 §6.3): the
+    /// child's first turn and its result are that scope's work (the durable
+    /// `child:<id>` row) until [`Self::child_finished`] hands it off. A
+    /// cancelled scope stops the child and drops the result instead.
+    owned_children: HashMap<SessionId, OwnedChild>,
     /// Last `TurnFinished` per session this process saw: `(stop_reason, when)`.
     last_stop: HashMap<SessionId, (String, DateTime<Utc>)>,
     /// Unanswered approvals per session: `(id, tool)` (design doc 19 §2.1).
@@ -108,7 +152,6 @@ pub struct Agents {
     search: Arc<search::Cache>,
     /// Registered nodes (32 §6.5); shared with the `spawn_subagent` tool's description.
     nodes: Nodes,
-    next_msg: u64,
     /// Activity ledger and continuation state (47 §4); every transition is
     /// applied synchronously inside a handler, which is the linearization point.
     /// Sessions whose row already had history when this process first
@@ -118,6 +161,19 @@ pub struct Agents {
     /// never continue automatically in this process. Ordinary work, results
     /// and the todo card are unaffected; new sessions use fresh accounting.
     ledger: Ledger,
+}
+
+/// One pending `send_message{await_reply}` (50 §5.3).
+struct Wait {
+    /// The session blocked in the tool call.
+    session: SessionId,
+    /// Endpoint key of the only peer whose reply may resolve it.
+    to: String,
+    /// Resolves with the final receipt: `replied` with the text, or the
+    /// terminal state that expired it (`communication_disabled`, cancel, …).
+    tx: oneshot::Sender<PeerReceipt>,
+    /// The route's generation at admission; a revoked one expires the wait.
+    generation: Generation,
 }
 
 /// A live session actor plus its peer identity.
@@ -198,9 +254,17 @@ struct ChildTurn {
     started_at: DateTime<Utc>,
 }
 
+/// The request scope a spawned child works for; `cancelled` once
+/// [`Agents::cancel_peer_scope`] stopped it.
+struct OwnedChild {
+    scope: Uuid,
+    cancelled: bool,
+}
+
 /// `ask` → `Result<(name, child), String>`: create a child session and start
 /// it on `task` (queued behind the concurrency cap). Returns before the child
-/// runs; its result reaches the parent as a `<subagent_result>` input.
+/// runs; its result reaches the parent as a peer message from `session:<child>`
+/// through the durable intake (50 §7), when the child→parent route is on.
 #[derive(Clone, Debug)]
 pub struct SpawnChild {
     /// Owning session.
@@ -219,22 +283,42 @@ pub struct SpawnChild {
     pub effort: Option<String>,
 }
 
-/// `ask` → `Result<Option<oneshot::Receiver<String>>, String>`: route a peer
-/// message. `Err` = unknown addressee. `Some(rx)` when `await_reply`: resolves
-/// with the addressee's next message to `from`.
+/// `ask` → `Result<Delivered, String>`: route a peer message (50 §5.2). The
+/// exchange is persisted (`accepted`) before the reply; `Err` is a refused
+/// admission (unknown address, disabled route, over quota, oversized,
+/// revoked admission, conflicting retry) and nothing was sent.
 #[derive(Clone, Debug)]
 pub struct Deliver {
-    /// Sender.
+    /// Authenticated sender (`ToolCx::session`).
     pub from: SessionId,
-    /// `"parent"` or a child name.
+    /// `session:<uuid>`, `peer:<name>`, `parent` or a direct child's name.
     pub to: String,
-    /// Body.
+    /// Body; redacted here, at most [`PEER_TEXT_MAX`] bytes after redaction.
     pub text: String,
-    /// Register a waiter for the answer.
+    /// Register an exact waiter for the answer.
     pub await_reply: bool,
-    /// Id of the `<message>` being answered.
-    pub reply_to: Option<String>,
+    /// The local message this one answers.
+    pub reply_to: Option<Uuid>,
+    /// Sender's idempotency key; the minted id when `None`.
+    pub request_id: Option<String>,
+    /// The generation token the tool call was admitted under, from
+    /// `tools::communication::current()`; a cancelled one is refused (50 §8).
+    pub admitted: CancellationToken,
 }
+
+/// Reply to [`Deliver`].
+#[derive(Debug, kameo::Reply)]
+pub struct Delivered {
+    /// The durable receipt at acceptance.
+    pub receipt: PeerReceipt,
+    /// With `await_reply`: resolves once with the final receipt.
+    pub reply: Option<oneshot::Receiver<PeerReceipt>>,
+}
+
+/// `tell`: the awaiting tool call timed out; drop the waiter (the accepted
+/// message stands, a late reply is delivered as ordinary input).
+#[derive(Clone, Copy, Debug)]
+pub struct DropWait(pub Uuid);
 
 /// `ask` → `String`: the child's identity line only (design doc 07 §10 — the
 /// roster and static guidance live in [`frame::baseline`]). Empty for a root session.
@@ -387,6 +471,7 @@ impl Agents {
         let depth = self.store.depth(id).await?;
         self.inherit_approvals(id, parent.as_ref().map(|p| p.0))
             .await;
+        self.mirror(id).await;
         let actor = Session::spawn(Session::new(
             id,
             depth,
@@ -402,6 +487,7 @@ impl Agents {
             self.rt.clone(),
             self.catalog.clone(),
             self.pool.clone(),
+            self.permits.clone(),
         ));
         let actor = LiveActor::Native(actor);
         self.ledger
@@ -414,6 +500,41 @@ impl Agents {
             },
         );
         Ok((id, actor))
+    }
+
+    /// Make `id`'s persisted lineage known to the policy (50 §2.1: ancestry
+    /// checks use stored topology, so a lazily resumed or freshly created
+    /// row never routes with a dangling link). Idempotent; a row that cannot
+    /// be read stays unknown and every route for it fails closed.
+    async fn mirror(&mut self, id: SessionId) {
+        if self.communication.0.read().root_of(id).is_ok() {
+            return;
+        }
+        let lineage = match self.store.lineage(id).await {
+            Ok(l) => l,
+            // No row: nothing to mirror; every route for `id` fails closed.
+            Err(e) if e.downcast_ref::<CommError>() == Some(&CommError::NotFound) => return,
+            Err(e) => {
+                tracing::error!(session = %id, "lineage: {e:#}");
+                return;
+            }
+        };
+        let mut p = self.communication.0.write();
+        let root = lineage.root();
+        if let Err(e) = p.record_root(root, lineage.scope) {
+            tracing::error!(session = %root, "record_root: {e}");
+            return;
+        }
+        if lineage.alias.is_some() {
+            let _ = p.set_scope(root, lineage.scope, lineage.alias.clone());
+        }
+        // Root first, then each child of the one just recorded.
+        for pair in lineage.chain.windows(2).rev() {
+            if let Err(e) = p.record_child(pair[0], pair[1]) {
+                tracing::error!(session = %pair[0], "record_child: {e}");
+                return;
+            }
+        }
     }
 
     /// Spawn an [`AcpChild`] for `id` on harness `name` — an `agents.yaml`
@@ -462,6 +583,7 @@ impl Agents {
         let cwd = cwd.unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
         self.inherit_approvals(id, parent.as_ref().map(|p| p.0))
             .await;
+        self.mirror(id).await;
         let actor = LiveActor::Acp(AcpChild::spawn(AcpChild::new(
             id,
             name,
@@ -511,12 +633,15 @@ impl Agents {
     ) -> SessionId {
         let sid = session.unwrap_or_default();
         let ticket = self.ledger.admit(sid, origin, id);
-        self.route(sid, id, text, files, ticket).await
+        self.route(sid, id, text, files, ticket, None).await
     }
 
     /// [`Agents::input`] with a ticket admitted earlier (a queued child's first
-    /// turn). A routing failure — a rejected attachment, no actor, or a `tell`
-    /// into a closed mailbox — releases the ticket: no runner ever held it.
+    /// turn). `scope` is the A2A request scope the input belongs to (an owned
+    /// child's assignment, the result of the task's own work); `None` is a
+    /// private input (50 §6.3). A routing failure — a rejected attachment, no
+    /// actor, or a `tell` into a closed mailbox — releases the ticket: no
+    /// runner ever held it.
     async fn route(
         &mut self,
         sid: SessionId,
@@ -524,6 +649,7 @@ impl Agents {
         text: String,
         files: Vec<PathBuf>,
         ticket: InputTicket,
+        scope: Option<Uuid>,
     ) -> SessionId {
         let routed = match check_files(&files) {
             Ok(()) => self.session(Some(sid), None, None, (None, None)).await,
@@ -537,6 +663,7 @@ impl Agents {
                         text,
                         files,
                         ticket: Some(ticket),
+                        scope,
                     })
                     .await
             }
@@ -544,6 +671,7 @@ impl Agents {
         };
         if let Err(e) = sent {
             self.ledger.release(sid, ticket);
+            self.network_input_dropped(ticket).await;
             tracing::error!(session = %sid, "session: {e:#}");
             self.rt
                 .publish(AgentEvent::Error {
@@ -556,12 +684,9 @@ impl Agents {
         sid
     }
 
-    /// [`SendInput`] / [`Steer`] from a human (design doc 19 §2.3): a session
-    /// blocked in `send_message{await_reply}` — a pending `(session, _)`
-    /// waiter — gets `text` as the tool's return value instead of a queued
-    /// message, announced as `MessageDelivered { from: "you" }`. Harness
-    /// inputs ([`Agents::inject`]) never take this path. Attachments cannot
-    /// answer a tool call, so an input with `files` is always routed.
+    /// [`SendInput`] / [`Steer`] from a human: routed as a fresh external
+    /// request (47 §4.5). A pending peer wait is never answered implicitly;
+    /// the owner answers a request by id with [`AnswerPeerRequest`] (50 §5.3).
     async fn human_input(
         &mut self,
         session: Option<SessionId>,
@@ -569,27 +694,6 @@ impl Agents {
         text: String,
         files: Vec<PathBuf>,
     ) -> SessionId {
-        let waiter = session
-            .filter(|_| files.is_empty())
-            .and_then(|s| self.waiters.keys().find(|(w, _)| *w == s).copied());
-        let text = match waiter.and_then(|k| self.waiters.remove(&k)) {
-            // A waiter that gave up (timeout) has dropped its receiver; fall through to route.
-            Some(tx) => match tx.send(text.clone()) {
-                Ok(()) => {
-                    let target = session.unwrap_or_default();
-                    self.rt
-                        .publish(AgentEvent::MessageDelivered {
-                            session: target,
-                            from: "you".into(),
-                            text,
-                        })
-                        .await;
-                    return target;
-                }
-                Err(_) => text,
-            },
-            None => text,
-        };
         self.input(session, id, text, files, InputOrigin::External)
             .await
     }
@@ -611,10 +715,43 @@ impl Agents {
             .map(|l| &l.actor)
     }
 
+    /// Wall deadline of one peer-triggered request scope (50 §8).
+    pub(crate) fn request_deadline(&self) -> Duration {
+        Duration::from_secs(self.cfg.subagents.max_runtime_secs)
+    }
+
+    /// Known vault values become placeholders (50 §9) before any peer
+    /// persistence, event or transport; unknown literals cannot be detected.
+    pub(crate) fn redact<'a>(&self, text: &'a str) -> Cow<'a, str> {
+        self.auth
+            .vault
+            .as_deref()
+            .map_or(Cow::Borrowed(text), |v| v.redact(text))
+    }
+
     /// Inject `text` (already wrapped) into `to` and announce it. Harness-made,
-    /// so `Automatic`: it never opens a new reminder budget (47 §4.5).
-    async fn inject(&mut self, to: SessionId, from: &str, text: String, wrapped: String) {
-        self.input(Some(to), None, wrapped, Vec::new(), InputOrigin::Automatic)
+    /// so `Automatic`: it never opens a new reminder budget (47 §4.5). A result
+    /// of work an exported task started carries that task's `scope`, and is
+    /// the scope's work from admission (50 §6.3).
+    async fn inject(
+        &mut self,
+        to: SessionId,
+        from: &str,
+        text: String,
+        wrapped: String,
+        scope: Option<Uuid>,
+    ) {
+        let ticket = self.ledger.admit(to, InputOrigin::Automatic, None);
+        if let Some(scope) = scope
+            && !self.network_input_queued(scope, ticket).await
+        {
+            // The task was cancelled or settled meanwhile: a late result of
+            // its work starts no turn (50 §8). Nothing is owed for it.
+            self.ledger.release(to, ticket);
+            tracing::info!(session = %to, "{from}: result dropped, its request scope is closed");
+            return;
+        }
+        self.route(to, None, wrapped, Vec::new(), ticket, scope)
             .await;
         self.rt
             .publish(AgentEvent::MessageDelivered {
@@ -625,56 +762,628 @@ impl Agents {
             .await;
     }
 
-    /// Resolve `to` relative to `from`: `"parent"` or a child name.
-    async fn resolve(&mut self, from: SessionId, to: &str) -> Option<(SessionId, String)> {
-        if to == "parent" {
-            let (parent, name) = self.sessions.get(&from)?.parent.clone()?;
-            return Some((parent, name));
+    /// Resolve `to` relative to `from` (50 §5.1): `session:<uuid>` must be a
+    /// stored row (never created), `parent` and a direct child's name are
+    /// conveniences, `peer:<name>` is a configured remote. Unknown and
+    /// malformed are one answer, so a guessed UUID learns nothing.
+    async fn resolve(&mut self, from: SessionId, to: &str) -> Result<Target, String> {
+        let unknown = || format!("unknown peer `{to}`");
+        match PeerAddress::parse(to).ok_or_else(unknown)? {
+            PeerAddress::Remote(name) => Ok(Target::Remote(name)),
+            PeerAddress::Session(id) => {
+                match self.store.session(id).await.map_err(|e| e.to_string())? {
+                    Some(_) => {
+                        self.mirror(id).await;
+                        Ok(Target::Local(id))
+                    }
+                    None => Err(unknown()),
+                }
+            }
+            PeerAddress::Relative(name) if name == "parent" => {
+                let parent = match self.sessions.get(&from).and_then(|l| l.parent.as_ref()) {
+                    Some((p, _)) => Some(*p),
+                    None => self
+                        .store
+                        .session(from)
+                        .await
+                        .map_err(|e| e.to_string())?
+                        .and_then(|r| r.parent),
+                };
+                parent.map(Target::Local).ok_or_else(unknown)
+            }
+            PeerAddress::Relative(name) => self
+                .store
+                .child_by_name(from, &name)
+                .await
+                .map_err(|e| e.to_string())?
+                .map(Target::Local)
+                .ok_or_else(unknown),
         }
-        let child = self.store.child_by_name(from, to).await.ok()??;
-        Some((child, "parent".into()))
     }
 
-    /// A child's turn ended: hand its result to the parent — a pending
-    /// waiter, else a `<subagent_result>` input. The child stays counted in
-    /// the ledger until this ran (`Ledger::handed_off`), and the parent's
-    /// ticket is admitted inside `inject` before the child is released, so
-    /// no decision can observe zero work between the two (47 §3.2).
+    /// A refused route as the sender reads it: its own disablement is named;
+    /// another tree's existence, scope or opt-out is not disclosed (50 §2.3).
+    fn route_error(&self, from: SessionId, to: SessionId, e: PolicyError) -> String {
+        let same_tree = {
+            let p = self.communication.0.read();
+            p.root_of(from).ok() == p.root_of(to).ok()
+        };
+        match e {
+            PolicyError::Disabled { session, .. } if session == from => {
+                format!("send_message: {}: {e}", tools::communication::DISABLED)
+            }
+            PolicyError::Disabled { .. } if same_tree => {
+                format!("send_message: {}: {e}", tools::communication::DISABLED)
+            }
+            PolicyError::SelfRoute(_) => "cannot message yourself".into(),
+            PolicyError::NetworkDisabled => e.to_string(),
+            _ => format!("unknown peer `session:{to}`"),
+        }
+    }
+
+    /// Register an exact waiter for message `id` (50 §5.3), bounded per
+    /// session and harness.
+    fn wait(
+        &mut self,
+        session: SessionId,
+        to: String,
+        id: Uuid,
+        generation: Generation,
+    ) -> Result<oneshot::Receiver<PeerReceipt>, String> {
+        if self.waits.len() >= WAITS_PER_HARNESS {
+            return Err(format!("busy: {WAITS_PER_HARNESS} replies already awaited"));
+        }
+        if self.waits.values().filter(|w| w.session == session).count() >= WAITS_PER_SESSION {
+            return Err(format!(
+                "busy: this session already awaits {WAITS_PER_SESSION} replies"
+            ));
+        }
+        let (tx, rx) = oneshot::channel();
+        self.waits.insert(
+            id,
+            Wait {
+                session,
+                to,
+                tx,
+                generation,
+            },
+        );
+        Ok(rx)
+    }
+
+    /// Hand the answer to the waiter of `original.id` (the awaited message,
+    /// already `replied` in the store with the text). `false` when no live
+    /// waiter exists: deliver the reply as ordinary input instead.
+    pub(crate) fn settle_wait(&mut self, original: &PeerReceipt) -> bool {
+        let Some(w) = self.waits.remove(&original.id) else {
+            return false;
+        };
+        self.bound.retain(|_, id| *id != original.id);
+        w.tx.send(original.clone()).is_ok()
+    }
+
+    /// Expire every wait `pred` selects with a terminal receipt naming
+    /// `reason` (never a fake reply or a normal timeout).
+    fn expire_waits(&mut self, reason: &str, pred: impl Fn(&Wait) -> bool) {
+        let gone: Vec<Uuid> = self
+            .waits
+            .iter()
+            .filter(|(_, w)| pred(w))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in gone {
+            let w = self.waits.remove(&id).expect("just listed");
+            self.bound.retain(|_, b| *b != id);
+            let _ = w.tx.send(PeerReceipt {
+                id,
+                to: w.to,
+                state: PeerMessageState::Failed,
+                reply_to: None,
+                reply: None,
+                task_id: None,
+                error: Some(reason.to_owned()),
+                answered_by: None,
+            });
+        }
+    }
+
+    /// Publish [`PeerMessageChanged`] to each local participant of `receipt`.
+    pub(crate) async fn peer_changed(&self, receipt: &PeerReceipt) {
+        let mut parties: Vec<SessionId> = PeerAddress::local(&receipt.to).into_iter().collect();
+        match self.store.exchange_record(receipt.id).await {
+            Ok(Some(rec)) => {
+                if let Some(s) = PeerAddress::local(&rec.from).filter(|s| !parties.contains(s)) {
+                    parties.push(s);
+                }
+            }
+            Ok(None) => {}
+            Err(e) => tracing::error!(id = %receipt.id, "exchange_record: {e:#}"),
+        }
+        for session in parties {
+            self.rt
+                .publish(PeerMessageChanged {
+                    session,
+                    id: receipt.id,
+                    state: receipt.state,
+                })
+                .await;
+        }
+    }
+
+    /// Publish the policy change for `session` (`None` = global).
+    async fn communication_changed(&self, session: Option<SessionId>) {
+        let revision = self.communication.0.read().revision();
+        self.rt
+            .publish(CommunicationChanged { session, revision })
+            .await;
+    }
+
+    /// A policy mutation that cancels generations, run behind the intake
+    /// barrier (50 §8): runners hold [`PEER_INTAKE`] read across
+    /// `generation.live()` + `consume_exchange`, so no consumption that saw a
+    /// live generation can commit after the tokens moved, and the registry
+    /// refuses new admissions from the shared tokens at once. The caller
+    /// then suppresses accepted input, drops queued runner inputs and
+    /// expires waits before it replies.
+    pub(crate) async fn revoking<R>(&self, f: impl FnOnce(&mut Policy) -> R) -> R {
+        let _barrier = PEER_INTAKE.write().await;
+        f(&mut self.communication.0.write())
+    }
+
+    /// Schedule an accepted exchange into its local recipient (50 §7): the
+    /// row exists and is `accepted`; the recipient must be a stored session
+    /// (never created here), native when `isolated` (an A2A task scope needs
+    /// native request ownership). The 47 ticket is admitted before the
+    /// actor `ask`, which runs off this mailbox; a refused ask fails the
+    /// exchange and releases the ticket through [`PeerIntakeFailed`].
+    pub(crate) async fn enqueue_peer(
+        &mut self,
+        record: PeerRecord,
+        generation: Generation,
+        isolated: bool,
+        reply_expected: bool,
+    ) -> Result<(), String> {
+        let to = PeerAddress::local(&record.receipt.to).ok_or("recipient is not local")?;
+        if !generation.live() {
+            return Err(format!(
+                "{}: route revoked before intake",
+                tools::communication::DISABLED
+            ));
+        }
+        let row = self
+            .store
+            .session(to)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("unknown peer `session:{to}`"))?;
+        if isolated && row.agent.is_some() {
+            return Err("an external harness cannot own an A2A task scope".into());
+        }
+        // The chain bound follows the initiating request across sessions
+        // (50 §8): a local sender's chain is inherited, a remote's is not.
+        let sender = PeerAddress::local(&record.from);
+        if self.ledger.chain_exhausted_for(sender, to) {
+            return Err(format!(
+                "chain limit: {} peer-triggered continuations since the last external input",
+                crate::communication::CHAIN_MAX
+            ));
+        }
+        let actor = self.actor(to).await?;
+        let id = record.receipt.id;
+        let scope = record.request_scope;
+        let ticket = self.ledger.admit_chained(to, None, sender);
+        if let Some(scope) = scope
+            && !self.network_input_queued(scope, ticket).await
+        {
+            // The scope's work from admission until it enters a turn (50
+            // §6.3); a cancelled scope takes no more input.
+            self.ledger.release(to, ticket);
+            return Err("canceled: the request scope is closed".into());
+        }
+        let me = ActorRef::<Agents>::lookup(AGENT_ACTOR).ok().flatten();
+        tokio::spawn(async move {
+            let Err(reason) = actor
+                .ask_peer(PeerInput {
+                    record,
+                    generation,
+                    ticket,
+                    request_scope: scope,
+                    isolated,
+                    reply_expected,
+                })
+                .await
+            else {
+                return;
+            };
+            match me {
+                Some(me) => {
+                    let _ = me
+                        .tell(PeerIntakeFailed {
+                            session: to,
+                            id,
+                            ticket,
+                            reason,
+                        })
+                        .await;
+                }
+                None => tracing::error!(session = %to, %id, "peer intake refused: {reason}"),
+            }
+        });
+        Ok(())
+    }
+
+    /// Cancel one request scope in `session` (50 §8): queued input of that
+    /// scope never starts, its in-flight turn is signalled, and so is every
+    /// child the scope spawned (50 §6.3) — a queued first turn never starts,
+    /// a running one stops, and its result is dropped by
+    /// [`Self::child_finished`] whenever it lands. The cancelled turns'
+    /// exact waits expire (50 §5.3). Unrelated turns, children and waits
+    /// are untouched. Task rows transition through the store by their
+    /// owner, only once the owned work has stopped.
+    pub(crate) async fn cancel_peer_scope(
+        &mut self,
+        session: SessionId,
+        scope: Uuid,
+    ) -> Result<(), String> {
+        let owner = match self.live(session) {
+            Some(LiveActor::Native(a)) => a
+                .tell(CancelPeerScope { scope })
+                .await
+                .map_err(|e| e.to_string()),
+            Some(LiveActor::Acp(_)) => Err(NOT_NATIVE.into()),
+            None => Ok(()),
+        };
+        let children: Vec<SessionId> = self
+            .owned_children
+            .iter()
+            .filter(|(_, o)| o.scope == scope && !o.cancelled)
+            .map(|(id, _)| *id)
+            .collect();
+        for &child in &children {
+            self.owned_children
+                .get_mut(&child)
+                .expect("listed")
+                .cancelled = true;
+            // Stop control (47 §4.3): candidates admitted before this are stale.
+            self.ledger.bump(child);
+            match self.live(child) {
+                // Its first turn runs under the inherited scope: the same
+                // exact signal, in flight or still queued.
+                Some(LiveActor::Native(a)) => {
+                    let _ = a.tell(CancelPeerScope { scope }).await;
+                }
+                Some(acp @ LiveActor::Acp(_)) => acp.tell_cancel().await,
+                None => {}
+            }
+        }
+        // Only the scope's own turn awaits under `session`; a private turn
+        // running there now keeps its waits.
+        let owner_scoped = self.network_turn_scope(session) == Some(scope);
+        self.expire_waits("cancelled", |w| {
+            (owner_scoped && w.session == session) || children.contains(&w.session)
+        });
+        owner
+    }
+
+    /// A queued child's first turn got its permit ([`StartChildTurn`]): the
+    /// scope it runs under, if a request scope owns the child (its input is
+    /// registered as that scope's work, 50 §6.3). `Err` when the scope was
+    /// cancelled while it waited: the ticket is released, the `child:<id>`
+    /// work settled, and nothing is routed.
+    async fn claim_child_turn(
+        &mut self,
+        child: SessionId,
+        ticket: InputTicket,
+    ) -> Result<Option<Uuid>, ()> {
+        let Some(&OwnedChild { scope, cancelled }) = self.owned_children.get(&child) else {
+            return Ok(None);
+        };
+        if cancelled || !self.network_input_queued(scope, ticket).await {
+            self.owned_children.remove(&child);
+            self.ledger.release(child, ticket);
+            self.network_settle_work(scope, &format!("child:{child}"))
+                .await;
+            return Err(());
+        }
+        Ok(Some(scope))
+    }
+
+    /// Disable follow-through for `subtree` (`None` = everything) after the
+    /// policy barrier moved (50 §2.2, §8): accepted-unconsumed input is
+    /// suppressed durably, live runners drop their queued peer inputs,
+    /// affected waits expire with `communication_disabled`, and the network
+    /// module is told. Suppressed input never revives on re-enable.
+    async fn revoke(&mut self, subtree: Option<SessionId>) {
+        const REASON: &str = tools::communication::DISABLED;
+        match self.store.suppress_exchanges(subtree, REASON).await {
+            Ok(receipts) => {
+                for r in &receipts {
+                    self.peer_changed(r).await;
+                }
+            }
+            Err(e) => tracing::error!("suppress_exchanges: {e:#}"),
+        }
+        // Live runners in the subtree (the ledger mirrors the same parent links).
+        let affected: Vec<SessionId> = match subtree {
+            None => self.sessions.keys().copied().collect(),
+            Some(root) => self.ledger.subtree(root),
+        };
+        for s in affected {
+            if let Some(LiveActor::Native(a)) = self.live(s) {
+                let _ = a.tell(SuppressPeerInputs).await;
+            }
+        }
+        self.expire_waits(REASON, |w| !w.generation.live());
+        self.network_revoked(subtree, REASON).await;
+    }
+
+    /// A child's turn ended: hand its result on through the same durable
+    /// intake as any peer message (50 §7), then release the child. The turn
+    /// bound to an awaited request answers exactly that request first, to
+    /// whichever session asked (`reply:<turn>`, 50 §5.3); the parent gets
+    /// the result as uncorrelated input from `session:<child>`
+    /// (`result:<turn>`) unless it already took it as that reply. Both keys
+    /// are durable dedup keys, so a repeated finish for the same turn never
+    /// injects twice, across restarts too. Off routes deliver nothing while
+    /// the transcript stays inspectable. The text is this turn's own final
+    /// result ([`PeerTurnFinished`]); a missing one is an error, never
+    /// another turn's text. A child a request scope owns (50 §6.3) hands
+    /// its result off as that scope's input — or, once the scope was
+    /// cancelled, records it `failed` and wakes nobody — and its `child:<id>`
+    /// work settles only here, after the child left the ledger, so the task
+    /// never completes or cancels while the child could still act. The
+    /// child stays counted in the ledger until this ran
+    /// (`Ledger::handed_off`), and the parent's ticket is admitted inside
+    /// `enqueue_peer` before the child is released (47 §3.2).
     async fn child_finished(&mut self, child: SessionId, turn: TurnId, stop_reason: &str) {
-        let Some((parent, name)) = self.sessions.get(&child).and_then(|l| l.parent.clone()) else {
-            self.ledger.handed_off(child, turn);
+        let owned = self.owned_children.remove(&child);
+        match self.sessions.get(&child).and_then(|l| l.parent.clone()) {
+            Some((parent, _)) => {
+                self.hand_off(child, turn, parent, stop_reason, owned.as_ref())
+                    .await;
+            }
+            None => {
+                self.turn_text.remove(&(child, turn));
+            }
+        }
+        self.ledger.handed_off(child, turn);
+        if let Some(o) = owned {
+            self.network_settle_work(o.scope, &format!("child:{child}"))
+                .await;
+        }
+    }
+
+    /// The delivery half of [`Self::child_finished`].
+    async fn hand_off(
+        &mut self,
+        child: SessionId,
+        turn: TurnId,
+        parent: SessionId,
+        stop_reason: &str,
+        owned: Option<&OwnedChild>,
+    ) {
+        let request = self.bound.remove(&(child, turn));
+        let answered = self.delivered.remove(&(child, turn));
+        let Some(mut text) = self.turn_text.remove(&(child, turn)) else {
+            tracing::error!(session = %child, %turn, "child turn finished without its PeerTurnFinished result");
+            self.rt
+                .publish(AgentEvent::Error {
+                    session: parent,
+                    turn: None,
+                    message: format!(
+                        "result of subagent session:{child} (turn {turn}) is missing; inspect its transcript"
+                    ),
+                })
+                .await;
             return;
         };
-        let mut text = self.store.last_turn_text(child).await.unwrap_or_else(|e| {
-            tracing::error!(session = %child, "last_turn_text: {e:#}");
-            String::new()
-        });
         if self.timed_out.remove(&child) {
             text = format!(
-                "[timed out after {}s]\n{text}",
-                self.cfg.subagents.max_runtime_secs
+                "[timed out after {}s, stop={}]\n{text}",
+                self.cfg.subagents.max_runtime_secs,
+                attr(stop_reason)
             );
         }
         // Bound like any tool result; the child's id is the spill file stem (36 §4.1).
-        text = spill::cap(
+        let text = spill::cap(
             parent,
             &child.to_string(),
             &text,
             self.cfg.max_tool_output_chars,
             &self.rt.data_dir.join("spill"),
         );
-        if let Some(tx) = self.waiters.remove(&(parent, child)) {
-            match tx.send(text) {
-                // The waiting invocation (still admitted) owns the continuation.
-                Ok(()) => return self.ledger.handed_off(child, turn),
-                Err(t) => text = t, // waiter gave up (timeout); fall through to inject
-            }
+        let text = self.redact(&text).into_owned();
+        // The exact reply goes to whoever is still waiting for it — the
+        // parent, or a sibling that asked the child directly.
+        let mut parent_answered = answered == Some(parent);
+        if let Some(request) = request
+            && let Some(requester) = self.answer_bound(child, turn, request, &text).await
+        {
+            parent_answered |= requester == parent;
         }
-        let wrapped = format!(
-            "<subagent_result name=\"{name}\" session=\"{child}\" stop=\"{stop_reason}\">\n{text}\n</subagent_result>"
-        );
-        self.inject(parent, &name, text, wrapped).await;
-        self.ledger.handed_off(child, turn);
+        let generation = self.communication.0.write().route(child, parent);
+        let Ok(generation) = generation else {
+            tracing::info!(session = %child, %parent, "child result not delivered: communication off");
+            return;
+        };
+        let (from_key, to_key) = (format!("session:{child}"), format!("session:{parent}"));
+        let request_id = format!("result:{turn}");
+        let receipt = match self
+            .store
+            .accept_exchange(&AcceptExchange {
+                sender: &from_key,
+                recipient: &to_key,
+                sender_session: Some(child),
+                recipient_session: Some(parent),
+                request_id: Some(&request_id),
+                reply_to: None,
+                request_scope: owned.map(|o| o.scope),
+                generation: generation.revision() as i64,
+                body: &text,
+            })
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!(session = %child, "child result exchange: {}", comm_err(e));
+                return;
+            }
+        };
+        if receipt.state != PeerMessageState::Accepted || !self.enqueued.insert(receipt.id) {
+            // Durable dedup: this turn's result was already accounted for.
+            return;
+        }
+        self.peer_changed(&receipt).await;
+        if owned.is_some_and(|o| o.cancelled) {
+            // The scope was cancelled while the child ran: its result is
+            // recorded, never a continuation of the cancelled request.
+            self.enqueued.remove(&receipt.id);
+            match self.store.fail_exchange(receipt.id, "cancelled").await {
+                Ok(r) => self.peer_changed(&r).await,
+                Err(e) => tracing::error!(id = %receipt.id, "fail_exchange: {e:#}"),
+            }
+            return;
+        }
+        if parent_answered {
+            // The parent already holds this result as the reply to its own
+            // request (50 §7): the durable record exists, consumed without a
+            // second turn.
+            let revision = generation.revision() as i64;
+            if let Ok(Some(r)) = self
+                .store
+                .consume_exchange_direct(receipt.id, parent, revision)
+                .await
+            {
+                self.peer_changed(&r).await;
+            }
+            self.enqueued.remove(&receipt.id);
+            return;
+        }
+        match self.store.peer_record(parent, receipt.id).await {
+            Ok(Some(record)) => {
+                if let Err(reason) = self.enqueue_peer(record, generation, false, false).await {
+                    self.enqueued.remove(&receipt.id);
+                    match self.store.fail_exchange(receipt.id, &reason).await {
+                        Ok(r) => self.peer_changed(&r).await,
+                        Err(e) => tracing::error!(id = %receipt.id, "fail_exchange: {e:#}"),
+                    }
+                    self.rt
+                        .publish(AgentEvent::Error {
+                            session: parent,
+                            turn: None,
+                            message: format!("subagent result not delivered: {reason}"),
+                        })
+                        .await;
+                }
+            }
+            Ok(None) => tracing::error!(id = %receipt.id, "accepted child result has no record"),
+            Err(e) => tracing::error!(id = %receipt.id, "peer_record: {e:#}"),
+        }
+    }
+
+    /// Answer the live waiter of `request` with `text` as `child`'s reply
+    /// (`reply:<turn>`, 50 §5.3): the store verifies the reversed endpoints
+    /// and marks the request `replied`; the waiter takes the receipt, or —
+    /// when its tool call is already gone — the reply reaches the requester
+    /// as ordinary input. `Some(requester)` when a reply was recorded;
+    /// `None` with no live waiter or an off route (the result is then the
+    /// parent's alone).
+    async fn answer_bound(
+        &mut self,
+        child: SessionId,
+        turn: TurnId,
+        request: Uuid,
+        text: &str,
+    ) -> Option<SessionId> {
+        let requester = self.waits.get(&request)?.session;
+        let generation = match self.communication.0.write().route(child, requester) {
+            Ok(g) => g,
+            Err(e) => {
+                tracing::info!(session = %child, %requester, "bound reply not delivered: {e}");
+                return None;
+            }
+        };
+        let (from_key, to_key) = (format!("session:{child}"), format!("session:{requester}"));
+        let request_id = format!("reply:{turn}");
+        let receipt = match self
+            .store
+            .accept_exchange(&AcceptExchange {
+                sender: &from_key,
+                recipient: &to_key,
+                sender_session: Some(child),
+                recipient_session: Some(requester),
+                request_id: Some(&request_id),
+                reply_to: Some(request),
+                // Inherited from the request by the store (50 §6.3).
+                request_scope: None,
+                generation: generation.revision() as i64,
+                body: text,
+            })
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!(session = %child, %request, "bound reply exchange: {}", comm_err(e));
+                return None;
+            }
+        };
+        if receipt.state != PeerMessageState::Accepted || !self.enqueued.insert(receipt.id) {
+            return Some(requester);
+        }
+        self.peer_changed(&receipt).await;
+        let original = match self.store.exchange_receipt(request).await {
+            Ok(Some(r)) => r,
+            _ => return Some(requester),
+        };
+        let revision = generation.revision() as i64;
+        if self.settle_wait(&original) {
+            if let Ok(Some(r)) = self
+                .store
+                .consume_exchange_direct(receipt.id, requester, revision)
+                .await
+            {
+                self.peer_changed(&r).await;
+            }
+            self.enqueued.remove(&receipt.id);
+            self.peer_changed(&original).await;
+            return Some(requester);
+        }
+        // The awaiting call timed out under us: ordinary correlated input.
+        match self.store.peer_record(requester, receipt.id).await {
+            Ok(Some(record)) => {
+                if let Err(reason) = self.enqueue_peer(record, generation, false, false).await {
+                    self.enqueued.remove(&receipt.id);
+                    match self.store.fail_exchange(receipt.id, &reason).await {
+                        Ok(r) => self.peer_changed(&r).await,
+                        Err(e) => tracing::error!(id = %receipt.id, "fail_exchange: {e:#}"),
+                    }
+                }
+            }
+            Ok(None) => tracing::error!(id = %receipt.id, "accepted reply has no record"),
+            Err(e) => tracing::error!(id = %receipt.id, "peer_record: {e:#}"),
+        }
+        Some(requester)
+    }
+}
+
+/// Where a peer address points after [`Agents::resolve`].
+enum Target {
+    Local(SessionId),
+    Remote(String),
+}
+
+impl LiveActor {
+    /// Offer a peer exchange to the runner; `Err` is the runner's refusal.
+    async fn ask_peer(&self, input: PeerInput) -> Result<(), String> {
+        let r = match self {
+            Self::Native(a) => a.ask(input).await,
+            Self::Acp(a) => a.ask(input).await,
+        };
+        match r {
+            Ok(()) => Ok(()),
+            Err(SendError::HandlerError(e)) => Err(e),
+            Err(e) => Err(format!("runner unavailable: {e}")),
+        }
     }
 }
 
@@ -715,6 +1424,7 @@ impl Message<AgentEvent> for Agents {
                     .insert(session, (stop_reason.clone(), Utc::now()));
                 self.search.invalidate();
                 self.child_finished(session, turn, &stop_reason).await;
+                self.idle_check(session).await;
             }
             AgentEvent::TitleChanged { .. }
             | AgentEvent::SessionDeleted { .. }
@@ -731,7 +1441,9 @@ impl Message<ApprovalRequested> for Agents {
     type Reply = ();
 
     async fn handle(&mut self, ev: ApprovalRequested, _: &mut Context<Self, Self::Reply>) {
-        self.approvals.insert(ev.session, (ev.id, ev.tool));
+        let session = ev.session;
+        self.approvals.insert(session, (ev.id, ev.tool));
+        self.network_approval(session, true).await;
     }
 }
 
@@ -739,7 +1451,16 @@ impl Message<ApprovalResolved> for Agents {
     type Reply = ();
 
     async fn handle(&mut self, ev: ApprovalResolved, _: &mut Context<Self, Self::Reply>) {
+        let sessions: Vec<SessionId> = self
+            .approvals
+            .iter()
+            .filter(|(_, (id, _))| *id == ev.id)
+            .map(|(s, _)| *s)
+            .collect();
         self.approvals.retain(|_, (id, _)| *id != ev.id);
+        for s in sessions {
+            self.network_approval(s, false).await;
+        }
     }
 }
 
@@ -784,6 +1505,8 @@ impl Message<Admit> for Agents {
     async fn handle(&mut self, Admit(op): Admit, _: &mut Context<Self, Self::Reply>) -> Admission {
         self.place(op.owner).await;
         self.ledger.admit_op(&op);
+        // Bind the work to the owner's active request scope before it runs (50 §6.3).
+        self.network_operation_admitted(&op).await;
         Admission::Admitted
     }
 }
@@ -821,7 +1544,10 @@ impl Agents {
                         &self.rt.data_dir.join("spill"),
                     );
                     let wrapped = job_result(&id, &command, &exit, secs, &text, pty);
-                    self.inject(session, &format!("job {id}"), text, wrapped)
+                    // A job an exported task's turn started reports to that
+                    // task's scope, never to a private turn (50 §6.3).
+                    let scope = self.network_operation_scope(op);
+                    self.inject(session, &format!("job {id}"), text, wrapped, scope)
                         .await;
                 }
                 // An inline result was the `shell` tool's own reply (14 §3);
@@ -848,7 +1574,26 @@ impl Message<Settle> for Agents {
     type Reply = ();
 
     async fn handle(&mut self, m: Settle, _: &mut Context<Self, Self::Reply>) {
+        let (op, owner, unknown) = match &m {
+            Settle::Finished { op } | Settle::FinishedWithResult { op, .. } => (*op, None, None),
+            Settle::Unknown { op, owner, failure } => (*op, Some(*owner), Some(failure.clone())),
+        };
+        let owner = owner.or_else(|| self.ledger.op_owner(op));
         self.settle(m).await;
+        self.network_operation_settled(op, unknown.as_deref()).await;
+        if let Some(s) = owner {
+            self.idle_check(s).await;
+        }
+    }
+}
+
+impl Agents {
+    /// The network module settles exported tasks only from an idle session
+    /// with no ledger activity, never from `TurnFinished` alone (50 §6.3).
+    async fn idle_check(&mut self, session: SessionId) {
+        if self.ledger.activity(session).is_none() {
+            self.network_session_idle(session).await;
+        }
     }
 }
 
@@ -865,6 +1610,18 @@ impl Message<InputConsumed> for Agents {
 
     async fn handle(&mut self, m: InputConsumed, _: &mut Context<Self, Self::Reply>) {
         self.ledger.consumed(m);
+        // A scope's input opened / joined this turn: the turn is the scope's (50 §6.3).
+        self.network_input_consumed(&m).await;
+    }
+}
+
+impl Message<InputDropped> for Agents {
+    type Reply = ();
+
+    async fn handle(&mut self, m: InputDropped, _: &mut Context<Self, Self::Reply>) {
+        self.ledger.release(m.session, m.ticket);
+        self.network_input_dropped(m.ticket).await;
+        self.idle_check(m.session).await;
     }
 }
 
@@ -872,7 +1629,9 @@ impl Message<TurnReturned> for Agents {
     type Reply = ();
 
     async fn handle(&mut self, m: TurnReturned, _: &mut Context<Self, Self::Reply>) {
+        let session = m.session;
         self.ledger.returned(m);
+        self.idle_check(session).await;
     }
 }
 
@@ -911,7 +1670,7 @@ impl Message<DecideYield> for Agents {
     ) -> YieldDecision {
         let blocked = self.ledger.subtree(m.session).into_iter().any(|d| {
             self.approvals.contains_key(&d)
-                || self.waiters.keys().any(|(w, _)| *w == d)
+                || self.waits.values().any(|w| w.session == d)
                 || (d != m.session && self.running.contains(&d))
         });
         self.ledger.decide(&m, blocked)
@@ -1135,6 +1894,29 @@ impl Message<ForkSession> for Agents {
             .fork(m.session, m.through, m.reply)
             .await
             .map_err(|e| e.to_string())?;
+        // A fork is a new root (50 §2.1): the source root's scope, no alias,
+        // opted out when the source is effectively off; nothing peer-related
+        // is copied (exchanges, tasks, waits).
+        self.mirror(m.session).await;
+        let scope = {
+            let mut p = self.communication.0.write();
+            match p.record_fork(m.session, id) {
+                Ok(()) => p
+                    .root_of(id)
+                    .ok()
+                    .and_then(|r| p.state(Some(r)).ok())
+                    .map(|s| s.scope),
+                Err(e) => {
+                    tracing::error!(session = %id, "record_fork: {e}");
+                    None
+                }
+            }
+        };
+        if let Some(scope) = scope.filter(|s| *s != PeerScope::Isolated)
+            && let Err(e) = self.store.set_root_scope(id, scope, None).await
+        {
+            tracing::error!(session = %id, "set_root_scope: {e:#}");
+        }
         self.search.invalidate();
         Ok(id)
     }
@@ -1146,7 +1928,10 @@ impl Message<Cancel> for Agents {
     async fn handle(&mut self, m: Cancel, _: &mut Context<Self, Self::Reply>) {
         // Every running descendant, not one level (design doc 19 §2.3).
         let tree = self.store.descendants(m.session).await.unwrap_or_default();
-        for id in std::iter::once(m.session).chain(tree.into_iter().map(|(_, s)| s.id)) {
+        let ids: Vec<SessionId> = std::iter::once(m.session)
+            .chain(tree.into_iter().map(|(_, s)| s.id))
+            .collect();
+        for &id in &ids {
             // Stop control (47 §4.3): candidates admitted before this are stale.
             self.ledger.bump(id);
             if let Some(live) = self
@@ -1157,6 +1942,10 @@ impl Message<Cancel> for Agents {
                 live.actor.tell_cancel().await;
             }
         }
+        // The cancelled turns' awaiting tool calls are gone: their waits
+        // expire explicitly (50 §5.3), never left for a late reply.
+        self.expire_waits("cancelled", |w| ids.contains(&w.session));
+        self.bound.retain(|(s, _), _| !ids.contains(s));
     }
 }
 
@@ -1433,6 +2222,20 @@ impl Message<SpawnChild> for Agents {
                 name: name.clone(),
             })
             .await;
+        // Spawned by a turn an A2A request scope owns (50 §6.3): the child
+        // is that scope's work — explicitly, from the spawning turn, never
+        // from whatever task happens to be active in the parent — until
+        // `child_finished` settles the `child:<id>` row.
+        if let Some(scope) = self.network_turn_scope(m.parent) {
+            self.network_bind_work(scope, &format!("child:{id}")).await;
+            self.owned_children.insert(
+                id,
+                OwnedChild {
+                    scope,
+                    cancelled: false,
+                },
+            );
+        }
         // The child's initial assignment is admitted now, before the permit
         // wait: a child queued behind the cap already counts (47 §3.2), and
         // it opens the child's own reminder budget (`External`).
@@ -1462,7 +2265,11 @@ impl Message<StartChildTurn> for Agents {
 
     async fn handle(&mut self, m: StartChildTurn, ctx: &mut Context<Self, Self::Reply>) {
         let child = m.child;
-        self.route(child, None, m.text, Vec::new(), m.ticket).await;
+        let Ok(scope) = self.claim_child_turn(child, m.ticket).await else {
+            return;
+        };
+        self.route(child, None, m.text, Vec::new(), m.ticket, scope)
+            .await;
         let me = ctx.actor_ref().clone();
         let after = Duration::from_secs(self.cfg.subagents.max_runtime_secs);
         let timer = tokio::spawn(async move {
@@ -1502,40 +2309,831 @@ impl Message<ChildTimedOut> for Agents {
     }
 }
 
+/// A store refusal as the sender reads it; unknown and unauthorized are one answer.
+fn comm_err(e: anyhow::Error) -> String {
+    match e.downcast_ref::<CommError>() {
+        Some(CommError::NotFound) => "unknown message".into(),
+        Some(CommError::Conflict) => {
+            "request_id already used for a different message; pick a new request_id".into()
+        }
+        Some(CommError::Terminal) => "that message is already settled".into(),
+        Some(CommError::Busy) => "busy: the recipient's intake is full; retry later".into(),
+        Some(CommError::TooLarge) => format!("message exceeds {PEER_TEXT_MAX} bytes"),
+        Some(CommError::Revoked) => format!("{}: route revoked", tools::communication::DISABLED),
+        Some(other) => other.to_string(),
+        None => format!("{e:#}"),
+    }
+}
+
 impl Message<Deliver> for Agents {
-    type Reply = Result<Option<oneshot::Receiver<String>>, String>;
+    type Reply = Result<Delivered, String>;
+
+    async fn handle(&mut self, m: Deliver, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let revoked = || {
+            format!(
+                "send_message: {}: {}",
+                tools::communication::DISABLED,
+                tools::communication::Disabled::Revoked
+            )
+        };
+        if m.admitted.is_cancelled() {
+            return Err(revoked());
+        }
+        let body = self.redact(&m.text).into_owned();
+        if body.len() > PEER_TEXT_MAX {
+            return Err(format!("message exceeds {PEER_TEXT_MAX} bytes"));
+        }
+        let to = match self.resolve(m.from, &m.to).await? {
+            Target::Remote(alias) => {
+                let generation = self
+                    .communication
+                    .0
+                    .write()
+                    .remote(m.from)
+                    .map_err(|e| e.to_string())?;
+                if m.admitted.is_cancelled() {
+                    return Err(revoked());
+                }
+                let receipt = self
+                    .network_send(
+                        m.from,
+                        &alias,
+                        &body,
+                        m.request_id.as_deref(),
+                        m.reply_to,
+                        m.await_reply,
+                    )
+                    .await?;
+                let reply = match (m.await_reply, receipt.state) {
+                    (true, PeerMessageState::Accepted) => {
+                        Some(self.wait(m.from, receipt.to.clone(), receipt.id, generation)?)
+                    }
+                    _ => None,
+                };
+                return Ok(Delivered { receipt, reply });
+            }
+            Target::Local(to) => to,
+        };
+        // The guard drops at the end of this statement; `route_error` reads.
+        let routed = self.communication.0.write().route(m.from, to);
+        let generation = routed.map_err(|e| self.route_error(m.from, to, e))?;
+        // Admission after the route (50 §8 item 2): the tool's own token is
+        // what an off→on between approval and dispatch cannot revive.
+        if m.admitted.is_cancelled() {
+            return Err(revoked());
+        }
+        if m.await_reply
+            && (self.waits.len() >= WAITS_PER_HARNESS
+                || self.waits.values().filter(|w| w.session == m.from).count() >= WAITS_PER_SESSION)
+        {
+            return Err("busy: too many replies awaited; let one resolve first".into());
+        }
+        // A reply inherits the request scope of what it answers (50 §6.3).
+        let scope = match m.reply_to {
+            Some(r) => {
+                self.store
+                    .peer_record(m.from, r)
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .ok_or_else(|| "unknown message".to_string())?
+                    .request_scope
+            }
+            None => None,
+        };
+        let (from_key, to_key) = (format!("session:{}", m.from), format!("session:{to}"));
+        let receipt = self
+            .store
+            .accept_exchange(&AcceptExchange {
+                sender: &from_key,
+                recipient: &to_key,
+                sender_session: Some(m.from),
+                recipient_session: Some(to),
+                request_id: m.request_id.as_deref(),
+                reply_to: m.reply_to,
+                request_scope: scope,
+                generation: generation.revision() as i64,
+                body: &body,
+            })
+            .await
+            .map_err(comm_err)?;
+        if receipt.state != PeerMessageState::Accepted || !self.enqueued.insert(receipt.id) {
+            // A retried request_id: the existing outcome, nothing sent again.
+            return Ok(Delivered {
+                receipt,
+                reply: None,
+            });
+        }
+        self.peer_changed(&receipt).await;
+        // An answer to a request its recipient awaits completes that tool
+        // call (50 §5.3); the store verified the reversed endpoints.
+        if let Some(request) = m.reply_to
+            && self
+                .waits
+                .get(&request)
+                .is_some_and(|w| w.session == to && w.to == from_key)
+        {
+            // A bound turn's explicit reply is the result of that request.
+            if let Some(t) = self.ledger.turn_of(m.from)
+                && self.bound.get(&(m.from, t)) == Some(&request)
+            {
+                self.delivered.insert((m.from, t), to);
+            }
+            let original = self
+                .store
+                .exchange_receipt(request)
+                .await
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| "unknown message".to_string())?;
+            if self.settle_wait(&original) {
+                let settled = self
+                    .store
+                    .consume_exchange_direct(receipt.id, to, generation.revision() as i64)
+                    .await
+                    .map_err(comm_err)?
+                    .unwrap_or_else(|| receipt.clone());
+                self.enqueued.remove(&receipt.id);
+                self.peer_changed(&settled).await;
+                self.peer_changed(&original).await;
+                let reply = m
+                    .await_reply
+                    .then(|| self.wait(m.from, to_key, settled.id, generation))
+                    .transpose()?;
+                return Ok(Delivered {
+                    receipt: settled,
+                    reply,
+                });
+            }
+        }
+        let record = self
+            .store
+            .peer_record(to, receipt.id)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "unknown message".to_string())?;
+        if let Err(reason) = self
+            .enqueue_peer(record, generation.clone(), false, m.await_reply)
+            .await
+        {
+            self.enqueued.remove(&receipt.id);
+            let failed = self
+                .store
+                .fail_exchange(receipt.id, &reason)
+                .await
+                .unwrap_or(receipt);
+            self.peer_changed(&failed).await;
+            return Err(reason);
+        }
+        let reply = m
+            .await_reply
+            .then(|| self.wait(m.from, to_key, receipt.id, generation))
+            .transpose()?;
+        Ok(Delivered { receipt, reply })
+    }
+}
+
+impl Message<DropWait> for Agents {
+    type Reply = ();
+
+    async fn handle(&mut self, DropWait(id): DropWait, _: &mut Context<Self, Self::Reply>) {
+        self.waits.remove(&id);
+        self.bound.retain(|_, b| *b != id);
+    }
+}
+
+impl Message<PeerConsumed> for Agents {
+    type Reply = ();
+
+    async fn handle(&mut self, m: PeerConsumed, _: &mut Context<Self, Self::Reply>) {
+        self.enqueued.remove(&m.id);
+        // The turn that consumed an awaited request is bound to it (50 §5.3).
+        if self
+            .waits
+            .get(&m.id)
+            .is_some_and(|w| w.to == format!("session:{}", m.session))
+        {
+            self.bound.insert((m.session, m.turn), m.id);
+        }
+        // Live typed provenance (50 §10), from the durable record only.
+        match self.store.peer_record(m.session, m.id).await {
+            Ok(Some(r)) => {
+                self.peer_changed(&r.receipt).await;
+                self.rt
+                    .publish(PeerDelivered {
+                        session: m.session,
+                        origin: origin_of(&r),
+                        text: r.text,
+                        seq: m.seq,
+                        turn: m.turn,
+                    })
+                    .await;
+            }
+            Ok(None) => {
+                tracing::error!(session = %m.session, id = %m.id, "consumed exchange has no record")
+            }
+            Err(e) => tracing::error!(id = %m.id, "peer_record: {e:#}"),
+        }
+    }
+}
+
+/// The provenance a record carries into transcripts and events.
+fn origin_of(r: &PeerRecord) -> PeerOrigin {
+    PeerOrigin {
+        id: r.receipt.id,
+        from: r.from.clone(),
+        reply_to: r.receipt.reply_to,
+        scope: r.request_scope,
+    }
+}
+
+impl Message<PeerIntakeFailed> for Agents {
+    type Reply = ();
+
+    async fn handle(&mut self, m: PeerIntakeFailed, _: &mut Context<Self, Self::Reply>) {
+        tracing::info!(session = %m.session, id = %m.id, "peer intake failed: {}", m.reason);
+        self.enqueued.remove(&m.id);
+        self.ledger.release(m.session, m.ticket);
+        self.network_input_dropped(m.ticket).await;
+        match self.store.exchange_receipt(m.id).await {
+            Ok(Some(r)) if r.state == PeerMessageState::Accepted => {
+                // The runner did not settle the row itself (closed mailbox, refusal).
+                match self.store.fail_exchange(m.id, &m.reason).await {
+                    Ok(r) => self.peer_changed(&r).await,
+                    Err(e) => tracing::error!(id = %m.id, "fail_exchange: {e:#}"),
+                }
+            }
+            Ok(Some(r)) => self.peer_changed(&r).await,
+            Ok(None) => {}
+            Err(e) => tracing::error!(id = %m.id, "exchange_receipt: {e:#}"),
+        }
+        self.idle_check(m.session).await;
+    }
+}
+
+impl Message<PeerTurnFinished> for Agents {
+    type Reply = ();
+
+    async fn handle(&mut self, m: PeerTurnFinished, _: &mut Context<Self, Self::Reply>) {
+        // Arrives before `TurnFinished`: `child_finished` takes the text by turn.
+        if self
+            .sessions
+            .get(&m.session)
+            .is_some_and(|l| l.parent.is_some())
+        {
+            self.turn_text.insert((m.session, m.turn), m.text.clone());
+        }
+        self.network_turn_finished(&m).await;
+    }
+}
+
+impl Message<GetCommunication> for Agents {
+    type Reply = Result<CommunicationState, String>;
 
     async fn handle(
         &mut self,
-        m: Deliver,
+        m: GetCommunication,
         _: &mut Context<Self, Self::Reply>,
-    ) -> Result<Option<oneshot::Receiver<String>>, String> {
-        let Some((to, from_name)) = self.resolve(m.from, &m.to).await else {
-            return Err(format!("unknown peer `{}`", m.to));
-        };
-        // A waiter that gave up (timeout) has dropped its receiver; fall through to inject.
-        let unresolved = match self.waiters.remove(&(to, m.from)) {
-            Some(tx) => tx.send(m.text).err(),
-            None => Some(m.text),
-        };
-        if let Some(text) = unresolved {
-            self.next_msg += 1;
-            let reply_to = m
-                .reply_to
-                .map(|r| format!(" reply_to=\"{r}\""))
-                .unwrap_or_default();
-            let wrapped = format!(
-                "<message from=\"{from_name}\" id=\"m{}\" reply_expected=\"{}\"{reply_to}>\n{text}\n</message>",
-                self.next_msg, m.await_reply
-            );
-            self.inject(to, &from_name, text, wrapped).await;
+    ) -> Self::Reply {
+        if let Some(s) = m.session {
+            self.mirror(s).await;
         }
-        Ok(m.await_reply.then(|| {
-            let (tx, rx) = oneshot::channel();
-            self.waiters.insert((m.from, to), tx);
-            rx
-        }))
+        self.communication
+            .0
+            .read()
+            .state(m.session)
+            .map_err(|e| e.to_string())
     }
+}
+
+impl Message<SetCommunication> for Agents {
+    type Reply = Result<CommunicationState, String>;
+
+    async fn handle(
+        &mut self,
+        m: SetCommunication,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        match m.session {
+            None => {
+                // Persist first (50 §8): a failed write keeps the old state.
+                write_config_atomic(
+                    &self.rt.data_dir.join("config.yaml"),
+                    "agent",
+                    "communication",
+                    if m.enabled { "true" } else { "false" },
+                )
+                .map_err(|e| format!("config.yaml: {e}"))?;
+                self.revoking(|p| p.set_global(m.enabled, "command")).await;
+                // `set_global` invalidated every generation in both
+                // directions: settle what those generations carried
+                // (accepted input, waits, exported work) before replying.
+                self.revoke(None).await;
+            }
+            Some(s) => {
+                self.mirror(s).await;
+                self.revoking(|p| p.set_session(s, m.enabled))
+                    .await
+                    .map_err(|e| e.to_string())?;
+                if !m.enabled {
+                    self.revoke(Some(s)).await;
+                }
+            }
+        }
+        self.communication_changed(m.session).await;
+        let state = self
+            .communication
+            .0
+            .read()
+            .state(m.session)
+            .map_err(|e| e.to_string())?;
+        Ok(state)
+    }
+}
+
+impl Message<SetPeerScope> for Agents {
+    type Reply = Result<CommunicationState, String>;
+
+    async fn handle(&mut self, m: SetPeerScope, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.mirror(m.root).await;
+        let (changed, alias) = {
+            let p = self.communication.0.read();
+            let s = p.state(Some(m.root)).map_err(|e| e.to_string())?;
+            let alias = match &m.alias {
+                None => s.alias,
+                Some(a) => {
+                    let a: String = a
+                        .trim()
+                        .chars()
+                        .take(crate::communication::ALIAS_MAX)
+                        .collect();
+                    (!a.is_empty()).then_some(a)
+                }
+            };
+            (s.scope != m.scope, alias)
+        };
+        // Durable first (the trusted record), then the live barrier.
+        self.store
+            .set_root_scope(m.root, m.scope, alias.as_deref())
+            .await
+            .map_err(comm_err)?;
+        self.revoking(|p| p.set_scope(m.root, m.scope, Some(alias.unwrap_or_default())))
+            .await
+            .map_err(|e| e.to_string())?;
+        if changed {
+            // Cross-root routes admitted under the old scope are gone (50 §8).
+            self.expire_waits("scope changed", |w| !w.generation.live());
+            self.network_revoked(Some(m.root), "scope changed").await;
+        }
+        self.communication_changed(Some(m.root)).await;
+        self.communication
+            .0
+            .read()
+            .state(Some(m.root))
+            .map_err(|e| e.to_string())
+    }
+}
+
+impl Message<ListPeers> for Agents {
+    type Reply = Result<PeerPage, String>;
+
+    async fn handle(&mut self, m: ListPeers, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.mirror(m.session).await;
+        let limit = m
+            .limit
+            .filter(|l| *l > 0)
+            .unwrap_or(DISCOVER_DEFAULT_LIMIT)
+            .min(DISCOVER_MAX_LIMIT) as usize;
+        let query = m
+            .query
+            .as_deref()
+            .map(str::to_lowercase)
+            .filter(|q| !q.is_empty());
+        let mut rows = self.directory(m.session).await?;
+        if let Some(q) = &query {
+            rows.retain(|p| p.name.to_lowercase().contains(q) || p.address.contains(q.as_str()));
+        }
+        // The cursor is the last address of the previous page (stable order).
+        let start = match &m.cursor {
+            Some(c) => rows
+                .iter()
+                .position(|p| p.address == *c)
+                .map(|i| i + 1)
+                .ok_or_else(|| "unknown cursor".to_string())?,
+            None => 0,
+        };
+        let end = (start + limit).min(rows.len());
+        let cursor = (end < rows.len()).then(|| rows[end - 1].address.clone());
+        Ok(PeerPage {
+            peers: rows.drain(start..end).collect(),
+            cursor,
+        })
+    }
+}
+
+impl Agents {
+    /// The full permitted directory for `session` (50 §5.1) in stable order:
+    /// same-tree sessions (parent, children, siblings, ancestors,
+    /// descendants), then other `owner` roots and their trees when this
+    /// root is `owner`, then configured remotes. Each local candidate passes
+    /// [`Policy::route`]; nothing dormant is woken and no network is probed.
+    async fn directory(&mut self, session: SessionId) -> Result<Vec<PeerInfo>, String> {
+        let root = {
+            let p = self.communication.0.read();
+            p.enabled(session).map_err(|e| e.to_string())?;
+            p.root_of(session).map_err(|e| e.to_string())?
+        };
+        let mut rows = self
+            .store
+            .list_sessions()
+            .await
+            .map_err(|e| e.to_string())?;
+        rows.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.0.cmp(&b.id.0)));
+        // Mirror every row so `route` never fails on a dangling link.
+        for r in &rows {
+            self.mirror(r.id).await;
+        }
+        let me_parent = rows.iter().find(|r| r.id == session).and_then(|r| r.parent);
+        let mut same = Vec::new();
+        let mut other = Vec::new();
+        {
+            let mut p = self.communication.0.write();
+            for r in &rows {
+                if r.id == session || p.route(session, r.id).is_err() {
+                    continue;
+                }
+                let Ok(their_root) = p.root_of(r.id) else {
+                    continue;
+                };
+                let relationship = if their_root != root {
+                    PeerRelationship::Root
+                } else if Some(r.id) == me_parent {
+                    PeerRelationship::Parent
+                } else if r.parent == Some(session) {
+                    PeerRelationship::Child
+                } else if r.parent.is_some() && r.parent == me_parent {
+                    PeerRelationship::Sibling
+                } else if descends(&rows, r.id, session) {
+                    PeerRelationship::Descendant
+                } else if descends(&rows, session, r.id) {
+                    PeerRelationship::Ancestor
+                } else {
+                    // Same tree, another branch: reachable like a descendant.
+                    PeerRelationship::Descendant
+                };
+                let name = if their_root == root {
+                    r.name.clone().unwrap_or_else(|| short(r.id))
+                } else {
+                    // Never another root's title (50 §5.1): the owner alias or a short id.
+                    p.state(Some(their_root))
+                        .ok()
+                        .and_then(|s| s.alias)
+                        .filter(|_| r.id == their_root)
+                        .unwrap_or_else(|| short(r.id))
+                };
+                let kind = match &r.agent {
+                    None => PeerKind::Native,
+                    Some(a) if self.nodes.read().is_ok_and(|n| n.contains_key(a)) => PeerKind::Node,
+                    Some(_) => PeerKind::Acp,
+                };
+                let state = if self.approvals.contains_key(&r.id) || self.running.contains(&r.id) {
+                    PeerState::Running
+                } else if self.waits.values().any(|w| w.session == r.id) {
+                    PeerState::Awaiting
+                } else if self.live(r.id).is_some() {
+                    PeerState::Idle
+                } else {
+                    PeerState::Stored
+                };
+                let info = PeerInfo {
+                    address: format!("session:{}", r.id),
+                    name,
+                    kind,
+                    relationship,
+                    state,
+                    send: true,
+                    // An external harness cannot call wth peer tools (50 §6.4).
+                    reply: kind == PeerKind::Native,
+                    stream: false,
+                };
+                if their_root == root {
+                    same.push(info);
+                } else {
+                    other.push(info);
+                }
+            }
+        }
+        same.extend(other);
+        same.extend(self.network.remote_peers(root));
+        Ok(same)
+    }
+}
+
+/// `s` is a strict descendant of `ancestor` among `rows`.
+fn descends(rows: &[SessionSummary], mut s: SessionId, ancestor: SessionId) -> bool {
+    for _ in 0..rows.len() {
+        match rows.iter().find(|r| r.id == s).and_then(|r| r.parent) {
+            Some(p) if p == ancestor => return true,
+            Some(p) => s = p,
+            None => return false,
+        }
+    }
+    false
+}
+
+/// Short session id for a nameless peer row: the first 8 hex chars.
+fn short(id: SessionId) -> String {
+    id.to_string().chars().take(8).collect()
+}
+
+impl Message<GetPeerMessage> for Agents {
+    type Reply = Result<PeerRecord, String>;
+
+    async fn handle(
+        &mut self,
+        m: GetPeerMessage,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.store
+            .peer_record(m.session, m.id)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "unknown message".to_string())
+    }
+}
+
+impl Agents {
+    /// Live-waiter derived pending sets for `session` (50 §5.3):
+    /// `(awaiting_answer, awaiting_reply)` = received requests whose sender
+    /// is blocked on `session`, and `session`'s own sent requests it is
+    /// blocked on. Never abandoned oneshots.
+    fn pending_requests(&self, session: SessionId) -> (Vec<Uuid>, Vec<Uuid>) {
+        let me = format!("session:{session}");
+        let mut received = Vec::new();
+        let mut sent = Vec::new();
+        for (id, w) in &self.waits {
+            if w.to == me {
+                received.push(*id);
+            }
+            if w.session == session {
+                sent.push(*id);
+            }
+        }
+        (received, sent)
+    }
+}
+
+impl Message<ListPeerMessages> for Agents {
+    type Reply = Result<PeerMessagePage, String>;
+
+    async fn handle(
+        &mut self,
+        m: ListPeerMessages,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let limit = m
+            .limit
+            .filter(|l| *l > 0)
+            .unwrap_or(DISCOVER_DEFAULT_LIMIT)
+            .min(DISCOVER_MAX_LIMIT);
+        let after: Option<Uuid> = match &m.cursor {
+            Some(c) => Some(c.parse().map_err(|_| "unknown cursor".to_string())?),
+            None => None,
+        };
+        let (received, sent) = self.pending_requests(m.session);
+        if m.pending_only {
+            // Bounded by the wait caps: load each live request's own record.
+            let mut messages = Vec::with_capacity(received.len() + sent.len());
+            for id in received.iter().chain(&sent) {
+                if let Some(r) = self
+                    .store
+                    .peer_record(m.session, *id)
+                    .await
+                    .map_err(|e| e.to_string())?
+                {
+                    messages.push(r);
+                }
+            }
+            messages.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+            return Ok(PeerMessagePage {
+                awaiting_answer: received,
+                awaiting_reply: sent,
+                messages,
+                cursor: None,
+            });
+        }
+        let messages = self
+            .store
+            .peer_records(m.session, after, limit)
+            .await
+            .map_err(|e| e.to_string())?;
+        let cursor = (messages.len() == usize::from(limit))
+            .then(|| messages.last().map(|r| r.receipt.id.to_string()))
+            .flatten();
+        let on_page = |set: &[Uuid]| -> Vec<Uuid> {
+            messages
+                .iter()
+                .map(|r| r.receipt.id)
+                .filter(|id| set.contains(id))
+                .collect()
+        };
+        Ok(PeerMessagePage {
+            awaiting_answer: on_page(&received),
+            awaiting_reply: on_page(&sent),
+            messages,
+            cursor,
+        })
+    }
+}
+
+impl Message<AnswerPeerRequest> for Agents {
+    type Reply = Result<PeerReceipt, String>;
+
+    async fn handle(
+        &mut self,
+        m: AnswerPeerRequest,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        // The durable record decides which side the human acts for.
+        let request = self
+            .store
+            .peer_record(m.session, m.reply_to)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "no such pending request for this session".to_string())?;
+        let me = format!("session:{}", m.session);
+        if request.from == me {
+            // The blocked sender's own request: resolve its wait as the owner,
+            // no peer identity forged, the recipient's copy untouched.
+            if !self
+                .waits
+                .get(&m.reply_to)
+                .is_some_and(|w| w.session == m.session)
+            {
+                return Err("this session is not awaiting a reply to that message".into());
+            }
+            let text = self.redact(&m.text).into_owned();
+            if text.len() > PEER_TEXT_MAX {
+                return Err(format!("answer exceeds {PEER_TEXT_MAX} bytes"));
+            }
+            let original = self
+                .store
+                .owner_answer(m.reply_to, m.session, &text)
+                .await
+                .map_err(comm_err)?;
+            self.rt
+                .publish(AgentEvent::MessageDelivered {
+                    session: m.session,
+                    from: "you".into(),
+                    text,
+                })
+                .await;
+            self.settle_wait(&original);
+            self.peer_changed(&original).await;
+            return Ok(original);
+        }
+        if request.receipt.to != me {
+            return Err("no such pending request for this session".into());
+        }
+        let sender = PeerAddress::local(&request.from);
+        let text = self.redact(&m.text).into_owned();
+        if text.len() > PEER_TEXT_MAX {
+            return Err(format!("answer exceeds {PEER_TEXT_MAX} bytes"));
+        }
+        let Some(sender) = sender else {
+            // A remote requester (`peer:<binding>`): the answer travels on
+            // its task channel, addressed by the binding's live alias.
+            let binding: Uuid = request
+                .from
+                .strip_prefix("peer:")
+                .and_then(|b| b.parse().ok())
+                .ok_or_else(|| "unknown message".to_string())?;
+            let alias = self
+                .store
+                .peer_binding_by_id(binding)
+                .await
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| "the requesting peer's binding was revoked".to_string())?
+                .alias;
+            let receipt = self
+                .network_send(m.session, &alias, &text, None, Some(m.reply_to), false)
+                .await?;
+            // Provenance: the human answered for this session.
+            let _ = self.store.owner_answer(m.reply_to, m.session, &text).await;
+            return Ok(receipt);
+        };
+        let routed = self.communication.0.write().route(m.session, sender);
+        let generation = routed.map_err(|e| self.route_error(m.session, sender, e))?;
+        let (from_key, to_key) = (format!("session:{}", m.session), request.from.clone());
+        let reply = self
+            .store
+            .accept_exchange(&AcceptExchange {
+                sender: &from_key,
+                recipient: &to_key,
+                sender_session: Some(m.session),
+                recipient_session: Some(sender),
+                request_id: None,
+                reply_to: Some(m.reply_to),
+                request_scope: request.request_scope,
+                generation: generation.revision() as i64,
+                body: &text,
+            })
+            .await
+            .map_err(comm_err)?;
+        // Provenance: the reply travels as `session:<recipient>`, its author is the human.
+        let original = self
+            .store
+            .owner_answer(m.reply_to, m.session, &text)
+            .await
+            .map_err(comm_err)?;
+        self.rt
+            .publish(AgentEvent::MessageDelivered {
+                session: m.session,
+                from: "you".into(),
+                text: text.clone(),
+            })
+            .await;
+        if self.settle_wait(&original) {
+            let settled = self
+                .store
+                .consume_exchange_direct(reply.id, sender, generation.revision() as i64)
+                .await
+                .map_err(comm_err)?
+                .unwrap_or(reply);
+            self.peer_changed(&settled).await;
+            self.peer_changed(&original).await;
+            return Ok(settled);
+        }
+        // Nobody waits any more: the answer is delivered once as correlated input.
+        self.peer_changed(&reply).await;
+        let record = self
+            .store
+            .peer_record(sender, reply.id)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "unknown message".to_string())?;
+        self.enqueued.insert(reply.id);
+        if let Err(reason) = self.enqueue_peer(record, generation, false, false).await {
+            self.enqueued.remove(&reply.id);
+            let failed = self
+                .store
+                .fail_exchange(reply.id, &reason)
+                .await
+                .unwrap_or(reply);
+            self.peer_changed(&failed).await;
+            return Err(reason);
+        }
+        Ok(reply)
+    }
+}
+
+impl Message<NewRootSession> for Agents {
+    type Reply = Result<SessionId, String>;
+
+    async fn handle(
+        &mut self,
+        m: NewRootSession,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let (id, _) = self
+            .session(None, None, None, (None, None))
+            .await
+            .map_err(|e| format!("{e:#}"))?;
+        if let Some(cwd) = &m.cwd {
+            self.store
+                .set_cwd(id, cwd)
+                .await
+                .map_err(|e| format!("{e:#}"))?;
+        }
+        if m.scope != PeerScope::Isolated {
+            self.store
+                .set_root_scope(id, m.scope, None)
+                .await
+                .map_err(comm_err)?;
+            self.communication
+                .0
+                .write()
+                .set_scope(id, m.scope, None)
+                .map_err(|e| e.to_string())?;
+            self.communication_changed(Some(id)).await;
+        }
+        Ok(id)
+    }
+}
+
+/// [`runtime::write_config_value`] with an atomic replace: the edit lands
+/// in a sibling temp file that is renamed over `path`, so a failed write
+/// leaves the old file intact (50 §8).
+fn write_config_atomic(path: &Path, section: &str, key: &str, value: &str) -> std::io::Result<()> {
+    let tmp = path.with_extension(format!("yaml.{}.tmp", std::process::id()));
+    match std::fs::copy(path, &tmp) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    if let Err(e) = runtime::write_config_value(&tmp, section, key, value) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    std::fs::rename(&tmp, path)
 }
 
 impl Agents {
@@ -1593,15 +3191,16 @@ impl Agents {
             let parent = row.parent.unwrap_or(session);
             let state = if let Some((_, tool)) = self.approvals.get(&id) {
                 AgentState::Approval { tool: tool.clone() }
-            } else if let Some((_, from)) = self.waiters.keys().find(|(w, _)| *w == id) {
-                let from = if *from == parent {
-                    "parent".to_owned()
-                } else {
-                    names
-                        .get(from)
+            } else if let Some(w) = self.waits.values().find(|w| w.session == id) {
+                // The awaited peer by its convenience name when it has one.
+                let from = match PeerAddress::local(&w.to) {
+                    Some(p) if p == parent => "parent".to_owned(),
+                    Some(p) => names
+                        .get(&p)
                         .map(|n| (*n).to_owned())
-                        .or_else(|| Some(self.sessions.get(from)?.parent.as_ref()?.1.clone()))
-                        .unwrap_or_else(|| from.to_string())
+                        .or_else(|| Some(self.sessions.get(&p)?.parent.as_ref()?.1.clone()))
+                        .unwrap_or_else(|| w.to.clone()),
+                    None => w.to.clone(),
                 };
                 AgentState::Awaiting { from }
             } else if self.running.contains(&id) {
@@ -1924,6 +3523,24 @@ impl Message<LoadSession> for Agents {
                     out.push((seq, entry));
                 }
                 out.extend(dividers.map(|e| (e.at_seq, compacted(e, heads.get(&e.n).cloned()))));
+                // Typed provenance for replay (50 §9): the exchange rows this
+                // session consumed, keyed by the history row they became.
+                match self.store.consumed_exchanges(m.session).await {
+                    Ok(rows) => {
+                        let peers: HashMap<i64, PeerOrigin> = rows
+                            .into_iter()
+                            .map(|(seq, r)| (seq, origin_of(&r)))
+                            .collect();
+                        for (seq, entry) in &mut out {
+                            if let HistoryEntry::User { peer, .. } = entry
+                                && let Some(o) = peers.get(seq)
+                            {
+                                *peer = Some(o.clone());
+                            }
+                        }
+                    }
+                    Err(e) => tracing::error!(session = %m.session, "consumed_exchanges: {e:#}"),
+                }
                 let (mut history, first_seq, more) = page(out, m.before, m.limit);
                 materialize(&mut history, &messages, &epochs, &self.rt.data_dir);
                 let (editable, reason, settled) = match (&refused, native.is_some(), external) {
@@ -1976,6 +3593,8 @@ impl Message<LoadSession> for Agents {
             .await
             .map_err(|e| tracing::error!(session = %m.session, "todos: {e:#}"))
             .ok();
+        self.mirror(m.session).await;
+        let communication = self.communication.0.read().state(Some(m.session)).ok();
         Loaded {
             history,
             running,
@@ -1995,6 +3614,7 @@ impl Message<LoadSession> for Agents {
             context_estimate,
             settled,
             todos,
+            communication,
         }
     }
 }
@@ -2244,12 +3864,26 @@ impl Message<DeleteSession> for Agents {
         if ids.iter().any(|id| self.running.contains(id)) {
             return Err("a turn is running; stop it first".into());
         }
+        // Peers first (50 §7): exports and routes revoked, waits resolved,
+        // accepted intake suppressed; then the rows (which drop the
+        // exchanges/tasks) and the actors.
+        self.mirror(m.session).await;
+        self.revoking(|p| p.forget(m.session)).await;
+        self.revoke(Some(m.session)).await;
+        self.expire_waits("session deleted", |w| {
+            ids.contains(&w.session) || PeerAddress::local(&w.to).is_some_and(|t| ids.contains(&t))
+        });
         for id in &ids {
             self.ledger.forget(*id);
+            self.bound.retain(|(s, _), _| s != id);
+            self.delivered.retain(|(s, _), _| s != id);
+            self.turn_text.retain(|(s, _), _| s != id);
+            self.owned_children.remove(id);
             if let Some(live) = self.sessions.remove(id) {
                 live.actor.kill().await;
             }
         }
+        self.communication_changed(Some(m.session)).await;
         let removed = self
             .store
             .delete_session(m.session)
@@ -2869,6 +4503,7 @@ fn render(
                     text: text_of(&m.content),
                     turn: opens.then_some(*seq),
                     context: context.cloned(),
+                    peer: None,
                 },
             )),
             ChatRole::Assistant => {
@@ -3075,10 +4710,11 @@ fn client(auth: Auth) -> anyhow::Result<Client> {
             if m.adapter_kind == AdapterKind::BedrockSigv4 {
                 return Ok(Some(AuthData::None));
             }
-            Ok(match keys.key(m.adapter_kind.as_lower_str()) {
-                Some(k) => Some(AuthData::Key(k)),
-                None => AdapterKind::default_key_env_name(&m.adapter_kind).map(AuthData::from_env),
-            })
+            // No vault key: `None` hands genai the adapter's own default
+            // (its env var, or anonymous for local servers such as omlx and
+            // ollama). Forcing `from_env` here made a keyless local model
+            // fail before any request left the process.
+            Ok(keys.key(m.adapter_kind.as_lower_str()).map(AuthData::Key))
         })
         .with_service_target_resolver(ServiceTargetResolver::from_resolver_async_fn(
             move |mut target: ServiceTarget| -> Pin<
@@ -3238,6 +4874,27 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             .ok()
     });
     let nodes = Nodes::default();
+    // 50 §2.1: the switch and where it came from; every persisted root and
+    // parent link root-first, so the registry's synchronous view never sees
+    // a dangling ancestor; then restart accounting (§7: nothing re-runs).
+    let source = if std::env::var_os("WTH_AGENT__COMMUNICATION").is_some() {
+        "env"
+    } else if rt.config.contains("agent.communication") {
+        "config"
+    } else {
+        "default"
+    };
+    let communication = SharedPolicy::new(Policy::new(cfg.communication, source));
+    load_topology(&store, &communication).await;
+    match store.fail_interrupted("interrupted_by_restart").await {
+        Ok(i) if !i.exchanges.is_empty() || !i.tasks.is_empty() => tracing::info!(
+            "communication: {} accepted exchange(s) and {} task(s) failed: interrupted_by_restart",
+            i.exchanges.len(),
+            i.tasks.len()
+        ),
+        Ok(_) => {}
+        Err(e) => tracing::error!("communication restart accounting: {e:#}"),
+    }
     let agents = Agents::spawn_with_mailbox(
         Agents {
             rt: rt.clone(),
@@ -3254,15 +4911,21 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             auth,
             sessions: HashMap::new(),
             running: HashSet::new(),
-            waiters: HashMap::new(),
+            communication: communication.clone(),
+            network: network::NetworkState::default(),
+            waits: HashMap::new(),
+            bound: HashMap::new(),
+            turn_text: HashMap::new(),
+            delivered: HashMap::new(),
+            enqueued: HashSet::new(),
             permits: Arc::new(Semaphore::new(cfg.subagents.max_concurrent.max(1))),
             child_turns: HashMap::new(),
             timed_out: HashSet::new(),
+            owned_children: HashMap::new(),
             last_stop: HashMap::new(),
             approvals: HashMap::new(),
             search: Arc::default(),
             nodes: nodes.clone(),
-            next_msg: 0,
             ledger: Ledger::default(),
         },
         runtime::subscriber_mailbox(),
@@ -3282,6 +4945,14 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         let Some(reg) = rt.lookup_when::<ToolRegistry>(REGISTRY_ACTOR).await else {
             return;
         };
+        // Availability source before any gated tool exists (50 §2.2): until
+        // this lands the registry disables them fail-closed.
+        if let Err(e) = reg
+            .ask(InstallCommunicationAccess(Arc::new(communication)))
+            .await
+        {
+            tracing::error!("communication access not installed; peer tools stay off: {e}");
+        }
         // 47 §4.2 rule 7: coverage first. The registry's ack means every
         // invocation/job from here on is admitted through `Admit`, and any
         // already running was admitted before the reply (its barrier asks back
@@ -3357,14 +5028,53 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         let _ = reg
             .ask(RegisterTool(Arc::new(SendMessageTool { cfg })))
             .await;
+        let _ = reg.ask(RegisterTool(Arc::new(DiscoverPeersTool))).await;
+        let _ = reg.ask(RegisterTool(Arc::new(PeerMessageTool))).await;
         let _ = reg.ask(RegisterTool(Arc::new(MessageUserTool))).await;
         let _ = reg.ask(RegisterTool(Arc::new(ListModelsTool))).await;
     });
     Ok(())
 }
 
+/// Mirror every persisted root (with its scope and alias) and parent link
+/// into the policy, parents before children (50 §2.1). A link whose parent
+/// row is missing is skipped and logged: that session routes nothing until
+/// its topology is repaired.
+async fn load_topology(store: &Store, communication: &SharedPolicy) {
+    let (roots, rows) = match (store.roots().await, store.list_sessions().await) {
+        (Ok(r), Ok(s)) => (r, s),
+        (Err(e), _) | (_, Err(e)) => {
+            tracing::error!("communication topology not loaded; every route fails closed: {e:#}");
+            return;
+        }
+    };
+    let mut p = communication.0.write();
+    for (id, scope, alias) in roots {
+        if let Err(e) = p.record_root(id, scope) {
+            tracing::error!(session = %id, "record_root: {e}");
+        } else if alias.is_some() {
+            let _ = p.set_scope(id, scope, alias);
+        }
+    }
+    let mut pending: Vec<(SessionId, SessionId)> = rows
+        .into_iter()
+        .filter_map(|r| Some((r.id, r.parent?)))
+        .collect();
+    // Parents first: repeat until a pass records nothing new.
+    loop {
+        let before = pending.len();
+        pending.retain(|&(child, parent)| p.record_child(child, parent).is_err());
+        if pending.is_empty() || pending.len() == before {
+            break;
+        }
+    }
+    for (child, parent) in pending {
+        tracing::error!(session = %child, %parent, "parent link not mirrored: unknown or cyclic ancestry");
+    }
+}
+
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::context::ContextAttachment;
 
@@ -3394,6 +5104,24 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(target.auth.single_key_value().unwrap(), "personal");
+    }
+
+    /// A keyless local provider (`omlx/...`) with no vault key and no env var
+    /// is anonymous, as genai's adapter defines it — not a `FromEnv` that fails
+    /// before any request leaves (the smoke's 42 s "stall" with zero hits).
+    #[tokio::test]
+    async fn keyless_local_adapter_falls_back_to_its_own_default_auth() {
+        let client = client(Auth::stub(Path::new("/unused"))).unwrap();
+        let target = client.resolve_service_target("omlx::inert").await.unwrap();
+        assert_eq!(target.model.adapter_kind, AdapterKind::Omlx);
+        // With OMLX_API_KEY set in the environment the adapter itself picks
+        // it; the resolver must never invent that requirement.
+        if std::env::var_os("OMLX_API_KEY").is_none() {
+            assert!(
+                matches!(target.auth, AuthData::None),
+                "resolver forced a key"
+            );
+        }
     }
 
     /// A session loaded mid-round: the call with a response is complete, the
@@ -3600,6 +5328,7 @@ mod tests {
                     ContextTarget::Message { seq: 0 },
                     vec![att(msg(0), 1, None), att(msg(0), 2, None)],
                 ),
+                peer: None,
             },
             HistoryEntry::Tool {
                 call_id: "c1".into(),
@@ -3658,6 +5387,7 @@ mod tests {
             text: s.into(),
             turn: None,
             context: None,
+            peer: None,
         };
         let tool = |id: &str, result| HistoryEntry::Tool {
             call_id: id.into(),
@@ -3710,6 +5440,7 @@ mod tests {
             text: s.into(),
             turn: None,
             context: None,
+            peer: None,
         };
         let tool = |id: &str| HistoryEntry::Tool {
             call_id: id.into(),
@@ -3829,6 +5560,12 @@ mod tests {
     /// Session actors it spawns are real; with no registry their turns end
     /// as `error` before any model is called.
     async fn agents() -> Agents {
+        agents_with(false).await
+    }
+
+    /// [`agents`] with `agent.communication` preset. Shared with the network
+    /// module's tests, which drive the same value through its hooks.
+    pub(crate) async fn agents_with(communication: bool) -> Agents {
         let dir = std::env::temp_dir().join(format!("wth-agents-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
         let cfg = Arc::new(AgentConfig::default());
@@ -3847,17 +5584,412 @@ mod tests {
             auth: Auth::stub(&dir),
             sessions: HashMap::new(),
             running: HashSet::new(),
-            waiters: HashMap::new(),
+            communication: SharedPolicy::new(Policy::new(communication, "config")),
+            network: network::NetworkState::default(),
+            waits: HashMap::new(),
+            bound: HashMap::new(),
+            turn_text: HashMap::new(),
+            delivered: HashMap::new(),
+            enqueued: HashSet::new(),
             permits: Arc::new(Semaphore::new(1)),
             child_turns: HashMap::new(),
             timed_out: HashSet::new(),
+            owned_children: HashMap::new(),
             last_stop: HashMap::new(),
             approvals: HashMap::new(),
             search: Arc::default(),
             nodes: Nodes::default(),
-            next_msg: 0,
             ledger: Ledger::default(),
         }
+    }
+
+    /// 50 §2.1: a session created here is mirrored into the policy with its
+    /// persisted root/parent links, and a restart's `load_topology` rebuilds
+    /// the same view root-first, so a lazily resumed child inherits its
+    /// ancestor's opt-out instead of routing as an unknown root.
+    #[tokio::test]
+    async fn topology_is_mirrored_and_reloaded_root_first() {
+        let mut a = agents_with(true).await;
+        let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        let child = SessionId::new();
+        a.session(Some(child), Some((root, "kid")), None, (None, None))
+            .await
+            .unwrap();
+        assert_eq!(a.communication.0.read().root_of(child).unwrap(), root);
+        assert!(a.communication.0.write().route(root, child).is_ok());
+
+        // A fresh policy over the same store: what `start` would build.
+        let fresh = SharedPolicy::new(Policy::new(true, "config"));
+        load_topology(&a.store, &fresh).await;
+        assert_eq!(fresh.0.read().root_of(child).unwrap(), root);
+        fresh.0.write().set_session(root, false).unwrap();
+        assert!(matches!(
+            fresh.0.write().route(child, root),
+            Err(PolicyError::Disabled { .. })
+        ));
+    }
+
+    /// 50 §2.3, §5.1: another root's session is not addressable from an
+    /// isolated tree and the refusal does not disclose that it exists; a
+    /// guessed UUID with no row fails the same way and creates nothing.
+    #[tokio::test]
+    async fn cross_root_and_unknown_addresses_are_one_answer() {
+        let mut a = agents_with(true).await;
+        let (me, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        let (other, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        let e = a.communication.0.write().route(me, other).unwrap_err();
+        assert_eq!(
+            a.route_error(me, other, e),
+            format!("unknown peer `session:{other}`")
+        );
+        let ghost = SessionId::new();
+        assert_eq!(
+            a.resolve(me, &format!("session:{ghost}"))
+                .await
+                .err()
+                .unwrap(),
+            format!("unknown peer `session:{ghost}`")
+        );
+        assert!(a.store.session(ghost).await.unwrap().is_none());
+        // Both roots `owner`: the route opens and the directory shows it as `Root`.
+        for r in [me, other] {
+            a.store
+                .set_root_scope(r, PeerScope::Owner, None)
+                .await
+                .unwrap();
+            a.communication
+                .0
+                .write()
+                .set_scope(r, PeerScope::Owner, None)
+                .unwrap();
+        }
+        let rows = a.directory(me).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].address, format!("session:{other}"));
+        assert_eq!(rows[0].relationship, PeerRelationship::Root);
+        assert_eq!(rows[0].state, PeerState::Idle);
+    }
+
+    /// 50 §5.3, §8: a wait resolves only by its exact id; a disable expires
+    /// it with `communication_disabled` (never a fake reply), suppresses the
+    /// accepted row durably, and the same wait cannot be resolved again.
+    #[tokio::test]
+    async fn waits_are_exact_and_expire_on_disable() {
+        let mut a = agents_with(true).await;
+        let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        let child = SessionId::new();
+        a.session(Some(child), Some((root, "kid")), None, (None, None))
+            .await
+            .unwrap();
+        let generation = a.communication.0.write().route(root, child).unwrap();
+        let receipt = a
+            .store
+            .accept_exchange(&AcceptExchange {
+                sender: &format!("session:{root}"),
+                recipient: &format!("session:{child}"),
+                sender_session: Some(root),
+                recipient_session: Some(child),
+                request_id: None,
+                reply_to: None,
+                request_scope: None,
+                generation: generation.revision() as i64,
+                body: "question",
+            })
+            .await
+            .unwrap();
+        let rx = a
+            .wait(root, format!("session:{child}"), receipt.id, generation)
+            .unwrap();
+        // A different id settles nothing.
+        let stray = PeerReceipt {
+            id: Uuid::now_v7(),
+            ..receipt.clone()
+        };
+        assert!(!a.settle_wait(&stray));
+        assert!(a.waits.contains_key(&receipt.id));
+
+        a.communication.0.write().set_session(root, false).unwrap();
+        a.revoke(Some(root)).await;
+        let expired = rx.await.unwrap();
+        assert_eq!(expired.state, PeerMessageState::Failed);
+        assert_eq!(
+            expired.error.as_deref(),
+            Some(tools::communication::DISABLED)
+        );
+        assert!(a.waits.is_empty());
+        let row = a.store.exchange_receipt(receipt.id).await.unwrap().unwrap();
+        assert_eq!(row.state, PeerMessageState::Suppressed);
+        assert!(!a.settle_wait(&receipt), "an expired wait is gone for good");
+    }
+
+    /// 50 §7: a child's result is one durable exchange keyed by
+    /// `(session:<child>, "result:<turn>")`: a repeated finish for the same
+    /// turn adds no second row and wakes nobody; a result already answered
+    /// through its waiter is recorded consumed without a turn; a finish
+    /// without this turn's own text is an error, never another turn's text;
+    /// and a result whose child→parent route is off wakes nobody (the child
+    /// is still released in the ledger).
+    #[tokio::test]
+    async fn child_results_are_durably_deduplicated_and_respect_off() {
+        let mut a = agents_with(true).await;
+        let (p, _) = in_turn(&mut a).await;
+        let child = SessionId::new();
+        a.session(Some(child), Some((p, "kid")), None, (None, None))
+            .await
+            .unwrap();
+        let finish = |a: &mut Agents, ct: TurnId| {
+            a.ledger.entered(TurnEntered {
+                session: child,
+                turn: Some(ct),
+            });
+            a.ledger.returned(TurnReturned {
+                session: child,
+                turn: Some(ct),
+            });
+        };
+        // Answered explicitly during the bound turn: durable row, consumed, no turn.
+        let ct = TurnId::new();
+        finish(&mut a, ct);
+        a.delivered.insert((child, ct), p);
+        a.turn_text.insert((child, ct), "final".into());
+        a.child_finished(child, ct, "end_turn").await;
+        assert_eq!(a.ledger.activity(p), None, "nothing pending on the parent");
+        let rows = a.store.pending_exchanges(p, 10).await.unwrap();
+        assert!(rows.is_empty(), "consumed without intake: {rows:?}");
+        // The same turn finishing again: the dedup key returns the existing
+        // row and the parent is not woken.
+        a.turn_text.insert((child, ct), "final again".into());
+        a.child_finished(child, ct, "end_turn").await;
+        assert_eq!(a.ledger.activity(p), None);
+        assert!(a.store.pending_exchanges(p, 10).await.unwrap().is_empty());
+
+        // No PeerTurnFinished text for this turn: an error, nothing injected.
+        let ct2 = TurnId::new();
+        finish(&mut a, ct2);
+        a.child_finished(child, ct2, "end_turn").await;
+        assert_eq!(a.ledger.activity(p), None);
+        assert!(a.store.pending_exchanges(p, 10).await.unwrap().is_empty());
+
+        // Off for the parent: the next result is inspectable but silent.
+        a.communication.0.write().set_session(p, false).unwrap();
+        let ct3 = TurnId::new();
+        finish(&mut a, ct3);
+        a.turn_text.insert((child, ct3), "done".into());
+        a.child_finished(child, ct3, "end_turn").await;
+        assert_eq!(a.ledger.activity(p), None);
+        assert!(a.turn_text.is_empty());
+    }
+
+    /// A subagent of `p` named `name`, registered as a session.
+    async fn kid(a: &mut Agents, p: SessionId, name: &str) -> SessionId {
+        let id = SessionId::new();
+        a.session(Some(id), Some((p, name)), None, (None, None))
+            .await
+            .unwrap();
+        id
+    }
+
+    /// `child`'s turn `ct` entered and returned in the ledger.
+    fn child_turn(a: &mut Agents, child: SessionId, ct: TurnId, returned: bool) {
+        a.ledger.entered(TurnEntered {
+            session: child,
+            turn: Some(ct),
+        });
+        if returned {
+            a.ledger.returned(TurnReturned {
+                session: child,
+                turn: Some(ct),
+            });
+        }
+    }
+
+    /// An accepted request `from → to` with a live waiter on it.
+    async fn awaited(
+        a: &mut Agents,
+        from: SessionId,
+        to: SessionId,
+    ) -> (Uuid, oneshot::Receiver<PeerReceipt>) {
+        let generation = a.communication.0.write().route(from, to).unwrap();
+        let receipt = a
+            .store
+            .accept_exchange(&AcceptExchange {
+                sender: &format!("session:{from}"),
+                recipient: &format!("session:{to}"),
+                sender_session: Some(from),
+                recipient_session: Some(to),
+                request_id: None,
+                reply_to: None,
+                request_scope: None,
+                generation: generation.revision() as i64,
+                body: "question",
+            })
+            .await
+            .unwrap();
+        let rx = a
+            .wait(from, format!("session:{to}"), receipt.id, generation)
+            .unwrap();
+        (receipt.id, rx)
+    }
+
+    /// 50 §6.3, §8: cancelling a request scope reaches the children it
+    /// spawned — a running one is marked and its wait expires, and when its
+    /// turn later ends the result is recorded `failed` instead of waking
+    /// the parent — while a sibling the scope does not own keeps its wait
+    /// and still delivers. A child still queued behind the cap never
+    /// starts: its ticket is released, nothing is routed.
+    #[tokio::test]
+    async fn scope_cancel_stops_owned_children_and_drops_their_results() {
+        let mut a = agents_with(true).await;
+        let (p, _) = in_turn(&mut a).await;
+        let scope = Uuid::now_v7();
+        let owned = kid(&mut a, p, "owned").await;
+        // Spawned by a private turn: nobody's scope owns it.
+        let other = kid(&mut a, p, "other").await;
+        a.owned_children.insert(
+            owned,
+            OwnedChild {
+                scope,
+                cancelled: false,
+            },
+        );
+        let ct = TurnId::new();
+        child_turn(&mut a, owned, ct, false);
+        let (_, owned_rx) = awaited(&mut a, owned, other).await;
+        let (_, other_rx) = awaited(&mut a, other, owned).await;
+
+        a.cancel_peer_scope(p, scope).await.unwrap();
+        assert!(a.owned_children[&owned].cancelled);
+        assert!(
+            !a.owned_children.contains_key(&other),
+            "unrelated child untouched"
+        );
+        let expired = owned_rx.await.unwrap();
+        assert_eq!(expired.state, PeerMessageState::Failed);
+        assert_eq!(expired.error.as_deref(), Some("cancelled"));
+        assert_eq!(a.waits.len(), 1, "the sibling's wait stands");
+        drop(other_rx);
+
+        // The cancelled child's turn ends: nothing reaches the parent.
+        a.ledger.returned(TurnReturned {
+            session: owned,
+            turn: Some(ct),
+        });
+        a.turn_text.insert((owned, ct), "late result".into());
+        a.child_finished(owned, ct, "cancelled").await;
+        assert!(!a.owned_children.contains_key(&owned));
+        assert_eq!(a.ledger.activity(p), None, "no continuation on the parent");
+        assert!(a.store.pending_exchanges(p, 10).await.unwrap().is_empty());
+        assert!(a.enqueued.is_empty());
+        // The same finish again is a durable no-op.
+        a.turn_text.insert((owned, ct), "late result".into());
+        a.child_finished(owned, ct, "cancelled").await;
+        assert_eq!(a.ledger.activity(p), None);
+
+        // The unrelated child still delivers to the parent as before.
+        let ot = TurnId::new();
+        child_turn(&mut a, other, ot, true);
+        a.turn_text.insert((other, ot), "done".into());
+        a.child_finished(other, ot, "end_turn").await;
+        assert!(
+            a.ledger
+                .activity(p)
+                .is_some_and(|w| w.ends_with(&format!("pending on {p}"))),
+            "{:?}",
+            a.ledger.activity(p)
+        );
+
+        // Queued behind the cap when the scope is cancelled: never starts.
+        let queued = kid(&mut a, p, "queued").await;
+        a.owned_children.insert(
+            queued,
+            OwnedChild {
+                scope,
+                cancelled: false,
+            },
+        );
+        let ticket = a.ledger.admit(queued, InputOrigin::External, None);
+        assert!(a.ledger.activity(queued).is_some());
+        a.cancel_peer_scope(p, scope).await.unwrap();
+        assert!(a.claim_child_turn(queued, ticket).await.is_err());
+        assert_eq!(a.ledger.activity(queued), None, "ticket released");
+        assert!(!a.owned_children.contains_key(&queued));
+        // An unowned child claims a plain, unscoped first turn.
+        let plain = kid(&mut a, p, "plain").await;
+        let ticket = a.ledger.admit(plain, InputOrigin::External, None);
+        assert_eq!(a.claim_child_turn(plain, ticket).await, Ok(None));
+    }
+
+    /// 50 §5.3, §7: a child's turn bound to a sibling's awaited request
+    /// answers exactly that sibling — the reply row carries the reversed
+    /// endpoints the store verifies, the waiter resolves with the text —
+    /// and the parent still receives the result as its own uncorrelated
+    /// input; only the parent's own answered request suppresses that.
+    #[tokio::test]
+    async fn bound_reply_goes_to_the_requester_and_the_parent_keeps_its_result() {
+        let mut a = agents_with(true).await;
+        let (p, _) = in_turn(&mut a).await;
+        let child = kid(&mut a, p, "kid").await;
+        let sibling = kid(&mut a, p, "sib").await;
+        let (request, rx) = awaited(&mut a, sibling, child).await;
+        let ct = TurnId::new();
+        child_turn(&mut a, child, ct, true);
+        a.bound.insert((child, ct), request);
+        a.turn_text.insert((child, ct), "the answer".into());
+        a.child_finished(child, ct, "end_turn").await;
+
+        let reply = rx.await.unwrap();
+        assert_eq!(reply.id, request);
+        assert_eq!(reply.state, PeerMessageState::Replied);
+        assert_eq!(reply.reply.as_deref(), Some("the answer"));
+        assert_eq!(
+            reply.answered_by.as_deref(),
+            Some(format!("session:{child}").as_str())
+        );
+        assert!(a.waits.is_empty() && a.bound.is_empty());
+        assert!(
+            a.store
+                .pending_exchanges(sibling, 10)
+                .await
+                .unwrap()
+                .is_empty(),
+            "the waiter took the reply; no second intake"
+        );
+        let why = a.ledger.activity(p).unwrap();
+        assert!(why.ends_with(&format!("pending on {p}")), "{why}");
+
+        // Parent as requester: one exchange answers it, nothing else is injected.
+        let (request, rx) = awaited(&mut a, p, child).await;
+        let ct2 = TurnId::new();
+        child_turn(&mut a, child, ct2, true);
+        a.bound.insert((child, ct2), request);
+        a.turn_text.insert((child, ct2), "for you".into());
+        let before = a.ledger.pending_count(p);
+        a.child_finished(child, ct2, "end_turn").await;
+        assert_eq!(rx.await.unwrap().reply.as_deref(), Some("for you"));
+        assert_eq!(a.ledger.pending_count(p), before, "no uncorrelated copy");
+    }
+
+    /// 50 §8: the global switch persists before it moves, atomically, and a
+    /// write into an unwritable location changes nothing.
+    #[test]
+    fn global_switch_write_is_atomic_and_line_preserving() {
+        let dir = std::env::temp_dir().join(format!("wth-cfg-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.yaml");
+        std::fs::write(&path, "agent:\n  model: x # keep\n  communication: false\n").unwrap();
+        write_config_atomic(&path, "agent", "communication", "true").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "agent:\n  model: x # keep\n  communication: true\n"
+        );
+        assert!(
+            std::fs::read_dir(&dir).unwrap().count() == 1,
+            "no temp file left"
+        );
+        let bad = dir.join("missing").join("config.yaml");
+        assert!(write_config_atomic(&bad, "agent", "communication", "true").is_err());
+        assert!(!bad.exists());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// Ticket id named by a `Ledger::activity` pending-input reason.
@@ -3892,7 +6024,7 @@ mod tests {
     /// retired without a second delivery.
     #[tokio::test]
     async fn results_are_pending_input_before_their_source_is_released() {
-        let mut a = agents().await;
+        let mut a = agents_with(true).await;
         let (p, t) = in_turn(&mut a).await;
         let child = SessionId::new();
         a.session(Some(child), Some((p, "kid")), None, (None, None))
@@ -3908,6 +6040,7 @@ mod tests {
             turn: Some(ct),
         });
         assert!(a.ledger.activity(p).is_some_and(|w| w.contains("busy")));
+        a.turn_text.insert((child, ct), "result".into());
         a.child_finished(child, ct, "end_turn").await;
         let why = a.ledger.activity(p).unwrap();
         assert!(why.ends_with(&format!("pending on {p}")), "{why}");
