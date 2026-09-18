@@ -6,6 +6,13 @@ import { Empty, Row, Section, useAction } from '@/components/settings/shared'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { LOCAL, useHarnesses } from '@/link/harnesses'
 import { useConnection } from '@/store/connection'
@@ -16,6 +23,7 @@ export function Connections() {
     <>
       <Logins />
       <Gateways />
+      <Bedrock />
     </>
   )
 }
@@ -198,6 +206,67 @@ function Gateways() {
           Add
         </Button>
       </form>
+    </Section>
+  )
+}
+
+/** `Select` value of the default credential chain; profiles are `p:<name>` so no profile name can collide. */
+const CHAIN = 'chain'
+
+/** The AWS profile Bedrock signs with, harness-wide (the TUI's `/aws`); credentials never leave the harness. */
+function Bedrock() {
+  const api = useApi()
+  const harnessName = useConnection((s) => s.info?.name)
+  const aws = useQuery({
+    queryKey: queryKeys.awsProfiles,
+    queryFn: () => api.list_aws_profiles(),
+  })
+  const set = useAction((profile: string | null) => api.set_aws_profile(profile), {
+    keys: [queryKeys.awsProfiles],
+    onSuccess: (r) => toast.success(r.selected ? `Bedrock uses profile ${r.selected}` : 'Bedrock uses the AWS default chain'),
+  })
+  const d = aws.data
+  const stale = !!d?.selected && !d.profiles.includes(d.selected)
+  // Something to pick, or a stale explicit choice to clear; otherwise the status line says it all.
+  const pick = !!d && (d.profiles.length > 0 || !!d.selected)
+
+  return (
+    <Section title="AWS Bedrock">
+      <Row
+        label="Profile"
+        description={
+          !d
+            ? aws.error
+              ? `Could not list profiles: ${aws.error.message}`
+              : 'Listing profiles…'
+            : stale
+              ? `Profile ${d.selected} is selected but not found on ${harnessName ?? 'the harness'}; pick another or the default chain.`
+              : d.selected
+                ? `Every Bedrock model on ${harnessName ?? 'this harness'} signs with profile ${d.selected}.`
+                : `Bedrock on ${harnessName ?? 'this harness'} uses a configured API key, otherwise the AWS default credential chain (${d.default_profile}). Select a profile to use its credentials from the next request.`
+        }
+      >
+        {pick && (
+          <Select
+            value={d.selected ? `p:${d.selected}` : CHAIN}
+            disabled={set.isPending}
+            onValueChange={(v) => set.mutate(v === CHAIN ? null : v.slice(2))}
+          >
+            <SelectTrigger aria-label="AWS inference profile" className="max-w-64">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={CHAIN}>AWS default chain ({d.default_profile})</SelectItem>
+              {d.profiles.map((p) => (
+                <SelectItem key={p} value={`p:${p}`}>
+                  {p}
+                </SelectItem>
+              ))}
+              {stale && <SelectItem value={`p:${d.selected}`}>{d.selected} (not found)</SelectItem>}
+            </SelectContent>
+          </Select>
+        )}
+      </Row>
     </Section>
   )
 }

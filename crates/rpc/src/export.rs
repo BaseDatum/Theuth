@@ -22,6 +22,7 @@ async fn export_bindings() {
         agent::QueuedInput,
         agent::Usage,
         agent::ModelInfo,
+        agent::AwsProfiles,
         agent::SkillMeta,
         agent::SkillBody,
         agent::LoginInfo,

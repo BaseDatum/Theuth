@@ -44,6 +44,7 @@ Env overrides any key: `WTH_<SECTION>__<KEY>` (`WTH_RPC__LISTEN=127.0.0.1:7799`)
 agent:
   model: anthropic/claude-sonnet-4-5   # provider/model, or bare id resolved against configured providers
   effort: null                         # low | high | off | token budget; provider default when unset
+  aws_profile: null                    # Bedrock; /aws or Settings → Connections selects a harness-wide profile
   max_tool_rounds: 32                  # tool-call rounds per turn before the loop asks for a text reply; also Settings → General
   max_tool_output_chars: 32000
   runtime_only: true                   # false: every tool is also a direct definition, not just python + user/agent tools
@@ -66,6 +67,11 @@ signal: {enabled: true, device_name: wth, owner: "+1555…", allowed: []}
 
 Only `agent.model` is required. Changing this file needs a restart, which
 only the user can do; say so instead of pretending it took effect.
+For Bedrock use `amazon-bedrock/<model-id>`. `/aws <profile>` changes inference
+on the next request for every session; `/aws clear` restores automatic auth.
+AWS owns profile discovery, credentials, region and SSO. Never copy AWS keys
+into config.yaml. An explicit profile wins over environment credentials and
+Bedrock bearer keys; without one, bearer keys win over the default AWS chain.
 
 ## MCP
 

@@ -18,6 +18,7 @@ use agent::{
     SetModel, SetSubagentTimeout, SetTitleModel, ShowPrompt, SkillBody, SkillMeta, Steer,
     SyncSkills, Undo, UseSkill, Withdraw,
 };
+use agent::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 use base64::Engine as _;
 use browser::{BROWSER_ACTOR, Browsers, Screenshot};
 use computer::{COMPUTER_ACTOR, Computer, Permissions};
@@ -245,6 +246,12 @@ pub trait Api {
     /// Every catalog model whose provider is configured.
     #[method(name = "list_models")]
     async fn list_models(&self) -> RpcResult<Vec<ModelInfo>>;
+    /// AWS SDK-discovered profiles on this harness, plus its inference selection.
+    #[method(name = "list_aws_profiles")]
+    async fn list_aws_profiles(&self) -> RpcResult<AwsProfiles>;
+    /// Select the harness-wide Bedrock inference profile; `None` restores the AWS default chain.
+    #[method(name = "set_aws_profile")]
+    async fn set_aws_profile(&self, profile: Option<String>) -> RpcResult<AwsProfiles>;
     /// Switch `session` (and the default for new sessions) to `model`.
     #[method(name = "set_model")]
     async fn set_model(&self, session: Option<SessionId>, model: String) -> RpcResult<ModelInfo>;
@@ -998,6 +1005,14 @@ impl ApiServer for Server {
         ask::<Agents, _>(agent::AGENT_ACTOR, ListModels).await
     }
 
+    async fn list_aws_profiles(&self) -> RpcResult<AwsProfiles> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, ListAwsProfiles).await
+    }
+
+    async fn set_aws_profile(&self, profile: Option<String>) -> RpcResult<AwsProfiles> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, SetAwsProfile { profile }).await
+    }
+
     async fn set_model(&self, session: Option<SessionId>, model: String) -> RpcResult<ModelInfo> {
         ask::<Agents, _>(agent::AGENT_ACTOR, SetModel { session, model }).await
     }
@@ -1527,7 +1542,9 @@ impl ApiServer for Server {
             && let Ok(asks) = actor.ask(tools::PendingAsks).await
         {
             for a in asks {
-                let Ok(v) = serde_json::to_value(&a) else { continue };
+                let Ok(v) = serde_json::to_value(&a) else {
+                    continue;
+                };
                 if !wanted(&v, session.as_deref(), tree.as_mut()) {
                     continue;
                 }

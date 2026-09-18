@@ -112,6 +112,7 @@ const DEFAULT_CONFIG: &str = "# wth configuration. Every plugin reads its own se
 agent:
   model: anthropic/claude-sonnet-4-5
   # title_model: anthropic/claude-haiku-4-5   # names sessions in the history list (07 §15); default: the session's model
+  # aws_profile: work          # Bedrock inference for every session; /aws or Settings → Connections
   # subagents:
   #   model: null              # default: agent.model
   #   max_depth: 1

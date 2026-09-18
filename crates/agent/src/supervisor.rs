@@ -40,14 +40,16 @@ use crate::user::{MessageUserTool, USER_ACTOR, UserChannels};
 use crate::{
     AGENT_ACTOR, AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentConfig, AgentEvent, AgentInfo,
     AgentState, AncestorInfo, Ancestors, Cancel, Compact, CompactStyle, DeleteSession, EditTurn,
-    ForkSession, GetCompactStyle, GetMaxToolRounds, GetSubagentTimeout, GetTitleModel, Harvest, HistoryEntry,
-    ListAcp, ListAgents, ListLogins, ListModels, ListProviders, ListQueued, ListRegistry,
-    ListSessions, ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginFinished, LoginInfo,
-    Logout, ModelInfo, NewSession, ProviderInfo, QueuedInput, Redo, Regenerate, RemoveAcp,
-    PinSession, RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession, SearchSessions, SendInput,
-    SessionSummary, SetCompactStyle, SetEffort, SetMaxToolRounds, SetModel, SetSubagentTimeout, SetTitleModel,
-    ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw, effort_of,
+    ForkSession, GetCompactStyle, GetMaxToolRounds, GetSubagentTimeout, GetTitleModel, Harvest,
+    HistoryEntry, ListAcp, ListAgents, ListLogins, ListModels, ListProviders, ListQueued,
+    ListRegistry, ListSessions, ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginFinished,
+    LoginInfo, Logout, ModelInfo, NewSession, PinSession, ProviderInfo, QueuedInput, Redo,
+    Regenerate, RemoveAcp, RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession,
+    SearchSessions, SendInput, SessionSummary, SetCompactStyle, SetEffort, SetMaxToolRounds,
+    SetModel, SetSubagentTimeout, SetTitleModel, ShowPrompt, SkillBody, SkillMeta, Steer,
+    SyncSkills, Undo, UseSkill, Withdraw, effort_of,
 };
+use crate::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 use crate::{frame, repl, search, spill};
 
 /// The supervisor actor. Look up with `ActorRef::<Agents>::lookup(AGENT_ACTOR)`.
@@ -1723,7 +1725,11 @@ impl Message<RenameSession> for Agents {
 impl Message<PinSession> for Agents {
     type Reply = Result<(), String>;
 
-    async fn handle(&mut self, m: PinSession, _: &mut Context<Self, Self::Reply>) -> Result<(), String> {
+    async fn handle(
+        &mut self,
+        m: PinSession,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<(), String> {
         self.store
             .set_pinned(m.session, m.pinned)
             .await
@@ -1792,6 +1798,42 @@ impl Message<SearchSessions> for Agents {
             );
         });
         reply
+    }
+}
+
+impl Message<ListAwsProfiles> for Agents {
+    type Reply = Result<AwsProfiles, String>;
+
+    async fn handle(
+        &mut self,
+        _: ListAwsProfiles,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        AwsProfiles::load(self.auth.aws_profile()).await
+    }
+}
+
+impl Message<SetAwsProfile> for Agents {
+    type Reply = Result<AwsProfiles, String>;
+
+    async fn handle(
+        &mut self,
+        m: SetAwsProfile,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let mut profiles = AwsProfiles::load(self.auth.aws_profile()).await?;
+        profiles.select(m.profile)?;
+        // JSON strings are YAML scalars too: profile names must never become config syntax.
+        let value = serde_json::to_string(&profiles.selected).map_err(|e| e.to_string())?;
+        runtime::write_config_value(
+            &self.rt.data_dir.join("config.yaml"),
+            "agent",
+            "aws_profile",
+            &value,
+        )
+        .map_err(|e| format!("config.yaml: {e}"))?;
+        *self.auth.aws_profile.write() = profiles.selected.clone();
+        Ok(profiles)
     }
 }
 
@@ -2426,9 +2468,15 @@ pub(crate) struct Auth {
     pub(crate) oauth: oauth::Store,
     /// Named OpenAI-compatible gateways; interior-mutable so `/provider add` is live.
     pub(crate) gateways: Arc<RwLock<HashMap<String, crate::providers::Gateway>>>,
+    /// Shared by every inference client; never mutates the process's AWS environment.
+    aws_profile: Arc<parking_lot::RwLock<Option<String>>>,
 }
 
 impl Auth {
+    fn aws_profile(&self) -> Option<String> {
+        self.aws_profile.read().clone()
+    }
+
     /// The current vault value for genai namespace `ns`, read live.
     pub(crate) fn key(&self, ns: &str) -> Option<String> {
         self.vault.as_ref()?.get(ns, 0).map(|k| k.to_string())
@@ -2493,6 +2541,10 @@ fn client(auth: Auth) -> anyhow::Result<Client> {
     let keys = auth.clone();
     Ok(Client::builder()
         .with_auth_resolver_fn(move |m: ModelIden| {
+            // SigV4's AuthData is a profile, not a vault key. Resolve it per request below.
+            if m.adapter_kind == AdapterKind::BedrockSigv4 {
+                return Ok(Some(AuthData::None));
+            }
             Ok(match keys.key(m.adapter_kind.as_lower_str()) {
                 Some(k) => Some(AuthData::Key(k)),
                 None => AdapterKind::default_key_env_name(&m.adapter_kind).map(AuthData::from_env),
@@ -2505,6 +2557,24 @@ fn client(auth: Auth) -> anyhow::Result<Client> {
                 let auth = auth.clone();
                 Box::pin(async move {
                     match target.model.adapter_kind {
+                        AdapterKind::BedrockSigv4 => {
+                            target.auth = match auth.aws_profile() {
+                                Some(profile) => AuthData::Key(profile),
+                                None => match auth.key("bedrock_api").or_else(|| {
+                                    ["BEDROCK_API_KEY", "AWS_BEARER_TOKEN_BEDROCK"]
+                                        .into_iter()
+                                        .find_map(|name| {
+                                            std::env::var(name).ok().filter(|v| !v.is_empty())
+                                        })
+                                }) {
+                                    Some(key) => {
+                                        target.model.adapter_kind = AdapterKind::BedrockApi;
+                                        AuthData::Key(key)
+                                    }
+                                    None => AuthData::None,
+                                },
+                            };
+                        }
                         AdapterKind::OpenAI | AdapterKind::OpenAIResp if auth.login("openai") => {
                             let t = auth
                                 .oauth
@@ -2613,6 +2683,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         vault,
         oauth: oauth::Store::new(&rt.data_dir),
         gateways: Arc::new(RwLock::new(gateways)),
+        aws_profile: Arc::new(parking_lot::RwLock::new(cfg.aws_profile.clone())),
     };
     // One worker per concurrent child turn plus the root session (design doc 08 §9).
     // The worker is this binary (08 §9).
@@ -2744,6 +2815,34 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn bedrock_profile_changes_reach_existing_clients_without_vault_keys() {
+        let auth = Auth {
+            vault: None,
+            oauth: oauth::Store::new(Path::new("/unused")),
+            gateways: Arc::new(RwLock::new(HashMap::new())),
+            aws_profile: Arc::new(parking_lot::RwLock::new(Some("work".into()))),
+        };
+        let client = client(auth.clone()).unwrap();
+        let catalog = Catalog::load(Path::new("/unused"));
+        let model = catalog
+            .resolve("amazon-bedrock/amazon.nova-pro-v1:0", &|_| true)
+            .unwrap();
+        let target = client
+            .resolve_service_target(model.genai.as_str())
+            .await
+            .unwrap();
+        assert_eq!(target.model.adapter_kind, AdapterKind::BedrockSigv4);
+        assert_eq!(target.auth.single_key_value().unwrap(), "work");
+
+        *auth.aws_profile.write() = Some("personal".into());
+        let target = client
+            .resolve_service_target(model.genai.as_str())
+            .await
+            .unwrap();
+        assert_eq!(target.auth.single_key_value().unwrap(), "personal");
+    }
 
     /// A session loaded mid-round: the call with a response is complete, the
     /// one still running is rendered with `result: None` (not dropped), so the

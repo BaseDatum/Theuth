@@ -10,8 +10,8 @@ use acp::EntryInfo;
 use acp::registry::RegistryAgent;
 use agent::search::SearchHit;
 use agent::{
-    AgentEvent, AgentInfo, AgentState, CompactStyle, HistoryEntry, Loaded, ModelInfo, ProviderInfo,
-    QueuedInput, SessionSummary, SkillBody, SkillMeta, Usage,
+    AgentEvent, AgentInfo, AgentState, AwsProfiles, CompactStyle, HistoryEntry, Loaded, ModelInfo,
+    ProviderInfo, QueuedInput, SessionSummary, SkillBody, SkillMeta, Usage,
 };
 use iocraft::KeyCode;
 use knowledge::{Change, HarvestResult, History, Meta};
@@ -98,6 +98,13 @@ pub enum UiEvent {
     CompactStyle(CompactStyle),
     /// Reply to [`Command::GetTitleModel`] / [`Command::SetTitleModel`].
     TitleModel(Option<ModelInfo>),
+    /// Reply to [`Command::ListAwsProfiles`] (`pick`) / [`Command::SetAwsProfile`].
+    AwsProfiles {
+        /// Discovered profiles and the harness-wide selection.
+        info: AwsProfiles,
+        /// Open the picker when there is a choice.
+        pick: bool,
+    },
     /// A command failed (actor missing, ask error).
     Error(String),
     /// Reply to [`Command::ListLogins`]: providers and OAuth MCP servers.
@@ -262,6 +269,10 @@ pub enum Command {
     GetTitleModel,
     /// `set_title_model`; `None` clears it.
     SetTitleModel(Option<String>),
+    /// `list_aws_profiles`.
+    ListAwsProfiles,
+    /// `set_aws_profile`; `None` restores the AWS default credential chain.
+    SetAwsProfile(Option<String>),
     /// `list_sessions`.
     ListSessions,
     /// `search_sessions`: fuzzy match over titles and message text.
@@ -913,6 +924,11 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "reasoning effort (picker without arg)",
     ),
     (
+        "/aws",
+        "[profile|clear]",
+        "AWS profile for Bedrock, harness-wide (picker without arg)",
+    ),
+    (
         "/mcp",
         "[add <url|json>|sync]",
         "MCP servers: on/off (this session or always), risk lines",
@@ -1135,6 +1151,13 @@ pub enum Menu {
     Efforts {
         /// The model's effort levels, then `clear`.
         items: Vec<String>,
+        /// Highlighted row.
+        cursor: usize,
+    },
+    /// `/aws` picker.
+    AwsProfiles {
+        /// The harness's profiles and selection; row 0 is the default chain.
+        info: AwsProfiles,
         /// Highlighted row.
         cursor: usize,
     },
@@ -1937,6 +1960,7 @@ impl Model {
                 Some(
                     Menu::Models { .. }
                         | Menu::Efforts { .. }
+                        | Menu::AwsProfiles { .. }
                         | Menu::Sessions { .. }
                         | Menu::Search { .. }
                         | Menu::Agents { .. }
@@ -2777,6 +2801,14 @@ impl Model {
                 "compact style: {s} (default)\n  summary  cache-hot LLM fold (07 §8.3)\n  cut      drop the folded span, keep the tail, no model call\n  snap     rasterize the folded span to images (vision model)"
             ))),
             UiEvent::TitleModel(m) => self.entries.push(Entry::Info(title_model_line(m.as_ref()))),
+            // Status always; the picker when there is a choice to make or a
+            // stale selection to clear (row 0 restores the default chain).
+            UiEvent::AwsProfiles { info, pick } => {
+                self.entries.push(Entry::Info(aws_profile_line(&info)));
+                if pick && (info.profiles.len() > 1 || info.selected.is_some()) {
+                    self.menu = Some(Menu::AwsProfiles { info, cursor: 0 });
+                }
+            }
             UiEvent::Providers(list) => {
                 if list.is_empty() {
                     self.entries.push(Entry::Info(
@@ -3448,6 +3480,11 @@ impl Model {
                 self.open_efforts(items);
             }
             "/effort" => self.set_effort((arg != "clear").then(|| arg.to_owned()), tx),
+            "/aws" if arg.is_empty() => send(tx, Command::ListAwsProfiles),
+            "/aws" => send(
+                tx,
+                Command::SetAwsProfile((arg != "clear").then(|| arg.to_owned())),
+            ),
             "/approvals" => self.approvals_cmd(arg, tx),
             "/mcp" if arg.is_empty() => {
                 self.awaiting_mcp = true;
@@ -4585,6 +4622,7 @@ impl Model {
             Some(Menu::Slash { .. }) => self.slash_key(code, input, tx),
             Some(Menu::Models { .. }) => self.models_key(code, tx),
             Some(Menu::Efforts { .. }) => self.efforts_key(code, tx),
+            Some(Menu::AwsProfiles { .. }) => self.aws_key(code, tx),
             Some(Menu::Sessions { .. }) => self.sessions_key(code, tx),
             Some(Menu::Search { .. }) => self.search_key(code, tx),
             Some(Menu::Agents { .. }) => self.agents_key(code, tx),
@@ -4701,6 +4739,50 @@ impl Model {
             _ => {}
         }
         MenuKey::Consumed
+    }
+
+    /// `/aws`: Enter selects the highlighted profile for the whole harness;
+    /// row 0 restores the AWS default credential chain.
+    fn aws_key(&mut self, code: KeyCode, tx: &UnboundedSender<Command>) -> MenuKey {
+        let Some(Menu::AwsProfiles { info, cursor }) = &mut self.menu else {
+            return MenuKey::Consumed;
+        };
+        match code {
+            KeyCode::Up => *cursor = cursor.saturating_sub(1),
+            KeyCode::Down => *cursor = (*cursor + 1).min(info.profiles.len()),
+            KeyCode::Esc => self.menu = None,
+            KeyCode::Enter => {
+                let picked = cursor.checked_sub(1).map(|i| info.profiles.get(i).cloned());
+                self.menu = None;
+                match picked {
+                    None => send(tx, Command::SetAwsProfile(None)),
+                    Some(Some(p)) => send(tx, Command::SetAwsProfile(Some(p))),
+                    Some(None) => {}
+                }
+            }
+            _ => {}
+        }
+        MenuKey::Consumed
+    }
+
+    /// `/aws` picker rows: the default chain, then every SDK-discovered
+    /// profile; `●` marks the selection in force.
+    pub fn aws_rows(&self) -> Vec<String> {
+        let Some(Menu::AwsProfiles { info, .. }) = &self.menu else {
+            return Vec::new();
+        };
+        let mark = |on: bool| if on { "●" } else { " " };
+        std::iter::once(format!(
+            "{} default credential chain ({})",
+            mark(info.selected.is_none()),
+            info.default_profile
+        ))
+        .chain(
+            info.profiles
+                .iter()
+                .map(|p| format!("{} {p}", mark(info.selected.as_deref() == Some(p.as_str())))),
+        )
+        .collect()
     }
 
     /// `/sessions`: Enter switches to the highlighted session. The one left
@@ -5722,6 +5804,28 @@ pub fn title_model_line(m: Option<&ModelInfo>) -> String {
         Some(m) => format!("title model: {} ({})", m.id, m.name),
         None => "title model: off — each session names itself with its own model (/title <model> to set a cheap one)".into(),
     }
+}
+
+/// The `/aws` reply: which AWS profile Bedrock calls use, harness-wide.
+pub fn aws_profile_line(p: &AwsProfiles) -> String {
+    let now = match &p.selected {
+        Some(s) if p.profiles.contains(s) => s.clone(),
+        Some(s) => {
+            format!("{s} (not found by the AWS SDK; `/aws clear` restores the default chain)")
+        }
+        None => format!(
+            "default credential chain ({}), unless a Bedrock API key is configured",
+            p.default_profile
+        ),
+    };
+    let found = if p.profiles.is_empty() {
+        "none found".to_owned()
+    } else {
+        p.profiles.join(", ")
+    };
+    format!(
+        "aws profile: {now} — applies to every session's Bedrock calls from the next request\n  profiles: {found}"
+    )
 }
 
 /// The `/schedules` usage line, shown on a bad argument.
@@ -7624,6 +7728,60 @@ mod tests {
         assert!(
             matches!(m.entries.last(), Some(Entry::Info(t)) if t.ends_with("no reasoning effort levels"))
         );
+    }
+
+    #[test]
+    fn aws_picks_sets_and_clears_the_harness_profile() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        let info = |profiles: &[&str], selected: Option<&str>| AwsProfiles {
+            profiles: profiles.iter().map(|p| (*p).to_owned()).collect(),
+            selected: selected.map(str::to_owned),
+            default_profile: "default".into(),
+        };
+        // Bare `/aws` asks; two profiles open the picker: default chain first, then names.
+        m.submit("/aws", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::ListAwsProfiles)));
+        m.apply(UiEvent::AwsProfiles {
+            info: info(&["dev", "prod"], Some("prod")),
+            pick: true,
+        });
+        assert!(matches!(m.menu, Some(Menu::AwsProfiles { .. })) && !m.input_focused());
+        let rows = m.aws_rows();
+        assert_eq!(rows.len(), 3);
+        assert!(rows[0].starts_with("  default") && rows[2].starts_with("● prod"));
+        m.menu_key(KeyCode::Down, "", &tx);
+        m.menu_key(KeyCode::Enter, "", &tx);
+        assert!(m.menu.is_none());
+        assert!(matches!(rx.try_recv(), Ok(Command::SetAwsProfile(Some(p))) if p == "dev"));
+        // Row 0 clears; so does `/aws clear`; `/aws name` sets directly.
+        m.apply(UiEvent::AwsProfiles {
+            info: info(&["dev", "prod"], Some("dev")),
+            pick: true,
+        });
+        m.menu_key(KeyCode::Enter, "", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::SetAwsProfile(None))));
+        m.submit("/aws clear", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::SetAwsProfile(None))));
+        m.submit("/aws prod", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::SetAwsProfile(Some(p))) if p == "prod"));
+        // A set reply is status only; one profile and nothing selected needs no picker.
+        m.apply(UiEvent::AwsProfiles {
+            info: info(&["dev"], None),
+            pick: false,
+        });
+        assert!(m.menu.is_none());
+        m.apply(UiEvent::AwsProfiles {
+            info: info(&["dev"], None),
+            pick: true,
+        });
+        assert!(m.menu.is_none());
+        // A stale explicit selection still opens the picker so row 0 can clear it.
+        m.apply(UiEvent::AwsProfiles {
+            info: info(&[], Some("gone")),
+            pick: true,
+        });
+        assert!(matches!(m.menu, Some(Menu::AwsProfiles { .. })));
     }
 
     #[test]

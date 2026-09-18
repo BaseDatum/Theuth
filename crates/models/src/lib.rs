@@ -269,7 +269,7 @@ impl Catalog {
             "moonshotai" => "moonshot",
             "alibaba" => "qwen_cloud",
             "alibaba-cn" => "aliyun",
-            "amazon-bedrock" => "bedrock_api",
+            "amazon-bedrock" => "bedrock_sigv4",
             "opencode-go" => "opencode_go",
             "github-copilot" => "github_copilot",
             "google-vertex" | "google-vertex-anthropic" => "vertex",

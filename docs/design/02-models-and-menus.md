@@ -67,7 +67,7 @@ sees `adapter::model`, produced by:
 | `moonshotai` | `moonshot` |
 | `alibaba` | `qwen_cloud` |
 | `alibaba-cn` | `aliyun` |
-| `amazon-bedrock` | `bedrock_api` |
+| `amazon-bedrock` | `bedrock_sigv4` (bearer fallback below) |
 | `opencode-go` | `opencode_go` |
 | `github-copilot` | `github_copilot` |
 | `google-vertex`, `google-vertex-anthropic` | `vertex` |
@@ -79,11 +79,11 @@ entry. Providers genai cannot route (`mistral`, `azure`) are simply not in the
 trimmed file; a user who adds them gets a genai "unknown adapter" error at
 call time, which is the honest failure.
 
-**Configured provider** = genai can authenticate it: `credentials.yaml` has a
-key under the genai namespace (`anthropic:`, `open_router:` …), or the
-adapter's default env var is set, or the adapter needs no key (`ollama`).
-This is exactly the auth-resolver rule from doc 01 §1.3, exposed as a
-predicate.
+**Configured provider** = a key in the secrets vault under the genai namespace
+(`anthropic`, `open_router`, …), a login, the adapter's default env var, or
+an adapter needing no API key. Bedrock uses the SDK credential chain: its
+catalog remains selectable without probing credentials or metadata services;
+missing credentials fail visibly at inference time. See doc 01 §1.3 and §2.2 below.
 
 **Resolution** of a typed/config id:
 1. Contains `/` and `provider/model` is in the catalog → that model.
@@ -236,6 +236,49 @@ already contain `:`, `@` and `-high` suffixes (`gpt-5-codex-high`,
 `…:free`), so a compound id needs an escape rule and a second resolver, and
 the session row would store a value that is not a catalog key. A separate
 column is one `Option<String>`.
+
+### 2.2 AWS Bedrock profiles
+
+`amazon-bedrock/<model-or-inference-profile-id>` keeps the public model id;
+genai's `bedrock-sigv4` feature supplies Converse streaming, signing and
+credential refresh. No AWS parser, signer or new backend in wth.
+
+The agent owns `ListAwsProfiles` and `SetAwsProfile { profile: Option<String> }`;
+RPC exposes `list_aws_profiles` and `set_aws_profile`. Both return
+`AwsProfiles { profiles, selected, default_profile }`. Discovery calls
+`aws_config::profile::load`, then `ProfileSet::profiles()`; the SDK handles
+merging config and credentials, `AWS_CONFIG_FILE`, `AWS_SHARED_CREDENTIALS_FILE`,
+`AWS_PROFILE`, default paths and SSO sections. Only profile names cross RPC.
+Discovery rereads the files, does not fetch credentials, and reports parse errors.
+
+`agent.aws_profile` is one harness-wide selection, shared by existing clients
+and read on each inference request (including subagents and title calls).
+The setter validates a discovered name, writes a quoted YAML scalar using the
+existing config writer, then updates the live value. A write failure leaves
+the live value unchanged. `null` clears the override; never pick the first
+profile automatically or change process environment variables.
+
+An explicit profile uses the SDK's `ProfileFileCredentialsProvider`, so ambient
+access-key variables cannot silently change its account. Static keys, SSO,
+role chains and credential processes remain SDK responsibilities. Region uses
+the SDK profile-aware chain (`AWS_REGION` overrides profile region).
+Without an explicit profile: a `bedrock_api` vault key wins, then
+`BEDROCK_API_KEY`, then `AWS_BEARER_TOKEN_BEDROCK`, otherwise the AWS default
+credential chain. Explicit raw `bedrock_api::…` model ids remain bearer-only.
+
+Desktop: Settings → Connections → AWS Bedrock; `/aws` opens that pane.
+TUI: `/aws` shows status and opens the shared keyboard picker with multiple
+profiles or an explicit selection to clear. `/aws <name>` selects directly;
+`/aws clear` restores automatic authentication. The picker includes the
+default chain and marks the current selection. A stale name is shown, not
+silently replaced. Profiles belong to the connected harness, not the frontend.
+
+Dependency patch: `vendor/genai` preserves fork `e4863b5`'s tool-image support
+and backports upstream `a120cb8`'s profile-keyed credentials, expiry refresh,
+bearer fallback and signing-region fixes. The additional explicit-profile
+provider fix prevents environment credentials overriding the chosen account.
+Drop the vendor patch when the fork ships both; provenance lives in its
+Cargo manifest and Bedrock module comments.
 
 ## 3. Input header (tui crate)
 

@@ -108,6 +108,18 @@ Typst; a content-addressed store under `~/.wth/artifacts/` —
 [`docs/design/35-artifacts.md`](docs/design/35-artifacts.md)), `tui` (iocraft),
 `wth` (binary).
 
+Bedrock: select an `amazon-bedrock/<model-id>` through `/model` (cross-region
+inference profile ids such as `us.anthropic.…` work too). Configure AWS normally;
+the Rust SDK discovers profiles from both AWS files, including SSO/role profiles
+and custom file paths. `/aws` opens the TUI picker when multiple profiles exist;
+desktop Settings → Connections → AWS Bedrock provides the same selection.
+`/aws work` persists `agent.aws_profile: work` for every session's next Bedrock
+request; `/aws clear` restores automatic authentication. An explicit profile
+overrides ambient access keys and Bedrock bearer keys. Otherwise a `bedrock_api`
+vault secret, `BEDROCK_API_KEY` or `AWS_BEARER_TOKEN_BEDROCK` wins over the default
+AWS chain. The SDK owns region, credentials and SSO; sign in with
+`aws sso login --profile work` when required. No AWS credentials enter wth's UI.
+
 Config (`~/.wth/`, created on first run; details in
 [`docs/design/01-config-and-subagents.md`](docs/design/01-config-and-subagents.md) §1):
 
@@ -117,6 +129,7 @@ Config (`~/.wth/`, created on first run; details in
   agent:
     model: anthropic/claude-sonnet-4-5
     # effort: high        # low|medium|high|… per model (/model lists them); unset = provider default
+    # aws_profile: work   # Bedrock inference; /aws or Settings → Connections selects it
     compact_at: 0.8        # compact when the context is this full; 0 disables
     compact_style: summary  # summary | cut | snap
     knowledge:             # how the loop uses the store

@@ -42,8 +42,17 @@ import type { ToolSpec } from '@/rpc/bindings/ToolSpec'
 import type { UpdateReady } from '@/rpc/bindings/UpdateReady'
 import type { Transcript } from '@/rpc/bindings/Transcript'
 import type { JsonValue } from '@/rpc/bindings/serde_json/JsonValue'
+import type { AwsProfiles } from '@/rpc/bindings/AwsProfiles'
 import type { RpcClient } from '@/rpc/client'
-import type { AgentInfo, Artifact, Info, LoadedPage, LoginInfo, ProviderInfo, VoiceStatus } from '@/rpc/extra'
+import type {
+  AgentInfo,
+  Artifact,
+  Info,
+  LoadedPage,
+  LoginInfo,
+  ProviderInfo,
+  VoiceStatus,
+} from '@/rpc/extra'
 
 /** `computer::PermissionStatus` (27 §6); hand-written until the bindings are regenerated. */
 export type PermissionStatus = {
@@ -117,6 +126,8 @@ export interface Api {
   /** Artifacts newest first: one session's (`descendants` widens to its subtree) or, with `null`, every session's (35 §3.5). */
   list_artifacts(session: SessionId | null, descendants?: boolean | null): Promise<Artifact[]>
   list_jobs(session: SessionId): Promise<JobView[]>
+  /** AWS profiles the SDK finds on the harness and the one Bedrock signs with. */
+  list_aws_profiles(): Promise<AwsProfiles>
   list_logins(): Promise<LoginInfo[]>
   list_mcp(session: SessionId | null): Promise<McpServer[]>
   list_models(): Promise<ModelInfo[]>
@@ -184,6 +195,8 @@ export interface Api {
   /** The last `limit` fires and skips of a schedule, newest first (34 §8). */
   schedule_history(name: string, limit: number): Promise<RunInfo[]>
   send_input(session: SessionId | null, text: string, files: string[]): Promise<SessionId>
+  /** Sign every Bedrock call on the harness as `profile` from the next request on; `null` restores the default credential chain. */
+  set_aws_profile(profile: string | null): Promise<AwsProfiles>
   set_approvals(session: SessionId | null, enabled: boolean): Promise<ApprovalsState>
   set_compact_style(style: CompactStyle): Promise<null>
   set_effort(session: SessionId | null, effort: string | null): Promise<null>
@@ -272,6 +285,7 @@ export const METHODS = [
   'list_acp_registry',
   'list_agents',
   'list_artifacts',
+  'list_aws_profiles',
   'list_jobs',
   'list_logins',
   'list_mcp',
@@ -310,6 +324,7 @@ export const METHODS = [
   'search_sessions',
   'send_input',
   'set_approvals',
+  'set_aws_profile',
   'set_compact_style',
   'set_effort',
   'set_max_tool_rounds',

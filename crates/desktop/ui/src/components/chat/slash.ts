@@ -1,12 +1,14 @@
 import type { UseNavigateResult } from '@tanstack/react-router'
 import { toast } from 'sonner'
 import { gitUrl, mcpEntry } from '@/lib/mcpEntry'
+import { queryKeys } from '@/lib/rpc'
 import { LOCAL, useHarnesses } from '@/link/harnesses'
 import type { Api } from '@/rpc/api'
 import type { CompactStyle } from '@/rpc/bindings/CompactStyle'
 import type { SyncResult } from '@/rpc/bindings/SyncResult'
 import type { LoadedPage } from '@/rpc/extra'
 import { useConnection } from '@/store/connection'
+import { active } from '@/store/harness-scope'
 import { useSessions } from '@/store/sessions'
 
 /** Slash commands (`tui::model::COMMANDS`): name, argument hint, description. */
@@ -92,6 +94,11 @@ export const COMMANDS: readonly { name: string; hint: string; desc: string }[] =
     name: '/provider',
     hint: '[add|rm <name>]',
     desc: 'OpenAI-compatible providers',
+  },
+  {
+    name: '/aws',
+    hint: '[profile|clear]',
+    desc: 'AWS profile Bedrock signs with, harness-wide (picker without arg)',
   },
   { name: '/exit', hint: '', desc: 'same as /quit' },
 ]
@@ -334,6 +341,13 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
         return
       }
       throw new Error('usage: /provider [add [name [url [key]]] | rm <name>]')
+    case '/aws': {
+      if (!arg) return settings(navigate, 'connections', session)
+      const r = await api.set_aws_profile(arg === 'clear' ? null : arg)
+      active().qc.setQueryData(queryKeys.awsProfiles, r)
+      toast(r.selected ? `bedrock: profile ${r.selected}` : `bedrock: AWS default chain (${r.default_profile})`)
+      return
+    }
     case '/prompt':
       return openSurface('prompt')
     case '/agents':

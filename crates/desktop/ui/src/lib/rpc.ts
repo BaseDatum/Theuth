@@ -21,6 +21,7 @@ export const queryKeys = {
   skill: (name: string) => ['skill', name] as const,
   logins: ['logins'] as const,
   providers: ['providers'] as const,
+  awsProfiles: ['aws-profiles'] as const,
   acp: ['acp'] as const,
   acpRegistry: ['acp', 'registry'] as const,
   agents: (id: string) => ['agents', id] as const,

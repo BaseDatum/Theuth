@@ -19,6 +19,7 @@ use runtime::{InputId, SessionId, TurnId};
 use serde::{Deserialize, Serialize};
 
 pub mod acp_child;
+mod aws;
 mod backend;
 pub mod compact;
 pub mod frame;
@@ -36,6 +37,7 @@ pub mod title;
 pub mod todo;
 pub mod user;
 
+pub use aws::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 pub use compact::CompactStyle;
 pub use supervisor::{Agents, RegisterNode, UnregisterNode};
 pub use user::{
@@ -1095,6 +1097,8 @@ pub struct AgentConfig {
     /// Reasoning effort for new sessions (`low`, `high`, `off`, a token
     /// budget, …; what the model accepts); unset = provider default.
     pub effort: Option<String>,
+    /// Harness-wide Bedrock inference profile; unset uses the AWS default credential chain.
+    pub aws_profile: Option<String>,
     /// Max tool-call rounds per turn before the loop stops itself.
     pub max_tool_rounds: u32,
     /// Max characters of tool output sent back to the model.
@@ -1128,6 +1132,7 @@ impl Default for AgentConfig {
         Self {
             model: "anthropic/claude-sonnet-4-5".into(),
             effort: None,
+            aws_profile: None,
             max_tool_rounds: 32,
             max_tool_output_chars: 32_000,
             runtime_only: true,

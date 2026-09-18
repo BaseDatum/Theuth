@@ -84,8 +84,9 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
         move || {
             let mut m = Model::new(default_model, approvals);
             m.catalog = Some(catalog);
-            m.entries
-                .push(Entry::Info(concat!("wth ", env!("CARGO_PKG_VERSION")).into()));
+            m.entries.push(Entry::Info(
+                concat!("wth ", env!("CARGO_PKG_VERSION")).into(),
+            ));
             m
         }
     });
@@ -583,6 +584,12 @@ fn menu(m: &Model, input: &str, width: u16) -> Option<AnyElement<'static>> {
         Menu::Efforts { items, cursor } => (
             "effort  ⏎ set  esc close".to_owned(),
             items.clone(),
+            *cursor,
+        ),
+        Menu::AwsProfiles { cursor, .. } => (
+            "aws profile  ⏎ use for every session's Bedrock calls from the next request  esc close"
+                .to_owned(),
+            m.aws_rows(),
             *cursor,
         ),
         Menu::Sessions { items, cursor } => (

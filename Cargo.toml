@@ -104,7 +104,9 @@ serde_yaml = "0.9"
 notify = "8"
 kameo = "0.22"
 kameo_actors = "0.8"
-genai = "0.7.0-beta.23"
+genai = { version = "0.7.0-beta.23", features = ["bedrock-sigv4"] }
+aws-config = "1"
+aws-types = "1"
 brush-core = "0.5"
 brush-builtins = "0.2"
 rmcp = { version = "3", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "reqwest"] }
@@ -265,9 +267,9 @@ slack-morphism = { git = "https://github.com/skymoore/slack-morphism-rust", bran
 # workspace; a git dependency's patches do not propagate, so we point at the same copies (23 §2).
 taffy = { git = "https://github.com/skymoore/obscura", branch = "main" }
 cosmic-text = { git = "https://github.com/skymoore/obscura", branch = "main" }
-# genai: `ToolResponse.images` so screenshots ride inside tool results (Anthropic tool_result
-# content array; OpenAI trailing user turn; Gemini inline_data). Fork `main` = v0.7.0-beta.23 + one commit (23 §5).
-genai = { git = "https://github.com/skymoore/rust-genai", branch = "main" }
+# genai: preserve ToolResponse.images (23 §5), plus upstream Bedrock profile selection,
+# credential refresh and region fixes (02 §2.2). Vendored until the fork includes both.
+genai = { path = "vendor/genai" }
 # btls-sys (wreq's BoringSSL, under obscura's stealth): `links = "btls"` instead of "boringssl" so
 # it can coexist with libsignal's boring-sys, and `prefix-symbols` (every export renamed
 # `btls_sys_*`) now works on macOS/iOS via llvm-objcopy, not only on ELF. Fork `main` = 0.5.6 +
