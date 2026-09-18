@@ -1030,6 +1030,39 @@ mod tests {
         }
     }
 
+    /// Takes its arguments as data: a placeholder is literal text.
+    struct Literal;
+
+    #[async_trait::async_trait]
+    impl Tool for Literal {
+        const NAME: &'static str = "literal";
+        const RISK: Risk = Risk::ReadOnly;
+        const CONSUMES_SECRETS: bool = false;
+        type Args = serde_json::Value;
+        fn description(&self) -> String {
+            String::new()
+        }
+        async fn call(&self, a: Self::Args, _: ToolCx) -> anyhow::Result<ToolOutput> {
+            Ok(ToolOutput::ok(a["q"].as_str().unwrap_or_default()))
+        }
+    }
+
+    #[tokio::test]
+    async fn placeholder_in_literal_args_neither_raises_the_gate_nor_expands() {
+        let reg = registry(vec![Arc::new(Echo), Arc::new(Literal)], None);
+        let session = SessionId::new();
+        let with = |name: &str| ToolCall {
+            args: serde_json::json!({"q": "find {{secret:GITHUB}} usage"}),
+            ..call(name, session)
+        };
+        // No approval actor: a raised gate is an error, not a prompt.
+        let out = reg.ask(Invoke(with("echo"))).await.unwrap();
+        assert!(out.is_error && out.content.contains("approval"), "{out:?}");
+        let out = reg.ask(Invoke(with("literal"))).await.unwrap();
+        assert!(!out.is_error, "{out:?}");
+        assert_eq!(out.content, "find {{secret:GITHUB}} usage");
+    }
+
     /// Blocks until released; reports the `current()` op it ran under.
     struct Slow {
         release: Arc<tokio::sync::Notify>,

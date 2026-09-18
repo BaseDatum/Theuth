@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link, getRouteApi, useNavigate } from '@tanstack/react-router'
 import { openUrl } from '@tauri-apps/plugin-opener'
-import { ChevronLeft, Copy, Download, MessageSquare, PanelRight } from 'lucide-react'
+import { ChevronLeft, Copy, Download, MessageSquare, PanelRight, RefreshCw } from 'lucide-react'
 import { type MouseEvent, type ReactNode, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { Streamdown } from 'streamdown'
@@ -10,18 +10,23 @@ import { sessionLabel, useArtifactList } from '@/components/artifacts/List'
 import { ArtifactMenu, RevealButton, TEXT_KINDS, metaLine, saveAs, useText } from '@/components/chat/ArtifactCard'
 import { Img, useFileUrl } from '@/components/chat/Attachments'
 import { fenced, plugins, shikiTheme } from '@/components/chat/MessageAssistant'
+import { SearchReturn } from '@/components/sidebar/SearchReturn'
+import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useIsMobile } from '@/hooks/use-mobile'
+import { useSearchFocus } from '@/hooks/use-search-focus'
 import { parseCsv } from '@/lib/csv'
 import { extOf, fmtBytes, isLocal, readBytes } from '@/lib/files'
 import { touch } from '@/lib/platform'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { queryKeys, useApi } from '@/lib/rpc'
+import { isSearchDestination, useSearchOrigin } from '@/lib/search'
 import { cn } from '@/lib/utils'
 import { useHarnesses } from '@/link/harnesses'
+import type { MatchRange } from '@/rpc/bindings/MatchRange'
 import type { Artifact } from '@/rpc/extra'
 import type { PDFDocumentLoadingTask, PDFPageProxy, RenderTask } from 'pdfjs-dist'
 
@@ -328,12 +333,15 @@ function Body({ a }: { a: Artifact }) {
 
 const route = getRouteApi('/artifacts/$callId')
 
-/** `/artifacts/$callId`: one artifact from the cross-session list; a version `Select` walks the same-name artifacts of its session. */
+/** `/artifacts/$callId`: the exact record by `call_id` (49 §7); a version `Select` walks the same-name artifacts of its session from the list. */
 export function Viewer() {
   const { callId } = route.useParams()
+  const api = useApi()
+  const record = useQuery({ queryKey: queryKeys.artifact(callId), queryFn: () => api.get_artifact(callId) })
   const list = useArtifactList()
   const navigate = useNavigate()
   const mobile = useIsMobile()
+  const origin = useSearchOrigin()
   const [railOpen, setRailOpen] = useState(true)
 
   // Under `md` the viewer is the only pane; `Esc` is the back chevron.
@@ -346,13 +354,17 @@ export function Viewer() {
     return () => window.removeEventListener('keydown', onKey)
   }, [mobile, navigate])
 
-  const a = list.data?.find((x) => x.call_id === callId)
+  // Hooks run before the status branches, so this memo sees `data` unnarrowed; the render below reads `record.data` after them.
+  const hit = record.data
   const versions = useMemo(
-    () => (a && list.data ? list.data.filter((x) => x.session === a.session && x.name === a.name).sort((x, y) => y.version - x.version) : []),
-    [list.data, a],
+    () => (hit && list.data ? list.data.filter((x) => x.session === hit.session && x.name === hit.name).sort((x, y) => y.version - x.version) : []),
+    [list.data, hit],
   )
+  const matched = isSearchDestination(origin, { category: 'artifacts', callId }) ? origin : null
+  // The activation lands on the title once the exact record rendered (49 §7); a refetch or a later ordinary visit leaves focus alone.
+  const heading = useSearchFocus<HTMLHeadingElement>(matched, record.isSuccess)
 
-  if (list.isPending) {
+  if (record.isPending) {
     return (
       <Frame>
         <div className="mx-auto w-full max-w-[768px] space-y-3 p-6">
@@ -363,31 +375,32 @@ export function Viewer() {
       </Frame>
     )
   }
-  if (list.isError) {
+  if (record.isError) {
+    // The exact record or nothing: no sibling version or same-name artifact stands in (49 §7).
     return (
       <Frame>
-        <p className="m-auto text-sm text-danger">{list.error.message}</p>
+        <div className="m-auto flex flex-col items-center gap-3 p-6 text-center">
+          <p className="text-sm text-danger">{record.error.message}</p>
+          <SearchReturn />
+        </div>
       </Frame>
     )
   }
-  if (!a) {
-    return (
-      <Frame>
-        <p className="m-auto text-sm text-fg-tertiary">No such artifact</p>
-      </Frame>
-    )
-  }
+  const a = record.data
   const textual = a.kind === 'markdown' || a.kind === 'text'
   return (
     <Frame
       title={
         <div className="min-w-0 flex-1">
-          <h1 className="truncate text-sm font-semibold">{a.title}</h1>
+          <h1 ref={heading} tabIndex={-1} className="truncate text-sm font-semibold outline-none">
+            {a.title}
+          </h1>
           <p className="truncate text-xs text-fg-tertiary">{metaLine(a)}</p>
         </div>
       }
       actions={
         <>
+          <SearchReturn className="hidden md:inline-flex" />
           {versions.length > 1 && (
             <Select value={a.call_id} onValueChange={(id) => void navigate({ to: '/artifacts/$callId', params: { callId: id } })}>
               <SelectTrigger size="sm" className="h-8 shrink-0 text-xs" aria-label="Version">
@@ -415,8 +428,9 @@ export function Viewer() {
       }
     >
       <div className="flex min-h-0 flex-1">
-        <div className="min-w-0 flex-1 overflow-auto">
-          <ArtifactView artifact={a} className={textual ? 'mx-auto w-full max-w-[768px]' : 'h-full'} />
+        <div className="flex min-w-0 flex-1 flex-col overflow-auto">
+          {matched && <Matched a={a} query={matched.query} />}
+          <ArtifactView artifact={a} className={textual ? 'mx-auto w-full max-w-[768px]' : 'min-h-0 flex-1'} />
           {/* Under `lg` the details have no room beside the body; they follow it instead, toggled by the same action. */}
           {railOpen && (
             <section className="border-t border-border-subtle lg:hidden">
@@ -434,7 +448,7 @@ export function Viewer() {
   )
 }
 
-/** 52 px bar (title left, actions right) over the pane body. Under `md` a back chevron returns to the list. */
+/** 52 px bar (title left, actions right) over the pane body. Under `md` a back chevron returns to the list and Search sits at the trailing edge (49 §5.1). */
 function Frame({ title, actions, children }: { title?: ReactNode; actions?: ReactNode; children: ReactNode }) {
   return (
     <article className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -449,10 +463,85 @@ function Frame({ title, actions, children }: { title?: ReactNode; actions?: Reac
         </Button>
         {title ?? <span className="flex-1" />}
         {actions}
+        <SearchTrigger className="md:hidden" />
       </header>
       {children}
     </article>
   )
+}
+
+const FIELD_LABEL: Record<string, string> = {
+  name: 'Name match',
+  title: 'Title match',
+  kind: 'Kind match',
+  content: 'Content match',
+  source: 'Source match',
+}
+
+/**
+ * 49 §7 Matched text: the exact indexed projection around the hit, fetched by `call_id` and the search's query
+ * (up to 2000 chars server-side). Plain text nodes with `<mark>`s over char ranges; nothing is injected into
+ * the rendered HTML/PDF, and source offsets are never claimed to be rendered positions.
+ */
+function Matched({ a, query }: { a: Artifact; query: string }) {
+  const api = useApi()
+  const ctx = useQuery({
+    queryKey: queryKeys.artifactSearchMatch(a.call_id, query),
+    queryFn: () => api.artifact_search_match(a.call_id, query),
+    retry: false,
+  })
+  const m = ctx.data
+  let note: string | null = null
+  if (m?.content_coverage === 'metadata_only') note = 'Content not searchable — only the name, title and kind were indexed.'
+  else if (m?.match.field === 'source') {
+    note = a.kind === 'pdf' ? 'Matched in the saved source, not the compiled pages.' : 'Matched in the saved source, not the rendered page.'
+  }
+  return (
+    <section aria-label="Matched text" className="shrink-0 border-b border-border-subtle bg-layer-1 px-4 py-3">
+      <div className="flex items-center gap-2">
+        <h2 className="text-xs font-semibold text-fg-secondary">Matched text</h2>
+        {m && <span className="text-xs text-fg-tertiary">{FIELD_LABEL[m.match.field] ?? m.match.field}</span>}
+        <span className="flex-1" />
+        {ctx.isError && (
+          <Button variant="ghost" size="xs" onClick={() => void ctx.refetch()} disabled={ctx.isFetching}>
+            <RefreshCw className={cn(ctx.isFetching && 'animate-spin')} />
+            Retry
+          </Button>
+        )}
+        <SearchReturn className="md:hidden" />
+      </div>
+      {ctx.isPending ? (
+        <Skeleton className="mt-2 h-12 w-full" />
+      ) : ctx.isError ? (
+        <p className="mt-2 text-sm text-danger">{ctx.error.message}</p>
+      ) : (
+        <>
+          {note && <p className="mt-1 text-xs text-fg-tertiary">{note}</p>}
+          <pre className="mt-2 max-h-64 overflow-auto rounded-lg bg-layer-2 p-3 font-sans text-[13px] leading-6 wrap-anywhere whitespace-pre-wrap">
+            <Marked text={ctx.data.match.snippet} ranges={ctx.data.match.ranges} />
+          </pre>
+        </>
+      )}
+    </section>
+  )
+}
+
+/** `ranges` are `[start, end)` char offsets (not UTF-16 units), so slice the code-point array. */
+function Marked({ text, ranges }: { text: string; ranges: MatchRange[] }) {
+  const chars = Array.from(text)
+  const out: ReactNode[] = []
+  let i = 0
+  for (const r of ranges) {
+    if (r.start > i) out.push(chars.slice(i, r.start).join(''))
+    out.push(
+      <mark key={r.start} className="rounded-sm bg-accent text-foreground">
+        {chars.slice(r.start, r.end).join('')}
+      </mark>,
+    )
+    i = r.end
+  }
+  if (i < chars.length) out.push(chars.slice(i).join(''))
+  return <>{out}</>
 }
 
 function Action({

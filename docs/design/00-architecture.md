@@ -46,6 +46,15 @@ memory, not a general git client. Rejected: frontend git commands or a second
 history database; neither works consistently on phones, and the existing
 bundle already owns the record.
 
+Human search (26, 49) follows the same rule: each owner searches its own
+store — `agent` sessions, `artifact` records and saved bytes, `knowledge`
+current concepts and their gix history — behind owner commands, and
+`rpc::search::run` only asks the selected owners and returns their pages in
+fixed order. The `search` RPC and the registered `search` tool are two
+adapters over that one function. Query policy, snippets and highlight
+ranges live in the pure `search` library; no search plugin, search database,
+or history index exists, and caches are owner-local and disposable (49 §4).
+
 ## 2. Process model
 
 One process. `wth` runs the bus, the agent, the tools, and the terminal UI
@@ -164,7 +173,10 @@ contracts live in `tools`; the agent's commands and its `AgentEvent` live in
 `runtime ← tools ← secrets ← knowledge ← agent ← link ← {signal, slack, nodes, schedule, artifact, update, voice} ← rpc ← tui ← wth`
 (`knowledge` joins the chain in 12 §9; `secrets` in 37 §0.10 — `web`,
 `search-providers`, `agent`, `slack`, `rpc`, `signal` depend on it; `update`
-in 39: depends on `agent` only, `rpc` forwards its `UpdateReady`). This keeps the shared crate under
+in 39: depends on `agent` only, `rpc` forwards its `UpdateReady`; the
+`search` library in 49 §4.1 sits beside `runtime` — it depends on no
+workspace crate, and `knowledge`, `agent`, `artifact`, `rpc`, `tui` depend
+on it). This keeps the shared crate under
 its 400-line ceiling and puts each contract next to the code that enforces
 it. (Earlier draft put the tool contract in `runtime`; dropped once the
 agent needed `tools` anyway for the registry actor type.)
@@ -641,8 +653,9 @@ crates/
   acp/                library: agents.yaml, ACP registry, Harness (external harness process), renderers (06)
   tools/              plugin: registry, approval, shell (brush), fs, mcp (rmcp) (§6, 01)
   secrets/            plugin: encrypted versioned vault (provider keys included), keychain key, {{secret:NAME[:-N]}} expansion + output scrub hook, secret_* tools, masked request, --secret-* CLI (37)
-  knowledge/          plugin: OKF bundle, FTS index, gix history, knowledge_* tools (added in 10; extracted from agent in 12 §9)
-  agent/              plugin: genai loop, session store, frame/compaction, context edits (`context.rs`), skills, subagents, repl, session search (§5, 07, 08, 26, 48)
+  knowledge/          plugin: OKF bundle, FTS index, gix history, knowledge_* tools, human concept/history search + read-at-commit (added in 10; extracted from agent in 12 §9; 49 §3.3–3.4)
+  search/             library: nucleo query policy, prepared candidate text, snippets with scalar highlight ranges, SearchCategory/SearchPage envelope — no plugin, actor or store (49 §4.1)
+  agent/              plugin: genai loop, session store, frame/compaction, context edits (`context.rs`), skills, subagents, repl, session search (§5, 07, 08, 26, 48, 49)
   web/                plugin: search_web / read_url, SSRF-guarded fetcher, RRF aggregator, keyless engines google/bing/brave/qwant/wikipedia/arxiv/github; one-call search reads top hits and returns relevant passages (16 §4.7)
   search-providers/   plugin: optional Firecrawl, SearXNG, OpenSERP, Brave API (`brave_api`) registered with web over the bus; only firecrawl present by default, key-gated (16)
   firecrawl-native/   library: vendored Firecrawl crawler/html heuristics (AGPL; 38)
@@ -652,11 +665,11 @@ crates/
   slack/              plugin: Slack channel over Socket Mode (added in 21)
   computer/           plugin: screenshot + pointer/keyboard tools (27)
   surface/            library: json-render spec, jsonrepair parse, located validation, terminal rendering of json-render and Mermaid (merman), flatten for text channels, prompt block + visualize skill (30)
-  rpc/                plugin: jsonrpsee server, event subscription bridge (§7)
+  rpc/                plugin: jsonrpsee server, event subscription bridge (§7); `search.rs`: four-category composition, `search`/`search_refresh` methods, the `search` tool and its registration-only `SearchToolsPlugin` (49 §4)
   link/               plugin: relay uplink, Noise pairing and sessions, device registry (31)
   nodes/              plugin: paired remote harnesses — control conns, dial transport for ACP children (32)
   schedule/           plugin: scheduled runs from `schedules/*.md` — tick, one session per schedule, delivery (34)
-  artifact/           plugin: show tool, content-addressed artifact store + index, Typst PDF compile and page render, SVG rasterise, prompt block + pdf skill (35)
+  artifact/           plugin: show tool, content-addressed artifact store + index, Typst PDF compile and page render, SVG rasterise, prompt block + pdf skill, occurrence search over saved bytes (35, 49 §3.2)
   app/                plugin: `app` tool (OpenUI Lang source → `Kind::App` artifact via the helper subprocess), `Apps` actor (`get_app`/`app_call_tool`/`app_call_status`/`app_close`, one-press consent, admission, durable pressed invocations), `AppCallChanged`, bundled `apps` skill (46)
   packages/apps/      TS: curated OpenUI library + compatibility hash, `check`, helper (`bun build --compile`), patched renderer adapter shared with desktop (46 §4, §6.2, §7)
   update/             plugin: silent self-update of the `wth` binary — manifest GET, minisign verify, atomic rename; `--update` (added in 39)
@@ -687,8 +700,14 @@ imports `link::qr`; `nodes` imports `link`'s identity, initiator and record
 codec; `tui` renders `link`'s status and QR; `rpc` sends `link` its
 dispatch as a `SetDispatch` message at start, 32 §3.1 — never a handle
 threaded through `wth`; `artifact` depends on `agent` for
-`AgentEvent::SessionDeleted` — subscribed, never asked — and on
-`tools`/`runtime`; nothing below `rpc` depends on it, 35 §13;
+`AgentEvent::SessionDeleted` — subscribed — and asks `agent::ListSessions`
+once per search build so an orphaned record is never searchable (49 §4.3);
+it also depends on `tools`/`runtime`; nothing below `rpc` depends on it, 35
+§13; `search` depends on no workspace crate and `knowledge`, `agent`,
+`artifact`, `rpc`, `tui` depend on it, 49 §4.1; `rpc::SearchToolsPlugin` is
+listed in both agent-bearing plugin vectors of `wth` independently of
+`RpcPlugin`, so the `search` tool exists in plain TUI, `--print` and `--acp`
+runs without the listener, 49 §4.4;
 `scrape → {firecrawl-native, web, browser}` and `browser → web`, so there is
 no cycle; `rpc` and `tui` depend on `scrape` only for the `ScrapeProgress`
 event type they forward and render, 38 §0.2).
@@ -731,7 +750,7 @@ Workspace dependencies (versions verified 2026-09-09 via `cargo info`):
 | roxmltree | 0.20 | sitemap `urlset` / `sitemapindex` parsing (firecrawl-native; 38) |
 | texting_robots | 0.2 | robots.txt: disallows, `Crawl-delay`, `Sitemap:` (firecrawl-native; 38) |
 | flate2 | 1 | gzip sitemaps inflated in the web fetcher (38); CLI update tarballs (39) |
-| slack-morphism | 2.28 (patched, 21 §2.1) | Slack Socket Mode + Web API |
+| slack-morphism | upstream Git rev e2a4b014 (PR #388 merged, unreleased; 21 §2.1) | Slack Socket Mode + Web API |
 | portable-pty | 0.9 | pty open/spawn/read/write for PTY jobs (22) |
 | vt100 | 0.16 | rendered screen of a PTY job (22) |
 | obscura-mcp | git v0.2.2 + 2 (fork, 23 §3.3, 44 §3.1) | embedded headless browser: per-session isolates, agent tool layer (stealth + render), network capture |
@@ -862,7 +881,7 @@ Each phase ends with a runnable check, not a test suite.
 | 13 | PTY jobs (22) | `start` a REPL with `ready`, `send` an expression, read the answer off the screen; the harness drives its own TUI | done 2026-09-14 (3 tool calls for the REPL, `pty="true"` result; the harness read `no session · idle` off its own TUI; 22 §11) |
 | 14 | browser (23) | `browser_open` reads HN; a screenshot of a local dev server is described from the image; `read_url rendered` keyless | done 2026-09-14 (one `browser_open` names the top story; colours of a fixture page read off the screenshot, not the text; `read_url rendered: true` without Firecrawl; 23 §13) |
 | 15 | message_user (24) | a bound Slack session receives a screenshot in its thread; an unbound RPC session lands in the owner DM and on the phone with the `session …` line | done 2026-09-14 (owner DM with the screenshot, three tool calls; bound thread and Signal unit-tested only; 24 §9) |
-| 16 | session search (26) | `search_sessions` over a real store ranks the expected session first with a highlighted snippet; ⌘K and `/search` show it | done 2026-09-15 (26 §8) |
+| 16 | session search (26) | `search_sessions` over a real store ranks the expected session first with a highlighted snippet; ⌘K and `/search` show it | done 2026-09-15 (26 §8); public `search_sessions` replaced by `search` in phase 29 |
 | 17 | computer (27) | composite screenshot of two displays described; TextEdit typed into and verified from the PNG; a click on display 2 lands | done 2026-09-15 (screenshot + open/key/type/refusal smoked on two displays; live click aborted by the user mid-turn, mapping unit-tested only; 27 §13) |
 | 18 | rewind (29): edit, regenerate, fork | 29 §9 checks 1–6 headless, 7–8 in both UIs | in progress 2026-09-15 |
 | 19 | link (31): phone/browser drives the harness through a stateless relay, Noise E2E, same JSON-RPC | 31 §12 | done 2026-09-15 (relay + headless + `wth --link` QR; browser paired IKpsk2, reconnected IK, no secrets in storage; device script paired/reconnected/revoked; relay restart re-registers <4 s; TUI `/link` card and badge in a pty; iOS build, camera scan and 31 §11 bench not run; 31 §13) |
@@ -875,6 +894,7 @@ Each phase ends with a runnable check, not a test suite.
 | 26 | update (39): `wth` and `wth.app` update themselves, silently; Homebrew tap; Linux CLI tarballs | 39 §12 steps 1–10 | in progress 2026-09-17 |
 | 27 | triggers (40): `on: hook` through the relay, `on: fs`, `when:` shell check on `every:` files | 40 §11 steps 1–6 | shelved 2026-09-17; preconditions in 40 §12 |
 | 28 | knowledge checks (41): `check:` on a concept, daily sweep, `(stale: …)` hints, `knowledge_verify`, picker/explorer run · edit · accept · fix with an agent | 41 §14 steps 1–6 | planned 2026-09-17 |
+| 29 | unified search (49): sessions, artifacts, knowledge, knowledge history behind one `search` RPC and one `search` tool; `search_refresh`; exact readers `get_artifact`/`artifact_search_match`/`knowledge_read_revision` | 49 §8 | done 2026-09-18 (fixture RPC smoke 62/62; tool invoked by a real model in runtime, native child, headless, `--print` and `--acp` runs; search and reads through the encrypted link; desktop/mobile dialog approved by the user; `/search` query, chips and artifact preview on a pty; release large corpus warm p95 2.4 ms, cold first reply 1.7 ms, all groups ready 4.0 s; peak RSS, the full 8.3 TUI matrix and the packaged iOS keyboard not measured; 49 §11) |
 | 30 | apps (46): `app` publishes an OpenUI screen the desktop renders progressively; a press runs its Mutation with zero approval cards; edits are CAS-atomic; TUI/Slack/Signal show source | 46 §10 | done 2026-09-18 on `feature/apps`, merge with limitation (packages/apps 78 tests, desktop 150 tests + build, `crates/app` publish→open→call→edit test; real RPC smoke 14/14 incl. mutating/destructive/secret presses with zero `ApprovalRequested`, `needs_approval` for automatic asks, duplicate/mismatched IDs, stale generation, peer close, CAS conflict; relay probe 7/7 through a real local relay with the desktop's link crypto — pair, get_app, press, status, reconnect, revoke; DOM click on the fixture panel → `Healthy`, count 1; visuals accepted by the user at the production URL; frontier steering 15/15 first pass, vehicle 19/20, small model not run; performance: dev-build trace first statement 9.2 s before commit, frame interval p95 18 ms; production cold load one 146 ms long task and frame budget uncertified — accepted limitation, not a gate; **not run**: Linux runtime, phone hardware, Developer ID/notarized clean machine (signing external), a real streaming-provider capture, `add_mcp_server`-installed backend restart; 46 §12) |
 
 Known gaps carried forward: cancel/error paths in the loop are code-reviewed,

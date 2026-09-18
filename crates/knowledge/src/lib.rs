@@ -3,6 +3,8 @@
 //!
 //! - [`store`]: the bundle on disk + the FTS5 index (`Knowledge`).
 //! - [`repo`]: local git history of the bundle via `gix` (no binary).
+//! - [`search`]: human fuzzy search over current concepts and their full
+//!   history, and read-at-commit (design doc 49). FTS retrieval is untouched.
 //! - [`harvest`]: the cache-hot continuation's instruction and reply parser,
 //!   and the `<knowledge>` hint rendering. The harvest *model call* stays in
 //!   the agent loop, which owns the frame.
@@ -11,7 +13,8 @@
 //! Public surface consumed by other plugins:
 //! - commands on the [`KNOWLEDGE_ACTOR`] actor ([`KnowledgeActor`]): [`Handle`],
 //!   [`Search`], [`Get`], [`List`], [`PutConcept`], [`Write`], [`Delete`], [`HistoryOf`],
-//!   [`RevisionOf`], [`Restore`], [`SyncNow`]
+//!   [`RevisionOf`], [`Restore`], [`SyncNow`], [`search::SearchConcepts`],
+//!   [`search::SearchHistory`], [`search::ReadRevision`], [`search::RefreshSearch`]
 //! - event: [`KnowledgeChanged`], published by the store after every write
 
 use std::sync::Arc;
@@ -25,6 +28,7 @@ use ::tools::{REGISTRY_ACTOR, ToolRegistry};
 
 pub mod harvest;
 pub mod repo;
+pub mod search;
 pub mod store;
 pub mod tools;
 pub mod types;

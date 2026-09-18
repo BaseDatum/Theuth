@@ -1132,7 +1132,7 @@ impl Channel {
                 let key = thread_key(&e.channel.0, &thread_ts.0);
                 self.lock().threads.set_title(&key, Some(e.title));
             }
-            SlackEventCallbackBody::Unknown => {
+            SlackEventCallbackBody::Unknown(_) => {
                 self.lock().dropped += 1;
                 tracing::debug!("unknown slack event type acked and dropped");
             }

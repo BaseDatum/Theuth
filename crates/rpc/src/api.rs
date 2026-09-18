@@ -7,6 +7,7 @@ use std::fmt::Display;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
+use ::search::SearchCategory;
 use agent::todo::TodoSnapshot;
 use agent::{
     AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentConfig, AgentInfo, Agents, Cancel, Compact,
@@ -16,12 +17,13 @@ use agent::{
     ListRegistry, ListSessions, ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginInfo,
     Logout, ModelInfo, NewSession, PinSession, ProviderInfo, QueuedInput, Redo, Regenerate,
     RemoveAcp, RemoveContext, RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession,
-    SearchSessions, SendInput, SessionSummary, SetCompactStyle, SetEffort, SetMaxToolRounds,
-    SetModel, SetSubagentTimeout, SetTitleModel, ShowPrompt, SkillBody, SkillMeta, Steer,
-    SyncSkills, Undo, UseSkill, Withdraw,
+    SendInput, SessionSummary, SetCompactStyle, SetEffort, SetMaxToolRounds, SetModel,
+    SetSubagentTimeout, SetTitleModel, ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo,
+    UseSkill, Withdraw,
 };
 use agent::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 use app::{AppDoc, AppToolResult, Apps, CallArgs, CallStatusOf, CallTool, CloseApp, GetApp};
+use artifact::search::ArtifactMatchContext;
 use base64::Engine as _;
 use browser::{BROWSER_ACTOR, Browsers, Screenshot};
 use computer::{COMPUTER_ACTOR, Computer, Permissions};
@@ -35,6 +37,7 @@ use kameo::actor::ActorRef;
 use kameo::error::SendError;
 use kameo::message::Message;
 use kameo::reply::Reply;
+use knowledge::search::HistoricalConcept;
 use knowledge::{
     Change, Concept, Delete, Get, HarvestResult, History, HistoryOf, Hit, KNOWLEDGE_ACTOR,
     KnowledgeActor, List, Meta, Put, PutConcept, Restore, Revision, RevisionOf, Search, Source,
@@ -59,6 +62,7 @@ use tools::{
 use voice::{SpeechId, VoiceStatus};
 
 use crate::bridge::Event;
+use crate::search::SearchResponse;
 
 /// `ask` failed (handler error, actor stopped mid-call).
 const ASK_FAILED: i32 = -32000;
@@ -259,15 +263,25 @@ pub trait Api {
     /// follows on the stream. Refused while any of them is mid-turn.
     #[method(name = "delete_session")]
     async fn delete_session(&self, session: SessionId) -> RpcResult<()>;
-    /// Fuzzy search (nucleo, design doc 26) over every session's title and its
-    /// user/assistant messages: the best hit per session, best score first, with a
-    /// snippet and the matched char ranges. Empty query → `[]`. `limit` defaults to 30, max 50.
-    #[method(name = "search_sessions")]
-    async fn search_sessions(
+    /// Unified human search (design doc 49 §4.2) over sessions, artifacts,
+    /// current knowledge and knowledge history: one group per selected category
+    /// in fixed order, each `ready`/`indexing`/`unavailable`/`error` on its own.
+    /// `categories` omitted → all four, `[]` → none; `limit` per category,
+    /// default 10, max 50. Blank query → no groups, no cache work.
+    /// Clients re-ask only `indexing` groups (`categories: [that]`) every 500 ms.
+    #[method(name = "search")]
+    async fn search(
         &self,
         query: String,
+        categories: Option<Vec<SearchCategory>>,
         limit: Option<u32>,
-    ) -> RpcResult<Vec<agent::search::SearchHit>>;
+    ) -> RpcResult<SearchResponse>;
+    /// Retry `search`'s failed owners without matching: the selected owners
+    /// (omitted → all four) drop failed/stale search build state so the next
+    /// `search` rebuilds; knowledge also re-syncs current concepts with disk.
+    /// Owners not running are skipped; any failing reset is the error.
+    #[method(name = "search_refresh")]
+    async fn search_refresh(&self, categories: Option<Vec<SearchCategory>>) -> RpcResult<()>;
     /// Every registered tool.
     #[method(name = "list_tools")]
     async fn list_tools(&self) -> RpcResult<Vec<ToolSpec>>;
@@ -406,6 +420,15 @@ pub trait Api {
     /// per-concept unified diffs, including deletions; `id` restricts to one concept.
     #[method(name = "knowledge_revision")]
     async fn knowledge_revision(&self, commit: String, id: Option<String>) -> RpcResult<Revision>;
+    /// The full text of concept `id` as committed at `commit` (a full object id
+    /// from a `knowledge_history` search hit's `snapshot_commit`); unknown
+    /// revision is an error, never the current text (49 §7).
+    #[method(name = "knowledge_read_revision")]
+    async fn knowledge_read_revision(
+        &self,
+        id: String,
+        commit: String,
+    ) -> RpcResult<HistoricalConcept>;
     /// Rewrite `id` from `commit` (default: the commit before its latest change).
     #[method(name = "knowledge_restore")]
     async fn knowledge_restore(&self, id: String, commit: Option<String>) -> RpcResult<Change>;
@@ -621,6 +644,19 @@ pub trait Api {
     /// Close one open view: stop its reads, drop queued work (46 §7). Idempotent.
     #[method(name = "app_close", with_extensions)]
     async fn app_close(&self, instance_id: String) -> RpcResult<()>;
+    /// The artifact record of one `show` call, for opening a search hit
+    /// without listing everything; vanished record is an error (49 §4.2).
+    #[method(name = "get_artifact")]
+    async fn get_artifact(&self, call_id: String) -> RpcResult<artifact::Artifact>;
+    /// Up to 2,000 characters of the artifact's indexed text around the
+    /// occurrence `query` matches, with highlight ranges and content coverage;
+    /// unavailable extraction is an error, never the live `origin` (49 §7).
+    #[method(name = "artifact_search_match")]
+    async fn artifact_search_match(
+        &self,
+        call_id: String,
+        query: String,
+    ) -> RpcResult<ArtifactMatchContext>;
     /// Every secret's name, note and version history (37 §3.1). Never values.
     #[method(name = "list_secrets")]
     async fn list_secrets(&self) -> RpcResult<secrets::SecretsList>;
@@ -1076,12 +1112,23 @@ impl ApiServer for Server {
         ask::<Agents, _>(agent::AGENT_ACTOR, DeleteSession { session }).await
     }
 
-    async fn search_sessions(
+    async fn search(
         &self,
         query: String,
+        categories: Option<Vec<SearchCategory>>,
         limit: Option<u32>,
-    ) -> RpcResult<Vec<agent::search::SearchHit>> {
-        ask::<Agents, _>(agent::AGENT_ACTOR, SearchSessions { query, limit }).await
+    ) -> RpcResult<SearchResponse> {
+        crate::search::run(&self.rt, query, categories, limit)
+            .await
+            .map_err(|e| {
+                ErrorObjectOwned::owned(jsonrpsee::types::error::INVALID_PARAMS_CODE, e, None::<()>)
+            })
+    }
+
+    async fn search_refresh(&self, categories: Option<Vec<SearchCategory>>) -> RpcResult<()> {
+        crate::search::refresh(categories)
+            .await
+            .map_err(|e| ErrorObjectOwned::owned(ASK_FAILED, e, None::<()>))
     }
 
     async fn list_tools(&self) -> RpcResult<Vec<ToolSpec>> {
@@ -1288,6 +1335,18 @@ impl ApiServer for Server {
 
     async fn knowledge_revision(&self, commit: String, id: Option<String>) -> RpcResult<Revision> {
         send(&knowledge()?, RevisionOf { commit, id }).await
+    }
+
+    async fn knowledge_read_revision(
+        &self,
+        id: String,
+        commit: String,
+    ) -> RpcResult<HistoricalConcept> {
+        send(
+            &knowledge()?,
+            knowledge::search::ReadRevision { id, commit },
+        )
+        .await
     }
 
     async fn knowledge_restore(&self, id: String, commit: Option<String>) -> RpcResult<Change> {
@@ -1558,6 +1617,22 @@ impl ApiServer for Server {
     async fn app_close(&self, ext: &Extensions, instance_id: String) -> RpcResult<()> {
         let peer = peer(ext)?;
         send(&apps()?, CloseApp { peer, instance_id }).await
+    }
+
+    async fn get_artifact(&self, call_id: String) -> RpcResult<artifact::Artifact> {
+        send(&artifact()?, artifact::search::Get { call_id }).await
+    }
+
+    async fn artifact_search_match(
+        &self,
+        call_id: String,
+        query: String,
+    ) -> RpcResult<ArtifactMatchContext> {
+        send(
+            &artifact()?,
+            artifact::search::ReadSearchMatch { call_id, query },
+        )
+        .await
     }
 
     async fn list_secrets(&self) -> RpcResult<secrets::SecretsList> {

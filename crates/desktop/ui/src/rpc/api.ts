@@ -31,7 +31,10 @@ import type { RepoInfo } from '@/rpc/bindings/RepoInfo'
 import type { Revision } from '@/rpc/bindings/Revision'
 import type { RunInfo } from '@/rpc/bindings/RunInfo'
 import type { ScheduleInfo } from '@/rpc/bindings/ScheduleInfo'
-import type { SearchHit } from '@/rpc/bindings/SearchHit'
+import type { ArtifactMatchContext } from '@/rpc/bindings/ArtifactMatchContext'
+import type { HistoricalConcept } from '@/rpc/bindings/HistoricalConcept'
+import type { SearchCategory } from '@/rpc/bindings/SearchCategory'
+import type { SearchResponse } from '@/rpc/bindings/SearchResponse'
 import type { SecretInfo } from '@/rpc/bindings/SecretInfo'
 import type { SecretsList } from '@/rpc/bindings/SecretsList'
 import type { SessionId } from '@/rpc/bindings/SessionId'
@@ -113,6 +116,10 @@ export interface Api {
   enable_schedule(name: string, enabled: boolean): Promise<ScheduleInfo>
   /** Copy artifact `id`'s blob to `dest` (parent created; refuses to overwrite); returns `dest` (35 §3.5). */
   export_artifact(id: string, dest: string): Promise<string>
+  /** The artifact record of one `show` call (49 §4.2); a vanished record rejects. */
+  get_artifact(call_id: string): Promise<Artifact>
+  /** Up to 2,000 chars of the artifact's indexed text around `query`'s match, with ranges and coverage (49 §7); failed extraction rejects. */
+  artifact_search_match(call_id: string, query: string): Promise<ArtifactMatchContext>
   /** Fire a schedule now, ignoring `next` (34 §8); rejects with `busy` / `no such schedule` / the parse error. */
   fire_schedule(name: string): Promise<SessionId>
   /** New session with the conversation through the turn opened at `through` (all when `null`); `reply` stops at that 0-based assistant text of the turn instead. */
@@ -137,6 +144,8 @@ export interface Api {
   ): Promise<Meta[]>
   knowledge_put(put: Put): Promise<Meta>
   knowledge_restore(id: string, commit: string | null): Promise<Change>
+  /** Full text of concept `id` as committed at `commit` (full object id); unknown revision rejects, never the current text (49 §7). */
+  knowledge_read_revision(id: string, commit: string): Promise<HistoricalConcept>
   /** `commit` against its first parent (the empty tree for the root), concept files only; `id` narrows to one concept. */
   knowledge_revision(commit: string, id: string | null): Promise<Revision>
   knowledge_search(query: string, limit: number | null): Promise<Hit[]>
@@ -224,8 +233,18 @@ export interface Api {
   restore_secret(name: string, back: number): Promise<SecretInfo>
   /** The name and every version. */
   delete_secret(name: string): Promise<void>
-  /** Fuzzy (fzf/helix syntax) search over titles and message text; best hit per session. */
-  search_sessions(query: string, limit: number | null): Promise<SearchHit[]>
+  /**
+   * Unified search (49 §4.2): one group per selected category in fixed order, each
+   * `ready`/`indexing`/`unavailable`/`error` on its own. `categories: null` → all four,
+   * `[]` → none; `limit` per category (default 10, max 50). Blank query → no groups.
+   */
+  search(
+    query: string,
+    categories: SearchCategory[] | null,
+    limit: number | null,
+  ): Promise<SearchResponse>
+  /** Drop failed/stale search build state of the selected owners (`null` → all) so the next `search` rebuilds; knowledge also re-syncs with disk. */
+  search_refresh(categories: SearchCategory[] | null): Promise<void>
   /** The last `limit` fires and skips of a schedule, newest first (34 §8). */
   schedule_history(name: string, limit: number): Promise<RunInfo[]>
   send_input(session: SessionId | null, text: string, files: string[]): Promise<SessionId>
@@ -284,6 +303,7 @@ export const METHODS = [
   'app_call_status',
   'app_call_tool',
   'app_close',
+  'artifact_search_match',
   'browser_screenshot',
   'cancel',
   'cancel_job',
@@ -299,6 +319,7 @@ export const METHODS = [
   'fire_schedule',
   'fork_session',
   'get_app',
+  'get_artifact',
   'get_attachment',
   'get_prompt',
   'get_todos',
@@ -310,6 +331,7 @@ export const METHODS = [
   'knowledge_history',
   'knowledge_list',
   'knowledge_put',
+  'knowledge_read_revision',
   'knowledge_restore',
   'knowledge_revision',
   'knowledge_search',
@@ -363,7 +385,8 @@ export const METHODS = [
   'resolve_approval',
   'restore_secret',
   'schedule_history',
-  'search_sessions',
+  'search',
+  'search_refresh',
   'send_input',
   'set_approvals',
   'set_aws_profile',

@@ -169,7 +169,7 @@ function replyIndex(session: string, turn: number, id: string): number | undefin
 }
 
 /** Markdown at column width; `open` while the reply streams (only the last entry ever is). `turn` is the opener seq the reply belongs to; `id` is the entry id (for the fork's reply index).
- * `context` is the stored row's membership (48 §3.3); a removed row renders as archive, without turn actions. */
+ * `context` is the stored row's membership (48 §3.3); a removed row renders as archive, without turn actions. `readOnly` (an inspection page) keeps only copy/read-aloud. */
 export const MessageAssistant = memo(function MessageAssistant({
   id,
   text,
@@ -177,6 +177,7 @@ export const MessageAssistant = memo(function MessageAssistant({
   session,
   turn,
   context,
+  readOnly,
 }: {
   id: string
   text: string
@@ -184,6 +185,7 @@ export const MessageAssistant = memo(function MessageAssistant({
   session: string
   turn?: number
   context?: ContextEntry
+  readOnly?: boolean
 }) {
   const api = useApi()
   const running = useSessionField(session, 'running')
@@ -216,13 +218,13 @@ export const MessageAssistant = memo(function MessageAssistant({
         <div className="-ml-2 flex">
           {voice && <ActionButton icon={mine ? Square : Volume2} label={mine ? 'Stop' : 'Read aloud'} onClick={readAloud} />}
           <CopyButton text={text} />
-          {turn != null && !running && !context?.removed && (
+          {!readOnly && turn != null && !running && !context?.removed && (
             <>
               <ActionButton icon={RefreshCw} label="Regenerate" onClick={() => rewind(session, turn, () => api.regenerate(session, turn))} />
               <ActionButton icon={GitFork} label="Fork from here" onClick={() => void fork(turn, replyIndex(session, turn, id))} />
             </>
           )}
-          {context && !context.removed && <RemoveButton session={session} target={context.target} active={context.active} />}
+          {!readOnly && context && !context.removed && <RemoveButton session={session} target={context.target} active={context.active} />}
         </div>
       )}
     </div>

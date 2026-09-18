@@ -6,6 +6,7 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
@@ -17,6 +18,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePo
 
 use crate::kind::{self, Receipt};
 use crate::pdf::{self, Source};
+use crate::search;
 use crate::tools::ShowArgs;
 use crate::{
     Artifact, ArtifactShown, ClaimInvocation, Commit, CompleteInvocation, Kind, MAX_BYTES,
@@ -199,6 +201,10 @@ pub struct State {
     /// The OS lock on that file, held for the process lifetime: released by
     /// the kernel when the process dies, so liveness is never guessed from a pid.
     _owner_lock: std::fs::File,
+    /// Derived search index (design doc 49 §3.2); invalidated by
+    /// [`State::show`], [`State::commit`] and [`State::delete_session`], the
+    /// only writers.
+    search: Arc<search::Cache>,
 }
 
 /// Directory beside [`DB`]: one empty file per live opener of the index,
@@ -413,8 +419,70 @@ fn first_heading(text: &str) -> Option<String> {
 }
 
 fn count_lines(bytes: &[u8]) -> usize {
-    bytes.iter().filter(|b| **b == b'\n').count()
-        + usize::from(!bytes.is_empty() && bytes.last() != Some(&b'\n'))
+    bytes.iter().filter(|&&b| b == b'\n').count()
+}
+
+fn row_to_artifact(dir: &Path, r: Row) -> anyhow::Result<Artifact> {
+    let (
+        call_id,
+        id,
+        session,
+        name,
+        title,
+        kind,
+        mime,
+        bytes,
+        version,
+        source,
+        preview,
+        pages,
+        origin,
+        created_at,
+    ) = r;
+    Ok(Artifact {
+        path: dir.join(blob_name(&id, &name)),
+        id,
+        session: session
+            .parse()
+            .with_context(|| format!("artifacts.session {session:?}"))?,
+        call_id,
+        kind: Kind::parse(&kind).with_context(|| format!("artifacts.kind {kind:?}"))?,
+        name,
+        title,
+        mime,
+        bytes: u64::try_from(bytes).unwrap_or_default(),
+        version: u32::try_from(version).unwrap_or_default(),
+        source: source.map(|s| dir.join(s)),
+        preview: preview.map(|p| dir.join(p)),
+        pages: pages.and_then(|p| u32::try_from(p).ok()),
+        origin: origin.map(PathBuf::from),
+        created_at,
+    })
+}
+
+/// `None` → every row; `Some(&[])` → none. Newest first.
+async fn select(
+    pool: &SqlitePool,
+    dir: &Path,
+    sessions: Option<&[SessionId]>,
+) -> anyhow::Result<Vec<Artifact>> {
+    if sessions.is_some_and(<[_]>::is_empty) {
+        return Ok(Vec::new());
+    }
+    // Only `COLS` (a const) and a `?` list sized to `sessions` are interpolated; ids are bound.
+    let where_ = sessions.map_or(String::new(), |s| {
+        format!("WHERE session IN ({})", vec!["?"; s.len()].join(","))
+    });
+    let sql = format!("SELECT {COLS} FROM artifacts {where_} ORDER BY created_at DESC, rowid DESC");
+    let mut q = sqlx::query_as::<_, Row>(sqlx::AssertSqlSafe(sql));
+    for s in sessions.unwrap_or_default() {
+        q = q.bind(s.to_string());
+    }
+    q.fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|r| row_to_artifact(dir, r))
+        .collect()
 }
 
 impl State {
@@ -451,44 +519,7 @@ impl State {
             gate: tokio::sync::RwLock::new(()),
             owner,
             _owner_lock: owner_lock,
-        })
-    }
-
-    fn row_to_artifact(&self, r: Row) -> anyhow::Result<Artifact> {
-        let (
-            call_id,
-            id,
-            session,
-            name,
-            title,
-            kind,
-            mime,
-            bytes,
-            version,
-            source,
-            preview,
-            pages,
-            origin,
-            created_at,
-        ) = r;
-        Ok(Artifact {
-            path: self.dir.join(blob_name(&id, &name)),
-            id,
-            session: session
-                .parse()
-                .with_context(|| format!("artifacts.session {session:?}"))?,
-            call_id,
-            kind: Kind::parse(&kind).with_context(|| format!("artifacts.kind {kind:?}"))?,
-            name,
-            title,
-            mime,
-            bytes: u64::try_from(bytes).unwrap_or_default(),
-            version: u32::try_from(version).unwrap_or_default(),
-            source: source.map(|s| self.dir.join(s)),
-            preview: preview.map(|p| self.dir.join(p)),
-            pages: pages.and_then(|p| u32::try_from(p).ok()),
-            origin: origin.map(PathBuf::from),
-            created_at,
+            search: Arc::default(),
         })
     }
 
@@ -710,6 +741,7 @@ impl State {
             }
         })?;
         artifact.version = u32::try_from(version).unwrap_or_default();
+        self.search.invalidate();
 
         tracing::info!(
             target: "artifact",
@@ -873,6 +905,7 @@ impl State {
             });
         };
         artifact.version = u32::try_from(version).unwrap_or_default();
+        self.search.invalidate();
         drop(_writing);
 
         tracing::info!(
@@ -893,8 +926,11 @@ impl State {
         Ok(artifact)
     }
 
-    /// The record of tool call `call_id`.
-    pub async fn get(&self, call_id: &str) -> Result<Artifact, String> {
+    /// The row of tool call `call_id`, live session or not: what [`Commit`]
+    /// and the app plugin ([`crate::GetRecord`]) need; [`State::get`] adds
+    /// the liveness check.
+    pub async fn record(&self, call_id: &str) -> Result<Artifact, String> {
+        // Only `COLS` (a const) is interpolated; the id is bound.
         let row: Option<Row> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT {COLS} FROM artifacts WHERE call_id = ?"
         )))
@@ -903,14 +939,14 @@ impl State {
         .await
         .map_err(|e| format!("index: {e}"))?;
         let row = row.ok_or_else(|| format!("{call_id}: no such artifact"))?;
-        self.row_to_artifact(row).map_err(|e| format!("{e:#}"))
+        row_to_artifact(&self.dir, row).map_err(|e| format!("{e:#}"))
     }
 
     /// What a [`Commit`] of `wanted.call_id` must answer when that call is
     /// already recorded: the existing record when it is exactly this one
     /// ([`same_record`]), a refusal otherwise; `None` when it is not recorded.
     async fn recorded(&self, wanted: &Artifact) -> Option<Result<Artifact, CommitError>> {
-        let existing = self.get(&wanted.call_id).await.ok()?;
+        let existing = self.record(&wanted.call_id).await.ok()?;
         Some(if same_record(&existing, wanted) {
             Ok(existing)
         } else {
@@ -1059,28 +1095,6 @@ impl State {
         rows.into_iter().map(invocation_from_row).collect()
     }
 
-    /// `None` → every row; `Some(&[])` → none.
-    async fn select(&self, sessions: Option<&[SessionId]>) -> anyhow::Result<Vec<Artifact>> {
-        if sessions.is_some_and(<[_]>::is_empty) {
-            return Ok(Vec::new());
-        }
-        // Only `COLS` (a const) and a `?` list sized to `sessions` are interpolated; ids are bound.
-        let where_ = sessions.map_or(String::new(), |s| {
-            format!("WHERE session IN ({})", vec!["?"; s.len()].join(","))
-        });
-        let sql =
-            format!("SELECT {COLS} FROM artifacts {where_} ORDER BY created_at DESC, rowid DESC");
-        let mut q = sqlx::query_as::<_, Row>(sqlx::AssertSqlSafe(sql));
-        for s in sessions.unwrap_or_default() {
-            q = q.bind(s.to_string());
-        }
-        q.fetch_all(&self.pool)
-            .await?
-            .into_iter()
-            .map(|r| self.row_to_artifact(r))
-            .collect()
-    }
-
     /// Artifacts newest first. `Some(session)` → that session's rows;
     /// `descendants` adds every session under it, asked from the agent
     /// supervisor ([`agent::ListAgents`]); when the agent is absent only the
@@ -1092,7 +1106,7 @@ impl State {
         descendants: bool,
     ) -> anyhow::Result<Vec<Artifact>> {
         let Some(session) = session else {
-            return self.select(None).await;
+            return select(&self.pool, &self.dir, None).await;
         };
         let mut sessions = vec![session];
         if descendants
@@ -1101,7 +1115,94 @@ impl State {
         {
             sessions.extend(tree.into_iter().map(|a| a.id));
         }
-        self.select(Some(&sessions)).await
+        select(&self.pool, &self.dir, Some(&sessions)).await
+    }
+
+    /// The record `call_id` names, or `Err` when there is none or its owning
+    /// session is gone (asked of the agent supervisor, never `sessions.sqlite`;
+    /// design doc 49 §4.3). Orphan rows left by a deletion while this plugin
+    /// was disabled are therefore invisible.
+    pub async fn get(&self, call_id: &str) -> Result<Artifact, String> {
+        let artifact = self.record(call_id).await?;
+        if !search::alive_sessions().await?.contains(&artifact.session) {
+            return Err(format!("{call_id}: owning session no longer exists"));
+        }
+        Ok(artifact)
+    }
+
+    /// Every retained occurrence whose owning session still exists, plus
+    /// nothing else: the search index's source (design doc 49 §3.2).
+    fn fetch(&self) -> impl Fn() -> search::Fetch + Send + 'static {
+        let pool = self.pool.clone();
+        let dir = self.dir.clone();
+        move || -> search::Fetch {
+            let pool = pool.clone();
+            let dir = dir.clone();
+            Box::pin(async move {
+                let rows = select(&pool, &dir, None)
+                    .await
+                    .map_err(|e| format!("artifacts unreadable: {e:#}"))?;
+                let alive = search::alive_sessions().await?;
+                let rows: Vec<Artifact> = rows
+                    .into_iter()
+                    .filter(|a| alive.contains(&a.session))
+                    .collect();
+                Ok(rows)
+            })
+        }
+    }
+
+    /// [`crate::search::SearchArtifacts`]: every occurrence, best field per
+    /// record, `indexing` while the first index builds.
+    pub async fn search_artifacts(
+        &self,
+        query: String,
+        limit: Option<u32>,
+    ) -> Result<::search::SearchPage<search::ArtifactSearchHit>, String> {
+        ::search::validate_query(&query)?;
+        let limit = ::search::limit(limit);
+        if query.trim().is_empty() {
+            return Ok(::search::SearchPage::ready(Vec::new(), limit));
+        }
+        let index = match self.search.index(self.fetch()) {
+            None => return Ok(::search::SearchPage::indexing()),
+            Some(Err(e)) => return Ok(::search::SearchPage::error(e)),
+            Some(Ok(index)) => index,
+        };
+        Ok(self
+            .search
+            .matched(move || index.search(&query, limit))
+            .await
+            .unwrap_or_else(::search::SearchPage::error))
+    }
+
+    /// [`crate::search::ReadSearchMatch`]: the winning field of `call_id`
+    /// for `query` with up to [`search::CONTEXT_CHARS`] scalars of context,
+    /// from the same index a search used. Re-resolves the record first, so a
+    /// vanished artifact or dead session is an error, never a sibling version.
+    pub async fn read_search_match(
+        &self,
+        call_id: String,
+        query: String,
+    ) -> Result<search::ArtifactMatchContext, String> {
+        ::search::validate_query(&query)?;
+        if query.trim().is_empty() {
+            return Err("empty query".into());
+        }
+        self.get(&call_id).await?;
+        let index = self
+            .search
+            .index(self.fetch())
+            .ok_or("artifacts are still indexing; retry shortly")??;
+        self.search
+            .matched(move || index.read_match(&call_id, &query))
+            .await?
+    }
+
+    /// [`crate::search::RefreshSearch`]: rebuild on the next query and retry
+    /// every failed extraction; successful text stays cached.
+    pub fn refresh_search(&self) {
+        self.search.refresh();
     }
 
     /// Copy the blob of `id` to `dest` (parent created). `Err` when `dest`
@@ -1129,19 +1230,26 @@ impl State {
     }
 
     /// Drop every row of `session`, artifacts and app invocations alike, in
-    /// one transaction; the next sweep collects the blobs.
+    /// one transaction; the next sweep collects the blobs. The index is
+    /// invalidated even when the delete fails: its builds filter by live
+    /// sessions, so the dead session's rows vanish from search anyway.
     pub async fn delete_session(&self, session: SessionId) -> anyhow::Result<()> {
         let session = session.to_string();
-        let mut tx = self.pool.begin().await?;
-        sqlx::query("DELETE FROM artifacts WHERE session = ?")
-            .bind(&session)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("DELETE FROM app_invocations WHERE session = ?")
-            .bind(&session)
-            .execute(&mut *tx)
-            .await?;
-        tx.commit().await?;
+        let deleted = async {
+            let mut tx = self.pool.begin().await?;
+            sqlx::query("DELETE FROM artifacts WHERE session = ?")
+                .bind(&session)
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("DELETE FROM app_invocations WHERE session = ?")
+                .bind(&session)
+                .execute(&mut *tx)
+                .await?;
+            tx.commit().await
+        }
+        .await;
+        self.search.invalidate();
+        deleted?;
         Ok(())
     }
 
@@ -1425,8 +1533,8 @@ mod tests {
         );
         assert_eq!(std::fs::read(&src).unwrap(), br#"{"library_hash":"h1"}"#);
         assert_eq!(blobs(&s.dir).len(), 2);
-        assert_eq!(s.get("c2").await.unwrap().session, s2);
-        assert_eq!(s.get("nope").await.unwrap_err(), "nope: no such artifact");
+        assert_eq!(s.record("c2").await.unwrap().session, s2);
+        assert_eq!(s.record("nope").await.unwrap_err(), "nope: no such artifact");
 
         // A record is immutable: the exact same commit is idempotent, any
         // other content/session under a recorded call_id is refused.
@@ -1454,7 +1562,7 @@ mod tests {
                 .unwrap_err(),
             "panel.openui: call c1 already recorded"
         );
-        let kept = s.get("c1").await.unwrap();
+        let kept = s.record("c1").await.unwrap();
         assert_eq!((kept.id.as_str(), kept.kind), (a.id.as_str(), Kind::App));
         assert_eq!(s.list(Some(s1), false).await.unwrap().len(), 1);
     }

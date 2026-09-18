@@ -427,6 +427,8 @@ async fn run() -> anyhow::Result<()> {
             Box::new(app::AppPlugin),
             Box::new(search_providers::SearchProvidersPlugin),
             Box::new(agent::AgentPlugin),
+            // The `search` tool (49 §4.4): registration only, no listener.
+            Box::new(rpc::SearchToolsPlugin),
             Box::new(signal::SignalPlugin {
                 channel: false,
                 link: None,
@@ -448,6 +450,7 @@ async fn run() -> anyhow::Result<()> {
             Box::new(app::AppPlugin),
             Box::new(search_providers::SearchProvidersPlugin),
             Box::new(agent::AgentPlugin),
+            Box::new(rpc::SearchToolsPlugin),
             Box::new(signal::SignalPlugin {
                 channel: cli.headless,
                 link: None,

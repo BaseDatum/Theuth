@@ -25,10 +25,12 @@ use tower::Service;
 pub mod acp;
 pub mod api;
 pub mod bridge;
+pub mod search;
 
 #[cfg(test)]
 mod export;
 
+pub use self::search::SearchToolsPlugin;
 pub use acp::AcpPlugin;
 pub use api::ApiServer;
 

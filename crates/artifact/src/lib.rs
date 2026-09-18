@@ -5,13 +5,16 @@
 //!
 //! Public surface consumed by other plugins:
 //! - commands on the [`ARTIFACT_ACTOR`] actor ([`ArtifactActor`]): [`Show`],
-//!   [`List`], [`Export`]; for the app plugin (46 §3): [`Commit`],
-//!   [`GetRecord`], [`ClaimInvocation`], [`CompleteInvocation`],
-//!   [`MarkInvocationUnknown`], [`GetInvocation`], [`ListInvocations`]
+//!   [`List`], [`Export`], [`search::SearchArtifacts`], [`search::Get`],
+//!   [`search::ReadSearchMatch`], [`search::RefreshSearch`]; for the app
+//!   plugin (46 §3): [`Commit`], [`GetRecord`], [`ClaimInvocation`],
+//!   [`CompleteInvocation`], [`MarkInvocationUnknown`], [`GetInvocation`],
+//!   [`ListInvocations`]
 //! - events: [`ArtifactShown`]
 
 pub mod kind;
 pub mod pdf;
+pub mod search;
 pub mod store;
 pub mod svg;
 pub mod tools;
@@ -377,11 +380,30 @@ impl Message<Commit> for ArtifactActor {
     }
 }
 
+impl Message<search::SearchArtifacts> for ArtifactActor {
+    type Reply = DelegatedReply<Result<::search::SearchPage<search::ArtifactSearchHit>, String>>;
+
+    async fn handle(
+        &mut self,
+        m: search::SearchArtifacts,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let state = self.state.clone();
+        // Leaves the mailbox: asks the agent for live sessions, matches on the blocking pool.
+        tokio::spawn(async move {
+            tx.send(state.search_artifacts(m.query, m.limit).await);
+        });
+        reply
+    }
+}
+
 impl Message<GetRecord> for ArtifactActor {
     type Reply = Result<Artifact, String>;
 
     async fn handle(&mut self, m: GetRecord, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.state.get(&m.call_id).await
+        self.state.record(&m.call_id).await
     }
 }
 
@@ -444,6 +466,51 @@ impl Message<ListInvocations> for ArtifactActor {
         self.state
             .list_invocations(&m.record_call_id, m.limit)
             .await
+    }
+}
+
+impl Message<search::Get> for ArtifactActor {
+    type Reply = DelegatedReply<Result<Artifact, String>>;
+
+    async fn handle(
+        &mut self,
+        m: search::Get,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let state = self.state.clone();
+        // Leaves the mailbox: asks the agent whether the owning session exists.
+        tokio::spawn(async move {
+            tx.send(state.get(&m.call_id).await);
+        });
+        reply
+    }
+}
+
+impl Message<search::ReadSearchMatch> for ArtifactActor {
+    type Reply = DelegatedReply<Result<search::ArtifactMatchContext, String>>;
+
+    async fn handle(
+        &mut self,
+        m: search::ReadSearchMatch,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let state = self.state.clone();
+        tokio::spawn(async move {
+            tx.send(state.read_search_match(m.call_id, m.query).await);
+        });
+        reply
+    }
+}
+
+impl Message<search::RefreshSearch> for ArtifactActor {
+    type Reply = ();
+
+    async fn handle(&mut self, _: search::RefreshSearch, _: &mut Context<Self, Self::Reply>) {
+        self.state.refresh_search();
     }
 }
 

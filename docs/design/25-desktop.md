@@ -202,7 +202,7 @@ Every row is an `Api` call already present unless marked **new** (§7).
 | `/jobs`, `/jobs kill` | session menu › Jobs sheet (`list_jobs` table, kill) |
 | `/schedules`, `/schedules run`, `/schedules history` (34) | Settings › Schedules: `list_schedules` table, Run → `fire_schedule`, row opens the session, expand → `schedule_history` |
 | `/sessions`, picker row `● id8 date model title` | sidebar (ChatGPT chat list): title (or first user line), grouped Today / Yesterday / Previous 7 days / Older by `updated_at`; active row highlighted; **new** `TitleChanged` keeps it live |
-| `/resume <uuid>` | ⌘K search (titles + ids, client-side over `list_sessions`) |
+| `/resume <uuid>` | ⌘K / `/search` (49): the `search` RPC over sessions, artifacts, knowledge and knowledge history; a session hit opens `/c/$session` (message hits carry the `seq` locator). App `/sessions` opens the same dialog with a one-open Sessions-only chip override |
 | `/new` (lazy create) | New chat → route `/`, session created by the first `send_input(null, …)` exactly like the TUI; `SessionCreated` inferred from the reply |
 | `/agents` picker + board (≤6 rows) + `/parent` | sidebar: the active session expands into its `list_agents` subtree (glyph · name · state · age), live from the subtree's events; clicking a child opens it with `↳ parent` breadcrumb in the header (19 §5) |
 | `/clear`, `/compact [style]`, `/compact style …`, `/undo`, `/redo`, `/cancel` | session menu (compact with style submenu, clear, undo, redo); Esc / stop button in the composer = `cancel`; compact style default in Settings › General |
@@ -228,7 +228,7 @@ ChatGPT affordances with no TUI counterpart:
 | delete / archive chat | delete: yes (2026-09-15) — item menu › Delete with a confirm; `delete_session` removes the subtree (rows, messages, epochs, actors) and emits `SessionDeleted` per id; refused while a turn runs. Archive: no. |
 | share, temporary chat, projects, GPTs, plans | not shown |
 | voice | read aloud: yes (43) — a speaker button first in every reply's action bar; Pocket TTS in the harness, Opus over the event subscription, `lib/speech.ts` plays it. Voice notes: yes (45) — a microphone in the composer, `MediaRecorder` → `put_attachment` → `transcribe`, the session then speaks every prose block until the user types. Dictation to text: no. |
-| search chat contents | yes since 26: ⌘K asks `search_sessions` (nucleo, fzf syntax) over titles and user/assistant messages; snippet with the matched ranges marked. Was titles-only in v0. |
+| search chat contents | yes since 26, all four categories since 49: ⌘K (hardware keyboard on any pointer), `/search [query]`, or the lucide magnifier immediately left of the sidebar toggle — in the expanded sidebar header, the collapsed/mobile chat and explorer headers, and the trailing edge of mobile knowledge/artifact detail headers; the full-width Search chats row is gone. One dialog mounted in the root shell outside the mobile Sheet; `search(query, categories?, limit?)` (nucleo, fzf syntax) with multi-select chips All · Sessions · Artifacts · Knowledge · Knowledge history remembered per harness; grouped results, 10 per category then Show more 30/50, `ready/indexing/unavailable/error` per group, partial coverage shown, Refresh → `search_refresh`. Hits open read-only: `/c/$session`, `/artifacts/$callId` (exact occurrence; **Matched text** via `artifact_search_match`), `/knowledge/$id`, or `/knowledge/$id?change=&snapshot=` (**Historical version**, `knowledge_read_revision`, no restore). Back to results restores the last view. `search_sessions` is removed; an older client gets Method not found and needs the matching harness/UI build. |
 | light / dark / system theme | Settings › General, default system (`prefers-color-scheme`), tokens from §2.4 |
 | shortcuts dialog `⌘/` | yes, the table in §2.4 plus ours (⌥Space toggle window) |
 | connect to another harness | yes (31): a phone, a browser tab or this app pairs with a harness through the relay and switches between paired harnesses; Settings › Link lists, renames and revokes devices |
@@ -279,7 +279,8 @@ crates/desktop/                 Tauri crate (workspace member by glob; kind: app
                                 knowledge.tsx, knowledge.$id.tsx, settings.$tab.tsx (dialog route)
     src/components/chat/        Transcript, Message{User,Assistant,Reasoning,Tool,Job,Peer,Divider,Error},
                                 Composer, QueuedChips, ApprovalCard, ScrollToBottom, ModelMenu, ContextMeter
-    src/components/sidebar/     SessionList, SessionItem (menu: rename, copy id, harvest, prompt, jobs), AgentTree, SearchDialog
+    src/components/sidebar/     SessionList, SessionItem (menu: rename, copy id, harvest, prompt, jobs), AgentTree,
+                                SearchDialog (49: chips, grouped results), SearchTrigger (magnifier), SearchReturn (Back to results)
     src/components/settings/    General, Approvals, Tools (MCP), Skills, Agents (ACP; "Harnesses" before 31), Connections, Channels, Link
     src/components/knowledge/   Tree, Document, Editor, Backlinks, History, SearchBox
     src/components/launch/      StartupScreen (pty transcript, 18 §4 timeout message, Relaunch)
@@ -579,7 +580,10 @@ Route `/knowledge` (tree + search, no document) and `/knowledge/$id`.
   Dialog listing `cited_by` count → `knowledge_delete`.
 - **Search.** Box above the tree → `knowledge_search(q, 50)` results with
   snippets, Enter opens. Terms under 3 chars show the "3+ characters" hint
-  (§2.3) instead of an empty list.
+  (§2.3) instead of an empty list. This is the local FTS filter of the
+  explorer; fuzzy search over current concepts and their complete history
+  is the global ⌘K dialog (49), which opens a concept at `/knowledge/$id`
+  or a historical text at `?change=&snapshot=` without restoring it.
 - **Freshness.** `knowledge_sync()` on window focus and on entering the
   explorer; `KnowledgeChanged` invalidates the list, open document and all
   history pages. Reconnect invalidates knowledge queries. Commit revisions

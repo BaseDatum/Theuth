@@ -84,10 +84,14 @@ export const touch = (): boolean => window.matchMedia('(pointer: coarse)').match
 /** The macOS Tauri window: traffic lights to inset around, a title bar to drag by. False in iOS Tauri and every browser. */
 export const isMacDesktop = (): boolean => container() === 'macos'
 
-/** One `keydown` listener for the whole window; mount once in the root shell. Registers nothing on touch devices. */
+/**
+ * One `keydown` listener for the whole window; mount once in the root shell. Touch devices keep only ⌘K/Ctrl+K
+ * (49 §5.1): a hardware keyboard still reaches search, and the physical `code` + modifier match already excludes
+ * software keyboards.
+ */
 export function useHotkeys(): void {
   useEffect(() => {
-    if (touch()) return
+    const bindings = touch() ? BINDINGS.filter((b) => b.event === 'wth:search') : BINDINGS
     const apple = isApple()
     const onKey = (e: KeyboardEvent) => {
       if (e.altKey || (apple ? e.ctrlKey : e.metaKey)) return
@@ -98,7 +102,7 @@ export function useHotkeys(): void {
         (target.isContentEditable ||
           target instanceof HTMLInputElement ||
           target instanceof HTMLTextAreaElement)
-      const hit = BINDINGS.find(
+      const hit = bindings.find(
         (b) =>
           b.mod === mod &&
           b.shift === e.shiftKey &&

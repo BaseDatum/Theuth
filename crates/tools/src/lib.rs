@@ -255,11 +255,13 @@ pub trait Tool: Send + Sync + 'static {
     /// Whether a `{{secret:NAME}}` placeholder in the args is credential
     /// use *by this call*: the gate raises it to `Ask` and the registry
     /// expands it to the value just before `call` (37 §0.4). `false` for a
-    /// tool that stores its arguments as an inert artifact — `app` commits
-    /// source text — where the placeholder is the data and stays literal
-    /// until the terminal tool call the artifact later makes consumes it.
-    /// Expanding earlier would persist the secret and prompt for a call
-    /// that never touches it. Output redaction applies either way.
+    /// tool whose arguments are data, not commands to run: `app` commits
+    /// source text as an inert artifact, where the placeholder stays literal
+    /// until the terminal tool call the artifact later makes consumes it
+    /// (46 §6); a search query naming a placeholder must match the literal
+    /// text, never expand into the secret and hand it to the matcher (49
+    /// §4.4). Expanding earlier would persist the secret and prompt for a
+    /// call that never touches it. Output redaction applies either way.
     const CONSUMES_SECRETS: bool = true;
 
     /// Description shown to the model.
