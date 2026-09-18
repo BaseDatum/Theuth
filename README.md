@@ -262,10 +262,15 @@ that used tools (and right before a compaction) the harness asks the model,
 on the frame it already has cached, what is worth keeping, and writes the
 answer as concepts; the model can also record with `knowledge_put` at any
 time. Every write is a git commit made in-process (`gix`), so no `git`
-binary is needed and history and undo work everywhere: `/knowledge` lists
-concepts, `/knowledge <query>` searches, `/knowledge history [id]` shows the
-commits (and the latest diff), `/knowledge restore <id> [commit]` puts a
-concept back, `/knowledge harvest` runs a harvest now. Turn off with
+binary is needed and history and undo work everywhere. In the desktop/mobile
+Knowledge view, **History** browses the whole bundle; a document's History
+action narrows it to that concept. Select a commit to inspect its changes,
+including deleted documents, and use **Older** to keep exploring. In the TUI,
+`/knowledge` opens a picker (`h` for that concept's history, `H` for all),
+`/knowledge <query>` searches, and `/knowledge history [id]` opens history
+directly. Enter selects a commit's diff; the older row loads more commits.
+`/knowledge restore <id> [commit]` puts a concept back;
+`/knowledge harvest` runs a harvest now. Turn off with
 `knowledge.enabled: false`; tune hint/harvest cadence under `agent.knowledge`
 in `config.yaml`. See
 [`docs/design/10-knowledge.md`](docs/design/10-knowledge.md).

@@ -579,13 +579,14 @@ knowledge_list    { prefix?: String, type?: String, tag?: String, limit?: u32 } 
 knowledge_put     { put: Put }                                            → Meta           written as `source: user`
 knowledge_delete  { id: String }                                          → ()
 knowledge_history { id?: String, limit?: u32 }                            → History        limit default 20
+knowledge_revision { commit: String, id?: String }                       → Revision       selected commit vs first parent
 knowledge_restore { id: String, commit?: String }                         → Change
 knowledge_harvest { session: SessionId }                                  → HarvestResult  refused while a turn runs
 ```
 
 All but `knowledge_harvest` `ask` the `"knowledge"` actor
 (`knowledge::KnowledgeActor`, 12 §9.1) with `knowledge::{Search, Get, List,
-PutConcept, Delete, HistoryOf, Restore}`; when the plugin is disabled the
+PutConcept, Delete, HistoryOf, RevisionOf, Restore}`; when the plugin is disabled the
 actor is not registered and the frontend answers `Err("knowledge is
 disabled")` from the failed lookup. The store asks are local I/O and run on
 the mailbox. `knowledge_harvest` asks the `"agent"` supervisor
@@ -597,23 +598,39 @@ event struct, published by the store, global, no session — not an
 flight; the TUI shows `harvesting…`), `Harvested { session, added, updated }`.
 Bindings via `just ts`.
 
-**TUI** (`crates/tui`), `/knowledge [query | history [id] | restore <id> [commit] | harvest]`
+`Revision { change: Change, parent: Option<String>, files: Vec<ChangedFile> }`
+is read-only. Each `ChangedFile { id, status, diff }` has `status` = `added`,
+`modified`, or `deleted` and a unified diff. `parent` is the full commit id;
+root commits compare with the empty tree. Paths come from the git tree diff,
+not the commit message: multi-concept sync/reconcile commits and deleted
+concepts remain inspectable. Generated `index.md`/`log.md` files are excluded.
+Both UIs fetch history in increments of 20, asking for one extra row to know
+whether older commits exist, and request revision details only on selection.
+
+**TUI** (`crates/tui`), `/knowledge [query | history [id] | show <commit> [id] | restore <id> [commit] | harvest]`
 (`Model::knowledge_cmd`; first word decides, everything else is a search):
 
 | input | does | renders |
 |---|---|---|
-| `/knowledge` | `knowledge::List { limit: 50 }` — the first 50 concepts by id | an `Entry` card (`CardKind::Skill`, the `/skills` shape) titled `knowledge: N concepts`, one `meta_line` per row: `` `id` — title [type]: description ``; `no concepts` info line when empty |
-| `/knowledge <query>` | `knowledge::Search { query }` (limit default 10), metas of the hits | the same card, best first |
-| `/knowledge history [id]` | `knowledge::HistoryOf { id?, limit: default 20 }` | card `knowledge history`: `commit  time  message` lines, then the diff in a ```` ```diff ```` fence when present; `no history` info line when empty |
+| `/knowledge` | `knowledge::List { limit: 50 }` — the first 50 concepts by id | picker: `↑↓` selects; `⏎`/`h` opens that concept's history; `H` opens the whole bundle, including when the picker is empty |
+| `/knowledge <query>` | `knowledge::Search { query }` (limit default 10), metas of the hits | the same picker, best first |
+| `/knowledge history [id]` | `knowledge::HistoryOf { id?, limit: 21 }` initially | commit picker with `⏎` to inspect, an older row loading 20 more, `r` refresh/retry, Esc closes |
+| `/knowledge show <commit> [id]` | `knowledge::RevisionOf { commit, id? }` | the selected revision as a transcript card (plain text in line mode) |
 | `/knowledge restore <id> [commit]` | `knowledge::Restore { id, commit? }` | info line `a1b2c3d  restore facts/x from b2c3d4e`; `/knowledge restore` alone is the error `usage: /knowledge restore <id> [commit]` |
 | `/knowledge harvest` | `agent::Harvest { session }` for the shown session | info line `knowledge +a ~b`; `no session` when none is shown |
+
+The selected revision shows commit metadata and each changed concept's
+unified diff. `↑↓` scrolls rows, `PgUp`/`PgDn` scrolls 20 rows, `←→` scrolls
+long lines, and Esc/`h`/Backspace returns to the commit list. Loading, empty
+history and request errors stay in the menu; late replies cannot reopen a
+dismissed history menu. Line mode keeps printing history and revision text.
 
 The `Harvested` **event** (the cadence harvest, or one triggered from
 another client) is interjected as the same `knowledge +a ~b` info line in the
 transcript — an entry, not a status-line flash. The TUI does not subscribe to
 `KnowledgeChanged` (the log has it). `<knowledge>` notes are hidden with the other
-wrappers (`injected`). Errors from any of these arrive as `UiEvent::Error`
-entries.
+wrappers (`injected`). History errors stay in the open menu for retry;
+other command errors arrive as `UiEvent::Error` entries.
 
 **Config** (two sections, each read by its own plugin — 00 §9; commented
 out with these defaults in the first-run template):

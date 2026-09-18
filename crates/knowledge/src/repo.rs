@@ -12,8 +12,9 @@ use gix::diff::blob::unified_diff::{ConsumeBinaryHunk, ContextSize};
 use gix::diff::blob::{Algorithm, InternedInput, UnifiedDiff};
 use gix::objs::tree::EntryKind;
 use gix::{Commit, ObjectId, Repository};
+use okf::{ConceptId, RESERVED_FILENAMES};
 
-use crate::types::Change;
+use crate::types::{Change, ChangeStatus, ChangedFile, Revision};
 
 /// Committer identity; the user's git config is never read.
 pub const SIGNATURE: (&str, &str) = ("wth", "wth@localhost");
@@ -110,25 +111,7 @@ impl Repo {
     /// newest first, at most `limit`.
     pub fn history(&self, path: Option<&Path>, limit: usize) -> anyhow::Result<Vec<Change>> {
         let repo = self.inner.to_thread_local();
-        touching(&repo, path, limit)?
-            .iter()
-            .map(|c| {
-                let time = chrono::DateTime::from_timestamp(c.time()?.seconds, 0)
-                    .context("commit time out of range")?
-                    .with_timezone(&chrono::Local);
-                Ok(Change {
-                    commit: abbrev(&c.id),
-                    time: time.format("%Y-%m-%d %H:%M").to_string(),
-                    message: c
-                        .message_raw_sloppy()
-                        .lines()
-                        .next()
-                        .unwrap_or_default()
-                        .to_str_lossy()
-                        .into_owned(),
-                })
-            })
-            .collect()
+        touching(&repo, path, limit)?.iter().map(change).collect()
     }
 
     /// The blob at `path` in `commit` (abbreviated or full id); `None` when
@@ -155,20 +138,70 @@ impl Repo {
         };
         let old = blob_data(&parent.object()?.into_commit(), path)?;
         let new = blob_data(commit, path)?;
-        let input = InternedInput::new(old.as_slice(), new.as_slice());
-        let diff = gix::diff::blob::diff_with_slider_heuristics(Algorithm::Histogram, &input);
-        let hunks = UnifiedDiff::new(
-            &diff,
-            &input,
-            ConsumeBinaryHunk::new(Vec::new(), "\n"),
-            ContextSize::symmetrical(3),
-        )
-        .consume()?;
-        let rel = rel(path)?;
-        Ok(Some(format!(
-            "--- a/{rel}\n+++ b/{rel}\n{}",
-            String::from_utf8_lossy(&hunks)
-        )))
+        unified(&rel(path)?, old.as_deref(), new.as_deref()).map(Some)
+    }
+
+    /// `commit` (abbreviated or full id) against its first parent — the empty
+    /// tree for a root commit — as per-concept diffs, restricted to `path`
+    /// when given. Only `*.md` blobs that are not `index.md`/`log.md` count.
+    pub fn revision(&self, commit: &str, path: Option<&Path>) -> anyhow::Result<Revision> {
+        let repo = self.inner.to_thread_local();
+        let c = repo
+            .rev_parse_single(commit)
+            .with_context(|| format!("unknown commit {commit}"))?
+            .object()?
+            .try_into_commit()
+            .with_context(|| format!("{commit} is not a commit"))?;
+        let parent = c.parent_ids().next();
+        let old = match parent {
+            Some(p) => p.object()?.into_commit().tree()?,
+            None => repo.empty_tree(),
+        };
+        let mut opts = gix::diff::Options::default();
+        opts.track_rewrites(None);
+        let blob =
+            |id: ObjectId| -> anyhow::Result<Vec<u8>> { Ok(repo.find_object(id)?.detach().data) };
+        let mut files = Vec::new();
+        use gix::diff::tree_with_rewrites::Change as C;
+        for ch in repo.diff_tree_to_tree(&old, &c.tree()?, opts)? {
+            if !ch.entry_mode().is_blob() {
+                continue;
+            }
+            let loc = ch.location().to_str()?;
+            if path.is_some_and(|p| Path::new(loc) != p) {
+                continue;
+            }
+            let name = loc.rsplit('/').next().unwrap_or(loc);
+            if !name.ends_with(".md") || RESERVED_FILENAMES.contains(&name) {
+                continue;
+            }
+            let Ok(cid) = ConceptId::from_path(Path::new(""), Path::new(loc)) else {
+                continue;
+            };
+            let (status, old, new) = match &ch {
+                C::Addition { id, .. } => (ChangeStatus::Added, None, Some(blob(*id)?)),
+                C::Deletion { id, .. } => (ChangeStatus::Deleted, Some(blob(*id)?), None),
+                C::Modification {
+                    previous_id, id, ..
+                } => (
+                    ChangeStatus::Modified,
+                    Some(blob(*previous_id)?),
+                    Some(blob(*id)?),
+                ),
+                // Rewrite tracking is off above.
+                C::Rewrite { .. } => continue,
+            };
+            files.push(ChangedFile {
+                id: cid.to_string(),
+                status,
+                diff: unified(loc, old.as_deref(), new.as_deref())?,
+            });
+        }
+        Ok(Revision {
+            change: change(&c)?,
+            parent: parent.map(|p| p.to_string()),
+            files,
+        })
     }
 
     /// Abbreviated id of the commit *before* the latest change to `path`
@@ -244,11 +277,49 @@ fn entry_at<'r>(
     Ok(commit.tree()?.lookup_entry_by_path(path)?)
 }
 
-/// Blob bytes at `path` in `commit`; empty when absent.
-fn blob_data(commit: &Commit<'_>, path: &Path) -> anyhow::Result<Vec<u8>> {
+/// Blob bytes at `path` in `commit`; `None` when absent.
+fn blob_data(commit: &Commit<'_>, path: &Path) -> anyhow::Result<Option<Vec<u8>>> {
     Ok(match entry_at(commit, path)? {
-        Some(entry) => entry.object()?.detach().data,
-        None => Vec::new(),
+        Some(entry) => Some(entry.object()?.detach().data),
+        None => None,
+    })
+}
+
+/// Unified diff of `old` → `new` at the tree path `rel`, 3 lines of context;
+/// an absent side is `/dev/null`.
+fn unified(rel: &str, old: Option<&[u8]>, new: Option<&[u8]>) -> anyhow::Result<String> {
+    let input = InternedInput::new(old.unwrap_or_default(), new.unwrap_or_default());
+    let diff = gix::diff::blob::diff_with_slider_heuristics(Algorithm::Histogram, &input);
+    let hunks = UnifiedDiff::new(
+        &diff,
+        &input,
+        ConsumeBinaryHunk::new(Vec::new(), "\n"),
+        ContextSize::symmetrical(3),
+    )
+    .consume()?;
+    let a = old.map_or(String::from("/dev/null"), |_| format!("a/{rel}"));
+    let b = new.map_or(String::from("/dev/null"), |_| format!("b/{rel}"));
+    Ok(format!(
+        "--- {a}\n+++ {b}\n{}",
+        String::from_utf8_lossy(&hunks)
+    ))
+}
+
+/// Commit metadata as the wire shows it: abbreviated id, local `YYYY-MM-DD HH:MM`, subject line.
+fn change(c: &Commit<'_>) -> anyhow::Result<Change> {
+    let time = chrono::DateTime::from_timestamp(c.time()?.seconds, 0)
+        .context("commit time out of range")?
+        .with_timezone(&chrono::Local);
+    Ok(Change {
+        commit: abbrev(&c.id),
+        time: time.format("%Y-%m-%d %H:%M").to_string(),
+        message: c
+            .message_raw_sloppy()
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .to_str_lossy()
+            .into_owned(),
     })
 }
 

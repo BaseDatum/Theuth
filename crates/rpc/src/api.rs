@@ -33,7 +33,8 @@ use kameo::message::Message;
 use kameo::reply::Reply;
 use knowledge::{
     Change, Concept, Delete, Get, HarvestResult, History, HistoryOf, Hit, KNOWLEDGE_ACTOR,
-    KnowledgeActor, List, Meta, Put, PutConcept, Restore, Search, Source, SyncNow, Write,
+    KnowledgeActor, List, Meta, Put, PutConcept, Restore, Revision, RevisionOf, Search, Source,
+    SyncNow, Write,
 };
 use link::{
     CancelPair, Enable, LINK_ACTOR, LinkActor, LinkConfig, LinkStatus, Pair, Pairing, Rename,
@@ -367,6 +368,10 @@ pub trait Api {
     #[method(name = "knowledge_history")]
     async fn knowledge_history(&self, id: Option<String>, limit: Option<u32>)
     -> RpcResult<History>;
+    /// `commit` against its first parent (the empty tree for a root commit) as
+    /// per-concept unified diffs, including deletions; `id` restricts to one concept.
+    #[method(name = "knowledge_revision")]
+    async fn knowledge_revision(&self, commit: String, id: Option<String>) -> RpcResult<Revision>;
     /// Rewrite `id` from `commit` (default: the commit before its latest change).
     #[method(name = "knowledge_restore")]
     async fn knowledge_restore(&self, id: String, commit: Option<String>) -> RpcResult<Change>;
@@ -1187,6 +1192,10 @@ impl ApiServer for Server {
         limit: Option<u32>,
     ) -> RpcResult<History> {
         send(&knowledge()?, HistoryOf { id, limit }).await
+    }
+
+    async fn knowledge_revision(&self, commit: String, id: Option<String>) -> RpcResult<Revision> {
+        send(&knowledge()?, RevisionOf { commit, id }).await
     }
 
     async fn knowledge_restore(&self, id: String, commit: Option<String>) -> RpcResult<Change> {

@@ -13,7 +13,7 @@ use crate::clip;
 use crate::model::{
     AcpRow, CardKind, Command, Entry, Level, Menu, MenuKey, Model, Prompt, Row, Switch, TurnAction,
     UiEvent, action_name, agent_row, artifact_row, artifact_size, describe, gate_name, k,
-    progress_line, result_line, short, slash_matches, window,
+    meta_line, progress_line, result_line, short, slash_matches, window,
 };
 
 /// Channels handed to the app through iocraft context (owned so the receiver
@@ -363,7 +363,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     let modal = modal
         .or_else(|| secret_box(&m))
         .or_else(|| ask_box(&m))
-        .or_else(|| menu(&m, &input.read(), width));
+        .or_else(|| menu(&m, &input.read(), width, height));
     // A secret's value (or a provider's key) shows as dots.
     let mask = (m.secret_request().is_some() || m.prompt.as_ref().is_some_and(Prompt::masked))
         .then_some('•');
@@ -549,7 +549,7 @@ fn ask_box(m: &Model) -> Option<AnyElement<'static>> {
 /// one less than the box's inner width: a `NoWrap` row wider than the
 /// terminal makes the terminal wrap the frame, and one exactly as wide makes
 /// taffy hand the box several extra rows (see `menu_box_is_tight_at_any_width`).
-fn menu(m: &Model, input: &str, width: u16) -> Option<AnyElement<'static>> {
+fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'static>> {
     // Char ranges to accent per row; only `/search` fills it.
     let mut marks: Vec<Vec<std::ops::Range<usize>>> = Vec::new();
     let (title, rows, cursor): (String, Vec<String>, usize) = match m.menu.as_ref()? {
@@ -829,9 +829,32 @@ fn menu(m: &Model, input: &str, width: u16) -> Option<AnyElement<'static>> {
             items.iter().map(artifact_row).collect(),
             *cursor,
         ),
+        Menu::Knowledge { items, cursor } => (
+            "knowledge  ⏎/h history of concept  H history of all  esc close".to_owned(),
+            if items.is_empty() {
+                vec!["no concepts · H shows the history of all (deleted ones too)".to_owned()]
+            } else {
+                items.iter().map(meta_line).collect()
+            },
+            *cursor,
+        ),
+        Menu::KnowledgeHistory { .. } => m.knowledge_history_menu(),
     };
     let cursor = cursor.min(rows.len().saturating_sub(1));
-    let shown = window(rows.len(), cursor, MENU_ROWS);
+    // A diff gets the screen minus the frame around the box; lists stay short.
+    let tall = matches!(
+        m.menu,
+        Some(Menu::KnowledgeHistory {
+            revision: Some(_),
+            ..
+        })
+    );
+    let max = if tall {
+        usize::from(height).saturating_sub(10).max(MENU_ROWS)
+    } else {
+        MENU_ROWS
+    };
+    let shown = window(rows.len(), cursor, max);
     // border 2 + padding 2 + cursor glyph 2, then one less.
     let fit = usize::from(width).saturating_sub(7);
     Some(
@@ -1262,7 +1285,7 @@ mod tests {
             cursor: 0,
         });
         for width in 60..=120u16 {
-            let modal = menu(&m, "", width).unwrap();
+            let modal = menu(&m, "", width, 30).unwrap();
             let frame = element! {
                 View(flex_direction: FlexDirection::Column, width, height: 30u16) {
                     View(flex_grow: 1.0, min_height: 0)

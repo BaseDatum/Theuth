@@ -49,6 +49,7 @@ function Doc({ id, draft }: { id: string; draft: string | undefined }) {
   const navigate = useNavigate()
   const [editing, setEditing] = useState(false)
   const [missing, setMissing] = useState<{ id: string; title: string } | null>(null)
+  const [historyOpen, setHistoryOpen] = useState(false)
   const [railOpen, setRailOpen] = useState(true)
   const mobile = useIsMobile()
   const doc = useQuery({
@@ -90,21 +91,24 @@ function Doc({ id, draft }: { id: string; draft: string | undefined }) {
   if (doc.isError) {
     return (
       <Frame id={id}>
-        <div className="m-auto text-center text-sm">
-          <p className="text-danger">{doc.error.message}</p>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="mt-2"
-            onClick={() => setMissing({ id, title: id })}
-          >
-            Create {id}
-          </Button>
+        <div className="m-auto max-w-full px-6 text-center text-sm">
+          <p className="text-danger wrap-anywhere">{doc.error.message}</p>
+          <div className="mt-2 flex flex-wrap justify-center gap-1">
+            <Button variant="ghost" size="sm" onClick={() => setMissing({ id, title: id })}>
+              Create {id}
+            </Button>
+            {/* A deleted concept's commits are still there; the sheet can restore it from one. */}
+            <Button variant="ghost" size="sm" onClick={() => setHistoryOpen(true)}>
+              <HistoryIcon />
+              History
+            </Button>
+          </div>
           <NewDocDialog
             open={missing !== null}
             onOpenChange={(o) => !o && setMissing(null)}
             initial={missing ?? undefined}
           />
+          <History id={id} open={historyOpen} onOpenChange={setHistoryOpen} />
         </div>
       </Frame>
     )

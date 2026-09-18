@@ -25,6 +25,7 @@ import type { Put } from '@/rpc/bindings/Put'
 import type { QueuedInput } from '@/rpc/bindings/QueuedInput'
 import type { RegistryAgent } from '@/rpc/bindings/RegistryAgent'
 import type { RepoInfo } from '@/rpc/bindings/RepoInfo'
+import type { Revision } from '@/rpc/bindings/Revision'
 import type { RunInfo } from '@/rpc/bindings/RunInfo'
 import type { ScheduleInfo } from '@/rpc/bindings/ScheduleInfo'
 import type { SearchHit } from '@/rpc/bindings/SearchHit'
@@ -117,6 +118,8 @@ export interface Api {
   ): Promise<Meta[]>
   knowledge_put(put: Put): Promise<Meta>
   knowledge_restore(id: string, commit: string | null): Promise<Change>
+  /** `commit` against its first parent (the empty tree for the root), concept files only; `id` narrows to one concept. */
+  knowledge_revision(commit: string, id: string | null): Promise<Revision>
   knowledge_search(query: string, limit: number | null): Promise<Hit[]>
   knowledge_sync(): Promise<Sync>
   knowledge_write(id: string, text: string): Promise<Meta>
@@ -271,6 +274,7 @@ export const METHODS = [
   'knowledge_list',
   'knowledge_put',
   'knowledge_restore',
+  'knowledge_revision',
   'knowledge_search',
   'knowledge_sync',
   'knowledge_write',

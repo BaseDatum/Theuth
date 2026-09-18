@@ -16,7 +16,7 @@ use sqlx::FromRow;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
 
 use crate::repo::Repo;
-use crate::types::{Change, Concept, History, Hit, KnowledgeOp, Meta, Put, Source, Sync};
+use crate::types::{Change, Concept, History, Hit, KnowledgeOp, Meta, Put, Revision, Source, Sync};
 use crate::{BODY_MAX, DIR, INDEX_FILE, KnowledgeChanged};
 
 const LOG_FILE: &str = "log.md";
@@ -798,6 +798,20 @@ impl Knowledge {
         .await?
     }
 
+    /// `commit` against its first parent as concept-file diffs, restricted to
+    /// `id` when given (10 §2.4). Read-only: nothing is written or committed.
+    pub async fn revision(&self, commit: &str, id: Option<&str>) -> anyhow::Result<Revision> {
+        let Some(repo) = self.repo.clone() else {
+            bail!("history unavailable: no repository")
+        };
+        let path = id
+            .map(concept_id)
+            .transpose()?
+            .map(|c| c.to_path(Path::new("")));
+        let commit = commit.to_owned();
+        tokio::task::spawn_blocking(move || repo.revision(&commit, path.as_deref())).await?
+    }
+
     /// Rewrite `<id>.md` from `commit` (default: the commit before the latest
     /// change to `id`) through the ordinary write path (10 §2.4).
     pub async fn restore(&self, id: &str, commit: Option<&str>) -> anyhow::Result<Change> {
@@ -1470,5 +1484,88 @@ mod tests {
             "first",
             "restore brings a deleted concept back"
         );
+    }
+
+    #[tokio::test]
+    async fn revision_details_root_edit_delete_and_sync_without_writing() {
+        use crate::types::ChangeStatus;
+        let (k, _dir) = open().await;
+        k.put(put("facts/a", "first", "one"), Source::Model)
+            .await
+            .unwrap();
+        k.put(put("facts/a", "second", "two"), Source::Model)
+            .await
+            .unwrap();
+        k.delete("facts/a").await.unwrap();
+        // One external edit of two concepts lands as a single sync commit.
+        std::fs::create_dir_all(k.root().join("facts")).unwrap();
+        for (n, body) in [("b", "bee"), ("c", "sea")] {
+            std::fs::write(
+                k.root().join(format!("facts/{n}.md")),
+                format!("---\ntype: fact\ntitle: {n}\n---\n{body}\n"),
+            )
+            .unwrap();
+        }
+        k.sync().await.unwrap();
+        let h = k.history(None, 10).await.unwrap().changes;
+        assert_eq!(h.len(), 4, "{h:?}");
+
+        // Root commit: no parent, the concept only — index.md/log.md are not files here.
+        let root = k.revision(&h[3].commit, None).await.unwrap();
+        assert_eq!(root.parent, None);
+        assert_eq!(root.change, h[3]);
+        let ids: Vec<_> = root.files.iter().map(|f| f.id.as_str()).collect();
+        assert_eq!(ids, ["facts/a"]);
+        assert_eq!(root.files[0].status, ChangeStatus::Added);
+        assert!(
+            root.files[0]
+                .diff
+                .starts_with("--- /dev/null\n+++ b/facts/a.md\n@@"),
+            "{}",
+            root.files[0].diff
+        );
+
+        let edit = k.revision(&h[2].commit, Some("facts/a")).await.unwrap();
+        let parent = edit.parent.as_deref().unwrap();
+        assert!(
+            parent.len() == 40 && parent.starts_with(&h[3].commit),
+            "{parent}"
+        );
+        assert_eq!(edit.files[0].status, ChangeStatus::Modified);
+        assert!(
+            edit.files[0]
+                .diff
+                .starts_with("--- a/facts/a.md\n+++ b/facts/a.md\n")
+                && edit.files[0].diff.contains("-title: first")
+                && edit.files[0].diff.contains("+title: second"),
+            "{}",
+            edit.files[0].diff
+        );
+
+        // The deleted concept is inspectable although `get` no longer finds it.
+        let del = k.revision(&h[1].commit, None).await.unwrap();
+        assert_eq!(del.files.len(), 1, "{:?}", del.files);
+        assert_eq!(del.files[0].status, ChangeStatus::Deleted);
+        assert!(
+            del.files[0]
+                .diff
+                .starts_with("--- a/facts/a.md\n+++ /dev/null\n")
+                && del.files[0].diff.contains("-title: second"),
+            "{}",
+            del.files[0].diff
+        );
+
+        let sync = k.revision(&h[0].commit, None).await.unwrap();
+        let ids: Vec<_> = sync.files.iter().map(|f| f.id.as_str()).collect();
+        assert_eq!(ids, ["facts/b", "facts/c"]);
+        let only_c = k.revision(&h[0].commit, Some("Facts/C.md")).await.unwrap();
+        assert_eq!(only_c.files.len(), 1);
+        assert_eq!(only_c.files[0].id, "facts/c");
+        assert!(k.revision(&h[0].commit, Some("index")).await.is_err());
+        assert!(k.revision("0000000", None).await.is_err());
+
+        // Inspection wrote and committed nothing.
+        assert_eq!(k.history(None, 10).await.unwrap().changes, h);
+        assert!(k.get("facts/a").await.is_err());
     }
 }

@@ -211,3 +211,43 @@ pub struct History {
     /// whole-bundle history or a concept with a single commit.
     pub diff: Option<String>,
 }
+
+/// How a commit touched a concept file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum ChangeStatus {
+    /// Absent in the parent, present in the commit.
+    Added,
+    /// Present in both trees with different content or mode.
+    Modified,
+    /// Present in the parent, absent in the commit.
+    Deleted,
+}
+
+/// One concept file changed by a commit.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct ChangedFile {
+    /// Concept id.
+    pub id: String,
+    /// Whether the file was added, modified or deleted.
+    pub status: ChangeStatus,
+    /// Unified diff against the first parent; `/dev/null` names an absent side.
+    pub diff: String,
+}
+
+/// `knowledge_revision` result: one commit against its first parent (the
+/// empty tree for a root commit), concept files only.
+#[derive(
+    Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct Revision {
+    /// The selected commit's identity, time and message.
+    pub change: Change,
+    /// Full id of the first parent; `None` for a root commit.
+    pub parent: Option<String>,
+    /// Tree order (sorted by path).
+    pub files: Vec<ChangedFile>,
+}

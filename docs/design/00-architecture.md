@@ -39,6 +39,13 @@ names the alternative it beat and why.
    the token; a provider-required identity line (05 §2.3) is not product
    branding and is not shown for key auth.
 
+Knowledge history inspection (10 §8, 25 §8) stays inside the `knowledge`
+plugin: `gix` compares a selected commit with its parent and RPC serves the
+concept diffs to both frontends. This is visibility into the harness's own
+memory, not a general git client. Rejected: frontend git commands or a second
+history database; neither works consistently on phones, and the existing
+bundle already owns the record.
+
 ## 2. Process model
 
 One process. `wth` runs the bus, the agent, the tools, and the terminal UI

@@ -27,9 +27,15 @@ export const queryKeys = {
   agents: (id: string) => ['agents', id] as const,
   jobs: (id: string) => ['jobs', id] as const,
   prompt: (id: string) => ['prompt', id] as const,
+  knowledge: ['knowledge'] as const,
   knowledgeList: ['knowledge', 'list'] as const,
   knowledgeDoc: (id: string) => ['knowledge', 'doc', id] as const,
-  knowledgeHistory: (id: string) => ['knowledge', 'history', id] as const,
+  /** Prefix of every `knowledgeHistory` page; commits are immutable, so revisions are keyed apart and never invalidated. */
+  knowledgeHistories: ['knowledge', 'history'] as const,
+  knowledgeHistory: (id: string | null, limit: number) =>
+    ['knowledge', 'history', id, limit] as const,
+  knowledgeRevision: (commit: string, id: string | null) =>
+    ['knowledge', 'revision', commit, id] as const,
   knowledgeSearch: (q: string) => ['knowledge', 'search', q] as const,
   artifacts: ['artifacts'] as const,
   info: ['info'] as const,
@@ -63,6 +69,7 @@ export function useInvalidateOn(): void {
       on('KnowledgeChanged', (e) => {
         void qc.invalidateQueries({ queryKey: queryKeys.knowledgeList })
         void qc.invalidateQueries({ queryKey: queryKeys.knowledgeDoc(e.id) })
+        void qc.invalidateQueries({ queryKey: queryKeys.knowledgeHistories })
       }),
       on('ArtifactShown', () => void qc.invalidateQueries({ queryKey: queryKeys.artifacts })),
       on('SecretsChanged', () => void qc.invalidateQueries({ queryKey: queryKeys.secrets })),

@@ -525,9 +525,18 @@ Route `/knowledge` (tree + search, no document) and `/knowledge/$id`.
   description, scope, source, timestamp from `meta`), body = `text` with the
   frontmatter stripped (first `---…---` block), rendered by streamdown in
   static mode. Right rail: **Links** (`links` with `exists`; missing ones in
-  the danger colour with "create"), **Cited by** (`cited_by`), **History**
-  (`knowledge_history(id)`: commits, latest diff in a code block, Restore
-  per commit → `knowledge_restore` after a confirm Dialog).
+  the danger colour with "create"), **Cited by** (`cited_by`). The document's
+  **History** action opens the same history sheet scoped to its id; a missing
+  document retains this action so deleted concepts can be inspected.
+- **History.** A labelled button in the explorer header opens the whole
+  bundle's history on desktop and mobile. Select any commit to load
+  `knowledge_revision(commit, id?)`: metadata, parent, changed concepts and
+  coloured unified diffs, including additions, deletions and root commits.
+  The scrollable commit list loads 20 more via **Older**; long diff lines wrap
+  within the phone-width sheet. Each changed concept links to its own history
+  with a Back action. Restore on a present file uses `knowledge_restore`
+  after confirmation; errors stay in the dialog for retry. Deleted files have
+  no content at that commit: select an earlier commit to restore them.
 - **Working links.** A click handler on the rendered body intercepts `<a>`:
   `resolveLink(sourceId, href)` in `resolveLink.ts` mirrors okf
   (`links.rs:38-146`): external schemes → opener plugin; `#anchor` →
@@ -552,7 +561,9 @@ Route `/knowledge` (tree + search, no document) and `/knowledge/$id`.
   snippets, Enter opens. Terms under 3 chars show the "3+ characters" hint
   (§2.3) instead of an empty list.
 - **Freshness.** `knowledge_sync()` on window focus and on entering the
-  explorer; `KnowledgeChanged` invalidates the list and the open document.
+  explorer; `KnowledgeChanged` invalidates the list, open document and all
+  history pages. Reconnect invalidates knowledge queries. Commit revisions
+  are immutable and otherwise remain cached.
   Harvest of the current session from the session menu; `Harvesting`/
   `Harvested` toasts.
 - **Not in v0.** Rename/move (no RPC; backlinks would break; the item menu
@@ -562,6 +573,16 @@ Route `/knowledge` (tree + search, no document) and `/knowledge/$id`.
 ## 9. Checks
 
 Each phase ends with a runnable check.
+
+History explorer check (2026-09-18): real 27-commit bundle, root reconcile,
+24 writes, deletion and multi-file sync. Browser DOM interaction verified
+selection, 20→27 paging, per-concept scope, deleted-concept drill-in and a
+confirmed restore; at 390 px the page and sheet stayed within the viewport
+with long diff lines. The actual TUI verified picker→bundle history,
+older-page navigation and root/deletion diffs. No screenshots, native Tauri
+shell or on-device visual review were performed. Runtime built from an
+isolated source copy while unrelated concurrent Slack event handling was
+temporarily incomplete; knowledge source and RPC behavior were unchanged.
 
 | step | deliverable | check |
 |---|---|---|

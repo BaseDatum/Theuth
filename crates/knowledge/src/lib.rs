@@ -11,7 +11,7 @@
 //! Public surface consumed by other plugins:
 //! - commands on the [`KNOWLEDGE_ACTOR`] actor ([`KnowledgeActor`]): [`Handle`],
 //!   [`Search`], [`Get`], [`List`], [`PutConcept`], [`Write`], [`Delete`], [`HistoryOf`],
-//!   [`Restore`], [`SyncNow`]
+//!   [`RevisionOf`], [`Restore`], [`SyncNow`]
 //! - event: [`KnowledgeChanged`], published by the store after every write
 
 use std::sync::Arc;
@@ -151,6 +151,15 @@ pub struct HistoryOf {
     pub limit: Option<u32>,
 }
 
+/// `ask` → `Result<Revision, String>`: one commit against its first parent (10 §2.4).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RevisionOf {
+    /// Abbreviated or full commit id.
+    pub commit: String,
+    /// Concept id; `None` for every concept the commit touched.
+    pub id: Option<String>,
+}
+
 /// `ask` → `Result<Change, String>`: rewrite a concept from a commit.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Restore {
@@ -245,6 +254,17 @@ impl Message<HistoryOf> for KnowledgeActor {
     async fn handle(&mut self, m: HistoryOf, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.k
             .history(m.id.as_deref(), m.limit.unwrap_or(20))
+            .await
+            .map_err(|e| format!("{e:#}"))
+    }
+}
+
+impl Message<RevisionOf> for KnowledgeActor {
+    type Reply = Result<Revision, String>;
+
+    async fn handle(&mut self, m: RevisionOf, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.k
+            .revision(&m.commit, m.id.as_deref())
             .await
             .map_err(|e| format!("{e:#}"))
     }

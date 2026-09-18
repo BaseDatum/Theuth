@@ -1,8 +1,9 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Outlet, getRouteApi, useParams } from '@tanstack/react-router'
-import { PanelLeft, Plus, RefreshCw } from 'lucide-react'
+import { History as HistoryIcon, PanelLeft, Plus, RefreshCw } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
+import { History } from '@/components/knowledge/History'
 import { NewDocDialog } from '@/components/knowledge/NewDocDialog'
 import { SearchBox } from '@/components/knowledge/SearchBox'
 import { Tree } from '@/components/knowledge/Tree'
@@ -23,6 +24,7 @@ export function Explorer() {
   const { _splat: active } = useParams({ strict: false })
   const sidebar = useSidebar()
   const [creating, setCreating] = useState(false)
+  const [historyOpen, setHistoryOpen] = useState(false)
 
   const sync = useMutation({
     mutationFn: () => api.knowledge_sync(),
@@ -84,6 +86,10 @@ export function Explorer() {
             </TooltipTrigger>
             <TooltipContent>Sync from disk</TooltipContent>
           </Tooltip>
+          <Button variant="ghost" size="sm" onClick={() => setHistoryOpen(true)}>
+            <HistoryIcon />
+            History
+          </Button>
           <Button variant="ghost" size="sm" onClick={() => setCreating(true)}>
             <Plus />
             New
@@ -102,6 +108,7 @@ export function Explorer() {
         )}
       </main>
       <NewDocDialog open={creating} onOpenChange={setCreating} />
+      <History id={null} open={historyOpen} onOpenChange={setHistoryOpen} />
     </div>
   )
 }

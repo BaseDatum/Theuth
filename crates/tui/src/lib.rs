@@ -368,9 +368,19 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
                 .map(|h| h.meta)
                 .collect(),
         ),
-        Command::KnowledgeHistory(id) => {
-            UiEvent::KnowledgeHistory(msg(api.knowledge_history(id, None).await)?)
+        Command::KnowledgeHistory { id, limit } => {
+            let fetch = u32::try_from(limit + 1).unwrap_or(u32::MAX);
+            UiEvent::KnowledgeHistory {
+                history: msg(api.knowledge_history(id.clone(), Some(fetch)).await)?,
+                id,
+                limit,
+            }
         }
+        Command::KnowledgeRevision { commit, id, card } => UiEvent::KnowledgeRevision {
+            revision: msg(api.knowledge_revision(commit, id.clone()).await)?,
+            id,
+            card,
+        },
         Command::KnowledgeRestore { id, commit } => {
             UiEvent::KnowledgeRestored(msg(api.knowledge_restore(id, commit).await)?)
         }
@@ -763,7 +773,7 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         UiEvent::Knowledge(metas) => metas
             .iter()
             .try_for_each(|m| writeln!(out, "{}", model::meta_line(m))),
-        UiEvent::KnowledgeHistory(h) => h
+        UiEvent::KnowledgeHistory { history: h, .. } => h
             .changes
             .iter()
             .try_for_each(|c| writeln!(out, "{}  {}  {}", c.commit, c.time, c.message))
@@ -771,6 +781,15 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
                 Some(d) => writeln!(out, "{d}"),
                 None => Ok(()),
             }),
+        UiEvent::KnowledgeRevision { revision: r, .. } => writeln!(
+            out,
+            "{}  {}  {}  parent {}\n{}",
+            r.change.commit,
+            r.change.time,
+            r.change.message,
+            r.parent.as_deref().unwrap_or("none"),
+            model::revision_rows(r).join("\n")
+        ),
         UiEvent::KnowledgeRestored(c) => writeln!(out, "{}  {}", c.commit, c.message),
         UiEvent::Harvested(r) => writeln!(out, "knowledge +{} ~{}", r.added, r.updated),
         UiEvent::Approvals(s) => writeln!(

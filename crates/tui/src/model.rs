@@ -14,7 +14,7 @@ use agent::{
     ProviderInfo, QueuedInput, SessionSummary, SkillBody, SkillMeta, Usage,
 };
 use iocraft::KeyCode;
-use knowledge::{Change, HarvestResult, History, Meta};
+use knowledge::{Change, ChangeStatus, HarvestResult, History, Meta, Revision};
 use models::Catalog;
 use runtime::{InputId, SessionId, TurnId};
 use tokio::sync::mpsc::UnboundedSender;
@@ -86,8 +86,26 @@ pub enum UiEvent {
     AcpAdded(EntryInfo),
     /// Reply to [`Command::KnowledgeList`] / [`Command::KnowledgeSearch`]: metas: best first for a search, by id for a list.
     Knowledge(Vec<Meta>),
-    /// Reply to [`Command::KnowledgeHistory`].
-    KnowledgeHistory(History),
+    /// Reply to [`Command::KnowledgeHistory`]: the request's scope and page
+    /// size; `history` holds up to `limit + 1` changes (the extra one means
+    /// an older page exists).
+    KnowledgeHistory {
+        /// Concept id, `None` for the whole bundle.
+        id: Option<String>,
+        /// Rows asked for.
+        limit: usize,
+        /// The reply.
+        history: History,
+    },
+    /// Reply to [`Command::KnowledgeRevision`]: the request's scope and the commit.
+    KnowledgeRevision {
+        /// Concept id filter, `None` for every concept the commit touched.
+        id: Option<String>,
+        /// The reply.
+        revision: Revision,
+        /// `/knowledge show`: a transcript card, not the history menu.
+        card: bool,
+    },
     /// Reply to [`Command::KnowledgeRestore`]: the restoring commit.
     KnowledgeRestored(Change),
     /// Reply to [`Command::Harvest`].
@@ -368,8 +386,22 @@ pub enum Command {
     KnowledgeList,
     /// `knowledge_search`.
     KnowledgeSearch(String),
-    /// `knowledge_history`; `None` for the whole bundle.
-    KnowledgeHistory(Option<String>),
+    /// `knowledge_history` for `limit + 1` rows; `id: None` for the whole bundle.
+    KnowledgeHistory {
+        /// Concept id.
+        id: Option<String>,
+        /// Rows to show; one more is fetched to learn whether older ones exist.
+        limit: usize,
+    },
+    /// `knowledge_revision`: one commit against its first parent.
+    KnowledgeRevision {
+        /// Abbreviated commit.
+        commit: String,
+        /// Concept id filter.
+        id: Option<String>,
+        /// `/knowledge show`: print a card rather than fill the history menu.
+        card: bool,
+    },
     /// `knowledge_restore`.
     KnowledgeRestore {
         /// Concept id.
@@ -945,8 +977,8 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     (
         "/knowledge",
-        "[query | history [id] | restore <id> [commit] | harvest]",
-        "knowledge base: list, search, history, restore, harvest",
+        "[query | history [id] | show <commit> [id] | restore <id> [commit] | harvest]",
+        "knowledge base: list, search, history, show a commit, restore, harvest",
     ),
     (
         "/login",
@@ -1252,6 +1284,36 @@ pub enum Menu {
         /// History of the highlighted secret is open: the highlighted
         /// version row (0 = current). `None` shows the names.
         history: Option<usize>,
+    },
+    /// `/knowledge [query]` picker (10 §6).
+    Knowledge {
+        /// The list or search reply.
+        items: Vec<Meta>,
+        /// Highlighted row.
+        cursor: usize,
+    },
+    /// `/knowledge history [id]`: commits newest first, then one commit's
+    /// diff against its parent. Opened when asked, filled by the reply that
+    /// matches `id` and `limit`; later or stale replies are dropped.
+    KnowledgeHistory {
+        /// Concept id, `None` for the whole bundle.
+        id: Option<String>,
+        /// Shown commits, at most `limit`.
+        changes: Vec<Change>,
+        /// Page size asked for; `⏎` on the `older` row asks for 20 more.
+        limit: usize,
+        /// Commits exist past `changes`: the `older` row shows.
+        more: bool,
+        /// Highlighted commit (or the `older` row at `changes.len()`).
+        cursor: usize,
+        /// A page request is in flight.
+        loading: bool,
+        /// Commit whose revision is being fetched; cleared by moving.
+        pending: Option<String>,
+        /// The last failed request's message, shown in place of the rows.
+        error: Option<String>,
+        /// Open diff of the highlighted commit: first shown row, first shown column.
+        revision: Option<(Revision, usize, usize)>,
     },
 }
 
@@ -1973,6 +2035,8 @@ impl Model {
                         | Menu::Nodes { .. }
                         | Menu::Secrets { .. }
                         | Menu::Artifacts { .. }
+                        | Menu::Knowledge { .. }
+                        | Menu::KnowledgeHistory { .. }
                 )
             )
     }
@@ -2683,32 +2747,71 @@ impl Model {
                 "cloned {} → {}  (build it, then `/mcp add {{...\"cwd\": ...}}`)",
                 r.name, r.path
             ))),
-            UiEvent::Knowledge(metas) => {
-                if metas.is_empty() {
-                    self.entries.push(Entry::Info("no concepts".into()));
-                } else {
-                    let lines: Vec<String> = metas.iter().map(meta_line).collect();
-                    self.entries.push(card(
-                        CardKind::Skill,
-                        format!("knowledge: {} concepts", metas.len()),
-                        &lines.join("\n"),
-                    ));
+            // Always the picker: `H` reaches the bundle's history (and so
+            // deleted concepts) even when nothing is left to list.
+            UiEvent::Knowledge(items) => self.menu = Some(Menu::Knowledge { items, cursor: 0 }),
+            // Fills the menu opened by the request it answers; anything else
+            // (closed with esc, another scope or page since) is dropped.
+            UiEvent::KnowledgeHistory {
+                id,
+                limit,
+                history,
+            } => {
+                if let Some(Menu::KnowledgeHistory {
+                    id: open,
+                    changes: shown,
+                    limit: page,
+                    more,
+                    loading,
+                    error,
+                    ..
+                }) = &mut self.menu
+                    && *open == id
+                    && *page == limit
+                {
+                    let mut changes = history.changes;
+                    *more = changes.len() > limit;
+                    changes.truncate(limit);
+                    *shown = changes;
+                    *loading = false;
+                    *error = None;
                 }
             }
-            UiEvent::KnowledgeHistory(h) => {
-                if h.changes.is_empty() {
-                    self.entries.push(Entry::Info("no history".into()));
-                } else {
-                    let mut text: String = h
-                        .changes
-                        .iter()
-                        .map(|c| format!("{}  {}  {}\n", c.commit, c.time, c.message))
-                        .collect();
-                    if let Some(diff) = &h.diff {
-                        text.push_str(&format!("\n```diff\n{diff}\n```"));
-                    }
-                    self.entries
-                        .push(card(CardKind::Skill, "knowledge history".into(), &text));
+            UiEvent::KnowledgeRevision {
+                id,
+                revision,
+                card: true,
+            } => {
+                let title = format!(
+                    "knowledge {}  {}{}",
+                    revision.change.commit,
+                    revision.change.message,
+                    id.map_or(String::new(), |i| format!("  ({i})"))
+                );
+                let text = revision_rows(&revision).join("\n");
+                self.entries.push(card(
+                    CardKind::Skill,
+                    title,
+                    &format!("```diff\n{text}\n```"),
+                ));
+            }
+            // Only the commit still awaited in the open scope.
+            UiEvent::KnowledgeRevision {
+                id,
+                revision,
+                card: false,
+            } => {
+                if let Some(Menu::KnowledgeHistory {
+                    id: open,
+                    pending,
+                    revision: shown,
+                    ..
+                }) = &mut self.menu
+                    && *open == id
+                    && pending.as_deref() == Some(revision.change.commit.as_str())
+                {
+                    *pending = None;
+                    *shown = Some((revision, 0, 0));
                 }
             }
             UiEvent::KnowledgeRestored(c) => self
@@ -2922,6 +3025,21 @@ impl Model {
                 self.awaiting_secrets = false;
                 self.awaiting_nodes = false;
                 self.notice = None;
+                // A knowledge request that was in flight failed: the menu
+                // shows it where the rows would be (`r` retries).
+                if let Some(Menu::KnowledgeHistory {
+                    loading,
+                    pending,
+                    error,
+                    ..
+                }) = &mut self.menu
+                    && (*loading || pending.is_some())
+                {
+                    *loading = false;
+                    *pending = None;
+                    *error = Some(e);
+                    return;
+                }
                 self.entries.push(Entry::Error(e));
             }
         }
@@ -4148,17 +4266,32 @@ impl Model {
         }
     }
 
-    /// `/knowledge [query | history [id] | restore <id> [commit] | harvest]`.
+    /// `/knowledge [query | history [id] | show <commit> [id] | restore <id> [commit] | harvest]`.
     fn knowledge_cmd(&mut self, arg: &str, tx: &UnboundedSender<Command>) {
         let (sub, rest) = arg
             .split_once(' ')
             .map_or((arg, ""), |(s, r)| (s, r.trim()));
         match (sub, rest) {
             ("", _) => send(tx, Command::KnowledgeList),
-            ("history", id) => send(
-                tx,
-                Command::KnowledgeHistory((!id.is_empty()).then(|| id.to_owned())),
-            ),
+            ("history", id) => {
+                self.open_history((!id.is_empty()).then(|| id.to_owned()), HISTORY_PAGE, tx);
+            }
+            ("show", "") => self
+                .entries
+                .push(Entry::Error("usage: /knowledge show <commit> [id]".into())),
+            ("show", rest) => {
+                let (commit, id) = rest
+                    .split_once(' ')
+                    .map_or((rest, None), |(c, i)| (c, Some(i.trim().to_owned())));
+                send(
+                    tx,
+                    Command::KnowledgeRevision {
+                        commit: commit.to_owned(),
+                        id,
+                        card: true,
+                    },
+                );
+            }
             ("restore", "") => self.entries.push(Entry::Error(
                 "usage: /knowledge restore <id> [commit]".into(),
             )),
@@ -4426,6 +4559,209 @@ impl Model {
         MenuKey::Consumed
     }
 
+    /// `/knowledge`: `⏎` / `h` opens the highlighted concept's history, `H`
+    /// the whole bundle's (deleted concepts included).
+    fn knowledge_key(&mut self, code: KeyCode, tx: &UnboundedSender<Command>) -> MenuKey {
+        let Some(Menu::Knowledge { items, cursor }) = &mut self.menu else {
+            return MenuKey::Consumed;
+        };
+        match code {
+            KeyCode::Up => *cursor = cursor.saturating_sub(1),
+            KeyCode::Down => *cursor = (*cursor + 1).min(items.len().saturating_sub(1)),
+            KeyCode::Esc => self.menu = None,
+            KeyCode::Enter | KeyCode::Char('h') => {
+                if let Some(id) = items.get(*cursor).map(|m| m.id.clone()) {
+                    self.open_history(Some(id), HISTORY_PAGE, tx);
+                }
+            }
+            KeyCode::Char('H') => self.open_history(None, HISTORY_PAGE, tx),
+            _ => {}
+        }
+        MenuKey::Consumed
+    }
+
+    /// Ask for `limit` commits of `id`'s history and show the menu waiting
+    /// for them; the same scope keeps its rows and highlight while the next
+    /// page loads. Only the reply for this `id` / `limit` fills it.
+    fn open_history(&mut self, id: Option<String>, limit: usize, tx: &UnboundedSender<Command>) {
+        match &mut self.menu {
+            Some(Menu::KnowledgeHistory {
+                id: open,
+                limit: page,
+                loading,
+                pending,
+                error,
+                revision,
+                ..
+            }) if *open == id => {
+                *page = limit;
+                *loading = true;
+                *pending = None;
+                *error = None;
+                *revision = None;
+            }
+            _ => {
+                self.menu = Some(Menu::KnowledgeHistory {
+                    id: id.clone(),
+                    changes: Vec::new(),
+                    limit,
+                    more: false,
+                    cursor: 0,
+                    loading: true,
+                    pending: None,
+                    error: None,
+                    revision: None,
+                });
+            }
+        }
+        send(tx, Command::KnowledgeHistory { id, limit });
+    }
+
+    /// `/knowledge history`: `⏎` on a commit fetches its diff (`↑↓` / page
+    /// keys scroll rows, `←→` columns; esc / `h` / `⌫` go back), `⏎` on the
+    /// `older` row asks for the next page, `r` re-asks for the current one.
+    /// Moving drops a pending fetch. Esc on the list closes.
+    fn knowledge_history_key(&mut self, code: KeyCode, tx: &UnboundedSender<Command>) -> MenuKey {
+        let Some(Menu::KnowledgeHistory {
+            id,
+            changes,
+            limit,
+            more,
+            cursor,
+            pending,
+            revision,
+            ..
+        }) = &mut self.menu
+        else {
+            return MenuKey::Consumed;
+        };
+        if let Some((rev, row, col)) = revision {
+            // One header row per file plus its diff lines; `revision_rows` shape.
+            let last = rev
+                .files
+                .iter()
+                .map(|f| 1 + f.diff.lines().count())
+                .sum::<usize>()
+                .saturating_sub(1);
+            match code {
+                KeyCode::Up => *row = row.saturating_sub(1),
+                KeyCode::Down => *row = (*row + 1).min(last),
+                KeyCode::PageUp => *row = row.saturating_sub(HISTORY_PAGE),
+                KeyCode::PageDown => *row = (*row + HISTORY_PAGE).min(last),
+                KeyCode::Left => *col = col.saturating_sub(DIFF_STEP),
+                KeyCode::Right => *col += DIFF_STEP,
+                KeyCode::Esc | KeyCode::Char('h') | KeyCode::Backspace => *revision = None,
+                _ => {}
+            }
+            return MenuKey::Consumed;
+        }
+        let rows = changes.len() + usize::from(*more);
+        match code {
+            KeyCode::Up => {
+                *cursor = cursor.saturating_sub(1);
+                *pending = None;
+            }
+            KeyCode::Down => {
+                *cursor = (*cursor + 1).min(rows.saturating_sub(1));
+                *pending = None;
+            }
+            KeyCode::Esc => self.menu = None,
+            KeyCode::Char('r') => {
+                let (id, limit) = (id.clone(), *limit);
+                self.open_history(id, limit, tx);
+            }
+            KeyCode::Enter => match changes.get(*cursor) {
+                Some(c) => {
+                    *pending = Some(c.commit.clone());
+                    send(
+                        tx,
+                        Command::KnowledgeRevision {
+                            commit: c.commit.clone(),
+                            id: id.clone(),
+                            card: false,
+                        },
+                    );
+                }
+                None if *more => {
+                    let (id, limit) = (id.clone(), *limit + HISTORY_PAGE);
+                    self.open_history(id, limit, tx);
+                }
+                None => {}
+            },
+            _ => {}
+        }
+        MenuKey::Consumed
+    }
+
+    /// The `/knowledge history` menu: `(title, rows, cursor)`. The commit
+    /// list (plus an `older` row when a page remains; `loading…`, the error
+    /// or `no history` in its place), or the highlighted commit's diff with
+    /// the cursor as its first shown row and `col` leading chars dropped.
+    pub fn knowledge_history_menu(&self) -> (String, Vec<String>, usize) {
+        let Some(Menu::KnowledgeHistory {
+            id,
+            changes,
+            more,
+            cursor,
+            loading,
+            pending,
+            error,
+            revision,
+            ..
+        }) = &self.menu
+        else {
+            return (String::new(), Vec::new(), 0);
+        };
+        let scope = id.as_deref().unwrap_or("all concepts");
+        if let Some((rev, row, col)) = revision {
+            let parent = rev
+                .parent
+                .as_deref()
+                .map_or("none (root)", |p| p.get(..7).unwrap_or(p));
+            let title = format!(
+                "knowledge · {scope} · {} · {} · {} · parent {parent} · {} file{}   ↑↓←→ scroll  esc back",
+                rev.change.commit,
+                rev.change.time,
+                rev.change.message,
+                rev.files.len(),
+                if rev.files.len() == 1 { "" } else { "s" },
+            );
+            let rows = revision_rows(rev)
+                .into_iter()
+                .map(|r| {
+                    if *col == 0 {
+                        r
+                    } else {
+                        r.chars().skip(*col).collect()
+                    }
+                })
+                .collect();
+            return (title, rows, *row);
+        }
+        let state = match (*loading, pending.as_deref(), error.as_deref()) {
+            (_, _, Some(e)) => format!("   error: {e}"),
+            (true, _, None) => "   loading…".to_owned(),
+            (false, Some(c), None) => format!("   loading {c}…"),
+            (false, None, None) => String::new(),
+        };
+        let title = format!("knowledge history · {scope}   ⏎ diff  r refresh  esc close{state}");
+        let mut rows: Vec<String> = changes
+            .iter()
+            .map(|c| format!("{}  {}  {}", c.commit, c.time, c.message))
+            .collect();
+        if *more {
+            rows.push(format!("… older  (⏎ loads {HISTORY_PAGE} more)"));
+        }
+        if rows.is_empty() {
+            rows.push(match (*loading, error) {
+                (_, Some(_)) => "request failed · r retries".into(),
+                (true, None) => "loading…".into(),
+                (false, None) => "no history · r refreshes".into(),
+            });
+        }
+        (title, rows, *cursor)
+    }
+
     /// `/compact [summary|cut|snap|style …]`.
     fn compact_cmd(&mut self, arg: &str, tx: &UnboundedSender<Command>) {
         let (sub, rest) = arg
@@ -4635,6 +4971,8 @@ impl Model {
             Some(Menu::Nodes { .. }) => self.nodes_key(code, tx),
             Some(Menu::Secrets { .. }) => self.secrets_key(code, tx),
             Some(Menu::Artifacts { .. }) => self.artifacts_key(code, tx),
+            Some(Menu::Knowledge { .. }) => self.knowledge_key(code, tx),
+            Some(Menu::KnowledgeHistory { .. }) => self.knowledge_history_key(code, tx),
         }
     }
 
@@ -5796,6 +6134,40 @@ fn artifact_body(a: &artifact::Artifact, opts: &markdown::Options) -> markdown::
 /// One `/knowledge` row: `` `id` — title [type]: description `` (10 §6).
 pub fn meta_line(m: &Meta) -> String {
     format!("`{}` — {} [{}]: {}", m.id, m.title, m.type_, m.description)
+}
+
+/// `/knowledge history` rows per page; `older` asks for this many more.
+pub const HISTORY_PAGE: usize = 20;
+/// Chars a diff scrolls sideways per `←` / `→`.
+const DIFF_STEP: usize = 8;
+
+/// A revision as diff rows: `+ id` / `~ id` / `- id` per concept file, each
+/// followed by its unified diff. Empty commits (only generated files
+/// changed) say so.
+pub fn revision_rows(r: &Revision) -> Vec<String> {
+    if r.files.is_empty() {
+        return vec!["no concept files changed".into()];
+    }
+    let mut rows = Vec::new();
+    for f in &r.files {
+        let glyph = match f.status {
+            ChangeStatus::Added => "+",
+            ChangeStatus::Modified => "~",
+            ChangeStatus::Deleted => "-",
+        };
+        rows.push(format!("{glyph} {}  ({})", f.id, status_name(f.status)));
+        rows.extend(f.diff.lines().map(str::to_owned));
+    }
+    rows
+}
+
+/// `added` / `modified` / `deleted`.
+fn status_name(s: ChangeStatus) -> &'static str {
+    match s {
+        ChangeStatus::Added => "added",
+        ChangeStatus::Modified => "modified",
+        ChangeStatus::Deleted => "deleted",
+    }
 }
 
 /// The `/title` reply: the model naming sessions, or the fallback.
@@ -7506,11 +7878,20 @@ mod tests {
         m.submit("/knowledge", &tx);
         assert!(matches!(rx.try_recv(), Ok(Command::KnowledgeList)));
         m.submit("/knowledge history facts/x", &tx);
-        assert!(
-            matches!(rx.try_recv(), Ok(Command::KnowledgeHistory(Some(id))) if id == "facts/x")
-        );
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::KnowledgeHistory { id: Some(id), limit: HISTORY_PAGE }) if id == "facts/x"
+        ));
         m.submit("/knowledge history", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::KnowledgeHistory(None))));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::KnowledgeHistory { id: None, .. })
+        ));
+        m.submit("/knowledge show a1b2c3d facts/x", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::KnowledgeRevision { commit, id: Some(id), card: true }) if commit == "a1b2c3d" && id == "facts/x"
+        ));
         m.submit("/knowledge restore facts/x a1b2c3d", &tx);
         assert!(matches!(
             rx.try_recv(),
@@ -7523,6 +7904,194 @@ mod tests {
         assert!(rx.try_recv().is_err(), "no session shown");
         m.submit("/knowledge rust toolchain", &tx);
         assert!(matches!(rx.try_recv(), Ok(Command::KnowledgeSearch(q)) if q == "rust toolchain"));
+    }
+
+    /// `/knowledge` → `h` opens the history menu loading; only the matching
+    /// reply fills it; the `older` row pages by 20 and lands on the first
+    /// new commit; ⏎ fetches one commit's diff, a reply for another commit
+    /// or after esc is dropped, `←→` scroll columns, esc steps back then
+    /// closes.
+    #[test]
+    fn knowledge_history_menu_pages_and_shows_one_commit() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        m.apply(UiEvent::Knowledge(vec![Meta {
+            id: "facts/x".into(),
+            type_: "fact".into(),
+            title: "x".into(),
+            description: String::new(),
+            tags: Vec::new(),
+            scope: None,
+            source: None,
+            timestamp: None,
+        }]));
+        assert!(matches!(m.menu, Some(Menu::Knowledge { .. })) && !m.input_focused());
+        m.menu_key(KeyCode::Char('h'), "", &tx);
+        let Ok(Command::KnowledgeHistory { id, limit }) = rx.try_recv() else {
+            panic!("history asked");
+        };
+        assert_eq!((id.as_deref(), limit), (Some("facts/x"), HISTORY_PAGE));
+        assert!(matches!(
+            m.menu,
+            Some(Menu::KnowledgeHistory { loading: true, .. })
+        ));
+        assert_eq!(m.knowledge_history_menu().1, ["loading…"]);
+        let change = |c: &str| Change {
+            commit: c.into(),
+            time: "2026-09-18 10:00".into(),
+            message: format!("edit {c}"),
+        };
+        let history = |n: usize| History {
+            changes: (0..n).map(|i| change(&format!("c{i:06}"))).collect(),
+            diff: None,
+        };
+        // Another scope's reply is dropped; the matching one fills the menu.
+        m.apply(UiEvent::KnowledgeHistory {
+            id: None,
+            limit,
+            history: history(3),
+        });
+        assert!(matches!(
+            m.menu,
+            Some(Menu::KnowledgeHistory { loading: true, .. })
+        ));
+        // A full page plus one: the `older` row shows and asks for 20 more.
+        m.apply(UiEvent::KnowledgeHistory {
+            id: id.clone(),
+            limit,
+            history: history(HISTORY_PAGE + 1),
+        });
+        assert!(matches!(
+            m.menu,
+            Some(Menu::KnowledgeHistory {
+                more: true,
+                loading: false,
+                ..
+            })
+        ));
+        let (_, rows, _) = m.knowledge_history_menu();
+        assert_eq!(rows.len(), HISTORY_PAGE + 1);
+        assert!(rows[HISTORY_PAGE].starts_with("… older"));
+        for _ in 0..HISTORY_PAGE + 5 {
+            m.menu_key(KeyCode::Down, "", &tx);
+        }
+        m.menu_key(KeyCode::Enter, "", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::KnowledgeHistory { limit, .. }) if limit == 2 * HISTORY_PAGE
+        ));
+        // The old page stays up while the next loads; a stale first-page reply is dropped.
+        assert_eq!(m.knowledge_history_menu().1.len(), HISTORY_PAGE + 1);
+        m.apply(UiEvent::KnowledgeHistory {
+            id: id.clone(),
+            limit: HISTORY_PAGE,
+            history: history(2),
+        });
+        m.apply(UiEvent::KnowledgeHistory {
+            id: id.clone(),
+            limit: 2 * HISTORY_PAGE,
+            history: history(30),
+        });
+        let (_, rows, cursor) = m.knowledge_history_menu();
+        assert_eq!(
+            (rows.len(), cursor),
+            (30, HISTORY_PAGE),
+            "no older row; highlight on the first new commit"
+        );
+        // ⏎ on a commit fetches its revision in the menu's scope.
+        m.menu_key(KeyCode::Up, "", &tx);
+        m.menu_key(KeyCode::Enter, "", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::KnowledgeRevision { commit, id: Some(i), card: false }) if commit == "c000019" && i == "facts/x"
+        ));
+        assert!(m.knowledge_history_menu().0.contains("loading c000019"));
+        let revision = |c: &str| Revision {
+            change: change(c),
+            parent: None,
+            files: vec![knowledge::ChangedFile {
+                id: "facts/x".into(),
+                status: ChangeStatus::Deleted,
+                diff: "-a\n-bcdefghijklmnop".into(),
+            }],
+        };
+        // A reply for a commit no longer awaited is dropped.
+        m.apply(UiEvent::KnowledgeRevision {
+            id: id.clone(),
+            revision: revision("c000003"),
+            card: false,
+        });
+        assert!(matches!(
+            m.menu,
+            Some(Menu::KnowledgeHistory {
+                revision: None,
+                pending: Some(_),
+                ..
+            })
+        ));
+        // A failed fetch shows in the menu, not the transcript; `r` re-asks.
+        m.apply(UiEvent::Error("boom".into()));
+        assert!(m.entries.is_empty());
+        assert!(m.knowledge_history_menu().0.contains("error: boom"));
+        m.menu_key(KeyCode::Char('r'), "", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::KnowledgeHistory { limit, .. }) if limit == 2 * HISTORY_PAGE
+        ));
+        m.apply(UiEvent::KnowledgeHistory {
+            id: id.clone(),
+            limit: 2 * HISTORY_PAGE,
+            history: history(30),
+        });
+        assert!(!m.knowledge_history_menu().0.contains("error"));
+        m.menu_key(KeyCode::Enter, "", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::KnowledgeRevision { .. })
+        ));
+        m.apply(UiEvent::KnowledgeRevision {
+            id: id.clone(),
+            revision: revision("c000019"),
+            card: false,
+        });
+        let (title, rows, scroll) = m.knowledge_history_menu();
+        assert!(title.contains("parent none (root)"), "{title}");
+        assert_eq!(rows, ["- facts/x  (deleted)", "-a", "-bcdefghijklmnop"]);
+        assert_eq!(scroll, 0);
+        // ↓ scrolls rows and clamps; → drops leading chars, ← restores them.
+        for _ in 0..3 {
+            m.menu_key(KeyCode::Down, "", &tx);
+        }
+        assert_eq!(m.knowledge_history_menu().2, 2);
+        m.menu_key(KeyCode::Right, "", &tx);
+        assert_eq!(m.knowledge_history_menu().1[2], "ijklmnop");
+        m.menu_key(KeyCode::Left, "", &tx);
+        assert_eq!(m.knowledge_history_menu().1[1], "-a");
+        // esc goes back to the list, then closes; a reply after that is dropped.
+        m.menu_key(KeyCode::Esc, "", &tx);
+        assert!(matches!(
+            m.menu,
+            Some(Menu::KnowledgeHistory {
+                revision: None,
+                cursor: 19,
+                ..
+            })
+        ));
+        m.menu_key(KeyCode::Esc, "", &tx);
+        assert!(m.menu.is_none());
+        m.apply(UiEvent::KnowledgeRevision {
+            id: id.clone(),
+            revision: revision("c000019"),
+            card: false,
+        });
+        assert!(m.menu.is_none() && m.entries.is_empty());
+        // `/knowledge show` is the one path to a transcript card.
+        m.apply(UiEvent::KnowledgeRevision {
+            id: None,
+            revision: revision("c000019"),
+            card: true,
+        });
+        assert!(matches!(m.entries.last(), Some(Entry::Card { .. })));
     }
 
     #[test]
