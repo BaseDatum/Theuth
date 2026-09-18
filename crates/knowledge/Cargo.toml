@@ -10,6 +10,7 @@ okf = { workspace = true }
 gix = { workspace = true }
 runtime = { workspace = true }
 tools = { workspace = true }
+search = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 anyhow = { workspace = true }
@@ -27,7 +28,7 @@ figment = { workspace = true }
 uuid = { workspace = true }
 
 [features]
-ts = ["dep:ts-rs", "runtime/ts", "tools/ts"]
+ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "search/ts"]
 
 [lints]
 workspace = true

@@ -69,6 +69,7 @@ function reload(st: Stores): void {
   sessions.unload()
   void st.qc.invalidateQueries({ queryKey: queryKeys.sessions })
   void st.qc.invalidateQueries({ queryKey: queryKeys.knowledge })
+  void st.qc.invalidateQueries({ queryKey: queryKeys.searchAll })
   const api = st.connection.getState().api
   if (api) void loadInfo(st, api).catch(() => undefined)
   if (useHarnesses.getState().active === st.id)

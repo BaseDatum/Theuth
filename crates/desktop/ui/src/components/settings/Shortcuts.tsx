@@ -4,7 +4,7 @@ import { modKey, touch } from '@/lib/hotkeys'
 /** ChatGPT's bindings (25 §2.4) plus the window toggle, as Apple key tokens; `label` spells them for the platform. */
 const SHORTCUTS: [string, string[]][] = [
   ['New chat', ['⇧', '⌘', 'O']],
-  ['Search chats', ['⌘', 'K']],
+  ['Search', ['⌘', 'K']],
   ['Toggle sidebar', ['⇧', '⌘', 'S']],
   ['Focus composer', ['⇧', 'Esc']],
   ['Copy last response', ['⇧', '⌘', 'C']],
@@ -29,10 +29,14 @@ const label = (keys: string[]) =>
   modKey() === '⌘' ? keys.join('') : keys.map((k) => PC[k] ?? k).join('+')
 
 export function Shortcuts() {
+  // Touch keeps only Mod+K for a hardware keyboard (49 §5.3, `useHotkeys`).
   if (touch()) {
     return (
       <Section title="Keyboard shortcuts">
-        <Empty>Keyboard shortcuts are not available on touch devices</Empty>
+        <Empty>
+          Keyboard shortcuts are not available on touch devices; with a hardware keyboard,{' '}
+          {label(['⌘', 'K'])} still opens Search
+        </Empty>
       </Section>
     )
   }

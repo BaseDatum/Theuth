@@ -52,7 +52,8 @@ function EditBubble({
 }
 
 /** Right-aligned bubble; a `◇ skill` chip above the words when the input was a skill injection. `turn` is set only on the message that opened a turn (steers carry none).
- * `context` is the stored row's membership (48 §3.3): its attachments are the authoritative occurrences (`files` is our optimistic list until then), and a removed row renders as archive. */
+ * `context` is the stored row's membership (48 §3.3): its attachments are the authoritative occurrences (`files` is our optimistic list until then), and a removed row renders as archive.
+ * `readOnly` (an inspection page) shows text and attachments only: no edit, fork or removal controls. */
 export const MessageUser = memo(function MessageUser({
   text,
   skill,
@@ -60,6 +61,7 @@ export const MessageUser = memo(function MessageUser({
   session,
   turn,
   context,
+  readOnly,
 }: {
   text: string
   skill?: string
@@ -67,6 +69,7 @@ export const MessageUser = memo(function MessageUser({
   session: string
   turn?: number
   context?: ContextEntry
+  readOnly?: boolean
 }) {
   const api = useApi()
   const running = useSessionField(session, 'running')
@@ -81,7 +84,7 @@ export const MessageUser = memo(function MessageUser({
           ◇ {skill}
         </span>
       )}
-      <Attachments files={files} occurrences={context?.attachments} session={session} active={context?.active} className="justify-end" />
+      <Attachments files={files} occurrences={context?.attachments} session={readOnly ? undefined : session} active={context?.active} className="justify-end" />
       {note && (
         <span className="flex items-center gap-1 text-xs text-fg-secondary">
           <Mic className="size-3" /> {note.secs} s
@@ -103,7 +106,7 @@ export const MessageUser = memo(function MessageUser({
           </div>
         )
       )}
-      {!editing && !context?.removed && (context || (turn != null && !running)) && (
+      {!readOnly && !editing && !context?.removed && (context || (turn != null && !running)) && (
         <div className="-mr-2 flex justify-end opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100 pointer-coarse:opacity-100">
           {turn != null && !running && (
             <>

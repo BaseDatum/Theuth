@@ -18,6 +18,7 @@ markdown = { path = "crates/markdown" }
 oauth = { path = "crates/oauth" }
 tools = { path = "crates/tools" }
 knowledge = { path = "crates/knowledge" }
+search = { path = "crates/search" }  # shared fuzzy matching/snippet/page envelope (design doc 49 §4.1)
 agent = { path = "crates/agent" }
 rpc = { path = "crates/rpc" }
 tui = { path = "crates/tui" }

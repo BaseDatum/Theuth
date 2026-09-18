@@ -47,18 +47,23 @@ const CREATE_LINKS_DST: &str = "CREATE INDEX IF NOT EXISTS links_dst ON links(ds
 /// Every write path runs under `write` (10 §2.3).
 pub struct Knowledge {
     root: PathBuf,
-    db: SqlitePool,
-    repo: Option<Arc<Repo>>,
+    pub(crate) db: SqlitePool,
+    pub(crate) repo: Option<Arc<Repo>>,
     /// Publishes [`KnowledgeChanged`] after every write (10 §8, 12 §9).
     rt: Runtime,
     write: tokio::sync::Mutex<()>,
     /// Paths `sync` has already warned about; a broken file is reported once (10 §11).
     warned: Mutex<HashSet<PathBuf>>,
+    /// Root-relative paths the last `sync` could not read or parse, with the
+    /// error: their rows (if any) are stale and left out of human search (49 §3.3).
+    pub(crate) stale: Mutex<HashMap<String, String>>,
+    /// Human search snapshots (49 §4.3); invalidated at every index mutation.
+    pub(crate) search: crate::search::Caches,
 }
 
 /// Frontmatter columns of a row, as `list`/`search`/`get` read them.
 #[derive(FromRow)]
-struct MetaRow {
+pub(crate) struct MetaRow {
     id: String,
     #[sqlx(rename = "type")]
     type_: String,
@@ -167,7 +172,7 @@ fn stat(path: &Path) -> std::io::Result<(i64, i64)> {
 
 /// Normalise and validate an id (10 §2.1): trimmed, lowercased, no leading
 /// `/` or trailing `.md`, a valid `ConceptId`, ≤ 3 segments, no reserved name.
-fn concept_id(raw: &str) -> anyhow::Result<ConceptId> {
+pub(crate) fn concept_id(raw: &str) -> anyhow::Result<ConceptId> {
     let id = raw.trim().to_lowercase();
     let id = id.trim_start_matches('/');
     let id = id.strip_suffix(".md").unwrap_or(id);
@@ -438,6 +443,8 @@ impl Knowledge {
             rt,
             write: tokio::sync::Mutex::new(()),
             warned: Mutex::new(HashSet::new()),
+            stale: Mutex::new(HashMap::new()),
+            search: crate::search::Caches::default(),
         });
         let s = k.sync().await?;
         if !s.is_empty() {
@@ -476,12 +483,20 @@ impl Knowledge {
             tokio::task::spawn_blocking(move || walk(&root, &keys)).await?;
         {
             let mut warned = self.warned.lock().unwrap_or_else(|p| p.into_inner());
+            let mut stale = self.stale.lock().unwrap_or_else(|p| p.into_inner());
+            stale.clear();
             for (path, error) in failed {
+                if let Ok(rel) = path.strip_prefix(&self.root) {
+                    stale.insert(rel.to_string_lossy().into_owned(), error.clone());
+                }
                 if warned.insert(path.clone()) {
                     tracing::warn!(path = %path.display(), error, "knowledge: unparsable concept skipped");
                 }
             }
         }
+        // The stale set may have changed even when no row did; a failed human
+        // build is retried on the next explicit sync (49 §3.3).
+        self.search.invalidate();
 
         let mut out = Sync::default();
         let mut written = Vec::new();
@@ -953,6 +968,11 @@ impl Knowledge {
                 .await?;
         }
         tx.commit().await?;
+        self.stale
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&ix.path);
+        self.search.invalidate();
         Ok(())
     }
 
@@ -967,6 +987,7 @@ impl Knowledge {
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
+        self.search.invalidate();
         Ok(())
     }
 

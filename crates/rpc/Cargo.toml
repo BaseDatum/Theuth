@@ -10,6 +10,7 @@ runtime = { workspace = true }
 tools = { workspace = true }
 agent = { workspace = true }
 knowledge = { workspace = true }
+search = { workspace = true }
 signal = { workspace = true }
 slack = { workspace = true }
 acp = { workspace = true }
@@ -44,9 +45,10 @@ ts-rs = { workspace = true, optional = true }
 [dev-dependencies]
 jsonrpsee = { workspace = true, features = ["ws-client"] }
 figment = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 
 [features]
-ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "knowledge/ts", "agent/ts", "signal/ts", "slack/ts", "acp/ts", "browser/ts", "computer/ts", "surface/ts", "link/ts", "nodes/ts", "schedule/ts", "artifact/ts", "secrets/ts", "web/ts", "update/ts", "voice/ts"]
+ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "knowledge/ts", "search/ts", "agent/ts", "signal/ts", "slack/ts", "acp/ts", "browser/ts", "computer/ts", "surface/ts", "link/ts", "nodes/ts", "schedule/ts", "artifact/ts", "secrets/ts", "web/ts", "update/ts", "voice/ts"]
 
 [lints]
 workspace = true

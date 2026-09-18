@@ -1,4 +1,5 @@
-//! Fuzzy session search via [`nucleo`] (helix/fzf scoring), design doc 26.
+//! Fuzzy session search via [`nucleo`] (helix/fzf scoring), design docs 26
+//! and 49.
 //!
 //! An [`Index`] is every session's title plus the text of its visible user
 //! and assistant messages, built from the store in one scan and cached by the
@@ -8,13 +9,16 @@
 //! snippet around the matched characters with their offsets, so a frontend
 //! can highlight them. Search stays raw transcript search (48 §2.2): a row
 //! removed from the model's context is still indexed, and its hit says so.
+//!
+//! Query policy, snippets and highlight ranges are the shared `search` crate's
+//! primitives every category uses; only the session records, the title
+//! boost and the one-hit-per-session collapse live here.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use nucleo::pattern::{CaseMatching, Normalization, Pattern};
-use nucleo::{Config, Matcher, Utf32Str};
+use ::search::{FuzzyMatcher, MatchRange, SearchPage, SearchText, snippet};
 use serde::{Deserialize, Serialize};
 
 use crate::SessionId;
@@ -22,13 +26,32 @@ use crate::loop_::text_of;
 use crate::store::Store;
 
 /// The supervisor's cached [`Index`]. [`Cache::invalidate`] bumps a generation
-/// (lock-free, from the event handler); [`Cache::search`] rebuilds when the
-/// cached index is older than the generation, then matches off the runtime
-/// threads. Concurrent searches serialise on the build only.
-#[derive(Default)]
+/// (lock-free, from the event handler). A query rebuilds when the cached
+/// index is older than the generation: [`Cache::page`] starts one build off
+/// the caller's thread and answers `indexing` meanwhile. Builds coalesce on
+/// one lock, held from the moment a stale slot is seen until the build
+/// publishes, so concurrent pages find it busy and spawn nothing. A build
+/// publishes under the generation it read, so a change during a build makes
+/// the next query rebuild rather than trust it. Matching runs on a blocking
+/// thread, one query at a time; a second concurrent query is refused, not
+/// queued.
 pub struct Cache {
     generation: AtomicU64,
-    index: tokio::sync::Mutex<Option<(u64, Arc<Index>)>>,
+    index: Arc<tokio::sync::Mutex<Option<Built>>>,
+    matching: Arc<tokio::sync::Semaphore>,
+}
+
+/// A finished build: the generation it read, and the index or why not.
+type Built = (u64, Result<Arc<Index>, String>);
+
+impl Default for Cache {
+    fn default() -> Self {
+        Cache {
+            generation: AtomicU64::new(0),
+            index: Arc::default(),
+            matching: Arc::new(tokio::sync::Semaphore::new(1)),
+        }
+    }
 }
 
 impl Cache {
@@ -37,35 +60,100 @@ impl Cache {
         self.generation.fetch_add(1, Ordering::Release);
     }
 
-    /// [`Index::search`] against a current index, building one from `store` if needed.
-    pub async fn search(
-        &self,
+    /// [`crate::SearchSessionPage`]: the bounded page for `query`, promptly.
+    /// A cold or stale cache answers `indexing` and starts one build; an
+    /// over-long query is `Err`; a blank query is an empty ready page and
+    /// touches no cache.
+    pub async fn page(
+        self: &Arc<Self>,
         store: &Store,
+        query: String,
+        limit: Option<u32>,
+    ) -> Result<SearchPage<SearchHit>, String> {
+        ::search::validate_query(&query)?;
+        let limit = ::search::limit(limit);
+        if query.trim().is_empty() {
+            return Ok(SearchPage::ready(Vec::new(), limit));
+        }
+        let index = match self.current(store) {
+            None => return Ok(SearchPage::indexing()),
+            Some(Err(e)) => return Ok(SearchPage::error(e)),
+            Some(Ok(index)) => index,
+        };
+        // One past the limit: `has_more` is a fact, not a guess.
+        Ok(match self.matched(index, query, limit + 1).await {
+            Ok(hits) => SearchPage::ready(hits, limit),
+            Err(e) => SearchPage::error(e.to_string()),
+        })
+    }
+
+    /// The published index for the current generation, or `None` while a
+    /// build for it is running (started here if nobody had).
+    fn current(self: &Arc<Self>, store: &Store) -> Option<Result<Arc<Index>, String>> {
+        let generation = self.generation.load(Ordering::Acquire);
+        let Ok(mut slot) = self.index.clone().try_lock_owned() else {
+            return None; // A build holds the lock.
+        };
+        if let Some((g, built)) = &*slot {
+            if *g == generation {
+                return Some(built.clone());
+            }
+        }
+        // The guard travels with the build: nobody else can see the stale
+        // slot and start a second one.
+        let (cache, store) = (self.clone(), store.clone());
+        tokio::spawn(async move {
+            let _ = cache.build_into(&mut slot, &store).await;
+        });
+        None
+    }
+
+    /// With the slot locked: return its index if it is current, else build
+    /// one and publish it (or the failure) under the generation it read.
+    async fn build_into(
+        &self,
+        slot: &mut Option<Built>,
+        store: &Store,
+    ) -> Result<Arc<Index>, String> {
+        let generation = self.generation.load(Ordering::Acquire);
+        if let Some((g, built)) = &*slot {
+            if *g == generation {
+                return built.clone();
+            }
+        }
+        let built = Index::build(store)
+            .await
+            .map(Arc::new)
+            .map_err(|e| e.to_string());
+        match &built {
+            Ok(index) => tracing::debug!(entries = index.len(), "search index built"),
+            Err(e) => tracing::warn!(error = %e, "search index build failed"),
+        }
+        *slot = Some((generation, built.clone()));
+        built
+    }
+
+    /// [`Index::search`] on a blocking thread, holding the single matching
+    /// permit until it returns; refused when another query holds it.
+    async fn matched(
+        &self,
+        index: Arc<Index>,
         query: String,
         limit: u32,
     ) -> anyhow::Result<Vec<SearchHit>> {
-        let generation = self.generation.load(Ordering::Acquire);
-        let index = {
-            let mut slot = self.index.lock().await;
-            match &*slot {
-                Some((g, index)) if *g == generation => index.clone(),
-                _ => {
-                    let index = Arc::new(Index::build(store).await?);
-                    tracing::debug!(entries = index.len(), "search index built");
-                    *slot = Some((generation, index.clone()));
-                    index
-                }
-            }
-        };
-        Ok(tokio::task::spawn_blocking(move || index.search(&query, limit)).await?)
+        let permit = self
+            .matching
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| anyhow::anyhow!("another session search is running; retry shortly"))?;
+        Ok(tokio::task::spawn_blocking(move || {
+            let hits = index.search(&query, limit);
+            drop(permit);
+            hits
+        })
+        .await?)
     }
 }
-
-/// Hard cap on hits per query.
-pub const MAX_LIMIT: u32 = 50;
-
-/// Hits when the caller omits `limit`.
-pub const DEFAULT_LIMIT: u32 = 30;
 
 /// Characters of context around the matched span.
 const SNIPPET_CHARS: usize = 160;
@@ -93,16 +181,6 @@ pub enum HitRole {
     User,
     /// The model's reply.
     Assistant,
-}
-
-/// `[start, end)` in chars of `snippet`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
-pub struct MatchRange {
-    /// First matched char.
-    pub start: u32,
-    /// One past the last matched char.
-    pub end: u32,
 }
 
 /// One session's best match.
@@ -138,7 +216,7 @@ pub struct SearchHit {
 
 struct Title {
     id: SessionId,
-    title: String,
+    title: SearchText,
     updated_at: String,
 }
 
@@ -146,7 +224,7 @@ struct Doc {
     session: SessionId,
     seq: i64,
     role: HitRole,
-    text: String,
+    text: SearchText,
     /// The row's whole-message mask is set.
     removed: bool,
 }
@@ -162,8 +240,7 @@ struct Candidate<'a> {
     kind: HitKind,
     seq: Option<i64>,
     role: Option<HitRole>,
-    haystack: &'a str,
-    indices: Vec<u32>,
+    text: &'a SearchText,
     score: u32,
     removed: bool,
 }
@@ -179,7 +256,7 @@ impl Index {
             .into_iter()
             .map(|(id, title, updated_at)| Title {
                 id,
-                title,
+                title: SearchText::new(title),
                 updated_at,
             })
             .collect();
@@ -194,11 +271,11 @@ impl Index {
                     _ => return None,
                 };
                 let text = text_of(&message.content);
-                (!text.trim().is_empty()).then_some(Doc {
+                (!text.trim().is_empty()).then(|| Doc {
                     session,
                     seq,
                     role,
-                    text,
+                    text: SearchText::new(text),
                     removed,
                 })
             })
@@ -217,63 +294,20 @@ impl Index {
     }
 
     /// Best hit per session for `query`, best score first, then most recently
-    /// updated. Empty query → no hits. `limit` is clamped to `1..=MAX_LIMIT`.
-    pub fn search(&self, query: &str, limit: u32) -> Vec<SearchHit> {
-        let q = query.trim();
-        if q.is_empty() || self.titles.is_empty() {
+    /// updated, then session id; at most `limit` hits. Every session is
+    /// considered before the cut, so `limit + 1` is an honest lookahead.
+    /// Empty query → no hits.
+    pub fn search<'a>(&'a self, query: &str, limit: u32) -> Vec<SearchHit> {
+        let mut matcher = FuzzyMatcher::new(query);
+        if matcher.is_empty() || self.titles.is_empty() {
             return Vec::new();
-        }
-        let limit = limit.clamp(1, MAX_LIMIT) as usize;
-        // fzf syntax: atoms split on spaces, `'exact`, `^prefix`, `suffix$`, `!not`.
-        let pattern = Pattern::parse(q, CaseMatching::Smart, Normalization::Smart);
-        let mut matcher = Matcher::new(Config::DEFAULT);
-        let mut buf = Vec::new();
-        let mut indices = Vec::new();
-
-        let mut candidates: Vec<Candidate> = Vec::new();
-        for t in &self.titles {
-            indices.clear();
-            let Some(score) = pattern.indices(
-                Utf32Str::new(&t.title, &mut buf),
-                &mut matcher,
-                &mut indices,
-            ) else {
-                continue;
-            };
-            candidates.push(Candidate {
-                session: t.id,
-                kind: HitKind::Title,
-                seq: None,
-                role: None,
-                haystack: &t.title,
-                indices: indices.clone(),
-                score: score.saturating_add(TITLE_BOOST),
-                removed: false,
-            });
-        }
-        for d in &self.docs {
-            indices.clear();
-            let Some(score) =
-                pattern.indices(Utf32Str::new(&d.text, &mut buf), &mut matcher, &mut indices)
-            else {
-                continue;
-            };
-            candidates.push(Candidate {
-                session: d.session,
-                kind: HitKind::Message,
-                seq: Some(d.seq),
-                role: Some(d.role),
-                haystack: &d.text,
-                indices: indices.clone(),
-                score,
-                removed: d.removed,
-            });
         }
 
         // Per session: the best candidate, and how many messages matched.
-        let mut best: HashMap<SessionId, Candidate> = HashMap::new();
+        // Scores only here; indices for the few hits that survive the cut.
+        let mut best: HashMap<SessionId, Candidate<'a>> = HashMap::new();
         let mut counts: HashMap<SessionId, u32> = HashMap::new();
-        for c in candidates {
+        let mut consider = |c: Candidate<'a>| {
             if c.kind == HitKind::Message {
                 *counts.entry(c.session).or_insert(0) += 1;
             }
@@ -283,7 +317,34 @@ impl Index {
                     best.insert(c.session, c);
                 }
             }
+        };
+        for t in &self.titles {
+            if let Some(score) = matcher.score(&t.title) {
+                consider(Candidate {
+                    session: t.id,
+                    kind: HitKind::Title,
+                    seq: None,
+                    role: None,
+                    text: &t.title,
+                    score: score.saturating_add(TITLE_BOOST),
+                    removed: false,
+                });
+            }
         }
+        for d in &self.docs {
+            if let Some(score) = matcher.score(&d.text) {
+                consider(Candidate {
+                    session: d.session,
+                    kind: HitKind::Message,
+                    seq: Some(d.seq),
+                    role: Some(d.role),
+                    text: &d.text,
+                    score,
+                    removed: d.removed,
+                });
+            }
+        }
+
         let by_id: HashMap<SessionId, &Title> = self.titles.iter().map(|t| (t.id, t)).collect();
         let mut ranked: Vec<Candidate> = best.into_values().collect();
         ranked.sort_by(|a, b| {
@@ -294,19 +355,22 @@ impl Index {
                 .then_with(|| ub.cmp(&ua))
                 .then_with(|| a.session.0.cmp(&b.session.0))
         });
-        ranked.truncate(limit);
+        ranked.truncate(limit as usize);
         ranked
             .into_iter()
             .map(|c| {
-                let (snippet, ranges) = snippet(c.haystack, &c.indices);
+                let (text, ranges) = match matcher.indices(c.text) {
+                    Some((_, indices)) => snippet(c.text.as_str(), indices, SNIPPET_CHARS),
+                    None => (String::new(), Vec::new()),
+                };
                 let t = by_id.get(&c.session);
                 SearchHit {
                     session: c.session,
-                    title: t.map(|t| t.title.clone()).unwrap_or_default(),
+                    title: t.map(|t| t.title.as_str().to_owned()).unwrap_or_default(),
                     kind: c.kind,
                     seq: c.seq,
                     role: c.role,
-                    snippet,
+                    snippet: text,
                     ranges,
                     score: c.score,
                     matches: counts.get(&c.session).copied().unwrap_or(0),
@@ -316,79 +380,6 @@ impl Index {
             })
             .collect()
     }
-}
-
-/// Up to [`SNIPPET_CHARS`] chars centred on the matched span, `…` where cut,
-/// and the matched runs re-based to snippet offsets.
-fn snippet(haystack: &str, indices: &[u32]) -> (String, Vec<MatchRange>) {
-    let chars: Vec<char> = haystack.chars().collect();
-    let n = chars.len();
-    if n == 0 {
-        return (String::new(), Vec::new());
-    }
-    let mut sorted: Vec<usize> = indices
-        .iter()
-        .map(|&i| i as usize)
-        .filter(|&i| i < n)
-        .collect();
-    sorted.sort_unstable();
-    sorted.dedup();
-
-    let (start, end) = match (sorted.first(), sorted.last()) {
-        (Some(&first), Some(&last)) => {
-            let span = last - first + 1;
-            if span >= SNIPPET_CHARS {
-                (first, (first + SNIPPET_CHARS).min(n))
-            } else {
-                let pad = (SNIPPET_CHARS - span) / 2;
-                let end = (first.saturating_sub(pad) + SNIPPET_CHARS).min(n);
-                (end.saturating_sub(SNIPPET_CHARS.min(n)), end)
-            }
-        }
-        _ => (0, n.min(SNIPPET_CHARS)),
-    };
-
-    let mut out = String::new();
-    let prefix = u32::from(start > 0);
-    if start > 0 {
-        out.push('…');
-    }
-    out.extend(&chars[start..end]);
-    if end < n {
-        out.push('…');
-    }
-    let local: Vec<u32> = sorted
-        .into_iter()
-        .filter(|&i| i >= start && i < end)
-        .map(|i| (i - start) as u32 + prefix)
-        .collect();
-    (out, runs(&local))
-}
-
-/// Sorted unique offsets → inclusive-exclusive runs of consecutive offsets.
-fn runs(offsets: &[u32]) -> Vec<MatchRange> {
-    let mut out = Vec::new();
-    let Some(&first) = offsets.first() else {
-        return out;
-    };
-    let (mut run_start, mut prev) = (first, first);
-    for &i in &offsets[1..] {
-        if i == prev + 1 {
-            prev = i;
-            continue;
-        }
-        out.push(MatchRange {
-            start: run_start,
-            end: prev + 1,
-        });
-        run_start = i;
-        prev = i;
-    }
-    out.push(MatchRange {
-        start: run_start,
-        end: prev + 1,
-    });
-    out
 }
 
 #[cfg(test)]
@@ -406,7 +397,7 @@ mod tests {
                 .enumerate()
                 .map(|(i, (id, t))| Title {
                     id: sid(*id),
-                    title: (*t).to_owned(),
+                    title: SearchText::new(*t),
                     updated_at: format!("2026-09-{:02}T00:00:00Z", i + 1),
                 })
                 .collect(),
@@ -416,7 +407,7 @@ mod tests {
                     session: sid(*s),
                     seq: *seq,
                     role: HitRole::User,
-                    text: (*text).to_owned(),
+                    text: SearchText::new(*text),
                     removed: *seq < 0,
                 })
                 .collect(),
@@ -487,21 +478,6 @@ mod tests {
     }
 
     #[test]
-    fn snippet_is_windowed_around_the_match_with_ellipses() {
-        let long = format!("{}needle{}", "a ".repeat(200), " b".repeat(200));
-        let (s, ranges) = snippet(&long, &[400, 401, 402, 403, 404, 405]);
-        assert!(s.starts_with('…') && s.ends_with('…'));
-        assert_eq!(s.chars().count(), SNIPPET_CHARS + 2);
-        let r = ranges[0];
-        let got: String = s
-            .chars()
-            .skip(r.start as usize)
-            .take((r.end - r.start) as usize)
-            .collect();
-        assert_eq!(got, "needle");
-    }
-
-    #[test]
     fn fzf_syntax_is_honoured() {
         let idx = index(&[(1, "deploy checklist"), (2, "dpy")], &[]);
         assert_eq!(idx.search("dpy", 10).len(), 2, "fuzzy: both match");
@@ -511,24 +487,81 @@ mod tests {
         assert_eq!(idx.search("dpy !check", 10).len(), 1);
     }
 
+    /// The whole corpus is ranked before the cut, so a `limit + 1` lookahead
+    /// past the old 50 cap reports `has_more` instead of masking it.
     #[test]
-    fn runs_collapse_adjacent_offsets() {
-        assert_eq!(
-            runs(&[0, 1, 2, 5, 6, 9]),
-            vec![
-                MatchRange { start: 0, end: 3 },
-                MatchRange { start: 5, end: 7 },
-                MatchRange { start: 9, end: 10 },
-            ]
-        );
-    }
-
-    #[test]
-    fn limit_is_clamped() {
+    fn lookahead_past_max_limit_sets_has_more() {
         let titles: Vec<(u128, String)> = (1..=60).map(|i| (i, format!("deploy {i}"))).collect();
         let refs: Vec<(u128, &str)> = titles.iter().map(|(i, t)| (*i, t.as_str())).collect();
         let idx = index(&refs, &[]);
-        assert_eq!(idx.search("deploy", 0).len(), 1);
-        assert_eq!(idx.search("deploy", 1000).len(), MAX_LIMIT as usize);
+        assert_eq!(idx.search("deploy", 51).len(), 51);
+        let page = SearchPage::ready(idx.search("deploy", 51), 50);
+        assert_eq!(page.hits.len(), 50);
+        assert!(page.has_more);
+        let page = SearchPage::ready(idx.search("deploy", 61), 60);
+        assert!(!page.has_more);
+    }
+
+    /// The first pass keeps scores only; the hits that survive still carry
+    /// scalar-accurate ranges through non-ASCII text.
+    #[test]
+    fn ranges_survive_non_ascii_text() {
+        let idx = index(
+            &[(1, "misc")],
+            &[(1, 1, "naïve 👨\u{200d}👩 déploiement done")],
+        );
+        let hits = idx.search("déploiement", 10);
+        assert_eq!(hits.len(), 1);
+        let r = hits[0].ranges[0];
+        let s: String = hits[0]
+            .snippet
+            .chars()
+            .skip(r.start as usize)
+            .take((r.end - r.start) as usize)
+            .collect();
+        assert_eq!(s, "déploiement");
+    }
+
+    /// A cold page answers `indexing` and starts the build; once it lands the
+    /// page is ready with the new rows; an invalidation goes cold again.
+    #[tokio::test]
+    async fn page_goes_indexing_then_ready_and_invalidate_resets() {
+        use ::search::PageState;
+        let dir = std::env::temp_dir().join(format!("wth-search-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open(&dir.join("sessions.sqlite")).await.unwrap();
+        let id = SessionId::new();
+        store.create_session(id, "m", None, None).await.unwrap();
+        store.set_title(id, "deploy checklist").await.unwrap();
+        let cache = Arc::new(Cache::default());
+
+        let page = |q: &'static str| cache.page(&store, q.to_owned(), None);
+        let settled = |q: &'static str| async move {
+            for _ in 0..200 {
+                let p = page(q).await.unwrap();
+                if p.state != PageState::Indexing {
+                    return p;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            panic!("build never published");
+        };
+
+        assert_eq!(page("deploy").await.unwrap().state, PageState::Indexing);
+        let ready = settled("deploy").await;
+        assert_eq!(ready.state, PageState::Ready);
+        assert_eq!(ready.hits.len(), 1);
+        assert_eq!(ready.hits[0].session, id);
+
+        store.set_title(id, "release notes").await.unwrap();
+        assert_eq!(
+            settled("release").await.hits.len(),
+            0,
+            "stale index until invalidated"
+        );
+        cache.invalidate();
+        assert_eq!(page("release").await.unwrap().state, PageState::Indexing);
+        assert_eq!(settled("release").await.hits.len(), 1);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
