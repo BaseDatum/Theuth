@@ -133,7 +133,7 @@ function Requests({ session, focus }: { session: string; focus: string | null })
   const api = useApi()
   const [pendingOnly, setPendingOnly] = useState(true)
   const page = useInfiniteQuery({
-    queryKey: queryKeys.peerMessages(session, pendingOnly),
+    queryKey: queryKeys.peerMessages(session, pendingOnly, 'infinite'),
     queryFn: ({ pageParam }) => api.list_peer_messages(session, pageParam, null, pendingOnly),
     initialPageParam: null as string | null,
     getNextPageParam: (last) => last.cursor,

@@ -23,7 +23,7 @@ function useRecord(session: string, id: string | null | undefined, enabled = tru
 function useAwaitingAnswer(session: string) {
   const api = useApi()
   return useQuery({
-    queryKey: queryKeys.peerMessages(session, true),
+    queryKey: queryKeys.peerMessages(session, true, 'page'),
     queryFn: () => api.list_peer_messages(session, null, null, true),
     select: (page) => page.awaiting_answer,
   })

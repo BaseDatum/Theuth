@@ -795,8 +795,9 @@ follows, stated as contract because no visual review has been performed:
 - **Authoritative on open, invalidated on change.** `Info.communication`
   and `Loaded.communication` carry the effective state; queries keyed
   `['communication', session]`, `['peers', session, query]`,
-  `['peer-messages', session, pendingOnly]`, `['peer-message', session,
-  id]`, `['a2a']` are invalidated centrally (`lib/rpc.ts`
+  `['peer-messages', session, pendingOnly, mode]` (`mode: 'page'` for chat
+  cards, `'infinite'` for Settings), `['peer-message', session, id]`,
+  `['a2a']` are invalidated centrally (`lib/rpc.ts`
   `useInvalidateOn`): `CommunicationChanged` → communication + peers + info;
   `PeerMessageChanged{session,id}` → that session's messages and record;
   `A2aChanged` → a2a + communication + peers. `Lagged`, reconnect and
@@ -816,9 +817,19 @@ follows, stated as contract because no visual review has been performed:
   `peer`) and does not yet list active tasks, so the pane shows no per-task
   state it cannot get authoritatively.
 
-Not verified: no browser or Tauri session has driven the pane; no
+Initial verification status: no browser or Tauri session had driven the pane; no
 screenshots; no second-client convergence run after a toggle, `Lagged` or
 reconnect; no mobile viewport pass for the new switches (44 px targets are
 the §12.1 convention, asserted only by the shared components' existing
 tests). The 2026-09-15 and §12.1 verifications above are unaffected. User
 visual approval is owed before this subsection drops "pending".
+
+2026-09-18 cache collision fix: chat cards and Settings must not share a
+query entry with different result shapes (`PeerMessagePage` versus
+`InfiniteData<PeerMessagePage>`). Sharing one caused `pages.length` to throw
+when opening Communication from chat; the reverse order hid the chat's
+pending-answer action. `Peers.test.ts` covers both navigation orders and
+session-prefix invalidation after an answer. Browser DOM smoke checks of
+the real menu and settings components with fixture RPC replies passed at
+desktop and mobile widths; these are not visual approval or native-device
+verification.

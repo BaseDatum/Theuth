@@ -62,7 +62,9 @@ export const queryKeys = {
   /** `get_communication(session)`; `null` is the global switch. Prefix `['communication']` covers every session (children inherit, so any change invalidates all). */
   communication: (session: string | null) => ['communication', session] as const,
   peers: (session: string, query: string | null) => ['peers', session, query] as const,
-  peerMessages: (session: string, pendingOnly: boolean) => ['peer-messages', session, pendingOnly] as const,
+  // Plain pages and InfiniteData must never share a cache entry; the session prefix invalidates both.
+  peerMessages: (session: string, pendingOnly: boolean, mode: 'page' | 'infinite') =>
+    ['peer-messages', session, pendingOnly, mode] as const,
   peerMessage: (session: string, id: string) => ['peer-message', session, id] as const,
   a2a: ['a2a'] as const,
 }
