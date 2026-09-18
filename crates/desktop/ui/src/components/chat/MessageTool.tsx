@@ -77,24 +77,25 @@ function Diff({ old, new: next }: { old: string; new: string }) {
 }
 
 /** `⚙ name` row with the described arguments; ✓/✗ + first result line when done, click shows the whole output. A `show` call is an artifact card; `crawl`/`map_site`/`scrape_url`/`search_web` show stacked site favicons (search lists its sources, read ones first).
- * Specialized cards draw their own previews; the stored, model-visible occurrences (48 §2.3) render beneath them with their removal controls, since an artifact on screen is not necessarily in the frame and removing an occurrence never deletes the artifact. */
-export const MessageTool = memo(function MessageTool({ tool, session }: { tool: Tool; session: string }) {
+ * Specialized cards draw their own previews; the stored, model-visible occurrences (48 §2.3) render beneath them with their removal controls, since an artifact on screen is not necessarily in the frame and removing an occurrence never deletes the artifact.
+ * `readOnly` (an inspection page) shows the occurrences without removal controls. */
+export const MessageTool = memo(function MessageTool({ tool, session, readOnly }: { tool: Tool; session: string; readOnly?: boolean }) {
   const card =
     tool.name === 'show' ? (
       <ArtifactCard tool={tool} session={session} />
     ) : tool.name === 'crawl' || tool.name === 'map_site' || tool.name === 'scrape_url' || tool.name === 'search_web' ? (
       <ScrapeCard tool={tool} session={session} />
     ) : null
-  if (!card) return <PlainTool tool={tool} session={session} />
+  if (!card) return <PlainTool tool={tool} session={session} readOnly={readOnly} />
   return (
     <>
       {card}
-      <Attachments occurrences={tool.context?.attachments} session={session} active={tool.context?.active} className="-mt-1 mb-2" />
+      <Attachments occurrences={tool.context?.attachments} session={readOnly ? undefined : session} active={tool.context?.active} className="-mt-1 mb-2" />
     </>
   )
 })
 
-function PlainTool({ tool, session }: { tool: Tool; session: string }) {
+function PlainTool({ tool, session, readOnly }: { tool: Tool; session: string; readOnly?: boolean }) {
   const [expanded, setExpanded] = useState(false)
   const source = useMemo(() => codeDetails(tool.name, tool.args), [tool.name, tool.args])
   const lines = useMemo(() => describe(tool.name, source?.args ?? tool.args), [tool.name, tool.args, source])
@@ -135,7 +136,7 @@ function PlainTool({ tool, session }: { tool: Tool; session: string }) {
           {result.output}
         </pre>
       )}
-      {result && <Attachments files={result.files} occurrences={tool.context?.attachments} session={session} active={tool.context?.active} className="mt-2" />}
+      {result && <Attachments files={result.files} occurrences={tool.context?.attachments} session={readOnly ? undefined : session} active={tool.context?.active} className="mt-2" />}
       {expanded && tool.job && <Job job={tool.job} />}
     </div>
   )

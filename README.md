@@ -89,7 +89,11 @@ the passages relevant to the query in the same call — [`docs/design/16-web.md`
 over the bus), `acp` (external
 harnesses over the Agent Client Protocol: agents.yaml, registry, harness
 connection), `signal` (phone frontend
-over Signal messenger), `slack` (Slack frontend over Socket Mode), `rpc` (jsonrpsee),
+over Signal messenger), `slack` (Slack frontend over Socket Mode), `rpc` (jsonrpsee;
+also registers the `search` tool — one fuzzy search over this harness's saved
+sessions, shown artifacts, current knowledge and knowledge history, for when
+you ask the agent to find something you did earlier —
+[`docs/design/49-search.md`](docs/design/49-search.md)),
 `link` (drive the harness from a phone or browser through a relay: Noise
 end-to-end encryption, pairing QR, device registry —
 [`docs/design/31-link.md`](docs/design/31-link.md)), `relay` (the `wth-relay`
@@ -238,6 +242,8 @@ forgets one; `/skills` lists skills (⏎ hands one to the model, `s` shows it; `
 `/artifacts` lists the files the agent has shown in this session and its subagents (⏎ opens one with the OS, `s` shows it inline, `e` exports it); a `▣` artifact card's path is a `file://` link, `o` opens the newest one, Ctrl+O renders markdown, code and CSV inline;
 `/secrets` lists the vault's secrets with their versions (`a` adds one into a masked field, `r` replaces the value as a new version, `h` shows history and restores an older version, `d` deletes); `/secrets add [name]`, `/secrets rm <name>`, `/secrets restore <name> [n]` skip the menu; when the agent calls `secret_request` a masked box asks you to type it;
 `/acp` manages external ACP harnesses;
+`/search [query]` searches everything saved on this harness live as you type
+(below);
 `/knowledge` browses the knowledge base (below); `/approvals off` stops
 approval prompts for this session, `/approvals off always` for good
 (`tools.approvals` in config.yaml). Typing while the model works queues the
@@ -251,6 +257,33 @@ text with the mouse to copy it (terminal-native). Images: **Ctrl+V** (not
 pastes nothing) attaches the clipboard image as `[⎘ image 1: W×H]`; dropping
 an image file onto the terminal attaches it by path. See
 [`docs/design/02-models-and-menus.md`](docs/design/02-models-and-menus.md).
+
+Search: `/search [query]` in the TUI, and ⌘K / Ctrl+K, `/search`, or the
+magnifier beside the sidebar toggle in the desktop/mobile app, open one
+search over four categories — **Sessions** (titles and your/the agent's
+messages), **Artifacts** (every version the agent has shown, by its saved
+text or source — HTML, SVG and compiled PDFs match on their saved source,
+PDFs without one and Office documents are converted once, images and other
+binaries by name only, no OCR), **Knowledge** (current concepts) and
+**Knowledge history** (the complete before/after text of every recorded
+change, deleted concepts included). Chips toggle categories independently
+(All selects all four) and are remembered per harness; results come grouped,
+ten per category with Show more, and each group says whether it is ready,
+still indexing, unavailable or partially covered. fzf syntax: fuzzy words,
+`'exact`, `^prefix`, `suffix$`, `!not`, each against one title or body.
+Opening a hit only reads: a session opens at that message, an artifact at
+that exact version with a **Matched text** panel, a concept as it is now, a
+history hit as a read-only **Historical version** — restoring stays a
+separate action. The agent has the same search as the `search` tool
+(read-only, also `await search(query, categories=…)` from the Python
+runtime) for requests like "find the deployment plan I showed you last
+week"; it returns the same grouped hits with exact ids, and it is not a
+web search (`search_web`) and does not replace `knowledge_search`, which
+the agent keeps using for ordinary fact lookup and the automatic
+`<knowledge>` hints. Everything runs on the harness; a paired phone or
+browser receives results, never the corpus. An app or browser build older
+than the harness gets *Method not found* for `search` and needs updating
+together with it. See [`docs/design/49-search.md`](docs/design/49-search.md).
 
 Knowledge: durable facts about your machines, projects, accounts and
 decisions, kept across sessions as plain markdown concepts in

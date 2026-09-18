@@ -183,6 +183,12 @@ pub trait Tool: Send + Sync + 'static {
     /// for tools whose result is not data the model would work on: talking to
     /// the user, spawning and messaging agents.
     const DIRECT: bool = false;
+    /// Whether `{{secret:NAME}}` placeholders in the arguments become values
+    /// before `call` (37 §3.4) and raise the gate to `Ask`. `false` for tools
+    /// whose arguments are data to look up, not commands to run — a search
+    /// query naming a placeholder must match the literal text, never expand
+    /// into the secret and hand it to the matcher (49 §4.4).
+    const EXPAND_SECRETS: bool = true;
 
     /// Description shown to the model.
     fn description(&self) -> String;
@@ -196,6 +202,10 @@ pub trait Tool: Send + Sync + 'static {
 pub trait ErasedTool: Send + Sync + 'static {
     /// Spec for the model.
     fn spec(&self) -> ToolSpec;
+    /// [`Tool::EXPAND_SECRETS`]; MCP tools take the default.
+    fn expand_secrets(&self) -> bool {
+        true
+    }
     /// Invoke with raw args.
     fn call(
         &self,
@@ -214,6 +224,10 @@ impl<T: Tool> ErasedTool for T {
             direct: T::DIRECT,
             returns: T::RETURNS.to_owned(),
         }
+    }
+
+    fn expand_secrets(&self) -> bool {
+        T::EXPAND_SECRETS
     }
 
     fn call(

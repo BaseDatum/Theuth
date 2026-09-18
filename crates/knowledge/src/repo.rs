@@ -16,6 +16,37 @@ use okf::{ConceptId, RESERVED_FILENAMES};
 
 use crate::types::{Change, ChangeStatus, ChangedFile, Revision};
 
+/// One concept file changed between a commit and its first parent, as the
+/// tree diff reports it (rename detection off; a rename is delete + add).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TreeChange {
+    /// Concept id derived from the tree path.
+    pub id: ConceptId,
+    /// `/`-separated tree path.
+    pub loc: String,
+    /// Added, modified or deleted against the first parent.
+    pub status: ChangeStatus,
+    /// Blob in the first parent (the empty tree for a root); `None` when added.
+    pub before: Option<ObjectId>,
+    /// Blob in the commit; `None` when deleted.
+    pub after: Option<ObjectId>,
+}
+
+/// One commit's concept changes with raw provenance (full ids, epoch seconds, subject).
+#[derive(Clone, Debug)]
+pub struct CommitChanges {
+    /// Full commit id.
+    pub commit: ObjectId,
+    /// Full first-parent id; `None` for a root.
+    pub parent: Option<ObjectId>,
+    /// Commit time as Unix seconds.
+    pub seconds: i64,
+    /// Subject line.
+    pub message: String,
+    /// Concept files changed against the first parent.
+    pub files: Vec<TreeChange>,
+}
+
 /// Committer identity; the user's git config is never read.
 pub const SIGNATURE: (&str, &str) = ("wth", "wth@localhost");
 
@@ -114,6 +145,49 @@ impl Repo {
         touching(&repo, path, limit)?.iter().map(change).collect()
     }
 
+    /// Full id of HEAD's commit; `None` while HEAD is unborn.
+    pub fn head_id(&self) -> anyhow::Result<Option<ObjectId>> {
+        let repo = self.inner.to_thread_local();
+        Ok(head_commit(&repo)?.map(|c| c.id))
+    }
+
+    /// Every commit reachable from `head` (merged ancestry included, other
+    /// tips excluded) with its concept changes against its first parent.
+    /// Blob bytes are not read here; see [`Self::blob`].
+    pub fn changes_from(&self, head: ObjectId) -> anyhow::Result<Vec<CommitChanges>> {
+        let repo = self.inner.to_thread_local();
+        let mut out = Vec::new();
+        for info in repo.rev_walk([head]).all()? {
+            let c = info?.object()?;
+            out.push(CommitChanges {
+                commit: c.id,
+                parent: c.parent_ids().next().map(|p| p.detach()),
+                seconds: c.time()?.seconds,
+                message: subject(&c),
+                files: tree_changes(&repo, &c)?,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Bytes of the blob `id`.
+    pub fn blob(&self, id: ObjectId) -> anyhow::Result<Vec<u8>> {
+        let repo = self.inner.to_thread_local();
+        Ok(repo.find_object(id)?.detach().data)
+    }
+
+    /// The blob at `path` in the commit `commit` (full id; must be a commit
+    /// object); `None` when the path is absent there. Read-only.
+    pub fn read_at(&self, path: &Path, commit: ObjectId) -> anyhow::Result<Option<Vec<u8>>> {
+        let repo = self.inner.to_thread_local();
+        let c = repo
+            .find_object(commit)
+            .with_context(|| format!("unknown commit {commit}"))?
+            .try_into_commit()
+            .with_context(|| format!("{commit} is not a commit"))?;
+        blob_data(&c, path)
+    }
+
     /// The blob at `path` in `commit` (abbreviated or full id); `None` when
     /// the path is absent there.
     pub fn show(&self, path: &Path, commit: &str) -> anyhow::Result<Option<Vec<u8>>> {
@@ -152,54 +226,24 @@ impl Repo {
             .object()?
             .try_into_commit()
             .with_context(|| format!("{commit} is not a commit"))?;
-        let parent = c.parent_ids().next();
-        let old = match parent {
-            Some(p) => p.object()?.into_commit().tree()?,
-            None => repo.empty_tree(),
-        };
-        let mut opts = gix::diff::Options::default();
-        opts.track_rewrites(None);
         let blob =
             |id: ObjectId| -> anyhow::Result<Vec<u8>> { Ok(repo.find_object(id)?.detach().data) };
         let mut files = Vec::new();
-        use gix::diff::tree_with_rewrites::Change as C;
-        for ch in repo.diff_tree_to_tree(&old, &c.tree()?, opts)? {
-            if !ch.entry_mode().is_blob() {
+        for ch in tree_changes(&repo, &c)? {
+            if path.is_some_and(|p| Path::new(&ch.loc) != p) {
                 continue;
             }
-            let loc = ch.location().to_str()?;
-            if path.is_some_and(|p| Path::new(loc) != p) {
-                continue;
-            }
-            let name = loc.rsplit('/').next().unwrap_or(loc);
-            if !name.ends_with(".md") || RESERVED_FILENAMES.contains(&name) {
-                continue;
-            }
-            let Ok(cid) = ConceptId::from_path(Path::new(""), Path::new(loc)) else {
-                continue;
-            };
-            let (status, old, new) = match &ch {
-                C::Addition { id, .. } => (ChangeStatus::Added, None, Some(blob(*id)?)),
-                C::Deletion { id, .. } => (ChangeStatus::Deleted, Some(blob(*id)?), None),
-                C::Modification {
-                    previous_id, id, ..
-                } => (
-                    ChangeStatus::Modified,
-                    Some(blob(*previous_id)?),
-                    Some(blob(*id)?),
-                ),
-                // Rewrite tracking is off above.
-                C::Rewrite { .. } => continue,
-            };
+            let old = ch.before.map(blob).transpose()?;
+            let new = ch.after.map(blob).transpose()?;
             files.push(ChangedFile {
-                id: cid.to_string(),
-                status,
-                diff: unified(loc, old.as_deref(), new.as_deref())?,
+                id: ch.id.to_string(),
+                status: ch.status,
+                diff: unified(&ch.loc, old.as_deref(), new.as_deref())?,
             });
         }
         Ok(Revision {
             change: change(&c)?,
-            parent: parent.map(|p| p.to_string()),
+            parent: c.parent_ids().next().map(|p| p.to_string()),
             files,
         })
     }
@@ -213,6 +257,126 @@ impl Repo {
             .and_then(|c| c.parent_ids().next())
             .map(|p| abbrev(&p)))
     }
+}
+
+#[cfg(test)]
+impl Repo {
+    /// Test fixture: commit `written` on top of `parents[0]`'s tree with the
+    /// given parents, advancing `reference` (`HEAD` or `refs/heads/<name>`).
+    pub(crate) fn commit_on(
+        &self,
+        reference: &str,
+        parents: &[ObjectId],
+        written: &[PathBuf],
+        message: &str,
+    ) -> anyhow::Result<ObjectId> {
+        let repo = self.inner.to_thread_local();
+        let base = match parents.first() {
+            Some(p) => repo.find_object(*p)?.into_commit().tree_id()?.detach(),
+            None => ObjectId::empty_tree(repo.object_hash()),
+        };
+        let mut editor = repo.edit_tree(base)?;
+        for path in written {
+            let blob = repo.write_blob(std::fs::read(self.root.join(path))?)?;
+            editor.upsert(rel(path)?, EntryKind::Blob, blob)?;
+        }
+        let tree = editor.write()?.detach();
+        let time = gix::date::Time::now_local_or_utc().format(gix::date::time::Format::Raw)?;
+        let sig = gix::actor::SignatureRef {
+            name: SIGNATURE.0.into(),
+            email: SIGNATURE.1.into(),
+            time: &time,
+        };
+        Ok(repo
+            .commit_as(sig, sig, reference, message, tree, parents.iter().copied())?
+            .detach())
+    }
+
+    /// Test fixture: an external `git reset --hard`-style ref move of HEAD's
+    /// branch. The reflog committer is [`SIGNATURE`]: an isolated repo has no
+    /// configured identity, so the default `set_target_id` would fail.
+    pub(crate) fn rewind(&self, to: ObjectId) -> anyhow::Result<()> {
+        use gix::refs::transaction::{Change, LogChange, PreviousValue, RefEdit, RefLog};
+        let repo = self.inner.to_thread_local();
+        let head = repo.head_ref()?.context("HEAD is unborn or detached")?;
+        let time = gix::date::Time::now_local_or_utc().format(gix::date::time::Format::Raw)?;
+        let sig = gix::actor::SignatureRef {
+            name: SIGNATURE.0.into(),
+            email: SIGNATURE.1.into(),
+            time: &time,
+        };
+        repo.edit_references_as(
+            Some(RefEdit {
+                change: Change::Update {
+                    log: LogChange {
+                        mode: RefLog::AndReference,
+                        force_create_reflog: false,
+                        message: "rewind".into(),
+                    },
+                    expected: PreviousValue::MustExist,
+                    new: gix::refs::Target::Object(to),
+                },
+                name: head.name().to_owned(),
+                deref: false,
+            }),
+            Some(sig),
+        )?;
+        Ok(())
+    }
+}
+
+/// Concept files changed by `c` against its first parent (the empty tree for
+/// a root): `*.md` blobs that are not `index.md`/`log.md` and parse as a
+/// [`ConceptId`]. Rewrite tracking is off.
+fn tree_changes(repo: &Repository, c: &Commit<'_>) -> anyhow::Result<Vec<TreeChange>> {
+    let old = match c.parent_ids().next() {
+        Some(p) => p.object()?.into_commit().tree()?,
+        None => repo.empty_tree(),
+    };
+    let mut opts = gix::diff::Options::default();
+    opts.track_rewrites(None);
+    let mut out = Vec::new();
+    use gix::diff::tree_with_rewrites::Change as C;
+    for ch in repo.diff_tree_to_tree(&old, &c.tree()?, opts)? {
+        if !ch.entry_mode().is_blob() {
+            continue;
+        }
+        let loc = ch.location().to_str()?;
+        let name = loc.rsplit('/').next().unwrap_or(loc);
+        if !name.ends_with(".md") || RESERVED_FILENAMES.contains(&name) {
+            continue;
+        }
+        let Ok(id) = ConceptId::from_path(Path::new(""), Path::new(loc)) else {
+            continue;
+        };
+        let (status, before, after) = match &ch {
+            C::Addition { id, .. } => (ChangeStatus::Added, None, Some(*id)),
+            C::Deletion { id, .. } => (ChangeStatus::Deleted, Some(*id), None),
+            C::Modification {
+                previous_id, id, ..
+            } => (ChangeStatus::Modified, Some(*previous_id), Some(*id)),
+            // Rewrite tracking is off above.
+            C::Rewrite { .. } => continue,
+        };
+        out.push(TreeChange {
+            id,
+            loc: loc.to_owned(),
+            status,
+            before,
+            after,
+        });
+    }
+    Ok(out)
+}
+
+/// First line of the commit message.
+fn subject(c: &Commit<'_>) -> String {
+    c.message_raw_sloppy()
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .to_str_lossy()
+        .into_owned()
 }
 
 /// 7-hex-char abbreviation; fixed width so ids stay stable in logs and messages.
@@ -313,13 +477,7 @@ fn change(c: &Commit<'_>) -> anyhow::Result<Change> {
     Ok(Change {
         commit: abbrev(&c.id),
         time: time.format("%Y-%m-%d %H:%M").to_string(),
-        message: c
-            .message_raw_sloppy()
-            .lines()
-            .next()
-            .unwrap_or_default()
-            .to_str_lossy()
-            .into_owned(),
+        message: subject(c),
     })
 }
 

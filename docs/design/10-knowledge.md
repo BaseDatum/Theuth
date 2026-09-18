@@ -51,6 +51,11 @@ works**, without a single byte of the cached prefix changing.
    RPC the same names plus `knowledge_harvest`; events `KnowledgeChanged`,
    `Harvested`; TUI `/knowledge [query | history [id] | restore <id> [commit]
    | harvest]`. No graph view, no editor: the files are the editor.
+   Human fuzzy search over current concepts and their complete history is the
+   unified `search` surface of [49](49-search.md) (RPC + `search` tool +
+   `/search`), fed by knowledge-owned `SearchConcepts`/`SearchHistory`; it
+   reads the FTS rows as stored data and leaves `knowledge_search`/hints
+   (§3.3) unchanged.
 
 ## 1. What jarvis does, and where it breaks
 
@@ -291,6 +296,22 @@ body. Then, in Rust, on the top `4 × limit`:
 
 `hint(text, cwd, exclude, limit)` = `search` with the rule, minus `exclude`
 (the ids already hinted this epoch), returning metas only.
+
+This FTS path is the model's retrieval and the hint source only. The human
+search of [49](49-search.md) does not issue FTS `MATCH`: `knowledge::search`
+reads every valid current row (id, metadata, whole body) and matches it with
+the shared nucleo matcher from `crates/search`, so short ids, `'exact`,
+`^prefix`, `suffix$` and `!not` behave the same as session search. The
+snapshot is keyed by an index-mutation generation (bumped by every row
+upsert/remove and by `sync`); `search_refresh` runs one `sync` so the next
+query rebuilds, and forgets a failed history build so it retries — a good
+snapshot stays until the fresh one is published. History search walks the
+captured full HEAD's reachable commits, diffs each tree against its first
+parent, and matches the complete Before and After blob text plus
+id/frontmatter/subject — not the unified diff — one hit per `(commit,
+concept)`; an external HEAD move is simply a new key. Both are lazy
+owner-local caches: a cold key answers `indexing` and builds off the
+mailbox; no new store.
 
 ```rust
 // ponytail: bm25 + a two-term gate + a path prefix. If hints are noisy in practice, the
@@ -580,13 +601,21 @@ knowledge_put     { put: Put }                                            → Me
 knowledge_delete  { id: String }                                          → ()
 knowledge_history { id?: String, limit?: u32 }                            → History        limit default 20
 knowledge_revision { commit: String, id?: String }                       → Revision       selected commit vs first parent
+knowledge_read_revision { id: String, commit: String }                   → HistoricalConcept  full text as committed; full object id; read, never restore (49 §7)
 knowledge_restore { id: String, commit?: String }                         → Change
 knowledge_harvest { session: SessionId }                                  → HarvestResult  refused while a turn runs
 ```
 
+The `knowledge` and `knowledge_history` groups of the unified `search` RPC
+and `search_refresh` ([49 §4.2](49-search.md#42-one-rpc-and-typed-results))
+ask the same actor with `knowledge::search::{SearchConcepts, SearchHistory,
+RefreshSearch}`; the rpc crate composes the groups and never opens the
+bundle or its `.git`.
+
 All but `knowledge_harvest` `ask` the `"knowledge"` actor
 (`knowledge::KnowledgeActor`, 12 §9.1) with `knowledge::{Search, Get, List,
-PutConcept, Delete, HistoryOf, RevisionOf, Restore}`; when the plugin is disabled the
+PutConcept, Delete, HistoryOf, RevisionOf, Restore}` and
+`knowledge::search::ReadRevision`; when the plugin is disabled the
 actor is not registered and the frontend answers `Err("knowledge is
 disabled")` from the failed lookup. The store asks are local I/O and run on
 the mailbox. `knowledge_harvest` asks the `"agent"` supervisor
@@ -607,8 +636,23 @@ concepts remain inspectable. Generated `index.md`/`log.md` files are excluded.
 Both UIs fetch history in increments of 20, asking for one extra row to know
 whether older commits exist, and request revision details only on selection.
 
+`HistoricalConcept { id, commit, text }` is the file verbatim as committed:
+a `knowledge_history` search hit's `snapshot_commit` (the change commit for
+an After hit, its first parent for a Before hit) is read through
+`knowledge_read_revision` without walking history pages and without a
+present-day concept — a deleted concept reads the same way. Unknown
+id/commit is an error, never the current text. Restore stays the separate
+confirmed `knowledge_restore`. The desktop reads it at
+`/knowledge/$id?change=<commit>&snapshot=<commit>` (a read-only **Historical
+version** view with the History sheet's Changes for that commit); the TUI's
+search-owned Historical reader is the same text with `c` for changes.
+
 **TUI** (`crates/tui`), `/knowledge [query | history [id] | show <commit> [id] | restore <id> [commit] | harvest]`
-(`Model::knowledge_cmd`; first word decides, everything else is a search):
+(`Model::knowledge_cmd`; first word decides, everything else is a search).
+`/search [query]` ([49 §6](49-search.md#6-terminal-interaction)) is the
+fuzzy, live, all-category search; its Knowledge hit opens a read-only
+current-concept reader fed by `knowledge_get`, its Knowledge history hit the
+Historical reader above — neither is the history picker below:
 
 | input | does | renders |
 |---|---|---|

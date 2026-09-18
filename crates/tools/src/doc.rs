@@ -21,24 +21,50 @@ pub fn format(bytes: &[u8]) -> Option<Format> {
     Format::from_bytes(bytes)
 }
 
+/// A conversion that outlived [`to_markdown`]'s deadline. The blocking task
+/// cannot be interrupted, so it keeps burning a thread until anydoc returns;
+/// a caller that serialises conversions (design doc 49 §4.3) checks
+/// [`Pending::is_finished`] before starting the next one.
+pub struct Pending(tokio::task::JoinHandle<Result<String, anydoc::ConvertError>>);
+
+impl Pending {
+    /// Whether the abandoned conversion has actually ended.
+    #[must_use]
+    pub fn is_finished(&self) -> bool {
+        self.0.is_finished()
+    }
+}
+
 /// `bytes` as Markdown. The error names the reason in words the model can
 /// act on: `pages 3, 4 of 12 are scanned (need OCR) …`, `encrypted`, …
 pub async fn to_markdown(bytes: Vec<u8>, format: Format) -> anyhow::Result<String> {
-    anyhow::ensure!(
-        bytes.len() <= MAX_BYTES,
-        "{:.1} MB exceeds the {} MB conversion cap",
-        bytes.len() as f64 / (1024.0 * 1024.0),
-        MAX_BYTES >> 20
-    );
-    let work = tokio::task::spawn_blocking(move || anydoc::to_markdown_bytes(&bytes, Some(format)));
-    match tokio::time::timeout(DEADLINE, work).await {
-        Ok(Ok(Ok(md))) => Ok(md),
-        Ok(Ok(Err(e))) => Err(describe(e)),
-        Ok(Err(join)) => Err(anyhow::anyhow!("converter panicked: {join}")),
-        Err(_) => Err(anyhow::anyhow!(
-            "conversion timed out after {}s",
-            DEADLINE.as_secs()
-        )),
+    convert(bytes, format).await.0
+}
+
+/// [`to_markdown`], plus the still-running task when it timed out (`None`
+/// otherwise) for callers that must not overlap conversions.
+pub async fn convert(bytes: Vec<u8>, format: Format) -> (anyhow::Result<String>, Option<Pending>) {
+    if bytes.len() > MAX_BYTES {
+        let err = anyhow::anyhow!(
+            "{:.1} MB exceeds the {} MB conversion cap",
+            bytes.len() as f64 / (1024.0 * 1024.0),
+            MAX_BYTES >> 20
+        );
+        return (Err(err), None);
+    }
+    let mut work =
+        tokio::task::spawn_blocking(move || anydoc::to_markdown_bytes(&bytes, Some(format)));
+    match tokio::time::timeout(DEADLINE, &mut work).await {
+        Ok(Ok(Ok(md))) => (Ok(md), None),
+        Ok(Ok(Err(e))) => (Err(describe(e)), None),
+        Ok(Err(join)) => (Err(anyhow::anyhow!("converter panicked: {join}")), None),
+        Err(_) => (
+            Err(anyhow::anyhow!(
+                "conversion timed out after {}s",
+                DEADLINE.as_secs()
+            )),
+            Some(Pending(work)),
+        ),
     }
 }
 

@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Globe, PanelLeft, ShieldOff } from 'lucide-react'
 import { useState } from 'react'
+import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
@@ -90,7 +91,12 @@ export function Header({
       data-tauri-drag-region={mac || undefined}
       className={cn('flex h-[52px] shrink-0 items-center gap-2 px-3', !open && mac && 'pl-20')}
     >
-      {(!open || isMobile) && <SidebarToggle />}
+      {(!open || isMobile) && (
+        <div className="flex shrink-0 items-center">
+          <SearchTrigger />
+          <SidebarToggle />
+        </div>
+      )}
       <div className="min-w-0">
         <ModelMenu session={session} draftEffort={draftEffort} onDraftEffort={onDraftEffort} />
       </div>
@@ -140,12 +146,13 @@ export function Header({
   )
 }
 
-function SidebarToggle() {
+export function SidebarToggle() {
   const { toggleSidebar } = useSidebar()
   return (
     <Button
       variant="ghost"
-      className="size-9 rounded-lg text-fg-secondary"
+      size="icon"
+      className="rounded-lg text-fg-secondary"
       aria-label="Open sidebar"
       onClick={toggleSidebar}
     >

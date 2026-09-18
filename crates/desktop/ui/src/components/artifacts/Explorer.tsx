@@ -1,15 +1,17 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Outlet, getRouteApi, useParams } from '@tanstack/react-router'
 import { PanelLeft, RefreshCw, Search, X } from 'lucide-react'
-import { useMemo, useState } from 'react'
-import { type Filter, List, sessionLabel, useArtifactList } from '@/components/artifacts/List'
+import { useEffect, useMemo, useState } from 'react'
+import { type Filter, List, nameMatch, sessionLabel, useArtifactList } from '@/components/artifacts/List'
 import { GLYPH } from '@/components/chat/ArtifactCard'
+import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useSidebar } from '@/components/ui/sidebar'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { queryKeys, useApi } from '@/lib/rpc'
+import { isSearchDestination, useSearchOrigin } from '@/lib/search'
 import { cn } from '@/lib/utils'
 import type { Kind } from '@/rpc/extra'
 
@@ -34,6 +36,23 @@ export function Explorer() {
   }, [list.data])
   const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
 
+  // A search hit opened `active` (49 §7): the record is exact, so any local filter hiding it is cleared,
+  // once per activation (`origin` is set only then), never while the user is typing a new one.
+  const origin = useSearchOrigin()
+  const fromSearch = active !== undefined && isSearchDestination(origin, { category: 'artifacts', callId: active })
+  const target = useQuery({
+    queryKey: queryKeys.artifact(active ?? ''),
+    queryFn: () => api.get_artifact(active ?? ''),
+    enabled: fromSearch,
+  })
+  const hit = fromSearch ? target.data : undefined
+  useEffect(() => {
+    if (!hit) return
+    setKind((k) => (k && hit.kind !== k ? null : k))
+    setSession((s) => (s && hit.session !== s ? null : s))
+    setQ((v) => (v && !nameMatch(hit, v) ? '' : v))
+  }, [origin, hit?.call_id])
+
   const mac = isMacDesktop()
   return (
     <div className="flex min-h-0 flex-1 overflow-hidden">
@@ -48,9 +67,12 @@ export function Explorer() {
           className={cn('flex h-[52px] shrink-0 items-center gap-1 px-3', !sidebar.open && mac && 'pl-20')}
         >
           {(!sidebar.open || sidebar.isMobile) && (
-            <Button variant="ghost" size="icon-sm" aria-label="Show sidebar" onClick={sidebar.toggleSidebar}>
-              <PanelLeft />
-            </Button>
+            <div className="flex shrink-0 items-center">
+              <SearchTrigger />
+              <Button variant="ghost" size="icon-sm" aria-label="Show sidebar" onClick={sidebar.toggleSidebar}>
+                <PanelLeft />
+              </Button>
+            </div>
           )}
           <h2 className="flex-1 truncate text-sm font-semibold">Artifacts</h2>
           <Tooltip>

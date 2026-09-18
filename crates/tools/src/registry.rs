@@ -509,7 +509,11 @@ impl Message<Invoke> for ToolRegistry {
             return reply;
         };
         let spec = tool.spec();
-        let mentions = crate::secrets::mentions(&call.args);
+        // A tool that takes its arguments literally (`EXPAND_SECRETS = false`)
+        // never sees a value, so a placeholder in them is plain text: no
+        // raised gate, no expansion.
+        let expand = tool.expand_secrets();
+        let mentions = expand && crate::secrets::mentions(&call.args);
         let approval = match self.gate(call.session, spec.risk, mentions) {
             Ok(a) => a,
             Err(why) => {
@@ -551,7 +555,7 @@ impl Message<Invoke> for ToolRegistry {
             };
             let out = activity
                 .clone()
-                .scope(invoke(tool, spec, call, approval, activity))
+                .scope(invoke(tool, spec, call, approval, expand, activity))
                 .await;
             tx.send(out);
             // The map entry goes when this task ends; the last clone settles.
@@ -574,14 +578,15 @@ impl Drop for Held {
     }
 }
 
-/// Approval, secret expansion and the tool body, all under `activity`'s scope
-/// so nested work can read [`activity::current`]. Returns only once the tool
-/// body has actually stopped (returned, failed or panicked).
+/// Approval, secret expansion (when `expand`) and the tool body, all under
+/// `activity`'s scope so nested work can read [`activity::current`]. Returns
+/// only once the tool body has actually stopped (returned, failed or panicked).
 async fn invoke(
     tool: DynTool,
     spec: ToolSpec,
     mut call: ToolCall,
     approval: Option<ActorRef<Approval>>,
+    expand: bool,
     activity: Activity,
 ) -> ToolOutput {
     if let Some(approval) = approval {
@@ -602,7 +607,7 @@ async fn invoke(
     }
     // Placeholders become values after the gate (the approval card showed the
     // placeholder) and before the tool; an unknown name fails the whole call.
-    if let Err(e) = crate::secrets::expand(&mut call.args) {
+    if expand && let Err(e) = crate::secrets::expand(&mut call.args) {
         return ToolOutput::err(e);
     }
     let cx = ToolCx {
@@ -739,6 +744,39 @@ mod tests {
             session: s,
             quiet: false,
         }
+    }
+
+    /// Takes its arguments as data: a placeholder is literal text.
+    struct Literal;
+
+    #[async_trait::async_trait]
+    impl Tool for Literal {
+        const NAME: &'static str = "literal";
+        const RISK: Risk = Risk::ReadOnly;
+        const EXPAND_SECRETS: bool = false;
+        type Args = serde_json::Value;
+        fn description(&self) -> String {
+            String::new()
+        }
+        async fn call(&self, a: Self::Args, _: ToolCx) -> anyhow::Result<ToolOutput> {
+            Ok(ToolOutput::ok(a["q"].as_str().unwrap_or_default()))
+        }
+    }
+
+    #[tokio::test]
+    async fn placeholder_in_literal_args_neither_raises_the_gate_nor_expands() {
+        let reg = registry(vec![Arc::new(Echo), Arc::new(Literal)], None);
+        let session = SessionId::new();
+        let with = |name: &str| ToolCall {
+            args: serde_json::json!({"q": "find {{secret:GITHUB}} usage"}),
+            ..call(name, session)
+        };
+        // No approval actor: a raised gate is an error, not a prompt.
+        let out = reg.ask(Invoke(with("echo"))).await.unwrap();
+        assert!(out.is_error && out.content.contains("approval"), "{out:?}");
+        let out = reg.ask(Invoke(with("literal"))).await.unwrap();
+        assert!(!out.is_error, "{out:?}");
+        assert_eq!(out.content, "find {{secret:GITHUB}} usage");
     }
 
     /// Blocks until released; reports the `current()` op it ran under.
