@@ -1,6 +1,7 @@
 //! `Fetcher::request` (design doc 44 §0.6): arbitrary method + headers + body
 //! behind the same guard as `fetch`, non-2xx returned as `Ok`, redirects
-//! rewritten per RFC 9110 (301/302/303 → GET, 307/308 keep method and body).
+//! rewritten per RFC 9110 (301/302/303 → GET, 307/308 keep method and body),
+//! credential headers never forwarded to another origin (46 §5).
 //! Happy paths use wiremock on loopback, allowlisted by exact `ip:port`.
 
 use web::fetch::{FetchError, Fetcher};
@@ -123,6 +124,75 @@ async fn temporary_redirect_keeps_post_and_body() {
         .expect("ok");
     assert_eq!(r.status, 200);
     assert_eq!(r.body, b"kept");
+}
+
+#[tokio::test]
+async fn cross_origin_redirect_with_caller_headers_is_rejected() {
+    let a = MockServer::start().await;
+    let b = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/a"))
+        .respond_with(
+            ResponseTemplate::new(302).insert_header("Location", format!("{}/b", b.uri())),
+        )
+        .mount(&a)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/b"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("leaked"))
+        .expect(1)
+        .mount(&b)
+        .await;
+    let fetcher = Fetcher::new("wth-test", 1 << 20, 5)
+        .expect("client")
+        .allowing(vec![*a.address(), *b.address()]);
+    for name in ["Authorization", "cookie", "X-Api-Key", "x-custom-token"] {
+        let err = fetcher
+            .request(
+                "GET",
+                &format!("{}/a", a.uri()),
+                &[hdr(name, "secret")],
+                None,
+            )
+            .await
+            .expect_err("header forwarding");
+        assert!(matches!(err, FetchError::Rejected(_)), "{name}: got {err}");
+    }
+    // The same hop without caller headers is an ordinary redirect.
+    let r = fetcher
+        .request("GET", &format!("{}/a", a.uri()), &[], None)
+        .await
+        .expect("ok");
+    assert_eq!(r.status, 200);
+    assert_eq!(r.body, b"leaked");
+}
+
+#[tokio::test]
+async fn same_origin_redirect_keeps_credentials() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/a"))
+        .respond_with(ResponseTemplate::new(301).insert_header("Location", "/b"))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/b"))
+        .and(header("authorization", "Bearer t"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let r = fetcher(&server, 1 << 20)
+        .request(
+            "GET",
+            &format!("{}/a", server.uri()),
+            &[hdr("authorization", "Bearer t")],
+            None,
+        )
+        .await
+        .expect("ok");
+    assert_eq!(r.status, 200);
+    assert_eq!(r.body, b"ok");
 }
 
 /// wiremock always sends `Content-Length`, which the fetcher refuses up front;

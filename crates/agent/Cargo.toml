@@ -7,6 +7,7 @@ description = "Model loop (genai), session store (sqlite), skills, subagents"
 
 [dependencies]
 knowledge = { workspace = true }
+search = { workspace = true }
 runtime = { workspace = true }
 models = { workspace = true }
 tools = { workspace = true }
@@ -53,7 +54,7 @@ figment = { workspace = true }
 aws-types = { workspace = true }
 
 [features]
-ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "knowledge/ts", "secrets/ts"]
+ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "knowledge/ts", "secrets/ts", "search/ts"]
 
 [lints]
 workspace = true

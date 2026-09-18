@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { ChevronRight } from 'lucide-react'
-import { memo, useMemo } from 'react'
+import { memo, useEffect, useMemo, useState } from 'react'
 import { GLYPH, metaLine } from '@/components/chat/ArtifactCard'
 import { Img } from '@/components/chat/Attachments'
 import { ago } from '@/components/sidebar/AgentTree'
@@ -25,18 +25,24 @@ export function sessionLabel(id: string, sessions: SessionSummary[] | undefined)
 
 export type Filter = { q: string; kind: Kind | null; session: string | null }
 
+/** The rail's text filter: a case-insensitive substring of the name or the title. */
+export function nameMatch(a: Artifact, q: string): boolean {
+  const needle = q.trim().toLowerCase()
+  return !needle || a.name.toLowerCase().includes(needle) || a.title.toLowerCase().includes(needle)
+}
+
 /** One `name` in one session: the newest version and the older ones, newest first. */
 type Stack = { head: Artifact; older: Artifact[] }
 type Group = { session: string; stacks: Stack[] }
 
 /** Newest first in, grouped by session (ordered by their newest artifact) then collapsed by `name`. */
 function group(all: Artifact[], f: Filter): Group[] {
-  const q = f.q.trim().toLowerCase()
+  const q = f.q.trim()
   const groups = new Map<string, Map<string, Artifact[]>>()
   for (const a of all) {
     if (f.kind && a.kind !== f.kind) continue
     if (f.session && a.session !== f.session) continue
-    if (q && !a.name.toLowerCase().includes(q) && !a.title.toLowerCase().includes(q)) continue
+    if (q && !nameMatch(a, q)) continue
     let byName = groups.get(a.session)
     if (!byName) groups.set(a.session, (byName = new Map()))
     const versions = byName.get(a.name)
@@ -98,10 +104,16 @@ export function List({ filter, active }: { filter: Filter; active: string | unde
   )
 }
 
+/** Older versions stay collapsed until one is active; opening is controlled so a hit on an old version expands an already-mounted stack (49 §7). */
 const StackRows = memo(function StackRows({ stack: s, active }: { stack: Stack; active: string | undefined }) {
+  const activeOlder = s.older.some((o) => o.call_id === active)
+  const [open, setOpen] = useState(activeOlder)
+  useEffect(() => {
+    if (activeOlder) setOpen(true)
+  }, [activeOlder])
   if (s.older.length === 0) return <Row a={s.head} active={s.head.call_id === active} />
   return (
-    <Collapsible defaultOpen={s.older.some((o) => o.call_id === active)} className="group/stack">
+    <Collapsible open={open} onOpenChange={setOpen} className="group/stack">
       <Row a={s.head} active={s.head.call_id === active} />
       <CollapsibleTrigger className="flex h-7 w-full items-center gap-1 rounded-[10px] pl-[62px] text-xs text-fg-tertiary hover:bg-layer-2">
         <ChevronRight className="size-3.5 shrink-0 transition-transform group-data-[state=open]/stack:rotate-90" />
@@ -121,6 +133,7 @@ const Row = memo(function Row({ a, active }: { a: Artifact; active: boolean }) {
     <Link
       to="/artifacts/$callId"
       params={{ callId: a.call_id }}
+      ref={active ? reveal : undefined}
       className={cn('flex items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 text-sm hover:bg-layer-2', active && 'bg-layer-3 hover:bg-layer-3')}
     >
       <Thumb a={a} />
@@ -136,6 +149,11 @@ const Row = memo(function Row({ a, active }: { a: Artifact; active: boolean }) {
     </Link>
   )
 })
+
+/** Callback ref for the active row: scroll it into the rail when it (re)mounts or becomes active. */
+function reveal(el: HTMLAnchorElement | null) {
+  el?.scrollIntoView({ block: 'nearest' })
+}
 
 /** The 40×52 slot: preview PNG, the image itself, or a kind glyph. */
 function Thumb({ a }: { a: Artifact }) {

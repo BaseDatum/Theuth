@@ -252,8 +252,8 @@ first tool that hands one *back*. Three layers, each one field:
    it first; `computer_screenshot` (27) is the second tool filling
    `ToolOutput.files`.
 2. **`genai::chat::ToolResponse.images: Vec<Binary>`** (fork
-   `github.com/skymoore/rust-genai`, `main` = tag `v0.7.0-beta.23` +
-   one commit, applied under `[patch.crates-io]`), with
+   `github.com/skymoore/rust-genai`, `main` tracks upstream with the tool-image
+   and Bedrock profile-isolation patches; `[patch.crates-io]`, commit pinned in `Cargo.lock`), with
    `ToolResponse::with_images`. Adapters:
    - Anthropic (`adapter_shared.rs` user and tool branches):
      `tool_result.content` becomes `[{type:text}, {type:image, source:
@@ -455,8 +455,8 @@ Firecrawl.
   as image parts of the tool result."
 - **00 §10 deps.** Rows: `obscura-mcp | git v0.2.2 (fork, 23 §3.3) |
   embedded headless browser (stealth + render)`, `taffy / cosmic-text |
-  patched to obscura's vendored copies`, `genai | 0.7.0-beta.23 (patched, 23
-  §5)`. Build prerequisites paragraph: cmake, clang/libclang, first-build
+  patched to obscura's vendored copies`, `genai | fork of upstream main (patched, 23
+  §5; revision in Cargo.lock)`. Build prerequisites paragraph: cmake, clang/libclang, first-build
   network.
 - **00 §13 phases.** Row 14: "browser (23) | `browser_open` reads HN; a
   screenshot of a local dev server is described from the image; `read_url

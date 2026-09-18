@@ -303,9 +303,15 @@ async fn check_and_apply(
     tokio::fs::create_dir_all(&updates)
         .await
         .with_context(|| updates.display().to_string())?;
-    let tarball = updates.join(format!("wth_{version}.tar.gz.part"));
+    // Private name: another updater (other process or this one's foreground
+    // `--update` beside the tick loop) must never truncate the tarball this
+    // one verified and is about to unpack.
+    let tarball = updates.join(format!(
+        "wth_{version}.{:016x}.tar.gz.part",
+        rand::random::<u64>()
+    ));
     let result = match download(&client, &platform.url, &platform.signature, &tarball).await {
-        Ok(()) => install(&tarball, &exe),
+        Ok(()) => install(&tarball, &exe).await,
         Err(e) => Err(e),
     };
     let _ = std::fs::remove_file(&tarball);
@@ -399,35 +405,165 @@ async fn download(
     Ok(())
 }
 
-/// Step 3: the entry `wth` from `tarball` → `<exe>.new`, `chmod 755`, rename
-/// over `exe`. Same directory, so the rename is atomic and the running image
-/// is untouched (39 §2.2 `ETXTBSY`).
-fn install(tarball: &Path, exe: &Path) -> anyhow::Result<()> {
-    let file = std::fs::File::open(tarball).with_context(|| tarball.display().to_string())?;
-    let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(file));
-    let new = exe.with_extension("new");
-    let mut found = false;
-    for entry in archive.entries().context("tarball")? {
-        let mut entry = entry.context("tarball entry")?;
-        if entry.path()?.file_name().is_some_and(|n| n == "wth")
-            && entry.header().entry_type().is_file()
-        {
-            entry
-                .unpack(&new)
-                .with_context(|| new.display().to_string())?;
-            found = true;
-            break;
+/// Prefix of the app parser helper beside `wth` (46 §2.1): the file is
+/// `wth-app-parser-<library sha256 hex>`, immutable per hash.
+const HELPER_PREFIX: &str = "wth-app-parser-";
+/// Upper bound on one tarball entry. A release `wth` is ~330 MB today, the
+/// helper ~60 MiB; the bound only stops a runaway header, not a real build.
+const MAX_ENTRY: u64 = 2 << 30;
+/// `wth.new --app-parser-hash` budget: the probe answers from a constant.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// `wth-app-parser-<64 lowercase hex>`.
+fn is_helper_name(name: &str) -> bool {
+    name.strip_prefix(HELPER_PREFIX).is_some_and(|h| {
+        h.len() == 64
+            && h.bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    })
+}
+
+/// Step 3: the payload holds exactly two regular files, `wth` and one
+/// `wth-app-parser-<hash>`. Both land beside `exe` as `<name>.new.<pid>-<nonce>`,
+/// `chmod 755`; the new `wth` is asked which helper hash it was compiled against
+/// and must name the one shipped beside it; then rename: helper first, then
+/// `wth`, so a `wth` that exists always has its helper. Same directory, so each
+/// rename is atomic and the running image is untouched (39 §2.2 `ETXTBSY`).
+/// The staging names are private to this install (created with `create_new`),
+/// so two updaters aimed at one `wth` never probe, rename, or delete each
+/// other's files: the pair that lands is always the pair that was probed. A
+/// helper already installed under the payload's hash is kept, not replaced:
+/// the name is the library hash, one ABI contract per name, and a running
+/// `wth` may be spawning it. Old helpers are never removed here: any number of
+/// older `wth` processes may still spawn theirs (46 §2.1).
+// ponytail: helpers accumulate one file per library hash; sweep them from a
+// place that knows every live `wth` (a `wth --gc-helpers` on the newest
+// binary) if the directory ever gets noisy.
+async fn install(tarball: &Path, exe: &Path) -> anyhow::Result<()> {
+    let dir = exe.parent().context("current_exe has no parent")?;
+    let tag = format!(".new.{}-{:016x}", std::process::id(), rand::random::<u64>());
+    let mut staged: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let result = match unpack(tarball, exe, dir, &tag, &mut staged) {
+        Ok(hash) => probe(&staged[1].0, &hash).await.and_then(|()| {
+            for (new, dest) in &staged {
+                if dest != exe && dest.exists() {
+                    let _ = std::fs::remove_file(new);
+                    continue;
+                }
+                std::fs::rename(new, dest)
+                    .with_context(|| format!("replace {}", dest.display()))?;
+            }
+            Ok(())
+        }),
+        Err(e) => Err(e),
+    };
+    if result.is_err() {
+        // Only files this install created: never another updater's stage.
+        for (new, _) in &staged {
+            let _ = std::fs::remove_file(new);
         }
     }
-    if !found {
+    result
+}
+
+/// Run the signature-verified new binary once: `--app-parser-hash` prints the
+/// library hash it embeds, which must be the helper in the same payload; a
+/// `wth` that could never find its helper is not installed.
+async fn probe(new_wth: &Path, hash: &str) -> anyhow::Result<()> {
+    let out = tokio::time::timeout(
+        PROBE_TIMEOUT,
+        tokio::process::Command::new(new_wth)
+            .arg("--app-parser-hash")
+            .stdin(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .context("probe `wth.new --app-parser-hash`: timed out")?
+    .context("probe `wth.new --app-parser-hash`")?;
+    let got = String::from_utf8_lossy(&out.stdout);
+    let got = got.trim();
+    if !out.status.success() {
+        anyhow::bail!(
+            "probe `wth.new --app-parser-hash`: {}: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    if got != hash {
+        anyhow::bail!("payload helper is {HELPER_PREFIX}{hash} but the new wth wants {got:?}");
+    }
+    Ok(())
+}
+
+/// Extract the validated entries to `<dest><tag>`, each created fresh
+/// (`create_new`) so the path is provably this install's; `staged` is filled in
+/// commit order (helper, then `wth`), including on error so the caller can
+/// clean up. Returns the helper's hash.
+fn unpack(
+    tarball: &Path,
+    exe: &Path,
+    dir: &Path,
+    tag: &str,
+    staged: &mut Vec<(PathBuf, PathBuf)>,
+) -> anyhow::Result<String> {
+    let file = std::fs::File::open(tarball).with_context(|| tarball.display().to_string())?;
+    let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(file));
+    let mut wth = false;
+    let mut helper: Option<String> = None;
+    for entry in archive.entries().context("tarball")? {
+        let mut entry = entry.context("tarball entry")?;
+        let path = entry.path().context("tarball entry path")?;
+        let mut components = path.components();
+        let name = match (components.next(), components.next()) {
+            (Some(std::path::Component::Normal(n)), None) => n.to_str(),
+            _ => None,
+        }
+        .with_context(|| format!("tarball entry {path:?}: not a bare file name"))?
+        .to_owned();
+        if entry.header().entry_type() != tar::EntryType::Regular {
+            anyhow::bail!("tarball entry `{name}`: not a regular file");
+        }
+        let size = entry.header().size().context("tarball entry size")?;
+        if size > MAX_ENTRY {
+            anyhow::bail!("tarball entry `{name}`: {size} bytes exceeds {MAX_ENTRY}");
+        }
+        let (dup, dest) = if name == "wth" {
+            (std::mem::replace(&mut wth, true), exe.to_path_buf())
+        } else if is_helper_name(&name) {
+            (
+                helper
+                    .replace(name[HELPER_PREFIX.len()..].to_owned())
+                    .is_some(),
+                dir.join(&name),
+            )
+        } else {
+            anyhow::bail!("tarball entry `{name}`: unexpected");
+        };
+        if dup {
+            anyhow::bail!("tarball entry `{name}`: duplicate");
+        }
+        let new = dir.join(format!("{name}{tag}"));
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&new)
+            .with_context(|| new.display().to_string())?;
+        staged.push((new.clone(), dest));
+        std::io::copy(&mut entry, &mut file).with_context(|| new.display().to_string())?;
+        drop(file);
+        std::fs::set_permissions(&new, std::fs::Permissions::from_mode(0o755))
+            .with_context(|| new.display().to_string())?;
+    }
+    let Some(hash) = helper else {
+        anyhow::bail!("tarball has no `{HELPER_PREFIX}<hash>` entry");
+    };
+    if !wth {
         anyhow::bail!("tarball has no `wth` entry");
     }
-    let result = std::fs::set_permissions(&new, std::fs::Permissions::from_mode(0o755))
-        .and_then(|()| std::fs::rename(&new, exe));
-    if result.is_err() {
-        let _ = std::fs::remove_file(&new);
-    }
-    result.with_context(|| format!("replace {}", exe.display()))
+    // Commit order: helper first, `wth` last.
+    staged.sort_by_key(|(_, dest)| dest == exe);
+    Ok(hash)
 }
 
 /// The plugin (39 §3.2): registers [`UpdateActor`] as [`UPDATE_ACTOR`]; runs
@@ -547,35 +683,326 @@ mod tests {
         assert!(!newer(&v("0.1.0"), &v("0.1.0")));
     }
 
-    #[test]
-    fn install_replaces_exe() {
+    const HASH: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    const OLD_HASH: &str = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+
+    /// One tarball entry: name (written raw, so `..` and `/` reach the reader
+    /// unfiltered), type, bytes, and the size the header claims.
+    struct Entry<'a> {
+        name: &'a str,
+        kind: tar::EntryType,
+        data: &'a [u8],
+        claimed: Option<u64>,
+    }
+
+    fn file<'a>(name: &'a str, data: &'a [u8]) -> Entry<'a> {
+        Entry {
+            name,
+            kind: tar::EntryType::Regular,
+            data,
+            claimed: None,
+        }
+    }
+
+    fn typed(name: &str, kind: tar::EntryType) -> Entry<'_> {
+        Entry {
+            name,
+            kind,
+            data: b"",
+            claimed: None,
+        }
+    }
+
+    /// `.tar.gz` of `entries` at `<dir>/wth_0.2.0.tar.gz.part`.
+    fn tarball(dir: &Path, entries: &[Entry<'_>]) -> PathBuf {
         use std::io::Write as _;
 
-        let dir = tempfile::tempdir().unwrap();
-        let exe = dir.path().join("wth");
-        std::fs::write(&exe, b"old").unwrap();
-
-        let payload = b"#!/bin/sh\necho new\n";
         let gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
         let mut tar = tar::Builder::new(gz);
-        for (name, data) in [("._wth", &b"applesauce"[..]), ("wth", &payload[..])] {
+        for e in entries {
             let mut header = tar::Header::new_gnu();
-            header.set_size(data.len() as u64);
+            header.as_old_mut().name[..e.name.len()].copy_from_slice(e.name.as_bytes());
+            header.set_entry_type(e.kind);
+            header.set_size(e.claimed.unwrap_or(e.data.len() as u64));
             header.set_mode(0o644);
+            if e.kind == tar::EntryType::Symlink {
+                header.set_link_name("/etc/passwd").unwrap();
+            }
             header.set_cksum();
-            tar.append_data(&mut header, name, data).unwrap();
+            tar.append(&header, e.data).unwrap();
         }
         let mut gz = tar.into_inner().unwrap();
         gz.flush().unwrap();
-        let tarball = dir.path().join("wth_0.2.0.tar.gz.part");
-        std::fs::write(&tarball, gz.finish().unwrap()).unwrap();
+        let path = dir.join("wth_0.2.0.tar.gz.part");
+        std::fs::write(&path, gz.finish().unwrap()).unwrap();
+        path
+    }
 
-        install(&tarball, &exe).unwrap();
-        assert_eq!(std::fs::read(&exe).unwrap(), payload);
-        assert_eq!(
-            std::fs::metadata(&exe).unwrap().permissions().mode() & 0o777,
-            0o755
+    /// A dir holding an old `wth` and its old helper, as after a previous update.
+    fn installed() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("wth");
+        std::fs::write(&exe, b"old").unwrap();
+        std::fs::write(
+            dir.path().join(format!("{HELPER_PREFIX}{OLD_HASH}")),
+            b"old helper",
+        )
+        .unwrap();
+        (dir, exe)
+    }
+
+    fn names(dir: &Path) -> Vec<String> {
+        let mut v: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        v.sort();
+        v
+    }
+
+    fn sorted(names: &[&str]) -> Vec<String> {
+        let mut v: Vec<String> = names.iter().map(|s| (*s).to_owned()).collect();
+        v.sort();
+        v
+    }
+
+    /// A stand-in `wth`: answers `--app-parser-hash` with `hash`.
+    fn fake_wth(hash: &str) -> Vec<u8> {
+        format!("#!/bin/sh\necho {hash}\n").into_bytes()
+    }
+
+    #[tokio::test]
+    async fn install_replaces_exe_and_adds_helper_keeping_the_old_one() {
+        let (dir, exe) = installed();
+        let helper = format!("{HELPER_PREFIX}{HASH}");
+        let old_helper = format!("{HELPER_PREFIX}{OLD_HASH}");
+        let new_wth = fake_wth(HASH);
+        let tb = tarball(
+            dir.path(),
+            &[
+                file(&helper, b"#!/bin/sh\necho helper\n"),
+                file("wth", &new_wth),
+            ],
         );
-        assert!(!exe.with_extension("new").exists());
+
+        install(&tb, &exe).await.unwrap();
+        assert_eq!(std::fs::read(&exe).unwrap(), new_wth);
+        assert_eq!(
+            std::fs::read(dir.path().join(&helper)).unwrap(),
+            b"#!/bin/sh\necho helper\n"
+        );
+        for f in [&exe, &dir.path().join(&helper)] {
+            assert_eq!(
+                std::fs::metadata(f).unwrap().permissions().mode() & 0o777,
+                0o755,
+                "{f:?}"
+            );
+        }
+        assert_eq!(
+            std::fs::read(dir.path().join(&old_helper)).unwrap(),
+            b"old helper",
+            "an older wth may still be running"
+        );
+        assert_eq!(
+            names(dir.path()),
+            sorted(&["wth", &helper, &old_helper, "wth_0.2.0.tar.gz.part"]),
+            "no .new leftovers"
+        );
+    }
+
+    #[tokio::test]
+    async fn install_rejects_bad_payloads_and_leaves_the_installation_intact() {
+        use tar::EntryType::{Directory, Symlink};
+
+        let helper = format!("{HELPER_PREFIX}{HASH}");
+        let old_helper = format!("{HELPER_PREFIX}{OLD_HASH}");
+        let upper = format!("{HELPER_PREFIX}{}", HASH.to_uppercase());
+        let wants_old = fake_wth(OLD_HASH);
+        let cases: Vec<(&str, Vec<Entry<'_>>)> = vec![
+            (
+                "wth compiled against another helper",
+                vec![file("wth", &wants_old), file(&helper, b"h")],
+            ),
+            (
+                "wth probe fails",
+                vec![file("wth", b"#!/bin/sh\nexit 3\n"), file(&helper, b"h")],
+            ),
+            (
+                "wth not executable",
+                vec![file("wth", b"not a program"), file(&helper, b"h")],
+            ),
+            ("no helper", vec![file("wth", b"new")]),
+            ("no wth", vec![file(&helper, b"h")]),
+            (
+                "unqualified helper",
+                vec![file("wth", b"new"), file("wth-app-parser", b"h")],
+            ),
+            (
+                "short hash",
+                vec![file("wth", b"new"), file("wth-app-parser-abc123", b"h")],
+            ),
+            (
+                "uppercase hash",
+                vec![file("wth", b"new"), file(&upper, b"h")],
+            ),
+            (
+                "two helpers",
+                vec![
+                    file("wth", b"new"),
+                    file(&helper, b"h"),
+                    file(&old_helper, b"h2"),
+                ],
+            ),
+            (
+                "two wth",
+                vec![
+                    file("wth", b"new"),
+                    file("wth", b"new2"),
+                    file(&helper, b"h"),
+                ],
+            ),
+            (
+                "stray file",
+                vec![
+                    file("wth", b"new"),
+                    file(&helper, b"h"),
+                    file("._wth", b"applesauce"),
+                ],
+            ),
+            (
+                "traversal",
+                vec![file("../wth", b"new"), file(&helper, b"h")],
+            ),
+            ("absolute", vec![file("/wth", b"new"), file(&helper, b"h")]),
+            ("nested", vec![file("bin/wth", b"new"), file(&helper, b"h")]),
+            (
+                "symlink wth",
+                vec![typed("wth", Symlink), file(&helper, b"h")],
+            ),
+            (
+                "symlink helper",
+                vec![file("wth", b"new"), typed(&helper, Symlink)],
+            ),
+            (
+                "directory",
+                vec![
+                    file("wth", b"new"),
+                    file(&helper, b"h"),
+                    typed("d", Directory),
+                ],
+            ),
+            (
+                "oversized (header claims > MAX_ENTRY)",
+                vec![
+                    Entry {
+                        name: "wth",
+                        kind: tar::EntryType::Regular,
+                        data: b"new",
+                        claimed: Some(MAX_ENTRY + 1),
+                    },
+                    file(&helper, b"h"),
+                ],
+            ),
+        ];
+        for (what, entries) in cases {
+            let (dir, exe) = installed();
+            let tb = tarball(dir.path(), &entries);
+            let err = install(&tb, &exe).await.unwrap_err();
+            assert_eq!(std::fs::read(&exe).unwrap(), b"old", "{what}: {err:#}");
+            assert_eq!(
+                std::fs::read(dir.path().join(&old_helper)).unwrap(),
+                b"old helper",
+                "{what}"
+            );
+            assert_eq!(
+                names(dir.path()),
+                sorted(&["wth", &old_helper, "wth_0.2.0.tar.gz.part"]),
+                "{what}: staged files must be removed ({err:#})"
+            );
+        }
+    }
+
+    /// Two updaters aimed at one `wth`, interleaved: A is parked inside its hash
+    /// probe (its fake `wth` waits for a gate file) while B fails, then another
+    /// B succeeds; then A is released. Each install must probe, rename, and
+    /// clean only its own stage: B's failure must not strip A's files, B's
+    /// success must land B's own helper, and A must still land its pair.
+    #[tokio::test]
+    async fn concurrent_installs_never_touch_each_others_stage() {
+        const B_HASH: &str = "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd";
+        let (dir, exe) = installed();
+        let scratch = tempfile::tempdir().unwrap();
+        let gate = scratch.path().join("go");
+        let helper_a = format!("{HELPER_PREFIX}{HASH}");
+        let helper_b = format!("{HELPER_PREFIX}{B_HASH}");
+        let old_helper = format!("{HELPER_PREFIX}{OLD_HASH}");
+        let wth_a = format!(
+            "#!/bin/sh\nwhile [ ! -e '{}' ]; do sleep 0.01; done\necho {HASH}\n",
+            gate.display()
+        )
+        .into_bytes();
+        let wth_b = fake_wth(B_HASH);
+        let wth_b_bad = fake_wth(OLD_HASH);
+        let staged = |dir: &Path| {
+            names(dir)
+                .into_iter()
+                .filter(|n| n.contains(".new."))
+                .count()
+        };
+
+        let tb_a = tarball(
+            scratch.path(),
+            &[file(&helper_a, b"helper a"), file("wth", &wth_a)],
+        );
+        let a = tokio::spawn({
+            let exe = exe.clone();
+            async move { install(&tb_a, &exe).await }
+        });
+        while staged(dir.path()) < 2 {
+            assert!(!a.is_finished(), "A cannot finish before the gate opens");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+
+        // B fails its probe while A is staged: A's files survive.
+        let tb = tarball(
+            scratch.path(),
+            &[file(&helper_b, b"helper b"), file("wth", &wth_b_bad)],
+        );
+        install(&tb, &exe).await.unwrap_err();
+        assert_eq!(std::fs::read(&exe).unwrap(), b"old");
+        assert_eq!(staged(dir.path()), 2, "B's cleanup removed A's stage");
+        assert!(!dir.path().join(&helper_b).exists());
+
+        // B succeeds while A is staged: B's own wth and helper land.
+        let tb = tarball(
+            scratch.path(),
+            &[file(&helper_b, b"helper b"), file("wth", &wth_b)],
+        );
+        install(&tb, &exe).await.unwrap();
+        assert_eq!(std::fs::read(&exe).unwrap(), wth_b);
+        assert_eq!(
+            std::fs::read(dir.path().join(&helper_b)).unwrap(),
+            b"helper b"
+        );
+        assert_eq!(staged(dir.path()), 2, "B's rename consumed A's stage");
+        assert!(!a.is_finished());
+
+        // A is released: the probed wth A lands with helper A.
+        std::fs::write(&gate, b"").unwrap();
+        a.await.unwrap().unwrap();
+        assert_eq!(std::fs::read(&exe).unwrap(), wth_a);
+        assert_eq!(
+            std::fs::read(dir.path().join(&helper_a)).unwrap(),
+            b"helper a"
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join(&helper_b)).unwrap(),
+            b"helper b"
+        );
+        assert_eq!(
+            names(dir.path()),
+            sorted(&["wth", &helper_a, &helper_b, &old_helper]),
+            "no .new leftovers"
+        );
     }
 }

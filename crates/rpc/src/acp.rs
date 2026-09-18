@@ -359,9 +359,9 @@ fn replay(i: usize, entry: HistoryEntry) -> SessionUpdate {
         HistoryEntry::Assistant { text, context, .. } => {
             SessionUpdate::AgentMessageChunk(ContentChunk::new(removed(text, &context).into()))
         }
-        // A `show` entry replays as a plain tool card; the artifact link it
-        // carried live (`ArtifactShown`) is a frontend join on
-        // `list_artifacts`, not part of the history (35 §0.3).
+        // A `show` / `app` entry replays as a plain tool card; the artifact
+        // link it carried live (`ArtifactShown`) is a frontend join on
+        // `list_artifacts` by `call_id`, any kind, not part of the history (35 §0.3).
         HistoryEntry::Tool {
             name, args, result, ..
         } => {
@@ -574,7 +574,9 @@ fn plan(items: &[Todo]) -> Plan {
 }
 
 /// A shown artifact becomes a second update on its `show` tool call: one
-/// `ResourceLink` the client renders as an openable file (35 §8).
+/// `ResourceLink` the client renders as an openable file (35 §8). An app
+/// record (46 §8.2) is the same link to its `.openui` source on the `app`
+/// call; ACP gets no pretend controls and the source is inert there.
 impl Message<ArtifactShown> for Relay {
     type Reply = ();
     async fn handle(&mut self, ev: ArtifactShown, _: &mut Context<Self, ()>) {

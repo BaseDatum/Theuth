@@ -1,6 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { useEffect } from 'react'
 import type { Api } from '@/rpc/api'
+import type { SearchCategory } from '@/rpc/bindings/SearchCategory'
 import { useConnection } from '@/store/connection'
 import { on } from '@/store/sessions'
 
@@ -14,7 +15,14 @@ export function useApi(): Api {
 export const queryKeys = {
   sessions: ['sessions'] as const,
   session: (id: string) => ['session', id] as const,
-  search: (q: string) => ['search', q] as const,
+  /** Prefix of every unified-search page (49 §4.2); invalidated by `useInvalidateOn` and the reconnect/`Lagged` reload. */
+  searchAll: ['search'] as const,
+  /**
+   * One `search` request (49 §5.3): harness scope comes from the per-harness QueryClient; `categories` is the
+   * canonical selected set; `gen` is the dialog-open generation, so a reopen never adopts a prior open's fetch.
+   */
+  search: (q: string, categories: readonly SearchCategory[], limit: number, gen = 0) =>
+    ['search', q, categories, limit, gen] as const,
   models: ['models'] as const,
   mcp: (s: string | null) => ['mcp', s] as const,
   skills: ['skills'] as const,
@@ -37,7 +45,12 @@ export const queryKeys = {
   knowledgeRevision: (commit: string, id: string | null) =>
     ['knowledge', 'revision', commit, id] as const,
   knowledgeSearch: (q: string) => ['knowledge', 'search', q] as const,
+  /** `knowledge_read_revision`: commits are immutable, so never invalidated. */
+  knowledgeReadRevision: (id: string, commit: string) =>
+    ['knowledge', 'read-revision', id, commit] as const,
   artifacts: ['artifacts'] as const,
+  artifact: (callId: string) => ['artifacts', 'get', callId] as const,
+  artifactSearchMatch: (callId: string, q: string) => ['artifacts', 'match', callId, q] as const,
   info: ['info'] as const,
   titleModel: ['title-model'] as const,
   signal: ['signal'] as const,
@@ -68,19 +81,35 @@ export function useInvalidateOn(): void {
         SESSIONS_DEBOUNCE_MS,
       )
     }
+    const search = () => void qc.invalidateQueries({ queryKey: queryKeys.searchAll })
     const offs = [
-      on('TurnFinished', sessions),
+      on('TurnFinished', () => {
+        sessions()
+        search()
+      }),
       on('SubagentSpawned', sessions),
-      on('TitleChanged', sessions),
-      on('SessionDeleted', () => void qc.invalidateQueries({ queryKey: queryKeys.sessions })),
+      on('TitleChanged', () => {
+        sessions()
+        search()
+      }),
+      on('Compacted', search),
+      on('ContextChanged', search),
+      on('SessionDeleted', () => {
+        void qc.invalidateQueries({ queryKey: queryKeys.sessions })
+        search()
+      }),
       on('McpProgress', () => void qc.invalidateQueries({ queryKey: ['mcp'] })),
       on('LoginFinished', () => void qc.invalidateQueries({ queryKey: queryKeys.logins })),
       on('KnowledgeChanged', (e) => {
         void qc.invalidateQueries({ queryKey: queryKeys.knowledgeList })
         void qc.invalidateQueries({ queryKey: queryKeys.knowledgeDoc(e.id) })
         void qc.invalidateQueries({ queryKey: queryKeys.knowledgeHistories })
+        search()
       }),
-      on('ArtifactShown', () => void qc.invalidateQueries({ queryKey: queryKeys.artifacts })),
+      on('ArtifactShown', () => {
+        void qc.invalidateQueries({ queryKey: queryKeys.artifacts })
+        search()
+      }),
       on('SecretsChanged', () => void qc.invalidateQueries({ queryKey: queryKeys.secrets })),
       on('SecretResolved', () => void qc.invalidateQueries({ queryKey: queryKeys.secrets })),
       on('CommunicationChanged', () => {

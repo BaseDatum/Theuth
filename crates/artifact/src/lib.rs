@@ -5,11 +5,16 @@
 //!
 //! Public surface consumed by other plugins:
 //! - commands on the [`ARTIFACT_ACTOR`] actor ([`ArtifactActor`]): [`Show`],
-//!   [`List`], [`Export`]
+//!   [`List`], [`Export`], [`search::SearchArtifacts`], [`search::Get`],
+//!   [`search::ReadSearchMatch`], [`search::RefreshSearch`]; for the app
+//!   plugin (46 §3): [`Commit`], [`GetRecord`], [`ClaimInvocation`],
+//!   [`CompleteInvocation`], [`MarkInvocationUnknown`], [`GetInvocation`],
+//!   [`ListInvocations`]
 //! - events: [`ArtifactShown`]
 
 pub mod kind;
 pub mod pdf;
+pub mod search;
 pub mod store;
 pub mod svg;
 pub mod tools;
@@ -24,7 +29,10 @@ use runtime::{Runtime, SessionId};
 use serde::{Deserialize, Serialize};
 
 pub use pdf::{Diag, Source};
-pub use store::State;
+pub use store::{
+    Claim, CommitError, Invocation, InvocationStatus, MAX_INVOCATION_RESULT, MAX_LIST_INVOCATIONS,
+    State, args_hash,
+};
 pub use svg::Raster;
 pub use tools::ShowArgs;
 
@@ -71,6 +79,9 @@ pub enum Kind {
     Pdf,
     /// `html`, `htm`.
     Html,
+    /// A validated OpenUI app (`.openui`, 46 §3.2). Never derived from an
+    /// extension: only [`Commit`] creates one.
+    App,
     /// Anything else: download only.
     File,
 }
@@ -86,6 +97,7 @@ impl Kind {
             Self::Svg => "svg",
             Self::Pdf => "pdf",
             Self::Html => "html",
+            Self::App => "app",
             Self::File => "file",
         }
     }
@@ -100,6 +112,7 @@ impl Kind {
             Self::Svg,
             Self::Pdf,
             Self::Html,
+            Self::App,
             Self::File,
         ]
         .into_iter()
@@ -189,6 +202,115 @@ pub struct Export {
     pub dest: PathBuf,
 }
 
+/// `ask` → `Result<Artifact, CommitError>`: publish already-validated bytes as
+/// a record of any [`Kind`], including [`Kind::App`], with an optional opaque
+/// source blob (46 §3.2–§3.3). The blob and source are written first; the row
+/// is inserted with its version in one statement that also checks
+/// `expected_base`; [`ArtifactShown`] publishes only after both. Records are
+/// immutable: a `call_id` already recorded returns that record when session,
+/// name, kind, title, bytes and source sidecar all match, and
+/// `CommitError::Other` otherwise. Runs off the mailbox like [`Show`].
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Commit {
+    /// Owning session.
+    pub session: SessionId,
+    /// Record key: the publishing tool call.
+    pub call_id: String,
+    /// `panel.openui`; needs an extension.
+    pub name: String,
+    /// Card title.
+    pub title: String,
+    /// Rendering kind; the caller vouches for validation.
+    pub kind: Kind,
+    /// The artifact bytes.
+    pub bytes: Vec<u8>,
+    /// `(suffix, bytes)` of a sidecar stored as `<sha16(bytes)>.<suffix>`
+    /// (its own hash, not the artifact's), e.g. `("app.json", metadata)`.
+    pub source: Option<(String, Vec<u8>)>,
+    /// Compare-and-swap: insert only while this `call_id` is the latest
+    /// version of `(session, name)`; `None` inserts unconditionally.
+    pub expected_base: Option<String>,
+}
+
+/// `ask` → `Result<Artifact, String>`: the record of one tool call.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GetRecord {
+    /// Record key.
+    pub call_id: String,
+}
+
+/// `ask` → `Result<Claim, String>`: atomically insert a `running` app
+/// invocation keyed by `request_id` (46 §6.4), only while `record_call_id`
+/// is a [`Kind::App`] record of `session` (`Err` otherwise). `args` are
+/// hashed canonically ([`args_hash`]); a repeat with the same identity and
+/// hash returns the stored row, a repeat with different input is a conflict.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ClaimInvocation {
+    /// Client-chosen, stable across transport retries of one activation.
+    pub request_id: String,
+    /// Owning session (purged with it).
+    pub session: SessionId,
+    /// The app record (`Artifact::call_id`).
+    pub record_call_id: String,
+    /// The bound Query/Mutation statement.
+    pub statement_id: String,
+    /// The press this invocation belongs to, if any.
+    pub action_id: Option<String>,
+    /// Resolved tool name.
+    pub tool: String,
+    /// Concrete arguments; only their hash is stored.
+    pub args: serde_json::Value,
+}
+
+/// `ask` → `Result<(), String>`: finish a `running` invocation. `result` is
+/// the caller-redacted display value, stored up to [`MAX_INVOCATION_RESULT`]
+/// serialized bytes (larger → an `{"omitted": …}` marker). `Err` when the row
+/// is missing or no longer running.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CompleteInvocation {
+    /// Row key.
+    pub request_id: String,
+    /// `true` → `succeeded`, `false` → `failed`.
+    pub ok: bool,
+    /// Redacted, bounded result.
+    pub result: Option<serde_json::Value>,
+}
+
+/// `ask` → `Result<Option<Invocation>, String>`: current status and stored
+/// result; `Ok(None)` is "no such request", `Err` an unreadable index.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GetInvocation {
+    /// Row key.
+    pub request_id: String,
+}
+
+/// `ask` → `Result<(), String>`: a `running` invocation whose dispatch
+/// outcome cannot be proven (the registry call failed after the durable
+/// claim, the reply never arrived) becomes `unknown`, never `failed`: the
+/// tool may have run. `reason` is caller-redacted like
+/// [`CompleteInvocation::result`] and stored as `{"unknown": reason}`,
+/// bounded the same way. `Err` when the row is missing or no longer running.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MarkInvocationUnknown {
+    /// Row key.
+    pub request_id: String,
+    /// Redacted, short: why the outcome is unknowable.
+    pub reason: Option<String>,
+}
+
+/// `ask` → `Result<Vec<Invocation>, String>`: the invocations of one app
+/// record, newest first, at most `min(limit, MAX_LIST_INVOCATIONS)`. Rows
+/// exist only while the record does (claims require it, session deletion
+/// purges both), so reopening an app after a restart can still find its
+/// request ids and their final statuses.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ListInvocations {
+    /// The app record.
+    pub record_call_id: String,
+    /// Newest rows wanted; capped at [`MAX_LIST_INVOCATIONS`].
+    pub limit: usize,
+}
+
 /// The [`ARTIFACT_ACTOR`] actor.
 #[derive(kameo::Actor)]
 pub struct ArtifactActor {
@@ -241,6 +363,154 @@ impl Message<Export> for ArtifactActor {
 
     async fn handle(&mut self, m: Export, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.state.export(&m.id, &m.dest).await
+    }
+}
+
+impl Message<Commit> for ArtifactActor {
+    type Reply = DelegatedReply<Result<Artifact, CommitError>>;
+
+    async fn handle(&mut self, m: Commit, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let state = self.state.clone();
+        tokio::spawn(async move {
+            tx.send(state.commit(m).await);
+        });
+        reply
+    }
+}
+
+impl Message<search::SearchArtifacts> for ArtifactActor {
+    type Reply = DelegatedReply<Result<::search::SearchPage<search::ArtifactSearchHit>, String>>;
+
+    async fn handle(
+        &mut self,
+        m: search::SearchArtifacts,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let state = self.state.clone();
+        // Leaves the mailbox: asks the agent for live sessions, matches on the blocking pool.
+        tokio::spawn(async move {
+            tx.send(state.search_artifacts(m.query, m.limit).await);
+        });
+        reply
+    }
+}
+
+impl Message<GetRecord> for ArtifactActor {
+    type Reply = Result<Artifact, String>;
+
+    async fn handle(&mut self, m: GetRecord, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.state.record(&m.call_id).await
+    }
+}
+
+impl Message<ClaimInvocation> for ArtifactActor {
+    type Reply = Result<Claim, String>;
+
+    async fn handle(
+        &mut self,
+        m: ClaimInvocation,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.state.claim(m).await
+    }
+}
+
+impl Message<CompleteInvocation> for ArtifactActor {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        m: CompleteInvocation,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.state.complete(m).await
+    }
+}
+
+impl Message<GetInvocation> for ArtifactActor {
+    type Reply = Result<Option<Invocation>, String>;
+
+    async fn handle(
+        &mut self,
+        m: GetInvocation,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.state.invocation(&m.request_id).await
+    }
+}
+
+impl Message<MarkInvocationUnknown> for ArtifactActor {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        m: MarkInvocationUnknown,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.state.mark_unknown(m).await
+    }
+}
+
+impl Message<ListInvocations> for ArtifactActor {
+    type Reply = Result<Vec<Invocation>, String>;
+
+    async fn handle(
+        &mut self,
+        m: ListInvocations,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.state
+            .list_invocations(&m.record_call_id, m.limit)
+            .await
+    }
+}
+
+impl Message<search::Get> for ArtifactActor {
+    type Reply = DelegatedReply<Result<Artifact, String>>;
+
+    async fn handle(
+        &mut self,
+        m: search::Get,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let state = self.state.clone();
+        // Leaves the mailbox: asks the agent whether the owning session exists.
+        tokio::spawn(async move {
+            tx.send(state.get(&m.call_id).await);
+        });
+        reply
+    }
+}
+
+impl Message<search::ReadSearchMatch> for ArtifactActor {
+    type Reply = DelegatedReply<Result<search::ArtifactMatchContext, String>>;
+
+    async fn handle(
+        &mut self,
+        m: search::ReadSearchMatch,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let state = self.state.clone();
+        tokio::spawn(async move {
+            tx.send(state.read_search_match(m.call_id, m.query).await);
+        });
+        reply
+    }
+}
+
+impl Message<search::RefreshSearch> for ArtifactActor {
+    type Reply = ();
+
+    async fn handle(&mut self, _: search::RefreshSearch, _: &mut Context<Self, Self::Reply>) {
+        self.state.refresh_search();
     }
 }
 

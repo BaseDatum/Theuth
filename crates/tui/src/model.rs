@@ -6,9 +6,9 @@ use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 
+use ::search::SearchCategory;
 use acp::EntryInfo;
 use acp::registry::RegistryAgent;
-use agent::search::SearchHit;
 use agent::todo::{Status as TodoStatus, TodoSnapshot, TodoSource};
 use agent::{
     AgentEvent, AgentInfo, AgentState, AwsProfiles, CommunicationChanged, CommunicationState,
@@ -31,6 +31,7 @@ use tools::{
 use uuid::Uuid;
 
 use crate::clip::Image;
+use crate::search;
 
 /// Everything the UI can receive: bus events plus replies to its own commands.
 #[derive(Debug)]
@@ -47,8 +48,10 @@ pub enum UiEvent {
     AskResolved(AskResolved),
     /// Reply to [`Command::ListSessions`].
     Sessions(Vec<SessionSummary>),
-    /// Reply to [`Command::Search`]: the query echoed with its hits.
-    Search(String, Vec<SearchHit>),
+    /// Reply to [`Command::Search`], tagged with the view generation that asked (49 §6.1).
+    Search(u64, search::Reply),
+    /// A concept was written or removed (bus event): open search re-asks.
+    KnowledgeChanged(knowledge::KnowledgeChanged),
     /// Reply to [`Command::ListAgents`]: the session's subtree with live state.
     Agents(Vec<AgentInfo>),
     /// Reply to [`Command::Load`] with `settled_only: false`: shown as is.
@@ -200,12 +203,15 @@ pub enum UiEvent {
     /// Live URLs of a `crawl` / `map_site` / `scrape_url` call (bus event, design doc 38).
     ScrapeProgress(web::progress::ScrapeProgress),
     /// Reply to [`Command::ListArtifacts`]: the session subtree's artifacts, newest first;
-    /// `pick` opens the `/artifacts` menu, else the rows only join their `show` cards.
+    /// `pick` opens the `/artifacts` (`/apps` when `apps`) menu, else the rows
+    /// only join their `show` / `app` cards.
     Artifacts {
         /// The rows.
         items: Vec<artifact::Artifact>,
         /// Open the picker.
         pick: bool,
+        /// Only [`artifact::Kind::App`] records (`/apps`, 46 §8.2).
+        apps: bool,
     },
     /// Reply to [`Command::ListSecrets`]: names, notes, versions. Never values.
     Secrets(secrets::SecretsList),
@@ -337,8 +343,9 @@ pub enum Command {
     SetAwsProfile(Option<String>),
     /// `list_sessions`.
     ListSessions,
-    /// `search_sessions`: fuzzy match over titles and message text.
-    Search(String),
+    /// One `/search` request (49 §6): `search`, `search_refresh`, a
+    /// destination fetch or the page around an old message.
+    Search(search::Request),
     /// `list_agents`: the subtree under a session.
     ListAgents(SessionId),
     /// `load_session`; `settled_only` (48 §5) reads through the idle actor
@@ -546,12 +553,15 @@ pub enum Command {
     RenameNode(String, String),
     /// `invite_node(<resolved id>)`. Holds a name or id prefix.
     InviteNode(String),
-    /// `list_artifacts(session, descendants: true)`; `pick` opens the `/artifacts` menu.
+    /// `list_artifacts(session, descendants: true)`; `pick` opens the `/artifacts`
+    /// menu, `apps` keeps only [`artifact::Kind::App`] records (`/apps`).
     ListArtifacts {
         /// Session.
         session: SessionId,
         /// Open the picker on reply.
         pick: bool,
+        /// Filter to apps.
+        apps: bool,
     },
     /// `export_artifact(id, ~/Downloads/<name>)`.
     ExportArtifact {
@@ -1123,8 +1133,8 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ("/sessions", "", "switch session (picker)"),
     (
         "/search",
-        "<query>",
-        "find a session by title or message text (fuzzy)",
+        "[query]",
+        "search sessions, artifacts, knowledge and history (live; fzf syntax)",
     ),
     ("/resume", "<id>", "open a session"),
     ("/new", "", "start a new session"),
@@ -1207,12 +1217,24 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "",
         "files the agent showed (picker: ⏎ opens, s shows inline, e exports to ~/Downloads)",
     ),
+    (
+        "/apps",
+        "",
+        "interactive apps the agent built, run on desktop/web (picker: ⏎ opens, s shows source, e exports to ~/Downloads)",
+    ),
     ("/exit", "", "same as /quit"),
 ];
 
-/// Commands whose name starts with the typed word (`/mo` → `/model`).
-pub fn slash_matches(word: &str) -> Vec<&'static (&'static str, &'static str, &'static str)> {
-    COMMANDS.iter().filter(|c| c.0.starts_with(word)).collect()
+/// Commands whose name starts with the typed word (`/mo` → `/model`);
+/// `/apps` only while the app plugin runs.
+pub fn slash_matches(
+    word: &str,
+    app_enabled: bool,
+) -> Vec<&'static (&'static str, &'static str, &'static str)> {
+    COMMANDS
+        .iter()
+        .filter(|c| c.0.starts_with(word) && (app_enabled || c.0 != "/apps"))
+        .collect()
 }
 
 /// Tool arguments as display lines. `shell` shows the command itself
@@ -1332,15 +1354,8 @@ pub enum Menu {
         /// Highlighted row.
         cursor: usize,
     },
-    /// `/search` picker.
-    Search {
-        /// What was searched for.
-        query: String,
-        /// Best score first, one per session.
-        hits: Vec<SearchHit>,
-        /// Highlighted row.
-        cursor: usize,
-    },
+    /// `/search` (49 §6): the live menu over [`Model::search`].
+    Search,
     /// `/agents` picker.
     Agents {
         /// The current session's subtree: running first, then awaiting /
@@ -1402,12 +1417,14 @@ pub enum Menu {
         /// Highlighted node.
         cursor: usize,
     },
-    /// `/artifacts` picker (35 §6.2).
+    /// `/artifacts` picker (35 §6.2); `/apps` when `apps` (46 §8.2).
     Artifacts {
         /// The session subtree's artifacts, newest first.
         items: Vec<artifact::Artifact>,
         /// Highlighted row.
         cursor: usize,
+        /// Rows are apps: the title says so and where they run.
+        apps: bool,
     },
     /// `/secrets`: the vault's names over [`Model::secrets`] (37 §5).
     Secrets {
@@ -1801,7 +1818,7 @@ fn set_card(entries: &mut [Entry], kind: CardKind, body: &str) {
 }
 
 /// Unix ms now.
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0)
 }
 
@@ -2345,6 +2362,9 @@ pub struct Model {
     pub approvals_global: bool,
     /// The root session opted out of prompts (`/approvals off`).
     pub approvals_off: bool,
+    /// `Info.app_enabled`: the app plugin runs, so `/apps` is offered. Off,
+    /// app records stay readable under `/artifacts` (46 §9).
+    pub app_enabled: bool,
     /// Latest MCP reconcile snapshot; `None` before the first.
     pub mcp: Option<McpProgress>,
     /// A reconcile settled while the `/mcp` menu is open: the event loop
@@ -2474,6 +2494,17 @@ pub struct Model {
     /// Bodies `PeerDelivered` already carded: the legacy `MessageDelivered`
     /// for the same input (50 §10) is not shown twice.
     peer_shown: VecDeque<String>,
+    /// `/search` state (49 §6.1): query, chips, request identity, groups,
+    /// cursor, previews. Kept across session switches so chips survive and
+    /// **Back to results** restores the last view; `menu == Menu::Search`
+    /// says whether it is up.
+    pub search: Box<search::State>,
+    /// The **Earlier messages** inspection (49 §7): the transcript shows a
+    /// page ending at an old match, isolated from the session's live events.
+    pub inspect: Option<search::Inspect>,
+    /// Search requests a reply produced where no sender was at hand (the
+    /// refresh reply's re-ask); flushed by the next tick or key.
+    search_outbox: Vec<search::Request>,
 }
 
 impl Model {
@@ -2501,6 +2532,8 @@ impl Model {
             // Per session: the switch view belongs to whatever is shown next
             // (the global default after `/new`).
             refresh_communication: true,
+            app_enabled: self.app_enabled,
+            search: std::mem::take(&mut self.search),
             ..Self::new(std::mem::take(&mut self.model_id), self.approvals_global)
         };
     }
@@ -2516,7 +2549,7 @@ impl Model {
         self.refresh_artifacts = self
             .entries
             .iter()
-            .any(|e| matches!(e, Entry::Tool { name, .. } if name == SHOW));
+            .any(|e| matches!(e, Entry::Tool { name, .. } if name == SHOW || name == APP));
         self.anchor = None;
         // An index into the old transcript is meaningless now.
         self.editing = None;
@@ -2672,12 +2705,17 @@ impl Model {
         if let Some(a) = self.ask() {
             return a.typing;
         }
-        !self.todo_focus && !self.modal_menu()
+        !self.todo_focus && !self.modal_menu() && self.inspect.is_none()
     }
 
     /// A menu that takes the keys is open: every menu but the slash popup.
     pub fn modal_menu(&self) -> bool {
         !matches!(self.menu, None | Some(Menu::Slash { .. }))
+    }
+
+    /// The `/search` menu is up (49 §6).
+    pub fn search_open(&self) -> bool {
+        matches!(self.menu, Some(Menu::Search))
     }
 
     /// The todo card has the keys: F2 focused it and nothing modal is up.
@@ -3401,12 +3439,10 @@ impl Model {
                     self.menu = Some(Menu::Sessions { items, cursor });
                 }
             }
-            UiEvent::Search(query, hits) => {
-                self.menu = Some(Menu::Search {
-                    query,
-                    hits,
-                    cursor: 0,
-                });
+            UiEvent::Search(generation, reply) => self.search_reply(generation, reply),
+            UiEvent::KnowledgeChanged(_) => {
+                self.search_invalidate(SearchCategory::Knowledge);
+                self.search_invalidate(SearchCategory::KnowledgeHistory);
             }
             UiEvent::Agents(list) => {
                 // Reseeding keeps what events taught about rows still there.
@@ -3448,7 +3484,8 @@ impl Model {
                 }
             }
             UiEvent::Refreshed(id, loaded) => {
-                if self.session == Some(id) {
+                // An inspected page is not the live transcript: no reload stitches over it.
+                if self.session == Some(id) && self.inspect.is_none() {
                     self.refresh(loaded);
                 }
             }
@@ -3781,6 +3818,7 @@ impl Model {
                 .push(Entry::Info(schedule_history_table(&name, info.as_ref(), &rows))),
             UiEvent::Computer(status) => self.entries.push(Entry::Info(computer_line(&status))),
             UiEvent::ArtifactShown(ev) => {
+                self.search_invalidate(SearchCategory::Artifacts);
                 if self.session == Some(ev.session) {
                     self.attach_artifact(ev.artifact);
                 }
@@ -3793,15 +3831,21 @@ impl Model {
                 }
             }
             UiEvent::ScrapeProgress(_) => {}
-            UiEvent::Artifacts { items, pick } => {
+            UiEvent::Artifacts { items, pick, apps } => {
                 if !pick {
                     for a in items {
                         self.attach_artifact(a);
                     }
                 } else if items.is_empty() {
-                    self.entries.push(Entry::Info("no artifacts".into()));
+                    self.entries.push(Entry::Info(
+                        if apps { "no apps" } else { "no artifacts" }.into(),
+                    ));
                 } else {
-                    self.menu = Some(Menu::Artifacts { items, cursor: 0 });
+                    self.menu = Some(Menu::Artifacts {
+                        items,
+                        cursor: 0,
+                        apps,
+                    });
                 }
             }
             UiEvent::Job(ev) => match ev {
@@ -4205,7 +4249,10 @@ impl Model {
             }
             // The sidebar of another frontend; nothing on screen changes and
             // a mid-stream arrival must not finish the streaming tail below.
-            AgentEvent::TitleChanged { .. } | AgentEvent::SessionDeleted { .. } => return,
+            AgentEvent::TitleChanged { .. } | AgentEvent::SessionDeleted { .. } => {
+                self.search_invalidate(SearchCategory::Sessions);
+                return;
+            }
             // Another client (or our own removal, whose reload is already on
             // its way) changed what the model sees. An edit or rewind reloads
             // the transcript once settled; the settled handback after a turn
@@ -4224,13 +4271,20 @@ impl Model {
             AgentEvent::TurnStarted { session, .. } if self.session == Some(*session) => {
                 self.streaming = true;
             }
-            AgentEvent::TurnFinished { session, .. } if self.session == Some(*session) => {
-                self.streaming = false;
+            AgentEvent::TurnFinished { session, .. } => {
+                self.search_invalidate(SearchCategory::Sessions);
+                if self.session == Some(*session) {
+                    self.streaming = false;
+                } else {
+                    self.track(&ev);
+                }
             }
             _ => self.track(&ev),
         }
-        // A subagent's stream is not rendered here; open it to read it.
-        if ev.session().is_none_or(|s| self.session != Some(s)) {
+        // A subagent's stream is not rendered here; open it to read it. An
+        // inspected page (49 §7) is not the live tail: arriving events must
+        // not stitch across the missing middle or move the match offscreen.
+        if ev.session().is_none_or(|s| self.session != Some(s)) || self.inspect.is_some() {
             return;
         }
         if !matches!(ev, AgentEvent::ReasoningDelta { .. })
@@ -4549,10 +4603,7 @@ impl Model {
         match cmd {
             "/quit" | "/exit" => self.quit = true,
             "/sessions" => send(tx, Command::ListSessions),
-            "/search" if arg.is_empty() => self
-                .entries
-                .push(Entry::Error("usage: /search <query>".into())),
-            "/search" => send(tx, Command::Search(arg.to_owned())),
+            "/search" => self.open_search(arg, tx),
             "/resume" => match arg.parse::<SessionId>() {
                 Ok(id) => self.resume(id, tx),
                 Err(_) => self
@@ -4655,12 +4706,16 @@ impl Model {
                     .entries
                     .push(Entry::Error("usage: /jobs [kill <id>]".into())),
             },
-            "/artifacts" => match self.session {
+            "/apps" if !self.app_enabled => self.entries.push(Entry::Info(
+                "apps are off (app.enabled); /artifacts lists their sources".into(),
+            )),
+            "/artifacts" | "/apps" => match self.session {
                 Some(session) => send(
                     tx,
                     Command::ListArtifacts {
                         session,
                         pick: true,
+                        apps: cmd == "/apps",
                     },
                 ),
                 None => self.entries.push(Entry::Info("no session".into())),
@@ -6377,7 +6432,7 @@ impl Model {
             Some(Menu::Efforts { .. }) => self.efforts_key(code, tx),
             Some(Menu::AwsProfiles { .. }) => self.aws_key(code, tx),
             Some(Menu::Sessions { .. }) => self.sessions_key(code, tx),
-            Some(Menu::Search { .. }) => self.search_key(code, tx),
+            Some(Menu::Search) => MenuKey::Consumed,
             Some(Menu::Agents { .. }) => self.agents_key(code, tx),
             Some(Menu::Mcp { .. }) => self.mcp_key(code, tx),
             Some(Menu::Acp { .. }) => self.acp_key(code, tx),
@@ -6402,7 +6457,7 @@ impl Model {
         let (word, arg) = input
             .split_once(' ')
             .map_or((input, ""), |(w, a)| (w, a.trim()));
-        let matches = slash_matches(word);
+        let matches = slash_matches(word, self.app_enabled);
         *cursor = (*cursor).min(matches.len().saturating_sub(1));
         let picked = matches.get(*cursor).copied();
         match code {
@@ -6594,28 +6649,317 @@ impl Model {
         MenuKey::Consumed
     }
 
-    /// `/search`: Enter switches to the highlighted hit's session, the same
-    /// path as `/sessions`.
-    fn search_key(&mut self, code: KeyCode, tx: &UnboundedSender<Command>) -> MenuKey {
-        let Some(Menu::Search { hits, cursor, .. }) = &mut self.menu else {
-            return MenuKey::Consumed;
-        };
-        match code {
-            KeyCode::Up => *cursor = cursor.saturating_sub(1),
-            KeyCode::Down => *cursor = (*cursor + 1).min(hits.len().saturating_sub(1)),
-            KeyCode::Esc => self.menu = None,
-            KeyCode::Enter => {
-                let picked = hits.get(*cursor).map(|h| h.session);
+    /// `/search [query]` (49 §6): open the live menu, a fresh view with the
+    /// remembered chips; a prefilled query runs at once. Any preview or
+    /// inspection under way is left.
+    pub fn open_search(&mut self, query: &str, tx: &UnboundedSender<Command>) {
+        self.inspect = None;
+        self.menu = Some(Menu::Search);
+        for r in self.search.open(query) {
+            send(tx, Command::Search(r));
+        }
+    }
+
+    /// The search editor changed (49 §6.1): the debounce starts.
+    pub fn search_edit(&mut self, text: String) {
+        if self.search_open() {
+            self.search.edit(text, now_ms());
+        }
+    }
+
+    /// When the event loop must next wake for search (unix ms); `None` idle.
+    pub fn search_wake(&self) -> Option<u64> {
+        self.search_open().then(|| self.search.wake()).flatten()
+    }
+
+    /// Send whatever search request is due at `now`, and anything a reply
+    /// queued meanwhile.
+    pub fn search_tick(&mut self, now: u64, tx: &UnboundedSender<Command>) {
+        self.search_flush(tx);
+        if !self.search_open() {
+            return;
+        }
+        for r in self.search.tick(now) {
+            send(tx, Command::Search(r));
+        }
+    }
+
+    /// A source changed: an open search re-asks, a closed one on restore.
+    fn search_invalidate(&mut self, category: SearchCategory) {
+        let open = self.search_open();
+        self.search.invalidate(category, open, now_ms());
+    }
+
+    /// A tagged search reply; stale generations are inert inside.
+    fn search_reply(&mut self, generation: u64, reply: search::Reply) {
+        if !self.search_open() {
+            return;
+        }
+        match self.search.reply(generation, reply, now_ms()) {
+            search::Effect::None => {}
+            search::Effect::Send(reqs) => {
+                // Only the refresh reply sends from here; it needs the sender,
+                // which `apply` lacks. Queue through the deadline instead.
+                self.search_queue(reqs);
+            }
+            search::Effect::Artifact(load) => {
+                let opts = self.assistant_options();
+                let body = artifact_text(
+                    &load.artifact,
+                    load.bytes.as_deref().map_err(String::as_str),
+                    &opts,
+                );
+                self.search.previews.push(search::Preview::Artifact {
+                    artifact: Box::new(load.artifact),
+                    body: Box::new(body),
+                    matched: load.matched,
+                    panel: false,
+                    scroll: 0,
+                });
+            }
+            search::Effect::Inspect {
+                session,
+                seq,
+                loaded,
+            } => self.inspect_page(session, seq, loaded),
+        }
+    }
+
+    /// Requests produced while no sender was at hand: held until the next
+    /// [`Model::search_tick`] / key.
+    fn search_queue(&mut self, reqs: Vec<search::Request>) {
+        self.search_outbox.extend(reqs);
+    }
+
+    /// Flush [`Model::search_queue`]'d requests.
+    pub fn search_flush(&mut self, tx: &UnboundedSender<Command>) {
+        for r in std::mem::take(&mut self.search_outbox) {
+            send(tx, Command::Search(r));
+        }
+    }
+
+    /// Keys while the `/search` menu is up (49 §6.1). `area` is the rows the
+    /// result list gets and `width` the box's inner columns, for paging and
+    /// preview clamping. Query-focus editing keys are the search editor's
+    /// (its own `TextInput`); this sees the rest.
+    pub fn search_key(
+        &mut self,
+        code: KeyCode,
+        width: usize,
+        area: usize,
+        tx: &UnboundedSender<Command>,
+    ) {
+        use crate::search::{Act, FOOTER, Focus};
+        let compact = area < 4;
+        // A preview owns the keys while up; Esc pops it.
+        if let Some(act) = self.search.preview_key(code, width, area) {
+            match code {
+                KeyCode::Char('o') => {
+                    if let Some(a) = self.search.preview_artifact() {
+                        send(tx, Command::OpenPath(a.path.clone()));
+                    }
+                }
+                KeyCode::Char('e') => {
+                    if let Some(a) = self.search.preview_artifact() {
+                        send(
+                            tx,
+                            Command::ExportArtifact {
+                                id: a.id.clone(),
+                                name: a.name.clone(),
+                            },
+                        );
+                    }
+                }
+                _ => {}
+            }
+            self.search_act(act, tx);
+            return;
+        }
+        let focus = self.search.focus;
+        let act = match (code, focus) {
+            (KeyCode::Esc, _) => {
                 self.menu = None;
-                match picked {
-                    Some(id) if Some(id) == self.session => {}
-                    Some(id) => self.resume(id, tx),
-                    None => {}
+                self.search.close();
+                return;
+            }
+            (KeyCode::Tab, Focus::Query) => {
+                self.search.focus = Focus::Filters(0);
+                Act::None
+            }
+            (KeyCode::Tab, Focus::Filters(_)) => {
+                self.search.focus = Focus::Results;
+                Act::None
+            }
+            (KeyCode::Tab, Focus::Results) => {
+                self.search.focus = Focus::Footer(0);
+                Act::None
+            }
+            (KeyCode::Tab, Focus::Footer(_)) => {
+                self.search.focus = Focus::Query;
+                Act::None
+            }
+            (KeyCode::BackTab, Focus::Query) => {
+                self.search.focus = Focus::Footer(0);
+                Act::None
+            }
+            (KeyCode::BackTab, Focus::Filters(_)) => {
+                self.search.focus = Focus::Query;
+                Act::None
+            }
+            (KeyCode::BackTab, Focus::Results) => {
+                self.search.focus = Focus::Filters(0);
+                Act::None
+            }
+            (KeyCode::BackTab, Focus::Footer(_)) => {
+                self.search.focus = Focus::Results;
+                Act::None
+            }
+            (KeyCode::Up, _) => {
+                self.search.move_cursor(-1);
+                Act::None
+            }
+            (KeyCode::Down, _) => {
+                self.search.move_cursor(1);
+                Act::None
+            }
+            (KeyCode::PageUp, _) => {
+                self.search.move_cursor(-(area.max(1) as isize));
+                Act::None
+            }
+            (KeyCode::PageDown, _) => {
+                self.search.move_cursor(area.max(1) as isize);
+                Act::None
+            }
+            (KeyCode::Left, Focus::Filters(i)) => {
+                self.search.focus = Focus::Filters(i.saturating_sub(1));
+                Act::None
+            }
+            (KeyCode::Right, Focus::Filters(i)) => {
+                self.search.focus = Focus::Filters((i + 1).min(4));
+                Act::None
+            }
+            (KeyCode::Char(' ') | KeyCode::Enter, Focus::Filters(i)) => {
+                Act::Send(self.search.toggle(i))
+            }
+            (KeyCode::Left, Focus::Footer(i)) => {
+                self.search.focus = Focus::Footer(i.saturating_sub(1));
+                Act::None
+            }
+            (KeyCode::Right, Focus::Footer(i)) => {
+                self.search.focus = Focus::Footer((i + 1).min(FOOTER.len() - 1));
+                Act::None
+            }
+            (KeyCode::Char(' ') | KeyCode::Enter, Focus::Footer(0)) => {
+                Act::Send(self.search.refresh())
+            }
+            (KeyCode::Char(' ') | KeyCode::Enter, Focus::Footer(_)) => {
+                self.search.previews.push(search::Preview::Help);
+                Act::None
+            }
+            (KeyCode::Enter, Focus::Query | Focus::Results) => self.search.enter(),
+            _ => Act::None,
+        };
+        self.search.ensure_visible(area, compact);
+        self.search_act(act, tx);
+    }
+
+    /// Carry out what a search key asked.
+    fn search_act(&mut self, act: search::Act, tx: &UnboundedSender<Command>) {
+        self.search_flush(tx);
+        match act {
+            search::Act::None => {}
+            search::Act::Send(reqs) => {
+                for r in reqs {
+                    send(tx, Command::Search(r));
                 }
             }
-            _ => {}
+            // A title hit or a recent row: an ordinary session switch (49 §7).
+            // The current session needs no reload; the menu just closes.
+            search::Act::Resume(id) => {
+                self.menu = None;
+                self.search.close();
+                if Some(id) != self.session || self.inspect.is_some() {
+                    self.resume(id, tx);
+                }
+            }
         }
-        MenuKey::Consumed
+    }
+
+    /// Show the page ending at `seq` as the **Earlier messages** inspection
+    /// (49 §7): the session's rows up to the match, the match revealed at the
+    /// top (a removed row as its archive card), live events kept out until
+    /// **Jump to latest** loads the normal tail. Nothing here enters the
+    /// model's context.
+    fn inspect_page(&mut self, session: SessionId, seq: i64, loaded: Loaded) {
+        let approvals = std::mem::take(&mut self.approvals);
+        let asks = std::mem::take(&mut self.asks);
+        self.reset();
+        self.approvals = approvals;
+        self.asks = asks;
+        self.session = Some(session);
+        let opts = self.assistant_options();
+        let mut target = None;
+        let mut entries = Vec::new();
+        for h in loaded.history {
+            let here = h
+                .context()
+                .is_some_and(|c| c.target == ContextTarget::Message { seq });
+            if here {
+                target = Some(entries.len());
+                entries.push(Entry::Info(format!("▶ matched message · seq {seq}")));
+            }
+            entries.extend(from_history(h, &opts));
+        }
+        if target.is_none() {
+            entries.insert(
+                0,
+                Entry::Info(format!(
+                    "message {seq} is not on this page (removed or hidden); showing the messages around it"
+                )),
+            );
+        }
+        self.entries = entries;
+        self.anchor = Some((target.unwrap_or(0), 0));
+        self.model_id = loaded.model;
+        self.effort = loaded.effort;
+        self.session_name = loaded.name;
+        self.session_parent = loaded.parent;
+        self.streaming = loaded.running;
+        self.inspect = Some(search::Inspect {
+            session,
+            seq,
+            found: target.is_some(),
+        });
+    }
+
+    /// **Jump to latest** from the inspection: the normal tail, live again.
+    pub fn jump_latest(&mut self, tx: &UnboundedSender<Command>) {
+        if let Some(i) = self.inspect.take() {
+            self.resume(i.session, tx);
+        }
+    }
+
+    /// **Back to results** from the inspection: the normal tail loads behind
+    /// the reopened menu, which shows the view as left.
+    pub fn back_to_results(&mut self, tx: &UnboundedSender<Command>) {
+        if let Some(i) = self.inspect.take() {
+            self.resume(i.session, tx);
+        }
+        self.menu = Some(Menu::Search);
+        for r in self.search.restore() {
+            send(tx, Command::Search(r));
+        }
+    }
+
+    /// The inspection's hint row (49 §7).
+    pub fn inspect_line(&self) -> Option<String> {
+        let i = self.inspect.as_ref()?;
+        Some(format!(
+            "earlier messages · {} · message {}{}   ↑↓ scroll  ⏎/j jump to latest  esc/b back to results",
+            short(i.session),
+            i.seq,
+            if i.found { "" } else { " (not on this page)" }
+        ))
     }
 
     /// `/agents`: Enter opens the highlighted subagent — a session switch,
@@ -6640,10 +6984,11 @@ impl Model {
         MenuKey::Consumed
     }
 
-    /// `/artifacts`: Enter opens the highlighted file with the OS, `s` shows
-    /// it inline as a card, `e` exports it to `~/Downloads/<name>` (35 §6.2).
+    /// `/artifacts` and `/apps`: Enter opens the highlighted file with the OS,
+    /// `s` shows it inline as a card (an app's read-only source), `e` exports
+    /// it to `~/Downloads/<name>` (35 §6.2, 46 §8.2).
     fn artifacts_key(&mut self, code: KeyCode, tx: &UnboundedSender<Command>) -> MenuKey {
-        let Some(Menu::Artifacts { items, cursor }) = &mut self.menu else {
+        let Some(Menu::Artifacts { items, cursor, .. }) = &mut self.menu else {
             return MenuKey::Consumed;
         };
         match code {
@@ -7670,6 +8015,10 @@ impl PeerRow<'_> {
 
 /// The tool whose card is an artifact card (35 §0.3).
 const SHOW: &str = "show";
+/// The tool whose card is an app card (46 §3.1): same join, source is the file.
+const APP: &str = "app";
+/// Where an app runs; the TUI only reads its source (46 §8.2).
+pub const APP_WHERE: &str = "interactive on desktop/web";
 /// Rows an inline artifact body shows at most (35 §6.1).
 const INLINE_LINES: usize = 200;
 /// Rows of a CSV artifact shown inline.
@@ -7695,6 +8044,7 @@ pub struct Progress {
 
 /// The spinner row of a `Pending` call with progress: `writing report.pdf… 3.2 KB`
 /// when `show` carries `content`, `showing report.pdf…` when it names a path,
+/// `building <name>… 3.2 KB` for `app` (its `name` streams first),
 /// `preparing <tool>… 3.2 KB` for every other tool.
 pub fn progress_line(tool: &str, p: &Progress) -> String {
     let size = bytes_label(p.bytes as u64);
@@ -7704,6 +8054,10 @@ pub fn progress_line(tool: &str, p: &Progress) -> String {
             (Some(n), false) => format!("showing {n}…"),
             (None, true) => format!("writing… {size}"),
             (None, false) => "preparing show…".to_owned(),
+        },
+        (APP, Some(s)) => match &s.name {
+            Some(n) => format!("building {n}… {size}"),
+            None => format!("building app… {size}"),
         },
         _ => format!("preparing {tool}… {size}"),
     }
@@ -7794,20 +8148,40 @@ fn md_cell(s: &str) -> String {
 
 /// An artifact's inline body by kind (35 §3.2): markdown rendered with the
 /// assistant's options so its own fences draw, text in a fence tagged with the
-/// extension, CSV as a table of the first [`CSV_ROWS`] rows, anything else one
-/// line. Text bodies cap at [`INLINE_LINES`].
+/// extension, CSV as a table of the first [`CSV_ROWS`] rows, an app's
+/// `.openui` source read-only in a fence under where it runs (46 §8.2),
+/// anything else one line. Text bodies cap at [`INLINE_LINES`].
 fn artifact_body(a: &artifact::Artifact, opts: &markdown::Options) -> markdown::Text {
+    use artifact::Kind;
+    let bytes = match a.kind {
+        Kind::Markdown | Kind::Text | Kind::Html | Kind::Csv | Kind::App => {
+            std::fs::read(&a.path).map_err(|e| e.to_string())
+        }
+        _ => Ok(Vec::new()),
+    };
+    artifact_text(a, bytes.as_deref().map_err(String::as_str), opts)
+}
+
+/// [`artifact_body`] over bytes already read (the search preview reads them
+/// off the UI thread); `Err` is why the file could not be read.
+pub(crate) fn artifact_text(
+    a: &artifact::Artifact,
+    bytes: Result<&[u8], &str>,
+    opts: &markdown::Options,
+) -> markdown::Text {
     use artifact::Kind;
     let ext = a.path.extension().map_or("", |e| e.to_str().unwrap_or(""));
     let path = a.path.display().to_string();
     let unreadable = |e: &dyn std::fmt::Display| format!("cannot read {path}: {e}");
     let md = match a.kind {
-        Kind::Markdown | Kind::Text | Kind::Html => match std::fs::read_to_string(&a.path) {
+        Kind::Markdown | Kind::Text | Kind::Html | Kind::App => match bytes {
             Err(e) => unreadable(&e),
-            Ok(s) => {
+            Ok(b) => {
+                let s = String::from_utf8_lossy(b);
                 let (body, cut) = cap_lines(&s);
                 let text = match a.kind {
                     Kind::Markdown => body,
+                    Kind::App => format!("[app] {APP_WHERE} · source:\n\n{}", fenced(ext, &body)),
                     _ => fenced(ext, &body),
                 };
                 match cut {
@@ -7816,8 +8190,8 @@ fn artifact_body(a: &artifact::Artifact, opts: &markdown::Options) -> markdown::
                 }
             }
         },
-        Kind::Csv => match std::fs::read(&a.path)
-            .map_err(|e| e.to_string())
+        Kind::Csv => match bytes
+            .map_err(str::to_owned)
             .and_then(|b| artifact::kind::csv_table(&b, ext == "tsv", CSV_ROWS))
         {
             Err(e) => unreadable(&e),
@@ -8225,7 +8599,7 @@ fn elapsed(d: chrono::Duration) -> String {
 }
 
 /// An RFC 3339 stamp as local `YYYY-MM-DD HH:MM`; anything else verbatim.
-fn when(rfc3339: &str) -> String {
+pub(crate) fn when(rfc3339: &str) -> String {
     chrono::DateTime::parse_from_rfc3339(rfc3339).map_or_else(
         |_| rfc3339.to_owned(),
         |t| {
@@ -8277,8 +8651,9 @@ mod tests {
             MenuKey::Input(String::new())
         );
         assert!(m.quit && m.menu.is_none());
-        assert_eq!(slash_matches("/").len(), COMMANDS.len());
-        assert!(slash_matches("/zzz").is_empty());
+        assert_eq!(slash_matches("/", true).len(), COMMANDS.len());
+        assert_eq!(slash_matches("/", false).len(), COMMANDS.len() - 1);
+        assert!(slash_matches("/zzz", true).is_empty());
     }
 
     /// An inventory: a user message with two images, an assistant call
@@ -8644,42 +9019,207 @@ mod tests {
         );
     }
 
+    /// A session search hit for tests.
+    fn search_session_hit(session: SessionId, seq: Option<i64>) -> agent::search::SearchHit {
+        use ::search::MatchRange;
+        use agent::search::{HitKind, HitRole};
+        agent::search::SearchHit {
+            session,
+            title: "deploy checklist".into(),
+            kind: if seq.is_some() {
+                HitKind::Message
+            } else {
+                HitKind::Title
+            },
+            seq,
+            role: seq.map(|_| HitRole::Assistant),
+            snippet: "deploy checklist".into(),
+            ranges: vec![MatchRange { start: 0, end: 6 }],
+            score: 1,
+            matches: 1,
+            updated_at: String::new(),
+            context_removed: false,
+        }
+    }
+
+    /// The reply to a `Command::Search` results request pulled off `rx`.
+    fn search_answer(cmd: Command, hits: Vec<agent::search::SearchHit>) -> UiEvent {
+        let Command::Search(search::Request { generation, kind }) = cmd else {
+            panic!("expected a search request");
+        };
+        let search::RequestKind::Results {
+            categories, limit, ..
+        } = kind
+        else {
+            panic!("expected a results request");
+        };
+        UiEvent::Search(
+            generation,
+            search::Reply::Results {
+                categories,
+                limit,
+                result: Ok(rpc::search::SearchResponse {
+                    groups: vec![rpc::search::SearchGroup::Sessions {
+                        page: ::search::SearchPage::ready(hits, 10),
+                    }],
+                }),
+            },
+        )
+    }
+
     #[test]
-    fn search_opens_picker_and_enter_switches_session() {
-        use agent::search::{HitKind, MatchRange};
+    fn search_opens_live_menu_and_enter_on_a_title_hit_switches_session() {
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::default();
+        // Blank `/search` opens the menu and asks only for recent sessions.
         m.submit("/search", &tx);
-        assert!(matches!(m.entries.last(), Some(Entry::Error(t)) if t == "usage: /search <query>"));
-        assert!(rx.try_recv().is_err());
-        m.submit("/search deploy", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::Search(q)) if q == "deploy"));
-        let hit = SessionId::new();
-        m.apply(UiEvent::Search(
-            "deploy".into(),
-            vec![SearchHit {
-                session: hit,
-                title: "deploy checklist".into(),
-                kind: HitKind::Title,
-                seq: None,
-                role: None,
-                snippet: "deploy checklist".into(),
-                ranges: vec![MatchRange { start: 0, end: 6 }],
-                score: 1,
-                matches: 0,
-                updated_at: String::new(),
-                context_removed: false,
-            }],
+        assert!(m.search_open() && !m.input_focused());
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::Search(search::Request {
+                kind: search::RequestKind::Recent,
+                ..
+            }))
         ));
-        assert!(
-            matches!(&m.menu, Some(Menu::Search { query, hits, cursor: 0 }) if query == "deploy" && hits.len() == 1)
-        );
-        assert!(!m.input_focused());
-        // Enter is a session switch, the `/sessions` path.
-        m.menu_key(KeyCode::Enter, "", &tx);
+        m.search_key(KeyCode::Esc, 80, 10, &tx);
+        assert!(m.menu.is_none());
+        // A prefilled query runs at once, all four chips at limit 10.
+        m.submit("/search deploy", &tx);
+        let cmd = rx.try_recv().unwrap();
+        assert!(matches!(
+            &cmd,
+            Command::Search(search::Request { kind: search::RequestKind::Results { query, categories, limit: 10 }, .. })
+                if query == "deploy" && categories.len() == 4
+        ));
+        let hit = SessionId::new();
+        m.apply(search_answer(cmd, vec![search_session_hit(hit, None)]));
+        assert!(matches!(
+            m.search.rows.get(m.search.cursor),
+            Some(search::Row::Hit(0, 0))
+        ));
+        // Enter on a title hit is a session switch, the `/sessions` path.
+        m.search_key(KeyCode::Enter, 80, 10, &tx);
         assert!(m.menu.is_none());
         assert_eq!(m.session, Some(hit));
         assert!(matches!(rx.try_recv(), Ok(Command::Load { session, .. }) if session == hit));
+        // Chips survive the reset a session switch performs.
+        m.search.selected = [true, false, false, false];
+        m.resume(SessionId::new(), &tx);
+        assert_eq!(m.search.selected, [true, false, false, false]);
+    }
+
+    #[test]
+    fn message_hit_opens_an_isolated_earlier_messages_page() {
+        use agent::{ContextEntry, ContextTarget, HistoryEntry};
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        let live = SessionId::new();
+        m.session = Some(live);
+        m.submit("/search deploy", &tx);
+        let cmd = rx.try_recv().unwrap();
+        m.apply(search_answer(cmd, vec![search_session_hit(live, Some(7))]));
+        m.search_key(KeyCode::Enter, 80, 10, &tx);
+        // The current session too: a page ending at the match, not a resume.
+        let Ok(Command::Search(search::Request {
+            generation,
+            kind: search::RequestKind::Page { session, seq: 7 },
+        })) = rx.try_recv()
+        else {
+            panic!("expected a page request");
+        };
+        assert_eq!(session, live);
+        let row = |seq: i64, text: &str| HistoryEntry::Assistant {
+            text: text.into(),
+            turn: None,
+            context: Some(ContextEntry {
+                target: ContextTarget::Message { seq },
+                active: true,
+                removed: false,
+                remove_with: vec![],
+                attachments: vec![],
+            }),
+        };
+        let loaded = Loaded {
+            history: vec![
+                row(5, "older"),
+                row(7, "the deploy checklist"),
+                row(8, "after"),
+            ],
+            ..Loaded::default()
+        };
+        m.apply(UiEvent::Search(
+            generation,
+            search::Reply::Page {
+                session: live,
+                seq: 7,
+                result: Ok(loaded),
+            },
+        ));
+        assert!(m.menu.is_none());
+        let inspect = m.inspect.clone().expect("inspection view");
+        assert!(inspect.found);
+        let marker = m
+            .entries
+            .iter()
+            .position(|e| matches!(e, Entry::Info(t) if t.contains("seq 7")))
+            .expect("match marker");
+        assert_eq!(
+            m.anchor,
+            Some((marker, 0)),
+            "the match is revealed at the top"
+        );
+        assert!(!m.input_focused(), "no composer over an incomplete context");
+        // Live events for the session do not stitch into the page.
+        let before = m.entries.len();
+        m.apply(UiEvent::Agent(AgentEvent::TextDelta {
+            session: live,
+            turn: TurnId::new(),
+            text: "streamed".into(),
+        }));
+        assert_eq!(m.entries.len(), before);
+        // Jump to latest loads the normal tail.
+        m.jump_latest(&tx);
+        assert!(m.inspect.is_none());
+        assert!(
+            matches!(rx.try_recv(), Ok(Command::Load { session, settled_only: false }) if session == live)
+        );
+    }
+
+    #[test]
+    fn back_to_results_restores_the_view_and_a_stale_reply_after_escape_is_dropped() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        m.submit("/search deploy", &tx);
+        let cmd = rx.try_recv().unwrap();
+        let Command::Search(search::Request { generation, .. }) = &cmd else {
+            panic!()
+        };
+        let generation = *generation;
+        m.search_key(KeyCode::Esc, 80, 10, &tx);
+        assert!(m.menu.is_none());
+        m.apply(search_answer(
+            cmd,
+            vec![search_session_hit(SessionId::new(), None)],
+        ));
+        assert!(
+            m.search.groups.is_empty(),
+            "an answer to a closed view never lands"
+        );
+        assert!(m.entries.iter().all(|e| !matches!(e, Entry::Error(_))));
+        // An error for that generation is inert too, not a transcript line.
+        m.apply(UiEvent::Search(
+            generation,
+            search::Reply::Results {
+                categories: vec![SearchCategory::Sessions],
+                limit: 10,
+                result: Err("late".into()),
+            },
+        ));
+        assert!(m.entries.iter().all(|e| !matches!(e, Entry::Error(_))));
+        // Back to results reopens the menu with the query kept.
+        m.back_to_results(&tx);
+        assert!(m.search_open());
+        assert_eq!(m.search.query, "deploy");
     }
 
     #[test]
@@ -11182,6 +11722,162 @@ mod tests {
     }
 
     #[test]
+    fn app_card_reads_its_source_and_apps_picker_lists_only_apps() {
+        let (tx, mut rx) = unbounded_channel();
+        let s = SessionId::new();
+        let turn = TurnId::new();
+        let mut m = Model {
+            session: Some(s),
+            app_enabled: true,
+            ..Model::default()
+        };
+        // The streamed `name` names the app being built; no pretend render.
+        m.apply_agent(AgentEvent::ToolCallPending {
+            session: s,
+            turn,
+            call_id: "a1".into(),
+            name: "app".into(),
+        });
+        m.apply_agent(AgentEvent::ToolCallProgress {
+            session: s,
+            turn,
+            call_id: "a1".into(),
+            args: r#"{"name": "panel", "source": "root = Card("#.into(),
+        });
+        let Some(Entry::Pending {
+            name,
+            progress: Some(p),
+            ..
+        }) = m.entries.last()
+        else {
+            unreachable!()
+        };
+        assert_eq!(progress_line(name, p), "building panel… 41 B");
+        m.apply_agent(AgentEvent::ToolCallStarted {
+            session: s,
+            turn,
+            call_id: "a1".into(),
+            name: "app".into(),
+            args: serde_json::json!({"name": "panel", "source": "root = Card(TextContent(\"hi\"))"}),
+        });
+        let path = std::env::temp_dir().join(format!("wth-tui-app-{}.openui", std::process::id()));
+        std::fs::write(&path, "root = Card(TextContent(\"hi\"))\n").unwrap();
+        let app = artifact::Artifact {
+            id: "app1".into(),
+            session: s,
+            call_id: "a1".into(),
+            name: "panel.openui".into(),
+            title: "Panel".into(),
+            kind: artifact::Kind::App,
+            mime: "text/plain".into(),
+            bytes: 31,
+            version: 1,
+            path: path.clone(),
+            source: None,
+            preview: None,
+            pages: None,
+            origin: None,
+            created_at: 0,
+        };
+        // The app's `ArtifactShown` joins the `app` card by call_id like `show`.
+        m.apply(UiEvent::ArtifactShown(artifact::ArtifactShown {
+            session: s,
+            call_id: "a1".into(),
+            artifact: app.clone(),
+        }));
+        m.apply_agent(AgentEvent::ToolCallFinished {
+            session: s,
+            turn,
+            call_id: "a1".into(),
+            output: "published panel v1 (a1) · 1 statement".into(),
+            is_error: false,
+            files: Vec::new(),
+        });
+        assert!(matches!(
+            m.entries.last(),
+            Some(Entry::Tool { artifact: Some(a), .. }) if a.kind == artifact::Kind::App
+        ));
+        // `o` opens the source file; Ctrl+O reads it, saying where the app runs.
+        assert_eq!(m.artifact_path(), Some(path.as_path()));
+        m.toggle_card();
+        let Some(Entry::Tool {
+            expanded: Some(t), ..
+        }) = m.entries.last()
+        else {
+            panic!("expanded");
+        };
+        let has = |needle: &str| {
+            t.view()
+                .lines()
+                .any(|l| l.iter().any(|s| s.text.contains(needle)))
+        };
+        assert!(has("desktop/web") && has("TextContent"));
+
+        // A loaded transcript with an `app` card asks to re-join artifacts like `show`.
+        m.apply(UiEvent::History(
+            s,
+            Loaded {
+                history: vec![HistoryEntry::Tool {
+                    call_id: "a1".into(),
+                    name: "app".into(),
+                    args: serde_json::json!({"name": "panel"}),
+                    result: Some(("published".into(), false)),
+                    files: vec![],
+                    context: None,
+                }],
+                ..Loaded::default()
+            },
+        ));
+        assert!(m.refresh_artifacts);
+        m.session = Some(s);
+
+        // With the plugin off, `/apps` is not offered and asks nothing; the
+        // source stays readable through `/artifacts` (the card above).
+        m.app_enabled = false;
+        assert!(slash_matches("/apps", false).is_empty());
+        m.submit("/apps", &tx);
+        assert!(rx.try_recv().is_err());
+        assert!(matches!(m.entries.last(), Some(Entry::Info(t)) if t.starts_with("apps are off")));
+        m.app_enabled = true;
+
+        // `/apps` asks for the filtered list; the picker names it and `s` shows the source.
+        m.submit("/apps", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::ListArtifacts { session, pick: true, apps: true }) if session == s
+        ));
+        m.apply(UiEvent::Artifacts {
+            items: vec![app],
+            pick: true,
+            apps: true,
+        });
+        assert!(matches!(m.menu, Some(Menu::Artifacts { apps: true, .. })));
+        m.menu_key(KeyCode::Char('s'), "", &tx);
+        assert!(m.menu.is_none());
+        assert!(matches!(
+            m.entries.last(),
+            Some(Entry::Card { kind: CardKind::Artifact, title, expanded: true, .. }) if title == "panel.openui"
+        ));
+        // `/artifacts` stays every kind; an empty `/apps` says so.
+        m.submit("/artifacts", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::ListArtifacts {
+                pick: true,
+                apps: false,
+                ..
+            })
+        ));
+        m.apply(UiEvent::Artifacts {
+            items: Vec::new(),
+            pick: true,
+            apps: true,
+        });
+        assert!(matches!(m.entries.last(), Some(Entry::Info(t)) if t == "no apps"));
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
     fn scrape_progress_rides_the_running_card_and_clears_on_finish() {
         let s = SessionId::new();
         let turn = TurnId::new();
@@ -11444,8 +12140,10 @@ mod tests {
     #[test]
     fn todo_summary_names_drops_and_blocked_waits() {
         use agent::todo::Todo;
-        let mut m = Model::default();
-        m.session = Some(SessionId::new());
+        let mut m = Model {
+            session: Some(SessionId::new()),
+            ..Model::default()
+        };
         let item = |status, reason: Option<&str>| Todo {
             text: "t".into(),
             status,

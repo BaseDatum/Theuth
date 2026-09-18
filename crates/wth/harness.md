@@ -30,8 +30,9 @@ real path. Everything below is relative to it.
 | `knowledge/` | the knowledge bundle (markdown, git history); `knowledge.sqlite` is a derived index | live |
 | `sessions.sqlite` | every session's history; `/sessions`, `/resume <id>` | live |
 | `attachments/`, `spill/` | pasted images; tool output that exceeded the cap (`read_file` the path a result names). `spill/<session>/epoch_<n>.txt` holds the turns folded by compaction `n` verbatim (and `epoch_<n>.summary.md` the summary), readable with `read_file` | - |
-| `artifacts/` | files shown with `show`: content-addressed blobs (design doc 35) | live |
-| `artifacts.sqlite` | the artifact index. Deleting it rebuilds nothing — the blobs it named are orphaned and swept at the next start | live |
+| `artifacts/` | files shown with `show` and apps published with `app` (`.openui`): content-addressed blobs (design docs 35, 46) | live |
+| `artifacts.sqlite` | the artifact index plus one row per app invocation (view, binding, status, result). Deleting it rebuilds nothing — the blobs it named are orphaned and swept at the next start | live |
+| `artifacts.owners/` | one OS-locked file per running harness on this data dir; an invocation row belongs to the owner that dispatched it, and only rows of a provably dead owner are recovered (as `unknown`, never retried) at the next open | live |
 | `logs/wth.log.<YYYY-MM-DD>` | the process log; `RUST_LOG=debug` for more | live |
 | `token` | bearer for the JSON-RPC server | startup |
 | `signal/` | Signal linked-device state and `inbox/` for files the user texts | - |
@@ -63,6 +64,7 @@ secrets: {key_store: auto, tools: true, request_timeout_secs: 1800}   # encrypte
 knowledge: {enabled: true}
 surface: {enabled: true, correct: true}   # replies may draw mermaid / json-render; correct = one fix-up round on invalid json-render
 artifact: {enabled: true, fonts: []}   # the `show` tool; fonts = extra directories searched when compiling PDFs (35)
+app: {enabled: true}   # the `app` tool, `/apps`, `get_app`/`app_*` RPC and the parser helper; false = none of those, published apps stay readable as source (46)
 signal: {enabled: true, device_name: wth, owner: "+1555…", allowed: []}
 a2a: {enabled: false, listen: 127.0.0.1:7780, public_url: null}   # remote agents over A2A (50 §6); off = no actor or listener; peers/exports in a2a/peers.yaml, `/a2a reload`
 ```
@@ -130,9 +132,10 @@ A skill is a markdown file with optional front matter (`name`,
 system prompt lists them; `load_skill` fetches a body; `add_skill` /
 `remove_skill` write local ones; `add_skill_repo` / `sync_skills` manage
 cloned repos (read-only). This file, `visualize` (drawing in replies,
-design doc 30) and `pdf` (front matter, page breaks and Typst for `show`'s
-`.pdf` names, design doc 35) are binary-owned; all three are rewritten on
-every start.
+design doc 30), `pdf` (front matter, page breaks and Typst for `show`'s
+`.pdf` names, design doc 35), `loops` and `apps` (OpenUI Lang, the component
+catalog and examples for `app`, design doc 46) are binary-owned; all of them
+are rewritten on every start.
 
 ## Sessions, subagents, jobs, knowledge
 
@@ -166,6 +169,21 @@ every start.
   compiles the markdown (or `source: typst`) in `content` and the result
   includes a picture of page 1. Same name again is a new version. *show* =
   in this chat; *message_user* = wherever the user is.
+- `app{name, source, title?, edit?, base_call_id?}` publishes an OpenUI Lang
+  program as an interactive screen the user opens and clicks on desktop/web
+  (design doc 46; load the `apps` skill first). It renders progressively
+  while you write it; its `Query` bindings read installed tools live and its
+  `Mutation` bindings run only from a pressed action — **the press is the
+  approval**, there is no second card, so state the consequence in the
+  button label; a policy-denied tool is simply unavailable. Links, external
+  images and external services are normal; a `{{secret:NAME}}` in the source
+  is committed literally and filled only when that tool runs. The receipt's
+  `record_call_id` is the base for `edit: true` patches (`name = null`
+  deletes a statement); a stale base returns a conflict naming the latest
+  version. In the TUI, Slack and Signal the card is a receipt plus read-only
+  source. `apps are unavailable on this harness: parser helper missing` means
+  the `wth-app-parser-<hash>` executable is not beside `wth` — say so and use
+  `show` for a static file; only the user can install it.
 - `ask_user{questions}` shows the user one or more multiple-choice questions
   (`{id, question, options: [{label, description?}], recommended?}`) and
   waits for the answers; they may pick, type their own, or skip a question,

@@ -50,4 +50,10 @@ name: string,
  * The global communication switch (50 §10): `session: None`, the
  * authoritative ceiling every per-session state inherits.
  */
-communication: CommunicationState, };
+communication: CommunicationState, 
+/**
+ * The app plugin is running (`app.enabled`, 46 §9): `get_app`/`app_*`
+ * answer and the `app` tool exists. `false` leaves app artifacts
+ * readable as source only. Absent from an older harness → `false`.
+ */
+app_enabled: boolean, };

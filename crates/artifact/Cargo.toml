@@ -9,6 +9,8 @@ description = "Files the agent makes for the user, shown in chat: `show` tool, c
 runtime = { workspace = true }
 tools = { workspace = true }
 agent = { workspace = true }
+search = { workspace = true }
+parking_lot = { workspace = true }
 markdown = { workspace = true }
 kameo = { workspace = true }
 tokio = { workspace = true }
@@ -37,7 +39,7 @@ figment = { workspace = true }
 tempfile = "3"
 
 [features]
-ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "agent/ts"]
+ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "agent/ts", "search/ts"]
 
 [lints]
 workspace = true

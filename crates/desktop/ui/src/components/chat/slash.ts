@@ -2,6 +2,7 @@ import type { UseNavigateResult } from '@tanstack/react-router'
 import { toast } from 'sonner'
 import { gitUrl, mcpEntry } from '@/lib/mcpEntry'
 import { queryKeys } from '@/lib/rpc'
+import { openSearch } from '@/lib/search'
 import { LOCAL, useHarnesses } from '@/link/harnesses'
 import type { Api } from '@/rpc/api'
 import type { CommunicationState } from '@/rpc/bindings/CommunicationState'
@@ -65,7 +66,8 @@ export const COMMANDS: readonly { name: string; hint: string; desc: string }[] =
     hint: '',
     desc: 'open the parent session (from a subagent)',
   },
-  { name: '/sessions', hint: '', desc: 'switch session (picker)' },
+  { name: '/search', hint: '[query]', desc: 'search sessions, artifacts and knowledge (prefilled with query)' },
+  { name: '/sessions', hint: '', desc: 'switch session (search, sessions only)' },
   { name: '/resume', hint: '<id>', desc: 'open a session' },
   { name: '/new', hint: '', desc: 'start a new session' },
   {
@@ -225,8 +227,12 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
     case '/exit':
       window.dispatchEvent(new Event('wth:quit'))
       return
+    case '/search':
+      openSearch(arg ? { query: arg } : undefined)
+      return
+    // A one-open Sessions-only override (49 §6): the remembered category selection stays put.
     case '/sessions':
-      window.dispatchEvent(new Event('wth:search'))
+      openSearch({ categories: ['sessions'] })
       return
     case '/resume':
       if (!/^[0-9a-f-]{36}$/i.test(arg)) throw new Error(`not a session id: ${JSON.stringify(arg)}`)
@@ -346,8 +352,8 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       if (!arg) return navigate({ to: '/knowledge' })
       if (sub === 'history') {
         return rest
-          ? navigate({ to: '/knowledge/$', params: { _splat: rest } })
-          : navigate({ to: '/knowledge' })
+          ? navigate({ to: '/knowledge/$', params: { _splat: rest }, search: { history: true } })
+          : navigate({ to: '/knowledge', search: { history: true } })
       }
       if (sub === 'restore') {
         if (!rest) throw new Error('usage: /knowledge restore <id> [commit]')

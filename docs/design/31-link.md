@@ -799,11 +799,11 @@ today assumes macOS is re-keyed on `container()`; the unguarded ones in
 | `Tools` popover `w-[min(380px,calc(100vw-2rem))]` | `Tools.tsx` |
 | hover-only actions visible under `pointer-coarse:` (`opacity-100`), `group-hover` kept for pointers | `MessageUser.tsx`; shadcn `showOnHover` already does this for `SessionItem` |
 | Enter: sends on `pointer-fine`, inserts newline on `pointer-coarse`; send button always visible on touch | `Composer.tsx:219-222` |
-| hotkeys: registered only when `!touch()`; labels `⌘` on macOS, `Ctrl` elsewhere; `Shortcuts` tab hidden on touch | `hotkeys.ts`, `Shortcuts.tsx`, `AppSidebar.tsx:45,52` |
+| hotkeys: registered only when `!touch()`, except ⌘K/Ctrl+K search, which stays bound so a hardware keyboard on a touch device opens it (49 §5.3); labels `⌘` on macOS, `Ctrl` elsewhere; `Shortcuts` tab hidden on touch | `hotkeys.ts`, `Shortcuts.tsx`, `AppSidebar.tsx:45,52` |
 | traffic-light `pl-20` and `data-tauri-drag-region` only when `container() === 'macos'` | the five headers in §2.2 |
 | transcript `max-w-[768px]` → `w-full md:max-w-[768px]`; user bubble `max-w-[85%] md:max-w-[70%]` | `Transcript.tsx`, `MessageUser.tsx` |
 | `body { cursor: default }` only on `pointer-fine`; `-webkit-tap-highlight-color: transparent`; `overscroll-behavior: none` on the shell | `styles.css` |
-| ⌘K search dialog: full-screen under `sm` with an autofocused input | `SearchDialog.tsx` |
+| search (49): one dialog mounted in the root shell outside the mobile Sheet, so opening it from the drawer closes the drawer and keeps search; full-screen under `md` (the sidebar breakpoint) inside `h-band`, query and wrapping category chips fixed above the scrolling results, 44 px targets; the magnifier sits left of the sidebar toggle in the collapsed/mobile chat and explorer headers and at the trailing edge of mobile knowledge/artifact detail headers, so search is one tap away without expanding the sidebar | `__root.tsx`, `SearchDialog.tsx`, `SearchTrigger.tsx`, `Header.tsx`, `Explorer.tsx`, `Document.tsx`, `Viewer.tsx` |
 | approval card buttons 44 px, Allow/Deny side by side full width on touch | `ApprovalCard.tsx` |
 
 Nothing above changes a desktop pixel at ≥ 768 px with a fine pointer; the
@@ -882,7 +882,8 @@ rows that assume the client is on the harness host:
 | `message_user` desktop sink | none (25 §7) | none |
 | `browser_screenshot`, `computer_*` | base64 over RPC | unchanged — they were already remote-shaped |
 | Signal QR (`signal_link`) | `QRCodeSVG` | unchanged |
-| Settings › Communication, peer picker, peer cards, `a2a_status`/`reload_a2a` (50, 2026-09-18) | `Api` methods and `CommunicationChanged`/`PeerMessageChanged`/`A2aChanged` on the one subscription | unchanged: the same records over `raw_json_request`; a paired device sees the harness's effective switch state and peer requests, and toggling from the phone invalidates the desktop through the same events. Link carries no A2A frames: the relay is not an A2A transport and gains no mode for it (§13.2) |
+| search: `search`, `search_refresh`, `get_artifact`, `artifact_search_match`, `knowledge_read_revision` (49) | ordinary `Api` calls; matching, extraction and history walks run inside the harness | unchanged: the device receives typed groups, snippets and ids over the channel, never the corpus; a hit opens through the same RPC reads (no local filesystem shortcut). A device whose UI predates 49 gets Method not found for `search` (`search_sessions` is gone) and must update; it is not a sessions-only fallback |
+| Settings › Communication, peer picker, peer cards, `a2a_status`/`reload_a2a` (50, 2026-09-18) | `Api` methods and `CommunicationChanged`/`PeerMessageChanged`/`A2aChanged` on the one subscription | unchanged: the same records over `raw_json_request`; a paired device sees the harness's effective switch state and peer requests, and toggling from the phone invalidates the desktop through the same events. Link carries no A2A frames: the relay is not an A2A transport and gains no mode for it (§13.3) |
 
 ## 10. Threat model
 
@@ -1054,7 +1055,22 @@ the invalidation rules above against `ws://127.0.0.1` transports — **not**
 a Noise/relay pairing, a real phone or the iOS container; those remain in
 §13's "not exercised" list.
 
-### 13.2 Agent communication (50), as-built 2026-09-18 — pending verification
+### 13.2 Unified search over Link (49), as-built 2026-09-18
+
+Nothing new on the wire again: `search`, `search_refresh`, `get_artifact`,
+`artifact_search_match` and `knowledge_read_revision` are ordinary `Api`
+methods, so a paired device runs the same four-category search the desktop
+does and the relay sees ciphertext. The dialog state (chips, last view for
+Back to results) lives in the per-harness scope of §7.4 and is dropped on a
+harness switch like every other slice; ready groups arriving for a harness
+that is no longer active are discarded. `search_sessions` no longer exists:
+an older bundled UI or browser build against a newer harness sees Method not
+found and must be updated together with it. A search and a subsequent
+historical-concept/artifact read were exercised through an encrypted Link
+channel in the implementation smoke; a real phone, the iOS keyboard and the
+App Store container remain in §13's "not exercised" list.
+
+### 13.3 Agent communication (50), as-built 2026-09-18 — pending verification
 
 50 §11 asks this doc for "parity tables, settings/events and reload behaviour
 over the same existing console transports; no new link wire mode". As

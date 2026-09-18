@@ -6,6 +6,8 @@
 //!   [`Enable`], [`Pair`], [`CancelPair`], [`Rename`], [`RenameDevice`],
 //!   [`Revoke`]
 //! - events: [`LinkEvent`]
+//! - [`RpcPeer`]: the authenticated connection behind an RPC call (mode-0
+//!   conns here, local sockets in `rpc`), read from jsonrpsee extensions
 //! - [`qr`] renders a pairing string for terminals
 //!
 //! Modules: [`identity`] (static key, prologue), [`devices`] (`devices.yaml`),

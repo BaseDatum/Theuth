@@ -46,6 +46,15 @@ memory, not a general git client. Rejected: frontend git commands or a second
 history database; neither works consistently on phones, and the existing
 bundle already owns the record.
 
+Human search (26, 49) follows the same rule: each owner searches its own
+store — `agent` sessions, `artifact` records and saved bytes, `knowledge`
+current concepts and their gix history — behind owner commands, and
+`rpc::search::run` only asks the selected owners and returns their pages in
+fixed order. The `search` RPC and the registered `search` tool are two
+adapters over that one function. Query policy, snippets and highlight
+ranges live in the pure `search` library; no search plugin, search database,
+or history index exists, and caches are owner-local and disposable (49 §4).
+
 ## 2. Process model
 
 One process. `wth` runs the bus, the agent, the tools, and the terminal UI
@@ -67,13 +76,19 @@ LaunchAgent or a systemd user unit whose command is the same
 user's main harness as a node; 32 §5.1. How any of them stays current: 39
 (added in 39, 2026-09-17).
 
-**Planned apps extension (46, not implemented):** final OpenUI validation uses
-a packaged, lazy TypeScript helper with the same upstream parser as the desktop.
-No custom Rust grammar or Monty app backend. The helper handles final documents,
-not per-token rendering; progressive parsing stays in the client's JS heap.
-Ordinary native/MCP tools execute app operations. This cold subprocess boundary
-is chosen over maintaining a second language implementation; 46 defines its
-packaging and measured acceptance before it can ship.
+**Apps helper subprocess (46, added 2026-09-18):** the one exception to
+"everything in-process". Final OpenUI validation runs in `wth-app-parser-<hash>`,
+a Bun-compiled copy of the same pinned upstream TypeScript parser the desktop
+renders with, shipped beside `wth` and spawned lazily by `crates/app` on the
+first `app` call (`--version` must print this binary's library hash first;
+JSON lines over stdio, 8 queued requests, 2 s deadline, killed and replaced on
+timeout or crash). It sees a final source and a tool snapshot and returns
+diagnostics and metadata — never a render tree, never a tool call. Rationale:
+one maintained grammar instead of a Rust reimplementation, and the boundary is
+cold (one document per publish; per-token parsing stays in the client's JS
+heap). No custom Rust grammar, no Monty app backend, no generic JS plugin
+runtime. `wth --app-parser-hash` lets packaging and the updater (39) check the
+helper against the binary.
 
 ## 3. Message bus: kameo
 
@@ -158,7 +173,10 @@ contracts live in `tools`; the agent's commands and its `AgentEvent` live in
 `runtime ← tools ← secrets ← knowledge ← agent ← link ← {signal, slack, nodes, schedule, artifact, update, voice} ← rpc ← tui ← wth`
 (`knowledge` joins the chain in 12 §9; `secrets` in 37 §0.10 — `web`,
 `search-providers`, `agent`, `slack`, `rpc`, `signal` depend on it; `update`
-in 39: depends on `agent` only, `rpc` forwards its `UpdateReady`). This keeps the shared crate under
+in 39: depends on `agent` only, `rpc` forwards its `UpdateReady`; the
+`search` library in 49 §4.1 sits beside `runtime` — it depends on no
+workspace crate, and `knowledge`, `agent`, `artifact`, `rpc`, `tui` depend
+on it). This keeps the shared crate under
 its 400-line ceiling and puts each contract next to the code that enforces
 it. (Earlier draft put the tool contract in `runtime`; dropped once the
 agent needed `tools` anyway for the registry actor type.)
@@ -239,13 +257,22 @@ session: Some(id) }`, inherited by subagents through `SetParent`). `Deny` is
 never rewritten. MCP config assigns a tool's `Risk` or hides it; it is not
 a second policy (12 §5; MCP risk comes from the server's tool annotations).
 
-**Planned explicit-action approval (46, not implemented):** a user activating
-an app action has already approved its covered tool calls, including destructive
-and secret-bearing calls. The tools-owned gate accepts that per-action evidence
-without a second approval card; explicit `Deny` still wins. Automatic refresh and
-unrelated model calls never inherit it, and the session's approval switches are
-not changed. This supersedes 46's earlier press-mutating setting; it is not yet
-the behavior of the current `ToolCall`/gate implementation.
+**Explicit-action approval (46, added 2026-09-18):** `tools::AppInvoke` is
+the registry's second entry beside `Invoke`. It carries an optional
+`UserActivation { record_call_id, action_id, request_id }` that the `app`
+actor constructs only for a `press` trigger after checking the committed
+binding; the registry re-checks visibility, the pinned tool identity and the
+arguments against the current schema, then resolves policy as usual. `Deny`
+is final. `Ask` with a matching activation dispatches with no
+`ApprovalRequested` — the press was the approval, including destructive and
+`{{secret:…}}`-bearing calls. `Ask` without activation (a timer or state
+refetch) returns `NeedsApproval` and runs nothing; the client shows a
+Load/Refresh affordance whose press is the approval. Model calls through
+`Invoke` are untouched and never inherit a press; the session switches are not
+changed. `Tool::CONSUMES_SECRETS` (default `true`) is the other addition: `app`
+sets it `false` because its arguments are an inert artifact, so a placeholder
+in app source neither raises the publish to `Ask` nor is expanded there; it
+expands only inside the terminal Query/Mutation tool call that consumes it.
 
 **Availability is not approval (50 §0.5, §2; implemented 2026-09-18,
 verification pending):** `agent.communication` (default off; a persisted
@@ -680,8 +707,9 @@ crates/
   acp/                library: agents.yaml, ACP registry, Harness (external harness process), renderers (06)
   tools/              plugin: registry, approval, shell (brush), fs, mcp (rmcp) (§6, 01)
   secrets/            plugin: encrypted versioned vault (provider keys included), keychain key, {{secret:NAME[:-N]}} expansion + output scrub hook, secret_* tools, masked request, --secret-* CLI (37)
-  knowledge/          plugin: OKF bundle, FTS index, gix history, knowledge_* tools (added in 10; extracted from agent in 12 §9)
-  agent/              plugin: genai loop, session store, frame/compaction, context edits (`context.rs`), skills, subagents, repl, session search (§5, 07, 08, 26, 48)
+  knowledge/          plugin: OKF bundle, FTS index, gix history, knowledge_* tools, human concept/history search + read-at-commit (added in 10; extracted from agent in 12 §9; 49 §3.3–3.4)
+  search/             library: nucleo query policy, prepared candidate text, snippets with scalar highlight ranges, SearchCategory/SearchPage envelope — no plugin, actor or store (49 §4.1)
+  agent/              plugin: genai loop, session store, frame/compaction, context edits (`context.rs`), skills, subagents, repl, session search (§5, 07, 08, 26, 48, 49)
   web/                plugin: search_web / read_url, SSRF-guarded fetcher, RRF aggregator, keyless engines google/bing/brave/qwant/wikipedia/arxiv/github; one-call search reads top hits and returns relevant passages (16 §4.7)
   search-providers/   plugin: optional Firecrawl, SearXNG, OpenSERP, Brave API (`brave_api`) registered with web over the bus; only firecrawl present by default, key-gated (16)
   firecrawl-native/   library: vendored Firecrawl crawler/html heuristics (AGPL; 38)
@@ -691,11 +719,13 @@ crates/
   slack/              plugin: Slack channel over Socket Mode (added in 21)
   computer/           plugin: screenshot + pointer/keyboard tools (27)
   surface/            library: json-render spec, jsonrepair parse, located validation, terminal rendering of json-render and Mermaid (merman), flatten for text channels, prompt block + visualize skill (30)
-  rpc/                plugin: jsonrpsee server, event subscription bridge (§7)
+  rpc/                plugin: jsonrpsee server, event subscription bridge (§7); `search.rs`: four-category composition, `search`/`search_refresh` methods, the `search` tool and its registration-only `SearchToolsPlugin` (49 §4)
   link/               plugin: relay uplink, Noise pairing and sessions, device registry (31)
   nodes/              plugin: paired remote harnesses — control conns, dial transport for ACP children (32)
   schedule/           plugin: scheduled runs from `schedules/*.md` — tick, one session per schedule, delivery (34)
-  artifact/           plugin: show tool, content-addressed artifact store + index, Typst PDF compile and page render, SVG rasterise, prompt block + pdf skill (35)
+  artifact/           plugin: show tool, content-addressed artifact store + index, Typst PDF compile and page render, SVG rasterise, prompt block + pdf skill, occurrence search over saved bytes (35, 49 §3.2)
+  app/                plugin: `app` tool (OpenUI Lang source → `Kind::App` artifact via the helper subprocess), `Apps` actor (`get_app`/`app_call_tool`/`app_call_status`/`app_close`, one-press consent, admission, durable pressed invocations), `AppCallChanged`, bundled `apps` skill (46)
+  packages/apps/      TS: curated OpenUI library + compatibility hash, `check`, helper (`bun build --compile`), patched renderer adapter shared with desktop (46 §4, §6.2, §7)
   update/             plugin: silent self-update of the `wth` binary — manifest GET, minisign verify, atomic rename; `--update` (added in 39)
   voice/              plugin: read replies aloud — Pocket TTS via `ptts`, `markdown::spoken`, Opus packets as `SpeechAudio` events (43)
   relay/              bin: wth-relay, stateless encrypted-frame relay (31)
@@ -725,19 +755,30 @@ imports `link::qr`; `nodes` imports `link`'s identity, initiator and record
 codec; `tui` renders `link`'s status and QR; `rpc` sends `link` its
 dispatch as a `SetDispatch` message at start, 32 §3.1 — never a handle
 threaded through `wth`; `artifact` depends on `agent` for
-`AgentEvent::SessionDeleted` — subscribed, never asked — and on
-`tools`/`runtime`; nothing below `rpc` depends on it, 35 §13;
+`AgentEvent::SessionDeleted` — subscribed — and asks `agent::ListSessions`
+once per search build so an orphaned record is never searchable (49 §4.3);
+it also depends on `tools`/`runtime`; nothing below `rpc` depends on it, 35
+§13; `search` depends on no workspace crate and `knowledge`, `agent`,
+`artifact`, `rpc`, `tui` depend on it, 49 §4.1; `rpc::SearchToolsPlugin` is
+listed in both agent-bearing plugin vectors of `wth` independently of
+`RpcPlugin`, so the `search` tool exists in plain TUI, `--print` and `--acp`
+runs without the listener, 49 §4.4;
 `scrape → {firecrawl-native, web, browser}` and `browser → web`, so there is
 no cycle; `rpc` and `tui` depend on `scrape` only for the `ScrapeProgress`
 event type they forward and render, 38 §0.2; `a2a` depends on `agent`,
 `secrets` and `runtime` only — `agent` owns intake, exchange and task rows,
 the plugin owns the listener, clients and `peers.yaml`, 50 §4).
 
-Planned, not a workspace member yet: `app` (46) owns OpenUI artifacts,
-progressive frontend integration and action RPC. It depends downward on
-artifact/tools/agent-owned contracts; agent and artifact do not import it.
-The current TS parser is reused in browser and packaged headless helper. There
-is no app-specific Python callable registry, replay file or Rust evaluator.
+`app` (46, added 2026-09-18) depends on `artifact` (typed `Commit` with
+`expected_base`, invocation rows), `tools` (`AppInvoke`, `DescribeTools`,
+`ToolInspection.identity`), `link` (`RpcPeer`, the connection a view is bound
+to), `agent` (`AgentEvent::SessionDeleted`, subscribed) and `runtime`; `rpc`
+imports its four commands and `AppCallChanged`; `agent`, `artifact` and
+`tools` do not import it. `web` gained `http_request` (46 §5). Neither agent
+nor artifact carries app types: the sidecar is opaque bytes to `artifact`,
+and the only central additions are `tools::AppInvoke` and
+`Tool::CONSUMES_SECRETS` (§4). There is no app-specific Python callable
+registry, replay file or Rust evaluator.
 
 Workspace dependencies (versions verified 2026-09-09 via `cargo info`):
 
@@ -766,7 +807,7 @@ Workspace dependencies (versions verified 2026-09-09 via `cargo info`):
 | roxmltree | 0.20 | sitemap `urlset` / `sitemapindex` parsing (firecrawl-native; 38) |
 | texting_robots | 0.2 | robots.txt: disallows, `Crawl-delay`, `Sitemap:` (firecrawl-native; 38) |
 | flate2 | 1 | gzip sitemaps inflated in the web fetcher (38); CLI update tarballs (39) |
-| slack-morphism | 2.28 (patched, 21 §2.1) | Slack Socket Mode + Web API |
+| slack-morphism | upstream Git rev e2a4b014 (PR #388 merged, unreleased; 21 §2.1) | Slack Socket Mode + Web API |
 | portable-pty | 0.9 | pty open/spawn/read/write for PTY jobs (22) |
 | vt100 | 0.16 | rendered screen of a PTY job (22) |
 | obscura-mcp | git v0.2.2 + 2 (fork, 23 §3.3, 44 §3.1) | embedded headless browser: per-session isolates, agent tool layer (stealth + render), network capture |
@@ -897,7 +938,7 @@ Each phase ends with a runnable check, not a test suite.
 | 13 | PTY jobs (22) | `start` a REPL with `ready`, `send` an expression, read the answer off the screen; the harness drives its own TUI | done 2026-09-14 (3 tool calls for the REPL, `pty="true"` result; the harness read `no session · idle` off its own TUI; 22 §11) |
 | 14 | browser (23) | `browser_open` reads HN; a screenshot of a local dev server is described from the image; `read_url rendered` keyless | done 2026-09-14 (one `browser_open` names the top story; colours of a fixture page read off the screenshot, not the text; `read_url rendered: true` without Firecrawl; 23 §13) |
 | 15 | message_user (24) | a bound Slack session receives a screenshot in its thread; an unbound RPC session lands in the owner DM and on the phone with the `session …` line | done 2026-09-14 (owner DM with the screenshot, three tool calls; bound thread and Signal unit-tested only; 24 §9) |
-| 16 | session search (26) | `search_sessions` over a real store ranks the expected session first with a highlighted snippet; ⌘K and `/search` show it | done 2026-09-15 (26 §8) |
+| 16 | session search (26) | `search_sessions` over a real store ranks the expected session first with a highlighted snippet; ⌘K and `/search` show it | done 2026-09-15 (26 §8); public `search_sessions` replaced by `search` in phase 29 |
 | 17 | computer (27) | composite screenshot of two displays described; TextEdit typed into and verified from the PNG; a click on display 2 lands | done 2026-09-15 (screenshot + open/key/type/refusal smoked on two displays; live click aborted by the user mid-turn, mapping unit-tested only; 27 §13) |
 | 18 | rewind (29): edit, regenerate, fork | 29 §9 checks 1–6 headless, 7–8 in both UIs | in progress 2026-09-15 |
 | 19 | link (31): phone/browser drives the harness through a stateless relay, Noise E2E, same JSON-RPC | 31 §12 | done 2026-09-15 (relay + headless + `wth --link` QR; browser paired IKpsk2, reconnected IK, no secrets in storage; device script paired/reconnected/revoked; relay restart re-registers <4 s; TUI `/link` card and badge in a pty; iOS build, camera scan and 31 §11 bench not run; 31 §13) |
@@ -910,7 +951,9 @@ Each phase ends with a runnable check, not a test suite.
 | 26 | update (39): `wth` and `wth.app` update themselves, silently; Homebrew tap; Linux CLI tarballs | 39 §12 steps 1–10 | in progress 2026-09-17 |
 | 27 | triggers (40): `on: hook` through the relay, `on: fs`, `when:` shell check on `every:` files | 40 §11 steps 1–6 | shelved 2026-09-17; preconditions in 40 §12 |
 | 28 | knowledge checks (41): `check:` on a concept, daily sweep, `(stale: …)` hints, `knowledge_verify`, picker/explorer run · edit · accept · fix with an agent | 41 §14 steps 1–6 | planned 2026-09-17 |
-| 29 | agent communication (50): default-off global ceiling + inherited opt-out; sibling/cross-root discovery; durable exchanges with exact `reply_to`; suppression/generation revocation; `a2a` plugin over the official SDK | 50 §12.2 scenarios; 50 §12.1 library gate | implemented 2026-09-18, verification pending — code paths landed in `agent`, `tools`, `a2a`, `rpc`, frontends; no runnable check or conformance run recorded yet; not as-built until that record lands |
+| 29 | unified search (49): sessions, artifacts, knowledge, knowledge history behind one `search` RPC and one `search` tool; `search_refresh`; exact readers `get_artifact`/`artifact_search_match`/`knowledge_read_revision` | 49 §8 | done 2026-09-18 (fixture RPC smoke 62/62; tool invoked by a real model in runtime, native child, headless, `--print` and `--acp` runs; search and reads through the encrypted link; desktop/mobile dialog approved by the user; `/search` query, chips and artifact preview on a pty; release large corpus warm p95 2.4 ms, cold first reply 1.7 ms, all groups ready 4.0 s; peak RSS, the full 8.3 TUI matrix and the packaged iOS keyboard not measured; 49 §11) |
+| 30 | apps (46): `app` publishes an OpenUI screen the desktop renders progressively; a press runs its Mutation with zero approval cards; edits are CAS-atomic; TUI/Slack/Signal show source | 46 §10 | done 2026-09-18 on `feature/apps`, merge with limitation (packages/apps 78 tests, desktop 150 tests + build, `crates/app` publish→open→call→edit test; real RPC smoke 14/14 incl. mutating/destructive/secret presses with zero `ApprovalRequested`, `needs_approval` for automatic asks, duplicate/mismatched IDs, stale generation, peer close, CAS conflict; relay probe 7/7 through a real local relay with the desktop's link crypto — pair, get_app, press, status, reconnect, revoke; DOM click on the fixture panel → `Healthy`, count 1; visuals accepted by the user at the production URL; frontier steering 15/15 first pass, vehicle 19/20, small model not run; performance: dev-build trace first statement 9.2 s before commit, frame interval p95 18 ms; production cold load one 146 ms long task and frame budget uncertified — accepted limitation, not a gate; **not run**: Linux runtime, phone hardware, Developer ID/notarized clean machine (signing external), a real streaming-provider capture, `add_mcp_server`-installed backend restart; 46 §12) |
+| 31 | agent communication (50): default-off global ceiling + inherited opt-out; sibling/cross-root discovery; durable exchanges with exact `reply_to`; suppression/generation revocation; `a2a` plugin over the official SDK | 50 §12.2 scenarios; 50 §12.1 library gate | implemented 2026-09-18, verification pending — code paths landed in `agent`, `tools`, `a2a`, `rpc`, frontends; no runnable check or conformance run recorded yet; not as-built until that record lands |
 
 Known gaps carried forward: cancel/error paths in the loop are code-reviewed,
 not smoke-tested; the `Jobs` actor kills every process group on shutdown
@@ -947,3 +990,4 @@ captured `Blocked` fixtures; 16 §10).
   | scheduler | `schedule` crate: files, tick, one session per schedule, `Deliver` | plugin | 34 (heartbeat, goals briefings, task DAG, notify flags, phase plumbing not ported: each is a file the user writes or a primitive the harness already has) |
   | updater (Tauri shell only, 966 lines) | `update` crate: manifest, minisign, atomic rename over `current_exe()`; the `.app` via `tauri-plugin-updater` at quit | plugin | 39 (toast, modal, snooze, phases, relaunch, daemon hunting not ported: silent by construction) |
   | voice | `voice` crate: Pocket TTS in process (`ptts`), one Opus packet per bus event, `speak`/`stop_speaking`/`voice_status`; Parakeet TDT speech-to-text (`parakeet-rs`), `[voice note, N s]` inputs and MP3 voice replies per prose block on Signal and Slack | plugin | 43, 45 (system-voice fallback, per-message audio cache and TUI playback not ported) |
+  | programs (bespoke sandboxed app programs, Monty callables) | `app` crate + OpenUI Lang: UI source as an artifact, Query/Mutation bound to ordinary native/MCP tools, one press = one approval | plugin | 46 (program registry, replay cells, second approval card and no-egress sandbox not ported: the design rejects them) |

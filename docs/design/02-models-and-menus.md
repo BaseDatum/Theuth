@@ -273,12 +273,10 @@ profiles or an explicit selection to clear. `/aws <name>` selects directly;
 default chain and marks the current selection. A stale name is shown, not
 silently replaced. Profiles belong to the connected harness, not the frontend.
 
-Dependency patch: `vendor/genai` preserves fork `e4863b5`'s tool-image support
-and backports upstream `a120cb8`'s profile-keyed credentials, expiry refresh,
-bearer fallback and signing-region fixes. The additional explicit-profile
-provider fix prevents environment credentials overriding the chosen account.
-Drop the vendor patch when the fork ships both; provenance lives in its
-Cargo manifest and Bedrock module comments.
+Dependency patch: the existing `skymoore/rust-genai` fork tracks upstream main
+and preserves its tool-image support plus the explicit-profile provider fix
+that prevents environment credentials overriding the chosen account.
+`Cargo.lock` pins the fork's merge commit; genai source lives in the fork, not wth.
 
 ## 3. Input header (tui crate)
 

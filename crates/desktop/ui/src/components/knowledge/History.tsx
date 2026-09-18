@@ -22,7 +22,9 @@ import {
   SheetTitle,
 } from '@/components/ui/sheet'
 import { Skeleton } from '@/components/ui/skeleton'
+import { useSearchFocus } from '@/hooks/use-search-focus'
 import { queryKeys, useApi } from '@/lib/rpc'
+import { isSearchDestination, useSearchOrigin } from '@/lib/search'
 import type { Change } from '@/rpc/bindings/Change'
 import type { Revision } from '@/rpc/bindings/Revision'
 import { cn } from 'cn'
@@ -34,24 +36,31 @@ type Props = {
   id: string | null
   open: boolean
   onOpenChange: (open: boolean) => void
+  /** Select this commit (full or abbreviated id) on open; fetched directly, it need not be on the first page. */
+  initialCommit?: string
 }
 
 const PAGE = 20
 
-/** Commits touching `id` (or every commit), any of them selectable; the selection shows the concept files it changed with unified diffs. Restore rewrites a file from the selected commit after a confirm. */
-export function History({ id, open, onOpenChange }: Props) {
+/** Same commit whether the list's 7-char abbreviation or a route's full id names it. */
+function sameCommit(a: string, b: string): boolean {
+  return a.startsWith(b) || b.startsWith(a)
+}
+
+/** Commits touching `id` (or every commit), any of them selectable; the selection shows the concept files it changed with unified diffs. Restore rewrites a file from the commit holding the displayed text after a confirm. */
+export function History({ id, open, onOpenChange, initialCommit }: Props) {
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       {/* Radix unmounts the content when closed, so every open starts at the sheet's own scope. */}
       <SheetContent className="flex w-full flex-col gap-0 sm:w-[560px] sm:max-w-[560px]">
-        <Panel id={id} />
+        <Panel id={id} initialCommit={initialCommit} />
       </SheetContent>
     </Sheet>
   )
 }
 
 /** The sheet's scope plus one drill-in: a changed document's own history, Back returns. */
-function Panel({ id }: { id: string | null }) {
+function Panel({ id, initialCommit }: { id: string | null; initialCommit?: string }) {
   const [scope, setScope] = useState(id)
   return (
     <>
@@ -75,17 +84,33 @@ function Panel({ id }: { id: string | null }) {
         </SheetDescription>
       </SheetHeader>
       {/* Keyed so paging, selection and the restore prompt never survive a scope change. */}
-      <Scoped key={scope ?? ''} id={scope} onScope={setScope} />
+      <Scoped
+        key={scope ?? ''}
+        id={scope}
+        initialCommit={scope === id ? initialCommit : undefined}
+        onScope={setScope}
+      />
     </>
   )
 }
 
-function Scoped({ id, onScope }: { id: string | null; onScope: (id: string) => void }) {
+function Scoped({
+  id,
+  initialCommit,
+  onScope,
+}: {
+  id: string | null
+  initialCommit: string | undefined
+  onScope: (id: string) => void
+}) {
   const api = useApi()
   const qc = useQueryClient()
+  const origin = useSearchOrigin()
   const [limit, setLimit] = useState(PAGE)
-  const [selected, setSelected] = useState<string | null>(null)
-  const [restoring, setRestoring] = useState<{ id: string; change: Change } | null>(null)
+  const [selected, setSelected] = useState<string | null>(initialCommit ?? null)
+  const [restoring, setRestoring] = useState<{ id: string; commit: string; change: Change } | null>(
+    null,
+  )
   // One extra row tells whether an older page exists without a count RPC.
   const history = useQuery({
     queryKey: queryKeys.knowledgeHistory(id, limit),
@@ -95,13 +120,22 @@ function Scoped({ id, onScope }: { id: string | null; onScope: (id: string) => v
   const all = history.data?.changes ?? []
   const changes = all.length > limit ? all.slice(0, limit) : all
   const more = all.length > limit
+  // A direct selection reads its revision straight away; the list only has to contain it for highlighting.
   const current = selected ?? changes[0]?.commit ?? null
+  const listed = current === null || changes.some((c) => sameCommit(c.commit, current))
   const revision = useQuery({
     queryKey: queryKeys.knowledgeRevision(current ?? '', id),
     queryFn: () => api.knowledge_revision(current ?? '', id),
     enabled: current !== null,
     staleTime: Number.POSITIVE_INFINITY,
   })
+  // A commit-metadata hit (`snapshot: null`) opens this sheet on its commit: focus lands on the selected commit's
+  // detail once it rendered, not on the (possibly deleted) document behind the sheet (49 §7).
+  const matched =
+    id !== null && initialCommit !== undefined && isSearchDestination(origin, { category: 'knowledge_history', id, commit: initialCommit, snapshot: null })
+      ? origin
+      : null
+  const detail = useSearchFocus<HTMLElement>(matched, revision.isSuccess)
   const restore = useMutation({
     mutationFn: (r: { id: string; commit: string }) => api.knowledge_restore(r.id, r.commit),
     onSuccess: (c, r) => {
@@ -127,7 +161,7 @@ function Scoped({ id, onScope }: { id: string | null; onScope: (id: string) => v
         </div>
       ) : history.isError ? (
         <Failed message={history.error.message} onRetry={() => void history.refetch()} />
-      ) : changes.length === 0 ? (
+      ) : changes.length === 0 && current === null ? (
         <p className="py-4 text-sm text-fg-tertiary">No history yet.</p>
       ) : (
         <>
@@ -136,7 +170,7 @@ function Scoped({ id, onScope }: { id: string | null; onScope: (id: string) => v
             className="max-h-[35dvh] overflow-y-auto divide-y divide-border-subtle px-2"
           >
             {changes.map((c) => {
-              const active = c.commit === current
+              const active = current !== null && sameCommit(c.commit, current)
               return (
                 <li key={c.commit}>
                   <button
@@ -167,10 +201,17 @@ function Scoped({ id, onScope }: { id: string | null; onScope: (id: string) => v
               {history.isFetching ? 'Loading…' : 'Older'}
             </Button>
           )}
+          {!listed && (
+            <p className="mt-2 text-xs text-fg-tertiary">
+              The selected change is older than the listed ones.
+            </p>
+          )}
           {current !== null && (
             <section
+              ref={detail}
+              tabIndex={-1}
               aria-label="Selected commit"
-              className="mt-4 border-t border-border-subtle pt-4"
+              className="mt-4 border-t border-border-subtle pt-4 outline-none"
             >
               {revision.isPending ? (
                 <div className="space-y-2">
@@ -184,9 +225,9 @@ function Scoped({ id, onScope }: { id: string | null; onScope: (id: string) => v
                   revision={revision.data}
                   scope={id}
                   onScope={onScope}
-                  onRestore={(file) => {
+                  onRestore={(file, commit) => {
                     restore.reset()
-                    setRestoring({ id: file.id, change: revision.data.change })
+                    setRestoring({ id: file.id, commit, change: revision.data.change })
                   }}
                 />
               )}
@@ -198,12 +239,14 @@ function Scoped({ id, onScope }: { id: string | null; onScope: (id: string) => v
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle className="wrap-anywhere">
-              Restore {restoring?.change.commit}?
+              Restore {restoring?.id} from {restoring?.commit}?
             </AlertDialogTitle>
             <AlertDialogDescription className="wrap-anywhere">
-              {restoring?.id} is rewritten as of {restoring?.change.time} (
-              {restoring?.change.message}
-              ). The current version stays in history.
+              {restoring !== null &&
+                (restoring.commit === restoring.change.commit
+                  ? `Rewritten as of ${restoring.change.time} (${restoring.change.message}).`
+                  : `Rewritten as it was before ${restoring.change.commit} deleted it (${restoring.change.time}, ${restoring.change.message}).`)}{' '}
+              The current version stays in history.
             </AlertDialogDescription>
           </AlertDialogHeader>
           {restore.isError && (
@@ -218,7 +261,7 @@ function Scoped({ id, onScope }: { id: string | null; onScope: (id: string) => v
               disabled={restore.isPending}
               onClick={(e) => {
                 e.preventDefault()
-                if (restoring) restore.mutate({ id: restoring.id, commit: restoring.change.commit })
+                if (restoring) restore.mutate({ id: restoring.id, commit: restoring.commit })
               }}
             >
               {restore.isPending ? 'Restoring…' : restore.isError ? 'Retry' : 'Restore'}
@@ -252,7 +295,7 @@ const STATUS: Record<ChangedFile['status'], string> = {
   deleted: 'border-danger-border bg-danger-bg text-danger',
 }
 
-/** The selected commit: metadata, then each concept file it changed with its diff. Deleted files have nothing to restore. */
+/** The selected commit: metadata, then each concept file it changed with its diff. Restore targets the commit holding the shown text: the commit itself, or its parent for a deletion. */
 function Detail({
   revision,
   scope,
@@ -262,7 +305,7 @@ function Detail({
   revision: Revision
   scope: string | null
   onScope: (id: string) => void
-  onRestore: (file: ChangedFile) => void
+  onRestore: (file: ChangedFile, commit: string) => void
 }) {
   const { change, parent, files } = revision
   return (
@@ -287,39 +330,42 @@ function Detail({
         <p className="mt-3 text-sm text-fg-tertiary">No documents changed in this commit.</p>
       ) : (
         <ul aria-label="Changed documents" className="mt-3 space-y-4">
-          {files.map((f) => (
-            <li key={f.id}>
-              <div className="flex flex-wrap items-center gap-2">
-                <Badge variant="outline" className={STATUS[f.status]}>
-                  {f.status}
-                </Badge>
-                {f.id === scope ? (
-                  <code className="min-w-0 flex-1 font-mono text-xs wrap-anywhere">{f.id}</code>
-                ) : (
-                  <button
-                    type="button"
-                    aria-label={`History of ${f.id}`}
-                    onClick={() => onScope(f.id)}
-                    className="min-w-0 flex-1 rounded-sm text-left font-mono text-xs wrap-anywhere underline decoration-dotted underline-offset-2 outline-none hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 pointer-coarse:min-h-11"
-                  >
-                    {f.id}
-                  </button>
-                )}
-                {f.status !== 'deleted' && (
-                  <Button
-                    variant="ghost"
-                    size="xs"
-                    className="pointer-coarse:min-h-11"
-                    aria-label={`Restore ${f.id} from ${change.commit}`}
-                    onClick={() => onRestore(f)}
-                  >
-                    Restore
-                  </Button>
-                )}
-              </div>
-              <UnifiedDiff diff={f.diff} />
-            </li>
-          ))}
+          {files.map((f) => {
+            const from = f.status === 'deleted' ? parent : change.commit
+            return (
+              <li key={f.id}>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant="outline" className={STATUS[f.status]}>
+                    {f.status}
+                  </Badge>
+                  {f.id === scope ? (
+                    <code className="min-w-0 flex-1 font-mono text-xs wrap-anywhere">{f.id}</code>
+                  ) : (
+                    <button
+                      type="button"
+                      aria-label={`History of ${f.id}`}
+                      onClick={() => onScope(f.id)}
+                      className="min-w-0 flex-1 rounded-sm text-left font-mono text-xs wrap-anywhere underline decoration-dotted underline-offset-2 outline-none hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 pointer-coarse:min-h-11"
+                    >
+                      {f.id}
+                    </button>
+                  )}
+                  {from !== null && (
+                    <Button
+                      variant="ghost"
+                      size="xs"
+                      className="pointer-coarse:min-h-11"
+                      aria-label={`Restore ${f.id} from ${from}`}
+                      onClick={() => onRestore(f, from)}
+                    >
+                      Restore
+                    </Button>
+                  )}
+                </div>
+                <UnifiedDiff diff={f.diff} />
+              </li>
+            )
+          })}
         </ul>
       )}
     </>

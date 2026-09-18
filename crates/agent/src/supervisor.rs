@@ -77,7 +77,8 @@ use crate::{
     ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills, LoadSession, LoadSkill,
     Loaded, Login, LoginFinished, LoginInfo, Logout, ModelInfo, NewRootSession, NewSession,
     PinSession, ProviderInfo, QueuedInput, Redo, Regenerate, RemoveAcp, RemoveContext,
-    RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession, SearchSessions, SendInput,
+    RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession, SearchRefresh, SearchSessionPage,
+    SendInput,
     SessionSummary, SetCompactStyle, SetEffort, SetMaxToolRounds, SetModel, SetSubagentTimeout,
     SetTitleModel, ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw,
     effort_of,
@@ -1426,8 +1427,10 @@ impl Message<AgentEvent> for Agents {
                 self.child_finished(session, turn, &stop_reason).await;
                 self.idle_check(session).await;
             }
+            // `SessionDeleted` is only ever published by `DeleteSession`,
+            // which bumps before replying; `TitleChanged` also comes from the
+            // loop's title generation.
             AgentEvent::TitleChanged { .. }
-            | AgentEvent::SessionDeleted { .. }
             | AgentEvent::Compacted { .. }
             | AgentEvent::ContextChanged { .. } => self.search.invalidate(),
             _ => {}
@@ -3811,6 +3814,11 @@ impl Message<RenameSession> for Agents {
             .set_title(m.session, &title)
             .await
             .map_err(|e| e.to_string())?;
+        // Before the reply: the caller's next search must not be served the
+        // old title. The `TitleChanged` bump below arrives through the
+        // mailbox after we have answered (and is still needed for titles the
+        // loop generates); a second bump only costs a rebuild.
+        self.search.invalidate();
         // A fresh session's first turn would otherwise overwrite this with the
         // input placeholder (`Session::start_turn`).
         if let Some(Live {
@@ -3889,6 +3897,9 @@ impl Message<DeleteSession> for Agents {
             .delete_session(m.session)
             .await
             .map_err(|e| e.to_string())?;
+        // Before the reply, as `RenameSession`: no search after a completed
+        // delete may still list the rows.
+        self.search.invalidate();
         for session in removed {
             self.rt
                 .publish(AgentEvent::SessionDeleted { session })
@@ -3898,29 +3909,32 @@ impl Message<DeleteSession> for Agents {
     }
 }
 
-impl Message<SearchSessions> for Agents {
-    type Reply = kameo::reply::DelegatedReply<Result<Vec<search::SearchHit>, String>>;
+impl Message<SearchSessionPage> for Agents {
+    type Reply =
+        kameo::reply::DelegatedReply<Result<::search::SearchPage<search::SearchHit>, String>>;
 
     async fn handle(
         &mut self,
-        m: SearchSessions,
+        m: SearchSessionPage,
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        // Off the mailbox: a rebuild scans every message row and matching
-        // runs on a blocking thread; events keep flowing meanwhile.
+        // Off the mailbox: a cold cache answers `indexing` and builds in its
+        // own task; matching runs on a blocking thread.
         let (cache, store) = (self.search.clone(), self.store.clone());
-        let limit = m.limit.unwrap_or(search::DEFAULT_LIMIT);
         tokio::spawn(async move {
-            tx.send(
-                cache
-                    .search(&store, m.query, limit)
-                    .await
-                    .map_err(|e| e.to_string()),
-            );
+            tx.send(cache.page(&store, m.query, m.limit).await);
         });
         reply
+    }
+}
+
+impl Message<SearchRefresh> for Agents {
+    type Reply = ();
+
+    async fn handle(&mut self, _: SearchRefresh, _: &mut Context<Self, Self::Reply>) {
+        self.search.invalidate();
     }
 }
 
@@ -6112,5 +6126,61 @@ pub(crate) mod tests {
         )
         .await;
         assert_eq!(a.ledger.activity(p), None);
+    }
+
+    /// A rename or delete that has replied is visible to the very next search:
+    /// it may still be `indexing`, but never `ready` from the previous rows.
+    /// The actor is not subscribed to its own events here, so only the bump
+    /// taken before the reply can make this pass.
+    #[tokio::test]
+    async fn mutation_reply_precedes_search_staleness() {
+        use ::search::PageState;
+        let a = agents().await;
+        let store = a.store.clone();
+        let agents = Agents::spawn(a);
+        let id = SessionId::new();
+        store.create_session(id, "m", None, None).await.unwrap();
+        store.set_title(id, "deploy checklist").await.unwrap();
+
+        let page = |q: &'static str| {
+            agents.ask(SearchSessionPage {
+                query: q.to_owned(),
+                limit: None,
+            })
+        };
+        let settled = |q: &'static str| async move {
+            for _ in 0..200 {
+                let p = page(q).await.unwrap();
+                if p.state != PageState::Indexing {
+                    return p;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            panic!("build never published");
+        };
+        assert_eq!(settled("deploy").await.hits.len(), 1, "warm index");
+
+        agents
+            .ask(RenameSession {
+                session: id,
+                title: "release notes".into(),
+            })
+            .await
+            .unwrap();
+        let next = page("deploy").await.unwrap();
+        assert!(
+            next.state == PageState::Indexing || next.hits.is_empty(),
+            "stale title served after rename replied: {next:?}"
+        );
+        assert_eq!(settled("release").await.hits.len(), 1);
+        assert_eq!(settled("deploy").await.hits.len(), 0);
+
+        agents.ask(DeleteSession { session: id }).await.unwrap();
+        let next = page("release").await.unwrap();
+        assert!(
+            next.state == PageState::Indexing || next.hits.is_empty(),
+            "deleted session served after delete replied: {next:?}"
+        );
+        assert_eq!(settled("release").await.hits.len(), 0);
     }
 }

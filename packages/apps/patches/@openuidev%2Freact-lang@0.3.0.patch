@@ -1,0 +1,1251 @@
+diff --git a/dist/exports-Cab8UG5o.mjs b/dist/exports-Cab8UG5o.mjs
+index fb50f51..0012650 100644
+--- a/dist/exports-Cab8UG5o.mjs
++++ b/dist/exports-Cab8UG5o.mjs
+@@ -1,4 +1,5 @@
+-import { ACTION_STEPS, ACTION_STEPS as ACTION_STEPS$1, BuiltinActionType, BuiltinActionType as BuiltinActionType$1, ToolNotFoundError, ToolNotFoundError as ToolNotFoundError$1, builtInValidators, createLibrary, createParser, createQueryManager, createStore, createStreamingParser, createStreamingParser as createStreamingParser$1, defineComponent, enrichErrors, evaluate, evaluateElementProps, extractToolResult, extractToolResult as extractToolResult$1, generatePrompt, generateSystemPrompt, isReactiveAssign, markReactive, mergeStatements, parseRules, parseStructuredRules, resolveStateField, tagSchemaId, validate, validate as validate$1 } from "@openuidev/lang-core";
++import { ACTION_STEPS as ACTION_STEPS$1, BuiltinActionType, BuiltinActionType as BuiltinActionType$1, LimitError, ToolNotFoundError, ToolNotFoundError as ToolNotFoundError$1, builtInValidators, createEvalBudget, createLibrary, createParser, createStore, createStreamingParser, createStreamingParser as createStreamingParser$1, defineComponent, enrichErrors, evaluateElementProps, extractToolResult, extractToolResult as extractToolResult$1, generatePrompt, generateSystemPrompt, isReactiveAssign, markReactive, mergeStatements, parseRules, parseStructuredRules, resolveStateField, tagSchemaId, validate, validate as validate$1 } from "@openuidev/lang-core";
++import { createActionId, createQueryManager, evaluateBudgeted, runActionPlan } from "./wth-runtime.mjs";
+ import { observability } from "@openuidev/observability";
+ import { Component, Fragment, createContext, useCallback, useContext, useEffect, useInsertionEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+ import { jsx, jsxs } from "react/jsx-runtime";
+@@ -338,7 +339,7 @@ function unwrapFieldValue(v) {
+ * Store holds everything: $bindings as top-level keys, form fields nested
+ * under formName as plain values.
+ */
+-function useOpenUIState({ response, library, isStreaming, onAction, onStateUpdate, initialState, toolProvider, onError, publishObservability }, renderDeep) {
++function useOpenUIState({ response, library, isStreaming, onAction, onStateUpdate, initialState, toolProvider, onError, publishObservability, onActionStart, onActionEnd, generation = 0, paused = false }, renderDeep) {
+ 	const sp = useMemo(() => createStreamingParser(library.toJSONSchema(), library.root), [library]);
+ 	const parseExceptionRef = useRef(null);
+ 	const result = useMemo(() => {
+@@ -357,51 +358,95 @@ function useOpenUIState({ response, library, isStreaming, onAction, onStateUpdat
+ 		}
+ 	}, [sp, response]);
+ 	const store = useMemo(() => createStore(), []);
+-	const queryManager = useMemo(() => createQueryManager(toolProvider ?? null), [toolProvider]);
++	/* born paused when the view is paused: the first scheduling pass must not call the provider */
++	const queryManager = useMemo(() => createQueryManager(toolProvider ?? null, { paused }), [toolProvider]);
+ 	useEffect(() => {
+ 		queryManager.activate();
+ 		return () => queryManager.dispose();
+ 	}, [queryManager]);
++	/**
++	* Reconcile `$state` with the committed declarations: values survive across generations only
++	* for declarations that are unchanged; changed defaults reset, deleted names are cleared, names
++	* new since the last commit take their default (including values seeded from a streamed preview).
++	* Streamed previews only fill in missing keys. Host `initialState` `$keys` win on every change.
++	*/
++	const committedDeclsRef = useRef({});
+ 	const storeInitKeyRef = useRef(Symbol());
+ 	useEffect(() => {
+ 		if (!result?.stateDeclarations && !initialState) return;
+-		const key = `${JSON.stringify(result?.stateDeclarations)}::${JSON.stringify(initialState)}`;
++		const key = `${isStreaming}::${JSON.stringify(result?.stateDeclarations)}::${JSON.stringify(initialState)}`;
+ 		if (storeInitKeyRef.current === key) return;
+ 		storeInitKeyRef.current = key;
+-		const bindingDefaults = {};
+-		if (initialState) for (const [key, value] of Object.entries(initialState)) if (key.startsWith("$")) bindingDefaults[key] = value;
++		const decls = result?.stateDeclarations ?? {};
++		const forced = {};
++		if (!isStreaming) {
++			const prev = committedDeclsRef.current;
++			for (const k of Object.keys(prev)) if (!(k in decls)) forced[k] = void 0;
++			for (const k of Object.keys(decls)) if (!(k in prev) || JSON.stringify(prev[k]) !== JSON.stringify(decls[k])) forced[k] = decls[k];
++			committedDeclsRef.current = decls;
++		}
++		if (initialState) for (const [key, value] of Object.entries(initialState)) if (key.startsWith("$")) forced[key] = value;
+ 		else store.set(key, value);
+-		store.initialize(result?.stateDeclarations ?? {}, bindingDefaults);
++		store.initialize(decls, forced);
+ 	}, [
+ 		result?.stateDeclarations,
+ 		store,
+-		initialState
++		initialState,
++		isStreaming
+ 	]);
+ 	const storeSnapshot = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
+ 	const querySnapshot = useSyncExternalStore(queryManager.subscribe, queryManager.getSnapshot, queryManager.getSnapshot);
++	const runtimeErrorsRef = useRef([]);
++	/* errors raised outside render (effects, input handlers) need a render to reach onError */
++	const [, bumpRuntimeErrors] = useState(0);
++	const reportRuntimeError = useCallback((error) => {
++		runtimeErrorsRef.current = [...runtimeErrorsRef.current, error];
++		bumpRuntimeErrors((n) => n + 1);
++	}, []);
++	const limitToError = (e, hint) => ({
++		source: "runtime",
++		code: "budget-exceeded",
++		message: e.message,
++		statementId: e.statementId,
++		hint
++	});
+ 	const evaluationContext = useMemo(() => ({
+ 		getState: (name) => unwrapFieldValue(store.get(name)),
+ 		resolveRef: (name) => {
+ 			const mutResult = queryManager.getMutationResult(name);
+ 			if (mutResult) return mutResult;
+ 			return queryManager.getResult(name);
+-		}
+-	}), [store, queryManager]);
++		},
++		/* reactive input assignments evaluate with a fresh per-change budget in lang-core; a limit is reported, not stored */
++		onLimitError: (e) => reportRuntimeError(limitToError(e, "Input assignment exceeds the evaluation budget"))
++	}), [
++		store,
++		queryManager,
++		reportRuntimeError
++	]);
+ 	useEffect(() => {
+ 		if (isStreaming) return;
+-		const evaluatedNodes = (result?.queryStatements ?? []).map((qn) => {
+-			const relevantDeps = {};
+-			if (qn.deps) for (const ref of qn.deps) relevantDeps[ref] = storeSnapshot[ref];
+-			return {
+-				statementId: qn.statementId,
+-				toolName: qn.toolAST ? evaluate(qn.toolAST, evaluationContext) : "",
+-				args: qn.argsAST ? evaluate(qn.argsAST, evaluationContext) : null,
+-				defaults: qn.defaultsAST ? evaluate(qn.defaultsAST, evaluationContext) : null,
+-				refreshInterval: qn.refreshAST ? evaluate(qn.refreshAST, evaluationContext) : void 0,
+-				deps: Object.keys(relevantDeps).length > 0 ? relevantDeps : void 0,
+-				complete: qn.complete
+-			};
+-		});
++		let evaluatedNodes;
++		try {
++			evaluatedNodes = (result?.queryStatements ?? []).map((qn) => {
++				const relevantDeps = {};
++				if (qn.deps) for (const ref of qn.deps) relevantDeps[ref] = storeSnapshot[ref];
++				return {
++					statementId: qn.statementId,
++					toolName: qn.toolAST ? evaluateBudgeted(qn.toolAST, evaluationContext) : "",
++					args: qn.argsAST ? evaluateBudgeted(qn.argsAST, evaluationContext) : null,
++					defaults: qn.defaultsAST ? evaluateBudgeted(qn.defaultsAST, evaluationContext) : null,
++					refreshInterval: qn.refreshAST ? evaluateBudgeted(qn.refreshAST, evaluationContext) : void 0,
++					deps: Object.keys(relevantDeps).length > 0 ? relevantDeps : void 0,
++					complete: qn.complete
++				};
++			});
++		} catch (e) {
++			if (!(e instanceof LimitError)) throw e;
++			/* keep the previously scheduled queries; report the located limit */
++			reportRuntimeError(limitToError(e, "Query arguments exceed the evaluation budget"));
++			return;
++		}
+ 		queryManager.evaluateQueries(evaluatedNodes);
+ 	}, [
+ 		isStreaming,
+@@ -412,10 +457,17 @@ function useOpenUIState({ response, library, isStreaming, onAction, onStateUpdat
+ 	]);
+ 	useEffect(() => {
+ 		if (isStreaming) return;
+-		const nodes = (result?.mutationStatements ?? []).map((mn) => ({
+-			statementId: mn.statementId,
+-			toolName: mn.toolAST ? evaluate(mn.toolAST, evaluationContext) : ""
+-		}));
++		let nodes;
++		try {
++			nodes = (result?.mutationStatements ?? []).map((mn) => ({
++				statementId: mn.statementId,
++				toolName: mn.toolAST ? evaluateBudgeted(mn.toolAST, evaluationContext) : ""
++			}));
++		} catch (e) {
++			if (!(e instanceof LimitError)) throw e;
++			reportRuntimeError(limitToError(e, "Mutation tool name exceeds the evaluation budget"));
++			return;
++		}
+ 		queryManager.registerMutations(nodes);
+ 	}, [
+ 		isStreaming,
+@@ -425,11 +477,15 @@ function useOpenUIState({ response, library, isStreaming, onAction, onStateUpdat
+ 	]);
+ 	const propsRef = useRef({
+ 		onAction,
+-		onStateUpdate
++		onStateUpdate,
++		onActionStart,
++		onActionEnd
+ 	});
+ 	propsRef.current = {
+ 		onAction,
+-		onStateUpdate
++		onStateUpdate,
++		onActionStart,
++		onActionEnd
+ 	};
+ 	const resultRef = useRef(result);
+ 	resultRef.current = result;
+@@ -472,9 +528,14 @@ function useOpenUIState({ response, library, isStreaming, onAction, onStateUpdat
+ 		}
+ 		return store.getSnapshot();
+ 	}, [store]);
++	/**
++	* One call = one activation (every react-ui control invokes this from its own
++	* pointer/keyboard handler). Plans get an action id created here and threaded
++	* through each step by runActionPlan; nothing global records an active press.
++	*/
+ 	const triggerAction = useCallback(async (userMessage, formName, action) => {
+ 		const formPayload = getFormPayload(formName);
+-		const { onAction: handler } = propsRef.current;
++		const { onAction: handler, onActionStart, onActionEnd } = propsRef.current;
+ 		if (action && !("steps" in action)) {
+ 			const actionType = action.type || BuiltinActionType.ContinueConversation;
+ 			const params = { ...action.params || {} };
+@@ -485,61 +546,31 @@ function useOpenUIState({ response, library, isStreaming, onAction, onStateUpdat
+ 				params,
+ 				humanFriendlyMessage: userMessage,
+ 				formState: formPayload,
+-				formName
++				formName,
++				actionId: createActionId()
+ 			});
+ 			return;
+ 		}
+-		const actionPlan = action;
+-		if (actionPlan?.steps) {
+-			for (const step of actionPlan.steps) switch (step.type) {
+-				case ACTION_STEPS.Run:
+-					if (step.refType === "mutation") {
+-						const mn = resultRef.current?.mutationStatements?.find((m) => m.statementId === step.statementId);
+-						const evaluatedArgs = mn?.argsAST ? evaluate(mn.argsAST, evaluationContext) : {};
+-						if (!await queryManager.fireMutation(step.statementId, evaluatedArgs)) return;
+-					} else queryManager.invalidate([step.statementId]);
+-					break;
+-				case ACTION_STEPS.ToAssistant:
+-					handler?.({
+-						type: BuiltinActionType.ContinueConversation,
+-						params: step.context ? { context: step.context } : {},
+-						humanFriendlyMessage: step.message,
+-						formState: formPayload,
+-						formName
+-					});
+-					break;
+-				case ACTION_STEPS.OpenUrl:
+-					handler?.({
+-						type: BuiltinActionType.OpenUrl,
+-						params: { url: step.url },
+-						humanFriendlyMessage: "",
+-						formState: formPayload,
+-						formName
+-					});
+-					break;
+-				case ACTION_STEPS.Set: {
+-					if (!step.valueAST) {
+-						console.warn(`[openui] Set action for ${step.target} has no valueAST — skipping`);
+-						break;
+-					}
+-					const value = evaluate(step.valueAST, evaluationContext);
+-					store.set(step.target, value);
+-					break;
+-				}
+-				case ACTION_STEPS.Reset: {
+-					const decls = resultRef.current?.stateDeclarations ?? {};
+-					for (const target of step.targets) store.set(target, decls[target] ?? null);
+-					break;
+-				}
+-			}
+-			return;
+-		}
++		if (action?.steps) return runActionPlan({
++			plan: action,
++			userMessage,
++			formName,
++			formPayload,
++			handler,
++			queryManager,
++			evaluationContext,
++			store,
++			getResult: () => resultRef.current,
++			onActionStart,
++			onActionEnd
++		});
+ 		handler?.({
+ 			type: BuiltinActionType.ContinueConversation,
+ 			params: {},
+ 			humanFriendlyMessage: userMessage,
+ 			formState: formPayload,
+-			formName
++			formName,
++			actionId: createActionId()
+ 		});
+ 	}, [
+ 		queryManager,
+@@ -578,12 +609,21 @@ function useOpenUIState({ response, library, isStreaming, onAction, onStateUpdat
+ 		evaluationContext,
+ 		reportError
+ 	]);
+-	const runtimeErrorsRef = useRef([]);
++	/* a fallback frame is only valid for the generation whose bindings/context it was evaluated against */
++	const lastGoodResultRef = useRef(null);
++	const lastGoodGenerationRef = useRef(generation);
++	if (lastGoodGenerationRef.current !== generation) {
++		lastGoodGenerationRef.current = generation;
++		lastGoodResultRef.current = null;
++	}
+ 	const evaluatedResult = useMemo(() => {
+ 		if (!result?.root) return result;
+ 		const errors = [];
+ 		const evalCtx = {
+-			ctx: evaluationContext,
++			ctx: {
++				...evaluationContext,
++				budget: createEvalBudget()
++			},
+ 			library,
+ 			store,
+ 			errors
+@@ -591,19 +631,25 @@ function useOpenUIState({ response, library, isStreaming, onAction, onStateUpdat
+ 		try {
+ 			const evaluatedRoot = evaluateElementProps(result.root, evalCtx);
+ 			runtimeErrorsRef.current = errors;
+-			return {
++			const evaluated = {
+ 				...result,
+ 				root: evaluatedRoot
+ 			};
++			lastGoodResultRef.current = evaluated;
++			return evaluated;
+ 		} catch (e) {
+-			const msg = e instanceof Error ? e.message : String(e);
+-			errors.push({
++			if (e instanceof LimitError) errors.push(limitToError(e, "Reduce repeated/nested components or @Each item counts"));
++			else errors.push({
+ 				source: "runtime",
+ 				code: "runtime-error",
+-				message: `Prop evaluation failed: ${msg}`
++				message: `Prop evaluation failed: ${e instanceof Error ? e.message : String(e)}`
+ 			});
+ 			runtimeErrorsRef.current = errors;
+-			return result;
++			/* leave the last good frame on screen; a raw unevaluated tree is not a frame */
++			return lastGoodResultRef.current ?? {
++				...result,
++				root: null
++			};
+ 		}
+ 	}, [
+ 		result,
+@@ -638,7 +684,8 @@ function useOpenUIState({ response, library, isStreaming, onAction, onStateUpdat
+ 		result: evaluatedResult,
+ 		parseResult: result,
+ 		contextValue,
+-		isQueryLoading
++		isQueryLoading,
++		queryManager
+ 	};
+ }
+ //#endregion
+@@ -743,7 +790,15 @@ const DefaultQueryLoader = () => /* @__PURE__ */ jsx("div", { style: {
+ 	animation: "openui-spin 0.6s linear infinite",
+ 	zIndex: 10
+ } });
+-function Renderer({ response, library, isStreaming = false, onAction, onStateUpdate, initialState, onParseResult, toolProvider, queryLoader, onError, publishObservability }) {
++/**
++* Patched Renderer. `toolProvider` also accepts a function `(toolName, args, meta) => Promise`
++* receiving ToolCallMeta; function-map entries receive `(args, meta)`. An MCP client receives
++* neither provenance nor an abort signal (its callTool positional options are its own).
++* Changing `generation` disposes the query manager (late results of the old generation are
++* ignored, data reloads) while $state in the store survives. `paused` stops scheduling.
++* `runtimeRef.current` exposes pause/status/retry controls to the host.
++*/
++function Renderer({ response, library, isStreaming = false, onAction, onStateUpdate, initialState, onParseResult, toolProvider, queryLoader, onError, publishObservability, generation = 0, paused = false, onActionStart, onActionEnd, runtimeRef }) {
+ 	useInsertionEffect(() => {
+ 		ensureLoadingStyle();
+ 	}, []);
+@@ -751,9 +806,18 @@ function Renderer({ response, library, isStreaming = false, onAction, onStateUpd
+ 	onParseResultRef.current = onParseResult;
+ 	const toolProviderInputRef = useRef(toolProvider);
+ 	toolProviderInputRef.current = toolProvider;
+-	const stableToolProvider = useRef({ async callTool(toolName, args) {
++	const actionCallbacksRef = useRef({
++		onActionStart,
++		onActionEnd
++	});
++	actionCallbacksRef.current = {
++		onActionStart,
++		onActionEnd
++	};
++	const stableToolProvider = useMemo(() => ({ async callTool(toolName, args, meta) {
+ 		const current = toolProviderInputRef.current ?? null;
+ 		if (current == null) throw new Error("[openui] toolProvider is null");
++		if (typeof current === "function") return current(toolName, args, meta);
+ 		if (typeof current.callTool === "function") return extractToolResult(await current.callTool({
+ 			name: toolName,
+ 			arguments: args
+@@ -761,22 +825,60 @@ function Renderer({ response, library, isStreaming = false, onAction, onStateUpd
+ 		const map = current;
+ 		const fn = map[toolName];
+ 		if (!fn) throw new ToolNotFoundError(toolName, Object.keys(map));
+-		return fn(args);
+-	} });
+-	const { result, parseResult, contextValue, isQueryLoading } = useOpenUIState({
++		return fn(args, meta);
++	} }), [generation]);
++	const { result, parseResult, contextValue, isQueryLoading, queryManager } = useOpenUIState({
+ 		response,
+ 		library,
+ 		isStreaming,
+ 		onAction,
+ 		onStateUpdate,
+ 		initialState,
+-		toolProvider: toolProvider != null ? stableToolProvider.current : null,
++		toolProvider: toolProvider != null ? stableToolProvider : null,
+ 		onError,
+-		publishObservability
++		publishObservability,
++		onActionStart,
++		onActionEnd,
++		generation,
++		paused
+ 	}, renderDeep);
+ 	useEffect(() => {
+ 		onParseResultRef.current?.(parseResult);
+ 	}, [parseResult]);
++	useEffect(() => {
++		if (paused) queryManager.pause();
++		else queryManager.resume();
++	}, [paused, queryManager]);
++	useEffect(() => {
++		if (!runtimeRef) return;
++		runtimeRef.current = {
++			pause: queryManager.pause,
++			resume: queryManager.resume,
++			isPaused: queryManager.isPaused,
++			getQueryStatus: queryManager.getQueryStatus,
++			getMutationResult: queryManager.getMutationResult,
++			getMutationCause: queryManager.getMutationCause,
++			subscribe: queryManager.subscribe,
++			refresh: (statementIds) => queryManager.invalidate(statementIds),
++			press: (statementIds) => {
++				const actionId = createActionId();
++				const { onActionStart, onActionEnd } = actionCallbacksRef.current;
++				onActionStart?.({
++					actionId,
++					steps: statementIds.length
++				});
++				queryManager.invalidate(statementIds, actionId);
++				onActionEnd?.({
++					actionId,
++					ok: true
++				});
++				return actionId;
++			}
++		};
++		return () => {
++			runtimeRef.current = null;
++		};
++	}, [queryManager, runtimeRef]);
+ 	if (!result?.root) return null;
+ 	return /* @__PURE__ */ jsx(OpenUIContext.Provider, {
+ 		value: contextValue,
+diff --git a/dist/exports-CqIWw0ev.d.mts b/dist/exports-CqIWw0ev.d.mts
+index 1f165ea..abba2e8 100644
+--- a/dist/exports-CqIWw0ev.d.mts
++++ b/dist/exports-CqIWw0ev.d.mts
+@@ -1,4 +1,6 @@
+ import { ACTION_STEPS as ACTION_STEPS$1, ActionEvent, ActionEvent as ActionEvent$1, ActionPlan, ActionPlan as ActionPlan$1, ActionStep, BuiltinActionType as BuiltinActionType$1, ComponentGroup, ComponentPromptSpec, ComponentRenderProps, DefinedComponent, ElementNode, EvaluationContext, InferStateFieldValue, Library, LibraryDefinition, McpClientLike, McpClientLike as McpClientLike$1, OpenUIError, OpenUIError as OpenUIError$1, ParseResult, ParseResult as ParseResult$1, ParsedRule, ParsedRule as ParsedRule$1, PromptOptions, PromptSpec, ReactiveAssign, StateField, StateField as StateField$1, SubComponentOf, SystemPromptOptions, SystemPromptSpec, ToolDescriptor, ToolNotFoundError as ToolNotFoundError$1, ToolProvider, ToolSpec, ValidatorFn, builtInValidators, createParser, createStreamingParser as createStreamingParser$1, extractToolResult as extractToolResult$1, generatePrompt, generateSystemPrompt, isReactiveAssign, mergeStatements, parseRules, parseStructuredRules, tagSchemaId, validate as validate$1 } from "@openuidev/lang-core";
++import { ActionEndEvent, ActionStartEvent, QueryStatus, ScopedActionEvent, ToolCallMeta } from "./wth-runtime.mjs";
++import { MutationResult } from "@openuidev/lang-core";
+ import * as _$react from "react";
+ import React$1, { ReactNode } from "react";
+ import { z } from "zod/v4";
+@@ -19,6 +21,22 @@ declare function defineComponent$1<T extends $ZodObject>(config: {
+ declare function createLibrary$1(input: LibraryDefinition$1): Library$1;
+ //#endregion
+ //#region src/Renderer.d.ts
++/** Function provider receiving wth provenance with every call (patch). */
++type MetaToolProviderFn = (toolName: string, args: Record<string, unknown>, meta: ToolCallMeta) => Promise<unknown>;
++/** Host handle published through `RendererProps.runtimeRef` (patch). */
++interface OpenUIRuntime {
++  pause(): void;
++  resume(): void;
++  isPaused(): boolean;
++  getQueryStatus(statementId: string): QueryStatus | null;
++  getMutationResult(statementId: string): MutationResult | null;
++  getMutationCause(statementId: string): unknown;
++  subscribe(listener: () => void): () => void;
++  /** Automatic refetch (`refresh`), e.g. after reconnect. */
++  refresh(statementIds?: string[]): void;
++  /** User-activated refetch (`press`) with a fresh action id; reports action start/end. */
++  press(statementIds: string[]): string;
++}
+ interface RendererProps {
+   /** Raw response text (openui-lang code). */
+   response: string | null;
+@@ -26,8 +44,8 @@ interface RendererProps {
+   library: Library$1;
+   /** Whether the LLM is still streaming (form interactions disabled during streaming). */
+   isStreaming?: boolean;
+-  /** Callback when a component triggers an action. */
+-  onAction?: (event: ActionEvent) => void;
++  /** Callback when a component triggers an action; `actionId` identifies the activation (patch). */
++  onAction?: (event: ScopedActionEvent) => void;
+   /**
+    * Called whenever a form field value changes. Receives the raw form state map.
+    * The consumer decides how to persist this (e.g. embed in message, store separately).
+@@ -43,10 +61,11 @@ interface RendererProps {
+   onParseResult?: (result: ParseResult | null) => void;
+   /**
+    * Tool provider for Query()/Mutation() calls.
+-   * - Function map: `{ tool_name: async (args) => result }` — simplest option
+-   * - MCP client: any object with `callTool({ name, arguments })` (e.g. from @modelcontextprotocol/sdk)
++   * - Function `(toolName, args, meta) => result` receiving ToolCallMeta (patch)
++   * - Function map: `{ tool_name: async (args, meta) => result }`
++   * - MCP client: any object with `callTool({ name, arguments })` (no provenance forwarded)
+    */
+-  toolProvider?: Record<string, (args: Record<string, unknown>) => Promise<unknown>> | McpClientLike | null;
++  toolProvider?: MetaToolProviderFn | Record<string, (args: Record<string, unknown>, meta: ToolCallMeta) => Promise<unknown>> | McpClientLike | null;
+   /** Custom loading indicator shown while queries are fetching. Defaults to a spinner. */
+   queryLoader?: React$1.ReactNode;
+   /**
+@@ -57,6 +76,15 @@ interface RendererProps {
+    */
+   onError?: (errors: OpenUIError[]) => void;
+   publishObservability?: boolean;
++  /** Version of the committed program; a change disposes queries and reloads data, $state survives (patch). */
++  generation?: number;
++  /** Stop starting fetches (hidden/background/disconnected view); in-flight calls finish (patch). */
++  paused?: boolean;
++  onActionStart?: (event: ActionStartEvent) => void;
++  onActionEnd?: (event: ActionEndEvent) => void;
++  runtimeRef?: {
++    current: OpenUIRuntime | null;
++  };
+ }
+ declare function Renderer({
+   response,
+@@ -69,7 +97,12 @@ declare function Renderer({
+   toolProvider,
+   queryLoader,
+   onError,
+-  publishObservability
++  publishObservability,
++  generation,
++  paused,
++  onActionStart,
++  onActionEnd,
++  runtimeRef
+ }: RendererProps): React$1.JSX.Element | null;
+ //#endregion
+ //#region src/context.d.ts
+@@ -177,5 +210,5 @@ declare const FormValidationContext: _$react.Context<FormValidationContextValue
+ declare function useFormValidation(): FormValidationContextValue | null;
+ declare function useCreateFormValidation(): FormValidationContextValue;
+ //#endregion
+-export { ComponentRenderer as $, parseRules as A, FormNameContext as B, createParser as C, generateSystemPrompt as D, generatePrompt as E, FormValidationContextValue as F, useRenderNode as G, useGetFieldValue as H, useCreateFormValidation as I, useTriggerAction as J, useSetDefaultValue as K, useFormValidation as L, tagSchemaId as M, validate$1 as N, isReactiveAssign as O, FormValidationContext as P, ComponentRenderProps$1 as Q, useStateField as R, builtInValidators as S, extractToolResult$1 as T, useIsQueryLoading as U, useFormName as V, useIsStreaming as W, RendererProps as X, Renderer as Y, ComponentGroup as Z, SystemPromptSpec as _, BuiltinActionType$1 as a, ToolDescriptor as at, ToolSpec as b, EvaluationContext as c, ParseResult$1 as d, DefinedComponent$1 as et, ParsedRule$1 as f, SystemPromptOptions as g, StateField$1 as h, ActionStep as i, SubComponentOf as it, parseStructuredRules as j, mergeStatements as k, McpClientLike$1 as l, ReactiveAssign as m, ActionEvent$1 as n, LibraryDefinition$1 as nt, ComponentPromptSpec as o, createLibrary$1 as ot, PromptSpec as p, useSetFieldValue as q, ActionPlan$1 as r, PromptOptions as rt, ElementNode as s, defineComponent$1 as st, ACTION_STEPS$1 as t, Library$1 as tt, OpenUIError$1 as u, ToolNotFoundError$1 as v, createStreamingParser$1 as w, ValidatorFn as x, ToolProvider as y, reactive as z };
++export { ComponentRenderer as $, parseRules as A, FormNameContext as B, createParser as C, generateSystemPrompt as D, generatePrompt as E, FormValidationContextValue as F, useRenderNode as G, useGetFieldValue as H, useCreateFormValidation as I, useTriggerAction as J, useSetDefaultValue as K, useFormValidation as L, tagSchemaId as M, validate$1 as N, isReactiveAssign as O, FormValidationContext as P, ComponentRenderProps$1 as Q, useStateField as R, builtInValidators as S, extractToolResult$1 as T, useIsQueryLoading as U, useFormName as V, useIsStreaming as W, RendererProps as X, Renderer as Y, ComponentGroup as Z, SystemPromptSpec as _, BuiltinActionType$1 as a, ToolDescriptor as at, ToolSpec as b, EvaluationContext as c, ParseResult$1 as d, DefinedComponent$1 as et, ParsedRule$1 as f, SystemPromptOptions as g, StateField$1 as h, ActionStep as i, SubComponentOf as it, parseStructuredRules as j, mergeStatements as k, McpClientLike$1 as l, ReactiveAssign as m, ActionEvent$1 as n, LibraryDefinition$1 as nt, ComponentPromptSpec as o, createLibrary$1 as ot, PromptSpec as p, useSetFieldValue as q, ActionPlan$1 as r, PromptOptions as rt, ElementNode as s, defineComponent$1 as st, ACTION_STEPS$1 as t, Library$1 as tt, OpenUIError$1 as u, ToolNotFoundError$1 as v, createStreamingParser$1 as w, ValidatorFn as x, ToolProvider as y, reactive as z, MetaToolProviderFn, OpenUIRuntime };
+ //# sourceMappingURL=exports-CqIWw0ev.d.mts.map
+\ No newline at end of file
+diff --git a/dist/index.d.mts b/dist/index.d.mts
+index c5b3745..befd76f 100644
+--- a/dist/index.d.mts
++++ b/dist/index.d.mts
+@@ -1,2 +1,2 @@
+-import { $ as ComponentRenderer, A as parseRules, B as FormNameContext, C as createParser, D as generateSystemPrompt, E as generatePrompt, F as FormValidationContextValue, G as useRenderNode, H as useGetFieldValue, I as useCreateFormValidation, J as useTriggerAction, K as useSetDefaultValue, L as useFormValidation, M as tagSchemaId, N as validate, O as isReactiveAssign, P as FormValidationContext, Q as ComponentRenderProps, R as useStateField, S as builtInValidators, T as extractToolResult, U as useIsQueryLoading, V as useFormName, W as useIsStreaming, X as RendererProps, Y as Renderer, Z as ComponentGroup, _ as SystemPromptSpec, a as BuiltinActionType, at as ToolDescriptor, b as ToolSpec, c as EvaluationContext, d as ParseResult, et as DefinedComponent, f as ParsedRule, g as SystemPromptOptions, h as StateField, i as ActionStep, it as SubComponentOf, j as parseStructuredRules, k as mergeStatements, l as McpClientLike, m as ReactiveAssign, n as ActionEvent, nt as LibraryDefinition, o as ComponentPromptSpec, ot as createLibrary, p as PromptSpec, q as useSetFieldValue, r as ActionPlan, rt as PromptOptions, s as ElementNode, st as defineComponent, t as ACTION_STEPS, tt as Library, u as OpenUIError, v as ToolNotFoundError, w as createStreamingParser, x as ValidatorFn, y as ToolProvider, z as reactive } from "./exports-CqIWw0ev.mjs";
+-export { ACTION_STEPS, ActionEvent, ActionPlan, ActionStep, BuiltinActionType, ComponentGroup, ComponentPromptSpec, ComponentRenderProps, ComponentRenderer, DefinedComponent, ElementNode, EvaluationContext, FormNameContext, FormValidationContext, FormValidationContextValue, Library, LibraryDefinition, McpClientLike, OpenUIError, ParseResult, ParsedRule, PromptOptions, PromptSpec, ReactiveAssign, Renderer, RendererProps, StateField, SubComponentOf, SystemPromptOptions, SystemPromptSpec, ToolDescriptor, ToolNotFoundError, ToolProvider, ToolSpec, ValidatorFn, builtInValidators, createLibrary, createParser, createStreamingParser, defineComponent, extractToolResult, generatePrompt, generateSystemPrompt, isReactiveAssign, mergeStatements, parseRules, parseStructuredRules, reactive, tagSchemaId, useCreateFormValidation, useFormName, useFormValidation, useGetFieldValue, useIsQueryLoading, useIsStreaming, useRenderNode, useSetDefaultValue, useSetFieldValue, useStateField, useTriggerAction, validate };
+\ No newline at end of file
++import { $ as ComponentRenderer, A as parseRules, B as FormNameContext, C as createParser, D as generateSystemPrompt, E as generatePrompt, F as FormValidationContextValue, G as useRenderNode, H as useGetFieldValue, I as useCreateFormValidation, J as useTriggerAction, K as useSetDefaultValue, L as useFormValidation, M as tagSchemaId, N as validate, O as isReactiveAssign, P as FormValidationContext, Q as ComponentRenderProps, R as useStateField, S as builtInValidators, T as extractToolResult, U as useIsQueryLoading, V as useFormName, W as useIsStreaming, X as RendererProps, Y as Renderer, Z as ComponentGroup, _ as SystemPromptSpec, a as BuiltinActionType, at as ToolDescriptor, b as ToolSpec, c as EvaluationContext, d as ParseResult, et as DefinedComponent, f as ParsedRule, g as SystemPromptOptions, h as StateField, i as ActionStep, it as SubComponentOf, j as parseStructuredRules, k as mergeStatements, l as McpClientLike, m as ReactiveAssign, n as ActionEvent, nt as LibraryDefinition, o as ComponentPromptSpec, ot as createLibrary, p as PromptSpec, q as useSetFieldValue, r as ActionPlan, rt as PromptOptions, s as ElementNode, st as defineComponent, t as ACTION_STEPS, tt as Library, u as OpenUIError, v as ToolNotFoundError, w as createStreamingParser, x as ValidatorFn, y as ToolProvider, z as reactive, MetaToolProviderFn, OpenUIRuntime } from "./exports-CqIWw0ev.mjs";
++export { MetaToolProviderFn, OpenUIRuntime, ACTION_STEPS, ActionEvent, ActionPlan, ActionStep, BuiltinActionType, ComponentGroup, ComponentPromptSpec, ComponentRenderProps, ComponentRenderer, DefinedComponent, ElementNode, EvaluationContext, FormNameContext, FormValidationContext, FormValidationContextValue, Library, LibraryDefinition, McpClientLike, OpenUIError, ParseResult, ParsedRule, PromptOptions, PromptSpec, ReactiveAssign, Renderer, RendererProps, StateField, SubComponentOf, SystemPromptOptions, SystemPromptSpec, ToolDescriptor, ToolNotFoundError, ToolProvider, ToolSpec, ValidatorFn, builtInValidators, createLibrary, createParser, createStreamingParser, defineComponent, extractToolResult, generatePrompt, generateSystemPrompt, isReactiveAssign, mergeStatements, parseRules, parseStructuredRules, reactive, tagSchemaId, useCreateFormValidation, useFormName, useFormValidation, useGetFieldValue, useIsQueryLoading, useIsStreaming, useRenderNode, useSetDefaultValue, useSetFieldValue, useStateField, useTriggerAction, validate };
+\ No newline at end of file
+diff --git a/dist/wth-runtime.d.mts b/dist/wth-runtime.d.mts
+new file mode 100644
+index 0000000..0ac9d38
+--- /dev/null
++++ b/dist/wth-runtime.d.mts
+@@ -0,0 +1,93 @@
++import { ActionEvent, ActionPlan, EvaluationContext, MutationNode, MutationResult, OpenUIError, ParseResult, QueryNode, QuerySnapshot, Store } from "@openuidev/lang-core";
++
++//#region wth/runtime.d.ts (patch)
++/** Why a provider call happens. Timers are `refresh`; only real activations are `press`. */
++type ToolCallTrigger = "load" | "refresh" | "state_change" | "press";
++/** Provenance attached to every provider call by the patched renderer. */
++interface ToolCallMeta {
++  statementId: string;
++  trigger: ToolCallTrigger;
++  /** Present only for calls made by one activation (mutation, pressed `@Run(query)`, host retry). */
++  actionId?: string;
++  /** Aborted when the query's arguments change or the renderer is disposed. Mutations carry none. */
++  signal?: AbortSignal;
++}
++/** Provider shape consumed by the patched query manager. */
++interface MetaToolProvider {
++  callTool(toolName: string, args: Record<string, unknown>, meta: ToolCallMeta): Promise<unknown>;
++}
++interface QueryStatus {
++  /** `refetching` = loading with earlier data available. */
++  state: "idle" | "loading" | "refetching" | "error";
++  /** Some settled data (current or previous arguments) is being shown. */
++  hasData: boolean;
++  /** Visible data is not the settled result for the current arguments. */
++  stale: boolean;
++  /** Trigger of the most recent fetch started for this query. */
++  trigger?: ToolCallTrigger;
++  error?: OpenUIError;
++  /** Raw provider rejection for host classification (e.g. needs approval). */
++  cause?: unknown;
++}
++interface QueryManager {
++  evaluateQueries(queryNodes: QueryNode[]): void;
++  getResult(statementId: string): unknown;
++  isLoading(statementId: string): boolean;
++  isAnyLoading(): boolean;
++  getQueryStatus(statementId: string): QueryStatus | null;
++  /** With `actionId`: pressed refetch (`press`); without: `refresh`. Timer ticks never inherit an action. */
++  invalidate(statementIds?: string[], actionId?: string): void;
++  registerMutations(nodes: MutationNode[]): void;
++  /** Runs once per activation; never retried. Resolves false on failure or disposal. */
++  fireMutation(statementId: string, evaluatedArgs: Record<string, unknown>, refreshQueryIds?: string[], actionId?: string): Promise<boolean>;
++  getMutationResult(statementId: string): MutationResult | null;
++  getMutationCause(statementId: string): unknown;
++  subscribe(listener: () => void): () => void;
++  getSnapshot(): QuerySnapshot;
++  activate(): void;
++  /** Stop starting fetches; in-flight calls finish, the latest desired fetch per query is kept. */
++  pause(): void;
++  resume(): void;
++  isPaused(): boolean;
++  /** Stop timers, abort in-flight queries, discard late results. Accepted remote writes are not undone. */
++  dispose(): void;
++}
++declare const MIN_REFRESH_INTERVAL_S: 5;
++declare const STATE_CHANGE_DEBOUNCE_MS: 150;
++declare function createActionId(): string;
++interface QueryManagerOptions {
++  /** Start paused: the first scheduling pass defers fetches until `resume()`. */
++  paused?: boolean;
++}
++declare function createQueryManager(toolProvider: MetaToolProvider | null, options?: QueryManagerOptions): QueryManager;
++declare function evaluateBudgeted(ast: unknown, evaluationContext: EvaluationContext): unknown;
++interface ActionStartEvent {
++  actionId: string;
++  steps: number;
++}
++interface ActionEndEvent {
++  actionId: string;
++  /** False when a mutation failed (remaining steps skipped) or evaluation threw. */
++  ok: boolean;
++  error?: unknown;
++}
++/** `ActionEvent` emitted from inside an action plan carries the activation id. */
++type ScopedActionEvent = ActionEvent & {
++  actionId?: string;
++};
++interface RunActionPlanInput {
++  plan: ActionPlan;
++  userMessage: string;
++  formName?: string;
++  formPayload: Record<string, unknown>;
++  handler?: (event: ScopedActionEvent) => void;
++  queryManager: QueryManager;
++  evaluationContext: EvaluationContext;
++  store: Store;
++  getResult: () => ParseResult | null;
++  onActionStart?: (event: ActionStartEvent) => void;
++  onActionEnd?: (event: ActionEndEvent) => void;
++}
++declare function runActionPlan(input: RunActionPlanInput): Promise<void>;
++//#endregion
++export { type ActionEndEvent, type ActionStartEvent, MIN_REFRESH_INTERVAL_S, type MetaToolProvider, type QueryManager, type QueryManagerOptions, type QueryStatus, type RunActionPlanInput, STATE_CHANGE_DEBOUNCE_MS, type ScopedActionEvent, type ToolCallMeta, type ToolCallTrigger, createActionId, createQueryManager, evaluateBudgeted, runActionPlan };
+diff --git a/dist/wth-runtime.mjs b/dist/wth-runtime.mjs
+new file mode 100644
+index 0000000..3938f7e
+--- /dev/null
++++ b/dist/wth-runtime.mjs
+@@ -0,0 +1,582 @@
++import { ACTION_STEPS, BuiltinActionType, McpToolError, ToolNotFoundError, createEvalBudget, evaluate } from "@openuidev/lang-core";
++//#region wth/runtime.ts (patch)
++/**
++* wth patch: replaces lang-core's createQueryManager for the React renderer and owns
++* action-plan execution. Every provider call receives ToolCallMeta
++* {statementId, trigger, actionId?, signal}. Triggers: load (first fetch), refresh
++* (timer), state_change (arguments changed), press (real activation: mutation, pressed
++* @Run(query) refetch or host retry). An action id exists only for the duration of one
++* triggerAction()/press call chain; timers never inherit it.
++*/
++/** JSON.stringify with stable key ordering at all nesting levels. */
++function stableStringify(value) {
++	return JSON.stringify(value, (_key, val) => {
++		if (val && typeof val === "object" && !Array.isArray(val)) {
++			const sorted = {};
++			for (const k of Object.keys(val).sort()) sorted[k] = val[k];
++			return sorted;
++		}
++		if (val === void 0) return "__undefined__";
++		if (typeof val === "number") {
++			if (Number.isNaN(val)) return "__NaN__";
++			if (val === Infinity) return "__Inf__";
++			if (val === -Infinity) return "__-Inf__";
++		}
++		return val;
++	});
++}
++function buildCacheKey(toolName, args, deps) {
++	const depsKey = deps != null ? "::" + stableStringify(deps) : "";
++	return toolName + "::" + stableStringify(args) + depsKey;
++}
++/** Minimum Query refresh interval in seconds. */
++const MIN_REFRESH_INTERVAL_S = 5;
++/** Coalescing window for state-driven refetches in milliseconds. */
++const STATE_CHANGE_DEBOUNCE_MS = 150;
++let fallbackActionId = 0;
++function createActionId() {
++	if (typeof globalThis.crypto?.randomUUID === "function") return globalThis.crypto.randomUUID();
++	fallbackActionId += 1;
++	return `openui-action-${Date.now().toString(36)}-${fallbackActionId.toString(36)}`;
++}
++function toolError(source, component, code, message, statementId, toolName, hint) {
++	const err = {
++		source,
++		code,
++		message,
++		statementId,
++		component,
++		toolName
++	};
++	if (hint) err.hint = hint;
++	return err;
++}
++function classifyToolError(err, source, component, verb, statementId, toolName) {
++	if (err instanceof ToolNotFoundError) return toolError(source, component, "tool-not-found", `${component} tool "${toolName}" not found`, statementId, toolName, err.availableTools.length ? `Available tools: ${err.availableTools.join(", ")}` : void 0);
++	if (err instanceof McpToolError) return toolError(source, component, "mcp-error", `${component} "${toolName}" returned an error: ${err.toolErrorText}`, statementId, toolName);
++	return toolError(source, component, "tool-error", `${component} "${toolName}" ${verb}: ${err instanceof Error ? err.message : String(err)}`, statementId, toolName);
++}
++/** `options.paused` starts the manager paused so the first scheduling pass defers instead of calling the provider. */
++function createQueryManager(toolProvider, options) {
++	const queries = /* @__PURE__ */ new Map();
++	const mutations = /* @__PURE__ */ new Map();
++	const cache = /* @__PURE__ */ new Map();
++	const listeners = /* @__PURE__ */ new Set();
++	let snapshot = {
++		__openui_loading: [],
++		__openui_refetching: [],
++		__openui_errors: []
++	};
++	let snapshotJson = JSON.stringify(snapshot);
++	let disposed = false;
++	let paused = options?.paused === true;
++	let generation = 0;
++	function settledData(cacheKey) {
++		const entry = cacheKey ? cache.get(cacheKey) : void 0;
++		return entry && entry.data !== void 0 ? entry : void 0;
++	}
++	function rebuildSnapshot() {
++		const out = {
++			__openui_loading: [],
++			__openui_refetching: [],
++			__openui_errors: []
++		};
++		for (const [sid, q] of queries) {
++			const entry = settledData(q.cacheKey) ?? settledData(q.prevCacheKey);
++			out[sid] = entry ? entry.data : q.defaults;
++			if (q.loading) {
++				out.__openui_loading.push(sid);
++				if (q.everFetched) out.__openui_refetching.push(sid);
++			}
++			if (q.error) out.__openui_errors.push(q.error);
++		}
++		for (const [sid, m] of mutations) {
++			out[sid] = m.result;
++			if (m.error) out.__openui_errors.push(m.error);
++		}
++		try {
++			const outJson = JSON.stringify(out);
++			if (outJson === snapshotJson) return false;
++			snapshot = out;
++			snapshotJson = outJson;
++		} catch {
++			snapshot = out;
++			snapshotJson = "";
++		}
++		return true;
++	}
++	function notify() {
++		for (const listener of [...listeners]) listener();
++	}
++	/** Abort the live call and release its cache entry; an aborted provider promise may never settle. */
++	function abortInFlight(q) {
++		if (q.controller) {
++			q.controller.abort();
++			const entry = q.fetchKey !== void 0 ? cache.get(q.fetchKey) : void 0;
++			if (entry && entry.controller === q.controller) {
++				entry.inFlight = false;
++				entry.controller = void 0;
++			}
++			q.controller = void 0;
++			q.fetchKey = void 0;
++		}
++	}
++	function clearDebounce(q) {
++		if (q.debounce) {
++			clearTimeout(q.debounce);
++			q.debounce = void 0;
++		}
++	}
++	async function executeFetch(cacheKey, statementId, trigger, actionId) {
++		if (!toolProvider || disposed) return;
++		const q = queries.get(statementId);
++		if (!q) return;
++		if (paused) {
++			/* latest desired fetch wins; a press keeps its provenance, a later timer tick does not upgrade it */
++			q.pending = { trigger, actionId };
++			return;
++		}
++		const fetchKey = cacheKey;
++		const toolName = q.toolName;
++		const args = q.args;
++		abortInFlight(q);
++		let entry = cache.get(fetchKey);
++		if (!entry) {
++			entry = { data: void 0 };
++			cache.set(fetchKey, entry);
++		}
++		const controller = new AbortController();
++		entry.inFlight = true;
++		entry.controller = controller;
++		q.controller = controller;
++		q.fetchKey = fetchKey;
++		q.loading = true;
++		q.lastTrigger = trigger;
++		rebuildSnapshot();
++		notify();
++		try {
++			const data = await toolProvider.callTool(toolName, args ?? {}, {
++				statementId,
++				trigger,
++				actionId,
++				signal: controller.signal
++			});
++			if (disposed || controller.signal.aborted) return;
++			const current = queries.get(statementId);
++			/* args moved on while this call ran: obsolete result, discard */
++			if (!current || current.cacheKey !== fetchKey) return;
++			entry.data = data ?? null;
++			current.everFetched = true;
++			current.error = void 0;
++			current.cause = void 0;
++			if (current.prevCacheKey && current.prevCacheKey !== fetchKey) {
++				const prevKey = current.prevCacheKey;
++				current.prevCacheKey = void 0;
++				cleanupCacheEntry(prevKey);
++			}
++		} catch (err) {
++			if (disposed || controller.signal.aborted) return;
++			const current = queries.get(statementId);
++			if (current && current.cacheKey === fetchKey) {
++				current.error = classifyToolError(err, "query", "Query", "failed", statementId, toolName);
++				current.cause = err;
++			}
++		} finally {
++			if (entry.controller === controller) {
++				entry.inFlight = false;
++				entry.controller = void 0;
++			}
++			const current = queries.get(statementId);
++			if (current && current.controller === controller) {
++				current.controller = void 0;
++				current.fetchKey = void 0;
++			}
++			if (!disposed && !controller.signal.aborted) {
++				if (current && current.cacheKey === fetchKey) {
++					current.loading = false;
++					if (rebuildSnapshot()) notify();
++					if (current.needsRefetch) {
++						const next = current.needsRefetch;
++						current.needsRefetch = void 0;
++						executeFetch(current.cacheKey, statementId, next.trigger, next.actionId);
++					}
++				} else if (rebuildSnapshot()) notify();
++			}
++		}
++	}
++	/** Remove a cache entry if no query references it. */
++	function cleanupCacheEntry(cacheKey) {
++		for (const q of queries.values()) if (q.cacheKey === cacheKey || q.prevCacheKey === cacheKey) return;
++		cache.delete(cacheKey);
++	}
++	function removeQuery(sid, q) {
++		clearInterval(q.timer);
++		clearDebounce(q);
++		abortInFlight(q);
++		queries.delete(sid);
++		cleanupCacheEntry(q.cacheKey);
++		if (q.prevCacheKey) cleanupCacheEntry(q.prevCacheKey);
++	}
++	/** Start a fetch for the query's current key unless settled data or an in-flight fetch for that key exists. */
++	function fetchIfNeeded(sid, trigger) {
++		const q = queries.get(sid);
++		if (!q || !toolProvider) return;
++		const entry = cache.get(q.cacheKey);
++		if (entry?.inFlight) return;
++		if (!(entry && entry.data !== void 0)) executeFetch(q.cacheKey, sid, trigger);
++	}
++	function evaluateQueries(queryNodes) {
++		if (disposed) return;
++		const activeIds = new Set(queryNodes.map((n) => n.statementId));
++		for (const [sid, q] of queries) if (!activeIds.has(sid)) removeQuery(sid, q);
++		for (const node of queryNodes) {
++			if (!node.complete) continue;
++			const cacheKey = buildCacheKey(node.toolName, node.args, node.deps);
++			const existing = queries.get(node.statementId);
++			let trigger = "load";
++			if (existing) {
++				if (existing.cacheKey !== cacheKey) {
++					if (!existing.prevCacheKey || cache.get(existing.prevCacheKey)?.data === void 0) existing.prevCacheKey = existing.cacheKey;
++					/* the superseded call is gone: no work is running for this query until the debounce decides */
++					abortInFlight(existing);
++					existing.needsRefetch = void 0;
++					existing.loading = false;
++					trigger = "state_change";
++				} else trigger = void 0;
++				existing.toolName = node.toolName;
++				existing.args = node.args;
++				existing.defaults = node.defaults;
++				existing.cacheKey = cacheKey;
++			} else queries.set(node.statementId, {
++				toolName: node.toolName,
++				args: node.args,
++				defaults: node.defaults,
++				cacheKey,
++				loading: false,
++				everFetched: false,
++				refreshInterval: 0
++			});
++			const q = queries.get(node.statementId);
++			if (trigger === "state_change") {
++				clearDebounce(q);
++				q.debounce = setTimeout(() => {
++					q.debounce = void 0;
++					if (disposed) return;
++					fetchIfNeeded(node.statementId, "state_change");
++				}, STATE_CHANGE_DEBOUNCE_MS);
++			} else if (trigger === "load") fetchIfNeeded(node.statementId, "load");
++			else if (q.debounce && settledData(cacheKey)) clearDebounce(q);
++			const requested = node.refreshInterval ?? 0;
++			const newInterval = requested > 0 ? Math.max(requested, MIN_REFRESH_INTERVAL_S) : 0;
++			if (newInterval !== q.refreshInterval) {
++				if (q.timer) {
++					clearInterval(q.timer);
++					q.timer = void 0;
++				}
++				if (newInterval > 0) q.timer = setInterval(() => {
++					if (disposed || paused || !toolProvider) return;
++					if (!cache.get(q.cacheKey)?.inFlight && !q.debounce) executeFetch(q.cacheKey, node.statementId, "refresh");
++				}, newInterval * 1e3);
++				q.refreshInterval = newInterval;
++			}
++		}
++		if (rebuildSnapshot()) notify();
++	}
++	function getResult(statementId) {
++		const q = queries.get(statementId);
++		if (!q) return null;
++		const entry = settledData(q.cacheKey) ?? settledData(q.prevCacheKey);
++		return entry ? entry.data : q.defaults;
++	}
++	function isLoading(statementId) {
++		return queries.get(statementId)?.loading ?? false;
++	}
++	function isAnyLoading() {
++		for (const q of queries.values()) if (q.loading) return true;
++		return false;
++	}
++	/**
++	* Host-facing status for one query. `stale` means the visible data is not the
++	* settled result for the current arguments (error after data, or previous
++	* arguments' data shown while the new arguments load). `cause` is the raw
++	* provider rejection so the host can classify it (e.g. needs approval).
++	*/
++	function getQueryStatus(statementId) {
++		const q = queries.get(statementId);
++		if (!q) return null;
++		const current = settledData(q.cacheKey);
++		const hasData = !!(current ?? settledData(q.prevCacheKey));
++		return {
++			state: q.error ? "error" : q.loading ? q.everFetched ? "refetching" : "loading" : "idle",
++			hasData,
++			stale: hasData && (!!q.error || !current),
++			trigger: q.lastTrigger,
++			error: q.error,
++			cause: q.cause
++		};
++	}
++	/**
++	* Refetch queries. With `actionId` this is a pressed refetch (`@Run(query)` or host
++	* retry) and carries that action's provenance, also through a refetch queued behind an
++	* in-flight one; without it the trigger is `refresh`. Later timer ticks never inherit it.
++	*/
++	function invalidate(statementIds, actionId) {
++		if (disposed || !toolProvider) return;
++		const trigger = actionId ? "press" : "refresh";
++		const targets = statementIds?.length ? statementIds.filter((sid) => queries.has(sid)) : [...queries.keys()];
++		for (const sid of targets) {
++			const q = queries.get(sid);
++			if (!q) continue;
++			clearDebounce(q);
++			if (cache.get(q.cacheKey)?.inFlight) q.needsRefetch = { trigger, actionId };
++			else executeFetch(q.cacheKey, sid, trigger, actionId);
++		}
++	}
++	function registerMutations(nodes) {
++		const activeIds = new Set(nodes.map((n) => n.statementId));
++		for (const sid of mutations.keys()) if (!activeIds.has(sid)) mutations.delete(sid);
++		for (const node of nodes) {
++			const existing = mutations.get(node.statementId);
++			if (existing) {
++				if (existing.toolName !== node.toolName) {
++					existing.toolName = node.toolName;
++					existing.result = {
++						status: "idle",
++						data: null,
++						error: null
++					};
++					existing.error = void 0;
++					existing.cause = void 0;
++				}
++			} else mutations.set(node.statementId, {
++				toolName: node.toolName,
++				result: { status: "idle" }
++			});
++		}
++		if (rebuildSnapshot()) notify();
++	}
++	/**
++	* Run a mutation once for the activation `actionId`. Never retried automatically; a
++	* failure or disposal reports false and the caller stops the action. A result arriving
++	* after dispose is ignored, without claiming the remote write was rolled back.
++	*/
++	async function fireMutation(statementId, evaluatedArgs, refreshQueryIds, actionId) {
++		if (disposed || !toolProvider) return false;
++		const m = mutations.get(statementId);
++		if (!m) return false;
++		if (m.result.status === "loading") return false;
++		const gen = generation;
++		m.result = { status: "loading" };
++		rebuildSnapshot();
++		notify();
++		let success = false;
++		try {
++			const data = await toolProvider.callTool(m.toolName, evaluatedArgs, {
++				statementId,
++				trigger: "press",
++				actionId
++			});
++			if (disposed || gen !== generation) return false;
++			m.result = {
++				status: "success",
++				data
++			};
++			m.error = void 0;
++			m.cause = void 0;
++			success = true;
++		} catch (err) {
++			if (disposed || gen !== generation) return false;
++			m.result = {
++				status: "error",
++				error: err instanceof Error ? err.message : String(err)
++			};
++			m.error = classifyToolError(err, "mutation", "Mutation", "failed", statementId, m.toolName);
++			m.cause = err;
++		}
++		rebuildSnapshot();
++		notify();
++		if (success && refreshQueryIds?.length) invalidate(refreshQueryIds, actionId);
++		return success;
++	}
++	function getMutationResult(statementId) {
++		return mutations.get(statementId)?.result ?? null;
++	}
++	function getMutationCause(statementId) {
++		return mutations.get(statementId)?.cause;
++	}
++	function subscribe(listener) {
++		listeners.add(listener);
++		return () => listeners.delete(listener);
++	}
++	function getSnapshot() {
++		return snapshot;
++	}
++	/**
++	* Undo `dispose()` for the same program (React StrictMode / Fast Refresh run effect cleanup and
++	* setup on one manager). Loads aborted by dispose never settled, so start them again.
++	*/
++	function activate() {
++		if (!disposed) return;
++		disposed = false;
++		for (const [sid, q] of queries) {
++			if (q.error || settledData(q.cacheKey) || cache.get(q.cacheKey)?.inFlight || q.debounce) continue;
++			executeFetch(q.cacheKey, sid, settledData(q.prevCacheKey) ? "state_change" : "load");
++		}
++	}
++	/** Stop starting fetches (timers, loads, state changes, presses); in-flight calls finish normally. */
++	function pause() {
++		paused = true;
++	}
++	/** Resume scheduling and run the single latest deferred fetch per query. */
++	function resume() {
++		if (!paused) return;
++		paused = false;
++		if (disposed) return;
++		for (const [sid, q] of queries) {
++			const pending = q.pending;
++			if (!pending) continue;
++			q.pending = void 0;
++			if (!cache.get(q.cacheKey)?.inFlight) executeFetch(q.cacheKey, sid, pending.trigger, pending.actionId);
++		}
++	}
++	function isPaused() {
++		return paused;
++	}
++	/** Stop everything; late results are discarded. Does not undo accepted remote writes. */
++	function dispose() {
++		disposed = true;
++		generation++;
++		listeners.clear();
++		for (const q of queries.values()) {
++			if (q.timer) {
++				clearInterval(q.timer);
++				q.timer = void 0;
++			}
++			clearDebounce(q);
++			abortInFlight(q);
++			q.refreshInterval = 0;
++			q.loading = false;
++			q.needsRefetch = void 0;
++			q.pending = void 0;
++		}
++		mutations.clear();
++	}
++	return {
++		evaluateQueries,
++		getResult,
++		isLoading,
++		isAnyLoading,
++		getQueryStatus,
++		invalidate,
++		registerMutations,
++		fireMutation,
++		getMutationResult,
++		getMutationCause,
++		subscribe,
++		getSnapshot,
++		activate,
++		pause,
++		resume,
++		isPaused,
++		dispose
++	};
++}
++/** Evaluate with a fresh per-call budget; the caller decides what a LimitError means. */
++function evaluateBudgeted(ast, evaluationContext) {
++	return evaluate(ast, {
++		...evaluationContext,
++		budget: createEvalBudget()
++	});
++}
++/** Unwrap `{ value, componentType }` form-field entries (same as useOpenUIState's getState). */
++function unwrapFieldValue(v) {
++	if (v && typeof v === "object" && !Array.isArray(v) && "value" in v) return v.value;
++	return v;
++}
++/**
++* Execute one activation. `actionId` is created here and threaded explicitly through
++* every step; nothing global records "clicking". User inputs (`$state`) are frozen at
++* activation in an action-local snapshot that only this plan's own Set/Reset steps advance,
++* so a network wait never re-reads inputs and a repeated @Run(m) around a @Set sees that Set.
++* Each step is evaluated when its turn comes, so query/mutation results produced by earlier
++* steps (e.g. `@Set($id, m.data.id)` after `@Run(m)`) are the returned ones.
++* Returns when the plan's awaited steps finish; a pressed query refetch keeps the id.
++*/
++async function runActionPlan({ plan, userMessage, formName, formPayload, handler, queryManager, evaluationContext, store, getResult, onActionStart, onActionEnd }) {
++	const actionId = createActionId();
++	const emit = (event) => handler?.({
++		...event,
++		actionId,
++		formState: formPayload,
++		formName
++	});
++	onActionStart?.({
++		actionId,
++		steps: plan.steps.length
++	});
++	let ok = true;
++	let error;
++	try {
++		const local = { ...store.getSnapshot() };
++		const ctx = {
++			...evaluationContext,
++			getState: (name) => unwrapFieldValue(local[name]),
++			budget: createEvalBudget()
++		};
++		const result = getResult();
++		const assign = (target, value) => {
++			local[target] = value;
++			store.set(target, value);
++		};
++		for (const step of plan.steps) switch (step.type) {
++			case ACTION_STEPS.Run:
++				if (step.refType === "mutation") {
++					const mn = result?.mutationStatements?.find((m) => m.statementId === step.statementId);
++					const args = mn?.argsAST ? evaluate(mn.argsAST, ctx) : {};
++					if (!await queryManager.fireMutation(step.statementId, args, void 0, actionId)) {
++						ok = false;
++						return;
++					}
++				} else queryManager.invalidate([step.statementId], actionId);
++				break;
++			case ACTION_STEPS.ToAssistant:
++				emit({
++					type: BuiltinActionType.ContinueConversation,
++					params: step.context ? { context: step.context } : {},
++					humanFriendlyMessage: step.message
++				});
++				break;
++			case ACTION_STEPS.OpenUrl:
++				emit({
++					type: BuiltinActionType.OpenUrl,
++					params: { url: step.url },
++					humanFriendlyMessage: ""
++				});
++				break;
++			case ACTION_STEPS.Set:
++				if (!step.valueAST) {
++					console.warn(`[openui] Set action for ${step.target} has no valueAST — skipping`);
++					break;
++				}
++				assign(step.target, evaluate(step.valueAST, ctx));
++				break;
++			case ACTION_STEPS.Reset: {
++				const decls = result?.stateDeclarations ?? {};
++				for (const target of step.targets) assign(target, decls[target] ?? null);
++				break;
++			}
++		}
++	} catch (e) {
++		ok = false;
++		error = e;
++		console.warn(`[openui] action ${actionId} failed: ${e instanceof Error ? e.message : String(e)}`);
++	} finally {
++		onActionEnd?.({
++			actionId,
++			ok,
++			error
++		});
++	}
++}
++//#endregion
++export { MIN_REFRESH_INTERVAL_S, STATE_CHANGE_DEBOUNCE_MS, createActionId, createQueryManager, evaluateBudgeted, runActionPlan };
+diff --git a/package.json b/package.json
+index dce573d..cc410b4 100644
+--- a/package.json
++++ b/package.json
+@@ -37,6 +37,10 @@
+         "types": "./dist/index.d.cts",
+         "default": "./dist/index.cjs"
+       }
++    },
++    "./wth-runtime": {
++      "types": "./dist/wth-runtime.d.mts",
++      "default": "./dist/wth-runtime.mjs"
+     }
+   },
+   "react-native": "./dist/index.native.cjs",

@@ -332,16 +332,25 @@ pub struct DeleteSession {
     pub session: SessionId,
 }
 
-/// `ask` → `Result<Vec<search::SearchHit>, String>`: fuzzy search (nucleo, design
-/// doc 26) over every session's title and its user/assistant message text; the
-/// best hit per session, best score first. Empty query → no hits.
+/// `ask` → `Result<::search::SearchPage<search::SearchHit>, String>`: the
+/// Sessions group of unified search (design doc 49 §4): fuzzy search (nucleo,
+/// fzf syntax) over every session's title and its user/assistant message
+/// text, the best hit per session, best score first. A cold or stale index
+/// answers `indexing` and builds once off the mailbox; ask again. `Err` for
+/// an over-long query; a blank query is an empty ready page.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SearchSessions {
-    /// Fuzzy pattern (fzf syntax: space-separated atoms, `'exact`, `^prefix`, `suffix$`, `!not`).
+pub struct SearchSessionPage {
+    /// Fuzzy pattern.
     pub query: String,
-    /// Hits to return; `None` → [`search::DEFAULT_LIMIT`], clamped to [`search::MAX_LIMIT`].
+    /// Hits per page; `None` → the shared `DEFAULT_LIMIT` (10), clamped to `1..=50`.
     pub limit: Option<u32>,
 }
+
+/// `ask` → `()`. Drop the session search index, failed build included, so
+/// the next [`SearchSessionPage`] rebuilds instead of repeating a cached
+/// error (design doc 49 §4: explicit refresh). Nothing is built here.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct SearchRefresh;
 
 /// `ask` → `Result<ContextSnapshot, String>`: the active-context inventory of
 /// `session` with its revision and editability (design doc 48 §3.2). An

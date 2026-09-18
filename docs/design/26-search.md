@@ -1,8 +1,11 @@
 # 26 — Session search: fuzzy, scored, over titles and messages
 
-Status: as-built v0 · 2026-09-15 · extends `00-architecture.md` §7 (RPC),
+Status: as-built v0 · 2026-09-15 · **superseded for the human surface by
+[49](49-search.md)** on 2026-09-18 · extends `00-architecture.md` §7 (RPC),
 §8 (TUI), §10 (tree); `25-desktop.md` §3 (parity table: search),
-`08-repl.md` (`/sessions`). §8 is the as-built record.
+`08-repl.md` (`/sessions`). §8 is the as-built record of v0; §9 records what
+49 kept, moved and removed. Sections 1–7 describe v0 as designed and are
+historical where §9 says otherwise.
 
 ## 0. Why
 
@@ -178,3 +181,44 @@ unit-tested, not exercised in a real terminal.
 Debug-build matching at ~300 ms is the current ceiling; if release is not
 ~30 ms, pre-convert texts to `Utf32String` at build time and/or run the
 doc loop across threads (nucleo's `Matcher` is cheap to clone per thread).
+
+## 9. Superseded by 49 (2026-09-18)
+
+What 49 did to this design, as built:
+
+- **Kept.** The index (§2.1: titles plus visible user/assistant text, `cut_at`
+  respected, `text_of`), the supervisor-owned `search::Cache` with generation
+  invalidation (§2.2), delegated replies off the mailbox (§2.3), the scoring
+  rules (§3: `Pattern::parse` smart case/normalisation, `TITLE_BOOST`, best
+  hit per session, `matches`, 160-char snippets, char-offset ranges) and the
+  `SearchHit` shape with its `context_removed` flag (48). `cargo test -p agent
+  search::` still covers them.
+- **Moved.** The nucleo pattern setup, prepared candidate text, `snippet`/run
+  merging and `MatchRange` now live in the pure `search` library
+  (`crates/search`), which agent, artifact and knowledge share; agent imports
+  them and keeps only session records, the title boost and the per-session
+  collapse. The limit contract is the shared one: default 10, clamped
+  `1..=50` **per category** (v0's default 30 is gone).
+- **Replaced.** The public RPC `search_sessions(query, limit?) -> [SearchHit]`
+  is removed, not aliased: the desktop `Api`/`METHODS`, TUI executor, export
+  list and bindings carry `search(query, categories?, limit?) ->
+  SearchResponse`, whose `sessions` group is a `SearchPage<SearchHit>` with
+  `state`/`has_more`/`coverage`/`notices`. The supervisor command is now
+  `agent::SearchSessionPage { query, limit }` answering that page, plus
+  `agent::SearchRefresh` behind `search_refresh`. A cold or stale cache answers
+  `indexing` and starts one build instead of blocking the first query on it;
+  one match runs at a time, a second concurrent one is refused, not queued.
+- **Frontends.** `SearchDialog` is the four-category dialog of 49 §5, mounted
+  at the root shell rather than inside the sidebar; the full-width Search
+  chats row is gone and the entry is the header magnifier. TUI `/search` is
+  the live menu of 49 §6 with its own `TextInput` and chips, not the
+  submit-once picker of §4. A session message hit opens the read-only
+  **Earlier messages** page at that `seq` (the §7 upgrade), in both UIs.
+- **Not done.** Tool-result text, incremental index maintenance and
+  subtree/date restriction (§7) remain unbuilt; nothing in 49 needed them.
+
+Measured after the move (release, fixture of 1,003 sessions / 50,010
+searchable messages): warm `search` p95 2.4 ms across all four groups, cold
+first reply 1.7 ms as `indexing`, all groups ready after 4.0 s (49 §11). The
+§8 debug-build ceiling is therefore obsolete; the `Utf32String`
+pre-conversion it proposed is what `search::SearchText` does.

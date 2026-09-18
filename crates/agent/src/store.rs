@@ -631,8 +631,7 @@ impl Store {
         at_seq: i64,
         tail_from: i64,
         head: &ChatMessage,
-        source: TodoSource,
-        items: &[Todo],
+        (source, items): (TodoSource, &[Todo]),
     ) -> anyhow::Result<TodoSnapshot> {
         let sid = id.to_string();
         let mut tx = self.pool.begin().await?;
@@ -1970,14 +1969,14 @@ mod tests {
         assert!(store.messages(ghost).await.unwrap().is_empty());
         let head = ChatMessage::user("<context_summary epoch=\"1\">s</context_summary>");
         store
-            .compact_with_todos(id, 1, 4, 4, &head, TodoSource::Acp, &plan2)
+            .compact_with_todos(id, 1, 4, 4, &head, (TodoSource::Acp, &plan2))
             .await
             .unwrap();
         let before = store.todos(id).await.unwrap();
         // Duplicate epoch number fails after the snapshot insert: both roll back.
         assert!(
             store
-                .compact_with_todos(id, 1, 4, 4, &head, TodoSource::Native, &[])
+                .compact_with_todos(id, 1, 4, 4, &head, (TodoSource::Native, &[]))
                 .await
                 .is_err()
         );
@@ -2005,7 +2004,7 @@ mod tests {
 
         // `/clear` at the very same seq: the ordered key puts it after the update.
         let cleared = store
-            .compact_with_todos(id, 2, at, at, &head, TodoSource::Native, &[])
+            .compact_with_todos(id, 2, at, at, &head, (TodoSource::Native, &[]))
             .await
             .unwrap();
         assert_eq!((cleared.version, cleared.items.is_empty()), (2, true));

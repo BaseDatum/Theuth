@@ -14,9 +14,22 @@
     "isolatedModules": true,
     "skipLibCheck": true,
     "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
     "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.tsbuildinfo",
     "types": ["vite/client", "node"],
-    "paths": { "@/*": ["./src/*"] }
+    "paths": {
+      "@/*": ["./src/*"],
+      "@wth/apps": ["../../../packages/apps/src/index.ts"],
+      "@wth/apps/renderer": ["../../../packages/apps/src/renderer.tsx"],
+      "@openuidev/lang-core": ["../../../packages/apps/node_modules/@openuidev/lang-core/dist/index.d.mts"],
+      "@openuidev/react-lang": ["../../../packages/apps/node_modules/@openuidev/react-lang/dist/index.d.mts"],
+      "@openuidev/react-lang/wth-runtime": ["../../../packages/apps/node_modules/@openuidev/react-lang/dist/wth-runtime.d.mts"],
+      "@openuidev/react-ui": ["../../../packages/apps/node_modules/@openuidev/react-ui/dist/index.d.mts"],
+      "@openuidev/react-ui/genui-lib": ["../../../packages/apps/node_modules/@openuidev/react-ui/dist/genui-lib/index.d.mts"],
+      "react": ["./node_modules/@types/react"],
+      "react/jsx-runtime": ["./node_modules/@types/react/jsx-runtime.d.ts"]
+    }
   },
   "include": ["src", "vite.config.ts"]
 }

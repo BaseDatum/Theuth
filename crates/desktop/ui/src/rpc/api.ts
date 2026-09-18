@@ -38,7 +38,10 @@ import type { RepoInfo } from '@/rpc/bindings/RepoInfo'
 import type { Revision } from '@/rpc/bindings/Revision'
 import type { RunInfo } from '@/rpc/bindings/RunInfo'
 import type { ScheduleInfo } from '@/rpc/bindings/ScheduleInfo'
-import type { SearchHit } from '@/rpc/bindings/SearchHit'
+import type { ArtifactMatchContext } from '@/rpc/bindings/ArtifactMatchContext'
+import type { HistoricalConcept } from '@/rpc/bindings/HistoricalConcept'
+import type { SearchCategory } from '@/rpc/bindings/SearchCategory'
+import type { SearchResponse } from '@/rpc/bindings/SearchResponse'
 import type { SecretInfo } from '@/rpc/bindings/SecretInfo'
 import type { SecretsList } from '@/rpc/bindings/SecretsList'
 import type { SessionId } from '@/rpc/bindings/SessionId'
@@ -58,7 +61,10 @@ import type { AwsProfiles } from '@/rpc/bindings/AwsProfiles'
 import type { RpcClient } from '@/rpc/client'
 import type {
   AgentInfo,
+  AppDoc,
+  AppToolResult,
   Artifact,
+  CallArgs,
   Info,
   LoadedPage,
   LoginInfo,
@@ -101,6 +107,12 @@ export interface Api {
   browser_screenshot(session: SessionId): Promise<string | null>
   /** The human resolves pending request `reply_to` on behalf of `session` — as its recipient (answer travels to the sender) or as its blocked sender (its own wait resolves); exact id, never an arbitrary waiter (50 §5.3). Rejects when `session` is neither side or nothing is pending. */
   answer_peer_request(session: SessionId, reply_to: string, text: string): Promise<PeerReceipt>
+  /** Run one pinned Query/Mutation binding of an open app view (46 §6); a `press` trigger is the approval. `-32002` when the connection is unauthenticated, `-32001` when apps are disabled. */
+  app_call_tool(args: CallArgs): Promise<AppToolResult>
+  /** Status and stored result of a pressed invocation by `request_id` (46 §6.4), for reconnect and duplicate presses. */
+  app_call_status(request_id: string): Promise<AppToolResult>
+  /** Close one open app view: stop its reads, drop queued work (46 §7); idempotent. */
+  app_close(instance_id: string): Promise<null>
   cancel(session: SessionId): Promise<null>
   cancel_job(session: SessionId, id: JobId): Promise<null>
   compact(session: SessionId, style: CompactStyle | null): Promise<number>
@@ -115,10 +127,16 @@ export interface Api {
   enable_schedule(name: string, enabled: boolean): Promise<ScheduleInfo>
   /** Copy artifact `id`'s blob to `dest` (parent created; refuses to overwrite); returns `dest` (35 §3.5). */
   export_artifact(id: string, dest: string): Promise<string>
+  /** The artifact record of one `show` call (49 §4.2); a vanished record rejects. */
+  get_artifact(call_id: string): Promise<Artifact>
+  /** Up to 2,000 chars of the artifact's indexed text around `query`'s match, with ranges and coverage (49 §7); failed extraction rejects. */
+  artifact_search_match(call_id: string, query: string): Promise<ArtifactMatchContext>
   /** Fire a schedule now, ignoring `next` (34 §8); rejects with `busy` / `no such schedule` / the parse error. */
   fire_schedule(name: string): Promise<SessionId>
   /** New session with the conversation through the turn opened at `through` (all when `null`); `reply` stops at that 0-based assistant text of the turn instead. */
   fork_session(session: SessionId, through: number | null, reply: number | null): Promise<SessionId>
+  /** A committed app record: artifact, source, compatibility hash, pinned bindings, diagnostics (46 §6.3). `-32001` when apps are disabled — show the artifact's source instead. */
+  get_app(record_call_id: string): Promise<AppDoc>
   get_prompt(session: SessionId | null): Promise<string>
   /** Effective communication state of `session`, or the global switch alone when `null` (50 §2.1); authoritative — render `effective`/`inherited_from`, never guess. */
   get_communication(session: SessionId | null): Promise<CommunicationState>
@@ -139,6 +157,8 @@ export interface Api {
   ): Promise<Meta[]>
   knowledge_put(put: Put): Promise<Meta>
   knowledge_restore(id: string, commit: string | null): Promise<Change>
+  /** Full text of concept `id` as committed at `commit` (full object id); unknown revision rejects, never the current text (49 §7). */
+  knowledge_read_revision(id: string, commit: string): Promise<HistoricalConcept>
   /** `commit` against its first parent (the empty tree for the root), concept files only; `id` narrows to one concept. */
   knowledge_revision(commit: string, id: string | null): Promise<Revision>
   knowledge_search(query: string, limit: number | null): Promise<Hit[]>
@@ -239,8 +259,18 @@ export interface Api {
   restore_secret(name: string, back: number): Promise<SecretInfo>
   /** The name and every version. */
   delete_secret(name: string): Promise<void>
-  /** Fuzzy (fzf/helix syntax) search over titles and message text; best hit per session. */
-  search_sessions(query: string, limit: number | null): Promise<SearchHit[]>
+  /**
+   * Unified search (49 §4.2): one group per selected category in fixed order, each
+   * `ready`/`indexing`/`unavailable`/`error` on its own. `categories: null` → all four,
+   * `[]` → none; `limit` per category (default 10, max 50). Blank query → no groups.
+   */
+  search(
+    query: string,
+    categories: SearchCategory[] | null,
+    limit: number | null,
+  ): Promise<SearchResponse>
+  /** Drop failed/stale search build state of the selected owners (`null` → all) so the next `search` rebuilds; knowledge also re-syncs with disk. */
+  search_refresh(categories: SearchCategory[] | null): Promise<void>
   /** The last `limit` fires and skips of a schedule, newest first (34 §8). */
   schedule_history(name: string, limit: number): Promise<RunInfo[]>
   send_input(session: SessionId | null, text: string, files: string[]): Promise<SessionId>
@@ -302,6 +332,10 @@ export const METHODS = [
   'answer_ask',
   'answer_peer_request',
   'answer_secret',
+  'app_call_status',
+  'app_call_tool',
+  'app_close',
+  'artifact_search_match',
   'browser_screenshot',
   'cancel',
   'cancel_job',
@@ -316,6 +350,8 @@ export const METHODS = [
   'export_artifact',
   'fire_schedule',
   'fork_session',
+  'get_app',
+  'get_artifact',
   'get_attachment',
   'get_communication',
   'get_prompt',
@@ -328,6 +364,7 @@ export const METHODS = [
   'knowledge_history',
   'knowledge_list',
   'knowledge_put',
+  'knowledge_read_revision',
   'knowledge_restore',
   'knowledge_revision',
   'knowledge_search',
@@ -385,7 +422,8 @@ export const METHODS = [
   'resolve_approval',
   'restore_secret',
   'schedule_history',
-  'search_sessions',
+  'search',
+  'search_refresh',
   'send_input',
   'set_approvals',
   'set_aws_profile',

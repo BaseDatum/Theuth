@@ -1,7 +1,7 @@
 # 50 — Agent communication: peers inside the harness, A2A at the boundary
 
-Status: implemented · 2026-09-18 · verification record in §12.3–12.5 (one
-final network rerun still to be inserted there).
+Status: implemented · 2026-09-18 · final communication verification recorded
+in §12.3–12.5. Merged-main apps/search integration is being checked separately.
 Extends [00](00-architecture.md), [01](01-config-and-subagents.md),
 [06](06-acp.md), [07](07-context.md), [19](19-subagent-board.md),
 [25](25-desktop.md), [31](31-link.md), [32](32-nodes.md),
@@ -1196,7 +1196,7 @@ subset a finished A2A system. Status per step as of 2026-09-18 (evidence in
 |---|---|---|---|
 | 1 | SDK dependency spike: workspace pins, throwaway `a2a_sdk_probe.rs` (§3.4; removed with its dev-dependencies before merge, source kept outside the repository as a proof artifact); reviewed SDK routers/handler/client. | Probe self-test passes; exact release set against pinned spec and official test kit plus an official Python/Go peer; classify every applicable failure/skip. | Done for the probe: 45/45, kit 80/155/30 with two fixture corrections, Go CLI both directions (§3.4). Not a production-adapter measurement. |
 | 2 | `agent/src/{lib,peers,supervisor,store,loop_,communication}.rs`, `agent/src/communication/network.rs`, `agent/src/store/communication.rs`, migrations 0011/0012; `tools/src/{registry,lib,communication}.rs`. | Global/session/scope authorization, UUID correlation, transactional intake, generation revocation, bounded waits and native request lifecycle. Exercise Python and direct tools identically. | Done: native smoke 57/57 and runtime tests 273 green after every review correction (§12.4). |
-| 3 | `crates/a2a` plugin (`lib`, `config`, `server`, `client`), workspace dependencies, plugin vector/default config, `vendor/{pbjson-types,a2a-client}`. | Authenticated cards and bidirectional SDK messages/tasks over HTTPS; no listener/fetch when off; failure cannot break normal harness startup. | Built and exercised on loopback HTTP: official Python SDK smoke 39/39 + closed-export 3/3 against the production export (§12.4; final rerun after the review corrections is the one open line of §12.5). Kit and Go CLI never run against the production adapter; HTTPS never exercised. |
+| 3 | `crates/a2a` plugin (`lib`, `config`, `server`, `client`), workspace dependencies, plugin vector/default config, `vendor/{pbjson-types,a2a-client}`. | Authenticated cards and bidirectional SDK messages/tasks over HTTPS; no listener/fetch when off; failure cannot break normal harness startup. | Built and exercised on loopback HTTP: official Python SDK smoke 39/39 + closed-export 3/3 against the production export, final rerun after every review correction (§12.4). Kit and Go CLI never run against the production adapter; HTTPS never exercised. |
 | 4 | `rpc/src/{api,bridge,export}.rs`; TUI; shared desktop/mobile RPC/store/components; Signal/Slack commands. | Real frontend controls, blocked reasons, message/task rendering, reconnect and cross-client synchronization. | Done: frontend 134 tests + `tsc` green, channel/TUI/RPC 208 tests green; enabled desktop surface visually approved by the user (§12.4). Two-client convergence not exercised. |
 | 5 | Existing design documents and README. | As-built record names exercised and unexercised paths, actual dependency versions and conformance reports. | This revision; 00/01/06/07/19/25/31/32/36/37 amended. |
 

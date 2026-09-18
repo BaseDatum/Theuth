@@ -5,6 +5,7 @@
 import type { ApprovalsState } from '@/rpc/bindings/ApprovalsState'
 import type { CompactStyle } from '@/rpc/bindings/CompactStyle'
 import type { CommunicationState } from '@/rpc/bindings/CommunicationState'
+import type { Kind } from '@/rpc/bindings/Kind'
 import type { Loaded } from '@/rpc/bindings/Loaded'
 import type { SessionId } from '@/rpc/bindings/SessionId'
 
@@ -23,6 +24,8 @@ export type Info = {
   platform: string
   /** The global communication switch (50 §2.1): `session: null`, `scope: isolated`; the startup snapshot before any session query. */
   communication: CommunicationState
+  /** The app plugin is running (46 §9): apps render interactively; `false`/absent (older harness) → source view only. */
+  app_enabled?: boolean
 }
 
 /** `load_session` reply with paging (`before`/`limit`). */
@@ -91,8 +94,19 @@ export type SessionDeleted = {
   session: SessionId
 }
 
-/** `artifact::Kind` (35 §3.2): derived from the extension at show time; frontends switch on it. */
-export type Kind = 'markdown' | 'text' | 'csv' | 'image' | 'svg' | 'pdf' | 'html' | 'file'
+/** `artifact::Kind` (35 §3.2, 46 §3): the generated binding; `app` is an OpenUI screen. */
+export type { Kind }
+
+/** App wire types (46 §6.3–§6.4), generated from `crates/app`; re-exported so callers import one module. */
+export type { AppDoc } from '@/rpc/bindings/AppDoc'
+export type { AppBinding } from '@/rpc/bindings/AppBinding'
+export type { AppDiagnostic } from '@/rpc/bindings/AppDiagnostic'
+export type { Trigger } from '@/rpc/bindings/Trigger'
+export type { CallArgs } from '@/rpc/bindings/CallArgs'
+export type { AppToolResult } from '@/rpc/bindings/AppToolResult'
+export type { CallStatus } from '@/rpc/bindings/CallStatus'
+export type { AppRecentCall } from '@/rpc/bindings/AppRecentCall'
+export type { AppCallChanged } from '@/rpc/bindings/AppCallChanged'
 
 /** `artifact::Artifact` (35 §3.3): one immutable snapshot a `show` call produced. */
 export type Artifact = {

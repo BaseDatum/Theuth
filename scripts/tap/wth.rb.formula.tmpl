@@ -25,9 +25,14 @@ class Wth < Formula
 
   def install
     bin.install "wth"
+    # App parser helper (design doc 46 §2.1): `wth` looks for
+    # wth-app-parser-<library hash> next to its own resolved path.
+    bin.install Dir["wth-app-parser-*"].fetch(0)
   end
 
   test do
     assert_match version.to_s, shell_output("#{bin}/wth --version")
+    helper = Dir[bin/"wth-app-parser-*"].fetch(0)
+    assert_match File.basename(helper).delete_prefix("wth-app-parser-"), shell_output("#{helper} --version")
   end
 end

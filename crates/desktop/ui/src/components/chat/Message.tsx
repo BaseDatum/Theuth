@@ -13,16 +13,17 @@ import { MessageTool } from './MessageTool'
 import { MessageUser } from './MessageUser'
 import { SecretRequestCard } from './SecretRequestCard'
 
-function body(entry: Entry, session: string) {
+/** `readOnly`: an archive/inspection rendering (search's Earlier messages page): no turn, fork or context-removal controls. */
+function body(entry: Entry, session: string, readOnly?: boolean) {
   switch (entry.kind) {
     case 'user':
-      return <MessageUser text={entry.text} skill={entry.skill} files={entry.files} session={session} turn={entry.turn} context={entry.context} />
+      return <MessageUser text={entry.text} skill={entry.skill} files={entry.files} session={session} turn={entry.turn} context={entry.context} readOnly={readOnly} />
     case 'assistant':
-      return <MessageAssistant id={entry.id} text={entry.text} open={entry.open} session={session} turn={entry.turn} context={entry.context} />
+      return <MessageAssistant id={entry.id} text={entry.text} open={entry.open} session={session} turn={entry.turn} context={entry.context} readOnly={readOnly} />
     case 'reasoning':
       return <MessageReasoning text={entry.text} done={entry.done} />
     case 'tool':
-      return <MessageTool tool={entry} session={session} />
+      return <MessageTool tool={entry} session={session} readOnly={readOnly} />
     case 'peer':
       return <MessagePeer from={entry.from} text={entry.text} origin={entry.origin} seq={entry.seq} session={session} />
     case 'nudge':
@@ -76,9 +77,9 @@ function describe(entry: Entry): string {
 }
 
 /** Collapsed `Removed from context` marker (48 §2.2). `View original` shows the archived card: its text and files stay
- * readable, its turn/context controls are gone, and nothing re-enters the model's context. */
-function Tombstone({ entry, session }: { entry: Entry; session: string }) {
-  const [open, setOpen] = useState(false)
+ * readable, its turn/context controls are gone, and nothing re-enters the model's context. `reveal` starts it open (a search target). */
+function Tombstone({ entry, session, readOnly, reveal }: { entry: Entry; session: string; readOnly?: boolean; reveal?: boolean }) {
+  const [open, setOpen] = useState(!!reveal)
   return (
     <div className="my-1 flex flex-col text-xs text-fg-tertiary">
       <div className="flex items-center gap-2">
@@ -97,7 +98,7 @@ function Tombstone({ entry, session }: { entry: Entry; session: string }) {
       </div>
       {open && (
         <div className="opacity-70" aria-label="Archived original; not part of the model's context">
-          {body(entry, session)}
+          {body(entry, session, readOnly)}
         </div>
       )}
     </div>
@@ -131,17 +132,30 @@ export function PromptCard({ prompt }: { prompt: Prompt }) {
 }
 
 /** One transcript row: the entry's card plus the prompts waiting on it. Entries are immutable and `session` is stable, so `memo` skips untouched rows.
- * A row removed from context (48 §2.2) collapses to a tombstone; user/assistant cards own their remove action, tool/peer/harness cards get it from `Card`. */
-export const Message = memo(function Message({ entry, prompts, session }: { entry: Entry; prompts: Prompt[] | null; session: string }) {
+ * A row removed from context (48 §2.2) collapses to a tombstone; user/assistant cards own their remove action, tool/peer/harness cards get it from `Card`.
+ * `readOnly` drops every control that would edit the session or its context; `reveal` opens a removed row's archive at once. */
+export const Message = memo(function Message({
+  entry,
+  prompts,
+  session,
+  readOnly,
+  reveal,
+}: {
+  entry: Entry
+  prompts: Prompt[] | null
+  session: string
+  readOnly?: boolean
+  reveal?: boolean
+}) {
   const card =
     entry.context?.removed ? (
-      <Tombstone entry={entry} session={session} />
-    ) : entry.kind === 'tool' || entry.kind === 'peer' || entry.kind === 'nudge' ? (
+      <Tombstone entry={entry} session={session} readOnly={readOnly} reveal={reveal} />
+    ) : !readOnly && (entry.kind === 'tool' || entry.kind === 'peer' || entry.kind === 'nudge') ? (
       <Card entry={entry} session={session}>
         {body(entry, session)}
       </Card>
     ) : (
-      body(entry, session)
+      body(entry, session, readOnly)
     )
   return (
     <>

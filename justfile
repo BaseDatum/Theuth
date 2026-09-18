@@ -30,12 +30,28 @@ fmt:
 run *ARGS:
     cargo run -p wth -- {{ARGS}}
 
-# Release build of `wth` copied into ~/.cargo/bin. Not `cargo install`: that
-# re-resolves (index + git fetch every time) and rebuilds in a scratch dir.
-install:
+# Release build of `wth` + its app parser helper copied into ~/.cargo/bin. Not
+# `cargo install`: that re-resolves (index + git fetch every time) and rebuilds
+# in a scratch dir. The helper lands as wth-app-parser-<hash> beside `wth`
+# (46 §2.1); older hashes are left in place for any still-running `wth`.
+install: helper
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source scripts/app-parser-env.sh
     cargo build --release -p wth
-    install -m 755 target/release/wth "${CARGO_HOME:-$HOME/.cargo}/bin/wth"
-    @echo "installed $(command -v wth)"
+    bin="${CARGO_HOME:-$HOME/.cargo}/bin"
+    install -m 755 "$HELPER_SRC" "$bin/$HELPER.new" && mv -f "$bin/$HELPER.new" "$bin/$HELPER"
+    install -m 755 target/release/wth "$bin/wth.new" && mv -f "$bin/wth.new" "$bin/wth"
+    echo "installed $(command -v wth) + $bin/$HELPER"
+
+# Standalone app parser helper (bun build --compile) → packages/apps/dist/wth-app-parser,
+# checked against packages/apps/generated/library-hash.txt. WTH_SKIP_BUN_INSTALL=1 skips bun install.
+helper:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source scripts/app-parser-env.sh
+    build_helper
+    echo "built $HELPER_SRC ($HELPER)"
 
 # Export TypeScript bindings for the RPC wire types.
 ts:

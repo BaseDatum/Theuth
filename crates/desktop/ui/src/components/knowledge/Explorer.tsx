@@ -7,6 +7,7 @@ import { History } from '@/components/knowledge/History'
 import { NewDocDialog } from '@/components/knowledge/NewDocDialog'
 import { SearchBox } from '@/components/knowledge/SearchBox'
 import { Tree } from '@/components/knowledge/Tree'
+import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
 import { Button } from '@/components/ui/button'
 import { useSidebar } from '@/components/ui/sidebar'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -16,15 +17,27 @@ import { cn } from 'cn'
 
 const route = getRouteApi('/knowledge')
 
-/** `/knowledge`: 300 px rail (search, tree) and the document outlet (25 §8). Under `md` one pane at a time: the tree at `/knowledge`, the document at `/knowledge/$id`. */
+/**
+ * `/knowledge`: 300 px rail (search, tree) and the document outlet (25 §8). Under `md` one pane at a time: the tree at
+ * `/knowledge`, the document at `/knowledge/$id`. `?history=true` at bare `/knowledge` opens the whole bundle's History
+ * sheet (the composer's `/knowledge history`); with a document open the same flag belongs to that document's sheet.
+ */
 export function Explorer() {
   const api = useApi()
   const qc = useQueryClient()
-  const { q } = route.useSearch()
+  const navigate = route.useNavigate()
+  const { q, history } = route.useSearch()
   const { _splat: active } = useParams({ strict: false })
   const sidebar = useSidebar()
   const [creating, setCreating] = useState(false)
-  const [historyOpen, setHistoryOpen] = useState(false)
+  // The rail's History opens beside whatever document is shown; only the bare route's `?history=true` is URL state.
+  const [historyLocal, setHistoryLocal] = useState(false)
+  const historyOpen = historyLocal || (!active && history === true)
+  const setHistoryOpen = (open: boolean) => {
+    setHistoryLocal(open)
+    if (!open && history === true && !active)
+      navigate({ to: '/knowledge', replace: true, search: ({ history: _history, ...rest }) => rest })
+  }
 
   const sync = useMutation({
     mutationFn: () => api.knowledge_sync(),
@@ -56,14 +69,17 @@ export function Explorer() {
           )}
         >
           {(!sidebar.open || sidebar.isMobile) && (
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label="Show sidebar"
-              onClick={sidebar.toggleSidebar}
-            >
-              <PanelLeft />
-            </Button>
+            <>
+              <SearchTrigger />
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Show sidebar"
+                onClick={sidebar.toggleSidebar}
+              >
+                <PanelLeft />
+              </Button>
+            </>
           )}
           <h2 className="flex-1 truncate text-sm font-semibold">Knowledge</h2>
           <Tooltip>

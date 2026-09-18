@@ -29,8 +29,8 @@ use serde_json::Value;
 
 use crate::registry::{HiddenTools, ListTools, RegisterTool, ToolRegistry, UnregisterTool};
 use crate::{
-    DynTool, ErasedTool, Gate, MCP_ACTOR, Policy, PolicyAction, Risk, ToolCx, ToolOutput, ToolSpec,
-    git,
+    DynTool, ErasedTool, Gate, MCP_ACTOR, McpEntry, Policy, PolicyAction, Risk, ToolCx, ToolOutput,
+    ToolSource, ToolSpec, git, secrets,
 };
 
 mod oauth;
@@ -97,6 +97,112 @@ impl ServerSpec {
             Transport::Stdio { cwd, .. } => cwd.as_deref(),
             Transport::Http { .. } => None,
         }
+    }
+
+    /// The entry as an app may inspect it (46 §3.2): scrubbed per
+    /// [`McpEntry`], display only. `repo` is the clone under `<dir>/repos/`
+    /// holding `cwd`, when any.
+    fn entry(&self, dir: &Path) -> McpEntry {
+        match &self.transport {
+            Transport::Stdio {
+                command,
+                args,
+                env,
+                cwd,
+            } => McpEntry::Stdio {
+                command: secrets::redact(command).into_owned(),
+                args: scrub_argv(args),
+                cwd: cwd.clone(),
+                env: env.keys().cloned().collect(),
+                repo: repo_of(dir, self),
+            },
+            Transport::Http { url, .. } => McpEntry::Http {
+                url: scrub_url(url),
+            },
+        }
+    }
+
+    /// [`ErasedTool::origin`] for every tool of `server`: sha256 hex of the
+    /// *raw* entry (unexpanded command/args/env/cwd, or URL with query and
+    /// headers), so a changed endpoint parameter, argv or credential is a
+    /// different identity while nothing of the entry leaves this hash.
+    fn origin(&self, server: &str) -> String {
+        use sha2::{Digest as _, Sha256};
+        let raw = match &self.transport {
+            Transport::Stdio {
+                command,
+                args,
+                env,
+                cwd,
+            } => serde_json::json!({
+                "server": server, "command": command, "args": args, "env": env, "cwd": cwd,
+            }),
+            Transport::Http { url, headers, .. } => serde_json::json!({
+                "server": server, "url": url, "headers": headers,
+            }),
+        };
+        format!("mcp:{:x}", Sha256::digest(raw.to_string()))
+    }
+}
+
+/// Flag names whose following value (or `=value`) is a credential.
+fn credential_flag(flag: &str) -> bool {
+    let name = flag.trim_start_matches('-').to_ascii_lowercase();
+    name == "p"
+        || [
+            "token",
+            "secret",
+            "pass",
+            "key",
+            "auth",
+            "credential",
+            "bearer",
+        ]
+        .iter()
+        .any(|w| name.contains(w))
+}
+
+/// Argv for display and hashing: vault values → placeholders; the value of
+/// a credential-looking flag → `<redacted>`, whether `--flag value` or
+/// `--flag=value`. `${VAR}` references stay: they are names, not values.
+/// ponytail: name heuristic for literal secrets no vault knows; the vault is
+/// the real answer (37), this only keeps an obvious `--token abc` off screen.
+fn scrub_argv(args: &[String]) -> Vec<String> {
+    let mut out = Vec::with_capacity(args.len());
+    let mut mask_next = false;
+    for a in args {
+        if mask_next {
+            out.push("<redacted>".to_owned());
+            mask_next = false;
+            continue;
+        }
+        if a.starts_with('-') {
+            match a.split_once('=') {
+                Some((flag, _)) if credential_flag(flag) => {
+                    out.push(format!("{flag}=<redacted>"));
+                    continue;
+                }
+                None if credential_flag(a) => mask_next = true,
+                _ => {}
+            }
+        }
+        out.push(secrets::redact(a).into_owned());
+    }
+    out
+}
+
+/// Scheme, host, port and path only: no userinfo, query or fragment, where
+/// tokens travel. Unparsable stays as the vault-redacted text.
+fn scrub_url(url: &str) -> String {
+    match reqwest::Url::parse(url) {
+        Ok(mut u) => {
+            let _ = u.set_username("");
+            let _ = u.set_password(None);
+            u.set_query(None);
+            u.set_fragment(None);
+            u.to_string()
+        }
+        Err(_) => secrets::redact(url).into_owned(),
     }
 }
 
@@ -343,11 +449,22 @@ struct McpTool {
     spec: ToolSpec,
     remote_name: String,
     service: Service,
+    source: ToolSource,
+    /// [`ServerSpec::origin`] of the owning server; private to the identity hash.
+    origin: String,
 }
 
 impl ErasedTool for McpTool {
     fn spec(&self) -> ToolSpec {
         self.spec.clone()
+    }
+
+    fn source(&self) -> ToolSource {
+        self.source.clone()
+    }
+
+    fn origin(&self) -> String {
+        self.origin.clone()
     }
 
     fn call(&self, args: Value, _: ToolCx) -> BoxFuture<'_, anyhow::Result<ToolOutput>> {
@@ -892,7 +1009,7 @@ impl Message<AddServer> for Mcp {
             .map_err(|e| format!("{}: connect failed: {e:#}", m.name))?;
         write_json(&path, &m.entry)?;
         settle(&mut self.state, m.name.clone(), spec, Ok(result));
-        register(&mut self.state, &self.registry, Vec::new()).await;
+        register(&mut self.state, &self.dir, &self.registry, Vec::new()).await;
         self.rt.publish(progress(&self.state)).await;
         // The watcher's reconcile then finds it running with the same spec.
         Ok(self.server(m.name, None, &HashSet::new()))
@@ -1063,7 +1180,7 @@ impl Message<Settled> for Mcp {
         let connected = m.result.is_ok();
         settle(&mut self.state, m.name, m.spec, m.result);
         if connected {
-            register(&mut self.state, &self.registry, Vec::new()).await;
+            register(&mut self.state, &self.dir, &self.registry, Vec::new()).await;
         }
         self.rt.publish(progress(&self.state)).await;
     }
@@ -1374,7 +1491,7 @@ async fn reconcile(
         });
     }
     if changed {
-        register(state, registry, orphans).await;
+        register(state, dir, registry, orphans).await;
         rt.publish(progress(state)).await;
     }
 }
@@ -1393,7 +1510,12 @@ fn risk_of(gates: &Gates, server: &str, t: &rmcp::model::Tool) -> Risk {
 /// by a native, registers as `<server>__<name>` for every server offering
 /// it, so each server keeps its own slot (01 §1.4). `orphans` are names
 /// registered by servers that have since been dropped.
-async fn register(state: &mut State, registry: &ActorRef<ToolRegistry>, mut orphans: Vec<String>) {
+async fn register(
+    state: &mut State,
+    dir: &Path,
+    registry: &ActorRef<ToolRegistry>,
+    mut orphans: Vec<String>,
+) {
     let offered = |server: &str, t: &rmcp::model::Tool| {
         state.gates.for_tool(server, &t.name) != Some(Gate::Off)
     };
@@ -1437,6 +1559,11 @@ async fn register(state: &mut State, registry: &ActorRef<ToolRegistry>, mut orph
                     },
                     remote_name: remote,
                     service: Arc::clone(&r.service),
+                    source: ToolSource::Mcp {
+                        server: server.clone(),
+                        entry: r.spec.entry(dir),
+                    },
+                    origin: r.spec.origin(server),
                 },
             ));
         }
@@ -1549,6 +1676,89 @@ mod tests {
                 cwd: None,
             },
         }
+    }
+
+    #[test]
+    fn origin_separates_backends_the_scrubbed_entry_shows_alike() {
+        let dir = Path::new(DIR);
+        let http = |url: &str| ServerSpec {
+            transport: Transport::Http {
+                url: url.into(),
+                headers: BTreeMap::new(),
+                oauth: None,
+            },
+        };
+        let (a, b) = (
+            http("https://api.example/mcp?region=eu&token=s3cret"),
+            http("https://api.example/mcp?region=us&token=s3cret"),
+        );
+        assert_ne!(a.origin("srv"), b.origin("srv"));
+        assert_ne!(a.origin("srv"), a.origin("other"));
+        assert_eq!(a.entry(dir), b.entry(dir));
+        assert_eq!(
+            a.entry(dir),
+            McpEntry::Http {
+                url: "https://api.example/mcp".into()
+            }
+        );
+        let shown = serde_json::to_string(&a.entry(dir)).unwrap() + &a.origin("srv");
+        assert!(!shown.contains("s3cret") && !shown.contains("region"));
+
+        let (c, d) = (
+            stdio(
+                "srv",
+                &["--keyspace", "prod", "--token", "abc"],
+                &[("K", "v1")],
+            ),
+            stdio(
+                "srv",
+                &["--keyspace", "stage", "--token", "abc"],
+                &[("K", "v1")],
+            ),
+        );
+        assert_ne!(c.origin("srv"), d.origin("srv"));
+        // A changed env value or credential is a new identity too, conservatively.
+        assert_ne!(
+            c.origin("srv"),
+            stdio(
+                "srv",
+                &["--keyspace", "prod", "--token", "abc"],
+                &[("K", "v2")]
+            )
+            .origin("srv")
+        );
+        assert_ne!(
+            c.origin("srv"),
+            stdio(
+                "srv",
+                &["--keyspace", "prod", "--token", "xyz"],
+                &[("K", "v1")]
+            )
+            .origin("srv")
+        );
+        // The entry shows argv and env *names* but never the credential;
+        // which non-credential values the name heuristic also masks is
+        // incidental and not pinned here.
+        let shown = serde_json::to_string(&c.entry(dir)).unwrap() + &c.origin("srv");
+        assert!(!shown.contains("abc"), "token leaked: {shown}");
+        let McpEntry::Stdio { args, env, .. } = c.entry(dir) else {
+            panic!("stdio entry");
+        };
+        assert_eq!(args.len(), 4);
+        assert_eq!(
+            [args[0].as_str(), args[2].as_str(), args[3].as_str()],
+            ["--keyspace", "--token", "<redacted>"]
+        );
+        assert_eq!(env, ["K"]);
+        assert_eq!(
+            scrub_argv(&[
+                "--api-key=abc".into(),
+                "-p".into(),
+                "pw".into(),
+                "--v".into()
+            ]),
+            ["--api-key=<redacted>", "-p", "<redacted>", "--v"]
+        );
     }
 
     #[tokio::test]

@@ -7,6 +7,7 @@ use std::fmt::Display;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
+use ::search::SearchCategory;
 use a2a::{A2A_ACTOR, A2aActor, A2aStatus};
 use agent::todo::TodoSnapshot;
 use agent::{
@@ -19,14 +20,17 @@ use agent::{
     Loaded, Login, LoginInfo, Logout, ModelInfo, NewRootSession, PeerMessagePage, PeerPage,
     PeerReceipt, PeerRecord, PeerScope, PinSession, ProviderInfo, QueuedInput, Redo, Regenerate,
     RemoveAcp, RemoveContext, RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession,
-    SearchSessions, SendInput, SessionSummary, SetCommunication, SetCompactStyle, SetEffort,
-    SetMaxToolRounds, SetModel, SetPeerScope, SetSubagentTimeout, SetTitleModel, ShowPrompt,
-    SkillBody, SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw,
+    SendInput, SessionSummary, SetCommunication, SetCompactStyle, SetEffort, SetMaxToolRounds,
+    SetModel, SetPeerScope, SetSubagentTimeout, SetTitleModel, ShowPrompt, SkillBody, SkillMeta,
+    Steer, SyncSkills, Undo, UseSkill, Withdraw,
 };
 use agent::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
+use app::{AppDoc, AppToolResult, Apps, CallArgs, CallStatusOf, CallTool, CloseApp, GetApp};
+use artifact::search::ArtifactMatchContext;
 use base64::Engine as _;
 use browser::{BROWSER_ACTOR, Browsers, Screenshot};
 use computer::{COMPUTER_ACTOR, Computer, Permissions};
+use jsonrpsee::Extensions;
 use jsonrpsee::core::{RpcResult, SubscriptionResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
 use jsonrpsee::server::{PendingSubscriptionSink, SubscriptionMessage};
@@ -36,6 +40,7 @@ use kameo::actor::ActorRef;
 use kameo::error::SendError;
 use kameo::message::Message;
 use kameo::reply::Reply;
+use knowledge::search::HistoricalConcept;
 use knowledge::{
     Change, Concept, Delete, Get, HarvestResult, History, HistoryOf, Hit, KNOWLEDGE_ACTOR,
     KnowledgeActor, List, Meta, Put, PutConcept, Restore, Revision, RevisionOf, Search, Source,
@@ -61,11 +66,14 @@ use uuid::Uuid;
 use voice::{SpeechId, VoiceStatus};
 
 use crate::bridge::Event;
+use crate::search::SearchResponse;
 
 /// `ask` failed (handler error, actor stopped mid-call).
 const ASK_FAILED: i32 = -32000;
 /// The named actor is not registered.
 const NOT_RUNNING: i32 = -32001;
+/// The call reached the method without an authenticated connection behind it.
+const UNAUTHORIZED: i32 = -32002;
 
 /// Reply to `info`: what a client needs before its first session (25 §7);
 /// the in-process TUI reads the same things off the [`Runtime`] directly.
@@ -95,6 +103,11 @@ pub struct Info {
     /// The global communication switch (50 §10): `session: None`, the
     /// authoritative ceiling every per-session state inherits.
     pub communication: CommunicationState,
+    /// The app plugin is running (`app.enabled`, 46 §9): `get_app`/`app_*`
+    /// answer and the `app` tool exists. `false` leaves app artifacts
+    /// readable as source only. Absent from an older harness → `false`.
+    #[serde(default)]
+    pub app_enabled: bool,
 }
 
 /// The wire API. `#[rpc(server)]` generates `ApiServer` (+ `into_rpc()`).
@@ -258,15 +271,25 @@ pub trait Api {
     /// follows on the stream. Refused while any of them is mid-turn.
     #[method(name = "delete_session")]
     async fn delete_session(&self, session: SessionId) -> RpcResult<()>;
-    /// Fuzzy search (nucleo, design doc 26) over every session's title and its
-    /// user/assistant messages: the best hit per session, best score first, with a
-    /// snippet and the matched char ranges. Empty query → `[]`. `limit` defaults to 30, max 50.
-    #[method(name = "search_sessions")]
-    async fn search_sessions(
+    /// Unified human search (design doc 49 §4.2) over sessions, artifacts,
+    /// current knowledge and knowledge history: one group per selected category
+    /// in fixed order, each `ready`/`indexing`/`unavailable`/`error` on its own.
+    /// `categories` omitted → all four, `[]` → none; `limit` per category,
+    /// default 10, max 50. Blank query → no groups, no cache work.
+    /// Clients re-ask only `indexing` groups (`categories: [that]`) every 500 ms.
+    #[method(name = "search")]
+    async fn search(
         &self,
         query: String,
+        categories: Option<Vec<SearchCategory>>,
         limit: Option<u32>,
-    ) -> RpcResult<Vec<agent::search::SearchHit>>;
+    ) -> RpcResult<SearchResponse>;
+    /// Retry `search`'s failed owners without matching: the selected owners
+    /// (omitted → all four) drop failed/stale search build state so the next
+    /// `search` rebuilds; knowledge also re-syncs current concepts with disk.
+    /// Owners not running are skipped; any failing reset is the error.
+    #[method(name = "search_refresh")]
+    async fn search_refresh(&self, categories: Option<Vec<SearchCategory>>) -> RpcResult<()>;
     /// Every registered tool.
     #[method(name = "list_tools")]
     async fn list_tools(&self) -> RpcResult<Vec<ToolSpec>>;
@@ -465,6 +488,15 @@ pub trait Api {
     /// per-concept unified diffs, including deletions; `id` restricts to one concept.
     #[method(name = "knowledge_revision")]
     async fn knowledge_revision(&self, commit: String, id: Option<String>) -> RpcResult<Revision>;
+    /// The full text of concept `id` as committed at `commit` (a full object id
+    /// from a `knowledge_history` search hit's `snapshot_commit`); unknown
+    /// revision is an error, never the current text (49 §7).
+    #[method(name = "knowledge_read_revision")]
+    async fn knowledge_read_revision(
+        &self,
+        id: String,
+        commit: String,
+    ) -> RpcResult<HistoricalConcept>;
     /// Rewrite `id` from `commit` (default: the commit before its latest change).
     #[method(name = "knowledge_restore")]
     async fn knowledge_restore(&self, id: String, commit: Option<String>) -> RpcResult<Change>;
@@ -671,6 +703,38 @@ pub trait Api {
     /// overwrite); returns the written path (35 §3.5).
     #[method(name = "export_artifact")]
     async fn export_artifact(&self, id: String, dest: PathBuf) -> RpcResult<PathBuf>;
+    /// A committed app record: its artifact, source, compatibility hash,
+    /// pinned tool bindings and diagnostics (46 §6.3, §8.3). Rejects with
+    /// `-32001` when the app plugin is disabled: the client falls back to
+    /// the artifact's readable source.
+    #[method(name = "get_app")]
+    async fn get_app(&self, record_call_id: String) -> RpcResult<AppDoc>;
+    /// Run one pinned Query/Mutation binding of an open app view on behalf of
+    /// the calling connection (46 §6). A `press` trigger is the approval; the
+    /// tool name comes from the binding, never the client. `-32002` when no
+    /// authenticated connection carries the call.
+    #[method(name = "app_call_tool", with_extensions)]
+    async fn app_call_tool(&self, args: CallArgs) -> RpcResult<AppToolResult>;
+    /// Status (and stored result) of a pressed invocation by `request_id`,
+    /// for reconnect and duplicate-press resolution (46 §6.4).
+    #[method(name = "app_call_status", with_extensions)]
+    async fn app_call_status(&self, request_id: String) -> RpcResult<AppToolResult>;
+    /// Close one open view: stop its reads, drop queued work (46 §7). Idempotent.
+    #[method(name = "app_close", with_extensions)]
+    async fn app_close(&self, instance_id: String) -> RpcResult<()>;
+    /// The artifact record of one `show` call, for opening a search hit
+    /// without listing everything; vanished record is an error (49 §4.2).
+    #[method(name = "get_artifact")]
+    async fn get_artifact(&self, call_id: String) -> RpcResult<artifact::Artifact>;
+    /// Up to 2,000 characters of the artifact's indexed text around the
+    /// occurrence `query` matches, with highlight ranges and content coverage;
+    /// unavailable extraction is an error, never the live `origin` (49 §7).
+    #[method(name = "artifact_search_match")]
+    async fn artifact_search_match(
+        &self,
+        call_id: String,
+        query: String,
+    ) -> RpcResult<ArtifactMatchContext>;
     /// Every secret's name, note and version history (37 §3.1). Never values.
     #[method(name = "list_secrets")]
     async fn list_secrets(&self) -> RpcResult<secrets::SecretsList>;
@@ -811,6 +875,23 @@ fn artifact() -> RpcResult<ActorRef<artifact::ArtifactActor>> {
     })
 }
 
+/// The app actor; absent when `app.enabled: false` or the plugin is not loaded.
+fn apps() -> RpcResult<ActorRef<Apps>> {
+    lookup::<Apps>(app::APP_ACTOR).map_err(|e| match e.code() {
+        NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "app is disabled", None::<()>),
+        _ => e,
+    })
+}
+
+/// The authenticated connection behind a `with_extensions` call. Both
+/// listeners (local socket, link conn) put one in every admitted request;
+/// its absence means nothing authenticated the call — never "local".
+fn peer(ext: &Extensions) -> RpcResult<link::RpcPeer> {
+    ext.get::<link::RpcPeer>().cloned().ok_or_else(|| {
+        ErrorObjectOwned::owned(UNAUTHORIZED, "no authenticated connection", None::<()>)
+    })
+}
+
 /// The secrets actor; absent when the plugin is not loaded or the vault failed to open.
 fn secrets() -> RpcResult<ActorRef<secrets::SecretsActor>> {
     lookup::<secrets::SecretsActor>(secrets::SECRETS_ACTOR).map_err(|e| match e.code() {
@@ -939,6 +1020,7 @@ impl ApiServer for Server {
             max_tool_rounds,
             name,
             communication,
+            app_enabled: apps().is_ok(),
         })
     }
 
@@ -1156,12 +1238,23 @@ impl ApiServer for Server {
         ask::<Agents, _>(agent::AGENT_ACTOR, DeleteSession { session }).await
     }
 
-    async fn search_sessions(
+    async fn search(
         &self,
         query: String,
+        categories: Option<Vec<SearchCategory>>,
         limit: Option<u32>,
-    ) -> RpcResult<Vec<agent::search::SearchHit>> {
-        ask::<Agents, _>(agent::AGENT_ACTOR, SearchSessions { query, limit }).await
+    ) -> RpcResult<SearchResponse> {
+        crate::search::run(&self.rt, query, categories, limit)
+            .await
+            .map_err(|e| {
+                ErrorObjectOwned::owned(jsonrpsee::types::error::INVALID_PARAMS_CODE, e, None::<()>)
+            })
+    }
+
+    async fn search_refresh(&self, categories: Option<Vec<SearchCategory>>) -> RpcResult<()> {
+        crate::search::refresh(categories)
+            .await
+            .map_err(|e| ErrorObjectOwned::owned(ASK_FAILED, e, None::<()>))
     }
 
     async fn list_tools(&self) -> RpcResult<Vec<ToolSpec>> {
@@ -1454,6 +1547,18 @@ impl ApiServer for Server {
         send(&knowledge()?, RevisionOf { commit, id }).await
     }
 
+    async fn knowledge_read_revision(
+        &self,
+        id: String,
+        commit: String,
+    ) -> RpcResult<HistoricalConcept> {
+        send(
+            &knowledge()?,
+            knowledge::search::ReadRevision { id, commit },
+        )
+        .await
+    }
+
     async fn knowledge_restore(&self, id: String, commit: Option<String>) -> RpcResult<Change> {
         send(&knowledge()?, Restore { id, commit }).await
     }
@@ -1715,6 +1820,45 @@ impl ApiServer for Server {
         send(&artifact()?, artifact::Export { id, dest }).await
     }
 
+    async fn get_app(&self, record_call_id: String) -> RpcResult<AppDoc> {
+        send(&apps()?, GetApp { record_call_id }).await
+    }
+
+    async fn app_call_tool(&self, ext: &Extensions, args: CallArgs) -> RpcResult<AppToolResult> {
+        let peer = peer(ext)?;
+        send(&apps()?, CallTool { peer, args }).await
+    }
+
+    async fn app_call_status(
+        &self,
+        ext: &Extensions,
+        request_id: String,
+    ) -> RpcResult<AppToolResult> {
+        let peer = peer(ext)?;
+        send(&apps()?, CallStatusOf { peer, request_id }).await
+    }
+
+    async fn app_close(&self, ext: &Extensions, instance_id: String) -> RpcResult<()> {
+        let peer = peer(ext)?;
+        send(&apps()?, CloseApp { peer, instance_id }).await
+    }
+
+    async fn get_artifact(&self, call_id: String) -> RpcResult<artifact::Artifact> {
+        send(&artifact()?, artifact::search::Get { call_id }).await
+    }
+
+    async fn artifact_search_match(
+        &self,
+        call_id: String,
+        query: String,
+    ) -> RpcResult<ArtifactMatchContext> {
+        send(
+            &artifact()?,
+            artifact::search::ReadSearchMatch { call_id, query },
+        )
+        .await
+    }
+
     async fn list_secrets(&self) -> RpcResult<secrets::SecretsList> {
         send(&secrets()?, secrets::List).await
     }
@@ -1912,5 +2056,34 @@ mod tests {
         assert!(wanted(&root, Some("c"), Some(&mut tree)));
         assert!(!wanted(&other, Some("c"), None));
         assert!(!wanted(&other, Some("c"), Some(&mut tree)));
+    }
+
+    /// The JSON-RPC error code of a raw `app_close` on `methods`.
+    async fn app_close_code(methods: &jsonrpsee::Methods) -> i64 {
+        let (resp, _) = methods
+            .raw_json_request(
+                r#"{"jsonrpc":"2.0","method":"app_close","params":["v1"],"id":1}"#,
+                1,
+            )
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(resp.get()).unwrap();
+        v["error"]["code"].as_i64().expect("error reply")
+    }
+
+    /// App calls are scoped to the connection that made them: a dispatch with
+    /// no `RpcPeer` in its extensions is unauthorized, never treated as local
+    /// (46 §6.3). With a peer the call reaches the actor lookup.
+    #[tokio::test]
+    async fn app_calls_need_an_authenticated_peer() {
+        let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
+        let base: jsonrpsee::Methods = Server::new(rt).into_rpc().into();
+        assert_eq!(app_close_code(&base).await, i64::from(UNAUTHORIZED));
+
+        let (peer, _guard) = link::RpcPeer::open();
+        let mut with_peer = base.clone();
+        with_peer.extensions_mut().insert(peer);
+        // No app actor in this process: past the peer gate, the lookup fails.
+        assert_eq!(app_close_code(&with_peer).await, i64::from(NOT_RUNNING));
     }
 }

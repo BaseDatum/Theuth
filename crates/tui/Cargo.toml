@@ -11,6 +11,7 @@ tools = { workspace = true }
 agent = { workspace = true }
 a2a = { workspace = true }
 uuid = { workspace = true }
+search = { workspace = true }
 knowledge = { workspace = true }
 rpc = { workspace = true }
 acp = { workspace = true }
@@ -40,6 +41,7 @@ crossterm = "0.29"
 arboard = { workspace = true }
 png = { workspace = true }
 sha2 = { workspace = true }
+unicode-width = { workspace = true }
 
 [lints]
 workspace = true

@@ -29,6 +29,7 @@ use tools::{
 
 mod clip;
 pub mod model;
+pub mod search;
 mod ui;
 
 use model::{Command, LoginRow, Model, UiEvent};
@@ -69,6 +70,8 @@ impl runtime::Plugin for TuiPlugin {
         rt.subscribe::<Bridge, artifact::ArtifactShown>(&bridge)
             .await;
         rt.subscribe::<Bridge, secrets::SecretsEvent>(&bridge).await;
+        rt.subscribe::<Bridge, knowledge::KnowledgeChanged>(&bridge)
+            .await;
         rt.subscribe::<Bridge, web::progress::ScrapeProgress>(&bridge)
             .await;
         rt.subscribe::<Bridge, update::UpdateReady>(&bridge).await;
@@ -79,6 +82,9 @@ impl runtime::Plugin for TuiPlugin {
         rt.subscribe::<Bridge, agent::PeerDelivered>(&bridge).await;
         rt.subscribe::<Bridge, a2a::A2aChanged>(&bridge).await;
         let api = Arc::new(Server::new(rt.clone()));
+        // The one startup fact the runtime does not hand out as a config
+        // section: whether the app plugin runs (46 §9, `Info.app_enabled`).
+        let app_enabled = api.info().await.is_ok_and(|i| i.app_enabled);
         tokio::spawn(run_commands(api, commands_rx, events_tx));
 
         let default_model = rt.section::<AgentConfig>("agent").unwrap_or_default().model;
@@ -97,6 +103,7 @@ impl runtime::Plugin for TuiPlugin {
                     commands: commands_tx,
                     default_model,
                     approvals,
+                    app_enabled,
                     catalog,
                     resume,
                     data_dir,
@@ -113,7 +120,15 @@ impl runtime::Plugin for TuiPlugin {
                 if prompt.is_none() {
                     tracing::warn!("stdout is not a terminal; using the line printer");
                 }
-                line_printer(events_rx, commands_tx, resume, approvals, prompt).await;
+                line_printer(
+                    events_rx,
+                    commands_tx,
+                    resume,
+                    approvals,
+                    app_enabled,
+                    prompt,
+                )
+                .await;
             }
             shutdown.cancel();
         });
@@ -150,6 +165,7 @@ forward!(
     nodes::NodeEvent => NodeEvent,
     artifact::ArtifactShown => ArtifactShown,
     secrets::SecretsEvent => SecretsEvent,
+    knowledge::KnowledgeChanged => KnowledgeChanged,
     web::progress::ScrapeProgress => ScrapeProgress,
     update::UpdateReady => UpdateReady,
     agent::CommunicationChanged => CommunicationChanged,
@@ -342,9 +358,10 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             pick: false,
         },
         Command::ListSessions => UiEvent::Sessions(msg(api.list_sessions().await)?),
-        Command::Search(query) => {
-            let hits = msg(api.search_sessions(query.clone(), Some(20)).await)?;
-            UiEvent::Search(query, hits)
+        // Every search reply carries the view generation that asked, errors
+        // included, so a superseded request can never land (49 §6.1).
+        Command::Search(search::Request { generation, kind }) => {
+            UiEvent::Search(generation, search_request(api, kind).await)
         }
         Command::ListAgents(session) => UiEvent::Agents(msg(api.list_agents(session).await)?),
         // A failed read must not leave the card looking current: the plan is
@@ -578,10 +595,17 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             let node = resolve_node(api, &n).await?;
             UiEvent::NodeInvite(node.name, msg(api.invite_node(node.id).await)?)
         }
-        Command::ListArtifacts { session, pick } => UiEvent::Artifacts {
-            items: msg(api.list_artifacts(Some(session), Some(true)).await)?,
+        Command::ListArtifacts {
+            session,
             pick,
-        },
+            apps,
+        } => {
+            let mut items = msg(api.list_artifacts(Some(session), Some(true)).await)?;
+            if apps {
+                items.retain(|a| a.kind == artifact::Kind::App);
+            }
+            UiEvent::Artifacts { items, pick, apps }
+        }
         Command::ExportArtifact { id, name } => {
             let dest = std::env::home_dir()
                 .ok_or_else(|| anyhow::anyhow!("no home directory"))?
@@ -663,6 +687,77 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
     Ok(())
 }
 
+/// One `/search` request against the API (49 §6–7). Failures are the reply's
+/// `Err`, never a bare `UiEvent::Error`: the menu needs the identity.
+async fn search_request(api: &Server, kind: search::RequestKind) -> search::Reply {
+    use search::{Reply, RequestKind};
+    let text = |e: jsonrpsee::types::ErrorObjectOwned| e.message().to_owned();
+    match kind {
+        RequestKind::Results {
+            query,
+            categories,
+            limit,
+        } => Reply::Results {
+            result: api
+                .search(query, Some(categories.clone()), Some(limit))
+                .await
+                .map_err(text),
+            categories,
+            limit,
+        },
+        RequestKind::Recent => Reply::Recent(api.list_sessions().await.map_err(text)),
+        RequestKind::Refresh(categories) => {
+            Reply::Refreshed(api.search_refresh(Some(categories)).await.map_err(text))
+        }
+        RequestKind::Artifact { call_id, query } => {
+            let artifact = match api.get_artifact(call_id.clone()).await {
+                Ok(a) => a,
+                Err(e) => return Reply::Artifact(Err(text(e))),
+            };
+            // Text-like kinds are read here, off the UI thread (49 §6.2).
+            let bytes = match artifact.kind {
+                artifact::Kind::Markdown
+                | artifact::Kind::Text
+                | artifact::Kind::Html
+                | artifact::Kind::Csv
+                | artifact::Kind::App => tokio::fs::read(&artifact.path)
+                    .await
+                    .map_err(|e| e.to_string()),
+                _ => Ok(Vec::new()),
+            };
+            let matched = match query {
+                Some(q) => Some(api.artifact_search_match(call_id, q).await.map_err(text)),
+                None => None,
+            };
+            Reply::Artifact(Ok(search::ArtifactLoad {
+                artifact,
+                bytes,
+                matched,
+            }))
+        }
+        RequestKind::Concept(id) => Reply::Concept(api.knowledge_get(id).await.map_err(text)),
+        RequestKind::Historical { id, commit } => {
+            Reply::Historical(api.knowledge_read_revision(id, commit).await.map_err(text))
+        }
+        RequestKind::Revision { commit, id } => {
+            Reply::Revision(api.knowledge_revision(commit, Some(id)).await.map_err(text))
+        }
+        RequestKind::Page { session, seq } => Reply::Page {
+            session,
+            seq,
+            result: api
+                .load_session(
+                    session,
+                    Some(seq.saturating_add(1)),
+                    Some(search::PAGE),
+                    Some(false),
+                )
+                .await
+                .map_err(text),
+        },
+    }
+}
+
 /// Keep only the message: the JSON-RPC code is not user-facing.
 fn msg<T>(r: RpcResult<T>) -> anyhow::Result<T> {
     r.map_err(|e| anyhow::anyhow!("{}", e.message()))
@@ -686,9 +781,11 @@ async fn line_printer(
     commands: UnboundedSender<Command>,
     resume: Option<SessionId>,
     approvals: bool,
+    app_enabled: bool,
     prompt: Option<String>,
 ) {
     let mut model = Model::new(String::new(), approvals);
+    model.app_enabled = app_enabled;
     if let Some(id) = resume {
         model.resume(id, &commands);
     }
@@ -704,17 +801,28 @@ async fn line_printer(
             ev = events.recv() => {
                 let Some(ev) = ev else { break };
                 print_event(&mut out, &model, &ev);
+                let search_reply = matches!(ev, UiEvent::Search(..));
                 let done = print_mode && match &ev {
                     UiEvent::Agent(AgentEvent::TurnFinished { session, .. }) => model.session == Some(*session),
                     UiEvent::Error(_) => true,
                     _ => false,
                 };
                 model.apply(ev);
-                if done { break; }
+                model.search_tick(model::now_ms(), &commands);
+                // `-p "/search …"` ends once every selected group has settled
+                // (an indexing owner is re-asked first, like the menu).
+                if done || (print_mode && search_reply && model.search_wake().is_none()) { break; }
                 if !stdin_open && model.approval().is_some() {
                     let _ = writeln!(out, "denied: stdin closed");
                     model.decide(Decision::Deny, &commands);
                 }
+            }
+            // A due search request (the `/search` debounce or indexing poll)
+            // fires here too: this loop has no render ticks.
+            _ = tokio::time::sleep(std::time::Duration::from_millis(
+                model.search_wake().map_or(0, |t| t.saturating_sub(model::now_ms())).max(1),
+            )), if model.search_wake().is_some() => {
+                model.search_tick(model::now_ms(), &commands);
             }
             line = lines.next_line(), if stdin_open => {
                 let Ok(Some(line)) = line else {
@@ -864,6 +972,14 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             writeln!(out, "context changed ({reason})")
         }
         UiEvent::Agent(_) => Ok(()),
+        // An app is a pointer to its source here: it runs on desktop/web (46 §8.2).
+        UiEvent::ArtifactShown(ev) if ev.artifact.kind == artifact::Kind::App => writeln!(
+            out,
+            "[app: {} · {} → source {}]",
+            ev.artifact.name,
+            model::APP_WHERE,
+            ev.artifact.path.display()
+        ),
         UiEvent::ArtifactShown(ev) => writeln!(
             out,
             "[artifact: {} → {}]",
@@ -871,6 +987,9 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             ev.artifact.path.display()
         ),
         UiEvent::ScrapeProgress(_) => Ok(()),
+        UiEvent::Artifacts { items, apps, .. } if items.is_empty() => {
+            writeln!(out, "{}", if *apps { "no apps" } else { "no artifacts" })
+        }
         UiEvent::Artifacts { items, .. } => items
             .iter()
             .try_for_each(|a| writeln!(out, "{}", model::artifact_row(a))),
@@ -1019,20 +1138,12 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         UiEvent::Sessions(list) => list
             .iter()
             .try_for_each(|s| writeln!(out, "{}  {}  {}", s.id, s.model, s.title)),
-        UiEvent::Search(_, hits) => hits.iter().try_for_each(|h| {
-            writeln!(
-                out,
-                "{}  {}  {}{}",
-                h.session,
-                h.title,
-                h.snippet,
-                if h.context_removed {
-                    "  ⊘ removed from context"
-                } else {
-                    ""
-                }
-            )
-        }),
+        // Real output groups with state, coverage and exact identities (49
+        // §6.2); an interactive chip set is not on offer here.
+        UiEvent::Search(_, reply) => search::print_lines(reply)
+            .iter()
+            .try_for_each(|l| writeln!(out, "{l}")),
+        UiEvent::KnowledgeChanged(_) => Ok(()),
         UiEvent::Agents(list) => list.iter().try_for_each(|a| {
             writeln!(
                 out,

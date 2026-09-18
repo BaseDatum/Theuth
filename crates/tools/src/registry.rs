@@ -2,7 +2,8 @@
 //! Owns every [`DynTool`]; every invocation passes through the one approval
 //! contract here before the tool runs: `Risk → PolicyAction` from
 //! `tools.policy`, with `Ask` rewritten to `Allow` by the approvals switches
-//! and nothing else (12 §5).
+//! and nothing else (12 §5) — or, on the app entry alone, answered `Allow`
+//! by the user's own activation of that action (46 §6.1).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
@@ -23,7 +24,7 @@ use crate::communication::{self, Admitted, CommunicationAccess};
 use crate::jobs::{InstallActivity, JOBS_ACTOR, Jobs, lock};
 use crate::{
     APPROVAL_ACTOR, ASK_ACTOR, DynTool, Policy, PolicyAction, REGISTRY_ACTOR, Risk, ToolCall,
-    ToolCx, ToolOutput, ToolSpec, ToolsConfig, fs, jobs, pty, shell,
+    ToolCx, ToolOutput, ToolSource, ToolSpec, ToolsConfig, fs, jobs, pty, schema, shell,
 };
 
 /// The registry actor. Look up with `ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR)`.
@@ -32,6 +33,11 @@ use crate::{
 #[derive(kameo::Actor)]
 pub struct ToolRegistry {
     tools: HashMap<String, DynTool>,
+    /// Compiled argument schema per registered tool, built on the first
+    /// [`AppInvoke`] for that tool and dropped with the registration (46 §7:
+    /// polling apps must not pay a compile per call). Keyed like `tools`, so
+    /// it can never hold more than the tools that exist.
+    validators: HashMap<String, schema::Compiled>,
     /// Plugin system-prompt blocks by plugin name (07 §4 part 7): sorted, so
     /// the rendered prompt is stable across restarts.
     prompts: BTreeMap<&'static str, String>,
@@ -95,6 +101,107 @@ pub struct HiddenTools(pub SessionId);
 /// args, tool panic and timeout all come back as `ToolOutput { is_error: true }`.
 #[derive(Debug)]
 pub struct Invoke(pub ToolCall);
+
+/// `ask` → [`AppInvoked`]. The app bridge's entry (46 §6): the same tool
+/// map, visibility, policy, activity admission, secret expansion and body as
+/// [`Invoke`], plus what only a published app has: a bound identity to hold
+/// the tool to, an argument re-check against the current schema, and
+/// consent evidence. Never fails. Not for model calls: those go through
+/// [`Invoke`] and keep asking.
+#[derive(Debug)]
+pub struct AppInvoke {
+    /// `call.id` is the app request id (stable across transport retries).
+    pub call: ToolCall,
+    /// The press that caused this call, or `None` for an automatic query
+    /// (load, refresh, state change).
+    pub activation: Option<UserActivation>,
+    /// [`ToolInspection::identity`] recorded when the app was published; any
+    /// other current identity is [`AppInvoked::Unavailable`], never a rebind.
+    pub expected_identity: String,
+}
+
+/// Evidence that a human activated one action of one committed app record,
+/// constructed by the app bridge after validating the binding. It answers
+/// `Ask` for exactly the call whose id equals `request_id`: it is not
+/// inherited by later refreshes, other `@Run` targets or the model.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserActivation {
+    /// Artifact record (`call_id`) of the app version that was on screen.
+    pub record_call_id: String,
+    /// The action execution the renderer created on real activation.
+    pub action_id: String,
+    /// The one invocation this covers; must equal [`ToolCall::id`].
+    pub request_id: String,
+}
+
+/// Outcome of [`AppInvoke`].
+#[derive(Clone, Debug, kameo::Reply)]
+pub enum AppInvoked {
+    /// Dispatched; ran to an output (which may itself be an error).
+    Completed(ToolOutput),
+    /// Effective policy is `Ask` and nothing activated it: nothing ran, no
+    /// prompt was shown. The app renders a Load/Refresh affordance whose
+    /// press is the approval (46 §6.1).
+    NeedsApproval,
+    /// Never dispatched: unknown or hidden tool, identity changed since
+    /// publication, arguments fail the current schema, activation does not
+    /// cover this call, or policy is `Deny` (final, pressed or not).
+    Unavailable(String),
+}
+
+/// Why [`ToolRegistry::admit_app`] refused a call: [`AppInvoked`] minus
+/// `Completed`, so the `Err` arm stays a `String` wide.
+enum Refused {
+    NeedsApproval,
+    Unavailable(String),
+}
+
+impl From<Refused> for AppInvoked {
+    fn from(r: Refused) -> Self {
+        match r {
+            Refused::NeedsApproval => Self::NeedsApproval,
+            Refused::Unavailable(why) => Self::Unavailable(why),
+        }
+    }
+}
+
+/// `ask` → `Result<ToolInspection, String>`: one visible tool's spec,
+/// origin, identity and what the policy would do for `session` right now.
+/// `args`, when known, raises `action` for secret placeholders like the
+/// gate does; `None` reports the policy of the tool alone (publish time).
+/// `Err` = unknown or hidden.
+#[derive(Clone, Debug)]
+pub struct InspectTool {
+    /// Session whose visibility and approval switches apply.
+    pub session: SessionId,
+    /// Registered tool name.
+    pub name: String,
+    /// Arguments about to be sent, if known.
+    pub args: Option<serde_json::Value>,
+}
+
+/// `ask` → `Vec<ToolInspection>`, sorted by name: [`ListTools`] with origin
+/// and identity, for the publish-time snapshot a parser check binds to.
+/// `action` is the tool's own policy (no args).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DescribeTools(pub Option<SessionId>);
+
+/// What an app binds to and shows for one tool.
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct ToolInspection {
+    /// The spec as the model sees it.
+    pub spec: ToolSpec,
+    /// Native, or the MCP server entry without credentials. Display only.
+    pub source: ToolSource,
+    /// The binding: sha256 hex over the name, schema and the tool's private
+    /// origin fingerprint ([`crate::ErasedTool::origin`]). Opaque: store and
+    /// compare it, never recompute it. Risk/policy are not part of it.
+    pub identity: String,
+    /// Effective action for the asking session (`Ask` = an automatic app
+    /// call comes back [`AppInvoked::NeedsApproval`]).
+    pub action: PolicyAction,
+}
 
 /// `ask` → `()`. Replaces an existing tool with the same name.
 pub struct RegisterTool(pub DynTool);
@@ -362,25 +469,43 @@ impl ToolRegistry {
         self.admit(session, name).is_ok()
     }
 
-    /// The one permission decision (12 §5), shared by [`Invoke`] and
-    /// [`ExternalApproval`]: `Ok(None)` run now, `Ok(Some(approval))` ask the
-    /// human first, `Err(why)` refuse. `mentions` = the args carry a secret
-    /// placeholder (37 §0.4): at least `Ask`, before the approval switches,
-    /// so `/approvals off` still silences it and `Deny` is never rewritten.
+    /// The tool under `name` as `session` sees it: `None` if unregistered or
+    /// hidden for the session or an ancestor.
+    fn visible(&self, session: SessionId, name: &str) -> Option<DynTool> {
+        self.tools
+            .get(name)
+            .filter(|_| !self.is_hidden(session, name))
+            .cloned()
+    }
+
+    /// The one permission decision (12 §5), before anyone is asked:
+    /// `tools.policy` for the risk, at least `Ask` when the args carry a
+    /// secret placeholder (37 §0.4), then `Ask` → `Allow` by the approval
+    /// switches (global, or the session / an ancestor opted out). `Deny` is
+    /// never rewritten.
+    fn effective(&self, session: Option<SessionId>, risk: Risk, mentions: bool) -> PolicyAction {
+        let mut action = self.policy.action(risk);
+        if mentions {
+            action = action.max(PolicyAction::Ask);
+        }
+        if action == PolicyAction::Ask
+            && (!self.approvals || session.is_some_and(|s| self.bypassed(s)))
+        {
+            action = PolicyAction::Allow;
+        }
+        action
+    }
+
+    /// [`Self::effective`] for a call wth runs or vouches for, shared by
+    /// [`Invoke`] and [`ExternalApproval`]: `Ok(None)` run now,
+    /// `Ok(Some(approval))` ask the human first, `Err(why)` refuse.
     fn gate(
         &mut self,
         session: SessionId,
         risk: Risk,
         mentions: bool,
     ) -> Result<Option<ActorRef<Approval>>, &'static str> {
-        let mut action = self.policy.action(risk);
-        if mentions {
-            action = action.max(PolicyAction::Ask);
-        }
-        if action == PolicyAction::Ask && (!self.approvals || self.bypassed(session)) {
-            action = PolicyAction::Allow;
-        }
-        match action {
+        match self.effective(Some(session), risk, mentions) {
             PolicyAction::Allow => Ok(None),
             PolicyAction::Deny => Err("denied by policy"),
             PolicyAction::Ask => {
@@ -393,6 +518,193 @@ impl ToolRegistry {
                     .ok_or("approval required but no approval actor is running")
             }
         }
+    }
+
+    /// Spec, origin, identity and effective action of one tool.
+    fn inspect(
+        &self,
+        tool: &DynTool,
+        session: Option<SessionId>,
+        mentions: bool,
+    ) -> ToolInspection {
+        let spec = tool.spec();
+        ToolInspection {
+            action: self.effective(session, spec.risk, mentions),
+            identity: identity(tool, &spec),
+            source: tool.source(),
+            spec,
+        }
+    }
+
+    /// Everything an app call must pass before it is dispatched like any
+    /// other (46 §6.3): visibility, communication availability (50 §0.5),
+    /// the bound identity, the current schema, that the activation is for
+    /// *this* call, then policy. `Err` is the reply for a call that never ran.
+    fn admit_app(
+        &mut self,
+        call: &ToolCall,
+        activation: Option<&UserActivation>,
+        expected_identity: &str,
+    ) -> Result<(DynTool, ToolSpec, Option<Admitted>), Refused> {
+        use Refused::Unavailable;
+        let name = &call.name;
+        let tool = self
+            .visible(call.session, name)
+            .ok_or_else(|| Unavailable(format!("unknown tool: {name}")))?;
+        // Availability before permission: a gated tool that is off does not
+        // exist for this session, so no activation is ever asked for.
+        let admitted = self
+            .admit(call.session, name)
+            .map_err(|why| Unavailable(format!("{name}: {}: {why}", communication::DISABLED)))?;
+        let spec = tool.spec();
+        if identity(&tool, &spec) != expected_identity {
+            return Err(Unavailable(format!(
+                "{name}: tool identity changed since the app was published; republish to rebind"
+            )));
+        }
+        let compiled = self
+            .validators
+            .entry(name.clone())
+            .or_insert_with(|| schema::compile(&spec.schema));
+        if let Err(e) = schema::check(compiled, &call.args) {
+            return Err(Unavailable(format!("{name}: invalid arguments: {e}")));
+        }
+        if let Some(a) = activation
+            && a.request_id != call.id
+        {
+            return Err(Unavailable(format!(
+                "{name}: activation {} covers request {}, not {}",
+                a.action_id, a.request_id, call.id
+            )));
+        }
+        let mentions = mentions(&tool, &call.args);
+        match self.effective(Some(call.session), spec.risk, mentions) {
+            PolicyAction::Allow => {}
+            PolicyAction::Deny => return Err(Unavailable(format!("{name}: denied by policy"))),
+            PolicyAction::Ask => match activation {
+                None => return Err(Refused::NeedsApproval),
+                Some(a) => tracing::info!(
+                    tool = %name, risk = ?spec.risk, secrets = mentions,
+                    record = %a.record_call_id, action = %a.action_id, request = %a.request_id,
+                    "app call approved by the user's activation"
+                ),
+            },
+        }
+        Ok((tool, spec, admitted))
+    }
+
+    /// Admission, approval (if `approval`), secret expansion and the tool
+    /// body, off the mailbox; `done` receives the output when the body has
+    /// actually stopped. Shared by [`Invoke`] and [`AppInvoke`]: the app
+    /// entry only ever arrives here with `approval == None`, its `Ask`
+    /// already answered by the activation in [`Self::admit_app`]. `admitted`
+    /// is the communication admission from [`Self::admit`], re-checked in
+    /// [`invoke`] once approval resolved (50 §8).
+    fn dispatch(
+        &mut self,
+        tool: DynTool,
+        spec: ToolSpec,
+        call: ToolCall,
+        approval: Option<ActorRef<Approval>>,
+        admitted: Option<Admitted>,
+        done: impl FnOnce(ToolOutput) + Send + 'static,
+    ) {
+        // Everything that awaits leaves the mailbox: admission (so `Agents`
+        // can still ask this actor while deciding), approval, the tool body.
+        // The `Activity` lives in this task until the output is handed back:
+        // a caller dropping the ask or synthesizing a cancelled response does
+        // not retire the entry; only this task finishing does (47 §4.2 rule 2).
+        let sink = self.activity.clone();
+        let gate = self.gate.clone();
+        let kind = Kind::Invoke {
+            tool: call.name.clone(),
+            call_id: call.id.clone(),
+            quiet: call.quiet,
+        };
+        // No supervisor yet: admit untracked *here*, inside the mailbox, so a
+        // `RegisterActivity` behind this message adopts the call.
+        let held = sink.is_none().then(|| {
+            let activity = Activity::untracked(call.session, kind.clone());
+            lock(&self.untracked).insert(activity.id(), activity.clone());
+            Held {
+                map: self.untracked.clone(),
+                activity,
+            }
+        });
+        tokio::spawn(async move {
+            let activity = match &held {
+                Some(h) => h.activity.clone(),
+                None => match activity::admit(sink.as_ref(), call.session, kind).await {
+                    Ok(a) => a,
+                    Err(why) => {
+                        done(ToolOutput::err(format!("{}: {why}", call.name)));
+                        return;
+                    }
+                },
+            };
+            // Counted as running from here until the body stopped (50 §8);
+            // the caller's bound sees the end before the output does.
+            let running = gate
+                .as_ref()
+                .and_then(|g| g.begin(call.session, &call.name, &call.args));
+            let out = activity
+                .clone()
+                .scope(invoke(tool, spec, call, approval, admitted, activity, gate))
+                .await;
+            drop(running);
+            done(out);
+            // The map entry goes when this task ends; the last clone settles.
+            drop(held);
+        });
+    }
+}
+
+impl Message<AppInvoke> for ToolRegistry {
+    type Reply = DelegatedReply<AppInvoked>;
+
+    async fn handle(&mut self, m: AppInvoke, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        match self.admit_app(&m.call, m.activation.as_ref(), &m.expected_identity) {
+            Err(r) => tx.send(r.into()),
+            Ok((tool, spec, admitted)) => {
+                self.dispatch(tool, spec, m.call, None, admitted, move |out| {
+                    tx.send(AppInvoked::Completed(out));
+                });
+            }
+        }
+        reply
+    }
+}
+
+impl Message<InspectTool> for ToolRegistry {
+    type Reply = Result<ToolInspection, String>;
+
+    async fn handle(&mut self, m: InspectTool, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let tool = self
+            .visible(m.session, &m.name)
+            .ok_or_else(|| format!("unknown tool: {}", m.name))?;
+        let mentions = m.args.as_ref().is_some_and(|a| mentions(&tool, a));
+        Ok(self.inspect(&tool, Some(m.session), mentions))
+    }
+}
+
+impl Message<DescribeTools> for ToolRegistry {
+    type Reply = Vec<ToolInspection>;
+
+    async fn handle(
+        &mut self,
+        DescribeTools(session): DescribeTools,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let mut out: Vec<ToolInspection> = self
+            .tools
+            .iter()
+            .filter(|(name, _)| !session.is_some_and(|s| self.is_hidden(s, name)))
+            .map(|(_, t)| self.inspect(t, session, false))
+            .collect();
+        out.sort_by(|a, b| a.spec.name.cmp(&b.spec.name));
+        out
     }
 }
 
@@ -527,6 +839,7 @@ impl Message<RegisterTool> for ToolRegistry {
     async fn handle(&mut self, m: RegisterTool, _: &mut Context<Self, Self::Reply>) {
         let name = m.0.spec().name;
         tracing::info!(tool = %name, "registered tool");
+        self.validators.remove(&name);
         self.tools.insert(name, m.0);
     }
 }
@@ -536,6 +849,7 @@ impl Message<UnregisterTool> for ToolRegistry {
 
     async fn handle(&mut self, m: UnregisterTool, _: &mut Context<Self, Self::Reply>) {
         if self.tools.remove(&m.0).is_some() {
+            self.validators.remove(&m.0);
             tracing::info!(tool = %m.0, "unregistered tool");
         }
     }
@@ -621,12 +935,7 @@ impl Message<Invoke> for ToolRegistry {
     ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        let Some(tool) = self
-            .tools
-            .get(&call.name)
-            .filter(|_| !self.is_hidden(call.session, &call.name))
-            .cloned()
-        else {
+        let Some(tool) = self.visible(call.session, &call.name) else {
             tx.send(ToolOutput::err(format!("unknown tool: {}", call.name)));
             return reply;
         };
@@ -640,7 +949,7 @@ impl Message<Invoke> for ToolRegistry {
                 return reply;
             }
         };
-        let mentions = crate::secrets::mentions(&call.args);
+        let mentions = mentions(&tool, &call.args);
         let approval = match self.gate(call.session, spec.risk, mentions) {
             Ok(a) => a,
             Err(why) => {
@@ -648,55 +957,34 @@ impl Message<Invoke> for ToolRegistry {
                 return reply;
             }
         };
-        // Everything that awaits leaves the mailbox: admission (so `Agents`
-        // can still ask this actor while deciding), approval, the tool body.
-        // The `Activity` lives in this task until the output is handed back:
-        // a caller dropping the ask or synthesizing a cancelled response does
-        // not retire the entry; only this task finishing does (47 §4.2 rule 2).
-        let sink = self.activity.clone();
-        let gate = self.gate.clone();
-        let kind = Kind::Invoke {
-            tool: call.name.clone(),
-            call_id: call.id.clone(),
-            quiet: call.quiet,
-        };
-        // No supervisor yet: admit untracked *here*, inside the mailbox, so a
-        // `RegisterActivity` behind this message adopts the call.
-        let held = sink.is_none().then(|| {
-            let activity = Activity::untracked(call.session, kind.clone());
-            lock(&self.untracked).insert(activity.id(), activity.clone());
-            Held {
-                map: self.untracked.clone(),
-                activity,
-            }
-        });
-        tokio::spawn(async move {
-            let activity = match &held {
-                Some(h) => h.activity.clone(),
-                None => match activity::admit(sink.as_ref(), call.session, kind).await {
-                    Ok(a) => a,
-                    Err(why) => {
-                        tx.send(ToolOutput::err(format!("{}: {why}", call.name)));
-                        return;
-                    }
-                },
-            };
-            // Counted as running from here until the body stopped (50 §8);
-            // the caller's bound sees the end before the output does.
-            let running = gate
-                .as_ref()
-                .and_then(|g| g.begin(call.session, &call.name, &call.args));
-            let out = activity
-                .clone()
-                .scope(invoke(tool, spec, call, approval, admitted, activity, gate))
-                .await;
-            drop(running);
-            tx.send(out);
-            // The map entry goes when this task ends; the last clone settles.
-            drop(held);
-        });
+        self.dispatch(tool, spec, call, approval, admitted, move |out| tx.send(out));
         reply
     }
+}
+
+/// The gate's secret input: a placeholder in `args` counts only for a tool
+/// that consumes it ([`crate::ErasedTool::consumes_secrets`]); for one that
+/// stores its arguments as data the placeholder is the data.
+fn mentions(tool: &DynTool, args: &serde_json::Value) -> bool {
+    tool.consumes_secrets() && crate::secrets::mentions(args)
+}
+
+/// The binding an app holds a tool to: sha256 hex over the canonical JSON
+/// of `{name, schema, origin}` ([`crate::ErasedTool::origin`]). Private so
+/// nothing outside this actor can recompute it from display data. Object
+/// keys are sorted at every depth before hashing (arrays keep their order,
+/// `required`/`enum` are positional): the unified feature graph turns on
+/// `serde_json/preserve_order`, so an MCP server re-sending the same schema
+/// with keys in a different order must still hash equal.
+fn identity(tool: &DynTool, spec: &ToolSpec) -> String {
+    use sha2::{Digest as _, Sha256};
+    let mut canon = serde_json::json!({
+        "name": spec.name,
+        "schema": spec.schema,
+        "origin": tool.origin(),
+    });
+    canon.sort_all_objects();
+    format!("{:x}", Sha256::digest(canon.to_string()))
 }
 
 /// One pre-registration invocation's slot in `ToolRegistry::untracked`;
@@ -763,7 +1051,10 @@ async fn invoke(
     }
     // Placeholders become values after the gate (the approval card showed the
     // placeholder) and before the tool; an unknown name fails the whole call.
-    if let Err(e) = crate::secrets::expand(&mut call.args) {
+    // A tool that stores its arguments as an artifact keeps them literal.
+    if tool.consumes_secrets()
+        && let Err(e) = crate::secrets::expand(&mut call.args)
+    {
         return ToolOutput::err(e);
     }
     let cx = ToolCx {
@@ -854,6 +1145,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
     let registry = ToolRegistry::spawn_with_mailbox(
         ToolRegistry {
             tools: builtins.into_iter().map(|t| (t.spec().name, t)).collect(),
+            validators: HashMap::new(),
             prompts: BTreeMap::new(),
             policy: cfg.policy,
             approvals: cfg.approvals,
@@ -893,10 +1185,6 @@ mod tests {
         }
     }
 
-    fn registry(tools: Vec<DynTool>, activity: Option<ActivitySink>) -> ActorRef<ToolRegistry> {
-        registry_with(tools, activity, Policy::default(), None)
-    }
-
     fn registry_with(
         tools: Vec<DynTool>,
         activity: Option<ActivitySink>,
@@ -904,20 +1192,33 @@ mod tests {
         approval: Option<ActorRef<Approval>>,
     ) -> ActorRef<ToolRegistry> {
         ToolRegistry::spawn(ToolRegistry {
-            tools: tools.into_iter().map(|t| (t.spec().name, t)).collect(),
-            prompts: BTreeMap::new(),
             policy,
+            approval,
+            ..build(tools, activity)
+        })
+    }
+
+    fn build(tools: Vec<DynTool>, activity: Option<ActivitySink>) -> ToolRegistry {
+        ToolRegistry {
+            tools: tools.into_iter().map(|t| (t.spec().name, t)).collect(),
+            validators: HashMap::new(),
+            prompts: BTreeMap::new(),
+            policy: Policy::default(),
             approvals: true,
             bypass: HashSet::new(),
             hidden: HashMap::new(),
             parents: HashMap::new(),
             config_path: PathBuf::new(),
-            approval,
+            approval: None,
             activity,
             untracked: Arc::default(),
             communication: None,
             gate: None,
-        })
+        }
+    }
+
+    fn registry(tools: Vec<DynTool>, activity: Option<ActivitySink>) -> ActorRef<ToolRegistry> {
+        ToolRegistry::spawn(build(tools, activity))
     }
 
     fn call(name: &str, s: SessionId) -> ToolCall {
@@ -928,6 +1229,39 @@ mod tests {
             session: s,
             quiet: false,
         }
+    }
+
+    /// Takes its arguments as data: a placeholder is literal text.
+    struct Literal;
+
+    #[async_trait::async_trait]
+    impl Tool for Literal {
+        const NAME: &'static str = "literal";
+        const RISK: Risk = Risk::ReadOnly;
+        const CONSUMES_SECRETS: bool = false;
+        type Args = serde_json::Value;
+        fn description(&self) -> String {
+            String::new()
+        }
+        async fn call(&self, a: Self::Args, _: ToolCx) -> anyhow::Result<ToolOutput> {
+            Ok(ToolOutput::ok(a["q"].as_str().unwrap_or_default()))
+        }
+    }
+
+    #[tokio::test]
+    async fn placeholder_in_literal_args_neither_raises_the_gate_nor_expands() {
+        let reg = registry(vec![Arc::new(Echo), Arc::new(Literal)], None);
+        let session = SessionId::new();
+        let with = |name: &str| ToolCall {
+            args: serde_json::json!({"q": "find {{secret:GITHUB}} usage"}),
+            ..call(name, session)
+        };
+        // No approval actor: a raised gate is an error, not a prompt.
+        let out = reg.ask(Invoke(with("echo"))).await.unwrap();
+        assert!(out.is_error && out.content.contains("approval"), "{out:?}");
+        let out = reg.ask(Invoke(with("literal"))).await.unwrap();
+        assert!(!out.is_error, "{out:?}");
+        assert_eq!(out.content, "find {{secret:GITHUB}} usage");
     }
 
     /// Blocks until released; reports the `current()` op it ran under.
@@ -1325,5 +1659,360 @@ mod tests {
                 .is_error
         );
         assert_eq!(ran.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// Destructive; counts runs and echoes the args it received.
+    struct Wipe(Arc<std::sync::atomic::AtomicUsize>);
+
+    #[derive(serde::Deserialize, schemars::JsonSchema)]
+    struct WipeArgs {
+        target: String,
+    }
+
+    #[async_trait::async_trait]
+    impl Tool for Wipe {
+        const NAME: &'static str = "wipe";
+        const RISK: Risk = Risk::Destructive;
+        type Args = WipeArgs;
+        fn description(&self) -> String {
+            String::new()
+        }
+        async fn call(&self, a: Self::Args, _: ToolCx) -> anyhow::Result<ToolOutput> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(ToolOutput::ok(a.target))
+        }
+    }
+
+    fn press(request_id: &str) -> Option<UserActivation> {
+        Some(UserActivation {
+            record_call_id: "rec".into(),
+            action_id: "act".into(),
+            request_id: request_id.into(),
+        })
+    }
+
+    async fn bound(reg: &ActorRef<ToolRegistry>, session: SessionId, name: &str) -> String {
+        reg.ask(InspectTool {
+            session,
+            name: name.into(),
+            args: None,
+        })
+        .await
+        .unwrap()
+        .identity
+    }
+
+    fn app_call(name: &str, s: SessionId, args: serde_json::Value) -> ToolCall {
+        ToolCall {
+            args,
+            ..call(name, s)
+        }
+    }
+
+    #[tokio::test]
+    async fn press_answers_ask_for_destructive_and_secret_calls_but_not_deny() {
+        let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let reg = registry(vec![Arc::new(Wipe(runs.clone())), Arc::new(Echo)], None);
+        let session = SessionId::new();
+        let wipe = bound(&reg, session, "wipe").await;
+        let echo = bound(&reg, session, "echo").await;
+
+        // No approval actor is running: a model call that reaches `Ask` fails
+        // right there, which is how we know the press never went near it.
+        let model = reg
+            .ask(Invoke(app_call(
+                "wipe",
+                session,
+                serde_json::json!({"target": "db"}),
+            )))
+            .await
+            .unwrap();
+        assert!(
+            model.is_error && model.content.contains("approval required"),
+            "{model:?}"
+        );
+        assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+        let pressed = reg
+            .ask(AppInvoke {
+                call: app_call("wipe", session, serde_json::json!({"target": "db"})),
+                activation: press("1"),
+                expected_identity: wipe.clone(),
+            })
+            .await
+            .unwrap();
+        assert!(
+            matches!(&pressed, AppInvoked::Completed(o) if !o.is_error && o.content == "db"),
+            "{pressed:?}"
+        );
+        assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        // A read-only tool whose args mention a secret is `Ask` too; the
+        // press covers it, and the placeholder stays a placeholder until the
+        // (absent) vault would expand it at the tool boundary.
+        let secret = serde_json::json!({"token": "{{secret:API}}"});
+        assert!(matches!(
+            reg.ask(AppInvoke {
+                call: app_call("echo", session, secret.clone()),
+                activation: None,
+                expected_identity: echo.clone(),
+            })
+            .await
+            .unwrap(),
+            AppInvoked::NeedsApproval
+        ));
+        assert!(matches!(
+            reg.ask(AppInvoke {
+                call: app_call("echo", session, secret),
+                activation: press("1"),
+                expected_identity: echo,
+            })
+            .await
+            .unwrap(),
+            AppInvoked::Completed(o) if !o.is_error
+        ));
+
+        // `Deny` is final: the press changes nothing and the tool never runs.
+        let mut denying = build(vec![Arc::new(Wipe(runs.clone()))], None);
+        denying.policy.destructive = PolicyAction::Deny;
+        let denying = ToolRegistry::spawn(denying);
+        let out = denying
+            .ask(AppInvoke {
+                call: app_call("wipe", session, serde_json::json!({"target": "db"})),
+                activation: press("1"),
+                expected_identity: wipe,
+            })
+            .await
+            .unwrap();
+        assert!(
+            matches!(&out, AppInvoked::Unavailable(why) if why.contains("denied by policy")),
+            "{out:?}"
+        );
+        assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn automatic_ask_needs_approval_and_never_prompts_or_runs() {
+        let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let reg = registry(vec![Arc::new(Wipe(runs.clone()))], None);
+        let session = SessionId::new();
+        let wipe = bound(&reg, session, "wipe").await;
+        for _ in 0..2 {
+            let out = reg
+                .ask(AppInvoke {
+                    call: app_call("wipe", session, serde_json::json!({"target": "db"})),
+                    activation: None,
+                    expected_identity: wipe.clone(),
+                })
+                .await
+                .unwrap();
+            assert!(matches!(out, AppInvoked::NeedsApproval), "{out:?}");
+        }
+        assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 0);
+        // The inspection says so up front, so the app can draw a Load button.
+        let i = reg
+            .ask(InspectTool {
+                session,
+                name: "wipe".into(),
+                args: Some(serde_json::json!({"target": "db"})),
+            })
+            .await
+            .unwrap();
+        assert_eq!(i.action, PolicyAction::Ask);
+        assert_eq!(i.source, ToolSource::native());
+        // Policy is not part of the identity; the switches never mutate it.
+        reg.ask(SetApprovals {
+            session: Some(session),
+            enabled: false,
+        })
+        .await
+        .unwrap();
+        assert_eq!(bound(&reg, session, "wipe").await, wipe);
+        assert_eq!(
+            reg.ask(DescribeTools(Some(session)))
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|i| (i.spec.name, i.identity))
+                .collect::<Vec<_>>(),
+            [("wipe".to_owned(), wipe)]
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_binding_bad_args_or_foreign_activation_never_dispatch() {
+        let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let reg = registry(vec![Arc::new(Wipe(runs.clone()))], None);
+        let session = SessionId::new();
+        let wipe = bound(&reg, session, "wipe").await;
+        let go = |args, activation, expected: &str| {
+            reg.ask(AppInvoke {
+                call: app_call("wipe", session, args),
+                activation,
+                expected_identity: expected.to_owned(),
+            })
+        };
+        let ok = serde_json::json!({"target": "db"});
+
+        let out = go(ok.clone(), press("1"), "0000").await.unwrap();
+        assert!(
+            matches!(&out, AppInvoked::Unavailable(w) if w.contains("identity changed")),
+            "{out:?}"
+        );
+        let out = go(serde_json::json!({"target": 7}), press("1"), &wipe)
+            .await
+            .unwrap();
+        assert!(
+            matches!(&out, AppInvoked::Unavailable(w) if w.contains("invalid arguments")),
+            "{out:?}"
+        );
+        let out = go(ok.clone(), press("other"), &wipe).await.unwrap();
+        assert!(
+            matches!(&out, AppInvoked::Unavailable(w) if w.contains("covers request")),
+            "{out:?}"
+        );
+        assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+        // Hidden for the session: unavailable, same as the model's `unknown tool`.
+        reg.ask(SetHidden {
+            session,
+            tools: vec!["wipe".into()],
+            hidden: true,
+        })
+        .await
+        .unwrap();
+        assert!(matches!(
+            go(ok, press("1"), &wipe).await.unwrap(),
+            AppInvoked::Unavailable(_)
+        ));
+        assert!(
+            reg.ask(InspectTool {
+                session,
+                name: "wipe".into(),
+                args: None
+            })
+            .await
+            .is_err()
+        );
+    }
+
+    /// Stands in for an MCP tool: the schema is whatever the server sent.
+    struct Raw(serde_json::Value);
+
+    impl crate::ErasedTool for Raw {
+        fn spec(&self) -> ToolSpec {
+            ToolSpec {
+                name: "raw".into(),
+                description: String::new(),
+                schema: self.0.clone(),
+                risk: Risk::ReadOnly,
+                direct: false,
+                returns: String::new(),
+            }
+        }
+        fn call(
+            &self,
+            _: serde_json::Value,
+            _: ToolCx,
+        ) -> futures::future::BoxFuture<'_, anyhow::Result<ToolOutput>> {
+            Box::pin(async { Ok(ToolOutput::ok("")) })
+        }
+    }
+
+    #[test]
+    fn identity_ignores_object_key_order_but_not_schema_or_array_order() {
+        // Built by insertion so `preserve_order` (on in the unified feature
+        // graph) keeps the two orders distinct in memory.
+        let obj = |pairs: &[(&str, serde_json::Value)]| {
+            let mut m = serde_json::Map::new();
+            for (k, v) in pairs {
+                m.insert((*k).to_owned(), v.clone());
+            }
+            serde_json::Value::Object(m)
+        };
+        let target = |ty: &str| obj(&[("type", ty.into()), ("minLength", 1.into())]);
+        let a = obj(&[
+            ("type", "object".into()),
+            (
+                "properties",
+                obj(&[
+                    ("target", target("string")),
+                    ("force", obj(&[("type", "boolean".into())])),
+                ]),
+            ),
+            ("required", serde_json::json!(["target", "force"])),
+        ]);
+        let b = obj(&[
+            ("required", serde_json::json!(["target", "force"])),
+            (
+                "properties",
+                obj(&[
+                    ("force", obj(&[("type", "boolean".into())])),
+                    (
+                        "target",
+                        obj(&[("minLength", 1.into()), ("type", "string".into())]),
+                    ),
+                ]),
+            ),
+            ("type", "object".into()),
+        ]);
+        let id = |schema: serde_json::Value| {
+            let tool: DynTool = Arc::new(Raw(schema));
+            let spec = tool.spec();
+            identity(&tool, &spec)
+        };
+        assert_eq!(id(a.clone()), id(b));
+        // Semantic changes still rebind: a different property type, and a
+        // reordered `required` array (position is meaning there).
+        let mut changed = a.clone();
+        changed["properties"]["target"]["type"] = "integer".into();
+        assert_ne!(id(a.clone()), id(changed));
+        let mut swapped = a.clone();
+        swapped["required"] = serde_json::json!(["force", "target"]);
+        assert_ne!(id(a), id(swapped));
+    }
+
+    #[tokio::test]
+    async fn concurrent_model_call_still_asks_while_a_press_runs() {
+        let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
+        let approval = Approval::spawn(Approval::new(rt, Duration::from_millis(20)));
+        let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut r = build(vec![Arc::new(Wipe(runs.clone()))], None);
+        r.approval = Some(approval);
+        let reg = ToolRegistry::spawn(r);
+        let session = SessionId::new();
+        let wipe = bound(&reg, session, "wipe").await;
+
+        let model = tokio::spawn({
+            let reg = reg.clone();
+            async move {
+                reg.ask(Invoke(app_call(
+                    "wipe",
+                    session,
+                    serde_json::json!({"target": "model"}),
+                )))
+                .await
+                .unwrap()
+            }
+        });
+        let pressed = reg
+            .ask(AppInvoke {
+                call: app_call("wipe", session, serde_json::json!({"target": "press"})),
+                activation: press("1"),
+                expected_identity: wipe,
+            })
+            .await
+            .unwrap();
+        assert!(
+            matches!(&pressed, AppInvoked::Completed(o) if o.content == "press"),
+            "{pressed:?}"
+        );
+        // Nobody answered the model's prompt: it timed out, i.e. it was asked.
+        let model = model.await.unwrap();
+        assert!(
+            model.is_error && model.content.contains("approval timed out"),
+            "{model:?}"
+        );
+        assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 }

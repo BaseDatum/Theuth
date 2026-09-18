@@ -7,6 +7,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { type ReactNode, createContext, useContext } from 'react'
 import { type StoreApi, useStore } from 'zustand'
+import { type SearchApi, createSearchState } from '@/lib/search'
 import { useHarnesses } from '@/link/harnesses'
 import {
   type ApprovalsApi,
@@ -28,6 +29,8 @@ export type Stores = {
   secretRequests: SecretRequestsApi
   connection: ConnectionApi
   qc: QueryClient
+  /** Transient search state: remembered categories, last view, origin of a search-opened screen (49 §7). */
+  search: SearchApi
   /** The live `subscribe_events` unsubscribe, while this harness is the active one. */
   attached: Promise<() => Promise<void>> | null
 }
@@ -45,6 +48,7 @@ export function scope(id: string): Stores {
       asks: createAsks(),
       secretRequests: createSecretRequests(),
       connection: createConnection(),
+      search: createSearchState(),
       qc: new QueryClient({ defaultOptions: { queries: { staleTime: 30_000, retry: 1 } } }),
       attached: null,
     }

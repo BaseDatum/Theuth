@@ -1,0 +1,78 @@
+# wth apps component catalog (library 8dc9c11b7273) — root statement: root = Stack([...])
+Positional arguments follow each signature; `name?` is optional; `$binding<T>` accepts a $state variable.
+
+## Layout
+Stack(children: any[], direction?: "row" | "column", gap?: "none" | "xs" | "s" | "m" | "l" | "xl" | "2xl", align?: "start" | "center" | "end" | "stretch" | "baseline", justify?: "start" | "center" | "end" | "between" | "around" | "evenly", wrap?: boolean) — Flex container. direction: "row"|"column" (default "column"). gap: "none"|"xs"|"s"|"m"|"l"|"xl"|"2xl" (default "m"). align: "start"|"center"|"end"|"stretch"|"baseline". justify: "start"|"center"|"end"|"between"|"around"|"evenly".
+Separator(orientation?: "horizontal" | "vertical", decorative?: boolean) — Visual divider between content sections
+- For grid-like layouts, use Stack with direction "row" and wrap set to true.
+- Prefer justify "start" (or omit justify) with wrap=true for stable columns instead of uneven gutters.
+- Use nested Stacks when you need explicit rows/sections.
+- Show/hide sections: $editId != "" ? Card([editForm]) : null
+
+## Content
+Card(children: (TextContent | CardHeader | Image | Separator | PieChart | AreaChart | BarChart | LineChart | Table | Buttons | Stack)[], variant?: "card" | "sunk" | "clear", direction?: "row" | "column", gap?: "none" | "xs" | "s" | "m" | "l" | "xl" | "2xl", align?: "start" | "center" | "end" | "stretch" | "baseline", justify?: "start" | "center" | "end" | "between" | "around" | "evenly", wrap?: boolean) — Styled container. variant: "card" (default, elevated) | "sunk" (recessed) | "clear" (transparent). Always full width. Accepts all Stack flex params (default: direction "column"). Cards flex to share space in row/wrap layouts.
+CardHeader(title?: string, subtitle?: string) — Header with optional title and subtitle
+TextContent(text: string, size?: "small" | "default" | "large" | "small-heavy" | "large-heavy") — Text block. Supports markdown. Optional size: "small" | "default" | "large" | "small-heavy" | "large-heavy".
+Image(alt: string, src?: string) — Image with alt text and optional URL
+- Use Cards to group related KPIs or sections. Stack with direction "row" for side-by-side layouts.
+
+## Tables
+Table(columns: Col[]) — Data table — column-oriented. Each Col holds its own data array.
+Col(label: string, data: any, type?: "string" | "number" | "action") — Column definition — holds label + data array
+- Row actions: Col("Actions", @Each(data.rows, "t", Button("Edit", Action([@Set($showEdit, true), @Set($editId, t.id)]))))
+- Sortable: sorted = @Sort(data.rows, $sortField, "desc"). Bind $sortField to Select. Use sorted.fieldName for Col data
+- Searchable: filtered = @Filter(data.rows, "title", "contains", $search). Bind $search to Input
+- Chain sort + filter: filtered = @Filter(...) then sorted = @Sort(filtered, ...) — use sorted for both Table and Charts
+- Empty state: @Count(data.rows) > 0 ? Table([...]) : TextContent("No data yet")
+
+## Charts (2D)
+BarChart(labels: string[], series: Series[], variant?: "grouped" | "stacked", xLabel?: string, yLabel?: string, height?: number) — Vertical bars; use for comparing values across categories with one or more series
+LineChart(labels: string[], series: Series[], variant?: "linear" | "natural" | "step", xLabel?: string, yLabel?: string, height?: number) — Lines over categories; use for trends and continuous data over time
+AreaChart(labels: string[], series: Series[], variant?: "linear" | "natural" | "step", xLabel?: string, yLabel?: string, height?: number) — Filled area under lines; use for cumulative totals or volume trends over time
+Series(category: string, values: number[]) — One data series
+- Charts accept column arrays: LineChart(labels, [Series("Name", values)]). Use array pluck: LineChart(data.rows.day, [Series("Views", data.rows.views)])
+- Use Cards to wrap charts with CardHeader for titled sections
+- Chart + Table from same source: use @Sort or @Filter result for both LineChart and Table Col data
+
+## Charts (1D)
+PieChart(labels: string[], values: number[], variant?: "pie" | "donut", appearance?: "circular" | "semiCircular") — Circular slices; use plucked arrays: PieChart(data.categories, data.values)
+- PieChart and BarChart need NUMBERS, not objects. For list data, use @Count(@Filter(...)) to aggregate:
+- PieChart from list: `PieChart(["Low", "Med", "High"], [@Count(@Filter(data.rows, "priority", "==", "low")), @Count(@Filter(data.rows, "priority", "==", "medium")), @Count(@Filter(data.rows, "priority", "==", "high"))], "donut")`
+- KPI from count: `TextContent("" + @Count(@Filter(data.rows, "status", "==", "open")), "large-heavy")`
+
+## Forms
+Input(name: string, placeholder?: string, type?: "text" | "email" | "password" | "number" | "url", rules?: {required?: boolean, email?: boolean, url?: boolean, numeric?: boolean, min?: number, max?: number, minLength?: number, maxLength?: number, pattern?: string}, value?: $binding<string>)
+TextArea(name: string, placeholder?: string, rows?: number, rules?: {required?: boolean, email?: boolean, url?: boolean, numeric?: boolean, min?: number, max?: number, minLength?: number, maxLength?: number, pattern?: string}, value?: $binding<string>)
+Select(name: string, items: SelectItem[], placeholder?: string, rules?: {required?: boolean, email?: boolean, url?: boolean, numeric?: boolean, min?: number, max?: number, minLength?: number, maxLength?: number, pattern?: string}, value?: $binding<string>, size?: "small" | "medium" | "large")
+SelectItem(value: string, label: string) — Option for Select
+SwitchGroup(name: string, items: SwitchItem[], variant?: "clear" | "card" | "sunk", value?: $binding<Record<string, boolean>>) — Group of switch toggles
+SwitchItem(label?: string, description?: string, name: string, defaultChecked?: boolean) — Individual switch toggle
+- rules is an optional object: {required: true, email: true, minLength: 8, maxLength: 100}
+- Available rules: required, email, min, max, minLength, maxLength, pattern, url, numeric
+- The renderer shows error messages automatically — do NOT generate error text in the UI
+- Conditional fields: $country == "US" ? stateField : $country == "UK" ? postcodeField : addressField
+
+## Buttons
+Button(label: string, action?: ActionExpression, variant?: "primary" | "secondary" | "tertiary", type?: "normal" | "destructive", size?: "extra-small" | "small" | "medium" | "large") — Clickable button
+Buttons(buttons: Button[], direction?: "row" | "column") — Group of Button components. direction: "row" (default) | "column".
+- Toggle in @Each: @Each(rows, "t", Button(t.status == "open" ? "Close" : "Reopen", Action([...])))
+
+## Data and actions
+$name = literal — reactive state; Query("tool", {args}, defaults, refreshSeconds?) — read; Mutation("tool", {args}) — runs only from an action; results expose .status/.data/.error
+Button(label, Action([steps])) steps: @Run, @ToAssistant, @OpenUrl, @Set, @Reset — @Run(mutationOrQuery), @Set($var, value), @Reset($var...), @OpenUrl(url), @ToAssistant(message, context?)
+@Each(array, item, template) — repeat a component per item
+@Count(array) → number — Returns array length
+@First(array) → element — Returns first element of array
+@Last(array) → element — Returns last element of array
+@Sum(numbers[]) → number — Sum of numeric array
+@Avg(numbers[]) → number — Average of numeric array
+@Min(numbers[]) → number — Minimum value in array
+@Max(numbers[]) → number — Maximum value in array
+@Sort(array, field, direction?) → sorted array — Sort array by field. Direction: "asc" (default) or "desc"
+@Filter(array, field, operator: "==" | "!=" | ">" | "<" | ">=" | "<=" | "contains", value) → filtered array — Filter array by field value
+@Round(number, decimals?) → number — Round to N decimal places (default 0)
+@Abs(number) → number — Absolute value
+@Floor(number) → number — Round down to nearest integer
+@Ceil(number) → number — Round up to nearest integer
+
+Limits: 131072 source bytes, 512 statements, nesting depth 32, 2048 rendered nodes.

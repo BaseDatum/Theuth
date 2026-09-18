@@ -1,0 +1,122 @@
+{
+  "$comment": "Design 46 §10.7 real-model evaluation cases. `steering`: 15 app-authoring prompts (5 prototypes, 5 read panels, 5 action panels) run against the real registry (native tools + the argo MCP fixture). `vehicle`: 20 prompts where the correct vehicle is `app` (app tool), `fence` (```json-render / ```mermaid in the reply) or `show` (show tool). Expectations are structural (bindings/state from @wth/apps check); positional/visual intent is never judged here and every app output is flagged for user review.",
+  "catalog_required": ["app", "show", "argo_app_health", "argo_sync"],
+  "thresholds": {
+    "steering": { "frontier": 12, "small": 9 },
+    "vehicle": { "frontier": 16, "small": 16 }
+  },
+  "steering": [
+    {
+      "id": "proto-dr-drill",
+      "group": "prototype",
+      "prompt": "Build a clickable prototype for a disaster-recovery cutover drill. It has a title, a line showing the current stage (start at \"idle\"), a Begin drill button that moves the stage to \"cutover\", a Reset button that puts it back, and an Open runbook button that opens https://argo-cd.readthedocs.io/ . No backend calls; it is a mock.",
+      "expect": { "no_bindings": true, "state_min": 1 }
+    },
+    {
+      "id": "proto-feature-flags",
+      "group": "prototype",
+      "prompt": "Mock up a feature-flag panel with three switches: dark mode, beta search, compact view. Under the switches show one sentence that says how many flags are on. Pure prototype, no services.",
+      "expect": { "no_bindings": true, "state_min": 1 }
+    },
+    {
+      "id": "proto-severity-picker",
+      "group": "prototype",
+      "prompt": "Prototype an incident severity picker: a select with SEV1, SEV2, SEV3, SEV4, a text that describes what the chosen severity means for paging, and an Acknowledge button that flips an acknowledged flag shown in the text. Local state only.",
+      "expect": { "no_bindings": true, "state_min": 1 }
+    },
+    {
+      "id": "proto-deploy-checklist",
+      "group": "prototype",
+      "prompt": "Make an interactive deployment checklist prototype: four switches (freeze announced, backups verified, canary green, rollback plan linked), a progress line like \"2/4 done\", and a Reset button. No tools, just state.",
+      "expect": { "no_bindings": true, "state_min": 1 }
+    },
+    {
+      "id": "proto-pricing-calc",
+      "group": "prototype",
+      "prompt": "Build a small pricing calculator prototype: an input for number of seats, a select for plan (starter 9, team 19, business 39 per seat), and a line that shows the monthly total. State only, no backend.",
+      "expect": { "no_bindings": true, "state_min": 1 }
+    },
+    {
+      "id": "read-health-single",
+      "group": "read",
+      "prompt": "Show me a live ArgoCD health panel for the application portal-web using the installed argo_app_health tool. Show status and whether it is synced, and refresh it every 30 seconds.",
+      "expect": { "queries": ["argo_app_health"], "no_mutations": true }
+    },
+    {
+      "id": "read-health-select",
+      "group": "read",
+      "prompt": "I want a live screen where I pick an ArgoCD application (portal-web, portal-api or billing) from a select and see its health from argo_app_health: status, synced, and the sync count. Read-only.",
+      "expect": { "queries": ["argo_app_health"], "no_mutations": true, "state_min": 1 }
+    },
+    {
+      "id": "read-health-pair",
+      "group": "read",
+      "prompt": "Make a read-only dashboard that shows the argo_app_health of portal-web and portal-api side by side in a row, each with its status and synced flag.",
+      "expect": { "queries": ["argo_app_health"], "min_queries": 2, "no_mutations": true }
+    },
+    {
+      "id": "read-health-refresh-button",
+      "group": "read",
+      "prompt": "Build a live panel for the billing ArgoCD app: query argo_app_health, show status and synced, and add a Refresh button that re-runs the health query. Nothing that changes the cluster.",
+      "expect": { "queries": ["argo_app_health"], "no_mutations": true }
+    },
+    {
+      "id": "read-health-explain",
+      "group": "read",
+      "prompt": "Create a live health card for portal-api backed by argo_app_health. Show the status and the sync count, and add an Explain button that sends the current status to you so you can explain it. Do not add any sync or write action.",
+      "expect": { "queries": ["argo_app_health"], "no_mutations": true }
+    },
+    {
+      "id": "action-sync-select",
+      "group": "action",
+      "prompt": "Build a live ArgoCD control panel: a select for the application (portal-web or portal-api), the current health from argo_app_health, and a Sync button that runs argo_sync for the selected app and then refreshes the health. Show the sync result message or error under the button.",
+      "expect": { "queries": ["argo_app_health"], "mutations": ["argo_sync"], "state_min": 1 }
+    },
+    {
+      "id": "action-sync-single",
+      "group": "action",
+      "prompt": "Give me a one-button screen: Sync portal-api. Pressing it calls argo_sync for portal-api and shows the returned message, or the error if it failed.",
+      "expect": { "mutations": ["argo_sync"] }
+    },
+    {
+      "id": "action-sync-states",
+      "group": "action",
+      "prompt": "Make an interactive panel for the billing app with its argo_app_health status and a button labelled with the app name that syncs it via argo_sync. The panel should make the loading, success and error states of the sync visible. The button press is the approval; do not add a second confirmation step.",
+      "expect": { "queries": ["argo_app_health"], "mutations": ["argo_sync"] }
+    },
+    {
+      "id": "action-sync-two",
+      "group": "action",
+      "prompt": "Create a live screen with two buttons in a row: Sync portal-web and Sync portal-api, each running argo_sync for its app, with the latest result message shown below.",
+      "expect": { "mutations": ["argo_sync"], "min_mutations": 2 }
+    },
+    {
+      "id": "action-sync-input",
+      "group": "action",
+      "prompt": "Build a live tool where I type an ArgoCD application name into an input, see its argo_app_health status and sync count, and press Sync to run argo_sync for that name and refresh the health afterwards.",
+      "expect": { "queries": ["argo_app_health"], "mutations": ["argo_sync"], "state_min": 1 }
+    }
+  ],
+  "vehicle": [
+    { "id": "v01", "prompt": "I need an interactive panel where I can pick an ArgoCD application and press a button to sync it.", "expect": "app" },
+    { "id": "v02", "prompt": "Build me a clickable mock of a settings screen with a few toggles so I can feel the flow before we implement it.", "expect": "app" },
+    { "id": "v03", "prompt": "Make a live screen that shows portal-web's ArgoCD health and refreshes on its own.", "expect": "app" },
+    { "id": "v04", "prompt": "Give me a small calculator I can play with: seats times price per plan.", "expect": "app" },
+    { "id": "v05", "prompt": "I want a button I can press to sync portal-api, and see the result right there.", "expect": "app" },
+    { "id": "v06", "prompt": "Prototype an incident acknowledgement form with a severity select and an Acknowledge button.", "expect": "app" },
+    { "id": "v07", "prompt": "Create a dashboard I can interact with that lists two ArgoCD apps and lets me refresh each one's health.", "expect": "app" },
+    { "id": "v08", "prompt": "Draw how a request flows from the load balancer through the API gateway to the database and cache.", "expect": "fence" },
+    { "id": "v09", "prompt": "Sketch the state machine of an ArgoCD sync: out of sync, syncing, healthy, degraded.", "expect": "fence" },
+    { "id": "v10", "prompt": "Show me a status board comparing blue/green, canary and rolling deployments on risk, rollback speed and cost. Just a picture in the reply, nothing interactive.", "expect": "fence" },
+    { "id": "v11", "prompt": "Diagram the sequence of calls when a user logs in with OAuth: browser, our API, identity provider.", "expect": "fence" },
+    { "id": "v12", "prompt": "Give me a static timeline of the four stages of our release train as a visual in your answer.", "expect": "fence" },
+    { "id": "v13", "prompt": "Draw the dependency graph between the services portal-web, portal-api, billing and the shared postgres.", "expect": "fence" },
+    { "id": "v14", "prompt": "Visualise, as a simple picture, the before and after of moving our cron jobs into a scheduler service. No buttons needed.", "expect": "fence" },
+    { "id": "v15", "prompt": "Write a CSV with three example ArgoCD apps and their health, and show me the file.", "expect": "show" },
+    { "id": "v16", "prompt": "Produce a short markdown runbook for a failed sync and show it to me as a document.", "expect": "show" },
+    { "id": "v17", "prompt": "Generate a one-page PDF summary of our deployment checklist and show it.", "expect": "show" },
+    { "id": "v18", "prompt": "Save a text log of ten fake sync attempts to a file and show me that file.", "expect": "show" },
+    { "id": "v19", "prompt": "Create an SVG logo placeholder for the portal team and show it as a file I can download.", "expect": "show" },
+    { "id": "v20", "prompt": "Write the ArgoCD Application YAML for portal-web to a file and show it to me.", "expect": "show" }
+  ]
+}

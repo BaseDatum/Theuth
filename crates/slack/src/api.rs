@@ -50,12 +50,12 @@ pub enum TaskStatus {
 }
 
 impl TaskStatus {
-    fn wire(&self) -> SlackStreamTaskStatus {
+    fn wire(&self) -> SlackTaskCardStatus {
         match self {
-            Self::Pending => SlackStreamTaskStatus::Pending,
-            Self::InProgress => SlackStreamTaskStatus::InProgress,
-            Self::Complete => SlackStreamTaskStatus::Complete,
-            Self::Error => SlackStreamTaskStatus::Error,
+            Self::Pending => SlackTaskCardStatus::Pending,
+            Self::InProgress => SlackTaskCardStatus::InProgress,
+            Self::Complete => SlackTaskCardStatus::Complete,
+            Self::Error => SlackTaskCardStatus::Error,
         }
     }
 }
@@ -104,9 +104,11 @@ pub enum Chunk {
     },
 }
 
-impl From<Chunk> for SlackStreamChunk {
-    fn from(c: Chunk) -> Self {
-        match c {
+impl TryFrom<Chunk> for SlackStreamChunk {
+    type Error = ApiError;
+
+    fn try_from(c: Chunk) -> Result<Self, Self::Error> {
+        Ok(match c {
             Chunk::Text(text) => SlackStreamChunk::MarkdownText { text },
             Chunk::Task {
                 id,
@@ -116,26 +118,37 @@ impl From<Chunk> for SlackStreamChunk {
                 output,
                 sources,
             } => SlackStreamChunk::TaskUpdate {
-                id,
+                id: id.into(),
                 title,
                 hide_title: None,
                 icon: None,
                 status: status.wire(),
                 details,
                 output,
-                sources: (!sources.is_empty()).then(|| {
-                    sources
-                        .into_iter()
-                        .map(|s| SlackStreamSource::new("url".into(), s.url, s.text))
-                        .collect()
-                }),
+                sources: (!sources.is_empty())
+                    .then(|| {
+                        sources
+                            .into_iter()
+                            .map(|s| {
+                                let url = s.url.parse().map_err(|e| {
+                                    ApiError::Transport(format!("task source URL: {e}"))
+                                })?;
+                                Ok(SlackTaskCardSource::Url(SlackUrlSourceElement::new(
+                                    url, s.text,
+                                )))
+                            })
+                            .collect::<Result<Vec<_>, ApiError>>()
+                    })
+                    .transpose()?,
             },
-        }
+        })
     }
 }
 
-fn chunks(v: Vec<Chunk>) -> Option<Vec<SlackStreamChunk>> {
-    (!v.is_empty()).then(|| v.into_iter().map(Into::into).collect())
+fn chunks(v: Vec<Chunk>) -> Result<Option<Vec<SlackStreamChunk>>, ApiError> {
+    (!v.is_empty())
+        .then(|| v.into_iter().map(TryInto::try_into).collect())
+        .transpose()
 }
 
 /// One file for [`SlackApi::upload_file`] (24 §5).
@@ -487,7 +500,7 @@ impl SlackApi for Api {
             .with_recipient_user_id(user.into())
             .with_recipient_team_id(team.into())
             .with_task_display_mode(SlackStreamTaskDisplayMode::Timeline)
-            .opt_chunks(chunks(first));
+            .opt_chunks(chunks(first)?);
         self.run("chat.startStream", async {
             self.client
                 .open_session(&self.bot)
@@ -500,7 +513,7 @@ impl SlackApi for Api {
 
     async fn append_stream(&self, channel: &str, ts: &str, c: Vec<Chunk>) -> Result<(), ApiError> {
         let req =
-            SlackApiChatAppendStreamRequest::new(channel.into(), ts.into()).opt_chunks(chunks(c));
+            SlackApiChatAppendStreamRequest::new(channel.into(), ts.into()).opt_chunks(chunks(c)?);
         self.pace("chat.appendStream", APPEND_GAP).await;
         self.run("chat.appendStream", async {
             self.client
@@ -521,13 +534,13 @@ impl SlackApi for Api {
         session_status: Option<&str>,
     ) -> Result<(), ApiError> {
         let session_status = session_status.map(self::session_status).transpose()?;
-        let req = SlackApiChatStopStreamRequest::new(channel.into(), ts.into())
-            .opt_chunks(chunks(c))
-            .opt_blocks(footer.map(|f| {
-                vec![SlackBlock::Context(SlackContextBlock::new(vec![
-                    SlackContextBlockElement::MarkDown(SlackBlockMarkDownText::new(f)),
-                ]))]
-            }))
+        let content = SlackMessageContent::new().opt_blocks(footer.map(|f| {
+            vec![SlackBlock::Context(SlackContextBlock::new(vec![
+                SlackContextBlockElement::MarkDown(SlackBlockMarkDownText::new(f)),
+            ]))]
+        }));
+        let req = SlackApiChatStopStreamRequest::new(channel.into(), ts.into(), content)
+            .opt_chunks(chunks(c)?)
             .opt_session_status(session_status);
         self.run("chat.stopStream", async {
             self.client
@@ -809,25 +822,27 @@ mod tests {
     }
 
     #[test]
-    fn task_status_serialises_snake_case() {
-        assert_eq!(
-            serde_json::to_string(&TaskStatus::InProgress).unwrap(),
-            "\"in_progress\""
-        );
-        let SlackStreamChunk::TaskUpdate {
-            status, sources, ..
-        } = SlackStreamChunk::from(Chunk::Task {
+    fn task_source_urls_are_validated_before_sending() {
+        let task = |url: &str| Chunk::Task {
             id: "c1".into(),
             title: "shell".into(),
             status: TaskStatus::Complete,
             details: None,
             output: None,
-            sources: vec![],
-        })
-        else {
-            panic!("task chunk")
+            sources: vec![Source {
+                url: url.into(),
+                text: "output".into(),
+            }],
         };
-        assert_eq!(status, SlackStreamTaskStatus::Complete);
-        assert!(sources.is_none());
+        let chunk = SlackStreamChunk::try_from(task("https://example.com/output")).unwrap();
+        let wire = serde_json::to_value(chunk).unwrap();
+        assert_eq!(wire["status"], "complete");
+        assert_eq!(
+            wire["sources"][0],
+            serde_json::json!({
+                "type": "url", "url": "https://example.com/output", "text": "output"
+            })
+        );
+        assert!(SlackStreamChunk::try_from(task("not a URL")).is_err());
     }
 }

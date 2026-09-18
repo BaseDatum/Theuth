@@ -356,6 +356,38 @@ entry in the existing array; the desktop's `resolveFile` then works
 unchanged for artifact paths, locally and through the relay. `ArtifactShown`
 is added to `bridge.rs`'s `forward!` and subscribe lists and to `export.rs`.
 
+**Search (49).** The `artifacts` group of the unified `search` RPC and
+`search` tool asks `artifact::search::SearchArtifacts { query, limit }`;
+two direct reads exist for opening a hit:
+
+```rust
+#[method(name = "get_artifact")]           async fn get_artifact(&self, call_id: String) -> RpcResult<Artifact>;                       // the exact record; vanished → error
+#[method(name = "artifact_search_match")]  async fn artifact_search_match(&self, call_id: String, query: String) -> RpcResult<ArtifactMatchContext>;  // ≤2,000 chars of indexed text around the match, rebased ranges, coverage
+```
+
+A hit identifies one **`call_id` occurrence** (every retained version, each
+its own row), never the shared blob `id`; equal blobs under different
+call_ids stay separate. Search reads saved `path`/`source` only, never
+`origin`. What is indexed, per `ArtifactSearchHit.content_coverage`:
+
+| saved kind | indexed | coverage |
+|---|---|---|
+| name, title, kind of every record | metadata candidate | — |
+| Markdown, text/code, CSV (all rows, not the 500-row preview) | complete UTF-8 text | `complete`, field `content` |
+| HTML, SVG, compiled PDF with saved Markdown/Typst source | the saved source text (**Source match**); no DOM execution, render or recompile | `complete`, field `source` |
+| PDF without source, Office/ODF/RTF/EPUB | `tools::doc::format/to_markdown` once per payload (25 MiB / 30 s converter limits kept, so a 32 MiB artifact can be too large) | `complete` or `metadata_only` + `content_not_searchable` notice |
+| images, unrecognised binaries | nothing (no OCR) | `metadata_only` notice |
+| invalid UTF-8, encrypted/scanned/malformed document, converter failure | metadata only, reason in the page notices | `metadata_only`, page coverage `partial` |
+
+The index is a lazy owner-local cache keyed by occurrence with bodies shared
+by immutable payload identity; `State::show/delete_session` invalidate it,
+`search_refresh` drops failed extractions for retry, and records whose
+owning session the supervisor no longer knows are excluded. Destinations:
+desktop `/artifacts/$callId` (exact version, local explorer filters reset;
+**Matched text** panel from `artifact_search_match`), TUI a read-only
+preview of that record with `o` open / `e` export / `m` matched text — no
+implicit session switch, no execution of artifact content.
+
 ### 3.6 `ToolCallProgress` (agent, §0.7)
 
 ```rust
@@ -666,7 +698,9 @@ artifact:
 ```
 
 Events: `ArtifactShown` (this crate); `AgentEvent::ToolCallProgress`
-(agent). RPC: `list_artifacts`, `export_artifact`; `get_attachment` +
+(agent). RPC: `list_artifacts`, `export_artifact`, `get_artifact`,
+`artifact_search_match`, and the `artifacts` group of `search`/`search_refresh`
+(49; §3.5); `get_attachment` +
 `artifacts/`. Disk: §3.4. Tracing target `artifact`:
 `show{kind, bytes, ms, compiled, pages, ok}` per call — the one number
 that says whether PDFs compile first time (§11 step 8's calibration).
