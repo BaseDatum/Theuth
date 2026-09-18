@@ -257,7 +257,9 @@ function useEventSideEffects(st: Stores): void {
  */
 function Shell({ harness, onRelaunch }: { harness: string; onRelaunch(): void }) {
   const refused = useHarnesses((s) => s.presence[harness] === 'refused')
-  const ready = useConnection((s) => s.info !== null && (s.state === 'open' || (harness !== LOCAL && !refused)))
+  const ready = useConnection(
+    (s) => s.info !== null && (s.state === 'open' || (harness !== LOCAL && !refused)),
+  )
   useInvalidateOn()
   useEventSideEffects(scope(harness))
   return ready ? (
@@ -321,11 +323,16 @@ export function App() {
     }
   }, [hydrated, harnesses])
 
-  // Switching moves the subscription; the tree below remounts under the new provider.
+  // Switching moves the subscription; the tree below remounts under the new provider. The harness left
+  // behind misses every event from here, so its transcripts go stale until it is shown again (48 §5)
+  // — on a real switch only, not a StrictMode re-run of this effect.
   useEffect(() => {
     const st = scope(active)
     attach(st)
-    return () => detach(st)
+    return () => {
+      detach(st)
+      if (useHarnesses.getState().active !== st.id) st.sessions.getState().unload()
+    }
   }, [active])
 
   // A switch restores that harness's last chat, else `/` (the tree below remounts under the new provider);

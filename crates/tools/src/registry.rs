@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use kameo::actor::{ActorRef, Spawn};
@@ -15,8 +15,10 @@ use kameo::reply::DelegatedReply;
 use runtime::{Runtime, SessionId};
 use serde::{Deserialize, Serialize};
 
+use crate::activity::{self, Activity, ActivitySink, Kind, OperationId};
 use crate::approval::{Approval, Decision, RequestApproval};
 use crate::ask::{AskUser, AskUserTool};
+use crate::jobs::{InstallActivity, JOBS_ACTOR, Jobs, lock};
 use crate::{
     APPROVAL_ACTOR, ASK_ACTOR, DynTool, Policy, PolicyAction, REGISTRY_ACTOR, Risk, ToolCall,
     ToolCx, ToolOutput, ToolSpec, ToolsConfig, fs, jobs, pty, shell,
@@ -47,6 +49,16 @@ pub struct ToolRegistry {
     config_path: PathBuf,
     /// Looked up at first `Ask`, never at start (no start-order coupling).
     approval: Option<ActorRef<Approval>>,
+    /// The activity supervisor (47 §4), from [`RegisterActivity`]. `None`
+    /// until `Agents` registers: invocations run untracked and nothing is
+    /// certified. `Some` and dead: invocations fail closed.
+    activity: Option<ActivitySink>,
+    /// Invocations admitted while `activity` was `None`, held until their
+    /// task ends. [`RegisterActivity`] adopts them, so a sink installed
+    /// mid-flight starts with a blocker per running call instead of an empty
+    /// ledger it would wrongly certify. Entries are inserted in the mailbox,
+    /// so a registration queued behind an [`Invoke`] always sees it.
+    untracked: Arc<Mutex<HashMap<OperationId, Activity>>>,
 }
 
 /// `ask` → `Vec<ToolSpec>` for every registered tool, sorted by name; with a
@@ -79,6 +91,24 @@ pub struct RegisterTool(pub DynTool);
 
 /// `ask` → `()`. Removes a tool by name; unknown name is a no-op.
 pub struct UnregisterTool(pub String);
+
+/// `ask` → `Result<(), String>` (kameo lifts `Err` to
+/// `SendError::HandlerError`). Install the activity supervisor's recipients
+/// (47 §4.1). From now on every [`Invoke`] is admitted before it runs and
+/// settled when its real work stops. Every invocation already running
+/// untracked is reported to the sink as `Settle::Unknown` before the reply.
+/// `Ok` additionally means the `Jobs` actor installed the same sink
+/// ([`InstallActivity`]): nothing this crate runs is invisible to the
+/// supervisor. `Err` (no jobs actor, or it did not install): invocations are
+/// covered, jobs are not; the supervisor must not certify. Registering again
+/// replaces the sink for new work.
+pub struct RegisterActivity(pub ActivitySink);
+
+/// `ask` → `Option<ActivitySink>`: the registered supervisor, for work
+/// admitted outside any invocation (RPC job start, 47 §4.2 rule 3). Inside
+/// an invocation use [`activity::current`] instead.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ActivityRecipient;
 
 /// `ask` → [`Decision`]: the same gate as [`Invoke`] for a tool call wth does
 /// not run itself — an external harness's `session/request_permission`
@@ -389,6 +419,45 @@ impl Message<UnregisterTool> for ToolRegistry {
     }
 }
 
+impl Message<RegisterActivity> for ToolRegistry {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        m: RegisterActivity,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        {
+            let running = lock(&self.untracked);
+            for a in running.values() {
+                a.adopt(&m.0);
+            }
+            tracing::info!(adopted = running.len(), "registered activity supervisor");
+        }
+        self.activity = Some(m.0.clone());
+        // Jobs never asks back into this actor, so awaiting it here cannot deadlock.
+        let Ok(Some(jobs)) = ActorRef::<Jobs>::lookup(JOBS_ACTOR) else {
+            return Err("jobs actor not running: job coverage uncertified".into());
+        };
+        jobs.ask(InstallActivity(m.0))
+            .await
+            .map(drop)
+            .map_err(|e| format!("jobs actor did not install the activity sink: {e}"))
+    }
+}
+
+impl Message<ActivityRecipient> for ToolRegistry {
+    type Reply = Option<ActivitySink>;
+
+    async fn handle(
+        &mut self,
+        _: ActivityRecipient,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.activity.clone()
+    }
+}
+
 impl Message<RegisterPrompt> for ToolRegistry {
     type Reply = ();
 
@@ -448,19 +517,72 @@ impl Message<Invoke> for ToolRegistry {
                 return reply;
             }
         };
-        // Everything that awaits leaves the mailbox.
+        // Everything that awaits leaves the mailbox: admission (so `Agents`
+        // can still ask this actor while deciding), approval, the tool body.
+        // The `Activity` lives in this task until the output is handed back:
+        // a caller dropping the ask or synthesizing a cancelled response does
+        // not retire the entry; only this task finishing does (47 §4.2 rule 2).
+        let sink = self.activity.clone();
+        let kind = Kind::Invoke {
+            tool: call.name.clone(),
+            call_id: call.id.clone(),
+            quiet: call.quiet,
+        };
+        // No supervisor yet: admit untracked *here*, inside the mailbox, so a
+        // `RegisterActivity` behind this message adopts the call.
+        let held = sink.is_none().then(|| {
+            let activity = Activity::untracked(call.session, kind.clone());
+            lock(&self.untracked).insert(activity.id(), activity.clone());
+            Held {
+                map: self.untracked.clone(),
+                activity,
+            }
+        });
         tokio::spawn(async move {
-            tx.send(invoke(tool, spec, call, approval).await);
+            let activity = match &held {
+                Some(h) => h.activity.clone(),
+                None => match activity::admit(sink.as_ref(), call.session, kind).await {
+                    Ok(a) => a,
+                    Err(why) => {
+                        tx.send(ToolOutput::err(format!("{}: {why}", call.name)));
+                        return;
+                    }
+                },
+            };
+            let out = activity
+                .clone()
+                .scope(invoke(tool, spec, call, approval, activity))
+                .await;
+            tx.send(out);
+            // The map entry goes when this task ends; the last clone settles.
+            drop(held);
         });
         reply
     }
 }
 
+/// One pre-registration invocation's slot in `ToolRegistry::untracked`;
+/// released when the invocation task ends, however it ends.
+struct Held {
+    map: Arc<Mutex<HashMap<OperationId, Activity>>>,
+    activity: Activity,
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        lock(&self.map).remove(&self.activity.id());
+    }
+}
+
+/// Approval, secret expansion and the tool body, all under `activity`'s scope
+/// so nested work can read [`activity::current`]. Returns only once the tool
+/// body has actually stopped (returned, failed or panicked).
 async fn invoke(
     tool: DynTool,
     spec: ToolSpec,
     mut call: ToolCall,
     approval: Option<ActorRef<Approval>>,
+    activity: Activity,
 ) -> ToolOutput {
     if let Some(approval) = approval {
         let req = RequestApproval {
@@ -489,7 +611,10 @@ async fn invoke(
         quiet: call.quiet,
     };
     // Own task so a panicking tool is an error output, not a dead registry.
-    let mut out = match tokio::spawn(async move { tool.call(call.args, cx).await }).await {
+    // Task-locals do not cross `spawn`: re-enter the scope with a clone, so
+    // the body sees `current()` and a panic there marks the operation unknown.
+    let body = activity.scope(async move { tool.call(call.args, cx).await });
+    let mut out = match tokio::spawn(body).await {
         Ok(Ok(out)) => out,
         Ok(Err(e)) => ToolOutput::err(format!("{}: {e:#}", spec.name)),
         Err(e) => ToolOutput::err(format!("{}: tool panicked: {e}", spec.name)),
@@ -561,6 +686,8 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
             parents: HashMap::new(),
             config_path: rt.data_dir.join("config.yaml"),
             approval: None,
+            activity: None,
+            untracked: Arc::default(),
         },
         runtime::subscriber_mailbox(),
     );
@@ -588,10 +715,9 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn hidden_tools_are_per_session_and_inherited() {
-        let reg = ToolRegistry::spawn(ToolRegistry {
-            tools: HashMap::from([("echo".to_owned(), Arc::new(Echo) as DynTool)]),
+    fn registry(tools: Vec<DynTool>, activity: Option<ActivitySink>) -> ActorRef<ToolRegistry> {
+        ToolRegistry::spawn(ToolRegistry {
+            tools: tools.into_iter().map(|t| (t.spec().name, t)).collect(),
             prompts: BTreeMap::new(),
             policy: Policy::default(),
             approvals: true,
@@ -600,7 +726,192 @@ mod tests {
             parents: HashMap::new(),
             config_path: PathBuf::new(),
             approval: None,
+            activity,
+            untracked: Arc::default(),
+        })
+    }
+
+    fn call(name: &str, s: SessionId) -> ToolCall {
+        ToolCall {
+            id: "1".into(),
+            name: name.into(),
+            args: serde_json::json!({}),
+            session: s,
+            quiet: false,
+        }
+    }
+
+    /// Blocks until released; reports the `current()` op it ran under.
+    struct Slow {
+        release: Arc<tokio::sync::Notify>,
+        ran_under: Arc<std::sync::Mutex<Option<Option<activity::OperationId>>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Tool for Slow {
+        const NAME: &'static str = "slow";
+        const RISK: Risk = Risk::ReadOnly;
+        type Args = serde_json::Value;
+        fn description(&self) -> String {
+            String::new()
+        }
+        async fn call(&self, _: Self::Args, _: ToolCx) -> anyhow::Result<ToolOutput> {
+            *jobs::lock(&self.ran_under) = Some(activity::current().map(|a| a.id()));
+            self.release.notified().await;
+            Ok(ToolOutput::ok("done"))
+        }
+    }
+
+    #[tokio::test]
+    async fn invocation_is_admitted_first_and_outlives_a_dropped_ask() {
+        use crate::activity::test_sink::{Seen, drained, spawn};
+        let (ledger, sink, seen) = spawn(None);
+        let release = Arc::new(tokio::sync::Notify::new());
+        let ran_under = Arc::new(std::sync::Mutex::new(None));
+        let slow = Slow {
+            release: release.clone(),
+            ran_under: ran_under.clone(),
+        };
+        let reg = registry(vec![Arc::new(slow)], Some(sink));
+        let session = SessionId::new();
+
+        // Caller gives up: synthetic cancellation upstream, real work continues.
+        let ask = tokio::spawn({
+            let reg = reg.clone();
+            async move { reg.ask(Invoke(call("slow", session))).await }
         });
+        while jobs::lock(&ran_under).is_none() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        ask.abort();
+        let _ = ask.await;
+
+        let seen_now = drained(&ledger, &seen).await;
+        let [Seen::Admitted(op)] = seen_now.as_slice() else {
+            panic!("expected one admission, got {seen_now:?}");
+        };
+        assert_eq!(
+            (op.owner, &op.kind),
+            (
+                session,
+                &Kind::Invoke {
+                    tool: "slow".into(),
+                    call_id: "1".into(),
+                    quiet: false
+                }
+            )
+        );
+        assert_eq!(
+            *jobs::lock(&ran_under),
+            Some(Some(op.id)),
+            "body sees its own activity"
+        );
+
+        release.notify_one();
+        let settled = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let s = drained(&ledger, &seen).await;
+                if s.len() > 1 {
+                    return s;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("settles once the body returns");
+        assert_eq!(settled[1], Seen::Finished(op.id));
+    }
+
+    #[tokio::test]
+    async fn rejected_or_lost_supervisor_fails_closed_without_running() {
+        use crate::activity::test_sink::spawn;
+        let ran_under = Arc::new(std::sync::Mutex::new(None));
+        let tool = || -> DynTool {
+            Arc::new(Slow {
+                release: Arc::new(tokio::sync::Notify::new()),
+                ran_under: ran_under.clone(),
+            })
+        };
+        let session = SessionId::new();
+
+        let (_ledger, sink, _) = spawn(Some("paused"));
+        let out = registry(vec![tool()], Some(sink))
+            .ask(Invoke(call("slow", session)))
+            .await
+            .unwrap();
+        assert!(out.is_error && out.content.contains("paused"), "{out:?}");
+
+        let (ledger, sink, _) = spawn(None);
+        ledger.stop_gracefully().await.unwrap();
+        ledger.wait_for_shutdown().await;
+        let out = registry(vec![tool()], Some(sink))
+            .ask(Invoke(call("slow", session)))
+            .await
+            .unwrap();
+        assert!(
+            out.is_error && out.content.contains("unavailable"),
+            "{out:?}"
+        );
+        assert!(jobs::lock(&ran_under).is_none(), "tool body never ran");
+    }
+
+    #[tokio::test]
+    async fn registration_adopts_a_running_untracked_invocation() {
+        use crate::activity::test_sink::{Seen, drained, spawn};
+        let release = Arc::new(tokio::sync::Notify::new());
+        let ran_under = Arc::new(std::sync::Mutex::new(None));
+        let slow = Slow {
+            release: release.clone(),
+            ran_under: ran_under.clone(),
+        };
+        let reg = registry(vec![Arc::new(slow)], None);
+        let session = SessionId::new();
+
+        // Started with no supervisor: runs untracked.
+        let ask = tokio::spawn({
+            let reg = reg.clone();
+            async move { reg.ask(Invoke(call("slow", session))).await }
+        });
+        while jobs::lock(&ran_under).is_none() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let op = jobs::lock(&ran_under)
+            .flatten()
+            .expect("body runs under a guard");
+
+        // Registration lands mid-flight: the ack must not certify an empty ledger.
+        let (ledger, sink, seen) = spawn(None);
+        // No jobs actor here: invocations are covered, the reply says jobs are not.
+        assert!(matches!(
+            reg.ask(RegisterActivity(sink)).await,
+            Err(kameo::error::SendError::HandlerError(_))
+        ));
+        let now = drained(&ledger, &seen).await;
+        assert!(
+            matches!(now.as_slice(), [Seen::Unknown(o, why)] if *o == op && why.contains("before")),
+            "{now:?}"
+        );
+
+        // Settles through the adopted sink once the body returns.
+        release.notify_one();
+        assert!(!ask.await.unwrap().unwrap().is_error);
+        let settled = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let s = drained(&ledger, &seen).await;
+                if s.len() > 1 {
+                    return s;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("adopted call settles");
+        assert_eq!(settled[1], Seen::Finished(op));
+    }
+
+    #[tokio::test]
+    async fn hidden_tools_are_per_session_and_inherited() {
+        let reg = registry(vec![Arc::new(Echo)], None);
         let (parent, child, other) = (SessionId::new(), SessionId::new(), SessionId::new());
         reg.tell(SetParent {
             session: child,
@@ -608,13 +919,7 @@ mod tests {
         })
         .await
         .unwrap();
-        let call = |s| ToolCall {
-            id: "1".into(),
-            name: "echo".into(),
-            args: serde_json::json!({}),
-            session: s,
-            quiet: false,
-        };
+        let call = |s| call("echo", s);
         let names = |specs: Vec<ToolSpec>| specs.into_iter().map(|s| s.name).collect::<Vec<_>>();
 
         reg.ask(SetHidden {

@@ -16,7 +16,7 @@ use runtime::{Runtime, SessionId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tools::{DynTool, Risk, Tool, ToolCx, ToolOutput};
+use tools::{DynTool, Risk, Tool, ToolCx, ToolOutput, Tracked};
 
 use crate::{BrowserConfig, BrowserEvent, Browsers, Call};
 
@@ -33,9 +33,11 @@ pub struct Ctx {
 }
 
 impl Ctx {
-    /// One obscura tool call. `Ok(Ok(result))` is the MCP result object,
-    /// `Ok(Err(text))` the actor's "browser unavailable / restarted" text
-    /// (23 §4), `Err` a dead actor.
+    /// One obscura tool call, carrying the invocation's activity so the
+    /// command stays owned by this session until the isolate finishes it,
+    /// even after the registry's timeout dropped us (47 §4.2 rule 5).
+    /// `Ok(Ok(result))` is the MCP result object, `Ok(Err(text))` the actor's
+    /// "browser unavailable / restarted" text (23 §4), `Err` a dead actor.
     async fn raw(
         &self,
         session: SessionId,
@@ -44,11 +46,11 @@ impl Ctx {
     ) -> anyhow::Result<Result<Value, String>> {
         match self
             .actor
-            .ask(Call {
+            .ask(Tracked::new(Call {
                 session,
                 name: name.to_owned(),
                 args,
-            })
+            }))
             .await
         {
             Ok(v) => Ok(Ok(v)),

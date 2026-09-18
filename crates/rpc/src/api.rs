@@ -7,13 +7,15 @@ use std::fmt::Display;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
+use agent::todo::TodoSnapshot;
 use agent::{
     AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentConfig, AgentInfo, Agents, Cancel, Compact,
-    CompactStyle, DeleteSession, EditTurn, ForkSession, GetCompactStyle, GetMaxToolRounds,
-    GetSubagentTimeout, GetTitleModel, Harvest, ListAcp, ListAgents, ListLogins, ListModels,
-    ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills, LoadSession, LoadSkill,
-    Loaded, Login, LoginInfo, Logout, ModelInfo, NewSession, PinSession, ProviderInfo, QueuedInput,
-    Redo, Regenerate, RemoveAcp, RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession,
+    CompactStyle, ContextItems, ContextRemoval, ContextSnapshot, ContextTarget, DeleteSession,
+    EditTurn, ForkSession, GetCompactStyle, GetMaxToolRounds, GetSubagentTimeout, GetTitleModel,
+    GetTodos, Harvest, ListAcp, ListAgents, ListLogins, ListModels, ListProviders, ListQueued,
+    ListRegistry, ListSessions, ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginInfo,
+    Logout, ModelInfo, NewSession, PinSession, ProviderInfo, QueuedInput, Redo, Regenerate,
+    RemoveAcp, RemoveContext, RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession,
     SearchSessions, SendInput, SessionSummary, SetCompactStyle, SetEffort, SetMaxToolRounds,
     SetModel, SetSubagentTimeout, SetTitleModel, ShowPrompt, SkillBody, SkillMeta, Steer,
     SyncSkills, Undo, UseSkill, Withdraw,
@@ -42,7 +44,6 @@ use link::{
 };
 use runtime::{InputId, Runtime, SessionId};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use signal::{Allow, Link, RemoveAllowed, SIGNAL_ACTOR, Signal, SignalStatus, Status, Unlink};
 use slack::{SLACK_ACTOR, Slack, SlackStatus};
 use tokio::sync::broadcast;
@@ -154,6 +155,22 @@ pub trait Api {
     /// Restore the last undone turn; returns its first line.
     #[method(name = "redo")]
     async fn redo(&self, session: SessionId) -> RpcResult<String>;
+    /// Inventory of the active context (design doc 48 §3.2): revision,
+    /// editability, and every removable message/binary/head with its
+    /// protocol companions. No bodies. Native sessions only.
+    #[method(name = "context_items")]
+    async fn context_items(&self, session: SessionId) -> RpcResult<ContextSnapshot>;
+    /// Remove `targets` from the active context at `expected_revision`
+    /// (design doc 48 §3.2). Atomic: stale revision, unknown targets or an
+    /// incomplete protocol group refuse and write nothing. Refused while a
+    /// turn is running; a `ContextChanged` follows on the stream.
+    #[method(name = "remove_context")]
+    async fn remove_context(
+        &self,
+        session: SessionId,
+        expected_revision: String,
+        targets: Vec<ContextTarget>,
+    ) -> RpcResult<ContextRemoval>;
     /// Regenerate the reply to the turn opened at `turn` (a `HistoryEntry`
     /// `turn` handle): drop it and everything after, replay the stored opener
     /// (design doc 29 §3). Refused while a turn is running.
@@ -207,14 +224,22 @@ pub trait Api {
     async fn list_agents(&self, session: SessionId) -> RpcResult<Vec<AgentInfo>>;
     /// Rendered history of one session plus whether a turn is in flight.
     /// `before`/`limit` page the entries (25 §7): those with `seq < before`,
-    /// the last `limit` of them; both omitted = everything.
+    /// the last `limit` of them; both omitted = everything. `settled_only`
+    /// (48 §5) reads through the idle session actor; while busy the reply
+    /// has `settled: false` and `context_editable: false` with a reason.
     #[method(name = "load_session")]
     async fn load_session(
         &self,
         session: SessionId,
         before: Option<i64>,
         limit: Option<u32>,
+        settled_only: Option<bool>,
     ) -> RpcResult<Loaded>;
+    /// The session's current plan (47 §5.1): the latest committed snapshot,
+    /// readable while a turn runs; `TodoChanged` carries later versions.
+    /// An unknown session or a failed read is an error, never an empty list.
+    #[method(name = "get_todos")]
+    async fn get_todos(&self, session: SessionId) -> RpcResult<TodoSnapshot>;
     /// Set a session's title by hand; `TitleChanged` follows on the stream.
     #[method(name = "rename_session")]
     async fn rename_session(&self, session: SessionId, title: String) -> RpcResult<()>;
@@ -746,16 +771,10 @@ static HOSTNAME: LazyLock<String> = LazyLock::new(|| {
 });
 
 /// Write `bytes` as `<data_dir>/attachments/<sha256[..16]>.<ext>`; an existing
-/// file is not rewritten. Shared by `put_attachment` and the ACP prompt path.
+/// file is not rewritten. Shared by `put_attachment` and the ACP prompt path;
+/// the naming rule lives in `agent::context` (48 §3.3).
 pub(crate) fn save_blob(bytes: &[u8], ext: &str, data_dir: &Path) -> std::io::Result<PathBuf> {
-    let hex = format!("{:x}", Sha256::digest(bytes));
-    let dir = data_dir.join("attachments");
-    let path = dir.join(format!("{}.{ext}", &hex[..16]));
-    if !path.exists() {
-        std::fs::create_dir_all(&dir)?;
-        std::fs::write(&path, bytes)?;
-    }
-    Ok(path)
+    agent::context::save_blob(bytes, ext, data_dir)
 }
 
 /// An `ASK_FAILED` (`-32000`) error with `msg`.
@@ -883,6 +902,27 @@ impl ApiServer for Server {
         ask::<Agents, _>(agent::AGENT_ACTOR, Redo { session }).await
     }
 
+    async fn context_items(&self, session: SessionId) -> RpcResult<ContextSnapshot> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, ContextItems { session }).await
+    }
+
+    async fn remove_context(
+        &self,
+        session: SessionId,
+        expected_revision: String,
+        targets: Vec<ContextTarget>,
+    ) -> RpcResult<ContextRemoval> {
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            RemoveContext {
+                session,
+                expected_revision,
+                targets,
+            },
+        )
+        .await
+    }
+
     async fn regenerate(&self, session: SessionId, turn: i64) -> RpcResult<()> {
         ask::<Agents, _>(agent::AGENT_ACTOR, Regenerate { session, turn }).await
     }
@@ -960,6 +1000,7 @@ impl ApiServer for Server {
         session: SessionId,
         before: Option<i64>,
         limit: Option<u32>,
+        settled_only: Option<bool>,
     ) -> RpcResult<Loaded> {
         ask::<Agents, _>(
             agent::AGENT_ACTOR,
@@ -967,9 +1008,14 @@ impl ApiServer for Server {
                 session,
                 before,
                 limit,
+                settled_only: settled_only.unwrap_or(false),
             },
         )
         .await
+    }
+
+    async fn get_todos(&self, session: SessionId) -> RpcResult<TodoSnapshot> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, GetTodos { session }).await
     }
 
     async fn rename_session(&self, session: SessionId, title: String) -> RpcResult<()> {

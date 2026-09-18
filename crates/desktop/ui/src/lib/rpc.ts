@@ -57,7 +57,10 @@ export function useInvalidateOn(): void {
     let timer: number | undefined
     const sessions = () => {
       clearTimeout(timer)
-      timer = window.setTimeout(() => void qc.invalidateQueries({ queryKey: queryKeys.sessions }), SESSIONS_DEBOUNCE_MS)
+      timer = window.setTimeout(
+        () => void qc.invalidateQueries({ queryKey: queryKeys.sessions }),
+        SESSIONS_DEBOUNCE_MS,
+      )
     }
     const offs = [
       on('TurnFinished', sessions),

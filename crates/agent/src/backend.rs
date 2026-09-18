@@ -9,7 +9,7 @@ use std::pin::Pin;
 use cursor::chat_stream;
 use futures::{Stream, StreamExt};
 use genai::adapter::AdapterKind;
-use genai::chat::{ChatOptions, ChatRequest, ChatStreamEvent};
+use genai::chat::{ChatOptions, ChatRequest, ChatStreamEvent, StopReason, StreamEnd};
 use genai::resolver::{AuthData, Endpoint};
 use genai::{Client, ModelIden, ModelSpec, ServiceTarget};
 use models::Resolved;
@@ -22,6 +22,16 @@ use crate::supervisor::Auth;
 
 /// One model call's events, from genai or the Cursor backend.
 pub(crate) type EventStream = Pin<Box<dyn Stream<Item = Result<ChatStreamEvent, String>> + Send>>;
+
+/// 47 §3.3: the private stop classification beside the raw provider string.
+/// A recognised normal completion (`end_turn`, `stop`, `STOP`, …; genai
+/// normalises the provider forms, Cursor emits `end_turn` itself) with no tool
+/// calls is a natural yield. A missing or unknown reason, truncation, filtering
+/// or a stop sequence is not: those never authorise a same-turn continuation.
+pub(crate) fn natural_stop(end: &StreamEnd) -> bool {
+    matches!(end.captured_stop_reason, Some(StopReason::Completed(_)))
+        && end.captured_tool_calls().is_none_or(|c| c.is_empty())
+}
 
 /// Which client streams a model. Chosen when the model is set
 /// ([`Backend::for_model`]), never per call.

@@ -1,9 +1,12 @@
-import { memo, useEffect, useState } from 'react'
+import { X } from 'lucide-react'
+import { memo, type ReactNode, useEffect, useState } from 'react'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { resolveFile } from '@/lib/files'
 import { useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import { useHarnesses } from '@/link/harnesses'
+import type { ContextAttachment } from '@/rpc/bindings/ContextAttachment'
+import { RemoveButton } from './MessageAssistant'
 
 const IMAGE = /\.(png|jpe?g|gif|webp|bmp|svg)$/i
 
@@ -43,27 +46,116 @@ export function Img({ path, className }: { path: string; className: string }) {
   return <img src={src} alt="" className={className} />
 }
 
-/** Thumbnails (`max-h-64`) of the image paths in `files`; click opens a lightbox. Non-images render as their file name. */
+/** One thumbnail or chip. An `occurrence` is a stored model-visible part (48 §3.3) and carries the removal target; a bare path is an artifact or optimistic file and has none. */
+type Item = { key: string; name: string; path: string | null; image: boolean; pdf: boolean; occurrence?: ContextAttachment }
+
+/** Authoritative occurrences replace `files` outright once present (each its own item, so a path attached twice stays two
+ * targets and a rematerialized copy never doubles an optimistic path); bare `files` are only our pre-persistence or artifact paths. */
+function items(files: string[] | undefined, occurrences: ContextAttachment[] | undefined): Item[] {
+  if (occurrences) {
+    return occurrences.map((o, i) => ({
+      key: `o${i}`,
+      name: o.name,
+      path: o.path,
+      image: o.mime.startsWith('image/') || (!!o.path && IMAGE.test(o.path)),
+      pdf: o.mime === 'application/pdf',
+      occurrence: o,
+    }))
+  }
+  return (files ?? []).map((path, i) => ({
+    key: `f${i}`,
+    name: path.slice(path.lastIndexOf('/') + 1),
+    path,
+    image: IMAGE.test(path),
+    pdf: /\.pdf$/i.test(path),
+  }))
+}
+
+/** Name chip; the name opens the viewer when there is a file behind it. `control` is the sibling remove button, never nested. */
+function Chip({ item, removed, onOpen, control }: { item: Item; removed: boolean; onOpen: () => void; control: ReactNode }) {
+  const viewable = !!item.path && (item.image || item.pdf)
+  return (
+    <span className={cn('flex min-w-0 items-center gap-1 rounded-lg bg-layer-2 pl-2 text-sm', removed ? 'text-fg-tertiary' : 'text-fg-secondary')}>
+      {removed && <span className="shrink-0 py-1 italic">Removed from context ·</span>}
+      <span className="truncate py-1">{item.name}</span>
+      {viewable ? (
+        <button type="button" className="min-h-11 shrink-0 px-2 text-xs underline underline-offset-2 hover:text-fg-primary" onClick={onOpen}>
+          {removed ? 'View original' : 'View'}
+        </button>
+      ) : (
+        <span className="pr-2" />
+      )}
+      {control}
+    </span>
+  )
+}
+
+/** Image thumbnail with the zoom button and the sibling corner `X`; a preview that fails to load falls back to the named chip, so the occurrence stays removable. */
+function Thumb({ item, onOpen, control, chipControl }: { item: Item; onOpen: () => void; control: ReactNode; chipControl: ReactNode }) {
+  const src = useFileUrl(item.path ?? '')
+  if (src === '') return <Chip item={item} removed={false} onOpen={onOpen} control={chipControl} />
+  return (
+    <div className="group relative">
+      <button type="button" className="cursor-zoom-in" aria-label={`Open image: ${item.name}`} onClick={onOpen}>
+        {src === null ? <div className="h-24 w-32 animate-pulse rounded-xl bg-layer-2" /> : <img src={src} alt="" className="max-h-64 rounded-xl" />}
+      </button>
+      {control}
+    </div>
+  )
+}
+
+/** The lightbox body: the image, or the PDF in a frame (WKWebView's own viewer; iOS draws page 1 — ponytail: reuse the artifact panel's pdf.js pages if that matters). */
+function Original({ item }: { item: Item }) {
+  const src = useFileUrl(item.path ?? '')
+  if (src === null) return <div className="h-64 w-96 animate-pulse rounded-xl bg-layer-2" />
+  if (src === '') return <div className="rounded-xl bg-layer-1 px-4 py-3 text-sm text-fg-secondary">Preview unavailable: {item.name}</div>
+  if (item.image) return <img src={src} alt={item.name} className="max-h-[85vh] w-auto rounded-xl" />
+  return <iframe src={src} title={item.name} className="h-[85vh] w-[90vw] rounded-xl border-0 bg-white" />
+}
+
+/** Thumbnails (`max-h-64`) of images with a lightbox; other files as name chips (PDFs viewable). `occurrences` are the
+ * stored, model-visible attachments and get a sibling corner `X` (image) or chip `X` (document) that opens the removal
+ * review on exactly that occurrence; removed ones collapse to a `Removed from context` chip whose `View original` is
+ * archive-only. `active` is the owning row's membership (false once folded before `tail_from`). `files` are plain paths
+ * for artifact/optimistic callers and get no controls. */
 export const Attachments = memo(function Attachments({
   files,
+  occurrences,
+  session,
+  active = true,
   className,
 }: {
-  files: string[]
+  files?: string[]
+  occurrences?: ContextAttachment[]
+  session?: string
+  active?: boolean
   className?: string
 }) {
-  const [open, setOpen] = useState<string | null>(null)
-  if (files.length === 0) return null
+  const [open, setOpen] = useState<Item | null>(null)
+  const list = items(files, occurrences)
+  if (list.length === 0) return null
+  const control = (item: Item, corner: boolean) =>
+    session && item.occurrence && !item.occurrence.removed ? (
+      <RemoveButton
+        session={session}
+        target={item.occurrence.target}
+        active={active}
+        icon={X}
+        label={`Remove ${item.image ? 'image' : 'document'} from context: ${item.name}`}
+        className={
+          corner
+            ? 'absolute top-0 right-0 rounded-xl text-fg-primary opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100 [&_svg]:size-6 [&_svg]:rounded-full [&_svg]:bg-layer-1/90 [&_svg]:p-1 [&_svg]:shadow-sm'
+            : 'shrink-0 text-fg-tertiary'
+        }
+      />
+    ) : null
   return (
     <div className={cn('flex flex-wrap gap-2', className)}>
-      {files.map((path) =>
-        IMAGE.test(path) ? (
-          <button key={path} type="button" className="cursor-zoom-in" onClick={() => setOpen(path)}>
-            <Img path={path} className="max-h-64 rounded-xl" />
-          </button>
+      {list.map((item) =>
+        !item.occurrence?.removed && item.image && item.path ? (
+          <Thumb key={item.key} item={item} onOpen={() => setOpen(item)} control={control(item, true)} chipControl={control(item, false)} />
         ) : (
-          <span key={path} className="rounded-lg bg-layer-2 px-2 py-1 text-sm text-fg-secondary">
-            {path.slice(path.lastIndexOf('/') + 1)}
-          </span>
+          <Chip key={item.key} item={item} removed={!!item.occurrence?.removed} onOpen={() => setOpen(item)} control={control(item, false)} />
         ),
       )}
       <Dialog open={open !== null} onOpenChange={(o) => !o && setOpen(null)}>
@@ -71,8 +163,13 @@ export const Attachments = memo(function Attachments({
           className="max-w-[90vw] border-0 bg-transparent p-0 shadow-none sm:max-w-[90vw]"
           showCloseButton={false}
         >
-          <DialogTitle className="sr-only">Image</DialogTitle>
-          {open && <Img path={open} className="max-h-[90vh] w-auto rounded-xl" />}
+          <DialogTitle className="sr-only">{open?.occurrence?.removed ? `Archived original, removed from context: ${open.name}` : (open?.name ?? 'Attachment')}</DialogTitle>
+          {open && <Original item={open} />}
+          {open?.occurrence && (
+            <div className="flex items-center justify-end gap-2 text-xs text-fg-secondary">
+              {open.occurrence.removed ? <span className="italic">Removed from context · archive only</span> : control(open, false)}
+            </div>
+          )}
         </DialogContent>
       </Dialog>
     </div>

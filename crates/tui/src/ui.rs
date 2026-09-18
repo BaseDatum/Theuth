@@ -5,15 +5,16 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use agent::CompactStyle;
+use agent::todo::Status as TodoStatus;
 use iocraft::prelude::*;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tools::{Decision, Risk};
 
 use crate::clip;
 use crate::model::{
-    AcpRow, CardKind, Command, Entry, Level, Menu, MenuKey, Model, Prompt, Row, Switch, TurnAction,
-    UiEvent, action_name, agent_row, artifact_row, artifact_size, describe, gate_name, k,
-    meta_line, progress_line, result_line, short, slash_matches, window,
+    AcpRow, CardKind, Command, Entry, Level, Menu, MenuKey, Model, Prompt, Row, Switch, TodoCard,
+    TurnAction, UiEvent, action_name, agent_row, artifact_row, artifact_size, describe, gate_name,
+    k, meta_line, progress_line, result_line, short, slash_matches, window,
 };
 
 /// Channels handed to the app through iocraft context (owned so the receiver
@@ -174,6 +175,15 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                         pick: false,
                     });
                 }
+                // A context edit or rewind landed (48 §5): the settled transcript.
+                if std::mem::take(&mut m.refresh_context)
+                    && let Some(session) = m.session
+                {
+                    let _ = commands.send(Command::Load {
+                        session,
+                        settled_only: true,
+                    });
+                }
             }
         }
     });
@@ -259,6 +269,27 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 }
                 return;
             }
+            // The todo card (47 §6.3): F2 opens and focuses / closes it; while
+            // focused it takes the scroll keys, esc, tab and ⏎, so the draft is
+            // neither sent nor cleared. Anything else hands the editor back:
+            // a typed char is inserted here, since `TextInput` saw this key
+            // unfocused. Modals above kept their answers; a modal menu keeps its keys.
+            let (w, h) = terminal_size;
+            if code == KeyCode::F(2) && !m.modal_menu() {
+                m.toggle_todos(&commands);
+                return;
+            }
+            if m.todo_focused() {
+                if m.todo_key(code, usize::from(w), usize::from(h)) {
+                    return;
+                }
+                if let KeyCode::Char(c) = code
+                    && !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                {
+                    insert_at_cursor(&mut m, &c.to_string());
+                    return;
+                }
+            }
             // Shift+Enter: the input inserts the newline itself.
             if code == KeyCode::Enter && modifiers.contains(KeyModifiers::SHIFT) {
                 return;
@@ -302,8 +333,10 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             }
             // Transcript scrolling. ↑/↓ are the editor's while it spans
             // lines; terminals without mouse capture send them for the wheel.
-            let (w, h) = terminal_size;
-            let view = view_rows(&m, h, &input.read());
+            let todo = m
+                .todo_card(usize::from(w), usize::from(h))
+                .map_or(0, |c| c.height());
+            let view = view_rows(&m, h, &input.read(), todo);
             let step = match code {
                 KeyCode::PageUp => Some(-(view as isize)),
                 KeyCode::PageDown => Some(view as isize),
@@ -376,7 +409,13 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     };
 
     // Only the slice that can reach the screen is built; see `Model::window`.
-    let view = view_rows(&m, height, &input.read());
+    let todo = m.todo_card(usize::from(width), usize::from(height));
+    let view = view_rows(
+        &m,
+        height,
+        &input.read(),
+        todo.as_ref().map_or(0, TodoCard::height),
+    );
     let win = m.window(view, usize::from(width));
     let entries = m.entries[win.from..win.to]
         .iter()
@@ -416,6 +455,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 }
             }))
             #(board(&m, width))
+            #(todo.map(todo_card))
             #(modal)
             #(m.prompt.as_ref().map(|p| {
                 element!(View(height: 1, padding_left: 1) {
@@ -657,7 +697,10 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
                         .chars()
                         .map(|c| if c.is_whitespace() { ' ' } else { c })
                         .collect();
-                    format!("{name} · {snippet}")
+                    // A hit in a message removed from context (48 §2.2) says so
+                    // after the snippet, so the ranges still line up.
+                    let tail = if h.context_removed { " · ⊘ removed from context" } else { "" };
+                    format!("{name} · {snippet}{tail}")
                 })
                 .collect();
             (
@@ -829,6 +872,7 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
             items.iter().map(artifact_row).collect(),
             *cursor,
         ),
+        Menu::Shake(s) => (s.title(), s.rows(), s.cursor),
         Menu::Knowledge { items, cursor } => (
             "knowledge  ⏎/h history of concept  H history of all  esc close".to_owned(),
             if items.is_empty() {
@@ -908,9 +952,10 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
 
 /// Rows the transcript pane gets: the terminal minus everything drawn
 /// around it (header, status, editor box, prompt line, activity row, queued
-/// chips, board). An estimate by the same rules the layout follows; a row or
-/// two off only moves the first scroll step, never the pinned bottom.
-fn view_rows(m: &Model, height: u16, input: &str) -> usize {
+/// chips, board, the todo card's `todo` rows). An estimate by the same
+/// rules the layout follows; a row or two off only moves the first scroll
+/// step, never the pinned bottom.
+fn view_rows(m: &Model, height: u16, input: &str, todo: usize) -> usize {
     let editor = 2 + input.lines().count().max(1);
     let activity = if m.waiting() { 2 } else { 0 };
     let queued: usize = m
@@ -923,7 +968,9 @@ fn view_rows(m: &Model, height: u16, input: &str) -> usize {
         n => 3 + n.min(BOARD_ROWS) + usize::from(n > BOARD_ROWS),
     };
     usize::from(height)
-        .saturating_sub(2 + editor + usize::from(m.prompt.is_some()) + activity + queued + board)
+        .saturating_sub(
+            2 + editor + usize::from(m.prompt.is_some()) + activity + queued + board + todo,
+        )
         .max(1)
 }
 
@@ -959,6 +1006,34 @@ fn board(m: &Model, width: u16) -> Option<AnyElement<'static>> {
         }
         .into_any(),
     )
+}
+
+/// The fixed todo card (47 §6.3): the trigger row, then while open the
+/// body rows in view and the overflow indicator. Session chrome beside the
+/// board, never a transcript entry; F2 gives it the keys.
+fn todo_card(c: TodoCard) -> AnyElement<'static> {
+    let border = if c.focused {
+        Color::Blue
+    } else {
+        Color::DarkGrey
+    };
+    let head = if c.focused { Color::White } else { Color::Grey };
+    let paint = |s: Option<TodoStatus>| match s {
+        Some(TodoStatus::InProgress) => Color::Cyan,
+        Some(TodoStatus::Pending) => Color::Grey,
+        Some(TodoStatus::Blocked) => Color::Yellow,
+        Some(TodoStatus::Done | TodoStatus::Dropped) | None => Color::DarkGrey,
+    };
+    element! {
+        View(border_style: BorderStyle::Round, border_color: border, flex_direction: FlexDirection::Column, padding_left: 1, padding_right: 1) {
+            Text(content: c.header, color: head, wrap: TextWrap::NoWrap)
+            #(c.rows.into_iter().map(|(status, text)| {
+                element!(Text(content: text, color: paint(status), wrap: TextWrap::NoWrap))
+            }))
+            #(c.overflow.map(|s| element!(Text(content: s, color: Color::DarkGrey, wrap: TextWrap::NoWrap))))
+        }
+    }
+    .into_any()
 }
 
 /// Split after `n` chars (not bytes): `("⠹ ", rest)`.
@@ -1002,6 +1077,7 @@ fn entry(e: &Entry, spinner: &str, skip: usize, width: u16) -> AnyElement<'stati
                 CardKind::Job | CardKind::Schedule => JOB,
                 CardKind::Link | CardKind::Node => LINK,
                 CardKind::Artifact => TOOL,
+                CardKind::Removed => PROMPT,
             };
             let v = text.view();
             let lines = v.lines().count();

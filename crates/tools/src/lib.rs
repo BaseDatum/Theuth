@@ -4,12 +4,15 @@
 //! hot-reloaded; `mcp/config.yaml` overrides a tool's [`Risk`] with a [`Gate`]).
 //!
 //! Public surface consumed by other plugins:
-//! - commands on the `"tools"` actor ([`ToolRegistry`]): [`ListTools`], [`Invoke`], [`ExternalApproval`], [`RegisterTool`], [`UnregisterTool`]
+//! - commands on the `"tools"` actor ([`ToolRegistry`]): [`ListTools`], [`Invoke`], [`ExternalApproval`], [`RegisterTool`], [`UnregisterTool`], [`RegisterActivity`], [`ActivityRecipient`]
 //! - commands on the `"approval"` actor ([`Approval`]): [`Resolve`]
 //! - commands on the `"ask"` actor ([`AskUser`]): [`AnswerAsk`]
 //! - commands on the `"mcp"` actor ([`Mcp`]): [`ListServers`], [`SetGate`], [`Restart`], [`AddServer`], [`RemoveServer`], [`AddRepo`], [`SyncMcp`], [`McpLogin`], [`McpLogout`]
 //! - commands on the `"jobs"` actor ([`Jobs`]): [`ListJobs`], [`CancelJob`]
 //! - events: [`ApprovalRequested`], [`ApprovalResolved`], [`AskRequested`], [`AskResolved`], [`JobEvent`]
+//! - activity protocol (47 §4, [`activity`]): the supervisor implements [`Admit`] and [`Settle`]
+//!   and registers an [`ActivitySink`]; producers hold an [`Activity`] guard for the real
+//!   lifetime of admitted work and read [`activity::current`] inside an invocation.
 
 use std::sync::Arc;
 
@@ -19,6 +22,7 @@ use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+pub mod activity;
 pub mod approval;
 pub mod ask;
 pub mod doc;
@@ -31,19 +35,25 @@ pub mod registry;
 pub mod secrets;
 pub mod shell;
 
+pub use activity::{
+    Activity, ActivitySink, Admission, Admit, Kind, Operation, OperationId, Rejected, Settle,
+    Tracked,
+};
 pub use approval::{Approval, ApprovalId, ApprovalRequested, ApprovalResolved, Decision, Resolve};
 pub use ask::{
     Answer, AnswerAsk, AskId, AskRequested, AskResolved, AskUser, Choice, PendingAsks, Question,
 };
-pub use jobs::{CancelJob, JOBS_ACTOR, JobEvent, JobExit, JobId, JobView, Jobs, ListJobs};
+pub use jobs::{
+    CancelJob, InstallActivity, JOBS_ACTOR, JobEvent, JobExit, JobId, JobView, Jobs, ListJobs,
+};
 pub use mcp::{
     AddRepo, AddServer, ListServers, Mcp, McpAuth, McpLogin, McpLogout, McpProgress, McpServer,
     McpToolInfo, Progress, RemoveServer, RepoInfo, Restart, SetGate, SyncMcp,
 };
 pub use registry::{
-    ApprovalsState, ExternalApproval, GetApprovals, HiddenTools, Invoke, ListPrompts, ListTools,
-    RegisterPrompt, RegisterTool, SetApprovals, SetHidden, SetParent, ToolRegistry,
-    UnregisterPrompt, UnregisterTool,
+    ActivityRecipient, ApprovalsState, ExternalApproval, GetApprovals, HiddenTools, Invoke,
+    ListPrompts, ListTools, RegisterActivity, RegisterPrompt, RegisterTool, SetApprovals,
+    SetHidden, SetParent, ToolRegistry, UnregisterPrompt, UnregisterTool,
 };
 
 /// Registry name of the [`ToolRegistry`] actor.

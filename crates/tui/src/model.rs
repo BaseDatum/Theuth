@@ -9,9 +9,11 @@ use std::sync::{Arc, LazyLock};
 use acp::EntryInfo;
 use acp::registry::RegistryAgent;
 use agent::search::SearchHit;
+use agent::todo::{Status as TodoStatus, TodoSnapshot, TodoSource};
 use agent::{
-    AgentEvent, AgentInfo, AgentState, AwsProfiles, CompactStyle, HistoryEntry, Loaded, ModelInfo,
-    ProviderInfo, QueuedInput, SessionSummary, SkillBody, SkillMeta, Usage,
+    AgentEvent, AgentInfo, AgentState, AwsProfiles, CompactStyle, ContextAttachment, ContextEntry,
+    ContextItem, ContextKind, ContextRemoval, ContextSnapshot, ContextTarget, HistoryEntry, Loaded,
+    ModelInfo, ProviderInfo, QueuedInput, SessionSummary, SkillBody, SkillMeta, Usage,
 };
 use iocraft::KeyCode;
 use knowledge::{Change, ChangeStatus, HarvestResult, History, Meta, Revision};
@@ -46,8 +48,25 @@ pub enum UiEvent {
     Search(String, Vec<SearchHit>),
     /// Reply to [`Command::ListAgents`]: the session's subtree with live state.
     Agents(Vec<AgentInfo>),
-    /// Reply to [`Command::Load`].
+    /// Reply to [`Command::Load`] with `settled_only: false`: shown as is.
     History(SessionId, Loaded),
+    /// Reply to [`Command::Load`] with `settled_only: true` (48 §5): shown
+    /// only when it is settled and not older than what is on screen.
+    Refreshed(SessionId, Loaded),
+    /// Reply to [`Command::ContextItems`]: the `/shake` inventory.
+    ContextItems {
+        /// Session the inventory describes.
+        session: SessionId,
+        /// The `/shake` argument that asked for it.
+        category: Option<ShakeCategory>,
+        /// The inventory.
+        snapshot: ContextSnapshot,
+    },
+    /// Reply to [`Command::RemoveContext`]: what was removed; the transcript reload follows.
+    ContextRemoved(SessionId, ContextRemoval),
+    /// Reply to [`Command::GetTodos`]: the session's latest committed plan
+    /// (47 §5.1); `None` when the read failed, which marks the plan stale.
+    Todos(SessionId, Option<TodoSnapshot>),
     /// Reply to [`Command::Fork`]: the new session, already loaded.
     Forked(SessionId, Loaded),
     /// Reply to [`Command::Send`]: the session the turn went to.
@@ -297,8 +316,32 @@ pub enum Command {
     Search(String),
     /// `list_agents`: the subtree under a session.
     ListAgents(SessionId),
-    /// `load_session`.
-    Load(SessionId),
+    /// `load_session`; `settled_only` (48 §5) reads through the idle actor
+    /// and replies with [`UiEvent::Refreshed`] instead of [`UiEvent::History`].
+    Load {
+        /// Session.
+        session: SessionId,
+        /// Refuse a busy session's half-persisted transcript.
+        settled_only: bool,
+    },
+    /// `context_items`: the `/shake` inventory (48 §3.2).
+    ContextItems {
+        /// Session.
+        session: SessionId,
+        /// The `/shake` argument, echoed in the reply.
+        category: Option<ShakeCategory>,
+    },
+    /// `get_todos`: the latest committed plan, readable mid-turn (47 §5.1).
+    GetTodos(SessionId),
+    /// `remove_context`, then `load_session(settled_only: true)`.
+    RemoveContext {
+        /// Session.
+        session: SessionId,
+        /// The inventory revision the review was made from.
+        expected_revision: String,
+        /// Exact targets, companions included.
+        targets: Vec<ContextTarget>,
+    },
     /// `resolve_approval`.
     Resolve {
         /// Request.
@@ -741,6 +784,9 @@ pub enum CardKind {
     Node,
     /// An artifact shown inline from `/artifacts` (`s`), or the `show` card header (35 §6.1).
     Artifact,
+    /// A message the user removed from the model's context (48 §2.2): the
+    /// original stays in the archive, shown only when expanded.
+    Removed,
 }
 
 impl CardKind {
@@ -754,6 +800,7 @@ impl CardKind {
             CardKind::Schedule => "◷",
             CardKind::Link | CardKind::Node => "⌁",
             CardKind::Artifact => "▣",
+            CardKind::Removed => "⊘",
         }
     }
 }
@@ -992,6 +1039,7 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "",
         "subagents of this session (picker: ⏎ opens one)",
     ),
+    ("/todos", "", "show or hide the plan card (F2)"),
     (
         "/jobs",
         "[kill <id>]",
@@ -1031,6 +1079,11 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "/compact",
         "[summary|cut|snap|style …]",
         "fold context; style sets the default",
+    ),
+    (
+        "/shake",
+        "[images|documents|messages|tools|summary]",
+        "remove images, messages or the summary from the model's context",
     ),
     ("/undo", "", "drop the last turn (redo restores)"),
     ("/redo", "", "restore the last undone turn"),
@@ -1315,6 +1368,274 @@ pub enum Menu {
         /// Open diff of the highlighted commit: first shown row, first shown column.
         revision: Option<(Revision, usize, usize)>,
     },
+    /// `/shake` picker and review (48 §2.4).
+    Shake(Box<Shake>),
+}
+
+/// The `/shake` argument: which kind of context item the picker lists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShakeCategory {
+    /// Image occurrences: user images, tool-response screenshots, snap-head PNGs.
+    Images,
+    /// Native PDF parts.
+    Documents,
+    /// Whole messages; nothing preselected.
+    Messages,
+    /// Tool exchanges with their protocol groups.
+    Tools,
+    /// The current epoch head.
+    Summary,
+}
+
+impl ShakeCategory {
+    /// The literal `/shake` argument; `None` for anything else (the caller prints usage).
+    pub fn parse(arg: &str) -> Option<Self> {
+        Some(match arg {
+            "images" => Self::Images,
+            "documents" => Self::Documents,
+            "messages" => Self::Messages,
+            "tools" => Self::Tools,
+            "summary" => Self::Summary,
+            _ => return None,
+        })
+    }
+
+    /// The inventory kind this category lists.
+    fn kind(self) -> ContextKind {
+        match self {
+            Self::Images => ContextKind::Image,
+            Self::Documents => ContextKind::Document,
+            Self::Messages => ContextKind::Message,
+            Self::Tools => ContextKind::Tool,
+            Self::Summary => ContextKind::Summary,
+        }
+    }
+
+    /// Plural noun for the zero-matches notice.
+    fn noun(self) -> &'static str {
+        match self {
+            Self::Images => "images",
+            Self::Documents => "documents",
+            Self::Messages => "messages",
+            Self::Tools => "tool exchanges",
+            Self::Summary => "summary",
+        }
+    }
+}
+
+/// Which `/shake` screen is up.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShakeStage {
+    /// Ticking inventory rows.
+    Pick,
+    /// The exact removal set, awaiting ⏎.
+    Review,
+}
+
+/// `/shake` state (48 §2.4): the server's whole active inventory, what the
+/// picker lists and what is ticked. Targets come from the inventory only;
+/// the transcript on screen is never a deletion handle.
+#[derive(Debug)]
+pub struct Shake {
+    /// Session the inventory came from.
+    pub session: SessionId,
+    /// Inventory revision; the removal is refused if the session moved on.
+    pub revision: String,
+    /// The inventory, in server order.
+    pub items: Vec<ContextItem>,
+    /// Indices into `items` the picker lists: the category's kind, or all.
+    pub shown: Vec<usize>,
+    /// Ticked indices into `items`.
+    pub selected: BTreeSet<usize>,
+    /// Highlighted row of `shown` (pick) or `review` (review).
+    pub cursor: usize,
+    /// Which screen is up.
+    pub stage: ShakeStage,
+    /// The removal set, built when review opens.
+    pub review: Vec<ReviewRow>,
+}
+
+/// One line of the `/shake` review: an exact target and why it is there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReviewRow {
+    /// What `remove_context` gets.
+    pub target: ContextTarget,
+    /// Inventory kind (`Message` for a companion the inventory does not list).
+    pub kind: ContextKind,
+    /// The inventory label.
+    pub label: String,
+    /// Not ticked: a protocol companion of a ticked message (48 §4.2).
+    pub companion: bool,
+}
+
+/// Lowercase kind for picker rows and the print-mode inventory.
+pub fn kind_name(k: ContextKind) -> &'static str {
+    match k {
+        ContextKind::Message => "message",
+        ContextKind::Image => "image",
+        ContextKind::Document => "document",
+        ContextKind::Tool => "tool",
+        ContextKind::Summary => "summary",
+    }
+}
+
+/// The message or head a binary target sits in.
+fn owner_target(t: ContextTarget) -> Option<ContextTarget> {
+    match t {
+        ContextTarget::Binary { owner, .. } => Some(match owner {
+            agent::ContextOwner::Message { seq } => ContextTarget::Message { seq },
+            agent::ContextOwner::Head { epoch } => ContextTarget::Head { epoch },
+        }),
+        _ => None,
+    }
+}
+
+/// The exact removal set (48 §3.2): the ticked items plus their
+/// `remove_with` companions, followed to closure, each target once, in
+/// inventory order. A whole message or head subsumes its attachments, so a
+/// ticked image inside a ticked message is not listed twice.
+pub fn expand(items: &[ContextItem], selected: &BTreeSet<usize>) -> Vec<ReviewRow> {
+    let picked: BTreeSet<ContextTarget> = selected
+        .iter()
+        .filter_map(|&i| items.get(i))
+        .map(|it| it.target)
+        .collect();
+    let mut companions = BTreeSet::new();
+    let mut queue: Vec<ContextTarget> = picked.iter().copied().collect();
+    while let Some(t) = queue.pop() {
+        for &c in items
+            .iter()
+            .filter(|it| it.target == t)
+            .flat_map(|it| &it.remove_with)
+        {
+            if !picked.contains(&c) && companions.insert(c) {
+                queue.push(c);
+            }
+        }
+    }
+    let subsumed = |t: ContextTarget| {
+        owner_target(t).is_some_and(|o| picked.contains(&o) || companions.contains(&o))
+    };
+    let mut rows: Vec<ReviewRow> = items
+        .iter()
+        .filter(|it| {
+            (picked.contains(&it.target) || companions.contains(&it.target)) && !subsumed(it.target)
+        })
+        .map(|it| ReviewRow {
+            target: it.target,
+            kind: it.kind,
+            label: it.label.clone(),
+            companion: !picked.contains(&it.target),
+        })
+        .collect();
+    // A companion the inventory does not list (the server names a row it
+    // hid): still part of the set, labelled by its coordinate.
+    for &c in &companions {
+        if !subsumed(c) && !rows.iter().any(|r| r.target == c) {
+            rows.push(ReviewRow {
+                target: c,
+                kind: ContextKind::Message,
+                label: match c {
+                    ContextTarget::Message { seq } => format!("message #{seq}"),
+                    ContextTarget::Head { epoch } => format!("summary (epoch {epoch})"),
+                    ContextTarget::Binary { part, .. } => format!("attachment part {part}"),
+                },
+                companion: true,
+            });
+        }
+    }
+    rows
+}
+
+impl Shake {
+    /// Tick or untick the highlighted picker row.
+    fn toggle(&mut self) {
+        if let Some(&i) = self.shown.get(self.cursor)
+            && !self.selected.remove(&i)
+        {
+            self.selected.insert(i);
+        }
+    }
+
+    /// Build the removal set and show it.
+    fn open_review(&mut self) {
+        self.review = expand(&self.items, &self.selected);
+        self.stage = ShakeStage::Review;
+        self.cursor = 0;
+    }
+
+    /// `(messages, attachments, heads, companions)` of the review.
+    fn counts(&self) -> (usize, usize, usize, usize) {
+        let mut c = (0, 0, 0, 0);
+        for r in &self.review {
+            match r.target {
+                ContextTarget::Message { .. } => c.0 += 1,
+                ContextTarget::Binary { .. } => c.1 += 1,
+                ContextTarget::Head { .. } => c.2 += 1,
+            }
+            c.3 += usize::from(r.companion);
+        }
+        c
+    }
+
+    /// Picker rows: `[x] image     shot.png · +2 messages` (the companions a
+    /// tick pulls in); review rows: the set with companions and summary
+    /// warnings spelled out.
+    pub fn rows(&self) -> Vec<String> {
+        match self.stage {
+            ShakeStage::Pick => self
+                .shown
+                .iter()
+                .map(|&i| {
+                    let it = &self.items[i];
+                    let more = match it.remove_with.len() {
+                        0 => String::new(),
+                        n => format!(" · +{n} message(s)"),
+                    };
+                    format!(
+                        "[{}] {:<8} {}{more}",
+                        if self.selected.contains(&i) { "x" } else { " " },
+                        kind_name(it.kind),
+                        it.label
+                    )
+                })
+                .collect(),
+            ShakeStage::Review => self
+                .review
+                .iter()
+                .map(|r| {
+                    let note = match r.target {
+                        ContextTarget::Head { .. } => " · summarized earlier context will be lost",
+                        ContextTarget::Binary {
+                            owner: agent::ContextOwner::Head { .. },
+                            ..
+                        } => {
+                            " · summary image: removing this loses part of the earlier conversation"
+                        }
+                        _ if r.companion => " · protocol companion",
+                        _ => "",
+                    };
+                    format!("{:<8} {}{note}", kind_name(r.kind), r.label)
+                })
+                .collect(),
+        }
+    }
+
+    /// Menu title: keys and, in review, the counts and what removal means.
+    pub fn title(&self) -> String {
+        match self.stage {
+            ShakeStage::Pick => format!(
+                "shake  ↑↓ move  space tick  ⏎ review  esc close   {} ticked",
+                self.selected.len()
+            ),
+            ShakeStage::Review => {
+                let (m, a, h, c) = self.counts();
+                format!(
+                    "remove from context: {m} message(s), {a} attachment(s), {h} head(s), {c} companion(s)  ⏎ remove  esc back   originals stay in history; later replies stay; /undo does not restore"
+                )
+            }
+        }
+    }
 }
 
 /// A `/link pair` or `/nodes` invite card that is still counting down.
@@ -1390,6 +1711,12 @@ fn set_card(entries: &mut [Entry], kind: CardKind, body: &str) {
 /// Unix ms now.
 fn now_ms() -> u64 {
     u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0)
+}
+
+/// A wire context revision (decimal string, 48 §3.1) as a number; `0` when
+/// missing, so an unloaded transcript is older than any loaded one.
+fn revision(s: &str) -> u64 {
+    s.parse().unwrap_or(0)
 }
 
 /// What a [`Menu::Turns`] pick does.
@@ -1780,6 +2107,72 @@ pub struct Window {
     pub top: usize,
 }
 
+/// Body rows the open todo card shows at most (47 §6.3).
+pub const TODO_ROWS: usize = 6;
+/// Columns of a todo row's status column: `[in progress] `.
+const TODO_LABEL: usize = 14;
+
+/// What the fixed todo card draws (47 §6.3): the trigger row, and while
+/// open the body rows in view with an overflow indicator.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TodoCard {
+    /// `> Todos · 2/5 done · 1 blocked   Now: …  [F2]`; `v` while open.
+    pub header: String,
+    /// Wrapped body rows in view (`Model::todo_scroll` applied); empty collapsed.
+    /// The status colours an item's rows; `None` is a blocker's reason.
+    pub rows: Vec<(Option<TodoStatus>, String)>,
+    /// `↕ 3–8 / 14 · ↑↓ PgUp PgDn` when the body does not fit; `None` otherwise.
+    pub overflow: Option<String>,
+    /// The card has the keys.
+    pub focused: bool,
+}
+
+impl TodoCard {
+    /// Terminal rows the card takes: border, trigger, body, overflow row.
+    pub fn height(&self) -> usize {
+        3 + self.rows.len() + usize::from(self.overflow.is_some())
+    }
+}
+
+/// The bracketed label of a todo row.
+pub fn status_label(s: TodoStatus) -> &'static str {
+    match s {
+        TodoStatus::Pending => "pending",
+        TodoStatus::InProgress => "in progress",
+        TodoStatus::Done => "done",
+        TodoStatus::Dropped => "dropped",
+        TodoStatus::Blocked => "blocked",
+    }
+}
+
+/// Greedy word wrap at `width` chars (`0` = one line); a word longer than
+/// the width is split. Never empty: an empty text is one empty row.
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut cur = String::new();
+    let mut len = 0;
+    for word in text.split_whitespace() {
+        let n = word.chars().count();
+        if width > 0 && len > 0 && len + 1 + n > width {
+            lines.push(std::mem::take(&mut cur));
+            len = 0;
+        } else if len > 0 {
+            cur.push(' ');
+            len += 1;
+        }
+        for c in word.chars() {
+            if width > 0 && len >= width {
+                lines.push(std::mem::take(&mut cur));
+                len = 0;
+            }
+            cur.push(c);
+            len += 1;
+        }
+    }
+    lines.push(cur);
+    lines
+}
+
 /// UI state.
 #[derive(Debug, Default)]
 pub struct Model {
@@ -1917,6 +2310,35 @@ pub struct Model {
     pub refresh_secrets: bool,
     /// Pending `secret_request`s for the current session or its subtree, oldest first; the front is shown.
     pub secret_requests: VecDeque<SecretRequest>,
+    /// Context revision of the shown transcript (`Loaded.context_revision`,
+    /// 48 §3.1); empty until loaded. A `ContextChanged` with a newer one
+    /// sets `refresh_context`; an older settled reload is dropped.
+    pub context_revision: String,
+    /// The shown session's context takes `/shake` (`Loaded.context_editable`).
+    pub context_editable: bool,
+    /// Why it does not, when it does not (`Loaded.context_reason`).
+    pub context_reason: Option<String>,
+    /// The transcript is behind a context edit or rewind and a settled
+    /// reload was refused (the session was busy): retry at the next
+    /// `ContextChanged { reason: "settled" }`.
+    pub context_stale: bool,
+    /// A context edit or rewind landed (here or in another client): the
+    /// event loop re-asks `load_session(settled_only: true)`.
+    pub refresh_context: bool,
+    /// Latest plan of the shown session (`Loaded.todos`, `TodoChanged`,
+    /// `get_todos`; 47 §5.1). `None` until a load carried one.
+    pub todos: Option<TodoSnapshot>,
+    /// The plan on screen may be behind: the last load carried no snapshot.
+    /// Labelled as such; never drawn as an empty plan (47 §5.4).
+    pub todos_stale: bool,
+    /// Disclosure choice per session, kept across switches within this
+    /// client and across incoming snapshots (47 §6.1). Absent = collapsed.
+    todo_open: HashMap<SessionId, bool>,
+    /// The todo card has the keys (F2): ↑/↓/PgUp/PgDn scroll it, esc
+    /// collapses, tab hands the editor back. Modals still win; see [`Model::todo_focused`].
+    pub todo_focus: bool,
+    /// First wrapped body row shown while expanded.
+    pub todo_scroll: usize,
 }
 
 impl Model {
@@ -1940,6 +2362,7 @@ impl Model {
             link: self.link.take(),
             nodes: self.nodes.take(),
             update: self.update.take(),
+            todo_open: std::mem::take(&mut self.todo_open),
             ..Self::new(std::mem::take(&mut self.model_id), self.approvals_global)
         };
     }
@@ -1976,6 +2399,93 @@ impl Model {
         self.session_name = loaded.name;
         self.session_parent = loaded.parent;
         self.loaded_skills = loaded.skills;
+        self.context_revision = loaded.context_revision;
+        self.context_editable = loaded.context_editable;
+        self.context_reason = loaded.context_reason;
+        self.context_stale = false;
+        if let Some(n) = loaded.context_estimate {
+            self.context = n;
+        }
+        self.loaded_todos(loaded.todos);
+    }
+
+    /// `Loaded.todos` (47 §5.4): a snapshot applies by version; none means the
+    /// read failed — the plan on screen stays, labelled stale, never emptied.
+    fn loaded_todos(&mut self, todos: Option<TodoSnapshot>) {
+        match todos {
+            Some(s) => self.set_todos(s),
+            None => self.todos_stale = true,
+        }
+    }
+
+    /// Install a snapshot of the shown session: only a higher version
+    /// replaces; an equal one is idempotent and, being authoritative, clears
+    /// the stale mark; an older one (a slow `load_session` racing a
+    /// `TodoChanged`) is dropped (47 §5.4). A newer *empty* plan is an
+    /// explicit clear: the card hides whatever the disclosure choice was, and
+    /// gives the editor back if it had the keys (47 §6.1).
+    pub fn set_todos(&mut self, s: TodoSnapshot) {
+        match &self.todos {
+            Some(cur) if s.version < cur.version => return,
+            Some(cur) if s.version == cur.version => {}
+            _ => {
+                if s.items.is_empty() {
+                    if let Some(id) = self.session {
+                        self.todo_open.insert(id, false);
+                    }
+                    self.todo_focus = false;
+                }
+                self.todos = Some(s);
+            }
+        }
+        self.todos_stale = false;
+    }
+
+    /// A settled reload (`UiEvent::Refreshed`, 48 §5): shown only when the
+    /// actor read it idle, nothing started streaming here meanwhile, and its
+    /// revision is not behind the one on screen. Otherwise the transcript
+    /// stays as it is, marked stale until the next settled notification;
+    /// a pending notice (our own removal) lands anyway.
+    fn refresh(&mut self, mut loaded: Loaded) {
+        let (theirs, ours) = (
+            revision(&loaded.context_revision),
+            revision(&self.context_revision),
+        );
+        // Our own removal reloads once through `RemoveContext` and once more
+        // when its `ContextChanged` arrives first: the second is the same picture.
+        if loaded.settled
+            && theirs == ours
+            && ours != 0
+            && !self.context_stale
+            && self.notice.is_none()
+        {
+            self.loaded_todos(loaded.todos.take());
+            return;
+        }
+        if !loaded.settled || self.streaming || theirs < ours {
+            self.context_stale = true;
+            self.context_editable = false;
+            if let Some(n) = self.notice.take() {
+                self.entries.push(Entry::Info(n));
+            }
+            if !loaded.settled
+                && let Some(reason) = loaded.context_reason
+            {
+                self.entries.push(Entry::Info(format!(
+                    "{reason} — transcript refreshes when it settles"
+                )));
+            }
+            self.loaded_todos(loaded.todos.take());
+            return;
+        }
+        // A picker over the old inventory would be refused as stale anyway.
+        if matches!(self.menu, Some(Menu::Shake(_))) {
+            self.menu = None;
+            self.entries.push(Entry::Info(
+                "context changed — /shake again to review".into(),
+            ));
+        }
+        self.load(loaded);
     }
 
     /// Markdown options for assistant text: the terminal width less the
@@ -2006,9 +2516,9 @@ impl Model {
         self.secret_requests.front()
     }
 
-    /// The input box takes keys: no approval prompt and no modal menu
-    /// (the slash popup rides on the box). A shown `secret_request` types
-    /// into the box (masked).
+    /// The input box takes keys: no approval prompt, no modal menu (the
+    /// slash popup rides on the box) and the todo card not focused (F2). A
+    /// shown `secret_request` types into the box (masked).
     pub fn input_focused(&self) -> bool {
         if self.approval().is_some() {
             return false;
@@ -2016,29 +2526,242 @@ impl Model {
         if self.secret_request().is_some() {
             return true;
         }
-        self.ask().is_none_or(|a| a.typing)
-            && !matches!(
-                self.menu,
-                Some(
-                    Menu::Models { .. }
-                        | Menu::Efforts { .. }
-                        | Menu::AwsProfiles { .. }
-                        | Menu::Sessions { .. }
-                        | Menu::Search { .. }
-                        | Menu::Agents { .. }
-                        | Menu::Mcp { .. }
-                        | Menu::Acp { .. }
-                        | Menu::Skills { .. }
-                        | Menu::Logins { .. }
-                        | Menu::Turns { .. }
-                        | Menu::Link { .. }
-                        | Menu::Nodes { .. }
-                        | Menu::Secrets { .. }
-                        | Menu::Artifacts { .. }
-                        | Menu::Knowledge { .. }
-                        | Menu::KnowledgeHistory { .. }
-                )
-            )
+        if let Some(a) = self.ask() {
+            return a.typing;
+        }
+        !self.todo_focus && !self.modal_menu()
+    }
+
+    /// A menu that takes the keys is open: every menu but the slash popup.
+    pub fn modal_menu(&self) -> bool {
+        !matches!(self.menu, None | Some(Menu::Slash { .. }))
+    }
+
+    /// The todo card has the keys: F2 focused it and nothing modal is up.
+    /// Approvals, secret entry, `ask_user` and menus keep their own keys;
+    /// their answers are never consumed here (47 §6.3).
+    pub fn todo_focused(&self) -> bool {
+        self.todo_focus
+            && self.approval().is_none()
+            && self.secret_request().is_none()
+            && self.ask().is_none()
+            && !self.modal_menu()
+    }
+
+    /// The shown session's disclosure choice; collapsed until F2 (47 §6.1).
+    pub fn todo_expanded(&self) -> bool {
+        self.session
+            .is_some_and(|s| self.todo_open.get(&s).copied().unwrap_or(false))
+    }
+
+    /// F2 and `/todos`: expand and focus a collapsed card, collapse an open
+    /// one. The editor's draft is untouched. Opening re-reads `get_todos`
+    /// so a plan written while this client was elsewhere shows (47 §6.3).
+    pub fn toggle_todos(&mut self, tx: &UnboundedSender<Command>) {
+        let Some(session) = self.session else {
+            self.entries.push(Entry::Info("no session".into()));
+            return;
+        };
+        let open = !self.todo_expanded();
+        self.todo_open.insert(session, open);
+        self.todo_focus = open;
+        if open {
+            send(tx, Command::GetTodos(session));
+        }
+    }
+
+    /// A key while the card is focused ([`Model::todo_focused`]) at a
+    /// `width`×`height` terminal: ↑/↓ and PgUp/PgDn scroll the body, esc
+    /// collapses and hands the editor back (no turn is cancelled), tab
+    /// hands it back with the card left open, ⏎ does nothing (the draft is
+    /// never submitted from here). `true` when consumed; any other key
+    /// hands the editor back and is *not* consumed, so typing lands in the
+    /// draft instead of vanishing.
+    pub fn todo_key(&mut self, code: KeyCode, width: usize, height: usize) -> bool {
+        let total = self.todo_lines(width).len();
+        let rows = total.min(self.todo_body_rows(height));
+        let page = rows.max(1);
+        // A resize may have left the scroll past the end; step from what is drawn.
+        let at = self.todo_scroll.min(total - rows);
+        self.todo_scroll = match code {
+            KeyCode::Up => at.saturating_sub(1),
+            KeyCode::Down => at + 1,
+            KeyCode::PageUp => at.saturating_sub(page),
+            KeyCode::PageDown => at + page,
+            KeyCode::Esc => {
+                if let Some(s) = self.session {
+                    self.todo_open.insert(s, false);
+                }
+                self.todo_focus = false;
+                at
+            }
+            KeyCode::Tab => {
+                self.todo_focus = false;
+                at
+            }
+            KeyCode::Enter => at,
+            _ => {
+                self.todo_focus = false;
+                return false;
+            }
+        }
+        .min(total - rows);
+        true
+    }
+
+    /// The card is drawn: the plan has items, is stale or unavailable, or
+    /// the user opened it. Only an authoritative empty plan hides it (47 §6.1).
+    pub fn todo_shown(&self) -> bool {
+        self.todo_expanded()
+            || self.todos_stale
+            || self.todos.as_ref().is_some_and(|t| !t.items.is_empty())
+    }
+
+    /// Body rows the open card may use: [`TODO_ROWS`], fewer on a short
+    /// terminal so the trigger row, editor and some transcript stay; `0`
+    /// leaves the trigger alone (47 §6.3).
+    pub fn todo_body_rows(&self, height: usize) -> usize {
+        TODO_ROWS.min(height.saturating_sub(14))
+    }
+
+    /// The open body at `width` columns (`0` = unbounded): `[status] text`
+    /// per item, wrapped under the text column, a blocker's reason on its
+    /// own rows. Nothing is cut; scrolling reaches every row (47 §6.1).
+    pub fn todo_lines(&self, width: usize) -> Vec<(Option<TodoStatus>, String)> {
+        let Some(t) = &self.todos else {
+            return Vec::new();
+        };
+        // Border 2 + padding 2 + one spare column (see `menu`), then the label column.
+        let text_width = match width {
+            0 => 0,
+            w => w.saturating_sub(5 + TODO_LABEL).max(10),
+        };
+        let pad = " ".repeat(TODO_LABEL);
+        let mut out = Vec::new();
+        for item in &t.items {
+            let label = format!(
+                "{:<TODO_LABEL$}",
+                format!("[{}]", status_label(item.status))
+            );
+            for (i, line) in wrap(&item.text, text_width).into_iter().enumerate() {
+                let lead = if i == 0 { &label } else { &pad };
+                out.push((Some(item.status), format!("{lead}{line}")));
+            }
+            if let Some(reason) = &item.reason {
+                for line in wrap(reason, text_width) {
+                    out.push((None, format!("{pad}{line}")));
+                }
+            }
+        }
+        out
+    }
+
+    /// What the fixed todo card draws this frame; `None` while hidden.
+    pub fn todo_card(&self, width: usize, height: usize) -> Option<TodoCard> {
+        if !self.todo_shown() {
+            return None;
+        }
+        let expanded = self.todo_expanded();
+        let focused = self.todo_focused();
+        let (glyph, hint) = if expanded { ("v", "") } else { (">", "  [F2]") };
+        let external = match &self.todos {
+            Some(t) if t.source == TodoSource::Acp => " (external plan)",
+            _ => "",
+        };
+        let mut header = format!("{glyph} Todos{external} · {}", self.todo_summary());
+        if !expanded {
+            if let Some(now) = self.todo_now() {
+                // Fit the row: border, padding and a spare column (see `menu`).
+                let room = match width {
+                    0 => usize::MAX,
+                    w => w
+                        .saturating_sub(5 + header.chars().count() + hint.len() + 3)
+                        .max(8),
+                };
+                let now: String = if now.chars().count() > room {
+                    now.chars().take(room - 1).chain(['…']).collect()
+                } else {
+                    now
+                };
+                header.push_str("   ");
+                header.push_str(&now);
+            }
+            header.push_str(hint);
+            return Some(TodoCard {
+                header,
+                rows: Vec::new(),
+                overflow: None,
+                focused,
+            });
+        }
+        let lines = self.todo_lines(width);
+        let total = lines.len();
+        let rows = total.min(self.todo_body_rows(height));
+        let from = self.todo_scroll.min(total - rows);
+        let overflow = (total > rows).then(|| {
+            if rows == 0 {
+                format!("{total} rows need a taller terminal")
+            } else {
+                format!("↕ {}–{} / {total} · ↑↓ PgUp PgDn", from + 1, from + rows)
+            }
+        });
+        Some(TodoCard {
+            header,
+            rows: lines.into_iter().skip(from).take(rows).collect(),
+            overflow,
+            focused,
+        })
+    }
+
+    /// `2/5 done · 1 blocked`; a settled list with drops reads `3 done, 1
+    /// dropped`, never `100%`; `none` for an empty plan, `unavailable`
+    /// without one; ` · stale` while the shown plan may be behind (47 §6.1).
+    fn todo_summary(&self) -> String {
+        let Some(t) = &self.todos else {
+            return "unavailable".into();
+        };
+        let count = |s: TodoStatus| t.items.iter().filter(|i| i.status == s).count();
+        let (done, dropped, blocked) = (
+            count(TodoStatus::Done),
+            count(TodoStatus::Dropped),
+            count(TodoStatus::Blocked),
+        );
+        let open = t.items.iter().any(|i| i.status.is_actionable());
+        let mut s = match (t.items.len(), open, blocked, dropped) {
+            (0, ..) => "none".to_owned(),
+            (_, false, 0, 1..) => format!("{done} done, {dropped} dropped"),
+            (n, ..) => format!("{done}/{n} done"),
+        };
+        if dropped > 0 && open {
+            s.push_str(&format!(" · {dropped} dropped"));
+        }
+        if blocked > 0 {
+            s.push_str(&format!(" · {blocked} blocked"));
+        }
+        if self.todos_stale {
+            s.push_str(" · stale");
+        }
+        s
+    }
+
+    /// The collapsed row's task: `Now: <in progress>`, else the first
+    /// pending item, else `Waiting: N blocked` for a blocked-only list;
+    /// nothing when settled (47 §6.1).
+    fn todo_now(&self) -> Option<String> {
+        let t = self.todos.as_ref()?;
+        let pick = |s: TodoStatus| t.items.iter().find(|i| i.status == s);
+        if let Some(i) = pick(TodoStatus::InProgress).or_else(|| pick(TodoStatus::Pending)) {
+            return Some(format!("Now: {}", i.text));
+        }
+        match t
+            .items
+            .iter()
+            .filter(|i| i.status == TodoStatus::Blocked)
+            .count()
+        {
+            0 => None,
+            n => Some(format!("Waiting: {n} blocked")),
+        }
     }
 
     /// The slice of the transcript worth building this frame. Every frame
@@ -2579,6 +3302,28 @@ impl Model {
             UiEvent::History(id, loaded) => {
                 if self.session == Some(id) {
                     self.load(loaded);
+                }
+            }
+            UiEvent::Refreshed(id, loaded) => {
+                if self.session == Some(id) {
+                    self.refresh(loaded);
+                }
+            }
+            UiEvent::ContextItems {
+                session,
+                category,
+                snapshot,
+            } => self.open_shake(session, category, snapshot),
+            // A failed read leaves the plan on screen, labelled stale (47 §5.4).
+            UiEvent::Todos(id, snapshot) => {
+                if self.session == Some(id) {
+                    self.loaded_todos(snapshot);
+                }
+            }
+            // The transcript reload that follows pushes the notice (`Refreshed`).
+            UiEvent::ContextRemoved(id, r) => {
+                if self.session == Some(id) {
+                    self.notice = Some(removal_line(&r));
                 }
             }
             UiEvent::Forked(id, loaded) => {
@@ -3167,6 +3912,18 @@ impl Model {
             self.session = ev.session();
             self.awaiting_session = false;
         }
+        // The plan is session chrome, not a transcript row (47 §6.1): it
+        // never finishes a streaming tail below. Children's plans show when
+        // opened; a hidden session refreshes from `Loaded.todos` then.
+        let ev = match ev {
+            AgentEvent::TodoChanged { session, snapshot } => {
+                if self.session == Some(session) {
+                    self.set_todos(snapshot);
+                }
+                return;
+            }
+            ev => ev,
+        };
         // Roster bookkeeping for the subtree, independent of what is shown.
         match &ev {
             AgentEvent::SubagentSpawned {
@@ -3235,6 +3992,21 @@ impl Model {
             // The sidebar of another frontend; nothing on screen changes and
             // a mid-stream arrival must not finish the streaming tail below.
             AgentEvent::TitleChanged { .. } | AgentEvent::SessionDeleted { .. } => return,
+            // Another client (or our own removal, whose reload is already on
+            // its way) changed what the model sees. An edit or rewind reloads
+            // the transcript once settled; the settled handback after a turn
+            // only clears a stale mark, the live stream already showed it.
+            AgentEvent::ContextChanged {
+                session,
+                revision: rev,
+                reason,
+            } => {
+                if self.session == Some(*session) {
+                    let newer = revision(rev) > revision(&self.context_revision);
+                    self.refresh_context |= (newer && reason != "settled") || self.context_stale;
+                }
+                return;
+            }
             AgentEvent::TurnStarted { session, .. } if self.session == Some(*session) => {
                 self.streaming = true;
             }
@@ -3440,7 +4212,9 @@ impl Model {
             | AgentEvent::MessageDelivered { .. }
             | AgentEvent::InputWithdrawn { .. }
             | AgentEvent::TitleChanged { .. }
-            | AgentEvent::SessionDeleted { .. } => {}
+            | AgentEvent::SessionDeleted { .. }
+            | AgentEvent::ContextChanged { .. }
+            | AgentEvent::TodoChanged { .. } => {}
             AgentEvent::Harvesting { .. } => self.harvesting = true,
             AgentEvent::Harvested { added, updated, .. } => {
                 self.harvesting = false;
@@ -3632,6 +4406,7 @@ impl Model {
                 .entries
                 .push(Entry::Error("usage: /logout <name>".into())),
             "/logout" => send(tx, Command::Logout(arg.to_owned())),
+            "/todos" => self.toggle_todos(tx),
             "/agents" => match self.session {
                 Some(session) => {
                     self.agents_picker_pending = true;
@@ -3687,6 +4462,7 @@ impl Model {
             },
             "/computer" => send(tx, Command::ComputerStatus),
             "/compact" => self.compact_cmd(arg, tx),
+            "/shake" => self.shake_cmd(arg, tx),
             "/clear" => match self.session {
                 Some(session) => send(
                     tx,
@@ -3778,7 +4554,13 @@ impl Model {
         self.approvals = approvals;
         self.asks = asks;
         self.session = Some(id);
-        send(tx, Command::Load(id));
+        send(
+            tx,
+            Command::Load {
+                session: id,
+                settled_only: false,
+            },
+        );
         send(tx, Command::ListAgents(id));
     }
 
@@ -4075,7 +4857,12 @@ impl Model {
                 + 1;
             format!("  ·  editing #{n} — ⏎ sends, esc cancels")
         });
-        format!("{session}  {state}{usage}{agents}{queued}{jobs}{skills}{editing}{scrolled}")
+        let todos = if self.todo_focused() {
+            "  ·  todos: ↑↓ scroll · esc closes · tab editor"
+        } else {
+            ""
+        };
+        format!("{session}  {state}{usage}{agents}{queued}{jobs}{skills}{editing}{scrolled}{todos}")
     }
 
     /// Line above the input: `model  ·  high  ·  ctx 12.3k / 200k (6%)  ·  cache 94%`
@@ -4762,6 +5549,121 @@ impl Model {
         (title, rows, *cursor)
     }
 
+    /// `/shake [images|documents|messages|tools|summary]` (48 §2.1): ask the
+    /// server for the whole active inventory; the reply opens the picker.
+    /// An unknown word is usage, never chat input or a skill.
+    fn shake_cmd(&mut self, arg: &str, tx: &UnboundedSender<Command>) {
+        let category = match arg {
+            "" => None,
+            a => match ShakeCategory::parse(a) {
+                Some(c) => Some(c),
+                None => {
+                    self.entries.push(Entry::Error(SHAKE_USAGE.into()));
+                    return;
+                }
+            },
+        };
+        match self.session {
+            Some(session) => send(tx, Command::ContextItems { session, category }),
+            None => self.entries.push(Entry::Info("no session".into())),
+        }
+    }
+
+    /// Open the `/shake` picker over `snapshot`: every item for the bare
+    /// command and `messages` with nothing ticked; a category's items ticked
+    /// and straight into review otherwise. A refusal (busy, external
+    /// harness) and an empty match are one notice each; nothing is written.
+    fn open_shake(
+        &mut self,
+        session: SessionId,
+        category: Option<ShakeCategory>,
+        snapshot: ContextSnapshot,
+    ) {
+        if self.session != Some(session) {
+            return;
+        }
+        self.context_revision = snapshot.revision.clone();
+        self.context_editable = snapshot.editable;
+        if !snapshot.editable {
+            self.context_reason = snapshot.reason.clone();
+            self.entries.push(Entry::Info(format!(
+                "shake: {}",
+                snapshot
+                    .reason
+                    .as_deref()
+                    .unwrap_or("context is not editable")
+            )));
+            return;
+        }
+        let shown: Vec<usize> = (0..snapshot.items.len())
+            .filter(|&i| category.is_none_or(|c| snapshot.items[i].kind == c.kind()))
+            .collect();
+        if shown.is_empty() {
+            self.entries.push(Entry::Info(match category {
+                Some(c) => format!("no {} in current context", c.noun()),
+                None => "nothing in current context".into(),
+            }));
+            return;
+        }
+        let selected: BTreeSet<usize> = match category {
+            None | Some(ShakeCategory::Messages) => BTreeSet::new(),
+            Some(_) => shown.iter().copied().collect(),
+        };
+        let mut shake = Shake {
+            session,
+            revision: snapshot.revision,
+            items: snapshot.items,
+            shown,
+            selected,
+            cursor: 0,
+            stage: ShakeStage::Pick,
+            review: Vec::new(),
+        };
+        if !shake.selected.is_empty() {
+            shake.open_review();
+        }
+        self.menu = Some(Menu::Shake(Box::new(shake)));
+    }
+
+    /// `/shake` keys: ↑↓ move, space ticks a picker row, ⏎ reviews then
+    /// removes, esc backs out of review then closes. Nothing is sent
+    /// before the review's ⏎.
+    fn shake_key(&mut self, code: KeyCode, tx: &UnboundedSender<Command>) -> MenuKey {
+        let Some(Menu::Shake(s)) = &mut self.menu else {
+            return MenuKey::Consumed;
+        };
+        let len = match s.stage {
+            ShakeStage::Pick => s.shown.len(),
+            ShakeStage::Review => s.review.len(),
+        };
+        match (code, s.stage) {
+            (KeyCode::Up, _) => s.cursor = s.cursor.saturating_sub(1),
+            (KeyCode::Down, _) => s.cursor = (s.cursor + 1).min(len.saturating_sub(1)),
+            (KeyCode::Char(' '), ShakeStage::Pick) => s.toggle(),
+            (KeyCode::Enter, ShakeStage::Pick) => {
+                if !s.selected.is_empty() {
+                    s.open_review();
+                }
+            }
+            (KeyCode::Esc, ShakeStage::Review) => {
+                s.stage = ShakeStage::Pick;
+                s.cursor = 0;
+            }
+            (KeyCode::Esc, ShakeStage::Pick) => self.menu = None,
+            (KeyCode::Enter, ShakeStage::Review) => {
+                let cmd = Command::RemoveContext {
+                    session: s.session,
+                    expected_revision: s.revision.clone(),
+                    targets: s.review.iter().map(|r| r.target).collect(),
+                };
+                self.menu = None;
+                send(tx, cmd);
+            }
+            _ => {}
+        }
+        MenuKey::Consumed
+    }
+
     /// `/compact [summary|cut|snap|style …]`.
     fn compact_cmd(&mut self, arg: &str, tx: &UnboundedSender<Command>) {
         let (sub, rest) = arg
@@ -4971,6 +5873,7 @@ impl Model {
             Some(Menu::Nodes { .. }) => self.nodes_key(code, tx),
             Some(Menu::Secrets { .. }) => self.secrets_key(code, tx),
             Some(Menu::Artifacts { .. }) => self.artifacts_key(code, tx),
+            Some(Menu::Shake(_)) => self.shake_key(code, tx),
             Some(Menu::Knowledge { .. }) => self.knowledge_key(code, tx),
             Some(Menu::KnowledgeHistory { .. }) => self.knowledge_history_key(code, tx),
         }
@@ -5893,11 +6796,30 @@ fn user_entries(text: String, turn: Option<i64>) -> Vec<Entry> {
 static FENCE: LazyLock<markdown::FenceHook> = LazyLock::new(|| Arc::new(surface::fence));
 
 /// Transcript entries for one history record; assistant text renders with
-/// `opts` so replayed history looks like it did live.
+/// `opts` so replayed history looks like it did live. A row the user removed
+/// from context (48 §2.2) is a collapsed `⊘` card over the original — the
+/// archive stays readable (Ctrl+O), nothing re-enters the model's frame.
+/// Attachment occurrences are listed by name, removed ones marked.
 fn from_history(h: HistoryEntry, opts: &markdown::Options) -> Vec<Entry> {
+    let removed = |c: &Option<ContextEntry>| c.as_ref().is_some_and(|c| c.removed);
     match h {
-        HistoryEntry::User { text, turn } => user_entries(text, turn),
-        HistoryEntry::Assistant { text, .. } => {
+        HistoryEntry::User {
+            text,
+            turn,
+            context,
+        } => {
+            if removed(&context) {
+                return vec![removed_card("you", &text)];
+            }
+            let mut out = user_entries(text, turn);
+            // One row each: `Entry::height` counts an `Info` as one line.
+            out.extend(attachment_labels(&context).into_iter().map(Entry::Info));
+            out
+        }
+        HistoryEntry::Assistant { text, context, .. } => {
+            if removed(&context) {
+                return vec![removed_card("assistant", &text)];
+            }
             let mut t = markdown::Text::with(opts.clone());
             t.push(&text);
             t.finish();
@@ -5910,31 +6832,76 @@ fn from_history(h: HistoryEntry, opts: &markdown::Options) -> Vec<Entry> {
             args,
             result,
             files: _,
-        } => vec![Entry::Tool {
-            args: describe(&name, &args),
+            context,
+        } => {
+            let mut args = describe(&name, &args);
+            args.extend(attachment_labels(&context));
             // `.` marks a call from inside a `python` cell (08 §4.1), as live.
-            name: if call_id.contains('.') {
+            let shown = if call_id.contains('.') {
                 format!("↳ {name}")
             } else {
                 name
-            },
-            call_id,
-            job: None,
-            artifact: None,
-            scrape: None,
-            result,
-            expanded: None,
-        }],
+            };
+            if removed(&context) {
+                if let Some((output, _)) = &result {
+                    args.push(output.clone());
+                }
+                return vec![removed_card(&shown, &args.join("\n"))];
+            }
+            vec![Entry::Tool {
+                args,
+                name: shown,
+                call_id,
+                job: None,
+                artifact: None,
+                scrape: None,
+                result,
+                expanded: None,
+            }]
+        }
         HistoryEntry::Compacted {
             epoch,
             summary,
             style,
-        } => vec![Entry::Compacted {
-            epoch,
-            style,
-            summary: Some(Box::new(markdown::Text::complete(&summary))),
-            expanded: false,
-        }],
+            context,
+        } => {
+            if removed(&context) {
+                return vec![removed_card(&format!("summary (epoch {epoch})"), &summary)];
+            }
+            vec![Entry::Compacted {
+                epoch,
+                style,
+                summary: Some(Box::new(markdown::Text::complete(&summary))),
+                expanded: false,
+            }]
+        }
+    }
+}
+
+/// The collapsed marker of a row removed from context; `original` is the
+/// archived text, shown on Ctrl+O only.
+fn removed_card(what: &str, original: &str) -> Entry {
+    card(
+        CardKind::Removed,
+        format!("{what} · removed from context"),
+        original,
+    )
+}
+
+/// One line per attachment occurrence of a history row: `⎘ shot.png
+/// (image/png)`, `⊘ report.pdf (application/pdf) · removed from context`.
+fn attachment_labels(c: &Option<ContextEntry>) -> Vec<String> {
+    c.as_ref().map_or_else(Vec::new, |c| {
+        c.attachments.iter().map(attachment_label).collect()
+    })
+}
+
+/// See [`attachment_labels`].
+pub fn attachment_label(a: &ContextAttachment) -> String {
+    if a.removed {
+        format!("⊘ {} ({}) · removed from context", a.name, a.mime)
+    } else {
+        format!("⎘ {} ({})", a.name, a.mime)
     }
 }
 
@@ -6203,6 +7170,33 @@ pub fn aws_profile_line(p: &AwsProfiles) -> String {
 /// The `/schedules` usage line, shown on a bad argument.
 pub const SCHEDULES_USAGE: &str =
     "usage: /schedules [run <name>|history <name>|pause <name>|resume <name>]";
+
+/// The `/shake` usage line, shown on an unknown argument (48 §2.1).
+pub const SHAKE_USAGE: &str = "usage: /shake [images|documents|messages|tools|summary]";
+
+/// The notice after `remove_context`: what left the context and the new
+/// estimate — an estimate, not provider usage (48 §3.2).
+pub fn removal_line(r: &ContextRemoval) -> String {
+    let mut parts = Vec::new();
+    for (n, noun) in [
+        (r.messages, "message(s)"),
+        (r.images, "image(s)"),
+        (r.documents, "document(s)"),
+        (r.heads, "summary head(s)"),
+    ] {
+        if n > 0 {
+            parts.push(format!("{n} {noun}"));
+        }
+    }
+    if parts.is_empty() {
+        return "nothing removed: already outside the context".into();
+    }
+    format!(
+        "removed from context: {} · ~{} tokens now · originals stay in history",
+        parts.join(", "),
+        k(r.estimated_tokens)
+    )
+}
 
 /// `/schedules`: one row per file — `name · when · next · runs · last · result · state`.
 /// `runs` is `—` for a plain schedule, `N` or `N/max` for a loop (33 §3.2);
@@ -6528,6 +7522,367 @@ mod tests {
         assert!(slash_matches("/zzz").is_empty());
     }
 
+    /// An inventory: a user message with two images, an assistant call
+    /// row paired with its tool response (each the other's companion, the
+    /// response holding a screenshot), a PDF part, and the epoch head.
+    fn shake_inventory() -> Vec<ContextItem> {
+        use agent::ContextOwner as O;
+        let msg = |seq| ContextTarget::Message { seq };
+        let bin = |seq, part| ContextTarget::Binary {
+            owner: O::Message { seq },
+            part,
+            image: None,
+        };
+        let item = |target, kind, label: &str, remove_with: Vec<ContextTarget>| ContextItem {
+            target,
+            kind,
+            label: label.into(),
+            remove_with,
+        };
+        vec![
+            item(msg(1), ContextKind::Message, "you: look at these", vec![]),
+            item(bin(1, 1), ContextKind::Image, "a.png", vec![]),
+            item(bin(1, 2), ContextKind::Image, "b.png", vec![]),
+            item(msg(2), ContextKind::Tool, "shell: ls", vec![msg(3)]),
+            item(msg(3), ContextKind::Tool, "shell result", vec![msg(2)]),
+            item(
+                ContextTarget::Binary {
+                    owner: O::Message { seq: 3 },
+                    part: 0,
+                    image: Some(0),
+                },
+                ContextKind::Image,
+                "screen.png",
+                vec![],
+            ),
+            item(bin(4, 0), ContextKind::Document, "report.pdf", vec![]),
+            item(
+                ContextTarget::Head { epoch: 2 },
+                ContextKind::Summary,
+                "summary (epoch 2)",
+                vec![],
+            ),
+        ]
+    }
+
+    fn snapshot(items: Vec<ContextItem>) -> ContextSnapshot {
+        ContextSnapshot {
+            revision: "7".into(),
+            editable: true,
+            items,
+            ..ContextSnapshot::default()
+        }
+    }
+
+    #[test]
+    fn expand_follows_companions_and_subsumes_attachments() {
+        let items = shake_inventory();
+        // Ticking the call row pulls in its response; the response's
+        // screenshot is not listed twice (the whole message subsumes it).
+        let rows = expand(&items, &BTreeSet::from([3, 5]));
+        let targets: Vec<_> = rows.iter().map(|r| (r.target, r.companion)).collect();
+        assert_eq!(
+            targets,
+            vec![
+                (ContextTarget::Message { seq: 2 }, false),
+                (ContextTarget::Message { seq: 3 }, true),
+            ]
+        );
+        // A ticked image inside a ticked message is one row: the message.
+        let rows = expand(&items, &BTreeSet::from([0, 1]));
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].target, ContextTarget::Message { seq: 1 });
+        // Images alone: exact occurrences, siblings untouched.
+        let rows = expand(&items, &BTreeSet::from([1]));
+        assert_eq!(rows.len(), 1);
+        assert!(matches!(
+            rows[0].target,
+            ContextTarget::Binary { part: 1, .. }
+        ));
+    }
+
+    #[test]
+    fn shake_categories_preselect_and_review_once() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        let session = SessionId::new();
+        m.session = Some(session);
+        // Unknown argument: usage, no request, no chat input.
+        m.submit("/shake everything", &tx);
+        assert!(matches!(m.entries.last(), Some(Entry::Error(t)) if t == SHAKE_USAGE));
+        assert!(rx.try_recv().is_err());
+        m.submit("/shake images", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::ContextItems {
+                category: Some(ShakeCategory::Images),
+                ..
+            })
+        ));
+        m.apply(UiEvent::ContextItems {
+            session,
+            category: Some(ShakeCategory::Images),
+            snapshot: snapshot(shake_inventory()),
+        });
+        // Every image ticked (the tool screenshot too, the PDF not), straight into review.
+        let Some(Menu::Shake(s)) = &m.menu else {
+            panic!("picker open");
+        };
+        assert_eq!(s.stage, ShakeStage::Review);
+        assert_eq!(s.review.len(), 3);
+        assert!(s.review.iter().all(|r| r.kind == ContextKind::Image));
+        assert!(!m.input_focused(), "the picker is modal");
+        // Esc backs into the picker (images only listed); a second Esc closes it.
+        m.menu_key(KeyCode::Esc, "", &tx);
+        let Some(Menu::Shake(s)) = &m.menu else {
+            panic!("picker open");
+        };
+        assert_eq!(s.stage, ShakeStage::Pick);
+        assert_eq!(s.shown.len(), 3);
+        // Space unticks the highlighted row; ⏎ reviews the rest, ⏎ removes exactly those.
+        m.menu_key(KeyCode::Char(' '), "", &tx);
+        m.menu_key(KeyCode::Enter, "", &tx);
+        assert!(rx.try_recv().is_err(), "review is not a removal");
+        m.menu_key(KeyCode::Enter, "", &tx);
+        assert!(m.menu.is_none());
+        let Ok(Command::RemoveContext {
+            expected_revision,
+            targets,
+            ..
+        }) = rx.try_recv()
+        else {
+            panic!("removal sent");
+        };
+        assert_eq!(expected_revision, "7");
+        assert_eq!(targets.len(), 2);
+        assert!(!targets.contains(&ContextTarget::Binary {
+            owner: agent::ContextOwner::Message { seq: 1 },
+            part: 1,
+            image: None,
+        }));
+    }
+
+    #[test]
+    fn shake_bare_and_messages_tick_nothing_and_zero_matches_write_nothing() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        let session = SessionId::new();
+        m.session = Some(session);
+        m.apply(UiEvent::ContextItems {
+            session,
+            category: None,
+            snapshot: snapshot(shake_inventory()),
+        });
+        let Some(Menu::Shake(s)) = &m.menu else {
+            panic!("picker open");
+        };
+        assert_eq!(
+            (s.stage, s.shown.len(), s.selected.len()),
+            (ShakeStage::Pick, 8, 0)
+        );
+        // ⏎ with nothing ticked stays put; esc closes without a request.
+        m.menu_key(KeyCode::Enter, "", &tx);
+        assert!(matches!(&m.menu, Some(Menu::Shake(s)) if s.stage == ShakeStage::Pick));
+        m.menu_key(KeyCode::Esc, "", &tx);
+        assert!(m.menu.is_none() && rx.try_recv().is_err());
+        m.apply(UiEvent::ContextItems {
+            session,
+            category: Some(ShakeCategory::Messages),
+            snapshot: snapshot(shake_inventory()),
+        });
+        let Some(Menu::Shake(s)) = &m.menu else {
+            panic!("picker open");
+        };
+        assert!(s.selected.is_empty());
+        assert!(
+            s.shown
+                .iter()
+                .all(|&i| s.items[i].kind == ContextKind::Message)
+        );
+        m.menu = None;
+        // No documents in an image-only context: a notice, no picker.
+        let images: Vec<_> = shake_inventory()
+            .into_iter()
+            .filter(|i| i.kind == ContextKind::Image)
+            .collect();
+        m.apply(UiEvent::ContextItems {
+            session,
+            category: Some(ShakeCategory::Documents),
+            snapshot: snapshot(images),
+        });
+        assert!(m.menu.is_none());
+        assert!(
+            matches!(m.entries.last(), Some(Entry::Info(t)) if t == "no documents in current context")
+        );
+        // A busy session: the reason, no picker.
+        m.apply(UiEvent::ContextItems {
+            session,
+            category: None,
+            snapshot: ContextSnapshot {
+                editable: false,
+                reason: Some("Session is busy; wait or stop it, then retry.".into()),
+                ..snapshot(shake_inventory())
+            },
+        });
+        assert!(m.menu.is_none());
+        assert!(matches!(m.entries.last(), Some(Entry::Info(t)) if t.contains("busy")));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn settled_refresh_is_guarded_and_context_changed_sets_the_flag() {
+        let (tx, mut rx) = unbounded_channel::<Command>();
+        let mut m = Model::default();
+        let session = SessionId::new();
+        m.session = Some(session);
+        m.apply(UiEvent::History(
+            session,
+            Loaded {
+                context_revision: "5".into(),
+                context_editable: true,
+                ..Loaded::default()
+            },
+        ));
+        // A settled handback with no newer edit changes nothing on screen.
+        m.apply(UiEvent::Agent(AgentEvent::ContextChanged {
+            session,
+            revision: "6".into(),
+            reason: "settled".into(),
+        }));
+        assert!(!m.refresh_context);
+        m.apply(UiEvent::Agent(AgentEvent::ContextChanged {
+            session,
+            revision: "6".into(),
+            reason: "context_edit".into(),
+        }));
+        assert!(m.refresh_context);
+        m.refresh_context = false;
+        // A busy reply is refused: transcript kept, marked stale, the
+        // pending removal notice still shown.
+        m.entries.push(Entry::Info("kept".into()));
+        m.apply(UiEvent::ContextRemoved(
+            session,
+            ContextRemoval {
+                revision: "6".into(),
+                images: 1,
+                estimated_tokens: 1200,
+                ..ContextRemoval::default()
+            },
+        ));
+        m.apply(UiEvent::Refreshed(
+            session,
+            Loaded {
+                context_revision: "6".into(),
+                settled: false,
+                context_reason: Some("Session is busy".into()),
+                ..Loaded::default()
+            },
+        ));
+        assert!(m.context_stale && !m.context_editable);
+        assert_eq!(m.context_revision, "5");
+        assert!(matches!(&m.entries[0], Entry::Info(t) if t == "kept"));
+        assert!(m.entries.iter().any(
+            |e| matches!(e, Entry::Info(t) if t.starts_with("removed from context: 1 image(s)"))
+        ));
+        // The next settled notification retries while stale.
+        m.apply(UiEvent::Agent(AgentEvent::ContextChanged {
+            session,
+            revision: "6".into(),
+            reason: "settled".into(),
+        }));
+        assert!(m.refresh_context);
+        // An older settled snapshot never replaces a newer transcript.
+        m.context_revision = "9".into();
+        m.apply(UiEvent::Refreshed(
+            session,
+            Loaded {
+                context_revision: "6".into(),
+                settled: true,
+                ..Loaded::default()
+            },
+        ));
+        assert_eq!(m.context_revision, "9");
+        // A newer settled one installs and clears the stale mark.
+        m.apply(UiEvent::Refreshed(
+            session,
+            Loaded {
+                context_revision: "10".into(),
+                settled: true,
+                context_editable: true,
+                context_estimate: Some(4200),
+                ..Loaded::default()
+            },
+        ));
+        assert!(!m.context_stale && m.context_editable);
+        assert_eq!((m.context_revision.as_str(), m.context), ("10", 4200));
+        assert!(rx.try_recv().is_err());
+        drop(tx);
+    }
+
+    #[test]
+    fn removed_rows_become_archive_cards_and_attachments_are_labelled() {
+        let opts = markdown::Options::default();
+        let entry = |removed, attachments| {
+            Some(ContextEntry {
+                target: ContextTarget::Message { seq: 1 },
+                active: true,
+                removed,
+                remove_with: vec![],
+                attachments,
+            })
+        };
+        let shot = |removed| ContextAttachment {
+            target: ContextTarget::Binary {
+                owner: agent::ContextOwner::Message { seq: 1 },
+                part: 1,
+                image: None,
+            },
+            name: "shot.png".into(),
+            mime: "image/png".into(),
+            path: None,
+            removed,
+        };
+        let out = from_history(
+            HistoryEntry::User {
+                text: "secret plan".into(),
+                turn: Some(1),
+                context: entry(true, vec![shot(false)]),
+            },
+            &opts,
+        );
+        assert_eq!(out.len(), 1);
+        assert!(matches!(
+            &out[0],
+            Entry::Card { kind: CardKind::Removed, expanded: false, title, .. } if title.starts_with("you · removed from context")
+        ));
+        let out = from_history(
+            HistoryEntry::User {
+                text: "look".into(),
+                turn: Some(1),
+                context: entry(false, vec![shot(true)]),
+            },
+            &opts,
+        );
+        assert!(matches!(&out[0], Entry::User { turn: Some(1), .. }));
+        assert!(
+            matches!(&out[1], Entry::Info(t) if t == "⊘ shot.png (image/png) · removed from context")
+        );
+        let out = from_history(
+            HistoryEntry::Tool {
+                call_id: "c1".into(),
+                name: "screenshot".into(),
+                args: serde_json::json!({}),
+                result: Some(("ok".into(), false)),
+                files: vec![],
+                context: entry(false, vec![shot(false)]),
+            },
+            &opts,
+        );
+        assert!(
+            matches!(&out[0], Entry::Tool { args, .. } if args.last().is_some_and(|l| l == "⎘ shot.png (image/png)"))
+        );
+    }
+
     #[test]
     fn search_opens_picker_and_enter_switches_session() {
         use agent::search::{HitKind, MatchRange};
@@ -6552,6 +7907,7 @@ mod tests {
                 score: 1,
                 matches: 0,
                 updated_at: String::new(),
+                context_removed: false,
             }],
         ));
         assert!(
@@ -6562,7 +7918,7 @@ mod tests {
         m.menu_key(KeyCode::Enter, "", &tx);
         assert!(m.menu.is_none());
         assert_eq!(m.session, Some(hit));
-        assert!(matches!(rx.try_recv(), Ok(Command::Load(s)) if s == hit));
+        assert!(matches!(rx.try_recv(), Ok(Command::Load { session, .. }) if session == hit));
     }
 
     #[test]
@@ -6612,7 +7968,7 @@ mod tests {
         // Enter is a session switch: load + reseed.
         m.menu_key(KeyCode::Enter, "", &tx);
         assert_eq!(m.session, Some(run));
-        assert!(matches!(rx.try_recv(), Ok(Command::Load(s)) if s == run));
+        assert!(matches!(rx.try_recv(), Ok(Command::Load { session, .. }) if session == run));
         assert!(matches!(rx.try_recv(), Ok(Command::ListAgents(s)) if s == run));
         // `/parent` goes where `Loaded.parent` says; at the top it says so.
         m.apply(UiEvent::History(
@@ -6627,7 +7983,7 @@ mod tests {
         assert!(m.header(&catalog).0.starts_with("↳ run  child · "));
         m.submit("/parent", &tx);
         assert_eq!(m.session, Some(root));
-        assert!(matches!(rx.try_recv(), Ok(Command::Load(s)) if s == root));
+        assert!(matches!(rx.try_recv(), Ok(Command::Load { session, .. }) if session == root));
         while rx.try_recv().is_ok() {}
         m.submit("/parent", &tx);
         assert!(rx.try_recv().is_err());
@@ -8199,6 +9555,7 @@ mod tests {
             HistoryEntry::Assistant {
                 text: md,
                 turn: None,
+                context: None,
             },
             &m.assistant_options(),
         );
@@ -8928,6 +10285,7 @@ mod tests {
                 history: vec![HistoryEntry::User {
                     text: "first question\nmore".into(),
                     turn: Some(1),
+                    context: None,
                 }],
                 ..Loaded::default()
             },
@@ -9130,5 +10488,234 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    /// A plan of `n` items: the first done, the second in progress, one
+    /// blocked with a reason, the rest pending.
+    fn plan(version: u64, n: usize) -> TodoSnapshot {
+        use agent::todo::Todo;
+        TodoSnapshot {
+            version,
+            source: TodoSource::Native,
+            items: (0..n)
+                .map(|i| Todo {
+                    text: format!("task {i} with enough words to wrap on a narrow terminal"),
+                    status: match i {
+                        0 => TodoStatus::Done,
+                        1 => TodoStatus::InProgress,
+                        2 => TodoStatus::Blocked,
+                        _ => TodoStatus::Pending,
+                    },
+                    reason: (i == 2).then(|| "waiting for the account owner".into()),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn todos_follow_versions_survive_stale_loads_and_session_switches() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        let (a, b) = (SessionId::new(), SessionId::new());
+        m.session = Some(a);
+        // Nothing loaded: no card. A load carries the plan.
+        assert!(m.todo_card(80, 40).is_none());
+        m.apply(UiEvent::History(
+            a,
+            Loaded {
+                todos: Some(plan(2, 3)),
+                ..Loaded::default()
+            },
+        ));
+        let header = m.todo_card(80, 40).unwrap().header;
+        assert!(
+            header.starts_with("> Todos · 1/3 done · 1 blocked"),
+            "{header}"
+        );
+        assert!(
+            header.contains("Now: task 1") && header.ends_with("[F2]"),
+            "{header}"
+        );
+        // Older and foreign snapshots are dropped; a newer one replaces.
+        m.apply_agent(AgentEvent::TodoChanged {
+            session: a,
+            snapshot: plan(1, 9),
+        });
+        m.apply_agent(AgentEvent::TodoChanged {
+            session: b,
+            snapshot: plan(9, 9),
+        });
+        assert_eq!(m.todos.as_ref().unwrap().version, 2);
+        m.apply_agent(AgentEvent::TodoChanged {
+            session: a,
+            snapshot: plan(3, 4),
+        });
+        assert_eq!(m.todos.as_ref().unwrap().items.len(), 4);
+        // A refused settled reload without a snapshot marks the plan stale,
+        // never empty; the same version back from `get_todos` clears it.
+        m.apply(UiEvent::Refreshed(
+            a,
+            Loaded {
+                settled: false,
+                ..Loaded::default()
+            },
+        ));
+        assert!(m.todos_stale && m.todos.as_ref().unwrap().items.len() == 4);
+        assert!(m.todo_card(80, 40).unwrap().header.contains("stale"));
+        m.apply(UiEvent::Todos(a, Some(plan(3, 4))));
+        assert!(!m.todos_stale);
+        // A failed `get_todos` marks the plan stale; it never looks current.
+        m.apply(UiEvent::Todos(a, None));
+        assert!(m.todos_stale && m.todos.as_ref().unwrap().items.len() == 4);
+        m.apply(UiEvent::Todos(a, Some(plan(3, 4))));
+        assert!(!m.todos_stale);
+        // An explicit clear hides the card even while it is open and focused,
+        // and the editor gets the keys back. A later F2 opens it again.
+        m.toggle_todos(&tx);
+        rx.try_recv().unwrap();
+        assert!(m.todo_expanded() && m.todo_focused());
+        m.apply_agent(AgentEvent::TodoChanged {
+            session: a,
+            snapshot: plan(4, 0),
+        });
+        assert!(m.todo_card(80, 40).is_none() && !m.todo_focus && m.input_focused());
+        m.toggle_todos(&tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::GetTodos(s)) if s == a));
+        assert!(
+            m.todo_card(80, 40)
+                .unwrap()
+                .header
+                .starts_with("v Todos · none")
+        );
+        // The same empty version back from that read is not a second clear.
+        m.apply(UiEvent::Todos(a, Some(plan(4, 0))));
+        assert!(m.todo_expanded() && m.todo_focused());
+        // The choice is per session: B opens collapsed, A is still open on return.
+        m.resume(b, &tx);
+        assert!(m.todos.is_none() && !m.todo_expanded() && !m.todo_focus);
+        m.resume(a, &tx);
+        assert!(m.todo_expanded());
+    }
+
+    #[test]
+    fn todo_card_scrolls_every_row_and_yields_to_modals() {
+        use tools::{AskId, AskRequested, Question};
+        let (tx, _rx) = unbounded_channel();
+        let mut m = Model::default();
+        let s = SessionId::new();
+        m.session = Some(s);
+        m.set_todos(plan(1, 8));
+        // F2: open and focused; the editor loses the keys, the draft is not touched.
+        m.toggle_todos(&tx);
+        assert!(m.todo_focused() && !m.input_focused());
+        let (w, h) = (40, 40);
+        let total = m.todo_lines(w).len();
+        let card = m.todo_card(w, h).unwrap();
+        assert!(total > TODO_ROWS, "narrow terminal wraps: {total} rows");
+        assert_eq!(card.rows.len(), TODO_ROWS);
+        assert_eq!(card.height(), 3 + TODO_ROWS + 1);
+        assert!(card.overflow.as_deref().unwrap().starts_with("↕ 1–6"));
+        // Down one, then PageDown to the end: the last row is reachable and
+        // the window never runs past it.
+        m.todo_key(KeyCode::Down, w, h);
+        assert_eq!(m.todo_scroll, 1);
+        for _ in 0..10 {
+            m.todo_key(KeyCode::PageDown, w, h);
+        }
+        assert_eq!(m.todo_scroll, total - TODO_ROWS);
+        let last = m.todo_card(w, h).unwrap().rows.last().unwrap().1.clone();
+        assert_eq!(last, m.todo_lines(w).last().unwrap().1);
+        m.todo_key(KeyCode::PageUp, w, h);
+        m.todo_key(KeyCode::Up, w, h);
+        assert_eq!(m.todo_scroll, total - 2 * TODO_ROWS - 1);
+        // A short terminal keeps the trigger and shrinks the body.
+        assert_eq!(m.todo_card(w, 17).unwrap().rows.len(), 3);
+        assert_eq!(m.todo_card(w, 10).unwrap().height(), 4);
+        // Widening the terminal leaves fewer rows than the scroll position:
+        // the card clamps to the end, and ↑ steps from that drawn end.
+        for _ in 0..10 {
+            m.todo_key(KeyCode::PageDown, w, h);
+        }
+        let wide = m.todo_lines(200).len();
+        assert!(wide < m.todo_scroll, "{wide} rows at 200 columns");
+        let card = m.todo_card(200, h).unwrap();
+        assert_eq!(
+            card.rows.last().unwrap().1,
+            m.todo_lines(200).last().unwrap().1
+        );
+        m.todo_key(KeyCode::Up, 200, h);
+        assert_eq!(m.todo_scroll, wide - TODO_ROWS - 1);
+        // ⏎ is swallowed (the draft is not submitted); a typed char is not:
+        // it hands the editor back so it lands in the draft.
+        assert!(m.todo_key(KeyCode::Enter, w, h) && m.todo_focused());
+        assert!(!m.todo_key(KeyCode::Char('x'), w, h));
+        assert!(!m.todo_focus && m.todo_expanded() && m.input_focused());
+        // Tab: editor back, card stays open. F2 again closes it.
+        m.todo_focus = true;
+        m.todo_key(KeyCode::Tab, w, h);
+        assert!(!m.todo_focus && m.todo_expanded() && m.input_focused());
+        m.toggle_todos(&tx);
+        assert!(!m.todo_expanded() && m.todo_card(w, h).unwrap().rows.is_empty());
+        // Esc while focused collapses and frees the editor.
+        m.toggle_todos(&tx);
+        m.todo_key(KeyCode::Esc, w, h);
+        assert!(!m.todo_expanded() && !m.todo_focus);
+        // A modal takes precedence: the focused card yields its keys.
+        m.toggle_todos(&tx);
+        m.apply(UiEvent::Ask(AskRequested {
+            id: AskId(Default::default()),
+            session: s,
+            questions: vec![Question {
+                id: "q".into(),
+                question: "q?".into(),
+                options: Vec::new(),
+                recommended: None,
+            }],
+        }));
+        assert!(!m.todo_focused());
+        m.asks.clear();
+        assert!(m.todo_focused());
+        m.menu = Some(Menu::Slash { cursor: 0 });
+        assert!(m.todo_focused(), "the slash popup is not modal");
+    }
+
+    #[test]
+    fn todo_summary_names_drops_and_blocked_waits() {
+        use agent::todo::Todo;
+        let mut m = Model::default();
+        m.session = Some(SessionId::new());
+        let item = |status, reason: Option<&str>| Todo {
+            text: "t".into(),
+            status,
+            reason: reason.map(str::to_owned),
+        };
+        m.set_todos(TodoSnapshot {
+            version: 1,
+            source: TodoSource::Acp,
+            items: vec![
+                item(TodoStatus::Done, None),
+                item(TodoStatus::Done, None),
+                item(TodoStatus::Dropped, None),
+            ],
+        });
+        assert_eq!(
+            m.todo_card(0, 40).unwrap().header,
+            "> Todos (external plan) · 2 done, 1 dropped  [F2]"
+        );
+        m.set_todos(TodoSnapshot {
+            version: 2,
+            source: TodoSource::Native,
+            items: vec![
+                item(TodoStatus::Done, None),
+                item(TodoStatus::Blocked, Some("owner")),
+            ],
+        });
+        assert_eq!(
+            m.todo_card(0, 40).unwrap().header,
+            "> Todos · 1/2 done · 1 blocked   Waiting: 1 blocked  [F2]"
+        );
+        let lines = m.todo_lines(0);
+        assert_eq!(lines[1].1, "[blocked]     t");
+        assert_eq!(lines[2], (None, format!("{}owner", " ".repeat(14))));
     }
 }

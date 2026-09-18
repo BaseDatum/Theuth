@@ -4,9 +4,10 @@ import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { useApi } from '@/lib/rpc'
 import { parseNote } from '@/lib/voice-note'
+import type { ContextEntry } from '@/rpc/bindings/ContextEntry'
 import { useSessionField } from '@/store/sessions'
 import { Attachments } from './Attachments'
-import { ActionButton, rewind, useFork } from './MessageAssistant'
+import { ActionButton, RemoveButton, rewind, useFork } from './MessageAssistant'
 
 /** The bubble as a textarea: Enter sends, Shift+Enter breaks the line, Escape cancels. Mounted only while editing, so `text` seeds it once. */
 function EditBubble({
@@ -50,19 +51,22 @@ function EditBubble({
   )
 }
 
-/** Right-aligned bubble; a `◇ skill` chip above the words when the input was a skill injection. `turn` is set only on the message that opened a turn (steers carry none). */
+/** Right-aligned bubble; a `◇ skill` chip above the words when the input was a skill injection. `turn` is set only on the message that opened a turn (steers carry none).
+ * `context` is the stored row's membership (48 §3.3): its attachments are the authoritative occurrences (`files` is our optimistic list until then), and a removed row renders as archive. */
 export const MessageUser = memo(function MessageUser({
   text,
   skill,
   files,
   session,
   turn,
+  context,
 }: {
   text: string
   skill?: string
   files?: string[]
   session: string
   turn?: number
+  context?: ContextEntry
 }) {
   const api = useApi()
   const running = useSessionField(session, 'running')
@@ -77,7 +81,7 @@ export const MessageUser = memo(function MessageUser({
           ◇ {skill}
         </span>
       )}
-      {files && <Attachments files={files} className="justify-end" />}
+      <Attachments files={files} occurrences={context?.attachments} session={session} active={context?.active} className="justify-end" />
       {note && (
         <span className="flex items-center gap-1 text-xs text-fg-secondary">
           <Mic className="size-3" /> {note.secs} s
@@ -99,10 +103,15 @@ export const MessageUser = memo(function MessageUser({
           </div>
         )
       )}
-      {turn != null && !running && !editing && (
+      {!editing && !context?.removed && (context || (turn != null && !running)) && (
         <div className="-mr-2 flex justify-end opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100 pointer-coarse:opacity-100">
-          <ActionButton icon={Pencil} label="Edit" onClick={() => setEditing(true)} />
-          <ActionButton icon={GitFork} label="Fork from here" onClick={() => void fork(turn)} />
+          {turn != null && !running && (
+            <>
+              <ActionButton icon={Pencil} label="Edit" onClick={() => setEditing(true)} />
+              <ActionButton icon={GitFork} label="Fork from here" onClick={() => void fork(turn)} />
+            </>
+          )}
+          {context && <RemoveButton session={session} target={context.target} active={context.active} />}
         </div>
       )}
     </div>

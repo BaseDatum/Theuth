@@ -15,7 +15,7 @@ use runtime::Runtime;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinSet;
-use tools::{Risk, Tool, ToolCx, ToolOutput};
+use tools::{Activity, Risk, Tool, ToolCx, ToolOutput, Tracked, activity};
 
 use crate::WebConfig;
 use crate::actor::{ProviderMetas, Read, Render, Search, WebActor};
@@ -205,8 +205,11 @@ const MIN_PROSE: usize = 100;
 /// provider error falls back to the raw fetcher; a timeout does not - the
 /// provider already tried the fetch tier and found it thin, so the raw page
 /// is the same shell, and the model is told the page needs the browser.
+/// `activity` is the invocation's guard, carried explicitly because this runs
+/// in a spawned task: the actor's detached read holds it past the timeout.
 async fn read_page(
     actor: ActorRef<WebActor>,
+    activity: Option<Activity>,
     fetcher: Arc<Fetcher>,
     url: String,
     query: String,
@@ -216,7 +219,15 @@ async fn read_page(
     let start = Instant::now();
     let page = match url::Url::parse(&url) {
         Err(e) => Err(format!("bad url: {e}")),
-        Ok(parsed) => match tokio::time::timeout(deadline, actor.ask(Read(parsed))).await {
+        Ok(parsed) => match tokio::time::timeout(
+            deadline,
+            actor.ask(Tracked {
+                message: Read(parsed),
+                activity,
+            }),
+        )
+        .await
+        {
             Ok(Ok(r)) => Ok((r.title, r.markdown, r.tier)),
             Err(_) => Err(format!(
                 "timed out after {}s rendering a JavaScript page; read_url with rendered: true waits for it",
@@ -349,10 +360,10 @@ impl Tool for SearchTool {
         let started = Instant::now();
         let mut resp = match self
             .actor
-            .ask(Search {
+            .ask(Tracked::new(Search {
                 query: q,
                 providers: a.providers,
-            })
+            }))
             .await
         {
             Ok(r) => r,
@@ -366,10 +377,12 @@ impl Tool for SearchTool {
             let mut done: Vec<String> = Vec::with_capacity(inflight.len());
             report(self.rt.as_ref(), Some(&pcx), &inflight, &done, read).await;
             let deadline = Duration::from_millis(self.cfg.read_timeout_ms.max(1));
+            let activity = activity::current();
             let mut set = JoinSet::new();
             for (i, url) in inflight.iter().enumerate() {
                 let fut = read_page(
                     self.actor.clone(),
+                    activity.clone(),
                     Arc::clone(&self.fetcher),
                     url.clone(),
                     text.to_owned(),
@@ -437,7 +450,7 @@ impl Tool for FetchTool {
                 Err(e) => return Ok(ToolOutput::err(e.to_string())),
             };
             let start = Instant::now();
-            let r = match self.actor.ask(Render(url)).await {
+            let r = match self.actor.ask(Tracked::new(Render(url))).await {
                 Ok(r) => r,
                 Err(kameo::error::SendError::HandlerError(e)) => return Ok(ToolOutput::err(e)),
                 Err(e) => anyhow::bail!("web actor unavailable: {e}"),

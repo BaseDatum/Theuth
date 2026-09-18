@@ -310,7 +310,12 @@ takes an argument), Enter runs it (or completes when the highlighted command
 needs an argument), Esc closes without clearing the input. Commands:
 `/model [id]`, `/effort [level|clear]`, `/mcp`, `/agents`, `/parent` (19),
 `/sessions`, `/resume <id>`, `/new`, `/cancel`,
-`/compact [summary|cut|snap|style …]` (11), `/clear` (11 §2.4: the conversation goes, the session stays), `/knowledge [query | history [id]
+`/compact [summary|cut|snap|style …]` (11), `/clear` (11 §2.4: the conversation goes, the session stays), `/shake [images|documents|messages|tools|summary]` (48 §2.1, added 2026-09-18: the five literal categories are the whole
+grammar — anything else prints usage and is not sent to the model; bare
+`/shake` opens the picker with nothing ticked, a category pre-ticks its
+matches; ↑↓ move, Space ticks, ⏎ reviews the exact targets and their
+protocol companions, ⏎ again removes, Esc backs out; there is no
+model-callable counterpart), `/knowledge [query | history [id]
 | restore <id> [commit] | harvest]` (the knowledge bundle: list, search, git
 history, restore, harvest now — `10 §8`), `/quit`. Signal mirrors `/effort`
 and its `/status` shows the current level (09).

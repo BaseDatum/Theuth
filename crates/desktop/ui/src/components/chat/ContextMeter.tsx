@@ -9,6 +9,7 @@ const k = (n: number) => `${Math.round(n / 1000)}k`
 export function ContextMeter({ session }: { session: string }) {
   const api = useApi()
   const used = useSessionField(session, 'context')
+  const estimated = useSessionField(session, 'contextEstimated')
   const usage = useSessionField(session, 'usage')
   const model = useSessionField(session, 'model')
   const { data: models } = useQuery({ queryKey: queryKeys.models, queryFn: () => api.list_models() })
@@ -26,8 +27,9 @@ export function ContextMeter({ session }: { session: string }) {
             ? 'border-warning-border bg-warning-bg text-warning'
             : 'border-danger-border bg-danger-bg text-danger',
       )}
-      title="Context window used · prefix cache hit rate"
+      title={`${estimated ? 'Estimated context window used' : 'Context window used'} · last turn prefix cache hit rate`}
     >
+      {estimated && '~'}
       {pct === null ? (
         k(used)
       ) : (

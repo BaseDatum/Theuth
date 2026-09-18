@@ -3,7 +3,9 @@
 Status: as-built v0 · 2026-09-12 (draft v0 same day) · extends `07-context.md`
 (frame, `est`), `08-repl.md`/TUI input, `06-acp.md` §4 (wth as agent),
 `09-signal.md` §7.4. §9 lists what the build changed against the draft; where
-§9 disagrees with §1–§8, §9 wins.
+§9 disagrees with §1–§8, §9 wins. §11 (2026-09-18) records how images leave
+the context again ([48](48-shake.md)); it supersedes §3.5's "no per-image
+identity" reading of history.
 
 Verified 2026-09-12 against a generated 400×300 PNG (red square left, blue
 circle right). ACP (`wth --acp`, throwaway Bun client): `initialize` →
@@ -420,3 +422,62 @@ parts. `frame::strip_images` covers the Tool role too (images dropped,
 `[screenshot omitted: model is text-only]` appended), and `est` counts each
 tool image as `IMAGE_TOKENS` instead of serialising the base64.
 `computer_screenshot` (27) is the second tool filling `ToolOutput.files`.
+
+## 11. Images out of the context again (added in 48, as-built 2026-09-18)
+
+This doc put images into stored rows and gave history a text marker for
+them (§3.5). [48](48-shake.md) adds the way back: the user removes one exact
+occurrence from the model's context while the stored row stays. The long
+contract lives in 48 §2–§5; what changes for readers of *this* doc:
+
+- **Authoritative occurrence metadata.** Every `HistoryEntry` variant carries
+  `context: Option<ContextEntry>` (`agent/src/context.rs`); its
+  `attachments: Vec<ContextAttachment { target, name, mime, path, removed }>`
+  lists the row's binary parts, `target` being
+  `ContextTarget::Binary { owner, part, image }` — `part` indexes the
+  **original** `ContentPart` array, `image` the original
+  `ToolResponse.images` index (§10's tool screenshots). A `Tool` entry's
+  attachments are that response's images only; a `Compacted` entry's are
+  the snap-head PNGs. The `[image: name]` marker in `text` stays for
+  text-only readers; clients render controls from the metadata, never from
+  the optimistic `files` they sent (25 §3 row "Ctrl+V image").
+- **Previews.** A stored `Base64` part without a safe path is written lazily,
+  per loaded history page, as `<data_dir>/attachments/<sha256[..16]>.<ext>`
+  by the one shared `context::save_blob` (the §5 ACP naming rule, now also
+  behind `put_attachment`) and served through the guarded `get_attachment`
+  (31 §6.4). `Url` sources are not fetched; a MIME with no extension leaves
+  `path: None` and a named, still removable chip. Not a sweep of the store,
+  and no bytes in `Loaded`, events or the `/shake` inventory.
+- **Occurrence, not file.** Removing one image excludes exactly that part
+  from the effective frame (`Store::frame`, `context_items`,
+  `effective_message`); a second occurrence of the same path or bytes stays.
+  Raw `messages.body` is unchanged; the mask lives in `messages.excluded` /
+  `epochs.excluded` (`0010_context.sql`). Exclusion runs before §3.3's
+  `strip_images`, so `/model` back to a vision model cannot bring a removed
+  image back, and `est` no longer counts it.
+- **Categories.** `/shake images` selects every image occurrence — user
+  attachments, tool-response images, snap frames (the review names the last:
+  "Summary image: removing this loses part of the earlier conversation").
+  PDFs (§3.1's 20 widening) are `/shake documents`; extracted PDF/Office
+  Markdown is ordinary text, not a binary occurrence. A user message whose
+  only meaningful part is removed is omitted from the frame; a tool response
+  whose images all go keeps its protocol envelope with the text
+  `context::IMAGE_REMOVED` ("Image removed by the user.") so no provider
+  sees an empty result.
+- **Archive, not erasure.** The transcript keeps the original: desktop/mobile
+  show a `Removed from context · name` chip whose `View original` opens the
+  archived bytes (dialog footer: "archive only"); the TUI prints
+  `⊘ name (mime) · removed from context` and the `-p` printer one `⊘` line.
+  Viewing never re-injects. Provider requests already sent, later replies,
+  summaries and snap pixels derived from the image are not scrubbed.
+
+Verified 2026-09-18 (Main, not this doc's author): against a real isolated
+daemon over RPC, direct and nested (tool-response) image removal left
+siblings and PDFs in place and a second edit still addressed original
+indices; the shared React surface removed an image from its corner control
+at 1280×900 and on a 390×844 coarse-pointer viewport (DOM measurements, no
+screenshots); the TUI's `/shake images` removed four images and kept the PDF
+and later conversation. Serialization was checked against the genai
+Anthropic/OpenAI/Gemini/Bedrock adapters with loopback fixture responses —
+valid request shapes, not provider acceptance or cost. Not exercised: the
+iOS container visually, a Noise-relayed phone (31), attachment GC (§6).

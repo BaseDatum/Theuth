@@ -12,6 +12,7 @@ use runtime::SessionId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::activity;
 use crate::jobs::{Jobs, Start, StartReply, lock};
 use crate::{Risk, Tool, ToolCx, ToolOutput};
 
@@ -104,6 +105,9 @@ impl Tool for ShellTool {
                 put_back: Arc::new(move |shell| {
                     lock(&sessions).insert(session, shell);
                 }),
+                // This invocation stays admitted until the reply: the job's
+                // own admission happens under it, with no gap (47 §4.2 rule 3).
+                activity: activity::current(),
             })
             .await
             .map_err(|e| anyhow::anyhow!("jobs actor: {e}"))?;

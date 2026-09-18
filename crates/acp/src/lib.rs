@@ -14,4 +14,4 @@ pub use agents::{AGENTS_FILE, DIR, Entry, EntryInfo, describe, load, path, save,
 pub use harness::{
     Connect, Dialer, Harness, LineDuplex, Permission, ProbeResult, Transport, Turn, Update, probe,
 };
-pub use render::{content_block_text, kind, render_content, render_diff, render_plan, risk};
+pub use render::{content_block_text, kind, render_content, render_diff, risk};

@@ -5,7 +5,9 @@
 //! `<subagent_result>` delivery are unchanged; every `session/update` becomes
 //! an [`AgentEvent`] on the wth session id (§3.3), every
 //! `session/request_permission` goes through the registry's one approval gate
-//! (§3.4, §8.8).
+//! (§3.4, §8.8). Turn claims, input consumption and returns go to the
+//! supervisor's continuation ledger (47 §4.3); the harness's plan is the
+//! session's persistent todo snapshot (47 §5.3).
 
 use std::collections::VecDeque;
 use std::convert::Infallible;
@@ -15,8 +17,8 @@ use std::time::Duration;
 
 use acp::{Connect, Harness, Permission, Transport, Update};
 use agent_client_protocol::schema::v1::{
-    PermissionOptionKind, RequestPermissionOutcome, SelectedPermissionOutcome, SessionUpdate,
-    ToolCallStatus,
+    PermissionOptionKind, Plan, PlanEntryStatus, RequestPermissionOutcome,
+    SelectedPermissionOutcome, SessionUpdate, ToolCallStatus,
 };
 use genai::chat::{ChatMessage, MessageContent};
 use kameo::Actor;
@@ -29,8 +31,12 @@ use tokio::task::AbortHandle;
 use tokio_util::sync::CancellationToken;
 use tools::{Decision, ExternalApproval, REGISTRY_ACTOR, ToolRegistry};
 
+use crate::continuation::{
+    self, InputConsumed, InputTicket, SessionUnknown, TurnEntered, TurnReturned,
+};
 use crate::loop_::{CancelTurn, IsRunning, UserInput};
 use crate::store::Store;
+use crate::todo::{Status, Todo, TodoSource};
 use crate::{AgentEvent, Usage};
 
 /// Grace after `session/cancel` before the process is killed (06 §3.5).
@@ -50,12 +56,27 @@ pub struct AcpChild {
     harness: Option<Harness>,
     /// Why the connection failed; the next input is failed with it.
     dead: Option<String>,
+    /// A dialled node rather than a child process (32 §6.5): losing the
+    /// connection does not prove the remote stopped (47 §4.2 rule 6).
+    remote: bool,
+    /// A prompt was ever sent over this connection: on a remote, work that
+    /// may outlive the prompt and this connection, so a disconnect is an
+    /// unknown outcome even when idle. A never-prompted remote is clean.
+    worked: bool,
     /// Inputs waiting for the connection or for the prompt in flight.
-    queue: VecDeque<(Option<InputId>, String)>,
+    queue: VecDeque<Queued>,
     /// The `session/prompt` in flight.
     turn: Option<Turn>,
     /// The row's title was checked/set.
     titled: bool,
+}
+
+/// One input waiting its turn: the caller's [`InputId`], the supervisor's
+/// admission ticket (47 §4.3; consumed when the turn persists the text) and the text.
+struct Queued {
+    id: Option<InputId>,
+    ticket: Option<InputTicket>,
+    text: String,
 }
 
 /// Per-turn state the translation accumulates into (06 §3.3).
@@ -112,6 +133,7 @@ impl AcpChild {
         store: Store,
         rt: Runtime,
     ) -> Self {
+        let remote = matches!(transport, Transport::Dial(_));
         let connect = Connect {
             transport,
             cwd,
@@ -126,6 +148,8 @@ impl AcpChild {
             connect: Some(connect),
             harness: None,
             dead: None,
+            remote,
+            worked: false,
             queue: VecDeque::new(),
             turn: None,
             titled: false,
@@ -170,11 +194,20 @@ impl AcpChild {
         }
     }
 
-    /// Persist `text` as the user message, then open a turn for it; the row
-    /// exists when `TurnStarted` is delivered (design doc 29 §4.2).
-    async fn open(&mut self, id: Option<InputId>, text: &str) -> TurnId {
+    /// Claim the turn with the supervisor, persist `text` as the user message
+    /// and acknowledge its ticket as consumed, then publish `TurnStarted`; the
+    /// row exists when it is delivered (design doc 29 §4.2, 47 §4.3).
+    /// `Err` when the row could not be written: the turn is already open and
+    /// finished as an error, and the ticket stays pending — failed
+    /// persistence never certifies a delivered input.
+    async fn open(&mut self, q: &Queued) -> Result<TurnId, ()> {
         let turn = TurnId::new();
-        if let Some(id) = id {
+        continuation::notify(TurnEntered {
+            session: self.id,
+            turn: Some(turn),
+        })
+        .await;
+        if let Some(id) = q.id {
             self.publish(AgentEvent::InputInjected {
                 session: self.id,
                 id,
@@ -182,25 +215,47 @@ impl AcpChild {
             })
             .await;
         }
-        self.title(text).await;
-        let turn_seq = self.append(ChatMessage::user(text)).await;
+        self.title(&q.text).await;
+        let persisted = self
+            .store
+            .append(self.id, &ChatMessage::user(&q.text))
+            .await;
+        if let (Ok(_), Some(t)) = (&persisted, q.ticket) {
+            continuation::notify(InputConsumed {
+                session: self.id,
+                id: t.id,
+                turn,
+            })
+            .await;
+        }
         self.publish(AgentEvent::TurnStarted {
             session: self.id,
             turn,
-            text: text.to_owned(),
+            text: q.text.clone(),
             model: self.name.clone(),
-            turn_seq,
+            turn_seq: *persisted.as_ref().unwrap_or(&0),
         })
         .await;
-        turn
+        self.turn = Some(Turn::new(self.id, turn));
+        match persisted {
+            Ok(_) => Ok(turn),
+            Err(e) => {
+                tracing::error!(session = %self.id, "append: {e:#}");
+                self.finish("error", Some(format!("persist input: {e:#}")))
+                    .await;
+                Err(())
+            }
+        }
     }
 
     /// Send one `session/prompt`; its result arrives as [`PromptDone`].
-    async fn start(&mut self, id: Option<InputId>, text: String, me: &ActorRef<Self>) {
+    async fn start(&mut self, q: Queued, me: &ActorRef<Self>) {
         let Some(harness) = &self.harness else { return };
-        let fut = harness.prompt(text.clone());
-        let turn = self.open(id, &text).await;
-        self.turn = Some(Turn::new(self.id, turn));
+        let fut = harness.prompt(q.text.clone());
+        if self.open(&q).await.is_err() {
+            return;
+        }
+        self.worked = true;
         let me = me.clone();
         tokio::spawn(async move {
             let _ = me.tell(PromptDone(fut.await)).await;
@@ -208,7 +263,10 @@ impl AcpChild {
     }
 
     /// Close the turn in flight: persist the assistant text (or `error`, the
-    /// last tool result, or `"(no text)"`), publish `Error` when given, then `TurnFinished`.
+    /// last tool result, or `"(no text)"`), publish `Error` when given, then
+    /// `TurnFinished`, then hand the state back to the supervisor
+    /// ([`TurnReturned`]; it keeps this child counted until the parent holds
+    /// the result).
     async fn finish(&mut self, stop_reason: &str, error: Option<String>) {
         let Some(turn) = self.turn.take() else { return };
         turn.cancel.cancel();
@@ -243,38 +301,103 @@ impl AcpChild {
             context: turn.context,
         })
         .await;
+        continuation::notify(TurnReturned {
+            session: self.id,
+            turn: Some(turn.id),
+        })
+        .await;
     }
 
     /// A turn that never reached the harness (06 §8.7): the error is the
     /// assistant message, so `<subagent_result stop="error">` names the cause.
-    async fn fail(&mut self, id: Option<InputId>, text: String, why: &str) {
-        let turn = self.open(id, &text).await;
-        self.turn = Some(Turn::new(self.id, turn));
-        self.finish("error", Some(why.to_owned())).await;
+    async fn fail(&mut self, q: Queued, why: &str) {
+        if self.open(&q).await.is_ok() {
+            self.finish("error", Some(why.to_owned())).await;
+        }
+    }
+
+    /// Fail every queued input with `why`: each was admitted by the
+    /// supervisor and answered, so its ticket is consumed and its parent gets
+    /// an error result instead of a silently vanished message.
+    async fn drain(&mut self, why: &str) {
+        while let Some(q) = self.queue.pop_front() {
+            self.fail(q, why).await;
+        }
     }
 
     /// Start the next queued input, if idle.
     async fn next(&mut self, me: &ActorRef<Self>) {
         if self.turn.is_none()
             && self.harness.is_some()
-            && let Some((id, text)) = self.queue.pop_front()
+            && let Some(q) = self.queue.pop_front()
         {
-            self.start(id, text, me).await;
+            self.start(q, me).await;
         }
     }
 
-    /// The process is gone: end the turn in flight as an error and stop.
+    /// The connection is gone. A child process that exited is known
+    /// stopped: end the turn in flight as an error, fail the queue, stop. A
+    /// dialled remote is not, once it was ever prompted (work it started can
+    /// outlive the prompt and this connection): that work is recorded
+    /// unknown first ([`Self::lose`], 47 §4.2 rule 6). The next
+    /// `send_message` respawns the child from the store row either way (06 §3.2).
     async fn closed(&mut self, why: String, ctx: &mut Context<Self, ()>) {
-        self.finish("error", Some(why)).await;
         if let Some(h) = self.harness.take() {
             h.close();
         }
-        // ponytail: inputs queued behind a dead process are dropped; the next
-        // `send_message` respawns the child from the store row (06 §3.2).
-        if !self.queue.is_empty() {
-            tracing::warn!(session = %self.id, dropped = self.queue.len(), "acp child closed with queued inputs");
+        if self.remote && self.worked {
+            self.lose(why, ctx).await;
+            return;
         }
+        self.finish("error", Some(why.clone())).await;
+        self.drain(&why).await;
         ctx.stop();
+    }
+
+    /// Record the remote's unverifiable work as unknown under this session,
+    /// then end the turn in flight (if any) with `why`, fail the queue and
+    /// stop.
+    async fn lose(&mut self, why: String, ctx: &mut Context<Self, ()>) {
+        let why = self.unknown(why).await;
+        self.finish("error", Some(why.clone())).await;
+        self.drain(&why).await;
+        ctx.stop();
+    }
+
+    /// Put `why` on the supervisor's ledger as this session's unknown outcome
+    /// (47 §4.2 rule 6); the reason the turn is then ended with.
+    /// [`SessionUnknown`] and [`TurnReturned`] share the supervisor's mailbox,
+    /// so the blocker exists before the return can be read as a clean
+    /// handback; the supervisor publishes the visible error.
+    async fn unknown(&self, why: String) -> String {
+        let why = format!("{why}; remote harness not confirmed stopped");
+        continuation::notify(SessionUnknown {
+            session: self.id,
+            failure: format!("{}: {why}", self.name),
+        })
+        .await;
+        why
+    }
+
+    /// 47 §5.3: the harness's plan is this session's canonical todo list.
+    /// Persist at the current history boundary, publish after commit; a
+    /// failed write advertises nothing.
+    async fn plan(&self, plan: &Plan) {
+        let items = plan_items(plan);
+        match self
+            .store
+            .save_todos(self.id, TodoSource::Acp, &items)
+            .await
+        {
+            Ok(snapshot) => {
+                self.publish(AgentEvent::TodoChanged {
+                    session: self.id,
+                    snapshot,
+                })
+                .await;
+            }
+            Err(e) => tracing::error!(session = %self.id, "save_todos: {e:#}"),
+        }
     }
 
     /// Route a `session/request_permission` through the registry's gate
@@ -416,11 +539,8 @@ pub(crate) fn translate(update: SessionUpdate, turn: &mut Turn) -> Vec<AgentEven
             // Pending / in-progress / partial content: the card already shows the call.
             None => Vec::new(),
         },
-        SessionUpdate::Plan(p) => vec![AgentEvent::TextDelta {
-            session,
-            turn: id,
-            text: Arc::from(format!("\n{}\n", acp::render::render_plan(&p))),
-        }],
+        // Plans are canonical state, not transcript text: `AcpChild::plan`.
+        SessionUpdate::Plan(_) => Vec::new(),
         SessionUpdate::UsageUpdate(u) => {
             turn.context = u32::try_from(u.used).unwrap_or(u32::MAX);
             Vec::new()
@@ -428,6 +548,24 @@ pub(crate) fn translate(update: SessionUpdate, turn: &mut Turn) -> Vec<AgentEven
         // user_message_chunk (load replay, 06 §8.11), commands, modes, config, info.
         _ => Vec::new(),
     }
+}
+
+/// 47 §5.3: an ACP plan as wth todo items, upstream order and content kept.
+/// Pending/in-progress/completed map directly; a status this build does not
+/// know is shown as pending rather than claimed done.
+fn plan_items(plan: &Plan) -> Vec<Todo> {
+    plan.entries
+        .iter()
+        .map(|e| Todo {
+            text: e.content.clone(),
+            status: match e.status {
+                PlanEntryStatus::InProgress => Status::InProgress,
+                PlanEntryStatus::Completed => Status::Done,
+                _ => Status::Pending,
+            },
+            reason: None,
+        })
+        .collect()
 }
 
 /// `Some(is_error)` for a terminal status.
@@ -519,12 +657,8 @@ impl Message<Connected> for AcpChild {
                 let me = ctx.actor_ref().clone();
                 self.next(&me).await;
             }
-            Err(e) => match self.queue.pop_front() {
-                Some((id, text)) => {
-                    self.fail(id, text, &e).await;
-                    ctx.stop();
-                }
-                None => {
+            Err(e) => {
+                if self.queue.is_empty() {
                     self.publish(AgentEvent::Error {
                         session: self.id,
                         turn: None,
@@ -532,8 +666,11 @@ impl Message<Connected> for AcpChild {
                     })
                     .await;
                     self.dead = Some(e);
+                } else {
+                    self.drain(&e).await;
+                    ctx.stop();
                 }
-            },
+            }
         }
     }
 }
@@ -545,28 +682,34 @@ impl Message<UserInput> for AcpChild {
 
     async fn handle(
         &mut self,
-        UserInput { id, text, files: _ }: UserInput,
+        UserInput {
+            id,
+            text,
+            files: _,
+            ticket,
+        }: UserInput,
         ctx: &mut Context<Self, Self::Reply>,
     ) {
+        let q = Queued { id, ticket, text };
         if let Some(why) = self.dead.clone() {
-            self.fail(id, text, &why).await;
+            self.fail(q, &why).await;
             ctx.stop();
             return;
         }
         if self.harness.is_none() || self.turn.is_some() {
-            if let Some(id) = id {
+            if let Some(id) = q.id {
                 self.publish(AgentEvent::InputQueued {
                     session: self.id,
                     id,
-                    text: text.clone(),
+                    text: q.text.clone(),
                 })
                 .await;
             }
-            self.queue.push_back((id, text));
+            self.queue.push_back(q);
             return;
         }
         let me = ctx.actor_ref().clone();
-        self.start(id, text, &me).await;
+        self.start(q, &me).await;
     }
 }
 
@@ -575,6 +718,7 @@ impl Message<Update> for AcpChild {
 
     async fn handle(&mut self, u: Update, ctx: &mut Context<Self, Self::Reply>) {
         match u {
+            Update::Session(SessionUpdate::Plan(p)) => self.plan(&p).await,
             Update::Session(update) => {
                 let Some(turn) = &mut self.turn else { return };
                 let events = translate(update, turn);
@@ -594,6 +738,14 @@ impl Message<PromptDone> for AcpChild {
     async fn handle(&mut self, PromptDone(r): PromptDone, ctx: &mut Context<Self, Self::Reply>) {
         match r {
             Ok(stop) => self.finish(&stop, None).await,
+            // A remote prompt that failed is an unknown outcome (the
+            // transport may be gone with work still running): the blocker
+            // goes on the ledger before this turn returns. The connection
+            // itself is kept; a real disconnect follows as `Closed`.
+            Err(e) if self.remote => {
+                let why = self.unknown(e).await;
+                self.finish("error", Some(why)).await;
+            }
             Err(e) => self.finish("error", Some(e)).await,
         }
         let me = ctx.actor_ref().clone();
@@ -637,24 +789,32 @@ impl Message<KillTimer> for AcpChild {
         if let Some(h) = self.harness.take() {
             h.close();
         }
+        // Closing our end kills a child process; a remote may still be working.
+        if self.remote {
+            self.lose("cancel not acknowledged within grace".into(), ctx)
+                .await;
+            return;
+        }
         self.finish("cancelled", None).await;
         ctx.stop();
     }
 }
 
+/// A prompt in flight, or an input waiting for the connection/prompt: the
+/// row is busy either way (the ledger, not this projection, is authority).
 impl Message<IsRunning> for AcpChild {
     type Reply = bool;
 
     async fn handle(&mut self, _: IsRunning, _: &mut Context<Self, Self::Reply>) -> bool {
-        self.turn.is_some()
+        self.turn.is_some() || !self.queue.is_empty()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use agent_client_protocol::schema::v1::{
-        ContentBlock, ContentChunk, Plan, PlanEntry, PlanEntryPriority, PlanEntryStatus, ToolCall,
-        ToolCallContent, ToolCallUpdate, ToolCallUpdateFields, ToolKind, UsageUpdate,
+        ContentBlock, ContentChunk, PlanEntry, PlanEntryPriority, ToolCall, ToolCallContent,
+        ToolCallUpdate, ToolCallUpdateFields, ToolKind, UsageUpdate,
     };
     use serde_json::json;
 
@@ -778,7 +938,7 @@ mod tests {
     }
 
     #[test]
-    fn plan_is_text_and_usage_is_context() {
+    fn plan_is_structured_state_not_transcript_text() {
         let mut t = turn();
         let plan = Plan::new(vec![
             PlanEntry::new("read", PlanEntryPriority::High, PlanEntryStatus::Completed),
@@ -789,18 +949,34 @@ mod tests {
             ),
             PlanEntry::new("test", PlanEntryPriority::Low, PlanEntryStatus::Pending),
         ]);
-        let ev = translate(SessionUpdate::Plan(plan), &mut t);
-        let [AgentEvent::TextDelta { text, .. }] = &ev[..] else {
-            panic!("{ev:?}");
-        };
-        assert!(
-            text.contains("[x] read") && text.contains("[~] edit") && text.contains("[ ] test"),
-            "{text}"
+        let items = plan_items(&plan);
+        assert_eq!(
+            items
+                .iter()
+                .map(|i| (i.text.as_str(), i.status, i.reason.as_deref()))
+                .collect::<Vec<_>>(),
+            [
+                ("read", Status::Done, None),
+                ("edit", Status::InProgress, None),
+                ("test", Status::Pending, None),
+            ],
+            "upstream order and status, nothing renamed or reordered"
         );
-        assert!(
-            t.text.is_empty(),
-            "plans are not persisted as assistant text"
+        // ACP owns its plan: no wth cap, no duplicate transcript rendering.
+        let long = Plan::new(
+            (0..40)
+                .map(|i| {
+                    PlanEntry::new(
+                        format!("step {i}"),
+                        PlanEntryPriority::Medium,
+                        PlanEntryStatus::Pending,
+                    )
+                })
+                .collect(),
         );
+        assert_eq!(plan_items(&long).len(), 40);
+        assert!(translate(SessionUpdate::Plan(plan), &mut t).is_empty());
+        assert!(t.text.is_empty());
 
         let ev = translate(
             SessionUpdate::UsageUpdate(UsageUpdate::new(12_345, 200_000)),
@@ -808,6 +984,63 @@ mod tests {
         );
         assert!(ev.is_empty());
         assert_eq!(t.context, 12_345);
+    }
+
+    /// 47 §5.3: the harness owns its plan. The stored snapshot carries the
+    /// `acp` source and upstream statuses verbatim; a re-sent plan that
+    /// reopens a completed step is stored as sent (no native sticky-done
+    /// rule), an unchanged plan keeps its version, and an empty plan is an
+    /// authoritative empty list, not a missing one.
+    #[tokio::test]
+    async fn stored_acp_plan_keeps_source_status_and_reopens() {
+        let dir = std::env::temp_dir().join(format!("wth-acp-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open(&dir.join("sessions.sqlite")).await.unwrap();
+        let id = SessionId::new();
+        store.create_session(id, "m", None, None).await.unwrap();
+        let entry = |c: &str, s| PlanEntry::new(c, PlanEntryPriority::Medium, s);
+
+        let plan = Plan::new(vec![
+            entry("read", PlanEntryStatus::Completed),
+            entry("edit", PlanEntryStatus::InProgress),
+        ]);
+        let snap = store
+            .save_todos(id, TodoSource::Acp, &plan_items(&plan))
+            .await
+            .unwrap();
+        assert_eq!((snap.version, snap.source), (1, TodoSource::Acp));
+        assert_eq!(
+            snap.items.iter().map(|i| i.status).collect::<Vec<_>>(),
+            [Status::Done, Status::InProgress]
+        );
+        assert_eq!(store.todos(id).await.unwrap(), snap);
+
+        let same = store
+            .save_todos(id, TodoSource::Acp, &plan_items(&plan))
+            .await
+            .unwrap();
+        assert_eq!(same.version, 1, "unchanged plan is not a new version");
+
+        let reopened = Plan::new(vec![
+            entry("read", PlanEntryStatus::InProgress),
+            entry("edit", PlanEntryStatus::Pending),
+        ]);
+        let snap = store
+            .save_todos(id, TodoSource::Acp, &plan_items(&reopened))
+            .await
+            .unwrap();
+        assert_eq!(snap.version, 2);
+        assert_eq!(
+            snap.items.iter().map(|i| i.status).collect::<Vec<_>>(),
+            [Status::InProgress, Status::Pending],
+            "upstream reopened a done step; stored as sent"
+        );
+
+        let snap = store.save_todos(id, TodoSource::Acp, &[]).await.unwrap();
+        assert_eq!((snap.version, snap.source), (3, TodoSource::Acp));
+        assert!(snap.items.is_empty());
+        assert_eq!(store.todos(id).await.unwrap(), snap);
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

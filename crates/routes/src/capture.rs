@@ -16,13 +16,16 @@ fn browser_actor() -> anyhow::Result<ActorRef<browser::Browsers>> {
         .ok_or_else(|| anyhow::anyhow!("browser not available; enable browser: to learn routes"))
 }
 
+/// One obscura call on `session`'s isolate, carrying the `site_learn`
+/// invocation's activity so a navigate that outlives the tool timeout keeps
+/// the session counted as busy until the isolate finishes it (47 §4.2 rule 5).
 async fn call(session: SessionId, name: &str, args: Value) -> anyhow::Result<String> {
     let result = browser_actor()?
-        .ask(browser::Call {
+        .ask(tools::Tracked::new(browser::Call {
             session,
             name: name.to_owned(),
             args,
-        })
+        }))
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let text = result["content"]

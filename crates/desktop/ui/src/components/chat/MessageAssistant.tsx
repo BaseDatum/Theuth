@@ -2,7 +2,7 @@ import { code } from '@streamdown/code'
 import { createMermaidPlugin } from '@streamdown/mermaid'
 import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
-import { Check, Copy, GitFork, type LucideIcon, RefreshCw, Square, Volume2 } from 'lucide-react'
+import { Check, Copy, GitFork, type LucideIcon, RefreshCw, Square, Trash2, Volume2 } from 'lucide-react'
 import { memo, useState } from 'react'
 import { toast } from 'sonner'
 import { type PluginConfig, Streamdown } from 'streamdown'
@@ -10,7 +10,11 @@ import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { queryKeys, useApi } from '@/lib/rpc'
 import * as speech from '@/lib/speech'
+import { cn } from '@/lib/utils'
+import type { ContextEntry } from '@/rpc/bindings/ContextEntry'
+import type { ContextTarget } from '@/rpc/bindings/ContextTarget'
 import { useSessionField, useSessions } from '@/store/sessions'
+import { openContextPicker } from './ContextPicker'
 import { JsonRenderFence } from './surface/JsonRenderFence'
 
 // Module scope: a new object per render would re-initialise the highlighter.
@@ -40,27 +44,78 @@ export function lastCode(text: string): string | null {
   return blocks.at(-1)?.[1] ?? null
 }
 
-/** 44 px ghost icon button with a tooltip (ChatGPT's action bar); `done` swaps the icon for a check. */
+/** 44 px ghost icon button with a tooltip (ChatGPT's action bar); `done` swaps the icon for a check.
+ * `disabled` uses `aria-disabled` so the tooltip and focus still explain the button. */
 export function ActionButton({
   icon: Icon,
   label,
   onClick,
   done,
+  disabled,
+  className,
 }: {
   icon: LucideIcon
   label: string
-  onClick: () => void
+  onClick?: () => void
   done?: boolean
+  disabled?: boolean
+  className?: string
 }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <Button variant="ghost" className="size-11 rounded-lg text-fg-secondary" aria-label={label} onClick={onClick}>
+        <Button
+          variant="ghost"
+          className={cn('size-11 rounded-lg text-fg-secondary aria-disabled:opacity-50 aria-disabled:hover:bg-transparent', className)}
+          aria-label={label}
+          aria-disabled={disabled || undefined}
+          onClick={disabled ? undefined : onClick}
+        >
           {done ? <Check /> : <Icon />}
         </Button>
       </TooltipTrigger>
       <TooltipContent>{label}</TooltipContent>
     </Tooltip>
+  )
+}
+
+/** Whether the session takes a context edit right now (48 §2.3): idle, natively editable, and the loaded history is current. The server rechecks. */
+export function useContextEditable(session: string): boolean {
+  const running = useSessionField(session, 'running')
+  const editable = useSessionField(session, 'contextEditable')
+  const stale = useSessionField(session, 'contextStale')
+  return !running && !!editable && !stale
+}
+
+/** `Remove from context` for one exact stored target (48 §2.3): opens the picker's review on it, pinned to the revision
+ * this transcript was loaded at so a seq reused after an edit/fork is never retargeted (48 §3.1). An entry folded before
+ * `tail_from` has no active target and says so; busy/stale/external sessions keep the button but disable it. */
+export function RemoveButton({
+  session,
+  target,
+  active,
+  icon = Trash2,
+  label = 'Remove from context',
+  className,
+}: {
+  session: string
+  target: ContextTarget
+  active: boolean
+  icon?: LucideIcon
+  label?: string
+  className?: string
+}) {
+  const ok = useContextEditable(session)
+  const revision = useSessionField(session, 'contextRevision')
+  if (!active) return <ActionButton icon={icon} label="Already outside current context" disabled className={className} />
+  return (
+    <ActionButton
+      icon={icon}
+      label={label}
+      disabled={!ok || revision == null}
+      className={className}
+      onClick={() => revision != null && openContextPicker(session, undefined, [target], revision)}
+    />
   )
 }
 
@@ -113,19 +168,22 @@ function replyIndex(session: string, turn: number, id: string): number | undefin
   return n < 0 ? undefined : n
 }
 
-/** Markdown at column width; `open` while the reply streams (only the last entry ever is). `turn` is the opener seq the reply belongs to; `id` is the entry id (for the fork's reply index). */
+/** Markdown at column width; `open` while the reply streams (only the last entry ever is). `turn` is the opener seq the reply belongs to; `id` is the entry id (for the fork's reply index).
+ * `context` is the stored row's membership (48 §3.3); a removed row renders as archive, without turn actions. */
 export const MessageAssistant = memo(function MessageAssistant({
   id,
   text,
   open,
   session,
   turn,
+  context,
 }: {
   id: string
   text: string
   open: boolean
   session: string
   turn?: number
+  context?: ContextEntry
 }) {
   const api = useApi()
   const running = useSessionField(session, 'running')
@@ -158,12 +216,13 @@ export const MessageAssistant = memo(function MessageAssistant({
         <div className="-ml-2 flex">
           {voice && <ActionButton icon={mine ? Square : Volume2} label={mine ? 'Stop' : 'Read aloud'} onClick={readAloud} />}
           <CopyButton text={text} />
-          {turn != null && !running && (
+          {turn != null && !running && !context?.removed && (
             <>
               <ActionButton icon={RefreshCw} label="Regenerate" onClick={() => rewind(session, turn, () => api.regenerate(session, turn))} />
               <ActionButton icon={GitFork} label="Fork from here" onClick={() => void fork(turn, replyIndex(session, turn, id))} />
             </>
           )}
+          {context && !context.removed && <RemoveButton session={session} target={context.target} active={context.active} />}
         </div>
       )}
     </div>

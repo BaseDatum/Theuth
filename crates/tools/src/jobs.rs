@@ -4,6 +4,12 @@
 //! and kills everything still running on `rt.shutdown`. Registered as
 //! [`JOBS_ACTOR`]; `shell` starts jobs with [`Start`], `jobs` / `cancel_job`
 //! (also here) ask [`ListJobs`] / [`CancelJob`].
+//!
+//! Activity (47 §4.2 rule 3): each job is an admitted operation
+//! (`Kind::Job` / `Kind::Pty`) from before its process spawns until the
+//! producer settles it; a result not returned by the tool call travels with
+//! that settlement and is the model's only `<job_result>` path. The
+//! supervisor's sink arrives through [`InstallActivity`].
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
@@ -23,8 +29,9 @@ use runtime::{Runtime, SessionId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Notify, oneshot};
-use tokio::task::AbortHandle;
+use tokio::task::{AbortHandle, JoinHandle};
 
+use crate::activity::{self, Activity, ActivitySink, Kind, OperationId, Rejected};
 use crate::{Risk, Tool, ToolCx, ToolOutput};
 
 /// Registry name of the [`Jobs`] actor.
@@ -39,6 +46,14 @@ const STUB_TAIL: usize = 2 * 1024;
 const MAX_ROWS: usize = 32;
 /// Minimum spacing of [`JobEvent::Output`] / [`JobEvent::Screen`] per job.
 pub(crate) const OUTPUT_EVERY: Duration = Duration::from_millis(500);
+/// How long a job's result waits for what the command left behind (open
+/// pipes, `&` jobs, killed groups) before that becomes its own operation.
+pub(crate) const SETTLE: Duration = Duration::from_secs(1);
+/// After SIGKILL, a process group still answering signal 0 past this is
+/// reported unknown rather than waited for.
+pub(crate) const KILL_WAIT: Duration = Duration::from_secs(2);
+/// Spacing of the signal-0 liveness poll on an owned process group.
+pub(crate) const GROUP_POLL: Duration = Duration::from_millis(50);
 
 /// `j{n}`, `n` per session starting at 1.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
@@ -190,6 +205,12 @@ pub struct Start {
     pub shell: Shell,
     /// Where the finished shell goes.
     pub put_back: PutBack,
+    /// [`activity::current`] at the caller. The job's own lifetime is admitted
+    /// as a child of a *tracked* invocation (47 §4.2 rule 3); an untracked or
+    /// absent parent (pre-registration invocation, RPC, tests) admits under
+    /// the supervisor installed on the actor instead, so no job spawns
+    /// untracked once one exists.
+    pub activity: Option<Activity>,
 }
 
 /// Reply to [`Start`].
@@ -222,16 +243,62 @@ pub struct CancelJob {
     pub id: JobId,
 }
 
-/// `tell` from a job task: record how it ended.
+/// `tell` from a job task: the actual work settled.
 pub(crate) struct Finished {
-    pub(crate) session: SessionId,
-    pub(crate) id: JobId,
-    pub(crate) exit: JobExit,
-    pub(crate) secs: u64,
+    /// The job's operation: its guard leaves [`Jobs::live`] here.
+    pub(crate) op: OperationId,
+    /// The row to close — `None` for a quiet job, which has none (and whose
+    /// reused id may name someone else's row).
+    pub(crate) row: Option<(SessionId, JobId, JobExit, u64)>,
+    /// The `JobEvent::Finished` the model is still owed: neither returned
+    /// inline by the tool call nor consumed by a quiet caller. Travels with
+    /// the guard as [`Settle::FinishedWithResult`](crate::Settle) (47 §4.1).
+    pub(crate) result: Option<JobEvent>,
 }
 
 /// `tell` on `rt.shutdown`: kill every running job's process groups.
 struct KillAll;
+
+/// `ask` → `()`: the activity supervisor (47 §4.2 rule 7), forwarded by the
+/// registry's `RegisterActivity` before that is acknowledged. Every job still
+/// running untracked is adopted (reported unknown until its own settlement)
+/// synchronously, so the ack means the ledger holds every live job; from
+/// then on nothing spawns untracked.
+pub struct InstallActivity(pub ActivitySink);
+
+/// `ask` from the admission task → `Result<R, String>`: spawn an admitted
+/// job under the actor's state. Admission itself awaits the supervisor's
+/// acknowledgement, so it happens off the mailbox (47 §4.1); this second hop
+/// is what keeps "admitted" strictly before "spawned".
+pub(crate) struct Launch<M> {
+    pub(crate) m: M,
+    pub(crate) id: JobId,
+    pub(crate) activity: Activity,
+}
+
+/// What the pipe-job asker waits on after [`Launch`].
+pub(crate) struct Running {
+    pub(crate) done: oneshot::Receiver<ToolOutput>,
+    pub(crate) claimable: Arc<AtomicBool>,
+    pub(crate) log: Arc<Mutex<Log>>,
+    pub(crate) log_path: PathBuf,
+}
+
+/// Admit a job's independent lifetime before anything spawns (47 §4.2
+/// rule 3): as a child of a tracked parent invocation, else under the
+/// installed supervisor (`None` before any exists: untracked, nothing
+/// certified — those guards are adopted by [`InstallActivity`]).
+pub(crate) async fn admit_job(
+    parent: Option<Activity>,
+    sink: Option<&ActivitySink>,
+    owner: SessionId,
+    kind: Kind,
+) -> Result<Activity, Rejected> {
+    match parent {
+        Some(p) if p.is_tracked() => p.admit(kind).await,
+        _ => activity::admit(sink, owner, kind).await,
+    }
+}
 
 /// Output as it arrives: appended to the log file (none for a quiet job), the
 /// last [`TAIL`] bytes kept, and the bytes since the last [`JobEvent::Output`]
@@ -288,6 +355,8 @@ fn keep_last(buf: &mut VecDeque<u8>, chunk: &[u8]) {
 
 pub(crate) struct Job {
     pub(crate) id: JobId,
+    /// The job's admitted operation, keying [`Jobs::live`].
+    pub(crate) op: OperationId,
     pub(crate) command: String,
     pub(crate) started: Instant,
     /// `None` while running.
@@ -362,6 +431,11 @@ pub struct Jobs {
     pub(crate) grace: Duration,
     timeout: Duration,
     pub(crate) sessions: HashMap<SessionId, SessionJobs>,
+    /// [`InstallActivity`]; `None` until the supervisor registers.
+    pub(crate) activity: Option<ActivitySink>,
+    /// Every unsettled job's guard (rows and quiet jobs alike), by operation:
+    /// the actor's clone, dropped — carrying the owed result — on [`Finished`].
+    pub(crate) live: HashMap<OperationId, Activity>,
 }
 
 impl Jobs {
@@ -373,6 +447,8 @@ impl Jobs {
             grace,
             timeout,
             sessions: HashMap::new(),
+            activity: None,
+            live: HashMap::new(),
         }
     }
 
@@ -382,6 +458,17 @@ impl Jobs {
             .jobs
             .iter_mut()
             .find(|j| j.id == *id)
+    }
+
+    /// Record an admitted job's guard as it spawns. A supervisor installed
+    /// between an untracked admission and this point adopts the guard here,
+    /// in the same serialized step that spawns it: nothing runs untracked
+    /// once one exists.
+    pub(crate) fn track(&mut self, activity: &Activity) {
+        if let Some(sink) = &self.activity {
+            activity.adopt(sink);
+        }
+        self.live.insert(activity.id(), activity.clone());
     }
 }
 
@@ -405,7 +492,7 @@ pub fn start(rt: &Runtime, grace: Duration, timeout: Duration) -> anyhow::Result
 impl Message<Start> for Jobs {
     type Reply = DelegatedReply<StartReply>;
 
-    async fn handle(&mut self, m: Start, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(&mut self, mut m: Start, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
         let quiet = m.quiet;
@@ -416,30 +503,105 @@ impl Message<Start> for Jobs {
             sj.next += 1;
         }
         let id = JobId(format!("j{}", sj.next));
+        let sink = self.activity.clone();
+        let me = ctx.actor_ref().clone();
+        let grace = self.grace;
+        // Admission, then the grace wait, leave the mailbox so `ListJobs` /
+        // `CancelJob` stay live. The caller's invocation stays admitted until
+        // it gets this reply, so the job's admission opens no gap (47 §4.2 rule 3).
+        tokio::spawn(async move {
+            let fail =
+                |why: String| StartReply::Done(ToolOutput::err(format!("cannot start job: {why}")));
+            let activity = match admit_job(
+                m.activity.take(),
+                sink.as_ref(),
+                m.session,
+                Kind::Job(id.clone()),
+            )
+            .await
+            {
+                Ok(a) => a,
+                Err(why) => return tx.send(fail(why.to_string())),
+            };
+            let Running {
+                mut done,
+                claimable,
+                log,
+                log_path,
+            } = match me
+                .ask(Launch {
+                    m,
+                    id: id.clone(),
+                    activity,
+                })
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => return tx.send(fail(e.to_string())),
+            };
+            if quiet {
+                // 37 §3.2: never a stub; the task's own `timeout` bounds the wait.
+                let out = done
+                    .await
+                    .unwrap_or_else(|_| ToolOutput::err("job task died"));
+                tx.send(StartReply::Done(out));
+                return;
+            }
+            // `Some`: the task finished (or died) within grace; `None`: grace elapsed.
+            let within = if grace.is_zero() {
+                None
+            } else {
+                tokio::time::timeout(grace, &mut done).await.ok()
+            };
+            let done = match within {
+                Some(r) => r.ok(),
+                None if claimable.swap(false, SeqCst) => None,
+                // The task claimed inline just as grace ran out: its result is ours.
+                None => done.await.ok(),
+            };
+            tx.send(match done {
+                Some(out) => StartReply::Done(out),
+                None => StartReply::Running {
+                    id,
+                    log: log_path,
+                    tail: lock(&log).tail_text(STUB_TAIL),
+                },
+            });
+        });
+        reply
+    }
+}
+
+impl Message<Launch<Start>> for Jobs {
+    type Reply = Result<Running, String>;
+
+    async fn handle(
+        &mut self,
+        l: Launch<Start>,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let Launch { m, id, activity } = l;
+        let quiet = m.quiet;
         let dir = self.rt.data_dir.join("jobs").join(m.session.to_string());
         let log_path = dir.join(format!("{id}.log"));
         let pgids: Arc<Mutex<Vec<i32>>> = Arc::default();
         let log_file = (!quiet).then_some(log_path.as_path());
-        let (file, params, out_r, err_r) = match setup(&dir, log_file, &m.shell, &pgids) {
-            Ok(s) => s,
-            Err(e) => {
-                tx.send(StartReply::Done(ToolOutput::err(format!(
-                    "cannot start job: {e:#}"
-                ))));
-                return reply;
-            }
-        };
+        // On `Err` the admitted guard drops here: settled `Finished`, no blocker.
+        let (file, params, out_r, err_r) =
+            setup(&dir, log_file, &m.shell, &pgids).map_err(|e| format!("{e:#}"))?;
         let log = Arc::new(Mutex::new(Log::new(file)));
         let cancel = Arc::new(Notify::new());
-        let (done_tx, mut done_rx) = oneshot::channel();
+        let (done_tx, done) = oneshot::channel();
         // Whoever swaps this first owns the result: the grace waiter (reply
-        // `Running`, the event is injected later) or the task (reply `Done`,
-        // the event is `inline` and not injected).
+        // `Running`, the result is owed to the model) or the task (reply
+        // `Done`, the event is `inline` and the guard settles bare).
         let claimable = Arc::new(AtomicBool::new(true));
         // 37 §3.4: the executed string is real; everything published or stored
         // (`Started`/`Finished`, `JobView`, `<job_result command>`) is scrubbed.
         let shown = crate::secrets::redact(&m.command).into_owned();
         let started = Instant::now();
+        self.track(&activity);
+        let op = activity.id();
         let task = tokio::spawn(run(Run {
             rt: self.rt.clone(),
             me: ctx.actor_ref().clone(),
@@ -462,11 +624,13 @@ impl Message<Start> for Jobs {
             timeout: self.timeout,
             started,
             done: done_tx,
+            activity,
         }))
         .abort_handle();
         if !quiet {
-            sj.push(Job {
-                id: id.clone(),
+            self.sessions.entry(m.session).or_default().push(Job {
+                id,
+                op,
                 command: shown,
                 started,
                 exit: None,
@@ -480,39 +644,12 @@ impl Message<Start> for Jobs {
                 pty: None,
             });
         }
-        // The grace wait leaves the mailbox so `ListJobs` / `CancelJob` stay live.
-        let grace = self.grace;
-        tokio::spawn(async move {
-            if quiet {
-                // 37 §3.2: never a stub; the task's own `timeout` bounds the wait.
-                let out = done_rx
-                    .await
-                    .unwrap_or_else(|_| ToolOutput::err("job task died"));
-                tx.send(StartReply::Done(out));
-                return;
-            }
-            // `Some`: the task finished (or died) within grace; `None`: grace elapsed.
-            let within = if grace.is_zero() {
-                None
-            } else {
-                tokio::time::timeout(grace, &mut done_rx).await.ok()
-            };
-            let done = match within {
-                Some(r) => r.ok(),
-                None if claimable.swap(false, SeqCst) => None,
-                // The task claimed inline just as grace ran out: its result is ours.
-                None => done_rx.await.ok(),
-            };
-            tx.send(match done {
-                Some(out) => StartReply::Done(out),
-                None => StartReply::Running {
-                    id,
-                    log: log_path,
-                    tail: lock(&log).tail_text(STUB_TAIL),
-                },
-            });
-        });
-        reply
+        Ok(Running {
+            done,
+            claimable,
+            log,
+            log_path,
+        })
     }
 }
 
@@ -548,9 +685,19 @@ impl Message<Finished> for Jobs {
     type Reply = ();
 
     async fn handle(&mut self, m: Finished, _: &mut Context<Self, Self::Reply>) {
-        if let Some(job) = self.job_mut(m.session, &m.id) {
-            job.exit = Some(m.exit);
-            job.secs = m.secs;
+        if let Some((session, id, exit, secs)) = m.row
+            && let Some(job) = self.job_mut(session, &id)
+        {
+            job.exit = Some(exit);
+            job.secs = secs;
+        }
+        // The actor's clone goes; the task's follows. Whichever is last
+        // settles, with the result when one is owed (47 §4.1): the model's
+        // only `<job_result>` path, the bus event stays observation.
+        if let Some(activity) = self.live.remove(&m.op) {
+            if let Some(result) = m.result {
+                activity.set_result(result);
+            }
         }
     }
 }
@@ -562,19 +709,64 @@ impl Message<KillAll> for Jobs {
         for job in self.sessions.values().flat_map(|s| &s.jobs) {
             if job.exit.is_none() {
                 kill(&job.pgids);
+                // Aborting the task skips its settlement, and an escapee may
+                // outlive the kill: say so before the guard can drop as `Finished`.
+                if let Some(a) = self.live.get(&job.op) {
+                    a.unknown(format!("{}: killed at shutdown before it settled", job.id));
+                }
                 job.task.abort();
             }
         }
     }
 }
 
-/// SIGKILL every recorded group once and forget them.
-pub(crate) fn kill(pgids: &Mutex<Vec<i32>>) {
-    let mut pgids = std::mem::take(&mut *lock(pgids));
+impl Message<InstallActivity> for Jobs {
+    type Reply = ();
+
+    async fn handle(&mut self, m: InstallActivity, _: &mut Context<Self, Self::Reply>) {
+        // Synchronous by design: the registry awaits this reply and the
+        // supervisor may await the registry, so nothing here may ask either.
+        for a in self.live.values() {
+            a.adopt(&m.0);
+        }
+        self.activity = Some(m.0);
+    }
+}
+
+/// Sorted, deduplicated snapshot of the recorded groups (pipeline members
+/// share the first member's group).
+fn groups(pgids: &Mutex<Vec<i32>>) -> Vec<i32> {
+    let mut pgids = lock(pgids).clone();
     pgids.sort_unstable();
-    pgids.dedup(); // pipeline members share the first member's group
-    for pgid in pgids {
+    pgids.dedup();
+    pgids
+}
+
+/// SIGKILL every recorded group once and forget them; returns what was
+/// signalled so the caller can verify it went.
+pub(crate) fn kill(pgids: &Mutex<Vec<i32>>) -> Vec<i32> {
+    let killed = groups(pgids);
+    lock(pgids).clear();
+    for &pgid in &killed {
         let _ = killpg(Pid::from_raw(pgid), Signal::SIGKILL);
+    }
+    killed
+}
+
+/// Poll `pgid` with signal 0 every [`GROUP_POLL`] until no member is left
+/// (an unreaped zombie still counts, so this also waits out the reaper) or
+/// `deadline`; `true` once the group is gone. Actual process evidence, not
+/// output idleness: only our own descendants share a recorded group.
+pub(crate) async fn group_gone(pgid: i32, deadline: Option<tokio::time::Instant>) -> bool {
+    let pgid = Pid::from_raw(pgid);
+    loop {
+        if killpg(pgid, None).is_err() {
+            return true;
+        }
+        if deadline.is_some_and(|d| tokio::time::Instant::now() >= d) {
+            return false;
+        }
+        tokio::time::sleep(GROUP_POLL).await;
     }
 }
 
@@ -644,11 +836,93 @@ struct Run {
     pgids: Arc<Mutex<Vec<i32>>>,
     cancel: Arc<Notify>,
     claimable: Arc<AtomicBool>,
-    /// [`Start::quiet`]: publish nothing, tell the actor nothing.
+    /// [`Start::quiet`]: publish nothing, take no row.
     quiet: bool,
     timeout: Duration,
     started: Instant,
     done: oneshot::Sender<ToolOutput>,
+    /// The job's admitted lifetime (`Kind::Job`); the actor holds the other
+    /// clone in [`Jobs::live`]. Dropped when this task returns.
+    activity: Activity,
+}
+
+/// One output pipe being read: the first ≤ 64 KiB (+1 so `truncate` still
+/// marks the cut) land in `head` as they arrive, so the finished output has
+/// what was collected even when the reader outlives the command.
+struct Drain {
+    head: Arc<Mutex<Vec<u8>>>,
+    task: JoinHandle<std::io::Result<()>>,
+}
+
+/// What the command left behind, awaited to actual settlement (47 §4.2
+/// rule 4), never inferred from the command text:
+/// - its `&` jobs: brush tracks each as a task that returns once its
+///   processes are reaped, redirected output or not;
+/// - every recorded process group, polled until no member is left — covers
+///   a detached grandchild (`( sleep 60 & )`) whose spawn was recorded but
+///   whose job table went with its subshell;
+/// - the pipe ends still open: a holder outside every recorded group (a
+///   `setsid` escapee) that inherited them, read to EOF.
+///
+/// Resolves to what could not be verified: a reader that died or failed
+/// (output past that point is lost), a job that stopped rather than exited,
+/// a group that survived SIGKILL past [`KILL_WAIT`]. A group alive after a
+/// normal exit is legitimately ours and is waited for.
+async fn settle(
+    bg: Vec<brush_core::jobs::Job>,
+    drains: Vec<JoinHandle<std::io::Result<()>>>,
+    groups: Vec<i32>,
+    killed: bool,
+) -> Vec<String> {
+    let mut why = Vec::new();
+    for mut b in bg {
+        match b.wait().await {
+            Ok(_) if matches!(b.state, brush_core::jobs::JobState::Done) => {}
+            Ok(_) => why.push("a background job stopped instead of exiting".to_owned()),
+            Err(e) => why.push(format!("background job wait failed: {e}")),
+        }
+    }
+    let bound = killed.then(|| tokio::time::Instant::now() + KILL_WAIT);
+    for pgid in groups {
+        if !group_gone(pgid, bound).await {
+            why.push(format!("process group {pgid} survived SIGKILL"));
+        }
+    }
+    for r in futures::future::join_all(drains).await {
+        match r {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => why.push(format!("output reader failed with its pipe open: {e}")),
+            Err(e) => why.push(format!("output reader died with its pipe open: {e}")),
+        }
+    }
+    why
+}
+
+/// [`settle`] did not finish within [`SETTLE`], or finished with doubts: the
+/// rest is this session's work as a child operation of the job, settled by
+/// the processes and readers themselves and marked unknown with each doubt.
+/// The job's own result is never held up or overridden by it: a root marked
+/// unknown would lose its `FinishedWithResult`, so uncertainty about the
+/// tail lives on the child alone.
+async fn linger(
+    job: &Activity,
+    id: &JobId,
+    tail: impl Future<Output = Vec<String>> + Send + 'static,
+) {
+    match job.admit(Kind::Command("job background process")).await {
+        Ok(a) => {
+            let id = id.clone();
+            let guard = a.clone();
+            tokio::spawn(a.scope(async move {
+                for why in tail.await {
+                    guard.unknown(format!("{id}: {why}"));
+                }
+            }));
+        }
+        // The job itself completed and its result is owed regardless; the
+        // supervisor that refused (or is gone) certifies nothing meanwhile.
+        Err(e) => tracing::warn!("{id}: background work left untracked: {e}"),
+    }
 }
 
 /// Publish the bytes since the last `Output`, if any.
@@ -664,27 +938,32 @@ async fn flush(rt: &Runtime, session: SessionId, id: &JobId, log: &Mutex<Log>) {
     }
 }
 
-/// Pipe → log as bytes arrive; returns the first ≤ 64 KiB (+1 so `truncate`
-/// still marks the cut) for the finished output.
-fn drain(mut r: std::io::PipeReader, log: Arc<Mutex<Log>>) -> tokio::task::JoinHandle<Vec<u8>> {
-    tokio::task::spawn_blocking(move || {
-        let mut all = Vec::new();
-        let mut buf = [0u8; 4096];
-        loop {
-            match r.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    lock(&log).push(&buf[..n]);
-                    if all.len() <= MAX_OUTPUT {
-                        all.extend_from_slice(&buf[..n]);
+/// Pipe → log as bytes arrive, the head kept aside for the finished output.
+/// Ends at EOF (`Ok`) or a read error (`Err`: the pipe may still be held,
+/// what follows is lost) — never reported as one or the other by default.
+fn drain(mut r: std::io::PipeReader, log: Arc<Mutex<Log>>) -> Drain {
+    let head: Arc<Mutex<Vec<u8>>> = Arc::default();
+    let task = tokio::task::spawn_blocking({
+        let head = head.clone();
+        move || {
+            let mut buf = [0u8; 4096];
+            loop {
+                match r.read(&mut buf) {
+                    Ok(0) => break Ok(()),
+                    Ok(n) => {
+                        lock(&log).push(&buf[..n]);
+                        let mut head = lock(&head);
+                        if head.len() <= MAX_OUTPUT {
+                            head.extend_from_slice(&buf[..n]);
+                        }
                     }
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(e) => break Err(e),
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                Err(_) => break,
             }
         }
-        all
-    })
+    });
+    Drain { head, task }
 }
 
 async fn run(mut j: Run) {
@@ -699,10 +978,10 @@ async fn run(mut j: Run) {
         .await;
     }
 
-    let out_task = drain(j.out_r, j.log.clone());
-    let err_task = drain(j.err_r, j.log.clone());
+    let out = drain(j.out_r, j.log.clone());
+    let err = drain(j.err_r, j.log.clone());
     let source = SourceInfo::from("shell");
-    let (exit, shell_err) = {
+    let (exit, shell_err, killed) = {
         let mut run = pin!(j.shell.run_string(j.command.as_str(), &source, &j.params));
         let mut deadline = pin!(tokio::time::sleep(j.timeout));
         let mut cancelled = pin!(j.cancel.notified());
@@ -710,29 +989,39 @@ async fn run(mut j: Run) {
         loop {
             tokio::select! {
                 biased;
-                () = &mut cancelled => { kill(&j.pgids); break (JobExit::Killed, None) }
-                () = &mut deadline => { kill(&j.pgids); break (JobExit::Timeout, None) }
+                () = &mut cancelled => break (JobExit::Killed, None, Some(kill(&j.pgids))),
+                () = &mut deadline => break (JobExit::Timeout, None, Some(kill(&j.pgids))),
                 r = &mut run => break match r {
-                    Ok(r) => (JobExit::Exited(u8::from(r.exit_code)), None),
-                    Err(e) => (JobExit::Exited(1), Some(e.to_string())),
+                    Ok(r) => (JobExit::Exited(u8::from(r.exit_code)), None, None),
+                    Err(e) => (JobExit::Exited(1), Some(e.to_string()), None),
                 },
                 _ = tick.tick(), if !j.quiet => flush(&j.rt, j.session, &j.id, &j.log).await,
             }
         }
     };
+    // The `&` jobs the command left running. Every `shell` call runs on a
+    // fresh clone of the session shell, whose job table starts empty, so
+    // taking them changes nothing a later `wait`/`jobs` builtin could see.
+    let bg = std::mem::take(&mut j.shell.jobs_mut().jobs);
+    // Killed: the groups just signalled, verified gone within `KILL_WAIT`.
+    // Exited: every recorded group, waited for as long as it lives.
+    let (groups, killed) = match killed {
+        Some(g) => (g, true),
+        None => (groups(&j.pgids), false),
+    };
     drop(j.params); // closes our pipe writers so the drains can finish
 
-    // ponytail: a child that survived the kill (setsid'd itself) keeps the pipe
-    // open; give up on its output after a second rather than hang the job.
-    let (stdout, stderr) = match tokio::time::timeout(
-        Duration::from_secs(1),
-        futures::future::join(out_task, err_task),
-    )
-    .await
-    {
-        Ok((o, e)) => (o.unwrap_or_default(), e.unwrap_or_default()),
-        Err(_) => (Vec::new(), Vec::new()),
-    };
+    // The result waits `SETTLE` for the tail; past that the tail is its own
+    // operation and the output is what the readers collected so far (the log
+    // has the rest).
+    let mut tail = Box::pin(settle(bg, vec![out.task, err.task], groups, killed));
+    match tokio::time::timeout(SETTLE, tail.as_mut()).await {
+        Ok(why) if why.is_empty() => {}
+        Ok(why) => linger(&j.activity, &j.id, std::future::ready(why)).await,
+        Err(_) => linger(&j.activity, &j.id, tail).await,
+    }
+    let stdout = std::mem::take(&mut *lock(&out.head));
+    let stderr = std::mem::take(&mut *lock(&err.head));
 
     let secs = j.started.elapsed().as_secs();
     // Whole text, once: exact where the chunk pass above is best effort.
@@ -781,27 +1070,30 @@ async fn run(mut j: Run) {
     // anyone can react to the reply or the event.
     let inline = j.claimable.swap(false, SeqCst);
     // 37 §3.2: a quiet job's output reaches only the `Start` asker.
+    let event = (!j.quiet).then(|| JobEvent::Finished {
+        session: j.session,
+        id: j.id.clone(),
+        command: j.shown,
+        exit: exit.clone(),
+        secs,
+        output,
+        inline,
+        pty: false,
+    });
     if !j.quiet {
         flush(&j.rt, j.session, &j.id, &j.log).await;
-        let _ =
-            j.me.tell(Finished {
-                session: j.session,
-                id: j.id.clone(),
-                exit: exit.clone(),
-                secs,
-            })
-            .await;
-        j.rt.publish(JobEvent::Finished {
-            session: j.session,
-            id: j.id,
-            command: j.shown,
-            exit,
-            secs,
-            output,
-            inline,
-            pty: false,
+    }
+    // The result rides the guard only when nobody else returns it: not
+    // inline (the tool call has it), not quiet (the caller consumes it).
+    let _ =
+        j.me.tell(Finished {
+            op: j.activity.id(),
+            row: (!j.quiet).then(|| (j.session, j.id.clone(), exit, secs)),
+            result: event.clone().filter(|_| !inline),
         })
         .await;
+    if let Some(event) = event {
+        j.rt.publish(event).await;
     }
     let _ = j.done.send(out);
 }
@@ -1007,17 +1299,56 @@ pub(crate) mod tests {
     }
 
     async fn spawn_job(fx: &Fx, command: &str) -> StartReply {
+        spawn_quiet(fx, command, false).await
+    }
+
+    async fn spawn_quiet(fx: &Fx, command: &str, quiet: bool) -> StartReply {
         fx.jobs
             .ask(Start {
                 session: fx.session,
                 command: command.into(),
                 call_id: String::new(),
-                quiet: false,
+                quiet,
                 shell: ShellTool::build_shell().await.unwrap(),
                 put_back: Arc::new(|_| {}),
+                activity: None,
             })
             .await
             .unwrap()
+    }
+
+    /// A fixture with a real supervisor recipient installed, as the
+    /// registry's `RegisterActivity` does.
+    pub(crate) async fn certified(
+        grace: Duration,
+        timeout: Duration,
+    ) -> (
+        Fx,
+        ActorRef<crate::activity::test_sink::Ledger>,
+        Arc<Mutex<Vec<crate::activity::test_sink::Seen>>>,
+    ) {
+        let fx = fixture(grace, timeout).await;
+        let (ledger, sink, seen) = crate::activity::test_sink::spawn(None);
+        fx.jobs.ask(InstallActivity(sink)).await.unwrap();
+        (fx, ledger, seen)
+    }
+
+    /// Polls the drained ledger until `pred` holds, within `within`.
+    pub(crate) async fn ledger_until(
+        ledger: &ActorRef<crate::activity::test_sink::Ledger>,
+        seen: &Mutex<Vec<crate::activity::test_sink::Seen>>,
+        within: Duration,
+        pred: impl Fn(&[crate::activity::test_sink::Seen]) -> bool,
+    ) -> Vec<crate::activity::test_sink::Seen> {
+        let deadline = Instant::now() + within;
+        loop {
+            let v = crate::activity::test_sink::drained(ledger, seen).await;
+            if pred(&v) {
+                return v;
+            }
+            assert!(Instant::now() < deadline, "ledger never satisfied: {v:?}");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
     }
 
     pub(crate) async fn list(fx: &Fx) -> Vec<JobView> {
@@ -1063,18 +1394,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn quiet_job_is_invisible() {
         let fx = fixture(Duration::from_millis(100), Duration::from_secs(60)).await;
-        let reply = fx
-            .jobs
-            .ask(Start {
-                session: fx.session,
-                command: "sleep 0.3; echo s3cret".into(),
-                call_id: String::new(),
-                quiet: true,
-                shell: ShellTool::build_shell().await.unwrap(),
-                put_back: Arc::new(|_| {}),
-            })
-            .await
-            .unwrap();
+        let reply = spawn_quiet(&fx, "sleep 0.3; echo s3cret", true).await;
         match reply {
             StartReply::Done(out) => assert_eq!(out.content, "s3cret\nexit code: 0"),
             r => panic!("expected Done, got {r:?}"),
@@ -1082,6 +1402,240 @@ pub(crate) mod tests {
         assert!(lock(&fx.events).is_empty());
         assert!(list(&fx).await.is_empty());
         assert!(!fx.dir.join("jobs").exists());
+    }
+
+    /// 47 §4.2 rule 3 / §4.1: the job is admitted (`Kind::Job`) before it
+    /// runs; a result the tool call did not return rides the guard as
+    /// `FinishedWithResult` — and only then, never as a bare `Finished`.
+    #[tokio::test]
+    async fn stub_result_settles_with_result() {
+        use crate::activity::test_sink::Seen;
+        let (fx, ledger, seen) =
+            certified(Duration::from_millis(100), Duration::from_secs(60)).await;
+        let StartReply::Running { .. } = spawn_job(&fx, "sleep 0.5; echo late").await else {
+            panic!("expected Running");
+        };
+        let v = crate::activity::test_sink::drained(&ledger, &seen).await;
+        let [Seen::Admitted(op)] = v.as_slice() else {
+            panic!("expected one admission, got {v:?}");
+        };
+        assert_eq!(op.owner, fx.session);
+        assert_eq!(op.kind, Kind::Job(JobId("j1".into())));
+        let op = op.id;
+        let v = ledger_until(&ledger, &seen, Duration::from_secs(3), |v| v.len() >= 2).await;
+        assert_eq!(v[1..], [Seen::Result(op)]);
+        assert!(!finished(&fx).await.2);
+    }
+
+    /// Inline and quiet results are consumed by the tool call: the guard
+    /// settles bare, so the supervisor owes no second wake (47 §3.2).
+    #[tokio::test]
+    async fn inline_and_quiet_settle_bare() {
+        use crate::activity::test_sink::Seen;
+        let (fx, ledger, seen) = certified(Duration::from_secs(3), Duration::from_secs(60)).await;
+        assert!(matches!(
+            spawn_job(&fx, "echo hi").await,
+            StartReply::Done(_)
+        ));
+        assert!(matches!(
+            spawn_quiet(&fx, "echo quiet", true).await,
+            StartReply::Done(_)
+        ));
+        let v = ledger_until(&ledger, &seen, Duration::from_secs(2), |v| v.len() >= 4).await;
+        let ops: Vec<_> = v
+            .iter()
+            .filter_map(|s| match s {
+                Seen::Admitted(op) => Some(op.id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ops.len(), 2);
+        for op in ops {
+            assert!(v.contains(&Seen::Finished(op)), "{v:?}");
+            assert!(!v.contains(&Seen::Result(op)), "{v:?}");
+        }
+    }
+
+    /// `command` returns `Done` with `output` within `SETTLE`, leaves a
+    /// `&` child behind as an open child operation of the job, and that
+    /// operation finishes — never unknown — once the child actually exits.
+    async fn background_child_stays_owned(command: &str, output: &str) {
+        use crate::activity::test_sink::Seen;
+        let (fx, ledger, seen) = certified(Duration::from_secs(5), Duration::from_secs(60)).await;
+        let started = Instant::now();
+        let StartReply::Done(out) = spawn_job(&fx, command).await else {
+            panic!("expected Done");
+        };
+        assert_eq!(out.content, output);
+        // The reply came after `SETTLE`, not after `sleep`.
+        assert!(
+            started.elapsed() < Duration::from_millis(1800),
+            "{:?}",
+            started.elapsed()
+        );
+        let v = crate::activity::test_sink::drained(&ledger, &seen).await;
+        let job = match &v[0] {
+            Seen::Admitted(op) => op.id,
+            s => panic!("{s:?}"),
+        };
+        let child = v
+            .iter()
+            .find_map(|s| match s {
+                Seen::Admitted(op) if op.kind == Kind::Command("job background process") => {
+                    Some(op.id)
+                }
+                _ => None,
+            })
+            .expect("background operation admitted");
+        assert!(v.contains(&Seen::Finished(job)), "{v:?}");
+        assert!(!v.contains(&Seen::Finished(child)), "{v:?}");
+        let v = ledger_until(&ledger, &seen, Duration::from_secs(3), |v| {
+            v.contains(&Seen::Finished(child))
+        })
+        .await;
+        assert!(!v.iter().any(|s| matches!(s, Seen::Unknown(..))), "{v:?}");
+    }
+
+    /// 47 §4.2 rule 4: a `&` child holding the pipe past the command's return
+    /// is this session's work until it exits; the job's result is not held up
+    /// and keeps what the reader had collected.
+    #[tokio::test]
+    async fn background_child_keeps_a_pipe_operation_open() {
+        background_child_stays_owned("sleep 2 & echo bg", "bg\nexit code: 0").await;
+    }
+
+    /// A grandchild with its output redirected, left by a foreground `sh`
+    /// that already exited: no pipe is held and the shell's job table is
+    /// empty — the recorded process group is the evidence, never the
+    /// command text.
+    #[tokio::test]
+    async fn redirected_background_process_stays_owned() {
+        background_child_stays_owned(
+            "sh -c 'sleep 2 >/dev/null 2>&1 &'; echo bg",
+            "bg\nexit code: 0",
+        )
+        .await;
+    }
+
+    /// Doubt about the tail (a dead reader, a group that survived SIGKILL)
+    /// blocks as unknown on the child operation only: the job still settles
+    /// with the result it owes, so the model is woken with what there is.
+    #[tokio::test]
+    async fn uncertain_tail_still_delivers_the_result() {
+        use crate::activity::test_sink::Seen;
+        let (ledger, sink, seen) = crate::activity::test_sink::spawn(None);
+        let id = JobId("j1".into());
+        let job = activity::admit(Some(&sink), SessionId::new(), Kind::Job(id.clone()))
+            .await
+            .unwrap();
+        linger(
+            &job,
+            &id,
+            std::future::ready(vec!["output reader died".to_owned()]),
+        )
+        .await;
+        job.set_result(JobEvent::Finished {
+            session: job.owner(),
+            id,
+            command: String::new(),
+            exit: JobExit::Exited(0),
+            secs: 0,
+            output: String::new(),
+            inline: false,
+            pty: false,
+        });
+        let root = job.id();
+        drop(job);
+        let v = ledger_until(&ledger, &seen, Duration::from_secs(2), |v| v.len() >= 4).await;
+        let Seen::Admitted(child) = &v[1] else {
+            panic!("{v:?}")
+        };
+        assert!(
+            v.iter().any(|s| matches!(s, Seen::Unknown(op, why) if *op == child.id && why.contains("reader died"))),
+            "{v:?}"
+        );
+        assert!(v.contains(&Seen::Result(root)), "{v:?}");
+        assert!(
+            !v.iter()
+                .any(|s| matches!(s, Seen::Unknown(op, _) | Seen::Finished(op) if *op == root)),
+            "{v:?}"
+        );
+    }
+
+    /// Setup failure after admission settles the guard: no leaked blocker.
+    #[tokio::test]
+    async fn setup_error_settles_admission() {
+        use crate::activity::test_sink::Seen;
+        let (fx, ledger, seen) = certified(Duration::from_secs(3), Duration::from_secs(60)).await;
+        // The jobs dir is a file: `create_dir_all` fails before anything spawns.
+        std::fs::write(fx.dir.join("jobs"), b"").unwrap();
+        let StartReply::Done(out) = spawn_job(&fx, "echo never").await else {
+            panic!("expected Done");
+        };
+        assert!(
+            out.is_error && out.content.starts_with("cannot start job:"),
+            "{}",
+            out.content
+        );
+        let v = ledger_until(&ledger, &seen, Duration::from_secs(2), |v| v.len() >= 2).await;
+        let Seen::Admitted(op) = &v[0] else {
+            panic!("{v:?}")
+        };
+        assert_eq!(v[1], Seen::Finished(op.id));
+        assert!(list(&fx).await.is_empty());
+    }
+
+    /// A supervisor rejecting the admission is an ordinary tool error and the
+    /// process never runs.
+    #[tokio::test]
+    async fn rejected_admission_runs_nothing() {
+        let fx = fixture(Duration::from_secs(3), Duration::from_secs(60)).await;
+        let (_ledger, sink, _seen) = crate::activity::test_sink::spawn(Some("paused"));
+        fx.jobs.ask(InstallActivity(sink)).await.unwrap();
+        let marker = fx.dir.join("ran");
+        let StartReply::Done(out) = spawn_job(&fx, &format!("touch {}", marker.display())).await
+        else {
+            panic!("expected Done");
+        };
+        assert_eq!(out.content, "cannot start job: paused");
+        assert!(!marker.exists());
+        assert!(list(&fx).await.is_empty());
+    }
+
+    /// 47 §4.2 rule 7: a job running before any supervisor existed is adopted
+    /// on install — reported unknown, then settled by its own producer with
+    /// the result it still owes; a job started after install is admitted.
+    #[tokio::test]
+    async fn install_adopts_running_jobs() {
+        use crate::activity::test_sink::Seen;
+        let fx = fixture(Duration::from_millis(100), Duration::from_secs(60)).await;
+        let StartReply::Running { .. } = spawn_job(&fx, "sleep 0.6; echo pre").await else {
+            panic!("expected Running");
+        };
+        let (ledger, sink, seen) = crate::activity::test_sink::spawn(None);
+        fx.jobs.ask(InstallActivity(sink)).await.unwrap();
+        let v = crate::activity::test_sink::drained(&ledger, &seen).await;
+        let [Seen::Unknown(pre, why)] = v.as_slice() else {
+            panic!("expected the running job reported unknown, got {v:?}");
+        };
+        assert!(
+            why.contains("before the activity supervisor registered"),
+            "{why}"
+        );
+        let pre = *pre;
+        let StartReply::Running { .. } = spawn_job(&fx, "sleep 0.3; echo post").await else {
+            panic!("expected Running");
+        };
+        let v = ledger_until(&ledger, &seen, Duration::from_secs(3), |v| {
+            v.iter().filter(|s| matches!(s, Seen::Result(_))).count() == 2
+        })
+        .await;
+        assert!(
+            matches!(&v[1], Seen::Admitted(op) if op.kind == Kind::Job(JobId("j2".into()))),
+            "{v:?}"
+        );
+        assert!(v.contains(&Seen::Result(pre)), "{v:?}");
+        assert!(!v.contains(&Seen::Finished(pre)), "{v:?}");
     }
 
     #[tokio::test]

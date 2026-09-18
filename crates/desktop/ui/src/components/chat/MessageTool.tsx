@@ -76,11 +76,22 @@ function Diff({ old, new: next }: { old: string; new: string }) {
   )
 }
 
-/** `⚙ name` row with the described arguments; ✓/✗ + first result line when done, click shows the whole output. A `show` call is an artifact card; `crawl`/`map_site`/`scrape_url`/`search_web` show stacked site favicons (search lists its sources, read ones first). */
+/** `⚙ name` row with the described arguments; ✓/✗ + first result line when done, click shows the whole output. A `show` call is an artifact card; `crawl`/`map_site`/`scrape_url`/`search_web` show stacked site favicons (search lists its sources, read ones first).
+ * Specialized cards draw their own previews; the stored, model-visible occurrences (48 §2.3) render beneath them with their removal controls, since an artifact on screen is not necessarily in the frame and removing an occurrence never deletes the artifact. */
 export const MessageTool = memo(function MessageTool({ tool, session }: { tool: Tool; session: string }) {
-  if (tool.name === 'show') return <ArtifactCard tool={tool} session={session} />
-  if (tool.name === 'crawl' || tool.name === 'map_site' || tool.name === 'scrape_url' || tool.name === 'search_web') return <ScrapeCard tool={tool} session={session} />
-  return <PlainTool tool={tool} session={session} />
+  const card =
+    tool.name === 'show' ? (
+      <ArtifactCard tool={tool} session={session} />
+    ) : tool.name === 'crawl' || tool.name === 'map_site' || tool.name === 'scrape_url' || tool.name === 'search_web' ? (
+      <ScrapeCard tool={tool} session={session} />
+    ) : null
+  if (!card) return <PlainTool tool={tool} session={session} />
+  return (
+    <>
+      {card}
+      <Attachments occurrences={tool.context?.attachments} session={session} active={tool.context?.active} className="-mt-1 mb-2" />
+    </>
+  )
 })
 
 function PlainTool({ tool, session }: { tool: Tool; session: string }) {
@@ -124,7 +135,7 @@ function PlainTool({ tool, session }: { tool: Tool; session: string }) {
           {result.output}
         </pre>
       )}
-      {result && result.files.length > 0 && <Attachments files={result.files} className="mt-2" />}
+      {result && <Attachments files={result.files} occurrences={tool.context?.attachments} session={session} active={tool.context?.active} className="mt-2" />}
       {expanded && tool.job && <Job job={tool.job} />}
     </div>
   )

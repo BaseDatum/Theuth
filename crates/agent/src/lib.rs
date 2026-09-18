@@ -9,7 +9,8 @@
 //!   [`LoadSkill`], [`UseSkill`], [`AddSkill`], [`RemoveSkill`], [`AddSkillRepo`],
 //!   [`RemoveSkillRepo`], [`SyncSkills`], [`ListLogins`], [`Login`], [`Logout`],
 //!   [`ListProviders`], [`AddProvider`], [`RemoveProvider`], [`NewSession`],
-//!   [`ListAcp`], [`AddAcp`], [`RemoveAcp`], [`ListRegistry`], [`Ancestors`]
+//!   [`ListAcp`], [`AddAcp`], [`RemoveAcp`], [`ListRegistry`], [`Ancestors`],
+//!   [`ContextItems`], [`RemoveContext`], [`GetTodos`]; continuation/activity transitions in [`continuation`]
 //! - the `"user"` actor ([`UserChannels`]) and the `message_user` tool (design doc 24) in [`user`].
 
 use std::path::PathBuf;
@@ -22,6 +23,8 @@ pub mod acp_child;
 mod aws;
 mod backend;
 pub mod compact;
+pub mod context;
+pub mod continuation;
 pub mod frame;
 pub mod loop_;
 pub mod peers;
@@ -39,6 +42,10 @@ pub mod user;
 
 pub use aws::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 pub use compact::CompactStyle;
+pub use context::{
+    ContextAttachment, ContextEntry, ContextItem, ContextKind, ContextOwner, ContextRemoval,
+    ContextSnapshot, ContextTarget,
+};
 pub use supervisor::{Agents, RegisterNode, UnregisterNode};
 pub use user::{
     Deliver, MessageUserTool, Outbound, OutboundFile, RegisterUserSink, USER_ACTOR, UserChannels,
@@ -266,7 +273,9 @@ pub struct ListSessions;
 
 /// `ask` → [`Loaded`] for rendering a resumed session. `before`/`limit` page
 /// the rendered entries (design doc 25 §7): entries with `seq < before`, the
-/// last `limit` of them; both `None` = everything.
+/// last `limit` of them; both `None` = everything. A page never splits a
+/// group of entries sharing one seq (tool siblings, a divider): the whole
+/// boundary group is included even past `limit`.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct LoadSession {
     /// Target session.
@@ -277,6 +286,11 @@ pub struct LoadSession {
     /// At most this many entries, the newest of the range.
     #[serde(default)]
     pub limit: Option<u32>,
+    /// Read only through the idle session actor (design doc 48 §5): a busy
+    /// native session answers with `settled: false` and a `context_reason`
+    /// instead of a snapshot that could race a live turn; clients reject it.
+    #[serde(default)]
+    pub settled_only: bool,
 }
 
 /// `ask` → `Result<(), String>`: set a session's title by hand and announce it
@@ -319,6 +333,40 @@ pub struct SearchSessions {
     pub limit: Option<u32>,
 }
 
+/// `ask` → `Result<ContextSnapshot, String>`: the active-context inventory of
+/// `session` with its revision and editability (design doc 48 §3.2). An
+/// external-harness session answers `editable: false`; an unknown id is `Err`
+/// and creates nothing. No message bodies.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct ContextItems {
+    /// Target session.
+    pub session: SessionId,
+}
+
+/// `ask` → `Result<ContextRemoval, String>`: remove `targets` from the
+/// session's effective context (design doc 48 §3.2) — masks beside the stored
+/// rows, no model call, no transcript deletion. Refuses a stale
+/// `expected_revision`, a busy session, an incomplete protocol group, and any
+/// external-harness session. `Err("unknown session")` creates nothing.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RemoveContext {
+    /// Target session.
+    pub session: SessionId,
+    /// Revision the client reviewed against ([`ContextSnapshot::revision`]).
+    pub expected_revision: String,
+    /// Concrete targets, companions included (server-computed closure must be present).
+    pub targets: Vec<ContextTarget>,
+}
+
+/// `ask` → `Result<TodoSnapshot, String>`: the session's latest committed plan
+/// (47 §5.1), read from the store so it never waits on a running turn.
+/// `Err` for an unknown session or a failed read; never an empty stand-in.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct GetTodos {
+    /// Session.
+    pub session: SessionId,
+}
+
 /// Reply to [`LoadSession`].
 #[derive(Clone, Debug, Default, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -348,6 +396,26 @@ pub struct Loaded {
     pub first_seq: Option<i64>,
     /// Older entries exist beyond `history` (only with a `limit`).
     pub more: bool,
+    /// Session revision the page was read at (design doc 48 §3.1); `""` when the read failed.
+    #[serde(default)]
+    pub context_revision: String,
+    /// Context removal is admissible now: native session, idle, state present.
+    #[serde(default)]
+    pub context_editable: bool,
+    /// Why not editable (`"turn in flight"`, external harness, …).
+    #[serde(default)]
+    pub context_reason: Option<String>,
+    /// Estimated tokens the effective context holds; an estimate, not provider usage.
+    #[serde(default)]
+    pub context_estimate: Option<u32>,
+    /// The snapshot was read while the session actor owned idle state
+    /// ([`LoadSession::settled_only`]); `false` means a live turn could race it.
+    #[serde(default)]
+    pub settled: bool,
+    /// The session's plan (47 §5.1), independent of paging; `None` when the
+    /// read failed — unavailable, not empty.
+    #[serde(default)]
+    pub todos: Option<todo::TodoSnapshot>,
 }
 
 /// `ask` → `Vec<AgentInfo>`: the subtree under `session` (children,
@@ -754,7 +822,12 @@ pub struct SessionSummary {
     pub pinned: bool,
 }
 
-/// Rendered history for UIs (tool traffic collapsed to summaries).
+/// Rendered history for UIs (tool traffic collapsed to summaries). Every
+/// variant carries `context`: the stored row's context-removal identity and
+/// membership (design doc 48 §3.3) — the actual message (not its turn
+/// opener) for user/assistant text, the backing response row for a tool
+/// card, the epoch head for a divider. `None` only for an unstored live
+/// card (a call still running) or when the read failed.
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(tag = "role", rename_all = "snake_case")]
@@ -768,6 +841,10 @@ pub enum HistoryEntry {
         #[serde(default)]
         #[cfg_attr(feature = "ts", ts(type = "number | null"))]
         turn: Option<i64>,
+        /// Context membership of the stored row; attachments are its binary parts.
+        #[serde(default)]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        context: Option<ContextEntry>,
     },
     /// Assistant text.
     Assistant {
@@ -778,6 +855,10 @@ pub enum HistoryEntry {
         #[serde(default)]
         #[cfg_attr(feature = "ts", ts(type = "number | null"))]
         turn: Option<i64>,
+        /// Context membership of the stored assistant row.
+        #[serde(default)]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        context: Option<ContextEntry>,
     },
     /// A tool call and its result; `result` is `None` while the call is
     /// still running (a session loaded mid-turn), and `ToolCallFinished`
@@ -794,6 +875,12 @@ pub enum HistoryEntry {
         /// Files the tool produced (23 §5), for UIs that render them inline.
         #[serde(default)]
         files: Vec<PathBuf>,
+        /// Context membership of the backing response row; attachments are
+        /// this response's images only (siblings in the same row are on
+        /// their own cards). `None` while the call is still running.
+        #[serde(default)]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        context: Option<ContextEntry>,
     },
     /// A compaction boundary: everything before it was folded into `summary`
     /// (design doc 07 §8.4).
@@ -805,7 +892,34 @@ pub enum HistoryEntry {
         /// How the head was built; missing on old rows → summary.
         #[serde(default)]
         style: CompactStyle,
+        /// Context membership of the epoch head (`ContextTarget::Head`);
+        /// attachments are snap images.
+        #[serde(default)]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        context: Option<ContextEntry>,
     },
+}
+
+impl HistoryEntry {
+    /// The entry's context metadata, whichever variant.
+    pub fn context(&self) -> Option<&ContextEntry> {
+        match self {
+            Self::User { context, .. }
+            | Self::Assistant { context, .. }
+            | Self::Tool { context, .. }
+            | Self::Compacted { context, .. } => context.as_ref(),
+        }
+    }
+
+    /// Mutable [`HistoryEntry::context`], for page-time attachment materialization.
+    pub fn context_mut(&mut self) -> Option<&mut ContextEntry> {
+        match self {
+            Self::User { context, .. }
+            | Self::Assistant { context, .. }
+            | Self::Tool { context, .. }
+            | Self::Compacted { context, .. } => context.as_mut(),
+        }
+    }
 }
 
 /// Token usage for a turn.
@@ -1054,6 +1168,30 @@ pub enum AgentEvent {
         /// Session.
         session: SessionId,
     },
+    /// The session's effective context changed outside a normal turn
+    /// (design doc 48 §3.2): a [`RemoveContext`] commit, a settled turn /
+    /// compaction handback, or an undo/redo. Published after commit and
+    /// installation in live state; carries no bodies. Clients reload the
+    /// affected session's history at `revision`.
+    ContextChanged {
+        /// Session.
+        session: SessionId,
+        /// Committed session revision (decimal string).
+        revision: String,
+        /// `"context_edit"`, `"settled"` or `"rewind"`.
+        reason: String,
+    },
+    /// The session's canonical plan changed (47 §5.1): a native `todo`
+    /// mutation committed with its tool result, an ACP plan update, a clear,
+    /// or a rewind selecting another list. Full snapshots replace earlier
+    /// state; apply only a higher `version`. No turn: a rewind changes the
+    /// plan between turns.
+    TodoChanged {
+        /// Session.
+        session: SessionId,
+        /// The whole list with its projection version.
+        snapshot: todo::TodoSnapshot,
+    },
 }
 
 impl AgentEvent {
@@ -1081,6 +1219,8 @@ impl AgentEvent {
             | Self::SkillsChanged { session, .. }
             | Self::TitleChanged { session, .. }
             | Self::SessionDeleted { session }
+            | Self::ContextChanged { session, .. }
+            | Self::TodoChanged { session, .. }
             | Self::Error { session, .. } => Some(*session),
             Self::SubagentSpawned { child, .. } => Some(*child),
         }

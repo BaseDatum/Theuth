@@ -2114,7 +2114,11 @@ impl Worker {
                 ))
                 .await;
             }
-            // Intercepted by the router (`Channel::spawned`).
+            // Intercepted by the router (`Channel::spawned`), or session
+            // bookkeeping with nothing to say in a thread (`ContextChanged`
+            // is a projection revision notice, 48 §3.2 — not a reply;
+            // `TodoChanged` is plan state for persistent UIs, 47 §5.1 — a
+            // thread is not one).
             AgentEvent::SubagentSpawned { .. }
             | AgentEvent::InputQueued { .. }
             | AgentEvent::InputInjected { .. }
@@ -2127,7 +2131,9 @@ impl Worker {
             | AgentEvent::SkillsChanged { .. }
             | AgentEvent::TitleChanged { .. }
             | AgentEvent::ToolCallProgress { .. }
-            | AgentEvent::SessionDeleted { .. } => {}
+            | AgentEvent::SessionDeleted { .. }
+            | AgentEvent::ContextChanged { .. }
+            | AgentEvent::TodoChanged { .. } => {}
         }
     }
 

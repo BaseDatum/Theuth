@@ -2,10 +2,12 @@
 //!
 //! An [`Index`] is every session's title plus the text of its visible user
 //! and assistant messages, built from the store in one scan and cached by the
-//! supervisor until a turn finishes, a title changes or a session is deleted.
-//! [`Index::search`] scores every entry against the query, keeps the best
-//! hit per session (title hits boosted), and returns a snippet around the
-//! matched characters with their offsets, so a frontend can highlight them.
+//! supervisor until a turn finishes, a title changes, a context edit lands or
+//! a session is deleted. [`Index::search`] scores every entry against the
+//! query, keeps the best hit per session (title hits boosted), and returns a
+//! snippet around the matched characters with their offsets, so a frontend
+//! can highlight them. Search stays raw transcript search (48 §2.2): a row
+//! removed from the model's context is still indexed, and its hit says so.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -128,6 +130,10 @@ pub struct SearchHit {
     pub matches: u32,
     /// The session's `updated_at` (RFC 3339), the tie-breaker after score.
     pub updated_at: String,
+    /// The matched message was removed from the model's context (48 §2.2);
+    /// the transcript still holds it. `false` for title hits.
+    #[serde(default)]
+    pub context_removed: bool,
 }
 
 struct Title {
@@ -141,6 +147,8 @@ struct Doc {
     seq: i64,
     role: HitRole,
     text: String,
+    /// The row's whole-message mask is set.
+    removed: bool,
 }
 
 /// Everything searchable, extracted once from the store.
@@ -157,6 +165,7 @@ struct Candidate<'a> {
     haystack: &'a str,
     indices: Vec<u32>,
     score: u32,
+    removed: bool,
 }
 
 impl Index {
@@ -178,7 +187,7 @@ impl Index {
             .search_bodies()
             .await?
             .into_iter()
-            .filter_map(|(session, seq, message)| {
+            .filter_map(|(session, seq, message, removed)| {
                 let role = match message.role {
                     genai::chat::ChatRole::User => HitRole::User,
                     genai::chat::ChatRole::Assistant => HitRole::Assistant,
@@ -190,6 +199,7 @@ impl Index {
                     seq,
                     role,
                     text,
+                    removed,
                 })
             })
             .collect();
@@ -238,6 +248,7 @@ impl Index {
                 haystack: &t.title,
                 indices: indices.clone(),
                 score: score.saturating_add(TITLE_BOOST),
+                removed: false,
             });
         }
         for d in &self.docs {
@@ -255,6 +266,7 @@ impl Index {
                 haystack: &d.text,
                 indices: indices.clone(),
                 score,
+                removed: d.removed,
             });
         }
 
@@ -299,6 +311,7 @@ impl Index {
                     score: c.score,
                     matches: counts.get(&c.session).copied().unwrap_or(0),
                     updated_at: t.map(|t| t.updated_at.clone()).unwrap_or_default(),
+                    context_removed: c.removed,
                 }
             })
             .collect()
@@ -404,6 +417,7 @@ mod tests {
                     seq: *seq,
                     role: HitRole::User,
                     text: (*text).to_owned(),
+                    removed: *seq < 0,
                 })
                 .collect(),
         }
@@ -413,6 +427,23 @@ mod tests {
     fn empty_query_returns_nothing() {
         let idx = index(&[(1, "deploy runbook")], &[]);
         assert!(idx.search("  ", 10).is_empty());
+    }
+
+    /// A removed row stays searchable (raw transcript search, 48 §2.2) and its
+    /// hit is labeled; a title hit never is.
+    #[test]
+    fn removed_rows_stay_indexed_and_labeled() {
+        // The test builder marks negative seqs as removed from context.
+        let idx = index(
+            &[(1, "notes"), (2, "notes")],
+            &[(1, -3, "the old screenshot"), (2, 4, "the old screenshot")],
+        );
+        let hits = idx.search("screenshot", 10);
+        assert_eq!(hits.len(), 2);
+        let by = |n: u128| hits.iter().find(|h| h.session == sid(n)).unwrap();
+        assert!(by(1).context_removed);
+        assert!(!by(2).context_removed);
+        assert!(!idx.search("notes", 10).iter().any(|h| h.context_removed));
     }
 
     #[test]

@@ -202,12 +202,47 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
         // concurrently and the notice must land before the new history.
         Command::Undo(session) => {
             let _ = tx.send(UiEvent::Undone(msg(api.undo(session).await)?));
-            UiEvent::History(session, msg(api.load_session(session, None, None).await)?)
+            UiEvent::History(
+                session,
+                msg(api.load_session(session, None, None, None).await)?,
+            )
         }
         Command::Redo(session) => {
             let _ = tx.send(UiEvent::Redone(msg(api.redo(session).await)?));
-            UiEvent::History(session, msg(api.load_session(session, None, None).await)?)
+            UiEvent::History(
+                session,
+                msg(api.load_session(session, None, None, None).await)?,
+            )
         }
+        // Same shape as undo: the notice, then the settled transcript (48
+        // §5). A refusal or a lost reply also reloads, so the screen never
+        // keeps showing content whose removal is unknown.
+        Command::RemoveContext {
+            session,
+            expected_revision,
+            targets,
+        } => {
+            match api
+                .remove_context(session, expected_revision, targets)
+                .await
+            {
+                Ok(r) => {
+                    let _ = tx.send(UiEvent::ContextRemoved(session, r));
+                }
+                Err(e) => {
+                    let _ = tx.send(UiEvent::Error(e.message().to_owned()));
+                }
+            }
+            UiEvent::Refreshed(
+                session,
+                msg(api.load_session(session, None, None, Some(true)).await)?,
+            )
+        }
+        Command::ContextItems { session, category } => UiEvent::ContextItems {
+            session,
+            category,
+            snapshot: msg(api.context_items(session).await)?,
+        },
         // The UI already truncated its transcript at the turn (29 §3); the
         // new turn streams back through ordinary events. On refusal, the
         // error lands first, then the transcript reloads to undo the cut.
@@ -215,7 +250,10 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             Ok(()) => return Ok(()),
             Err(e) => {
                 let _ = tx.send(UiEvent::Error(e.message().to_owned()));
-                UiEvent::History(session, msg(api.load_session(session, None, None).await)?)
+                UiEvent::History(
+                    session,
+                    msg(api.load_session(session, None, None, None).await)?,
+                )
             }
         },
         Command::EditTurn {
@@ -226,12 +264,15 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             Ok(()) => return Ok(()),
             Err(e) => {
                 let _ = tx.send(UiEvent::Error(e.message().to_owned()));
-                UiEvent::History(session, msg(api.load_session(session, None, None).await)?)
+                UiEvent::History(
+                    session,
+                    msg(api.load_session(session, None, None, None).await)?,
+                )
             }
         },
         Command::Fork { session, through } => {
             let id = msg(api.fork_session(session, through, None).await)?;
-            UiEvent::Forked(id, msg(api.load_session(id, None, None).await)?)
+            UiEvent::Forked(id, msg(api.load_session(id, None, None, None).await)?)
         }
         Command::Cancel(session) => {
             msg(api.cancel(session).await)?;
@@ -296,8 +337,27 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             UiEvent::Search(query, hits)
         }
         Command::ListAgents(session) => UiEvent::Agents(msg(api.list_agents(session).await)?),
-        Command::Load(session) => {
-            UiEvent::History(session, msg(api.load_session(session, None, None).await)?)
+        // A failed read must not leave the card looking current: the plan is
+        // marked stale first, then the error line explains why (47 §5.4).
+        Command::GetTodos(session) => match msg(api.get_todos(session).await) {
+            Ok(s) => UiEvent::Todos(session, Some(s)),
+            Err(e) => {
+                let _ = tx.send(UiEvent::Todos(session, None));
+                return Err(e);
+            }
+        },
+        Command::Load {
+            session,
+            settled_only,
+        } => {
+            let loaded = msg(api
+                .load_session(session, None, None, Some(settled_only))
+                .await)?;
+            if settled_only {
+                UiEvent::Refreshed(session, loaded)
+            } else {
+                UiEvent::History(session, loaded)
+            }
         }
         Command::ListModels => UiEvent::Models(msg(api.list_models().await)?),
         Command::SetModel { session, model } => {
@@ -624,6 +684,74 @@ async fn line_printer(
     }
 }
 
+/// A loaded transcript as lines. A row removed from context (48 §2.2)
+/// prints as one `⊘` marker over its first line — the archive is not
+/// replayed — and attachment occurrences print by name.
+fn print_history(out: &mut impl Write, loaded: &agent::Loaded) -> std::io::Result<()> {
+    let labels = |c: &Option<agent::ContextEntry>| -> String {
+        c.as_ref().map_or_else(String::new, |c| {
+            c.attachments
+                .iter()
+                .map(|a| format!("\n{}", model::attachment_label(a)))
+                .collect()
+        })
+    };
+    let removed = |c: &Option<agent::ContextEntry>| c.as_ref().is_some_and(|c| c.removed);
+    loaded.history.iter().try_for_each(|h| match h {
+        agent::HistoryEntry::User { text, context, .. } if removed(context) => writeln!(
+            out,
+            "⊘ removed from context: > {}",
+            text.lines().next().unwrap_or_default()
+        ),
+        agent::HistoryEntry::Assistant { text, context, .. } if removed(context) => writeln!(
+            out,
+            "⊘ removed from context: {}",
+            text.lines().next().unwrap_or_default()
+        ),
+        agent::HistoryEntry::Tool { name, context, .. } if removed(context) => {
+            writeln!(out, "⊘ removed from context: ⚙ {name}")
+        }
+        agent::HistoryEntry::Compacted { epoch, context, .. } if removed(context) => {
+            writeln!(out, "⊘ removed from context: summary (epoch {epoch})")
+        }
+        agent::HistoryEntry::User { text, context, .. } => {
+            writeln!(out, "> {text}{}", labels(context))
+        }
+        agent::HistoryEntry::Assistant { text, .. } => writeln!(out, "{text}"),
+        agent::HistoryEntry::Tool {
+            name,
+            args,
+            result,
+            context,
+            ..
+        } => writeln!(
+            out,
+            "⚙ {name}\n{}{}\n{}",
+            model::describe(name, args).join("\n"),
+            labels(context),
+            match result {
+                Some((output, is_error)) => format!(
+                    "{} {}",
+                    if *is_error { "✗" } else { "✓" },
+                    model::result_line(output)
+                ),
+                None => "… running".to_owned(),
+            }
+        ),
+        agent::HistoryEntry::Compacted {
+            epoch,
+            summary,
+            style,
+            ..
+        } => {
+            writeln!(
+                out,
+                "── context compacted (epoch {epoch} · {style}) ──\n{summary}"
+            )
+        }
+    })
+}
+
 fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
     let _ = match ev {
         UiEvent::Agent(AgentEvent::SubagentSpawned { name, .. }) => {
@@ -683,6 +811,9 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         }
         UiEvent::Agent(AgentEvent::Error { message, .. }) | UiEvent::Error(message) => {
             writeln!(out, "error: {message}")
+        }
+        UiEvent::Agent(AgentEvent::ContextChanged { reason, .. }) => {
+            writeln!(out, "context changed ({reason})")
         }
         UiEvent::Agent(_) => Ok(()),
         UiEvent::ArtifactShown(ev) => writeln!(
@@ -840,9 +971,20 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         UiEvent::Sessions(list) => list
             .iter()
             .try_for_each(|s| writeln!(out, "{}  {}  {}", s.id, s.model, s.title)),
-        UiEvent::Search(_, hits) => hits
-            .iter()
-            .try_for_each(|h| writeln!(out, "{}  {}  {}", h.session, h.title, h.snippet)),
+        UiEvent::Search(_, hits) => hits.iter().try_for_each(|h| {
+            writeln!(
+                out,
+                "{}  {}  {}{}",
+                h.session,
+                h.title,
+                h.snippet,
+                if h.context_removed {
+                    "  ⊘ removed from context"
+                } else {
+                    ""
+                }
+            )
+        }),
         UiEvent::Agents(list) => list.iter().try_for_each(|a| {
             writeln!(
                 out,
@@ -853,35 +995,36 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
                 model::short(a.id)
             )
         }),
-        UiEvent::History(_, loaded) => loaded.history.iter().try_for_each(|h| match h {
-            agent::HistoryEntry::User { text, .. } => writeln!(out, "> {text}"),
-            agent::HistoryEntry::Assistant { text, .. } => writeln!(out, "{text}"),
-            agent::HistoryEntry::Tool {
-                name, args, result, ..
-            } => writeln!(
-                out,
-                "⚙ {name}\n{}\n{}",
-                model::describe(name, args).join("\n"),
-                match result {
-                    Some((output, is_error)) => format!(
-                        "{} {}",
-                        if *is_error { "✗" } else { "✓" },
-                        model::result_line(output)
-                    ),
-                    None => "… running".to_owned(),
-                }
-            ),
-            agent::HistoryEntry::Compacted {
-                epoch,
-                summary,
-                style,
-            } => {
-                writeln!(
-                    out,
-                    "── context compacted (epoch {epoch} · {style}) ──\n{summary}"
-                )
-            }
-        }),
+        UiEvent::History(_, loaded) => print_history(out, loaded),
+        // A busy session's settled reload is refused (48 §5); the model
+        // keeps what it shows and says so.
+        UiEvent::Refreshed(_, loaded) if !loaded.settled => writeln!(
+            out,
+            "{} — transcript refreshes when it settles",
+            loaded
+                .context_reason
+                .as_deref()
+                .unwrap_or("session is busy")
+        ),
+        UiEvent::Refreshed(_, loaded) => print_history(out, loaded),
+        // Interactive selection needs a TTY; the inventory itself still prints.
+        UiEvent::ContextItems { snapshot, .. } => {
+            writeln!(out, "menus need a TTY").and_then(|()| {
+                snapshot.items.iter().try_for_each(|i| {
+                    writeln!(
+                        out,
+                        "{:<8} {}{}",
+                        model::kind_name(i.kind),
+                        i.label,
+                        match i.remove_with.len() {
+                            0 => String::new(),
+                            n => format!(" · +{n} message(s)"),
+                        }
+                    )
+                })
+            })
+        }
+        UiEvent::ContextRemoved(_, r) => writeln!(out, "{}", model::removal_line(r)),
         UiEvent::SessionCreated(id) => writeln!(out, "session {id}"),
         UiEvent::Providers(list) => list
             .iter()
@@ -944,5 +1087,14 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             )
         }
         UiEvent::SecretsEvent(_) => Ok(()),
+        // `/todos` in print mode: plain rows, no card (47 §6.3); a failed
+        // read prints its error line instead.
+        UiEvent::Todos(_, snapshot) => snapshot.iter().flat_map(|s| &s.items).try_for_each(|t| {
+            writeln!(out, "[{}] {}", model::status_label(t.status), t.text).and_then(|()| {
+                t.reason
+                    .as_deref()
+                    .map_or(Ok(()), |r| writeln!(out, "    {r}"))
+            })
+        }),
     };
 }

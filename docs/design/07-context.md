@@ -4,7 +4,7 @@ Status: implemented v0 · 2026-09-10 · extends `00-architecture.md` §5,
 `02-models-and-menus.md` §3 (header), `04-prompt-skills-mcp.md` §1.1,
 `01-config-and-subagents.md` §2.5. Where this doc disagrees with those, this
 doc wins; §13 lists the edits made there. Code: `crates/agent/src/{frame,
-compact,spill,todo,loop_,store}.rs`.
+compact,spill,todo,loop_,store}.rs`; `context.rs` for 48's masks/projection.
 
 Goal: a session can run for hours and hundreds of tool rounds without the
 model losing the thread, and every model call after the first reads its
@@ -23,13 +23,21 @@ what it taught us; the rest is what we do instead.
 > before the previous request's last message changes: not the tools, not the
 > system prompt, not a byte of any earlier message.
 
-The only permitted exceptions are two named, counted, logged events:
+The only permitted exceptions are three named, counted, logged events:
 
 - **rebase** — the system prompt is re-rendered at a *turn* start and differs
   from the previous turn's (the user edited `prompt.md`, a skill was added,
   the date rolled over). Messages are untouched.
 - **compaction** — the message list is cut and a summary is put in front of
   the remainder. This starts a new **epoch**.
+- **context_edit** (48, added 2026-09-18) — the user removed exact
+  occurrences (an image, a PDF, a message and its tool-protocol companions,
+  the current head) from the frame with `/shake` or a transcript control.
+  User-authorized only, on an idle native session, with a confirmation;
+  never automatic, never model-callable. Logged as `context_edit` with the
+  counts (`store.rs`, `Store::remove_context`); the session/cache key is
+  unchanged, the changed request bytes are the miss. Frames before and
+  after the edit append normally.
 
 Everything else in this doc is a consequence: where volatile text may live
 (only at the tail), how tool output is bounded (at append time, never later),
@@ -103,10 +111,14 @@ per-transport difference.
 1. **Append-only within an epoch.** `history` only grows: `persist()` pushes
    and inserts a row. There is no code path that assigns to `history[i]`,
    removes from the middle, or reorders. Compaction is `drain(..keep_from)`
-   plus a new head, and is the *only* such path (§8). Reads honour
-   `sessions.cut_at` (undo, §8.8) and return only visible rows; writes go
-   through `Session::claim`, which commits a pending cut first, so the
-   loop never sees a hidden row.
+   plus a new head, and is the *only* such path a turn takes (§8). Reads
+   honour `sessions.cut_at` (undo, §8.8) and return only visible rows;
+   writes go through `Session::claim`, which commits a pending cut first,
+   so the loop never sees a hidden row. The one between-turns exception is
+   the user's `context_edit` (§0, 48): the store never rewrites a row for
+   it either — it writes a mask beside the row and `SessionState::install`
+   replaces the idle frame with the masked projection; the next turn
+   appends to that.
 2. **Volatile text lives at the tail.** Anything that changes per turn or
    per round is appended as a message *after* everything the model already
    saw. It is then history: frozen, persisted, replayed identically on
@@ -123,8 +135,8 @@ per-transport difference.
    fetched once per turn (§5), so it cannot change mid-turn.
 6. **Tool output is bounded when it is appended, never later.** §6.
 7. **Every mutation that is not an append is a named event** (`rebase`,
-   `compaction`), logged with its cause, so an unexpected cache miss can
-   always be explained from the log.
+   `compaction`, `context_edit`), logged with its cause, so an unexpected
+   cache miss can always be explained from the log.
 8. **Harness inputs are plain user messages.** `<subagent_result>`,
    `<job_result>` (14 §3) and peer `<message>` are appended like typed
    input; they carry no id and publish no `Input*` event (01 §2.3).
@@ -557,19 +569,30 @@ CREATE TABLE epochs (
 rewritten. `Store::append` gains `RETURNING seq` so history rows carry
 their seq (`Vec<(i64, ChatMessage)>`), which is what `tail_from` needs.
 `epochs.head` may hold base64 PNG parts for `snap` heads (13 §2.4; ~0.5 MiB
-per epoch row at the default budget).
+per epoch row at the default budget). Migration `0010_context` (48 §4.1,
+added 2026-09-18) adds `messages.excluded` / `epochs.excluded` (JSON
+`Mask`, `NULL` = nothing excluded) and `sessions.context_revision`. The
+`body`/`head` JSON is still never rewritten by an edit: `/shake` writes
+the mask beside it, and `Store::frame` applies masks when it builds the
+head and history (`context::project`) while `messages`/`epochs`/undo/
+search keep reading the raw rows.
 
 **Resume** (`--resume`, subagent lazy load, `LoadSession`):
 
 ```
 epoch = latest epochs row (or none)
-head  = epoch.head
-history = messages WHERE seq >= epoch.tail_from   (all messages when no epoch)
+head  = epoch.head, minus its mask                                   (48 §4.1)
+history = messages WHERE seq >= epoch.tail_from, each minus its mask  (all messages when no epoch)
 used  = 0
 ```
 
 The frame on resume is byte-identical to the one the model last saw, so
-a resume inside the TTL is a cache hit as well.
+a resume inside the TTL is a cache hit as well. A `/shake` between the
+last call and the resume is the one case where it is not: the frame is
+then the edited projection the actor installed at the edit, which is
+also what the next call would have sent. A masked head with nothing left
+in it is omitted but keeps its `tail_from`: folded or cleared rows never
+re-enter the frame.
 
 **UI.** `Loaded.history` interleaves `HistoryEntry::Compacted { epoch,
 summary }` after the entry for `at_seq`. The TUI renders it as a divider
@@ -717,6 +740,14 @@ provider has already cached (tools, system and every visible message are
 unchanged), so it is a hit up to the new tail — the same reason §8.3's
 summariser is cache-hot.
 
+**Masks (48 §4.4, added 2026-09-18).** `/shake` exclusions stay attached
+to their rows and heads: a hidden turn that comes back with `/redo` comes
+back with its masks, `commit_cut` drops masks with the rows it deletes,
+and fork copies `excluded` with the rows and epochs. Neither `/undo` nor
+`/redo` restores removed content; there is no un-shake. Every move of
+`cut_at` also bumps `sessions.context_revision`, so a picker opened on the
+old view is refused as stale.
+
 **Refused while a turn is in flight** (`Err("turn in flight")`): the loop
 holds `SessionState` for the duration of a turn and would otherwise
 persist after a row the store had just hidden. `Undo`/`Redo` are `ask` on
@@ -726,8 +757,10 @@ the hidden/restored turn's user text, for the info card.
 Not doing: branching (a cut is linear; the hidden tail is gone after the
 next write), undo to a steer point inside a turn (it would leave a frame
 ending in tool results, which no provider accepts as a prefix for a new
-user message), an event for other frontends (they see the cut at their next
-`Loaded`, which already carries `undone`).
+user message). Other frontends see the cut at their next `Loaded` (which
+carries `undone`); since 48 the actor also publishes `ContextChanged {
+reason: "rewind" }` after an undo/redo so a client holding the old
+revision reloads instead of acting on it.
 
 ## 9. Todo list
 
@@ -1027,11 +1060,15 @@ Each step left `wth` runnable.
 - **In-place pruning of old tool results** (jarvis `compact.rs:635-720`).
   Every rewrite re-caches the rest of the history at 1.25× to save tokens
   that cost 0.1× cached. Bound output at append time instead (§6); the
-  compaction fold is the only place old bodies leave the window.
+  compaction fold is the only *automatic* place old bodies leave the window.
   `cut` and `snap` (11) are not this: they build a new head and drain
   `history` the same way as `summary`; they are not in-place rewrites.
+  `/shake` (48) is not this either: it is one user-confirmed edit between
+  turns, logged as `context_edit` (§0), with no threshold, sweeper or
+  policy behind it; the stored bodies stay and only a mask is written.
 - **Model-driven shelve/recall tools.** Same invalidation, plus a second
-  stub protocol. `read_file` on the spill path is the recall.
+  stub protocol. `read_file` on the spill path is the recall. Still true
+  after 48: `remove_context` is an RPC/UI command, not a tool.
 - **Sticky re-injection** (jarvis todos, harness status, steering banners
   kept "fresh" by removing the old copy and re-appending). Replaced by §9:
   the todo list is harness state; the model reads it from tool output,

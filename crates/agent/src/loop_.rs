@@ -8,7 +8,12 @@
 //! Input arriving mid-turn queues in `Shared::steer` and is injected after the
 //! tool batch; a caller-minted [`InputId`] rides along so the UI can follow it
 //! (`InputQueued` → `InputInjected` | `InputWithdrawn`). Harness inputs
-//! (`<subagent_result>`, `<message>`) carry no id and publish nothing.
+//! (`<subagent_result>`, `<message>`) carry no id and publish nothing. Every
+//! input routed by `Agents` carries an [`InputTicket`], acknowledged with
+//! [`InputConsumed`] once persisted; the actor reports [`TurnEntered`] /
+//! [`TurnReturned`], and a natural stop proposes a [`DecideYield`] candidate
+//! before `TurnFinished` (design doc 47 §4.3): an accepted one appends the
+//! `<todo_continue>` note and continues the same turn.
 //! [`UndoTurn`]/[`RedoTurn`] move the store's cut between turns; the first
 //! write afterwards (`Session::claim`) commits it.
 
@@ -36,7 +41,11 @@ use runtime::{InputId, Runtime, SessionId, TurnId};
 use tokio_util::sync::CancellationToken;
 use tools::{Invoke, ListPrompts, ListTools, REGISTRY_ACTOR, ToolOutput, ToolRegistry, ToolSpec};
 
-use crate::backend::Backend;
+use crate::backend::{Backend, natural_stop};
+use crate::context::{ContextHistory, ContextRemoval, ContextSnapshot, ContextTarget};
+use crate::continuation::{
+    self, DecideYield, InputConsumed, InputTicket, TurnEntered, TurnReturned, YieldDecision,
+};
 use crate::frame::{self, Frame, Transport};
 use crate::peers::SpawnSubagentTool;
 use crate::repl::{self, Repl, RunCx};
@@ -78,6 +87,10 @@ pub struct UserInput {
     pub text: String,
     /// Image files to attach (17 §2); one `Binary` part each.
     pub files: Vec<PathBuf>,
+    /// The supervisor's admission (47 §4.3); acknowledged with
+    /// [`InputConsumed`] once persisted. `None` only for inputs that bypass
+    /// `Agents` routing, which can never open a continuation.
+    pub ticket: Option<InputTicket>,
 }
 
 /// What one input carries into the context: text plus image files (17 §2).
@@ -90,6 +103,8 @@ pub struct Input {
     /// (regenerate, design doc 29 §4.2). `text` is still its rendering, for
     /// `TurnStarted` and the title.
     pub replay: Option<ChatMessage>,
+    /// See [`UserInput::ticket`].
+    pub ticket: Option<InputTicket>,
 }
 
 /// One queued input: the caller's id (`None` for harness inputs) and its content.
@@ -119,6 +134,8 @@ pub struct RestartTurn {
     pub turn: i64,
     /// New text and files, or `None` to replay the opener.
     pub input: Option<(String, Vec<PathBuf>)>,
+    /// The supervisor's admission of the restarted opener (47 §4.3).
+    pub ticket: Option<InputTicket>,
 }
 
 /// `tell`: abort the in-flight turn, if any.
@@ -151,6 +168,31 @@ pub struct CompactNow {
 /// (10 §5.2). `Err("turn in flight")` while a turn runs.
 pub struct HarvestNow;
 
+/// `ask` → `Result<ContextSnapshot, String>`: the active-context inventory
+/// (48 §3.2). Not refused while busy: `editable`/`reason` say so instead.
+pub struct ContextItemsNow;
+
+/// `ask` → `Result<ContextRemoval, String>`: remove `targets` from the context
+/// (48 §4.3). Idle sessions only; no model call, no cut, no claim.
+/// `Err("Session is busy; …" | <store error: stale revision, unknown target, …>)`.
+pub struct RemoveContextNow {
+    /// Session revision the caller's view was read at; a mismatch refuses.
+    pub expected_revision: String,
+    /// Messages / tool-call groups to mask out of the active context.
+    pub targets: Vec<ContextTarget>,
+}
+
+/// `ask` → `Result<ContextHistory, String>`: raw history plus context
+/// membership, read consistently (48 §5). `settled_only` refuses while a
+/// turn/compaction/harvest owns the state instead of returning a running frame.
+pub struct ContextHistoryNow {
+    /// Refuse (`BUSY`) unless the session is idle, so the frame is settled.
+    pub settled_only: bool,
+}
+
+/// Refusal text for context edits while the state is owned by a task (48 §2.3).
+const BUSY: &str = "Session is busy; wait or stop it, then retry.";
+
 /// `tell` (from the turn task to its own session): the turn ended.
 pub struct TurnDone(SessionState);
 
@@ -172,8 +214,12 @@ pub struct SessionState {
     pub pressure_sent: bool,
     /// When the last call returned and its prompt size, for miss detection (07 §7).
     pub prev_call: Option<(Instant, u32)>,
-    /// Run-local todo list (07 §9).
+    /// The committed plan (07 §9, 47 §5.1): the store's latest visible
+    /// snapshot, mutated only through an atomic append with a tool batch.
     pub todos: Vec<todo::Todo>,
+    /// Projection version of `todos` (47 §5.2); `0` until the first load or
+    /// for a session that never had a plan.
+    pub todo_version: u64,
     /// Round of this turn in which `todo` was last called or reminded.
     pub todo_touched_round: u32,
     /// Concept ids hinted this epoch (10 §4.2); cleared by compaction, not persisted.
@@ -216,6 +262,7 @@ impl SessionState {
             pressure_sent: false,
             prev_call: None,
             todos: Vec::new(),
+            todo_version: 0,
             todo_touched_round: 0,
             hinted: BTreeSet::new(),
             knowledge_hinted_round: 0,
@@ -230,6 +277,36 @@ impl SessionState {
             window_hint: 0,
         }
     }
+
+    /// 48 §4.3 steps 4–5: replace the frame with a store-prepared effective
+    /// projection between turns. Todos, runtime, knowledge, title cadence and
+    /// usage totals stay; skill membership is recomputed from the new frame,
+    /// `used` is seeded with the [`compact::est`] estimate (the provider's
+    /// number replaces it next call) and the cache baseline is dropped so the
+    /// next call is not logged as an unexplained prefix miss. Returns the
+    /// estimate and whether the skill set changed.
+    pub fn install(
+        &mut self,
+        epoch: u32,
+        head: Option<ChatMessage>,
+        history: Vec<(i64, ChatMessage)>,
+    ) -> (u32, bool) {
+        let used = history
+            .iter()
+            .fold(head.as_ref().map_or(0, compact::est), |acc, (_, m)| {
+                acc.saturating_add(compact::est(m))
+            });
+        let skills = skills::in_frame(&history);
+        let skills_changed = skills != self.skills;
+        self.epoch = epoch;
+        self.head = head;
+        self.history = history;
+        self.skills = skills;
+        self.used = used;
+        self.prev_call = None;
+        self.pressure_sent = false;
+        (used, skills_changed)
+    }
 }
 
 /// One conversation. Spawn with `Session::spawn(session)`.
@@ -241,6 +318,9 @@ pub struct Session {
     state: Option<SessionState>,
     /// Cancels the in-flight turn; `None` when idle.
     inflight: Option<CancellationToken>,
+    /// What [`TurnEntered`] announced: `Some(Some(turn))` for a model turn,
+    /// `Some(None)` for a compaction/harvest mini-turn, `None` when idle.
+    entered: Option<Option<TurnId>>,
     /// Whether `sessions.title` is set.
     titled: bool,
     /// Effort set while a turn ran (or between turns); applied when the next turn starts.
@@ -326,7 +406,8 @@ impl Session {
         catalog: Arc<models::Catalog>,
         pool: Option<Arc<Pool>>,
     ) -> Self {
-        let titled = !state.history.is_empty() || state.head.is_some();
+        // A head removed from context (48 §4.1) leaves `epoch > 0` with no head.
+        let titled = !state.history.is_empty() || state.head.is_some() || state.epoch > 0;
         let (model, error) = model;
         let mut current = Current::new(model, error, &client, &auth);
         current.effort = effort;
@@ -350,9 +431,23 @@ impl Session {
             },
             state: Some(state),
             inflight: None,
+            entered: None,
             titled,
             pending_effort: None,
         }
+    }
+
+    /// 47 §4.2: a task owns the state from here; tell the supervisor before
+    /// any event or spawn can race the announcement. `turn: None` is a
+    /// compaction/harvest mini-turn.
+    async fn enter(&mut self, cancel: CancellationToken, turn: Option<TurnId>) {
+        self.inflight = Some(cancel);
+        self.entered = Some(turn);
+        continuation::notify(TurnEntered {
+            session: self.shared.id,
+            turn,
+        })
+        .await;
     }
 
     /// The idle state, with any pending undo cut committed first: this is the
@@ -366,10 +461,96 @@ impl Session {
         Some(state)
     }
 
+    /// Nobody owns the state: no turn, compaction or harvest in flight.
+    fn idle(&self) -> bool {
+        self.inflight.is_none() && self.state.is_some()
+    }
+
+    /// Fill the actor-owned half of a snapshot (48 §3.2): the store knows the
+    /// inventory, only the actor knows whether an edit would be admitted now.
+    fn mark(&self, snap: &mut ContextSnapshot) {
+        let idle = self.idle();
+        snap.editable = idle;
+        snap.reason = (!idle).then(|| BUSY.to_owned());
+    }
+
+    /// 48 §3.2: tell every client the context projection changed.
+    async fn context_changed(&self, revision: String, reason: &str) {
+        self.shared
+            .rt
+            .publish(AgentEvent::ContextChanged {
+                session: self.shared.id,
+                revision,
+                reason: reason.to_owned(),
+            })
+            .await;
+    }
+
+    /// [`Session::context_changed`] with the store's current revision.
+    async fn publish_revision(&self, reason: &str) {
+        match self.shared.store.context_revision(self.shared.id).await {
+            Ok(revision) => self.context_changed(revision, reason).await,
+            Err(e) => tracing::warn!(session = %self.shared.id, "context_revision: {e:#}"),
+        }
+    }
+
+    /// [`SessionState::install`] on the idle state, publishing the skill badge
+    /// when membership moved.
+    async fn install(
+        &mut self,
+        epoch: u32,
+        head: Option<ChatMessage>,
+        history: Vec<(i64, ChatMessage)>,
+    ) {
+        let Some(state) = self.state.as_mut() else {
+            // Callers check `idle()` first.
+            return;
+        };
+        let (_, skills_changed) = state.install(epoch, head, history);
+        if skills_changed {
+            let skills = state.skills.iter().cloned().collect();
+            self.shared
+                .rt
+                .publish(AgentEvent::SkillsChanged {
+                    session: self.shared.id,
+                    skills,
+                })
+                .await;
+        }
+    }
+
+    /// 47 §5.2: install the store's visible plan into the idle state. A rewind
+    /// selects an older list under a newer version and announces it; the lazy
+    /// first-turn load (`todo_version == 0`, never read) announces nothing the
+    /// UI has not already seen through `Loaded.todos`. A failed read keeps
+    /// the state as it is: an unavailable plan never authorises anything.
+    async fn load_todos(&mut self, announce: bool) {
+        let Some(state) = self.state.as_mut() else {
+            return;
+        };
+        let snapshot = match self.shared.store.todos(self.shared.id).await {
+            Ok(s) => s,
+            Err(e) => return tracing::warn!(session = %self.shared.id, "todos: {e:#}"),
+        };
+        state.todo_version = snapshot.version;
+        if !announce {
+            state.todos = snapshot.items;
+            return;
+        }
+        state.todos = snapshot.items.clone();
+        self.shared
+            .rt
+            .publish(AgentEvent::TodoChanged {
+                session: self.shared.id,
+                snapshot,
+            })
+            .await;
+    }
+
     /// [`UndoTurn`]/[`RedoTurn`]: move the store's cut, reload the frame from
     /// the visible rows, and return the first line of the moved turn's user text.
     async fn cut(&mut self, undo: bool) -> Result<String, String> {
-        if self.inflight.is_some() || self.state.is_none() {
+        if !self.idle() {
             return Err("turn in flight".into());
         }
         let id = self.shared.id;
@@ -382,6 +563,10 @@ impl Session {
         let text = moved.map_err(|e| e.to_string())?.ok_or(empty)?;
         let (epoch, head, history) = store.frame(id).await.map_err(|e| e.to_string())?;
         self.state = Some(SessionState::resume(epoch, head, history));
+        // 47 §5.2: the plan follows the visible cut, under a fresh version.
+        self.load_todos(true).await;
+        // 48 §4.4: restored rows bring their masks back; old views must not act on them.
+        self.publish_revision("rewind").await;
         Ok(text.lines().next().unwrap_or("").chars().take(80).collect())
     }
 
@@ -389,13 +574,19 @@ impl Session {
     /// persisted here so `TurnStarted` can carry its seq (design doc 29 §4.2);
     /// the rest are persisted by the turn task.
     async fn start_turn(&mut self, inputs: Vec<Queued>, me: &ActorRef<Self>) {
+        // 47 §5.2: a resumed actor starts with an unread plan.
+        // ponytail: version 0 also means "never had a plan", so such a session
+        // re-reads one indexed row per turn start; keep a loaded flag if that shows.
+        if self.state.as_ref().is_some_and(|s| s.todo_version == 0) {
+            self.load_todos(false).await;
+        }
         let Some(state) = self.claim().await else {
             // Only reachable if a turn is already running; the caller checked `inflight`.
             return;
         };
         let turn = TurnId::new();
         let cancel = self.shared.rt.shutdown.child_token();
-        self.inflight = Some(cancel.clone());
+        self.enter(cancel.clone(), Some(turn)).await;
         if !self.titled {
             self.titled = true;
             if let Some((_, first)) = inputs.first() {
@@ -471,7 +662,12 @@ impl Message<UserInput> for Session {
 
     async fn handle(
         &mut self,
-        UserInput { id, text, files }: UserInput,
+        UserInput {
+            id,
+            text,
+            files,
+            ticket,
+        }: UserInput,
         ctx: &mut Context<Self, Self::Reply>,
     ) {
         if self.inflight.is_none() {
@@ -480,6 +676,7 @@ impl Message<UserInput> for Session {
                 text,
                 files,
                 replay: None,
+                ticket,
             };
             return self.start_turn(vec![(id, input)], &me).await;
         }
@@ -498,6 +695,7 @@ impl Message<UserInput> for Session {
                     text,
                     files,
                     replay: None,
+                    ticket,
                 },
             ));
         if let Some(event) = event {
@@ -576,26 +774,40 @@ impl Message<RestartTurn> for Session {
         m: RestartTurn,
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        if self.inflight.is_some() || self.state.is_none() {
+        if !self.idle() {
             return Err("turn in flight".into());
         }
         let id = self.shared.id;
         let store = &self.shared.store;
-        let opener = store.cut_to(id, m.turn).await.map_err(|e| e.to_string())?;
-        let (epoch, head, history) = store.frame(id).await.map_err(|e| e.to_string())?;
-        self.state = Some(SessionState::resume(epoch, head, history));
+        // 48 §4.4 regenerate: replay what the model would see, not the raw row —
+        // and refuse before the destructive cut when nothing of it is left.
         let input = match m.input {
             Some((text, files)) => Input {
                 text,
                 files,
                 replay: None,
+                ticket: m.ticket,
             },
-            None => Input {
-                text: text_of(&opener.content),
-                files: vec![],
-                replay: Some(opener),
-            },
+            None => {
+                let opener = store
+                    .effective_message(id, m.turn)
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .filter(|o| !text_of(&o.content).trim().is_empty())
+                    .ok_or("opener was removed from context; edit it instead")?;
+                Input {
+                    text: text_of(&opener.content),
+                    files: vec![],
+                    replay: Some(opener),
+                    ticket: m.ticket,
+                }
+            }
         };
+        store.cut_to(id, m.turn).await.map_err(|e| e.to_string())?;
+        let (epoch, head, history) = store.frame(id).await.map_err(|e| e.to_string())?;
+        self.state = Some(SessionState::resume(epoch, head, history));
+        // 47 §5.2: the plan below the cut, like undo.
+        self.load_todos(true).await;
         let me = ctx.actor_ref().clone();
         self.start_turn(vec![(None, input)], &me).await;
         Ok(())
@@ -670,7 +882,7 @@ impl Message<CompactNow> for Session {
             return reply;
         };
         let cancel = self.shared.rt.shutdown.child_token();
-        self.inflight = Some(cancel.clone());
+        self.enter(cancel.clone(), None).await;
         let mut turn = Turn::new(self.shared.clone(), None, cancel, state);
         let me = ctx.actor_ref().clone();
         let style = m.style;
@@ -697,7 +909,7 @@ impl Message<HarvestNow> for Session {
             return reply;
         };
         let cancel = self.shared.rt.shutdown.child_token();
-        self.inflight = Some(cancel.clone());
+        self.enter(cancel.clone(), None).await;
         let mut turn = Turn::new(self.shared.clone(), None, cancel, state);
         let me = ctx.actor_ref().clone();
         tokio::spawn(async move {
@@ -712,15 +924,122 @@ impl Message<HarvestNow> for Session {
 impl Message<TurnDone> for Session {
     type Reply = ();
 
+    /// The state is back: tell the supervisor first (47 §4.2: this handback,
+    /// not `TurnFinished`, is the runner's own idle transition), then start
+    /// the queued steering, whose tickets stayed pending meanwhile.
     async fn handle(&mut self, TurnDone(state): TurnDone, ctx: &mut Context<Self, Self::Reply>) {
         self.state = Some(state);
         self.inflight = None;
+        if let Some(turn) = self.entered.take() {
+            continuation::notify(TurnReturned {
+                session: self.shared.id,
+                turn,
+            })
+            .await;
+        }
         let queued =
             std::mem::take(&mut *self.shared.steer.lock().unwrap_or_else(|p| p.into_inner()));
-        if !queued.is_empty() {
+        if queued.is_empty() {
+            // 48 §3.3: one coalesced notification per handback (turn, `/compact`,
+            // harvest) so clients reconcile live cards with persisted identities.
+            // With queued input the next turn starts at once: clients see it
+            // busy through `TurnStarted`, and its own handback notifies later.
+            self.publish_revision("settled").await;
+        } else {
             let me = ctx.actor_ref().clone();
             self.start_turn(queued, &me).await;
         }
+    }
+}
+
+impl Message<ContextItemsNow> for Session {
+    type Reply = Result<ContextSnapshot, String>;
+
+    async fn handle(
+        &mut self,
+        _: ContextItemsNow,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let mut snap = self
+            .shared
+            .store
+            .context_items(self.shared.id)
+            .await
+            .map_err(|e| e.to_string())?;
+        self.mark(&mut snap);
+        Ok(snap)
+    }
+}
+
+impl Message<RemoveContextNow> for Session {
+    type Reply = Result<ContextRemoval, String>;
+
+    async fn handle(
+        &mut self,
+        m: RemoveContextNow,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.remove_context(m).await
+    }
+}
+
+impl Message<ContextHistoryNow> for Session {
+    type Reply = Result<ContextHistory, String>;
+
+    async fn handle(
+        &mut self,
+        m: ContextHistoryNow,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.context_history(m).await
+    }
+}
+
+impl Session {
+    /// 48 §4.3: idle only — not `claim`, which would commit an unrelated undo
+    /// cut. The store checks the revision, resolves targets against persisted
+    /// active context, writes masks and bumps the revision in one transaction
+    /// (and logs the `context_edit`), and hands back the effective frame it
+    /// committed; that frame replaces the idle state before any other message
+    /// is handled.
+    async fn remove_context(&mut self, m: RemoveContextNow) -> Result<ContextRemoval, String> {
+        if !self.idle() {
+            return Err(BUSY.into());
+        }
+        // Commit is the store's last fallible step: an `Err` wrote nothing, so
+        // the idle state stays exactly as it was.
+        let (removal, epoch, head, history) = self
+            .shared
+            .store
+            .remove_context(self.shared.id, &m.expected_revision, &m.targets)
+            .await
+            .map_err(|e| e.to_string())?;
+        if removal.revision == m.expected_revision {
+            // Already-removed targets: nothing written, nothing to install or announce.
+            return Ok(removal);
+        }
+        self.install(epoch, head, history).await;
+        self.context_changed(removal.revision.clone(), "context_edit")
+            .await;
+        Ok(removal)
+    }
+
+    /// 48 §5: `settled_only` is the post-edit reload — refused while a task
+    /// owns the state rather than returning a frame a running turn is
+    /// appending to. A plain read is allowed at any time and reports busy in
+    /// its snapshot.
+    async fn context_history(&mut self, m: ContextHistoryNow) -> Result<ContextHistory, String> {
+        if m.settled_only && !self.idle() {
+            return Err(BUSY.into());
+        }
+        let mut history = self
+            .shared
+            .store
+            .context_history(self.shared.id)
+            .await
+            .map_err(|e| e.to_string())?;
+        self.mark(&mut history.snapshot);
+        Ok(history)
     }
 }
 
@@ -764,6 +1083,11 @@ struct Turn {
     salvaged: u32,
     /// `(name, args)` of the last failed tool call, for the repeat-failure note (36 §4.3).
     last_failure: Option<(String, serde_json::Value)>,
+    /// Control epoch of the ticket that opened this turn (47 §4.3); `None`
+    /// when no admitted input did, which never proposes a continuation.
+    control_epoch: Option<u64>,
+    /// Natural-yield candidates proposed this turn; each is decided once.
+    checkpoints: u64,
 }
 
 /// Why a model call did not return a [`StreamEnd`].
@@ -785,6 +1109,9 @@ enum Round {
     Retry,
     /// The turn is over with this stop reason.
     Stop(String),
+    /// A recognised, tool-free provider completion outside landing/recovery
+    /// (47 §3.3): the one stop that may propose a same-turn continuation.
+    Yield(String),
 }
 
 /// genai namespace of a `adapter::model` id.
@@ -887,6 +1214,8 @@ impl Turn {
             retries: AtomicU32::new(0),
             salvaged: 0,
             last_failure: None,
+            control_epoch: None,
+            checkpoints: 0,
         }
     }
 
@@ -950,21 +1279,24 @@ impl Turn {
     }
 
     /// Append to the store and the history (07 §2.2.1: the only way in).
-    async fn persist(&mut self, msg: ChatMessage) {
-        let seq = match self.shared.store.append(self.shared.id, &msg).await {
-            Ok(seq) => seq,
+    /// `false` when the store refused: the row is in the frame for this
+    /// process only, and nothing that requires durability may treat it as done.
+    async fn persist(&mut self, msg: ChatMessage) -> bool {
+        let (seq, stored) = match self.shared.store.append(self.shared.id, &msg).await {
+            Ok(seq) => (seq, true),
             Err(e) => {
                 self.error(format!("store: {e:#}")).await;
-                self.state.history.last().map_or(0, |(s, _)| s + 1)
+                (self.state.history.last().map_or(0, |(s, _)| s + 1), false)
             }
         };
         self.state.history.push((seq, msg));
+        stored
     }
 
-    /// A harness note: user-role tail message (07 §8.7).
-    async fn note(&mut self, kind: &str, text: &str) {
+    /// A harness note: user-role tail message (07 §8.7). See [`Turn::persist`] for the flag.
+    async fn note(&mut self, kind: &str, text: &str) -> bool {
         self.persist(ChatMessage::user(format!("<{kind}>\n{text}\n</{kind}>")))
-            .await;
+            .await
     }
 
     /// 36 §3: a frame ending in an assistant `tool_use` with no `tool_result`
@@ -1260,16 +1592,31 @@ impl Turn {
     }
 
     /// Persist one input (the replayed opener when set, design doc 29 §4.2);
-    /// a `<skill>` injection (04 §2.4) also marks the skill loaded.
+    /// a `<skill>` injection (04 §2.4) also marks the skill loaded. A ticketed
+    /// input is acknowledged to the supervisor only once the store has it
+    /// (47 §4.1 AcceptInput); a refused write leaves the ticket pending, so
+    /// the failure surfaces instead of an unrecorded input authorising a nudge.
     async fn take_input(&mut self, mut input: Input) {
         if let Some((name, _, _)) = skills::injected(&input.text) {
             self.note_skill(name.to_owned()).await;
         }
+        let ticket = input.ticket;
         let msg = match input.replay.take() {
             Some(m) => m,
             None => user_message(input),
         };
-        self.persist(msg).await;
+        let stored = self.persist(msg).await;
+        if let (Some(ticket), Some(turn)) = (ticket, self.turn)
+            && stored
+        {
+            self.control_epoch.get_or_insert(ticket.epoch);
+            continuation::notify(InputConsumed {
+                session: self.shared.id,
+                id: ticket.id,
+                turn,
+            })
+            .await;
+        }
     }
 
     /// A skill body entered the frame; publish the set when it grew.
@@ -1347,6 +1694,14 @@ impl Turn {
                         }
                         Round::Retry => {}
                         Round::Stop(reason) => break reason,
+                        // 47 §4.3/§4.5: an accepted continuation appended its note and
+                        // resumes this same turn — same id, rounds, landing state,
+                        // counters and token; no `TurnFinished` in between.
+                        Round::Yield(reason) => {
+                            if !self.propose(turn, rounds).await {
+                                break reason;
+                            }
+                        }
                     }
                 }
             }
@@ -1439,6 +1794,12 @@ impl Turn {
             Ok(None) => return,
             Err(e) => return tracing::warn!(session = %session, "title: {e:#}"),
         };
+        // 48 §4.3: the digest below is this revision's effective content; a
+        // context edit (or any append) before the reply lands makes it stale.
+        let revision = match store.context_revision(session).await {
+            Ok(r) => r,
+            Err(e) => return tracing::warn!(session = %session, "title: {e:#}"),
+        };
         let digest = ChatMessage::user(title::digest(
             &old,
             self.state.head.as_ref(),
@@ -1476,8 +1837,8 @@ impl Turn {
             if new == old {
                 return;
             }
-            match store.set_title(session, &new).await {
-                Ok(()) => {
+            match store.set_title_at_revision(session, &new, &revision).await {
+                Ok(true) => {
                     tracing::info!(session = %session, from = %old, to = %new, "title");
                     rt.publish(AgentEvent::TitleChanged {
                         session,
@@ -1485,9 +1846,72 @@ impl Turn {
                     })
                     .await;
                 }
+                Ok(false) => {
+                    tracing::info!(session = %session, revision, to = %new, "title: context moved since the digest; discarded");
+                }
                 Err(e) => tracing::warn!(session = %session, "set_title: {e:#}"),
             }
         });
+    }
+
+    /// 47 §4.3: propose this natural stop as a same-turn continuation
+    /// candidate and, when the supervisor commits one, append the reminder.
+    /// `true` means "call the model again". The supervisor certifies
+    /// quiescence; this side only refuses what can never qualify — no
+    /// admitted opener, nothing actionable, cancelled — and re-checks the
+    /// token and the steering queue after the commit, before the note is
+    /// persisted: input admitted after the decision was made is queued here
+    /// by now, and finishing lets it open the next turn instead of landing
+    /// behind a reminder in this one (a discarded reservation injects
+    /// nothing). `round` restarts the in-turn `<todo>` reminder clock so it
+    /// does not follow this note immediately (§2.1).
+    async fn propose(&mut self, turn: TurnId, round: u32) -> bool {
+        let Some(epoch) = self.control_epoch else {
+            return false;
+        };
+        if !todo::actionable(&self.state.todos) || self.cancel.is_cancelled() {
+            return false;
+        }
+        self.checkpoints += 1;
+        let candidate = DecideYield {
+            session: self.shared.id,
+            turn,
+            checkpoint: self.checkpoints,
+            epoch,
+            snapshot: todo::TodoSnapshot {
+                version: self.state.todo_version,
+                source: todo::TodoSource::Native,
+                items: self.state.todos.clone(),
+            },
+            cancel: self.cancel.clone(),
+        };
+        let decision = tokio::select! {
+            _ = self.cancel.cancelled() => YieldDecision::Finish,
+            d = continuation::decide(candidate) => d,
+        };
+        let YieldDecision::Continue { attempt } = decision else {
+            return false;
+        };
+        let steering = !self
+            .shared
+            .steer
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .is_empty();
+        if self.cancel.is_cancelled() || steering {
+            return false;
+        }
+        let Some(body) = todo::render_reminder(&self.state.todos, attempt) else {
+            return false;
+        };
+        tracing::info!(session = %self.shared.id, ?turn, checkpoint = self.checkpoints, attempt, "todo continue");
+        // A reminder the store refused is not a continuation the model may run
+        // on: the failure is already public; finish this turn instead.
+        if !self.note(todo::CONTINUE_NOTE, &body).await {
+            return false;
+        }
+        self.state.todo_touched_round = round;
+        true
     }
 
     /// One model call plus its tool batch. `round` counts calls made so far this turn.
@@ -1544,12 +1968,9 @@ impl Turn {
                 self.state.pressure_sent = true;
             }
         }
-        let open_items = self
-            .state
-            .todos
-            .iter()
-            .any(|t| matches!(t.status, todo::Status::Pending | todo::Status::InProgress));
-        if open_items && round - self.state.todo_touched_round >= todo::TODO_REMIND_ROUNDS {
+        if todo::actionable(&self.state.todos)
+            && round - self.state.todo_touched_round >= todo::TODO_REMIND_ROUNDS
+        {
             let list = todo::render(&self.state.todos);
             self.note("todo", &list).await;
             self.state.todo_touched_round = round;
@@ -1692,6 +2113,9 @@ impl Turn {
             .as_ref()
             .map(|s| s.raw().to_string())
             .unwrap_or_else(|| "end_turn".into());
+        // 47 §3.3: the display string above defaults; the classification does
+        // not. The landing call is excluded whatever it says (36 §5).
+        let mut natural = natural_stop(&end) && !self.landing;
         let calls: Vec<ToolCall> = end
             .captured_tool_calls()
             .map(|v| v.into_iter().cloned().collect())
@@ -1702,7 +2126,9 @@ impl Turn {
                 // `json-render` block would not render; the frontends already saw the text.
                 let correction =
                     needs_correction(&self.shared.cfg.surface, &self.state, &text_of(&content));
-                self.persist(ChatMessage::assistant(content)).await;
+                // An unrecorded reply cannot be continued from: the store, not
+                // this process's memory, is what a continuation resumes.
+                natural &= self.persist(ChatMessage::assistant(content)).await;
                 if let Some((fences, msg)) = correction {
                     self.state.surface_corrected = true;
                     tracing::info!(target: "surface", session = %self.shared.id, fences, "correction round");
@@ -1721,7 +2147,11 @@ impl Turn {
                 .await;
                 return Round::Tools;
             }
-            return Round::Stop(stop);
+            return if natural {
+                Round::Yield(stop)
+            } else {
+                Round::Stop(stop)
+            };
         }
         let assistant = end
             .into_assistant_message_for_tool_use()
@@ -1798,12 +2228,17 @@ impl Turn {
             outputs[i] =
                 Some(out.unwrap_or_else(|e| ToolOutput::err(format!("tool registry: {e}"))));
         }
+        // 47 §5.1: `todo` operations run against a working copy; the list is
+        // canonical only once it commits with this batch's tool message below.
+        let mut plan: Option<Vec<todo::Todo>> = None;
         for (i, call) in calls.iter().enumerate() {
             if cancelled || outputs[i].is_some() {
                 continue;
             }
             let out = if call.fn_name == todo::NAME {
-                self.todo(call.fn_arguments.clone(), round)
+                self.state.todo_touched_round = round;
+                let work = plan.get_or_insert_with(|| self.state.todos.clone());
+                Self::todo(work, call.fn_arguments.clone())
             } else {
                 tokio::select! {
                     _ = cancel.cancelled() => { cancelled = true; continue }
@@ -1821,6 +2256,8 @@ impl Turn {
         let mut repeat: Option<String> = None;
         let mut failed = false;
         let mut responses = Vec::with_capacity(calls.len());
+        // 47 §5.1: published once the batch (and any plan it changed) is committed.
+        let mut finished = Vec::with_capacity(calls.len());
         for (call, out) in calls.iter().zip(&outs) {
             let mut display = frame::truncate(&out.content, DISPLAY_OUTPUT_CHARS);
             for f in &out.files {
@@ -1828,15 +2265,14 @@ impl Turn {
                 display.push_str(&f.file_name().unwrap_or(f.as_os_str()).to_string_lossy());
                 display.push(']');
             }
-            self.publish(AgentEvent::ToolCallFinished {
+            finished.push(AgentEvent::ToolCallFinished {
                 session,
                 turn,
                 call_id: call.call_id.clone(),
                 output: display,
                 is_error: out.is_error,
                 files: out.files.clone(),
-            })
-            .await;
+            });
             // 07 §6: bounded once, here, with the full text spilled to disk.
             let content = spill::cap(
                 session,
@@ -1940,7 +2376,56 @@ impl Turn {
             }
         }
         // One tool message carrying every response (genai: `ChatMessage::from(Vec<ToolResponse>)`).
-        self.persist(ChatMessage::from(responses)).await;
+        // 47 §5.1–§5.2: a changed plan lands in the same transaction as the
+        // batch; a failed write keeps the old canonical list, the events say so
+        // and the turn ends instead of running on an unsaved frame.
+        let msg = ChatMessage::from(responses);
+        let mut changed = None;
+        match plan.filter(|p| *p != self.state.todos) {
+            None => {
+                self.persist(msg).await;
+            }
+            Some(items) => {
+                let committed = self
+                    .shared
+                    .store
+                    .append_with_todos(session, &msg, todo::TodoSource::Native, &items)
+                    .await;
+                match committed {
+                    Ok((seq, snapshot)) => {
+                        self.state.history.push((seq, msg));
+                        self.state.todos = items;
+                        self.state.todo_version = snapshot.version;
+                        changed = Some(snapshot);
+                    }
+                    Err(e) => {
+                        let e = format!("store: {e:#}");
+                        for (event, call) in finished.iter_mut().zip(&calls) {
+                            if call.fn_name == todo::NAME
+                                && let AgentEvent::ToolCallFinished {
+                                    output, is_error, ..
+                                } = event
+                            {
+                                *output = format!("ERROR: not saved: {e}");
+                                *is_error = true;
+                            }
+                        }
+                        for event in finished {
+                            self.publish(event).await;
+                        }
+                        self.error(e).await;
+                        return Round::Stop("error".into());
+                    }
+                }
+            }
+        }
+        for event in finished {
+            self.publish(event).await;
+        }
+        if let Some(snapshot) = changed {
+            self.publish(AgentEvent::TodoChanged { session, snapshot })
+                .await;
+        }
         if let Some(name) = repeat {
             self.note(
                 "steer",
@@ -1964,14 +2449,14 @@ impl Turn {
         Round::Tools
     }
 
-    /// The loop-local `todo` tool (07 §9): the rendered list is the output.
-    fn todo(&mut self, args: serde_json::Value, round: u32) -> ToolOutput {
-        self.state.todo_touched_round = round;
+    /// The loop-local `todo` tool (07 §9) against the batch's working copy:
+    /// the rendered list is the output.
+    fn todo(list: &mut Vec<todo::Todo>, args: serde_json::Value) -> ToolOutput {
         let applied = serde_json::from_value::<todo::TodoArgs>(args)
             .map_err(|e| format!("bad arguments: {e}"))
-            .and_then(|a| todo::apply(&mut self.state.todos, a));
+            .and_then(|a| todo::apply(list, a));
         match applied {
-            Ok(()) => ToolOutput::ok(todo::render(&self.state.todos)),
+            Ok(()) => ToolOutput::ok(todo::render(list)),
             Err(e) => ToolOutput::err(e),
         }
     }
@@ -2153,7 +2638,6 @@ impl Turn {
             }
             CompactStyle::Cut => cut_body(),
             CompactStyle::Clear => {
-                self.state.todos.clear();
                 "Context cleared by the user. Nothing of the earlier conversation is carried over; the session and its settings continue.".to_owned()
             }
             CompactStyle::Summary => {
@@ -2199,7 +2683,9 @@ impl Turn {
             Ok(Some(agents)) => agents.ask(Roster { session }).await.unwrap_or_default(),
             _ => String::new(),
         };
-        let todos = (!self.state.todos.is_empty()).then(|| todo::render(&self.state.todos));
+        // A `/clear` head carries no plan: the list empties with this record.
+        let todos = (style != CompactStyle::Clear && !self.state.todos.is_empty())
+            .then(|| todo::render(&self.state.todos));
         let runtime = match &self.repl {
             Some(r) => r.render_inventory(),
             None => repl::saved_inventory(&self.shared.rt.data_dir, session),
@@ -2278,11 +2764,35 @@ impl Turn {
             .history
             .get(keep_from)
             .map_or(at_seq + 1, |m| m.0);
-        self.shared
-            .store
-            .compact(session, n, at_seq, tail_from, &head)
-            .await
-            .map_err(|e| format!("store: {e:#}"))?;
+        // 11 §2.4 / 47 §5.2: `/clear` empties the plan in the compaction's
+        // transaction, anchored at its boundary; the empty card is published
+        // only after that commit. Other styles leave the plan untouched.
+        let cleared = if style == CompactStyle::Clear {
+            let snapshot = self
+                .shared
+                .store
+                .compact_with_todos(
+                    session,
+                    n,
+                    at_seq,
+                    tail_from,
+                    &head,
+                    todo::TodoSource::Native,
+                    &[],
+                )
+                .await
+                .map_err(|e| format!("store: {e:#}"))?;
+            self.state.todos.clear();
+            self.state.todo_version = snapshot.version;
+            Some(snapshot)
+        } else {
+            self.shared
+                .store
+                .compact(session, n, at_seq, tail_from, &head)
+                .await
+                .map_err(|e| format!("store: {e:#}"))?;
+            None
+        };
         // 07 §2.2.1: the one non-append mutation of history.
         self.state.history.drain(..keep_from);
         let after = self
@@ -2318,6 +2828,10 @@ impl Turn {
             style,
         })
         .await;
+        if let Some(snapshot) = cleared {
+            self.publish(AgentEvent::TodoChanged { session, snapshot })
+                .await;
+        }
         Ok(n)
     }
 
@@ -2571,6 +3085,256 @@ fn progress_due(prev: Option<&Progress>, now: Instant, len: usize) -> bool {
 mod tests {
     use super::*;
     use crate::skills;
+
+    /// 48 §4.3: a context edit swaps the frame but not the run-local state,
+    /// reseeds the estimate and drops the cache baseline; a head removed with
+    /// its epoch retained is a legal frame.
+    #[test]
+    fn install_swaps_frame_and_keeps_run_state() {
+        let skill = ChatMessage::user(skills::inject_text("deploy", "body", ""));
+        let mut state = SessionState::resume(
+            1,
+            Some(ChatMessage::user(
+                "<context_summary epoch=\"1\">s</context_summary>",
+            )),
+            vec![(3, skill), (4, ChatMessage::user("with image"))],
+        );
+        assert_eq!(state.skills.iter().collect::<Vec<_>>(), ["deploy"]);
+        state.todos = vec![todo::Todo {
+            text: "keep me".into(),
+            status: todo::Status::Pending,
+            reason: None,
+        }];
+        state.used = 9999;
+        state.prev_call = Some((Instant::now(), 5000));
+        state.pressure_sent = true;
+        state.title_turns = 3;
+        state.files_written.insert("a.rs".into());
+        state.todo_version = 7;
+
+        // Head and the skill row removed; epoch and later row stay.
+        let tail = vec![(4, ChatMessage::user("with image"))];
+        let (used, skills_changed) = state.install(1, None, tail.clone());
+
+        assert_eq!((state.epoch, state.head.is_none()), (1, true));
+        assert_eq!(state.history.len(), 1);
+        assert_eq!(state.history[0].0, 4);
+        assert!(skills_changed && state.skills.is_empty());
+        assert_eq!(used, compact::est(&tail[0].1));
+        assert_eq!(state.used, used);
+        assert!(state.prev_call.is_none() && !state.pressure_sent);
+        assert_eq!((state.todos.len(), state.todo_version), (1, 7));
+        assert_eq!(state.title_turns, 3);
+        assert!(state.files_written.contains("a.rs"));
+
+        // Same skill set again: no badge publish.
+        let (_, changed) = state.install(1, None, tail);
+        assert!(!changed);
+    }
+
+    /// 48 §2.3 / §4.3: a context edit is admitted only while nobody owns the
+    /// state. Refused or failed edits leave the store and the live frame
+    /// untouched; an admitted one installs exactly the frame the store
+    /// committed, keeps the plan, starts no turn, and the next trigger
+    /// projection is that frame's estimate.
+    #[tokio::test]
+    async fn context_edit_is_idle_only_and_installs_committed_frame() {
+        let dir = std::env::temp_dir().join(format!("wth-loop-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open(&dir.join("sessions.sqlite")).await.unwrap();
+        let id = SessionId::new();
+        store.create_session(id, "m", None, None).await.unwrap();
+        for m in [
+            ChatMessage::user("u1"),
+            ChatMessage::assistant("a1"),
+            ChatMessage::user("u2"),
+        ] {
+            store.append(id, &m).await.unwrap();
+        }
+        let (epoch, head, history) = store.frame(id).await.unwrap();
+        let mut state = SessionState::resume(epoch, head, history);
+        state.todos = vec![todo::Todo {
+            text: "keep me".into(),
+            status: todo::Status::Pending,
+            reason: None,
+        }];
+        state.todo_version = 3;
+        let model = Resolved {
+            id: "m".into(),
+            genai: "m".into(),
+            provider: None,
+            model: None,
+        };
+        let mut session = Session::new(
+            id,
+            0,
+            (model, None),
+            None,
+            state,
+            Arc::new(AgentConfig::default()),
+            Arc::default(),
+            Arc::default(),
+            store.clone(),
+            Client::new().unwrap(),
+            Auth::stub(&dir),
+            Runtime::new(figment::Figment::new(), dir.clone()),
+            Arc::new(models::Catalog::load(&dir)),
+            None,
+        );
+        let rev = store.context_revision(id).await.unwrap();
+        let edit = |expected: &str, seq: i64| RemoveContextNow {
+            expected_revision: expected.to_owned(),
+            targets: vec![ContextTarget::Message { seq }],
+        };
+        let seqs = |history: &[(i64, ChatMessage)]| -> Vec<(i64, String)> {
+            history
+                .iter()
+                .map(|(s, m)| (*s, text_of(&m.content)))
+                .collect()
+        };
+
+        // A task owns the state: nothing is written, the settled reload is
+        // refused, a plain read reports busy.
+        let owned = session.state.take().unwrap();
+        session.inflight = Some(CancellationToken::new());
+        assert_eq!(
+            session.remove_context(edit(&rev, 2)).await,
+            Err(BUSY.to_owned())
+        );
+        assert_eq!(
+            session
+                .context_history(ContextHistoryNow { settled_only: true })
+                .await
+                .err(),
+            Some(BUSY.to_owned())
+        );
+        let read = session
+            .context_history(ContextHistoryNow {
+                settled_only: false,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            (read.snapshot.editable, read.snapshot.reason.as_deref()),
+            (false, Some(BUSY))
+        );
+        assert_eq!(store.context_revision(id).await.unwrap(), rev);
+        assert_eq!(store.frame(id).await.unwrap().2.len(), 3);
+        session.state = Some(owned);
+        session.inflight = None;
+        assert!(session.idle());
+
+        // Idle but refused by the store (stale revision, unknown target):
+        // nothing written, live frame and plan exactly as before.
+        let err = session.remove_context(edit("0", 2)).await.unwrap_err();
+        assert!(err.contains("stale revision"), "{err}");
+        assert!(session.remove_context(edit(&rev, 99)).await.is_err());
+        assert_eq!(store.context_revision(id).await.unwrap(), rev);
+        {
+            let s = session.state.as_ref().unwrap();
+            assert_eq!(s.history.len(), 3);
+            assert_eq!((s.todos.len(), s.todo_version, s.used), (1, 3, 0));
+        }
+
+        // Admitted: one revision bump, the committed effective frame is the
+        // live one, the estimate is seeded from it, the plan survives, and no
+        // turn was started (nothing appended, nobody owns the state).
+        let removal = session.remove_context(edit(&rev, 2)).await.unwrap();
+        assert_eq!(removal.messages, 1);
+        assert_ne!(removal.revision, rev);
+        assert_eq!(store.context_revision(id).await.unwrap(), removal.revision);
+        let (epoch, head, committed) = store.frame(id).await.unwrap();
+        assert_eq!(seqs(&committed), [(0, "u1".into()), (1, "a1".into())]);
+        {
+            let s = session.state.as_ref().unwrap();
+            assert_eq!((s.epoch, s.head.is_none()), (epoch, head.is_none()));
+            assert_eq!(seqs(&s.history), seqs(&committed));
+            assert_eq!(s.used, removal.estimated_tokens);
+            assert_eq!((s.todos.len(), s.todo_version), (1, 3));
+        }
+        assert!(session.idle() && session.entered.is_none());
+
+        // Already removed: a no-op at the new revision, nothing bumped.
+        let noop = session
+            .remove_context(edit(&removal.revision, 2))
+            .await
+            .unwrap();
+        assert_eq!(
+            (noop.revision.as_str(), noop.messages),
+            (removal.revision.as_str(), 0)
+        );
+        assert_eq!(store.context_revision(id).await.unwrap(), removal.revision);
+
+        // The next turn's first trigger projection (`used + appended since
+        // the turn began`) is the effective frame's estimate, not the old one.
+        let turn = Turn::new(
+            session.shared.clone(),
+            None,
+            CancellationToken::new(),
+            session.state.take().unwrap(),
+        );
+        let appended: u32 = turn.state.history[turn.since..]
+            .iter()
+            .map(|(_, m)| compact::est(m))
+            .sum();
+        let frame_est = committed
+            .iter()
+            .fold(0u32, |acc, (_, m)| acc.saturating_add(compact::est(m)));
+        assert_eq!(turn.state.used + appended, frame_est);
+        drop(turn);
+        drop(store);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 47 §3.3: only a recognised, tool-free completion is a natural yield;
+    /// a missing or unknown reason, truncation and a tool stop are not, and
+    /// the batch's working copy leaves the committed list untouched until the
+    /// store accepts it (47 §5.1).
+    #[test]
+    fn natural_stop_is_recognised_completion_without_tools() {
+        use genai::chat::StopReason;
+        let with = |reason: Option<StopReason>| StreamEnd {
+            captured_stop_reason: reason,
+            ..StreamEnd::default()
+        };
+        assert!(natural_stop(&with(Some(StopReason::Completed(
+            "end_turn".into()
+        )))));
+        assert!(natural_stop(&with(Some("STOP".to_owned().into()))));
+        assert!(!natural_stop(&with(None)));
+        assert!(!natural_stop(&with(Some(StopReason::MaxTokens(
+            "length".into()
+        )))));
+        assert!(!natural_stop(&with(Some(StopReason::Other(
+            "weird".into()
+        )))));
+        assert!(!natural_stop(&with(Some(StopReason::ContentFilter(
+            "SAFETY".into()
+        )))));
+        let call = ToolCall {
+            call_id: "c1".into(),
+            fn_name: "todo".into(),
+            fn_arguments: serde_json::json!({ "op": "view" }),
+            thought_signatures: None,
+        };
+        assert!(!natural_stop(&StreamEnd {
+            captured_stop_reason: Some(StopReason::Completed("end_turn".into())),
+            captured_content: Some(MessageContent::from(vec![call])),
+            ..StreamEnd::default()
+        }));
+
+        let committed = vec![todo::Todo {
+            text: "a".into(),
+            status: todo::Status::Pending,
+            reason: None,
+        }];
+        let mut work = committed.clone();
+        let out = Turn::todo(&mut work, serde_json::json!({ "op": "done", "task": "a" }));
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(work[0].status, todo::Status::Done);
+        assert_eq!(committed[0].status, todo::Status::Pending);
+        assert!(!todo::actionable(&work) && todo::actionable(&committed));
+    }
 
     #[test]
     fn progress_due_coalesces_by_bytes_and_time() {

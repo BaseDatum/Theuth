@@ -17,6 +17,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use agent::todo::{Status, Todo};
 use agent::{
     AgentEvent, Agents, Cancel, HistoryEntry, ListSessions, LoadSession, NewSession, SendInput,
 };
@@ -24,10 +25,11 @@ use agent_client_protocol::schema::v1::{
     AgentCapabilities, CancelNotification, ContentBlock, ContentChunk, EmbeddedResourceResource,
     Implementation, InitializeRequest, InitializeResponse, ListSessionsRequest,
     ListSessionsResponse, LoadSessionRequest, LoadSessionResponse, NewSessionRequest,
-    NewSessionResponse, PermissionOption, PermissionOptionKind, PromptCapabilities, PromptRequest,
-    PromptResponse, RequestPermissionOutcome, RequestPermissionRequest, ResourceLink,
-    SessionId as AcpSessionId, SessionInfo, SessionNotification, SessionUpdate, StopReason,
-    ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, UsageUpdate,
+    NewSessionResponse, PermissionOption, PermissionOptionKind, Plan, PlanEntry, PlanEntryPriority,
+    PlanEntryStatus, PromptCapabilities, PromptRequest, PromptResponse, RequestPermissionOutcome,
+    RequestPermissionRequest, ResourceLink, SessionId as AcpSessionId, SessionInfo,
+    SessionNotification, SessionUpdate, StopReason, ToolCall, ToolCallContent, ToolCallStatus,
+    ToolCallUpdate, ToolCallUpdateFields, UsageUpdate,
 };
 use agent_client_protocol::{Agent, Client, ConnectTo, ConnectionTo, Error, Lines, Stdio};
 use artifact::ArtifactShown;
@@ -169,6 +171,7 @@ async fn serve(
                         session,
                         before: None,
                         limit: None,
+                        settled_only: false,
                     },
                 )
                 .await
@@ -336,14 +339,23 @@ fn stop_reason(s: String) -> StopReason {
     serde_json::from_value(serde_json::Value::String(s)).unwrap_or(StopReason::EndTurn)
 }
 
-/// One stored history entry as a `session/load` replay update.
+/// One stored history entry as a `session/load` replay update. Rows removed
+/// from context (48 §2.2) keep their original text, prefixed with a marker;
+/// ACP clients have no structured tombstone.
 fn replay(i: usize, entry: HistoryEntry) -> SessionUpdate {
-    match entry {
-        HistoryEntry::User { text, .. } => {
-            SessionUpdate::UserMessageChunk(ContentChunk::new(text.into()))
+    let removed = |text: String, context: &Option<agent::ContextEntry>| {
+        if context.as_ref().is_some_and(|c| c.removed) {
+            format!("[removed from context] {text}")
+        } else {
+            text
         }
-        HistoryEntry::Assistant { text, .. } => {
-            SessionUpdate::AgentMessageChunk(ContentChunk::new(text.into()))
+    };
+    match entry {
+        HistoryEntry::User { text, context, .. } => {
+            SessionUpdate::UserMessageChunk(ContentChunk::new(removed(text, &context).into()))
+        }
+        HistoryEntry::Assistant { text, context, .. } => {
+            SessionUpdate::AgentMessageChunk(ContentChunk::new(removed(text, &context).into()))
         }
         // A `show` entry replays as a plain tool card; the artifact link it
         // carried live (`ArtifactShown`) is a frontend join on
@@ -519,9 +531,44 @@ impl Message<AgentEvent> for Relay {
                     format!("error: {message}").into(),
                 )),
             ),
+            // 47 §5.1: the plan is state, not transcript; the client sees the
+            // whole list on every change. Never touches the prompt waiter.
+            AgentEvent::TodoChanged { session, snapshot } => {
+                self.notify(session, SessionUpdate::Plan(plan(&snapshot.items)));
+            }
             _ => {}
         }
     }
+}
+
+/// A wth todo list as an ACP plan, order kept. Pending / in progress / done
+/// map directly. ACP has no blocked or dropped status: blocked stays pending
+/// with the reason in the text, dropped is completed but says so — a client
+/// must not read a dropped item as work done. Priority is not tracked here.
+fn plan(items: &[Todo]) -> Plan {
+    Plan::new(
+        items
+            .iter()
+            .map(|t| {
+                let (content, status) = match t.status {
+                    Status::Pending => (t.text.clone(), PlanEntryStatus::Pending),
+                    Status::InProgress => (t.text.clone(), PlanEntryStatus::InProgress),
+                    Status::Done => (t.text.clone(), PlanEntryStatus::Completed),
+                    Status::Blocked => (
+                        match &t.reason {
+                            Some(r) => format!("{} (blocked: {r})", t.text),
+                            None => format!("{} (blocked)", t.text),
+                        },
+                        PlanEntryStatus::Pending,
+                    ),
+                    Status::Dropped => {
+                        (format!("{} (dropped)", t.text), PlanEntryStatus::Completed)
+                    }
+                };
+                PlanEntry::new(content, PlanEntryPriority::Medium, status)
+            })
+            .collect(),
+    )
 }
 
 /// A shown artifact becomes a second update on its `show` tool call: one
@@ -600,6 +647,37 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     use super::*;
+
+    #[test]
+    fn plan_keeps_blocked_and_dropped_honest() {
+        let todo = |text: &str, status, reason: Option<&str>| Todo {
+            text: text.into(),
+            status,
+            reason: reason.map(str::to_owned),
+        };
+        let p = plan(&[
+            todo("read", Status::Done, None),
+            todo("edit", Status::InProgress, None),
+            todo("ship", Status::Blocked, Some("needs creds")),
+            todo("gold-plate", Status::Dropped, None),
+            todo("test", Status::Pending, None),
+        ]);
+        let got: Vec<(&str, &PlanEntryStatus)> = p
+            .entries
+            .iter()
+            .map(|e| (e.content.as_str(), &e.status))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("read", &PlanEntryStatus::Completed),
+                ("edit", &PlanEntryStatus::InProgress),
+                ("ship (blocked: needs creds)", &PlanEntryStatus::Pending),
+                ("gold-plate (dropped)", &PlanEntryStatus::Completed),
+                ("test", &PlanEntryStatus::Pending),
+            ]
+        );
+    }
 
     #[test]
     fn image_block_becomes_sha_named_file() {

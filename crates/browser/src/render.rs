@@ -8,6 +8,7 @@ use std::sync::{Arc, LazyLock};
 use kameo::actor::ActorRef;
 use runtime::{Runtime, SessionId};
 use serde_json::{Value, json};
+use tools::Tracked;
 use web::{Provider, ProviderError, ProviderMeta, Query, Rendered};
 
 use crate::{Browsers, Call};
@@ -38,16 +39,19 @@ impl ObscuraRender {
     }
 
     /// One obscura tool call on the render session, reduced to its text
-    /// block. `isError` and an unavailable browser both surface as
+    /// block. The activity of whoever asked `web` to render (`current()` under
+    /// the web actor's `Tracked::scope`) rides along: `RENDER_SESSION` is the
+    /// isolate key, the originating invocation stays the owner (47 §4.2
+    /// rule 5). `isError` and an unavailable browser both surface as
     /// [`ProviderError::Http`]: the aggregator reports the text verbatim.
     async fn call(&self, name: &str, args: Value) -> Result<String, ProviderError> {
         let result = self
             .actor
-            .ask(Call {
+            .ask(Tracked::new(Call {
                 session: *RENDER_SESSION,
                 name: name.to_owned(),
                 args,
-            })
+            }))
             .await
             .map_err(|e| ProviderError::Http(e.to_string()))?;
         let text = result["content"]

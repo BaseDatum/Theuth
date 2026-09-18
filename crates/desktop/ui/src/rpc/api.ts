@@ -6,6 +6,9 @@ import type { AskId } from '@/rpc/bindings/AskId'
 import type { Change } from '@/rpc/bindings/Change'
 import type { CompactStyle } from '@/rpc/bindings/CompactStyle'
 import type { Concept } from '@/rpc/bindings/Concept'
+import type { ContextRemoval } from '@/rpc/bindings/ContextRemoval'
+import type { ContextSnapshot } from '@/rpc/bindings/ContextSnapshot'
+import type { ContextTarget } from '@/rpc/bindings/ContextTarget'
 import type { Decision } from '@/rpc/bindings/Decision'
 import type { Gate } from '@/rpc/bindings/Gate'
 import type { HarvestResult } from '@/rpc/bindings/HarvestResult'
@@ -40,6 +43,7 @@ import type { SlackStatus } from '@/rpc/bindings/SlackStatus'
 import type { Sync } from '@/rpc/bindings/Sync'
 import type { SyncResult } from '@/rpc/bindings/SyncResult'
 import type { ToolSpec } from '@/rpc/bindings/ToolSpec'
+import type { TodoSnapshot } from '@/rpc/bindings/TodoSnapshot'
 import type { UpdateReady } from '@/rpc/bindings/UpdateReady'
 import type { Transcript } from '@/rpc/bindings/Transcript'
 import type { JsonValue } from '@/rpc/bindings/serde_json/JsonValue'
@@ -92,6 +96,8 @@ export interface Api {
   compact_style(): Promise<CompactStyle>
   /** Computer-control permissions and attached displays (27 §6); rejects when the plugin is disabled. */
   computer_permissions(): Promise<PermissionStatus>
+  /** Active-context inventory with its revision and `remove_with` companions (48 §3.2); `editable: false` carries the refusal `reason`. */
+  context_items(session: SessionId): Promise<ContextSnapshot>
   /** Replace the turn opened at `turn` with `text` (29 §3); refused mid-turn. */
   edit_turn(session: SessionId, turn: number, text: string, files: string[]): Promise<null>
   /** Rewrite a schedule's `enabled:` line (33 §3.5; the toggle); rejects with `no such schedule`. */
@@ -105,6 +111,8 @@ export interface Api {
   get_prompt(session: SessionId | null): Promise<string>
   /** Base64 of a file under `<data_dir>/{attachments,browser,computer,artifacts}` (31 §6.4); `-32000` elsewhere. */
   get_attachment(path: string): Promise<string>
+  /** Latest committed plan of `session` (47 §5.1); works mid-turn; unknown session / failed read rejects, never an empty list. */
+  get_todos(session: SessionId): Promise<TodoSnapshot>
   info(): Promise<Info>
   knowledge_delete(id: string): Promise<null>
   knowledge_get(id: string): Promise<Concept>
@@ -139,7 +147,13 @@ export interface Api {
   list_sessions(): Promise<SessionSummary[]>
   list_skills(): Promise<SkillMeta[]>
   list_tools(): Promise<ToolSpec[]>
-  load_session(session: SessionId, before: number | null, limit: number | null): Promise<LoadedPage>
+  /** `settled_only`: read through the idle actor and tag `settled`; a busy session answers `settled: false` and the caller discards the page (48 §5). */
+  load_session(
+    session: SessionId,
+    before: number | null,
+    limit: number | null,
+    settled_only?: boolean | null,
+  ): Promise<LoadedPage>
   load_skill(name: string): Promise<SkillBody>
   link_cancel_pair(): Promise<null>
   /** Toggle the link plugin; `relay` replaces `link.relay` when not `null` (31 §6.4). */
@@ -171,6 +185,12 @@ export interface Api {
   /** Regenerate the reply to the turn opened at `turn` (29 §3); refused mid-turn. */
   regenerate(session: SessionId, turn: number): Promise<null>
   remove_acp(name: string): Promise<null>
+  /** Exclude `targets` from the model's context at `expected_revision` (48 §3.2); stale, foreign or incomplete sets refuse atomically. */
+  remove_context(
+    session: SessionId,
+    expected_revision: string,
+    targets: ContextTarget[],
+  ): Promise<ContextRemoval>
   remove_mcp_server(name: string): Promise<null>
   remove_provider(name: string): Promise<null>
   remove_skill(name: string): Promise<null>
@@ -256,6 +276,7 @@ export const METHODS = [
   'compact',
   'compact_style',
   'computer_permissions',
+  'context_items',
   'delete_secret',
   'delete_session',
   'edit_turn',
@@ -265,6 +286,7 @@ export const METHODS = [
   'fork_session',
   'get_attachment',
   'get_prompt',
+  'get_todos',
   'info',
   'invite_node',
   'knowledge_delete',
@@ -315,6 +337,7 @@ export const METHODS = [
   'redo',
   'regenerate',
   'remove_acp',
+  'remove_context',
   'remove_mcp_server',
   'remove_node',
   'remove_provider',

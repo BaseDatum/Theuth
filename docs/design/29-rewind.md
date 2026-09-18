@@ -5,7 +5,9 @@ primitive; this doc generalises its cut), `00-architecture.md` §5 (session
 store), §7 (three RPC methods), `25-desktop.md` §3 (parity table: three
 per-message buttons), `01-config-and-subagents.md` §2 (a fork is not a
 child). Facts in §2 were re-read from the tree on 2026-09-15; line numbers
-are from that read.
+are from that read. §11 (2026-09-18) records what [48](48-shake.md)'s
+exclusion masks changed for regenerate, fork and undo; where it and §3–§4
+differ, §11 is the built behaviour.
 
 ## 0. Decisions in one screen
 
@@ -544,3 +546,58 @@ in v0 (text only, like the desktop).
 1 → 2 → 3 serial (each needs the previous shape). 4 and 5 in parallel once
 3 is green, against the §4.3/§4.4 contract; neither touches `agent`.
 `cargo check` green per step; the §9 checks run once at the end.
+
+## 11. Context masks (48), as-built 2026-09-18
+
+48 lets the user exclude one stored occurrence or row from the model's
+context without cutting the tail. The masks live beside the rows this doc
+addresses (`messages.excluded`, `epochs.excluded`, `0010_context.sql`) and
+the raw/effective split in `store.rs` decides which readers see them: turn
+identity, `cut_to`, undo/redo, archive and search read raw rows; `frame`,
+`context_items` and `effective_message` apply the masks. Consequences here:
+
+- **Turn handles are unchanged.** `turn` is still the seq of a raw user
+  row that opens a turn (`is_turn_start` over raw adjacency). A removed
+  opener is still a turn start for cut/undo purposes; it just contributes
+  nothing to the frame.
+- **Regenerate replays the effective opener, not the raw clone.** The
+  `RestartTurn` handler (`loop_.rs`) reads `Store::effective_message(id,
+  turn)` *before* `cut_to`: a whole-removed opener, or one whose retained
+  text is empty, refuses with `"opener was removed from context; edit it
+  instead"` and moves nothing. Otherwise the replayed `ChatMessage` is the
+  masked form — a removed image is not reattached by `/regen`. This
+  narrows §3's "as stored — text, `Binary` parts, everything": only the
+  parts still in context. Edit (`edit_turn`) supplies new content and
+  remains text-only (`[]` files from both UIs, §8), so it can never
+  reintroduce a removed binary by accident.
+- **Fork copies the masks with the rows and epochs** in the same
+  transaction (`INSERT … SELECT … excluded`). The mid-reply cut (§3
+  *Mid-turn*) strips tool calls from the ending assistant row; a whole
+  mask or a mask with no binary coordinates is copied as-is over the
+  stripped raw row, while a partially masked row is copied in its
+  *effective* form with the mask cleared, so an old `part` index never
+  lands on a shortened part vector (`fork_copies_masks_and_remaps_the_
+  stripped_reply`). The fork's `context_revision` is seeded from the
+  source's and then moves independently — a confirmation built against one
+  session never applies to the other, since the session id travels with
+  every target; the source is still only read. Existing forks are
+  independent and keep whatever they copied.
+- **`/undo` and `/redo` keep their meaning: turn visibility.** They move
+  `cut_at` over raw rows and do not restore removed payloads; a hidden
+  turn restored by `redo` comes back with its masks. Every move bumps
+  `context_revision` (48 §3.1), as do `commit_cut`, append and epoch
+  insertion, so a `remove_context` confirmed against the pre-undo view is
+  refused as stale rather than deleting by position. `SessionState` is
+  still rebuilt from `store.frame()` after a cut, which now yields the
+  masked frame.
+- **Wire.** `HistoryEntry::{User, Assistant}` keep `turn`; every variant
+  gains `context: Option<ContextEntry>` (25 §7 addendum). Rewind buttons
+  render only when the row is not removed (`!context.removed`); a tombstone
+  has no edit/regenerate/fork.
+
+Verified by Main 2026-09-18: agent tests cover fork/rewind with original
+indices and the stripped-reply remap; the isolated-daemon RPC smoke showed
+a fork retaining the source's masks and a head omission keeping
+`epoch 1 / tail_from 4` (no folded rows returned). Undo/redo/regenerate
+after a removal were exercised through those tests, not through a live
+provider turn; §9's checks for this doc's own verbs are unchanged.

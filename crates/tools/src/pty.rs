@@ -26,7 +26,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Notify, mpsc, oneshot};
 
-use crate::jobs::{self, Finished, Job, JobEvent, JobExit, JobId, Jobs, Log, lock, sep};
+use crate::activity::{self, Activity, Kind, Tracked};
+use crate::jobs::{
+    self, Finished, Job, JobEvent, JobExit, JobId, Jobs, Launch, Log, admit_job, lock, sep,
+};
 use crate::{Risk, Tool, ToolCx, ToolOutput};
 
 /// Screen height (22 §1.9).
@@ -231,6 +234,9 @@ pub struct StartPty {
     pub cwd: PathBuf,
     /// `ready` deadline when `args.ready.timeout` is absent.
     pub ready_timeout: Duration,
+    /// [`activity::current`] at the caller; see [`jobs::Start::activity`].
+    /// The readiness wait runs under it too.
+    pub activity: Option<Activity>,
 }
 
 /// `ask` → `Result<ToolOutput, String>`: type into a PTY job, reply with the
@@ -240,6 +246,9 @@ pub struct SendInput {
     pub session: SessionId,
     /// The tool arguments (`id` inside).
     pub args: SendArgs,
+    /// [`activity::current`] at the caller: the settle wait runs under it,
+    /// so it counts until the screen actually settled even if the asker is gone.
+    pub activity: Option<Activity>,
 }
 
 /// `ask` → `Result<ToolOutput, String>`: the current screen.
@@ -256,6 +265,8 @@ pub struct Wait {
     pub session: SessionId,
     /// The tool arguments (`id` inside).
     pub args: WaitArgs,
+    /// [`activity::current`] at the caller: the wait runs under it.
+    pub activity: Option<Activity>,
 }
 
 /// A resolved PTY job as the tool paths see it, detached from the actor.
@@ -305,10 +316,22 @@ impl Jobs {
     }
 }
 
+/// What the `start` asker waits on after [`Launch`].
+pub(crate) struct Running {
+    done: oneshot::Receiver<ToolOutput>,
+    claimable: Arc<AtomicBool>,
+    pty: Arc<PtyHandle>,
+    log_path: PathBuf,
+}
+
 impl Message<StartPty> for Jobs {
     type Reply = DelegatedReply<ToolOutput>;
 
-    async fn handle(&mut self, m: StartPty, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        mut m: StartPty,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
         let re = match m
@@ -325,91 +348,49 @@ impl Message<StartPty> for Jobs {
             Some(Ok(re)) => Some(re),
             None => None,
         };
-        if let Some(name) = &m.args.name
-            && let Some(j) = self.sessions.get(&m.session).and_then(|s| {
-                s.jobs
-                    .iter()
-                    .find(|j| j.exit.is_none() && j.name.as_deref() == Some(name))
-            })
-        {
-            tx.send(ToolOutput::err(format!(
-                "a running job is already named `{name}` ({})",
-                j.id
-            )));
-            return reply;
-        }
         let sj = self.sessions.entry(m.session).or_default();
         sj.next += 1;
         let id = JobId(format!("j{}", sj.next));
-        let dir = self.rt.data_dir.join("jobs").join(m.session.to_string());
-        let log_path = dir.join(format!("{id}.log"));
-        let s = match spawn(&dir, &log_path, &m.args, &m.cwd) {
-            Ok(s) => s,
-            Err(e) => {
-                tx.send(ToolOutput::err(format!("cannot start job: {e:#}")));
-                return reply;
-            }
-        };
-        let pty = Arc::new(PtyHandle {
-            writer: Mutex::new(s.writer),
-            parser: Mutex::new(vt100::Parser::new(ROWS, COLS, 0)),
-            output: Notify::new(),
-            pid: s.pid,
-            exit: Mutex::new(None),
-        });
-        let log = Arc::new(Mutex::new(Log::new(Some(s.file))));
-        let cancel = Arc::new(Notify::new());
-        let (done_tx, mut done_rx) = oneshot::channel();
-        // Same claim protocol as the pipes path (14): first swap owns the result.
-        let claimable = Arc::new(AtomicBool::new(true));
-        let started = Instant::now();
-        // 37 §3.4: `spawn` above ran the real command; every stored/published
-        // copy is scrubbed.
-        let shown = crate::secrets::redact(&m.args.command).into_owned();
-        let (chunk_tx, rx) = mpsc::channel(64);
-        std::thread::spawn(move || read_loop(s.reader, &chunk_tx));
-        let task = tokio::spawn(run(Run {
-            rt: self.rt.clone(),
-            me: ctx.actor_ref().clone(),
-            session: m.session,
-            id: id.clone(),
-            command: shown.clone(),
-            call_id: m.call_id,
-            log_path: log_path.clone(),
-            log: log.clone(),
-            pty: Arc::clone(&pty),
-            master: s.master,
-            child: s.child,
-            rx,
-            cancel: cancel.clone(),
-            claimable: claimable.clone(),
-            started,
-            done: done_tx,
-        }))
-        .abort_handle();
-        sj.push(Job {
-            id: id.clone(),
-            command: shown,
-            started,
-            exit: None,
-            secs: 0,
-            log_path: log_path.clone(),
-            log,
-            pgids: Arc::new(Mutex::new(vec![s.pid as i32])),
-            cancel,
-            task,
-            name: m.args.name.clone(),
-            pty: Some(Arc::clone(&pty)),
-        });
+        let sink = self.activity.clone();
+        let me = ctx.actor_ref().clone();
         let grace = self.grace;
-        let ready_timeout = m.ready_timeout;
-        tokio::spawn(async move {
+        // Admission leaves the mailbox (47 §4.1); `Launch` spawns under the
+        // actor's state; the readiness wait below runs under the caller's
+        // invocation so it counts until it actually ends (47 §4.2 rule 3).
+        let under = m.activity.take();
+        let parent = under.clone();
+        let waiter = async move {
+            let fail = |why: String| ToolOutput::err(format!("cannot start job: {why}"));
+            let activity =
+                match admit_job(parent, sink.as_ref(), m.session, Kind::Pty(id.clone())).await {
+                    Ok(a) => a,
+                    Err(why) => return tx.send(fail(why.to_string())),
+                };
+            let ready = m.args.ready.take();
+            let name = m.args.name.clone();
+            let ready_timeout = m.ready_timeout;
+            let Running {
+                mut done,
+                claimable,
+                pty,
+                log_path,
+            } = match me
+                .ask(Launch {
+                    m,
+                    id: id.clone(),
+                    activity,
+                })
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => return tx.send(fail(e.to_string())),
+            };
             // `Some`: the task finished; `None`: grace / readiness ended first.
-            let (note, within) = match m.args.ready {
+            let (note, within) = match ready {
                 None if grace.is_zero() => (String::new(), None),
                 None => (
                     String::new(),
-                    tokio::time::timeout(grace, &mut done_rx).await.ok(),
+                    tokio::time::timeout(grace, &mut done).await.ok(),
                 ),
                 Some(r) => {
                     let secs = r.timeout.unwrap_or(ready_timeout.as_secs()).min(READY_MAX);
@@ -417,9 +398,9 @@ impl Message<StartPty> for Jobs {
                     let host = r.host.as_deref().unwrap_or("127.0.0.1");
                     let port = r.port.map(|p| (host, p));
                     tokio::select! {
-                        r = &mut done_rx => (String::new(), Some(r)),
+                        r = &mut done => (String::new(), Some(r)),
                         o = await_output(&pty, &log_path, 0, re.as_ref(), port, deadline) => match o {
-                            Outcome::Exited => (String::new(), Some((&mut done_rx).await)),
+                            Outcome::Exited => (String::new(), Some((&mut done).await)),
                             Outcome::Ready(matched) => {
                                 let mut parts = Vec::new();
                                 if let Some(m) = matched {
@@ -441,13 +422,13 @@ impl Message<StartPty> for Jobs {
             let done = match within {
                 Some(r) => r.ok(),
                 None if claimable.swap(false, SeqCst) => None,
-                None => done_rx.await.ok(),
+                None => done.await.ok(),
             };
             tx.send(done.unwrap_or_else(|| {
                 let (rows, cursor) = pty.screen();
                 let mut content = format!(
                     "job {} · running · pid {}{note}\nlog: {}\n",
-                    label(&id, m.args.name.as_deref()),
+                    label(&id, name.as_deref()),
                     pty.pid,
                     log_path.display()
                 );
@@ -461,8 +442,106 @@ impl Message<StartPty> for Jobs {
                     files: Vec::new(),
                 }
             }));
-        });
+        };
+        tokio::spawn(
+            Tracked {
+                message: (),
+                activity: under,
+            }
+            .scope(|()| waiter),
+        );
         reply
+    }
+}
+
+impl Message<Launch<StartPty>> for Jobs {
+    type Reply = Result<Running, String>;
+
+    async fn handle(
+        &mut self,
+        l: Launch<StartPty>,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let Launch { m, id, activity } = l;
+        // Checked here, serialized with the push, so two concurrent `start`s
+        // cannot both take a name. On `Err` the admitted guard drops: settled
+        // `Finished`, no blocker.
+        if let Some(name) = &m.args.name
+            && let Some(j) = self.sessions.get(&m.session).and_then(|s| {
+                s.jobs
+                    .iter()
+                    .find(|j| j.exit.is_none() && j.name.as_deref() == Some(name))
+            })
+        {
+            return Err(format!(
+                "a running job is already named `{name}` ({})",
+                j.id
+            ));
+        }
+        let dir = self.rt.data_dir.join("jobs").join(m.session.to_string());
+        let log_path = dir.join(format!("{id}.log"));
+        let s = spawn(&dir, &log_path, &m.args, &m.cwd).map_err(|e| format!("{e:#}"))?;
+        let pty = Arc::new(PtyHandle {
+            writer: Mutex::new(s.writer),
+            parser: Mutex::new(vt100::Parser::new(ROWS, COLS, 0)),
+            output: Notify::new(),
+            pid: s.pid,
+            exit: Mutex::new(None),
+        });
+        let log = Arc::new(Mutex::new(Log::new(Some(s.file))));
+        let cancel = Arc::new(Notify::new());
+        let (done_tx, done) = oneshot::channel();
+        // Same claim protocol as the pipes path (14): first swap owns the result.
+        let claimable = Arc::new(AtomicBool::new(true));
+        let started = Instant::now();
+        // 37 §3.4: `spawn` above ran the real command; every stored/published
+        // copy is scrubbed.
+        let shown = crate::secrets::redact(&m.args.command).into_owned();
+        let (chunk_tx, rx) = mpsc::channel(64);
+        std::thread::spawn(move || read_loop(s.reader, &chunk_tx));
+        self.track(&activity);
+        let op = activity.id();
+        let task = tokio::spawn(run(Run {
+            rt: self.rt.clone(),
+            me: ctx.actor_ref().clone(),
+            session: m.session,
+            id: id.clone(),
+            command: shown.clone(),
+            call_id: m.call_id,
+            log_path: log_path.clone(),
+            log: log.clone(),
+            pty: Arc::clone(&pty),
+            master: s.master,
+            child: s.child,
+            rx,
+            cancel: cancel.clone(),
+            claimable: claimable.clone(),
+            started,
+            done: done_tx,
+            activity,
+        }))
+        .abort_handle();
+        self.sessions.entry(m.session).or_default().push(Job {
+            id,
+            op,
+            command: shown,
+            started,
+            exit: None,
+            secs: 0,
+            log_path: log_path.clone(),
+            log,
+            pgids: Arc::new(Mutex::new(vec![s.pid as i32])),
+            cancel,
+            task,
+            name: m.args.name,
+            pty: Some(Arc::clone(&pty)),
+        });
+        Ok(Running {
+            done,
+            claimable,
+            pty,
+            log_path,
+        })
     }
 }
 
@@ -474,7 +553,13 @@ impl Message<SendInput> for Jobs {
         let Some(tx) = tx else { return reply };
         match self.pty(m.session, &m.args.id) {
             Ok(live) => {
-                tokio::spawn(async move { tx.send(send(&live, m.args).await) });
+                // Under the caller's guard: the settle wait is its work until
+                // it ends, whether or not the asker is still there (47 §3.2).
+                let tracked = Tracked {
+                    message: m.args,
+                    activity: m.activity,
+                };
+                tokio::spawn(tracked.scope(|args| async move { tx.send(send(&live, args).await) }));
             }
             Err(e) => tx.send(Err(e)),
         }
@@ -499,7 +584,11 @@ impl Message<Wait> for Jobs {
         let Some(tx) = tx else { return reply };
         match self.pty(m.session, &m.args.id) {
             Ok(live) => {
-                tokio::spawn(async move { tx.send(wait(&live, m.args).await) });
+                let tracked = Tracked {
+                    message: m.args,
+                    activity: m.activity,
+                };
+                tokio::spawn(tracked.scope(|args| async move { tx.send(wait(&live, args).await) }));
             }
             Err(e) => tx.send(Err(e)),
         }
@@ -595,6 +684,50 @@ struct Run {
     claimable: Arc<AtomicBool>,
     started: Instant,
     done: oneshot::Sender<ToolOutput>,
+    /// The job's admitted lifetime (`Kind::Pty`); the actor holds the other
+    /// clone in [`Jobs::live`]. Dropped when this task returns.
+    activity: Activity,
+}
+
+/// Something outlived the exit: a `&` child that ignored SIGHUP stays in
+/// the leader's process group (job control is off under `$SHELL -c`) and,
+/// by platform, keeps the slave open or loses it when the tty is revoked
+/// with its leader; a `setsid` escapee holding the slave sits outside the
+/// group. Either is this session's work until it actually ends (47 §4.2
+/// rule 4): a child operation of the job, settled by the group going empty
+/// and the reader hitting EOF, never inferred from the screen or the
+/// command line. Its bytes still reach the log. A killed group that
+/// survived `KILL_WAIT` is a doubt, reported on the child alone so the
+/// job's own result is not overridden.
+async fn linger(
+    job: &Activity,
+    id: &JobId,
+    group: Option<Pid>,
+    rx: Option<(mpsc::Receiver<Vec<u8>>, Arc<Mutex<Log>>)>,
+    doubt: Option<String>,
+) {
+    match job.admit(Kind::Command("pty background process")).await {
+        Ok(a) => {
+            let id = id.clone();
+            let guard = a.clone();
+            tokio::spawn(a.scope(async move {
+                if let Some(why) = doubt {
+                    guard.unknown(format!("{id}: {why}"));
+                }
+                if let Some((mut rx, log)) = rx {
+                    while let Some(c) = rx.recv().await {
+                        lock(&log).push(&c);
+                    }
+                }
+                if let Some(pgid) = group {
+                    jobs::group_gone(pgid.as_raw(), None).await;
+                }
+            }));
+        }
+        // The job itself completed and its result is owed regardless; the
+        // supervisor that refused (or is gone) certifies nothing meanwhile.
+        Err(e) => tracing::warn!("{id}: pty background work left untracked: {e}"),
+    }
 }
 
 fn exit_of(
@@ -625,26 +758,29 @@ async fn run(mut j: Run) {
     let mut carry = Vec::new();
     let mut dirty = false;
     let mut tick = tokio::time::interval(jobs::OUTPUT_EVERY);
-    let exit = loop {
+    let (exit, killed) = loop {
         tokio::select! {
             biased;
             () = j.cancel.notified() => {
                 let _ = killpg(pid, nix::sys::signal::Signal::SIGKILL);
-                break JobExit::Killed;
+                // Cancellation is not cessation: the exit is the reaper's.
+                let _ = (&mut waited).await;
+                break (JobExit::Killed, true);
             }
-            r = &mut waited => break exit_of(r),
+            r = &mut waited => break (exit_of(r), false),
             chunk = j.rx.recv() => match chunk {
                 Some(c) => {
                     ingest(&j.pty, &j.log, &mut carry, &c);
                     dirty = true;
                 }
-                // EOF: every slave closed. A child that closed its tty and
-                // lingers gets a second, then SIGKILL.
+                // EOF: every slave closed (or the tty revoked, on platforms
+                // that do so once its leader is gone). A leader that closed
+                // its tty and lingers gets a second, then SIGKILL.
                 None => break match tokio::time::timeout(Duration::from_secs(1), &mut waited).await {
-                    Ok(r) => exit_of(r),
+                    Ok(r) => (exit_of(r), false),
                     Err(_) => {
                         let _ = killpg(pid, nix::sys::signal::Signal::SIGKILL);
-                        exit_of(waited.await)
+                        (exit_of(waited.await), true)
                     }
                 },
             },
@@ -655,14 +791,36 @@ async fn run(mut j: Run) {
             }
         }
     };
-    if !matches!(exit, JobExit::Killed) {
-        // Trailing bytes still in flight from the reader.
-        while let Ok(Some(c)) = tokio::time::timeout(Duration::from_millis(200), j.rx.recv()).await
-        {
-            ingest(&j.pty, &j.log, &mut carry, &c);
+    // Trailing bytes still in flight from the reader. `None` is EOF/EIO;
+    // idling out instead means a holder still has the slave.
+    let closed = loop {
+        match tokio::time::timeout(Duration::from_millis(200), j.rx.recv()).await {
+            Ok(Some(c)) => ingest(&j.pty, &j.log, &mut carry, &c),
+            Ok(None) => break true,
+            Err(_) => break false,
+        }
+    };
+    drop(j.master); // closes the slave: anything that escaped the group gets SIGHUP
+    // Ownership is the process group, not the tty: the leader is reaped, but
+    // a `&` child of it lives on in the same group whether or not it still
+    // holds the slave. The result waits `SETTLE` (`KILL_WAIT` after a kill)
+    // for the group to empty; past that the tail is its own operation.
+    let bound = if killed {
+        jobs::KILL_WAIT
+    } else {
+        jobs::SETTLE
+    };
+    let gone = jobs::group_gone(pid.as_raw(), Some(tokio::time::Instant::now() + bound)).await;
+    let rx = (!closed).then(|| (j.rx, j.log.clone()));
+    match (gone, killed) {
+        (true, _) if closed => {}
+        (true, _) => linger(&j.activity, &j.id, None, rx, None).await,
+        (false, false) => linger(&j.activity, &j.id, Some(pid), rx, None).await,
+        (false, true) => {
+            let doubt = format!("process group {pid} survived SIGKILL");
+            linger(&j.activity, &j.id, None, rx, Some(doubt)).await;
         }
     }
-    drop(j.master); // closes the slave: anything that escaped the group gets SIGHUP
 
     let (rows, cursor) = j.pty.screen();
     let screen = rows.join("\n");
@@ -688,25 +846,26 @@ async fn run(mut j: Run) {
     })
     .await;
     let inline = j.claimable.swap(false, SeqCst);
-    let _ =
-        j.me.tell(Finished {
-            session: j.session,
-            id: j.id.clone(),
-            exit: exit.clone(),
-            secs,
-        })
-        .await;
-    j.rt.publish(JobEvent::Finished {
+    let event = JobEvent::Finished {
         session: j.session,
-        id: j.id,
+        id: j.id.clone(),
         command: j.command,
-        exit,
+        exit: exit.clone(),
         secs,
         output: screen,
         inline,
         pty: true,
-    })
-    .await;
+    };
+    // The result rides the guard unless the tool call already returned it
+    // (14 / 47 §4.1); the bus event stays observation for UIs.
+    let _ =
+        j.me.tell(Finished {
+            op: j.activity.id(),
+            row: Some((j.session, j.id, exit, secs)),
+            result: (!inline).then(|| event.clone()),
+        })
+        .await;
+    j.rt.publish(event).await;
     let _ = j.done.send(out);
 }
 
@@ -1099,6 +1258,7 @@ impl Tool for StartTool {
                 args,
                 cwd,
                 ready_timeout: self.ready_timeout,
+                activity: activity::current(),
             })
             .await
             .map_err(|e| anyhow::anyhow!("jobs actor: {e}"))
@@ -1124,6 +1284,7 @@ impl Tool for SendTool {
                 .ask(SendInput {
                     session: cx.session,
                     args,
+                    activity: activity::current(),
                 })
                 .await,
         )
@@ -1174,6 +1335,7 @@ impl Tool for WaitTool {
                 .ask(Wait {
                     session: cx.session,
                     args,
+                    activity: activity::current(),
                 })
                 .await,
         )
@@ -1481,6 +1643,99 @@ mod tests {
             .unwrap();
         assert!(out.is_error);
         assert_eq!(out.content, "j1 (srv) killed — start it again");
+    }
+
+    /// 47 §3.2: a ready PTY is an open `Kind::Pty` operation, nothing settles
+    /// while it serves; `cancel_job` settles it only once the reaper has the
+    /// exit, with the result the `start` call did not return.
+    #[tokio::test]
+    async fn ready_pty_stays_open_until_reaped() {
+        use crate::activity::test_sink::Seen;
+        use crate::jobs::tests::{certified, ledger_until};
+        let (fx, ledger, seen) =
+            certified(Duration::from_millis(100), Duration::from_secs(60)).await;
+        let (start, ..) = tools(&fx);
+        let mut args = start_args("echo READY; sleep 30");
+        args.ready = Some(Ready {
+            log: Some("READY".into()),
+            port: None,
+            host: None,
+            timeout: None,
+        });
+        let out = Tool::call(&start, args, cx(&fx)).await.unwrap();
+        assert!(
+            out.content.contains("· ready: log matched"),
+            "{}",
+            out.content
+        );
+        let pid = out.structured.as_ref().unwrap()["pid"].as_u64().unwrap() as i32;
+        let v = crate::activity::test_sink::drained(&ledger, &seen).await;
+        let [Seen::Admitted(op)] = v.as_slice() else {
+            panic!("expected only the admission, got {v:?}");
+        };
+        assert_eq!(op.kind, Kind::Pty(JobId("j1".into())));
+        let op = op.id;
+
+        cancel(&fx, "j1").await;
+        assert_eq!(settled(&fx, Duration::from_secs(2)).await.state, "killed");
+        // The row closed after the reaper returned: the pid is already gone.
+        assert!(nix::sys::signal::kill(Pid::from_raw(pid), None).is_err());
+        let v = ledger_until(&ledger, &seen, Duration::from_secs(2), |v| v.len() >= 2).await;
+        assert_eq!(v[1..], [Seen::Result(op)]);
+        assert!(matches!(
+            lock(&fx.events).iter().last(),
+            Some(JobEvent::Finished {
+                pty: true,
+                inline: false,
+                exit: JobExit::Killed,
+                ..
+            })
+        ));
+    }
+
+    /// 47 §4.2 rule 4: a `&` child that survives the shell's exit (SIGHUP
+    /// ignored) lives on in its process group, holding the slave or not (the
+    /// tty is revoked with its leader on some platforms). The job settles on
+    /// the reaper's exit with its result; the survivor is its own operation
+    /// until it actually exits.
+    #[tokio::test]
+    async fn tty_holder_outliving_exit_keeps_an_operation_open() {
+        use crate::activity::test_sink::Seen;
+        use crate::jobs::tests::{certified, ledger_until};
+        let (fx, ledger, seen) = certified(Duration::from_secs(3), Duration::from_secs(60)).await;
+        let (start, ..) = tools(&fx);
+        let out = Tool::call(
+            &start,
+            start_args("trap '' HUP; sleep 2 & echo up"),
+            cx(&fx),
+        )
+        .await
+        .unwrap();
+        assert!(out.content.ends_with("exit code: 0"), "{}", out.content);
+        let v = ledger_until(&ledger, &seen, Duration::from_secs(2), |v| {
+            v.iter().any(|s| matches!(s, Seen::Finished(_)))
+        })
+        .await;
+        let Seen::Admitted(job) = &v[0] else {
+            panic!("{v:?}")
+        };
+        assert_eq!(job.kind, Kind::Pty(JobId("j1".into())));
+        let holder = v
+            .iter()
+            .find_map(|s| match s {
+                Seen::Admitted(op) if op.kind == Kind::Command("pty background process") => {
+                    Some(op.id)
+                }
+                _ => None,
+            })
+            .expect("holder operation admitted");
+        assert!(v.contains(&Seen::Finished(job.id)), "{v:?}");
+        assert!(!v.contains(&Seen::Finished(holder)), "{v:?}");
+        let v = ledger_until(&ledger, &seen, Duration::from_secs(4), |v| {
+            v.contains(&Seen::Finished(holder))
+        })
+        .await;
+        assert!(!v.iter().any(|s| matches!(s, Seen::Unknown(..))), "{v:?}");
     }
 
     #[test]

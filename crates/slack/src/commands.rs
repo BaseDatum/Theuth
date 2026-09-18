@@ -476,6 +476,7 @@ async fn status(cx: &CommandCx<'_>) -> anyhow::Result<Reply> {
             session,
             before: None,
             limit: None,
+            settled_only: false,
         })
         .await
         .map_err(err)?;

@@ -13,7 +13,7 @@ pub mod tools;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use ::tools::{REGISTRY_ACTOR, RegisterTool, ToolRegistry};
+use ::tools::{REGISTRY_ACTOR, RegisterTool, ToolRegistry, Tracked};
 use kameo::actor::Spawn;
 use kameo::message::{Context, Message};
 use kameo::reply::DelegatedReply;
@@ -174,6 +174,14 @@ impl Browsers {
 /// (`{ content, isError }`, 23 §3.3); `Err` is `browser restarted: <reason>`
 /// when the session's thread died under this call. Runs off the mailbox so a
 /// slow page never blocks another session.
+///
+/// Sent bare, the command is **uncertified**: nothing in the activity ledger
+/// (47 §4) covers it. Callers that own model-visible work send
+/// [`Tracked<Call>`] (`Tracked::new(Call { .. })` inside an invocation) so
+/// the originating invocation stays counted until the isolate has actually
+/// finished the command, even after the caller's timeout dropped the reply.
+/// `session` is the isolate key, never the activity owner: the render
+/// provider and scrape slots use private ids here (47 §4.2 rule 5).
 #[derive(Clone, Debug)]
 pub struct Call {
     /// Owning session; subagents are sessions, so they get their own isolate.
@@ -233,21 +241,47 @@ struct Sweep;
 #[derive(Clone, Copy, Debug)]
 struct CloseAll;
 
+impl Message<Tracked<Call>> for Browsers {
+    type Reply = DelegatedReply<Result<Value, String>>;
+
+    async fn handle(
+        &mut self,
+        m: Tracked<Call>,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let handle = self.handle(m.message.session);
+        // The guard moves into the future *before* spawn and lives until
+        // `handle.call` resolves: the worker replied, or its thread died and
+        // dropped the queued command with it. Either way nothing is still
+        // running, so the last clone may report `Finished`; a panic in here
+        // is marked unknown by `scope`. The isolate's idle page pump is not
+        // tracked: ambient timers owe the model nothing.
+        tokio::spawn(m.scope(|call| async move {
+            let out = handle
+                .call(&call.name, call.args)
+                .await
+                .map_err(|reason| format!("browser restarted: {reason}"));
+            tx.send(out);
+        }));
+        reply
+    }
+}
+
 impl Message<Call> for Browsers {
     type Reply = DelegatedReply<Result<Value, String>>;
 
     async fn handle(&mut self, m: Call, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        let (reply, tx) = ctx.reply_sender();
-        let Some(tx) = tx else { return reply };
-        let handle = self.handle(m.session);
-        tokio::spawn(async move {
-            let out = handle
-                .call(&m.name, m.args)
-                .await
-                .map_err(|reason| format!("browser restarted: {reason}"));
-            tx.send(out);
-        });
-        reply
+        Message::<Tracked<Call>>::handle(
+            self,
+            Tracked {
+                message: m,
+                activity: None,
+            },
+            ctx,
+        )
+        .await
     }
 }
 

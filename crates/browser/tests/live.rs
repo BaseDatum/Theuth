@@ -4,14 +4,40 @@
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::time::Instant;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use base64::Engine as _;
-use browser::{BrowserConfig, Browsers};
+use browser::{BrowserConfig, Browsers, Call};
 use kameo::actor::Spawn;
+use kameo::message::{Context, Message};
 use runtime::SessionId;
 use serde_json::{Value, json};
-use tools::{DynTool, ToolCx, ToolOutput};
+use tools::{ActivitySink, Admission, Admit, DynTool, Kind, Settle, ToolCx, ToolOutput, Tracked};
+
+/// Activity supervisor double (47 §4): admits everything, records settlements.
+#[derive(kameo::Actor)]
+struct Ledger {
+    settled: Arc<Mutex<Vec<Settle>>>,
+    changed: Arc<tokio::sync::Notify>,
+}
+
+impl Message<Admit> for Ledger {
+    type Reply = Admission;
+
+    async fn handle(&mut self, _: Admit, _: &mut Context<Self, Self::Reply>) -> Admission {
+        Admission::Admitted
+    }
+}
+
+impl Message<Settle> for Ledger {
+    type Reply = ();
+
+    async fn handle(&mut self, m: Settle, _: &mut Context<Self, Self::Reply>) {
+        self.settled.lock().expect("ledger").push(m);
+        self.changed.notify_one();
+    }
+}
 
 const PAGE: &str = r#"<!doctype html><html><head><title>Fixture</title></head><body>
 <h1>WTH_FIXTURE_ALPHA</h1>
@@ -235,6 +261,59 @@ async fn drives_fixture_page() {
     assert_eq!(&live[..8], b"\x89PNG\r\n\x1a\n");
 
     kit.ok("browser_show", json!({})).await;
+
+    // 47 §4.2 rule 5: a caller that times out cannot free the outstanding
+    // command. The `Tracked<Call>` guard stays with the isolate's work and
+    // settles only once the wait actually ends, error and all.
+    let settled = Arc::new(Mutex::new(Vec::new()));
+    let changed = Arc::new(tokio::sync::Notify::new());
+    let ledger = Ledger::spawn(Ledger {
+        settled: Arc::clone(&settled),
+        changed: Arc::clone(&changed),
+    });
+    let activity = ActivitySink::new(ledger)
+        .admit(kit.session, Kind::Command("browser"))
+        .await
+        .expect("admit");
+    let op = activity.id();
+    let pending = actor.ask(Tracked {
+        message: Call {
+            session: kit.session,
+            name: "browser_wait_for_text".to_owned(),
+            args: json!({ "text": "WTH_NEVER_APPEARS", "timeout": 2 }),
+        },
+        activity: Some(activity),
+    });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), pending)
+            .await
+            .is_err(),
+        "caller should have timed out while the wait runs"
+    );
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        settled.lock().expect("ledger").is_empty(),
+        "settled while the isolate still waits: {:?}",
+        settled.lock().expect("ledger")
+    );
+    tokio::time::timeout(Duration::from_secs(15), async {
+        while settled.lock().expect("ledger").is_empty() {
+            changed.notified().await;
+        }
+    })
+    .await
+    .expect("settlement once the wait ended");
+    assert!(
+        matches!(settled.lock().expect("ledger").as_slice(), [Settle::Finished { op: o }] if *o == op),
+        "unexpected settlement: {:?}",
+        settled.lock().expect("ledger")
+    );
+    // The isolate is intact and serves the next command.
+    let read = kit.ok("browser_read", json!({})).await;
+    assert!(
+        read.contains("you sent: hello wth"),
+        "read after wait: {read}"
+    );
 
     kit.ok("browser_close", json!({})).await;
 

@@ -2,7 +2,9 @@ import { jsonrepair } from 'jsonrepair'
 import { resultLine } from '@/lib/describe'
 import { classify, type Injected } from '@/lib/injected'
 import { pushChunk } from '@/lib/jobTail'
+import type { ContextEntry } from '@/rpc/bindings/ContextEntry'
 import type { HistoryEntry } from '@/rpc/bindings/HistoryEntry'
+import type { TodoSnapshot } from '@/rpc/bindings/TodoSnapshot'
 import type { WireEvent } from '@/rpc/events'
 import type { AgentInfo } from '@/rpc/extra'
 import type { Entry, JobTail, SessionSlice } from './sessions'
@@ -38,7 +40,29 @@ export function empty(id: string): SessionSlice {
     progress: new Map(),
     scrape: new Map(),
     artifactPanel: null,
+    contextEstimated: false,
+    contextEditable: false,
+    contextStale: false,
+    historyGeneration: 0,
+    live: 0,
+    todos: null,
+    todosStale: false,
+    todosExpanded: false,
   }
+}
+
+/**
+ * `snapshot` folded into the slice's plan (47 §5.4): a higher version replaces the list, an equal one is
+ * idempotent, an older one is ignored. `null` (unavailable: a failed or absent read) never clears a known
+ * list. `authoritative` (a live event, a read issued after the last invalidation) also repairs `todosStale`;
+ * a read that predates it may carry a newer list, but not proof that nothing newer exists.
+ */
+export function reconcileTodos(s: SessionSlice, snapshot: TodoSnapshot | null, authoritative: boolean): SessionSlice {
+  if (!snapshot) return s
+  const cur = s.todos
+  if (cur && snapshot.version < cur.version) return s
+  if (cur && snapshot.version === cur.version) return authoritative && s.todosStale ? { ...s, todosStale: false } : s
+  return { ...s, todos: snapshot, todosStale: authoritative ? false : s.todosStale }
 }
 
 /** What a streaming `show` call is doing, read off its partial JSON arguments: `name` (else the base name of
@@ -91,27 +115,29 @@ function hhmm(iso: string): string {
   return Number.isNaN(d.getTime()) ? iso : `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
-/** Transcript entries for one user input: the skill chip plus words, one card per harness wrapper, or `you`. `turn` stamps the `you` row (29 §5.1). */
-function userEntries(text: string, cls: Injected[] | null, injected?: true, turn?: number): Entry[] {
+/** Transcript entries for one user input: the skill chip plus words, one card per harness wrapper, or `you`. `turn` stamps
+ * the `you` row (29 §5.1); every card of one stored row shares its `context` (48 §3.2). */
+function userEntries(text: string, cls: Injected[] | null, injected?: true, turn?: number, context?: ContextEntry): Entry[] {
   const flag = injected ? { injected } : {}
-  if (cls === null) return [{ id: nextId(), kind: 'user', text, turn, ...flag }]
+  if (cls === null) return [{ id: nextId(), kind: 'user', text, turn, context, ...flag }]
   return cls.map((c): Entry => {
     switch (c.kind) {
       case 'skill':
-        return { id: nextId(), kind: 'user', text: c.words, skill: c.name, turn, ...flag }
+        return { id: nextId(), kind: 'user', text: c.words, skill: c.name, turn, context, ...flag }
       case 'peer':
-        return { id: nextId(), kind: 'peer', from: c.from, text: c.text }
+        return { id: nextId(), kind: 'peer', from: c.from, text: c.text, context }
       case 'subagent':
-        return { id: nextId(), kind: 'peer', from: c.name, text: c.text }
+        return { id: nextId(), kind: 'peer', from: c.name, text: c.text, context }
       case 'job':
         return {
           id: nextId(),
           kind: 'peer',
           from: `${c.id} · ${c.command} · exit ${c.exit} · ${c.secs}s${c.pty ? ' · pty' : ''}`,
           text: c.text,
+          context,
         }
       case 'schedule':
-        return { id: nextId(), kind: 'peer', from: `${c.name} · ${hhmm(c.at)}`, text: c.text }
+        return { id: nextId(), kind: 'peer', from: `${c.name} · ${hhmm(c.at)}`, text: c.text, context }
     }
   })
 }
@@ -123,13 +149,14 @@ function stampUser(entries: Entry[], turn: number): Entry[] {
   return u?.kind === 'user' ? replaceAt(entries, at, { ...u, turn }) : entries
 }
 
-/** Transcript entries for one history record. */
+/** Transcript entries for one history record; `context` (48 §3.3) rides along on every card the record becomes. */
 export function fromHistory(h: HistoryEntry): Entry[] {
+  const context = h.context ?? undefined
   switch (h.role) {
     case 'user':
-      return userEntries(h.text, classify(h.text), undefined, h.turn ?? undefined)
+      return userEntries(h.text, classify(h.text), undefined, h.turn ?? undefined, context)
     case 'assistant':
-      return h.text.trim() ? [{ id: nextId(), kind: 'assistant', text: h.text, open: false, turn: h.turn ?? undefined }] : []
+      return h.text.trim() ? [{ id: nextId(), kind: 'assistant', text: h.text, open: false, turn: h.turn ?? undefined, context }] : []
     case 'tool':
       return [
         {
@@ -140,12 +167,51 @@ export function fromHistory(h: HistoryEntry): Entry[] {
           args: h.args,
           pending: false,
           child: h.call_id.includes('.'),
+          context,
           ...(h.result ? { result: { output: h.result[0], isError: h.result[1], files: h.files ?? [] } } : {}),
         },
       ]
     case 'compacted':
-      return [{ id: nextId(), kind: 'compacted', epoch: h.epoch, style: h.style, summary: h.summary }]
+      return [{ id: nextId(), kind: 'compacted', epoch: h.epoch, style: h.style, summary: h.summary, context }]
   }
+}
+
+/** What makes two renderings of one stored row the same card: kind plus its stable handle, not the process-local id. */
+function signature(e: Entry): string {
+  switch (e.kind) {
+    case 'tool':
+      return `t${e.callId}`
+    case 'compacted':
+      return `c${e.epoch}`
+    case 'peer':
+      return `p${e.from}\n${e.text}`
+    case 'user':
+    case 'assistant':
+      return `${e.kind[0]}${e.turn ?? ''}\n${e.text}`
+    default:
+      return `${e.kind}\n${e.text}`
+  }
+}
+
+/**
+ * `fresh` (a reloaded snapshot) wearing the ids of the cards `old` already shows for the same rows, so
+ * React keys, virtualizer measurements, focus and scroll survive the replacement; a tool card also keeps
+ * its live job tail. Matching is by `signature`, in order, so duplicate texts pair up one to one.
+ */
+export function adopt(old: readonly Entry[], fresh: Entry[]): Entry[] {
+  if (!old.length || !fresh.length) return fresh
+  const seen = new Map<string, Entry[]>()
+  for (const e of old) {
+    const sig = signature(e)
+    const q = seen.get(sig)
+    if (q) q.push(e)
+    else seen.set(sig, [e])
+  }
+  return fresh.map((e) => {
+    const prev = seen.get(signature(e))?.shift()
+    if (!prev) return e
+    return e.kind === 'tool' && prev.kind === 'tool' && prev.job ? { ...e, id: prev.id, job: prev.job } : { ...e, id: prev.id }
+  })
 }
 
 /** Anything but its own delta finishes a streaming tail: text before and after a tool call are separate entries. */
@@ -200,7 +266,8 @@ export function apply(slice: SessionSlice, e: WireEvent, ctx: Ctx): SessionSlice
       return queued.length === slice.queued.length ? slice : { ...slice, queued }
     }
     case 'MessageDelivered':
-      return interject(slice, { id: nextId(), kind: 'peer', from: e.from, text: e.text })
+      // Shown now, stored only once a turn injects it: a settled snapshot read meanwhile lacks the card.
+      return interject({ ...slice, live: slice.live + 1 }, { id: nextId(), kind: 'peer', from: e.from, text: e.text })
     case 'TitleChanged':
       return slice.title === e.title ? slice : { ...slice, title: e.title }
     case 'JobStarted':
@@ -224,8 +291,33 @@ export function apply(slice: SessionSlice, e: WireEvent, ctx: Ctx): SessionSlice
       return { ...slice, artifacts: new Map(slice.artifacts).set(e.call_id, e.artifact), progress: without(slice.progress, e.call_id) }
     case 'ScrapeProgress':
       return { ...slice, scrape: new Map(slice.scrape).set(e.call_id, { inflight: e.inflight, done: e.done, limit: e.limit }) }
+    case 'SkillsChanged':
+      return { ...slice, skills: e.skills }
+    // A full snapshot committed with its tool batch; the settled reload carries the same list, so `live` is untouched.
+    case 'TodoChanged':
+      return reconcileTodos(slice, e.snapshot, true)
+    // The store moved past what is on screen (48 §5): controls disable, in-flight pages and snapshots
+    // are discarded, and the route reloads through the settled path. The revision we already installed
+    // (our own edit's echo) changes nothing unless a refused reload left us stale.
+    case 'ContextChanged':
+      if (slice.contextRevision === e.revision && !slice.contextStale) return slice
+      return {
+        ...slice,
+        contextRevision: e.revision,
+        contextStale: true,
+        contextEditable: false,
+        contextEstimated: e.reason === 'settled' ? slice.contextEstimated : true,
+        historyGeneration: slice.historyGeneration + 1,
+        live: slice.live + 1,
+      }
   }
-  const s = closeTail(slice, e)
+  // Unknown events (approvals, speech, …) leave the slice — and a streaming tail — alone.
+  const next = turn(closeTail(slice, e), e, ctx)
+  return next === undefined ? slice : { ...next, live: slice.live + 1 }
+}
+
+/** The turn's own events, after the tail was closed: anything that changes what a settled snapshot would have to contain. */
+function turn(s: SessionSlice, e: WireEvent, ctx: Ctx): SessionSlice | undefined {
   const idle = s.running ? 'thinking' : 'idle'
   switch (e.type) {
     // Echo the turn's input unless we sent it, it was a steer whose card
@@ -250,6 +342,8 @@ export function apply(slice: SessionSlice, e: WireEvent, ctx: Ctx): SessionSlice
         model: e.model,
         turnSeq: e.turn_seq,
         lastInjected: undefined,
+        // The actor is busy; the settled reload after `TurnDone` restores the authoritative flag.
+        contextEditable: false,
       }
     }
     // The steer enters the context now: its card moves from the queue to
@@ -337,6 +431,7 @@ export function apply(slice: SessionSlice, e: WireEvent, ctx: Ctx): SessionSlice
         progress: s.progress.size ? new Map() : s.progress,
         usage: e.usage,
         context: e.context,
+        contextEstimated: false,
         running: false,
         waiting: false,
         activity: 'idle',
@@ -361,10 +456,8 @@ export function apply(slice: SessionSlice, e: WireEvent, ctx: Ctx): SessionSlice
       return { ...s, activity: 'harvesting' }
     case 'Harvested':
       return interject({ ...s, activity: idle }, { id: nextId(), kind: 'info', text: `knowledge +${e.added} ~${e.updated}` })
-    case 'SkillsChanged':
-      return { ...s, skills: e.skills }
     default:
-      return slice
+      return undefined
   }
 }
 

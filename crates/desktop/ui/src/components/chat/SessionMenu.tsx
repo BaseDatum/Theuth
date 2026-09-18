@@ -254,6 +254,7 @@ export function SessionMenu({ session }: { session: string }) {
             </DropdownMenuSubContent>
           </DropdownMenuSub>
           <DropdownMenuItem onSelect={cmd('/clear')}>Clear</DropdownMenuItem>
+          <DropdownMenuItem onSelect={cmd('/shake')}>Shake context…</DropdownMenuItem>
           <DropdownMenuItem onSelect={cmd('/undo')}>Undo</DropdownMenuItem>
           <DropdownMenuItem disabled={undone === 0} onSelect={cmd('/redo')}>
             Redo

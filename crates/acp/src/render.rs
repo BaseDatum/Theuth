@@ -1,10 +1,11 @@
 //! Pure renderers and label tables (design doc 06 §3.3, §3.4, §4.1): ACP tool
-//! content → text for the tool card, plan → checklist, `ToolKind` ↔ [`Risk`].
+//! content → text for the tool card, `ToolKind` ↔ [`Risk`]. The harness's
+//! plan is not rendered here: it is the session's todo snapshot (47 §5.3).
 
 use std::path::Path;
 
 use agent_client_protocol::schema::v1::{
-    ContentBlock, EmbeddedResourceResource, Plan, PlanEntryStatus, ToolCallContent, ToolKind,
+    ContentBlock, EmbeddedResourceResource, ToolCallContent, ToolKind,
 };
 use tools::Risk;
 
@@ -89,24 +90,6 @@ pub fn render_diff(path: &Path, old: Option<&str>, new: &str) -> String {
         out.push_str(l);
     }
     out
-}
-
-/// A plan as a checklist: `- [ ]` pending, `- [~]` in progress, `- [x]` completed.
-#[must_use]
-pub fn render_plan(plan: &Plan) -> String {
-    plan.entries
-        .iter()
-        .map(|e| {
-            let mark = match e.status {
-                PlanEntryStatus::Pending => ' ',
-                PlanEntryStatus::InProgress => '~',
-                PlanEntryStatus::Completed => 'x',
-                _ => '?',
-            };
-            format!("- [{mark}] {}", e.content)
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 /// The approval class a harness tool kind maps to (06 §3.4): `read`/`search`/

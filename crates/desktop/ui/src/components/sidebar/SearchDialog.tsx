@@ -101,6 +101,7 @@ export function SearchDialog({
 }
 
 function hint(hit: SearchHit): string | null {
+  if (hit.context_removed) return 'Removed from context'
   return hit.matches > 1 ? `${hit.matches} matches` : hit.kind === 'title' ? 'title' : hit.role
 }
 

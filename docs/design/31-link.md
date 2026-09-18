@@ -570,6 +570,13 @@ Nothing is cached elsewhere.
 `export.rs` gains `LinkStatus`, `Device`, `Pairing`, `LinkEvent`;
 `bindings/methods.json` gains the nine names and the vitest catches drift.
 
+Since 48 (2026-09-18) `get_attachment` also serves the preview files the
+history builder materializes for stored binaries (17 §11), written by the
+same naming rule — now `agent::context::save_blob`, which `api.rs`
+re-exports for `put_attachment` and the ACP prompt path. No new method,
+cap or directory: the same `<data_dir>/attachments` guard applies on the
+phone as on the desktop.
+
 ### 6.5 TUI: `/link`
 
 `COMMANDS` row `("/link", "[on|off|pair|rm <n>|name <n> <name>|relay <url>]",
@@ -682,6 +689,17 @@ is rendered under `<HarnessProvider key={active}>` so a switch is a remount.
 Query keys are prefixed `[active, …]`. Hidden harnesses cost nothing: no
 subscription, no store updates. Rule from jarvis kept: never fan two
 harnesses into one store.
+
+*48 addendum (2026-09-18).* The context-removal controls (25 §3 `/shake`
+row) make this scoping load-bearing rather than cosmetic: every
+`remove_context` is issued against the `Stores` captured for its harness
+before the await (`scope(req.harness)`), and the post-commit settled reload
+is dispatched only if that harness is still `active`. An RPC that completes
+after a switch therefore lands in the harness it was meant for or is
+dropped; it never touches the newly active harness's slice. Switching away
+`unload()`s the inactive harness's sessions (`loaded: false`,
+`contextStale`, `historyGeneration + 1`), so returning to it refetches
+authoritative history and no removed item can be shown from a stale cache.
 
 ### 7.5 Pairing UX
 
@@ -989,6 +1007,49 @@ Open: §11 bench numbers; the mobile Settings deep link landing on the pane.
 
 - 32 (nodes) amends §4.1, §4.3, §6.2, §7.3, §7.5; the `SetDispatch` message
   now also carries `acp`.
+
+### 13.1 Context removal over Link (48), as-built 2026-09-18
+
+Nothing here changed on the wire. `context_items`, `remove_context`,
+`load_session(settled_only)` and `AgentEvent::ContextChanged` are ordinary
+`Api` methods and bridged events (25 §7 addendum), so they reach a paired
+device through the existing Noise channel byte for byte — no new op, frame
+type or transport, and the relay learns nothing new. What the device side
+had to get right:
+
+- **Reconnect invalidates loaded state.** A `LinkTransport` reconnect
+  (`PRESENCE 0 → 1`, iOS foreground, `Lagged`) runs `App.reload(st)`:
+  `resetLagged()`, `unload()` — every slice's `historyGeneration` bumps and
+  `contextStale` is set when it had been loaded — then the visible session
+  is refetched. A page or settled snapshot requested before the gap lands
+  under an older generation and is discarded (`sessions.ts`, `loadHistory`
+  refusal). A `ContextChanged` missed during the gap therefore cannot leave
+  a removed image on screen, and a control rendered from pre-gap history
+  cannot fire: its pinned revision no longer matches.
+- **Harness switch invalidates the same way** (§7.4 addendum): switching
+  away unloads; an in-flight `remove_context` completes into the harness
+  that issued it or is dropped, never into the newly active one.
+- **Stale targeting is refused, not retried.** Every control pins the
+  `contextRevision` its transcript was loaded at; the review dialog rechecks
+  the slice's revision, `running` and `contextStale` before the call, and
+  the server rechecks `expected_revision`. A refusal or a transport error
+  with unknown outcome (`-32300`, socket not `open`) shows the message and
+  offers to reload the inventory; the destructive RPC is never replayed
+  automatically. On stale, the user reviews again from fresh data — no
+  retargeting by position.
+- **Attachments.** Previews for stored binaries come through
+  `get_attachment` (§6.4 note), so a phone sees the same removable chips
+  as the desktop for an image sent from any client, after resume.
+
+Verified by Main 2026-09-18 in the shared React surface: a second HTTP
+client's removal converged on a 390×844 coarse-pointer viewport through
+`ContextChanged`; an open confirmation was refused after a remote removal;
+switching the active harness to an isolated offline scope, mutating the
+original harness while unsubscribed and switching back reloaded the masks
+with nothing restored. That exercised the per-harness store lifecycle and
+the invalidation rules above against `ws://127.0.0.1` transports — **not**
+a Noise/relay pairing, a real phone or the iOS container; those remain in
+§13's "not exercised" list.
 
 ## 14. Amendments (same commit series)
 

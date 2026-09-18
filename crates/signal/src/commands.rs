@@ -448,6 +448,7 @@ async fn status(cx: &Cx<'_>) -> anyhow::Result<String> {
             session,
             before: None,
             limit: None,
+            settled_only: false,
         })
         .await
         .map_err(err)?;

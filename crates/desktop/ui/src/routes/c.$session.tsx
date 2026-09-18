@@ -1,23 +1,32 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useCallback, useEffect } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import { toast } from 'sonner'
 import { Composer } from '@/components/chat/Composer'
 import { Header } from '@/components/chat/Header'
 import { lastCode } from '@/components/chat/MessageAssistant'
+import { TodoCard } from '@/components/chat/TodoCard'
 import { Transcript } from '@/components/chat/Transcript'
 import { useApi } from '@/lib/rpc'
-import { useSessionField, useSessions } from '@/store/sessions'
+import { useScope } from '@/store/harness-scope'
+import { freshness, on, useSessionField } from '@/store/sessions'
 
 export const Route = createFileRoute('/c/$session')({ component: SessionRoute })
 
 const PAGE = 60
+/** Settled reloads refused because an event raced the read are retried at most this often before waiting for the next notification. */
+const SETTLE_TRIES = 3
 
 const fail = (e: unknown) => toast.error(e instanceof Error ? e.message : String(e))
 
-/** One chat: header, transcript, composer. Loads the newest page and the agent subtree on first visit; events keep both live. */
+/** `wth:reload-session` detail: `session` narrows it to one chat; `settled` asks for the mutation-refresh path (48 §5). A bare `Event` reloads in full. */
+type ReloadDetail = { session?: string; settled?: boolean }
+
+/** One chat: header, transcript, todo card, composer. Loads the newest page and the agent subtree on first visit; events keep both live. */
 function SessionRoute() {
   const { session } = Route.useParams()
   const api = useApi()
+  // The harness this route mounted under: an RPC landing after a switch writes to its own stores, never the new harness's (48 §5).
+  const { sessions: store } = useScope()
   const title = useSessionField(session, 'title')
   const running = useSessionField(session, 'running')
 
@@ -25,38 +34,106 @@ function SessionRoute() {
     document.title = `${title ?? ''}${running ? ' ·' : ''}`
   }, [title, running])
 
+  // The plan (47 §5.4): one `get_todos` when the page carried none (an older harness, a refused read) or a gap
+  // marked it stale. `setTodos` only moves forward, so a cached list is never wiped; a failed read leaves the
+  // list labelled stale (the card says so) rather than silently reading as empty. Bound to this route's harness
+  // and session, so a late reply after a switch still lands in the right slice.
+  const refreshTodos = useCallback(() => {
+    api.get_todos(session).then(
+      (t) => store.getState().setTodos(session, t),
+      (e) => {
+        store.getState().markTodosStale(session)
+        fail(e)
+      },
+    )
+  }, [api, session, store])
+
   const load = useCallback(async () => {
+    const before = store.getState().sessions[session]
+    const fresh = before && freshness(before)
     const [page, agents, artifacts] = await Promise.all([
       api.load_session(session, null, PAGE),
       api.list_agents(session),
       // A harness without the artifact plugin has no such method.
       api.list_artifacts(session, null).catch(() => []),
     ])
-    const { loadHistory, setChildren, setArtifacts } = useSessions.getState()
-    loadHistory(session, page, 'replace')
+    const { loadHistory, setChildren, setArtifacts } = store.getState()
+    loadHistory(session, page, 'replace', fresh)
     setChildren(session, agents)
     setArtifacts(session, artifacts)
-  }, [api, session])
+    const s = store.getState().sessions[session]
+    if (!s?.todos || s.todosStale) refreshTodos()
+  }, [api, session, store, refreshTodos])
+
+  // The mutation refresh (48 §5): a settled-only page, installed only when nothing raced it. Calls
+  // while one is in flight coalesce into one more pass. A refusal from the actor (busy) waits for its
+  // handback's `ContextChanged`; a refusal from the store (an event landed meanwhile) retries while idle.
+  const settling = useRef(false)
+  const again = useRef(false)
+  const settle = useCallback(() => {
+    if (settling.current) {
+      again.current = true
+      return
+    }
+    settling.current = true
+    void (async () => {
+      for (let tries = 0; tries < SETTLE_TRIES; tries++) {
+        const s = store.getState().sessions[session]
+        // Nothing to reconcile, or a turn runs: its `TurnDone` publishes the `ContextChanged` that comes back here.
+        if (!s?.contextStale || s.running) break
+        const fresh = freshness(s)
+        try {
+          const page = await api.load_session(session, null, PAGE, true)
+          if (store.getState().loadHistory(session, page, 'settled', fresh) || !page.settled || page.running) break
+        } catch (e) {
+          fail(e)
+          break
+        }
+      }
+      settling.current = false
+      if (again.current) {
+        again.current = false
+        settle()
+      }
+    })()
+  }, [api, session, store])
 
   useEffect(() => {
-    const store = useSessions.getState()
-    store.ensure(session)
-    if (!store.sessions[session]?.loaded) {
+    const st = store.getState()
+    st.ensure(session)
+    const s = st.sessions[session]
+    if (!s?.loaded) {
       load().catch(fail)
     } else {
-      api.list_agents(session).then((a) => useSessions.getState().setChildren(session, a), fail)
+      api.list_agents(session).then((a) => store.getState().setChildren(session, a), fail)
+      // A `ContextChanged` reached this slice while another chat was shown.
+      if (s.contextStale) settle()
+      // The plan went stale (reconnect / `Lagged`) or never arrived while hidden: refresh before display (47 §5.4).
+      if (!s.todos || s.todosStale) refreshTodos()
     }
-  }, [api, session, load])
+  }, [api, session, load, settle, store, refreshTodos])
 
-  // Reconnect / `Lagged`: everything between is lost, so the visible session is re-fetched.
+  // Reconnect / `Lagged` (bare event): everything between is lost, so the visible session is re-fetched in full.
+  // A context edit (`ContextChanged`, or the picker's `settled` event) goes through the settled path instead.
   useEffect(() => {
-    const reload = () => void load().catch(fail)
+    const reload = (ev: Event) => {
+      const detail: ReloadDetail | undefined = ev instanceof CustomEvent ? ev.detail : undefined
+      if (detail?.session !== undefined && detail.session !== session) return
+      if (detail?.settled) settle()
+      else void load().catch(fail)
+    }
     window.addEventListener('wth:reload-session', reload)
-    return () => window.removeEventListener('wth:reload-session', reload)
-  }, [load])
+    const off = on('ContextChanged', (e) => {
+      if (e.session === session) settle()
+    })
+    return () => {
+      window.removeEventListener('wth:reload-session', reload)
+      off()
+    }
+  }, [load, settle, session])
 
   useEffect(() => {
-    const last = () => useSessions.getState().sessions[session]?.entries.findLast((e) => e.kind === 'assistant')
+    const last = () => store.getState().sessions[session]?.entries.findLast((e) => e.kind === 'assistant')
     const response = () => {
       const e = last()
       if (e) void navigator.clipboard.writeText(e.text)
@@ -72,13 +149,14 @@ function SessionRoute() {
       window.removeEventListener('wth:copy-last-response', response)
       window.removeEventListener('wth:copy-last-code', code)
     }
-  }, [session])
+  }, [session, store])
 
   // Keyed so refs/drafts reset per session; the keys must differ between siblings.
   return (
     <>
       <Header session={session} />
       <Transcript key={`t:${session}`} session={session} />
+      <TodoCard key={`d:${session}`} session={session} />
       <Composer key={`c:${session}`} session={session} />
     </>
   )

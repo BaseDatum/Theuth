@@ -448,10 +448,10 @@ impl Scrape {
             site: Some(host.trim_start_matches("www.").to_owned()),
             recent: None,
         };
-        let ask = web.ask(web::actor::Search {
+        let ask = web.ask(tools::Tracked::new(web::actor::Search {
             query,
             providers: None,
-        });
+        }));
         let Ok(Ok(resp)) = tokio::time::timeout(budget, ask).await else {
             tracing::debug!("map search failed or timed out");
             return Vec::new();

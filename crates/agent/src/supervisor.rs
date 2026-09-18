@@ -1,9 +1,13 @@
 //! `Agents` supervisor: registered as [`crate::AGENT_ACTOR`]; owns one
 //! session actor per live session, the sqlite store, and peer routing
 //! (design doc 01 §2.3): child results, peer messages and finished jobs
-//! (14 §3) are injected as [`UserInput`] into the addressee.
+//! (14 §3, via `Settle::FinishedWithResult`) are injected as [`UserInput`]
+//! into the addressee. It is also the single continuation authority (47 §4):
+//! every input is admitted here before routing, every runner reports its
+//! busy state, tools settle admitted work here, and [`DecideYield`] is
+//! answered from that state alone.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{Arc, RwLock};
@@ -11,24 +15,35 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use genai::adapter::AdapterKind;
-use genai::chat::{ChatMessage, ChatRole};
+use genai::chat::{BinarySource, ChatMessage, ChatRole, ContentPart};
 use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
 use genai::{Client, Headers, ModelIden, ServiceTarget};
 use kameo::actor::{ActorRef, Spawn};
+use kameo::error::SendError;
 use kameo::message::{Context, Message};
 use models::{Catalog, Resolved};
-use runtime::{InputId, Runtime, SessionId};
+use runtime::{InputId, Runtime, SessionId, TurnId};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, oneshot};
 use tokio::task::AbortHandle;
 use tools::{
-    ApprovalId, ApprovalRequested, ApprovalResolved, JobEvent, JobExit, JobId, ListPrompts,
-    ListTools, REGISTRY_ACTOR, RegisterPrompt, RegisterTool, SetParent, ToolRegistry,
+    ActivitySink, Admission, Admit, ApprovalId, ApprovalRequested, ApprovalResolved, JobEvent,
+    JobExit, JobId, ListPrompts, ListTools, REGISTRY_ACTOR, RegisterActivity, RegisterPrompt,
+    RegisterTool, SetParent, Settle, ToolRegistry,
 };
 
 use crate::acp_child::AcpChild;
+use crate::context::{
+    ContextEntry, ContextHistory, ContextOwner, ContextRemoval, ContextSnapshot, ContextTarget,
+    save_blob,
+};
+use crate::continuation::{
+    DecideYield, InputConsumed, InputOrigin, InputTicket, Ledger, SessionUnknown, TurnEntered,
+    TurnReturned, YieldDecision,
+};
 use crate::loop_::{
-    CancelTurn, CompactNow, HarvestNow, IsRunning, QueuedInputs, RedoTurn, RestartTurn, Session,
-    SessionState, SetPendingEffort, SwitchModel, UndoTurn, UserInput, WithdrawInput, text_of,
+    CancelTurn, CompactNow, ContextHistoryNow, ContextItemsNow, HarvestNow, IsRunning,
+    QueuedInputs, RedoTurn, RemoveContextNow, RestartTurn, Session, SessionState, SetPendingEffort,
+    SwitchModel, UndoTurn, UserInput, WithdrawInput, text_of,
 };
 use crate::peers::{ListModelsTool, Nodes, SendMessageTool, SpawnSubagentTool, node_lines};
 use crate::skills::{
@@ -39,15 +54,15 @@ use crate::store::{self, Epoch, Store};
 use crate::user::{MessageUserTool, USER_ACTOR, UserChannels};
 use crate::{
     AGENT_ACTOR, AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentConfig, AgentEvent, AgentInfo,
-    AgentState, AncestorInfo, Ancestors, Cancel, Compact, CompactStyle, DeleteSession, EditTurn,
-    ForkSession, GetCompactStyle, GetMaxToolRounds, GetSubagentTimeout, GetTitleModel, Harvest,
-    HistoryEntry, ListAcp, ListAgents, ListLogins, ListModels, ListProviders, ListQueued,
-    ListRegistry, ListSessions, ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginFinished,
-    LoginInfo, Logout, ModelInfo, NewSession, PinSession, ProviderInfo, QueuedInput, Redo,
-    Regenerate, RemoveAcp, RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession,
-    SearchSessions, SendInput, SessionSummary, SetCompactStyle, SetEffort, SetMaxToolRounds,
-    SetModel, SetSubagentTimeout, SetTitleModel, ShowPrompt, SkillBody, SkillMeta, Steer,
-    SyncSkills, Undo, UseSkill, Withdraw, effort_of,
+    AgentState, AncestorInfo, Ancestors, Cancel, Compact, CompactStyle, ContextItems,
+    DeleteSession, EditTurn, ForkSession, GetCompactStyle, GetMaxToolRounds, GetSubagentTimeout,
+    GetTitleModel, GetTodos, Harvest, HistoryEntry, ListAcp, ListAgents, ListLogins, ListModels,
+    ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills, LoadSession, LoadSkill,
+    Loaded, Login, LoginFinished, LoginInfo, Logout, ModelInfo, NewSession, PinSession,
+    ProviderInfo, QueuedInput, Redo, Regenerate, RemoveAcp, RemoveContext, RemoveProvider,
+    RemoveSkill, RemoveSkillRepo, RenameSession, SearchSessions, SendInput, SessionSummary,
+    SetCompactStyle, SetEffort, SetMaxToolRounds, SetModel, SetSubagentTimeout, SetTitleModel,
+    ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw, effort_of,
 };
 use crate::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 use crate::{frame, repl, search, spill};
@@ -94,6 +109,15 @@ pub struct Agents {
     /// Registered nodes (32 §6.5); shared with the `spawn_subagent` tool's description.
     nodes: Nodes,
     next_msg: u64,
+    /// Activity ledger and continuation state (47 §4); every transition is
+    /// applied synchronously inside a handler, which is the linearization point.
+    /// Sessions whose row already had history when this process first
+    /// touched them are registered `resumed`: a previous owner's jobs,
+    /// readers and children cannot be proven stopped (47 §4.5), and nothing
+    /// short of producer reconciliation (not built) could prove it, so they
+    /// never continue automatically in this process. Ordinary work, results
+    /// and the todo card are unaffected; new sessions use fresh accounting.
+    ledger: Ledger,
 }
 
 /// A live session actor plus its peer identity.
@@ -122,14 +146,11 @@ impl LiveActor {
         }
     }
 
-    async fn tell_input(&self, input: UserInput) {
+    /// `Err` when the actor's mailbox is closed: the input was dropped, never queued.
+    async fn tell_input(&self, input: UserInput) -> anyhow::Result<()> {
         match self {
-            Self::Native(a) => {
-                let _ = a.tell(input).await;
-            }
-            Self::Acp(a) => {
-                let _ = a.tell(input).await;
-            }
+            Self::Native(a) => a.tell(input).await.map_err(|e| anyhow::anyhow!("{e}")),
+            Self::Acp(a) => a.tell(input).await.map_err(|e| anyhow::anyhow!("{e}")),
         }
     }
 
@@ -255,6 +276,8 @@ struct StartChildTurn {
     child: SessionId,
     permit: OwnedSemaphorePermit,
     text: String,
+    /// Admitted by [`SpawnChild`] before the permit wait.
+    ticket: InputTicket,
 }
 
 /// `tell` (internal): a child turn hit `max_runtime_secs`.
@@ -312,14 +335,23 @@ impl Agents {
                 .await?;
             return Ok((id, actor));
         }
-        let (model, effort, state, parent) = match row {
+        let (model, effort, state, parent, resumed) = match row {
             Some(row) => {
                 let (epoch, head, history) = self.store.frame(id).await?;
+                // A row with history belonged to an earlier process whose work
+                // cannot be proven stopped (47 §4.5), see `Agents::ledger`.
+                let resumed = epoch > 0 || !history.is_empty();
+                let mut state = SessionState::resume(epoch, head, history);
+                // 47 §5.2: the structured plan, not a parsed summary.
+                let todos = self.store.todos(id).await?;
+                state.todos = todos.items;
+                state.todo_version = todos.version;
                 (
                     self.resolve_model(&row.model),
                     row.effort,
-                    SessionState::resume(epoch, head, history),
+                    state,
                     row.parent.zip(row.name),
+                    resumed,
                 )
             }
             None => {
@@ -348,6 +380,7 @@ impl Agents {
                     effort,
                     SessionState::resume(0, None, Vec::new()),
                     parent.map(|(p, n)| (p, n.to_string())),
+                    false,
                 )
             }
         };
@@ -371,6 +404,8 @@ impl Agents {
             self.pool.clone(),
         ));
         let actor = LiveActor::Native(actor);
+        self.ledger
+            .register(id, parent.as_ref().map(|p| p.0), resumed);
         self.sessions.insert(
             id,
             Live {
@@ -408,6 +443,8 @@ impl Agents {
                 crate::peers::unknown(&name, &entries, &node_lines(&self.nodes))
             ),
         };
+        // An existing row belonged to an earlier process (see `Agents::ledger`).
+        let resumed = row.is_some();
         let (parent, cwd, resume) = match row {
             Some(row) => (
                 row.parent.zip(row.name),
@@ -434,6 +471,8 @@ impl Agents {
             self.store.clone(),
             self.rt.clone(),
         )));
+        self.ledger
+            .register(id, parent.as_ref().map(|p| p.0), resumed);
         self.sessions.insert(
             id,
             Live {
@@ -460,36 +499,61 @@ impl Agents {
 
     /// Route `text` (plus image `files`) into `session` (created when `None`);
     /// errors surface as `AgentEvent::Error`. A rejected attachment drops the
-    /// whole input (17 §3.1).
+    /// whole input (17 §3.1). The input's ticket is admitted here, before
+    /// the actor `tell`, so a yield decision handled after this sees it (47 §4.3).
     async fn input(
         &mut self,
         session: Option<SessionId>,
         id: Option<InputId>,
         text: String,
         files: Vec<PathBuf>,
+        origin: InputOrigin,
+    ) -> SessionId {
+        let sid = session.unwrap_or_default();
+        let ticket = self.ledger.admit(sid, origin, id);
+        self.route(sid, id, text, files, ticket).await
+    }
+
+    /// [`Agents::input`] with a ticket admitted earlier (a queued child's first
+    /// turn). A routing failure — a rejected attachment, no actor, or a `tell`
+    /// into a closed mailbox — releases the ticket: no runner ever held it.
+    async fn route(
+        &mut self,
+        sid: SessionId,
+        id: Option<InputId>,
+        text: String,
+        files: Vec<PathBuf>,
+        ticket: InputTicket,
     ) -> SessionId {
         let routed = match check_files(&files) {
-            Ok(()) => self.session(session, None, None, (None, None)).await,
+            Ok(()) => self.session(Some(sid), None, None, (None, None)).await,
             Err(e) => Err(anyhow::anyhow!(e)),
         };
-        match routed {
-            Ok((sid, actor)) => {
-                actor.tell_input(UserInput { id, text, files }).await;
-                sid
-            }
-            Err(e) => {
-                let id = session.unwrap_or_default();
-                tracing::error!(session = %id, "session: {e:#}");
-                self.rt
-                    .publish(AgentEvent::Error {
-                        session: id,
-                        turn: None,
-                        message: format!("{e:#}"),
+        let sent = match routed {
+            Ok((_, actor)) => {
+                actor
+                    .tell_input(UserInput {
+                        id,
+                        text,
+                        files,
+                        ticket: Some(ticket),
                     })
-                    .await;
-                id
+                    .await
             }
+            Err(e) => Err(e),
+        };
+        if let Err(e) = sent {
+            self.ledger.release(sid, ticket);
+            tracing::error!(session = %sid, "session: {e:#}");
+            self.rt
+                .publish(AgentEvent::Error {
+                    session: sid,
+                    turn: None,
+                    message: format!("{e:#}"),
+                })
+                .await;
         }
+        sid
     }
 
     /// [`SendInput`] / [`Steer`] from a human (design doc 19 §2.3): a session
@@ -526,7 +590,8 @@ impl Agents {
             },
             None => text,
         };
-        self.input(session, id, text, files).await
+        self.input(session, id, text, files, InputOrigin::External)
+            .await
     }
 
     /// The live (or resumed) actor for `session`, with the lookup error as the
@@ -546,9 +611,11 @@ impl Agents {
             .map(|l| &l.actor)
     }
 
-    /// Inject `text` (already wrapped) into `to` and announce it.
+    /// Inject `text` (already wrapped) into `to` and announce it. Harness-made,
+    /// so `Automatic`: it never opens a new reminder budget (47 §4.5).
     async fn inject(&mut self, to: SessionId, from: &str, text: String, wrapped: String) {
-        self.input(Some(to), None, wrapped, Vec::new()).await;
+        self.input(Some(to), None, wrapped, Vec::new(), InputOrigin::Automatic)
+            .await;
         self.rt
             .publish(AgentEvent::MessageDelivered {
                 session: to,
@@ -568,8 +635,14 @@ impl Agents {
         Some((child, "parent".into()))
     }
 
-    async fn child_finished(&mut self, child: SessionId, stop_reason: &str) {
+    /// A child's turn ended: hand its result to the parent — a pending
+    /// waiter, else a `<subagent_result>` input. The child stays counted in
+    /// the ledger until this ran (`Ledger::handed_off`), and the parent's
+    /// ticket is admitted inside `inject` before the child is released, so
+    /// no decision can observe zero work between the two (47 §3.2).
+    async fn child_finished(&mut self, child: SessionId, turn: TurnId, stop_reason: &str) {
         let Some((parent, name)) = self.sessions.get(&child).and_then(|l| l.parent.clone()) else {
+            self.ledger.handed_off(child, turn);
             return;
         };
         let mut text = self.store.last_turn_text(child).await.unwrap_or_else(|e| {
@@ -592,7 +665,8 @@ impl Agents {
         );
         if let Some(tx) = self.waiters.remove(&(parent, child)) {
             match tx.send(text) {
-                Ok(()) => return,
+                // The waiting invocation (still admitted) owns the continuation.
+                Ok(()) => return self.ledger.handed_off(child, turn),
                 Err(t) => text = t, // waiter gave up (timeout); fall through to inject
             }
         }
@@ -600,6 +674,7 @@ impl Agents {
             "<subagent_result name=\"{name}\" session=\"{child}\" stop=\"{stop_reason}\">\n{text}\n</subagent_result>"
         );
         self.inject(parent, &name, text, wrapped).await;
+        self.ledger.handed_off(child, turn);
     }
 }
 
@@ -628,6 +703,7 @@ impl Message<AgentEvent> for Agents {
             }
             AgentEvent::TurnFinished {
                 session,
+                turn,
                 stop_reason,
                 ..
             } => {
@@ -638,11 +714,12 @@ impl Message<AgentEvent> for Agents {
                 self.last_stop
                     .insert(session, (stop_reason.clone(), Utc::now()));
                 self.search.invalidate();
-                self.child_finished(session, &stop_reason).await;
+                self.child_finished(session, turn, &stop_reason).await;
             }
             AgentEvent::TitleChanged { .. }
             | AgentEvent::SessionDeleted { .. }
-            | AgentEvent::Compacted { .. } => self.search.invalidate(),
+            | AgentEvent::Compacted { .. }
+            | AgentEvent::ContextChanged { .. } => self.search.invalidate(),
             _ => {}
         }
     }
@@ -666,44 +743,189 @@ impl Message<ApprovalResolved> for Agents {
     }
 }
 
-/// Finished jobs (14 §3): `Finished` becomes a `<job_result>` harness input
-/// via [`Agents::inject`] — an idle session starts a new turn, a turn in
-/// flight queues it after the current tool batch. A session with no live
-/// actor is resumed from the store by `input`, so a job that outlives its
-/// actor still wakes the session. `Started` / `Output` are for the UIs.
-impl Message<JobEvent> for Agents {
+/// `tell` (internal): the tool registry acknowledged [`RegisterActivity`];
+/// from here every invocation/job/command is admitted before it runs, so a
+/// zero-entry ledger is evidence (47 §4.2 rule 7). Never certified before.
+struct ActivityRegistered;
+
+impl Message<ActivityRegistered> for Agents {
     type Reply = ();
 
-    async fn handle(&mut self, ev: JobEvent, _: &mut Context<Self, Self::Reply>) {
-        let JobEvent::Finished {
-            session,
-            id,
-            command,
-            exit,
-            secs,
-            output,
-            inline,
-            pty,
-        } = ev
-        else {
-            return;
-        };
-        // An inline result was the `shell` tool's own reply; injecting it
-        // too would hand the model the same output twice.
-        if inline {
+    async fn handle(&mut self, _: ActivityRegistered, _: &mut Context<Self, Self::Reply>) {
+        self.ledger.certify();
+    }
+}
+
+impl Agents {
+    /// Make `session`'s ancestry known to the ledger from its stored row when
+    /// no actor has registered it (an RPC job start on a session with no
+    /// actor, work adopted at registration). The store never asks back into
+    /// this actor. A row that cannot be read leaves the owner unresolved,
+    /// which blocks every decision until the work settles: fail closed, not
+    /// a wildcard by design.
+    async fn place(&mut self, session: SessionId) {
+        if self.ledger.knows(session) {
             return;
         }
-        // Same cap and dir as tool results in the loop (07 §6).
-        let text = spill::cap(
-            session,
-            &format!("job-{id}"),
-            &output,
-            self.cfg.max_tool_output_chars,
-            &self.rt.data_dir.join("spill"),
+        match self.store.session(session).await {
+            Ok(Some(row)) => self.ledger.register(session, row.parent, true),
+            Ok(None) => tracing::warn!(session = %session, "activity for a session with no row"),
+            Err(e) => tracing::error!(session = %session, "activity owner lookup: {e:#}"),
+        }
+    }
+}
+
+/// Activity admission (47 §4.1): the entry is recorded, then the reply.
+/// Awaits only the store for an owner no actor registered (never a tools
+/// actor, so no deadlock with the registry's barrier).
+impl Message<Admit> for Agents {
+    type Reply = Admission;
+
+    async fn handle(&mut self, Admit(op): Admit, _: &mut Context<Self, Self::Reply>) -> Admission {
+        self.place(op.owner).await;
+        self.ledger.admit_op(&op);
+        Admission::Admitted
+    }
+}
+
+impl Agents {
+    /// Settlement (47 §4.1). A finished job's result (14 §3) becomes a
+    /// `<job_result>` harness input here — the *only* model-delivery path; the
+    /// public `JobEvent::Finished` stays for UIs. The owner's input ticket is
+    /// admitted inside `inject` before the operation is retired, so execution
+    /// turns into a pending delivery with no gap; an idle session starts a new
+    /// turn, a running one queues it, and a session with no live actor is
+    /// resumed by `route`. `Unknown` keeps the entry and surfaces the failure;
+    /// only a later `Finished` for the same id (the owner reconciling) clears it.
+    async fn settle(&mut self, m: Settle) {
+        match m {
+            Settle::Finished { op } => self.ledger.retire_op(op),
+            Settle::FinishedWithResult { op, result } => {
+                if let JobEvent::Finished {
+                    session,
+                    id,
+                    command,
+                    exit,
+                    secs,
+                    output,
+                    inline: false,
+                    pty,
+                } = result
+                {
+                    // Same cap and dir as tool results in the loop (07 §6).
+                    let text = spill::cap(
+                        session,
+                        &format!("job-{id}"),
+                        &output,
+                        self.cfg.max_tool_output_chars,
+                        &self.rt.data_dir.join("spill"),
+                    );
+                    let wrapped = job_result(&id, &command, &exit, secs, &text, pty);
+                    self.inject(session, &format!("job {id}"), text, wrapped)
+                        .await;
+                }
+                // An inline result was the `shell` tool's own reply (14 §3);
+                // injecting it too would hand the model the same output twice.
+                self.ledger.retire_op(op);
+            }
+            Settle::Unknown { op, owner, failure } => {
+                tracing::warn!(%op, %owner, "activity outcome unknown: {failure}");
+                self.place(owner).await;
+                self.ledger.unknown_op(op, owner, failure.clone());
+                self.rt
+                    .publish(AgentEvent::Error {
+                        session: owner,
+                        turn: None,
+                        message: format!("background work outcome unknown: {failure}"),
+                    })
+                    .await;
+            }
+        }
+    }
+}
+
+impl Message<Settle> for Agents {
+    type Reply = ();
+
+    async fn handle(&mut self, m: Settle, _: &mut Context<Self, Self::Reply>) {
+        self.settle(m).await;
+    }
+}
+
+impl Message<TurnEntered> for Agents {
+    type Reply = ();
+
+    async fn handle(&mut self, m: TurnEntered, _: &mut Context<Self, Self::Reply>) {
+        self.ledger.entered(m);
+    }
+}
+
+impl Message<InputConsumed> for Agents {
+    type Reply = ();
+
+    async fn handle(&mut self, m: InputConsumed, _: &mut Context<Self, Self::Reply>) {
+        self.ledger.consumed(m);
+    }
+}
+
+impl Message<TurnReturned> for Agents {
+    type Reply = ();
+
+    async fn handle(&mut self, m: TurnReturned, _: &mut Context<Self, Self::Reply>) {
+        self.ledger.returned(m);
+    }
+}
+
+impl Message<SessionUnknown> for Agents {
+    type Reply = ();
+
+    async fn handle(&mut self, m: SessionUnknown, _: &mut Context<Self, Self::Reply>) {
+        tracing::warn!(session = %m.session, "session activity unknown: {}", m.failure);
+        let session = m.session;
+        let message = format!(
+            "work under this session cannot be proven stopped: {}",
+            m.failure
         );
-        let wrapped = job_result(&id, &command, &exit, secs, &text, pty);
-        self.inject(session, &format!("job {id}"), text, wrapped)
+        self.ledger.session_unknown(m);
+        self.rt
+            .publish(AgentEvent::Error {
+                session,
+                turn: None,
+                message,
+            })
             .await;
+    }
+}
+
+/// The one decision (47 §4.3), entirely synchronous: supervisor-owned
+/// evidence (approvals, peer waiters, event-projected running descendants)
+/// plus the ledger, then the commit inside `Ledger::decide`. Never queries
+/// an actor or the store.
+impl Message<DecideYield> for Agents {
+    type Reply = YieldDecision;
+
+    async fn handle(
+        &mut self,
+        m: DecideYield,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> YieldDecision {
+        let blocked = self.ledger.subtree(m.session).into_iter().any(|d| {
+            self.approvals.contains_key(&d)
+                || self.waiters.keys().any(|(w, _)| *w == d)
+                || (d != m.session && self.running.contains(&d))
+        });
+        self.ledger.decide(&m, blocked)
+    }
+}
+
+impl Message<GetTodos> for Agents {
+    type Reply = Result<crate::todo::TodoSnapshot, String>;
+
+    async fn handle(&mut self, m: GetTodos, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.store
+            .todos(m.session)
+            .await
+            .map_err(|e| format!("{e:#}"))
     }
 }
 
@@ -759,8 +981,15 @@ impl Message<UseSkill> for Agents {
         let text = skills::inject_text(&m.name, &text, &m.args);
         // Routed, never a waiter's answer: a skill body is not a reply. The
         // id makes the queue/inject lifecycle visible to UIs (they did not type it).
+        // The user asked for it: a fresh request (47 §4.5).
         Ok(self
-            .input(m.session, Some(InputId::new()), text, Vec::new())
+            .input(
+                m.session,
+                Some(InputId::new()),
+                text,
+                Vec::new(),
+                InputOrigin::External,
+            )
             .await)
     }
 }
@@ -782,11 +1011,16 @@ impl Message<Withdraw> for Agents {
             return Err("not queued".into());
         };
         // `SendError::HandlerError` displays as the inner `String`.
-        actor
+        let r = actor
             .native()?
             .ask(WithdrawInput(m.id))
             .await
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string());
+        if r.is_ok() {
+            // The queued input left the loop with its ticket: nothing is owed.
+            self.ledger.withdrawn(m.session, m.id);
+        }
+        r
     }
 }
 
@@ -806,6 +1040,7 @@ impl Message<Undo> for Agents {
 
     async fn handle(&mut self, m: Undo, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.search.invalidate();
+        self.ledger.bump(m.session);
         self.actor(m.session)
             .await?
             .native()?
@@ -820,6 +1055,7 @@ impl Message<Redo> for Agents {
 
     async fn handle(&mut self, m: Redo, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.search.invalidate();
+        self.ledger.bump(m.session);
         self.actor(m.session)
             .await?
             .native()?
@@ -834,15 +1070,24 @@ impl Message<Regenerate> for Agents {
 
     async fn handle(&mut self, m: Regenerate, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.search.invalidate();
-        self.actor(m.session)
-            .await?
-            .native()?
+        let actor = self.actor(m.session).await?.native()?.clone();
+        // A rewind invalidates old candidates; the replayed opener is the
+        // human's request again (fresh budget). The loop drops the ticket
+        // with a refused restart, so release it on `Err`.
+        self.ledger.bump(m.session);
+        let ticket = self.ledger.admit(m.session, InputOrigin::External, None);
+        let r = actor
             .ask(RestartTurn {
                 turn: m.turn,
                 input: None,
+                ticket: Some(ticket),
             })
             .await
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string());
+        if r.is_err() {
+            self.ledger.release(m.session, ticket);
+        }
+        r
     }
 }
 
@@ -852,15 +1097,22 @@ impl Message<EditTurn> for Agents {
     async fn handle(&mut self, m: EditTurn, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         check_files(&m.files)?;
         self.search.invalidate();
-        self.actor(m.session)
-            .await?
-            .native()?
+        let actor = self.actor(m.session).await?.native()?.clone();
+        // As `Regenerate`: rewind, then the edited text is a fresh human request.
+        self.ledger.bump(m.session);
+        let ticket = self.ledger.admit(m.session, InputOrigin::External, None);
+        let r = actor
             .ask(RestartTurn {
                 turn: m.turn,
                 input: Some((m.text, m.files)),
+                ticket: Some(ticket),
             })
             .await
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string());
+        if r.is_err() {
+            self.ledger.release(m.session, ticket);
+        }
+        r
     }
 }
 
@@ -895,6 +1147,8 @@ impl Message<Cancel> for Agents {
         // Every running descendant, not one level (design doc 19 §2.3).
         let tree = self.store.descendants(m.session).await.unwrap_or_default();
         for id in std::iter::once(m.session).chain(tree.into_iter().map(|(_, s)| s.id)) {
+            // Stop control (47 §4.3): candidates admitted before this are stale.
+            self.ledger.bump(id);
             if let Some(live) = self
                 .sessions
                 .get(&id)
@@ -923,6 +1177,9 @@ impl Message<Compact> for Agents {
                 return reply;
             }
         };
+        // Manual compaction rewrites the context: old candidates are stale.
+        // Its busy window is reported by the loop (`TurnEntered { turn: None }`).
+        self.ledger.bump(m.session);
         // Off the mailbox: `compact_now` asks us for the `Roster`, so awaiting
         // here would deadlock. `SendError::HandlerError` displays as the inner `String`.
         tokio::spawn(async move {
@@ -1176,6 +1433,10 @@ impl Message<SpawnChild> for Agents {
                 name: name.clone(),
             })
             .await;
+        // The child's initial assignment is admitted now, before the permit
+        // wait: a child queued behind the cap already counts (47 §3.2), and
+        // it opens the child's own reminder budget (`External`).
+        let ticket = self.ledger.admit(id, InputOrigin::External, None);
         let me = ctx.actor_ref().clone();
         let permits = self.permits.clone();
         let text = m.task;
@@ -1188,6 +1449,7 @@ impl Message<SpawnChild> for Agents {
                     child: id,
                     permit,
                     text,
+                    ticket,
                 })
                 .await;
         });
@@ -1200,7 +1462,7 @@ impl Message<StartChildTurn> for Agents {
 
     async fn handle(&mut self, m: StartChildTurn, ctx: &mut Context<Self, Self::Reply>) {
         let child = m.child;
-        self.input(Some(child), None, m.text, Vec::new()).await;
+        self.route(child, None, m.text, Vec::new(), m.ticket).await;
         let me = ctx.actor_ref().clone();
         let after = Duration::from_secs(self.cfg.subagents.max_runtime_secs);
         let timer = tokio::spawn(async move {
@@ -1234,6 +1496,7 @@ impl Message<ChildTimedOut> for Agents {
             && let Some(live) = self.sessions.get(&child)
         {
             self.timed_out.insert(child);
+            self.ledger.bump(child);
             live.actor.tell_cancel().await;
         }
     }
@@ -1586,43 +1849,35 @@ impl Message<LoadSession> for Agents {
     type Reply = Loaded;
 
     async fn handle(&mut self, m: LoadSession, _: &mut Context<Self, Self::Reply>) -> Loaded {
-        let store = &self.store;
-        let loaded = async {
-            anyhow::Ok((
-                store.session(m.session).await?,
-                store.messages(m.session).await?,
-                store.epochs(m.session).await?,
-            ))
-        }
-        .await;
-        // ponytail: every row is read and rendered per page; a seq-ranged
-        // query is the upgrade if a measured session makes this slow.
-        let (row, history, first_seq, more, skills) = match loaded {
-            Ok((row, messages, epochs)) => {
-                // The frame is the latest epoch's tail (07 §8.4); its skills are the badge (04 §2.4).
-                let from = epochs.last().map_or(0, |e| e.tail_from);
-                let at = messages.partition_point(|(seq, _)| *seq < from);
-                let skills = skills::in_frame(&messages[at..]).into_iter().collect();
-                // A boundary sits right after the last entry completed at or
-                // before `at_seq`, i.e. before the first entry past it.
-                let mut epochs = epochs.into_iter().peekable();
-                let mut out = Vec::new();
-                for (seq, entry) in render(&messages) {
-                    while let Some(e) = epochs.next_if(|e| e.at_seq < seq) {
-                        out.push((e.at_seq, compacted(e)));
-                    }
-                    out.push((seq, entry));
+        // Raw rows and their context metadata in one consistent read (48 §5):
+        // through the session actor when it is live (it owns admission and
+        // fills editable/reason), from the store when no actor exists (idle
+        // by construction) or the session runs on an external harness.
+        let row = self.store.session(m.session).await.unwrap_or_else(|e| {
+            tracing::error!(session = %m.session, "load session: {e:#}");
+            None
+        });
+        let external = row.as_ref().is_some_and(|r| r.agent.is_some());
+        let live = self.live(m.session).cloned();
+        let native = live.as_ref().and_then(|a| a.native().ok());
+        // `Err(reason)` = the actor refused a settled read (busy); the store
+        // still answers so the reply is honest but not installable.
+        let (read, refused) = match native {
+            Some(a) => match a
+                .ask(ContextHistoryNow {
+                    settled_only: m.settled_only,
+                })
+                .await
+            {
+                Ok(h) => (Ok(h), None),
+                Err(SendError::HandlerError(busy)) => {
+                    (self.store.context_history(m.session).await, Some(busy))
                 }
-                out.extend(epochs.map(|e| (e.at_seq, compacted(e))));
-                let (history, first_seq, more) = page(out, m.before, m.limit);
-                (row, history, first_seq, more, skills)
-            }
-            Err(e) => {
-                tracing::error!(session = %m.session, "load session: {e:#}");
-                (None, Vec::new(), None, false, Vec::new())
-            }
+                Err(e) => (Err(anyhow::anyhow!("{e}")), None),
+            },
+            None => (self.store.context_history(m.session).await, None),
         };
-        let (running, queued) = match self.live(m.session) {
+        let (running, queued) = match &live {
             Some(actor) => (
                 actor.is_running().await,
                 match actor.native() {
@@ -1631,6 +1886,74 @@ impl Message<LoadSession> for Agents {
                 },
             ),
             None => (false, Vec::new()),
+        };
+        // ponytail: every row is read and rendered per page; a seq-ranged
+        // query is the upgrade if a measured session makes this slow.
+        let (history, first_seq, more, skills, context) = match read {
+            Ok(h) => {
+                let ContextHistory {
+                    revision,
+                    messages,
+                    epochs,
+                    entries,
+                    heads,
+                    snapshot,
+                } = h;
+                // The frame is the latest epoch's tail (07 §8.4); its skills
+                // are the badge (04 §2.4), read off the effective rows.
+                let from = epochs.last().map_or(0, |e| e.tail_from);
+                let at = messages.partition_point(|(seq, _)| *seq < from);
+                let tail = &messages[at..];
+                let removed = |seq: &i64| entries.get(seq).is_some_and(|e| e.removed);
+                let skills = if tail.iter().any(|(seq, _)| removed(seq)) {
+                    let kept: Vec<_> = tail.iter().filter(|(s, _)| !removed(s)).cloned().collect();
+                    skills::in_frame(&kept)
+                } else {
+                    skills::in_frame(tail)
+                }
+                .into_iter()
+                .collect();
+                // A boundary sits right after the last entry completed at or
+                // before `at_seq`, i.e. before the first entry past it.
+                let mut dividers = epochs.iter().peekable();
+                let mut out = Vec::new();
+                for (seq, entry) in render(&messages, &entries) {
+                    while let Some(e) = dividers.next_if(|e| e.at_seq < seq) {
+                        out.push((e.at_seq, compacted(e, heads.get(&e.n).cloned())));
+                    }
+                    out.push((seq, entry));
+                }
+                out.extend(dividers.map(|e| (e.at_seq, compacted(e, heads.get(&e.n).cloned()))));
+                let (mut history, first_seq, more) = page(out, m.before, m.limit);
+                materialize(&mut history, &messages, &epochs, &self.rt.data_dir);
+                let (editable, reason, settled) = match (&refused, native.is_some(), external) {
+                    (Some(busy), _, _) => (false, Some(busy.clone()), false),
+                    (None, _, true) => (false, Some(NOT_NATIVE.to_owned()), !running),
+                    // The actor filled these from its own idle state.
+                    (None, true, false) => (snapshot.editable, snapshot.reason, snapshot.editable),
+                    // No actor: nothing runs; a removal resumes one.
+                    (None, false, false) => (true, None, true),
+                };
+                let context = (
+                    revision,
+                    editable,
+                    reason,
+                    (!external).then_some(snapshot.estimated_tokens),
+                    settled,
+                );
+                (history, first_seq, more, skills, context)
+            }
+            Err(e) => {
+                tracing::error!(session = %m.session, "load session: {e:#}");
+                let reason = Some(format!("load session: {e:#}"));
+                (
+                    Vec::new(),
+                    None,
+                    false,
+                    Vec::new(),
+                    (String::new(), false, reason, None, false),
+                )
+            }
         };
         let undone = self
             .store
@@ -1643,6 +1966,16 @@ impl Message<LoadSession> for Agents {
         let (model, effort, agent, name, parent) = row
             .map(|r| (r.model, r.effort, r.agent, r.name, r.parent))
             .unwrap_or_default();
+        let (context_revision, context_editable, context_reason, context_estimate, settled) =
+            context;
+        // 47 §5.1: the committed plan, independent of paging and of a running
+        // turn; a failed read is `None` (unavailable), never an empty plan.
+        let todos = self
+            .store
+            .todos(m.session)
+            .await
+            .map_err(|e| tracing::error!(session = %m.session, "todos: {e:#}"))
+            .ok();
         Loaded {
             history,
             running,
@@ -1656,12 +1989,21 @@ impl Message<LoadSession> for Agents {
             skills,
             first_seq,
             more,
+            context_revision,
+            context_editable,
+            context_reason,
+            context_estimate,
+            settled,
+            todos,
         }
     }
 }
 
 /// [`LoadSession`] paging over seq-tagged entries: keep `seq < before`, then
-/// the last `limit`. Returns `(history, first_seq, more)`.
+/// the last `limit`, widened backwards so a group of entries sharing one seq
+/// (tool siblings from one response row, a divider on its message) is never
+/// split — `before = first_seq` would otherwise skip its remainder (48 §5).
+/// Returns `(history, first_seq, more)`.
 fn page(
     mut entries: Vec<(i64, HistoryEntry)>,
     before: Option<i64>,
@@ -1675,16 +2017,162 @@ fn page(
         });
     }
     let keep = limit.map_or(entries.len(), |l| l as usize);
-    let more = entries.len() > keep;
-    if more {
-        entries.drain(..entries.len() - keep);
+    let mut cut = entries.len().saturating_sub(keep);
+    while 0 < cut && cut < entries.len() && entries[cut - 1].0 == entries[cut].0 {
+        cut -= 1;
     }
+    let more = cut > 0;
+    entries.drain(..cut);
     let first_seq = entries.first().map(|(seq, _)| *seq);
     (
         entries.into_iter().map(|(_, e)| e).collect(),
         first_seq,
         more,
     )
+}
+
+/// Preview files for the binary occurrences on one page (48 §3.3): stored
+/// base64 bytes become `<data_dir>/attachments/<sha256[..16]>.<ext>` via
+/// [`save_blob`] (idempotent), served by `get_attachment`. Lazy per page,
+/// never a sweep; URL sources are not fetched and a part whose MIME has no
+/// extension here stays path-less — the chip is still named and removable.
+/// Coordinates in the metadata are untouched: they address the stored rows.
+fn materialize(
+    history: &mut [HistoryEntry],
+    messages: &[(i64, ChatMessage)],
+    epochs: &[Epoch],
+    data_dir: &Path,
+) {
+    for entry in history {
+        let Some(ctx) = entry.context_mut() else {
+            continue;
+        };
+        for a in ctx.attachments.iter_mut().filter(|a| a.path.is_none()) {
+            let Some(b) = binary_at(&a.target, messages, epochs) else {
+                continue;
+            };
+            let BinarySource::Base64(b64) = &b.source else {
+                continue;
+            };
+            let Some(ext) = ext_of(&b.content_type) else {
+                continue;
+            };
+            let bytes = match base64::Engine::decode(
+                &base64::engine::general_purpose::STANDARD,
+                b64.as_bytes(),
+            ) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    tracing::warn!(name = %a.name, "attachment preview: bad base64: {e}");
+                    continue;
+                }
+            };
+            match save_blob(&bytes, ext, data_dir) {
+                Ok(p) => a.path = Some(p),
+                Err(e) => tracing::warn!(name = %a.name, "attachment preview: {e}"),
+            }
+        }
+    }
+}
+
+/// The stored binary a [`ContextTarget::Binary`] addresses: original part
+/// index, then the original `ToolResponse.images` index when `image` is set.
+fn binary_at<'a>(
+    target: &ContextTarget,
+    messages: &'a [(i64, ChatMessage)],
+    epochs: &'a [Epoch],
+) -> Option<&'a genai::chat::Binary> {
+    let ContextTarget::Binary { owner, part, image } = target else {
+        return None;
+    };
+    let content = match owner {
+        ContextOwner::Message { seq } => {
+            let i = messages.binary_search_by_key(seq, |(s, _)| *s).ok()?;
+            &messages[i].1.content
+        }
+        ContextOwner::Head { epoch } => &epochs.iter().find(|e| e.n == *epoch)?.head.content,
+    };
+    match (content.parts().get(*part as usize)?, image) {
+        (ContentPart::Binary(b), None) => Some(b),
+        (ContentPart::ToolResponse(r), Some(i)) => r.images.get(*i as usize),
+        _ => None,
+    }
+}
+
+/// File extension for a stored MIME we preview (17 §1, 20 §2.5); the same
+/// set `put_attachment` accepts for images and documents.
+fn ext_of(mime: &str) -> Option<&'static str> {
+    Some(match mime.trim().to_ascii_lowercase().as_str() {
+        "image/png" => "png",
+        "image/jpeg" | "image/jpg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        "application/pdf" => "pdf",
+        _ => return None,
+    })
+}
+
+impl Agents {
+    /// The stored row for `session`; `Err("unknown session")` — nothing is
+    /// created and no harness is launched (48 §0.7).
+    async fn stored(&self, session: SessionId) -> Result<SessionSummary, String> {
+        self.store
+            .session(session)
+            .await
+            .map_err(|e| format!("{e:#}"))?
+            .ok_or_else(|| "unknown session".to_owned())
+    }
+}
+
+impl Message<ContextItems> for Agents {
+    type Reply = Result<ContextSnapshot, String>;
+
+    async fn handle(&mut self, m: ContextItems, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let row = self.stored(m.session).await?;
+        let live = self.live(m.session).and_then(|a| a.native().ok());
+        match (row.agent.is_some(), live) {
+            // The wth loop owns admission: busy shows as `editable: false` with its reason.
+            (false, Some(a)) => a.ask(ContextItemsNow).await.map_err(|e| e.to_string()),
+            (external, None) | (external @ true, Some(_)) => {
+                let mut s = self
+                    .store
+                    .context_items(m.session)
+                    .await
+                    .map_err(|e| format!("{e:#}"))?;
+                // An external harness owns its real context (48 §0.7); a
+                // native session with no actor is idle, and a removal resumes one.
+                s.editable = !external;
+                s.reason = external.then(|| NOT_NATIVE.to_owned());
+                Ok(s)
+            }
+        }
+    }
+}
+
+impl Message<RemoveContext> for Agents {
+    type Reply = Result<ContextRemoval, String>;
+
+    async fn handle(
+        &mut self,
+        m: RemoveContext,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        if self.stored(m.session).await?.agent.is_some() {
+            return Err(NOT_NATIVE.into());
+        }
+        // A context edit changes what the model sees: candidates before it are stale.
+        self.ledger.bump(m.session);
+        // The row exists and is native, so this resumes (never creates) the loop actor.
+        self.actor(m.session)
+            .await?
+            .native()?
+            .ask(RemoveContextNow {
+                expected_revision: m.expected_revision,
+                targets: m.targets,
+            })
+            .await
+            .map_err(|e| e.to_string())
+    }
 }
 
 impl Message<RenameSession> for Agents {
@@ -1757,6 +2245,7 @@ impl Message<DeleteSession> for Agents {
             return Err("a turn is running; stop it first".into());
         }
         for id in &ids {
+            self.ledger.forget(*id);
             if let Some(live) = self.sessions.remove(id) {
                 live.actor.kill().await;
             }
@@ -2353,8 +2842,14 @@ impl From<&Resolved> for ModelInfo {
 /// `Tool` entry (tagged with the response's seq). Calls without a response
 /// yet — the round running when the session was loaded — come last, in
 /// call order, with `result: None`. `User`/`Assistant` entries carry the seq
-/// of the turn opener they belong to (design doc 29 §4.3).
-fn render(messages: &[(i64, ChatMessage)]) -> Vec<(i64, HistoryEntry)> {
+/// of the turn opener they belong to (design doc 29 §4.3). `entries` is the
+/// per-row context metadata (48 §3.3): a text entry gets its own row's, a
+/// tool card its response row's, narrowed to that response's images; a
+/// call still running has no stored response and so no target.
+fn render(
+    messages: &[(i64, ChatMessage)],
+    entries: &BTreeMap<i64, ContextEntry>,
+) -> Vec<(i64, HistoryEntry)> {
     let mut out = Vec::new();
     // ponytail: linear scan; one round's calls, never more than a handful.
     let mut pending: Vec<(i64, &genai::chat::ToolCall)> = Vec::new();
@@ -2366,12 +2861,14 @@ fn render(messages: &[(i64, ChatMessage)]) -> Vec<(i64, HistoryEntry)> {
             current_turn = Some(*seq);
         }
         prev = Some(m);
+        let context = entries.get(seq);
         match m.role {
             ChatRole::User => out.push((
                 *seq,
                 HistoryEntry::User {
                     text: text_of(&m.content),
                     turn: opens.then_some(*seq),
+                    context: context.cloned(),
                 },
             )),
             ChatRole::Assistant => {
@@ -2382,13 +2879,19 @@ fn render(messages: &[(i64, ChatMessage)]) -> Vec<(i64, HistoryEntry)> {
                         HistoryEntry::Assistant {
                             text,
                             turn: current_turn,
+                            context: context.cloned(),
                         },
                     ));
                 }
                 pending.extend(m.content.tool_calls().into_iter().map(|c| (*seq, c)));
             }
             ChatRole::Tool => {
-                for r in m.content.tool_responses() {
+                let responses = m
+                    .content
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, p)| p.as_tool_response().map(|r| (i, r)));
+                for (part, r) in responses {
                     let call = pending
                         .iter()
                         .position(|(_, c)| c.call_id == r.call_id)
@@ -2410,6 +2913,18 @@ fn render(messages: &[(i64, ChatMessage)]) -> Vec<(i64, HistoryEntry)> {
                         }
                     }
                     let is_error = text.starts_with("ERROR: ");
+                    // Same row target for every sibling card; only this response's images.
+                    let context = context.map(|c| ContextEntry {
+                        attachments: c
+                            .attachments
+                            .iter()
+                            .filter(|a| {
+                                matches!(a.target, ContextTarget::Binary { part: p, .. } if p as usize == part)
+                            })
+                            .cloned()
+                            .collect(),
+                        ..c.clone()
+                    });
                     out.push((
                         *seq,
                         HistoryEntry::Tool {
@@ -2418,6 +2933,7 @@ fn render(messages: &[(i64, ChatMessage)]) -> Vec<(i64, HistoryEntry)> {
                             args: args.clone(),
                             result: Some((text, is_error)),
                             files,
+                            context,
                         },
                     ));
                 }
@@ -2434,6 +2950,7 @@ fn render(messages: &[(i64, ChatMessage)]) -> Vec<(i64, HistoryEntry)> {
                 args: c.fn_arguments.clone(),
                 result: None,
                 files: Vec::new(),
+                context: None,
             },
         )
     }));
@@ -2441,8 +2958,9 @@ fn render(messages: &[(i64, ChatMessage)]) -> Vec<(i64, HistoryEntry)> {
 }
 
 /// The UI divider for one epoch: the head text without its
-/// `<context_summary …>` wrapper (design doc 07 §8.4).
-fn compacted(e: Epoch) -> HistoryEntry {
+/// `<context_summary …>` wrapper (design doc 07 §8.4), carrying the head's
+/// context membership (`ContextTarget::Head`, snap images as attachments).
+fn compacted(e: &Epoch, context: Option<ContextEntry>) -> HistoryEntry {
     let text = text_of(&e.head.content);
     let style = crate::compact::style_of_head(&text);
     let summary = text
@@ -2455,6 +2973,7 @@ fn compacted(e: Epoch) -> HistoryEntry {
         epoch: e.n,
         summary,
         style,
+        context,
     }
 }
 
@@ -2473,6 +2992,17 @@ pub(crate) struct Auth {
 }
 
 impl Auth {
+    /// No vault, no logins, no gateways; `dir` holds the (empty) OAuth store.
+    #[cfg(test)]
+    pub(crate) fn stub(dir: &Path) -> Self {
+        Self {
+            vault: None,
+            oauth: oauth::Store::new(dir),
+            gateways: Arc::new(RwLock::new(HashMap::new())),
+            aws_profile: Arc::new(parking_lot::RwLock::new(None)),
+        }
+    }
+
     fn aws_profile(&self) -> Option<String> {
         self.aws_profile.read().clone()
     }
@@ -2733,13 +3263,15 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             search: Arc::default(),
             nodes: nodes.clone(),
             next_msg: 0,
+            ledger: Ledger::default(),
         },
         runtime::subscriber_mailbox(),
     );
     agents.register(AGENT_ACTOR)?;
     UserChannels::spawn(UserChannels::default()).register(USER_ACTOR)?;
     rt.subscribe::<Agents, AgentEvent>(&agents).await;
-    rt.subscribe::<Agents, JobEvent>(&agents).await;
+    // Finished jobs reach the model through `Settle::FinishedWithResult`
+    // (47 §4.1), never a second time through the public `JobEvent`.
     rt.subscribe::<Agents, ApprovalRequested>(&agents).await;
     rt.subscribe::<Agents, ApprovalResolved>(&agents).await;
 
@@ -2750,6 +3282,25 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         let Some(reg) = rt.lookup_when::<ToolRegistry>(REGISTRY_ACTOR).await else {
             return;
         };
+        // 47 §4.2 rule 7: coverage first. The registry's ack means every
+        // invocation/job from here on is admitted through `Admit`, and any
+        // already running was admitted before the reply (its barrier asks back
+        // into `Agents`, which is why this runs off the mailbox). Only the
+        // ack certifies; an unreachable registry leaves nudges off for good.
+        match reg
+            .ask(RegisterActivity(ActivitySink::new(agents.clone())))
+            .await
+        {
+            Ok(()) => {
+                let _ = agents.tell(ActivityRegistered).await;
+            }
+            // A handler `Err` (no `Jobs` actor / install failed: jobs not
+            // covered) is lifted into `SendError::HandlerError`; with no
+            // registry reply at all it is another `SendError`. Neither certifies.
+            Err(e) => {
+                tracing::error!("activity coverage incomplete; todo continuation stays off: {e}")
+            }
+        }
         let _ = reg
             .ask(RegisterPrompt {
                 plugin: "agent",
@@ -2815,6 +3366,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::ContextAttachment;
 
     #[tokio::test]
     async fn bedrock_profile_changes_reach_existing_clients_without_vault_keys() {
@@ -2861,7 +3413,7 @@ mod tests {
             (1, ChatMessage::from(vec![call("c1"), call("c2")])),
             (2, ChatMessage::from(vec![ToolResponse::new("c1", "ok")])),
         ];
-        let got = render(&messages);
+        let got = render(&messages, &BTreeMap::new());
         assert_eq!(got.len(), 3);
         assert!(matches!(
             &got[1],
@@ -2901,12 +3453,200 @@ mod tests {
                 ]),
             ),
         ];
-        let got = render(&messages);
+        let got = render(&messages, &BTreeMap::new());
         assert!(matches!(
             &got[0],
             (1, HistoryEntry::Tool { result: Some((out, false)), files, .. })
                 if out == "saved\n[image: shot-1.png]" && files == &[PathBuf::from("/data/browser/s/shot-1.png")]
         ));
+    }
+
+    /// Two responses in one stored Tool row become two cards that share the
+    /// row's target (48 §3.3) but each lists only its own response's images,
+    /// addressed by original part/image index; a call still running has none.
+    #[test]
+    fn render_narrows_tool_attachments_to_their_response() {
+        use genai::chat::{Binary, BinarySource, ToolCall, ToolResponse};
+        let call = |id: &str| ToolCall {
+            thought_signatures: None,
+            call_id: id.into(),
+            fn_name: "shot".into(),
+            fn_arguments: serde_json::json!({}),
+        };
+        let png = |n: &str| Binary {
+            content_type: "image/png".into(),
+            source: BinarySource::Base64("".into()),
+            name: Some(n.into()),
+        };
+        let messages = vec![
+            (
+                0,
+                ChatMessage::from(vec![call("c1"), call("c2"), call("c3")]),
+            ),
+            (
+                1,
+                ChatMessage::from(vec![
+                    ToolResponse::new("c1", "a").with_images(vec![png("a.png")]),
+                    ToolResponse::new("c2", "b").with_images(vec![png("b.png")]),
+                ]),
+            ),
+        ];
+        let binary = |part, image| ContextTarget::Binary {
+            owner: ContextOwner::Message { seq: 1 },
+            part,
+            image: Some(image),
+        };
+        let attachment = |part, name: &str| ContextAttachment {
+            target: binary(part, 0),
+            name: name.into(),
+            mime: "image/png".into(),
+            path: None,
+            removed: false,
+        };
+        let mut entries = BTreeMap::new();
+        entries.insert(
+            1,
+            ContextEntry {
+                target: ContextTarget::Message { seq: 1 },
+                active: true,
+                removed: false,
+                remove_with: vec![ContextTarget::Message { seq: 0 }],
+                attachments: vec![attachment(0, "a.png"), attachment(1, "b.png")],
+            },
+        );
+        let got = render(&messages, &entries);
+        let ctx = |i: usize| match &got[i].1 {
+            HistoryEntry::Tool { context, .. } => context.as_ref(),
+            _ => unreachable!(),
+        };
+        for (i, name) in [(0, "a.png"), (1, "b.png")] {
+            let c = ctx(i).unwrap();
+            assert_eq!(c.target, ContextTarget::Message { seq: 1 });
+            assert_eq!(c.remove_with, [ContextTarget::Message { seq: 0 }]);
+            assert_eq!(c.attachments.len(), 1);
+            assert_eq!(c.attachments[0].name, name);
+            assert_eq!(c.attachments[0].target, binary(i as u32, 0));
+        }
+        assert!(
+            matches!(&got[2].1, HistoryEntry::Tool { call_id, result: None, .. } if call_id == "c3")
+        );
+        assert!(ctx(2).is_none());
+    }
+
+    /// Page-time previews follow the original coordinates into the stored
+    /// arrays (a direct part, a nested tool image, a head part); URL sources
+    /// and unknown MIMEs stay path-less.
+    #[test]
+    fn materialize_writes_previews_by_original_coordinates() {
+        use genai::chat::{Binary, BinarySource, ContentPart, MessageContent, ToolResponse};
+        let b64 = |s: &str| base64::Engine::encode(&base64::engine::general_purpose::STANDARD, s);
+        let png = |body: &str| Binary {
+            content_type: "image/png".into(),
+            source: BinarySource::Base64(b64(body).into()),
+            name: None,
+        };
+        let messages = vec![
+            (
+                0,
+                ChatMessage::user(MessageContent::from_parts(vec![
+                    ContentPart::Text("hi".into()),
+                    ContentPart::Binary(png("direct")),
+                    ContentPart::Binary(Binary {
+                        content_type: "image/png".into(),
+                        source: BinarySource::Url("https://x/y.png".into()),
+                        name: None,
+                    }),
+                ])),
+            ),
+            (
+                1,
+                ChatMessage::from(vec![
+                    ToolResponse::new("c1", "t")
+                        .with_images(vec![png("nested-0"), png("nested-1")]),
+                ]),
+            ),
+        ];
+        let epochs = vec![Epoch {
+            n: 1,
+            at_seq: 1,
+            tail_from: 2,
+            head: ChatMessage::user(MessageContent::from_parts(vec![
+                ContentPart::Text("summary".into()),
+                ContentPart::Binary(png("head")),
+            ])),
+        }];
+        let msg = |seq| ContextOwner::Message { seq };
+        let att = |owner, part, image| ContextAttachment {
+            target: ContextTarget::Binary { owner, part, image },
+            name: "x".into(),
+            mime: "image/png".into(),
+            path: None,
+            removed: false,
+        };
+        let entry = |target, attachments| {
+            Some(ContextEntry {
+                target,
+                active: true,
+                removed: false,
+                remove_with: Vec::new(),
+                attachments,
+            })
+        };
+        let mut history = vec![
+            HistoryEntry::User {
+                text: String::new(),
+                turn: Some(0),
+                context: entry(
+                    ContextTarget::Message { seq: 0 },
+                    vec![att(msg(0), 1, None), att(msg(0), 2, None)],
+                ),
+            },
+            HistoryEntry::Tool {
+                call_id: "c1".into(),
+                name: "t".into(),
+                args: serde_json::Value::Null,
+                result: None,
+                files: Vec::new(),
+                context: entry(
+                    ContextTarget::Message { seq: 1 },
+                    vec![att(msg(1), 0, Some(1))],
+                ),
+            },
+            HistoryEntry::Compacted {
+                epoch: 1,
+                summary: String::new(),
+                style: CompactStyle::default(),
+                context: entry(
+                    ContextTarget::Head { epoch: 1 },
+                    vec![att(ContextOwner::Head { epoch: 1 }, 1, None)],
+                ),
+            },
+        ];
+        let dir = std::env::temp_dir().join(format!("wth-preview-{}", uuid::Uuid::new_v4()));
+        materialize(&mut history, &messages, &epochs, &dir);
+        let paths: Vec<Option<String>> = history
+            .iter()
+            .flat_map(|h| h.context().unwrap().attachments.iter())
+            .map(|a| a.path.as_ref().map(|p| std::fs::read_to_string(p).unwrap()))
+            .collect();
+        assert_eq!(
+            paths,
+            [
+                Some("direct".into()),
+                None,
+                Some("nested-1".into()),
+                Some("head".into())
+            ]
+        );
+        // Coordinates are metadata about the stored rows, not the preview file.
+        assert_eq!(
+            history[1].context().unwrap().attachments[0].target,
+            ContextTarget::Binary {
+                owner: msg(1),
+                part: 0,
+                image: Some(1)
+            }
+        );
     }
 
     /// Paging walks back from the tail: the newest `limit`, then everything
@@ -2917,6 +3657,7 @@ mod tests {
         let user = |s: &str| HistoryEntry::User {
             text: s.into(),
             turn: None,
+            context: None,
         };
         let tool = |id: &str, result| HistoryEntry::Tool {
             call_id: id.into(),
@@ -2924,6 +3665,7 @@ mod tests {
             args: serde_json::Value::Null,
             result,
             files: Vec::new(),
+            context: None,
         };
         let all = || {
             vec![
@@ -2956,6 +3698,44 @@ mod tests {
         assert_eq!((h.len(), first, more), (5, Some(0), false));
         let (h, first, more) = page(Vec::new(), None, Some(3));
         assert_eq!((h.len(), first, more), (0, None, false));
+    }
+
+    /// A limit that would land inside a group of entries sharing one seq
+    /// (sibling tool cards of one response row, a divider on its message)
+    /// widens the page to the whole group, so `before = first_seq` on the
+    /// next page skips nothing (48 §5).
+    #[test]
+    fn page_never_splits_a_seq_group() {
+        let user = |s: &str| HistoryEntry::User {
+            text: s.into(),
+            turn: None,
+            context: None,
+        };
+        let tool = |id: &str| HistoryEntry::Tool {
+            call_id: id.into(),
+            name: "shell".into(),
+            args: serde_json::Value::Null,
+            result: Some(("ok".into(), false)),
+            files: Vec::new(),
+            context: None,
+        };
+        let all = || {
+            vec![
+                (0, user("a")),
+                (2, tool("c1")),
+                (2, tool("c2")),
+                (2, tool("c3")),
+                (3, user("b")),
+            ]
+        };
+        let (h, first, more) = page(all(), None, Some(2));
+        assert_eq!((h.len(), first, more), (4, Some(2), true));
+        let (h, first, more) = page(all(), first, Some(2));
+        assert_eq!((h.len(), first, more), (1, Some(0), false));
+        assert!(matches!(&h[0], HistoryEntry::User { text, .. } if text == "a"));
+        // A limit of zero stays empty rather than indexing past the end.
+        let (h, first, more) = page(all(), None, Some(0));
+        assert_eq!((h.len(), first, more), (0, None, true));
     }
 
     #[test]
@@ -3042,5 +3822,162 @@ mod tests {
             "attachment big.jpg: 5.0 MB exceeds 5 MB"
         );
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// An `Agents` value (no actor, no tool registry) over a temp store: the
+    /// supervisor's own sequencing runs inline and its ledger is readable.
+    /// Session actors it spawns are real; with no registry their turns end
+    /// as `error` before any model is called.
+    async fn agents() -> Agents {
+        let dir = std::env::temp_dir().join(format!("wth-agents-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = Arc::new(AgentConfig::default());
+        Agents {
+            rt: Runtime::new(figment::Figment::new(), dir.clone()),
+            default_model: cfg.model.clone(),
+            default_effort: None,
+            cfg,
+            compact_style: Arc::default(),
+            title_model: Arc::default(),
+            catalog: Arc::new(Catalog::load(&dir)),
+            pool: None,
+            configured: Arc::new(|_: &str| false),
+            store: Store::open(&dir.join("sessions.sqlite")).await.unwrap(),
+            client: Client::new().unwrap(),
+            auth: Auth::stub(&dir),
+            sessions: HashMap::new(),
+            running: HashSet::new(),
+            waiters: HashMap::new(),
+            permits: Arc::new(Semaphore::new(1)),
+            child_turns: HashMap::new(),
+            timed_out: HashSet::new(),
+            last_stop: HashMap::new(),
+            approvals: HashMap::new(),
+            search: Arc::default(),
+            nodes: Nodes::default(),
+            next_msg: 0,
+            ledger: Ledger::default(),
+        }
+    }
+
+    /// Ticket id named by a `Ledger::activity` pending-input reason.
+    fn pending_ticket(why: &str) -> u64 {
+        let mut words = why.split(' ');
+        assert_eq!(words.next(), Some("input"), "{why}");
+        words.next().unwrap().parse().unwrap()
+    }
+
+    /// A certified root in turn `t` with its opener consumed.
+    async fn in_turn(a: &mut Agents) -> (SessionId, TurnId) {
+        a.ledger.certify();
+        let (p, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        let t = TurnId::new();
+        let opener = a.ledger.admit(p, InputOrigin::External, None);
+        a.ledger.entered(TurnEntered {
+            session: p,
+            turn: Some(t),
+        });
+        a.ledger.consumed(InputConsumed {
+            session: p,
+            id: opener.id,
+            turn: t,
+        });
+        assert_eq!(a.ledger.activity(p), None);
+        (p, t)
+    }
+
+    /// 47 §3.2: a child's result and a detached job's result each become the
+    /// parent's pending input *before* the source stops counting, so no
+    /// decision between the two sees zero work; an inline job result is
+    /// retired without a second delivery.
+    #[tokio::test]
+    async fn results_are_pending_input_before_their_source_is_released() {
+        let mut a = agents().await;
+        let (p, t) = in_turn(&mut a).await;
+        let child = SessionId::new();
+        a.session(Some(child), Some((p, "kid")), None, (None, None))
+            .await
+            .unwrap();
+        let ct = TurnId::new();
+        a.ledger.entered(TurnEntered {
+            session: child,
+            turn: Some(ct),
+        });
+        a.ledger.returned(TurnReturned {
+            session: child,
+            turn: Some(ct),
+        });
+        assert!(a.ledger.activity(p).is_some_and(|w| w.contains("busy")));
+        a.child_finished(child, ct, "end_turn").await;
+        let why = a.ledger.activity(p).unwrap();
+        assert!(why.ends_with(&format!("pending on {p}")), "{why}");
+        a.ledger.consumed(InputConsumed {
+            session: p,
+            id: pending_ticket(&why),
+            turn: t,
+        });
+        assert_eq!(
+            a.ledger.activity(p),
+            None,
+            "child released with the handoff"
+        );
+
+        let finished = |op: &tools::Operation, inline: bool| Settle::FinishedWithResult {
+            op: op.id,
+            result: JobEvent::Finished {
+                session: p,
+                id: JobId("j".into()),
+                command: "echo".into(),
+                exit: JobExit::Exited(0),
+                secs: 1,
+                output: "out".into(),
+                inline,
+                pty: false,
+            },
+        };
+        let op = |owner: SessionId| tools::Operation {
+            id: tools::Activity::untracked(owner, tools::Kind::Command("t")).id(),
+            owner,
+            kind: tools::Kind::Command("t"),
+        };
+        let inline = op(p);
+        a.ledger.admit_op(&inline);
+        a.settle(finished(&inline, true)).await;
+        assert_eq!(
+            a.ledger.activity(p),
+            None,
+            "inline: retired, nothing injected"
+        );
+        let detached = op(p);
+        a.ledger.admit_op(&detached);
+        a.settle(finished(&detached, false)).await;
+        let why = a.ledger.activity(p).unwrap();
+        assert!(why.ends_with(&format!("pending on {p}")), "{why}");
+        a.ledger.consumed(InputConsumed {
+            session: p,
+            id: pending_ticket(&why),
+            turn: t,
+        });
+        assert_eq!(
+            a.ledger.activity(p),
+            None,
+            "operation retired under the ticket"
+        );
+    }
+
+    /// An input no runner ever held (rejected attachment) leaves nothing pending.
+    #[tokio::test]
+    async fn routing_failure_releases_the_ticket() {
+        let mut a = agents().await;
+        let (p, _) = in_turn(&mut a).await;
+        a.input(
+            Some(p),
+            None,
+            "x".into(),
+            vec![PathBuf::from("/nonexistent/wth.png")],
+            InputOrigin::External,
+        )
+        .await;
+        assert_eq!(a.ledger.activity(p), None);
     }
 }

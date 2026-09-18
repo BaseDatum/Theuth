@@ -26,6 +26,7 @@ import { LOCAL, useHarnesses } from '@/link/harnesses'
 import { useConnection } from '@/store/connection'
 import { useSessionField, useSessions } from '@/store/sessions'
 import { Attachments } from './Attachments'
+import { ContextPicker } from './ContextPicker'
 import { QueuedChips } from './QueuedChips'
 import { type Ctx, FRESH, matches, run } from './slash'
 
@@ -368,6 +369,7 @@ export function Composer({
   return (
     <div className="mx-auto w-full max-w-[768px] px-4 pb-2">
       {session && <QueuedChips session={session} onEdit={(t) => setText(t)} />}
+      {session && <ContextPicker session={session} />}
       <input
         ref={fileInput}
         type="file"

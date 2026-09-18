@@ -40,8 +40,15 @@ Independent tasks go out in one message and run concurrently; give each a `name`
 Results arrive as <subagent_result> messages; do not poll. send_message steers a running wth subagent or \
 gives any child follow-up work in its existing context. Approvals a child asks for go to the user, not you.\n\
 You own the outcome: verify a child's claims (read the diff, run the check) before passing them on, \
-integrate the pieces, report in your own words. For work with three or more steps keep a `todo` list \
-and mark items as you go.";
+integrate the pieces, report in your own words.\n\
+Before substantive work on a request with three or more steps, or any explicit user checklist, initialize a \
+`todo` list covering the whole request, including verification. Preserve every requested item. Keep task text \
+short and stable. Update the list as work completes; continue working after bookkeeping. Incorporate new user \
+requirements into the current plan.\n\
+A job or subagent may continue after you end a turn; its result will wake you. Do not poll or send filler to \
+stay active. Before a final answer, reconcile your todos with actual results. If remaining work requires user \
+input or another external prerequisite, block those items with a reason; do not mark unfinished work done. Use \
+`ask_user` when a decision is needed.";
 
 /// How cache marks are placed for a provider family (design doc 07 §3 table).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -270,6 +270,10 @@ fn browser_actor() -> Option<ActorRef<browser::Browsers>> {
         .flatten()
 }
 
+/// One obscura-mcp command on render slot `session`. Sent as a
+/// [`tools::Tracked`] so the invocation that owns this fetch stays admitted
+/// until the browser finishes the command, even after a page timeout dropped
+/// this future (47 §4.2 rule 5); `session` is the slot key, never the owner.
 async fn call(
     actor: &ActorRef<browser::Browsers>,
     session: SessionId,
@@ -277,11 +281,11 @@ async fn call(
     args: Value,
 ) -> anyhow::Result<String> {
     let result = actor
-        .ask(browser::Call {
+        .ask(tools::Tracked::new(browser::Call {
             session,
             name: name.to_owned(),
             args,
-        })
+        }))
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let text = result["content"]

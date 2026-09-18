@@ -10,6 +10,7 @@ import type { LoadedPage } from '@/rpc/extra'
 import { useConnection } from '@/store/connection'
 import { active } from '@/store/harness-scope'
 import { useSessions } from '@/store/sessions'
+import { openContextPicker, type ShakeCategory } from './ContextPicker'
 
 /** Slash commands (`tui::model::COMMANDS`): name, argument hint, description. */
 export const COMMANDS: readonly { name: string; hint: string; desc: string }[] = [
@@ -57,6 +58,7 @@ export const COMMANDS: readonly { name: string; hint: string; desc: string }[] =
     hint: '[kill <id>]',
     desc: "list this session's background jobs",
   },
+  { name: '/todos', hint: '', desc: "toggle this session's todo card (TUI: F2)" },
   {
     name: '/parent',
     hint: '',
@@ -85,6 +87,11 @@ export const COMMANDS: readonly { name: string; hint: string; desc: string }[] =
   { name: '/redo', hint: '', desc: 'restore the last undone turn' },
   { name: '/regen', hint: '', desc: 'regenerate the reply to the last turn' },
   {
+    name: '/shake',
+    hint: '[images|documents|messages|tools|summary]',
+    desc: 'remove exact messages/attachments from the active context (picker)',
+  },
+  {
     name: '/fork',
     hint: '',
     desc: 'new session with the whole conversation',
@@ -107,7 +114,7 @@ export const COMMANDS: readonly { name: string; hint: string; desc: string }[] =
 export const matches = (word: string) => COMMANDS.filter((c) => c.name.startsWith(word))
 
 /** Header surfaces a command can open; the header listens for `wth:open`. */
-export type Surface = 'model' | 'prompt' | 'jobs'
+export type Surface = 'model' | 'prompt' | 'jobs' | 'todos'
 
 export function openSurface(surface: Surface): void {
   window.dispatchEvent(new CustomEvent('wth:open', { detail: surface }))
@@ -116,7 +123,7 @@ export function openSurface(surface: Surface): void {
 /** `wth:open` detail, when it names a surface. */
 export function surfaceOf(e: Event): Surface | null {
   const d: unknown = e instanceof CustomEvent ? e.detail : null
-  return d === 'model' || d === 'prompt' || d === 'jobs' ? d : null
+  return d === 'model' || d === 'prompt' || d === 'jobs' || d === 'todos' ? d : null
 }
 
 export type SettingsTab =
@@ -161,6 +168,7 @@ const split = (s: string): [string, string] => {
 
 const STYLES: readonly CompactStyle[] = ['summary', 'cut', 'snap', 'clear']
 const style = (s: string) => STYLES.find((x) => x === s)
+const CATEGORIES: readonly ShakeCategory[] = ['images', 'documents', 'messages', 'tools', 'summary']
 
 const need = (session: string | null): string => {
   if (!session) throw new Error('no session')
@@ -185,6 +193,12 @@ export const FRESH: LoadedPage = {
   skills: [],
   first_seq: null,
   more: false,
+  context_revision: '0',
+  context_editable: false,
+  context_reason: 'turn in flight',
+  context_estimate: null,
+  settled: false,
+  todos: null,
 }
 
 /**
@@ -358,6 +372,9 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       if (!ctx.parent) throw new Error('this is the top-level session')
       await navigate({ to: '/c/$session', params: { session: ctx.parent } })
       return
+    case '/todos':
+      need(session)
+      return openSurface('todos')
     case '/jobs':
       if (!arg) {
         need(session)
@@ -414,6 +431,14 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
         throw e
       })
       return
+    }
+    // Literal categories only (48 §2.1): an unknown word is usage, never a skill or chat input.
+    case '/shake': {
+      const id = need(session)
+      if (!arg) return openContextPicker(id)
+      const c = CATEGORIES.find((x) => x === arg)
+      if (!c) throw new Error('usage: /shake [images|documents|messages|tools|summary]')
+      return openContextPicker(id, c)
     }
     case '/fork': {
       const nid = await api.fork_session(need(session), null, null)

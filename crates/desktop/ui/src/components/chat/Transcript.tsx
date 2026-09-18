@@ -6,12 +6,13 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import { type Prompt, useApprovals, useAsks, useSecretRequests } from '@/store/approvals'
+import { useScope } from '@/store/harness-scope'
 import {
   type Activity,
   type Entry,
+  freshness,
   useEntries,
   useSessionField,
-  useSessions,
 } from '@/store/sessions'
 import { Message, PromptCard } from './Message'
 import { Pulse } from './Pulse'
@@ -135,7 +136,8 @@ export function Transcript({ session }: { session: string }) {
   const firstSeq = useSessionField(session, 'firstSeq')
   const running = useSessionField(session, 'running')
   const activity = useSessionField(session, 'activity') ?? 'idle'
-  const loadHistory = useSessions((s) => s.loadHistory)
+  // This harness's store, read after the await: a page landing after a switch must not touch another harness's slice.
+  const { sessions: store } = useScope()
   const ref = useRef<HTMLDivElement>(null)
   const stuck = useRef(true)
   const height = useRef(0)
@@ -164,11 +166,16 @@ export function Transcript({ session }: { session: string }) {
     if (stuck.current) el.scrollTop = el.scrollHeight
   })
 
+  // Guarded by the slice's freshness at request time (48 §5): a page read before a context edit
+  // (or before a snapshot replaced the transcript) is dropped rather than reintroducing removed rows.
   const page = async () => {
     if (paging.current || !more || firstSeq === null || firstSeq === undefined) return
+    const s = store.getState().sessions[session]
+    if (!s) return
     paging.current = true
     try {
-      loadHistory(session, await api.load_session(session, firstSeq, PAGE), 'prepend')
+      const older = await api.load_session(session, firstSeq, PAGE)
+      store.getState().loadHistory(session, older, 'prepend', freshness(s))
     } finally {
       paging.current = false
     }

@@ -342,14 +342,25 @@ flowchart LR
   regenerate move `cut_at` to a turn start; the next write commits it
   (07 §8.8, 29). Fork copies the visible rows and epochs of a session into
   a new one (29 §3): no message tree — rejected because a tree store plus
-  a branch switcher buys nothing the fork does not.
+  a branch switcher buys nothing the fork does not. `/shake` (48, added
+  2026-09-18) is the one user-authorized edit of the frame that is not a
+  cut: the agent's session actor, idle and native only, writes exclusion
+  masks beside the rows/head it keeps (`messages.excluded`,
+  `epochs.excluded`, migration `0010_context`) and bumps
+  `sessions.context_revision` in the same transaction, then installs the
+  effective frame and publishes `ContextChanged`. The original rows are
+  untouched archive: raw readers (turns, undo/redo, fork, search) see
+  them, effective readers (`Store::frame`, the `/shake` inventory) apply
+  the masks, so a removed occurrence stays out through resume and fork.
+  Nothing prunes automatically and no tool exposes it to the model.
 
 **Session store**: `sqlx` 0.9 sqlite, inside the agent crate (only the agent
 writes it; UIs read via `ask(ListSessions)`/`ask(LoadSession)`). Tables:
 `sessions(id, created_at, updated_at, title, model, …)` (`updated_at` = last
 append; `list_sessions` orders by it),
-`messages(session_id, seq, role, body_json)`,
-`epochs(session_id, n, at_seq, tail_from, head, created_at)` (`07 §8.4`).
+`messages(session_id, seq, role, body_json, excluded)`,
+`epochs(session_id, n, at_seq, tail_from, head, created_at, excluded)` (`07 §8.4`;
+`excluded` and `sessions.context_revision`: 48 §4.1).
 `sqlx::migrate!`.
 
 **Skills** (phase 2): markdown files with front matter (`gray_matter`) under
@@ -363,6 +374,14 @@ epoch is `SkillsChanged` / `Loaded.skills`, shown as a status badge (04
 **Subagents**: detached — `spawn_subagent` returns at once, the child's result
 arrives in the parent as a new turn, peers talk via `send_message`. Design,
 limits and events: `01-config-and-subagents.md` §2.
+
+**Planned agent communication (49, not implemented):**
+[`49-agent-communication.md`](49-agent-communication.md) proposes direct
+sibling/cross-session discovery and messaging through `Agents`, default-off
+global and inherited session controls, and an optional A2A network plugin.
+The official Rust A2A SDK is selected conditionally; its present maturity and
+conformance evidence does not meet the proposal's release gates. Existing
+parent/child messaging remains unchanged until implementation.
 
 ## 6. Tools plugin
 
@@ -608,7 +627,7 @@ crates/
   tools/              plugin: registry, approval, shell (brush), fs, mcp (rmcp) (§6, 01)
   secrets/            plugin: encrypted versioned vault (provider keys included), keychain key, {{secret:NAME[:-N]}} expansion + output scrub hook, secret_* tools, masked request, --secret-* CLI (37)
   knowledge/          plugin: OKF bundle, FTS index, gix history, knowledge_* tools (added in 10; extracted from agent in 12 §9)
-  agent/              plugin: genai loop, session store, frame/compaction, skills, subagents, repl, session search (§5, 07, 08, 26)
+  agent/              plugin: genai loop, session store, frame/compaction, context edits (`context.rs`), skills, subagents, repl, session search (§5, 07, 08, 26, 48)
   web/                plugin: search_web / read_url, SSRF-guarded fetcher, RRF aggregator, keyless engines google/bing/brave/qwant/wikipedia/arxiv/github; one-call search reads top hits and returns relevant passages (16 §4.7)
   search-providers/   plugin: optional Firecrawl, SearXNG, OpenSERP, Brave API (`brave_api`) registered with web over the bus; only firecrawl present by default, key-gated (16)
   firecrawl-native/   library: vendored Firecrawl crawler/html heuristics (AGPL; 38)

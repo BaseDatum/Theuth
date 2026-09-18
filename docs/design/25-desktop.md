@@ -209,10 +209,11 @@ Every row is an `Api` call already present unless marked **new** (§7).
 | `/edit [n]` (29) | Edit button under a user bubble (hover): the bubble becomes a textarea, Send → `edit_turn` |
 | `/regen [n]` (29) | Regenerate button in the reply's action bar → `regenerate` |
 | `/fork [n]` (29) | Fork button on either bubble → `fork_session`, opens the new session |
+| `/shake [images\|documents\|messages\|tools\|summary]` (48, 2026-09-18) | same literal categories in the slash popup (`slash.ts`; an unknown word is usage, never chat input) and session menu › **Shake context…**; both open `ContextPicker` (picker → review → **Remove from context**) over `context_items`; per-occurrence controls in the transcript: a sibling corner `X` on each stored image / chip `X` on a document ("Remove image from context: <name>"), `Trash2` **Remove from context** in the user/assistant action bar and on tool cards — all `size-11` (44 px) `ActionButton`s, revealed on focus and coarse pointers, never nested in the thumbnail button; an entry folded before `tail_from` shows **Already outside current context** disabled; busy/stale/external sessions keep the control disabled ("Session is busy; wait or stop it, then retry."). Confirm → `remove_context(session, expected_revision, targets)`; no optimistic splice — the settled reload installs the result, `toast` announces it, focus returns to the composer. Removed rows collapse to a `Removed from context` marker with `View original` (archive-only). One React tree for desktop, iOS and browser (31 §0.4); see §12 for what was verified |
 | steer while streaming + `◇ queued` chips + ⌥↑ withdraw | typing while streaming sends `steer(session, text, client id)`; chips above the composer with an × (`withdraw`) and click-to-edit (withdraw into the composer) |
 | Shift+Enter newline, Enter send | same |
 | paste → `[⎘ paste N]` token over 5 lines / 400 chars | same tokens, same expansion at submit (`pastes.ts`) |
-| Ctrl+V image → PNG in `<data_dir>/attachments`, dropped paths | paste/drop of image or PDF → `put_attachment(bytes, ext)` over RPC (31 §6.4; same sha16 path convention); native drag-drop paths are passed straight through; thumbnails inline in the bubble; text-only model warning from `ModelInfo.image` |
+| Ctrl+V image → PNG in `<data_dir>/attachments`, dropped paths | paste/drop of image or PDF → `put_attachment(bytes, ext)` over RPC (31 §6.4; same sha16 path convention); native drag-drop paths are passed straight through; thumbnails inline in the bubble; text-only model warning from `ModelInfo.image`. Since 48: the optimistic `files` on a sent entry are display-only until the persisted row arrives; the bubble then renders `HistoryEntry.context.attachments` (authoritative occurrence targets, previews via `get_attachment`), which is what the remove controls act on |
 | Ctrl+O toggle newest card | click any collapsible; ⌘⇧O is New chat here (ChatGPT binding) |
 | PgUp/PgDn, ↑/↓ scroll, anchored scrolling during streaming | native scroll; stick-to-bottom with ChatGPT's "scroll to bottom" arrow when the user has scrolled up |
 | `/quit` | tray › Quit, ⌘Q: RPC `shutdown` if we launched the daemon, then close the pty (18 §7 step 3); a reused daemon is left running |
@@ -511,6 +512,25 @@ list, `methods.json`. `TitleChanged` is an `AgentEvent` variant, so the
 bridge needs nothing. `knowledge_write` is not a tool; the model keeps
 `knowledge_put`, so `harness.md` is unchanged.
 
+Added 2026-09-18 by [48](48-shake.md) (as-built; 48 §3 is the contract,
+`crates/agent/src/context.rs` the types): `context_items(session) →
+ContextSnapshot` (revision, `editable`/`reason`, epoch, `tail_from`, items
+with `remove_with` companions, `estimated_tokens`; no bodies) and
+`remove_context(session, expected_revision: string, targets: ContextTarget[])
+→ ContextRemoval` (atomic; stale revision, unknown target or incomplete
+protocol group refuse and write nothing). `load_session` gains
+`settled_only?: bool`; `Loaded` gains `context_revision`, `context_editable`,
+`context_reason`, `context_estimate` and `settled` — a busy actor answers a
+settled read with `settled: false` rather than a snapshot that could race
+the stream. `HistoryEntry.{user,assistant,tool,compacted}.context?:
+ContextEntry` carries the row's target, `active`/`removed`, companions and
+attachment occurrences. `AgentEvent::ContextChanged { session, revision,
+reason }` follows every commit (and a coalesced one after `TurnDone`); it
+rides the existing bridge, so Link (31) carries it unchanged. Revisions are
+decimal strings on the wire (JS integer precision). `api.ts`/`METHODS` and
+the regenerated bindings include both methods; the vitest drift check is
+unchanged in shape.
+
 ## 8. Knowledge explorer
 
 Route `/knowledge` (tree + search, no document) and `/knowledge/$id`.
@@ -707,3 +727,50 @@ are off in the smoke config); Signal/Slack tabs beyond rendering status;
 the §4.4 side-by-side screenshot against the authenticated chatgpt.com
 (sidebar `#f9f9f9`/`#171717` still the design's guess); bash/fish as
 `$SHELL`; the blocking-rc timeout screen.
+
+### 12.1 Shake (48), as-built 2026-09-18
+
+Files: `components/chat/{ContextPicker,Attachments,Message,MessageAssistant,
+MessageUser,MessageTool,SessionMenu}.tsx`, `slash.ts`, `store/{sessions,
+reduce}.ts`, `routes/c.$session.tsx`, `rpc/api.ts`. Rules the build settled
+beyond §3's row:
+
+- **Every control targets a stored occurrence.** `RemoveButton` and the
+  attachment `X` take the `ContextTarget` from `HistoryEntry.context` and pin
+  the slice's `contextRevision` at render; a confirmation opened under an
+  older revision refuses ("stale") and the reload refreshes it — a seq reused
+  after an edit/fork is never retargeted by position. Live (unpersisted)
+  cards and optimistic `files` have no control.
+- **Whole-message removal is a group.** The review lists the server's
+  `remove_with` companions (assistant prose + calls with their tool results)
+  before confirm; a partial set is refused server-side. Per-image removal
+  never widens to the exchange.
+- **No optimistic splice.** `ContextChanged` marks the slice
+  `contextStale`, disables controls, bumps `historyGeneration` and `live`;
+  the chat route then reloads with `settled_only`. A page or snapshot that
+  lands under an older generation, or after newer live activity, is
+  discarded and retried on the next settled notification. `Lagged`,
+  reconnect (`reload` → `unload()`) and switching the active harness
+  invalidate the same way (31 §7.4 addendum).
+- **Touch/keyboard.** All removal targets are `size-11` and reachable by
+  Tab (revealed on `focus-within` as well as hover; always visible under
+  `pointer-coarse`); Enter/Space activate, Escape closes the review; after
+  a commit focus returns to the composer `TEXTAREA`.
+
+Verified 2026-09-18 by Main in the shared React surface (Chromium; `bun run
+check` and vitest green, 22 files / 131 tests including
+`ContextPicker.test.ts`): at 1280×900, image A removed from its corner
+control; `/shake tools` review listed the assistant companion and confirm
+left `Removed from context` markers for the tool and assistant rows while
+later replies stayed; focus returned to the `TEXTAREA`. At 390×844 with a
+coarse pointer: every removal target measured 44×44 with opacity 1, no
+nested buttons; image B removed. A second (HTTP) client removing image C
+while the mobile viewport showed the session converged through
+`ContextChanged` (C's button gone, archive chip present); an open
+confirmation for A was refused after a remote removal of D and A stayed.
+Daemon restart + reload showed the masks persisted; switching the active
+harness to an isolated scope, mutating the original while unsubscribed and
+switching back reloaded the masks with no old image restored. All of this
+is DOM state: no screenshots or visual review, no real iOS device or
+simulator, and the harness switch exercised the per-harness store
+lifecycle, not a Noise/relay pairing.
