@@ -60,6 +60,14 @@ LaunchAgent or a systemd user unit whose command is the same
 user's main harness as a node; 32 §5.1. How any of them stays current: 39
 (added in 39, 2026-09-17).
 
+**Planned apps extension (46, not implemented):** final OpenUI validation uses
+a packaged, lazy TypeScript helper with the same upstream parser as the desktop.
+No custom Rust grammar or Monty app backend. The helper handles final documents,
+not per-token rendering; progressive parsing stays in the client's JS heap.
+Ordinary native/MCP tools execute app operations. This cold subprocess boundary
+is chosen over maintaining a second language implementation; 46 defines its
+packaging and measured acceptance before it can ship.
+
 ## 3. Message bus: kameo
 
 Library: `kameo` 0.22 + `kameo_actors` 0.8 (`MessageBus`, `PubSub`, `Broker`).
@@ -223,6 +231,14 @@ session: None }`) and the in-memory per-session set (`SetApprovals {
 session: Some(id) }`, inherited by subagents through `SetParent`). `Deny` is
 never rewritten. MCP config assigns a tool's `Risk` or hides it; it is not
 a second policy (12 §5; MCP risk comes from the server's tool annotations).
+
+**Planned explicit-action approval (46, not implemented):** a user activating
+an app action has already approved its covered tool calls, including destructive
+and secret-bearing calls. The tools-owned gate accepts that per-action evidence
+without a second approval card; explicit `Deny` still wins. Automatic refresh and
+unrelated model calls never inherit it, and the session's approval switches are
+not changed. This supersedes 46's earlier press-mutating setting; it is not yet
+the behavior of the current `ToolCall`/gate implementation.
 
 TUI: `/approvals [on|off] [always]`; RPC: `set_approvals`; header shows
 `approvals off` while either switch is off.
@@ -633,6 +649,12 @@ threaded through `wth`; `artifact` depends on `agent` for
 `scrape → {firecrawl-native, web, browser}` and `browser → web`, so there is
 no cycle; `rpc` and `tui` depend on `scrape` only for the `ScrapeProgress`
 event type they forward and render, 38 §0.2).
+
+Planned, not a workspace member yet: `app` (46) owns OpenUI artifacts,
+progressive frontend integration and action RPC. It depends downward on
+artifact/tools/agent-owned contracts; agent and artifact do not import it.
+The current TS parser is reused in browser and packaged headless helper. There
+is no app-specific Python callable registry, replay file or Rust evaluator.
 
 Workspace dependencies (versions verified 2026-09-09 via `cargo info`):
 

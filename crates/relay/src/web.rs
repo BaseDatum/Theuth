@@ -13,8 +13,8 @@ use tower_http::services::{ServeDir, ServeFile};
 use crate::App;
 use crate::cookie::{self, Signer};
 
-/// CSP on every served page (streamdown needs inline styles).
-pub const CSP: &str = "default-src 'self'; connect-src 'self' wss: ws:; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'";
+/// CSP on every served page (streamdown needs inline styles; images may come from the web).
+pub const CSP: &str = "default-src 'self'; connect-src 'self' wss: ws:; img-src 'self' data: blob: https: http:; style-src 'self' 'unsafe-inline'";
 
 /// Static-serving state.
 pub struct Web {

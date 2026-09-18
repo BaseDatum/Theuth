@@ -76,9 +76,12 @@ cites `file:line` as of this tree.
 8. **`Risk::ReadOnly`, not a sink.** `show` writes only under
    `<data_dir>/artifacts/` and the recipient is whoever the reply already
    reaches: the same argument as `message_user` (24 §4) and `knowledge_put`
-   (10 §6). An HTML artifact could carry bytes out when *rendered*, so the
-   desktop renders it in a network-less sandbox (§9); no other kind has an
-   egress path.
+   (10 §6). An HTML artifact, when *rendered*, can load images from the web
+   like any page the user opens — that is intended (46) — but the desktop
+   renders it in a script-less sandbox (§9): CSP blocks scripts,
+   `fetch`/XHR, fonts and frames; `sandbox=""` blocks forms, top navigation
+   and same-origin access. External image requests are intentional, so this
+   viewer is not claimed to be network-less or an egress-prevention boundary.
 9. **Not a canvas.** No user edits flowing back, no diff view, no code
    workspace (00 §1.8: not a coding agent). A code file is a text artifact
    with highlighting. §12 names the one message shape that would make
@@ -254,7 +257,7 @@ switch on it, never on the extension again.
 | `Image` | png, jpg, jpeg, gif, webp | thumbnail | `<img>`, click = lightbox | `[image W×H]` + path (17 §6 stands: no terminal graphics) | receipt (it already has it) |
 | `Svg` | svg | rasterised PNG | `<img>` of the SVG (text/svg is inert as an `<img>`) | as Image | page PNG |
 | `Pdf` | pdf | page-1 PNG when we compiled it; page count | native `<iframe>` viewer | `N pages` + path | page PNG (compiled only) |
-| `Html` | html, htm | none | sandboxed `<iframe sandbox srcdoc>` with a network-less CSP (§9) | source fence | receipt |
+| `Html` | html, htm | none | sandboxed `<iframe sandbox srcdoc>` with a script-less CSP; images may load from the web (§9) | source fence | receipt |
 | `File` | anything else | none | download / open only | path | receipt + the warning line |
 
 ### 3.3 The record, the actor, the event
@@ -629,12 +632,17 @@ therefore sees the card, the preview, the panel and can download the PDF.
 - **HTML is the one kind that renders code.** Desktop viewer: `<iframe
   sandbox="" srcdoc={html}>` (no scripts, no same-origin, no forms, no
   top navigation) with a `<meta http-equiv="Content-Security-Policy"
-  content="default-src 'none'; style-src 'unsafe-inline'; img-src data:">`
-  prepended, so no request leaves the frame even for an `<img src=https://…>`
-  the model was tricked into writing. Nothing else fetches. The TUI shows
-  source; channels upload the file (their clients do not render HTML).
-  Rejected: DOMPurify + inline render — sanitising is the approach 28 §0.4
-  declines; a network-less sandbox is the control.
+  content="default-src 'none'; style-src 'unsafe-inline'; img-src data:
+  https: http:">` prepended. Images load from the web on purpose — a
+  report with a chart from a URL is the normal case (46) — and the main
+  window's `img-src` (and the relay's, 31 §7.6) allow `https: http:` for
+   the same reason. `default-src 'none'` blocks scripts, `fetch`/XHR,
+   fonts and frames; `sandbox=""` blocks forms, top navigation and
+   same-origin access. Image URLs and their request metadata reach the remote
+   host by design; rendering is not a guarantee against data leaving.
+  The TUI shows source; channels upload the file (their clients do not
+  render HTML). Rejected: DOMPurify + inline render — sanitising is the
+  approach 28 §0.4 declines; the inert sandbox is the control.
 - **SVG** renders as `<img>` (scripts and external references are inert
   in an image context) and is rasterised by `resvg` with `ImageHrefResolver`
   set to refuse remote `href`s.
@@ -708,9 +716,9 @@ section.
    the bindings. Check: in the webview — a markdown, a CSV, an SVG and a
    compiled PDF each render in the panel; the PDF's page-1 thumbnail sits
    in the card; an HTML artifact with `<img src=https://example.com/x.png>`
-   makes **no** request (network panel); Save as writes where chosen;
-   through a relay-linked browser the card and preview show and Open /
-   Reveal are hidden.
+   shows the picture and makes **only** that request (network panel); Save
+   as writes where chosen; through a relay-linked browser the card and
+   preview show and Open / Reveal are hidden.
 7. **Channels + ACP**: Slack/Signal subscriptions; ACP `ResourceLink`.
    Check: unit — bound session → one `upload_file` with `comment ==
    title`; child of a bound parent → the parent's thread; unbound →

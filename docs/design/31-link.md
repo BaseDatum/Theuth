@@ -748,9 +748,10 @@ with `--web ui/dist`. Rules:
   throttle or cut off one browser. **It is not the credential.** The
   end-to-end identity is the WebCrypto key (§7.2); a stolen cookie lets an
   attacker open sockets the harness will refuse at `IK` message 1.
-- CSP on served pages: `default-src 'self'; connect-src 'self' wss:;
-  img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'` (streamdown
-  needs inline styles, as in Tauri today).
+- CSP on served pages: `default-src 'self'; connect-src 'self' wss: ws:;
+  img-src 'self' data: blob: https: http:; style-src 'self' 'unsafe-inline'`
+  (streamdown needs inline styles and images load from the web, as in
+  Tauri today).
 - Trust: a browser container trusts the origin that serves its JavaScript.
   A relay operator who ships modified JS can read plaintext in that browser.
   The native apps do not have this exposure. Settings › About says so in one
