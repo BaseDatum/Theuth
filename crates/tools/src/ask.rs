@@ -121,7 +121,7 @@ struct Request {
 struct Expire(AskId);
 
 /// A waiting tool call: its session and where its answers go.
-type Waiter = (SessionId, oneshot::Sender<Option<Vec<Answer>>>);
+type Waiter = (SessionId, Vec<Question>, oneshot::Sender<Option<Vec<Answer>>>);
 
 /// The ask actor.
 #[derive(kameo::Actor)]
@@ -156,7 +156,7 @@ impl Message<Request> for AskUser {
         let (reply, tx) = ctx.reply_sender();
         let id = AskId(uuid::Uuid::now_v7());
         let (atx, arx) = oneshot::channel();
-        self.pending.insert(id, (m.session, atx));
+        self.pending.insert(id, (m.session, m.questions.clone(), atx));
         let rt = self.rt.clone();
         let timeout = self.timeout;
         let me = ctx.actor_ref().clone();
@@ -194,7 +194,7 @@ impl Message<AnswerAsk> for AskUser {
     type Reply = Option<SessionId>;
 
     async fn handle(&mut self, m: AnswerAsk, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        let (session, tx) = self.pending.remove(&m.id)?;
+        let (session, _questions, tx) = self.pending.remove(&m.id)?;
         tx.send(m.answers).ok().map(|()| session)
     }
 }
@@ -204,6 +204,26 @@ impl Message<Expire> for AskUser {
 
     async fn handle(&mut self, m: Expire, _: &mut Context<Self, Self::Reply>) {
         self.pending.remove(&m.0);
+    }
+}
+
+/// `ask` → the still-pending asks. Lets a UI that subscribes (or reconnects
+/// over the relay) *after* the [`AskRequested`] broadcast still be shown the
+/// card it missed, instead of a card that never arrives (31 §7.3).
+pub struct PendingAsks;
+
+impl Message<PendingAsks> for AskUser {
+    type Reply = Vec<AskRequested>;
+
+    async fn handle(&mut self, _: PendingAsks, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.pending
+            .iter()
+            .map(|(id, (session, questions, _))| AskRequested {
+                id: *id,
+                session: *session,
+                questions: questions.clone(),
+            })
+            .collect()
     }
 }
 

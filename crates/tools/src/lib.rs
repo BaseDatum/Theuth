@@ -32,7 +32,9 @@ pub mod secrets;
 pub mod shell;
 
 pub use approval::{Approval, ApprovalId, ApprovalRequested, ApprovalResolved, Decision, Resolve};
-pub use ask::{Answer, AnswerAsk, AskId, AskRequested, AskResolved, AskUser, Choice, Question};
+pub use ask::{
+    Answer, AnswerAsk, AskId, AskRequested, AskResolved, AskUser, Choice, PendingAsks, Question,
+};
 pub use jobs::{CancelJob, JOBS_ACTOR, JobEvent, JobExit, JobId, JobView, Jobs, ListJobs};
 pub use mcp::{
     AddRepo, AddServer, ListServers, Mcp, McpAuth, McpLogin, McpLogout, McpProgress, McpServer,

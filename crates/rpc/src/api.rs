@@ -1519,6 +1519,23 @@ impl ApiServer for Server {
         };
         let sink = pending.accept().await?;
         let session = session.map(|s| s.to_string());
+        // Replay in-flight asks so a client that subscribes (or reconnects over
+        // the relay) *after* the AskRequested broadcast still gets the card,
+        // rather than a card that never arrives and a tool that blocks until
+        // its human timeout (31 §7.3).
+        if let Ok(Some(actor)) = ActorRef::<tools::AskUser>::lookup(tools::ASK_ACTOR)
+            && let Ok(asks) = actor.ask(tools::PendingAsks).await
+        {
+            for a in asks {
+                let Ok(v) = serde_json::to_value(&a) else { continue };
+                if !wanted(&v, session.as_deref(), tree.as_mut()) {
+                    continue;
+                }
+                if let Ok(raw) = serde_json::value::to_raw_value(&v) {
+                    let _ = sink.send(SubscriptionMessage::from(raw)).await;
+                }
+            }
+        }
         tokio::spawn(async move {
             loop {
                 let msg = tokio::select! {
