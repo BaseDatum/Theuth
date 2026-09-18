@@ -73,6 +73,9 @@ impl runtime::Plugin for TuiPlugin {
             .await;
         rt.subscribe::<Bridge, update::UpdateReady>(&bridge).await;
         let api = Arc::new(Server::new(rt.clone()));
+        // The one startup fact the runtime does not hand out as a config
+        // section: whether the app plugin runs (46 §9, `Info.app_enabled`).
+        let app_enabled = api.info().await.is_ok_and(|i| i.app_enabled);
         tokio::spawn(run_commands(api, commands_rx, events_tx));
 
         let default_model = rt.section::<AgentConfig>("agent").unwrap_or_default().model;
@@ -91,6 +94,7 @@ impl runtime::Plugin for TuiPlugin {
                     commands: commands_tx,
                     default_model,
                     approvals,
+                    app_enabled,
                     catalog,
                     resume,
                     data_dir,
@@ -107,7 +111,15 @@ impl runtime::Plugin for TuiPlugin {
                 if prompt.is_none() {
                     tracing::warn!("stdout is not a terminal; using the line printer");
                 }
-                line_printer(events_rx, commands_tx, resume, approvals, prompt).await;
+                line_printer(
+                    events_rx,
+                    commands_tx,
+                    resume,
+                    approvals,
+                    app_enabled,
+                    prompt,
+                )
+                .await;
             }
             shutdown.cancel();
         });
@@ -568,10 +580,17 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             let node = resolve_node(api, &n).await?;
             UiEvent::NodeInvite(node.name, msg(api.invite_node(node.id).await)?)
         }
-        Command::ListArtifacts { session, pick } => UiEvent::Artifacts {
-            items: msg(api.list_artifacts(Some(session), Some(true)).await)?,
+        Command::ListArtifacts {
+            session,
             pick,
-        },
+            apps,
+        } => {
+            let mut items = msg(api.list_artifacts(Some(session), Some(true)).await)?;
+            if apps {
+                items.retain(|a| a.kind == artifact::Kind::App);
+            }
+            UiEvent::Artifacts { items, pick, apps }
+        }
         Command::ExportArtifact { id, name } => {
             let dest = std::env::home_dir()
                 .ok_or_else(|| anyhow::anyhow!("no home directory"))?
@@ -638,9 +657,11 @@ async fn line_printer(
     commands: UnboundedSender<Command>,
     resume: Option<SessionId>,
     approvals: bool,
+    app_enabled: bool,
     prompt: Option<String>,
 ) {
     let mut model = Model::new(String::new(), approvals);
+    model.app_enabled = app_enabled;
     if let Some(id) = resume {
         model.resume(id, &commands);
     }
@@ -816,6 +837,14 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             writeln!(out, "context changed ({reason})")
         }
         UiEvent::Agent(_) => Ok(()),
+        // An app is a pointer to its source here: it runs on desktop/web (46 §8.2).
+        UiEvent::ArtifactShown(ev) if ev.artifact.kind == artifact::Kind::App => writeln!(
+            out,
+            "[app: {} · {} → source {}]",
+            ev.artifact.name,
+            model::APP_WHERE,
+            ev.artifact.path.display()
+        ),
         UiEvent::ArtifactShown(ev) => writeln!(
             out,
             "[artifact: {} → {}]",
@@ -823,6 +852,9 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             ev.artifact.path.display()
         ),
         UiEvent::ScrapeProgress(_) => Ok(()),
+        UiEvent::Artifacts { items, apps, .. } if items.is_empty() => {
+            writeln!(out, "{}", if *apps { "no apps" } else { "no artifacts" })
+        }
         UiEvent::Artifacts { items, .. } => items
             .iter()
             .try_for_each(|a| writeln!(out, "{}", model::artifact_row(a))),

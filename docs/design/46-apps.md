@@ -1,9 +1,13 @@
 # 46 — Apps: progressive interactive UI on OpenUI Lang
 
-Status: revised design · 2026-09-18 · not implemented. This revision replaces
-this document's Rust parser, Monty program-registration/replay, second-approval,
-and no-egress proposals. User decisions: a button press approves its action;
-links, external images and external services are normal app functionality;
+Status: implemented on `feature/apps` · design revised 2026-09-18, as-built
+record §12 2026-09-18. §§0–11 are the design as decided, kept as the
+reference for the constraints; where the code settled differently, an
+**As built** note follows the affected section and §12 records what was
+exercised and what was not. This revision replaces this document's Rust
+parser, Monty program-registration/replay, second-approval, and no-egress
+proposals. User decisions: a button press approves its action; links,
+external images and external services are normal app functionality;
 progressive rendering is required. Extends `25-desktop.md`, `30-surfaces.md`,
 `35-artifacts.md`, `31-link.md`, and the tool/permission contract in
 `00-architecture.md`. Uses `04-prompt-skills-mcp.md` for backend integrations
@@ -211,6 +215,21 @@ on shutdown; crash/2 s validation deadline kills and replaces the helper on
 next request, with the current request failed and nothing committed. Start
 lazily, so sessions without apps pay neither process nor parser startup cost.
 
+**As built.** The executable is `wth-app-parser-<library-hash>` beside the
+`wth` binary (`WTH_APP_PARSER` overrides the path for tests), built by
+`packages/apps/scripts/build-helper.ts` with `bun build --compile --minify`
+from `src/helper.ts`; the build refuses a bundle that pulls in React,
+`react-ui`, `react-lang` or zustand. `app::helper::Helper` spawns it on the
+first request, runs `--version` first and refuses a helper whose printed hash
+is not this binary's `app::HASH`, then speaks JSON lines (`protocol.ts`:
+`{id, op: check|merge_check, source, base?, tools[]}` →
+`{id, source, library_hash, statements, bindings, diagnostics, state,
+orphaned}`) with `OPENUI_TELEMETRY_DISABLED=1 DO_NOT_TRACK=1`. Constants:
+`PENDING = 8` queued requests (beyond → busy error), `DEADLINE = 2 s` per
+request, `MAX_LINE = 4 MiB`; a timeout, malformed reply or crash kills the
+child and the next request spawns a replacement. `wth --app-parser-hash`
+prints the expected hash for packaging and the updater (39).
+
 ## 3. Publishing, identity and edits
 
 ### 3.1 Tool contract
@@ -322,6 +341,24 @@ values are schema-checked again immediately before invocation. Same-typed swappe
 props remain a model-quality issue, measured with actual renders, not “fixed” by
 more parser rules.
 
+**As built.** `packages/apps` (`@wth/apps`): `library.ts` exports 21
+dependency-closed upstream components — `Stack` (root), `Card`, `CardHeader`,
+`Separator`, `TextContent`, `Image`, `Table`, `Col`, `BarChart`, `LineChart`,
+`AreaChart`, `PieChart`, `Series`, `Input`, `TextArea`, `Select`, `SelectItem`,
+`SwitchGroup`, `SwitchItem`, `Button`, `Buttons` — with pins `lang-core`/
+`react-lang` 0.3.0 (both patched in-tree under `patches/`) and `react-ui`/
+`react-headless` 0.16.1. `bun run generate` writes `generated/library.json`,
+`catalog.txt` (the prompt/skill catalog) and `library-hash.txt`; the hash is
+SHA-256 over the pins, each patch file's digest, the root, the ordered
+component schemas, the reactive markers and the §7 limits, so any of them
+changing invalidates every committed app's `library_hash`. `check.ts` is the
+final validator (`root`, strict reparse, duplicates, unresolved/cyclic
+references, `$state` declarations, action step shapes, string-literal tool
+names present in the snapshot, Query ≤4 / Mutation ≤2 args, required keys and
+`additionalProperties: false` of the tool schema); full argument-value schema
+validation is the registry's job at `AppInvoke`, not the helper's. Diagnostic
+codes: `protocol.ts` `DiagnosticCode`.
+
 ### 4.1 Prototype: real state, ordinary link, external image
 
 ```openui
@@ -383,6 +420,8 @@ Use the first adequate rung, independent of whether the UI is called a prototype
    forwarding redirects with existing web policy. No browser CORS workaround
    or client-side copy of harness credentials. This tool ships with apps if
    not already present; it is useful independently of them.
+   **As built:** `crates/web/src/http.rs` (`HttpRequestTool`, `Risk::Mutating`),
+   registered by `WebPlugin`; new on this branch.
 4. An **ordinary MCP integration** for joins, multi-step service transactions,
    custom logic or reusable APIs. The model writes source under `mcp/repos/`,
    exercises it using the existing shell/tools, and installs via `add_mcp_server`
@@ -496,6 +535,23 @@ Inputs driving an action are captured at activation, not read again after a
 network wait. Inspect integration source through the metadata in `get_app`; the
 old `get_app_program`/Monty lookup is unnecessary.
 
+**As built.** Exactly these four methods exist (`rpc::Api`): `get_app`,
+`app_call_tool`, `app_call_status`, `app_close`. The three `app_*` methods are
+`with_extensions` and take the authenticated `link::RpcPeer` the listener put
+in the request (local socket or link conn); no peer → `-32002`, never "local".
+`get_app` needs only the ordinary connection auth. `Info.app_enabled` tells a
+client whether the plugin is running; a disabled plugin answers `-32001` and
+the client shows the artifact's source. `AppDoc` adds `state` (declared
+`$state` defaults) and `recent_calls` (≤64 durable pressed invocations of the
+record, newest first, from `artifact::ListInvocations`) so a reopened or
+reconnected view shows what its actions did; `diagnostics` gains live
+`tool-unknown`/`tool-identity`/`tool-denied` entries per binding. Views are
+bound `(instance_id → peer, record, generation)`, ≤64 per connection; a
+foreign peer is refused. The registry's `AppInvoke` re-checks visibility,
+the pinned identity and the arguments against the current schema before the
+gate. `app_call_status` is scoped to a live authenticated connection of the
+harness, not to the view that made the request.
+
 `@ToAssistant`/implicit conversation actions use existing `send_input`, with
 app record/action provenance and the chosen message/context/form values shown
 in the transcript. Treat attached service text as app data, not system guidance.
@@ -522,22 +578,36 @@ model turn. Reconnect reads status from RPC; missing a bus event does not make a
 completed action unknowable. Closing a panel stops reads, not an already accepted
 external mutation; its status remains discoverable.
 
+**As built.** `artifacts.sqlite` migrations `0002_app_invocations` (table
+keyed by `request_id`, bound to session/record/statement/tool/`args_hash`,
+status, result, timestamps) and `0003_app_invocation_owner` (`owner TEXT`).
+Each store opener holds one exclusively locked file in
+`<data_dir>/artifacts.owners/` and stamps its name on the rows it claims; on
+open, `running` rows whose owner file is gone or lockable become `unknown`
+(the kernel drops the lock with the process), rows of a live owner are left
+alone, nothing is re-dispatched. Stored results are capped at 64 KiB
+(`{"omitted": …}` beyond); `ListInvocations` clamps to 64. Duplicate identity
+compares session, record, statement, tool and canonical args hash — not
+`action_id`. `SessionDeleted` deletes the session's artifacts and invocation
+rows in one transaction. `AppCallChanged` is published once, when an admitted
+call finishes (detached reads report `cancelled`); there is no `running` event.
+
 ## 7. Work bounds and lifecycle
 
 Initial defaults, subject to the acceptance measurements, not performance claims:
 
-| Boundary             | Limit / rule                                                                                                  |
-| -------------------- | ------------------------------------------------------------------------------------------------------------- |
-| Source / metadata    | 128 KiB source; 512 statements; depth 32; 256 KiB metadata                                                    |
-| Parser admission     | 8 pending final validations; helper timeout 2 s; backpressure error beyond it                                 |
-| Materialization      | 2,048 expanded nodes; count reference occurrences, not distinct declarations                                  |
-| Dynamic evaluation   | 50,000 operations and 2,048 produced nodes per update; nested `@Each` shares the budget                       |
-| Tool results         | 1 MiB serialized response before client forwarding; no silent JSON truncation                                 |
-| Query scheduling     | 5 s minimum interval; ≤8 active calls and ≤32 pending queries per app record across its views                 |
-| Harness total        | ≤32 active app calls; queued reads bounded globally at 128; presses return busy rather than wait indefinitely |
-| Input-driven refresh | coalesce changed args for 150 ms; one running + one latest desired value per query/view                       |
-| Hidden/closed views  | stop polling; discard queued reads; ignore late results from obsolete generation                              |
-| Transport loss       | stop scheduling; reconnect reads once; never automatically replay a mutation                                  |
+| Boundary             | Limit / rule                                                                                                                                                                                             |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Source / metadata    | 128 KiB source; 512 statements; depth 32; 256 KiB metadata                                                                                                                                               |
+| Parser admission     | 8 pending final validations; helper timeout 2 s; backpressure error beyond it                                                                                                                            |
+| Materialization      | 2,048 expanded component nodes per parse and 65,536 AST visits (`materializedNodes`); reference occurrences counted, not declarations                                                                    |
+| Dynamic evaluation   | 50,000 operations and 2,048 produced nodes per budget; nested `@Each` shares it. As built a budget is per render pass, per action plan and per evaluated query argument, not one allowance per UI update |
+| Tool results         | 1 MiB serialized response before client forwarding; no silent JSON truncation                                                                                                                            |
+| Query scheduling     | 5 s minimum interval (as built: enforced by the patched renderer, not the harness); ≤8 active calls and ≤32 pending queries per app record across its views                                              |
+| Harness total        | ≤32 active app calls; queued reads bounded globally at 128; presses return busy rather than wait indefinitely                                                                                            |
+| Input-driven refresh | coalesce changed args for 150 ms; one running + one latest desired value per query/view                                                                                                                  |
+| Hidden/closed views  | stop polling; discard queued reads; ignore late results from obsolete generation                                                                                                                         |
+| Transport loss       | stop scheduling; reconnect reads once; never automatically replay a mutation                                                                                                                             |
 
 Source/depth caps do not imply an expanded-work cap. Thread budgets through the
 upstream materializer/evaluator **before** allocating arrays or recursively
@@ -606,6 +676,18 @@ streaming may still produce an app with honest progress text, but is explicitly
 not evidence that progressive rendering passed. Do not silently make all apps
 wait for commit as a fallback implementation.
 
+**As built.** Only the `app` tool definition opts into Anthropic's eager
+input streaming (`agent::loop_::direct_tool`, `with_eager_input_streaming`);
+other tools are unchanged. The desktop turns `ToolCallProgress` of an `app`
+call into a draft (`store/reduce.ts`), repairs only the argument envelope,
+auto-opens the panel once per focused turn on the first renderable chunk, and
+`ArtifactShown` replaces the draft with the record. `AppHost` merges only
+complete patch statements over the committed base while editing and shows the
+unfinished tail as text; a failed new draft stays a readable source card.
+Live progressive rendering through a real streaming provider was observed in
+the desktop store tests and the fixture-model smoke, not on a captured
+provider trace (§12).
+
 ### 8.2 Desktop, TUI, channels and remote clients
 
 - Desktop/phone: artifact card + shared panel/explorer app viewer. Never mount
@@ -630,6 +712,17 @@ wait for commit as a fallback implementation.
   artifact ResourceLink. No pretend clickable controls in text-only channels.
 - Remote identity: scope record/instance/query state by harness ID. Tool execution
   remains on the paired harness. Relay transport does not reduce a press's approval.
+
+**As built.** TUI: the artifact card shows `interactive on desktop/web`,
+Ctrl+O expands the `.openui` source (200-line cap), `o` opens the source with
+the OS opener; `/apps` lists the session's `Kind::App` records (⏎ open, `s`
+source, `e` export) and is offered only while `Info.app_enabled`. Slack and
+Signal attach the source file with `Interactive app — open on desktop/web`.
+ACP emits the ordinary `ArtifactShown` `ResourceLink` to the `.openui` file.
+Desktop: `AppView` lazy-loads `AppHost` (and the OpenUI runtime/CSS) on first
+preview/open; there is no separately named Vite chunk. A library-hash mismatch,
+a disabled plugin or a failed `get_app` renders the source, never a
+best-effort app. Phone/iOS client work was not part of this branch.
 
 ### 8.3 Compatibility and failures
 
@@ -683,11 +776,20 @@ limits above are named constants first, not a settings page.
 <data_dir>/
   artifacts/<source-hash>.openui
   artifacts/<metadata-hash>.app.json   # Artifact.source, separate content hash
-  artifacts.sqlite                   # existing rows + app_invocations migration
-  mcp/<integration>.json             # existing MCP installation ownership
-  mcp/repos/<integration>/           # ordinary source/build, not replay cells
-  skills/apps.md                     # generated on start
+  artifacts.sqlite                     # existing rows + 0002_app_invocations + 0003 owner column
+  artifacts.owners/<opener>            # one exclusively locked file per store opener (§6.4)
+  mcp/<integration>.json               # existing MCP installation ownership
+  mcp/repos/<integration>/             # ordinary source/build, not replay cells
+  skills/apps.md                       # rewritten on start from crates/app/apps.md + generated catalog
 ```
+
+Beside the binary: `wth-app-parser-<library-hash>` (§2.1). Sidecar contents
+(`app::meta::AppMeta`): library hash, statements, pinned bindings with tool
+identities, publish diagnostics, state defaults, orphaned names, the bound
+`ToolInspection`s and inspection-only entry-point snapshots of bound stdio
+MCP servers under `mcp/repos` (32 KiB each, 96 KiB per app; `node_modules`,
+`dist`, `build`, `target`, `.git`, `.venv` skipped). Metadata is capped at
+256 KiB: snapshot text is dropped with a note first, then the publish fails.
 
 The helper ships beside the binary, not in writable artifact state. Artifact
 session deletion removes invocation rows; existing blob/source sweep handles
@@ -764,10 +866,126 @@ new DLP/scanning layer, or a bespoke TUI renderer. Multi-step UI can use state,
 normal tools and assistant actions. These exclusions remove machinery, not the
 ability to build a live, service-backed app.
 
-## 12. Verification record for this revision
+## 12. Verification record
 
-This is a design revision, not a shipped app feature. Isolated checks on
-2026-09-18 used published `lang-core`/`react-lang` 0.3.0 and `react-ui` 0.16.1:
+### 12.1 As built (2026-09-18, `feature/apps`)
+
+Implemented: `crates/app` (`AppPlugin`, `Apps` actor, `AppTool`, `helper`,
+`sched`, `meta`), `packages/apps` (library, `check`, helper, patched renderer
+adapter), `tools::AppInvoke` + `Tool::CONSUMES_SECRETS`, `artifact` `Kind::App`
+/ `Commit { expected_base }` / `app_invocations` + owners, four `rpc::Api`
+methods + `AppCallChanged` + `Info.app_enabled`, desktop `components/apps`,
+TUI/Slack/Signal/ACP source surfaces, `web::http_request`, helper build,
+packaging, updater probe, `scripts/apps` acceptance drivers.
+
+Exercised locally on macOS arm64, all from the tree at library hash
+`8dc9c11b…cc46c4`:
+
+- `packages/apps`: 78 tests (check, bounds, library, helper protocol, jsdom
+  renderer), `tsc` check and the helper build pass.
+- Desktop UI: 150 tests, TS check and a production build pass.
+- Real RPC smoke (`scripts/apps/smoke.ts` against a headless harness, a
+  scripted OpenAI-compatible fixture model and an ordinary stdio MCP fixture
+  exposing `argo_*`): all 14 scenarios pass — `publish`, `get_app`,
+  `auto_read`, `needs_approval`, `auto_mutation`, `press`, `duplicate`,
+  `changed_args`, `destroy`, `echo_auto`, `echo_press`, `stale_generation`,
+  `peer_disconnect`, `cas_edit`. That covers a single press running a
+  mutating, a destructive and a `{{secret:…}}`-bearing call with **zero**
+  `ApprovalRequested`, an automatic read that needs approval becoming
+  `needs_approval` without a prompt, a timer never running a Mutation, the
+  placeholder staying literal in the committed source and reaching the MCP
+  server expanded only at the terminal call, duplicate/mismatched request IDs,
+  a stale generation, peer close detaching reads, and two patches racing for
+  one base where the loser gets `conflict` with the latest record.
+- Registry unit tests: press answers Ask for destructive and secret calls but
+  not Deny; automatic Ask never prompts or runs; stale binding, bad args or a
+  foreign activation never dispatch; a concurrent model call still asks while
+  a press runs; identity ignores object key order but not schema/array order.
+- `crates/app/tests/publish.rs`: publish → open → call → edit end to end
+  against the real helper and store.
+- Browser DOM check of the committed ArgoCD panel in the desktop UI: clicking
+  **Sync** produced `Healthy`/`synced` and a fixture call count of 1. This is a
+  DOM observation. **Visual acceptance is the user's**: the user reviewed the
+  production-build URL and accepted the presentation ("visuals acceptable").
+  The assistant makes no visual claim.
+- Model steering (§10.7) with a frontier model (`amazon-bedrock/us.openai.gpt-6-astra`)
+  over `app`, `show`, `load_skill`, `argo_app_health`, `argo_sync`: 15/15
+  first-pass valid (5/5 prototype, 5/5 read, 5/5 action), 0 corrections;
+  vehicle choice 19/20. An earlier 0/15 first-pass run was a test-harness
+  defect — it hid `load_skill`, so the model could not read the `apps` skill —
+  and every one of those 15 was corrected on the next call; it is not a
+  product result. The passing run used the harness's earlier prompt text, so
+  the later compact prompt is not what produced 15/15. Small-model steering
+  was not run.
+- Helper, earlier source revision (different library hash, not rerun after the
+  review edits): 100-statement `check` warm median 0.51 ms, p95 1.04 ms, first
+  request 34.91 ms; executable 59,881,826 bytes (57.1 MiB) at the current hash.
+- Helper signing configuration, ad hoc, once on the built `dist` helper:
+  `codesign --force --options runtime --timestamp=none --sign - --entitlements
+scripts/entitlements-app-parser.plist`, `codesign --verify --strict` and the
+  signed helper's `--version` printing the current hash. The entitlement is
+  `com.apple.security.cs.allow-jit` only. Release signing runs on another
+  machine; no further signing command or check is run here, and no Developer
+  ID or notarization is claimed.
+- Desktop §7 trace, **dev UI build**, browser DOM, 62 s uninterrupted: a
+  100-statement progressive app while 50 background sessions streamed
+  (all 50 finished, 30,050 deltas, 0 errors). 3,695 rAF callbacks; frame
+  interval p95 18 ms; one 126 ms long task, the cold lazy load of the app
+  module; first rendered statement 9.23 s before the artifact committed.
+  Frame interval is not main-thread work, so §7's "p95 ≤16 ms input/frame
+  work" is **not** shown by this trace. Progressive rendering before commit
+  is shown for the fixture provider, not a real streaming provider.
+- Desktop §7 trace, **production build**: cold load of the app module is one
+  146 ms long task, over the 50 ms budget; the harness collected 0 rAF
+  samples, so it could not certify the frame budget either way — no pass is
+  claimed. **User decision: merge with this limitation.** The cold-load long
+  task is an accepted, known limit; performance is no longer a merge gate for
+  this feature. §7's numbers stay as the design targets.
+- Relay probe (`/tmp/…/relay-result.json`), real local relay + headless
+  harness, a Bun client using the desktop's own `LinkTransport` crypto: all
+  7 steps pass — `status`, `pair` (IKpsk2 pairing key, `LinkPaired`),
+  `session`, `get_app`, `press` (health `load` succeeded, press succeeded,
+  fixture count 0→1, secret value absent from the reply, `app_call_status`
+  over the relay agrees), `reconnect` (IK re-handshake, harness saw
+  offline→online, a load after reconnect succeeded; 512 ms step), `revoke`
+  (`LinkRevoked`, relay client lost its session, device gone from
+  `link_status`). No phone hardware, no visual claim.
+
+Not run, recorded as unrun rather than passed: Linux runtime (the Docker build
+and clean-`ubuntu:22.04` probe are release-script gates, not exercised here);
+physical phone/iOS trace, heap or open/close cycles; Developer ID signing,
+notarization and a clean-machine launch (external, another machine); a frame-
+budget measurement on the production build (see the accepted limitation above);
+first-meaningful-frame timing against a real streaming provider;
+a model-authored MCP server installed through `add_mcp_server`, restarted and
+called without an agent turn (the smoke used a fixture server); app RPC from
+a physical phone (the relay path itself is the probe above); Slack/Signal live
+delivery of an app source file (code path
+shared with 35's artifact delivery); `enabled: false` in a pty.
+
+Discrepancies between the code and §§0–11 found while writing this record.
+They are reported, not accepted as scope changes; each stays open until the
+user decides or the code changes:
+
+- The 5 s minimum refresh interval is enforced by the patched renderer only;
+  the harness bounds by slots and coalescing, not by time (§7 table).
+- Evaluation budgets are per render pass / action plan / query argument, not
+  one allowance per update (§7); `materializedNodes = 65,536` was added.
+- `AppCallChanged` fires once on completion; there is no `running` event, and
+  a refusal before admission publishes nothing (§6.4).
+- `app_call_status` is scoped to an authenticated connection of the harness,
+  not to the requesting view (§6.3).
+- A native tool's identity origin is `native:<crate version>`; a rebuild at the
+  same version does not change it (§3.2).
+- Durable duplicate detection compares args, not `action_id` (§6.4).
+- The helper's 4 MiB request guard originally checked only an unterminated
+  tail; fixed 2026-09-18: `handle(line)` now caps the UTF-8 byte length of
+  every line, completed or final-at-EOF, before `parseRequest` (§2.1).
+
+### 12.2 Design-revision checks (2026-09-18, before implementation)
+
+Isolated checks used published `lang-core`/`react-lang` 0.3.0 and `react-ui`
+0.16.1:
 
 - Both §4 examples parsed with zero reported errors/unresolved references:
   prototype 9 statements; live panel 11 statements, one Query and one Mutation.
@@ -776,8 +994,7 @@ This is a design revision, not a shipped app feature. Isolated checks on
 - A core-only Bun-compiled executable handled two JSON-lines requests in one
   process without a browser or Node/Bun command at execution time. The local
   macOS arm64 probe was **59,914,850 bytes (57.1 MiB)**: bundling a JS runtime has
-  a real release-size cost. Linux builds, signing, clean-machine deployment,
-  RSS and startup/latency budgets were not verified.
+  a real release-size cost.
 - A browser DOM check of the actual upstream renderer showed partial title/text
   before completion, then programmatic button activation changed `$stage` to
   `cutover`. `@OpenUrl` emitted the expected `open_url` event. This checked state
@@ -790,10 +1007,8 @@ This is a design revision, not a shipped app feature. Isolated checks on
   changes are implemented in desktop, relay and HTML-artifact CSP; unrelated
   script/form restrictions remain unchanged.
 
-Visual appearance is unverified and must be checked by the user if needed; do
-not infer visual quality from DOM/network checks. Full app RPC, action provenance,
-budget patches, real-service integration, packaging, provider streaming and
-model/performance acceptance remain §10 implementation checks, not claimed results.
+Visual appearance is never inferred by the assistant from DOM/network checks;
+it is the user's review, given in §12.1.
 
 ### Implementation verification scope agreed with the user
 
@@ -801,7 +1016,13 @@ For the implementation/merge of this feature, the user approved **merge after
 local checks and their visual review**. Linux runtime/performance, physical-phone
 measurements and Developer ID/notarized clean-machine checks are not merge gates
 in this environment; document them as unrun, not passed. Packaging support for
-those platforms remains in implementation scope. Local parser/helper execution,
-backend/RPC/relay behavior, desktop automated interaction/performance, ad-hoc
-signing/installation checks and disabled mode remain required. The assistant
-does not inspect images; visual acceptance is performed by the user.
+those platforms remains in implementation scope. Signing happens on another
+machine: the scripts carry the signing configuration, and no signing command or
+verification runs here beyond the one ad-hoc configuration check recorded in
+§12.1. Local parser/helper execution, backend/RPC/relay behavior, desktop
+automated interaction, installation checks and disabled mode remain required.
+Outcome (2026-09-18): the user accepted the visual presentation at the
+production URL and decided **merge with limitation** on performance — the
+production cold-load long task (§12.1) is accepted and the frame budget is
+uncertified; performance no longer gates this merge. The assistant does not
+inspect images; visual acceptance is performed by the user.

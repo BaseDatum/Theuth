@@ -12,9 +12,9 @@ use tools::{Decision, Risk};
 
 use crate::clip;
 use crate::model::{
-    AcpRow, CardKind, Command, Entry, Level, Menu, MenuKey, Model, Prompt, Row, Switch, TodoCard,
-    TurnAction, UiEvent, action_name, agent_row, artifact_row, artifact_size, describe, gate_name,
-    k, meta_line, progress_line, result_line, short, slash_matches, window,
+    APP_WHERE, AcpRow, CardKind, Command, Entry, Level, Menu, MenuKey, Model, Prompt, Row, Switch,
+    TodoCard, TurnAction, UiEvent, action_name, agent_row, artifact_row, artifact_size, describe,
+    gate_name, k, meta_line, progress_line, result_line, short, slash_matches, window,
 };
 
 /// Channels handed to the app through iocraft context (owned so the receiver
@@ -28,6 +28,8 @@ pub struct Links {
     pub default_model: String,
     /// `tools.approvals` from config.
     pub approvals: bool,
+    /// `Info.app_enabled`: offer `/apps`.
+    pub app_enabled: bool,
     /// Context limits for the header.
     pub catalog: Arc<models::Catalog>,
     /// Session to `/resume` on first render.
@@ -79,11 +81,13 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     let mut links = hooks.use_context_mut::<Links>();
     let default_model = links.default_model.clone();
     let approvals = links.approvals;
+    let app_enabled = links.app_enabled;
     let catalog = links.catalog.clone();
     let mut model = hooks.use_state({
         let catalog = catalog.clone();
         move || {
             let mut m = Model::new(default_model, approvals);
+            m.app_enabled = app_enabled;
             m.catalog = Some(catalog);
             m.entries.push(Entry::Info(
                 concat!("wth ", env!("CARGO_PKG_VERSION")).into(),
@@ -173,6 +177,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                     let _ = commands.send(Command::ListArtifacts {
                         session,
                         pick: false,
+                        apps: false,
                     });
                 }
                 // A context edit or rewind landed (48 §5): the settled transcript.
@@ -595,7 +600,7 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
     let (title, rows, cursor): (String, Vec<String>, usize) = match m.menu.as_ref()? {
         Menu::Slash { cursor } => {
             let word = input.split(' ').next().unwrap_or_default();
-            let rows = slash_matches(word)
+            let rows = slash_matches(word, m.app_enabled)
                 .into_iter()
                 .map(|(name, hint, desc)| format!("{:<30} {desc}", format!("{name} {hint}")))
                 .collect::<Vec<_>>();
@@ -867,8 +872,16 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
         Menu::Secrets { cursor, history } => {
             (m.secrets_title(), m.secrets_rows(), history.unwrap_or(*cursor))
         }
-        Menu::Artifacts { items, cursor } => (
-            "artifacts  ⏎ open  s show inline  e export to ~/Downloads  esc close".to_owned(),
+        Menu::Artifacts {
+            items,
+            cursor,
+            apps,
+        } => (
+            if *apps {
+                format!("apps · {APP_WHERE}  ⏎ open  s show source  e export to ~/Downloads  esc close")
+            } else {
+                "artifacts  ⏎ open  s show inline  e export to ~/Downloads  esc close".to_owned()
+            },
             items.iter().map(artifact_row).collect(),
             *cursor,
         ),
@@ -1130,6 +1143,7 @@ fn entry(e: &Entry, spinner: &str, skip: usize, width: u16) -> AnyElement<'stati
         }
         // Artifact card (35 §6.1): `▣ name · vN · size`, the title when it
         // differs, the path as a `file://` link; a failed show keeps its ✗ line.
+        // An app card (46 §8.2) says where it runs: the terminal has its source only.
         Entry::Tool {
             artifact: Some(a),
             result,
@@ -1141,6 +1155,9 @@ fn entry(e: &Entry, spinner: &str, skip: usize, width: u16) -> AnyElement<'stati
                 header.push_str(&format!(" · v{}", a.version));
             }
             header.push_str(&format!(" · {}", artifact_size(a)));
+            if a.kind == artifact::Kind::App {
+                header.push_str(&format!(" · {APP_WHERE}"));
+            }
             let error = match result {
                 Some((output, true)) => Some(format!("✗ {}", result_line(output))),
                 _ => None,

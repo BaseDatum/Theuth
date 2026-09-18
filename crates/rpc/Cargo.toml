@@ -20,6 +20,7 @@ link = { workspace = true }
 nodes = { workspace = true }
 schedule = { workspace = true }
 artifact = { workspace = true }
+app = { workspace = true }
 secrets = { workspace = true }
 web = { workspace = true }
 update = { workspace = true }
@@ -46,7 +47,7 @@ jsonrpsee = { workspace = true, features = ["ws-client"] }
 figment = { workspace = true }
 
 [features]
-ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "knowledge/ts", "agent/ts", "signal/ts", "slack/ts", "acp/ts", "browser/ts", "computer/ts", "surface/ts", "link/ts", "nodes/ts", "schedule/ts", "artifact/ts", "secrets/ts", "web/ts", "update/ts", "voice/ts"]
+ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "knowledge/ts", "agent/ts", "signal/ts", "slack/ts", "acp/ts", "browser/ts", "computer/ts", "surface/ts", "link/ts", "nodes/ts", "schedule/ts", "artifact/ts", "app/ts", "secrets/ts", "web/ts", "update/ts", "voice/ts"]
 
 [lints]
 workspace = true

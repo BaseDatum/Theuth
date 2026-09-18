@@ -1,6 +1,7 @@
 //! The store: `<data_dir>/artifacts/` blobs by content hash plus the
 //! `<data_dir>/artifacts.sqlite` index beside it (35 §3.3–§3.4; the
-//! `knowledge/` + `knowledge.sqlite` layout). Truth is the index; blobs
+//! `knowledge/` + `knowledge.sqlite` layout) and `<data_dir>/artifacts.owners/`,
+//! one OS-locked file per live opener ([`OWNERS`]). Truth is the index; blobs
 //! without a row are swept at start.
 
 use std::collections::HashSet;
@@ -18,7 +19,8 @@ use crate::kind::{self, Receipt};
 use crate::pdf::{self, Source};
 use crate::tools::ShowArgs;
 use crate::{
-    Artifact, ArtifactShown, ClaimInvocation, Commit, CompleteInvocation, Kind, MAX_BYTES, svg,
+    Artifact, ArtifactShown, ClaimInvocation, Commit, CompleteInvocation, Kind, MAX_BYTES,
+    MarkInvocationUnknown, svg,
 };
 
 /// Directory under `data_dir`.
@@ -28,6 +30,8 @@ pub const DB: &str = "artifacts.sqlite";
 /// Largest serialized [`Invocation::result`] kept; larger results are
 /// replaced by an `{"omitted": …}` marker (46 §6.4).
 pub const MAX_INVOCATION_RESULT: usize = 64 * 1024;
+/// Most rows one [`crate::ListInvocations`] answers.
+pub const MAX_LIST_INVOCATIONS: usize = 64;
 
 /// Why a [`Commit`] did not insert a row. Nothing is published on `Err`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,7 +75,7 @@ pub enum InvocationStatus {
     Succeeded,
     /// Completed with `ok: false`.
     Failed,
-    /// Was `running` when the store last opened: outcome unknowable.
+    /// Was `running` when its owning harness stopped: outcome unknowable.
     Unknown,
 }
 
@@ -189,6 +193,106 @@ pub struct State {
     /// insert; [`State::sweep`] holds it exclusively, so it never collects a
     /// blob whose row is about to exist.
     gate: tokio::sync::RwLock<()>,
+    /// Name of this opener's file in [`OWNERS`]; stamped on the invocations
+    /// it claims.
+    owner: String,
+    /// The OS lock on that file, held for the process lifetime: released by
+    /// the kernel when the process dies, so liveness is never guessed from a pid.
+    _owner_lock: std::fs::File,
+}
+
+/// Directory beside [`DB`]: one empty file per live opener of the index,
+/// held under an exclusive OS lock ([`std::fs::File::try_lock`]).
+/// `app_invocations.owner` names it; [`State::open`] recovers a `running`
+/// row as `unknown` only when its owner's lock is free (46 §6.4), so a second
+/// harness on one data dir never voids the first one's in-flight calls.
+const OWNERS: &str = "artifacts.owners";
+
+/// Create and lock this opener's owner file. Locked under a dot-name first
+/// and renamed in, so no scan ever sees it unlocked under its real name.
+fn lock_owner(owners: &Path) -> anyhow::Result<(String, std::fs::File)> {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let owner = format!(
+        "{}-{nanos:x}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    let tmp = owners.join(format!(".{owner}"));
+    let file =
+        std::fs::File::create_new(&tmp).with_context(|| format!("create {}", tmp.display()))?;
+    file.try_lock()
+        .with_context(|| format!("lock {}", tmp.display()))?;
+    let path = owners.join(&owner);
+    std::fs::rename(&tmp, &path).with_context(|| format!("rename {}", path.display()))?;
+    Ok((owner, file))
+}
+
+/// Take a dead owner's lock: `Some(file)` holding it, `None` when the file is
+/// gone (created before its owner's first claim and removed only once its
+/// lock was taken, so missing is dead too), `Err(None)` when its owner is alive.
+fn lock_dead(path: &Path) -> anyhow::Result<Result<Option<std::fs::File>, ()>> {
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Ok(None)),
+        Err(e) => return Err(e).with_context(|| format!("open {}", path.display())),
+    };
+    match file.try_lock() {
+        Ok(()) => Ok(Ok(Some(file))),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(Err(())),
+        Err(std::fs::TryLockError::Error(e)) => {
+            Err(e).with_context(|| format!("probe {}", path.display()))
+        }
+    }
+}
+
+/// A row still `running` whose owner no longer holds its lock never
+/// completed: that harness died mid-dispatch. Its outcome is unknowable,
+/// never retried (46 §6.4). Only owners proven dead are recovered, one at a
+/// time with their lock held through the update, so an opener that claims
+/// between this scan and the update is never mistaken for one; rows of live
+/// owners (another harness on this data dir) are theirs to finish. Legacy
+/// rows without an owner are recovered. Files of dead openers are removed.
+async fn recover_abandoned(pool: &SqlitePool, owners: &Path) -> anyhow::Result<()> {
+    let names: Vec<(Option<String>,)> =
+        sqlx::query_as("SELECT DISTINCT owner FROM app_invocations WHERE status = 'running'")
+            .fetch_all(pool)
+            .await
+            .context("list running app invocations")?;
+    for (name,) in names {
+        let _held = match &name {
+            None => None,
+            Some(name) => match lock_dead(&owners.join(name))? {
+                Ok(held) => held,
+                Err(()) => continue,
+            },
+        };
+        sqlx::query(
+            "UPDATE app_invocations SET status = 'unknown' \
+             WHERE status = 'running' AND owner IS ?",
+        )
+        .bind(&name)
+        .execute(pool)
+        .await
+        .context("recover abandoned app invocations")?;
+        if let Some(name) = &name {
+            let _ = std::fs::remove_file(owners.join(name));
+        }
+    }
+    // Dead openers that left nothing running. Dot-names are being created:
+    // locked, not yet renamed in.
+    for entry in std::fs::read_dir(owners)? {
+        let entry = entry?;
+        if entry.file_name().to_string_lossy().starts_with('.') {
+            continue;
+        }
+        if let Ok(Some(_dead)) = lock_dead(&entry.path())? {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+    Ok(())
 }
 
 const COLS: &str = "call_id, id, session, name, title, kind, mime, bytes, version, \
@@ -227,6 +331,43 @@ type InvRow = (
     i64,
     Option<i64>,
 );
+
+/// `Err` when the row is corrupt, so a status lookup never mistakes an
+/// unreadable outcome for a missing one.
+fn invocation_from_row(r: InvRow) -> Result<Invocation, String> {
+    let (
+        request_id,
+        session,
+        record_call_id,
+        statement_id,
+        action_id,
+        tool,
+        args_hash,
+        status,
+        result,
+        started_at,
+        finished_at,
+    ) = r;
+    Ok(Invocation {
+        session: session
+            .parse()
+            .map_err(|e| format!("{request_id}: app_invocations.session {session:?}: {e}"))?,
+        status: InvocationStatus::parse(&status)
+            .ok_or_else(|| format!("{request_id}: app_invocations.status {status:?}"))?,
+        result: result
+            .map(|r| serde_json::from_str(&r))
+            .transpose()
+            .map_err(|e| format!("{request_id}: app_invocations.result: {e}"))?,
+        request_id,
+        record_call_id,
+        statement_id,
+        action_id,
+        tool,
+        args_hash,
+        started_at,
+        finished_at,
+    })
+}
 
 fn sha16(bytes: &[u8]) -> String {
     let mut hex = format!("{:x}", Sha256::digest(bytes));
@@ -277,10 +418,15 @@ fn count_lines(bytes: &[u8]) -> usize {
 }
 
 impl State {
-    /// Create `<data_dir>/artifacts/`, open `<data_dir>/artifacts.sqlite`, run migrations.
+    /// Create `<data_dir>/artifacts/`, take this opener's [`OWNERS`] lock,
+    /// open `<data_dir>/artifacts.sqlite`, run migrations, recover the
+    /// invocations of dead openers.
     pub async fn open(data_dir: &Path, rt: Runtime, fonts: Vec<PathBuf>) -> anyhow::Result<Self> {
         let dir = data_dir.join(DIR);
         std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
+        let owners = data_dir.join(OWNERS);
+        std::fs::create_dir_all(&owners).with_context(|| format!("create {}", owners.display()))?;
+        let (owner, owner_lock) = lock_owner(&owners)?;
         let db = data_dir.join(DB);
         let opts = SqliteConnectOptions::new()
             .filename(&db)
@@ -296,18 +442,15 @@ impl State {
             .run(&pool)
             .await
             .context("run migrations")?;
-        // A row still `running` at open never completed: the harness died
-        // mid-dispatch. Its outcome is unknowable, never retried (46 §6.4).
-        sqlx::query("UPDATE app_invocations SET status = 'unknown' WHERE status = 'running'")
-            .execute(&pool)
-            .await
-            .context("reset stale app invocations")?;
+        recover_abandoned(&pool, &owners).await?;
         Ok(Self {
             dir,
             pool,
             rt,
             fonts,
             gate: tokio::sync::RwLock::new(()),
+            owner,
+            _owner_lock: owner_lock,
         })
     }
 
@@ -646,15 +789,8 @@ impl State {
             origin: None,
             created_at: chrono::Utc::now().timestamp(),
         };
-        match self.get(&artifact.call_id).await {
-            Ok(a) if same_record(&a, &artifact) => return Ok(a),
-            Ok(_) => {
-                return Err(CommitError::Other(format!(
-                    "{}: {} already records a different artifact",
-                    artifact.name, artifact.call_id
-                )));
-            }
-            Err(_) => {}
+        if let Some(recorded) = self.recorded(&artifact).await {
+            return recorded;
         }
 
         let _writing = self.gate.read().await;
@@ -704,19 +840,25 @@ impl State {
                 if e.as_database_error()
                     .is_some_and(|d| d.is_unique_violation()) =>
             {
-                return match self.get(&artifact.call_id).await {
-                    Ok(a) if same_record(&a, &artifact) => Ok(a),
-                    _ => Err(CommitError::Other(format!(
+                return self.recorded(&artifact).await.unwrap_or_else(|| {
+                    Err(CommitError::Other(format!(
                         "{}: {} already records a different artifact",
                         artifact.name, artifact.call_id
-                    ))),
-                };
+                    )))
+                });
             }
             Err(e) => {
                 return Err(CommitError::Other(format!("{}: index: {e}", artifact.name)));
             }
         };
         let Some((version,)) = inserted else {
+            // Zero rows also when an identical retry raced past the pre-check
+            // and won: its insert moved `latest` past `expected_base`, so this
+            // statement's predicate is false without a unique violation. The
+            // record exists exactly as asked; only a different one is a conflict.
+            if let Some(recorded) = self.recorded(&artifact).await {
+                return recorded;
+            }
             let latest: Option<(String,)> = sqlx::query_as(
                 "SELECT call_id FROM artifacts WHERE session = ? AND name = ? \
                  ORDER BY version DESC LIMIT 1",
@@ -764,6 +906,21 @@ impl State {
         self.row_to_artifact(row).map_err(|e| format!("{e:#}"))
     }
 
+    /// What a [`Commit`] of `wanted.call_id` must answer when that call is
+    /// already recorded: the existing record when it is exactly this one
+    /// ([`same_record`]), a refusal otherwise; `None` when it is not recorded.
+    async fn recorded(&self, wanted: &Artifact) -> Option<Result<Artifact, CommitError>> {
+        let existing = self.get(&wanted.call_id).await.ok()?;
+        Some(if same_record(&existing, wanted) {
+            Ok(existing)
+        } else {
+            Err(CommitError::Other(format!(
+                "{}: {} already records a different artifact",
+                wanted.name, wanted.call_id
+            )))
+        })
+    }
+
     /// 46 §6.4 [`ClaimInvocation`]: one `INSERT … SELECT … WHERE EXISTS
     /// (app record of this session) ON CONFLICT DO NOTHING`, so a claim
     /// cannot outlive its record's deletion or target a non-app; when the id
@@ -772,8 +929,8 @@ impl State {
         let hash = args_hash(&m.args);
         let session = m.session.to_string();
         let inserted: Option<(String,)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "INSERT INTO app_invocations ({INV_COLS}) \
-             SELECT ?,?,?,?,?,?,?,'running',NULL,?,NULL \
+            "INSERT INTO app_invocations ({INV_COLS}, owner) \
+             SELECT ?,?,?,?,?,?,?,'running',NULL,?,NULL,? \
              WHERE EXISTS (SELECT 1 FROM artifacts WHERE call_id = ? AND session = ? AND kind = 'app') \
              ON CONFLICT(request_id) DO NOTHING RETURNING request_id"
         )))
@@ -785,6 +942,7 @@ impl State {
         .bind(&m.tool)
         .bind(&hash)
         .bind(chrono::Utc::now().timestamp())
+        .bind(&self.owner)
         .bind(&m.record_call_id)
         .bind(&session)
         .fetch_optional(&self.pool)
@@ -819,7 +977,26 @@ impl State {
         } else {
             InvocationStatus::Failed
         };
-        let result = m.result.map(|v| {
+        self.finish(&m.request_id, status, m.result).await
+    }
+
+    /// [`MarkInvocationUnknown`]: `running` → `unknown`, the reason kept as
+    /// `{"unknown": reason}`. Never `failed`: the tool may have run.
+    pub async fn mark_unknown(&self, m: MarkInvocationUnknown) -> Result<(), String> {
+        let result = m.reason.map(|r| serde_json::json!({"unknown": r}));
+        self.finish(&m.request_id, InvocationStatus::Unknown, result)
+            .await
+    }
+
+    /// One terminal transition out of `running`; the result is serialized and
+    /// bounded to [`MAX_INVOCATION_RESULT`].
+    async fn finish(
+        &self,
+        request_id: &str,
+        status: InvocationStatus,
+        result: Option<serde_json::Value>,
+    ) -> Result<(), String> {
+        let result = result.map(|v| {
             let s = v.to_string();
             if s.len() > MAX_INVOCATION_RESULT {
                 serde_json::json!({
@@ -837,12 +1014,12 @@ impl State {
         .bind(status.as_str())
         .bind(result)
         .bind(chrono::Utc::now().timestamp())
-        .bind(&m.request_id)
+        .bind(request_id)
         .execute(&self.pool)
         .await
-        .map_err(|e| format!("{}: index: {e}", m.request_id))?;
+        .map_err(|e| format!("{request_id}: index: {e}"))?;
         if done.rows_affected() == 0 {
-            return Err(format!("{}: not a running invocation", m.request_id));
+            return Err(format!("{request_id}: not a running invocation"));
         }
         Ok(())
     }
@@ -858,41 +1035,28 @@ impl State {
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| format!("{request_id}: index: {e}"))?;
-        let Some((
-            request_id,
-            session,
-            record_call_id,
-            statement_id,
-            action_id,
-            tool,
-            args_hash,
-            status,
-            result,
-            started_at,
-            finished_at,
-        )) = row
-        else {
-            return Ok(None);
-        };
-        Ok(Some(Invocation {
-            session: session
-                .parse()
-                .map_err(|e| format!("{request_id}: app_invocations.session {session:?}: {e}"))?,
-            status: InvocationStatus::parse(&status)
-                .ok_or_else(|| format!("{request_id}: app_invocations.status {status:?}"))?,
-            result: result
-                .map(|r| serde_json::from_str(&r))
-                .transpose()
-                .map_err(|e| format!("{request_id}: app_invocations.result: {e}"))?,
-            request_id,
-            record_call_id,
-            statement_id,
-            action_id,
-            tool,
-            args_hash,
-            started_at,
-            finished_at,
-        }))
+        row.map(invocation_from_row).transpose()
+    }
+
+    /// [`crate::ListInvocations`]: the rows of one app record, newest first,
+    /// at most `min(limit, MAX_LIST_INVOCATIONS)`.
+    // ponytail: filtered by a table scan; add an index on (record_call_id,
+    // started_at) if one data dir ever holds many thousands of presses.
+    pub async fn list_invocations(
+        &self,
+        record_call_id: &str,
+        limit: usize,
+    ) -> Result<Vec<Invocation>, String> {
+        let rows: Vec<InvRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT {INV_COLS} FROM app_invocations WHERE record_call_id = ? \
+             ORDER BY started_at DESC, rowid DESC LIMIT ?"
+        )))
+        .bind(record_call_id)
+        .bind(limit.min(MAX_LIST_INVOCATIONS) as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| format!("{record_call_id}: index: {e}"))?;
+        rows.into_iter().map(invocation_from_row).collect()
     }
 
     /// `None` → every row; `Some(&[])` → none.
@@ -1347,6 +1511,124 @@ mod tests {
         assert_eq!(list[0].call_id, "c7");
     }
 
+    /// Two identical retries of one patch race past the pre-check: the loser
+    /// inserts zero rows (the winner moved `latest` past the base) yet the
+    /// record it asked for exists exactly, so both answer that one record;
+    /// a genuinely different patch against the same base still conflicts.
+    #[tokio::test]
+    async fn commit_identical_retries_share_one_record() {
+        let (s, _d) = open().await;
+        let sess = SessionId::new();
+        s.commit(app(sess, "c1", "root = A\n", None)).await.unwrap();
+        let (x, y) = tokio::join!(
+            s.commit(app(sess, "c2", "root = B\n", Some("c1"))),
+            s.commit(app(sess, "c2", "root = B\n", Some("c1"))),
+        );
+        let (x, y) = (x.unwrap(), y.unwrap());
+        assert_eq!((x.call_id.as_str(), x.version), ("c2", 2));
+        assert_eq!((x.id, x.created_at), (y.id, y.created_at));
+        assert_eq!(s.list(Some(sess), false).await.unwrap().len(), 2);
+        assert_eq!(
+            s.commit(app(sess, "c3", "root = C\n", Some("c1")))
+                .await
+                .unwrap_err(),
+            CommitError::Conflict {
+                latest: Some("c2".into())
+            }
+        );
+        // Same call id, other content, stale base: refused as a record clash,
+        // never reported as a version conflict.
+        assert_eq!(
+            s.commit(app(sess, "c2", "root = Z\n", Some("c1")))
+                .await
+                .unwrap_err(),
+            CommitError::Other("panel.openui: c2 already records a different artifact".into())
+        );
+    }
+
+    /// A second opener of one data dir (another harness, a `wth --acp`) must
+    /// not void the first one's in-flight calls: only rows whose owner's lock
+    /// is free become `unknown`; live owners still complete theirs.
+    #[tokio::test]
+    async fn second_open_keeps_live_owner_invocations_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+        let a = State::open(dir.path(), rt.clone(), Vec::new())
+            .await
+            .unwrap();
+        let sess = SessionId::new();
+        let args = serde_json::json!({"name": "portal-web"});
+        a.commit(app(sess, "rec", "root = X\n", None))
+            .await
+            .unwrap();
+        assert_eq!(
+            a.claim(press(sess, "r1", args.clone())).await.unwrap(),
+            Claim::New
+        );
+
+        let b = State::open(dir.path(), rt.clone(), Vec::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            b.invocation("r1").await.unwrap().unwrap().status,
+            InvocationStatus::Running
+        );
+        // The other opener sees the same row, does not dispatch again.
+        assert!(matches!(
+            b.claim(press(sess, "r1", args.clone())).await.unwrap(),
+            Claim::Existing(_)
+        ));
+        a.complete(CompleteInvocation {
+            request_id: "r1".into(),
+            ok: true,
+            result: Some(serde_json::json!({"message": "synced"})),
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            b.invocation("r1").await.unwrap().unwrap().status,
+            InvocationStatus::Succeeded
+        );
+
+        // `a` dies with r2 running, `b` lives with r3 running: a third opener
+        // recovers exactly r2.
+        assert_eq!(
+            a.claim(press(sess, "r2", args.clone())).await.unwrap(),
+            Claim::New
+        );
+        assert_eq!(
+            b.claim(press(sess, "r3", args.clone())).await.unwrap(),
+            Claim::New
+        );
+        drop(a);
+        let c = State::open(dir.path(), rt, Vec::new()).await.unwrap();
+        assert_eq!(
+            c.invocation("r2").await.unwrap().unwrap().status,
+            InvocationStatus::Unknown
+        );
+        assert_eq!(
+            c.invocation("r3").await.unwrap().unwrap().status,
+            InvocationStatus::Running
+        );
+        b.complete(CompleteInvocation {
+            request_id: "r3".into(),
+            ok: false,
+            result: None,
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            c.invocation("r3").await.unwrap().unwrap().status,
+            InvocationStatus::Failed
+        );
+        // The dead owner's lock file is gone; the two live ones remain.
+        let owners: Vec<_> = std::fs::read_dir(dir.path().join(OWNERS))
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(owners.len(), 2, "{owners:?}");
+    }
+
     #[tokio::test]
     async fn commit_validation() {
         let (s, _d) = open().await;
@@ -1525,6 +1807,166 @@ mod tests {
         assert_eq!(s.invocation("nope").await.unwrap(), None);
         // The record is gone with its session: no reinsertion under its id.
         assert!(s.claim(press(sess, "r9", args.clone())).await.is_err());
+    }
+
+    /// An ambiguous dispatch is `unknown`, once, with its redacted reason;
+    /// it is neither completable afterwards nor re-run on a repeat claim.
+    #[tokio::test]
+    async fn mark_unknown_is_terminal_and_never_failed() {
+        let (s, _d) = open().await;
+        let sess = SessionId::new();
+        let args = serde_json::json!({"name": "portal-web"});
+        s.commit(app(sess, "rec", "root = X\n", None))
+            .await
+            .unwrap();
+        assert!(
+            s.mark_unknown(MarkInvocationUnknown {
+                request_id: "r1".into(),
+                reason: None,
+            })
+            .await
+            .unwrap_err()
+            .ends_with("not a running invocation")
+        );
+        s.claim(press(sess, "r1", args.clone())).await.unwrap();
+        s.mark_unknown(MarkInvocationUnknown {
+            request_id: "r1".into(),
+            reason: Some("registry ask timed out".into()),
+        })
+        .await
+        .unwrap();
+        let row = s.invocation("r1").await.unwrap().unwrap();
+        assert_eq!(row.status, InvocationStatus::Unknown);
+        assert_eq!(
+            row.result,
+            Some(serde_json::json!({"unknown": "registry ask timed out"}))
+        );
+        assert!(row.finished_at.is_some());
+        assert!(
+            s.complete(CompleteInvocation {
+                request_id: "r1".into(),
+                ok: true,
+                result: None,
+            })
+            .await
+            .is_err()
+        );
+        assert!(
+            s.mark_unknown(MarkInvocationUnknown {
+                request_id: "r1".into(),
+                reason: None,
+            })
+            .await
+            .is_err()
+        );
+        let Claim::Existing(again) = s.claim(press(sess, "r1", args)).await.unwrap() else {
+            panic!("unknown row must be returned, not re-run");
+        };
+        assert_eq!(again.status, InvocationStatus::Unknown);
+
+        // An oversized reason is bounded like any result.
+        s.claim(press(sess, "r2", serde_json::json!({})))
+            .await
+            .unwrap();
+        s.mark_unknown(MarkInvocationUnknown {
+            request_id: "r2".into(),
+            reason: Some("x".repeat(MAX_INVOCATION_RESULT)),
+        })
+        .await
+        .unwrap();
+        let big = s.invocation("r2").await.unwrap().unwrap();
+        assert_eq!(big.status, InvocationStatus::Unknown);
+        assert!(big.result.unwrap().get("omitted").is_some());
+    }
+
+    /// Listing is per record, newest first, capped, and survives a restart
+    /// (with the abandoned row recovered as `unknown`); it ends with the
+    /// record's session.
+    #[tokio::test]
+    async fn list_invocations_per_record_newest_first_capped_durable() {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+        let s = State::open(dir.path(), rt.clone(), Vec::new())
+            .await
+            .unwrap();
+        let sess = SessionId::new();
+        s.commit(app(sess, "rec", "root = X\n", None))
+            .await
+            .unwrap();
+        s.commit(app(sess, "other", "root = Y\n", None))
+            .await
+            .unwrap();
+        assert_eq!(s.list_invocations("rec", 10).await.unwrap(), vec![]);
+
+        let n = MAX_LIST_INVOCATIONS + 3;
+        for i in 0..n {
+            let mut m = press(sess, &format!("r{i}"), serde_json::json!({"i": i}));
+            if i % 2 == 1 {
+                m.record_call_id = "other".into();
+            }
+            assert_eq!(s.claim(m).await.unwrap(), Claim::New);
+        }
+        // Even ids on `rec`, odd on `other`; finish the newest `rec` one.
+        let newest = format!("r{}", n - 1);
+        s.complete(CompleteInvocation {
+            request_id: newest.clone(),
+            ok: false,
+            result: Some(serde_json::json!({"error": "denied"})),
+        })
+        .await
+        .unwrap();
+
+        let rec = s.list_invocations("rec", 3).await.unwrap();
+        assert_eq!(rec.len(), 3);
+        assert_eq!(rec[0].request_id, newest);
+        assert_eq!(rec[0].status, InvocationStatus::Failed);
+        assert_eq!(rec[1].request_id, format!("r{}", n - 3));
+        assert_eq!(rec[2].request_id, format!("r{}", n - 5));
+        assert!(rec.iter().all(|r| r.record_call_id == "rec"));
+
+        // Cap: more rows than the cap exist per record only across both
+        // records; ask for everything and get at most the cap, all `rec`.
+        for i in n..n + MAX_LIST_INVOCATIONS {
+            s.claim(press(sess, &format!("r{i}"), serde_json::json!({"i": i})))
+                .await
+                .unwrap();
+        }
+        let all = s.list_invocations("rec", usize::MAX).await.unwrap();
+        assert_eq!(all.len(), MAX_LIST_INVOCATIONS);
+        assert!(all.iter().all(|r| r.record_call_id == "rec"));
+        assert_eq!(
+            all[0].request_id,
+            format!("r{}", n + MAX_LIST_INVOCATIONS - 1)
+        );
+        assert_eq!(s.list_invocations("rec", 0).await.unwrap(), vec![]);
+        assert_eq!(s.list_invocations("nope", 5).await.unwrap(), vec![]);
+
+        // Restart: the list is still there; still-running rows are `unknown`.
+        drop(s);
+        let s = State::open(dir.path(), rt, Vec::new()).await.unwrap();
+        let after = s.list_invocations("rec", 3).await.unwrap();
+        assert_eq!(after.len(), 3);
+        assert_eq!(after[0].status, InvocationStatus::Unknown);
+        let other = s.list_invocations("other", 2).await.unwrap();
+        assert_eq!(other.len(), 2);
+        assert!(other.iter().all(|r| r.record_call_id == "other"));
+        // `newest` is now beyond the cap (64 later `rec` rows exist): a
+        // capped list must not carry it, and its `failed` status must have
+        // survived the restart untouched by recovery.
+        assert!(
+            s.list_invocations("rec", MAX_LIST_INVOCATIONS)
+                .await
+                .unwrap()
+                .iter()
+                .all(|r| r.request_id != newest)
+        );
+        assert_eq!(
+            s.invocation(&newest).await.unwrap().unwrap().status,
+            InvocationStatus::Failed
+        );
+
+        s.delete_session(sess).await.unwrap();
+        assert_eq!(s.list_invocations("rec", 5).await.unwrap(), vec![]);
     }
 
     /// The metadata sidecar is live while its row exists and swept with it.

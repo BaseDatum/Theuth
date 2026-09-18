@@ -2,8 +2,8 @@
 # Build the Linux CLI tarball natively in Docker and stage it in the bucket (39 §5.1).
 #
 # Pipeline (run once per arch, on a box of that arch — never QEMU):
-#   1. docker build -f deploy/update/Dockerfile --output type=local  → target/linux-out/wth
-#   2. tar → target/release/dist/wth_<ver>_linux-<arch>.tar.gz  (one entry `wth`, unsigned)
+#   1. docker build -f deploy/update/Dockerfile --output type=local  → target/linux-out/{wth,wth-app-parser-<hash>}
+#   2. tar → target/release/dist/wth_<ver>_linux-<arch>.tar.gz  (entries `wth` + `wth-app-parser-<hash>`, unsigned)
 #   3. aws s3 cp → s3://$WTH_S3_BUCKET/staging/<ver>/  (private; release-s3.sh signs, publishes, deletes)
 #
 # Env (defaults for rustfs @ s3.rwx.dev; repo-root .env.signing is loaded):
@@ -21,6 +21,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=load-signing-env.sh
 source "$ROOT/scripts/load-signing-env.sh"
 cd "$ROOT"
+# shellcheck source=app-parser-env.sh
+source "$ROOT/scripts/app-parser-env.sh"
 
 command -v docker >/dev/null 2>&1 || { echo "error: docker required (Docker Desktop on macOS, docker-ce on Linux)" >&2; exit 1; }
 command -v aws >/dev/null 2>&1 || { echo "error: aws CLI v2 required (brew install awscli)" >&2; exit 1; }
@@ -52,12 +54,13 @@ echo "==> [1/3] docker build (native, linux-$ARCH)"
 rm -rf "$OUT"
 docker build -f deploy/update/Dockerfile --output "type=local,dest=$OUT" .
 [[ -f "$OUT/wth" ]] || { echo "error: $OUT/wth not produced" >&2; exit 1; }
-chmod 755 "$OUT/wth"
+[[ -f "$OUT/$HELPER" ]] || { echo "error: $OUT/$HELPER not produced (image built from another library hash?)" >&2; exit 1; }
+chmod 755 "$OUT/wth" "$OUT/$HELPER"
 
 echo "==> [2/3] $TGZ"
 mkdir -p "$DIST"
 rm -f "$TGZ"
-COPYFILE_DISABLE=1 tar --no-xattrs -czf "$TGZ" -C "$OUT" wth
+COPYFILE_DISABLE=1 tar --no-xattrs -czf "$TGZ" -C "$OUT" wth "$HELPER"
 
 echo "==> [3/3] upload → $DEST"
 if [[ "$DRY_RUN" == "1" ]]; then

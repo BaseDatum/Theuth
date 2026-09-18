@@ -67,13 +67,19 @@ LaunchAgent or a systemd user unit whose command is the same
 user's main harness as a node; 32 §5.1. How any of them stays current: 39
 (added in 39, 2026-09-17).
 
-**Planned apps extension (46, not implemented):** final OpenUI validation uses
-a packaged, lazy TypeScript helper with the same upstream parser as the desktop.
-No custom Rust grammar or Monty app backend. The helper handles final documents,
-not per-token rendering; progressive parsing stays in the client's JS heap.
-Ordinary native/MCP tools execute app operations. This cold subprocess boundary
-is chosen over maintaining a second language implementation; 46 defines its
-packaging and measured acceptance before it can ship.
+**Apps helper subprocess (46, added 2026-09-18):** the one exception to
+"everything in-process". Final OpenUI validation runs in `wth-app-parser-<hash>`,
+a Bun-compiled copy of the same pinned upstream TypeScript parser the desktop
+renders with, shipped beside `wth` and spawned lazily by `crates/app` on the
+first `app` call (`--version` must print this binary's library hash first;
+JSON lines over stdio, 8 queued requests, 2 s deadline, killed and replaced on
+timeout or crash). It sees a final source and a tool snapshot and returns
+diagnostics and metadata — never a render tree, never a tool call. Rationale:
+one maintained grammar instead of a Rust reimplementation, and the boundary is
+cold (one document per publish; per-token parsing stays in the client's JS
+heap). No custom Rust grammar, no Monty app backend, no generic JS plugin
+runtime. `wth --app-parser-hash` lets packaging and the updater (39) check the
+helper against the binary.
 
 ## 3. Message bus: kameo
 
@@ -239,13 +245,22 @@ session: Some(id) }`, inherited by subagents through `SetParent`). `Deny` is
 never rewritten. MCP config assigns a tool's `Risk` or hides it; it is not
 a second policy (12 §5; MCP risk comes from the server's tool annotations).
 
-**Planned explicit-action approval (46, not implemented):** a user activating
-an app action has already approved its covered tool calls, including destructive
-and secret-bearing calls. The tools-owned gate accepts that per-action evidence
-without a second approval card; explicit `Deny` still wins. Automatic refresh and
-unrelated model calls never inherit it, and the session's approval switches are
-not changed. This supersedes 46's earlier press-mutating setting; it is not yet
-the behavior of the current `ToolCall`/gate implementation.
+**Explicit-action approval (46, added 2026-09-18):** `tools::AppInvoke` is
+the registry's second entry beside `Invoke`. It carries an optional
+`UserActivation { record_call_id, action_id, request_id }` that the `app`
+actor constructs only for a `press` trigger after checking the committed
+binding; the registry re-checks visibility, the pinned tool identity and the
+arguments against the current schema, then resolves policy as usual. `Deny`
+is final. `Ask` with a matching activation dispatches with no
+`ApprovalRequested` — the press was the approval, including destructive and
+`{{secret:…}}`-bearing calls. `Ask` without activation (a timer or state
+refetch) returns `NeedsApproval` and runs nothing; the client shows a
+Load/Refresh affordance whose press is the approval. Model calls through
+`Invoke` are untouched and never inherit a press; the session switches are not
+changed. `Tool::CONSUMES_SECRETS` (default `true`) is the other addition: `app`
+sets it `false` because its arguments are an inert artifact, so a placeholder
+in app source neither raises the publish to `Ask` nor is expanded there; it
+expands only inside the terminal Query/Mutation tool call that consumes it.
 
 TUI: `/approvals [on|off] [always]`; RPC: `set_approvals`; header shows
 `approvals off` while either switch is off.
@@ -642,6 +657,8 @@ crates/
   nodes/              plugin: paired remote harnesses — control conns, dial transport for ACP children (32)
   schedule/           plugin: scheduled runs from `schedules/*.md` — tick, one session per schedule, delivery (34)
   artifact/           plugin: show tool, content-addressed artifact store + index, Typst PDF compile and page render, SVG rasterise, prompt block + pdf skill (35)
+  app/                plugin: `app` tool (OpenUI Lang source → `Kind::App` artifact via the helper subprocess), `Apps` actor (`get_app`/`app_call_tool`/`app_call_status`/`app_close`, one-press consent, admission, durable pressed invocations), `AppCallChanged`, bundled `apps` skill (46)
+  packages/apps/      TS: curated OpenUI library + compatibility hash, `check`, helper (`bun build --compile`), patched renderer adapter shared with desktop (46 §4, §6.2, §7)
   update/             plugin: silent self-update of the `wth` binary — manifest GET, minisign verify, atomic rename; `--update` (added in 39)
   voice/              plugin: read replies aloud — Pocket TTS via `ptts`, `markdown::spoken`, Opus packets as `SpeechAudio` events (43)
   relay/              bin: wth-relay, stateless encrypted-frame relay (31)
@@ -676,11 +693,16 @@ threaded through `wth`; `artifact` depends on `agent` for
 no cycle; `rpc` and `tui` depend on `scrape` only for the `ScrapeProgress`
 event type they forward and render, 38 §0.2).
 
-Planned, not a workspace member yet: `app` (46) owns OpenUI artifacts,
-progressive frontend integration and action RPC. It depends downward on
-artifact/tools/agent-owned contracts; agent and artifact do not import it.
-The current TS parser is reused in browser and packaged headless helper. There
-is no app-specific Python callable registry, replay file or Rust evaluator.
+`app` (46, added 2026-09-18) depends on `artifact` (typed `Commit` with
+`expected_base`, invocation rows), `tools` (`AppInvoke`, `DescribeTools`,
+`ToolInspection.identity`), `link` (`RpcPeer`, the connection a view is bound
+to), `agent` (`AgentEvent::SessionDeleted`, subscribed) and `runtime`; `rpc`
+imports its four commands and `AppCallChanged`; `agent`, `artifact` and
+`tools` do not import it. `web` gained `http_request` (46 §5). Neither agent
+nor artifact carries app types: the sidecar is opaque bytes to `artifact`,
+and the only central additions are `tools::AppInvoke` and
+`Tool::CONSUMES_SECRETS` (§4). There is no app-specific Python callable
+registry, replay file or Rust evaluator.
 
 Workspace dependencies (versions verified 2026-09-09 via `cargo info`):
 
@@ -853,6 +875,7 @@ Each phase ends with a runnable check, not a test suite.
 | 26 | update (39): `wth` and `wth.app` update themselves, silently; Homebrew tap; Linux CLI tarballs | 39 §12 steps 1–10 | in progress 2026-09-17 |
 | 27 | triggers (40): `on: hook` through the relay, `on: fs`, `when:` shell check on `every:` files | 40 §11 steps 1–6 | shelved 2026-09-17; preconditions in 40 §12 |
 | 28 | knowledge checks (41): `check:` on a concept, daily sweep, `(stale: …)` hints, `knowledge_verify`, picker/explorer run · edit · accept · fix with an agent | 41 §14 steps 1–6 | planned 2026-09-17 |
+| 30 | apps (46): `app` publishes an OpenUI screen the desktop renders progressively; a press runs its Mutation with zero approval cards; edits are CAS-atomic; TUI/Slack/Signal show source | 46 §10 | done 2026-09-18 on `feature/apps`, merge with limitation (packages/apps 78 tests, desktop 150 tests + build, `crates/app` publish→open→call→edit test; real RPC smoke 14/14 incl. mutating/destructive/secret presses with zero `ApprovalRequested`, `needs_approval` for automatic asks, duplicate/mismatched IDs, stale generation, peer close, CAS conflict; relay probe 7/7 through a real local relay with the desktop's link crypto — pair, get_app, press, status, reconnect, revoke; DOM click on the fixture panel → `Healthy`, count 1; visuals accepted by the user at the production URL; frontier steering 15/15 first pass, vehicle 19/20, small model not run; performance: dev-build trace first statement 9.2 s before commit, frame interval p95 18 ms; production cold load one 146 ms long task and frame budget uncertified — accepted limitation, not a gate; **not run**: Linux runtime, phone hardware, Developer ID/notarized clean machine (signing external), a real streaming-provider capture, `add_mcp_server`-installed backend restart; 46 §12) |
 
 Known gaps carried forward: cancel/error paths in the loop are code-reviewed,
 not smoke-tested; the `Jobs` actor kills every process group on shutdown
@@ -889,3 +912,4 @@ captured `Blocked` fixtures; 16 §10).
   | scheduler | `schedule` crate: files, tick, one session per schedule, `Deliver` | plugin | 34 (heartbeat, goals briefings, task DAG, notify flags, phase plumbing not ported: each is a file the user writes or a primitive the harness already has) |
   | updater (Tauri shell only, 966 lines) | `update` crate: manifest, minisign, atomic rename over `current_exe()`; the `.app` via `tauri-plugin-updater` at quit | plugin | 39 (toast, modal, snooze, phases, relaunch, daemon hunting not ported: silent by construction) |
   | voice | `voice` crate: Pocket TTS in process (`ptts`), one Opus packet per bus event, `speak`/`stop_speaking`/`voice_status`; Parakeet TDT speech-to-text (`parakeet-rs`), `[voice note, N s]` inputs and MP3 voice replies per prose block on Signal and Slack | plugin | 43, 45 (system-voice fallback, per-message audio cache and TUI playback not ported) |
+  | programs (bespoke sandboxed app programs, Monty callables) | `app` crate + OpenUI Lang: UI source as an artifact, Query/Mutation bound to ordinary native/MCP tools, one press = one approval | plugin | 46 (program registry, replay cells, second approval card and no-egress sandbox not ported: the design rejects them) |

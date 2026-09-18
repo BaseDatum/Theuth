@@ -2,10 +2,11 @@
  * Final-document validation shared by the headless helper and the desktop adapter (design 46 §4).
  *
  * Upstream parsing is permissive for streaming; this module layers the strict publish rules on
- * top using upstream AST/schema utilities only: complete source, a `root` statement, no
- * unresolved/cyclic references, no parser errors, supported action targets, literal
- * tool bindings that exist in the visible tool snapshot, and object-literal tool arguments whose
- * keys satisfy the tool schema. Dynamic argument values are schema-checked again at invocation.
+ * top using upstream AST/schema utilities only: complete source, strict syntax (no skipped lines
+ * or trailing tokens), a `root` statement, no unresolved/cyclic references (including inside
+ * Query/Mutation arguments), no parser errors, supported action targets, literal tool bindings
+ * that exist in the visible tool snapshot, and object-literal tool arguments whose keys satisfy
+ * the tool schema. Dynamic argument values are schema-checked again at invocation.
  *
  * Imports only `@openuidev/lang-core` and the generated JSON: no React, no component renderers.
  */
@@ -13,6 +14,7 @@ import {
   ACTION_STEPS,
   LIMITS,
   LimitError,
+  StrictParseError,
   createParser,
   mergeStatements,
   parseExpression,
@@ -65,9 +67,21 @@ function canonicalize(source: string): string {
   return trimmed.startsWith("```") ? mergeStatements("", trimmed) : trimmed;
 }
 
+/**
+ * Strict re-parse of the final document (`strict` upstream option): trailing tokens, missing
+ * closers/separators, unrecognized characters and lines the streaming splitter would drop all
+ * throw `StrictParseError`, located at the statement when the splitter knows it.
+ */
 function typedStatements(source: string): TypedStatement[] {
-  return split(tokenize(source)).map((raw) => {
-    const expr = parseExpression(raw.tokens);
+  return split(tokenize(source, true), true).map((raw) => {
+    let expr: ASTNode;
+    try {
+      expr = parseExpression(raw.tokens, true);
+    } catch (e) {
+      if (e instanceof StrictParseError || e instanceof LimitError)
+        e.statementId ??= raw.id;
+      throw e;
+    }
     const kind: StatementKind =
       expr.k === "Comp" && expr.name === "Query"
         ? "query"
@@ -144,6 +158,8 @@ function failure(
 function exceptionResult(source: string, e: unknown): CheckResult {
   if (e instanceof LimitError)
     return failure(source, "budget-exceeded", e.message, e.statementId ?? "");
+  if (e instanceof StrictParseError)
+    return failure(source, "syntax", e.message, e.statementId ?? "");
   return failure(
     source,
     "parse-exception",
@@ -187,10 +203,8 @@ function analyze(source: string, tools: ToolSnapshot[]): CheckResult {
     diagnostics.push({ at, message, code });
 
   let result: ParseResult;
-  let statements: TypedStatement[];
   try {
     result = parser.parse(source);
-    statements = typedStatements(source);
   } catch (e) {
     return exceptionResult(source, e);
   }
@@ -202,6 +216,15 @@ function analyze(source: string, tools: ToolSnapshot[]): CheckResult {
       "incomplete",
       "source is incomplete: an unclosed string or bracket was auto-closed",
     );
+
+  let statements: TypedStatement[];
+  try {
+    statements = typedStatements(source);
+  } catch (e) {
+    const rejected = exceptionResult(source, e);
+    rejected.diagnostics.unshift(...diagnostics);
+    return rejected;
+  }
 
   const byId = new Map<string, TypedStatement>();
   for (const s of statements) {

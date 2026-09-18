@@ -6,6 +6,7 @@ use std::convert::Infallible;
 use std::sync::Arc;
 
 use agent::{AgentEvent, LoginFinished};
+use app::AppCallChanged;
 use artifact::ArtifactShown;
 use browser::BrowserEvent;
 use kameo::Actor;
@@ -102,7 +103,8 @@ forward!(
     SecretsEvent,
     ScrapeProgress,
     UpdateReady,
-    VoiceEvent
+    VoiceEvent,
+    AppCallChanged
 );
 
 /// The process-wide event feed. The first caller spawns the bridge,
@@ -140,5 +142,6 @@ pub async fn start(rt: &Runtime) -> broadcast::Sender<Event> {
     rt.subscribe::<Bridge, ScrapeProgress>(&actor).await;
     rt.subscribe::<Bridge, UpdateReady>(&actor).await;
     rt.subscribe::<Bridge, VoiceEvent>(&actor).await;
+    rt.subscribe::<Bridge, AppCallChanged>(&actor).await;
     tx
 }

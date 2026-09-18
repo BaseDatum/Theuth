@@ -64,6 +64,7 @@ export type DiagnosticCode =
   | "budget-exceeded"
   // adapter
   | "incomplete"
+  | "syntax"
   | "no-root"
   | "duplicate-statement"
   | "unresolved"

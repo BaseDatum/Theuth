@@ -506,6 +506,8 @@ fn now_ms() -> u64 {
 }
 
 const STOPPED: &str = "signal channel stopped";
+/// Caption on an app's source attachment (46 §8.2): the file, not controls.
+const APP_NOTE: &str = "Interactive app — open on desktop/web";
 
 /// Supervisor: linking phase ↔ connected phase until shutdown (09 §3.1).
 async fn run(chan: Arc<Channel>, mut ctrl: mpsc::UnboundedReceiver<Control>) {
@@ -1309,7 +1311,8 @@ impl Channel {
                     self.send_chunks(&to, &asks::question_text(&req, 0)).await;
                 }
             }
-            // 35 §8: the session's number, else the nearest bound ancestor's.
+            // 35 §8: the session's number, else the nearest bound ancestor's. An
+            // app (46 §8.2) is its `.openui` source, captioned with where it runs.
             Event::Artifact(m) => {
                 let chain = match self.port.ancestors(m.session).await {
                     Ok(chain) => chain,
@@ -1334,7 +1337,14 @@ impl Channel {
                         return;
                     }
                 };
-                let caption = (!a.title.trim().is_empty()).then_some(a.title.as_str());
+                let title = a.title.trim();
+                let caption = match (a.kind, title.is_empty()) {
+                    (artifact::Kind::App, true) => Some(APP_NOTE.to_owned()),
+                    (artifact::Kind::App, false) => Some(format!("{title} · {APP_NOTE}")),
+                    (_, true) => None,
+                    (_, false) => Some(title.to_owned()),
+                };
+                let caption = caption.as_deref();
                 if !self
                     .send_attachment(&to, &bytes, &a.mime, Some(&a.name), caption)
                     .await
@@ -2466,6 +2476,35 @@ mod tests {
                     && bytes == b"%PDF"
                     && file_name.as_deref() == Some("report.pdf")
                     && caption.as_deref() == Some("Weekly report")
+        ));
+    }
+
+    #[tokio::test]
+    async fn app_for_a_bound_session_is_its_source_captioned_where_it_runs() {
+        let f = fixture().await;
+        f.chan
+            .lock()
+            .threads
+            .bind(&Recipient::new(FRIEND), f.stub.session);
+        let mut ev = artifact(f.stub.session, f._dir.path());
+        let path = f._dir.path().join("panel.openui");
+        std::fs::write(&path, b"root = Card(TextContent(\"hi\"))").unwrap();
+        ev.artifact.kind = artifact::Kind::App;
+        ev.artifact.name = "panel.openui".into();
+        ev.artifact.title = "Panel".into();
+        ev.artifact.mime = "text/plain".into();
+        ev.artifact.path = path;
+        f.chan.handle_event(Event::Artifact(ev)).await;
+        let sent = f.transport.sent();
+        // One attachment, no text, no pretend controls.
+        assert_eq!(sent.len(), 1);
+        assert!(matches!(
+            &sent[0],
+            SentItem::Attachment { to, bytes, file_name, caption, .. }
+                if to == FRIEND
+                    && bytes == b"root = Card(TextContent(\"hi\"))"
+                    && file_name.as_deref() == Some("panel.openui")
+                    && caption.as_deref() == Some("Panel · Interactive app — open on desktop/web")
         ));
     }
 

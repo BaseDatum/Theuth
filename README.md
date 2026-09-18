@@ -27,6 +27,9 @@ just run -- --slack-setup      # create the Slack app from the manifest, verify 
 just run -- --slack-manifest   # manual path: print the Slack app manifest for api.slack.com/apps → From a manifest
 just run -- --acp          # Agent Client Protocol on stdio: use wth from Zed/editors (agent_servers: {"wth": {"command": "wth", "args": ["--acp"]}})
 just ts                    # TypeScript bindings for the wire types → bindings/
+just helper                # app parser helper (bun build --compile) → packages/apps/dist/wth-app-parser; apps need it beside `wth`
+WTH_APP_PARSER=packages/apps/dist/wth-app-parser just run   # dev run with that helper (release layouts find wth-app-parser-<hash> next to `wth` on their own)
+just install               # release `wth` + `wth-app-parser-<hash>` into ~/.cargo/bin; older helpers stay for any still-running wth
 just desktop               # macOS menubar app in dev mode (Tauri + Vite); starts the daemon itself
 just package-macos         # wth.app + dmg; ad-hoc unless WTH_SIGN_IDENTITY / .env.signing
 just package-ios           # signed IPA for TestFlight (Apple Distribution)
@@ -36,8 +39,11 @@ just install-macos         # copy the packaged app to /Applications
 
 Build prerequisites: `cmake`, `clang`/`libclang` and `llvm-objcopy`/`llvm-nm` for the embedded browser's
 BoringSSL (`brew install cmake llvm` / `apt install cmake clang libclang-dev`),
-and network on the first build for the prebuilt V8 archive (set
-`RUSTY_V8_ARCHIVE` to a local copy to build offline).
+network on the first build for the prebuilt V8 archive (set
+`RUSTY_V8_ARCHIVE` to a local copy to build offline), and `bun` to *build* the
+app parser helper (`brew install oven-sh/bun/bun`) — the result is a standalone
+executable, so an installed `wth` needs no Node or Bun at run time. The Homebrew
+formula and the self-updater install the helper with `wth`.
 
 macOS permissions: `computer_*` needs Screen Recording and Accessibility
 granted to the app that launched wth — your terminal (Ghostty, iTerm,
@@ -105,8 +111,12 @@ unattended, `schedule_done` when the model decides —
 (the `show` tool: files the agent makes for you, shown as cards in the chat —
 markdown, code, CSV, images, SVG, PDFs compiled in-process from markdown or
 Typst; a content-addressed store under `~/.wth/artifacts/` —
-[`docs/design/35-artifacts.md`](docs/design/35-artifacts.md)), `tui` (iocraft),
-`wth` (binary).
+[`docs/design/35-artifacts.md`](docs/design/35-artifacts.md)), `app` (the
+`app` tool: interactive OpenUI Lang screens the agent publishes as `.openui`
+artifacts and you use on desktop/web; a headless `wth-app-parser-<hash>`
+helper validates source, `app_*` RPC runs an app's Query/Mutation bindings
+through the tool registry — [`docs/design/46-apps.md`](docs/design/46-apps.md)),
+`tui` (iocraft), `wth` (binary).
 
 Bedrock: select an `amazon-bedrock/<model-id>` through `/model` (cross-region
 inference profile ids such as `us.anthropic.…` work too). Configure AWS normally;
@@ -123,7 +133,7 @@ AWS chain. The SDK owns region, credentials and SSO; sign in with
 Config (`~/.wth/`, created on first run; details in
 [`docs/design/01-config-and-subagents.md`](docs/design/01-config-and-subagents.md) §1):
 
-- `config.yaml` — every plugin reads its own section; `WTH_<SECTION>__<KEY>` env overrides. `agent.model` is a models.dev id (`anthropic/claude-sonnet-4-5`); `/model` rewrites that one line in place. The `agent`, `tools`, `secrets`, `knowledge`, `web`, `scrape`, `search_providers`, `browser`, `computer`, `link`, `nodes`, `schedule`, `update`, `artifact`, `voice` and `slack` sections with their defaults:
+- `config.yaml` — every plugin reads its own section; `WTH_<SECTION>__<KEY>` env overrides. `agent.model` is a models.dev id (`anthropic/claude-sonnet-4-5`); `/model` rewrites that one line in place. The `agent`, `tools`, `secrets`, `knowledge`, `web`, `scrape`, `search_providers`, `browser`, `computer`, `link`, `nodes`, `schedule`, `update`, `artifact`, `app`, `voice` and `slack` sections with their defaults:
 
   ```yaml
   agent:
@@ -195,6 +205,8 @@ Config (`~/.wth/`, created on first run; details in
   artifact:                       # design doc 35; the `show` tool, `/artifacts` lists a session's
     enabled: true                 # false: no `show` tool, no prompt block, no /artifacts; blobs and index kept
     fonts: []                     # extra directories searched for PDF fonts, besides system fonts and the embedded set
+  app:                            # design doc 46; the `app` tool, `/apps` lists a session's
+    enabled: true                 # false: no `app` tool, prompt block, helper, `get_app`/`app_*` RPC or /apps; existing apps stay readable as source (/artifacts, Ctrl+O)
   voice:                          # design docs 43 + 45; Read-aloud and voice notes: Pocket TTS and Parakeet STT in the harness
     enabled: true                 # false: no actors, `speak`/`transcribe` answer "not running", the desktop shows no speaker or mic
     voice: peter_yearsley         # a `voices/<name>.safetensors` in the checkpoint directory
@@ -221,7 +233,7 @@ Config (`~/.wth/`, created on first run; details in
 - `acp/agents.yaml` — one entry per external harness (`name: {command, args, env, description}`); `/acp` lists, probes, adds from the registry (`/acp add <id>`), removes. The model spawns one with `spawn_subagent{agent}`; it runs as a child session like a wth subagent.
 - `skills/` — `<name>/SKILL.md` directories, loose `*.md`, or git clones (`/skills add <url>`, `/skills sync`); see [`docs/skills.md`](docs/skills.md). `harness.md` is written here on every start: the model's manual for this data dir and its config, loaded on demand.
 - `knowledge/` — the knowledge bundle (OKF markdown, one `<id>.md` per concept, a git repo kept in-process); `knowledge.sqlite` beside it is its search index and can be deleted.
-- `artifacts/` — content-addressed blobs of every file the agent has `show`n; `artifacts.sqlite` beside it is the index. Deleting the index orphans the blobs, which are swept at the next start.
+- `artifacts/` — content-addressed blobs of every file the agent has `show`n or published with `app`; `artifacts.sqlite` beside it is the index, and also holds one row per app invocation (which view pressed which binding, status, result). Deleting the index orphans the blobs, which are swept at the next start. `artifacts.owners/` holds one OS-locked file per running harness on this data dir: invocation rows belong to the owner that dispatched them, so a second harness (or a restart) recovers only rows whose owner is provably dead and reports them as `unknown`, never retried.
 
 TUI: `/` opens the command list; `/model` picks a model (header above the
 input shows model, effort and context used); `/effort [level|clear]` sets the
@@ -235,7 +247,7 @@ forgets one; `/skills` lists skills (⏎ hands one to the model, `s` shows it; `
 `/undo` drops the last turn (yours and the reply), `/redo` restores it; `/shake [images|documents|messages|tools|summary]` removes chosen content from the model's context without dropping what came after it — bare `/shake` opens a picker, a category (e.g. `/shake images`) pre-selects every matching occurrence in the current context, Space toggles a row, Enter reviews the exact targets (a removed tool exchange or assistant message takes its protocol companions with it) and confirms; no model call, later replies stay, the original rows stay in the transcript as collapsed *removed* cards and `/undo` does not bring the content back (attach or send it again); works on idle native sessions only ([`docs/design/48-shake.md`](docs/design/48-shake.md)); `/edit [n]` edits a user message and regenerates from it, `/regen [n]` regenerates the reply to a turn, `/fork [n]` opens a new session with the conversation through a turn; URLs in the transcript are OSC 8 hyperlinks (click them in a terminal that supports it, e.g. ghostty/iTerm2/kitty/WezTerm);
 `/jobs` lists the session's shell jobs, `/jobs kill <id>` stops one (a running job's card shows its last 10 output lines live);
 `/schedules` lists the scheduled runs and loops with their next and last fire and run count, `/schedules run <name>` fires one now, `/schedules pause|resume <name>` flips its `enabled:` line, `/schedules history <name>` shows its runs and reports;
-`/artifacts` lists the files the agent has shown in this session and its subagents (⏎ opens one with the OS, `s` shows it inline, `e` exports it); a `▣` artifact card's path is a `file://` link, `o` opens the newest one, Ctrl+O renders markdown, code and CSV inline;
+`/artifacts` lists the files the agent has shown in this session and its subagents (⏎ opens one with the OS, `s` shows it inline, `e` exports it); a `▣` artifact card's path is a `file://` link, `o` opens the newest one, Ctrl+O renders markdown, code and CSV inline; `/apps` is the same picker for the apps the agent built — the TUI cannot run them (`interactive on desktop/web`), so `s`/Ctrl+O show the `.openui` source read-only and `e` exports it;
 `/secrets` lists the vault's secrets with their versions (`a` adds one into a masked field, `r` replaces the value as a new version, `h` shows history and restores an older version, `d` deletes); `/secrets add [name]`, `/secrets rm <name>`, `/secrets restore <name> [n]` skip the menu; when the agent calls `secret_request` a masked box asks you to type it;
 `/acp` manages external ACP harnesses;
 `/knowledge` browses the knowledge base (below); `/approvals off` stops
@@ -289,6 +301,36 @@ Slack or Signal the file lands in the bound thread. `message_user` is still
 how the agent reaches you when you are not looking at this chat. Turn off
 with `artifact.enabled: false`. See
 [`docs/design/35-artifacts.md`](docs/design/35-artifacts.md).
+
+Apps: when the deliverable is a screen you work *in* — a dashboard, a control
+panel, a form, a clickable prototype — the agent calls `app{name, source}`
+with an OpenUI Lang program instead of a static `json-render`/Mermaid picture
+or a `show` file. The desktop and the relay's browser UI open a panel while
+the source is still streaming and promote it when the harness commits the
+version; you press buttons, fill inputs, and its `Query` bindings read
+installed tools (native, MCP, `http_request`) live, without another model
+turn. **The press is the approval**: one click runs the chosen action — a
+`Mutation`, including destructive or `{{secret:NAME}}`-bearing calls — and
+there is no second confirmation card; a tool the policy would ask about
+becomes a Load/Refresh button whose press is the consent, and a denied tool
+is shown unavailable, not confirmed. Timer/load reads never run mutations.
+Links, external HTTP(S) images and external services are ordinary app
+functionality; a `{{secret:…}}` placeholder in the source is committed
+literally and resolved only when the bound tool runs. Every version is an
+immutable `.openui` artifact (`edit: true` merges a patch onto the receipt's
+`record_call_id` and commits only if that version is still the latest); an
+app's tool bindings are pinned by identity and schema, so a changed MCP
+server shows as unavailable rather than silently rebinding. Where an app
+cannot run — the TUI, Slack, Signal — its card is a receipt plus read-only
+source (`/apps`). Validation runs in `wth-app-parser-<hash>` beside the `wth`
+binary (one immutable file per library hash; `wth --app-parser-hash` prints
+the one this build wants; `WTH_APP_PARSER=<path>` points at another
+executable for development); a missing helper fails the `app` call with
+`apps are unavailable on this harness: parser helper missing at …`, a
+wrong-version one with both hashes, and nothing else stops working. Turn off with `app.enabled: false`: no `app`
+tool, prompt block, helper or `/apps`; the bundled `apps` skill is still
+written, and existing apps stay readable as source. See
+[`docs/design/46-apps.md`](docs/design/46-apps.md).
 
 Signal: a phone-side frontend that runs only in the daemon. Pair once with
 `wth --link-signal --owner +15551234567` (scan the QR from Signal → Settings
@@ -347,8 +389,9 @@ with working links and a raw editor; a globe in the chat header opens a live
 view of the agent's browser while it works. A file the agent shows is a card
 with a thumbnail in the transcript and opens in a side panel with a viewer per
 kind (markdown, highlighted code, CSV table, image, native PDF) and Copy /
-Save as / Open / Reveal; a `▣ N` button in the header lists the session's
-artifacts. It has no Dock icon; the tray icon or
+Save as / Open / Reveal; an app card opens the running app in that panel
+(provisional while its source streams, live once committed); a `▣ N` button
+in the header lists the session's artifacts. It has no Dock icon; the tray icon or
 ⌥Space toggles the window. On launch it reuses a running `wth --serve` on
 the configured port, otherwise it starts the bundled `wth --headless` on a
 pseudo-terminal through your login shell so the daemon has exactly the
@@ -397,7 +440,7 @@ Give the model, and your phone, another machine. Four lines on the box:
 
 ```sh
 ssh box
-brew install skymoore/tap/wth         # or `just install` (release `wth` into ~/.cargo/bin), or copy the binary over
+brew install skymoore/tap/wth         # or `just install` (release `wth` + its `wth-app-parser-<hash>` into ~/.cargo/bin), or copy both binaries over
 wth --secret-set anthropic            # a model key, typed without echo (or piped: `printf %s "$KEY" | wth --secret-set anthropic`)
 wth --install-service --relay wss://relay.example.com   # writes a launchd LaunchAgent / systemd user unit running `$SHELL -l -i -c 'exec wth --headless'`, sets link.enabled, starts it, prints a QR + key
 ```

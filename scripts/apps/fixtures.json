@@ -1,0 +1,49 @@
+{
+  "model": { "provider": "fixture", "id": "app-fixture", "key": "fixture-key" },
+  "mcp": {
+    "name": "argo",
+    "tools": ["argo_app_health", "argo_destroy", "argo_echo", "argo_slow", "argo_sync"]
+  },
+  "secret": { "name": "APP_SMOKE", "value": "app-smoke-secret-value-7f3a9c1d", "placeholder": "{{secret:APP_SMOKE}}" },
+  "app": {
+    "name": "argo-panel.openui",
+    "title": "ArgoCD health (fixture)",
+    "source": [
+      "root = Stack([title, pick, healthText, countText, controls, syncText, destroyText, slowText, echoText, note1, note2])",
+      "$app = \"portal-web\"",
+      "title = TextContent(\"## ArgoCD health (fixture)\")",
+      "pick = Select(\"app\", [SelectItem(\"portal-web\", \"Portal web\"), SelectItem(\"portal-api\", \"Portal API\")], \"Choose application\", null, $app)",
+      "health = Query(\"argo_app_health\", {name: $app}, {status: \"Loading\", synced: false, count: 0}, 30)",
+      "healthText = TextContent($app + \": \" + health.status + (health.synced ? \" — synced\" : \" — not synced\"))",
+      "countText = TextContent(\"Sync count: \" + health.count)",
+      "syncResult = Mutation(\"argo_sync\", {name: $app})",
+      "destroyResult = Mutation(\"argo_destroy\", {name: $app})",
+      "syncProbe = Query(\"argo_sync\", {name: $app}, {message: \"\", count: 0})",
+      "echoed = Query(\"argo_echo\", {secret: \"{{secret:APP_SMOKE}}\"}, {echoed: \"\", length: 0})",
+      "slow = Query(\"argo_slow\", {name: $app, ms: 2500}, {status: \"Loading\", synced: false, count: 0})",
+      "controls = Stack([syncBtn, destroyBtn, echoBtn], \"row\")",
+      "syncBtn = Button(\"Sync \" + $app, Action([@Run(syncResult), @Run(health)]))",
+      "destroyBtn = Button(\"Destroy \" + $app, Action([@Run(destroyResult), @Run(health)]))",
+      "echoBtn = Button(\"Echo secret\", Action([@Run(echoed)]))",
+      "syncText = TextContent(syncResult.status == \"success\" ? syncResult.data.message : (syncResult.status == \"error\" ? syncResult.error : \"\"))",
+      "destroyText = TextContent(destroyResult.status == \"success\" ? destroyResult.data.message : \"\")",
+      "slowText = TextContent(\"Slow read: \" + slow.status)",
+      "echoText = TextContent(\"Echo: \" + echoed.echoed + \" (\" + echoed.length + \" chars)\")",
+      "note1 = TextContent(\"This panel is the wth apps acceptance fixture. Sync increments a durable counter in the fixture state file; Destroy resets it to zero. Neither touches anything outside the fixture temp file.\")",
+      "note2 = TextContent(\"Health and the slow read are read-only queries. The slow read sleeps to exercise generation cancellation and peer disconnect; echo sends a vault placeholder the harness expands and scrubs. syncProbe is a Query bound to the mutating sync tool: it needs an explicit Load and never runs on a timer. \" + syncProbe.count)"
+    ],
+    "statements": {
+      "health": { "tool": "argo_app_health", "kind": "query", "risk": "read_only" },
+      "syncResult": { "tool": "argo_sync", "kind": "mutation", "risk": "mutating" },
+      "destroyResult": { "tool": "argo_destroy", "kind": "mutation", "risk": "destructive" },
+      "slow": { "tool": "argo_slow", "kind": "query", "risk": "read_only" },
+      "syncProbe": { "tool": "argo_sync", "kind": "query", "risk": "mutating" },
+      "echoed": { "tool": "argo_echo", "kind": "query", "risk": "read_only" }
+    },
+    "actions": { "sync": "syncBtn", "destroy": "destroyBtn", "echo": "echoBtn" }
+  },
+  "patches": {
+    "a": "title = TextContent(\"## ArgoCD health (fixture, edit A)\")",
+    "b": "title = TextContent(\"## ArgoCD health (fixture, edit B)\")"
+  }
+}

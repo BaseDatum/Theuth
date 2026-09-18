@@ -79,6 +79,9 @@ function parseRequest(line: string): ParserRequest | ParserErrorResponse {
 }
 
 function handle(line: string): ParserResponse | ParserErrorResponse {
+  if (new TextEncoder().encode(line).byteLength > MAX_LINE_BYTES) {
+    return { id: null, error: `request line exceeds ${MAX_LINE_BYTES} bytes` };
+  }
   const req = parseRequest(line);
   if ("error" in req) return req;
   const result =

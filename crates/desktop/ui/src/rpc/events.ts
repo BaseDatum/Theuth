@@ -14,6 +14,7 @@ import type { SecretsEvent } from '@/rpc/bindings/SecretsEvent'
 import type { SignalEvent } from '@/rpc/bindings/SignalEvent'
 import type { SlackEvent } from '@/rpc/bindings/SlackEvent'
 import type {
+  AppCallChanged,
   ArtifactShown,
   LoginFinished,
   ScrapeProgress,
@@ -59,4 +60,5 @@ export type WireEvent =
   | ArtifactShown
   | ScrapeProgress
   | VoiceEvent
+  | AppCallChanged
   | Lagged

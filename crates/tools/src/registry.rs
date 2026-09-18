@@ -478,7 +478,7 @@ impl ToolRegistry {
                 a.action_id, a.request_id, call.id
             )));
         }
-        let mentions = crate::secrets::mentions(&call.args);
+        let mentions = mentions(&tool, &call.args);
         match self.effective(Some(call.session), spec.risk, mentions) {
             PolicyAction::Allow => {}
             PolicyAction::Deny => return Err(Unavailable(format!("{name}: denied by policy"))),
@@ -575,7 +575,7 @@ impl Message<InspectTool> for ToolRegistry {
         let tool = self
             .visible(m.session, &m.name)
             .ok_or_else(|| format!("unknown tool: {}", m.name))?;
-        let mentions = m.args.as_ref().is_some_and(crate::secrets::mentions);
+        let mentions = m.args.as_ref().is_some_and(|a| mentions(&tool, a));
         Ok(self.inspect(&tool, Some(m.session), mentions))
     }
 }
@@ -803,7 +803,7 @@ impl Message<Invoke> for ToolRegistry {
             return reply;
         };
         let spec = tool.spec();
-        let mentions = crate::secrets::mentions(&call.args);
+        let mentions = mentions(&tool, &call.args);
         let approval = match self.gate(call.session, spec.risk, mentions) {
             Ok(a) => a,
             Err(why) => {
@@ -816,18 +816,28 @@ impl Message<Invoke> for ToolRegistry {
     }
 }
 
+/// The gate's secret input: a placeholder in `args` counts only for a tool
+/// that consumes it ([`crate::ErasedTool::consumes_secrets`]); for one that
+/// stores its arguments as data the placeholder is the data.
+fn mentions(tool: &DynTool, args: &serde_json::Value) -> bool {
+    tool.consumes_secrets() && crate::secrets::mentions(args)
+}
+
 /// The binding an app holds a tool to: sha256 hex over the canonical JSON
 /// of `{name, schema, origin}` ([`crate::ErasedTool::origin`]). Private so
-/// nothing outside this actor can recompute it from display data;
-/// `serde_json` without `preserve_order` sorts keys, so equal schemas hash
-/// equal.
+/// nothing outside this actor can recompute it from display data. Object
+/// keys are sorted at every depth before hashing (arrays keep their order,
+/// `required`/`enum` are positional): the unified feature graph turns on
+/// `serde_json/preserve_order`, so an MCP server re-sending the same schema
+/// with keys in a different order must still hash equal.
 fn identity(tool: &DynTool, spec: &ToolSpec) -> String {
     use sha2::{Digest as _, Sha256};
-    let canon = serde_json::json!({
+    let mut canon = serde_json::json!({
         "name": spec.name,
         "schema": spec.schema,
         "origin": tool.origin(),
     });
+    canon.sort_all_objects();
     format!("{:x}", Sha256::digest(canon.to_string()))
 }
 
@@ -872,7 +882,10 @@ async fn invoke(
     }
     // Placeholders become values after the gate (the approval card showed the
     // placeholder) and before the tool; an unknown name fails the whole call.
-    if let Err(e) = crate::secrets::expand(&mut call.args) {
+    // A tool that stores its arguments as an artifact keeps them literal.
+    if tool.consumes_secrets()
+        && let Err(e) = crate::secrets::expand(&mut call.args)
+    {
         return ToolOutput::err(e);
     }
     let cx = ToolCx {
@@ -1465,6 +1478,82 @@ mod tests {
             .await
             .is_err()
         );
+    }
+
+    /// Stands in for an MCP tool: the schema is whatever the server sent.
+    struct Raw(serde_json::Value);
+
+    impl crate::ErasedTool for Raw {
+        fn spec(&self) -> ToolSpec {
+            ToolSpec {
+                name: "raw".into(),
+                description: String::new(),
+                schema: self.0.clone(),
+                risk: Risk::ReadOnly,
+                direct: false,
+                returns: String::new(),
+            }
+        }
+        fn call(
+            &self,
+            _: serde_json::Value,
+            _: ToolCx,
+        ) -> futures::future::BoxFuture<'_, anyhow::Result<ToolOutput>> {
+            Box::pin(async { Ok(ToolOutput::ok("")) })
+        }
+    }
+
+    #[test]
+    fn identity_ignores_object_key_order_but_not_schema_or_array_order() {
+        // Built by insertion so `preserve_order` (on in the unified feature
+        // graph) keeps the two orders distinct in memory.
+        let obj = |pairs: &[(&str, serde_json::Value)]| {
+            let mut m = serde_json::Map::new();
+            for (k, v) in pairs {
+                m.insert((*k).to_owned(), v.clone());
+            }
+            serde_json::Value::Object(m)
+        };
+        let target = |ty: &str| obj(&[("type", ty.into()), ("minLength", 1.into())]);
+        let a = obj(&[
+            ("type", "object".into()),
+            (
+                "properties",
+                obj(&[
+                    ("target", target("string")),
+                    ("force", obj(&[("type", "boolean".into())])),
+                ]),
+            ),
+            ("required", serde_json::json!(["target", "force"])),
+        ]);
+        let b = obj(&[
+            ("required", serde_json::json!(["target", "force"])),
+            (
+                "properties",
+                obj(&[
+                    ("force", obj(&[("type", "boolean".into())])),
+                    (
+                        "target",
+                        obj(&[("minLength", 1.into()), ("type", "string".into())]),
+                    ),
+                ]),
+            ),
+            ("type", "object".into()),
+        ]);
+        let id = |schema: serde_json::Value| {
+            let tool: DynTool = Arc::new(Raw(schema));
+            let spec = tool.spec();
+            identity(&tool, &spec)
+        };
+        assert_eq!(id(a.clone()), id(b));
+        // Semantic changes still rebind: a different property type, and a
+        // reordered `required` array (position is meaning there).
+        let mut changed = a.clone();
+        changed["properties"]["target"]["type"] = "integer".into();
+        assert_ne!(id(a.clone()), id(changed));
+        let mut swapped = a.clone();
+        swapped["required"] = serde_json::json!(["force", "target"]);
+        assert_ne!(id(a), id(swapped));
     }
 
     #[tokio::test]

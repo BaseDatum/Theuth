@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { LIMITS } from "@openuidev/lang-core";
+import fixtures from "../../../scripts/apps/fixtures.json";
 import { check, libraryHash, mergeCheck } from "../src/check.ts";
 import type { ToolSnapshot } from "../src/protocol.ts";
 
@@ -100,6 +101,62 @@ describe("check: design examples", () => {
     const r = check(`\`\`\`openui\n${prototype}\n\`\`\``, []);
     expect(r.diagnostics).toEqual([]);
     expect(r.source.startsWith("root = Stack(")).toBeTrue();
+  });
+});
+
+describe("check: acceptance fixture", () => {
+  test("scripts/apps/fixtures.json publishes and its bindings match the declared statements", () => {
+    // Same tool contract the fixture MCP server (scripts/apps/fixture-server.ts) advertises.
+    const named = {
+      type: "object",
+      properties: { name: { type: "string" } },
+      required: ["name"],
+      additionalProperties: false,
+    };
+    const schemas: Record<string, unknown> = {
+      argo_app_health: named,
+      argo_sync: named,
+      argo_destroy: named,
+      argo_slow: {
+        ...named,
+        properties: { name: { type: "string" }, ms: { type: "integer" } },
+      },
+      argo_echo: {
+        type: "object",
+        properties: { secret: { type: "string" } },
+        required: ["secret"],
+        additionalProperties: false,
+      },
+    };
+    const expected = fixtures.app.statements as Record<
+      string,
+      { tool: string; kind: string; risk: string }
+    >;
+    // Risk the fixture server's MCP annotations map to (readOnlyHint / destructiveHint / neither).
+    const risks: Record<string, ToolSnapshot["risk"]> = {
+      argo_app_health: "read_only",
+      argo_sync: "mutating",
+      argo_destroy: "destructive",
+      argo_slow: "read_only",
+      argo_echo: "read_only",
+    };
+    const fixtureTools: ToolSnapshot[] = fixtures.mcp.tools.map((name) => ({
+      name,
+      schema: schemas[name] as ToolSnapshot["schema"],
+      risk: risks[name]!,
+      identity: `mcp:${fixtures.mcp.name}/${name}#1`,
+    }));
+    const r = check(fixtures.app.source.join("\n"), fixtureTools);
+    expect(r.diagnostics).toEqual([]);
+    const got: Record<string, { tool: string; kind: string; risk: string }> =
+      Object.fromEntries(
+        r.bindings.map((b) => [
+          b.statement_id,
+          { tool: b.tool, kind: b.kind, risk: b.risk },
+        ]),
+      );
+    expect(got).toEqual(expected);
+    expect(r.source).toContain(fixtures.secret.placeholder);
   });
 });
 
@@ -240,6 +297,52 @@ describe("check: strict final rules", () => {
       expect.objectContaining({ code: "budget-exceeded" }),
     ]);
     expect(r.diagnostics[0]!.at).not.toBe("");
+  });
+
+  test("trailing tokens and lines the streaming splitter would drop are syntax errors", () => {
+    const trailing = check("root = Stack([]) unexpected", []);
+    expect(trailing.diagnostics).toEqual([
+      expect.objectContaining({ code: "syntax", at: "root" }),
+    ]);
+    expect(trailing.statements).toEqual([]);
+    const dropped = check('root = Stack([])\nq Query("argo_sync", {})', tools);
+    expect(dropped.diagnostics).toEqual([
+      expect.objectContaining({ code: "syntax", at: "q" }),
+    ]);
+    expect(
+      codes(check('root = Stack([a b])\na = TextContent("x")\nb = a', [])),
+    ).toEqual(["syntax"]);
+    expect(codes(check("root = Stack([]) ; x", []))).toEqual(["syntax"]);
+    // incomplete input still reports the auto-close alongside the strict failure
+    expect(codes(check('root = Stack([TextContent("x")', []))).toEqual([
+      "incomplete",
+      "syntax",
+    ]);
+  });
+
+  test("references inside Query/Mutation arguments are validated and ordinary ones resolved", () => {
+    const r = check(
+      'root = Stack([])\nm = Mutation("argo_sync", {name: missing})',
+      tools,
+    );
+    expect(r.diagnostics).toEqual([
+      expect.objectContaining({ code: "unresolved", at: "m" }),
+    ]);
+    const cyclic = check(
+      'root = Stack([])\na = b\nb = a\nm = Mutation("argo_sync", {name: a})',
+      tools,
+    );
+    expect(
+      cyclic.diagnostics.some(
+        (d) => d.code === "unresolved" && d.message.includes("cyclic"),
+      ),
+    ).toBeTrue();
+    const ok = check(
+      'root = Stack([])\nname = "prod"\nm = Mutation("argo_sync", {name: name})',
+      tools,
+    );
+    expect(ok.diagnostics).toEqual([]);
+    expect(ok.bindings.map((b) => b.statement_id)).toEqual(["m"]);
   });
 });
 

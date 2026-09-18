@@ -7,7 +7,7 @@
 //! - commands on the [`ARTIFACT_ACTOR`] actor ([`ArtifactActor`]): [`Show`],
 //!   [`List`], [`Export`]; for the app plugin (46 §3): [`Commit`],
 //!   [`GetRecord`], [`ClaimInvocation`], [`CompleteInvocation`],
-//!   [`GetInvocation`]
+//!   [`MarkInvocationUnknown`], [`GetInvocation`], [`ListInvocations`]
 //! - events: [`ArtifactShown`]
 
 pub mod kind;
@@ -27,7 +27,8 @@ use serde::{Deserialize, Serialize};
 
 pub use pdf::{Diag, Source};
 pub use store::{
-    Claim, CommitError, Invocation, InvocationStatus, MAX_INVOCATION_RESULT, State, args_hash,
+    Claim, CommitError, Invocation, InvocationStatus, MAX_INVOCATION_RESULT, MAX_LIST_INVOCATIONS,
+    State, args_hash,
 };
 pub use svg::Raster;
 pub use tools::ShowArgs;
@@ -280,6 +281,33 @@ pub struct GetInvocation {
     pub request_id: String,
 }
 
+/// `ask` → `Result<(), String>`: a `running` invocation whose dispatch
+/// outcome cannot be proven (the registry call failed after the durable
+/// claim, the reply never arrived) becomes `unknown`, never `failed`: the
+/// tool may have run. `reason` is caller-redacted like
+/// [`CompleteInvocation::result`] and stored as `{"unknown": reason}`,
+/// bounded the same way. `Err` when the row is missing or no longer running.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MarkInvocationUnknown {
+    /// Row key.
+    pub request_id: String,
+    /// Redacted, short: why the outcome is unknowable.
+    pub reason: Option<String>,
+}
+
+/// `ask` → `Result<Vec<Invocation>, String>`: the invocations of one app
+/// record, newest first, at most `min(limit, MAX_LIST_INVOCATIONS)`. Rows
+/// exist only while the record does (claims require it, session deletion
+/// purges both), so reopening an app after a restart can still find its
+/// request ids and their final statuses.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ListInvocations {
+    /// The app record.
+    pub record_call_id: String,
+    /// Newest rows wanted; capped at [`MAX_LIST_INVOCATIONS`].
+    pub limit: usize,
+}
+
 /// The [`ARTIFACT_ACTOR`] actor.
 #[derive(kameo::Actor)]
 pub struct ArtifactActor {
@@ -390,6 +418,32 @@ impl Message<GetInvocation> for ArtifactActor {
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         self.state.invocation(&m.request_id).await
+    }
+}
+
+impl Message<MarkInvocationUnknown> for ArtifactActor {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        m: MarkInvocationUnknown,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.state.mark_unknown(m).await
+    }
+}
+
+impl Message<ListInvocations> for ArtifactActor {
+    type Reply = Result<Vec<Invocation>, String>;
+
+    async fn handle(
+        &mut self,
+        m: ListInvocations,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.state
+            .list_invocations(&m.record_call_id, m.limit)
+            .await
     }
 }
 

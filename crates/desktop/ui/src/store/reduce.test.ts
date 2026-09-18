@@ -128,6 +128,85 @@ test('ToolCallProgress names the file being written; ToolCallStarted clears it; 
   expect(tool && s.artifacts.get(tool.callId)).toEqual(artifact)
 })
 
+const APP_ARTIFACT = {
+  id: 'app1',
+  session: S,
+  call_id: 'a1',
+  name: 'drill',
+  title: 'DR drill',
+  kind: 'app' as const,
+  mime: 'text/x-openui',
+  bytes: 120,
+  version: 1,
+  path: '/d/artifacts/app1.openui',
+  source: '/d/artifacts/meta.app.json',
+  preview: null,
+  pages: null,
+  origin: null,
+  created_at: 0,
+}
+
+test('an app call keeps a draft: envelope-repaired partial source, kept across an unparsable chunk, promoted away by ArtifactShown', () => {
+  let s = run([
+    { type: 'TurnStarted', session: S, turn: T, text: 'x', model: 'm', turn_seq: 1 },
+    { type: 'ToolCallPending', session: S, turn: T, call_id: 'a1', name: 'app' },
+    { type: 'ToolCallProgress', session: S, turn: T, call_id: 'a1', args: '{"name": "drill", "source": "root = Stack([title])\\ntitle = TextContent(\\"## DR' },
+  ])
+  // The envelope is repaired; the source inside is exactly the bytes so far, including its unterminated string.
+  expect(s.appDrafts.get('a1')).toMatchObject({ name: 'drill', edit: false, status: 'streaming', source: 'root = Stack([title])\ntitle = TextContent("## DR' })
+  const before = s.appDrafts.get('a1')
+  // A chunk cut inside a key does not repair to an object: the previous source stays.
+  s = apply(s, { type: 'ToolCallProgress', session: S, turn: T, call_id: 'a1', args: '{"na' }, ctx())
+  expect(s.appDrafts.get('a1')?.source).toBe(before?.source)
+  s = apply(s, { type: 'ToolCallStarted', session: S, turn: T, call_id: 'a1', name: 'app', args: { name: 'drill', source: 'root = Stack([])', edit: false } }, ctx())
+  expect(s.appDrafts.get('a1')).toMatchObject({ status: 'validating', source: 'root = Stack([])' })
+  s = apply(s, { type: 'ArtifactShown', session: S, call_id: 'a1', artifact: APP_ARTIFACT }, ctx())
+  expect(s.appDrafts.has('a1')).toBe(false)
+  expect(s.artifacts.get('a1')).toEqual(APP_ARTIFACT)
+})
+
+test('a non-app call streaming arguments never becomes a draft', () => {
+  const s = run([
+    { type: 'TurnStarted', session: S, turn: T, text: 'x', model: 'm', turn_seq: 1 },
+    { type: 'ToolCallPending', session: S, turn: T, call_id: 'c1', name: 'show' },
+    { type: 'ToolCallProgress', session: S, turn: T, call_id: 'c1', args: '{"name": "root = x", "source": "y"}' },
+  ])
+  expect(s.appDrafts.size).toBe(0)
+})
+
+test('an edit draft carries its base; a failed publish keeps the draft readable with the error, a success drops it', () => {
+  const start: WireEvent[] = [
+    { type: 'TurnStarted', session: S, turn: T, text: 'x', model: 'm', turn_seq: 1 },
+    { type: 'ToolCallPending', session: S, turn: T, call_id: 'a2', name: 'app' },
+    { type: 'ToolCallProgress', session: S, turn: T, call_id: 'a2', args: '{"name": "drill", "edit": true, "base_call_id": "a1", "source": "title = TextContent(\\"## v2\\")\\n' },
+  ]
+  let s = run(start)
+  expect(s.appDrafts.get('a2')).toMatchObject({ edit: true, base: 'a1', source: 'title = TextContent("## v2")\n' })
+  s = apply(s, { type: 'ToolCallStarted', session: S, turn: T, call_id: 'a2', name: 'app', args: { name: 'drill', edit: true, base_call_id: 'a1', source: 'title = TextContent("## v2")\n' } }, ctx())
+  s = apply(s, { type: 'ToolCallFinished', session: S, turn: T, call_id: 'a2', output: 'error: unknown component Foo', is_error: true, files: [] }, ctx())
+  expect(s.appDrafts.get('a2')).toMatchObject({ status: 'failed', error: 'error: unknown component Foo', base: 'a1' })
+  // The failed draft is not an artifact and survives the turn's end for reading.
+  s = apply(s, { type: 'TurnFinished', session: S, turn: T, stop_reason: 'stop', usage, context: 1 }, ctx())
+  expect(s.appDrafts.get('a2')?.status).toBe('failed')
+
+  let ok = run(start)
+  ok = apply(ok, { type: 'ToolCallStarted', session: S, turn: T, call_id: 'a2', name: 'app', args: { name: 'drill', edit: true, base_call_id: 'a1', source: 'x = 1' } }, ctx())
+  ok = apply(ok, { type: 'ToolCallFinished', session: S, turn: T, call_id: 'a2', output: 'published drill v2', is_error: false, files: [] }, ctx())
+  expect(ok.appDrafts.has('a2')).toBe(false)
+})
+
+test('a draft abandoned mid-stream is cancelled at TurnFinished, not dropped; its pending card goes', () => {
+  const s = run([
+    { type: 'TurnStarted', session: S, turn: T, text: 'x', model: 'm', turn_seq: 1 },
+    { type: 'ToolCallPending', session: S, turn: T, call_id: 'a3', name: 'app' },
+    { type: 'ToolCallProgress', session: S, turn: T, call_id: 'a3', args: '{"name": "drill", "source": "root = Sta' },
+    { type: 'TurnFinished', session: S, turn: T, stop_reason: 'stop', usage, context: 1 },
+  ])
+  expect(s.appDrafts.get('a3')).toMatchObject({ status: 'cancelled', source: 'root = Sta' })
+  expect(s.entries.some((e) => e.kind === 'tool')).toBe(false)
+  expect(s.progress.size).toBe(0)
+})
+
 test('InputQueued dedupes by id and never touches the streaming tail', () => {
   const base = run([{ type: 'TextDelta', session: S, turn: T, text: 'a' }])
   const q = apply(base, { type: 'InputQueued', session: S, id: 'i1', text: 'steer' }, ctx())
@@ -544,4 +623,27 @@ test('store: expansion survives snapshots, events and the reconnect reload; plan
   // The sibling's higher version is its own; it stays collapsed and stale until its own refresh.
   expect(todoTexts(sb)).toEqual(['b1'])
   expect(sb).toMatchObject({ todosExpanded: false, todosStale: true })
+})
+
+test('AppCallChanged keeps the newest status per statement of each record, bounded to the newest records, without touching the tail', () => {
+  const call = (record: string, statement: string, status: 'running' | 'succeeded', ms: number): WireEvent => ({
+    type: 'AppCallChanged',
+    session: S,
+    record_call_id: record,
+    request_id: `${record}-${statement}-${status}`,
+    statement_id: statement,
+    tool: 'argo_sync',
+    risk: 'mutating',
+    trigger: 'press',
+    status,
+    ms,
+  })
+  let s = run([{ type: 'TextDelta', session: S, turn: T, text: 'a' }, call('r1', 'sync', 'running', 0), call('r1', 'sync', 'succeeded', 340), call('r1', 'other', 'succeeded', 5)])
+  expect(s.entries).toMatchObject([{ kind: 'assistant', open: true }])
+  expect(s.appCalls.get('r1')?.get('sync')).toMatchObject({ status: 'succeeded', ms: 340 })
+  expect(s.appCalls.get('r1')?.size).toBe(2)
+  for (let i = 0; i < 32; i++) s = apply(s, call(`x${i}`, 'q', 'succeeded', i), ctx())
+  expect(s.appCalls.size).toBe(32)
+  expect(s.appCalls.has('r1')).toBe(false)
+  expect(s.appCalls.has('x31')).toBe(true)
 })

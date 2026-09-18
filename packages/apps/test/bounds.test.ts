@@ -4,10 +4,12 @@ import {
   LimitError,
   createEvalBudget,
   createParser,
+  createStore,
   createStreamingParser,
   evaluate,
   evaluateElementProps,
   mergeStatements,
+  resolveStateField,
 } from "@openuidev/lang-core";
 import type { ASTNode, EvaluationContext } from "@openuidev/lang-core";
 import { generatedLibrary } from "../src/check.ts";
@@ -92,6 +94,53 @@ describe("parse-time bounds", () => {
     expect(() =>
       mergeStatements('root = Stack([x])\nx = TextContent("a")', deep),
     ).toThrow(LimitError);
+  });
+
+  test("non-component reference blowup through arrays is charged before allocating", () => {
+    // 2^27 array cells if materialized; the node budget trips first.
+    let src = 'root = TextContent("" + a26)\na0 = [0]\n';
+    for (let i = 1; i <= 26; i++) src += `a${i} = [a${i - 1}, a${i - 1}]\n`;
+    const r = parser.parse(src);
+    expect(r.root).toBeNull();
+    expect(r.meta.errors[0]?.message).toContain(`${LIMITS.materializedNodes}`);
+  });
+
+  test("left-associative operator chains are bounded by AST depth, not parser recursion", () => {
+    const r = parser.parse(`root = TextContent("" ${"+ 1 ".repeat(5000)})`);
+    expect(r.root).toBeNull();
+    expect(r.meta.errors[0]).toMatchObject({
+      code: "budget-exceeded",
+      statementId: "root",
+    });
+    expect(r.meta.errors[0]!.message).toContain("nesting");
+    expect(
+      parser.parse(`root = TextContent("" ${"+ 1 ".repeat(20)})`).root,
+    ).not.toBeNull();
+  });
+
+  test("component depth through an @Each template is bounded", () => {
+    let src = 'root = Stack(@Each([0], "i", n0))\n';
+    for (let i = 0; i < LIMITS.depth + 8; i++)
+      src += `n${i} = Stack([n${i + 1}])\n`;
+    src += `n${LIMITS.depth + 8} = TextContent("leaf")`;
+    const r = parser.parse(src);
+    expect(r.root).toBeNull();
+    expect(r.meta.errors[0]?.code).toBe("budget-exceeded");
+  });
+
+  test("Query/Mutation arguments are normalized: ordinary refs inlined, unknown refs unresolved", () => {
+    const r = parser.parse(
+      'root = Stack([])\nname = "prod"\n$app = "x"\nm = Mutation("save", {name: name, other: missing})\nq = Query("list", {who: name, app: $app})',
+    );
+    expect(r.mutationStatements[0]!.argsAST).toEqual({
+      k: "Obj",
+      entries: [
+        ["name", { k: "Str", v: "prod" }],
+        ["other", { k: "Ph", n: "missing" }],
+      ],
+    });
+    expect(r.meta.unresolved).toEqual(["missing"]);
+    expect(r.queryStatements[0]!.deps).toEqual(["$app"]);
   });
 });
 
@@ -185,5 +234,140 @@ describe("evaluation budget", () => {
         ctx,
       ),
     ).toHaveLength(rows.length);
+  });
+
+  test("array-wide builtins and member projection charge per element", () => {
+    const big = Array.from({ length: LIMITS.evalOps + 1 }, () => 0);
+    const ctx = (): EvaluationContext => ({
+      getState: () => null,
+      resolveRef: (n) => (n === "q" ? big : null),
+      budget: createEvalBudget(),
+    });
+    const call = (name: string): ASTNode => ({
+      k: "Comp",
+      name,
+      args: [{ k: "Ref", n: "q" }],
+    });
+    for (const name of ["Sum", "Avg", "Min", "Max", "Sort", "Filter"])
+      expect(() => evaluate(call(name), ctx())).toThrow(LimitError);
+    expect(() =>
+      evaluate({ k: "Member", obj: { k: "Ref", n: "q" }, field: "x" }, ctx()),
+    ).toThrow(LimitError);
+    // O(1) builtins and .length stay cheap
+    expect(evaluate(call("Count"), ctx())).toBe(big.length);
+    expect(
+      evaluate(
+        { k: "Member", obj: { k: "Ref", n: "q" }, field: "length" },
+        ctx(),
+      ),
+    ).toBe(big.length);
+    expect(evaluate(call("Sum"), { ...ctx(), budget: undefined })).toBe(0);
+  });
+
+  test("@Each projects the used field without literalizing unused row payload", () => {
+    const payload = Array.from({ length: LIMITS.evalOps }, () => 0);
+    const items = Array.from({ length: 8 }, (_, i) => ({ id: i, payload }));
+    const ctx = (): EvaluationContext => ({
+      getState: () => null,
+      resolveRef: (n) => (n === "items" ? items : null),
+      budget: createEvalBudget(),
+    });
+    const each = (template: ASTNode): ASTNode => ({
+      k: "Comp",
+      name: "Each",
+      args: [{ k: "Ref", n: "items" }, { k: "Ref", n: "r" }, template],
+    });
+    expect(
+      evaluate(
+        each({ k: "Member", obj: { k: "Ref", n: "r" }, field: "id" }),
+        ctx(),
+      ),
+    ).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+    // capturing the whole row into a deferred @Set is charged per literal node
+    expect(() =>
+      evaluate(
+        each({
+          k: "Comp",
+          name: "Set",
+          args: [
+            { k: "StateRef", n: "$row" },
+            { k: "Ref", n: "r" },
+          ],
+        }),
+        ctx(),
+      ),
+    ).toThrow(LimitError);
+    // deeply nested payload cannot be literalized past the depth bound
+    let deep: unknown = 0;
+    for (let i = 0; i < LIMITS.depth + 1; i++) deep = [deep];
+    expect(() =>
+      evaluate(
+        each({
+          k: "Comp",
+          name: "Set",
+          args: [
+            { k: "StateRef", n: "$row" },
+            { k: "Ref", n: "r" },
+          ],
+        }),
+        { ...ctx(), resolveRef: () => [deep] },
+      ),
+    ).toThrow(LimitError);
+  });
+
+  test("reactive input assignments get a fresh budget and do not commit on LimitError", () => {
+    const store = createStore();
+    store.initialize({ $x: "old" }, {});
+    const reported: LimitError[] = [];
+    const expr: ASTNode = {
+      k: "Comp",
+      name: "Each",
+      args: [
+        { k: "Ref", n: "rows" },
+        { k: "Ref", n: "r" },
+        { k: "Ref", n: "r" },
+      ],
+    };
+    const field = resolveStateField(
+      "f",
+      { __reactive: "assign", target: "$x", expr },
+      store,
+      {
+        getState: () => null,
+        resolveRef: () => rows,
+        onLimitError: (e) => reported.push(e),
+      },
+      () => null,
+      () => {},
+    );
+    field.setValue("typed");
+    expect(store.get("$x")).toBe("old");
+    expect(reported.map((e) => e.limit)).toEqual(["evalNodes"]);
+    // a second change is not starved by the first: fresh budget per change
+    const small = resolveStateField(
+      "g",
+      {
+        __reactive: "assign",
+        target: "$x",
+        expr: { k: "StateRef", n: "$value" },
+      },
+      store,
+      { getState: () => null, resolveRef: () => null },
+      () => null,
+      () => {},
+    );
+    small.setValue("new");
+    expect(store.get("$x")).toBe("new");
+    // without a handler the LimitError propagates and still leaves the store untouched
+    const unhandled = resolveStateField(
+      "h",
+      { __reactive: "assign", target: "$x", expr },
+      store,
+      { getState: () => null, resolveRef: () => rows },
+      () => null,
+      () => {},
+    );
+    expect(() => unhandled.setValue("again")).toThrow(LimitError);
+    expect(store.get("$x")).toBe("new");
   });
 });

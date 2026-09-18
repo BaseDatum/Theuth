@@ -5,6 +5,7 @@ import { ChevronLeft, Copy, Download, MessageSquare, PanelRight } from 'lucide-r
 import { type MouseEvent, type ReactNode, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { Streamdown } from 'streamdown'
+import { AppView } from '@/components/apps/AppView'
 import { sessionLabel, useArtifactList } from '@/components/artifacts/List'
 import { ArtifactMenu, RevealButton, TEXT_KINDS, metaLine, saveAs, useText } from '@/components/chat/ArtifactCard'
 import { Img, useFileUrl } from '@/components/chat/Attachments'
@@ -279,7 +280,9 @@ export function ArtifactView({ artifact, className }: { artifact: Artifact; clas
 function Body({ a }: { a: Artifact }) {
   const api = useApi()
   const active = useHarnesses((s) => s.active)
-  const text = useText(TEXT_KINDS[a.kind] ? a.path : null)
+  const text = useText(TEXT_KINDS[a.kind] && a.kind !== 'app' ? a.path : null)
+  // The explorer addresses one version: the view is pinned to it (46 §3.3), unlike the chat panel's latest mode.
+  if (a.kind === 'app') return <AppView session={a.session} artifact={a} className="h-full" />
   if (a.kind === 'image' || a.kind === 'svg') {
     return (
       <Zoom>

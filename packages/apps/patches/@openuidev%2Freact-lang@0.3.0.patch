@@ -1,5 +1,5 @@
 diff --git a/dist/exports-Cab8UG5o.mjs b/dist/exports-Cab8UG5o.mjs
-index fb50f51..b80da06 100644
+index fb50f51..0012650 100644
 --- a/dist/exports-Cab8UG5o.mjs
 +++ b/dist/exports-Cab8UG5o.mjs
 @@ -1,4 +1,5 @@
@@ -14,15 +14,65 @@ index fb50f51..b80da06 100644
  * under formName as plain values.
  */
 -function useOpenUIState({ response, library, isStreaming, onAction, onStateUpdate, initialState, toolProvider, onError, publishObservability }, renderDeep) {
-+function useOpenUIState({ response, library, isStreaming, onAction, onStateUpdate, initialState, toolProvider, onError, publishObservability, onActionStart, onActionEnd }, renderDeep) {
++function useOpenUIState({ response, library, isStreaming, onAction, onStateUpdate, initialState, toolProvider, onError, publishObservability, onActionStart, onActionEnd, generation = 0, paused = false }, renderDeep) {
  	const sp = useMemo(() => createStreamingParser(library.toJSONSchema(), library.root), [library]);
  	const parseExceptionRef = useRef(null);
  	const result = useMemo(() => {
-@@ -387,21 +388,37 @@ function useOpenUIState({ response, library, isStreaming, onAction, onStateUpdat
- 			return queryManager.getResult(name);
+@@ -357,51 +358,95 @@ function useOpenUIState({ response, library, isStreaming, onAction, onStateUpdat
  		}
- 	}), [store, queryManager]);
+ 	}, [sp, response]);
+ 	const store = useMemo(() => createStore(), []);
+-	const queryManager = useMemo(() => createQueryManager(toolProvider ?? null), [toolProvider]);
++	/* born paused when the view is paused: the first scheduling pass must not call the provider */
++	const queryManager = useMemo(() => createQueryManager(toolProvider ?? null, { paused }), [toolProvider]);
+ 	useEffect(() => {
+ 		queryManager.activate();
+ 		return () => queryManager.dispose();
+ 	}, [queryManager]);
++	/**
++	* Reconcile `$state` with the committed declarations: values survive across generations only
++	* for declarations that are unchanged; changed defaults reset, deleted names are cleared, names
++	* new since the last commit take their default (including values seeded from a streamed preview).
++	* Streamed previews only fill in missing keys. Host `initialState` `$keys` win on every change.
++	*/
++	const committedDeclsRef = useRef({});
+ 	const storeInitKeyRef = useRef(Symbol());
+ 	useEffect(() => {
+ 		if (!result?.stateDeclarations && !initialState) return;
+-		const key = `${JSON.stringify(result?.stateDeclarations)}::${JSON.stringify(initialState)}`;
++		const key = `${isStreaming}::${JSON.stringify(result?.stateDeclarations)}::${JSON.stringify(initialState)}`;
+ 		if (storeInitKeyRef.current === key) return;
+ 		storeInitKeyRef.current = key;
+-		const bindingDefaults = {};
+-		if (initialState) for (const [key, value] of Object.entries(initialState)) if (key.startsWith("$")) bindingDefaults[key] = value;
++		const decls = result?.stateDeclarations ?? {};
++		const forced = {};
++		if (!isStreaming) {
++			const prev = committedDeclsRef.current;
++			for (const k of Object.keys(prev)) if (!(k in decls)) forced[k] = void 0;
++			for (const k of Object.keys(decls)) if (!(k in prev) || JSON.stringify(prev[k]) !== JSON.stringify(decls[k])) forced[k] = decls[k];
++			committedDeclsRef.current = decls;
++		}
++		if (initialState) for (const [key, value] of Object.entries(initialState)) if (key.startsWith("$")) forced[key] = value;
+ 		else store.set(key, value);
+-		store.initialize(result?.stateDeclarations ?? {}, bindingDefaults);
++		store.initialize(decls, forced);
+ 	}, [
+ 		result?.stateDeclarations,
+ 		store,
+-		initialState
++		initialState,
++		isStreaming
+ 	]);
+ 	const storeSnapshot = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
+ 	const querySnapshot = useSyncExternalStore(queryManager.subscribe, queryManager.getSnapshot, queryManager.getSnapshot);
 +	const runtimeErrorsRef = useRef([]);
++	/* errors raised outside render (effects, input handlers) need a render to reach onError */
++	const [, bumpRuntimeErrors] = useState(0);
++	const reportRuntimeError = useCallback((error) => {
++		runtimeErrorsRef.current = [...runtimeErrorsRef.current, error];
++		bumpRuntimeErrors((n) => n + 1);
++	}, []);
 +	const limitToError = (e, hint) => ({
 +		source: "runtime",
 +		code: "budget-exceeded",
@@ -30,6 +80,22 @@ index fb50f51..b80da06 100644
 +		statementId: e.statementId,
 +		hint
 +	});
+ 	const evaluationContext = useMemo(() => ({
+ 		getState: (name) => unwrapFieldValue(store.get(name)),
+ 		resolveRef: (name) => {
+ 			const mutResult = queryManager.getMutationResult(name);
+ 			if (mutResult) return mutResult;
+ 			return queryManager.getResult(name);
+-		}
+-	}), [store, queryManager]);
++		},
++		/* reactive input assignments evaluate with a fresh per-change budget in lang-core; a limit is reported, not stored */
++		onLimitError: (e) => reportRuntimeError(limitToError(e, "Input assignment exceeds the evaluation budget"))
++	}), [
++		store,
++		queryManager,
++		reportRuntimeError
++	]);
  	useEffect(() => {
  		if (isStreaming) return;
 -		const evaluatedNodes = (result?.queryStatements ?? []).map((qn) => {
@@ -63,13 +129,13 @@ index fb50f51..b80da06 100644
 +		} catch (e) {
 +			if (!(e instanceof LimitError)) throw e;
 +			/* keep the previously scheduled queries; report the located limit */
-+			runtimeErrorsRef.current = [...runtimeErrorsRef.current, limitToError(e, "Query arguments exceed the evaluation budget")];
++			reportRuntimeError(limitToError(e, "Query arguments exceed the evaluation budget"));
 +			return;
 +		}
  		queryManager.evaluateQueries(evaluatedNodes);
  	}, [
  		isStreaming,
-@@ -412,10 +429,17 @@ function useOpenUIState({ response, library, isStreaming, onAction, onStateUpdat
+@@ -412,10 +457,17 @@ function useOpenUIState({ response, library, isStreaming, onAction, onStateUpdat
  	]);
  	useEffect(() => {
  		if (isStreaming) return;
@@ -85,13 +151,13 @@ index fb50f51..b80da06 100644
 +			}));
 +		} catch (e) {
 +			if (!(e instanceof LimitError)) throw e;
-+			runtimeErrorsRef.current = [...runtimeErrorsRef.current, limitToError(e, "Mutation tool name exceeds the evaluation budget")];
++			reportRuntimeError(limitToError(e, "Mutation tool name exceeds the evaluation budget"));
 +			return;
 +		}
  		queryManager.registerMutations(nodes);
  	}, [
  		isStreaming,
-@@ -425,11 +449,15 @@ function useOpenUIState({ response, library, isStreaming, onAction, onStateUpdat
+@@ -425,11 +477,15 @@ function useOpenUIState({ response, library, isStreaming, onAction, onStateUpdat
  	]);
  	const propsRef = useRef({
  		onAction,
@@ -109,7 +175,7 @@ index fb50f51..b80da06 100644
  	};
  	const resultRef = useRef(result);
  	resultRef.current = result;
-@@ -472,9 +500,14 @@ function useOpenUIState({ response, library, isStreaming, onAction, onStateUpdat
+@@ -472,9 +528,14 @@ function useOpenUIState({ response, library, isStreaming, onAction, onStateUpdat
  		}
  		return store.getSnapshot();
  	}, [store]);
@@ -125,7 +191,7 @@ index fb50f51..b80da06 100644
  		if (action && !("steps" in action)) {
  			const actionType = action.type || BuiltinActionType.ContinueConversation;
  			const params = { ...action.params || {} };
-@@ -485,61 +518,31 @@ function useOpenUIState({ response, library, isStreaming, onAction, onStateUpdat
+@@ -485,61 +546,31 @@ function useOpenUIState({ response, library, isStreaming, onAction, onStateUpdat
  				params,
  				humanFriendlyMessage: userMessage,
  				formState: formPayload,
@@ -204,12 +270,18 @@ index fb50f51..b80da06 100644
  		});
  	}, [
  		queryManager,
-@@ -578,12 +581,15 @@ function useOpenUIState({ response, library, isStreaming, onAction, onStateUpdat
+@@ -578,12 +609,21 @@ function useOpenUIState({ response, library, isStreaming, onAction, onStateUpdat
  		evaluationContext,
  		reportError
  	]);
 -	const runtimeErrorsRef = useRef([]);
++	/* a fallback frame is only valid for the generation whose bindings/context it was evaluated against */
 +	const lastGoodResultRef = useRef(null);
++	const lastGoodGenerationRef = useRef(generation);
++	if (lastGoodGenerationRef.current !== generation) {
++		lastGoodGenerationRef.current = generation;
++		lastGoodResultRef.current = null;
++	}
  	const evaluatedResult = useMemo(() => {
  		if (!result?.root) return result;
  		const errors = [];
@@ -222,7 +294,7 @@ index fb50f51..b80da06 100644
  			library,
  			store,
  			errors
-@@ -591,19 +597,25 @@ function useOpenUIState({ response, library, isStreaming, onAction, onStateUpdat
+@@ -591,19 +631,25 @@ function useOpenUIState({ response, library, isStreaming, onAction, onStateUpdat
  		try {
  			const evaluatedRoot = evaluateElementProps(result.root, evalCtx);
  			runtimeErrorsRef.current = errors;
@@ -253,7 +325,7 @@ index fb50f51..b80da06 100644
  		}
  	}, [
  		result,
-@@ -638,7 +650,8 @@ function useOpenUIState({ response, library, isStreaming, onAction, onStateUpdat
+@@ -638,7 +684,8 @@ function useOpenUIState({ response, library, isStreaming, onAction, onStateUpdat
  		result: evaluatedResult,
  		parseResult: result,
  		contextValue,
@@ -263,7 +335,7 @@ index fb50f51..b80da06 100644
  	};
  }
  //#endregion
-@@ -743,7 +756,15 @@ const DefaultQueryLoader = () => /* @__PURE__ */ jsx("div", { style: {
+@@ -743,7 +790,15 @@ const DefaultQueryLoader = () => /* @__PURE__ */ jsx("div", { style: {
  	animation: "openui-spin 0.6s linear infinite",
  	zIndex: 10
  } });
@@ -280,7 +352,7 @@ index fb50f51..b80da06 100644
  	useInsertionEffect(() => {
  		ensureLoadingStyle();
  	}, []);
-@@ -751,9 +772,18 @@ function Renderer({ response, library, isStreaming = false, onAction, onStateUpd
+@@ -751,9 +806,18 @@ function Renderer({ response, library, isStreaming = false, onAction, onStateUpd
  	onParseResultRef.current = onParseResult;
  	const toolProviderInputRef = useRef(toolProvider);
  	toolProviderInputRef.current = toolProvider;
@@ -300,7 +372,7 @@ index fb50f51..b80da06 100644
  		if (typeof current.callTool === "function") return extractToolResult(await current.callTool({
  			name: toolName,
  			arguments: args
-@@ -761,22 +791,58 @@ function Renderer({ response, library, isStreaming = false, onAction, onStateUpd
+@@ -761,22 +825,60 @@ function Renderer({ response, library, isStreaming = false, onAction, onStateUpd
  		const map = current;
  		const fn = map[toolName];
  		if (!fn) throw new ToolNotFoundError(toolName, Object.keys(map));
@@ -322,7 +394,9 @@ index fb50f51..b80da06 100644
 -		publishObservability
 +		publishObservability,
 +		onActionStart,
-+		onActionEnd
++		onActionEnd,
++		generation,
++		paused
  	}, renderDeep);
  	useEffect(() => {
  		onParseResultRef.current?.(parseResult);
@@ -475,10 +549,10 @@ index c5b3745..befd76f 100644
 \ No newline at end of file
 diff --git a/dist/wth-runtime.d.mts b/dist/wth-runtime.d.mts
 new file mode 100644
-index 0000000..e1de8f6
+index 0000000..0ac9d38
 --- /dev/null
 +++ b/dist/wth-runtime.d.mts
-@@ -0,0 +1,89 @@
+@@ -0,0 +1,93 @@
 +import { ActionEvent, ActionPlan, EvaluationContext, MutationNode, MutationResult, OpenUIError, ParseResult, QueryNode, QuerySnapshot, Store } from "@openuidev/lang-core";
 +
 +//#region wth/runtime.d.ts (patch)
@@ -536,7 +610,11 @@ index 0000000..e1de8f6
 +declare const MIN_REFRESH_INTERVAL_S: 5;
 +declare const STATE_CHANGE_DEBOUNCE_MS: 150;
 +declare function createActionId(): string;
-+declare function createQueryManager(toolProvider: MetaToolProvider | null): QueryManager;
++interface QueryManagerOptions {
++  /** Start paused: the first scheduling pass defers fetches until `resume()`. */
++  paused?: boolean;
++}
++declare function createQueryManager(toolProvider: MetaToolProvider | null, options?: QueryManagerOptions): QueryManager;
 +declare function evaluateBudgeted(ast: unknown, evaluationContext: EvaluationContext): unknown;
 +interface ActionStartEvent {
 +  actionId: string;
@@ -567,13 +645,13 @@ index 0000000..e1de8f6
 +}
 +declare function runActionPlan(input: RunActionPlanInput): Promise<void>;
 +//#endregion
-+export { type ActionEndEvent, type ActionStartEvent, MIN_REFRESH_INTERVAL_S, type MetaToolProvider, type QueryManager, type QueryStatus, type RunActionPlanInput, STATE_CHANGE_DEBOUNCE_MS, type ScopedActionEvent, type ToolCallMeta, type ToolCallTrigger, createActionId, createQueryManager, evaluateBudgeted, runActionPlan };
++export { type ActionEndEvent, type ActionStartEvent, MIN_REFRESH_INTERVAL_S, type MetaToolProvider, type QueryManager, type QueryManagerOptions, type QueryStatus, type RunActionPlanInput, STATE_CHANGE_DEBOUNCE_MS, type ScopedActionEvent, type ToolCallMeta, type ToolCallTrigger, createActionId, createQueryManager, evaluateBudgeted, runActionPlan };
 diff --git a/dist/wth-runtime.mjs b/dist/wth-runtime.mjs
 new file mode 100644
-index 0000000..ce1a1ce
+index 0000000..3938f7e
 --- /dev/null
 +++ b/dist/wth-runtime.mjs
-@@ -0,0 +1,545 @@
+@@ -0,0 +1,582 @@
 +import { ACTION_STEPS, BuiltinActionType, McpToolError, ToolNotFoundError, createEvalBudget, evaluate } from "@openuidev/lang-core";
 +//#region wth/runtime.ts (patch)
 +/**
@@ -632,7 +710,8 @@ index 0000000..ce1a1ce
 +	if (err instanceof McpToolError) return toolError(source, component, "mcp-error", `${component} "${toolName}" returned an error: ${err.toolErrorText}`, statementId, toolName);
 +	return toolError(source, component, "tool-error", `${component} "${toolName}" ${verb}: ${err instanceof Error ? err.message : String(err)}`, statementId, toolName);
 +}
-+function createQueryManager(toolProvider) {
++/** `options.paused` starts the manager paused so the first scheduling pass defers instead of calling the provider. */
++function createQueryManager(toolProvider, options) {
 +	const queries = /* @__PURE__ */ new Map();
 +	const mutations = /* @__PURE__ */ new Map();
 +	const cache = /* @__PURE__ */ new Map();
@@ -644,7 +723,7 @@ index 0000000..ce1a1ce
 +	};
 +	let snapshotJson = JSON.stringify(snapshot);
 +	let disposed = false;
-+	let paused = false;
++	let paused = options?.paused === true;
 +	let generation = 0;
 +	function settledData(cacheKey) {
 +		const entry = cacheKey ? cache.get(cacheKey) : void 0;
@@ -683,10 +762,17 @@ index 0000000..ce1a1ce
 +	function notify() {
 +		for (const listener of [...listeners]) listener();
 +	}
++	/** Abort the live call and release its cache entry; an aborted provider promise may never settle. */
 +	function abortInFlight(q) {
 +		if (q.controller) {
 +			q.controller.abort();
++			const entry = q.fetchKey !== void 0 ? cache.get(q.fetchKey) : void 0;
++			if (entry && entry.controller === q.controller) {
++				entry.inFlight = false;
++				entry.controller = void 0;
++			}
 +			q.controller = void 0;
++			q.fetchKey = void 0;
 +		}
 +	}
 +	function clearDebounce(q) {
@@ -707,17 +793,17 @@ index 0000000..ce1a1ce
 +		const fetchKey = cacheKey;
 +		const toolName = q.toolName;
 +		const args = q.args;
++		abortInFlight(q);
 +		let entry = cache.get(fetchKey);
 +		if (!entry) {
-+			entry = {
-+				data: void 0,
-+				inFlight: true
-+			};
++			entry = { data: void 0 };
 +			cache.set(fetchKey, entry);
-+		} else entry.inFlight = true;
-+		abortInFlight(q);
++		}
 +		const controller = new AbortController();
++		entry.inFlight = true;
++		entry.controller = controller;
 +		q.controller = controller;
++		q.fetchKey = fetchKey;
 +		q.loading = true;
 +		q.lastTrigger = trigger;
 +		rebuildSnapshot();
@@ -731,11 +817,8 @@ index 0000000..ce1a1ce
 +			});
 +			if (disposed || controller.signal.aborted) return;
 +			const current = queries.get(statementId);
-+			if (!current || current.cacheKey !== fetchKey) {
-+				/* args moved on while this call ran: obsolete result, discard */
-+				entry.inFlight = false;
-+				return;
-+			}
++			/* args moved on while this call ran: obsolete result, discard */
++			if (!current || current.cacheKey !== fetchKey) return;
 +			entry.data = data ?? null;
 +			current.everFetched = true;
 +			current.error = void 0;
@@ -753,9 +836,15 @@ index 0000000..ce1a1ce
 +				current.cause = err;
 +			}
 +		} finally {
-+			entry.inFlight = false;
++			if (entry.controller === controller) {
++				entry.inFlight = false;
++				entry.controller = void 0;
++			}
 +			const current = queries.get(statementId);
-+			if (current && current.controller === controller) current.controller = void 0;
++			if (current && current.controller === controller) {
++				current.controller = void 0;
++				current.fetchKey = void 0;
++			}
 +			if (!disposed && !controller.signal.aborted) {
 +				if (current && current.cacheKey === fetchKey) {
 +					current.loading = false;
@@ -802,8 +891,10 @@ index 0000000..ce1a1ce
 +			if (existing) {
 +				if (existing.cacheKey !== cacheKey) {
 +					if (!existing.prevCacheKey || cache.get(existing.prevCacheKey)?.data === void 0) existing.prevCacheKey = existing.cacheKey;
++					/* the superseded call is gone: no work is running for this query until the debounce decides */
 +					abortInFlight(existing);
 +					existing.needsRefetch = void 0;
++					existing.loading = false;
 +					trigger = "state_change";
 +				} else trigger = void 0;
 +				existing.toolName = node.toolName;
@@ -974,8 +1065,17 @@ index 0000000..ce1a1ce
 +	function getSnapshot() {
 +		return snapshot;
 +	}
++	/**
++	* Undo `dispose()` for the same program (React StrictMode / Fast Refresh run effect cleanup and
++	* setup on one manager). Loads aborted by dispose never settled, so start them again.
++	*/
 +	function activate() {
++		if (!disposed) return;
 +		disposed = false;
++		for (const [sid, q] of queries) {
++			if (q.error || settledData(q.cacheKey) || cache.get(q.cacheKey)?.inFlight || q.debounce) continue;
++			executeFetch(q.cacheKey, sid, settledData(q.prevCacheKey) ? "state_change" : "load");
++		}
 +	}
 +	/** Stop starting fetches (timers, loads, state changes, presses); in-flight calls finish normally. */
 +	function pause() {
@@ -1042,10 +1142,18 @@ index 0000000..ce1a1ce
 +		budget: createEvalBudget()
 +	});
 +}
++/** Unwrap `{ value, componentType }` form-field entries (same as useOpenUIState's getState). */
++function unwrapFieldValue(v) {
++	if (v && typeof v === "object" && !Array.isArray(v) && "value" in v) return v.value;
++	return v;
++}
 +/**
 +* Execute one activation. `actionId` is created here and threaded explicitly through
-+* every step; nothing global records "clicking". Mutation arguments for every Run step
-+* are captured before the first await so a network wait never re-reads inputs.
++* every step; nothing global records "clicking". User inputs (`$state`) are frozen at
++* activation in an action-local snapshot that only this plan's own Set/Reset steps advance,
++* so a network wait never re-reads inputs and a repeated @Run(m) around a @Set sees that Set.
++* Each step is evaluated when its turn comes, so query/mutation results produced by earlier
++* steps (e.g. `@Set($id, m.data.id)` after `@Run(m)`) are the returned ones.
 +* Returns when the plan's awaited steps finish; a pressed query refetch keeps the id.
 +*/
 +async function runActionPlan({ plan, userMessage, formName, formPayload, handler, queryManager, evaluationContext, store, getResult, onActionStart, onActionEnd }) {
@@ -1063,15 +1171,23 @@ index 0000000..ce1a1ce
 +	let ok = true;
 +	let error;
 +	try {
-+		const capturedArgs = /* @__PURE__ */ new Map();
-+		for (const step of plan.steps) if (step.type === ACTION_STEPS.Run && step.refType === "mutation") {
-+			const mn = getResult()?.mutationStatements?.find((m) => m.statementId === step.statementId);
-+			capturedArgs.set(step.statementId, mn?.argsAST ? evaluateBudgeted(mn.argsAST, evaluationContext) : {});
-+		}
++		const local = { ...store.getSnapshot() };
++		const ctx = {
++			...evaluationContext,
++			getState: (name) => unwrapFieldValue(local[name]),
++			budget: createEvalBudget()
++		};
++		const result = getResult();
++		const assign = (target, value) => {
++			local[target] = value;
++			store.set(target, value);
++		};
 +		for (const step of plan.steps) switch (step.type) {
 +			case ACTION_STEPS.Run:
 +				if (step.refType === "mutation") {
-+					if (!await queryManager.fireMutation(step.statementId, capturedArgs.get(step.statementId) ?? {}, void 0, actionId)) {
++					const mn = result?.mutationStatements?.find((m) => m.statementId === step.statementId);
++					const args = mn?.argsAST ? evaluate(mn.argsAST, ctx) : {};
++					if (!await queryManager.fireMutation(step.statementId, args, void 0, actionId)) {
 +						ok = false;
 +						return;
 +					}
@@ -1091,17 +1207,16 @@ index 0000000..ce1a1ce
 +					humanFriendlyMessage: ""
 +				});
 +				break;
-+			case ACTION_STEPS.Set: {
++			case ACTION_STEPS.Set:
 +				if (!step.valueAST) {
 +					console.warn(`[openui] Set action for ${step.target} has no valueAST — skipping`);
 +					break;
 +				}
-+				store.set(step.target, evaluateBudgeted(step.valueAST, evaluationContext));
++				assign(step.target, evaluate(step.valueAST, ctx));
 +				break;
-+			}
 +			case ACTION_STEPS.Reset: {
-+				const decls = getResult()?.stateDeclarations ?? {};
-+				for (const target of step.targets) store.set(target, decls[target] ?? null);
++				const decls = result?.stateDeclarations ?? {};
++				for (const target of step.targets) assign(target, decls[target] ?? null);
 +				break;
 +			}
 +		}

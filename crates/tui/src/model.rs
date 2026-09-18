@@ -197,12 +197,15 @@ pub enum UiEvent {
     /// Live URLs of a `crawl` / `map_site` / `scrape_url` call (bus event, design doc 38).
     ScrapeProgress(web::progress::ScrapeProgress),
     /// Reply to [`Command::ListArtifacts`]: the session subtree's artifacts, newest first;
-    /// `pick` opens the `/artifacts` menu, else the rows only join their `show` cards.
+    /// `pick` opens the `/artifacts` (`/apps` when `apps`) menu, else the rows
+    /// only join their `show` / `app` cards.
     Artifacts {
         /// The rows.
         items: Vec<artifact::Artifact>,
         /// Open the picker.
         pick: bool,
+        /// Only [`artifact::Kind::App`] records (`/apps`, 46 §8.2).
+        apps: bool,
     },
     /// Reply to [`Command::ListSecrets`]: names, notes, versions. Never values.
     Secrets(secrets::SecretsList),
@@ -521,12 +524,15 @@ pub enum Command {
     RenameNode(String, String),
     /// `invite_node(<resolved id>)`. Holds a name or id prefix.
     InviteNode(String),
-    /// `list_artifacts(session, descendants: true)`; `pick` opens the `/artifacts` menu.
+    /// `list_artifacts(session, descendants: true)`; `pick` opens the `/artifacts`
+    /// menu, `apps` keeps only [`artifact::Kind::App`] records (`/apps`).
     ListArtifacts {
         /// Session.
         session: SessionId,
         /// Open the picker on reply.
         pick: bool,
+        /// Filter to apps.
+        apps: bool,
     },
     /// `export_artifact(id, ~/Downloads/<name>)`.
     ExportArtifact {
@@ -1128,12 +1134,24 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "",
         "files the agent showed (picker: ⏎ opens, s shows inline, e exports to ~/Downloads)",
     ),
+    (
+        "/apps",
+        "",
+        "interactive apps the agent built, run on desktop/web (picker: ⏎ opens, s shows source, e exports to ~/Downloads)",
+    ),
     ("/exit", "", "same as /quit"),
 ];
 
-/// Commands whose name starts with the typed word (`/mo` → `/model`).
-pub fn slash_matches(word: &str) -> Vec<&'static (&'static str, &'static str, &'static str)> {
-    COMMANDS.iter().filter(|c| c.0.starts_with(word)).collect()
+/// Commands whose name starts with the typed word (`/mo` → `/model`);
+/// `/apps` only while the app plugin runs.
+pub fn slash_matches(
+    word: &str,
+    app_enabled: bool,
+) -> Vec<&'static (&'static str, &'static str, &'static str)> {
+    COMMANDS
+        .iter()
+        .filter(|c| c.0.starts_with(word) && (app_enabled || c.0 != "/apps"))
+        .collect()
 }
 
 /// Tool arguments as display lines. `shell` shows the command itself
@@ -1323,12 +1341,14 @@ pub enum Menu {
         /// Highlighted node.
         cursor: usize,
     },
-    /// `/artifacts` picker (35 §6.2).
+    /// `/artifacts` picker (35 §6.2); `/apps` when `apps` (46 §8.2).
     Artifacts {
         /// The session subtree's artifacts, newest first.
         items: Vec<artifact::Artifact>,
         /// Highlighted row.
         cursor: usize,
+        /// Rows are apps: the title says so and where they run.
+        apps: bool,
     },
     /// `/secrets`: the vault's names over [`Model::secrets`] (37 §5).
     Secrets {
@@ -2225,6 +2245,9 @@ pub struct Model {
     pub approvals_global: bool,
     /// The root session opted out of prompts (`/approvals off`).
     pub approvals_off: bool,
+    /// `Info.app_enabled`: the app plugin runs, so `/apps` is offered. Off,
+    /// app records stay readable under `/artifacts` (46 §9).
+    pub app_enabled: bool,
     /// Latest MCP reconcile snapshot; `None` before the first.
     pub mcp: Option<McpProgress>,
     /// A reconcile settled while the `/mcp` menu is open: the event loop
@@ -2363,6 +2386,7 @@ impl Model {
             nodes: self.nodes.take(),
             update: self.update.take(),
             todo_open: std::mem::take(&mut self.todo_open),
+            app_enabled: self.app_enabled,
             ..Self::new(std::mem::take(&mut self.model_id), self.approvals_global)
         };
     }
@@ -2378,7 +2402,7 @@ impl Model {
         self.refresh_artifacts = self
             .entries
             .iter()
-            .any(|e| matches!(e, Entry::Tool { name, .. } if name == SHOW));
+            .any(|e| matches!(e, Entry::Tool { name, .. } if name == SHOW || name == APP));
         self.anchor = None;
         // An index into the old transcript is meaningless now.
         self.editing = None;
@@ -3586,15 +3610,21 @@ impl Model {
                 }
             }
             UiEvent::ScrapeProgress(_) => {}
-            UiEvent::Artifacts { items, pick } => {
+            UiEvent::Artifacts { items, pick, apps } => {
                 if !pick {
                     for a in items {
                         self.attach_artifact(a);
                     }
                 } else if items.is_empty() {
-                    self.entries.push(Entry::Info("no artifacts".into()));
+                    self.entries.push(Entry::Info(
+                        if apps { "no apps" } else { "no artifacts" }.into(),
+                    ));
                 } else {
-                    self.menu = Some(Menu::Artifacts { items, cursor: 0 });
+                    self.menu = Some(Menu::Artifacts {
+                        items,
+                        cursor: 0,
+                        apps,
+                    });
                 }
             }
             UiEvent::Job(ev) => match ev {
@@ -4434,12 +4464,16 @@ impl Model {
                     .entries
                     .push(Entry::Error("usage: /jobs [kill <id>]".into())),
             },
-            "/artifacts" => match self.session {
+            "/apps" if !self.app_enabled => self.entries.push(Entry::Info(
+                "apps are off (app.enabled); /artifacts lists their sources".into(),
+            )),
+            "/artifacts" | "/apps" => match self.session {
                 Some(session) => send(
                     tx,
                     Command::ListArtifacts {
                         session,
                         pick: true,
+                        apps: cmd == "/apps",
                     },
                 ),
                 None => self.entries.push(Entry::Info("no session".into())),
@@ -5886,7 +5920,7 @@ impl Model {
         let (word, arg) = input
             .split_once(' ')
             .map_or((input, ""), |(w, a)| (w, a.trim()));
-        let matches = slash_matches(word);
+        let matches = slash_matches(word, self.app_enabled);
         *cursor = (*cursor).min(matches.len().saturating_sub(1));
         let picked = matches.get(*cursor).copied();
         match code {
@@ -6124,10 +6158,11 @@ impl Model {
         MenuKey::Consumed
     }
 
-    /// `/artifacts`: Enter opens the highlighted file with the OS, `s` shows
-    /// it inline as a card, `e` exports it to `~/Downloads/<name>` (35 §6.2).
+    /// `/artifacts` and `/apps`: Enter opens the highlighted file with the OS,
+    /// `s` shows it inline as a card (an app's read-only source), `e` exports
+    /// it to `~/Downloads/<name>` (35 §6.2, 46 §8.2).
     fn artifacts_key(&mut self, code: KeyCode, tx: &UnboundedSender<Command>) -> MenuKey {
-        let Some(Menu::Artifacts { items, cursor }) = &mut self.menu else {
+        let Some(Menu::Artifacts { items, cursor, .. }) = &mut self.menu else {
             return MenuKey::Consumed;
         };
         match code {
@@ -6911,6 +6946,10 @@ fn on_off(b: bool) -> &'static str {
 
 /// The tool whose card is an artifact card (35 §0.3).
 const SHOW: &str = "show";
+/// The tool whose card is an app card (46 §3.1): same join, source is the file.
+const APP: &str = "app";
+/// Where an app runs; the TUI only reads its source (46 §8.2).
+pub const APP_WHERE: &str = "interactive on desktop/web";
 /// Rows an inline artifact body shows at most (35 §6.1).
 const INLINE_LINES: usize = 200;
 /// Rows of a CSV artifact shown inline.
@@ -6936,6 +6975,7 @@ pub struct Progress {
 
 /// The spinner row of a `Pending` call with progress: `writing report.pdf… 3.2 KB`
 /// when `show` carries `content`, `showing report.pdf…` when it names a path,
+/// `building <name>… 3.2 KB` for `app` (its `name` streams first),
 /// `preparing <tool>… 3.2 KB` for every other tool.
 pub fn progress_line(tool: &str, p: &Progress) -> String {
     let size = bytes_label(p.bytes as u64);
@@ -6945,6 +6985,10 @@ pub fn progress_line(tool: &str, p: &Progress) -> String {
             (Some(n), false) => format!("showing {n}…"),
             (None, true) => format!("writing… {size}"),
             (None, false) => "preparing show…".to_owned(),
+        },
+        (APP, Some(s)) => match &s.name {
+            Some(n) => format!("building {n}… {size}"),
+            None => format!("building app… {size}"),
         },
         _ => format!("preparing {tool}… {size}"),
     }
@@ -7035,28 +7079,34 @@ fn md_cell(s: &str) -> String {
 
 /// An artifact's inline body by kind (35 §3.2): markdown rendered with the
 /// assistant's options so its own fences draw, text in a fence tagged with the
-/// extension, CSV as a table of the first [`CSV_ROWS`] rows, anything else one
-/// line. Text bodies cap at [`INLINE_LINES`].
+/// extension, CSV as a table of the first [`CSV_ROWS`] rows, an app's
+/// `.openui` source read-only in a fence under where it runs (46 §8.2),
+/// anything else one line. Text bodies cap at [`INLINE_LINES`].
 fn artifact_body(a: &artifact::Artifact, opts: &markdown::Options) -> markdown::Text {
     use artifact::Kind;
     let ext = a.path.extension().map_or("", |e| e.to_str().unwrap_or(""));
     let path = a.path.display().to_string();
     let unreadable = |e: &dyn std::fmt::Display| format!("cannot read {path}: {e}");
     let md = match a.kind {
-        Kind::Markdown | Kind::Text | Kind::Html => match std::fs::read_to_string(&a.path) {
-            Err(e) => unreadable(&e),
-            Ok(s) => {
-                let (body, cut) = cap_lines(&s);
-                let text = match a.kind {
-                    Kind::Markdown => body,
-                    _ => fenced(ext, &body),
-                };
-                match cut {
-                    0 => text,
-                    n => format!("{text}\n\n… (+{n} lines, o opens)"),
+        Kind::Markdown | Kind::Text | Kind::Html | Kind::App => {
+            match std::fs::read_to_string(&a.path) {
+                Err(e) => unreadable(&e),
+                Ok(s) => {
+                    let (body, cut) = cap_lines(&s);
+                    let text = match a.kind {
+                        Kind::Markdown => body,
+                        Kind::App => {
+                            format!("[app] {APP_WHERE} · source:\n\n{}", fenced(ext, &body))
+                        }
+                        _ => fenced(ext, &body),
+                    };
+                    match cut {
+                        0 => text,
+                        n => format!("{text}\n\n… (+{n} lines, o opens)"),
+                    }
                 }
             }
-        },
+        }
         Kind::Csv => match std::fs::read(&a.path)
             .map_err(|e| e.to_string())
             .and_then(|b| artifact::kind::csv_table(&b, ext == "tsv", CSV_ROWS))
@@ -7089,7 +7139,6 @@ fn artifact_body(a: &artifact::Artifact, opts: &markdown::Options) -> markdown::
         Kind::Image => format!("[image] {path}"),
         Kind::Svg => format!("[svg] {path}"),
         Kind::Pdf => format!("{} · {path}", artifact_size(a)),
-        Kind::App => format!("[app] interactive on desktop/web · source {path}"),
         Kind::File => path.clone(),
     };
     let mut t = markdown::Text::with(opts.clone());
@@ -7519,8 +7568,9 @@ mod tests {
             MenuKey::Input(String::new())
         );
         assert!(m.quit && m.menu.is_none());
-        assert_eq!(slash_matches("/").len(), COMMANDS.len());
-        assert!(slash_matches("/zzz").is_empty());
+        assert_eq!(slash_matches("/", true).len(), COMMANDS.len());
+        assert_eq!(slash_matches("/", false).len(), COMMANDS.len() - 1);
+        assert!(slash_matches("/zzz", true).is_empty());
     }
 
     /// An inventory: a user message with two images, an assistant call
@@ -10421,6 +10471,162 @@ mod tests {
     }
 
     #[test]
+    fn app_card_reads_its_source_and_apps_picker_lists_only_apps() {
+        let (tx, mut rx) = unbounded_channel();
+        let s = SessionId::new();
+        let turn = TurnId::new();
+        let mut m = Model {
+            session: Some(s),
+            app_enabled: true,
+            ..Model::default()
+        };
+        // The streamed `name` names the app being built; no pretend render.
+        m.apply_agent(AgentEvent::ToolCallPending {
+            session: s,
+            turn,
+            call_id: "a1".into(),
+            name: "app".into(),
+        });
+        m.apply_agent(AgentEvent::ToolCallProgress {
+            session: s,
+            turn,
+            call_id: "a1".into(),
+            args: r#"{"name": "panel", "source": "root = Card("#.into(),
+        });
+        let Some(Entry::Pending {
+            name,
+            progress: Some(p),
+            ..
+        }) = m.entries.last()
+        else {
+            unreachable!()
+        };
+        assert_eq!(progress_line(name, p), "building panel… 41 B");
+        m.apply_agent(AgentEvent::ToolCallStarted {
+            session: s,
+            turn,
+            call_id: "a1".into(),
+            name: "app".into(),
+            args: serde_json::json!({"name": "panel", "source": "root = Card(TextContent(\"hi\"))"}),
+        });
+        let path = std::env::temp_dir().join(format!("wth-tui-app-{}.openui", std::process::id()));
+        std::fs::write(&path, "root = Card(TextContent(\"hi\"))\n").unwrap();
+        let app = artifact::Artifact {
+            id: "app1".into(),
+            session: s,
+            call_id: "a1".into(),
+            name: "panel.openui".into(),
+            title: "Panel".into(),
+            kind: artifact::Kind::App,
+            mime: "text/plain".into(),
+            bytes: 31,
+            version: 1,
+            path: path.clone(),
+            source: None,
+            preview: None,
+            pages: None,
+            origin: None,
+            created_at: 0,
+        };
+        // The app's `ArtifactShown` joins the `app` card by call_id like `show`.
+        m.apply(UiEvent::ArtifactShown(artifact::ArtifactShown {
+            session: s,
+            call_id: "a1".into(),
+            artifact: app.clone(),
+        }));
+        m.apply_agent(AgentEvent::ToolCallFinished {
+            session: s,
+            turn,
+            call_id: "a1".into(),
+            output: "published panel v1 (a1) · 1 statement".into(),
+            is_error: false,
+            files: Vec::new(),
+        });
+        assert!(matches!(
+            m.entries.last(),
+            Some(Entry::Tool { artifact: Some(a), .. }) if a.kind == artifact::Kind::App
+        ));
+        // `o` opens the source file; Ctrl+O reads it, saying where the app runs.
+        assert_eq!(m.artifact_path(), Some(path.as_path()));
+        m.toggle_card();
+        let Some(Entry::Tool {
+            expanded: Some(t), ..
+        }) = m.entries.last()
+        else {
+            panic!("expanded");
+        };
+        let has = |needle: &str| {
+            t.view()
+                .lines()
+                .any(|l| l.iter().any(|s| s.text.contains(needle)))
+        };
+        assert!(has("desktop/web") && has("TextContent"));
+
+        // A loaded transcript with an `app` card asks to re-join artifacts like `show`.
+        m.apply(UiEvent::History(
+            s,
+            Loaded {
+                history: vec![HistoryEntry::Tool {
+                    call_id: "a1".into(),
+                    name: "app".into(),
+                    args: serde_json::json!({"name": "panel"}),
+                    result: Some(("published".into(), false)),
+                    files: vec![],
+                    context: None,
+                }],
+                ..Loaded::default()
+            },
+        ));
+        assert!(m.refresh_artifacts);
+        m.session = Some(s);
+
+        // With the plugin off, `/apps` is not offered and asks nothing; the
+        // source stays readable through `/artifacts` (the card above).
+        m.app_enabled = false;
+        assert!(slash_matches("/apps", false).is_empty());
+        m.submit("/apps", &tx);
+        assert!(rx.try_recv().is_err());
+        assert!(matches!(m.entries.last(), Some(Entry::Info(t)) if t.starts_with("apps are off")));
+        m.app_enabled = true;
+
+        // `/apps` asks for the filtered list; the picker names it and `s` shows the source.
+        m.submit("/apps", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::ListArtifacts { session, pick: true, apps: true }) if session == s
+        ));
+        m.apply(UiEvent::Artifacts {
+            items: vec![app],
+            pick: true,
+            apps: true,
+        });
+        assert!(matches!(m.menu, Some(Menu::Artifacts { apps: true, .. })));
+        m.menu_key(KeyCode::Char('s'), "", &tx);
+        assert!(m.menu.is_none());
+        assert!(matches!(
+            m.entries.last(),
+            Some(Entry::Card { kind: CardKind::Artifact, title, expanded: true, .. }) if title == "panel.openui"
+        ));
+        // `/artifacts` stays every kind; an empty `/apps` says so.
+        m.submit("/artifacts", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::ListArtifacts {
+                pick: true,
+                apps: false,
+                ..
+            })
+        ));
+        m.apply(UiEvent::Artifacts {
+            items: Vec::new(),
+            pick: true,
+            apps: true,
+        });
+        assert!(matches!(m.entries.last(), Some(Entry::Info(t)) if t == "no apps"));
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
     fn scrape_progress_rides_the_running_card_and_clears_on_finish() {
         let s = SessionId::new();
         let turn = TurnId::new();
@@ -10683,8 +10889,10 @@ mod tests {
     #[test]
     fn todo_summary_names_drops_and_blocked_waits() {
         use agent::todo::Todo;
-        let mut m = Model::default();
-        m.session = Some(SessionId::new());
+        let mut m = Model {
+            session: Some(SessionId::new()),
+            ..Model::default()
+        };
         let item = |status, reason: Option<&str>| Todo {
             text: "t".into(),
             status,

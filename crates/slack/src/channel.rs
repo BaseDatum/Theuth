@@ -550,6 +550,8 @@ const EYES: &str = "eyes";
 const DONE: &str = "white_check_mark";
 const STOPPED: &str = "octagonal_sign";
 const FAILED: &str = "x";
+/// Comment on an uploaded app source (46 §8.2): the thread gets the file, not controls.
+const APP_NOTE: &str = "Interactive app — open on desktop/web";
 
 impl Channel {
     fn new(
@@ -1867,7 +1869,9 @@ impl Worker {
 
     // -- artifacts (35 §8) -------------------------------------------------
 
-    /// Uploads a `show` artifact into the thread, `title` as the comment.
+    /// Uploads a `show` artifact into the thread, `title` as the comment. An
+    /// app (46 §8.2) uploads its `.openui` source the same way; the comment
+    /// says it is interactive elsewhere — no controls are pretended here.
     async fn artifact(&self, a: Artifact) {
         let bytes = match tokio::fs::read(&a.path).await {
             Ok(b) => b,
@@ -1881,7 +1885,14 @@ impl Worker {
             mime: a.mime,
             bytes,
         };
-        let comment = (!a.title.trim().is_empty()).then_some(a.title.as_str());
+        let title = a.title.trim();
+        let comment = match (a.kind, title.is_empty()) {
+            (artifact::Kind::App, true) => Some(APP_NOTE.to_owned()),
+            (artifact::Kind::App, false) => Some(format!("{title} · {APP_NOTE}")),
+            (_, true) => None,
+            (_, false) => Some(title.to_owned()),
+        };
+        let comment = comment.as_deref();
         if let Err(e) = self
             .chan
             .api
@@ -3070,6 +3081,31 @@ pub(crate) mod tests {
             .await;
         let upload = format!("upload_file {DM} 100.1 [report.md] Weekly report");
         f.until(|calls| calls.contains(&upload)).await;
+    }
+
+    #[tokio::test]
+    async fn app_for_a_bound_session_uploads_its_source_saying_where_it_runs() {
+        let f = fixture();
+        f.bind(OWNER);
+        let mut ev = artifact(f.stub.session, f._dir.path());
+        let path = f._dir.path().join("panel.openui");
+        std::fs::write(&path, b"root = Card(TextContent(\"hi\"))").unwrap();
+        ev.artifact.kind = artifact::Kind::App;
+        ev.artifact.name = "panel.openui".into();
+        ev.artifact.title = "Panel".into();
+        ev.artifact.path = path;
+        f.chan.route(Event::Artifact(ev)).await;
+        let upload = format!("upload_file {DM} 100.1 [panel.openui] Panel · {APP_NOTE}");
+        f.until(|calls| calls.contains(&upload)).await;
+        // One upload carrying the source; no blocks card pretending controls.
+        assert_eq!(
+            f.api
+                .calls()
+                .iter()
+                .filter(|c| c.starts_with("upload_file") || c.starts_with("post_blocks"))
+                .count(),
+            1
+        );
     }
 
     #[tokio::test]

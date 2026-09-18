@@ -26,9 +26,7 @@ async function spawnHelper(
 }
 
 /** Protocol run: every stdout line is a JSON response. */
-async function run(
-  stdin: string,
-): Promise<{
+async function run(stdin: string): Promise<{
   code: number;
   lines: (ParserResponse | ParserErrorResponse)[];
   stdout: string;

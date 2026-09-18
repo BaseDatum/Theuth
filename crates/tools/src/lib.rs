@@ -252,6 +252,15 @@ pub trait Tool: Send + Sync + 'static {
     /// for tools whose result is not data the model would work on: talking to
     /// the user, spawning and messaging agents.
     const DIRECT: bool = false;
+    /// Whether a `{{secret:NAME}}` placeholder in the args is credential
+    /// use *by this call*: the gate raises it to `Ask` and the registry
+    /// expands it to the value just before `call` (37 §0.4). `false` for a
+    /// tool that stores its arguments as an inert artifact — `app` commits
+    /// source text — where the placeholder is the data and stays literal
+    /// until the terminal tool call the artifact later makes consumes it.
+    /// Expanding earlier would persist the secret and prompt for a call
+    /// that never touches it. Output redaction applies either way.
+    const CONSUMES_SECRETS: bool = true;
 
     /// Description shown to the model.
     fn description(&self) -> String;
@@ -279,6 +288,11 @@ pub trait ErasedTool: Send + Sync + 'static {
     fn origin(&self) -> String {
         format!("native:{}", env!("CARGO_PKG_VERSION"))
     }
+    /// [`Tool::CONSUMES_SECRETS`]: `false` only for tools that take an
+    /// inert artifact as arguments. MCP tools always consume.
+    fn consumes_secrets(&self) -> bool {
+        true
+    }
     /// Invoke with raw args.
     fn call(
         &self,
@@ -297,6 +311,10 @@ impl<T: Tool> ErasedTool for T {
             direct: T::DIRECT,
             returns: T::RETURNS.to_owned(),
         }
+    }
+
+    fn consumes_secrets(&self) -> bool {
+        T::CONSUMES_SECRETS
     }
 
     fn call(

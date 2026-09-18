@@ -1,5 +1,5 @@
 {
-  "hash": "5ec7ff109464d01a1f20f2c40ea2782c72364a8106560848fb46dfb3a42d8e36",
+  "hash": "8dc9c11b7273e72b9e7feabddc5b976fb2714c2afaed2e907b6db838e2cc46c4",
   "pins": {
     "@openuidev/lang-core": "0.3.0",
     "@openuidev/react-headless": "0.16.1",
@@ -7,14 +7,15 @@
     "@openuidev/react-ui": "0.16.1"
   },
   "patches": {
-    "@openuidev%2Flang-core@0.3.0.patch": "6af2e9e8f161d562961bc0775a1eecef0f8fac61aa52d9b2d035ba2c7bb1ccf5",
-    "@openuidev%2Freact-lang@0.3.0.patch": "0861a775da13e0ac5b4fe60f21b361ba2b4446eb980ee2f1dd6877e008b2a500"
+    "@openuidev%2Flang-core@0.3.0.patch": "648ad78577984c96d634329e5805ae7b9ddb5fa4479025e6d2479b8cf5bbb5c0",
+    "@openuidev%2Freact-lang@0.3.0.patch": "2a4b02ba042871c43c0882f8866e6869db6e741e9fa83e335bae461a25ae62ea"
   },
   "limits": {
     "sourceBytes": 131072,
     "statements": 512,
     "depth": 32,
     "expandedNodes": 2048,
+    "materializedNodes": 65536,
     "evalOps": 50000,
     "evalNodes": 2048
   },

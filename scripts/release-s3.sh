@@ -3,9 +3,11 @@
 #
 # Pipeline (after package-macos, notarize-macos, package-update-macos; Linux tarballs
 # already staged by `just stage-linux` on each Linux build host):
-#   gates 1-7 (§5.2)     version == Info.plist, Developer ID, notarized, pubkeys match,
-#                        <ver>/ absent (immutability), staging/<ver>/ complete, each Linux
-#                        tarball prints VERSION in a clean ubuntu:22.04 of its arch
+#   gates 1-8 (§5.2)     version == Info.plist, Developer ID (app + wth-app-parser helper), notarized,
+#                        pubkeys match, <ver>/ absent (immutability), staging/<ver>/ complete, each Linux
+#                        tarball prints VERSION in a clean ubuntu:22.04 of its arch and its helper answers
+#                        `--version` with the library hash, every CLI tarball holds exactly
+#                        `wth` + `wth-app-parser-<hash>` (46 §2.1; scripts/app-parser-env.sh)
 #   pull staging/<ver>/  → dist/
 #   sign                 cargo tauri signer sign  dist/wth_<ver>_*.tar.gz  → .sig
 #   SHA256SUMS           shasum -a 256 over tarballs + DMG
@@ -44,6 +46,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=load-signing-env.sh
 source "$ROOT/scripts/load-signing-env.sh"
 cd "$ROOT"
+# shellcheck source=app-parser-env.sh
+source "$ROOT/scripts/app-parser-env.sh"
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "error: $1 required${2:+ ($2)}" >&2; exit 1; }; }
 need aws "brew install awscli"
@@ -130,8 +134,10 @@ PLIST_VER="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$AP
 if [[ "$PRERELEASE" == "1" ]]; then
   echo "==> gates 2-3 skipped (WTH_RELEASE_PRERELEASE=1)"
 else
-  gate 2 "codesign shows a Developer ID"
+  gate 2 "codesign shows a Developer ID (app and $HELPER)"
   codesign -dv "$APP" 2>&1 | grep -q 'Authority=Developer ID' || fail 2 "ad-hoc build (set WTH_SIGN_IDENTITY, rerun just package-macos)"
+  codesign -dv "$APP/Contents/MacOS/$HELPER" 2>&1 | grep -q 'Authority=Developer ID' || fail 2 "$HELPER not signed with a Developer ID (rerun just package-macos)"
+  codesign -d --entitlements - --xml "$APP/Contents/MacOS/$HELPER" 2>/dev/null | grep -q 'com.apple.security.cs.allow-jit' || fail 2 "$HELPER lacks the JIT entitlement (scripts/entitlements-app-parser.plist)"
   gate 3 "spctl --assess (notarized)"
   spctl --assess --type execute "$APP" 2>/dev/null || fail 3 "not notarized (just notarize-macos)"
 fi
@@ -165,11 +171,26 @@ else
   for f in "${LINUX_TGZ[@]}"; do
     case "$f" in *linux-x86_64*) plat=linux/amd64 ;; *) plat=linux/arm64 ;; esac
     out="$(docker run --rm --platform "$plat" -v "$PWD/$DIST:/d:ro" ubuntu:22.04 \
-      bash -c "tar xzf /d/$f -C /tmp && /tmp/wth --version" 2>&1)" || fail 7 "$f: $out"
+      bash -c "tar xzf /d/$f -C /tmp && /tmp/wth --version && echo wants=\$(/tmp/wth --app-parser-hash) && /tmp/$HELPER --version && printf '' | /tmp/$HELPER" 2>&1)" || fail 7 "$f: $out"
     [[ "$out" == *"$VERSION"* ]] || fail 7 "$f printed '$out', expected $VERSION"
-    echo "    $f: $out ($plat)"
+    [[ "$out" == *"wants=$HELPER_HASH"* ]] || fail 7 "$f: wth --app-parser-hash does not name $HELPER_HASH: '$out'"
+    [[ "$out" == *"wth-app-parser $HELPER_HASH"* ]] || fail 7 "$f: $HELPER --version printed '$out', expected 'wth-app-parser $HELPER_HASH'"
+    echo "    $f: $(tr '\n' ' ' <<<"$out")($plat)"
   done
 fi
+
+WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
+
+gate 8 "every CLI tarball holds exactly wth + $HELPER; the macOS helper runs here"
+for f in "$CLI_TGZ" ${LINUX_TGZ[@]+"${LINUX_TGZ[@]}"}; do
+  listed="$(tar -tzf "$DIST/$f" | sed 's|^\./||' | sort | tr '\n' ' ')"
+  [[ "$listed" == "wth $HELPER " ]] || fail 8 "$f lists '$listed', expected 'wth $HELPER' (stale dist/ or staging from another library hash)"
+  echo "    $f: wth $HELPER"
+done
+mkdir -p "$WORK/cli" && tar -xzf "$DIST/$CLI_TGZ" -C "$WORK/cli"
+check_helper "$WORK/cli/$HELPER"
+[[ "$("$WORK/cli/wth" --version 2>&1)" == *"$VERSION"* ]] || fail 8 "$CLI_TGZ: wth --version did not print $VERSION"
+[[ "$("$WORK/cli/wth" --app-parser-hash 2>&1)" == "$HELPER_HASH" ]] || fail 8 "$CLI_TGZ: wth --app-parser-hash does not name the shipped $HELPER (the updater refuses such a payload)"
 
 # ── sign + sums ──────────────────────────────────────────────────────────────
 TARBALLS=("$APP_TGZ" "$CLI_TGZ" ${LINUX_TGZ[@]+"${LINUX_TGZ[@]}"})
@@ -202,7 +223,6 @@ UPLOADS=("${TARBALLS[@]}" "$DMG" SHA256SUMS)
 for f in "${TARBALLS[@]}"; do UPLOADS+=("$f.sig"); done
 for f in "${UPLOADS[@]}"; do s3_cp "$DIST/$f" "$S3_VER/$f"; done
 
-WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 TMP="$WORK/dl"; mkdir -p "$TMP"
 
 # ── verify what the client will fetch ────────────────────────────────────────

@@ -1,6 +1,6 @@
 # Update: operator setup
 
-Status: checklist · 2026-09-17 · companion to design/39-update.md
+Status: checklist · 2026-09-18 · companion to design/39-update.md and 46-apps.md §2.1
 
 Everything a human configures outside the repo before the first release
 works. Once per product, not per release, except §6. Env values live in
@@ -100,17 +100,26 @@ Already in place from 25 §5; listed because release gates 2–3 depend on it.
    hash preferred) and the `WTH_NOTARY_*` values from
    `.env.signing.example`; `xcrun notarytool store-credentials wth-notary`
    has been run once.
-2. `just package-macos && just notarize-macos` produces a `.app` for which
+2. The release Mac has `bun` (`brew install oven-sh/bun/bun`): `just
+   package-macos` builds the app parser helper from `packages/apps` with
+   `bun build --compile` into a standalone executable (46 §2.1), named
+   `wth-app-parser-<hash>` after the committed
+   `packages/apps/generated/library-hash.txt`, and signs it with
+   `scripts/entitlements-app-parser.plist` (JIT, for Bun's runtime). Bun is
+   a build tool only; nothing shipped needs Node or Bun.
+3. `just package-macos && just notarize-macos` produces a `.app` for which
 
    ```sh
    codesign -dv target/release/bundle/macos/wth.app 2>&1 | grep 'Authority=Developer ID'
+   codesign -dv target/release/bundle/macos/wth.app/Contents/MacOS/wth-app-parser-* 2>&1 | grep 'Authority=Developer ID'
    spctl --assess --type execute target/release/bundle/macos/wth.app
    ```
 
-   both pass. An ad-hoc build (`WTH_SIGN_IDENTITY` unset) stops
-   `release-s3.sh` at gate 2 and an un-notarized one at gate 3; only
-   `WTH_RELEASE_PRERELEASE=1` bypasses them, and it writes
-   `latest-prerelease.json`, never `latest.json`, and never bumps the tap.
+   all pass. An ad-hoc build (`WTH_SIGN_IDENTITY` unset), an unsigned helper
+   or one without the JIT entitlement stops `release-s3.sh` at gate 2 and an
+   un-notarized bundle at gate 3; only `WTH_RELEASE_PRERELEASE=1` bypasses
+   them, and it writes `latest-prerelease.json`, never `latest.json`, and
+   never bumps the tap.
 
 ## 4. Homebrew tap
 
@@ -147,6 +156,9 @@ first release (39 §5.3). Nobody edits them by hand.
 
 Linux CLI tarballs are built natively per arch in Docker, never under QEMU
 (39 §5.1), and handed to the release Mac through `s3://wth/staging/<ver>/`.
+Each holds two files: `wth` and `wth-app-parser-<hash>`, the helper built in
+the same image by a pinned Bun (`deploy/update/Dockerfile`, `BUN_VERSION` +
+its two `SHASUMS256` sums — bump all three together). No host needs Bun.
 
 1. `linux-aarch64`: Docker Desktop on the arm64 release Mac (or any arm64
    Mac with the repo checked out).
@@ -158,12 +170,15 @@ Linux CLI tarballs are built natively per arch in Docker, never under QEMU
 4. On each, before `just release` on the Mac:
 
    ```sh
-   just stage-linux           # docker build → wth_<ver>_linux-<arch>.tar.gz → s3://wth/staging/<ver>/
+   just stage-linux           # docker build → wth + wth-app-parser-<hash> → wth_<ver>_linux-<arch>.tar.gz → s3://wth/staging/<ver>/
    ```
 
-   `WTH_LINUX_ARCH` overrides the detected arch. Gate 6 aborts the
-   release if either tarball is missing; gate 7 runs `wth --version` from
-   each staged tarball in a clean `ubuntu:22.04` container.
+   `WTH_LINUX_ARCH` overrides the detected arch. The script refuses an image
+   whose helper hash is not the checkout's. Gate 6 aborts the release if
+   either tarball is missing; gate 7 runs, from each staged tarball in a
+   clean `ubuntu:22.04` container, `wth --version`, `wth --app-parser-hash`
+   (must print the shipped helper's hash) and the helper's own `--version`;
+   gate 8 lists every CLI tarball and requires exactly those two entries.
 5. macOS-only release (hotfix, no Linux box at hand):
    `WTH_RELEASE_LINUX=skip just release` publishes a manifest without the
    `cli-linux-*` keys and a formula without the `on_linux` block; Linux
@@ -182,12 +197,16 @@ Linux CLI tarballs are built natively per arch in Docker, never under QEMU
    # = package-macos → notarize-macos → package-update-macos → release-s3 → tag-release
    ```
 
-4. In `release-s3.sh`'s summary look for: all seven gates passed
-   (39 §5.2); five tarballs signed; `SHA256SUMS` written; each object
-   re-downloaded through the public URL and verified (`minisign -V` if
-   installed, else sha256 against `SHA256SUMS`); `latest.json` uploaded
-   last; `staging/<ver>/` deleted; tap commit `wth <ver>` pushed;
-   `brew audit` clean for formula and cask; tag `v<ver>` pushed.
+4. In `release-s3.sh`'s summary look for: all eight gates passed
+   (39 §5.2; gate 8 = every CLI tarball is exactly `wth` +
+   `wth-app-parser-<hash>` and the macOS pair answers `--version` /
+   `--app-parser-hash` with that hash); five tarballs signed; `SHA256SUMS`
+   written; each object re-downloaded through the public URL and verified
+   (`minisign -V` if installed, else sha256 against `SHA256SUMS`);
+   `latest.json` uploaded last; `staging/<ver>/` deleted; tap commit
+   `wth <ver>` pushed; `brew audit` clean for formula and cask; tag `v<ver>`
+   pushed. The manifest shape is unchanged: one URL per platform, the CLI
+   tarball now carries both files.
 5. Verify from a machine that is not the release Mac:
 
    ```sh
@@ -195,7 +214,8 @@ Linux CLI tarballs are built natively per arch in Docker, never under QEMU
    #  .version == the new version; .platforms has darwin-aarch64, cli-macos-aarch64,
    #  cli-linux-x86_64, cli-linux-aarch64 (the last two absent with WTH_RELEASE_LINUX=skip)
    brew install skymoore/tap/wth && wth --version
-   brew install --cask skymoore/tap/wth && ls /Applications/wth.app
+   ls "$(dirname "$(readlink -f "$(which wth)")")"/wth-app-parser-"$(wth --app-parser-hash)"   # the helper the formula installed beside it
+   brew install --cask skymoore/tap/wth && ls /Applications/wth.app/Contents/MacOS/wth-app-parser-*
    ```
 
 ## 7. Verification checklist (39 §12)
@@ -205,23 +225,34 @@ Tick each on the first release and after any change to `crates/update`,
 
 - [ ] 1 Bucket: `test-s3-rustfs.sh` — authed PUT 200, anonymous GET 200
       under `releases/`, anonymous GET 403 under `staging/`, anonymous PUT 403.
-- [ ] 2 Key + script: an ad-hoc build aborts at gate 2; a
-      `WTH_RELEASE_PRERELEASE=1` run writes only `latest-prerelease.json`
-      and leaves the tap alone; repeating a version aborts at gate 5;
-      missing staging aborts at gate 6; `WTH_RELEASE_LINUX=skip` yields a
-      two-key manifest.
+- [ ] 2 Key + script: an ad-hoc build, an unsigned helper or one without
+      the JIT entitlement aborts at gate 2; a `WTH_RELEASE_PRERELEASE=1` run
+      writes only `latest-prerelease.json` and leaves the tap alone;
+      repeating a version aborts at gate 5; missing staging aborts at gate
+      6; a stale `dist/` tarball from another library hash aborts at gate 8;
+      `WTH_RELEASE_LINUX=skip` yields a two-key manifest.
 - [ ] 3 Linux build: `just stage-linux` on both hosts; gate 7 prints the
-      version from `ubuntu:22.04`; the same tarball's `wth --version` works
-      in `debian:12` and `fedora:40`.
+      version, `wants=<hash>` and `wth-app-parser <hash>` from
+      `ubuntu:22.04`; the same tarball's `wth --version` and
+      `wth-app-parser-<hash> --version` work in `debian:12` and `fedora:40`.
 - [ ] 4 `wth --update`: `0.1.1` on a scratch prefix, `WTH_UPDATE__URL=<scratch>
       wth --update` on a `0.1.0` `~/.cargo/bin/wth` prints `wth 0.1.0 → 0.1.1`,
       `wth --version` → `0.1.1`, `codesign --verify` passes (macOS); same on
       Linux; root-owned `/usr/local/bin/wth` → `available`, then `sudo wth
       --update`; a flipped byte in the tarball → verify error, binary
-      unchanged; `0.0.9` and `1.0.0` → `up to date`.
+      unchanged; `0.0.9` and `1.0.0` → `up to date`. Helper: after the
+      update `~/.cargo/bin` holds the new `wth-app-parser-<hash>` *and* the
+      old one (never removed — a still-running `0.1.0` may spawn it), the
+      helper was renamed in before `wth`, and `wth --app-parser-hash` names
+      the file beside it. A payload whose `wth --app-parser-hash` does not
+      match its helper, or with any third entry, is refused with the binary
+      unchanged; a payload whose helper hash is already installed keeps the
+      existing file. `WTH_APP_PARSER=<path>` overrides the lookup in every
+      build — a development/test hook, never set it in a service unit.
 - [ ] 5 Homebrew: formula at `0.1.0` on macOS and Linux; publish `0.1.1`;
       `wth --update` prints brew's summary, `brew list --versions wth` →
-      `0.1.1`, `readlink -f $(which wth)` under `Cellar/wth/0.1.1/`,
+      `0.1.1`, `readlink -f $(which wth)` under `Cellar/wth/0.1.1/` with
+      `wth-app-parser-<hash>` beside it (the formula asserts its `--version`),
       `~/.cargo/bin` untouched; with brew's lock held → brew's lock error,
       nothing changes, next tick succeeds; cask installs
       `/Applications/wth.app`; after step 8 `brew upgrade` is silent and

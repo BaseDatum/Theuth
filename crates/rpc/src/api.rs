@@ -21,9 +21,11 @@ use agent::{
     SyncSkills, Undo, UseSkill, Withdraw,
 };
 use agent::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
+use app::{AppDoc, AppToolResult, Apps, CallArgs, CallStatusOf, CallTool, CloseApp, GetApp};
 use base64::Engine as _;
 use browser::{BROWSER_ACTOR, Browsers, Screenshot};
 use computer::{COMPUTER_ACTOR, Computer, Permissions};
+use jsonrpsee::Extensions;
 use jsonrpsee::core::{RpcResult, SubscriptionResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
 use jsonrpsee::server::{PendingSubscriptionSink, SubscriptionMessage};
@@ -62,6 +64,8 @@ use crate::bridge::Event;
 const ASK_FAILED: i32 = -32000;
 /// The named actor is not registered.
 const NOT_RUNNING: i32 = -32001;
+/// The call reached the method without an authenticated connection behind it.
+const UNAUTHORIZED: i32 = -32002;
 
 /// Reply to `info`: what a client needs before its first session (25 §7);
 /// the in-process TUI reads the same things off the [`Runtime`] directly.
@@ -88,6 +92,11 @@ pub struct Info {
     /// Harness display name (`link.name`, else the hostname): what a linked
     /// device shows in its harness switcher (31 §6.4).
     pub name: String,
+    /// The app plugin is running (`app.enabled`, 46 §9): `get_app`/`app_*`
+    /// answer and the `app` tool exists. `false` leaves app artifacts
+    /// readable as source only. Absent from an older harness → `false`.
+    #[serde(default)]
+    pub app_enabled: bool,
 }
 
 /// The wire API. `#[rpc(server)]` generates `ApiServer` (+ `into_rpc()`).
@@ -593,6 +602,25 @@ pub trait Api {
     /// overwrite); returns the written path (35 §3.5).
     #[method(name = "export_artifact")]
     async fn export_artifact(&self, id: String, dest: PathBuf) -> RpcResult<PathBuf>;
+    /// A committed app record: its artifact, source, compatibility hash,
+    /// pinned tool bindings and diagnostics (46 §6.3, §8.3). Rejects with
+    /// `-32001` when the app plugin is disabled: the client falls back to
+    /// the artifact's readable source.
+    #[method(name = "get_app")]
+    async fn get_app(&self, record_call_id: String) -> RpcResult<AppDoc>;
+    /// Run one pinned Query/Mutation binding of an open app view on behalf of
+    /// the calling connection (46 §6). A `press` trigger is the approval; the
+    /// tool name comes from the binding, never the client. `-32002` when no
+    /// authenticated connection carries the call.
+    #[method(name = "app_call_tool", with_extensions)]
+    async fn app_call_tool(&self, args: CallArgs) -> RpcResult<AppToolResult>;
+    /// Status (and stored result) of a pressed invocation by `request_id`,
+    /// for reconnect and duplicate-press resolution (46 §6.4).
+    #[method(name = "app_call_status", with_extensions)]
+    async fn app_call_status(&self, request_id: String) -> RpcResult<AppToolResult>;
+    /// Close one open view: stop its reads, drop queued work (46 §7). Idempotent.
+    #[method(name = "app_close", with_extensions)]
+    async fn app_close(&self, instance_id: String) -> RpcResult<()>;
     /// Every secret's name, note and version history (37 §3.1). Never values.
     #[method(name = "list_secrets")]
     async fn list_secrets(&self) -> RpcResult<secrets::SecretsList>;
@@ -733,6 +761,23 @@ fn artifact() -> RpcResult<ActorRef<artifact::ArtifactActor>> {
     })
 }
 
+/// The app actor; absent when `app.enabled: false` or the plugin is not loaded.
+fn apps() -> RpcResult<ActorRef<Apps>> {
+    lookup::<Apps>(app::APP_ACTOR).map_err(|e| match e.code() {
+        NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "app is disabled", None::<()>),
+        _ => e,
+    })
+}
+
+/// The authenticated connection behind a `with_extensions` call. Both
+/// listeners (local socket, link conn) put one in every admitted request;
+/// its absence means nothing authenticated the call — never "local".
+fn peer(ext: &Extensions) -> RpcResult<link::RpcPeer> {
+    ext.get::<link::RpcPeer>().cloned().ok_or_else(|| {
+        ErrorObjectOwned::owned(UNAUTHORIZED, "no authenticated connection", None::<()>)
+    })
+}
+
 /// The secrets actor; absent when the plugin is not loaded or the vault failed to open.
 fn secrets() -> RpcResult<ActorRef<secrets::SecretsActor>> {
     lookup::<secrets::SecretsActor>(secrets::SECRETS_ACTOR).map_err(|e| match e.code() {
@@ -817,6 +862,7 @@ impl ApiServer for Server {
             subagent_timeout_secs,
             max_tool_rounds,
             name,
+            app_enabled: apps().is_ok(),
         })
     }
 
@@ -1491,6 +1537,29 @@ impl ApiServer for Server {
         send(&artifact()?, artifact::Export { id, dest }).await
     }
 
+    async fn get_app(&self, record_call_id: String) -> RpcResult<AppDoc> {
+        send(&apps()?, GetApp { record_call_id }).await
+    }
+
+    async fn app_call_tool(&self, ext: &Extensions, args: CallArgs) -> RpcResult<AppToolResult> {
+        let peer = peer(ext)?;
+        send(&apps()?, CallTool { peer, args }).await
+    }
+
+    async fn app_call_status(
+        &self,
+        ext: &Extensions,
+        request_id: String,
+    ) -> RpcResult<AppToolResult> {
+        let peer = peer(ext)?;
+        send(&apps()?, CallStatusOf { peer, request_id }).await
+    }
+
+    async fn app_close(&self, ext: &Extensions, instance_id: String) -> RpcResult<()> {
+        let peer = peer(ext)?;
+        send(&apps()?, CloseApp { peer, instance_id }).await
+    }
+
     async fn list_secrets(&self) -> RpcResult<secrets::SecretsList> {
         send(&secrets()?, secrets::List).await
     }
@@ -1662,4 +1731,38 @@ fn wanted(
         return true;
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The JSON-RPC error code of a raw `app_close` on `methods`.
+    async fn app_close_code(methods: &jsonrpsee::Methods) -> i64 {
+        let (resp, _) = methods
+            .raw_json_request(
+                r#"{"jsonrpc":"2.0","method":"app_close","params":["v1"],"id":1}"#,
+                1,
+            )
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(resp.get()).unwrap();
+        v["error"]["code"].as_i64().expect("error reply")
+    }
+
+    /// App calls are scoped to the connection that made them: a dispatch with
+    /// no `RpcPeer` in its extensions is unauthorized, never treated as local
+    /// (46 §6.3). With a peer the call reaches the actor lookup.
+    #[tokio::test]
+    async fn app_calls_need_an_authenticated_peer() {
+        let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
+        let base: jsonrpsee::Methods = Server::new(rt).into_rpc().into();
+        assert_eq!(app_close_code(&base).await, i64::from(UNAUTHORIZED));
+
+        let (peer, _guard) = link::RpcPeer::open();
+        let mut with_peer = base.clone();
+        with_peer.extensions_mut().insert(peer);
+        // No app actor in this process: past the peer gate, the lookup fails.
+        assert_eq!(app_close_code(&with_peer).await, i64::from(NOT_RUNNING));
+    }
 }

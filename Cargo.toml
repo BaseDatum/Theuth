@@ -37,6 +37,7 @@ link = { path = "crates/link" }
 nodes = { path = "crates/nodes" }
 schedule = { path = "crates/schedule" }
 artifact = { path = "crates/artifact" }
+app = { path = "crates/app" }  # interactive OpenUI apps: publish, app RPC, one-press tool bridge (46)
 secrets = { path = "crates/secrets" }  # secrets vault (37)
 update = { path = "crates/update" }  # self-update from the release bucket (39)
 voice = { path = "crates/voice" }  # read replies aloud: Pocket TTS in-process (43)

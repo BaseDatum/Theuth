@@ -249,6 +249,71 @@ describe("stale and obsolete results", () => {
     expect(notified).toBe(before);
     expect(qm.getResult("q")).toBeNull();
   });
+
+  test("returning to cached arguments while the newer fetch is in flight ends loading; the aborted call is inert", async () => {
+    const { calls, provider } = recordingProvider();
+    const qm = createQueryManager(provider);
+    qm.evaluateQueries([queryNode("q", { page: 1 })]);
+    calls[0]!.resolve("page-1");
+    await settle();
+    qm.evaluateQueries([queryNode("q", { page: 2 })]);
+    vi.advanceTimersByTime(STATE_CHANGE_DEBOUNCE_MS);
+    expect(qm.getQueryStatus("q")!.state).toBe("refetching");
+
+    qm.evaluateQueries([queryNode("q", { page: 1 })]);
+    expect(calls[1]!.meta.signal?.aborted).toBe(true);
+    vi.advanceTimersByTime(STATE_CHANGE_DEBOUNCE_MS);
+    expect(calls).toHaveLength(2);
+    expect(qm.getResult("q")).toBe("page-1");
+    expect(qm.getQueryStatus("q")).toMatchObject({
+      state: "idle",
+      stale: false,
+    });
+    expect(qm.getSnapshot().__openui_loading).toEqual([]);
+    // the superseded promise never settled: page 2 must still be fetchable
+    qm.evaluateQueries([queryNode("q", { page: 2 })]);
+    vi.advanceTimersByTime(STATE_CHANGE_DEBOUNCE_MS);
+    expect(calls).toHaveLength(3);
+    expect(calls[2]!.args).toEqual({ page: 2 });
+    qm.dispose();
+  });
+
+  test("reactivation after dispose restarts a load that was aborted before settling", async () => {
+    const { calls, provider } = recordingProvider();
+    const qm = createQueryManager(provider);
+    qm.evaluateQueries([queryNode("q", {})]);
+    qm.dispose();
+    expect(calls[0]!.meta.signal?.aborted).toBe(true);
+    qm.activate();
+    qm.evaluateQueries([queryNode("q", {})]);
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.meta).toMatchObject({ trigger: "load" });
+    expect(calls[1]!.meta.signal?.aborted).toBe(false);
+    calls[1]!.resolve("data");
+    await settle();
+    expect(qm.getResult("q")).toBe("data");
+    expect(qm.getQueryStatus("q")).toMatchObject({
+      state: "idle",
+      hasData: true,
+    });
+    // settled data is not reloaded by a further cleanup/setup cycle
+    qm.dispose();
+    qm.activate();
+    expect(calls).toHaveLength(2);
+    qm.dispose();
+  });
+
+  test("a manager born paused defers its first load until resume", () => {
+    const { calls, provider } = recordingProvider();
+    const qm = createQueryManager(provider, { paused: true });
+    qm.evaluateQueries([queryNode("q", {})]);
+    expect(calls).toHaveLength(0);
+    expect(qm.isPaused()).toBe(true);
+    qm.resume();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.meta.trigger).toBe("load");
+    qm.dispose();
+  });
 });
 
 describe("action scope", () => {
@@ -404,6 +469,176 @@ describe("action scope", () => {
     expect(calls[1]!.meta.actionId).toBeDefined();
     expect(calls[2]!.meta.actionId).toBeDefined();
     expect(calls[1]!.meta.actionId).not.toBe(calls[2]!.meta.actionId);
+    qm.dispose();
+  });
+
+  test("a @Set before @Run is visible to that mutation, a repeated @Run around a @Set sends step-specific arguments, and outside edits after activation are not", async () => {
+    const { calls, provider } = recordingProvider();
+    const qm = createQueryManager(provider);
+    const store = createStore();
+    store.initialize({ $id: "old" }, {});
+    qm.registerMutations([{ statementId: "m", toolName: "save" }]);
+    const parse = {
+      mutationStatements: [
+        {
+          statementId: "m",
+          toolAST: null,
+          argsAST: {
+            k: "Obj",
+            entries: [["id", { k: "StateRef", n: "$id" }]],
+          },
+        },
+      ],
+      stateDeclarations: { $id: "old" },
+    } as unknown as ParseResult;
+    const done = runActionPlan({
+      plan: {
+        steps: [
+          { type: "run", refType: "mutation", statementId: "m" },
+          { type: "set", target: "$id", valueAST: { k: "Str", v: "new" } },
+          { type: "run", refType: "mutation", statementId: "m" },
+          { type: "reset", targets: ["$id"] },
+          { type: "run", refType: "mutation", statementId: "m" },
+        ],
+      } as never,
+      userMessage: "Save",
+      formPayload: {},
+      queryManager: qm,
+      evaluationContext: contextFor(store, qm),
+      store,
+      getResult: () => parse,
+    });
+    await settle();
+    expect(calls[0]!.args).toEqual({ id: "old" });
+    expect(store.get("$id")).toBe("old");
+    store.set("$id", "typed-meanwhile");
+    calls[0]!.resolve({ ok: true });
+    await settle();
+    expect(store.get("$id")).toBe("new");
+    expect(calls[1]!.args).toEqual({ id: "new" });
+    calls[1]!.resolve({ ok: true });
+    await settle();
+    expect(store.get("$id")).toBe("old");
+    expect(calls[2]!.args).toEqual({ id: "old" });
+    calls[2]!.resolve({ ok: true });
+    await done;
+    expect(calls).toHaveLength(3);
+    qm.dispose();
+  });
+
+  test("row selection: @Set then @Run sends the selected id", async () => {
+    const { calls, provider } = recordingProvider();
+    const qm = createQueryManager(provider);
+    const store = createStore();
+    store.initialize({ $id: "old" }, {});
+    qm.registerMutations([{ statementId: "m", toolName: "save" }]);
+    const parse = {
+      mutationStatements: [
+        {
+          statementId: "m",
+          toolAST: null,
+          argsAST: {
+            k: "Obj",
+            entries: [["id", { k: "StateRef", n: "$id" }]],
+          },
+        },
+      ],
+      stateDeclarations: {},
+    } as unknown as ParseResult;
+    const done = runActionPlan({
+      plan: {
+        steps: [
+          { type: "set", target: "$id", valueAST: { k: "Str", v: "row-7" } },
+          { type: "run", refType: "mutation", statementId: "m" },
+        ],
+      } as never,
+      userMessage: "Select",
+      formPayload: {},
+      queryManager: qm,
+      evaluationContext: contextFor(store, qm),
+      store,
+      getResult: () => parse,
+    });
+    await settle();
+    expect(calls[0]!.args).toEqual({ id: "row-7" });
+    expect(store.get("$id")).toBe("row-7");
+    calls[0]!.resolve({ ok: true });
+    await done;
+    qm.dispose();
+  });
+
+  test("steps after @Run see that mutation's returned data while $state stays frozen at activation", async () => {
+    const { calls, provider } = recordingProvider();
+    const qm = createQueryManager(provider);
+    const store = createStore();
+    store.initialize({ $id: "", $name: "draft" }, {});
+    qm.registerMutations([
+      { statementId: "create", toolName: "create" },
+      { statementId: "tag", toolName: "tag" },
+    ]);
+    const member = (obj: unknown, field: string) => ({
+      k: "Member",
+      obj,
+      field,
+    });
+    const parse = {
+      mutationStatements: [
+        {
+          statementId: "create",
+          toolAST: null,
+          argsAST: {
+            k: "Obj",
+            entries: [["name", { k: "StateRef", n: "$name" }]],
+          },
+        },
+        {
+          statementId: "tag",
+          toolAST: null,
+          argsAST: {
+            k: "Obj",
+            entries: [
+              [
+                "id",
+                member(member({ k: "RuntimeRef", n: "create" }, "data"), "id"),
+              ],
+              ["name", { k: "StateRef", n: "$name" }],
+            ],
+          },
+        },
+      ],
+      stateDeclarations: {},
+    } as unknown as ParseResult;
+    const done = runActionPlan({
+      plan: {
+        steps: [
+          { type: "run", refType: "mutation", statementId: "create" },
+          {
+            type: "set",
+            target: "$id",
+            valueAST: member(
+              member({ k: "RuntimeRef", n: "create" }, "data"),
+              "id",
+            ),
+          },
+          { type: "run", refType: "mutation", statementId: "tag" },
+        ],
+      } as never,
+      userMessage: "Create",
+      formPayload: {},
+      queryManager: qm,
+      evaluationContext: contextFor(store, qm),
+      store,
+      getResult: () => parse,
+    });
+    await settle();
+    expect(calls[0]!.args).toEqual({ name: "draft" });
+    store.set("$name", "typed-meanwhile");
+    calls[0]!.resolve({ id: "srv-42" });
+    await settle();
+    expect(store.get("$id")).toBe("srv-42");
+    expect(calls[1]!.args).toEqual({ id: "srv-42", name: "draft" });
+    calls[1]!.resolve({ ok: true });
+    await done;
     qm.dispose();
   });
 });

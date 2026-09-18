@@ -82,10 +82,19 @@ function toAppRuntime(runtime: OpenUIRuntime): AppRuntime {
   };
 }
 
+/**
+ * What the upstream Renderer sees, deferred as one unit: while an action holds back an update, a
+ * click on the still-visible frame reaches the provider and callbacks passed alongside that frame.
+ */
 interface Program {
   response: string | null;
   generation: number;
   isStreaming: boolean;
+  provider: AppToolProvider;
+  onAction?: (event: AppActionEvent) => void;
+  onActionStart?: (scope: ActionScope) => void;
+  onActionEnd?: (result: ActionResult) => void;
+  onError?: (errors: OpenUIError[]) => void;
 }
 
 export function AppRenderer({
@@ -105,18 +114,17 @@ export function AppRenderer({
   onError,
   queryLoader,
 }: AppRendererProps) {
-  const providerRef = useRef(provider);
-  providerRef.current = provider;
-  // New identity per generation: the patched Renderer disposes its query manager on `generation`
-  // change, so results of the previous version are discarded rather than shown.
-  const toolProvider = useMemo(
-    () => (tool: string, args: Record<string, unknown>, meta: ToolCallMeta) =>
-      providerRef.current(tool, args, toProviderContext(meta)),
-    [],
-  );
-
-  // Defer program changes while an action runs; the committed frame stays until it ends.
-  const incoming: Program = { response, generation, isStreaming };
+  // Defer program changes while an action runs; the committed frame, its provider and callbacks stay until it ends.
+  const incoming: Program = {
+    response,
+    generation,
+    isStreaming,
+    provider,
+    onAction,
+    onActionStart,
+    onActionEnd,
+    onError,
+  };
   const latestRef = useRef(incoming);
   latestRef.current = incoming;
   const appliedRef = useRef(incoming);
@@ -126,11 +134,17 @@ export function AppRenderer({
     appliedRef.current = incoming;
   const applied = appliedRef.current;
 
-  const callbacksRef = useRef({ onActionStart, onActionEnd });
-  callbacksRef.current = { onActionStart, onActionEnd };
+  // Stable identity: the patched Renderer creates its query manager per `generation`, so results of
+  // the previous version are discarded rather than shown. Calls go to the applied program's provider.
+  const toolProvider = useMemo(
+    () => (tool: string, args: Record<string, unknown>, meta: ToolCallMeta) =>
+      appliedRef.current.provider(tool, args, toProviderContext(meta)),
+    [],
+  );
+
   const handleActionStart = useCallback((event: ActionStartEvent) => {
     activeActions.current += 1;
-    callbacksRef.current.onActionStart?.({
+    appliedRef.current.onActionStart?.({
       action_id: event.actionId,
       steps: event.steps,
     });
@@ -139,27 +153,16 @@ export function AppRenderer({
     activeActions.current -= 1;
     const result: ActionResult = { action_id: event.actionId, ok: event.ok };
     if (event.error !== undefined) result.error = event.error;
-    callbacksRef.current.onActionEnd?.(result);
-    const latest = latestRef.current;
-    const current = appliedRef.current;
-    if (
-      activeActions.current === 0 &&
-      (latest.response !== current.response ||
-        latest.generation !== current.generation ||
-        latest.isStreaming !== current.isStreaming)
-    )
+    appliedRef.current.onActionEnd?.(result);
+    if (activeActions.current === 0 && latestRef.current !== appliedRef.current)
       rerender();
   }, []);
-
-  const handleAction = useCallback(
-    (event: ScopedActionEvent) => {
-      const { actionId, ...rest } = event;
-      const mapped: AppActionEvent = rest;
-      if (actionId !== undefined) mapped.action_id = actionId;
-      onAction?.(mapped);
-    },
-    [onAction],
-  );
+  const handleAction = useCallback((event: ScopedActionEvent) => {
+    const { actionId, ...rest } = event;
+    const mapped: AppActionEvent = rest;
+    if (actionId !== undefined) mapped.action_id = actionId;
+    appliedRef.current.onAction?.(mapped);
+  }, []);
 
   const upstreamRuntimeRef = useRef<OpenUIRuntime | null>(null);
   useEffect(() => {
@@ -186,7 +189,7 @@ export function AppRenderer({
       runtimeRef={upstreamRuntimeRef}
       onStateUpdate={onStateUpdate}
       initialState={initialState}
-      onError={onError}
+      onError={applied.onError}
       queryLoader={queryLoader}
     />
   );

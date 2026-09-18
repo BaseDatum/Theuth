@@ -2,17 +2,20 @@
 # Package wth.app + wth.dmg for macOS (jarvis pipeline, stripped).
 #
 #   1. cargo build --release -p wth  (daemon sidecar, host arch)
+#      + packages/apps: bun build --compile → wth-app-parser (46 §2.1; scripts/app-parser-env.sh)
 #   2. stage sidecar as binaries/wth-<host-triple>
 #   3. cargo tauri build --config tauri.bundle.conf.json  (app bundle only)
 #      + libonnxruntime.dylib (Microsoft's release, pinned) into Contents/Frameworks (45 §2.1)
+#      + wth-app-parser-<hash> into Contents/MacOS beside the sidecar
 #   4. codesign inside-out (hardened runtime): $WTH_SIGN_IDENTITY, else ad-hoc "-"
+#      the helper gets scripts/entitlements-app-parser.plist (Bun JIT)
 #   5. hdiutil DMG (after signing — Tauri's dmg target would snapshot pre-signature)
 #
 # Arm64-only: built on/for the host. Universal binaries are out of scope.
 #
 # Env:
 #   WTH_SIGN_IDENTITY      codesign identity (default: "-" ad-hoc)
-#   WTH_SKIP_BUN_INSTALL=1 skip `bun install`
+#   WTH_SKIP_BUN_INSTALL=1 skip `bun install` (desktop UI and packages/apps)
 # Optional local defaults: repo-root `.env.signing`.
 set -euo pipefail
 
@@ -22,6 +25,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=load-signing-env.sh
 source "$ROOT/scripts/load-signing-env.sh"
 cd "$ROOT"
+# shellcheck source=app-parser-env.sh
+source "$ROOT/scripts/app-parser-env.sh"
 
 HOST_TRIPLE="$(rustc -vV | awk '/^host:/ {print $2}')"
 IDENTITY="${WTH_SIGN_IDENTITY:--}"
@@ -33,12 +38,16 @@ ORT_VERSION="1.27.0"
 ORT_SHA256="545e81c58152353acb0d1e8bd6ce4b62f830c0961f5b3acfedc790ffd76e477a"
 ORT_TGZ="target/onnxruntime-osx-arm64-${ORT_VERSION}.tgz"
 ENTITLEMENTS="crates/desktop/entitlements.plist"
+HELPER_ENTITLEMENTS="scripts/entitlements-app-parser.plist"
 
 echo "==> [1/5] TypeScript bindings"
 just ts-desktop
 
 echo "==> [1/5] building wth (release, $HOST_TRIPLE)"
 cargo build --release -p wth
+
+echo "==> [1/5] building $HELPER (bun build --compile)"
+build_helper
 
 echo "==> [2/5] staging sidecar"
 mkdir -p crates/desktop/binaries
@@ -62,6 +71,10 @@ mkdir -p "$APP/Contents/Frameworks"
 tar -xzf "$ORT_TGZ" -O "onnxruntime-osx-arm64-${ORT_VERSION}/lib/libonnxruntime.${ORT_VERSION}.dylib" > "$APP/Contents/Frameworks/libonnxruntime.dylib"
 chmod 755 "$APP/Contents/Frameworks/libonnxruntime.dylib"
 
+echo "==> [3/5] $HELPER → Contents/MacOS"
+rm -f "$APP/Contents/MacOS"/wth-app-parser-*
+install -m 755 "$HELPER_SRC" "$APP/Contents/MacOS/$HELPER"
+
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")"
 DMG="$BUNDLE_DIR/wth_${VERSION}_$(uname -m).dmg"
 
@@ -71,6 +84,10 @@ TIMESTAMP_FLAG="--timestamp"
 # Nested helpers get $BUNDLE_ID.* so macOS 15+ Local Network Privacy attributes
 # to the app instead of an orphan bare-binary row.
 codesign --force $TIMESTAMP_FLAG --sign "$IDENTITY" "$APP/Contents/Frameworks/libonnxruntime.dylib"
+codesign --force --options runtime $TIMESTAMP_FLAG --sign "$IDENTITY" \
+  -i "${BUNDLE_ID}.app-parser" \
+  --entitlements "$HELPER_ENTITLEMENTS" "$APP/Contents/MacOS/$HELPER"
+check_helper "$APP/Contents/MacOS/$HELPER"
 codesign --force --options runtime $TIMESTAMP_FLAG --sign "$IDENTITY" \
   -i "${BUNDLE_ID}.wth" \
   --entitlements "$ENTITLEMENTS" "$APP/Contents/MacOS/wth"
@@ -94,6 +111,7 @@ fi
 echo
 echo "done:"
 echo "  app: $APP"
+echo "  helper: $APP/Contents/MacOS/$HELPER"
 echo "  dmg: $DMG"
 if [[ "$IDENTITY" == "-" ]]; then
   echo "  signed: ad-hoc (set WTH_SIGN_IDENTITY for a Developer ID build," \

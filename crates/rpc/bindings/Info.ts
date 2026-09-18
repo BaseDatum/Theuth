@@ -44,4 +44,10 @@ max_tool_rounds: number,
  * Harness display name (`link.name`, else the hostname): what a linked
  * device shows in its harness switcher (31 §6.4).
  */
-name: string, };
+name: string, 
+/**
+ * The app plugin is running (`app.enabled`, 46 §9): `get_app`/`app_*`
+ * answer and the `app` tool exists. `false` leaves app artifacts
+ * readable as source only. Absent from an older harness → `false`.
+ */
+app_enabled: boolean, };

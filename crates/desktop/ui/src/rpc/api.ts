@@ -51,7 +51,10 @@ import type { AwsProfiles } from '@/rpc/bindings/AwsProfiles'
 import type { RpcClient } from '@/rpc/client'
 import type {
   AgentInfo,
+  AppDoc,
+  AppToolResult,
   Artifact,
+  CallArgs,
   Info,
   LoadedPage,
   LoginInfo,
@@ -90,6 +93,12 @@ export interface Api {
   add_skill_repo(url: string, name: string | null): Promise<SkillMeta[]>
   /** PNG (base64) of the session's browser page; `null` when it has no isolate or no open page. */
   browser_screenshot(session: SessionId): Promise<string | null>
+  /** Run one pinned Query/Mutation binding of an open app view (46 §6); a `press` trigger is the approval. `-32002` when the connection is unauthenticated, `-32001` when apps are disabled. */
+  app_call_tool(args: CallArgs): Promise<AppToolResult>
+  /** Status and stored result of a pressed invocation by `request_id` (46 §6.4), for reconnect and duplicate presses. */
+  app_call_status(request_id: string): Promise<AppToolResult>
+  /** Close one open app view: stop its reads, drop queued work (46 §7); idempotent. */
+  app_close(instance_id: string): Promise<null>
   cancel(session: SessionId): Promise<null>
   cancel_job(session: SessionId, id: JobId): Promise<null>
   compact(session: SessionId, style: CompactStyle | null): Promise<number>
@@ -108,6 +117,8 @@ export interface Api {
   fire_schedule(name: string): Promise<SessionId>
   /** New session with the conversation through the turn opened at `through` (all when `null`); `reply` stops at that 0-based assistant text of the turn instead. */
   fork_session(session: SessionId, through: number | null, reply: number | null): Promise<SessionId>
+  /** A committed app record: artifact, source, compatibility hash, pinned bindings, diagnostics (46 §6.3). `-32001` when apps are disabled — show the artifact's source instead. */
+  get_app(record_call_id: string): Promise<AppDoc>
   get_prompt(session: SessionId | null): Promise<string>
   /** Base64 of a file under `<data_dir>/{attachments,browser,computer,artifacts}` (31 §6.4); `-32000` elsewhere. */
   get_attachment(path: string): Promise<string>
@@ -270,6 +281,9 @@ export const METHODS = [
   'add_skill_repo',
   'answer_ask',
   'answer_secret',
+  'app_call_status',
+  'app_call_tool',
+  'app_close',
   'browser_screenshot',
   'cancel',
   'cancel_job',
@@ -284,6 +298,7 @@ export const METHODS = [
   'export_artifact',
   'fire_schedule',
   'fork_session',
+  'get_app',
   'get_attachment',
   'get_prompt',
   'get_todos',

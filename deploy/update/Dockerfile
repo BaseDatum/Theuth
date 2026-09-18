@@ -1,7 +1,12 @@
 # syntax=docker/dockerfile:1
-# Linux `wth` for the update bucket (design doc 39 §5.1). Build from the repo root:
+# Linux `wth` + `wth-app-parser-<hash>` for the update bucket (design docs 39 §5.1, 46 §2.1). Build from the repo root:
 #   docker build -f deploy/update/Dockerfile --output type=local,dest=target/linux-out .
-# The output stage is `FROM scratch` with one file, so `--output type=local` yields `target/linux-out/wth`.
+# The output stage is `FROM scratch` with two files, so `--output type=local` yields
+# `target/linux-out/wth` and `target/linux-out/wth-app-parser-<hash>`.
+#
+# The helper is a `bun build --compile` executable: Bun is pinned by version + sha256 and used
+# at build time only; the output embeds its own runtime, so no Bun/Node on the target box.
+# The hash is packages/apps/generated/library-hash.txt, the value `wth` embeds (scripts/app-parser-env.sh).
 #
 # Why ubuntu:22.04 and not musl/alpine?
 #   glibc 2.35 is the oldest we support (Ubuntu 22.04+, Debian 12+, Fedora 36+, Homebrew on
@@ -21,13 +26,30 @@ ARG DEBIAN_FRONTEND=noninteractive
 # X11/xcb: enigo + xcap.  xdo/xkbcommon: enigo.  dbus: keyring (dbus-secret-service).
 # pipewire/drm/gbm/wayland: xcap's Wayland capture path.  libssl-dev: openssl-probe stragglers.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      curl ca-certificates git build-essential clang cmake llvm libclang-dev pkg-config perl \
+      curl ca-certificates git build-essential clang cmake llvm libclang-dev pkg-config perl unzip \
       libxcb1-dev libxcb-shape0-dev libxcb-xfixes0-dev libxcb-render0-dev libxcb-randr0-dev \
       libx11-dev libxtst-dev libxdo-dev libxkbcommon-dev \
       libdbus-1-dev \
       libpipewire-0.3-dev libdrm-dev libgbm-dev libwayland-dev \
       libssl-dev \
  && rm -rf /var/lib/apt/lists/*
+
+# Bun, pinned (SHASUMS256.txt of the GitHub release). Bump both sums with the version.
+ARG BUN_VERSION=1.4.0
+ARG BUN_SHA256_X64=2d03fb5fb83ac8b567aca0a281b2ce1a1a19d488f56c2968d88c3f25e92fe452
+ARG BUN_SHA256_AARCH64=4b1a332ee861983eb93bcfe6f770fff94e3e31b2c388bdaea3c8ed35e58eed0e
+RUN case "$TARGETARCH" in \
+      amd64) bun_arch=x64; bun_sha="$BUN_SHA256_X64" ;; \
+      arm64) bun_arch=aarch64; bun_sha="$BUN_SHA256_AARCH64" ;; \
+      *) echo "unsupported TARGETARCH $TARGETARCH" >&2; exit 1 ;; \
+    esac \
+ && curl -fsSLo /tmp/bun.zip "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-linux-${bun_arch}.zip" \
+ && echo "$bun_sha  /tmp/bun.zip" | sha256sum -c - \
+ && unzip -q /tmp/bun.zip -d /tmp \
+ && install -m 755 "/tmp/bun-linux-${bun_arch}/bun" /usr/local/bin/bun \
+ && rm -rf /tmp/bun.zip "/tmp/bun-linux-${bun_arch}" \
+ && bun --version | grep -qx "$BUN_VERSION"
+ENV OPENUI_TELEMETRY_DISABLED=1 DO_NOT_TRACK=1
 
 ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo PATH=/usr/local/cargo/bin:$PATH
 WORKDIR /src
@@ -46,6 +68,18 @@ RUN --mount=type=cache,id=wth-update-cargo-registry-${TARGETARCH},target=/usr/lo
  && cp target/release/wth /wth \
  && /wth --version
 
+# Helper: native target (the running bun is the embedded runtime — no cross-target download).
+# Named by the committed library hash; `--version` must echo it and EOF on stdin must exit 0.
+RUN --mount=type=cache,id=wth-update-bun-${TARGETARCH},target=/root/.bun/install/cache \
+    cd packages/apps \
+ && bun install --frozen-lockfile \
+ && bun run build:helper \
+ && hash="$(tr -d '[:space:]' <generated/library-hash.txt)" \
+ && echo "$hash" | grep -Eqx '[0-9a-f]{64}' \
+ && install -m 755 dist/wth-app-parser "/wth-app-parser-$hash" \
+ && "/wth-app-parser-$hash" --version | grep -q "$hash" \
+ && printf '' | "/wth-app-parser-$hash"
+
 # ── output ────────────────────────────────────────────────────────────────────
 FROM scratch
-COPY --from=build /wth /wth
+COPY --from=build /wth /wth-app-parser-* /

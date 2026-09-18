@@ -104,6 +104,11 @@ struct Cli {
     /// (or `brew upgrade wth` for a Homebrew install), print one line, exit (39 §3.2).
     #[arg(long, conflicts_with_all = ["headless", "serve", "acp", "prompt", "resume", "link_signal", "slack_manifest", "slack_setup", "link", "install_service", "uninstall_service", "secret_set", "secret_rm", "secret_list"])]
     update: bool,
+    /// Print the app library compatibility hash this binary was built with and
+    /// exit (46 §2.1): the updater checks a staged `wth-app-parser-<hash>` helper
+    /// against it. Before config, logging or any plugin.
+    #[arg(long, conflicts_with_all = ["headless", "serve", "acp", "prompt", "resume", "link_signal", "slack_manifest", "slack_setup", "link", "install_service", "uninstall_service", "secret_set", "secret_rm", "secret_list", "update"])]
+    app_parser_hash: bool,
 }
 
 const DEFAULT_CONFIG: &str = "# wth configuration. Every plugin reads its own section.
@@ -193,6 +198,9 @@ agent:
 #   enabled: true            # false: no `show` tool, no prompt block, no /artifacts; blobs and index kept
 #   fonts: []                # extra directories searched for PDF fonts, besides system fonts and the embedded set
 
+# app:                       # `app` tool: interactive OpenUI screens, rendered on desktop/web (design doc 46)
+#   enabled: true            # false: no tool, no prompt, no parser helper, no app RPC; existing apps stay readable as source
+
 # voice:                     # read replies aloud (design doc 43): Pocket TTS in-process, audio streamed to the frontend;
 #                            # voice notes in, spoken replies out on Signal/Slack (design doc 45)
 #   enabled: true            # false: no actor, `speak` answers \"not running\", the desktop shows no button or mic
@@ -252,8 +260,8 @@ const HARNESS_SKILL: &str = include_str!("../harness.md");
 
 /// Creates the data-dir skeleton on first run. Existing files are never
 /// overwritten, except `skills/harness.md`, `skills/visualize.md`,
-/// `skills/pdf.md` and `skills/loops.md`, which the binary owns and rewrites so
-/// they always describe the running version.
+/// `skills/pdf.md`, `skills/loops.md` and `skills/apps.md`, which the binary
+/// owns and rewrites so they always describe the running version.
 fn first_run(data_dir: &Path, config_path: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(data_dir.join("mcp"))?;
     std::fs::create_dir_all(data_dir.join("acp"))?;
@@ -264,6 +272,7 @@ fn first_run(data_dir: &Path, config_path: &Path) -> std::io::Result<()> {
         ("visualize.md", surface::visualize_skill()),
         ("pdf.md", artifact::pdf::skill()),
         ("loops.md", schedule::tools::LOOPS_SKILL.to_owned()),
+        ("apps.md", app::skill()),
     ] {
         let path = skills.join(name);
         if std::fs::read_to_string(&path).ok().as_deref() != Some(body.as_str()) {
@@ -306,6 +315,10 @@ async fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
     if cli.slack_manifest {
         print!("{}", slack::MANIFEST);
+        return Ok(());
+    }
+    if cli.app_parser_hash {
+        println!("{}", app::HASH.trim());
         return Ok(());
     }
 
@@ -411,6 +424,7 @@ async fn run() -> anyhow::Result<()> {
             Box::new(routes::RoutesPlugin),
             Box::new(computer::ComputerPlugin),
             Box::new(artifact::ArtifactPlugin),
+            Box::new(app::AppPlugin),
             Box::new(search_providers::SearchProvidersPlugin),
             Box::new(agent::AgentPlugin),
             Box::new(signal::SignalPlugin {
@@ -431,6 +445,7 @@ async fn run() -> anyhow::Result<()> {
             Box::new(routes::RoutesPlugin),
             Box::new(computer::ComputerPlugin),
             Box::new(artifact::ArtifactPlugin),
+            Box::new(app::AppPlugin),
             Box::new(search_providers::SearchProvidersPlugin),
             Box::new(agent::AgentPlugin),
             Box::new(signal::SignalPlugin {
