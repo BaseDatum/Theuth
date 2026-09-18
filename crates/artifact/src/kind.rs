@@ -14,6 +14,8 @@ pub fn ext(name: &str) -> Option<String> {
 }
 
 /// [`Kind`] from the (last) extension of `name`; unknown → [`Kind::File`].
+/// Never [`Kind::App`]: a `.openui` file shown the ordinary way is inert
+/// text; only a validated [`crate::Commit`] makes an active app (46 §3.2).
 pub fn of(name: &str) -> Kind {
     match ext(name).as_deref() {
         Some("md" | "markdown") => Kind::Markdown,
@@ -26,27 +28,28 @@ pub fn of(name: &str) -> Kind {
             "txt" | "log" | "rs" | "py" | "ts" | "tsx" | "js" | "jsx" | "json" | "yaml" | "yml"
             | "toml" | "sh" | "bash" | "zsh" | "go" | "c" | "h" | "cpp" | "hpp" | "java" | "kt"
             | "swift" | "rb" | "php" | "sql" | "css" | "scss" | "xml" | "ini" | "cfg" | "conf"
-            | "env" | "diff" | "patch" | "lua" | "zig",
+            | "env" | "diff" | "patch" | "lua" | "zig" | "openui",
         ) => Kind::Text,
         _ => Kind::File,
     }
 }
 
-/// Mime type for `name`: `mime_guess`, with text fallbacks by [`Kind`].
-pub fn mime(name: &str) -> String {
-    if let Some(m) = mime_guess::from_path(name).first_raw() {
-        return m.to_owned();
-    }
-    match of(name) {
+/// Mime type for `name` of `kind`: `mime_guess`, with text fallbacks by [`Kind`].
+pub fn mime(kind: Kind, name: &str) -> String {
+    let fallback = match kind {
         Kind::Markdown => "text/markdown",
         Kind::Text => "text/plain",
         Kind::Csv => "text/csv",
         Kind::Html => "text/html",
         Kind::Svg => "image/svg+xml",
         Kind::Pdf => "application/pdf",
+        Kind::App => return "text/x-openui".to_owned(),
         Kind::Image | Kind::File => "application/octet-stream",
-    }
-    .to_owned()
+    };
+    mime_guess::from_path(name)
+        .first_raw()
+        .unwrap_or(fallback)
+        .to_owned()
 }
 
 /// `(header, first N data rows, total data rows)` from [`csv_table`].
@@ -140,6 +143,9 @@ mod tests {
         assert_eq!(of("Chart.SVG"), Kind::Svg);
         assert_eq!(of("main.rs"), Kind::Text);
         assert_eq!(of("noext"), Kind::File);
+        assert_eq!(of("panel.openui"), Kind::Text);
+        assert_eq!(mime(Kind::Text, "panel.openui"), "text/plain");
+        assert_eq!(mime(Kind::App, "panel.openui"), "text/x-openui");
     }
 
     #[test]

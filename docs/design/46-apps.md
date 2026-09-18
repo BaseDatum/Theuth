@@ -794,3 +794,14 @@ Visual appearance is unverified and must be checked by the user if needed; do
 not infer visual quality from DOM/network checks. Full app RPC, action provenance,
 budget patches, real-service integration, packaging, provider streaming and
 model/performance acceptance remain §10 implementation checks, not claimed results.
+
+### Implementation verification scope agreed with the user
+
+For the implementation/merge of this feature, the user approved **merge after
+local checks and their visual review**. Linux runtime/performance, physical-phone
+measurements and Developer ID/notarized clean-machine checks are not merge gates
+in this environment; document them as unrun, not passed. Packaging support for
+those platforms remains in implementation scope. Local parser/helper execution,
+backend/RPC/relay behavior, desktop automated interaction/performance, ad-hoc
+signing/installation checks and disabled mode remain required. The assistant
+does not inspect images; visual acceptance is performed by the user.

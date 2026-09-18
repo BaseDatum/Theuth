@@ -236,12 +236,16 @@ impl Fetcher {
     /// `method` `url` with `headers` and optional `body`, redirects re-checked
     /// per hop like [`Self::fetch`] (44 §0.6). 301/302/303 turn into a bodyless
     /// GET; 307/308 keep method and body. Caller `host` / `content-length`
-    /// headers are skipped. The body is raw bytes: no gzip inflate, no
-    /// document or HTML conversion.
+    /// headers are skipped. Caller headers go only to the origin `url` names:
+    /// a redirect elsewhere is refused when any were given, because an API
+    /// key can sit under any header name (`X-Api-Key`, an expanded secret
+    /// placeholder) and the fetcher cannot classify them reliably.
+    /// The body is raw bytes: no gzip inflate, no document or HTML conversion.
     ///
     /// # Errors
-    /// [`FetchError::Rejected`] for an invalid method, the guard or too many
-    /// redirects; [`FetchError::Failed`] for transport errors or an oversize
+    /// [`FetchError::Rejected`] for an invalid method, the guard, too many
+    /// redirects or a cross-origin redirect with caller headers;
+    /// [`FetchError::Failed`] for transport errors or an oversize
     /// `Content-Length`. Non-2xx is `Ok`.
     pub async fn request(
         &self,
@@ -254,6 +258,7 @@ impl Fetcher {
         let mut method = reqwest::Method::from_bytes(method.as_bytes())
             .map_err(|_| FetchError::Rejected(format!("invalid method: {method}")))?;
         let mut current = ssrf::parse_absolute(url)?;
+        let origin = current.origin();
         let mut redirects = 0usize;
         loop {
             ssrf::check_static(&current, &self.allow)?;
@@ -286,6 +291,11 @@ impl Fetcher {
                 current = current
                     .join(location)
                     .map_err(|e| FetchError::Failed(format!("invalid redirect Location: {e}")))?;
+                if !headers.is_empty() && current.origin() != origin {
+                    return Err(FetchError::Rejected(format!(
+                        "redirect to {current} leaves the request's origin; caller headers are not forwarded across origins"
+                    )));
+                }
                 if !matches!(
                     status,
                     reqwest::StatusCode::TEMPORARY_REDIRECT
@@ -457,7 +467,7 @@ fn is_plain_type(ct: Option<&str>) -> bool {
     })
 }
 
-fn is_binary(ct: Option<&str>) -> bool {
+pub(crate) fn is_binary(ct: Option<&str>) -> bool {
     let Some(ct) = ct else { return false };
     if ct.starts_with("text/")
         || ct.contains("json")

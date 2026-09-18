@@ -689,6 +689,9 @@ struct Run {
     activity: Activity,
 }
 
+/// The reader still draining a lingering slave, and the log its bytes reach.
+type Drain = (mpsc::Receiver<Vec<u8>>, Arc<Mutex<Log>>);
+
 /// Something outlived the exit: a `&` child that ignored SIGHUP stays in
 /// the leader's process group (job control is off under `$SHELL -c`) and,
 /// by platform, keeps the slave open or loses it when the tty is revoked
@@ -703,7 +706,7 @@ async fn linger(
     job: &Activity,
     id: &JobId,
     group: Option<Pid>,
-    rx: Option<(mpsc::Receiver<Vec<u8>>, Arc<Mutex<Log>>)>,
+    rx: Option<Drain>,
     doubt: Option<String>,
 ) {
     match job.admit(Kind::Command("pty background process")).await {

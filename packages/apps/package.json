@@ -1,0 +1,44 @@
+{
+  "name": "@wth/apps",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "OpenUI Lang adapter for wth apps: curated library, generated catalog/hash, headless check/merge helper (design 46).",
+  "exports": {
+    ".": "./src/index.ts",
+    "./check": "./src/check.ts",
+    "./protocol": "./src/protocol.ts",
+    "./library": "./src/library.ts",
+    "./renderer": "./src/renderer.tsx",
+    "./generated/library.json": "./generated/library.json",
+    "./generated/catalog.txt": "./generated/catalog.txt"
+  },
+  "scripts": {
+    "generate": "bun run scripts/generate.ts",
+    "build:helper": "bun run scripts/build-helper.ts",
+    "check": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.20.0",
+    "@openuidev/lang-core": "0.3.0",
+    "@openuidev/react-headless": "0.16.1",
+    "@openuidev/react-lang": "0.3.0",
+    "@openuidev/react-ui": "0.16.1",
+    "react": "19",
+    "react-dom": "19",
+    "zod": "^4.3.6",
+    "zustand": "^5.0.15"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "typescript": "^7.0.2"
+  },
+  "trustedDependencies": [],
+  "patchedDependencies": {
+    "@openuidev/lang-core@0.3.0": "patches/@openuidev%2Flang-core@0.3.0.patch",
+    "@openuidev/react-lang@0.3.0": "patches/@openuidev%2Freact-lang@0.3.0.patch"
+  }
+}

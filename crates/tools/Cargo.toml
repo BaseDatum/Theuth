@@ -33,6 +33,8 @@ anydoc = { workspace = true }
 regex = { workspace = true }
 portable-pty = { workspace = true }
 vt100 = { workspace = true }
+sha2 = { workspace = true }
+jsonschema = { workspace = true }
 
 [features]
 ts = ["dep:ts-rs", "runtime/ts"]

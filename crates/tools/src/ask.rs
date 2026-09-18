@@ -121,7 +121,11 @@ struct Request {
 struct Expire(AskId);
 
 /// A waiting tool call: its session and where its answers go.
-type Waiter = (SessionId, Vec<Question>, oneshot::Sender<Option<Vec<Answer>>>);
+type Waiter = (
+    SessionId,
+    Vec<Question>,
+    oneshot::Sender<Option<Vec<Answer>>>,
+);
 
 /// The ask actor.
 #[derive(kameo::Actor)]
@@ -156,7 +160,8 @@ impl Message<Request> for AskUser {
         let (reply, tx) = ctx.reply_sender();
         let id = AskId(uuid::Uuid::now_v7());
         let (atx, arx) = oneshot::channel();
-        self.pending.insert(id, (m.session, m.questions.clone(), atx));
+        self.pending
+            .insert(id, (m.session, m.questions.clone(), atx));
         let rt = self.rt.clone();
         let timeout = self.timeout;
         let me = ctx.actor_ref().clone();

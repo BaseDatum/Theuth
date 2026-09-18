@@ -7089,6 +7089,7 @@ fn artifact_body(a: &artifact::Artifact, opts: &markdown::Options) -> markdown::
         Kind::Image => format!("[image] {path}"),
         Kind::Svg => format!("[svg] {path}"),
         Kind::Pdf => format!("{} · {path}", artifact_size(a)),
+        Kind::App => format!("[app] interactive on desktop/web · source {path}"),
         Kind::File => path.clone(),
     };
     let mut t = markdown::Text::with(opts.clone());

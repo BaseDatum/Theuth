@@ -1,0 +1,391 @@
+diff --git a/node_modules/@openuidev/lang-core/.bun-tag-dbe13cdbdb22f0d9 b/.bun-tag-dbe13cdbdb22f0d9
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/dist/index.d.mts b/dist/index.d.mts
+index 1676e13723d3006b839bb202f3ef68279784dcac..c3f470789c171bd7a86439c4007e8415dbbcdfb8 100644
+--- a/dist/index.d.mts
++++ b/dist/index.d.mts
+@@ -1,5 +1,35 @@
+ import * as z from "zod/v4/core";
+ 
++//#region wth/limits.d.ts (patch)
++/** Named work bounds enforced by the patched parser, materializer and evaluator. */
++declare const LIMITS: Readonly<{
++  /** Source size in UTF-8 bytes accepted by parse()/streaming parser. */
++  sourceBytes: 131072;
++  /** Statements per program. */
++  statements: 512;
++  /** Expression nesting depth inside one statement and component tree depth after expansion. */
++  depth: 32;
++  /** Component element expansions per parse; each reference occurrence counts. */
++  expandedNodes: 2048;
++  /** evaluate() operations per update. */
++  evalOps: 50000;
++  /** Element nodes / @Each items produced per update. */
++  evalNodes: 2048;
++}>;
++type LimitKind = "sourceBytes" | "statements" | "depth" | "expandedNodes" | "evalOps" | "evalNodes";
++/** Thrown when a bound is exceeded. Parser entry points convert it into a `budget-exceeded` ValidationError with `root: null`. */
++declare class LimitError extends Error {
++  readonly limit: LimitKind;
++  statementId?: string;
++  constructor(limit: LimitKind, message: string, statementId?: string);
++}
++/** Mutable per-update evaluation budget; attach to `EvaluationContext.budget`. */
++interface EvalBudget {
++  ops: number;
++  nodes: number;
++}
++declare function createEvalBudget(): EvalBudget;
++//#endregion
+ //#region src/parser/ast.d.ts
+ /**
+  * Discriminated union representing every value that can appear in an
+@@ -198,7 +228,7 @@ interface ElementNode {
+ /**
+  * Validation error codes for schema-related issues.
+  */
+-type ValidationErrorCode = "missing-required" | "null-required" | "unknown-component" | "inline-reserved" | "excess-args" | "type-mismatch";
++type ValidationErrorCode = "missing-required" | "null-required" | "unknown-component" | "inline-reserved" | "excess-args" | "type-mismatch" | "budget-exceeded";
+ /**
+  * A prop validation error. Components with missing required props are
+  * dropped from the output tree and errors are recorded here.
+@@ -809,6 +839,11 @@ interface SchemaContext {
+   };
+ }
+ interface EvaluationContext {
++  /**
++   * Work budget shared by every evaluate() call in one update (patch). Create with
++   * `createEvalBudget()`; omit for unbounded evaluation. Exceeding it throws `LimitError`.
++   */
++  budget?: EvalBudget;
+   /** Read $variable from the store */
+   getState(name: string): unknown;
+   /** Resolve a reference to another declaration's evaluated value */
+@@ -1027,5 +1062,5 @@ declare function validate(value: unknown, rules: ParsedRule[], customValidators?
+  */
+ declare function parseStructuredRules(rules: unknown): ParsedRule[];
+ //#endregion
+-export { ACTION_NAMES, ACTION_STEPS, type ASTNode, type ActionEvent, type ActionPlan, type ActionStep, BUILTINS, BUILTIN_NAMES, BuiltinActionType, type BuiltinDef, type CallNode, type CloudPromptOptions, type ComponentGroup, type ComponentPromptSpec, type ComponentRenderProps, type DefinedComponent, type ElementNode, type EvalContext, type EvaluationContext, type InferStateFieldValue, LAZY_BUILTINS, type Library, type LibraryDefinition, type LibraryJSONSchema, type LibrarySpec, type McpClientLike, McpToolError, type MutationNode, type MutationResult, type MutationStatementInfo, type OpenUIError, type OpenUIErrorCode, type OpenUIErrorSource, type ParseResult, type ParsedRule, type Parser, type PromptOptions, type PromptSpec, type QueryManager, type QueryNode, type QuerySnapshot, type QueryStatementInfo, type ReactiveAssign, type RuntimeExprNode, type SerializeOptions, type StateField, type Statement, type Store, type StreamParser, type SubComponentOf, type SystemPromptOptions, type SystemPromptSpec, type Token, type ToolDescriptor, ToolNotFoundError, type ToolProvider, type ToolSpec, type ValidationError, type ValidationErrorCode, type ValidatorFn, autoClose, buildSignature, builtInValidators, createLibrary, createParser, createQueryManager, createStore, createStreamingParser, defineComponent, enrichErrors, evaluate, evaluateElementProps, extractToolResult, generatePrompt, generateSystemPrompt, isASTNode, isBuiltin, isReactiveAssign, isReactiveSchema, isRuntimeExpr, jsonToOpenUI, markReactive, mergeStatements, parse, parseExpression, parseRules, parseStructuredRules, resolveStateField, split, stripReactiveAssign, tagSchemaId, toNumber, tokenize, validate, walkAST };
++export { ACTION_NAMES, ACTION_STEPS, LIMITS, LimitError, type LimitKind, type EvalBudget, createEvalBudget, type ASTNode, type ActionEvent, type ActionPlan, type ActionStep, BUILTINS, BUILTIN_NAMES, BuiltinActionType, type BuiltinDef, type CallNode, type CloudPromptOptions, type ComponentGroup, type ComponentPromptSpec, type ComponentRenderProps, type DefinedComponent, type ElementNode, type EvalContext, type EvaluationContext, type InferStateFieldValue, LAZY_BUILTINS, type Library, type LibraryDefinition, type LibraryJSONSchema, type LibrarySpec, type McpClientLike, McpToolError, type MutationNode, type MutationResult, type MutationStatementInfo, type OpenUIError, type OpenUIErrorCode, type OpenUIErrorSource, type ParseResult, type ParsedRule, type Parser, type PromptOptions, type PromptSpec, type QueryManager, type QueryNode, type QuerySnapshot, type QueryStatementInfo, type ReactiveAssign, type RuntimeExprNode, type SerializeOptions, type StateField, type Statement, type Store, type StreamParser, type SubComponentOf, type SystemPromptOptions, type SystemPromptSpec, type Token, type ToolDescriptor, ToolNotFoundError, type ToolProvider, type ToolSpec, type ValidationError, type ValidationErrorCode, type ValidatorFn, autoClose, buildSignature, builtInValidators, createLibrary, createParser, createQueryManager, createStore, createStreamingParser, defineComponent, enrichErrors, evaluate, evaluateElementProps, extractToolResult, generatePrompt, generateSystemPrompt, isASTNode, isBuiltin, isReactiveAssign, isReactiveSchema, isRuntimeExpr, jsonToOpenUI, markReactive, mergeStatements, parse, parseExpression, parseRules, parseStructuredRules, resolveStateField, split, stripReactiveAssign, tagSchemaId, toNumber, tokenize, validate, walkAST };
+ //# sourceMappingURL=index.d.mts.map
+\ No newline at end of file
+diff --git a/dist/index.mjs b/dist/index.mjs
+index 8d3e88b2e739d9bb089b2267a80e0bca62795437..55c20391fcd1442c6ee3faf845aa5e5704419793 100644
+--- a/dist/index.mjs
++++ b/dist/index.mjs
+@@ -1,6 +1,66 @@
+ import { n as getPostHogConfig, o as normalizeProjectIdentity, r as isRuntimeTelemetryEnabled, t as TELEMETRY_REQUEST_TIMEOUT_MS } from "./shared-Dzgc28Wo.mjs";
+ import { object } from "zod/v4";
+ import * as z from "zod/v4/core";
++//#region wth/limits.ts (patch: bounded parsing, materialization and evaluation — see packages/apps/patches)
++/** Source size in UTF-8 bytes accepted by parse()/streaming parser (same unit the harness enforces). */
++const MAX_SOURCE_BYTES = 131072;
++/** Statements (`id = expr`) per program. */
++const MAX_STATEMENTS = 512;
++/** Expression nesting depth inside one statement and component tree depth after expansion. */
++const MAX_DEPTH = 32;
++/** Component element expansions per parse; every reference occurrence counts, not distinct declarations. */
++const MAX_EXPANDED_NODES = 2048;
++/** Evaluator operations per update (one evaluateElementProps pass, one query-args evaluation, one action). */
++const MAX_EVAL_OPS = 50000;
++/** Element nodes / @Each items produced per update; nested @Each shares this budget. */
++const MAX_EVAL_NODES = 2048;
++const LIMITS = Object.freeze({
++	sourceBytes: MAX_SOURCE_BYTES,
++	statements: MAX_STATEMENTS,
++	depth: MAX_DEPTH,
++	expandedNodes: MAX_EXPANDED_NODES,
++	evalOps: MAX_EVAL_OPS,
++	evalNodes: MAX_EVAL_NODES
++});
++/** Thrown by parser/materializer/evaluator when a work bound is exceeded; callers convert it to a located error. */
++var LimitError = class extends Error {
++	limit;
++	statementId;
++	constructor(limit, message, statementId) {
++		super(message);
++		this.name = "LimitError";
++		this.limit = limit;
++		this.statementId = statementId;
++	}
++};
++/** Fresh evaluation budget; attach as `EvaluationContext.budget` once per update so nested evaluation shares it. */
++function createEvalBudget() {
++	return {
++		ops: MAX_EVAL_OPS,
++		nodes: MAX_EVAL_NODES
++	};
++}
++function spendOps(context, statementId) {
++	const b = context.budget;
++	if (b && --b.ops < 0) throw new LimitError("evalOps", `app exceeds evaluation budget (${MAX_EVAL_OPS} operations per update)`, statementId);
++}
++function spendNodes(context, count, statementId) {
++	const b = context.budget;
++	if (!b) return;
++	if (count > b.nodes) throw new LimitError("evalNodes", `app exceeds render budget (${MAX_EVAL_NODES} produced nodes per update)`, statementId);
++	b.nodes -= count;
++}
++/** ValidationError describing an exceeded bound, so ParseResult.meta.errors carries it like any other parser error. */
++function limitValidationError(err) {
++	return {
++		code: "budget-exceeded",
++		component: "",
++		path: "",
++		message: err.message,
++		statementId: err.statementId
++	};
++}
++//#endregion
+ //#region src/telemetry/runtime.ts
+ const SYSTEM_PROMPT_EVENT_NAME = "lang_core_system_prompt_generation_used";
+ const PARSER_PARSE_EVENT_NAME = "lang_core_parser_parse_used";
+@@ -1475,10 +1535,16 @@ function parseExpression(tokens) {
+ 			default: return 0;
+ 		}
+ 	}
++	let depth = 0;
+ 	function parseExpr(minPrec = 0) {
+-		let left = parsePrefix();
+-		while (getInfixPrec(cur()) > minPrec) left = parseInfix(left);
+-		return left;
++		if (++depth > MAX_DEPTH) throw new LimitError("depth", `expression nesting deeper than ${MAX_DEPTH}`);
++		try {
++			let left = parsePrefix();
++			while (getInfixPrec(cur()) > minPrec) left = parseInfix(left);
++			return left;
++		} finally {
++			depth--;
++		}
+ 	}
+ 	function parsePrefix() {
+ 		const tok = cur();
+@@ -2307,6 +2373,10 @@ function containsDynamicValue(v) {
+ * Resolve a Ref node: inline from symbol table, detect cycles, emit RuntimeRef
+ * for Query/Mutation declarations. Shared by materializeValue and materializeExpr.
+ */
++/** Charge one component expansion against the parse budget; throws before any props/array are allocated. */
++function chargeExpansion(ctx) {
++	if (--ctx.expansions < 0) throw new LimitError("expandedNodes", `app exceeds render budget (${MAX_EXPANDED_NODES} expanded nodes)`, ctx.currentStatementId);
++}
+ function resolveRef(name, ctx, mode) {
+ 	if (ctx.visited.has(name)) {
+ 		ctx.unres.push(name);
+@@ -2366,6 +2436,8 @@ function materializeExprInternal(node, ctx, scopedRefs) {
+ 		case "Comp": {
+ 			const lazy = materializeLazyBuiltin(node, ctx, scopedRefs);
+ 			if (lazy) return lazy;
++			const isElement = !isBuiltin(node.name) && !isReservedCall(node.name);
++			if (isElement) chargeExpansion(ctx);
+ 			const recursedArgs = node.args.map((a) => materializeExprInternal(a, ctx, scopedRefs));
+ 			if (isBuiltin(node.name) || isReservedCall(node.name)) return {
+ 				...node,
+@@ -2489,14 +2561,20 @@ function materializeValue(node, ctx) {
+ 			const def = ctx.cat?.get(name);
+ 			const props = {};
+ 			if (def) {
++				chargeExpansion(ctx);
++				if (++ctx.depth > MAX_DEPTH) throw new LimitError("depth", `component tree deeper than ${MAX_DEPTH}`, ctx.currentStatementId);
+ 				let dropComponent = false;
+-				for (let i = 0; i < def.params.length && i < args.length; i++) {
+-					const param = def.params[i];
+-					const value = materializeValue(args[i], ctx);
+-					props[param.name] = value;
+-					if (param.schema !== void 0 && validateSchemaValue(value, param.schema, name, `/${param.name}`, ctx)) {
+-						if (resolveInvalidValue(props, param.name, param.required, param.defaultValue)) dropComponent = true;
++				try {
++					for (let i = 0; i < def.params.length && i < args.length; i++) {
++						const param = def.params[i];
++						const value = materializeValue(args[i], ctx);
++						props[param.name] = value;
++						if (param.schema !== void 0 && validateSchemaValue(value, param.schema, name, `/${param.name}`, ctx)) {
++							if (resolveInvalidValue(props, param.name, param.required, param.defaultValue)) dropComponent = true;
++						}
+ 					}
++				} finally {
++					ctx.depth--;
+ 				}
+ 				if (args.length > def.params.length) pushValidationIssue(ctx, name, "", {
+ 					code: "excess-args",
+@@ -2772,7 +2850,15 @@ function pickEntryId(stmtMap, typedStmts, firstId, rootName) {
+ 	if (preferredComponent) return preferredComponent.id;
+ 	return typedStmts.find(isComponentStatement)?.id ?? firstId;
+ }
++/** Result for a program that exceeded a work bound: no root, one located `budget-exceeded` error. */
++function limitResult(err, wasIncomplete, stmtCount) {
++	const result = emptyResult(wasIncomplete);
++	result.meta.statementCount = stmtCount;
++	result.meta.errors.push(limitValidationError(err));
++	return result;
++}
+ function buildResult(stmtMap, typedStmts, firstId, wasIncomplete, stmtCount, cat, rootName) {
++	if (stmtCount > MAX_STATEMENTS) return limitResult(new LimitError("statements", `program has ${stmtCount} statements; limit is ${MAX_STATEMENTS}`), wasIncomplete, stmtCount);
+ 	const entryId = pickEntryId(stmtMap, typedStmts, firstId, rootName);
+ 	if (!stmtMap.has(entryId)) return emptyResult(wasIncomplete);
+ 	const syms = /* @__PURE__ */ new Map();
+@@ -2793,12 +2879,21 @@ function buildResult(stmtMap, typedStmts, firstId, wasIncomplete, stmtCount, cat
+ 		visited: /* @__PURE__ */ new Set(),
+ 		partial: wasIncomplete,
+ 		currentStatementId: entryId,
+-		unreached
++		unreached,
++		expansions: MAX_EXPANDED_NODES,
++		depth: 0
+ 	};
+-	const materialized = materializeValue(syms.get(entryId), ctx);
+-	const root = isElementNode(materialized) ? materialized : null;
+-	if (root) root.statementId = entryId;
+-	const { stateDeclarations, queryStatements, mutationStatements } = extractStatements(typedStmts, ctx);
++	let root;
++	let stateDeclarations, queryStatements, mutationStatements;
++	try {
++		const materialized = materializeValue(syms.get(entryId), ctx);
++		root = isElementNode(materialized) ? materialized : null;
++		if (root) root.statementId = entryId;
++		({stateDeclarations, queryStatements, mutationStatements} = extractStatements(typedStmts, ctx));
++	} catch (e) {
++		if (e instanceof LimitError) return limitResult(e, wasIncomplete, stmtCount);
++		throw e;
++	}
+ 	return {
+ 		root,
+ 		meta: {
+@@ -2921,18 +3016,56 @@ function preprocess(input) {
+ * @param cat    - Param map for positional-arg → named-prop mapping
+ * @returns      ParseResult with root ElementNode (or null) and metadata
+ */
++/** UTF-8 byte length without allocating an encoded copy. */
++function utf8ByteLength(s) {
++	let bytes = 0;
++	for (let i = 0; i < s.length; i++) {
++		const c = s.charCodeAt(i);
++		if (c < 128) bytes += 1;
++		else if (c < 2048) bytes += 2;
++		else if (c >= 55296 && c <= 56319 && i + 1 < s.length) {
++			bytes += 4;
++			i++;
++		} else bytes += 3;
++	}
++	return bytes;
++}
++/** Returns the LimitError for an oversized source, or undefined when within MAX_SOURCE_BYTES. Cheap when the string cannot exceed it. */
++function sourceLimitError(s) {
++	if (s.length * 3 <= MAX_SOURCE_BYTES) return;
++	const bytes = utf8ByteLength(s);
++	if (bytes <= MAX_SOURCE_BYTES) return;
++	return new LimitError("sourceBytes", `source is ${bytes} bytes; limit is ${MAX_SOURCE_BYTES}`);
++}
++/** classifyStatement + parseExpression, attributing a nesting-depth LimitError to the statement. */
++function parseStatement(s) {
++	try {
++		return classifyStatement(s, parseExpression(s.tokens));
++	} catch (e) {
++		if (e instanceof LimitError && !e.statementId) e.statementId = s.id;
++		throw e;
++	}
++}
+ function parse(input, cat, rootName) {
++	const oversized = sourceLimitError(input);
++	if (oversized) return limitResult(oversized, false, 0);
+ 	const trimmed = preprocess(input);
+ 	if (!trimmed) return emptyResult();
+ 	const { text, wasIncomplete } = autoClose(trimmed);
+ 	const stmts = split(tokenize(text));
+ 	if (!stmts.length) return emptyResult(wasIncomplete);
++	if (stmts.length > MAX_STATEMENTS) return limitResult(new LimitError("statements", `program has ${stmts.length} statements; limit is ${MAX_STATEMENTS}`), wasIncomplete, stmts.length);
+ 	const stmtMap = /* @__PURE__ */ new Map();
+ 	let firstId = "";
+-	for (const s of stmts) {
+-		const stmt = classifyStatement(s, parseExpression(s.tokens));
+-		stmtMap.set(s.id, stmt);
+-		if (!firstId) firstId = s.id;
++	try {
++		for (const s of stmts) {
++			const stmt = parseStatement(s);
++			stmtMap.set(s.id, stmt);
++			if (!firstId) firstId = s.id;
++		}
++	} catch (e) {
++		if (e instanceof LimitError) return limitResult(e, wasIncomplete, stmts.length);
++		throw e;
+ 	}
+ 	return buildResult(stmtMap, [...stmtMap.values()], firstId, wasIncomplete, stmtMap.size, cat, rootName);
+ }
+@@ -2947,7 +3080,8 @@ function createStreamParser(cat, rootName) {
+ 		const t = text.trim();
+ 		if (!t) return;
+ 		for (const s of split(tokenize(t))) {
+-			const stmt = classifyStatement(s, parseExpression(s.tokens));
++			if (completedCount >= MAX_STATEMENTS) throw new LimitError("statements", `program has more than ${MAX_STATEMENTS} statements`, s.id);
++			const stmt = parseStatement(s);
+ 			completedStmtMap.set(s.id, stmt);
+ 			completedCount++;
+ 			if (!firstId) firstId = s.id;
+@@ -3001,6 +3135,16 @@ function createStreamParser(cat, rootName) {
+ 		return stmtStart;
+ 	}
+ 	function currentResult() {
++		const oversized = sourceLimitError(buf);
++		if (oversized) return limitResult(oversized, true, completedCount);
++		try {
++			return currentResultUnbounded();
++		} catch (e) {
++			if (e instanceof LimitError) return limitResult(e, true, completedCount);
++			throw e;
++		}
++	}
++	function currentResultUnbounded() {
+ 		refreshCleaned();
+ 		const pendingStart = scanNewCompleted();
+ 		const pendingText = cleaned.slice(pendingStart).trim();
+@@ -3017,7 +3161,7 @@ function createStreamParser(cat, rootName) {
+ 		const allStmtMap = new Map(completedStmtMap);
+ 		for (const s of stmts) {
+ 			if (completedStmtMap.has(s.id)) continue;
+-			const stmt = classifyStatement(s, parseExpression(s.tokens));
++			const stmt = parseStatement(s);
+ 			allStmtMap.set(s.id, stmt);
+ 		}
+ 		return buildResult(allStmtMap, [...allStmtMap.values()], firstId || stmts[0].id, wasIncomplete, completedCount + stmts.length, cat, rootName);
+@@ -3406,6 +3550,7 @@ function isReactiveAssign(value) {
+ * Evaluate an AST node to a runtime value.
+ */
+ function evaluate(node, context, schemaCtx) {
++	spendOps(context);
+ 	switch (node.k) {
+ 		case "Str": return node.v;
+ 		case "Num": return node.v;
+@@ -3426,6 +3571,7 @@ function evaluate(node, context, schemaCtx) {
+ 			}
+ 			if (ACTION_NAMES.has(node.name)) return evaluateActionCall(node.name, node.args, context);
+ 			if (node.mappedProps) {
++				spendNodes(context, 1);
+ 				const def = schemaCtx?.library.components[node.name];
+ 				const props = {};
+ 				for (const [key, val] of Object.entries(node.mappedProps)) {
+@@ -3715,6 +3861,7 @@ function evaluateLazyBuiltin(name, args, context, schemaCtx) {
+ 		const varName = args[1].k === "Ref" ? args[1].n : args[1].k === "Str" ? args[1].v : null;
+ 		if (!varName) return [];
+ 		const template = args[2];
++		spendNodes(context, arr.length);
+ 		return arr.map((item, _idx) => {
+ 			const substituted = substituteRef(template, varName, item);
+ 			const childCtx = {
+@@ -3803,6 +3950,7 @@ function evaluateElementProps(el, evalCtx) {
+ 		try {
+ 			evaluated[key] = evaluatePropValue(value, evalCtx, schemaCtx, propSchema);
+ 		} catch (e) {
++			if (e instanceof LimitError) throw e;
+ 			evaluated[key] = value;
+ 			const msg = e instanceof Error ? e.message : String(e);
+ 			evalCtx.errors?.push({
+@@ -4471,6 +4619,6 @@ function parseStructuredRules(rules) {
+ 	return result;
+ }
+ //#endregion
+-export { ACTION_NAMES, ACTION_STEPS, BUILTINS, BUILTIN_NAMES, BuiltinActionType, LAZY_BUILTINS, McpToolError, ToolNotFoundError, autoClose, buildSignature, builtInValidators, createLibrary, createParser, createQueryManager, createStore, createStreamingParser, defineComponent, enrichErrors, evaluate, evaluateElementProps, extractToolResult, generatePrompt, generateSystemPrompt, isASTNode, isBuiltin, isReactiveAssign, isReactiveSchema, isRuntimeExpr, jsonToOpenUI, markReactive, mergeStatements, parse, parseExpression, parseRules, parseStructuredRules, resolveStateField, split, stripReactiveAssign, tagSchemaId, toNumber, tokenize, validate, walkAST };
++export { ACTION_NAMES, ACTION_STEPS, BUILTINS, LIMITS, LimitError, createEvalBudget, BUILTIN_NAMES, BuiltinActionType, LAZY_BUILTINS, McpToolError, ToolNotFoundError, autoClose, buildSignature, builtInValidators, createLibrary, createParser, createQueryManager, createStore, createStreamingParser, defineComponent, enrichErrors, evaluate, evaluateElementProps, extractToolResult, generatePrompt, generateSystemPrompt, isASTNode, isBuiltin, isReactiveAssign, isReactiveSchema, isRuntimeExpr, jsonToOpenUI, markReactive, mergeStatements, parse, parseExpression, parseRules, parseStructuredRules, resolveStateField, split, stripReactiveAssign, tagSchemaId, toNumber, tokenize, validate, walkAST };
+ 
+ //# sourceMappingURL=index.mjs.map
+\ No newline at end of file

@@ -1,8 +1,9 @@
 //! Web search and fetch (design doc 16). `WebPlugin` reads the `web` config
 //! section, spawns the provider registry actor ([`actor::WebActor`] as
 //! [`provider::WEB_ACTOR`]), and registers `search_web` (SERP plus the
-//! query-relevant passages of the top hits, read in one call) and `read_url`
-//! on the tool registry, with the plugin's prompt block. External providers
+//! query-relevant passages of the top hits, read in one call), `read_url`
+//! and `http_request` (46 §5: one explicit API call, structured reply) on
+//! the tool registry, with the plugin's prompt block. External providers
 //! arrive over the bus ([`provider::RegisterProvider`]) from the
 //! `search-providers` plugin.
 
@@ -11,6 +12,7 @@ pub mod aggregate;
 pub mod engines;
 pub mod excerpt;
 pub mod fetch;
+pub mod http;
 pub mod progress;
 pub mod provider;
 pub mod render;
@@ -84,8 +86,9 @@ impl Default for WebConfig {
 
 /// The plugin: reads `web`, then in a task waits for the secrets vault (37
 /// §3.6: the `github` key), spawns [`WebActor`] as [`WEB_ACTOR`] with the
-/// configured built-in engines, and registers `search_web` and `read_url` once
-/// the tool registry is up (knowledge pattern). The search tool registers even
+/// configured built-in engines, and registers `search_web`, `read_url` and
+/// `http_request` once the tool registry is up (knowledge pattern). The search
+/// tool registers even
 /// with zero engines: external providers may arrive over the bus, and the
 /// description tells the user how to add one.
 pub struct WebPlugin;
@@ -113,6 +116,15 @@ impl runtime::Plugin for WebPlugin {
             &cfg.user_agent,
             cfg.max_fetch_bytes,
             cfg.max_redirects,
+        )?);
+        // Own client: the page fetcher's 8 s per-hop timeout and 2 MiB cap are
+        // page policy; the API tool's bounds are fixed by 46 §5.
+        let api_fetcher = Arc::new(fetch::Fetcher::new_with_timeouts(
+            &cfg.user_agent,
+            http::MAX_BYTES,
+            cfg.max_redirects,
+            http::TIMEOUT,
+            fetch::CONNECT_TIMEOUT,
         )?);
         let rt = rt.clone();
         tokio::spawn(async move {
@@ -165,6 +177,12 @@ impl runtime::Plugin for WebPlugin {
                         fetcher,
                         providers: metas,
                         cfg,
+                    })))
+                    .await;
+                let _ = reg
+                    .ask(RegisterTool(Arc::new(http::HttpRequestTool {
+                        fetcher: api_fetcher,
+                        deadline: http::TIMEOUT,
                     })))
                     .await;
                 let _ = reg

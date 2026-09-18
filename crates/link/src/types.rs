@@ -5,6 +5,7 @@
 //! sibling modules.
 
 use serde::{Deserialize, Serialize};
+use tokio_util::sync::{CancellationToken, DropGuard, WaitForCancellationFutureOwned};
 
 /// Registry name of the [`crate::LinkActor`].
 pub const LINK_ACTOR: &str = "link";
@@ -181,4 +182,69 @@ pub struct SetDispatch {
     pub methods: jsonrpsee::Methods,
     /// ACP agent half a mode-1 conn hands its [`crate::RecordChannel`] to.
     pub acp: AcpServe,
+}
+
+/// One authenticated RPC connection — a Noise session (mode 0) or a local
+/// WebSocket the bearer token admitted — as the method it invokes sees it:
+/// the same peer for every request on that connection, a different one for
+/// every other connection. Methods read it from their jsonrpsee
+/// [`Extensions`](jsonrpsee::types::Extensions) (`#[method(with_extensions)]`,
+/// `ext.get::<RpcPeer>()`); `None` there means no connection authenticated
+/// the call — treat it as unauthenticated, never as local.
+#[derive(Clone, Debug)]
+pub struct RpcPeer {
+    id: u64,
+    closed: CancellationToken,
+}
+
+/// Held by the connection for as long as it is open; dropping it closes the
+/// peer ([`RpcPeer::closed`] resolves). Never stored in extensions.
+#[derive(Debug)]
+pub struct RpcPeerGuard {
+    _cancel_on_drop: DropGuard,
+}
+
+impl RpcPeer {
+    /// A fresh peer with a random id. The connection keeps the guard until it
+    /// is gone (disconnect, revocation, server stop).
+    pub fn open() -> (Self, RpcPeerGuard) {
+        let closed = CancellationToken::new();
+        let guard = RpcPeerGuard {
+            _cancel_on_drop: closed.clone().drop_guard(),
+        };
+        (
+            Self {
+                id: rand::random(),
+                closed,
+            },
+            guard,
+        )
+    }
+
+    /// A peer for a trusted in-process caller (the TUI, tests): authenticated
+    /// by construction, never closes. Construct once and reuse it, or the
+    /// caller looks like a new connection every time.
+    pub fn internal() -> Self {
+        Self {
+            id: rand::random(),
+            closed: CancellationToken::new(),
+        }
+    }
+
+    /// Random per connection; collision-resistant across the Noise and local
+    /// WebSocket domains.
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// Resolves once the connection is gone; `'static`, so it can outlive the
+    /// request that read the peer (e.g. cleanup spawned per pending query).
+    pub fn closed(&self) -> WaitForCancellationFutureOwned {
+        self.closed.clone().cancelled_owned()
+    }
+
+    /// Whether the connection is already gone.
+    pub fn is_closed(&self) -> bool {
+        self.closed.is_cancelled()
+    }
 }

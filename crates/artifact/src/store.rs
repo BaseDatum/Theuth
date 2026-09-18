@@ -10,18 +10,163 @@ use std::time::{Duration, Instant};
 use anyhow::Context as _;
 use kameo::actor::ActorRef;
 use runtime::{Runtime, SessionId};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
 
 use crate::kind::{self, Receipt};
 use crate::pdf::{self, Source};
 use crate::tools::ShowArgs;
-use crate::{Artifact, ArtifactShown, Kind, MAX_BYTES, svg};
+use crate::{
+    Artifact, ArtifactShown, ClaimInvocation, Commit, CompleteInvocation, Kind, MAX_BYTES, svg,
+};
 
 /// Directory under `data_dir`.
 pub const DIR: &str = "artifacts";
 /// Index file name, beside [`DIR`] in `data_dir`.
 pub const DB: &str = "artifacts.sqlite";
+/// Largest serialized [`Invocation::result`] kept; larger results are
+/// replaced by an `{"omitted": …}` marker (46 §6.4).
+pub const MAX_INVOCATION_RESULT: usize = 64 * 1024;
+
+/// Why a [`Commit`] did not insert a row. Nothing is published on `Err`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CommitError {
+    /// `expected_base` is no longer the latest version of `(session, name)`;
+    /// `latest` is the record that is (`None` when the name has no rows).
+    Conflict {
+        /// `call_id` of the current latest version; `None` when the name has no rows.
+        latest: Option<String>,
+    },
+    /// Invalid input or a store failure; what the model may read.
+    Other(String),
+}
+
+impl std::fmt::Display for CommitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Conflict { latest: Some(l) } => {
+                write!(f, "conflict: base is not latest ({l} is)")
+            }
+            Self::Conflict { latest: None } => f.write_str("conflict: base no longer exists"),
+            Self::Other(e) => f.write_str(e),
+        }
+    }
+}
+
+impl From<CommitError> for String {
+    fn from(e: CommitError) -> Self {
+        e.to_string()
+    }
+}
+
+/// Lifecycle of one app invocation row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "lowercase")]
+pub enum InvocationStatus {
+    /// Claimed, dispatch in progress.
+    Running,
+    /// Completed with `ok: true`.
+    Succeeded,
+    /// Completed with `ok: false`.
+    Failed,
+    /// Was `running` when the store last opened: outcome unknowable.
+    Unknown,
+}
+
+impl InvocationStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    fn parse(s: &str) -> Option<Self> {
+        [Self::Running, Self::Succeeded, Self::Failed, Self::Unknown]
+            .into_iter()
+            .find(|k| k.as_str() == s)
+    }
+}
+
+/// One durable pressed invocation (46 §6.4).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct Invocation {
+    /// Row key.
+    pub request_id: String,
+    /// Owning session.
+    pub session: SessionId,
+    /// The app record.
+    pub record_call_id: String,
+    /// The bound statement.
+    pub statement_id: String,
+    /// The press, if any.
+    pub action_id: Option<String>,
+    /// Resolved tool name.
+    pub tool: String,
+    /// [`args_hash`] of the arguments.
+    pub args_hash: String,
+    /// Current status.
+    pub status: InvocationStatus,
+    /// Stored (redacted, bounded) result once completed.
+    pub result: Option<serde_json::Value>,
+    /// Unix seconds.
+    pub started_at: i64,
+    /// Unix seconds, once completed.
+    pub finished_at: Option<i64>,
+}
+
+/// Outcome of [`ClaimInvocation`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Claim {
+    /// Inserted as `running`; the caller dispatches.
+    New,
+    /// Same request id, same identity and arguments: do not dispatch again.
+    Existing(Box<Invocation>),
+    /// Same request id, different identity or arguments.
+    Conflict,
+}
+
+/// `sha256[..16]` of the canonical (sorted-key) JSON of `args`.
+pub fn args_hash(args: &serde_json::Value) -> String {
+    let mut s = String::new();
+    canonical(args, &mut s);
+    sha16(s.as_bytes())
+}
+
+fn canonical(v: &serde_json::Value, out: &mut String) {
+    match v {
+        serde_json::Value::Object(m) => {
+            let mut keys: Vec<&String> = m.keys().collect();
+            keys.sort_unstable();
+            out.push('{');
+            for (i, k) in keys.into_iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                out.push_str(&serde_json::to_string(k).unwrap_or_default());
+                out.push(':');
+                canonical(&m[k], out);
+            }
+            out.push('}');
+        }
+        serde_json::Value::Array(a) => {
+            out.push('[');
+            for (i, x) in a.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                canonical(x, out);
+            }
+            out.push(']');
+        }
+        _ => out.push_str(&v.to_string()),
+    }
+}
 
 /// What one `show` produced: the record plus the numbers its receipt needs.
 #[derive(Clone, Debug)]
@@ -40,6 +185,10 @@ pub struct State {
     rt: Runtime,
     /// Extra font directories for PDF compiles (`artifact.fonts`).
     pub fonts: Vec<PathBuf>,
+    /// Writers (`show`, `commit`) hold it shared from first blob write to row
+    /// insert; [`State::sweep`] holds it exclusively, so it never collects a
+    /// blob whose row is about to exist.
+    gate: tokio::sync::RwLock<()>,
 }
 
 const COLS: &str = "call_id, id, session, name, title, kind, mime, bytes, version, \
@@ -60,6 +209,23 @@ type Row = (
     Option<i64>,
     Option<String>,
     i64,
+);
+
+const INV_COLS: &str = "request_id, session, record_call_id, statement_id, action_id, tool, \
+                        args_hash, status, result, started_at, finished_at";
+
+type InvRow = (
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    String,
+    String,
+    String,
+    Option<String>,
+    i64,
+    Option<i64>,
 );
 
 fn sha16(bytes: &[u8]) -> String {
@@ -130,11 +296,18 @@ impl State {
             .run(&pool)
             .await
             .context("run migrations")?;
+        // A row still `running` at open never completed: the harness died
+        // mid-dispatch. Its outcome is unknowable, never retried (46 §6.4).
+        sqlx::query("UPDATE app_invocations SET status = 'unknown' WHERE status = 'running'")
+            .execute(&pool)
+            .await
+            .context("reset stale app invocations")?;
         Ok(Self {
             dir,
             pool,
             rt,
             fonts,
+            gate: tokio::sync::RwLock::new(()),
         })
     }
 
@@ -177,18 +350,27 @@ impl State {
     }
 
     /// Write `<dir>/<file>` unless it already exists (same hash = same bytes).
+    /// The temp name is unique per call: two writers of one blob (same bytes
+    /// in two sessions) each rename their own file; the second rename is an
+    /// atomic replace with identical content.
     async fn put_blob(&self, file: &str, bytes: &[u8]) -> anyhow::Result<PathBuf> {
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let path = self.dir.join(file);
         if tokio::fs::try_exists(&path).await.unwrap_or(false) {
             return Ok(path);
         }
-        let part = self.dir.join(format!("{file}.part"));
+        let part = self.dir.join(format!(
+            "{file}.{}.{}.part",
+            std::process::id(),
+            SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
         tokio::fs::write(&part, bytes)
             .await
             .with_context(|| format!("write {}", part.display()))?;
-        tokio::fs::rename(&part, &path)
-            .await
-            .with_context(|| format!("rename {}", path.display()))?;
+        if let Err(e) = tokio::fs::rename(&part, &path).await {
+            let _ = tokio::fs::remove_file(&part).await;
+            return Err(e).with_context(|| format!("rename {}", path.display()));
+        }
         Ok(path)
     }
 
@@ -251,6 +433,7 @@ impl State {
         let mut preview_png = None;
         let mut heading_src: Option<&str> = None;
         let mut compiled = false;
+        let _writing = self.gate.read().await;
 
         let bytes = match (kind, &content) {
             (Kind::Pdf, Some(content)) => {
@@ -323,7 +506,7 @@ impl State {
         };
 
         let mut artifact = Artifact {
-            mime: kind::mime(&name),
+            mime: kind::mime(kind, &name),
             id,
             session,
             call_id,
@@ -341,10 +524,12 @@ impl State {
         };
         // The version is assigned inside the INSERT so two parallel `show`s of one
         // name (one assistant message, `Show` runs off the mailbox) cannot both read
-        // the same count. Only `COLS` (a const) is interpolated; every value is bound.
+        // the same count. Plain INSERT: a record is immutable, so a colliding
+        // `call_id` (e.g. an app committed under it) is refused, never replaced.
+        // Only `COLS` (a const) is interpolated; every value is bound.
         let (version,): (i64,) = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "INSERT OR REPLACE INTO artifacts ({COLS}) VALUES (?,?,?,?,?,?,?,?,\
-             (SELECT COUNT(*) + 1 FROM artifacts WHERE session = ? AND name = ? AND call_id != ?),\
+            "INSERT INTO artifacts ({COLS}) VALUES (?,?,?,?,?,?,?,?,\
+             (SELECT COUNT(*) + 1 FROM artifacts WHERE session = ? AND name = ?),\
              ?,?,?,?,?) RETURNING version"
         )))
         .bind(&artifact.call_id)
@@ -357,7 +542,6 @@ impl State {
         .bind(i64::try_from(artifact.bytes).unwrap_or(i64::MAX))
         .bind(artifact.session.to_string())
         .bind(&artifact.name)
-        .bind(&artifact.call_id)
         .bind(source_file)
         .bind(preview_file)
         .bind(artifact.pages.map(i64::from))
@@ -370,7 +554,18 @@ impl State {
         .bind(artifact.created_at)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| format!("{}: index: {e}", artifact.name))?;
+        .map_err(|e| {
+            if e.as_database_error()
+                .is_some_and(|d| d.is_unique_violation())
+            {
+                format!(
+                    "{}: call {} already recorded",
+                    artifact.name, artifact.call_id
+                )
+            } else {
+                format!("{}: index: {e}", artifact.name)
+            }
+        })?;
         artifact.version = u32::try_from(version).unwrap_or_default();
 
         tracing::info!(
@@ -391,6 +586,313 @@ impl State {
             })
             .await;
         Ok(Shown { artifact, receipt })
+    }
+
+    /// 46 §3.2–§3.3 [`Commit`]: validate → blob + source blob → one
+    /// `INSERT … WHERE base is latest RETURNING version` → publish. The
+    /// compare and the version insert are one statement, so two patches
+    /// against one base cannot both land; the loser gets
+    /// [`CommitError::Conflict`] with the current latest record. A record is
+    /// immutable: recommitting a `call_id` returns the existing record only
+    /// when it is exactly this one ([`same_record`]) and is refused otherwise.
+    pub async fn commit(&self, m: Commit) -> Result<Artifact, CommitError> {
+        let name = m.name;
+        let invalid = |e: String| CommitError::Other(format!("{name}: {e}"));
+        if kind::ext(&name).is_none() {
+            return Err(invalid("name needs an extension".into()));
+        }
+        if m.bytes.len() as u64 > MAX_BYTES {
+            return Err(invalid(format!(
+                "{} exceeds {}",
+                kind::human(m.bytes.len() as u64),
+                kind::human(MAX_BYTES)
+            )));
+        }
+        if let Some((suffix, src)) = &m.source {
+            if suffix.is_empty() || suffix.contains(['/', '\\']) || suffix.contains("..") {
+                return Err(invalid(format!(
+                    "source suffix {suffix:?} is not a file suffix"
+                )));
+            }
+            if src.len() as u64 > MAX_BYTES {
+                return Err(invalid(format!(
+                    "source {} exceeds {}",
+                    kind::human(src.len() as u64),
+                    kind::human(MAX_BYTES)
+                )));
+            }
+        }
+        let id = sha16(&m.bytes);
+        // The sidecar's own hash: metadata for one UI hash may differ between
+        // commits (tool identities), and must never overwrite.
+        let source_file = m
+            .source
+            .as_ref()
+            .map(|(suffix, src)| format!("{}.{suffix}", sha16(src)));
+        let mut artifact = Artifact {
+            mime: kind::mime(m.kind, &name),
+            path: self.dir.join(blob_name(&id, &name)),
+            source: source_file.as_deref().map(|s| self.dir.join(s)),
+            id,
+            session: m.session,
+            call_id: m.call_id,
+            name,
+            title: m.title,
+            kind: m.kind,
+            bytes: m.bytes.len() as u64,
+            version: 0,
+            preview: None,
+            pages: None,
+            origin: None,
+            created_at: chrono::Utc::now().timestamp(),
+        };
+        match self.get(&artifact.call_id).await {
+            Ok(a) if same_record(&a, &artifact) => return Ok(a),
+            Ok(_) => {
+                return Err(CommitError::Other(format!(
+                    "{}: {} already records a different artifact",
+                    artifact.name, artifact.call_id
+                )));
+            }
+            Err(_) => {}
+        }
+
+        let _writing = self.gate.read().await;
+        if let (Some(f), Some((_, src))) = (&source_file, &m.source) {
+            self.put_blob(f, src)
+                .await
+                .map_err(|e| CommitError::Other(format!("{}: {e:#}", artifact.name)))?;
+        }
+        self.put_blob(&blob_name(&artifact.id, &artifact.name), &m.bytes)
+            .await
+            .map_err(|e| CommitError::Other(format!("{}: {e:#}", artifact.name)))?;
+        let session = artifact.session.to_string();
+        // One statement: SQLite holds the write lock across the version
+        // subselect and the latest-row check, so the compare-and-swap cannot
+        // interleave with another insert. Only `COLS` (a const) is interpolated.
+        let inserted = sqlx::query_as::<_, (i64,)>(sqlx::AssertSqlSafe(format!(
+            "INSERT INTO artifacts ({COLS}) SELECT ?,?,?,?,?,?,?,?,\
+             (SELECT COUNT(*) + 1 FROM artifacts WHERE session = ? AND name = ?),\
+             ?,NULL,NULL,NULL,? \
+             WHERE ? IS NULL OR (SELECT call_id FROM artifacts WHERE session = ? AND name = ? \
+             ORDER BY version DESC LIMIT 1) = ? \
+             RETURNING version"
+        )))
+        .bind(&artifact.call_id)
+        .bind(&artifact.id)
+        .bind(&session)
+        .bind(&artifact.name)
+        .bind(&artifact.title)
+        .bind(artifact.kind.as_str())
+        .bind(&artifact.mime)
+        .bind(i64::try_from(artifact.bytes).unwrap_or(i64::MAX))
+        .bind(&session)
+        .bind(&artifact.name)
+        .bind(source_file)
+        .bind(artifact.created_at)
+        .bind(&m.expected_base)
+        .bind(&session)
+        .bind(&artifact.name)
+        .bind(&m.expected_base)
+        .fetch_optional(&self.pool)
+        .await;
+        let inserted = match inserted {
+            Ok(v) => v,
+            // Two retries of one call raced past the pre-check: the row that
+            // won is this record if it matches, otherwise a different one.
+            Err(e)
+                if e.as_database_error()
+                    .is_some_and(|d| d.is_unique_violation()) =>
+            {
+                return match self.get(&artifact.call_id).await {
+                    Ok(a) if same_record(&a, &artifact) => Ok(a),
+                    _ => Err(CommitError::Other(format!(
+                        "{}: {} already records a different artifact",
+                        artifact.name, artifact.call_id
+                    ))),
+                };
+            }
+            Err(e) => {
+                return Err(CommitError::Other(format!("{}: index: {e}", artifact.name)));
+            }
+        };
+        let Some((version,)) = inserted else {
+            let latest: Option<(String,)> = sqlx::query_as(
+                "SELECT call_id FROM artifacts WHERE session = ? AND name = ? \
+                 ORDER BY version DESC LIMIT 1",
+            )
+            .bind(&session)
+            .bind(&artifact.name)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| CommitError::Other(format!("{}: index: {e}", artifact.name)))?;
+            return Err(CommitError::Conflict {
+                latest: latest.map(|(c,)| c),
+            });
+        };
+        artifact.version = u32::try_from(version).unwrap_or_default();
+        drop(_writing);
+
+        tracing::info!(
+            target: "artifact",
+            kind = artifact.kind.as_str(),
+            bytes = artifact.bytes,
+            version = artifact.version,
+            ok = true,
+            "commit"
+        );
+        self.rt
+            .publish(ArtifactShown {
+                session: artifact.session,
+                call_id: artifact.call_id.clone(),
+                artifact: artifact.clone(),
+            })
+            .await;
+        Ok(artifact)
+    }
+
+    /// The record of tool call `call_id`.
+    pub async fn get(&self, call_id: &str) -> Result<Artifact, String> {
+        let row: Option<Row> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT {COLS} FROM artifacts WHERE call_id = ?"
+        )))
+        .bind(call_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| format!("index: {e}"))?;
+        let row = row.ok_or_else(|| format!("{call_id}: no such artifact"))?;
+        self.row_to_artifact(row).map_err(|e| format!("{e:#}"))
+    }
+
+    /// 46 §6.4 [`ClaimInvocation`]: one `INSERT … SELECT … WHERE EXISTS
+    /// (app record of this session) ON CONFLICT DO NOTHING`, so a claim
+    /// cannot outlive its record's deletion or target a non-app; when the id
+    /// exists, the stored identity decides `Existing` vs `Conflict`.
+    pub async fn claim(&self, m: ClaimInvocation) -> Result<Claim, String> {
+        let hash = args_hash(&m.args);
+        let session = m.session.to_string();
+        let inserted: Option<(String,)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "INSERT INTO app_invocations ({INV_COLS}) \
+             SELECT ?,?,?,?,?,?,?,'running',NULL,?,NULL \
+             WHERE EXISTS (SELECT 1 FROM artifacts WHERE call_id = ? AND session = ? AND kind = 'app') \
+             ON CONFLICT(request_id) DO NOTHING RETURNING request_id"
+        )))
+        .bind(&m.request_id)
+        .bind(&session)
+        .bind(&m.record_call_id)
+        .bind(&m.statement_id)
+        .bind(&m.action_id)
+        .bind(&m.tool)
+        .bind(&hash)
+        .bind(chrono::Utc::now().timestamp())
+        .bind(&m.record_call_id)
+        .bind(&session)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| format!("{}: index: {e}", m.request_id))?;
+        if inserted.is_some() {
+            return Ok(Claim::New);
+        }
+        let Some(existing) = self.invocation(&m.request_id).await? else {
+            return Err(format!(
+                "{}: {} is not an app record of this session",
+                m.request_id, m.record_call_id
+            ));
+        };
+        let same = existing.session == m.session
+            && existing.record_call_id == m.record_call_id
+            && existing.statement_id == m.statement_id
+            && existing.tool == m.tool
+            && existing.args_hash == hash;
+        Ok(if same {
+            Claim::Existing(Box::new(existing))
+        } else {
+            Claim::Conflict
+        })
+    }
+
+    /// 46 §6.4 [`CompleteInvocation`]: `running` → `succeeded` / `failed`
+    /// with a bounded stored result.
+    pub async fn complete(&self, m: CompleteInvocation) -> Result<(), String> {
+        let status = if m.ok {
+            InvocationStatus::Succeeded
+        } else {
+            InvocationStatus::Failed
+        };
+        let result = m.result.map(|v| {
+            let s = v.to_string();
+            if s.len() > MAX_INVOCATION_RESULT {
+                serde_json::json!({
+                    "omitted": format!("result of {} exceeds {}", kind::human(s.len() as u64), kind::human(MAX_INVOCATION_RESULT as u64)),
+                })
+                .to_string()
+            } else {
+                s
+            }
+        });
+        let done = sqlx::query(
+            "UPDATE app_invocations SET status = ?, result = ?, finished_at = ? \
+             WHERE request_id = ? AND status = 'running'",
+        )
+        .bind(status.as_str())
+        .bind(result)
+        .bind(chrono::Utc::now().timestamp())
+        .bind(&m.request_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| format!("{}: index: {e}", m.request_id))?;
+        if done.rows_affected() == 0 {
+            return Err(format!("{}: not a running invocation", m.request_id));
+        }
+        Ok(())
+    }
+
+    /// Current row of `request_id`: `Ok(None)` when there is none, `Err` when
+    /// the index is unreadable or the row is corrupt, so a status lookup never
+    /// mistakes an unreadable outcome for a missing one.
+    pub async fn invocation(&self, request_id: &str) -> Result<Option<Invocation>, String> {
+        let row: Option<InvRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT {INV_COLS} FROM app_invocations WHERE request_id = ?"
+        )))
+        .bind(request_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| format!("{request_id}: index: {e}"))?;
+        let Some((
+            request_id,
+            session,
+            record_call_id,
+            statement_id,
+            action_id,
+            tool,
+            args_hash,
+            status,
+            result,
+            started_at,
+            finished_at,
+        )) = row
+        else {
+            return Ok(None);
+        };
+        Ok(Some(Invocation {
+            session: session
+                .parse()
+                .map_err(|e| format!("{request_id}: app_invocations.session {session:?}: {e}"))?,
+            status: InvocationStatus::parse(&status)
+                .ok_or_else(|| format!("{request_id}: app_invocations.status {status:?}"))?,
+            result: result
+                .map(|r| serde_json::from_str(&r))
+                .transpose()
+                .map_err(|e| format!("{request_id}: app_invocations.result: {e}"))?,
+            request_id,
+            record_call_id,
+            statement_id,
+            action_id,
+            tool,
+            args_hash,
+            started_at,
+            finished_at,
+        }))
     }
 
     /// `None` → every row; `Some(&[])` → none.
@@ -462,17 +964,27 @@ impl State {
         Ok(dest.to_path_buf())
     }
 
-    /// Drop every row of `session`; the next sweep collects the blobs.
+    /// Drop every row of `session`, artifacts and app invocations alike, in
+    /// one transaction; the next sweep collects the blobs.
     pub async fn delete_session(&self, session: SessionId) -> anyhow::Result<()> {
+        let session = session.to_string();
+        let mut tx = self.pool.begin().await?;
         sqlx::query("DELETE FROM artifacts WHERE session = ?")
-            .bind(session.to_string())
-            .execute(&self.pool)
+            .bind(&session)
+            .execute(&mut *tx)
             .await?;
+        sqlx::query("DELETE FROM app_invocations WHERE session = ?")
+            .bind(&session)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
         Ok(())
     }
 
-    /// Delete blobs (and previews, sources) no row references. Returns how many.
+    /// Delete blobs (and previews, sources) no row references. Returns how
+    /// many. Exclusive against `show`/`commit`, whose blobs precede their rows.
     pub async fn sweep(&self) -> anyhow::Result<usize> {
+        let _exclusive = self.gate.write().await;
         let ids: Vec<(String,)> = sqlx::query_as("SELECT DISTINCT id FROM artifacts")
             .fetch_all(&self.pool)
             .await?;
@@ -493,7 +1005,8 @@ impl State {
             if file.starts_with(DB) || !entry.file_type().await?.is_file() {
                 continue;
             }
-            if !live.contains(stem(&file)) {
+            // No writer runs under the exclusive gate: any `.part` is a crash leftover.
+            if file.ends_with(".part") || !live.contains(stem(&file)) {
                 tokio::fs::remove_file(entry.path()).await?;
                 removed += 1;
             }
@@ -504,6 +1017,18 @@ impl State {
 
 fn stem(file: &str) -> &str {
     file.split('.').next().unwrap_or(file)
+}
+
+/// Whether the existing record of a `call_id` is exactly the one being
+/// recommitted: same bytes, session, name, kind, title and source sidecar
+/// (its own hash, so different binding metadata is a different record).
+fn same_record(existing: &Artifact, wanted: &Artifact) -> bool {
+    existing.id == wanted.id
+        && existing.session == wanted.session
+        && existing.name == wanted.name
+        && existing.kind == wanted.kind
+        && existing.title == wanted.title
+        && existing.source == wanted.source
 }
 
 #[cfg(test)]
@@ -671,6 +1196,352 @@ mod tests {
         s.delete_session(sess).await.unwrap();
         assert!(s.list(Some(sess), false).await.unwrap().is_empty());
         assert_eq!(s.sweep().await.unwrap(), 2);
+        assert!(blobs(&s.dir).is_empty());
+    }
+
+    fn app(sess: SessionId, call_id: &str, src: &str, base: Option<&str>) -> Commit {
+        Commit {
+            session: sess,
+            call_id: call_id.into(),
+            name: "panel.openui".into(),
+            title: "Panel".into(),
+            kind: Kind::App,
+            bytes: src.as_bytes().to_vec(),
+            source: Some(("app.json".into(), br#"{"library_hash":"h1"}"#.to_vec())),
+            expected_base: base.map(str::to_owned),
+        }
+    }
+
+    /// Ordinary `show` of a `.openui` file is inert text: only `Commit` makes
+    /// an active app.
+    #[tokio::test]
+    async fn show_openui_is_inert_text() {
+        let (s, _d) = open().await;
+        let shown = s
+            .show(
+                SessionId::new(),
+                "c1".into(),
+                content("panel.openui", "root = TextContent(\"hi\")\n"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(shown.artifact.kind, Kind::Text);
+        assert_eq!(shown.artifact.mime, "text/plain");
+        assert_eq!(shown.receipt.lines, Some(1));
+    }
+
+    /// One blob, one metadata sidecar, two records with their own sessions.
+    #[tokio::test]
+    async fn commit_same_bytes_two_sessions_one_blob_two_records() {
+        let (s, _d) = open().await;
+        let (s1, s2) = (SessionId::new(), SessionId::new());
+        // Concurrent: both write the same blob and sidecar; each renames its
+        // own temp file, neither clobbers the other.
+        let (a, b) = tokio::join!(
+            s.commit(app(s1, "c1", "root = X\n", None)),
+            s.commit(app(s2, "c2", "root = X\n", None)),
+        );
+        let (a, b) = (a.unwrap(), b.unwrap());
+        assert_eq!(a.id, b.id);
+        assert_eq!((a.version, b.version), (1, 1));
+        assert_eq!((a.session, b.session), (s1, s2));
+        assert_eq!(a.kind, Kind::App);
+        assert_eq!(a.mime, "text/x-openui");
+        assert_eq!(a.path.extension().unwrap(), "openui");
+        let src = a.source.clone().unwrap();
+        assert!(
+            src.to_string_lossy().ends_with(".app.json"),
+            "{}",
+            src.display()
+        );
+        assert_ne!(
+            src.file_name().unwrap().to_string_lossy(),
+            format!("{}.app.json", a.id),
+            "sidecar is keyed by its own hash, not the UI hash"
+        );
+        assert_eq!(std::fs::read(&src).unwrap(), br#"{"library_hash":"h1"}"#);
+        assert_eq!(blobs(&s.dir).len(), 2);
+        assert_eq!(s.get("c2").await.unwrap().session, s2);
+        assert_eq!(s.get("nope").await.unwrap_err(), "nope: no such artifact");
+
+        // A record is immutable: the exact same commit is idempotent, any
+        // other content/session under a recorded call_id is refused.
+        let again = s.commit(app(s1, "c1", "root = X\n", None)).await.unwrap();
+        assert_eq!((again.version, again.created_at), (a.version, a.created_at));
+        assert_eq!(s.list(Some(s1), false).await.unwrap().len(), 1);
+        assert_eq!(
+            s.commit(app(s1, "c1", "root = Y\n", None))
+                .await
+                .unwrap_err(),
+            CommitError::Other("panel.openui: c1 already records a different artifact".into())
+        );
+        assert!(s.commit(app(s2, "c1", "root = X\n", None)).await.is_err());
+        // Same UI bytes, different binding metadata: a different record.
+        let mut rebound = app(s1, "c1", "root = X\n", None);
+        rebound.source = Some(("app.json".into(), br#"{"library_hash":"h9"}"#.to_vec()));
+        assert!(s.commit(rebound).await.is_err());
+        let mut retitled = app(s1, "c1", "root = X\n", None);
+        retitled.title = "Other".into();
+        assert!(s.commit(retitled).await.is_err());
+        // Ordinary `show` cannot overwrite a committed app under its call id.
+        assert_eq!(
+            s.show(s1, "c1".into(), content("panel.openui", "root = Z\n"))
+                .await
+                .unwrap_err(),
+            "panel.openui: call c1 already recorded"
+        );
+        let kept = s.get("c1").await.unwrap();
+        assert_eq!((kept.id.as_str(), kept.kind), (a.id.as_str(), Kind::App));
+        assert_eq!(s.list(Some(s1), false).await.unwrap().len(), 1);
+    }
+
+    /// Two patches against one base race: exactly one lands as v2, the other
+    /// gets a conflict naming the winner; a stale base afterwards also conflicts;
+    /// unconditional replacement still appends.
+    #[tokio::test]
+    async fn commit_cas_race_loses_no_patch() {
+        let (s, _d) = open().await;
+        let sess = SessionId::new();
+        s.commit(app(sess, "c1", "root = A\n", None)).await.unwrap();
+        let (x, y) = tokio::join!(
+            s.commit(app(sess, "c2", "root = B\n", Some("c1"))),
+            s.commit(app(sess, "c3", "root = C\n", Some("c1"))),
+        );
+        let (won, lost) = match (x, y) {
+            (Ok(w), Err(l)) | (Err(l), Ok(w)) => (w, l),
+            other => panic!("expected one winner: {other:?}"),
+        };
+        assert_eq!(won.version, 2);
+        assert_eq!(
+            lost,
+            CommitError::Conflict {
+                latest: Some(won.call_id.clone())
+            }
+        );
+        assert_eq!(
+            s.commit(app(sess, "c4", "root = D\n", Some("c1")))
+                .await
+                .unwrap_err(),
+            CommitError::Conflict {
+                latest: Some(won.call_id.clone())
+            }
+        );
+        assert_eq!(
+            s.commit(app(sess, "c5", "root = E\n", Some("zzz")))
+                .await
+                .unwrap_err(),
+            CommitError::Conflict {
+                latest: Some(won.call_id.clone())
+            }
+        );
+        assert_eq!(
+            s.commit(app(SessionId::new(), "c6", "root = F\n", Some("c1")))
+                .await
+                .unwrap_err(),
+            CommitError::Conflict { latest: None }
+        );
+        let full = s.commit(app(sess, "c7", "root = G\n", None)).await.unwrap();
+        assert_eq!(full.version, 3);
+        let list = s.list(Some(sess), false).await.unwrap();
+        assert_eq!(list.len(), 3);
+        assert_eq!(list[0].call_id, "c7");
+    }
+
+    #[tokio::test]
+    async fn commit_validation() {
+        let (s, _d) = open().await;
+        let sess = SessionId::new();
+        let mut m = app(sess, "c1", "x", None);
+        m.name = "noext".into();
+        assert_eq!(
+            s.commit(m).await.unwrap_err(),
+            CommitError::Other("noext: name needs an extension".into())
+        );
+        let mut m = app(sess, "c1", "x", None);
+        m.source = Some(("../evil".into(), Vec::new()));
+        assert!(
+            matches!(s.commit(m).await.unwrap_err(), CommitError::Other(e) if e.contains("suffix"))
+        );
+        let mut m = app(sess, "c1", "x", None);
+        m.bytes = vec![0; 33 * 1024 * 1024];
+        assert_eq!(
+            s.commit(m).await.unwrap_err(),
+            CommitError::Other("panel.openui: 33 MB exceeds 32 MB".into())
+        );
+        assert!(s.list(Some(sess), false).await.unwrap().is_empty());
+        assert!(blobs(&s.dir).is_empty());
+    }
+
+    fn press(sess: SessionId, request_id: &str, args: serde_json::Value) -> ClaimInvocation {
+        ClaimInvocation {
+            request_id: request_id.into(),
+            session: sess,
+            record_call_id: "rec".into(),
+            statement_id: "syncResult".into(),
+            action_id: Some("act1".into()),
+            tool: "argo_sync".into(),
+            args,
+        }
+    }
+
+    #[test]
+    fn args_hash_is_canonical() {
+        let a = args_hash(&serde_json::json!({"a": 1, "b": [1, {"y": 2, "x": 1}]}));
+        let b = args_hash(&serde_json::json!({"b": [1, {"x": 1, "y": 2}], "a": 1}));
+        assert_eq!(a, b);
+        assert_ne!(
+            a,
+            args_hash(&serde_json::json!({"a": 2, "b": [1, {"x": 1, "y": 2}]}))
+        );
+    }
+
+    /// Same id + same input → the stored row; same id + other input → conflict;
+    /// completion is once; a running row survives a restart as `unknown`;
+    /// session deletion purges.
+    #[tokio::test]
+    async fn invocation_claim_idempotent_conflict_recovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+        let s = State::open(dir.path(), rt.clone(), Vec::new())
+            .await
+            .unwrap();
+        let sess = SessionId::new();
+        let args = serde_json::json!({"name": "portal-web"});
+
+        // No app record yet: nothing to bind to.
+        assert!(
+            s.claim(press(sess, "r0", args.clone()))
+                .await
+                .unwrap_err()
+                .ends_with("rec is not an app record of this session")
+        );
+        s.show(sess, "rec".into(), content("panel.openui", "root = X\n"))
+            .await
+            .unwrap();
+        // An inert shown `.openui` is not an app record either.
+        assert!(s.claim(press(sess, "r0", args.clone())).await.is_err());
+        s.delete_session(sess).await.unwrap();
+        s.commit(app(sess, "rec", "root = X\n", None))
+            .await
+            .unwrap();
+        // Another session cannot bind to this session's record.
+        assert!(
+            s.claim(press(SessionId::new(), "r0", args.clone()))
+                .await
+                .is_err()
+        );
+
+        assert_eq!(
+            s.claim(press(sess, "r1", args.clone())).await.unwrap(),
+            Claim::New
+        );
+        let Claim::Existing(row) = s.claim(press(sess, "r1", args.clone())).await.unwrap() else {
+            panic!("repeat must return the stored row");
+        };
+        assert_eq!(row.status, InvocationStatus::Running);
+        assert_eq!(row.args_hash, args_hash(&args));
+        assert_eq!(row.tool, "argo_sync");
+        assert_eq!(
+            s.claim(press(sess, "r1", serde_json::json!({"name": "portal-api"})))
+                .await
+                .unwrap(),
+            Claim::Conflict
+        );
+        assert_eq!(
+            s.claim(press(SessionId::new(), "r1", args.clone()))
+                .await
+                .unwrap(),
+            Claim::Conflict
+        );
+
+        s.complete(CompleteInvocation {
+            request_id: "r1".into(),
+            ok: true,
+            result: Some(serde_json::json!({"message": "synced"})),
+        })
+        .await
+        .unwrap();
+        let done = s.invocation("r1").await.unwrap().unwrap();
+        assert_eq!(done.status, InvocationStatus::Succeeded);
+        assert_eq!(done.result, Some(serde_json::json!({"message": "synced"})));
+        assert!(done.finished_at.is_some());
+        assert!(
+            s.complete(CompleteInvocation {
+                request_id: "r1".into(),
+                ok: false,
+                result: None,
+            })
+            .await
+            .unwrap_err()
+            .ends_with("not a running invocation")
+        );
+        let Claim::Existing(again) = s.claim(press(sess, "r1", args.clone())).await.unwrap() else {
+            panic!("completed row must be returned, not re-run");
+        };
+        assert_eq!(again.status, InvocationStatus::Succeeded);
+
+        assert_eq!(
+            s.claim(press(sess, "r2", args.clone())).await.unwrap(),
+            Claim::New
+        );
+        s.complete(CompleteInvocation {
+            request_id: "r2".into(),
+            ok: false,
+            result: Some(serde_json::Value::String("x".repeat(MAX_INVOCATION_RESULT))),
+        })
+        .await
+        .unwrap();
+        let big = s.invocation("r2").await.unwrap().unwrap();
+        assert_eq!(big.status, InvocationStatus::Failed);
+        assert!(big.result.unwrap().get("omitted").is_some());
+
+        assert_eq!(
+            s.claim(press(sess, "r3", args.clone())).await.unwrap(),
+            Claim::New
+        );
+        drop(s);
+        let s = State::open(dir.path(), rt, Vec::new()).await.unwrap();
+        assert_eq!(
+            s.invocation("r3").await.unwrap().unwrap().status,
+            InvocationStatus::Unknown
+        );
+        assert!(
+            s.complete(CompleteInvocation {
+                request_id: "r3".into(),
+                ok: true,
+                result: None,
+            })
+            .await
+            .is_err()
+        );
+        assert_eq!(
+            s.invocation("r1").await.unwrap().unwrap().status,
+            InvocationStatus::Succeeded
+        );
+
+        s.delete_session(sess).await.unwrap();
+        assert_eq!(s.invocation("r1").await.unwrap(), None);
+        assert_eq!(s.invocation("r3").await.unwrap(), None);
+        assert_eq!(s.invocation("nope").await.unwrap(), None);
+        // The record is gone with its session: no reinsertion under its id.
+        assert!(s.claim(press(sess, "r9", args.clone())).await.is_err());
+    }
+
+    /// The metadata sidecar is live while its row exists and swept with it.
+    #[tokio::test]
+    async fn source_metadata_sweep() {
+        let (s, _d) = open().await;
+        let sess = SessionId::new();
+        let a = s.commit(app(sess, "c1", "root = A\n", None)).await.unwrap();
+        let mut m = app(sess, "c2", "root = A\n", Some("c1"));
+        m.source = Some(("app.json".into(), br#"{"library_hash":"h2"}"#.to_vec()));
+        let b = s.commit(m).await.unwrap();
+        assert_eq!(a.id, b.id);
+        assert_ne!(a.source, b.source, "metadata is keyed by its own hash");
+        assert_eq!(blobs(&s.dir).len(), 3);
+        assert_eq!(s.sweep().await.unwrap(), 0);
+        s.delete_session(sess).await.unwrap();
+        assert_eq!(s.sweep().await.unwrap(), 3);
         assert!(blobs(&s.dir).is_empty());
     }
 }

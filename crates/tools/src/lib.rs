@@ -4,7 +4,7 @@
 //! hot-reloaded; `mcp/config.yaml` overrides a tool's [`Risk`] with a [`Gate`]).
 //!
 //! Public surface consumed by other plugins:
-//! - commands on the `"tools"` actor ([`ToolRegistry`]): [`ListTools`], [`Invoke`], [`ExternalApproval`], [`RegisterTool`], [`UnregisterTool`], [`RegisterActivity`], [`ActivityRecipient`]
+//! - commands on the `"tools"` actor ([`ToolRegistry`]): [`ListTools`], [`Invoke`], [`AppInvoke`], [`InspectTool`], [`DescribeTools`], [`ExternalApproval`], [`RegisterTool`], [`UnregisterTool`], [`RegisterActivity`], [`ActivityRecipient`]
 //! - commands on the `"approval"` actor ([`Approval`]): [`Resolve`]
 //! - commands on the `"ask"` actor ([`AskUser`]): [`AnswerAsk`]
 //! - commands on the `"mcp"` actor ([`Mcp`]): [`ListServers`], [`SetGate`], [`Restart`], [`AddServer`], [`RemoveServer`], [`AddRepo`], [`SyncMcp`], [`McpLogin`], [`McpLogout`]
@@ -32,6 +32,7 @@ pub mod jobs;
 pub mod mcp;
 pub mod pty;
 pub mod registry;
+mod schema;
 pub mod secrets;
 pub mod shell;
 
@@ -51,9 +52,10 @@ pub use mcp::{
     McpToolInfo, Progress, RemoveServer, RepoInfo, Restart, SetGate, SyncMcp,
 };
 pub use registry::{
-    ActivityRecipient, ApprovalsState, ExternalApproval, GetApprovals, HiddenTools, Invoke,
-    ListPrompts, ListTools, RegisterActivity, RegisterPrompt, RegisterTool, SetApprovals,
-    SetHidden, SetParent, ToolRegistry, UnregisterPrompt, UnregisterTool,
+    ActivityRecipient, AppInvoke, AppInvoked, ApprovalsState, DescribeTools, ExternalApproval,
+    GetApprovals, HiddenTools, InspectTool, Invoke, ListPrompts, ListTools, RegisterActivity,
+    RegisterPrompt, RegisterTool, SetApprovals, SetHidden, SetParent, ToolInspection, ToolRegistry,
+    UnregisterPrompt, UnregisterTool, UserActivation,
 };
 
 /// Registry name of the [`ToolRegistry`] actor.
@@ -99,6 +101,73 @@ pub struct ToolSpec {
     /// Python annotation of what the runtime function returns (`ToolOutput::
     /// structured` when set, else the text): `str`, `list[dict]`, `Any`, ...
     pub returns: String,
+}
+
+/// Where a registered tool comes from, as an app may *show* it (46 §3.2).
+/// Display only: no credential value is in it, and it is not what the tool's
+/// identity hashes — that is [`ErasedTool::origin`], which the registry
+/// reports as `ToolInspection::identity`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ToolSource {
+    /// Built into this harness or one of its plugins.
+    Native {
+        /// Harness package version that compiled the tool: a rebuilt native
+        /// with the same name and schema is a new binding.
+        version: String,
+    },
+    /// A server entry under `<data_dir>/mcp`.
+    Mcp {
+        /// Server name (file stem or wrapper key).
+        server: String,
+        /// The entry, scrubbed ([`McpEntry`]).
+        entry: McpEntry,
+    },
+}
+
+impl ToolSource {
+    /// This build's native origin.
+    pub fn native() -> Self {
+        Self::Native {
+            version: env!("CARGO_PKG_VERSION").to_owned(),
+        }
+    }
+}
+
+/// An MCP server entry as an app may inspect it: what runs / where it is,
+/// never credentials. Scrubbed at construction and lossy by design (two
+/// entries can display alike and still be different backends; identity
+/// tells them apart): vault values → placeholders (37); `env` carries
+/// variable *names* only; HTTP headers are omitted entirely; the URL keeps
+/// scheme/host/port/path (no userinfo, query or fragment); argv values that
+/// follow a credential-looking flag (`--token x`, `--api-key=x`, `-p x`)
+/// are masked.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(tag = "transport", rename_all = "snake_case")]
+pub enum McpEntry {
+    /// A child process.
+    Stdio {
+        /// Unexpanded `command` as written in the entry.
+        command: String,
+        /// Unexpanded `args`, credential values masked.
+        args: Vec<String>,
+        /// Absolute working directory; a clone under `mcp/repos/` for a
+        /// model-authored integration (46 §5).
+        cwd: Option<std::path::PathBuf>,
+        /// Environment variable names the entry sets, sorted.
+        env: Vec<String>,
+        /// Name of the clone under `mcp/repos/` that holds `cwd`, if any:
+        /// where an app's source snapshot of a model-authored integration
+        /// comes from.
+        repo: Option<String>,
+    },
+    /// A remote server.
+    Http {
+        /// Endpoint origin and path; userinfo, query and fragment removed.
+        url: String,
+    },
 }
 
 /// A model-requested invocation.
@@ -196,6 +265,20 @@ pub trait Tool: Send + Sync + 'static {
 pub trait ErasedTool: Send + Sync + 'static {
     /// Spec for the model.
     fn spec(&self) -> ToolSpec;
+    /// Origin for display. Natives and plugin tools keep the default.
+    fn source(&self) -> ToolSource {
+        ToolSource::native()
+    }
+    /// Opaque fingerprint of where the tool actually runs, hashed with the
+    /// name and schema into the identity an app binds to (46 §3.2). Never
+    /// exposed, so it may cover the *raw* configuration: MCP hashes the whole
+    /// server entry (URL with query, argv, env, headers), so two same-named
+    /// tools on different endpoints never share an identity and a rotated
+    /// credential conservatively rebinds. Natives: this build's version, so
+    /// a rebuilt native with the same name and schema is a new binding.
+    fn origin(&self) -> String {
+        format!("native:{}", env!("CARGO_PKG_VERSION"))
+    }
     /// Invoke with raw args.
     fn call(
         &self,

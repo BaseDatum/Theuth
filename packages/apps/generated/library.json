@@ -1,0 +1,1148 @@
+{
+  "hash": "5ec7ff109464d01a1f20f2c40ea2782c72364a8106560848fb46dfb3a42d8e36",
+  "pins": {
+    "@openuidev/lang-core": "0.3.0",
+    "@openuidev/react-headless": "0.16.1",
+    "@openuidev/react-lang": "0.3.0",
+    "@openuidev/react-ui": "0.16.1"
+  },
+  "patches": {
+    "@openuidev%2Flang-core@0.3.0.patch": "6af2e9e8f161d562961bc0775a1eecef0f8fac61aa52d9b2d035ba2c7bb1ccf5",
+    "@openuidev%2Freact-lang@0.3.0.patch": "0861a775da13e0ac5b4fe60f21b361ba2b4446eb980ee2f1dd6877e008b2a500"
+  },
+  "limits": {
+    "sourceBytes": 131072,
+    "statements": 512,
+    "depth": 32,
+    "expandedNodes": 2048,
+    "evalOps": 50000,
+    "evalNodes": 2048
+  },
+  "root": "Stack",
+  "components": [
+    "Stack",
+    "Card",
+    "CardHeader",
+    "Separator",
+    "TextContent",
+    "Image",
+    "Table",
+    "Col",
+    "BarChart",
+    "LineChart",
+    "AreaChart",
+    "PieChart",
+    "Series",
+    "Input",
+    "TextArea",
+    "Select",
+    "SelectItem",
+    "SwitchGroup",
+    "SwitchItem",
+    "Button",
+    "Buttons"
+  ],
+  "componentGroups": [
+    {
+      "name": "Layout",
+      "components": [
+        "Stack",
+        "Separator"
+      ],
+      "notes": [
+        "- For grid-like layouts, use Stack with direction \"row\" and wrap set to true.",
+        "- Prefer justify \"start\" (or omit justify) with wrap=true for stable columns instead of uneven gutters.",
+        "- Use nested Stacks when you need explicit rows/sections.",
+        "- Show/hide sections: $editId != \"\" ? Card([editForm]) : null"
+      ]
+    },
+    {
+      "name": "Content",
+      "components": [
+        "Card",
+        "CardHeader",
+        "TextContent",
+        "Image"
+      ],
+      "notes": [
+        "- Use Cards to group related KPIs or sections. Stack with direction \"row\" for side-by-side layouts."
+      ]
+    },
+    {
+      "name": "Tables",
+      "components": [
+        "Table",
+        "Col"
+      ],
+      "notes": [
+        "- Row actions: Col(\"Actions\", @Each(data.rows, \"t\", Button(\"Edit\", Action([@Set($showEdit, true), @Set($editId, t.id)]))))",
+        "- Sortable: sorted = @Sort(data.rows, $sortField, \"desc\"). Bind $sortField to Select. Use sorted.fieldName for Col data",
+        "- Searchable: filtered = @Filter(data.rows, \"title\", \"contains\", $search). Bind $search to Input",
+        "- Chain sort + filter: filtered = @Filter(...) then sorted = @Sort(filtered, ...) — use sorted for both Table and Charts",
+        "- Empty state: @Count(data.rows) > 0 ? Table([...]) : TextContent(\"No data yet\")"
+      ]
+    },
+    {
+      "name": "Charts (2D)",
+      "components": [
+        "BarChart",
+        "LineChart",
+        "AreaChart",
+        "Series"
+      ],
+      "notes": [
+        "- Charts accept column arrays: LineChart(labels, [Series(\"Name\", values)]). Use array pluck: LineChart(data.rows.day, [Series(\"Views\", data.rows.views)])",
+        "- Use Cards to wrap charts with CardHeader for titled sections",
+        "- Chart + Table from same source: use @Sort or @Filter result for both LineChart and Table Col data"
+      ]
+    },
+    {
+      "name": "Charts (1D)",
+      "components": [
+        "PieChart"
+      ],
+      "notes": [
+        "- PieChart and BarChart need NUMBERS, not objects. For list data, use @Count(@Filter(...)) to aggregate:",
+        "- PieChart from list: `PieChart([\"Low\", \"Med\", \"High\"], [@Count(@Filter(data.rows, \"priority\", \"==\", \"low\")), @Count(@Filter(data.rows, \"priority\", \"==\", \"medium\")), @Count(@Filter(data.rows, \"priority\", \"==\", \"high\"))], \"donut\")`",
+        "- KPI from count: `TextContent(\"\" + @Count(@Filter(data.rows, \"status\", \"==\", \"open\")), \"large-heavy\")`"
+      ]
+    },
+    {
+      "name": "Forms",
+      "components": [
+        "Input",
+        "TextArea",
+        "Select",
+        "SelectItem",
+        "SwitchGroup",
+        "SwitchItem"
+      ],
+      "notes": [
+        "- rules is an optional object: {required: true, email: true, minLength: 8, maxLength: 100}",
+        "- Available rules: required, email, min, max, minLength, maxLength, pattern, url, numeric",
+        "- The renderer shows error messages automatically — do NOT generate error text in the UI",
+        "- Conditional fields: $country == \"US\" ? stateField : $country == \"UK\" ? postcodeField : addressField"
+      ]
+    },
+    {
+      "name": "Buttons",
+      "components": [
+        "Button",
+        "Buttons"
+      ],
+      "notes": [
+        "- Toggle in @Each: @Each(rows, \"t\", Button(t.status == \"open\" ? \"Close\" : \"Reopen\", Action([...])))"
+      ]
+    }
+  ],
+  "signatures": {
+    "Stack": {
+      "signature": "Stack(children: any[], direction?: \"row\" | \"column\", gap?: \"none\" | \"xs\" | \"s\" | \"m\" | \"l\" | \"xl\" | \"2xl\", align?: \"start\" | \"center\" | \"end\" | \"stretch\" | \"baseline\", justify?: \"start\" | \"center\" | \"end\" | \"between\" | \"around\" | \"evenly\", wrap?: boolean)",
+      "description": "Flex container. direction: \"row\"|\"column\" (default \"column\"). gap: \"none\"|\"xs\"|\"s\"|\"m\"|\"l\"|\"xl\"|\"2xl\" (default \"m\"). align: \"start\"|\"center\"|\"end\"|\"stretch\"|\"baseline\". justify: \"start\"|\"center\"|\"end\"|\"between\"|\"around\"|\"evenly\"."
+    },
+    "Card": {
+      "signature": "Card(children: (TextContent | CardHeader | Image | Separator | PieChart | AreaChart | BarChart | LineChart | Table | Buttons | Stack)[], variant?: \"card\" | \"sunk\" | \"clear\", direction?: \"row\" | \"column\", gap?: \"none\" | \"xs\" | \"s\" | \"m\" | \"l\" | \"xl\" | \"2xl\", align?: \"start\" | \"center\" | \"end\" | \"stretch\" | \"baseline\", justify?: \"start\" | \"center\" | \"end\" | \"between\" | \"around\" | \"evenly\", wrap?: boolean)",
+      "description": "Styled container. variant: \"card\" (default, elevated) | \"sunk\" (recessed) | \"clear\" (transparent). Always full width. Accepts all Stack flex params (default: direction \"column\"). Cards flex to share space in row/wrap layouts."
+    },
+    "CardHeader": {
+      "signature": "CardHeader(title?: string, subtitle?: string)",
+      "description": "Header with optional title and subtitle"
+    },
+    "Separator": {
+      "signature": "Separator(orientation?: \"horizontal\" | \"vertical\", decorative?: boolean)",
+      "description": "Visual divider between content sections"
+    },
+    "TextContent": {
+      "signature": "TextContent(text: string, size?: \"small\" | \"default\" | \"large\" | \"small-heavy\" | \"large-heavy\")",
+      "description": "Text block. Supports markdown. Optional size: \"small\" | \"default\" | \"large\" | \"small-heavy\" | \"large-heavy\"."
+    },
+    "Image": {
+      "signature": "Image(alt: string, src?: string)",
+      "description": "Image with alt text and optional URL"
+    },
+    "Table": {
+      "signature": "Table(columns: Col[])",
+      "description": "Data table — column-oriented. Each Col holds its own data array."
+    },
+    "Col": {
+      "signature": "Col(label: string, data: any, type?: \"string\" | \"number\" | \"action\")",
+      "description": "Column definition — holds label + data array"
+    },
+    "BarChart": {
+      "signature": "BarChart(labels: string[], series: Series[], variant?: \"grouped\" | \"stacked\", xLabel?: string, yLabel?: string, height?: number)",
+      "description": "Vertical bars; use for comparing values across categories with one or more series"
+    },
+    "LineChart": {
+      "signature": "LineChart(labels: string[], series: Series[], variant?: \"linear\" | \"natural\" | \"step\", xLabel?: string, yLabel?: string, height?: number)",
+      "description": "Lines over categories; use for trends and continuous data over time"
+    },
+    "AreaChart": {
+      "signature": "AreaChart(labels: string[], series: Series[], variant?: \"linear\" | \"natural\" | \"step\", xLabel?: string, yLabel?: string, height?: number)",
+      "description": "Filled area under lines; use for cumulative totals or volume trends over time"
+    },
+    "PieChart": {
+      "signature": "PieChart(labels: string[], values: number[], variant?: \"pie\" | \"donut\", appearance?: \"circular\" | \"semiCircular\")",
+      "description": "Circular slices; use plucked arrays: PieChart(data.categories, data.values)"
+    },
+    "Series": {
+      "signature": "Series(category: string, values: number[])",
+      "description": "One data series"
+    },
+    "Input": {
+      "signature": "Input(name: string, placeholder?: string, type?: \"text\" | \"email\" | \"password\" | \"number\" | \"url\", rules?: {required?: boolean, email?: boolean, url?: boolean, numeric?: boolean, min?: number, max?: number, minLength?: number, maxLength?: number, pattern?: string}, value?: $binding<string>)",
+      "description": ""
+    },
+    "TextArea": {
+      "signature": "TextArea(name: string, placeholder?: string, rows?: number, rules?: {required?: boolean, email?: boolean, url?: boolean, numeric?: boolean, min?: number, max?: number, minLength?: number, maxLength?: number, pattern?: string}, value?: $binding<string>)",
+      "description": ""
+    },
+    "Select": {
+      "signature": "Select(name: string, items: SelectItem[], placeholder?: string, rules?: {required?: boolean, email?: boolean, url?: boolean, numeric?: boolean, min?: number, max?: number, minLength?: number, maxLength?: number, pattern?: string}, value?: $binding<string>, size?: \"small\" | \"medium\" | \"large\")",
+      "description": ""
+    },
+    "SelectItem": {
+      "signature": "SelectItem(value: string, label: string)",
+      "description": "Option for Select"
+    },
+    "SwitchGroup": {
+      "signature": "SwitchGroup(name: string, items: SwitchItem[], variant?: \"clear\" | \"card\" | \"sunk\", value?: $binding<Record<string, boolean>>)",
+      "description": "Group of switch toggles"
+    },
+    "SwitchItem": {
+      "signature": "SwitchItem(label?: string, description?: string, name: string, defaultChecked?: boolean)",
+      "description": "Individual switch toggle"
+    },
+    "Button": {
+      "signature": "Button(label: string, action?: ActionExpression, variant?: \"primary\" | \"secondary\" | \"tertiary\", type?: \"normal\" | \"destructive\", size?: \"extra-small\" | \"small\" | \"medium\" | \"large\")",
+      "description": "Clickable button"
+    },
+    "Buttons": {
+      "signature": "Buttons(buttons: Button[], direction?: \"row\" | \"column\")",
+      "description": "Group of Button components. direction: \"row\" (default) | \"column\"."
+    }
+  },
+  "reactive": {
+    "Input": [
+      "value"
+    ],
+    "TextArea": [
+      "value"
+    ],
+    "Select": [
+      "value"
+    ],
+    "SwitchGroup": [
+      "value"
+    ]
+  },
+  "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "Stack": {
+        "$ref": "#/$defs/Stack"
+      },
+      "Card": {
+        "$ref": "#/$defs/Card"
+      },
+      "CardHeader": {
+        "$ref": "#/$defs/CardHeader"
+      },
+      "Separator": {
+        "$ref": "#/$defs/Separator"
+      },
+      "TextContent": {
+        "$ref": "#/$defs/TextContent"
+      },
+      "Image": {
+        "$ref": "#/$defs/Image"
+      },
+      "Table": {
+        "$ref": "#/$defs/Table"
+      },
+      "Col": {
+        "$ref": "#/$defs/Col"
+      },
+      "BarChart": {
+        "$ref": "#/$defs/BarChart"
+      },
+      "LineChart": {
+        "$ref": "#/$defs/LineChart"
+      },
+      "AreaChart": {
+        "$ref": "#/$defs/AreaChart"
+      },
+      "PieChart": {
+        "$ref": "#/$defs/PieChart"
+      },
+      "Series": {
+        "$ref": "#/$defs/Series"
+      },
+      "Input": {
+        "$ref": "#/$defs/Input"
+      },
+      "TextArea": {
+        "$ref": "#/$defs/TextArea"
+      },
+      "Select": {
+        "$ref": "#/$defs/Select"
+      },
+      "SelectItem": {
+        "$ref": "#/$defs/SelectItem"
+      },
+      "SwitchGroup": {
+        "$ref": "#/$defs/SwitchGroup"
+      },
+      "SwitchItem": {
+        "$ref": "#/$defs/SwitchItem"
+      },
+      "Button": {
+        "$ref": "#/$defs/Button"
+      },
+      "Buttons": {
+        "$ref": "#/$defs/Buttons"
+      }
+    },
+    "required": [
+      "Stack",
+      "Card",
+      "CardHeader",
+      "Separator",
+      "TextContent",
+      "Image",
+      "Table",
+      "Col",
+      "BarChart",
+      "LineChart",
+      "AreaChart",
+      "PieChart",
+      "Series",
+      "Input",
+      "TextArea",
+      "Select",
+      "SelectItem",
+      "SwitchGroup",
+      "SwitchItem",
+      "Button",
+      "Buttons"
+    ],
+    "additionalProperties": false,
+    "$defs": {
+      "Stack": {
+        "type": "object",
+        "properties": {
+          "children": {
+            "type": "array",
+            "items": {}
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "row",
+              "column"
+            ]
+          },
+          "gap": {
+            "type": "string",
+            "enum": [
+              "none",
+              "xs",
+              "s",
+              "m",
+              "l",
+              "xl",
+              "2xl"
+            ]
+          },
+          "align": {
+            "type": "string",
+            "enum": [
+              "start",
+              "center",
+              "end",
+              "stretch",
+              "baseline"
+            ]
+          },
+          "justify": {
+            "type": "string",
+            "enum": [
+              "start",
+              "center",
+              "end",
+              "between",
+              "around",
+              "evenly"
+            ]
+          },
+          "wrap": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "children"
+        ],
+        "additionalProperties": false,
+        "description": "Flex container. direction: \"row\"|\"column\" (default \"column\"). gap: \"none\"|\"xs\"|\"s\"|\"m\"|\"l\"|\"xl\"|\"2xl\" (default \"m\"). align: \"start\"|\"center\"|\"end\"|\"stretch\"|\"baseline\". justify: \"start\"|\"center\"|\"end\"|\"between\"|\"around\"|\"evenly\"."
+      },
+      "Card": {
+        "type": "object",
+        "properties": {
+          "children": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TextContent"
+                },
+                {
+                  "$ref": "#/$defs/CardHeader"
+                },
+                {
+                  "$ref": "#/$defs/Image"
+                },
+                {
+                  "$ref": "#/$defs/Separator"
+                },
+                {
+                  "$ref": "#/$defs/PieChart"
+                },
+                {
+                  "$ref": "#/$defs/AreaChart"
+                },
+                {
+                  "$ref": "#/$defs/BarChart"
+                },
+                {
+                  "$ref": "#/$defs/LineChart"
+                },
+                {
+                  "$ref": "#/$defs/Table"
+                },
+                {
+                  "$ref": "#/$defs/Buttons"
+                },
+                {
+                  "$ref": "#/$defs/Stack"
+                }
+              ]
+            }
+          },
+          "variant": {
+            "type": "string",
+            "enum": [
+              "card",
+              "sunk",
+              "clear"
+            ]
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "row",
+              "column"
+            ]
+          },
+          "gap": {
+            "type": "string",
+            "enum": [
+              "none",
+              "xs",
+              "s",
+              "m",
+              "l",
+              "xl",
+              "2xl"
+            ]
+          },
+          "align": {
+            "type": "string",
+            "enum": [
+              "start",
+              "center",
+              "end",
+              "stretch",
+              "baseline"
+            ]
+          },
+          "justify": {
+            "type": "string",
+            "enum": [
+              "start",
+              "center",
+              "end",
+              "between",
+              "around",
+              "evenly"
+            ]
+          },
+          "wrap": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "children"
+        ],
+        "additionalProperties": false,
+        "description": "Styled container. variant: \"card\" (default, elevated) | \"sunk\" (recessed) | \"clear\" (transparent). Always full width. Accepts all Stack flex params (default: direction \"column\"). Cards flex to share space in row/wrap layouts."
+      },
+      "TextContent": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "size": {
+            "type": "string",
+            "enum": [
+              "small",
+              "default",
+              "large",
+              "small-heavy",
+              "large-heavy"
+            ]
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false,
+        "description": "Text block. Supports markdown. Optional size: \"small\" | \"default\" | \"large\" | \"small-heavy\" | \"large-heavy\"."
+      },
+      "CardHeader": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "subtitle": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "description": "Header with optional title and subtitle"
+      },
+      "Image": {
+        "type": "object",
+        "properties": {
+          "alt": {
+            "type": "string"
+          },
+          "src": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "alt"
+        ],
+        "additionalProperties": false,
+        "description": "Image with alt text and optional URL"
+      },
+      "Separator": {
+        "type": "object",
+        "properties": {
+          "orientation": {
+            "type": "string",
+            "enum": [
+              "horizontal",
+              "vertical"
+            ]
+          },
+          "decorative": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false,
+        "description": "Visual divider between content sections"
+      },
+      "PieChart": {
+        "type": "object",
+        "properties": {
+          "labels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "values": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          },
+          "variant": {
+            "type": "string",
+            "enum": [
+              "pie",
+              "donut"
+            ]
+          },
+          "appearance": {
+            "type": "string",
+            "enum": [
+              "circular",
+              "semiCircular"
+            ]
+          }
+        },
+        "required": [
+          "labels",
+          "values"
+        ],
+        "additionalProperties": false,
+        "description": "Circular slices; use plucked arrays: PieChart(data.categories, data.values)"
+      },
+      "AreaChart": {
+        "type": "object",
+        "properties": {
+          "labels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "series": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/Series"
+            }
+          },
+          "variant": {
+            "type": "string",
+            "enum": [
+              "linear",
+              "natural",
+              "step"
+            ]
+          },
+          "xLabel": {
+            "type": "string"
+          },
+          "yLabel": {
+            "type": "string"
+          },
+          "height": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "labels",
+          "series"
+        ],
+        "additionalProperties": false,
+        "description": "Filled area under lines; use for cumulative totals or volume trends over time"
+      },
+      "Series": {
+        "type": "object",
+        "properties": {
+          "category": {
+            "type": "string"
+          },
+          "values": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          }
+        },
+        "required": [
+          "category",
+          "values"
+        ],
+        "additionalProperties": false,
+        "description": "One data series"
+      },
+      "BarChart": {
+        "type": "object",
+        "properties": {
+          "labels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "series": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/Series"
+            }
+          },
+          "variant": {
+            "type": "string",
+            "enum": [
+              "grouped",
+              "stacked"
+            ]
+          },
+          "xLabel": {
+            "type": "string"
+          },
+          "yLabel": {
+            "type": "string"
+          },
+          "height": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "labels",
+          "series"
+        ],
+        "additionalProperties": false,
+        "description": "Vertical bars; use for comparing values across categories with one or more series"
+      },
+      "LineChart": {
+        "type": "object",
+        "properties": {
+          "labels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "series": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/Series"
+            }
+          },
+          "variant": {
+            "type": "string",
+            "enum": [
+              "linear",
+              "natural",
+              "step"
+            ]
+          },
+          "xLabel": {
+            "type": "string"
+          },
+          "yLabel": {
+            "type": "string"
+          },
+          "height": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "labels",
+          "series"
+        ],
+        "additionalProperties": false,
+        "description": "Lines over categories; use for trends and continuous data over time"
+      },
+      "Table": {
+        "type": "object",
+        "properties": {
+          "columns": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/Col"
+            }
+          }
+        },
+        "required": [
+          "columns"
+        ],
+        "additionalProperties": false,
+        "description": "Data table — column-oriented. Each Col holds its own data array."
+      },
+      "Col": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "data": {},
+          "type": {
+            "type": "string",
+            "enum": [
+              "string",
+              "number",
+              "action"
+            ]
+          }
+        },
+        "required": [
+          "label",
+          "data"
+        ],
+        "additionalProperties": false,
+        "description": "Column definition — holds label + data array"
+      },
+      "Buttons": {
+        "type": "object",
+        "properties": {
+          "buttons": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/Button"
+            }
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "row",
+              "column"
+            ]
+          }
+        },
+        "required": [
+          "buttons"
+        ],
+        "additionalProperties": false,
+        "description": "Group of Button components. direction: \"row\" (default) | \"column\"."
+      },
+      "Button": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "action": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "open_url"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "url"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "continue_conversation"
+                  },
+                  "context": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string"
+                  },
+                  "params": {
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "additionalProperties": {}
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "variant": {
+            "type": "string",
+            "enum": [
+              "primary",
+              "secondary",
+              "tertiary"
+            ]
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "normal",
+              "destructive"
+            ]
+          },
+          "size": {
+            "type": "string",
+            "enum": [
+              "extra-small",
+              "small",
+              "medium",
+              "large"
+            ]
+          }
+        },
+        "required": [
+          "label"
+        ],
+        "additionalProperties": false,
+        "description": "Clickable button"
+      },
+      "Input": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "placeholder": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "text",
+              "email",
+              "password",
+              "number",
+              "url"
+            ]
+          },
+          "rules": {
+            "type": "object",
+            "properties": {
+              "required": {
+                "type": "boolean"
+              },
+              "email": {
+                "type": "boolean"
+              },
+              "url": {
+                "type": "boolean"
+              },
+              "numeric": {
+                "type": "boolean"
+              },
+              "min": {
+                "type": "number"
+              },
+              "max": {
+                "type": "number"
+              },
+              "minLength": {
+                "type": "number"
+              },
+              "maxLength": {
+                "type": "number"
+              },
+              "pattern": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "TextArea": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "placeholder": {
+            "type": "string"
+          },
+          "rows": {
+            "type": "number"
+          },
+          "rules": {
+            "type": "object",
+            "properties": {
+              "required": {
+                "type": "boolean"
+              },
+              "email": {
+                "type": "boolean"
+              },
+              "url": {
+                "type": "boolean"
+              },
+              "numeric": {
+                "type": "boolean"
+              },
+              "min": {
+                "type": "number"
+              },
+              "max": {
+                "type": "number"
+              },
+              "minLength": {
+                "type": "number"
+              },
+              "maxLength": {
+                "type": "number"
+              },
+              "pattern": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "Select": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/SelectItem"
+            }
+          },
+          "placeholder": {
+            "type": "string"
+          },
+          "rules": {
+            "type": "object",
+            "properties": {
+              "required": {
+                "type": "boolean"
+              },
+              "email": {
+                "type": "boolean"
+              },
+              "url": {
+                "type": "boolean"
+              },
+              "numeric": {
+                "type": "boolean"
+              },
+              "min": {
+                "type": "number"
+              },
+              "max": {
+                "type": "number"
+              },
+              "minLength": {
+                "type": "number"
+              },
+              "maxLength": {
+                "type": "number"
+              },
+              "pattern": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          "value": {
+            "type": "string"
+          },
+          "size": {
+            "type": "string",
+            "enum": [
+              "small",
+              "medium",
+              "large"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "items"
+        ],
+        "additionalProperties": false
+      },
+      "SelectItem": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "value",
+          "label"
+        ],
+        "additionalProperties": false,
+        "description": "Option for Select"
+      },
+      "SwitchGroup": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/SwitchItem"
+            }
+          },
+          "variant": {
+            "type": "string",
+            "enum": [
+              "clear",
+              "card",
+              "sunk"
+            ]
+          },
+          "value": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "type": "boolean"
+            }
+          }
+        },
+        "required": [
+          "name",
+          "items"
+        ],
+        "additionalProperties": false,
+        "description": "Group of switch toggles"
+      },
+      "SwitchItem": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "defaultChecked": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false,
+        "description": "Individual switch toggle"
+      }
+    }
+  }
+}

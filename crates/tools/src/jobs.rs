@@ -694,10 +694,10 @@ impl Message<Finished> for Jobs {
         // The actor's clone goes; the task's follows. Whichever is last
         // settles, with the result when one is owed (47 §4.1): the model's
         // only `<job_result>` path, the bus event stays observation.
-        if let Some(activity) = self.live.remove(&m.op) {
-            if let Some(result) = m.result {
-                activity.set_result(result);
-            }
+        if let Some(activity) = self.live.remove(&m.op)
+            && let Some(result) = m.result
+        {
+            activity.set_result(result);
         }
     }
 }

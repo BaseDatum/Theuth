@@ -1186,6 +1186,24 @@ fn needs_correction(
     Some((errs.len(), surface::surface_error(&errs)))
 }
 
+/// The direct `app` tool (46 §5): its arguments carry UI source the frontend
+/// renders progressively, so it opts into Anthropic fine-grained tool
+/// streaming (46 §8.1). Other adapters ignore the field.
+const APP_TOOL: &str = "app";
+
+/// One `ToolSpec` → provider tool definition; only `app` requests eager input streaming.
+fn direct_tool(s: ToolSpec) -> Tool {
+    let eager = s.name == APP_TOOL;
+    let tool = Tool::new(s.name)
+        .with_description(s.description)
+        .with_schema(s.schema);
+    if eager {
+        tool.with_eager_input_streaming(true)
+    } else {
+        tool
+    }
+}
+
 impl Turn {
     fn new(
         shared: Shared,
@@ -1424,14 +1442,7 @@ impl Turn {
             specs.push(repl::spec());
         }
         specs.sort_by(|a, b| a.name.cmp(&b.name));
-        specs
-            .into_iter()
-            .map(|s| {
-                Tool::new(s.name)
-                    .with_description(s.description)
-                    .with_schema(s.schema)
-            })
-            .collect()
+        specs.into_iter().map(direct_tool).collect()
     }
 
     /// Open the stream for `frame` and drain it to its `End`. With `live`,
@@ -2777,8 +2788,7 @@ impl Turn {
                     at_seq,
                     tail_from,
                     &head,
-                    todo::TodoSource::Native,
-                    &[],
+                    (todo::TodoSource::Native, &[]),
                 )
                 .await
                 .map_err(|e| format!("store: {e:#}"))?;
@@ -3085,6 +3095,26 @@ fn progress_due(prev: Option<&Progress>, now: Instant, len: usize) -> bool {
 mod tests {
     use super::*;
     use crate::skills;
+
+    /// 46 §8.1: only the direct `app` tool opts into fine-grained input
+    /// streaming; every other tool definition is untouched.
+    #[test]
+    fn only_app_tool_requests_eager_input_streaming() {
+        let spec = |name: &str| ToolSpec {
+            name: name.into(),
+            description: String::new(),
+            schema: serde_json::json!({"type": "object"}),
+            risk: tools::Risk::ReadOnly,
+            direct: true,
+            returns: "str".into(),
+        };
+        assert_eq!(
+            direct_tool(spec(APP_TOOL)).eager_input_streaming,
+            Some(true)
+        );
+        assert_eq!(direct_tool(spec("shell")).eager_input_streaming, None);
+        assert_eq!(direct_tool(todo::spec()).eager_input_streaming, None);
+    }
 
     /// 48 §4.3: a context edit swaps the frame but not the run-local state,
     /// reseeds the estimate and drops the cache baseline; a head removed with

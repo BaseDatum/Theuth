@@ -19,7 +19,7 @@ use tokio_util::sync::CancellationToken;
 use crate::devices::{Row, device_id};
 use crate::identity::{Identity, now_ms, params};
 use crate::state::Ctx;
-use crate::types::LinkEvent;
+use crate::types::{LinkEvent, RpcPeer};
 use crate::uplink::{self, CLOSE_NORMAL, CLOSE_REFUSED};
 
 /// Noise message ceiling.
@@ -323,9 +323,11 @@ pub async fn run(mut c: Conn) {
     }
 }
 
-/// Mode 0 (31 §6.2): records are JSON-RPC requests into `raw_json_request`;
-/// a pairing conn enrols the device on its first record. Returns whether the
-/// conn became a session.
+/// Mode 0 (31 §6.2): records are JSON-RPC requests into `raw_json_request`
+/// on this conn's own clone of the dispatch `Methods`, whose extensions carry
+/// the conn's [`RpcPeer`] (closed when this returns); a pairing conn enrols
+/// the device on its first record. Waiting for `SetDispatch` counts against
+/// the handshake deadline. Returns whether the conn became a session.
 async fn run_api(
     c: &mut Conn,
     transport: &mut TransportState,
@@ -335,6 +337,14 @@ async fn run_api(
     deadline: Instant,
 ) -> bool {
     let mut session = pending.is_none();
+    let (peer, _peer_guard) = RpcPeer::open();
+    let methods = tokio::select! {
+        _ = c.cancel.cancelled() => { c.close(CLOSE_NORMAL).await; return session }
+        d = tokio::time::timeout_at(deadline, c.ctx.dispatch()) => match d {
+            Ok(d) => Arc::new(peer_methods(&d.methods, peer)),
+            Err(_) => { c.close(CLOSE_REFUSED).await; return session }
+        },
+    };
     let (resp_tx, mut resp_rx) = mpsc::channel::<Box<JsonRawValue>>(256);
     let mut asm = Reassembler::default();
     let mut buf = vec![0u8; MAX_MSG];
@@ -361,9 +371,7 @@ async fn run_api(
                     session = true;
                 }
                 if let Some(text) = asm.push(&buf[..n]) {
-                    let ctx = c.ctx.clone();
-                    let tx = resp_tx.clone();
-                    tokio::spawn(dispatch(ctx, text, tx));
+                    tokio::spawn(dispatch(methods.clone(), text, resp_tx.clone()));
                 }
             }
             r = resp_rx.recv() => {
@@ -479,14 +487,24 @@ async fn commit_pairing(c: &Conn, key: &[u8; 32], hello: PairHello, psk: Option<
     true
 }
 
+/// `methods` with `peer` in its extensions: what one conn's requests dispatch into.
+fn peer_methods(methods: &jsonrpsee::Methods, peer: RpcPeer) -> jsonrpsee::Methods {
+    let mut m = methods.clone();
+    m.extensions_mut().insert(peer);
+    m
+}
+
 /// One request: response first, then every subscription notification for as
 /// long as the conn (holder of `resp_rx`) lives.
-async fn dispatch(ctx: Arc<Ctx>, text: Vec<u8>, tx: mpsc::Sender<Box<JsonRawValue>>) {
+async fn dispatch(
+    methods: Arc<jsonrpsee::Methods>,
+    text: Vec<u8>,
+    tx: mpsc::Sender<Box<JsonRawValue>>,
+) {
     let Ok(text) = String::from_utf8(text) else {
         let _ = tx.send(parse_error()).await;
         return;
     };
-    let methods = &ctx.dispatch().await.methods;
     match methods.raw_json_request(&text, SUB_BUF).await {
         Ok((resp, mut rx)) => {
             if tx.send(resp).await.is_err() {
@@ -566,6 +584,47 @@ mod tests {
             }
             assert_eq!(out.unwrap(), text);
         }
+    }
+
+    /// `null` when the call carries no peer.
+    async fn peer_id(m: &jsonrpsee::Methods) -> Option<u64> {
+        let (resp, _) = m
+            .raw_json_request(r#"{"jsonrpc":"2.0","id":1,"method":"peer"}"#, 1)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(resp.get()).unwrap();
+        v["result"].as_u64()
+    }
+
+    #[tokio::test]
+    async fn peer_is_per_conn_clone() {
+        let mut module = jsonrpsee::RpcModule::new(());
+        module
+            .register_method("peer", |_, _, ext| ext.get::<RpcPeer>().map(RpcPeer::id))
+            .unwrap();
+        let base: jsonrpsee::Methods = module.into();
+        // No conn → no peer; nothing authenticates a bare dispatch.
+        assert_eq!(peer_id(&base).await, None);
+
+        let (a, guard_a) = RpcPeer::open();
+        let (b, guard_b) = RpcPeer::open();
+        assert_ne!(a.id(), b.id());
+        let ma = peer_methods(&base, a.clone());
+        let mb = peer_methods(&base, b.clone());
+        // Every request on a conn sees that conn's peer; another conn sees its own.
+        assert_eq!(peer_id(&ma).await, Some(a.id()));
+        assert_eq!(peer_id(&ma).await, Some(a.id()));
+        assert_eq!(peer_id(&mb).await, Some(b.id()));
+        assert_eq!(peer_id(&base).await, None);
+
+        // Closing one conn closes only its peer, even via clones taken earlier.
+        let closed_a = a.closed();
+        drop(guard_a);
+        closed_a.await;
+        assert!(a.is_closed());
+        assert!(!b.is_closed());
+        drop(guard_b);
+        assert!(b.is_closed());
     }
 
     #[test]
