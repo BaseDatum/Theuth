@@ -72,7 +72,7 @@ impl Backend {
                 let target = client
                     .resolve_service_target(resolved.genai.as_str())
                     .await
-                    .map_err(|e| e.to_string())?;
+                    .map_err(provider_error)?;
                 Ok(Transport::of(target.model.adapter_kind))
             }
         }
@@ -105,11 +105,26 @@ impl Backend {
                     .exec_chat_stream(spec, req, Some(opts))
                     .await
                     .map(|r| -> EventStream {
-                        Box::pin(r.stream.map(|ev| ev.map_err(|e| e.to_string())))
+                        Box::pin(r.stream.map(|ev| ev.map_err(provider_error)))
                     })
-                    .map_err(|e| e.to_string())
+                    .map_err(provider_error)
             }
         }
+    }
+}
+
+/// genai currently wraps AWS credential failures as unsupported features.
+/// Keep the provider detail, but explain the failed authentication and recovery.
+fn provider_error(error: genai::Error) -> String {
+    match error {
+        genai::Error::AdapterNotSupported {
+            adapter_kind: AdapterKind::BedrockSigv4,
+            feature,
+        } if feature.starts_with("AWS credential") => format!(
+            "AWS authentication failed: {feature}\nCheck the selected AWS profile and credentials. \
+             If it uses SSO, run `aws sso login --profile <profile>` (or `aws sso login` for the default profile), then retry."
+        ),
+        error => error.to_string(),
     }
 }
 
@@ -130,4 +145,24 @@ fn slug(resolved: &Resolved) -> &str {
         .id
         .split_once('/')
         .map_or(resolved.id.as_str(), |(_, m)| m)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn aws_credential_failure_is_actionable_and_not_retried() {
+        let detail = "AWS credential resolution failed for profile 'work': token has expired";
+        let message = provider_error(genai::Error::AdapterNotSupported {
+            adapter_kind: AdapterKind::BedrockSigv4,
+            feature: detail.into(),
+        });
+        assert!(message.contains(detail));
+        assert!(message.contains("aws sso login"));
+        assert_eq!(
+            crate::compact::classify(&message),
+            crate::compact::Failure::Deterministic
+        );
+    }
 }

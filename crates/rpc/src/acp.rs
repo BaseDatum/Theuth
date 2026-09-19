@@ -382,6 +382,9 @@ fn replay(i: usize, entry: HistoryEntry) -> SessionUpdate {
         HistoryEntry::Compacted { summary, .. } => SessionUpdate::AgentMessageChunk(
             ContentChunk::new(format!("[compacted] {summary}").into()),
         ),
+        HistoryEntry::Error { text, .. } => {
+            SessionUpdate::AgentMessageChunk(ContentChunk::new(format!("error: {text}").into()))
+        }
     }
 }
 

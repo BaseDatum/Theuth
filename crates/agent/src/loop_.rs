@@ -1877,8 +1877,19 @@ impl Turn {
         self.shared.rt.publish(event).await;
     }
 
+    /// Surface a failure: durable first (history replaces live rows on
+    /// reload), then the live event. A refused write only logs — never back
+    /// through [`Turn::persist`], whose own failure lands here.
     async fn error(&self, message: String) {
         tracing::warn!(session = %self.shared.id, turn = ?self.turn, "{message}");
+        if let Err(e) = self
+            .shared
+            .store
+            .record_error(self.shared.id, &message)
+            .await
+        {
+            tracing::warn!(session = %self.shared.id, "record_error: {e:#}");
+        }
         self.publish(AgentEvent::Error {
             session: self.shared.id,
             turn: self.turn,

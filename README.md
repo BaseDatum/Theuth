@@ -138,6 +138,12 @@ vault secret, `BEDROCK_API_KEY` or `AWS_BEARER_TOKEN_BEDROCK` wins over the defa
 AWS chain. The SDK owns region, credentials and SSO; sign in with
 `aws sso login --profile work` when required. No AWS credentials enter wth's UI.
 
+Chat failures (including denied model/region access and expired AWS sessions) stay
+in the TUI and desktop/mobile transcript after the turn finishes, on reload, and
+when reopening the session. They are not sent to the model as conversation text.
+AWS credential failures include SSO login guidance; fix the profile/login or
+model access, then send the request again.
+
 Config (`~/.wth/`, created on first run; details in
 [`docs/design/01-config-and-subagents.md`](docs/design/01-config-and-subagents.md) §1):
 

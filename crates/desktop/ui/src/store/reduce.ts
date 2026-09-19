@@ -348,6 +348,9 @@ export function fromHistory(h: HistoryEntry): Entry[] {
           context,
         },
       ];
+    // Never model content: shown as it was live, nothing to remove from context.
+    case "error":
+      return [{ id: nextId(), kind: "error", text: h.text, context }];
   }
 }
 

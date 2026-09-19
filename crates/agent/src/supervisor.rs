@@ -78,10 +78,9 @@ use crate::{
     Loaded, Login, LoginFinished, LoginInfo, Logout, ModelInfo, NewRootSession, NewSession,
     PinSession, ProviderInfo, QueuedInput, Redo, Regenerate, RemoveAcp, RemoveContext,
     RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession, SearchRefresh, SearchSessionPage,
-    SendInput,
-    SessionSummary, SetCompactStyle, SetEffort, SetMaxToolRounds, SetModel, SetSubagentTimeout,
-    SetTitleModel, ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw,
-    effort_of,
+    SendInput, SessionSummary, SetCompactStyle, SetEffort, SetMaxToolRounds, SetModel,
+    SetSubagentTimeout, SetTitleModel, ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo,
+    UseSkill, Withdraw, effort_of,
 };
 use crate::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 use crate::{frame, repl, search, spill};
@@ -674,13 +673,7 @@ impl Agents {
             self.ledger.release(sid, ticket);
             self.network_input_dropped(ticket).await;
             tracing::error!(session = %sid, "session: {e:#}");
-            self.rt
-                .publish(AgentEvent::Error {
-                    session: sid,
-                    turn: None,
-                    message: format!("{e:#}"),
-                })
-                .await;
+            self.error(sid, format!("{e:#}")).await;
         }
         sid
     }
@@ -697,6 +690,21 @@ impl Agents {
     ) -> SessionId {
         self.input(session, id, text, files, InputOrigin::External)
             .await
+    }
+
+    /// A session-scoped failure outside any turn: recorded behind the last
+    /// visible message (history replaces live rows on reload), then published.
+    async fn error(&self, session: SessionId, message: String) {
+        if let Err(e) = self.store.record_error(session, &message).await {
+            tracing::warn!(session = %session, "record_error: {e:#}");
+        }
+        self.rt
+            .publish(AgentEvent::Error {
+                session,
+                turn: None,
+                message,
+            })
+            .await;
     }
 
     /// The live (or resumed) actor for `session`, with the lookup error as the
@@ -1167,15 +1175,13 @@ impl Agents {
         let answered = self.delivered.remove(&(child, turn));
         let Some(mut text) = self.turn_text.remove(&(child, turn)) else {
             tracing::error!(session = %child, %turn, "child turn finished without its PeerTurnFinished result");
-            self.rt
-                .publish(AgentEvent::Error {
-                    session: parent,
-                    turn: None,
-                    message: format!(
-                        "result of subagent session:{child} (turn {turn}) is missing; inspect its transcript"
-                    ),
-                })
-                .await;
+            self.error(
+                parent,
+                format!(
+                    "result of subagent session:{child} (turn {turn}) is missing; inspect its transcript"
+                ),
+            )
+            .await;
             return;
         };
         if self.timed_out.remove(&child) {
@@ -1268,12 +1274,7 @@ impl Agents {
                         Ok(r) => self.peer_changed(&r).await,
                         Err(e) => tracing::error!(id = %receipt.id, "fail_exchange: {e:#}"),
                     }
-                    self.rt
-                        .publish(AgentEvent::Error {
-                            session: parent,
-                            turn: None,
-                            message: format!("subagent result not delivered: {reason}"),
-                        })
+                    self.error(parent, format!("subagent result not delivered: {reason}"))
                         .await;
                 }
             }
@@ -1561,12 +1562,7 @@ impl Agents {
                 tracing::warn!(%op, %owner, "activity outcome unknown: {failure}");
                 self.place(owner).await;
                 self.ledger.unknown_op(op, owner, failure.clone());
-                self.rt
-                    .publish(AgentEvent::Error {
-                        session: owner,
-                        turn: None,
-                        message: format!("background work outcome unknown: {failure}"),
-                    })
+                self.error(owner, format!("background work outcome unknown: {failure}"))
                     .await;
             }
         }
@@ -1649,13 +1645,7 @@ impl Message<SessionUnknown> for Agents {
             m.failure
         );
         self.ledger.session_unknown(m);
-        self.rt
-            .publish(AgentEvent::Error {
-                session,
-                turn: None,
-                message,
-            })
-            .await;
+        self.error(session, message).await;
     }
 }
 
@@ -3526,6 +3516,31 @@ impl Message<LoadSession> for Agents {
                     out.push((seq, entry));
                 }
                 out.extend(dividers.map(|e| (e.at_seq, compacted(e, heads.get(&e.n).cloned()))));
+                // Durable failures sit behind their anchor's whole seq group
+                // (tool siblings, a divider), so paging keeps them with it.
+                match self.store.errors(m.session).await {
+                    Ok(errors) if !errors.is_empty() => {
+                        out.extend(errors.into_iter().map(|(at, text)| {
+                            (
+                                at,
+                                HistoryEntry::Error {
+                                    text,
+                                    context: None,
+                                },
+                            )
+                        }));
+                        // Unfinished calls trail the transcript, regardless of
+                        // their older call seq (they have no completion seq).
+                        out.sort_by_key(|(seq, entry)| {
+                            (
+                                matches!(entry, HistoryEntry::Tool { result: None, .. }),
+                                *seq,
+                            )
+                        });
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::error!(session = %m.session, "errors: {e:#}"),
+                }
                 // Typed provenance for replay (50 §9): the exchange rows this
                 // session consumed, keyed by the history row they became.
                 match self.store.consumed_exchanges(m.session).await {

@@ -905,6 +905,7 @@ fn print_history(out: &mut impl Write, loaded: &agent::Loaded) -> std::io::Resul
                 "── context compacted (epoch {epoch} · {style}) ──\n{summary}"
             )
         }
+        agent::HistoryEntry::Error { text, .. } => writeln!(out, "error: {text}"),
     })
 }
 

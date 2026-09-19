@@ -245,16 +245,9 @@ export function Composer({
         mode(session)
         await api.send_input(session, body, files)
       } else {
-        let id: string
-        if (draftEffort === undefined) {
-          id = await api.send_input(null, body, files)
-        } else {
-          id = await api.new_session()
-          await api.set_effort(id, draftEffort)
-          await api.send_input(id, body, files)
-        }
-        // A fresh session has nothing stored yet: mark it loaded so the route does not
-        // re-fetch and drop the bubble below (its echo is skipped via `markSent`).
+        const id = await api.new_session()
+        if (draftEffort !== undefined) await api.set_effort(id, draftEffort)
+        // Seed before sending: a fast failure can finish before the RPC reply.
         loadHistory(
           id,
           { ...FRESH, model: defaultModel ?? '', effort: draftEffort ?? null },
@@ -262,6 +255,7 @@ export function Composer({
         )
         markSent(id, body, files)
         mode(id)
+        await api.send_input(id, body, files)
         await navigate({ to: '/c/$session', params: { session: id } })
       }
     } catch (e) {

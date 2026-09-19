@@ -1,10 +1,12 @@
 //! sqlite session store (sqlx): `sessions` + `messages` + `epochs` +
-//! `todo_snapshots`; resume by replay. Only the agent writes it; UIs read
-//! through the supervisor's commands.
-//! `sessions.cut_at` is the undo marker: rows with `seq >= cut_at` (epochs and
-//! todo snapshots `at_seq >= cut_at`) are hidden from every reader until
-//! `commit_cut` deletes them. The plan is the latest visible snapshot ordered
-//! by `(at_seq, k)`; `sessions.todo_version` only ever grows (47 §5.2).
+//! `todo_snapshots` + `errors`; resume by replay. Only the agent writes it;
+//! UIs read through the supervisor's commands.
+//! `sessions.cut_at` is the undo marker: rows with `seq >= cut_at` (epochs,
+//! todo snapshots and errors `at_seq >= cut_at`) are hidden from every reader
+//! until `commit_cut` deletes them. The plan is the latest visible snapshot
+//! ordered by `(at_seq, k)`; `sessions.todo_version` only ever grows (47 §5.2).
+//! `errors` are UI-only rows anchored at the last visible message seq when
+//! they happened; they never enter the model frame.
 //!
 //! Context removal (48 §4): `messages.excluded` / `epochs.excluded` hold
 //! [`Mask`]s beside untouched rows. *Raw* readers (`messages`, undo/redo,
@@ -283,6 +285,33 @@ impl Store {
         todos_in(&mut conn, &id.to_string()).await
     }
 
+    /// Record a UI-only failure behind the last visible message (`-1` in an
+    /// empty session). Not a context change: no revision or `updated_at` bump.
+    pub async fn record_error(&self, id: SessionId, text: &str) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO errors (session_id, at_seq, text) \
+             SELECT ?1, COALESCE(MAX(seq), -1), ?2 FROM messages WHERE session_id = ?1 \
+             AND seq < COALESCE((SELECT cut_at FROM sessions WHERE id = ?1), 9223372036854775807)",
+        )
+        .bind(id.to_string())
+        .bind(text)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Visible errors as `(at_seq, text)`, in the order they happened.
+    pub async fn errors(&self, id: SessionId) -> anyhow::Result<Vec<(i64, String)>> {
+        Ok(sqlx::query_as(
+            "SELECT at_seq, text FROM errors WHERE session_id = ?1 \
+             AND at_seq < COALESCE((SELECT cut_at FROM sessions WHERE id = ?1), 9223372036854775807) \
+             ORDER BY at_seq, id",
+        )
+        .bind(id.to_string())
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
     /// All visible messages with their seq, in `seq` order. Raw: exclusion
     /// masks are not applied (turn identity, undo/redo, archive).
     pub async fn messages(&self, id: SessionId) -> anyhow::Result<Vec<(i64, ChatMessage)>> {
@@ -437,6 +466,13 @@ impl Store {
         .execute(&mut *tx)
         .await?;
         sqlx::query(
+            "DELETE FROM errors WHERE session_id = ?1 \
+             AND at_seq >= (SELECT cut_at FROM sessions WHERE id = ?1)",
+        )
+        .bind(&sid)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
             "UPDATE sessions SET cut_at = NULL, context_revision = context_revision + 1 \
              WHERE id = ? AND cut_at IS NOT NULL",
         )
@@ -573,6 +609,18 @@ impl Store {
              SELECT ?1, at_seq, k, source, items FROM todo_snapshots WHERE session_id = ?2 \
              AND at_seq < ?3 \
              AND at_seq < COALESCE((SELECT cut_at FROM sessions WHERE id = ?2), 9223372036854775807)",
+        )
+        .bind(&new)
+        .bind(&old)
+        .bind(end)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO errors (session_id, at_seq, text) \
+             SELECT ?1, at_seq, text FROM errors WHERE session_id = ?2 \
+             AND at_seq < ?3 \
+             AND at_seq < COALESCE((SELECT cut_at FROM sessions WHERE id = ?2), 9223372036854775807) \
+             ORDER BY at_seq, id",
         )
         .bind(&new)
         .bind(&old)
@@ -968,6 +1016,10 @@ impl Store {
                 .execute(&mut *tx)
                 .await?;
             sqlx::query("DELETE FROM todo_snapshots WHERE session_id = ?")
+                .bind(&sid)
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("DELETE FROM errors WHERE session_id = ?")
                 .bind(&sid)
                 .execute(&mut *tx)
                 .await?;
@@ -1684,6 +1736,51 @@ mod tests {
         );
         assert_eq!(store.redo(id).await.unwrap(), None);
         assert_eq!(store.hidden_turns(id).await.unwrap(), 0);
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn errors_follow_their_turn() {
+        let (store, id, dir) = fresh().await;
+        // Failure before any message anchors at -1 and is never hidden.
+        store.record_error(id, "e0").await.unwrap();
+        append_all(&store, id, [ChatMessage::user("u1"), asst("a1")]).await;
+        // Two consecutive failed requests behind the same opener keep order.
+        store.append(id, &ChatMessage::user("u2")).await.unwrap();
+        store.record_error(id, "e1").await.unwrap();
+        store.record_error(id, "e2").await.unwrap();
+        let all = vec![(-1, "e0".into()), (2, "e1".into()), (2, "e2".into())];
+        assert_eq!(store.errors(id).await.unwrap(), all);
+        assert_eq!(
+            texts(&store.frame(id).await.unwrap().2),
+            [(0, "u1".into()), (1, "a1".into()), (2, "u2".into())]
+        );
+        drop(store);
+        let store = Store::open(&dir.join("sessions.sqlite")).await.unwrap();
+        assert_eq!(store.errors(id).await.unwrap(), all);
+
+        assert_eq!(store.undo(id).await.unwrap().as_deref(), Some("u2"));
+        assert_eq!(store.errors(id).await.unwrap(), [(-1, "e0".into())]);
+        assert_eq!(store.redo(id).await.unwrap().as_deref(), Some("u2"));
+        assert_eq!(store.errors(id).await.unwrap(), all);
+        let whole = store.fork(id, None, None).await.unwrap();
+        assert_eq!(store.errors(whole).await.unwrap(), all);
+
+        // A fork through u1 leaves u2's failures behind.
+        let forked = store.fork(id, Some(0), None).await.unwrap();
+        assert_eq!(store.errors(forked).await.unwrap(), [(-1, "e0".into())]);
+
+        store.undo(id).await.unwrap();
+        store.commit_cut(id).await.unwrap();
+        assert_eq!(store.errors(id).await.unwrap(), [(-1, "e0".into())]);
+        store.delete_session(id).await.unwrap();
+        let left: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM errors WHERE session_id = ?")
+            .bind(id.to_string())
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        assert_eq!(left.0, 0);
         drop(store);
         let _ = std::fs::remove_dir_all(&dir);
     }

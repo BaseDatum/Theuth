@@ -193,7 +193,7 @@ const need = (session: string | null): string => {
  */
 export const FRESH: LoadedPage = {
   history: [],
-  running: true,
+  running: false,
   model: '',
   effort: null,
   queued: [],
@@ -205,10 +205,10 @@ export const FRESH: LoadedPage = {
   first_seq: null,
   more: false,
   context_revision: '0',
-  context_editable: false,
-  context_reason: 'turn in flight',
+  context_editable: true,
+  context_reason: null,
   context_estimate: null,
-  settled: false,
+  settled: true,
   todos: null,
   communication: null,
 }
@@ -496,11 +496,10 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
     }
     default: {
       // `/<skill> [args]` hands the skill to the model (04 §2.4); the agent names an unknown skill.
-      const id = await api.use_skill(session, cmd.slice(1), arg)
-      if (!session) {
-        useSessions.getState().loadHistory(id, FRESH, 'replace')
-        await navigate({ to: '/c/$session', params: { session: id } })
-      }
+      const id = session ?? await api.new_session()
+      if (!session) useSessions.getState().loadHistory(id, FRESH, 'replace')
+      await api.use_skill(id, cmd.slice(1), arg)
+      if (!session) await navigate({ to: '/c/$session', params: { session: id } })
     }
   }
 }

@@ -783,13 +783,17 @@ impl Message<Connected> for AcpChild {
                     && let Ok(Some(prev)) = self.store.acp_session(self.id).await
                     && prev != h.session_id()
                 {
+                    let message = format!(
+                        "{}: previous harness session not restored; starting fresh",
+                        self.name
+                    );
+                    if let Err(e) = self.store.record_error(self.id, &message).await {
+                        tracing::warn!(session = %self.id, "record_error: {e:#}");
+                    }
                     self.publish(AgentEvent::Error {
                         session: self.id,
                         turn: None,
-                        message: format!(
-                            "{}: previous harness session not restored; starting fresh",
-                            self.name
-                        ),
+                        message,
                     })
                     .await;
                 }
@@ -802,6 +806,9 @@ impl Message<Connected> for AcpChild {
             }
             Err(e) => {
                 if self.queue.is_empty() {
+                    if let Err(err) = self.store.record_error(self.id, &e).await {
+                        tracing::warn!(session = %self.id, "record_error: {err:#}");
+                    }
                     self.publish(AgentEvent::Error {
                         session: self.id,
                         turn: None,

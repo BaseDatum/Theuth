@@ -863,8 +863,8 @@ pub struct SessionSummary {
 /// variant carries `context`: the stored row's context-removal identity and
 /// membership (design doc 48 §3.3) — the actual message (not its turn
 /// opener) for user/assistant text, the backing response row for a tool
-/// card, the epoch head for a divider. `None` only for an unstored live
-/// card (a call still running) or when the read failed.
+/// card, the epoch head for a divider. `None` for UI-only errors, an
+/// unstored live card (a call still running), or when the read failed.
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(tag = "role", rename_all = "snake_case")]
@@ -941,6 +941,17 @@ pub enum HistoryEntry {
         #[cfg_attr(feature = "ts", ts(optional))]
         context: Option<ContextEntry>,
     },
+    /// A failure (provider, store, harness) the session surfaced as
+    /// `AgentEvent::Error`, replayed in transcript order behind the message
+    /// it followed. UI-only: never in the model frame, so nothing to remove.
+    Error {
+        /// Same text the live event carried.
+        text: String,
+        /// Always `None`: an error is not removable model context.
+        #[serde(default)]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        context: Option<ContextEntry>,
+    },
 }
 
 impl HistoryEntry {
@@ -950,7 +961,8 @@ impl HistoryEntry {
             Self::User { context, .. }
             | Self::Assistant { context, .. }
             | Self::Tool { context, .. }
-            | Self::Compacted { context, .. } => context.as_ref(),
+            | Self::Compacted { context, .. }
+            | Self::Error { context, .. } => context.as_ref(),
         }
     }
 
@@ -960,7 +972,8 @@ impl HistoryEntry {
             Self::User { context, .. }
             | Self::Assistant { context, .. }
             | Self::Tool { context, .. }
-            | Self::Compacted { context, .. } => context.as_mut(),
+            | Self::Compacted { context, .. }
+            | Self::Error { context, .. } => context.as_mut(),
         }
     }
 }

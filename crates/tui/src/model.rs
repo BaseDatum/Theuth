@@ -920,8 +920,10 @@ impl Entry {
             // width, so they count one row per line like everything else.
             Entry::Assistant(t) => md(t, width),
             Entry::Card { text, expanded, .. } => 4 + if *expanded { md(text, inner) } else { 0 },
-            Entry::Reasoning { done: true, .. } | Entry::Info(_) | Entry::Error(_) => 1,
-            Entry::Reasoning { text, .. } => text_rows(text, width),
+            Entry::Reasoning { done: true, .. } => 1,
+            Entry::Reasoning { text, .. } | Entry::Info(text) | Entry::Error(text) => {
+                text_rows(text, width)
+            }
             Entry::Pending { .. } => 2,
             // Artifact card: header, title (when it differs), path row; the
             // arguments are not drawn (35 §6.1).
@@ -2329,6 +2331,10 @@ pub struct Model {
     pub prompt: Option<Prompt>,
     /// A `Send { session: None }` is in flight; adopt the next `TurnStarted`.
     awaiting_session: bool,
+    /// A routing failure of that send (`Error { turn: None }`) that arrived
+    /// before `SessionCreated` named the session: shown once it does, if the
+    /// ids agree; another session's error is dropped.
+    send_error: Option<(SessionId, String)>,
     /// `/mcp` was typed; the next `UiEvent::Mcp` opens the menu. Refreshes
     /// after `SetGate` only update an open menu, never reopen a closed one.
     awaiting_mcp: bool,
@@ -3519,6 +3525,11 @@ impl Model {
                     // The global default was shown; now this session's own view.
                     self.refresh_communication = true;
                 }
+                if let Some((s, message)) = self.send_error.take()
+                    && s == id
+                {
+                    self.entries.push(Entry::Error(message));
+                }
             }
             UiEvent::Models(items) => {
                 if items.is_empty() {
@@ -4162,6 +4173,19 @@ impl Model {
         if self.awaiting_session && matches!(ev, AgentEvent::TurnStarted { .. }) {
             self.session = ev.session();
             self.awaiting_session = false;
+        }
+        // The send was refused before any turn (a rejected attachment, no
+        // actor): its error names a session we do not know yet, so it would
+        // fall through the ownership check below. Held for `SessionCreated`.
+        if self.awaiting_session
+            && self.session.is_none()
+            && let AgentEvent::Error {
+                session,
+                turn: None,
+                message,
+            } = &ev
+        {
+            self.send_error = Some((*session, message.clone()));
         }
         // The plan is session chrome, not a transcript row (47 §6.1): it
         // never finishes a streaming tail below. Children's plans show when
@@ -7749,6 +7773,8 @@ fn from_history(h: HistoryEntry, opts: &markdown::Options) -> Vec<Entry> {
                 expanded: false,
             }]
         }
+        // Never model content: shown, never reasoned over (48 §3.3 has nothing to remove).
+        HistoryEntry::Error { text, .. } => vec![Entry::Error(text)],
     }
 }
 
@@ -11477,6 +11503,120 @@ mod tests {
         assert_eq!(m.entries.len(), 1, "own send is not echoed twice");
         assert!(matches!(&m.entries[0], Entry::User { text, turn: Some(5) } if text == "hello"));
         assert_eq!(m.turn_seq, Some(5));
+    }
+
+    /// An access failure (expired SSO) mid-turn stays readable: the turn's
+    /// end clears the busy state, and the authoritative reload carries the
+    /// same row as `HistoryEntry::Error` — one error line, not two, not none.
+    #[test]
+    fn provider_error_outlives_turn_end_and_reload() {
+        let (tx, _rx) = unbounded_channel();
+        let mut m = Model::new("m".into(), true);
+        let s = SessionId::new();
+        let turn = TurnId::new();
+        m.session = Some(s);
+        m.submit("hello", &tx);
+        m.apply_agent(AgentEvent::TurnStarted {
+            session: s,
+            turn,
+            turn_seq: 1,
+            text: "hello".into(),
+            model: "m".into(),
+        });
+        assert!(m.streaming);
+        let message = "provider: SSO session expired; run `aws sso login`";
+        m.apply_agent(AgentEvent::Error {
+            session: s,
+            turn: Some(turn),
+            message: message.into(),
+        });
+        m.apply_agent(AgentEvent::TurnFinished {
+            session: s,
+            turn,
+            stop_reason: "error".into(),
+            usage: Usage::default(),
+            context: 0,
+        });
+        assert!(!m.streaming, "the failed turn is over");
+        let errors = |m: &Model| {
+            m.entries
+                .iter()
+                .filter(|e| matches!(e, Entry::Error(t) if t == message))
+                .count()
+        };
+        assert_eq!(errors(&m), 1);
+        // Reopen: the stored row renders as the same error line.
+        m.apply(UiEvent::History(
+            s,
+            Loaded {
+                history: vec![
+                    HistoryEntry::User {
+                        text: "hello".into(),
+                        turn: Some(1),
+                        context: None,
+                        peer: None,
+                    },
+                    HistoryEntry::Error {
+                        text: message.into(),
+                        context: None,
+                    },
+                ],
+                ..Loaded::default()
+            },
+        ));
+        assert_eq!(errors(&m), 1);
+        assert!(!m.streaming);
+        assert!(matches!(m.entries.last(), Some(Entry::Error(_))));
+        // A long provider message is measured wrapped, not as one row.
+        assert_eq!(Entry::Error("x".repeat(50)).height(20), 3);
+    }
+
+    /// The first send is refused before any turn (`Error { turn: None }`)
+    /// and the event outruns the `SessionCreated` reply: the error shows once
+    /// the reply names that session; another session's does not attach.
+    #[test]
+    fn send_rejection_before_session_reply_is_shown_for_that_session_only() {
+        let (tx, _rx) = unbounded_channel();
+        let mut m = Model::new("m".into(), true);
+        let (ours, theirs) = (SessionId::new(), SessionId::new());
+        m.submit("hello", &tx);
+        assert!(m.awaiting_session && m.session.is_none());
+        m.apply_agent(AgentEvent::Error {
+            session: theirs,
+            turn: None,
+            message: "elsewhere".into(),
+        });
+        m.apply_agent(AgentEvent::Error {
+            session: ours,
+            turn: None,
+            message: "attachment rejected".into(),
+        });
+        assert!(m.entries.iter().all(|e| !matches!(e, Entry::Error(_))));
+        m.apply(UiEvent::SessionCreated(ours));
+        assert_eq!(m.session, Some(ours));
+        assert!(!m.awaiting_session && !m.streaming);
+        let errors: Vec<&str> = m
+            .entries
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Error(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(errors, ["attachment rejected"]);
+        // Once the session is known, its errors land directly; strangers' do not.
+        m.apply_agent(AgentEvent::Error {
+            session: theirs,
+            turn: None,
+            message: "still elsewhere".into(),
+        });
+        assert_eq!(
+            m.entries
+                .iter()
+                .filter(|e| matches!(e, Entry::Error(_)))
+                .count(),
+            1
+        );
     }
 
     #[test]

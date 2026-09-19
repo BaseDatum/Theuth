@@ -542,6 +542,42 @@ test('store: a settled snapshot is refused when a stream raced it (deltas kept) 
   expect(useSessions.getState().sessions[id]).toMatchObject({ context: 12, contextEstimated: true })
 })
 
+test('store: an access error mid-turn outlives the turn end and the settled reload as one row', () => {
+  const id = 'sso'
+  const st = useSessions.getState()
+  // A fresh session as the composer seeds it (`FRESH`).
+  st.loadHistory(id, { ...loaded('0'), history: [], first_seq: null, more: false }, 'replace')
+  st.markSent(id, 'hello')
+  const message = 'provider: SSO session expired; run `aws sso login`'
+  st.applyEvents([
+    { type: 'TurnStarted', session: id, turn: T, text: 'hello', model: 'm', turn_seq: 1 },
+    { type: 'Error', session: id, turn: T, message },
+    { type: 'TurnFinished', session: id, turn: T, stop_reason: 'error', usage, context: 3 },
+    { type: 'ContextChanged', session: id, revision: '1', reason: 'settled' },
+  ])
+  let s = useSessions.getState().sessions[id]!
+  expect(s.entries.map((e) => ('text' in e ? [e.kind, e.text] : e.kind))).toEqual([['user', 'hello'], ['error', message]])
+  expect(s).toMatchObject({ running: false, waiting: false, activity: 'idle', contextStale: true })
+  const errorId = s.entries[1]!.id
+  // The authoritative page carries the stored row: same card, same id, still one error.
+  const page = {
+    ...loaded('1'),
+    history: [
+      { role: 'user' as const, text: 'hello', turn: 1, context: msg(1) },
+      { role: 'error' as const, text: message },
+    ],
+    first_seq: 1,
+    more: false,
+  }
+  expect(st.loadHistory(id, page, 'settled', freshness(s))).toBe(true)
+  s = useSessions.getState().sessions[id]!
+  expect(s.entries.map((e) => e.kind)).toEqual(['user', 'error'])
+  expect(s.entries[1]).toMatchObject({ id: errorId, kind: 'error', text: message })
+  expect(s).toMatchObject({ running: false, activity: 'idle', contextStale: false })
+  // Reopened later: the stored row renders as the same error line, never as assistant text.
+  expect(fromHistory({ role: 'error', text: message })).toMatchObject([{ kind: 'error', text: message }])
+})
+
 test('store: unload invalidates loaded slices for the reconnect/harness-switch reload; a superseded full page is dropped', () => {
   const id = 'unloaded'
   const st = useSessions.getState()
