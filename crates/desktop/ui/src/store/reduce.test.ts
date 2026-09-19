@@ -316,6 +316,9 @@ test('job tail attaches to the tool card by call id, follows output, freezes or 
   const late = apply(s, { type: 'JobFinished', session: S, id: 'j1', command: 'make', exit: 'timeout', secs: 9n, output: '', inline: false, pty: false }, ctx())
   expect(late.entries[0]).toMatchObject({ job: { exit: { exit: 'timeout', secs: 9 } } })
   expect(apply(s, { type: 'JobOutput', session: S, id: 'j9', chunk: 'x' }, ctx())).toBe(s)
+  // Only a PTY job lights the header's terminals icon, like the globe follows `browser_*`.
+  expect(s.terminal).toBe(false)
+  expect(apply(s, { type: 'JobStarted', session: S, id: 'j2', command: 'top', call_id: 'c9', log: '/l', name: null, pty: true }, ctx()).terminal).toBe(true)
 })
 
 test('ScrapeProgress attaches inflight URLs to the crawl card by call id, dropped on finish', () => {

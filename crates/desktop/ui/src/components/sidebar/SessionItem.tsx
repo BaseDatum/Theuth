@@ -17,21 +17,41 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { useProjects } from '@/components/chat/ProjectPicker'
 import { parseNote } from '@/lib/voice-note'
 import { Input } from '@/components/ui/input'
 import { SidebarMenuAction, SidebarMenuButton } from '@/components/ui/sidebar'
 import { touch } from '@/lib/hotkeys'
-import { queryKeys, useApi } from '@/lib/rpc'
+import { useApi, queryKeys } from '@/lib/rpc'
 import type { SelectMode } from '@/lib/selection'
-import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import { cn } from '@/lib/utils'
 import { useSessionField } from '@/store/sessions'
 
+/** Submenu body: the other known projects, then a new one (typed inline). Mounted only while the submenu is open. */
+function ProjectItems({ current, onPick, onNew }: { current: string | null; onPick(p: string): void; onNew(): void }) {
+  const others = useProjects().filter((p) => p !== current)
+  return (
+    <>
+      {others.map((p) => (
+        <DropdownMenuItem key={p} onSelect={() => onPick(p)}>
+          {p}
+        </DropdownMenuItem>
+      ))}
+      {others.length > 0 && <DropdownMenuSeparator />}
+      <DropdownMenuItem onSelect={onNew}>New project…</DropdownMenuItem>
+    </>
+  )
+}
+
 /**
  * One chat in the list: title (live from `TitleChanged`), project pill (51 §3), active highlight, hover `…` menu with
- * pin, inline rename, move to project and delete. ⌘-click / ⇧-click / menu > Select feed the list's multi-selection.
+ * pin, inline rename, move to project (existing or new) and delete. ⌘-click / ⇧-click / menu > Select feed the list's multi-selection.
  */
 export const SessionItem = memo(function SessionItem({
   id,
@@ -59,7 +79,7 @@ export const SessionItem = memo(function SessionItem({
   const raw = live || title || id.slice(0, 8)
   // A session opened by a voice note is titled from its input; the `[voice note, N s]` marker is not a title (45 §7.4).
   const shown = parseNote(raw)?.body || raw
-  // Inline editor: the title, or the project label (with the known projects as a native datalist).
+  // Inline editor: the title, or the name of a new project.
   const [editing, setEditing] = useState<{ field: 'title' | 'project'; value: string } | null>(null)
   const [confirming, setConfirming] = useState(false)
 
@@ -107,28 +127,19 @@ export const SessionItem = memo(function SessionItem({
   return (
     <div className="group/menu-item relative">
       {editing !== null ? (
-        <>
-          <Input
-            autoFocus
-            list={editing.field === 'project' ? `projects-${id}` : undefined}
-            placeholder={editing.field === 'project' ? 'Project' : undefined}
-            value={editing.value}
-            onChange={(e) => setEditing({ field: editing.field, value: e.target.value })}
-            onBlur={() => setEditing(null)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') void (editing.field === 'title' ? rename(editing.value) : move(editing.value))
-              if (e.key === 'Escape') setEditing(null)
-            }}
-            className="h-9 rounded-[10px] text-sm"
-          />
-          {editing.field === 'project' && (
-            <datalist id={`projects-${id}`}>
-              {[...new Set((qc.getQueryData<SessionSummary[]>(queryKeys.sessions) ?? []).flatMap((s) => (s.project ? [s.project] : [])))].map(
-                (p) => <option key={p} value={p} />,
-              )}
-            </datalist>
-          )}
-        </>
+        <Input
+          autoFocus
+          placeholder={editing.field === 'project' ? 'New project' : undefined}
+          maxLength={editing.field === 'project' ? 128 : undefined}
+          value={editing.value}
+          onChange={(e) => setEditing({ field: editing.field, value: e.target.value })}
+          onBlur={() => setEditing(null)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') void (editing.field === 'title' ? rename(editing.value) : move(editing.value))
+            if (e.key === 'Escape') setEditing(null)
+          }}
+          className="h-9 rounded-[10px] text-sm"
+        />
       ) : (
         <>
           <SidebarMenuButton
@@ -177,9 +188,12 @@ export const SessionItem = memo(function SessionItem({
             <DropdownMenuContent side="right" align="start" className="w-48">
               <DropdownMenuItem onSelect={() => setEditing({ field: 'title', value: shown })}>Rename</DropdownMenuItem>
               <DropdownMenuItem onSelect={() => void pin()}>{pinned ? 'Unpin' : 'Pin'}</DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => setEditing({ field: 'project', value: project ?? '' })}>
-                Move to project…
-              </DropdownMenuItem>
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>Move to project</DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="w-48">
+                  <ProjectItems current={project} onPick={(p) => void move(p)} onNew={() => setEditing({ field: 'project', value: '' })} />
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
               {project && <DropdownMenuItem onSelect={() => void move(null)}>Remove from project</DropdownMenuItem>}
               <DropdownMenuItem onSelect={() => select(id, 'toggle')}>
                 {selected ? 'Deselect' : 'Select'}

@@ -1,13 +1,11 @@
-import { useQuery } from '@tanstack/react-query'
 import { createFileRoute } from '@tanstack/react-router'
 import { useEffect, useState } from 'react'
 import { Composer, type DraftCreate } from '@/components/chat/Composer'
 import { Header } from '@/components/chat/Header'
-import { Input } from '@/components/ui/input'
+import { ProjectPicker } from '@/components/chat/ProjectPicker'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { usePrivate } from '@/lib/private'
-import { queryKeys, useApi } from '@/lib/rpc'
 
 export const Route = createFileRoute('/')({ component: Index })
 
@@ -15,25 +13,24 @@ export const Route = createFileRoute('/')({ component: Index })
 function Index() {
   const [effort, setEffort] = useState<string | null>()
   const [priv, setPriv] = useState(false)
-  const [project, setProject] = useState('')
+  const [project, setProject] = useState<string | null>(null)
   useEffect(() => {
     document.title = ''
   }, [])
-  const label = project.trim()
-  const draft: DraftCreate = { private: priv, project: label ? label : null }
+  const draft: DraftCreate = { private: priv, project: project?.trim() || null }
   return (
     <>
       <Header session={null} draftEffort={effort} onDraftEffort={setEffort} />
       <div className="flex min-h-0 flex-1 flex-col justify-center pb-24">
         <h1 className="mb-6 text-center text-[28px] leading-9 font-semibold">Where should we begin?</h1>
-        <CreateOptions priv={priv} onPriv={setPriv} project={project} onProject={setProject} />
         <Composer session={null} draftEffort={effort} draftCreate={draft} />
+        <CreateOptions priv={priv} onPriv={setPriv} project={project} onProject={setProject} />
       </div>
     </>
   )
 }
 
-/** Private toggle, project picker (existing labels + free text) and the retention warning with its acknowledgement (51 §1, §8.3). */
+/** Private toggle, project picker and the retention warning with its acknowledgement (51 §1, §8.3); sits under the composer. */
 function CreateOptions({
   priv,
   onPriv,
@@ -42,16 +39,13 @@ function CreateOptions({
 }: {
   priv: boolean
   onPriv(v: boolean): void
-  project: string
-  onProject(v: string): void
+  project: string | null
+  onProject(v: string | null): void
 }) {
-  const api = useApi()
-  const { data: sessions } = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
-  const projects = [...new Set(sessions?.flatMap((s) => (s.project ? [s.project] : [])))].sort()
   const acknowledged = usePrivate((s) => s.acknowledged)
   const acknowledge = usePrivate((s) => s.acknowledge)
   return (
-    <div className="mx-auto mb-3 w-full max-w-[768px] px-4 text-sm">
+    <div className="mx-auto mt-1 w-full max-w-[768px] px-4 text-sm">
       <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
         <label className="flex items-center gap-2">
           <Switch checked={priv} onCheckedChange={onPriv} aria-label="Private session" />
@@ -61,20 +55,7 @@ function CreateOptions({
           <Label htmlFor="new-chat-project" className="text-fg-secondary">
             Project
           </Label>
-          <Input
-            id="new-chat-project"
-            list="new-chat-projects"
-            className="h-8 w-48"
-            placeholder="None"
-            maxLength={128}
-            value={project}
-            onChange={(e) => onProject(e.target.value)}
-          />
-          <datalist id="new-chat-projects">
-            {projects.map((p) => (
-              <option key={p} value={p} />
-            ))}
-          </datalist>
+          <ProjectPicker id="new-chat-project" value={project} onChange={onProject} />
         </div>
       </div>
       {priv && (

@@ -187,6 +187,8 @@ export type SessionSlice = {
   browser: boolean;
   /** The live browser dialog is open (globe click or `BrowserShowLive`). */
   browserLive: boolean;
+  /** A PTY job started in this session (`JobStarted.pty`): the header shows the terminals icon. */
+  terminal: boolean;
   /** Artifacts by `call_id` of the `show` call that made them (35 §7.3); fed by `ArtifactShown` and `list_artifacts`. */
   artifacts: Map<string, Artifact>;
   /** Tool calls whose arguments are still streaming (`ToolCallProgress`), by `call_id`; cleared on `ToolCallStarted`.

@@ -13,6 +13,7 @@ import type { PtyPage } from '@/rpc/bindings/PtyPage'
 import type { Style } from '@/rpc/bindings/Style'
 import type { StyledRun } from '@/rpc/bindings/StyledRun'
 import { useScope } from '@/store/harness-scope'
+import { useSessionField } from '@/store/sessions'
 
 // Fixed dark canvas so the 16-colour palette reads on either app theme.
 const BG = '#1e1e1e'
@@ -233,9 +234,21 @@ export function TerminalViewer({ session, open, onOpenChange }: { session: strin
   )
 }
 
-/** Header icon; `/terminals` reaches it through the `wth:terminals` window event. */
+/**
+ * Header icon, shown once the session (or its subtree) has a PTY: a live `JobStarted.pty` or a retained terminal
+ * found on load, the same way the globe follows the first `browser_*` call. `/terminals` reaches the viewer through
+ * the `wth:terminals` window event even before then.
+ */
 export function TerminalButton({ session }: { session: string }) {
+  const api = useApi()
   const [open, setOpen] = useState(false)
+  const live = useSessionField(session, 'terminal')
+  const { data } = useQuery({
+    queryKey: queryKeys.terminals(session),
+    queryFn: () => api.list_terminals(session, true),
+    enabled: !live,
+    staleTime: Infinity,
+  })
   useEffect(() => {
     const h = (e: Event) => {
       if ((e as CustomEvent<{ session?: string }>).detail?.session === session) setOpen(true)
@@ -245,9 +258,11 @@ export function TerminalButton({ session }: { session: string }) {
   }, [session])
   return (
     <>
-      <Button variant="ghost" className="size-9 rounded-lg text-fg-secondary" aria-label="Terminals" onClick={() => setOpen(true)}>
-        <SquareTerminal className="size-5" />
-      </Button>
+      {(live || (data?.length ?? 0) > 0) && (
+        <Button variant="ghost" className="size-9 rounded-lg text-fg-secondary" aria-label="Terminals" onClick={() => setOpen(true)}>
+          <SquareTerminal className="size-5" />
+        </Button>
+      )}
       <TerminalViewer session={session} open={open} onOpenChange={setOpen} />
     </>
   )

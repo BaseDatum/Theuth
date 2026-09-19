@@ -36,6 +36,7 @@ export function empty(id: string): SessionSlice {
     children: {},
     browser: false,
     browserLive: false,
+    terminal: false,
     artifacts: new Map(),
     progress: new Map(),
     scrape: new Map(),
@@ -507,12 +508,14 @@ export function apply(
       );
     case "TitleChanged":
       return slice.title === e.title ? slice : { ...slice, title: e.title };
-    case "JobStarted":
-      return patchTool(
+    case "JobStarted": {
+      const next = patchTool(
         slice,
         (t) => t.callId === e.call_id,
         (t) => ({ ...t, job: { id: e.id, command: e.command, lines: [] } }),
       );
+      return e.pty && !next.terminal ? { ...next, terminal: true } : next;
+    }
     case "JobOutput":
       return patchJob(slice, e.id, (j) => ({
         ...j,

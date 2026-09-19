@@ -79,11 +79,10 @@ export function CostPill({ session }: { session: string }) {
         type="button"
         className="rounded-full border border-border-subtle px-2.5 py-0.5 text-xs whitespace-nowrap text-fg-secondary tabular-nums"
         title={costLines(data.total).primary}
+        aria-label="Cost"
         onClick={() => setOpen(true)}
       >
-        <span className="hidden md:inline">Returned cost </span>
         {amount}
-        {data.total.unavailable > 0 && <span className="hidden md:inline"> · {data.total.unavailable} unavailable</span>}
       </button>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-w-md">
