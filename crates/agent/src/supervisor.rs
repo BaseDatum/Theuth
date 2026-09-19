@@ -84,6 +84,7 @@ use crate::{
 };
 use crate::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 use crate::{frame, repl, search, spill};
+use crate::{SetSessionProject, project};
 
 /// The supervisor actor. Look up with `ActorRef::<Agents>::lookup(AGENT_ACTOR)`.
 #[derive(kameo::Actor)]
@@ -453,8 +454,7 @@ impl Agents {
                     None => (self.default_model.as_str(), self.default_effort.clone()),
                 };
                 let model = self.resolve_model(model);
-                self.store
-                    .create_session(id, &model.0.id, parent.map(|p| p.0), parent.map(|p| p.1))
+                self.store.create_session(id, &model.0.id, parent.map(|p| p.0), parent.map(|p| p.1), None)
                     .await?;
                 if let Some(e) = &effort {
                     self.store.set_effort(id, Some(e)).await?;
@@ -573,8 +573,7 @@ impl Agents {
                 self.store.acp_session(id).await?,
             ),
             None => {
-                self.store
-                    .create_session(id, &name, parent.map(|p| p.0), parent.map(|p| p.1))
+                self.store.create_session(id, &name, parent.map(|p| p.0), parent.map(|p| p.1), None)
                     .await?;
                 self.store.set_acp(id, &name, cwd.as_deref()).await?;
                 (parent.map(|(p, n)| (p, n.to_string())), cwd, None)
@@ -3221,6 +3220,8 @@ impl Agents {
                 started_at: self.child_turns.get(&id).map(|ct| ct.started_at),
                 finished_at: self.last_stop.get(&id).map(|(_, at)| *at),
                 last: first_line(&last),
+                project: row.project.clone(),
+                retention: tools::Retention::Durable,
             });
         }
         out
@@ -3598,8 +3599,8 @@ impl Message<LoadSession> for Agents {
                 tracing::error!(session = %m.session, "hidden_turns: {e:#}");
                 0
             });
-        let (model, effort, agent, name, parent) = row
-            .map(|r| (r.model, r.effort, r.agent, r.name, r.parent))
+        let (model, effort, agent, name, parent, project) = row
+            .map(|r| (r.model, r.effort, r.agent, r.name, r.parent, r.project))
             .unwrap_or_default();
         let (context_revision, context_editable, context_reason, context_estimate, settled) =
             context;
@@ -3633,6 +3634,8 @@ impl Message<LoadSession> for Agents {
             settled,
             todos,
             communication,
+            project,
+            retention: tools::Retention::Durable,
         }
     }
 }
@@ -5102,6 +5105,32 @@ async fn load_topology(store: &Store, communication: &SharedPolicy) {
     }
 }
 
+impl Message<SetSessionProject> for Agents {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        m: SetSessionProject,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<(), String> {
+        let project = project::normalize_project(m.project.as_deref())?;
+        let root = self
+            .store
+            .set_project(m.session, project.as_deref())
+            .await
+            .map_err(|e| e.to_string())?;
+        // Committed above; the caller's next list must see it (RenameSession).
+        self.search.invalidate();
+        self.rt
+            .publish(AgentEvent::SessionMetadataChanged {
+                session: root,
+                project,
+            })
+            .await;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -6154,7 +6183,7 @@ pub(crate) mod tests {
         let store = a.store.clone();
         let agents = Agents::spawn(a);
         let id = SessionId::new();
-        store.create_session(id, "m", None, None).await.unwrap();
+        store.create_session(id, "m", None, None, None).await.unwrap();
         store.set_title(id, "deploy checklist").await.unwrap();
 
         let page = |q: &'static str| {

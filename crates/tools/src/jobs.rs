@@ -54,6 +54,9 @@ pub(crate) const SETTLE: Duration = Duration::from_secs(1);
 pub(crate) const KILL_WAIT: Duration = Duration::from_secs(2);
 /// Spacing of the signal-0 liveness poll on an owned process group.
 pub(crate) const GROUP_POLL: Duration = Duration::from_millis(50);
+/// Retained-terminal budget across every session (51 §7.4); each PTY is
+/// charged [`crate::pty::RESERVE`] at `start` until its handle is evicted.
+pub(crate) const PTY_BUDGET: usize = 64 << 20;
 
 /// `j{n}`, `n` per session starting at 1.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
@@ -113,6 +116,12 @@ pub enum JobEvent {
         call_id: String,
         /// Log file receiving stdout+stderr as they arrive.
         log: PathBuf,
+        /// `start`'s label (22 §2.1), PTY jobs only.
+        #[serde(default)]
+        name: Option<String>,
+        /// Runs on a pseudo-terminal (22).
+        #[serde(default)]
+        pty: bool,
     },
     /// Bytes since the previous `Output`.
     #[serde(rename = "JobOutput")]
@@ -165,6 +174,8 @@ pub enum JobEvent {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, kameo::Reply)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct JobView {
+    /// Owning session.
+    pub session: SessionId,
     /// Job.
     pub id: JobId,
     /// Command line.
@@ -370,7 +381,10 @@ pub(crate) struct Job {
     pub(crate) task: AbortHandle,
     /// `start`'s label (22 §2.1); PTY jobs only.
     pub(crate) name: Option<String>,
-    /// The pseudo-terminal, for PTY jobs (22 §4.8).
+    /// Ran on a pseudo-terminal (22); stays true once `pty` is evicted.
+    pub(crate) on_pty: bool,
+    /// The pseudo-terminal, for PTY jobs (22 §4.8); `None` for a pipe job or
+    /// once evicted under the budget (51 §7.4).
     pub(crate) pty: Option<Arc<crate::pty::PtyHandle>>,
 }
 
@@ -383,14 +397,19 @@ impl Job {
         }
     }
 
-    fn view(&self) -> JobView {
+    /// `running` | `exited 0` | `timeout` | `killed`.
+    pub(crate) fn state(&self) -> String {
+        self.exit
+            .as_ref()
+            .map_or_else(|| "running".to_owned(), ToString::to_string)
+    }
+
+    fn view(&self, session: SessionId) -> JobView {
         JobView {
+            session,
             id: self.id.clone(),
             command: self.command.clone(),
-            state: self
-                .exit
-                .as_ref()
-                .map_or_else(|| "running".to_owned(), ToString::to_string),
+            state: self.state(),
             secs: self.secs(),
             log: self.log_path.clone(),
             tail: match &self.pty {
@@ -398,7 +417,7 @@ impl Job {
                 None => lock(&self.log).tail_text(TAIL),
             },
             name: self.name.clone(),
-            pty: self.pty.is_some(),
+            pty: self.on_pty,
         }
     }
 }
@@ -410,17 +429,18 @@ pub(crate) struct SessionJobs {
 }
 
 impl SessionJobs {
-    /// Append a row, dropping the oldest finished ones past [`MAX_ROWS`].
-    pub(crate) fn push(&mut self, job: Job) {
+    /// Append a row, dropping the oldest finished ones past [`MAX_ROWS`];
+    /// returns how many retained terminals went with them.
+    pub(crate) fn push(&mut self, job: Job) -> usize {
         self.jobs.push(job);
+        let mut evicted = 0;
         while self.jobs.len() > MAX_ROWS {
             match self.jobs.iter().position(|j| j.exit.is_some()) {
-                Some(i) => {
-                    self.jobs.remove(i);
-                }
+                Some(i) => evicted += usize::from(self.jobs.remove(i).pty.is_some()),
                 None => break,
             }
         }
+        evicted
     }
 }
 
@@ -436,6 +456,11 @@ pub struct Jobs {
     /// Every unsettled job's guard (rows and quiet jobs alike), by operation:
     /// the actor's clone, dropped — carrying the owed result — on [`Finished`].
     pub(crate) live: HashMap<OperationId, Activity>,
+    /// Bytes charged against [`PTY_BUDGET`]: one [`crate::pty::RESERVE`]
+    /// per job whose `pty` is `Some`.
+    pub(crate) pty_bytes: usize,
+    /// Snapshot renders admitted at once (51 §7.4).
+    pub(crate) snapshots: Arc<tokio::sync::Semaphore>,
 }
 
 impl Jobs {
@@ -449,6 +474,8 @@ impl Jobs {
             sessions: HashMap::new(),
             activity: None,
             live: HashMap::new(),
+            pty_bytes: 0,
+            snapshots: Arc::new(tokio::sync::Semaphore::new(crate::pty::SNAPSHOTS)),
         }
     }
 
@@ -469,6 +496,33 @@ impl Jobs {
             activity.adopt(sink);
         }
         self.live.insert(activity.id(), activity.clone());
+    }
+
+    /// Add a row, releasing the terminal charge of whatever it evicts.
+    pub(crate) fn push(&mut self, session: SessionId, job: Job) {
+        let evicted = self.sessions.entry(session).or_default().push(job);
+        self.pty_bytes -= evicted * crate::pty::RESERVE;
+    }
+
+    /// Drop exited jobs' terminals, oldest first across every session, until
+    /// `need` more bytes fit under [`PTY_BUDGET`] or none are left (51 §7.4).
+    /// Live scrollback is never trimmed: vt100 exposes no way to.
+    pub(crate) fn make_room(&mut self, need: usize) {
+        while self.pty_bytes + need > PTY_BUDGET {
+            let oldest = self
+                .sessions
+                .values_mut()
+                .flat_map(|s| s.jobs.iter_mut())
+                .filter(|j| j.exit.is_some() && j.pty.is_some())
+                .min_by_key(|j| j.started);
+            match oldest {
+                Some(j) => {
+                    j.pty = None;
+                    self.pty_bytes -= crate::pty::RESERVE;
+                }
+                None => break,
+            }
+        }
     }
 }
 
@@ -628,21 +682,25 @@ impl Message<Launch<Start>> for Jobs {
         }))
         .abort_handle();
         if !quiet {
-            self.sessions.entry(m.session).or_default().push(Job {
-                id,
-                op,
-                command: shown,
-                started,
-                exit: None,
-                secs: 0,
-                log_path: log_path.clone(),
-                log: log.clone(),
-                pgids,
-                cancel,
-                task,
-                name: None,
-                pty: None,
-            });
+            self.push(
+                m.session,
+                Job {
+                    id,
+                    op,
+                    command: shown,
+                    started,
+                    exit: None,
+                    secs: 0,
+                    log_path: log_path.clone(),
+                    log: log.clone(),
+                    pgids,
+                    cancel,
+                    task,
+                    name: None,
+                    on_pty: false,
+                    pty: None,
+                },
+            );
         }
         Ok(Running {
             done,
@@ -659,7 +717,7 @@ impl Message<ListJobs> for Jobs {
     async fn handle(&mut self, m: ListJobs, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.sessions
             .get(&m.0)
-            .map(|s| s.jobs.iter().map(Job::view).collect::<Vec<_>>())
+            .map(|s| s.jobs.iter().map(|j| j.view(m.0)).collect::<Vec<_>>())
             .unwrap_or_default()
     }
 }
@@ -706,7 +764,7 @@ impl Message<KillAll> for Jobs {
     type Reply = ();
 
     async fn handle(&mut self, _: KillAll, _: &mut Context<Self, Self::Reply>) {
-        for job in self.sessions.values().flat_map(|s| &s.jobs) {
+        for job in self.sessions.values_mut().flat_map(|s| &mut s.jobs) {
             if job.exit.is_none() {
                 kill(&job.pgids);
                 // Aborting the task skips its settlement, and an escapee may
@@ -716,7 +774,10 @@ impl Message<KillAll> for Jobs {
                 }
                 job.task.abort();
             }
+            // Nothing observes a terminal past shutdown: release every charge.
+            job.pty = None;
         }
+        self.pty_bytes = 0;
     }
 }
 
@@ -974,6 +1035,8 @@ async fn run(mut j: Run) {
             command: j.shown.clone(),
             call_id: j.call_id,
             log: j.log_path,
+            name: None,
+            pty: false,
         })
         .await;
     }
@@ -1726,6 +1789,7 @@ pub(crate) mod tests {
             session: fx.session,
             call_id: String::new(),
             quiet: false,
+            resources: crate::SessionResources::durable_arc(&std::env::temp_dir()),
         };
         let cd = Tool::call(
             &tool,

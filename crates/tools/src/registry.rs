@@ -22,6 +22,7 @@ use crate::approval::{Approval, Decision, RequestApproval};
 use crate::ask::{AskUser, AskUserTool};
 use crate::communication::{self, Admitted, CommunicationAccess};
 use crate::jobs::{InstallActivity, JOBS_ACTOR, Jobs, lock};
+use crate::resources::SessionResources;
 use crate::{
     APPROVAL_ACTOR, ASK_ACTOR, DynTool, Policy, PolicyAction, REGISTRY_ACTOR, Risk, ToolCall,
     ToolCx, ToolOutput, ToolSource, ToolSpec, ToolsConfig, fs, jobs, pty, schema, shell,
@@ -55,6 +56,12 @@ pub struct ToolRegistry {
     parents: HashMap<SessionId, SessionId>,
     /// `<data_dir>/config.yaml`, for the persistent switch.
     config_path: PathBuf,
+    /// Per-root file capability from [`InstallResources`] (51 §4.5); a
+    /// session without one resolves through `parents`, then to `durable`.
+    resources: HashMap<SessionId, Arc<SessionResources>>,
+    /// [`SessionResources::durable`] of the data dir: what every session gets
+    /// unless a private root was installed.
+    durable: Arc<SessionResources>,
     /// Looked up at first `Ask`, never at start (no start-order coupling).
     approval: Option<ActorRef<Approval>>,
     /// The activity supervisor (47 §4), from [`RegisterActivity`]. `None`
@@ -358,6 +365,36 @@ impl Message<SetParent> for ToolRegistry {
     }
 }
 
+/// `tell`: `session`'s owners write under `resources` from now on (51 §4.5).
+/// The supervisor installs one per private root before its first turn;
+/// subagents inherit through [`SetParent`].
+#[derive(Clone, Debug)]
+pub struct InstallResources {
+    pub session: SessionId,
+    pub resources: Arc<SessionResources>,
+}
+
+impl Message<InstallResources> for ToolRegistry {
+    type Reply = ();
+
+    async fn handle(&mut self, m: InstallResources, _: &mut Context<Self, Self::Reply>) {
+        self.resources.insert(m.session, m.resources);
+    }
+}
+
+/// `tell`: forget the root's [`InstallResources`] on close; later calls for
+/// the id fall back to durable (and should not happen).
+#[derive(Clone, Copy, Debug)]
+pub struct RemoveResources(pub SessionId);
+
+impl Message<RemoveResources> for ToolRegistry {
+    type Reply = ();
+
+    async fn handle(&mut self, m: RemoveResources, _: &mut Context<Self, Self::Reply>) {
+        self.resources.remove(&m.0);
+    }
+}
+
 /// Whether prompts are on, globally and for the session asked about.
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,
@@ -443,6 +480,19 @@ impl ToolRegistry {
             match self.parents.get(&id) {
                 Some(p) => id = *p,
                 None => return false,
+            }
+        }
+    }
+
+    /// The session's [`InstallResources`], else the nearest ancestor's, else durable.
+    fn resources_for(&self, mut id: SessionId) -> Arc<SessionResources> {
+        loop {
+            if let Some(r) = self.resources.get(&id) {
+                return r.clone();
+            }
+            match self.parents.get(&id) {
+                Some(p) => id = *p,
+                None => return self.durable.clone(),
             }
         }
     }
@@ -616,6 +666,7 @@ impl ToolRegistry {
         // not retire the entry; only this task finishing does (47 §4.2 rule 2).
         let sink = self.activity.clone();
         let gate = self.gate.clone();
+        let resources = self.resources_for(call.session);
         let kind = Kind::Invoke {
             tool: call.name.clone(),
             call_id: call.id.clone(),
@@ -649,7 +700,9 @@ impl ToolRegistry {
                 .and_then(|g| g.begin(call.session, &call.name, &call.args));
             let out = activity
                 .clone()
-                .scope(invoke(tool, spec, call, approval, admitted, activity, gate))
+                .scope(invoke(
+                    tool, spec, call, approval, admitted, activity, gate, resources,
+                ))
                 .await;
             drop(running);
             done(out);
@@ -1016,6 +1069,7 @@ async fn invoke(
     admitted: Option<Admitted>,
     activity: Activity,
     gate: Option<Arc<dyn ExecutionGate>>,
+    resources: Arc<SessionResources>,
 ) -> ToolOutput {
     let session = call.session;
     let suspend = || gate.as_ref().and_then(|g| g.suspend(session));
@@ -1061,6 +1115,7 @@ async fn invoke(
         session: call.session,
         call_id: call.id,
         quiet: call.quiet,
+        resources,
     };
     // A tool whose whole body is a human wait executes nothing bounded; the
     // suspension ends with the body (the next call in the batch, or the
@@ -1153,6 +1208,8 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
             hidden: HashMap::new(),
             parents: HashMap::new(),
             config_path: rt.data_dir.join("config.yaml"),
+            resources: HashMap::new(),
+            durable: SessionResources::durable_arc(&rt.data_dir),
             approval: None,
             activity: None,
             untracked: Arc::default(),
@@ -1209,6 +1266,8 @@ mod tests {
             hidden: HashMap::new(),
             parents: HashMap::new(),
             config_path: PathBuf::new(),
+            resources: HashMap::new(),
+            durable: SessionResources::durable_arc(std::path::Path::new("/tmp")),
             approval: None,
             activity,
             untracked: Arc::default(),

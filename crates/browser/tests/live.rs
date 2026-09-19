@@ -149,6 +149,7 @@ impl Kit {
             session: self.session,
             call_id: "c1".to_owned(),
             quiet: false,
+            resources: tools::SessionResources::durable_arc(&std::env::temp_dir()),
         };
         tool.call(args, cx).await.expect(name)
     }

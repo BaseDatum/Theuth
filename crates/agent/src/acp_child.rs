@@ -1220,7 +1220,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let store = Store::open(&dir.join("sessions.sqlite")).await.unwrap();
         let id = SessionId::new();
-        store.create_session(id, "m", None, None).await.unwrap();
+        store.create_session(id, "m", None, None, None).await.unwrap();
         let entry = |c: &str, s| PlanEntry::new(c, PlanEntryPriority::Medium, s);
 
         let plan = Plan::new(vec![

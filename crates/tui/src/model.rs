@@ -4225,6 +4225,8 @@ impl Model {
                             started_at: Some(chrono::Utc::now()),
                             finished_at: None,
                             last: String::new(),
+                            project: None,
+                            retention: agent::Retention::Durable,
                         }),
                     );
                 }
@@ -4513,6 +4515,7 @@ impl Model {
                 self.interject(Entry::Info(format!("knowledge +{added} ~{updated}")))
             }
             AgentEvent::SkillsChanged { skills, .. } => self.loaded_skills = skills,
+            AgentEvent::SessionMetadataChanged { .. } | AgentEvent::ModelUsageChanged { .. } => {}
         }
     }
 
@@ -9265,6 +9268,8 @@ mod tests {
             started_at: None,
             finished_at: finished.map(|s| chrono::Utc::now() - chrono::Duration::seconds(s)),
             last: String::new(),
+            project: None,
+            retention: agent::Retention::Durable,
         };
         let list = vec![
             info("old", AgentState::Idle, Some(600)),
@@ -10238,6 +10243,8 @@ mod tests {
             command: "python3 -q".into(),
             call_id: "c1".into(),
             log: "/tmp/j.log".into(),
+            name: None,
+            pty: false,
         }));
         let screen = |rows: &[&str]| {
             UiEvent::Job(JobEvent::Screen {
@@ -10427,6 +10434,8 @@ mod tests {
             command: "sleep 9".into(),
             call_id: String::new(),
             log: "/tmp/j.log".into(),
+            name: None,
+            pty: false,
         };
         m.apply(UiEvent::Job(started(s, "j1")));
         m.apply(UiEvent::Job(started(s, "j2")));
@@ -10486,6 +10495,8 @@ mod tests {
                 command: "make".into(),
                 call_id: call.into(),
                 log: "/tmp/j.log".into(),
+                name: None,
+                pty: false,
             })
         };
         m.apply(started("j1", "c1"));

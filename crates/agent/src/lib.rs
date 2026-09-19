@@ -32,6 +32,7 @@ pub mod continuation;
 pub mod frame;
 pub mod loop_;
 pub mod peers;
+pub mod project;
 pub mod providers;
 pub mod repl;
 pub mod search;
@@ -43,6 +44,9 @@ pub mod supervisor;
 pub mod title;
 pub mod todo;
 pub mod user;
+pub mod private;
+pub mod lifecycle;
+pub mod cost;
 
 pub use aws::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 pub use communication::{
@@ -60,6 +64,15 @@ pub use supervisor::{Agents, RegisterNode, UnregisterNode};
 pub use user::{
     Deliver, MessageUserTool, Outbound, OutboundFile, RegisterUserSink, USER_ACTOR, UserChannels,
     UserSink,
+};
+pub use lifecycle::{
+    CleanupStatus, CloseAck, CloseParticipants, CloseResult, CloseTree, CreateSessionOptions,
+    PrivateOwner, RegisterCloseParticipant, SessionOpen,
+};
+pub use tools::Retention;
+pub use cost::{
+    CallId, CallKind, CallStatus, ChildCost, CostBucket, CostObservation, CostScope, Coverage,
+    MeterUpdate, Money, Provenance, SessionCost, TokenTotals,
 };
 
 /// Registry name of the [`Agents`] supervisor actor.
@@ -386,6 +399,12 @@ pub struct GetTodos {
     pub session: SessionId,
 }
 
+/// `ask` → `Result<Option<SessionCost>, String>`: the owner summary of
+/// `session` from the accounting ledger (design doc 51 §6.5); `None` when the
+/// session is not an accounting owner.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct SessionCostQuery(pub SessionId);
+
 /// Reply to [`LoadSession`].
 #[derive(Clone, Debug, Default, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -439,6 +458,12 @@ pub struct Loaded {
     /// the session is unknown to the policy (no row).
     #[serde(default)]
     pub communication: Option<CommunicationState>,
+    /// Effective project label (51 §3): the root's value, also on children.
+    #[serde(default)]
+    pub project: Option<String>,
+    /// Storage class of the root (51 §4); durable unless created private.
+    #[serde(default)]
+    pub retention: tools::Retention,
 }
 
 /// `ask` → `Vec<AgentInfo>`: the subtree under `session` (children,
@@ -495,6 +520,12 @@ pub struct AgentInfo {
     pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
     /// First line of the last assistant text, ≤ 80 chars; `""` when none.
     pub last: String,
+    /// Effective project label (51 §3): the root's value.
+    #[serde(default)]
+    pub project: Option<String>,
+    /// Storage class of the root (51 §4).
+    #[serde(default)]
+    pub retention: tools::Retention,
 }
 
 /// Live state of one subagent (design doc 19 §2.1).
@@ -774,6 +805,18 @@ pub struct NewRootSession {
     pub scope: PeerScope,
 }
 
+/// `ask` → `Result<(), String>`: set or clear (`None`) the project label of
+/// the root above `session` (design doc 51 §3). Normalized here: no control
+/// characters, trimmed, 1–128 bytes. Publishes `SessionMetadataChanged`
+/// for the root after the commit.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetSessionProject {
+    /// Any session of the tree; the root is resolved.
+    pub session: SessionId,
+    /// New label, or `None` to clear.
+    pub project: Option<String>,
+}
+
 /// `ask` → `Vec<acp::EntryInfo>`: configured external harnesses
 /// (`<data_dir>/acp/agents.yaml`); `probe` runs `initialize` against each.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
@@ -857,6 +900,13 @@ pub struct SessionSummary {
     /// Kept at the top of the list.
     #[serde(default)]
     pub pinned: bool,
+    /// Effective project label (51 §3): stored on the root, shown on every
+    /// row of its tree.
+    #[serde(default)]
+    pub project: Option<String>,
+    /// Storage class of the root (51 §4); durable unless created private.
+    #[serde(default)]
+    pub retention: tools::Retention,
 }
 
 /// Rendered history for UIs (tool traffic collapsed to summaries). Every
@@ -1248,6 +1298,23 @@ pub enum AgentEvent {
         /// The whole list with its projection version.
         snapshot: todo::TodoSnapshot,
     },
+    /// The root's metadata changed (51 §3): `project` is the new effective
+    /// value for the whole tree. Published after the commit.
+    SessionMetadataChanged {
+        /// Root session.
+        session: SessionId,
+        /// New project label; `None` = ungrouped.
+        project: Option<String>,
+    },
+    /// The accounting ledger of `session` changed (design doc 51 §6.4);
+    /// re-read `session_cost` when `revision` is newer than what is shown.
+    ModelUsageChanged {
+        /// Owner whose revision moved (the mutated owner or a live ancestor).
+        session: SessionId,
+        /// New opaque revision.
+        #[cfg_attr(feature = "ts", ts(type = "number"))]
+        revision: u64,
+    },
 }
 
 impl AgentEvent {
@@ -1277,7 +1344,9 @@ impl AgentEvent {
             | Self::SessionDeleted { session }
             | Self::ContextChanged { session, .. }
             | Self::TodoChanged { session, .. }
-            | Self::Error { session, .. } => Some(*session),
+            | Self::SessionMetadataChanged { session, .. }
+            | Self::Error { session, .. }
+            | Self::ModelUsageChanged { session, .. } => Some(*session),
             Self::SubagentSpawned { child, .. } => Some(*child),
         }
     }

@@ -1177,6 +1177,7 @@ mod tests {
                         session,
                         call_id: "1".into(),
                         quiet: false,
+                        resources: tools::SessionResources::durable_arc(&std::env::temp_dir()),
                     },
                 )
                 .await

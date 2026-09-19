@@ -4111,7 +4111,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let store = Store::open(&dir.join("sessions.sqlite")).await.unwrap();
         let id = SessionId::new();
-        store.create_session(id, "m", None, None).await.unwrap();
+        store.create_session(id, "m", None, None, None).await.unwrap();
         for m in [
             ChatMessage::user("u1"),
             ChatMessage::assistant("a1"),
@@ -4618,8 +4618,8 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let store = Store::open(&dir.join("sessions.sqlite")).await.unwrap();
         let (mut policy, sender, id, generation) = route();
-        store.create_session(id, "m", None, None).await.unwrap();
-        store.create_session(sender, "m", None, None).await.unwrap();
+        store.create_session(id, "m", None, None, None).await.unwrap();
+        store.create_session(sender, "m", None, None, None).await.unwrap();
         let (from, to) = (format!("session:{sender}"), format!("session:{id}"));
         let req = AcceptExchange {
             sender: &from,

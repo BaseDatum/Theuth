@@ -399,6 +399,7 @@ mod tests {
             session: SessionId::new(),
             call_id: "1".into(),
             quiet: false,
+            resources: crate::SessionResources::durable_arc(&std::env::temp_dir()),
         };
         Tool::call(&AskUserTool(actor), args, cx).await.unwrap()
     }
@@ -431,6 +432,7 @@ mod tests {
                 session: SessionId::new(),
                 call_id: "1".into(),
                 quiet: false,
+                resources: crate::SessionResources::durable_arc(&std::env::temp_dir()),
             },
         )
         .await

@@ -378,6 +378,14 @@ impl ::tools::secrets::Secrets for Vault {
     fn redact_value(&self, v: &mut serde_json::Value) {
         Vault::redact_value(self, v);
     }
+
+    fn redact_spans(&self, text: &str) -> Vec<std::ops::Range<usize>> {
+        Vault::redact_spans(self, text)
+    }
+
+    fn max_literal_len(&self) -> usize {
+        Vault::max_literal_len(self)
+    }
 }
 
 /// The plugin (37 §3.3): reads `secrets`, opens the vault (importing

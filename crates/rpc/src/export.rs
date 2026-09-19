@@ -116,6 +116,14 @@ async fn export_bindings() {
         tools::JobView,
         tools::JobId,
         tools::JobExit,
+        tools::TerminalSummary,
+        tools::PtyViewport,
+        tools::PtyScreenReply,
+        tools::PtyPage,
+        tools::StyledRun,
+        tools::Style,
+        tools::Color,
+        tools::Cell,
         tools::git::SyncResult,
         runtime::SessionId,
         runtime::TurnId,
@@ -163,7 +171,12 @@ async fn export_bindings() {
         voice::Transcript,
         surface::Spec,
         surface::Element,
-        surface::Component
+        surface::Component,
+        agent::CreateSessionOptions,
+        agent::SessionOpen,
+        agent::CloseResult,
+        agent::CleanupStatus,
+        tools::Retention
     );
 
     use crate::ApiServer;

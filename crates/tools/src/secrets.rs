@@ -12,6 +12,7 @@
 //! is the shape.
 
 use std::borrow::Cow;
+use std::ops::Range;
 use std::sync::{Arc, OnceLock};
 
 use crate::ToolOutput;
@@ -28,6 +29,15 @@ pub trait Secrets: Send + Sync {
     fn redact<'a>(&self, text: &'a str) -> Cow<'a, str>;
     /// [`Secrets::redact`] over every string in a JSON value.
     fn redact_value(&self, v: &mut serde_json::Value);
+    /// Byte ranges [`Secrets::redact`] would replace, ascending and
+    /// non-overlapping. Nothing by default (51 §7.2).
+    fn redact_spans(&self, _text: &str) -> Vec<Range<usize>> {
+        Vec::new()
+    }
+    /// Longest literal [`Secrets::redact_spans`] can match, in bytes; `0` = none.
+    fn max_literal_len(&self) -> usize {
+        0
+    }
 }
 
 static INSTALLED: OnceLock<Arc<dyn Secrets>> = OnceLock::new();
@@ -61,6 +71,16 @@ pub fn redact(text: &str) -> Cow<'_, str> {
     INSTALLED
         .get()
         .map_or(Cow::Borrowed(text), |s| s.redact(text))
+}
+
+/// Byte ranges [`redact`] would replace; empty when nothing is installed.
+pub fn redact_spans(text: &str) -> Vec<Range<usize>> {
+    INSTALLED.get().map_or_else(Vec::new, |s| s.redact_spans(text))
+}
+
+/// Longest literal [`redact_spans`] can match; `0` when nothing is installed.
+pub fn max_literal_len() -> usize {
+    INSTALLED.get().map_or(0, |s| s.max_literal_len())
 }
 
 /// [`redact`] over `content` and every string in `structured`.

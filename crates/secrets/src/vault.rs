@@ -128,6 +128,8 @@ struct PlainRef<'a> {
 struct Scrubber {
     ac: AhoCorasick,
     placeholders: Vec<String>,
+    /// Longest pattern, in bytes.
+    max_len: usize,
 }
 
 struct Inner {
@@ -326,6 +328,19 @@ impl Vault {
             }
             Ok(())
         });
+    }
+
+    /// Byte ranges [`Vault::redact`] would replace, ascending and
+    /// non-overlapping (51 §7.2).
+    pub fn redact_spans(&self, text: &str) -> Vec<std::ops::Range<usize>> {
+        self.synced().scrubber.as_ref().map_or_else(Vec::new, |sc| {
+            sc.ac.find_iter(text).map(|m| m.start()..m.end()).collect()
+        })
+    }
+
+    /// Longest value [`Vault::redact_spans`] can match, in bytes; `0` = none.
+    pub fn max_literal_len(&self) -> usize {
+        self.synced().scrubber.as_ref().map_or(0, |sc| sc.max_len)
     }
 
     /// Read view, reloaded first if the file's mtime moved.
@@ -554,11 +569,16 @@ fn scrubber(entries: &BTreeMap<String, Entry>) -> Option<Scrubber> {
     if patterns.is_empty() {
         return None;
     }
+    let max_len = patterns.iter().map(|p| p.len()).max().unwrap_or(0);
     let ac = AhoCorasickBuilder::new()
         .match_kind(MatchKind::LeftmostLongest)
         .build(&patterns);
     match ac {
-        Ok(ac) => Some(Scrubber { ac, placeholders }),
+        Ok(ac) => Some(Scrubber {
+            ac,
+            placeholders,
+            max_len,
+        }),
         Err(e) => {
             tracing::warn!("secrets: building the redaction automaton failed: {e}");
             None

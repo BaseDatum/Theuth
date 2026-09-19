@@ -31,6 +31,7 @@ fn cx() -> ToolCx {
         session: SessionId::new(),
         call_id: "c".into(),
         quiet: false,
+        resources: tools::SessionResources::durable_arc(&std::env::temp_dir()),
     }
 }
 

@@ -406,6 +406,27 @@ append; `list_sessions` orders by it),
 `excluded` and `sessions.context_revision`: 48 §4.1).
 `sqlx::migrate!`.
 
+**PROPOSED — session lifecycle, project metadata, model cost, and terminal
+observation (51; design only, not built · 2026-09-18):**
+[`51-session-lifecycle-costs-and-terminals.md`](51-session-lifecycle-costs-and-terminals.md)
+specifies private root trees that never enter the durable store, one exact
+nullable project label, native per-call and remote cumulative cost provenance
+with recursive child rollups, and authoritative styled read-only windows for
+agent-created PTYs. It keeps policy
+and storage with their current owners and uses the same `rpc::Api` in every
+frontend; it does not add a project/workspace service, billing service,
+terminal broker, generic resource registry, or delete-after-persist privacy
+path. The inspected 2026-09-18 tree does not implement these guarantees.
+
+**PROPOSED — vision fallback (52; design only, not built · 2026-09-19):**
+[`52-vision-fallback.md`](52-vision-fallback.md) adds a title-style fallback
+model setting in the TUI and shared desktop/mobile settings. Native sessions
+consult the models catalog and backend: image-capable main models bypass
+the layer; otherwise the main model writes a question, a tool-free vision
+model interprets the image, and an attributed observation is appended to
+context. Original images remain intact. This is agent-owned model adaptation,
+not a plugin or peer; the proposal also closes Python/MCP image-transport gaps.
+
 **Skills** (phase 2): markdown files with front matter (`gray_matter`) under
 `<data_dir>/skills`; the agent lists names+descriptions in the system prompt
 and loads a body on `ask(LoadSkill)` from the model via a builtin tool. The
