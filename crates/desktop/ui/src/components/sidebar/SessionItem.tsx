@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { Check, MoreHorizontal } from 'lucide-react'
+import { Archive, Brain, Check, Eye, LoaderCircle, type LucideIcon, MoreHorizontal, PencilLine, Shrink, Wrench } from 'lucide-react'
 import { memo, useState } from 'react'
 import { toast } from 'sonner'
 import {
@@ -31,7 +31,32 @@ import { touch } from '@/lib/hotkeys'
 import { useApi, queryKeys } from '@/lib/rpc'
 import type { SelectMode } from '@/lib/selection'
 import { cn } from '@/lib/utils'
-import { useSessionField } from '@/store/sessions'
+import { type Activity, useSessionField } from '@/store/sessions'
+
+/** One glyph per non-idle `Activity`: what the session is doing right now, readable at a glance in the list. */
+const ACTIVITY: Record<Exclude<Activity, 'idle'>, [LucideIcon, string]> = {
+  thinking: [LoaderCircle, 'Thinking'],
+  reasoning: [Brain, 'Reasoning'],
+  streaming: [PencilLine, 'Replying'],
+  tool: [Wrench, 'Running a tool'],
+  compacting: [Shrink, 'Compacting context'],
+  harvesting: [Archive, 'Harvesting'],
+  vision: [Eye, 'Inspecting images'],
+}
+
+/** Live activity glyph for a session row; nothing while idle. */
+function SessionActivity({ id }: { id: string }) {
+  const activity = useSessionField(id, 'activity') ?? 'idle'
+  if (activity === 'idle') return null
+  const [Icon, label] = ACTIVITY[activity]
+  return (
+    <Icon
+      className={cn('size-3.5 shrink-0 text-info', activity === 'thinking' ? 'animate-spin' : 'animate-pulse')}
+      aria-label={label}
+      role="img"
+    />
+  )
+}
 
 /** Submenu body: the other known projects, then a new one (typed inline). Mounted only while the submenu is open. */
 function ProjectItems({ current, onPick, onNew }: { current: string | null; onPick(p: string): void; onNew(): void }) {
@@ -171,6 +196,7 @@ export const SessionItem = memo(function SessionItem({
                   {selected && <Check className="size-3 stroke-[3]" />}
                 </span>
               )}
+              <SessionActivity id={id} />
               <span className="truncate">{shown}</span>
               {project && (
                 <span className="ml-auto shrink-0 rounded-full border border-border-subtle px-1.5 text-[10px] leading-4 text-fg-tertiary">
