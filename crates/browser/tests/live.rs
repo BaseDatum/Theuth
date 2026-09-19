@@ -136,6 +136,7 @@ fn urldecode(s: &str) -> String {
 struct Kit {
     tools: Vec<DynTool>,
     session: SessionId,
+    data_dir: std::path::PathBuf,
 }
 
 impl Kit {
@@ -149,6 +150,7 @@ impl Kit {
             session: self.session,
             call_id: "c1".to_owned(),
             quiet: false,
+            resources: tools::SessionResources::durable_arc(&self.data_dir),
         };
         tool.call(args, cx).await.expect(name)
     }
@@ -183,6 +185,7 @@ async fn drives_fixture_page() {
     let kit = Kit {
         tools: browser::tools::all(actor.clone(), cfg, rt.clone()),
         session: SessionId::new(),
+        data_dir: data_dir.clone(),
     };
 
     // A viewer polling an unknown session gets nothing and spawns nothing.

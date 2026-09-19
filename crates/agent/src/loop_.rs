@@ -27,6 +27,7 @@
 //! [`TurnId`] through [`PeerTurnFinished`].
 
 use std::collections::{BTreeSet, HashMap};
+use std::convert::Infallible;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -39,9 +40,11 @@ use futures::future::join_all;
 use genai::Client;
 use genai::chat::{
     Binary, ChatMessage, ChatRole, ChatStreamEvent, ContentPart, MessageContent, ReasoningEffort,
-    StreamEnd, Tool, ToolCall, ToolResponse,
+    StreamEnd, Tool, ToolCall, ToolResponse, UsageCostSource,
 };
-use kameo::actor::ActorRef;
+use kameo::Actor;
+use kameo::actor::{ActorRef, WeakActorRef};
+use kameo::error::ActorStopReason;
 use kameo::message::{Context, Message};
 use knowledge::{HarvestResult, KNOWLEDGE_ACTOR, Knowledge, KnowledgeActor, Put, Source};
 use models::Resolved;
@@ -49,8 +52,12 @@ use monty_pool::Pool;
 use runtime::{InputId, Runtime, SessionId, TurnId};
 use sha2::Digest as _;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use tools::{Invoke, ListPrompts, ListTools, REGISTRY_ACTOR, ToolOutput, ToolRegistry, ToolSpec};
+use tools::{
+    Invoke, ListPrompts, ListTools, REGISTRY_ACTOR, SessionResources, ToolOutput, ToolRegistry,
+    ToolSpec,
+};
 use uuid::Uuid;
 
 use crate::backend::{Backend, natural_stop};
@@ -58,6 +65,7 @@ use crate::communication::{
     Generation, PeerConsumed, PeerIntakeFailed, PeerRecord, PeerTurnFinished,
 };
 use crate::context::{ContextHistory, ContextRemoval, ContextSnapshot, ContextTarget};
+use crate::cost::{CallId, CallKind, CallStatus, CostObservation, Money};
 use crate::continuation::{
     self, DecideYield, InputConsumed, InputDropped, InputTicket, TurnEntered, TurnReturned,
     YieldDecision,
@@ -373,6 +381,10 @@ pub struct SessionState {
     pub files_written: BTreeSet<String>,
     /// Upper bound on the window learnt from an overflow when the catalog has none (36 §6.6); 0 = unknown.
     pub window_hint: u32,
+    /// The detached title call of the last turn (07 §15, 51 §6.1): aborted
+    /// when a new one starts and when the session stops, never left to
+    /// outlive the lifecycle.
+    pub title_task: Option<JoinHandle<()>>,
 }
 
 impl SessionState {
@@ -401,6 +413,7 @@ impl SessionState {
             surface_corrected: false,
             files_written: BTreeSet::new(),
             window_hint: 0,
+            title_task: None,
         }
     }
 
@@ -436,7 +449,6 @@ impl SessionState {
 }
 
 /// One conversation. Spawn with `Session::spawn(session)`.
-#[derive(kameo::Actor)]
 pub struct Session {
     /// Everything a turn task needs, cloned per turn.
     shared: Shared,
@@ -455,6 +467,26 @@ pub struct Session {
     scope: TurnScope,
     /// This session's slot is published to [`PermitGate`] (50 §8).
     gated: bool,
+}
+
+impl Actor for Session {
+    type Args = Self;
+    type Error = Infallible;
+
+    async fn on_start(session: Self, _: ActorRef<Self>) -> Result<Self, Infallible> {
+        Ok(session)
+    }
+
+    /// 51 §6.1: nothing of this session outlives its actor — the detached
+    /// title call is fenced by `closed` and, when the state is home, joined.
+    async fn on_stop(&mut self, _: WeakActorRef<Self>, _: ActorStopReason) -> Result<(), Infallible> {
+        self.shared.closed.cancel();
+        if let Some(task) = self.state.as_mut().and_then(|s| s.title_task.take()) {
+            task.abort();
+            let _ = task.await;
+        }
+        Ok(())
+    }
 }
 #[derive(Clone)]
 struct Shared {
@@ -483,8 +515,12 @@ struct Shared {
     /// Knowledge store, looked up per turn in [`Turn::rebase`]; `None` when the
     /// plugin is disabled or not started (12 §9.2).
     knowledge: Option<Arc<Knowledge>>,
-    /// `<data_dir>/spill` (07 §6).
+    /// `<resources.root>/spill` (07 §6, 51 §4.5).
     spill_dir: PathBuf,
+    /// Where this tree's files go and which lifecycle generation admitted it (51 §4.5).
+    resources: Arc<SessionResources>,
+    /// Cancelled when the actor stops (51 §4.4): what a detached task fences on.
+    closed: CancellationToken,
     /// The supervisor's child-work semaphore (50 §8): a peer-opened turn holds
     /// one permit while it executes, none while it only waits on peers.
     permits: Arc<Semaphore>,
@@ -525,7 +561,8 @@ impl Session {
     /// Build a session around `state` (`SessionState::resume(0, None, vec![])`
     /// for a new one). `depth` ≥ `subagents.max_depth` hides `spawn_subagent`.
     /// `model` is the resolved id and, when resolution failed, the message to surface.
-    /// `effort` is the reasoning effort the first turn runs with.
+    /// `effort` is the reasoning effort the first turn runs with. `resources`
+    /// is the tree's file root and retention (51 §4.5).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         id: SessionId,
@@ -544,6 +581,7 @@ impl Session {
         catalog: Arc<models::Catalog>,
         pool: Option<Arc<Pool>>,
         permits: Arc<Semaphore>,
+        resources: Arc<SessionResources>,
     ) -> Self {
         // A head removed from context (48 §4.1) leaves `epoch > 0` with no head.
         let titled = !state.history.is_empty() || state.head.is_some() || state.epoch > 0;
@@ -562,7 +600,9 @@ impl Session {
                 store,
                 client,
                 auth,
-                spill_dir: rt.data_dir.join("spill"),
+                spill_dir: resources.dir("spill"),
+                resources,
+                closed: rt.shutdown.child_token(),
                 rt,
                 steer: Arc::default(),
                 permit: Arc::default(),
@@ -1760,6 +1800,143 @@ pub(crate) fn ns(genai: &str) -> &str {
     genai.split_once("::").map_or("", |(n, _)| n)
 }
 
+/// The provider a model call is billed under: the catalog provider, else the
+/// genai adapter namespace.
+fn provider_of(model: &Resolved) -> Option<&str> {
+    model
+        .provider
+        .as_deref()
+        .or_else(|| Some(ns(&model.genai)).filter(|n| !n.is_empty()))
+}
+
+/// One reserved attempt (51 §6.1): `reserve_call` then `mark_dispatched`,
+/// both committed before transport runs. Settled exactly once — by
+/// [`Reserved::settle`] with the observed outcome or, when the future holding
+/// it is dropped mid-flight (a summariser timeout, an aborted title task), as
+/// `cancelled` with unknown coverage from `Drop`, so no attempt stays
+/// `dispatched` until the next startup's `unresolve_open_calls`.
+struct Reserved {
+    call: Option<CallId>,
+    store: Store,
+    rt: Runtime,
+}
+
+impl Reserved {
+    /// `Err` is conclusively local: nothing was sent, the row (if any) is
+    /// `not_dispatched`, and the caller must not retry — the store that
+    /// refused once refuses the same request again.
+    #[expect(clippy::too_many_arguments, reason = "one row, one call")]
+    async fn open(
+        store: &Store,
+        rt: &Runtime,
+        owner: SessionId,
+        request_id: &str,
+        attempt: u32,
+        turn: Option<TurnId>,
+        kind: CallKind,
+        model: &Resolved,
+    ) -> Result<Self, String> {
+        let call = store
+            .reserve_call(owner, request_id, attempt, turn, kind, provider_of(model), Some(&model.id))
+            .await
+            .map_err(|e| format!("accounting: {e:#}"))?;
+        if let Err(e) = store.mark_dispatched(&call).await {
+            if let Err(e2) = store.mark_not_dispatched(&call, "dispatch marker failed").await {
+                tracing::warn!(%call, "mark_not_dispatched: {e2:#}");
+            }
+            return Err(format!("accounting: {e:#}"));
+        }
+        Ok(Self {
+            call: Some(call),
+            store: store.clone(),
+            rt: rt.clone(),
+        })
+    }
+
+    /// Settle with `usage` (what the stream's `End` carried; `None` for a
+    /// failed or cancelled attempt) and tell every affected owner its usage
+    /// revision moved.
+    async fn settle(
+        mut self,
+        status: CallStatus,
+        usage: Option<&genai::chat::Usage>,
+        model: &Resolved,
+    ) {
+        let Some(call) = self.call.take() else { return };
+        let mut obs = observe(usage, model);
+        if status != CallStatus::Settled {
+            obs.unknown_reason = Some(status.to_string());
+        }
+        settle(&self.store, &self.rt, &call, status, obs).await;
+    }
+}
+
+impl Drop for Reserved {
+    fn drop(&mut self) {
+        let Some(call) = self.call.take() else { return };
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return tracing::warn!(%call, "dropped outside a runtime; left dispatched");
+        };
+        let (store, rt) = (self.store.clone(), self.rt.clone());
+        handle.spawn(async move {
+            let obs = CostObservation {
+                unknown_reason: Some("dropped before settlement".into()),
+                ..Default::default()
+            };
+            settle(&store, &rt, &call, CallStatus::Cancelled, obs).await;
+        });
+    }
+}
+
+/// Commit the settlement and publish `ModelUsageChanged` for the owner and
+/// every live ancestor the store bumped.
+async fn settle(store: &Store, rt: &Runtime, call: &CallId, status: CallStatus, obs: CostObservation) {
+    match store.settle_call(call, status, obs).await {
+        Ok(bumped) => {
+            for (session, revision) in bumped {
+                rt.publish(AgentEvent::ModelUsageChanged { session, revision })
+                    .await;
+            }
+        }
+        Err(e) => tracing::warn!(%call, "settle_call: {e:#}"),
+    }
+}
+
+/// 51 §6.2: what one attempt's usage says about tokens and money for `model`.
+/// Only a provider-reported amount is `returned`; an adapter estimate is
+/// `estimated`; an invalid amount or no cost is unknown with a content-free
+/// reason. Context is the prompt plus the completion of this call.
+fn observe(usage: Option<&genai::chat::Usage>, model: &Resolved) -> CostObservation {
+    let tokens = |n: Option<i32>| n.and_then(|n| u32::try_from(n).ok());
+    let mut obs = CostObservation {
+        provider: provider_of(model).map(str::to_owned),
+        requested_model: Some(model.id.clone()),
+        ..Default::default()
+    };
+    let Some(u) = usage else {
+        obs.unknown_reason = Some("no usage returned".into());
+        return obs;
+    };
+    obs.input_tokens = tokens(u.prompt_tokens);
+    obs.output_tokens = tokens(u.completion_tokens);
+    let details = u.prompt_tokens_details.as_ref();
+    obs.cache_read_tokens = tokens(details.and_then(|d| d.cached_tokens));
+    obs.cache_write_tokens = tokens(details.and_then(|d| d.cache_creation_tokens));
+    obs.context_tokens = match (obs.input_tokens, obs.output_tokens) {
+        (None, None) => None,
+        (i, o) => Some(i.unwrap_or(0).saturating_add(o.unwrap_or(0))),
+    };
+    match &u.cost {
+        None => obs.unknown_reason = Some("no cost returned".into()),
+        Some(c) => match Money::from_f64(c.amount, &c.currency) {
+            Ok(m) if c.source == UsageCostSource::ProviderReported => obs.returned = Some(m),
+            Ok(m) => obs.estimated = Some(m),
+            Err(reason) => obs.unknown_reason = Some(reason),
+        },
+    }
+    obs
+}
+
 /// Text of `history` worth matching against the bundle (10 §4.2): user
 /// steering, assistant texts and tool-call arguments. Not tool results (mostly
 /// already read, and large) nor harness wrappers (`<note>`, `<message>`, …).
@@ -1883,8 +2060,14 @@ impl Turn {
         }
     }
 
-    /// The store when the knowledge plugin is up (12 §9.2).
+    /// The store when the knowledge plugin is up (12 §9.2) and the tree is
+    /// durable: a private session neither harvests nor hints (51 §4.5), so
+    /// every knowledge path — `run`'s trigger, `compact`'s pre-harvest,
+    /// `/knowledge harvest`, round hints — funnels through this `None`.
     fn knowledge(&self) -> Option<Arc<Knowledge>> {
+        if self.shared.resources.is_private() {
+            return None;
+        }
         self.shared.knowledge.clone()
     }
 
@@ -2109,6 +2292,11 @@ impl Turn {
     /// for the live frame, [`aux_conversation`] for a stateless auxiliary call.
     /// Transient failures before anything streamed are resent with backoff
     /// (36 §2.2); one that dies mid-reply is `Abort::Partial` (36 §2.4).
+    ///
+    /// 51 §6.1: one logical request; every resend is an attempt of it, each
+    /// reserved and marked dispatched before transport and settled after, as
+    /// `kind`. A reservation the store refuses is a local, final
+    /// `Abort::Model` — nothing is sent and nothing is retried.
     async fn call(
         &self,
         current: &Current,
@@ -2116,12 +2304,26 @@ impl Turn {
         transport: Transport,
         live: Option<TurnId>,
         conversation: SessionId,
+        kind: CallKind,
     ) -> Result<StreamEnd, Abort> {
+        let request_id = Uuid::now_v7().to_string();
         let mut attempt = 0;
         loop {
+            let reserved = Reserved::open(
+                &self.shared.store,
+                &self.shared.rt,
+                self.shared.id,
+                &request_id,
+                attempt as u32,
+                self.turn,
+                kind,
+                &current.model,
+            )
+            .await
+            .map_err(Abort::Model)?;
             let mut text = String::new();
             let mut calls = false;
-            let e = match self
+            let r = self
                 .stream_once(
                     current,
                     &frame,
@@ -2131,8 +2333,14 @@ impl Turn {
                     &mut text,
                     &mut calls,
                 )
-                .await
-            {
+                .await;
+            let (status, usage) = match &r {
+                Ok(end) => (CallStatus::Settled, end.captured_usage.as_ref()),
+                Err(Abort::Cancelled) => (CallStatus::Cancelled, None),
+                Err(_) => (CallStatus::Failed, None),
+            };
+            reserved.settle(status, usage, &current.model).await;
+            let e = match r {
                 Ok(end) => return Ok(end),
                 Err(Abort::Model(e)) => e,
                 Err(other) => return Err(other),
@@ -2623,7 +2831,12 @@ impl Turn {
     }
 
     /// 07 §15: when [`title::due`], name the session from a digest of this epoch
-    /// on a detached task, so the next turn is never delayed by it.
+    /// on a detached task, so the next turn is never delayed by it. 51 §6.1:
+    /// the task is tracked on the state (one at a time; the session joins it
+    /// at stop), its call is accounted as [`CallKind::Title`], and its write
+    /// and event are fenced on the session's `closed` token so nothing from a
+    /// closed generation lands. Diagnostics never carry prompt/reply/title
+    /// content; for a private tree not even their lengths.
     async fn maybe_title(&mut self) {
         let epoch_changed = self.state.epoch != self.state.title_epoch;
         if !title::due(
@@ -2679,7 +2892,16 @@ impl Turn {
             self.state.head.as_ref(),
             &self.state.history,
         ));
-        tokio::spawn(async move {
+        if let Some(prev) = self.state.title_task.take() {
+            prev.abort();
+            let _ = prev.await;
+        }
+        let closed = self.shared.closed.clone();
+        let generation = self.shared.resources.generation;
+        let private = self.shared.resources.is_private();
+        let turn = self.turn;
+        self.state.title_task = Some(tokio::spawn(async move {
+            let chars = |s: &str| (!private).then(|| s.chars().count());
             let frame = Frame {
                 tools: &[],
                 system: title::SYSTEM,
@@ -2688,6 +2910,22 @@ impl Turn {
                 vision: false,
             };
             let (req, opts) = frame.request(transport, session, None);
+            let request_id = Uuid::now_v7().to_string();
+            let reserved = match Reserved::open(
+                &store,
+                &rt,
+                session,
+                &request_id,
+                0,
+                turn,
+                CallKind::Title,
+                &current.model,
+            )
+            .await
+            {
+                Ok(r) => r,
+                Err(e) => return tracing::warn!(session = %session, "title: {e}"),
+            };
             let call = async {
                 let mut stream = current
                     .backend
@@ -2695,25 +2933,47 @@ impl Turn {
                     .await?;
                 while let Some(ev) = stream.next().await {
                     if let ChatStreamEvent::End(end) = ev? {
-                        return Ok(end.captured_texts().map(|t| t.concat()).unwrap_or_default());
+                        return Ok(end);
                     }
                 }
-                Err::<String, String>("stream ended without End event".into())
+                Err::<StreamEnd, String>("stream ended without End event".into())
             };
-            let reply = match tokio::time::timeout(Duration::from_secs(45), call).await {
-                Ok(Ok(text)) => text,
-                Ok(Err(e)) => return tracing::warn!(session = %session, "title: {e}"),
-                Err(_) => return tracing::warn!(session = %session, "title: timed out"),
+            let outcome = tokio::select! {
+                _ = closed.cancelled() => Err(CallStatus::Cancelled),
+                r = tokio::time::timeout(Duration::from_secs(45), call) => match r {
+                    Ok(Ok(end)) => Ok(end),
+                    Ok(Err(e)) => {
+                        tracing::warn!(session = %session, "title: {e}");
+                        Err(CallStatus::Failed)
+                    }
+                    Err(_) => {
+                        tracing::warn!(session = %session, "title: timed out");
+                        Err(CallStatus::Failed)
+                    }
+                },
             };
+            let (status, usage) = match &outcome {
+                Ok(end) => (CallStatus::Settled, end.captured_usage.as_ref()),
+                Err(status) => (*status, None),
+            };
+            reserved.settle(status, usage, &current.model).await;
+            let Ok(end) = outcome else { return };
+            let reply = end.captured_texts().map(|t| t.concat()).unwrap_or_default();
             let Some(new) = title::clean(&reply) else {
-                return tracing::info!(session = %session, reply, "title: unusable reply");
+                return tracing::info!(session = %session, chars = ?chars(&reply), "title: unusable reply");
             };
             if new == old {
                 return;
             }
+            if closed.is_cancelled() {
+                return tracing::info!(session = %session, generation, "title: session closed before the write; discarded");
+            }
             match store.set_title_at_revision(session, &new, &revision).await {
                 Ok(true) => {
-                    tracing::info!(session = %session, from = %old, to = %new, "title");
+                    if closed.is_cancelled() {
+                        return tracing::info!(session = %session, generation, "title: session closed after the write; not announced");
+                    }
+                    tracing::info!(session = %session, generation, chars = ?chars(&new), "title");
                     rt.publish(AgentEvent::TitleChanged {
                         session,
                         title: new,
@@ -2721,11 +2981,11 @@ impl Turn {
                     .await;
                 }
                 Ok(false) => {
-                    tracing::info!(session = %session, revision, to = %new, "title: context moved since the digest; discarded");
+                    tracing::info!(session = %session, revision, "title: context moved since the digest; discarded");
                 }
                 Err(e) => tracing::warn!(session = %session, "set_title: {e:#}"),
             }
-        });
+        }));
     }
 
     /// 47 §4.3: propose this natural stop as a same-turn continuation
@@ -2904,7 +3164,7 @@ impl Turn {
             vision: current.vision(),
         };
         let end = match self
-            .call(&current, frame, transport, Some(turn), self.shared.id)
+            .call(&current, frame, transport, Some(turn), self.shared.id, CallKind::Round)
             .await
         {
             Ok(end) => end,
@@ -3386,7 +3646,7 @@ impl Turn {
                     cwd: self.cwd.clone(),
                     permit: self.cell_permit(),
                 };
-                Repl::open(pool, self.shared.id, &self.shared.rt.data_dir, cx).await
+                Repl::open(pool, self.shared.id, &self.shared.resources.root, cx).await
             }
         };
         self.repl.insert(repl).run(&call.call_id, &code).await
@@ -3595,7 +3855,7 @@ impl Turn {
             .then(|| todo::render(&self.state.todos));
         let runtime = match &self.repl {
             Some(r) => r.render_inventory(),
-            None => repl::saved_inventory(&self.shared.rt.data_dir, session),
+            None => repl::saved_inventory(&self.shared.resources.root, session),
         };
         let read = (!self.state.knowledge_read.is_empty()).then(|| {
             let ids: Vec<&str> = self
@@ -3755,7 +4015,14 @@ impl Turn {
         let mut trimmed = false;
         loop {
             match self
-                .continuation(current, transport, head, full, compact::COMPACT_INSTRUCTION)
+                .continuation(
+                    current,
+                    transport,
+                    head,
+                    full,
+                    compact::COMPACT_INSTRUCTION,
+                    CallKind::Compaction,
+                )
                 .await
             {
                 Ok(text) => return Ok(text),
@@ -3778,6 +4045,7 @@ impl Turn {
     /// than [`compact::SUMMARY_MIN_CHARS`] (36 §6.1). Bounded by
     /// [`SUMMARISE_TIMEOUT`]. `Err` is the raw model error (callers test
     /// `compact::is_overflow`), `summariser timed out` or `degenerate summary`.
+    /// `kind` is what the attempts are accounted as (51 §6.1).
     async fn continuation(
         &self,
         current: &Current,
@@ -3785,6 +4053,7 @@ impl Turn {
         head: Option<&ChatMessage>,
         full: &mut Vec<ChatMessage>,
         instruction: &str,
+        kind: CallKind,
     ) -> Result<String, String> {
         // 36 §6.1: a short harvest is a valid "nothing new"; only the summary has a floor.
         let summary = instruction == compact::COMPACT_INSTRUCTION;
@@ -3797,7 +4066,7 @@ impl Turn {
                 history: full.as_slice(),
                 vision: current.vision(),
             };
-            let call = self.call(current, frame, transport, None, self.shared.id);
+            let call = self.call(current, frame, transport, None, self.shared.id, kind);
             match tokio::time::timeout(SUMMARISE_TIMEOUT, call).await {
                 Err(_) => return Err("summariser timed out".into()),
                 Ok(Ok(end)) => {
@@ -3841,7 +4110,11 @@ impl Turn {
         current: &Current,
         transport: Transport,
     ) -> Result<HarvestResult, String> {
-        let knowledge = self.knowledge().ok_or("knowledge is off")?;
+        let knowledge = self.knowledge().ok_or(if self.shared.resources.is_private() {
+            "knowledge harvest is disabled in a private session"
+        } else {
+            "knowledge is off"
+        })?;
         if self.state.history.is_empty() {
             return Err("nothing to harvest".into());
         }
@@ -3865,7 +4138,14 @@ impl Turn {
         let (head, mut full) = self.projected(&images);
         full.push(ChatMessage::user(&instruction));
         let text = self
-            .continuation(current, transport, head.as_ref(), &mut full, &instruction)
+            .continuation(
+                current,
+                transport,
+                head.as_ref(),
+                &mut full,
+                &instruction,
+                CallKind::Harvest,
+            )
             .await?;
 
         let mut result = HarvestResult::default();
@@ -4187,6 +4467,7 @@ impl Turn {
             transport,
             None,
             aux_conversation(self.shared.id),
+            CallKind::Vision,
         );
         let end = match tokio::time::timeout(SUMMARISE_TIMEOUT, call).await {
             Err(_) => {
@@ -4497,7 +4778,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let store = Store::open(&dir.join("sessions.sqlite")).await.unwrap();
         let id = SessionId::new();
-        store.create_session(id, "m", None, None).await.unwrap();
+        store.create_session(id, "m", None, None, None).await.unwrap();
         for m in [
             ChatMessage::user("u1"),
             ChatMessage::assistant("a1"),
@@ -4536,6 +4817,7 @@ mod tests {
             Arc::new(models::Catalog::load(&dir)),
             None,
             Arc::new(Semaphore::new(8)),
+            SessionResources::durable_arc(&dir),
         );
         let rev = store.context_revision(id).await.unwrap();
         let edit = |expected: &str, seq: i64| RemoveContextNow {
@@ -5005,8 +5287,8 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let store = Store::open(&dir.join("sessions.sqlite")).await.unwrap();
         let (mut policy, sender, id, generation) = route();
-        store.create_session(id, "m", None, None).await.unwrap();
-        store.create_session(sender, "m", None, None).await.unwrap();
+        store.create_session(id, "m", None, None, None).await.unwrap();
+        store.create_session(sender, "m", None, None, None).await.unwrap();
         let (from, to) = (format!("session:{sender}"), format!("session:{id}"));
         let req = AcceptExchange {
             sender: &from,
@@ -5050,6 +5332,7 @@ mod tests {
             Arc::new(models::Catalog::load(&dir)),
             None,
             Arc::new(Semaphore::new(1)),
+            SessionResources::durable_arc(&dir),
         );
         let mut turn = Turn::new(
             session.shared.clone(),
@@ -5118,7 +5401,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let store = Store::open(&dir.join("sessions.sqlite")).await.unwrap();
         let id = SessionId::new();
-        store.create_session(id, "m", None, None).await.unwrap();
+        store.create_session(id, "m", None, None, None).await.unwrap();
         let shot = Binary::from_base64("image/png", "AAAA", Some("shot.png".into()));
         let user = ChatMessage::user(MessageContent::from_parts(vec![
             ContentPart::Text("look".into()),
@@ -5172,6 +5455,7 @@ mod tests {
             Arc::new(models::Catalog::load(&dir)),
             None,
             Arc::new(Semaphore::new(1)),
+            SessionResources::durable_arc(&dir),
         );
         let mut turn = Turn::new(
             session.shared.clone(),
@@ -5511,5 +5795,351 @@ mod tests {
         // A cancelled turn never resumes the interpreter.
         cancel.cancel();
         assert!(cell.run().await.is_none());
+    }
+
+    /// 51 §6.2: only a provider-reported amount is `returned`, an adapter
+    /// estimate is `estimated`, an invalid one is unknown with a reason; the
+    /// cache breakdown and context follow the usage.
+    #[test]
+    fn observe_partitions_money_by_provenance() {
+        use genai::chat::{PromptTokensDetails, UsageCost};
+        let model = Resolved {
+            id: "openrouter/x".into(),
+            genai: "openrouter::x".into(),
+            provider: None,
+            model: None,
+        };
+        let usage = |cost: Option<UsageCost>| genai::chat::Usage {
+            prompt_tokens: Some(100),
+            completion_tokens: Some(20),
+            prompt_tokens_details: Some(PromptTokensDetails {
+                cached_tokens: Some(60),
+                cache_creation_tokens: Some(5),
+                ..Default::default()
+            }),
+            cost,
+            ..Default::default()
+        };
+        let cost = |amount: f64, currency: &str, source: UsageCostSource| {
+            Some(UsageCost {
+                amount,
+                currency: currency.into(),
+                source,
+            })
+        };
+
+        let reported = observe(Some(&usage(cost(0.25, "USD", UsageCostSource::ProviderReported))), &model);
+        assert_eq!(reported.returned.as_ref().map(|m| m.nanos), Some(250_000_000));
+        assert!(reported.estimated.is_none() && reported.unknown_reason.is_none());
+        assert_eq!(
+            (reported.input_tokens, reported.output_tokens, reported.cache_read_tokens, reported.cache_write_tokens, reported.context_tokens),
+            (Some(100), Some(20), Some(60), Some(5), Some(120))
+        );
+        assert_eq!((reported.provider.as_deref(), reported.requested_model.as_deref()), (Some("openrouter"), Some("openrouter/x")));
+
+        let estimated = observe(Some(&usage(cost(0.1, "USD", UsageCostSource::AdapterEstimated))), &model);
+        assert!(estimated.returned.is_none());
+        assert_eq!(estimated.estimated.as_ref().map(|m| m.nanos), Some(100_000_000));
+
+        let bad = observe(Some(&usage(cost(-1.0, "USD", UsageCostSource::ProviderReported))), &model);
+        assert!(bad.returned.is_none() && bad.estimated.is_none());
+        assert_eq!(bad.unknown_reason.as_deref(), Some("invalid amount"));
+
+        let none = observe(None, &model);
+        assert_eq!(none.unknown_reason.as_deref(), Some("no usage returned"));
+        assert!(none.input_tokens.is_none() && none.context_tokens.is_none());
+    }
+
+    /// Every `AgentEvent` published on a runtime, in order.
+    struct Sink(tokio::sync::mpsc::UnboundedSender<AgentEvent>);
+
+    impl Actor for Sink {
+        type Args = Self;
+        type Error = Infallible;
+
+        async fn on_start(sink: Self, _: ActorRef<Self>) -> Result<Self, Infallible> {
+            Ok(sink)
+        }
+    }
+
+    impl Message<AgentEvent> for Sink {
+        type Reply = ();
+
+        async fn handle(&mut self, e: AgentEvent, _: &mut Context<Self, ()>) {
+            let _ = self.0.send(e);
+        }
+    }
+
+    /// One HTTP/1.1 response, `Connection: close`.
+    fn http(status: u16, content_type: &str, body: &str) -> String {
+        format!(
+            "HTTP/1.1 {status} X\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    /// An OpenAI-shaped completion stream: one text delta, a `stop` with
+    /// `usage` (JSON object text), `[DONE]`.
+    fn sse(usage: &str) -> String {
+        http(
+            200,
+            "text/event-stream",
+            &format!(
+                "data: {{\"choices\":[{{\"index\":0,\"delta\":{{\"content\":\"hi\"}}}}]}}\n\n\
+                 data: {{\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"stop\"}}],\"usage\":{usage}}}\n\n\
+                 data: [DONE]\n\n"
+            ),
+        )
+    }
+
+    /// A local OpenAI-compatible endpoint: every connection is counted and
+    /// answered with the next scripted response (500 once they run out).
+    async fn fake_openai(responses: Vec<String>) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}/v1/", listener.local_addr().unwrap());
+        let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = hits.clone();
+        tokio::spawn(async move {
+            let mut responses = responses.into_iter();
+            while let Ok((mut sock, _)) = listener.accept().await {
+                counter.fetch_add(1, Ordering::SeqCst);
+                // Drain the request: headers, then the Content-Length body.
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 4096];
+                let mut want = usize::MAX;
+                loop {
+                    if buf.len() >= want {
+                        break;
+                    }
+                    let Ok(n) = sock.read(&mut chunk).await else { break };
+                    if n == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                    if want == usize::MAX
+                        && let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n")
+                    {
+                        let head = String::from_utf8_lossy(&buf[..pos]).to_ascii_lowercase();
+                        let len = head
+                            .lines()
+                            .find_map(|l| l.strip_prefix("content-length:"))
+                            .and_then(|v| v.trim().parse::<usize>().ok())
+                            .unwrap_or(0);
+                        want = pos + 4 + len;
+                    }
+                }
+                let response = responses
+                    .next()
+                    .unwrap_or_else(|| http(500, "text/plain", "no scripted response left"));
+                let _ = sock.write_all(response.as_bytes()).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+        (base_url, hits)
+    }
+
+    /// A turn of session `id` on `store` whose model is the OpenAI-compatible
+    /// gateway at `base_url`; with its resolved model and transport and the
+    /// runtime's event stream.
+    async fn gateway_turn(
+        dir: &Path,
+        store: Store,
+        id: SessionId,
+        base_url: String,
+    ) -> (Turn, Current, Transport, tokio::sync::mpsc::UnboundedReceiver<AgentEvent>) {
+        let auth = Auth::stub(dir);
+        auth.gateways.write().unwrap_or_else(|p| p.into_inner()).insert(
+            "fake".into(),
+            crate::providers::Gateway {
+                base_url,
+                key: "k".into(),
+            },
+        );
+        let model = Resolved {
+            id: "fake/m".into(),
+            genai: "fake::m".into(),
+            provider: Some("fake".into()),
+            model: None,
+        };
+        let rt = Runtime::new(figment::Figment::new(), dir.to_path_buf());
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let sink = kameo::actor::Spawn::spawn(Sink(tx));
+        rt.subscribe::<Sink, AgentEvent>(&sink).await;
+        let mut session = Session::new(
+            id,
+            0,
+            (model, None),
+            None,
+            SessionState::resume(0, None, vec![]),
+            Arc::new(AgentConfig::default()),
+            Arc::default(),
+            Arc::default(),
+            Arc::default(),
+            store,
+            Client::new().unwrap(),
+            auth,
+            rt,
+            Arc::new(models::Catalog::load(dir)),
+            None,
+            Arc::new(Semaphore::new(1)),
+            SessionResources::durable_arc(dir),
+        );
+        let mut turn = Turn::new(
+            session.shared.clone(),
+            Some(TurnId::new()),
+            CancellationToken::new(),
+            session.state.take().unwrap(),
+        );
+        let (current, transport) = turn.resolve().await.unwrap();
+        (turn, current, transport, rx)
+    }
+
+    /// `(call_id, request_id, kind, status)` of every attempt of `owner`, by attempt.
+    async fn calls(store: &Store, owner: SessionId) -> Vec<(String, String, String, String)> {
+        sqlx::query_as(
+            "SELECT call_id, request_id, kind, status FROM model_calls WHERE owner_id = ? ORDER BY attempt",
+        )
+        .bind(owner.to_string())
+        .fetch_all(store.pool())
+        .await
+        .unwrap()
+    }
+
+    async fn next_usage_changed(
+        events: &mut tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
+    ) -> (SessionId, u64) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match events.recv().await {
+                    Some(AgentEvent::ModelUsageChanged { session, revision }) => {
+                        return (session, revision);
+                    }
+                    Some(_) => {}
+                    None => panic!("bus closed"),
+                }
+            }
+        })
+        .await
+        .expect("ModelUsageChanged published")
+    }
+
+    /// 51 §6.1/§6.2 end to end: a real transport whose usage carries a
+    /// provider-reported cost settles one `round` attempt, the owner summary
+    /// shows it as returned money, and the bus announces the new revision.
+    #[tokio::test]
+    async fn accounted_call_settles_returned_cost_and_announces() {
+        let dir = std::env::temp_dir().join(format!("wth-cost-{}", Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open_memory().await.unwrap();
+        let id = SessionId::new();
+        store.create_session(id, "fake/m", None, None, None).await.unwrap();
+        let (base_url, hits) = fake_openai(vec![sse(
+            r#"{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"cost":0.25}"#,
+        )])
+        .await;
+        let (turn, current, transport, mut events) = gateway_turn(&dir, store.clone(), id, base_url).await;
+
+        let history = [ChatMessage::user("hi")];
+        let frame = Frame {
+            tools: &[],
+            system: "s",
+            head: None,
+            history: &history,
+            vision: false,
+        };
+        let end = turn
+            .call(&current, frame, transport, turn.turn, id, CallKind::Round)
+            .await;
+        assert!(end.is_ok_and(|e| e.captured_usage.is_some()));
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+
+        let rows = calls(&store, id).await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!((rows[0].2.as_str(), rows[0].3.as_str()), ("round", "settled"));
+        let cost = store.session_cost(id).await.unwrap().unwrap();
+        assert_eq!(
+            cost.direct.returned,
+            vec![Money {
+                currency: "USD".into(),
+                nanos: 250_000_000,
+            }]
+        );
+        assert_eq!(
+            (cost.direct.calls, cost.direct.dispatched, cost.direct.unavailable),
+            (1, 1, 0)
+        );
+        assert_eq!((cost.direct.tokens.input, cost.direct.tokens.output), (10, 5));
+        assert_eq!(next_usage_changed(&mut events).await, (id, cost.revision));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// 51 §6.1: a transient failure and its resend are two attempts — two
+    /// `call_id`s, one `request_id` — the first settled `failed`, the second
+    /// `settled`; only the settled one carries money.
+    #[tokio::test]
+    async fn retried_attempts_share_a_request_under_distinct_call_ids() {
+        let dir = std::env::temp_dir().join(format!("wth-cost-{}", Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open_memory().await.unwrap();
+        let id = SessionId::new();
+        store.create_session(id, "fake/m", None, None, None).await.unwrap();
+        let (base_url, hits) = fake_openai(vec![
+            http(500, "text/plain", "upstream hiccup"),
+            sse(r#"{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"cost":0.25}"#),
+        ])
+        .await;
+        let (turn, current, transport, _events) = gateway_turn(&dir, store.clone(), id, base_url).await;
+
+        let history = [ChatMessage::user("hi")];
+        let frame = Frame {
+            tools: &[],
+            system: "s",
+            head: None,
+            history: &history,
+            vision: false,
+        };
+        assert!(turn.call(&current, frame, transport, None, id, CallKind::Round).await.is_ok());
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+
+        let rows = calls(&store, id).await;
+        assert_eq!(rows.len(), 2);
+        assert_ne!(rows[0].0, rows[1].0);
+        assert_eq!(rows[0].1, rows[1].1);
+        assert_eq!((rows[0].3.as_str(), rows[1].3.as_str()), ("failed", "settled"));
+        let cost = store.session_cost(id).await.unwrap().unwrap();
+        assert_eq!((cost.direct.calls, cost.direct.dispatched, cost.direct.unavailable), (2, 2, 1));
+        assert_eq!(cost.direct.returned[0].nanos, 250_000_000);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// 51 §6.1: no reservation, no transport. A session the ledger does not
+    /// know (no `cost_owners` row) cannot reserve; the call aborts locally
+    /// and the endpoint is never contacted.
+    #[tokio::test]
+    async fn refused_reservation_aborts_before_transport() {
+        let dir = std::env::temp_dir().join(format!("wth-cost-{}", Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open_memory().await.unwrap();
+        let orphan = SessionId::new();
+        let (base_url, hits) = fake_openai(vec![sse(r#"{"prompt_tokens":1,"completion_tokens":1}"#)]).await;
+        let (turn, current, transport, _events) = gateway_turn(&dir, store.clone(), orphan, base_url).await;
+
+        let history = [ChatMessage::user("hi")];
+        let frame = Frame {
+            tools: &[],
+            system: "s",
+            head: None,
+            history: &history,
+            vision: false,
+        };
+        let err = match turn.call(&current, frame, transport, None, orphan, CallKind::Round).await {
+            Err(Abort::Model(e)) => e,
+            _ => panic!("a refused reservation is a local model abort"),
+        };
+        assert!(err.starts_with("accounting:"), "{err}");
+        assert_eq!(hits.load(Ordering::SeqCst), 0);
+        assert!(calls(&store, orphan).await.is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

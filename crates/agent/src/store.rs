@@ -45,6 +45,7 @@ use crate::todo::{Todo, TodoSnapshot, TodoSource};
 use crate::vision::{VisionImage, VisionNote};
 
 pub mod communication;
+pub mod accounting;
 
 /// Handle to `<data_dir>/sessions.sqlite`. Cheap to clone.
 #[derive(Clone)]
@@ -111,6 +112,34 @@ struct SessionRow {
     agent: Option<String>,
     cwd: Option<String>,
     pinned: bool,
+    project: Option<String>,
+}
+
+/// Scalar subquery: the `project` of the root above the outer `sessions` row
+/// (51 §3: children carry none of their own). Correlated on the outer table
+/// name, so the enclosing query must select `FROM sessions` unaliased.
+macro_rules! effective_project {
+    () => {
+        "(WITH RECURSIVE up(id, parent) AS ( \
+              SELECT sessions.id, sessions.parent \
+              UNION ALL \
+              SELECT p.id, p.parent FROM sessions p JOIN up ON p.id = up.parent) \
+          SELECT r.project FROM up JOIN sessions r ON r.id = up.id WHERE up.parent IS NULL)"
+    };
+}
+
+/// Column list every `sessions` reader selects, qualified with the table name
+/// so joins against `tree` stay unambiguous. A macro (not a const) so it
+/// splices into `concat!` and the query stays a `'static` literal.
+macro_rules! session_cols {
+    () => {
+        concat!(
+            "sessions.id, sessions.created_at, sessions.updated_at, sessions.title, sessions.model, \
+             sessions.parent, sessions.name, sessions.effort, sessions.agent, sessions.cwd, sessions.pinned, ",
+            effective_project!(),
+            " AS project"
+        )
+    };
 }
 
 impl TryFrom<SessionRow> for SessionSummary {
@@ -134,6 +163,8 @@ impl TryFrom<SessionRow> for SessionSummary {
             agent: r.agent,
             cwd: r.cwd,
             pinned: r.pinned,
+            project: r.project,
+            retention: tools::Retention::Durable,
         })
     }
 }
@@ -158,17 +189,49 @@ impl Store {
         Ok(Self { pool })
     }
 
-    /// Insert a session row. `title` starts empty; `name` is the peer name of a subagent.
+    /// An in-memory database with the same schema, for a private root tree
+    /// (51 §4.5): no file, no journal, `temp_store=MEMORY` so sorts and
+    /// temp tables never spill to disk. Exactly one pooled connection:
+    /// every SQLite `:memory:` connection is its own database, so a second
+    /// one would see an empty, unmigrated store.
+    pub async fn open_memory() -> anyhow::Result<Self> {
+        let opts = SqliteConnectOptions::new()
+            .in_memory(true)
+            .journal_mode(SqliteJournalMode::Memory)
+            .pragma("temp_store", "MEMORY");
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .min_connections(1)
+            .connect_with(opts)
+            .await
+            .context("open in-memory store")?;
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .context("run migrations")?;
+        Ok(Self { pool })
+    }
+
+    /// The pool, for crate-internal probes (tests of pragmas and the like).
+    pub(crate) fn pool(&self) -> &SqlitePool {
+        &self.pool
+    }
+
+    /// Insert a session row and its accounting owner in one transaction.
+    /// `title` starts empty; `name` is the peer name of a subagent; `project`
+    /// is stored on roots only (a child's is its root's, 51 §3).
     pub async fn create_session(
         &self,
         id: SessionId,
         model: &str,
         parent: Option<SessionId>,
         name: Option<&str>,
+        project: Option<&str>,
     ) -> anyhow::Result<()> {
         let now = chrono::Utc::now().to_rfc3339();
+        let mut tx = self.pool.begin().await?;
         sqlx::query(
-            "INSERT INTO sessions (id, created_at, updated_at, title, model, parent, name) VALUES (?, ?, ?, '', ?, ?, ?)",
+            "INSERT INTO sessions (id, created_at, updated_at, title, model, parent, name, project) VALUES (?, ?, ?, '', ?, ?, ?, ?)",
         )
         .bind(id.to_string())
         .bind(&now)
@@ -176,8 +239,11 @@ impl Store {
         .bind(model)
         .bind(parent.map(|p| p.to_string()))
         .bind(name)
-        .execute(&self.pool)
+        .bind(parent.is_none().then_some(project).flatten())
+        .execute(&mut *tx)
         .await?;
+        accounting::ensure_owner_in(&mut tx, id, parent).await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -680,10 +746,12 @@ impl Store {
         let id = SessionId::new();
         let (new, old) = (id.to_string(), src.to_string());
         let now = chrono::Utc::now().to_rfc3339();
-        let inserted = sqlx::query(
-            "INSERT INTO sessions (id, created_at, updated_at, title, model, parent, name, effort, cwd, context_revision) \
-             SELECT ?, ?, ?, title, model, NULL, NULL, effort, cwd, context_revision FROM sessions WHERE id = ?",
-        )
+        let inserted = sqlx::query(concat!(
+            "INSERT INTO sessions (id, created_at, updated_at, title, model, parent, name, effort, cwd, context_revision, project) \
+             SELECT ?, ?, ?, title, model, NULL, NULL, effort, cwd, context_revision, ",
+            effective_project!(),
+            " FROM sessions WHERE id = ?"
+        ))
         .bind(&new)
         .bind(&now)
         .bind(&now)
@@ -694,6 +762,7 @@ impl Store {
         if inserted != 1 {
             anyhow::bail!("no such session");
         }
+        accounting::ensure_owner_in(&mut tx, id, None).await?;
         sqlx::query(
             "INSERT INTO messages (session_id, seq, body, excluded, vision) \
              SELECT ?1, seq, body, excluded, vision FROM messages WHERE session_id = ?2 AND seq < ?3 \
@@ -1064,9 +1133,11 @@ impl Store {
 
     /// One session, if it exists.
     pub async fn session(&self, id: SessionId) -> anyhow::Result<Option<SessionSummary>> {
-        let row: Option<SessionRow> = sqlx::query_as(
-            "SELECT id, created_at, updated_at, title, model, parent, name, effort, agent, cwd, pinned FROM sessions WHERE id = ?",
-        )
+        let row: Option<SessionRow> = sqlx::query_as(concat!(
+            "SELECT ",
+            session_cols!(),
+            " FROM sessions WHERE id = ?"
+        ))
         .bind(id.to_string())
         .fetch_optional(&self.pool)
         .await?;
@@ -1075,9 +1146,11 @@ impl Store {
 
     /// Every session, pinned first, then most recently active first.
     pub async fn list_sessions(&self) -> anyhow::Result<Vec<SessionSummary>> {
-        let rows: Vec<SessionRow> = sqlx::query_as(
-            "SELECT id, created_at, updated_at, title, model, parent, name, effort, agent, cwd, pinned FROM sessions ORDER BY pinned DESC, updated_at DESC, id DESC",
-        )
+        let rows: Vec<SessionRow> = sqlx::query_as(concat!(
+            "SELECT ",
+            session_cols!(),
+            " FROM sessions ORDER BY pinned DESC, updated_at DESC, id DESC"
+        ))
         .fetch_all(&self.pool)
         .await?;
         rows.into_iter().map(SessionSummary::try_from).collect()
@@ -1095,15 +1168,16 @@ impl Store {
         }
         // `path` = the created_at||id of every ancestor down to the row, so
         // string order is pre-order with siblings by creation time.
-        let rows: Vec<TreeRow> = sqlx::query_as(
+        let rows: Vec<TreeRow> = sqlx::query_as(concat!(
             "WITH RECURSIVE tree(id, depth, path) AS ( \
                  SELECT id, 1, created_at || id FROM sessions WHERE parent = ? \
                  UNION ALL \
                  SELECT s.id, t.depth + 1, t.path || '/' || s.created_at || s.id \
                  FROM sessions s JOIN tree t ON s.parent = t.id) \
-             SELECT s.id, s.created_at, s.updated_at, s.title, s.model, s.parent, s.name, s.effort, s.agent, s.cwd, s.pinned, t.depth \
-             FROM sessions s JOIN tree t ON s.id = t.id ORDER BY t.path",
-        )
+             SELECT ",
+            session_cols!(),
+            ", t.depth FROM sessions JOIN tree t ON sessions.id = t.id ORDER BY t.path"
+        ))
         .bind(root.to_string())
         .fetch_all(&self.pool)
         .await?;
@@ -1118,7 +1192,9 @@ impl Store {
     }
 
     /// Delete `root` and every descendant with their messages, epochs, plans
-    /// and communication accounting (exchanges, A2A contexts/tasks).
+    /// and communication accounting (exchanges, A2A contexts/tasks). Spend
+    /// stays (51 §6.4): a true root takes its whole ledger tree with it, a
+    /// subtree only tombstones its owners.
     /// Returns the removed ids, children before parents.
     pub async fn delete_session(&self, root: SessionId) -> anyhow::Result<Vec<SessionId>> {
         let mut ids: Vec<SessionId> = self
@@ -1130,6 +1206,18 @@ impl Store {
             .collect();
         ids.push(root);
         let mut tx = self.pool.begin().await?;
+        let is_root: bool = sqlx::query_scalar("SELECT parent IS NULL FROM sessions WHERE id = ?")
+            .bind(root.to_string())
+            .fetch_optional(&mut *tx)
+            .await?
+            .unwrap_or(false);
+        if is_root {
+            accounting::delete_root_ledger_in(&mut tx, root).await?;
+        } else {
+            for id in &ids {
+                accounting::tombstone_owner_in(&mut tx, *id).await?;
+            }
+        }
         for id in &ids {
             let sid = id.to_string();
             communication::delete_communication_in(&mut tx, &sid).await?;
@@ -1206,6 +1294,46 @@ impl Store {
             .filter(|t| !t.is_empty())
             .collect::<Vec<_>>()
             .join("\n"))
+    }
+
+    /// Set the project label on the root above `session` (51 §3: a child call
+    /// mutates its root; `None` clears). The caller has normalized `project`.
+    /// Returns the root id; unknown `session` is an error.
+    pub async fn set_project(
+        &self,
+        session: SessionId,
+        project: Option<&str>,
+    ) -> anyhow::Result<SessionId> {
+        let root: Option<(String,)> = sqlx::query_as(
+            "UPDATE sessions SET project = ? WHERE id = ( \
+                 WITH RECURSIVE up(id, parent) AS ( \
+                     SELECT id, parent FROM sessions WHERE id = ? \
+                     UNION ALL \
+                     SELECT p.id, p.parent FROM sessions p JOIN up ON p.id = up.parent) \
+                 SELECT id FROM up WHERE parent IS NULL) \
+             RETURNING id",
+        )
+        .bind(project)
+        .bind(session.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        root.map(|(id,)| id.parse().context("bad session id"))
+            .transpose()?
+            .ok_or_else(|| anyhow::anyhow!("no such session"))
+    }
+
+    /// The project label in force for `session`: its root's value.
+    pub async fn effective_project(&self, session: SessionId) -> anyhow::Result<Option<String>> {
+        let row: Option<(Option<String>,)> = sqlx::query_as(concat!(
+            "SELECT ",
+            effective_project!(),
+            " FROM sessions WHERE id = ?"
+        ))
+        .bind(session.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(|(p,)| p)
+            .ok_or_else(|| anyhow::anyhow!("no such session"))
     }
 }
 
@@ -1518,7 +1646,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let store = Store::open(&dir.join("sessions.sqlite")).await.unwrap();
         let id = SessionId::new();
-        store.create_session(id, "m", None, None).await.unwrap();
+        store.create_session(id, "m", None, None, None).await.unwrap();
         (store, id, dir)
     }
 
@@ -1573,8 +1701,7 @@ mod tests {
         assert_eq!(list[0].title, "");
 
         let child = SessionId::new();
-        store
-            .create_session(child, "m", Some(id), Some("kid"))
+        store.create_session(child, "m", Some(id), Some("kid"), None)
             .await
             .unwrap();
         let list = store.list_sessions().await.unwrap();
@@ -1630,21 +1757,18 @@ mod tests {
         let b = SessionId::new();
         let a1 = SessionId::new();
         let other = SessionId::new();
-        store
-            .create_session(a, "m", Some(root), Some("a"))
+        store.create_session(a, "m", Some(root), Some("a"), None)
             .await
             .unwrap();
         tokio::time::sleep(Duration::from_millis(2)).await;
-        store
-            .create_session(a1, "m", Some(a), Some("a1"))
+        store.create_session(a1, "m", Some(a), Some("a1"), None)
             .await
             .unwrap();
         tokio::time::sleep(Duration::from_millis(2)).await;
-        store
-            .create_session(b, "m", Some(root), Some("b"))
+        store.create_session(b, "m", Some(root), Some("b"), None)
             .await
             .unwrap();
-        store.create_session(other, "m", None, None).await.unwrap();
+        store.create_session(other, "m", None, None, None).await.unwrap();
 
         let got: Vec<(u8, SessionId)> = store
             .descendants(root)
@@ -3104,6 +3228,62 @@ mod tests {
     }
 
     // endregion: --- Context removal (48)
+
+    // region: --- Project metadata (51 §3)
+
+    #[tokio::test]
+    async fn project_lives_on_the_root_and_shows_on_every_row() {
+        let (store, root, dir) = fresh().await;
+        let child = SessionId::new();
+        store
+            .create_session(child, "m", Some(root), Some("kid"), Some("ignored"))
+            .await
+            .unwrap();
+        let project_of = |list: Vec<SessionSummary>, id| {
+            list.into_iter().find(|s| s.id == id).unwrap().project
+        };
+
+        // A child call mutates the root; the caller already normalized.
+        assert_eq!(store.set_project(child, Some("Alpha")).await.unwrap(), root);
+        let list = store.list_sessions().await.unwrap();
+        assert_eq!(list.len(), 2);
+        assert!(list.iter().all(|s| s.project.as_deref() == Some("Alpha")));
+        assert_eq!(
+            store.descendants(root).await.unwrap()[0].1.project.as_deref(),
+            Some("Alpha")
+        );
+        assert_eq!(
+            store.effective_project(child).await.unwrap().as_deref(),
+            Some("Alpha")
+        );
+
+        // A fork of the child copies the effective value into its own root.
+        store.append(child, &ChatMessage::user("hi")).await.unwrap();
+        let fork = store.fork(child, None, None).await.unwrap();
+        assert_eq!(
+            store.session(fork).await.unwrap().unwrap().project.as_deref(),
+            Some("Alpha")
+        );
+
+        // Clearing the root clears its tree; the fork has diverged.
+        assert_eq!(store.set_project(root, None).await.unwrap(), root);
+        let list = store.list_sessions().await.unwrap();
+        assert_eq!(project_of(list.clone(), root), None);
+        assert_eq!(project_of(list.clone(), child), None);
+        assert_eq!(project_of(list, fork).as_deref(), Some("Alpha"));
+        assert_eq!(
+            store
+                .set_project(SessionId::new(), Some("x"))
+                .await
+                .unwrap_err()
+                .to_string(),
+            "no such session"
+        );
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // endregion: --- Project metadata (51 §3)
 
     // region:    --- Vision notes (52)
 

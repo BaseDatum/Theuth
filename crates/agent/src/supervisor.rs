@@ -84,6 +84,16 @@ use crate::{
 };
 use crate::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 use crate::{frame, repl, search, spill};
+use crate::{SetSessionProject, project};
+use crate::SessionCostQuery;
+use crate::lifecycle::{
+    Authorize, Authorized, CleanupStatus, CloseResult, CreateSession, LeaveSession, PrivateOwner,
+    PrivateRoot, PrivateTrees, ResumePrivate, SessionOpen,
+};
+use crate::private::Scratch;
+use tools::{
+    CloseTree, CloseTreeAll, OpenTree, ParticipantsReady, Retention, SessionResources, TreeOpened,
+};
 
 /// The supervisor actor. Look up with `ActorRef::<Agents>::lookup(AGENT_ACTOR)`.
 #[derive(kameo::Actor)]
@@ -172,6 +182,21 @@ pub struct Agents {
     /// never continue automatically in this process. Ordinary work, results
     /// and the todo card are unaffected; new sessions use fresh accounting.
     ledger: Ledger,
+    /// Open private root trees (51 §4), by root; kept through teardown so
+    /// `PrivateTrees` and a late `Authorize` see `closing`.
+    private: HashMap<SessionId, PrivateRoot>,
+    /// Member of an open private tree → its root; removed at close.
+    private_member: HashMap<SessionId, SessionId>,
+    /// Every id ever closed privately in this process: `route`/`session` on
+    /// one refuses instead of creating a durable row (51 §4.4).
+    closing: HashSet<SessionId>,
+    /// Lifecycle generation (51 §8.2): bumped per private open and close.
+    generation: u64,
+    /// The durable capability (data dir, generation 0) every non-private
+    /// session runs under.
+    durable_resources: Arc<SessionResources>,
+    /// Owner-gone grace before a private root closes itself (51 §4.3).
+    private_grace: Duration,
 }
 
 /// One pending `send_message{await_reply}` (50 §5.3).
@@ -419,12 +444,31 @@ impl Agents {
         if let Some(live) = self.sessions.get(&id).filter(|l| l.actor.is_alive()) {
             return Ok((id, live.actor.clone()));
         }
-        let row = self.store.session(id).await?;
+        // 51 §4.4: a closed private id is never recreated as a durable row.
+        if self.closing.contains(&id) {
+            anyhow::bail!("session closed");
+        }
+        // A private member, or a new child of one, lives in its root's tree.
+        let private_root = self
+            .private_member
+            .get(&id)
+            .or_else(|| parent.and_then(|p| self.private_member.get(&p.0)))
+            .copied();
+        let store = private_root
+            .and_then(|r| self.private.get(&r))
+            .map_or_else(|| self.store.clone(), |p| (*p.store).clone());
+        let resources = private_root
+            .and_then(|r| self.private.get(&r))
+            .map_or_else(|| self.durable_resources.clone(), |p| p.resources.clone());
+        let row = store.session(id).await?;
         let harness = acp
             .as_ref()
             .map(|a| a.0.clone())
             .or_else(|| row.as_ref().and_then(|r| r.agent.clone()));
         if let Some(name) = harness {
+            if private_root.is_some() {
+                anyhow::bail!("remote agents are unavailable in a private session");
+            }
             let actor = self
                 .acp_session(id, row, parent, name, acp.and_then(|a| a.1))
                 .await?;
@@ -432,13 +476,13 @@ impl Agents {
         }
         let (model, effort, state, parent, resumed) = match row {
             Some(row) => {
-                let (epoch, head, history) = self.store.frame(id).await?;
+                let (epoch, head, history) = store.frame(id).await?;
                 // A row with history belonged to an earlier process whose work
                 // cannot be proven stopped (47 §4.5), see `Agents::ledger`.
                 let resumed = epoch > 0 || !history.is_empty();
                 let mut state = SessionState::resume(epoch, head, history);
                 // 47 §5.2: the structured plan, not a parsed summary.
-                let todos = self.store.todos(id).await?;
+                let todos = store.todos(id).await?;
                 state.todos = todos.items;
                 state.todo_version = todos.version;
                 (
@@ -464,11 +508,11 @@ impl Agents {
                     None => (self.default_model.as_str(), self.default_effort.clone()),
                 };
                 let model = self.resolve_model(model);
-                self.store
-                    .create_session(id, &model.0.id, parent.map(|p| p.0), parent.map(|p| p.1))
+                store
+                    .create_session(id, &model.0.id, parent.map(|p| p.0), parent.map(|p| p.1), None)
                     .await?;
                 if let Some(e) = &effort {
-                    self.store.set_effort(id, Some(e)).await?;
+                    store.set_effort(id, Some(e)).await?;
                 }
                 (
                     model,
@@ -479,9 +523,11 @@ impl Agents {
                 )
             }
         };
-        let depth = self.store.depth(id).await?;
+        let depth = store.depth(id).await?;
         self.inherit_approvals(id, parent.as_ref().map(|p| p.0))
             .await;
+        // A private tree is never mirrored into the peer topology (51 §4.2);
+        // `mirror` reads the durable store, so for a member this is a no-op.
         self.mirror(id).await;
         let actor = Session::spawn(Session::new(
             id,
@@ -493,13 +539,14 @@ impl Agents {
             self.compact_style.clone(),
             self.title_model.clone(),
             self.vision_model.clone(),
-            self.store.clone(),
+            store,
             self.client.clone(),
             self.auth.clone(),
             self.rt.clone(),
             self.catalog.clone(),
             self.pool.clone(),
             self.permits.clone(),
+            resources,
         ));
         let actor = LiveActor::Native(actor);
         self.ledger
@@ -511,6 +558,17 @@ impl Agents {
                 parent,
             },
         );
+        // A new child of a private tree joins it: the registry learns the
+        // superset so its resources and every owner's routing cover it.
+        if let Some(root) = private_root
+            && !self.private_member.contains_key(&id)
+        {
+            self.private_member.insert(id, root);
+            if let Some(p) = self.private.get_mut(&root) {
+                p.members.push(id);
+            }
+            self.open_tree(root).await;
+        }
         Ok((id, actor))
     }
 
@@ -585,8 +643,7 @@ impl Agents {
                 self.store.acp_session(id).await?,
             ),
             None => {
-                self.store
-                    .create_session(id, &name, parent.map(|p| p.0), parent.map(|p| p.1))
+                self.store.create_session(id, &name, parent.map(|p| p.0), parent.map(|p| p.1), None)
                     .await?;
                 self.store.set_acp(id, &name, cwd.as_deref()).await?;
                 (parent.map(|(p, n)| (p, n.to_string())), cwd, None)
@@ -706,8 +763,11 @@ impl Agents {
 
     /// A session-scoped failure outside any turn: recorded behind the last
     /// visible message (history replaces live rows on reload), then published.
+    /// A closed private id has no row anywhere and gets none (51 §4.4).
     async fn error(&self, session: SessionId, message: String) {
-        if let Err(e) = self.store.record_error(session, &message).await {
+        if !self.closing.contains(&session)
+            && let Err(e) = self.store_for(session).record_error(session, &message).await
+        {
             tracing::warn!(session = %session, "record_error: {e:#}");
         }
         self.rt
@@ -1504,7 +1564,7 @@ impl Agents {
         if self.ledger.knows(session) {
             return;
         }
-        match self.store.session(session).await {
+        match self.store_for(session).session(session).await {
             Ok(Some(row)) => self.ledger.register(session, row.parent, true),
             Ok(None) => tracing::warn!(session = %session, "activity for a session with no row"),
             Err(e) => tracing::error!(session = %session, "activity owner lookup: {e:#}"),
@@ -1686,7 +1746,7 @@ impl Message<GetTodos> for Agents {
     type Reply = Result<crate::todo::TodoSnapshot, String>;
 
     async fn handle(&mut self, m: GetTodos, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.store
+        self.store_for(m.session)
             .todos(m.session)
             .await
             .map_err(|e| format!("{e:#}"))
@@ -1883,7 +1943,10 @@ impl Message<EditTurn> for Agents {
 impl Message<ForkSession> for Agents {
     type Reply = Result<SessionId, String>;
 
-    async fn handle(&mut self, m: ForkSession, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(&mut self, m: ForkSession, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        if let Some(&root) = self.private_member.get(&m.session) {
+            return self.fork_private(root, m, ctx.actor_ref().clone()).await;
+        }
         let row = self
             .store
             .session(m.session)
@@ -1932,7 +1995,11 @@ impl Message<Cancel> for Agents {
 
     async fn handle(&mut self, m: Cancel, _: &mut Context<Self, Self::Reply>) {
         // Every running descendant, not one level (design doc 19 §2.3).
-        let tree = self.store.descendants(m.session).await.unwrap_or_default();
+        let tree = self
+            .store_for(m.session)
+            .descendants(m.session)
+            .await
+            .unwrap_or_default();
         let ids: Vec<SessionId> = std::iter::once(m.session)
             .chain(tree.into_iter().map(|(_, s)| s.id))
             .collect();
@@ -2216,8 +2283,12 @@ impl Message<SpawnChild> for Agents {
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Result<(String, SessionId), String> {
         let sub = &self.cfg.subagents;
+        // 51 §4.1: nothing of a private tree leaves the process.
+        if m.agent.is_some() && self.private_member.contains_key(&m.parent) {
+            return Err("remote agents are unavailable in a private session".into());
+        }
         let depth = self
-            .store
+            .store_for(m.parent)
             .depth(m.parent)
             .await
             .map_err(|e| e.to_string())?;
@@ -2259,7 +2330,7 @@ impl Message<SpawnChild> for Agents {
         let mut name = base.clone();
         let mut n = 1;
         while self
-            .store
+            .store_for(m.parent)
             .child_by_name(m.parent, &name)
             .await
             .map_err(|e| e.to_string())?
@@ -3154,25 +3225,32 @@ impl Message<NewRootSession> for Agents {
         m: NewRootSession,
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
+        self.new_root(m.cwd.as_deref(), m.scope).await
+    }
+}
+
+impl Agents {
+    /// A durable root: created, `cwd` recorded, scope declared (50 §2.1).
+    async fn new_root(&mut self, cwd: Option<&Path>, scope: PeerScope) -> Result<SessionId, String> {
         let (id, _) = self
             .session(None, None, None, (None, None))
             .await
             .map_err(|e| format!("{e:#}"))?;
-        if let Some(cwd) = &m.cwd {
+        if let Some(cwd) = cwd {
             self.store
                 .set_cwd(id, cwd)
                 .await
                 .map_err(|e| format!("{e:#}"))?;
         }
-        if m.scope != PeerScope::Isolated {
+        if scope != PeerScope::Isolated {
             self.store
-                .set_root_scope(id, m.scope, None)
+                .set_root_scope(id, scope, None)
                 .await
                 .map_err(comm_err)?;
             self.communication
                 .0
                 .write()
-                .set_scope(id, m.scope, None)
+                .set_scope(id, scope, None)
                 .map_err(|e| e.to_string())?;
             self.communication_changed(Some(id)).await;
         }
@@ -3235,7 +3313,8 @@ impl Agents {
     /// [`AgentInfo`] for every descendant of `session`, store rows in
     /// pre-order plus live state from this actor (design doc 19 §2.1).
     async fn agents(&self, session: SessionId) -> Vec<AgentInfo> {
-        let rows = match self.store.descendants(session).await {
+        let store = self.store_for(session);
+        let rows = match store.descendants(session).await {
             Ok(rows) => rows,
             Err(e) => {
                 tracing::error!(session = %session, "descendants: {e:#}");
@@ -3274,7 +3353,7 @@ impl Agents {
                 }
             };
             // ponytail: one message replay per row; a `last_text` column if the picker gets slow.
-            let last = self.store.last_turn_text(id).await.unwrap_or_else(|e| {
+            let last = store.last_turn_text(id).await.unwrap_or_else(|e| {
                 tracing::error!(session = %id, "last_turn_text: {e:#}");
                 String::new()
             });
@@ -3289,6 +3368,8 @@ impl Agents {
                 started_at: self.child_turns.get(&id).map(|ct| ct.started_at),
                 finished_at: self.last_stop.get(&id).map(|(_, at)| *at),
                 last: first_line(&last),
+                project: row.project.clone(),
+                retention: self.retention_of(id),
             });
         }
         out
@@ -3493,7 +3574,7 @@ impl Message<Ancestors> for Agents {
         // Titles live in sqlite only; one read for the root, the conversation the user knows.
         if let Some(root) = chain.last_mut() {
             root.title = self
-                .store
+                .store_for(root.id)
                 .session(root.id)
                 .await
                 .ok()
@@ -3513,7 +3594,8 @@ impl Message<LoadSession> for Agents {
         // through the session actor when it is live (it owns admission and
         // fills editable/reason), from the store when no actor exists (idle
         // by construction) or the session runs on an external harness.
-        let row = self.store.session(m.session).await.unwrap_or_else(|e| {
+        let store = self.store_for(m.session).clone();
+        let row = store.session(m.session).await.unwrap_or_else(|e| {
             tracing::error!(session = %m.session, "load session: {e:#}");
             None
         });
@@ -3531,11 +3613,11 @@ impl Message<LoadSession> for Agents {
             {
                 Ok(h) => (Ok(h), None),
                 Err(SendError::HandlerError(busy)) => {
-                    (self.store.context_history(m.session).await, Some(busy))
+                    (store.context_history(m.session).await, Some(busy))
                 }
                 Err(e) => (Err(anyhow::anyhow!("{e}")), None),
             },
-            None => (self.store.context_history(m.session).await, None),
+            None => (store.context_history(m.session).await, None),
         };
         let (running, queued) = match &live {
             Some(actor) => (
@@ -3586,7 +3668,7 @@ impl Message<LoadSession> for Agents {
                 out.extend(dividers.map(|e| (e.at_seq, compacted(e, heads.get(&e.n).cloned()))));
                 // Durable failures sit behind their anchor's whole seq group
                 // (tool siblings, a divider), so paging keeps them with it.
-                match self.store.errors(m.session).await {
+                match store.errors(m.session).await {
                     Ok(errors) if !errors.is_empty() => {
                         out.extend(errors.into_iter().map(|(at, text)| {
                             (
@@ -3611,7 +3693,7 @@ impl Message<LoadSession> for Agents {
                 }
                 // Typed provenance for replay (50 §9): the exchange rows this
                 // session consumed, keyed by the history row they became.
-                match self.store.consumed_exchanges(m.session).await {
+                match store.consumed_exchanges(m.session).await {
                     Ok(rows) => {
                         let peers: HashMap<i64, PeerOrigin> = rows
                             .into_iter()
@@ -3628,7 +3710,10 @@ impl Message<LoadSession> for Agents {
                     Err(e) => tracing::error!(session = %m.session, "consumed_exchanges: {e:#}"),
                 }
                 let (mut history, first_seq, more) = page(out, m.before, m.limit);
-                materialize(&mut history, &messages, &epochs, &self.rt.data_dir);
+                // Previews land under the tree's root (51 §4.5): the data
+                // dir for durable, the scratch dir for private.
+                let root = self.resources_for(m.session).root.clone();
+                materialize(&mut history, &messages, &epochs, &root);
                 let (editable, reason, settled) = match (&refused, native.is_some(), external) {
                     (Some(busy), _, _) => (false, Some(busy.clone()), false),
                     (None, _, true) => (false, Some(NOT_NATIVE.to_owned()), !running),
@@ -3658,23 +3743,21 @@ impl Message<LoadSession> for Agents {
                 )
             }
         };
-        let undone = self
-            .store
+        let undone = store
             .hidden_turns(m.session)
             .await
             .unwrap_or_else(|e| {
                 tracing::error!(session = %m.session, "hidden_turns: {e:#}");
                 0
             });
-        let (model, effort, agent, name, parent) = row
-            .map(|r| (r.model, r.effort, r.agent, r.name, r.parent))
+        let (model, effort, agent, name, parent, project) = row
+            .map(|r| (r.model, r.effort, r.agent, r.name, r.parent, r.project))
             .unwrap_or_default();
         let (context_revision, context_editable, context_reason, context_estimate, settled) =
             context;
         // 47 §5.1: the committed plan, independent of paging and of a running
         // turn; a failed read is `None` (unavailable), never an empty plan.
-        let todos = self
-            .store
+        let todos = store
             .todos(m.session)
             .await
             .map_err(|e| tracing::error!(session = %m.session, "todos: {e:#}"))
@@ -3701,6 +3784,8 @@ impl Message<LoadSession> for Agents {
             settled,
             todos,
             communication,
+            project,
+            retention: self.retention_of(m.session),
         }
     }
 }
@@ -3822,7 +3907,7 @@ impl Agents {
     /// The stored row for `session`; `Err("unknown session")` — nothing is
     /// created and no harness is launched (48 §0.7).
     async fn stored(&self, session: SessionId) -> Result<SessionSummary, String> {
-        self.store
+        self.store_for(session)
             .session(session)
             .await
             .map_err(|e| format!("{e:#}"))?
@@ -3841,7 +3926,7 @@ impl Message<ContextItems> for Agents {
             (false, Some(a)) => a.ask(ContextItemsNow).await.map_err(|e| e.to_string()),
             (external, None) | (external @ true, Some(_)) => {
                 let mut s = self
-                    .store
+                    .store_for(m.session)
                     .context_items(m.session)
                     .await
                     .map_err(|e| format!("{e:#}"))?;
@@ -3893,7 +3978,7 @@ impl Message<RenameSession> for Agents {
         if title.is_empty() {
             return Err("empty title".into());
         }
-        self.store
+        self.store_for(m.session)
             .set_title(m.session, &title)
             .await
             .map_err(|e| e.to_string())?;
@@ -3929,7 +4014,7 @@ impl Message<PinSession> for Agents {
         m: PinSession,
         _: &mut Context<Self, Self::Reply>,
     ) -> Result<(), String> {
-        self.store
+        self.store_for(m.session)
             .set_pinned(m.session, m.pinned)
             .await
             .map_err(|e| e.to_string())
@@ -3942,8 +4027,17 @@ impl Message<DeleteSession> for Agents {
     async fn handle(
         &mut self,
         m: DeleteSession,
-        _: &mut Context<Self, Self::Reply>,
+        ctx: &mut Context<Self, Self::Reply>,
     ) -> Result<(), String> {
+        // A private member never takes the durable path (51 §4.4): the
+        // whole tree closes, running turns included.
+        if let Some(&root) = self.private_member.get(&m.session) {
+            self.close_private(root, ctx.actor_ref().clone()).await;
+            return Ok(());
+        }
+        if self.closing.contains(&m.session) {
+            return Err("session closed".into());
+        }
         let tree = self
             .store
             .descendants(m.session)
@@ -4112,12 +4206,12 @@ impl Message<SetModel> for Agents {
     ) -> Result<ModelInfo, String> {
         let resolved = self.catalog.resolve(&m.model, &*self.configured)?;
         if let Some(id) = m.session {
-            let Some(row) = self.store.session(id).await.map_err(|e| e.to_string())? else {
+            let Some(row) = self.store_for(id).session(id).await.map_err(|e| e.to_string())? else {
                 return Err(format!("unknown session {id}"));
             };
             let actor = self.actor(id).await?.native()?.clone();
             let _ = actor.tell(SwitchModel(resolved.clone())).await;
-            if let Err(e) = self.store.set_model(id, &resolved.id).await {
+            if let Err(e) = self.store_for(id).set_model(id, &resolved.id).await {
                 tracing::warn!(session = %id, "set_model: {e:#}");
             }
             self.rt
@@ -4152,7 +4246,7 @@ impl Agents {
         let _ = actor
             .tell(SetPendingEffort(effort.as_deref().and_then(effort_of)))
             .await;
-        if let Err(e) = self.store.set_effort(id, effort.as_deref()).await {
+        if let Err(e) = self.store_for(id).set_effort(id, effort.as_deref()).await {
             tracing::warn!(session = %id, "set_effort: {e:#}");
         }
         self.rt
@@ -4174,7 +4268,7 @@ impl Message<SetEffort> for Agents {
     ) -> Result<(), String> {
         let target = match m.session {
             Some(id) => {
-                self.store
+                self.store_for(id)
                     .session(id)
                     .await
                     .map_err(|e| e.to_string())?
@@ -4971,6 +5065,17 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
     }
     let cfg = Arc::new(cfg);
     let store = Store::open(&rt.data_dir.join("sessions.sqlite")).await?;
+    // 51 §6.4: calls a previous process left open can never settle.
+    match store.unresolve_open_calls().await {
+        Ok(n) if n > 0 => tracing::info!("accounting: {n} open call(s) marked unresolved"),
+        Ok(_) => {}
+        Err(e) => tracing::error!("accounting restart: {e:#}"),
+    }
+    // 51 §4.5: scratch dirs of dead processes, proven free by their lock.
+    let swept = crate::private::sweep_stale();
+    if swept > 0 {
+        tracing::info!("private: {swept} stale scratch dir(s) removed");
+    }
     // Plugins start in order and `secrets` precedes `agent`, so the actor is
     // registered by now or never (its vault failed to open).
     let vault = match ActorRef::<secrets::SecretsActor>::lookup(secrets::SECRETS_ACTOR) {
@@ -5082,6 +5187,12 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             search: Arc::default(),
             nodes: nodes.clone(),
             ledger: Ledger::default(),
+            private: HashMap::new(),
+            private_member: HashMap::new(),
+            closing: HashSet::new(),
+            generation: 0,
+            durable_resources: SessionResources::durable_arc(&rt.data_dir),
+            private_grace: PRIVATE_GRACE,
         },
         runtime::subscriber_mailbox(),
     );
@@ -5228,9 +5339,577 @@ async fn load_topology(store: &Store, communication: &SharedPolicy) {
     }
 }
 
+impl Message<SetSessionProject> for Agents {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        m: SetSessionProject,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<(), String> {
+        let project = project::normalize_project(m.project.as_deref())?;
+        let root = self
+            .store_for(m.session)
+            .set_project(m.session, project.as_deref())
+            .await
+            .map_err(|e| e.to_string())?;
+        // Committed above; the caller's next list must see it (RenameSession).
+        self.search.invalidate();
+        self.rt
+            .publish(AgentEvent::SessionMetadataChanged {
+                session: root,
+                project,
+            })
+            .await;
+        Ok(())
+    }
+}
+
+/// How long a private root outlives its owner's connection before it closes
+/// itself (51 §4.3): long enough for a reconnect + `resume_private`.
+const PRIVATE_GRACE: Duration = Duration::from_secs(30);
+/// Longest `Agents` waits for the owners' close acks before it gives up on
+/// them; the registry already times out each participant at 30 s.
+const CLOSE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// `tell` (internal): a private owner's connection has been gone for the
+/// grace period; close the root if the same owner still holds it.
+#[derive(Clone, Copy, Debug)]
+struct PrivateExpired {
+    root: SessionId,
+    peer: u64,
+    generation: u64,
+}
+
+/// `tell` (internal): the off-mailbox teardown of a private root finished.
+#[derive(Clone, Debug)]
+struct PrivateClosed {
+    root: SessionId,
+    ok: bool,
+    detail: Option<String>,
+}
+
+/// Constant-time equality over the full length of both strings.
+fn secret_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    let mut diff = a.len() ^ b.len();
+    for i in 0..a.len().max(b.len()) {
+        diff |= usize::from(a.get(i).copied().unwrap_or(0) ^ b.get(i).copied().unwrap_or(0));
+    }
+    diff == 0
+}
+
+impl Agents {
+    /// The store `id`'s tree lives in: a private member's in-memory store,
+    /// else the durable one (51 §4.5).
+    fn store_for(&self, id: SessionId) -> &Store {
+        self.private_member
+            .get(&id)
+            .and_then(|root| self.private.get(root))
+            .map_or(&self.store, |p| &p.store)
+    }
+
+    /// The file capability `id`'s tree runs under.
+    fn resources_for(&self, id: SessionId) -> Arc<SessionResources> {
+        self.private_member
+            .get(&id)
+            .and_then(|root| self.private.get(root))
+            .map_or_else(|| self.durable_resources.clone(), |p| p.resources.clone())
+    }
+
+    fn retention_of(&self, id: SessionId) -> Retention {
+        if self.private_member.contains_key(&id) {
+            Retention::Private
+        } else {
+            Retention::Durable
+        }
+    }
+
+    /// The tool registry, which owns the lifecycle barrier (51 §8.2).
+    /// `Ok(None)` only under `cfg(test)`, where no registry runs and the
+    /// barrier itself is the tools crate's to test; in a binary a missing
+    /// registry makes private mode unavailable.
+    fn registry() -> Result<Option<ActorRef<ToolRegistry>>, String> {
+        // A name can outlive its actor (another test's registry, or a crashed
+        // one); a dead ref would fail every ask with "actor not running".
+        match ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR) {
+            Ok(Some(reg)) if reg.is_alive() => Ok(Some(reg)),
+            _ if cfg!(test) => Ok(None),
+            _ => Err("private mode unavailable: tool registry".into()),
+        }
+    }
+
+    /// Tell the registry (and through it every owner) the current member
+    /// set of a private tree; idempotent superset (51 §8.2).
+    async fn open_tree(&self, root: SessionId) {
+        let Some(p) = self.private.get(&root) else {
+            return;
+        };
+        if let Ok(Some(reg)) = Self::registry() {
+            let _ = reg
+                .tell(OpenTree(TreeOpened {
+                    root,
+                    sessions: p.members.clone(),
+                    resources: p.resources.clone(),
+                }))
+                .await;
+        }
+    }
+
+    /// A fresh private tree around `store` (51 §4.1): scratch dir, next
+    /// generation, owner record, registry announcement and the owner watcher.
+    /// The root row must already exist in `store`.
+    async fn open_private(
+        &mut self,
+        root: SessionId,
+        store: Arc<Store>,
+        owner: (String, u64, CancellationToken, String),
+        me: ActorRef<Agents>,
+    ) -> Result<(), String> {
+        let (view, peer, peer_closed, secret) = owner;
+        let scratch = Scratch::create().map_err(|e| format!("private scratch: {e}"))?;
+        self.generation += 1;
+        let generation = self.generation;
+        let resources = Arc::new(SessionResources {
+            root: scratch.root.clone(),
+            retention: Retention::Private,
+            generation,
+        });
+        self.private.insert(
+            root,
+            PrivateRoot {
+                store,
+                scratch: Some(scratch),
+                owner: PrivateOwner {
+                    view,
+                    peer,
+                    peer_closed,
+                    generation,
+                    secret,
+                },
+                resources,
+                members: vec![root],
+                cancel: CancellationToken::new(),
+                closing: false,
+            },
+        );
+        self.private_member.insert(root, root);
+        self.open_tree(root).await;
+        self.watch_owner(root, me);
+        Ok(())
+    }
+
+    /// Watch the owner's connection: gone for [`Self::private_grace`] →
+    /// [`PrivateExpired`]. The root's `cancel` token ends the watch (rebind,
+    /// close), so a stale watcher never fires for a new owner.
+    fn watch_owner(&self, root: SessionId, me: ActorRef<Agents>) {
+        let Some(p) = self.private.get(&root) else {
+            return;
+        };
+        let (peer, generation) = (p.owner.peer, p.owner.generation);
+        let peer_closed = p.owner.peer_closed.clone();
+        let watcher = p.cancel.clone();
+        let grace = self.private_grace;
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = watcher.cancelled() => return,
+                _ = peer_closed.cancelled() => {}
+            }
+            tokio::select! {
+                _ = watcher.cancelled() => return,
+                _ = tokio::time::sleep(grace) => {}
+            }
+            let _ = me
+                .tell(PrivateExpired {
+                    root,
+                    peer,
+                    generation,
+                })
+                .await;
+        });
+    }
+
+    /// Fork a private member into a new private root for the same owner
+    /// (51 §4.1): the copy is made inside the tree's in-memory store, which
+    /// the new root then shares; the store closes with its last tree.
+    async fn fork_private(
+        &mut self,
+        root: SessionId,
+        m: ForkSession,
+        me: ActorRef<Agents>,
+    ) -> Result<SessionId, String> {
+        let p = self.private.get(&root).ok_or("no such session")?;
+        if p.closing {
+            return Err("session closing".into());
+        }
+        let store = p.store.clone();
+        let owner = (
+            p.owner.view.clone(),
+            p.owner.peer,
+            p.owner.peer_closed.clone(),
+            // Same holder, same lease: the owner already presents this secret.
+            p.owner.secret.clone(),
+        );
+        let id = store
+            .fork(m.session, m.through, m.reply)
+            .await
+            .map_err(|e| e.to_string())?;
+        self.open_private(id, store, owner, me).await?;
+        Ok(id)
+    }
+
+    /// Close a private tree (51 §4.4), linearised in this mailbox: every
+    /// member is marked closed and stopped, the generation bumps and
+    /// `SessionClosing` goes out; the owners' barrier, the store and the
+    /// scratch dir are torn down off-mailbox, answered by [`PrivateClosed`].
+    async fn close_private(&mut self, root: SessionId, me: ActorRef<Agents>) {
+        let Some(p) = self.private.get_mut(&root) else {
+            return;
+        };
+        if p.closing {
+            return;
+        }
+        p.closing = true;
+        p.cancel.cancel();
+        self.generation += 1;
+        let generation = self.generation;
+        let members = p.members.clone();
+        let store = p.store.clone();
+        let scratch = p.scratch.take();
+        for &id in &members {
+            self.closing.insert(id);
+            self.private_member.remove(&id);
+            // Stop control (47 §4.3), then forget: nothing of this tree continues.
+            self.ledger.bump(id);
+            self.ledger.forget(id);
+            self.running.remove(&id);
+            self.approvals.remove(&id);
+            self.last_stop.remove(&id);
+            self.owned_children.remove(&id);
+            self.bound.retain(|(s, _), _| *s != id);
+            self.delivered.retain(|(s, _), _| *s != id);
+            self.turn_text.retain(|(s, _), _| *s != id);
+            if let Some(timer) = self.child_turns.remove(&id).and_then(|ct| ct.timer) {
+                timer.abort();
+            }
+            if let Some(live) = self.sessions.remove(&id) {
+                live.actor.tell_cancel().await;
+                live.actor.kill().await;
+            }
+        }
+        self.expire_waits("session closed", |w| members.contains(&w.session));
+        self.rt
+            .publish(AgentEvent::SessionClosing {
+                session: root,
+                generation,
+            })
+            .await;
+        let registry = Self::registry();
+        tokio::spawn(async move {
+            let (mut ok, mut detail) = (true, None);
+            match registry {
+                Ok(Some(reg)) => {
+                    let cancel = CancellationToken::new();
+                    let barrier = reg.ask(CloseTreeAll(CloseTree {
+                        subtree: members.clone(),
+                        generation,
+                        cancel: cancel.clone(),
+                    }));
+                    match tokio::time::timeout(CLOSE_TIMEOUT, barrier).await {
+                        Ok(Ok(acks)) => {
+                            let failed: Vec<String> = acks
+                                .iter()
+                                .filter(|a| !a.ok)
+                                .map(|a| match &a.detail {
+                                    Some(d) => format!("{}: {d}", a.owner),
+                                    None => a.owner.clone(),
+                                })
+                                .collect();
+                            if !failed.is_empty() {
+                                ok = false;
+                                detail = Some(failed.join("; "));
+                            }
+                        }
+                        Ok(Err(e)) => {
+                            ok = false;
+                            detail = Some(format!("close barrier: {e}"));
+                        }
+                        Err(_) => {
+                            cancel.cancel();
+                            ok = false;
+                            detail = Some("close barrier: timeout".into());
+                        }
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    ok = false;
+                    detail = Some(e);
+                }
+            }
+            // This tree's rows go even when a fork still shares the store;
+            // the last tree out closes the pool.
+            if let Err(e) = store.delete_session(root).await {
+                tracing::warn!(session = %root, "private rows: {e:#}");
+            }
+            if let Ok(store) = Arc::try_unwrap(store) {
+                store.pool().close().await;
+            }
+            if let Some(scratch) = scratch
+                && let Err(e) = scratch.remove()
+            {
+                ok = false;
+                detail = Some(format!("scratch: {e}"));
+            }
+            let _ = me.tell(PrivateClosed { root, ok, detail }).await;
+        });
+    }
+}
+
+impl Message<CreateSession> for Agents {
+    type Reply = Result<SessionOpen, String>;
+
+    async fn handle(&mut self, m: CreateSession, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let project = project::normalize_project(m.options.project.as_deref())?;
+        if m.options.retention == Retention::Durable {
+            let cwd = m.options.cwd.as_deref().map(Path::new);
+            let id = self.new_root(cwd, PeerScope::Owner).await?;
+            if project.is_some() {
+                self.store
+                    .set_project(id, project.as_deref())
+                    .await
+                    .map_err(|e| e.to_string())?;
+                self.search.invalidate();
+            }
+            return Ok(SessionOpen {
+                session: id,
+                root: id,
+                retention: Retention::Durable,
+                lease_secret: None,
+            });
+        }
+        let view = m
+            .options
+            .view
+            .filter(|v| !v.trim().is_empty())
+            .ok_or("a private session needs a view")?;
+        let (peer, peer_closed) = m.peer.ok_or("a private session needs an RPC peer")?;
+        // 51 §8.2: every enabled owner must be able to clean up before any
+        // private byte exists.
+        if let Some(reg) = Self::registry()? {
+            // A handler `Err` (missing owners) is lifted into `HandlerError`.
+            reg.ask(ParticipantsReady).await.map_err(|e| match e {
+                SendError::HandlerError(missing) => format!("private mode unavailable: {missing}"),
+                e => format!("private mode unavailable: {e}"),
+            })?;
+        }
+        let store = Store::open_memory().await.map_err(|e| format!("{e:#}"))?;
+        let root = SessionId::new();
+        let model = self.resolve_model(&self.default_model).0.id;
+        store
+            .create_session(root, &model, None, None, project.as_deref())
+            .await
+            .map_err(|e| e.to_string())?;
+        if let Some(e) = &self.default_effort {
+            store
+                .set_effort(root, Some(e))
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        if let Some(cwd) = &m.options.cwd {
+            store
+                .set_cwd(root, Path::new(cwd))
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        let secret = PrivateOwner::mint_secret();
+        self.open_private(
+            root,
+            Arc::new(store),
+            (view, peer, peer_closed, secret.clone()),
+            ctx.actor_ref().clone(),
+        )
+        .await?;
+        // The loop actor over the private store, so the first input never
+        // races the tree's registration above.
+        if let Err(e) = self.session(Some(root), None, None, (None, None)).await {
+            self.close_private(root, ctx.actor_ref().clone()).await;
+            return Err(format!("{e:#}"));
+        }
+        Ok(SessionOpen {
+            session: root,
+            root,
+            retention: Retention::Private,
+            lease_secret: Some(secret),
+        })
+    }
+}
+
+impl Message<Authorize> for Agents {
+    type Reply = Result<Authorized, String>;
+
+    async fn handle(&mut self, m: Authorize, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        if let Some(&root) = self.private_member.get(&m.session) {
+            let p = self.private.get(&root).ok_or("no such session")?;
+            if p.closing {
+                return Err("session closing".into());
+            }
+            if m.peer != Some(p.owner.peer) {
+                return Err("unauthorized".into());
+            }
+            return Ok(Authorized {
+                root,
+                retention: Retention::Private,
+                generation: p.resources.generation,
+                resources: p.resources.clone(),
+                owner_peer: Some(p.owner.peer),
+            });
+        }
+        if self.closing.contains(&m.session) {
+            return Err("session closed".into());
+        }
+        match self.store.lineage(m.session).await {
+            Ok(l) => Ok(Authorized {
+                root: l.root(),
+                retention: Retention::Durable,
+                generation: 0,
+                resources: self.durable_resources.clone(),
+                owner_peer: None,
+            }),
+            Err(e) if e.downcast_ref::<CommError>() == Some(&CommError::NotFound) => {
+                Err("no such session".into())
+            }
+            Err(e) => Err(format!("{e:#}")),
+        }
+    }
+}
+
+impl Message<PrivateTrees> for Agents {
+    type Reply = Vec<(SessionId, SessionId, u64)>;
+
+    async fn handle(&mut self, _: PrivateTrees, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        // A closing tree stays listed until `PrivateClosed` published its
+        // `SessionDeleted`s: a subscriber seeded now must still filter them.
+        self.private
+            .iter()
+            .flat_map(|(root, p)| p.members.iter().map(move |m| (*m, *root, p.owner.peer)))
+            .collect()
+    }
+}
+
+impl Message<ResumePrivate> for Agents {
+    type Reply = Result<SessionOpen, String>;
+
+    async fn handle(&mut self, m: ResumePrivate, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let root = *self
+            .private_member
+            .get(&m.session)
+            .ok_or("no such private session")?;
+        let p = self.private.get_mut(&root).ok_or("no such private session")?;
+        if p.closing {
+            return Err("session closing".into());
+        }
+        if p.owner.view != m.view || !secret_eq(&p.owner.secret, &m.lease_secret) {
+            return Err("unauthorized".into());
+        }
+        // One step: new secret, new holder, old watcher gone, new watcher on.
+        let secret = PrivateOwner::mint_secret();
+        p.owner.secret = secret.clone();
+        p.owner.peer = m.peer.0;
+        p.owner.peer_closed = m.peer.1;
+        p.cancel.cancel();
+        p.cancel = CancellationToken::new();
+        self.watch_owner(root, ctx.actor_ref().clone());
+        Ok(SessionOpen {
+            session: m.session,
+            root,
+            retention: Retention::Private,
+            lease_secret: Some(secret),
+        })
+    }
+}
+
+impl Message<LeaveSession> for Agents {
+    type Reply = Result<CloseResult, String>;
+
+    async fn handle(&mut self, m: LeaveSession, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let Some(&root) = self.private_member.get(&m.session) else {
+            return Err(if self.closing.contains(&m.session) {
+                "session closed".into()
+            } else {
+                "not a private session".into()
+            });
+        };
+        let p = self.private.get(&root).ok_or("session closed")?;
+        if p.closing {
+            return Err("session closing".into());
+        }
+        let holder = m.peer == p.owner.peer
+            || m.lease_secret
+                .as_deref()
+                .is_some_and(|s| secret_eq(s, &p.owner.secret));
+        if !holder {
+            return Err("unauthorized".into());
+        }
+        self.close_private(root, ctx.actor_ref().clone()).await;
+        Ok(CloseResult {
+            revoked: true,
+            cleanup: CleanupStatus::Pending,
+        })
+    }
+}
+
+impl Message<PrivateExpired> for Agents {
+    type Reply = ();
+
+    async fn handle(&mut self, m: PrivateExpired, ctx: &mut Context<Self, Self::Reply>) {
+        let still_held = self
+            .private
+            .get(&m.root)
+            .is_some_and(|p| !p.closing && p.owner.peer == m.peer && p.owner.generation == m.generation);
+        if still_held {
+            tracing::info!(session = %m.root, "private owner gone; closing");
+            self.close_private(m.root, ctx.actor_ref().clone()).await;
+        }
+    }
+}
+
+impl Message<PrivateClosed> for Agents {
+    type Reply = ();
+
+    async fn handle(&mut self, m: PrivateClosed, _: &mut Context<Self, Self::Reply>) {
+        let Some(p) = self.private.remove(&m.root) else {
+            return;
+        };
+        if !m.ok {
+            tracing::warn!(
+                session = %m.root,
+                "private cleanup incomplete: {}",
+                m.detail.as_deref().unwrap_or("unknown")
+            );
+        }
+        // Children first, then the root: the order `DeleteSession` uses.
+        for session in p.members.into_iter().rev() {
+            self.rt.publish(AgentEvent::SessionDeleted { session }).await;
+        }
+    }
+}
+
+impl Message<SessionCostQuery> for Agents {
+    type Reply = Result<Option<crate::cost::SessionCost>, String>;
+
+    async fn handle(&mut self, m: SessionCostQuery, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.store_for(m.0)
+            .session_cost(m.0)
+            .await
+            .map_err(|e| format!("{e:#}"))
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::CreateSessionOptions;
     use crate::context::ContextAttachment;
 
     #[tokio::test]
@@ -5809,6 +6488,13 @@ pub(crate) mod tests {
             search: Arc::default(),
             nodes: Nodes::default(),
             ledger: Ledger::default(),
+            private: HashMap::new(),
+            private_member: HashMap::new(),
+            closing: HashSet::new(),
+            generation: 0,
+            durable_resources: SessionResources::durable_arc(&dir),
+            // Short enough for a test to outwait it (`resume_rebinds_and_cancels_old_watcher`).
+            private_grace: Duration::from_millis(200),
         }
     }
 
@@ -6492,7 +7178,7 @@ pub(crate) mod tests {
         let store = a.store.clone();
         let agents = Agents::spawn(a);
         let id = SessionId::new();
-        store.create_session(id, "m", None, None).await.unwrap();
+        store.create_session(id, "m", None, None, None).await.unwrap();
         store.set_title(id, "deploy checklist").await.unwrap();
 
         let page = |q: &'static str| {
@@ -6535,5 +7221,239 @@ pub(crate) mod tests {
             "deleted session served after delete replied: {next:?}"
         );
         assert_eq!(settled("release").await.hits.len(), 0);
+    }
+
+    /// The handler's `Err(String)` of an `ask` (kameo lifts it into
+    /// `SendError::HandlerError`); panics on `Ok` or a transport failure.
+    fn refused<T: std::fmt::Debug, M>(r: Result<T, SendError<M, String>>) -> String {
+        match r {
+            Err(SendError::HandlerError(e)) => e,
+            Ok(v) => panic!("expected a refusal, got {v:?}"),
+            Err(e) => panic!("send failed: {e}"),
+        }
+    }
+
+    /// `CreateSession` for a private root through a spawned supervisor. No
+    /// tool registry runs in these tests, so the participant barrier is
+    /// bypassed (`Agents::registry` → `Ok(None)` under `cfg(test)`); the
+    /// barrier itself is covered by the tools crate.
+    async fn open_private(
+        agents: &ActorRef<Agents>,
+        peer: u64,
+        closed: CancellationToken,
+    ) -> SessionOpen {
+        agents
+            .ask(CreateSession {
+                options: CreateSessionOptions {
+                    retention: Retention::Private,
+                    project: Some("ops".into()),
+                    view: Some("v1".into()),
+                    cwd: None,
+                },
+                peer: Some((peer, closed)),
+            })
+            .await
+            .unwrap()
+    }
+
+    /// 51 §4.1–§4.2: a private root needs a view and an owning peer; once
+    /// open it authorizes only that peer, is absent from the durable list
+    /// and present in `PrivateTrees`, and its state reads through its own store.
+    #[tokio::test]
+    async fn private_root_is_owned_and_unlisted() {
+        let agents = Agents::spawn(agents().await);
+        let private = |view: Option<&str>| CreateSessionOptions {
+            retention: Retention::Private,
+            project: None,
+            view: view.map(str::to_owned),
+            cwd: None,
+        };
+        let no_peer = agents
+            .ask(CreateSession {
+                options: private(Some("v1")),
+                peer: None,
+            })
+            .await;
+        assert_eq!(refused(no_peer), "a private session needs an RPC peer");
+        let no_view = agents
+            .ask(CreateSession {
+                options: private(None),
+                peer: Some((7, CancellationToken::new())),
+            })
+            .await;
+        assert_eq!(refused(no_view), "a private session needs a view");
+
+        let open = open_private(&agents, 7, CancellationToken::new()).await;
+        assert_eq!(open.retention, Retention::Private);
+        assert_eq!(open.session, open.root);
+        assert_eq!(open.lease_secret.as_deref().map(str::len), Some(64));
+
+        let authorize = |session, peer| agents.ask(Authorize { session, peer });
+        let auth = authorize(open.root, Some(7)).await.unwrap();
+        assert_eq!(
+            (auth.root, auth.retention, auth.owner_peer),
+            (open.root, Retention::Private, Some(7))
+        );
+        assert!(auth.resources.is_private());
+        assert_eq!(auth.generation, 1);
+        for peer in [Some(8), None] {
+            assert_eq!(refused(authorize(open.root, peer).await), "unauthorized");
+        }
+        assert_eq!(
+            refused(authorize(SessionId::new(), Some(7)).await),
+            "no such session"
+        );
+        // A durable root: any peer, the durable capability, listed with its project.
+        let durable = agents
+            .ask(CreateSession {
+                options: CreateSessionOptions {
+                    project: Some("ops".into()),
+                    ..CreateSessionOptions::default()
+                },
+                peer: None,
+            })
+            .await
+            .unwrap();
+        assert!(durable.lease_secret.is_none());
+        let auth = authorize(durable.root, Some(99)).await.unwrap();
+        assert_eq!(
+            (auth.retention, auth.generation, auth.owner_peer),
+            (Retention::Durable, 0, None)
+        );
+
+        let listed = agents.ask(ListSessions).await.unwrap();
+        assert!(
+            listed
+                .iter()
+                .any(|s| s.id == durable.root && s.project.as_deref() == Some("ops"))
+        );
+        assert!(!listed.iter().any(|s| s.id == open.root), "private root listed");
+        assert_eq!(
+            agents.ask(PrivateTrees).await.unwrap(),
+            vec![(open.root, open.root, 7)]
+        );
+        // Session-scoped reads route to the tree's store: the private row
+        // answers from the in-memory store, and the subtree listing is empty.
+        agents.ask(GetTodos { session: open.root }).await.unwrap();
+        assert!(
+            agents
+                .ask(ListAgents { session: open.root })
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// 51 §4.4: only the holder may leave; a left tree is revoked at once,
+    /// fails `Authorize` closed, and input to its id recreates nothing durable.
+    #[tokio::test]
+    async fn leave_revokes_and_never_recreates() {
+        let a = agents().await;
+        let store = a.store.clone();
+        let agents = Agents::spawn(a);
+        let open = open_private(&agents, 7, CancellationToken::new()).await;
+        let root = open.root;
+        let leave = |peer| {
+            agents.ask(LeaveSession {
+                session: root,
+                lease_secret: None,
+                peer,
+            })
+        };
+        assert_eq!(refused(leave(8).await), "unauthorized");
+        let left = leave(7).await.unwrap();
+        assert!(left.revoked);
+        assert_eq!(left.cleanup, CleanupStatus::Pending);
+
+        let e = refused(
+            agents
+                .ask(Authorize {
+                    session: root,
+                    peer: Some(7),
+                })
+                .await,
+        );
+        assert!(e.starts_with("session clos"), "{e}");
+        // Still listed while closing: a subscriber seeded now must filter its
+        // closing/deleted events (RPC filter map is insert-only).
+        assert_eq!(agents.ask(PrivateTrees).await.unwrap(), vec![(root, root, 7)]);
+        assert_eq!(refused(leave(7).await), "session closed");
+        // Input to the closed id is refused, not turned into a durable row.
+        agents
+            .ask(SendInput {
+                session: Some(root),
+                text: "hello".into(),
+                files: Vec::new(),
+            })
+            .await
+            .unwrap();
+        assert!(store.session(root).await.unwrap().is_none());
+        assert!(
+            !agents
+                .ask(ListSessions)
+                .await
+                .unwrap()
+                .iter()
+                .any(|s| s.id == root)
+        );
+        // Teardown ran off-mailbox; the tree is gone for good.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(agents.ask(PrivateTrees).await.unwrap().is_empty());
+    }
+
+    /// 51 §4.3: `resume_private` needs the view and the current secret,
+    /// rotates it and rebinds the owner. Rebinding cancels the old owner's
+    /// watcher (its dead connection no longer closes the root); the new
+    /// owner's does after the grace.
+    #[tokio::test]
+    async fn resume_rebinds_and_cancels_old_watcher() {
+        let agents = Agents::spawn(agents().await);
+        let old_closed = CancellationToken::new();
+        let open = open_private(&agents, 7, old_closed.clone()).await;
+        let (root, secret) = (open.root, open.lease_secret.unwrap());
+        let resume = |view: &str, secret: &str, peer: u64, closed: CancellationToken| {
+            agents.ask(ResumePrivate {
+                session: root,
+                view: view.to_owned(),
+                lease_secret: secret.to_owned(),
+                peer: (peer, closed),
+            })
+        };
+        let authorize = |peer| {
+            agents.ask(Authorize {
+                session: root,
+                peer: Some(peer),
+            })
+        };
+        assert_eq!(
+            refused(resume("v1", "nope", 9, CancellationToken::new()).await),
+            "unauthorized"
+        );
+        assert_eq!(
+            refused(resume("v2", &secret, 9, CancellationToken::new()).await),
+            "unauthorized"
+        );
+        let new_closed = CancellationToken::new();
+        let rebound = resume("v1", &secret, 9, new_closed.clone()).await.unwrap();
+        let rotated = rebound.lease_secret.unwrap();
+        assert_ne!(rotated, secret);
+        assert_eq!(
+            refused(resume("v1", &secret, 9, CancellationToken::new()).await),
+            "unauthorized",
+            "old secret still accepted"
+        );
+        authorize(9).await.unwrap();
+        assert_eq!(refused(authorize(7).await), "unauthorized");
+        assert_eq!(agents.ask(PrivateTrees).await.unwrap(), vec![(root, root, 9)]);
+
+        // The old connection dies well past the (200 ms) grace: the root stays.
+        old_closed.cancel();
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        assert_eq!(agents.ask(PrivateTrees).await.unwrap(), vec![(root, root, 9)]);
+        // The holder's connection dies: the root closes itself after the grace.
+        new_closed.cancel();
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        assert!(agents.ask(PrivateTrees).await.unwrap().is_empty());
+        assert!(refused(authorize(9).await).starts_with("session clos"));
     }
 }

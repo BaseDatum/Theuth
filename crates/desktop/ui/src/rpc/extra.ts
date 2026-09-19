@@ -7,6 +7,7 @@ import type { CompactStyle } from '@/rpc/bindings/CompactStyle'
 import type { CommunicationState } from '@/rpc/bindings/CommunicationState'
 import type { Kind } from '@/rpc/bindings/Kind'
 import type { Loaded } from '@/rpc/bindings/Loaded'
+import type { Retention } from '@/rpc/bindings/Retention'
 import type { SessionId } from '@/rpc/bindings/SessionId'
 import type { HistoryEntry as BoundHistory } from '@/rpc/bindings/HistoryEntry'
 import type { TurnId } from '@/rpc/bindings/TurnId'
@@ -83,6 +84,10 @@ export type AgentInfo = {
   /** RFC 3339; `null` before a `TurnFinished`. */
   finished_at: string | null
   last: string
+  /** Effective project label of the root (51 §3); `#[serde(default)]`. */
+  project?: string | null
+  /** Storage class of the root (51 §4); `#[serde(default)]` = durable. */
+  retention?: Retention
 }
 
 /** `AgentEvent::TitleChanged`: the titler or `rename_session` wrote a title. */

@@ -65,6 +65,9 @@ export const COMMANDS: readonly { name: string; hint: string; desc: string }[] =
     hint: '[kill <id>]',
     desc: "list this session's background jobs",
   },
+  { name: '/project', hint: '<label>|off', desc: "set or clear this chat's project (51 §3)" },
+  { name: '/cost', hint: '', desc: "this session's returned cost breakdown" },
+  { name: '/terminals', hint: '', desc: "this session's live terminals" },
   { name: '/todos', hint: '', desc: "toggle this session's todo card (TUI: F2)" },
   {
     name: '/parent',
@@ -216,6 +219,8 @@ export const FRESH: LoadedPage = {
   settled: true,
   todos: null,
   communication: null,
+  project: null,
+  retention: 'durable',
 }
 
 /**
@@ -449,6 +454,20 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
         return
       }
       throw new Error('usage: /jobs [kill <id>]')
+    case '/project': {
+      const id = need(session)
+      if (!arg) throw new Error('usage: /project <label>|off')
+      await api.set_session_project(id, arg === 'off' ? null : arg)
+      void active().qc.invalidateQueries({ queryKey: queryKeys.sessions })
+      toast(arg === 'off' ? 'project cleared' : `project: ${arg}`)
+      return
+    }
+    case '/cost':
+      window.dispatchEvent(new CustomEvent('wth:open-cost', { detail: { session: need(session) } }))
+      return
+    case '/terminals':
+      window.dispatchEvent(new CustomEvent('wth:terminals', { detail: { session: need(session) } }))
+      return
     case '/compact': {
       if (!arg) return compact(api, need(session), null)
       const s = style(sub)

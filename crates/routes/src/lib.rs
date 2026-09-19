@@ -5,11 +5,13 @@
 //! this crate asks it, so 44 §6's messages are methods.
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use ::tools::{REGISTRY_ACTOR, ToolRegistry};
+use ::tools::{CloseAck, CloseTree, REGISTRY_ACTOR, RegisterLifecycle, ToolRegistry};
+use kameo::actor::Spawn;
+use kameo::message::{Context, Message};
 use runtime::{Runtime, SessionId};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -79,6 +81,12 @@ pub struct Routes {
     /// on a quiet page still answers for the site the session is on. Never
     /// swept: one `String` per session ever seen is nothing.
     last_domain: tokio::sync::Mutex<HashMap<SessionId, String>>,
+    /// 51 §5: a private tree's learned routes, by its scratch root and
+    /// domain; never merged into `store`, dropped on [`CloseTree`].
+    private: tokio::sync::Mutex<HashMap<PathBuf, HashMap<String, SiteRoutes>>>,
+    /// Private session → its root, recorded on `learn`, so a close by
+    /// subtree finds the root's map.
+    members: tokio::sync::Mutex<HashMap<SessionId, PathBuf>>,
 }
 
 /// `site_learn` result (44 §4).
@@ -124,18 +132,119 @@ impl Routes {
             fetcher,
             creds: tokio::sync::Mutex::new(HashMap::new()),
             last_domain: tokio::sync::Mutex::new(HashMap::new()),
+            private: tokio::sync::Mutex::new(HashMap::new()),
+            members: tokio::sync::Mutex::new(HashMap::new()),
         }
+    }
+
+    /// A domain's routes: the private root's map when `root` is given, else
+    /// the disk store.
+    pub(crate) async fn load(&self, root: Option<&Path>, domain: &str) -> anyhow::Result<SiteRoutes> {
+        let Some(root) = root else {
+            return self.store.load(domain).await;
+        };
+        Ok(self
+            .private
+            .lock()
+            .await
+            .get(root)
+            .and_then(|m| m.get(domain))
+            .cloned()
+            .unwrap_or_else(|| SiteRoutes {
+                domain: domain.to_owned(),
+                ..SiteRoutes::default()
+            }))
+    }
+
+    async fn merge(
+        &self,
+        root: Option<&Path>,
+        domain: &str,
+        routes: Vec<Route>,
+    ) -> anyhow::Result<SiteRoutes> {
+        let Some(root) = root else {
+            return self.store.merge(domain, routes).await;
+        };
+        let mut private = self.private.lock().await;
+        let site = private
+            .entry(root.to_path_buf())
+            .or_default()
+            .entry(domain.to_owned())
+            .or_insert_with(|| SiteRoutes {
+                domain: domain.to_owned(),
+                ..SiteRoutes::default()
+            });
+        store::merge_into(site, routes);
+        Ok(site.clone())
+    }
+
+    pub(crate) async fn mark(
+        &self,
+        root: Option<&Path>,
+        domain: &str,
+        route_id: &str,
+        ok: bool,
+    ) -> anyhow::Result<()> {
+        let Some(root) = root else {
+            return self.store.mark(domain, route_id, ok).await;
+        };
+        if let Some(site) = self
+            .private
+            .lock()
+            .await
+            .get_mut(root)
+            .and_then(|m| m.get_mut(domain))
+        {
+            store::mark_in(site, route_id, ok);
+        }
+        Ok(())
+    }
+
+    /// [`CloseTree`]: drop the subtree's credentials, last domains and, for
+    /// any private member, its root's routes.
+    pub async fn close(&self, subtree: &[SessionId]) {
+        let roots: Vec<PathBuf> = {
+            let mut members = self.members.lock().await;
+            subtree.iter().filter_map(|s| members.remove(s)).collect()
+        };
+        if !roots.is_empty() {
+            let mut private = self.private.lock().await;
+            for r in &roots {
+                private.remove(r);
+            }
+        }
+        self.creds
+            .lock()
+            .await
+            .retain(|(s, _), _| !subtree.contains(s));
+        self.last_domain
+            .lock()
+            .await
+            .retain(|s, _| !subtree.contains(s));
     }
 
     /// 44 §3.2–§3.4, §3.6: with `url`, navigate this session's isolate there
     /// (`networkidle0`) and settle; drain the capture buffer, classify, merge
     /// per registrable domain, arm the session's credentials. Replies for the
-    /// domain of `url`, else the domain with most routes.
+    /// domain of `url`, else the domain with most routes. `root` is the
+    /// private tree's scratch root (51 §5): its routes stay in memory under
+    /// it; `None` merges into `<data_dir>/routes`.
     ///
     /// # Errors
     /// No browser actor, a failed navigation, an unparseable capture, or a
     /// store write failure.
-    pub async fn learn(&self, session: SessionId, url: Option<&Url>) -> anyhow::Result<LearnReply> {
+    pub async fn learn(
+        &self,
+        session: SessionId,
+        root: Option<&Path>,
+        url: Option<&Url>,
+    ) -> anyhow::Result<LearnReply> {
+        if let Some(root) = root {
+            self.members
+                .lock()
+                .await
+                .insert(session, root.to_path_buf());
+        }
         if let Some(u) = url {
             capture::navigate(session, u).await?;
             tokio::time::sleep(Duration::from_millis(self.cfg.settle_ms)).await;
@@ -175,9 +284,9 @@ impl Routes {
         };
         for (d, learned) in grouped {
             let cookie = capture::cookie_header(session, &d).await;
-            self.absorb(session, &d, learned, cookie).await?;
+            self.absorb(session, root, &d, learned, cookie).await?;
         }
-        let routes = self.store.load(&domain).await?.routes;
+        let routes = self.load(root, &domain).await?.routes;
         let hint = hint(&exs, classified, &top_urls, &domain, routes.len());
         Ok(LearnReply {
             domain,
@@ -195,6 +304,7 @@ impl Routes {
     async fn absorb(
         &self,
         session: SessionId,
+        root: Option<&Path>,
         domain: &str,
         learned: Vec<Learned>,
         cookie: Option<String>,
@@ -218,7 +328,7 @@ impl Routes {
         if let Some(c) = cookie {
             fresh.push(("cookie".to_owned(), Zeroizing::new(c)));
         }
-        let site = self.store.merge(domain, routes).await?;
+        let site = self.merge(root, domain, routes).await?;
         if fresh.is_empty() {
             return Ok(site);
         }
@@ -239,15 +349,17 @@ impl Routes {
         Ok(site)
     }
 
-    /// The stored routes for `url`'s registrable domain.
+    /// The stored routes for `url`'s registrable domain (`root` as in
+    /// [`Self::learn`]).
     ///
     /// # Errors
     /// Store read failure.
-    pub async fn list(&self, url: &Url) -> anyhow::Result<SiteRoutes> {
-        self.store.load(&registrable_domain(url)).await
+    pub async fn list(&self, root: Option<&Path>, url: &Url) -> anyhow::Result<SiteRoutes> {
+        self.load(root, &registrable_domain(url)).await
     }
 
-    /// 44 §3.5: fill, arm, request, drift-check (`replay::call`).
+    /// 44 §3.5: fill, arm, request, drift-check (`replay::call`); `root` as
+    /// in [`Self::learn`].
     ///
     /// # Errors
     /// Unknown or non-replayable route, missing path params, transport
@@ -255,10 +367,11 @@ impl Routes {
     pub async fn call(
         &self,
         session: SessionId,
+        root: Option<&Path>,
         route_id: &str,
         params: &Map<String, Value>,
     ) -> anyhow::Result<CallReply> {
-        replay::call(self, session, route_id, params).await
+        replay::call(self, session, root, route_id, params).await
     }
 
     /// Drop credential entries untouched for [`CREDS_IDLE`].
@@ -338,6 +451,20 @@ fn hint(exs: &[Exchange], classified: bool, top_urls: &[String], domain: &str, n
     }
 }
 
+/// The `"routes"` lifecycle participant (51 §4.4): answers [`CloseTree`]
+/// with [`Routes::close`]. Nothing to prepare on open, so no `opened`.
+#[derive(kameo::Actor)]
+struct Lifecycle(Arc<Routes>);
+
+impl Message<CloseTree> for Lifecycle {
+    type Reply = CloseAck;
+
+    async fn handle(&mut self, m: CloseTree, _: &mut Context<Self, Self::Reply>) -> CloseAck {
+        self.0.close(&m.subtree).await;
+        CloseAck::ok("routes")
+    }
+}
+
 /// The plugin: reads `routes`, builds the fetcher, registers `site_learn` /
 /// `site_routes` / `site_call` once the tool registry is up, and sweeps idle
 /// credentials until shutdown.
@@ -380,6 +507,14 @@ impl runtime::Plugin for RoutesPlugin {
         let rt = rt.clone();
         tokio::spawn(async move {
             if let Some(reg) = rt.lookup_when::<ToolRegistry>(REGISTRY_ACTOR).await {
+                let lifecycle = Lifecycle::spawn(Lifecycle(Arc::clone(&routes)));
+                let _ = reg
+                    .ask(RegisterLifecycle {
+                        owner: "routes",
+                        opened: None,
+                        close: lifecycle.reply_recipient(),
+                    })
+                    .await;
                 tools::register(&reg, routes).await;
             }
         });
@@ -462,7 +597,7 @@ mod tests {
             let cookie = (d == "example.com").then(|| "sid=SECRET-COOKIE".to_owned());
             sites.push(
                 routes
-                    .absorb(session, &d, learned, cookie)
+                    .absorb(session, None, &d, learned, cookie)
                     .await
                     .expect("absorb"),
             );
@@ -501,6 +636,43 @@ mod tests {
         drop(creds);
 
         std::fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    #[tokio::test]
+    async fn private_root_stays_in_memory_and_closes() {
+        let (dir, routes) = tmp_routes();
+        let session = SessionId::new();
+        let scratch = dir.join("scratch");
+        let root = Some(scratch.as_path());
+        let grouped = group(classify_all(&[exchange(
+            "https://api.example.com/v1/items?page=1",
+            &[("authorization", "Bearer SECRET-TOKEN")],
+        )]));
+        for (d, learned) in grouped {
+            routes
+                .absorb(session, root, &d, learned, None)
+                .await
+                .expect("absorb");
+        }
+        routes
+            .members
+            .lock()
+            .await
+            .insert(session, scratch.clone());
+        let url = Url::parse("https://api.example.com/").expect("url");
+        let site = routes.list(root, &url).await.expect("list");
+        assert_eq!(site.routes.len(), 1);
+        let id = site.routes[0].id.clone();
+        routes.mark(root, "example.com", &id, false).await.expect("mark");
+        assert!(routes.list(root, &url).await.expect("list").routes[0].stale);
+        // Never on disk, never visible to a durable session.
+        assert!(!dir.join("routes").exists());
+        assert!(routes.list(None, &url).await.expect("list").routes.is_empty());
+
+        routes.close(&[session]).await;
+        assert!(routes.list(root, &url).await.expect("list").routes.is_empty());
+        assert!(routes.creds.lock().await.is_empty());
+        assert!(routes.members.lock().await.is_empty());
     }
 
     #[tokio::test]

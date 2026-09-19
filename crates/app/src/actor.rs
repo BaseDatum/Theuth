@@ -575,6 +575,22 @@ impl Apps {
             self.open.remove(record);
         }
     }
+
+    /// The rows of `session` are gone (deleted, or its private tree closed):
+    /// nothing cached may keep running for them; its views are cancelled.
+    fn forget(&mut self, session: runtime::SessionId, why: &str) {
+        self.core.forget_session(session);
+        let records: Vec<String> = self
+            .open
+            .iter()
+            .filter(|(_, d)| d.artifact.session == session)
+            .map(|(r, _)| r.clone())
+            .collect();
+        for r in records {
+            Self::cancel(self.sched.close_record(&r), why);
+            self.open.remove(&r);
+        }
+    }
 }
 
 /// Shape checks that are protocol misuse (`Err`), not statuses.
@@ -984,20 +1000,8 @@ impl Message<agent::AgentEvent> for Apps {
     type Reply = ();
 
     async fn handle(&mut self, ev: agent::AgentEvent, _: &mut Context<Self, Self::Reply>) {
-        let agent::AgentEvent::SessionDeleted { session } = ev else {
-            return;
-        };
-        // The rows are gone: nothing cached may keep running for them.
-        self.core.forget_session(session);
-        let records: Vec<String> = self
-            .open
-            .iter()
-            .filter(|(_, d)| d.artifact.session == session)
-            .map(|(r, _)| r.clone())
-            .collect();
-        for r in records {
-            Self::cancel(self.sched.close_record(&r), "session deleted");
-            self.open.remove(&r);
+        if let agent::AgentEvent::SessionDeleted { session } = ev {
+            self.forget(session, "session deleted");
         }
     }
 }
@@ -1071,6 +1075,28 @@ impl Message<CloseApp> for Apps {
             self.unpin(&r);
         }
         Ok(())
+    }
+}
+
+impl Message<tools::CloseTree> for Apps {
+    type Reply = tools::CloseAck;
+
+    /// A private tree closes (51 §4.4): every view on a record of a subtree
+    /// session is cancelled and unpinned, and its cached records are dropped,
+    /// before the artifact owner removes the rows the records point at.
+    async fn handle(
+        &mut self,
+        m: tools::CloseTree,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        for &session in &m.subtree {
+            self.forget(session, "session closed");
+        }
+        tools::CloseAck {
+            owner: "app".into(),
+            ok: true,
+            detail: None,
+        }
     }
 }
 

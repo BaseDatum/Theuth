@@ -20,6 +20,8 @@ import { BrowserLive } from './BrowserLive'
 import { ContextMeter } from './ContextMeter'
 import { ModelMenu } from './ModelMenu'
 import { SessionMenu } from './SessionMenu'
+import { CostPill } from './CostPill'
+import { TerminalButton } from './TerminalViewer'
 
 /** `↳ parent` breadcrumb of a subagent's transcript. */
 function Parent({ id }: { id: string }) {
@@ -103,6 +105,8 @@ export function Header({
       {parent && <Parent id={parent} />}
       <div className="flex-1" data-tauri-drag-region={mac || undefined} />
       {session && <ContextMeter session={session} />}
+      {session && <CostPill session={session} />}
+      {session && <TerminalButton session={session} />}
       {session && browser && (
         <Button
           variant="ghost"

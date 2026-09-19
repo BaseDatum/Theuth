@@ -2163,7 +2163,10 @@ impl Worker {
             | AgentEvent::SessionDeleted { .. }
             | AgentEvent::ContextChanged { .. }
             | AgentEvent::TodoChanged { .. }
-            | AgentEvent::VisionProgress { .. } => {}
+            | AgentEvent::VisionProgress { .. }
+            | AgentEvent::SessionMetadataChanged { .. }
+            | AgentEvent::ModelUsageChanged { .. }
+            | AgentEvent::SessionClosing { .. } => {}
         }
     }
 

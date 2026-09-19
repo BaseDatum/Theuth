@@ -1,6 +1,7 @@
 //! `site_learn`, `site_routes`, `site_call` (design doc 44 §4). Risk
 //! `ReadOnly`; http(s) only. Rows are [`Route`]s: header names, never values.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use kameo::actor::ActorRef;
@@ -56,6 +57,14 @@ fn parse_url(s: &str) -> anyhow::Result<Url> {
         anyhow::bail!("only http(s) URLs");
     }
     Ok(u)
+}
+
+/// 51 §5: the scratch root a private session's routes live under; `None`
+/// for a durable session (the disk store).
+fn private_root(cx: &ToolCx) -> Option<&Path> {
+    cx.resources
+        .is_private()
+        .then(|| cx.resources.root.as_path())
 }
 
 fn auth(names: &[String]) -> String {
@@ -124,7 +133,7 @@ impl Tool for SiteLearnTool {
 
     async fn call(&self, a: SiteLearnArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
         let url = a.url.as_deref().map(parse_url).transpose()?;
-        let reply = match self.0.learn(cx.session, url.as_ref()).await {
+        let reply = match self.0.learn(cx.session, private_root(&cx), url.as_ref()).await {
             Ok(r) => r,
             Err(e) => return Ok(ToolOutput::err(e.to_string())),
         };
@@ -159,9 +168,9 @@ impl Tool for SiteRoutesTool {
         "Routes already learned for the URL's site, ranked; call one with site_call. Empty means site_learn first.".into()
     }
 
-    async fn call(&self, a: SiteRoutesArgs, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
+    async fn call(&self, a: SiteRoutesArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
         let url = parse_url(&a.url)?;
-        let site = match self.0.list(&url).await {
+        let site = match self.0.list(private_root(&cx), &url).await {
             Ok(s) => s,
             Err(e) => return Ok(ToolOutput::err(e.to_string())),
         };
@@ -207,7 +216,11 @@ impl Tool for SiteCallTool {
             pointer,
             records,
             unarmed,
-        } = match self.0.call(cx.session, &a.route, &params).await {
+        } = match self
+            .0
+            .call(cx.session, private_root(&cx), &a.route, &params)
+            .await
+        {
             Ok(r) => r,
             Err(e) => return Ok(ToolOutput::err(e.to_string())),
         };
@@ -219,7 +232,7 @@ impl Tool for SiteCallTool {
         };
         let armed: Vec<String> = self
             .0
-            .list(&parse_url(&url)?)
+            .list(private_root(&cx), &parse_url(&url)?)
             .await
             .ok()
             .and_then(|s| s.routes.into_iter().find(|r| r.id == a.route))

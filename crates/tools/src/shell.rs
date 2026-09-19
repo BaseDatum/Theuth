@@ -105,6 +105,7 @@ impl Tool for ShellTool {
                 put_back: Arc::new(move |shell| {
                     lock(&sessions).insert(session, shell);
                 }),
+                root: cx.resources.root.clone(),
                 // This invocation stays admitted until the reply: the job's
                 // own admission happens under it, with no gap (47 §4.2 rule 3).
                 activity: activity::current(),

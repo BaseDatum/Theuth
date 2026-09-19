@@ -341,6 +341,13 @@ impl runtime::Plugin for AppPlugin {
                         text: prompt(),
                     })
                     .await;
+                let _ = reg
+                    .tell(tools::RegisterLifecycle {
+                        owner: "app",
+                        opened: None,
+                        close: actor.reply_recipient(),
+                    })
+                    .await;
             }
         });
         Ok(())

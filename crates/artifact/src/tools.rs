@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use tools::{Risk, Tool, ToolCx, ToolOutput};
 
 use crate::pdf::Source;
-use crate::store::State;
+use crate::store::Stores;
 use crate::{Kind, kind};
 
 /// Arguments of `show`. Exactly one of `path` / `content`; `content` requires `name`.
@@ -33,11 +33,12 @@ pub const PROMPT: &str = "## Hand over files, don't paste them\n\
 `show` puts a file in front of the user as a card in this chat — rendered, openable, savable. Use it whenever the deliverable is a file: a report, a summary longer than a screen, a table over ~8 rows, a document you were asked to write, an image or screenshot they should look at, a PDF. `show{path}` shows a file that exists (never read a file and then repeat its content in your reply — show it). `show{content, name}` writes and shows a new one; a `.pdf` name turns markdown into a real PDF (front matter `title`, `author`, `toc: true` for a title block and contents) and the result includes a picture of page 1 — look at it. Same name again = a new version. One sentence of takeaway in your reply, then the card carries the content. `message_user` is still how you reach the user *outside* this chat.";
 
 /// `show`: snapshot a file (or write `content`) under the harness and show it
-/// as a card. Calls [`State::show`] directly — the tool already runs off the
-/// registry's mailbox, and the receipt needs numbers only the store has.
+/// as a card. Calls [`crate::store::State::show`] directly — the tool already
+/// runs off the registry's mailbox, and the receipt needs numbers only the
+/// store has.
 pub struct ShowTool {
-    /// The store.
-    pub state: Arc<State>,
+    /// The stores, routed by the calling session.
+    pub stores: Arc<Stores>,
 }
 
 #[async_trait::async_trait]
@@ -59,7 +60,17 @@ impl Tool for ShowTool {
     }
 
     async fn call(&self, args: ShowArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
-        let shown = match self.state.show(cx.session, cx.call_id, args).await {
+        // A private caller whose tree the actor has not mapped yet must not
+        // fall through to the durable store.
+        let state = if cx.resources.is_private() {
+            self.stores.private_for(cx.session)
+        } else {
+            self.stores.state_for(cx.session).ok()
+        };
+        let Some(state) = state else {
+            return Ok(ToolOutput::err("show: private session is not open"));
+        };
+        let shown = match state.show(cx.session, cx.call_id, args).await {
             Ok(s) => s,
             Err(msg) => return Ok(ToolOutput::err(format!("show: {msg}"))),
         };

@@ -671,6 +671,8 @@ mod tests {
             agent: None,
             cwd: None,
             pinned: false,
+            project: None,
+            retention: agent::Retention::Durable,
         }
     }
 
@@ -712,6 +714,8 @@ mod tests {
             started_at: Some(Utc::now()),
             finished_at: None,
             last: "looking".into(),
+            project: None,
+            retention: agent::Retention::Durable,
         }];
         let models_rows = vec![
             ModelInfo {

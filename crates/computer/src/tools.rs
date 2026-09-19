@@ -5,12 +5,13 @@
 //! [`Action`] to the input thread. Every action returns one line and no image.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use runtime::{Runtime, SessionId};
+use runtime::SessionId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use tools::{DynTool, Risk, Tool, ToolCx, ToolOutput};
+use tools::{DynTool, Risk, SessionResources, Tool, ToolCx, ToolOutput};
 
 use crate::ComputerConfig;
 use crate::frame::Frame;
@@ -21,9 +22,6 @@ use crate::screen;
 pub struct Ctx {
     /// `computer:` config; `max_edge` caps the screenshot's long edge.
     pub cfg: ComputerConfig,
-    /// Screenshots land under `<rt.data_dir>/computer/<session>/`, capture
-    /// temp files under `<rt.data_dir>/computer/tmp`.
-    pub rt: Runtime,
     /// The one input thread (27 §3.4).
     pub input: input::Handle,
     /// Last screenshot's frame per session (27 §3.3).
@@ -36,6 +34,11 @@ pub const PROMPT: &str = "You can see and drive the user's desktop with the comp
 impl Ctx {
     fn frames(&self) -> MutexGuard<'_, HashMap<SessionId, Frame>> {
         self.frames.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Drop the last-screenshot frames of `sessions` (a closing tree, 51 §4.5).
+    pub fn forget(&self, sessions: &[SessionId]) {
+        self.frames().retain(|s, _| !sessions.contains(s));
     }
 
     /// Image pixel of `session`'s last screenshot → global logical point.
@@ -117,6 +120,16 @@ fn optional_point(
     }
 }
 
+/// Where `computer_screenshot` PNGs go: `<resources>/computer/<session>`
+/// (51 §4.5). A durable root *is* the data dir, so the layout stays
+/// `<data_dir>/computer/<session>`; a private root's shots live in its
+/// scratch dir and vanish with it. Capture temp files go beside it in
+/// `<resources>/computer/tmp`.
+#[must_use]
+pub fn shot_dir(resources: &SessionResources, session: SessionId) -> PathBuf {
+    resources.dir("computer").join(session.to_string())
+}
+
 /// Arguments for [`ScreenshotTool`].
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
 pub struct ScreenshotArgs {
@@ -132,12 +145,12 @@ computer_tool!(
     |ctx, a, cx| {
         let display = a.display;
         let max_edge = ctx.cfg.max_edge;
-        let tmp_dir = ctx.rt.data_dir.join("computer").join("tmp");
+        let tmp_dir = cx.resources.dir("computer").join("tmp");
         let shot = match tokio::task::spawn_blocking(move || screen::capture(display, max_edge, &tmp_dir)).await? {
             Ok(shot) => shot,
             Err(e) => return Ok(ToolOutput::err(e.to_string())),
         };
-        let dir = ctx.rt.data_dir.join("computer").join(cx.session.to_string());
+        let dir = shot_dir(&cx.resources, cx.session);
         tokio::fs::create_dir_all(&dir).await?;
         // ponytail: linear probe for the next free shot-<n>.png; survives restarts,
         // tens of shots per session at most.
@@ -423,7 +436,6 @@ mod tests {
     async fn all_registers_eight_tools_with_screenshot_read_only() {
         let ctx = Arc::new(Ctx {
             cfg: ComputerConfig::default(),
-            rt: Runtime::new(figment::Figment::new(), std::env::temp_dir()),
             input: input::spawn(),
             frames: Mutex::new(HashMap::new()),
         });
@@ -458,5 +470,47 @@ mod tests {
         assert!(open_command(Some("Safari"), Some("https://x")).is_err());
         assert!(open_command(Some("Safari"), None).is_ok());
         assert!(open_command(None, Some("https://x")).is_ok());
+    }
+
+    #[test]
+    fn shot_dir_follows_resources_root() {
+        let session = SessionId::new();
+        let data = std::path::Path::new("/data");
+        assert_eq!(
+            shot_dir(&SessionResources::durable(data), session),
+            data.join("computer").join(session.to_string())
+        );
+        let private = SessionResources {
+            root: "/tmp/wth-private-x".into(),
+            retention: tools::Retention::Private,
+            generation: 3,
+        };
+        assert_eq!(
+            shot_dir(&private, session),
+            std::path::Path::new("/tmp/wth-private-x")
+                .join("computer")
+                .join(session.to_string())
+        );
+    }
+
+    #[test]
+    fn forget_drops_only_the_closing_sessions() {
+        let ctx = Ctx {
+            cfg: ComputerConfig::default(),
+            input: input::spawn(),
+            frames: Mutex::new(HashMap::new()),
+        };
+        let frame = Frame {
+            origin: (0, 0),
+            ratio: 1.0,
+            size: (1, 1),
+            displays: Vec::new(),
+        };
+        let (closing, other) = (SessionId::new(), SessionId::new());
+        ctx.frames().insert(closing, frame.clone());
+        ctx.frames().insert(other, frame);
+        ctx.forget(&[closing, SessionId::new()]);
+        assert!(!ctx.frames().contains_key(&closing));
+        assert!(ctx.frames().contains_key(&other));
     }
 }

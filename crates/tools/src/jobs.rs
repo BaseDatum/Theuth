@@ -1,6 +1,6 @@
 //! `Jobs` actor (14 §2): every process the model starts is a background job.
 //! Owns each job's process groups, streams output to
-//! `<data_dir>/jobs/<session>/<id>.log`, publishes [`JobEvent`]s on the bus,
+//! `<resources.root>/jobs/<session>/<id>.log`, publishes [`JobEvent`]s on the bus,
 //! and kills everything still running on `rt.shutdown`. Registered as
 //! [`JOBS_ACTOR`]; `shell` starts jobs with [`Start`], `jobs` / `cancel_job`
 //! (also here) ask [`ListJobs`] / [`CancelJob`].
@@ -30,8 +30,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Notify, oneshot};
 use tokio::task::{AbortHandle, JoinHandle};
+use tokio_util::sync::CancellationToken;
 
 use crate::activity::{self, Activity, ActivitySink, Kind, OperationId, Rejected};
+use crate::resources::CloseAck;
 use crate::{Risk, Tool, ToolCx, ToolOutput};
 
 /// Registry name of the [`Jobs`] actor.
@@ -54,6 +56,9 @@ pub(crate) const SETTLE: Duration = Duration::from_secs(1);
 pub(crate) const KILL_WAIT: Duration = Duration::from_secs(2);
 /// Spacing of the signal-0 liveness poll on an owned process group.
 pub(crate) const GROUP_POLL: Duration = Duration::from_millis(50);
+/// Retained-terminal budget across every session (51 §7.4); each PTY is
+/// charged [`crate::pty::RESERVE`] at `start` until its handle is evicted.
+pub(crate) const PTY_BUDGET: usize = 64 << 20;
 
 /// `j{n}`, `n` per session starting at 1.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
@@ -113,6 +118,12 @@ pub enum JobEvent {
         call_id: String,
         /// Log file receiving stdout+stderr as they arrive.
         log: PathBuf,
+        /// `start`'s label (22 §2.1), PTY jobs only.
+        #[serde(default)]
+        name: Option<String>,
+        /// Runs on a pseudo-terminal (22).
+        #[serde(default)]
+        pty: bool,
     },
     /// Bytes since the previous `Output`.
     #[serde(rename = "JobOutput")]
@@ -165,6 +176,8 @@ pub enum JobEvent {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, kameo::Reply)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct JobView {
+    /// Owning session.
+    pub session: SessionId,
     /// Job.
     pub id: JobId,
     /// Command line.
@@ -205,6 +218,9 @@ pub struct Start {
     pub shell: Shell,
     /// Where the finished shell goes.
     pub put_back: PutBack,
+    /// The session's [`crate::SessionResources::root`] (51 §4.5): the log
+    /// is `<root>/jobs/<session>/<id>.log`, the data dir for a durable tree.
+    pub root: PathBuf,
     /// [`activity::current`] at the caller. The job's own lifetime is admitted
     /// as a child of a *tracked* invocation (47 §4.2 rule 3); an untracked or
     /// absent parent (pre-registration invocation, RPC, tests) admits under
@@ -241,6 +257,21 @@ pub struct CancelJob {
     pub session: SessionId,
     /// Job.
     pub id: JobId,
+}
+
+/// `ask` → [`CloseAck`] (owner `"jobs"`): the [`crate::CloseTree`] barrier's Jobs
+/// half (51 §4.4). Every row of `sessions` goes at once (`ListJobs` is empty
+/// on reply); running jobs are cancelled and their process groups killed;
+/// the ack waits for the tasks to settle (bounded by `cancel`) and then
+/// removes each session's `<root>/jobs/<session>` log directory. `ok` is
+/// false when a task was still settling at `cancel` or a directory could
+/// not be removed.
+#[derive(Clone, Debug)]
+pub struct CloseSessions {
+    /// The closing subtree.
+    pub sessions: Vec<SessionId>,
+    /// The closer stopped waiting: reply with what is still unsettled.
+    pub cancel: CancellationToken,
 }
 
 /// `tell` from a job task: the actual work settled.
@@ -370,7 +401,10 @@ pub(crate) struct Job {
     pub(crate) task: AbortHandle,
     /// `start`'s label (22 §2.1); PTY jobs only.
     pub(crate) name: Option<String>,
-    /// The pseudo-terminal, for PTY jobs (22 §4.8).
+    /// Ran on a pseudo-terminal (22); stays true once `pty` is evicted.
+    pub(crate) on_pty: bool,
+    /// The pseudo-terminal, for PTY jobs (22 §4.8); `None` for a pipe job or
+    /// once evicted under the budget (51 §7.4).
     pub(crate) pty: Option<Arc<crate::pty::PtyHandle>>,
 }
 
@@ -383,14 +417,19 @@ impl Job {
         }
     }
 
-    fn view(&self) -> JobView {
+    /// `running` | `exited 0` | `timeout` | `killed`.
+    pub(crate) fn state(&self) -> String {
+        self.exit
+            .as_ref()
+            .map_or_else(|| "running".to_owned(), ToString::to_string)
+    }
+
+    fn view(&self, session: SessionId) -> JobView {
         JobView {
+            session,
             id: self.id.clone(),
             command: self.command.clone(),
-            state: self
-                .exit
-                .as_ref()
-                .map_or_else(|| "running".to_owned(), ToString::to_string),
+            state: self.state(),
             secs: self.secs(),
             log: self.log_path.clone(),
             tail: match &self.pty {
@@ -398,7 +437,7 @@ impl Job {
                 None => lock(&self.log).tail_text(TAIL),
             },
             name: self.name.clone(),
-            pty: self.pty.is_some(),
+            pty: self.on_pty,
         }
     }
 }
@@ -410,17 +449,18 @@ pub(crate) struct SessionJobs {
 }
 
 impl SessionJobs {
-    /// Append a row, dropping the oldest finished ones past [`MAX_ROWS`].
-    pub(crate) fn push(&mut self, job: Job) {
+    /// Append a row, dropping the oldest finished ones past [`MAX_ROWS`];
+    /// returns how many retained terminals went with them.
+    pub(crate) fn push(&mut self, job: Job) -> usize {
         self.jobs.push(job);
+        let mut evicted = 0;
         while self.jobs.len() > MAX_ROWS {
             match self.jobs.iter().position(|j| j.exit.is_some()) {
-                Some(i) => {
-                    self.jobs.remove(i);
-                }
+                Some(i) => evicted += usize::from(self.jobs.remove(i).pty.is_some()),
                 None => break,
             }
         }
+        evicted
     }
 }
 
@@ -436,6 +476,11 @@ pub struct Jobs {
     /// Every unsettled job's guard (rows and quiet jobs alike), by operation:
     /// the actor's clone, dropped — carrying the owed result — on [`Finished`].
     pub(crate) live: HashMap<OperationId, Activity>,
+    /// Bytes charged against [`PTY_BUDGET`]: one [`crate::pty::RESERVE`]
+    /// per job whose `pty` is `Some`.
+    pub(crate) pty_bytes: usize,
+    /// Snapshot renders admitted at once (51 §7.4).
+    pub(crate) snapshots: Arc<tokio::sync::Semaphore>,
 }
 
 impl Jobs {
@@ -449,6 +494,8 @@ impl Jobs {
             sessions: HashMap::new(),
             activity: None,
             live: HashMap::new(),
+            pty_bytes: 0,
+            snapshots: Arc::new(tokio::sync::Semaphore::new(crate::pty::SNAPSHOTS)),
         }
     }
 
@@ -469,6 +516,33 @@ impl Jobs {
             activity.adopt(sink);
         }
         self.live.insert(activity.id(), activity.clone());
+    }
+
+    /// Add a row, releasing the terminal charge of whatever it evicts.
+    pub(crate) fn push(&mut self, session: SessionId, job: Job) {
+        let evicted = self.sessions.entry(session).or_default().push(job);
+        self.pty_bytes -= evicted * crate::pty::RESERVE;
+    }
+
+    /// Drop exited jobs' terminals, oldest first across every session, until
+    /// `need` more bytes fit under [`PTY_BUDGET`] or none are left (51 §7.4).
+    /// Live scrollback is never trimmed: vt100 exposes no way to.
+    pub(crate) fn make_room(&mut self, need: usize) {
+        while self.pty_bytes + need > PTY_BUDGET {
+            let oldest = self
+                .sessions
+                .values_mut()
+                .flat_map(|s| s.jobs.iter_mut())
+                .filter(|j| j.exit.is_some() && j.pty.is_some())
+                .min_by_key(|j| j.started);
+            match oldest {
+                Some(j) => {
+                    j.pty = None;
+                    self.pty_bytes -= crate::pty::RESERVE;
+                }
+                None => break,
+            }
+        }
     }
 }
 
@@ -582,7 +656,7 @@ impl Message<Launch<Start>> for Jobs {
     ) -> Self::Reply {
         let Launch { m, id, activity } = l;
         let quiet = m.quiet;
-        let dir = self.rt.data_dir.join("jobs").join(m.session.to_string());
+        let dir = m.root.join("jobs").join(m.session.to_string());
         let log_path = dir.join(format!("{id}.log"));
         let pgids: Arc<Mutex<Vec<i32>>> = Arc::default();
         let log_file = (!quiet).then_some(log_path.as_path());
@@ -628,21 +702,25 @@ impl Message<Launch<Start>> for Jobs {
         }))
         .abort_handle();
         if !quiet {
-            self.sessions.entry(m.session).or_default().push(Job {
-                id,
-                op,
-                command: shown,
-                started,
-                exit: None,
-                secs: 0,
-                log_path: log_path.clone(),
-                log: log.clone(),
-                pgids,
-                cancel,
-                task,
-                name: None,
-                pty: None,
-            });
+            self.push(
+                m.session,
+                Job {
+                    id,
+                    op,
+                    command: shown,
+                    started,
+                    exit: None,
+                    secs: 0,
+                    log_path: log_path.clone(),
+                    log: log.clone(),
+                    pgids,
+                    cancel,
+                    task,
+                    name: None,
+                    on_pty: false,
+                    pty: None,
+                },
+            );
         }
         Ok(Running {
             done,
@@ -659,7 +737,7 @@ impl Message<ListJobs> for Jobs {
     async fn handle(&mut self, m: ListJobs, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.sessions
             .get(&m.0)
-            .map(|s| s.jobs.iter().map(Job::view).collect::<Vec<_>>())
+            .map(|s| s.jobs.iter().map(|j| j.view(m.0)).collect::<Vec<_>>())
             .unwrap_or_default()
     }
 }
@@ -678,6 +756,76 @@ impl Message<CancelJob> for Jobs {
         // would race its normal-exit arm into `Exited(137)`.
         job.cancel.notify_one();
         Ok(())
+    }
+}
+
+impl Message<CloseSessions> for Jobs {
+    type Reply = DelegatedReply<CloseAck>;
+
+    async fn handle(
+        &mut self,
+        m: CloseSessions,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let mut tasks = Vec::new();
+        let mut dirs = Vec::new();
+        for session in &m.sessions {
+            let Some(sj) = self.sessions.remove(session) else {
+                continue;
+            };
+            for job in sj.jobs {
+                if job.exit.is_none() {
+                    // As `CancelJob`: the task reports `Killed` and settles;
+                    // the kill here only makes sure nothing survives a task
+                    // that is never polled again.
+                    job.cancel.notify_one();
+                    kill(&job.pgids);
+                    tasks.push((job.id, job.task));
+                }
+                if job.pty.is_some() {
+                    self.pty_bytes -= crate::pty::RESERVE;
+                }
+                if let Some(dir) = job.log_path.parent()
+                    && !dirs.iter().any(|d| d == dir)
+                {
+                    dirs.push(dir.to_path_buf());
+                }
+            }
+        }
+        let Some(tx) = tx else { return reply };
+        tokio::spawn(async move {
+            let mut doubts = Vec::new();
+            let settled = async {
+                while tasks.iter().any(|(_, t)| !t.is_finished()) {
+                    tokio::time::sleep(GROUP_POLL).await;
+                }
+            };
+            tokio::select! {
+                biased;
+                () = settled => {}
+                () = m.cancel.cancelled() => {
+                    for (id, t) in &tasks {
+                        if !t.is_finished() {
+                            doubts.push(format!("{id}: still settling at cancel"));
+                        }
+                    }
+                }
+            }
+            for dir in dirs {
+                match tokio::fs::remove_dir_all(&dir).await {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => doubts.push(format!("{}: {e}", dir.display())),
+                }
+            }
+            tx.send(if doubts.is_empty() {
+                CloseAck::ok("jobs")
+            } else {
+                CloseAck::failed("jobs", doubts.join("; "))
+            });
+        });
+        reply
     }
 }
 
@@ -706,7 +854,7 @@ impl Message<KillAll> for Jobs {
     type Reply = ();
 
     async fn handle(&mut self, _: KillAll, _: &mut Context<Self, Self::Reply>) {
-        for job in self.sessions.values().flat_map(|s| &s.jobs) {
+        for job in self.sessions.values_mut().flat_map(|s| &mut s.jobs) {
             if job.exit.is_none() {
                 kill(&job.pgids);
                 // Aborting the task skips its settlement, and an escapee may
@@ -716,7 +864,10 @@ impl Message<KillAll> for Jobs {
                 }
                 job.task.abort();
             }
+            // Nothing observes a terminal past shutdown: release every charge.
+            job.pty = None;
         }
+        self.pty_bytes = 0;
     }
 }
 
@@ -974,6 +1125,8 @@ async fn run(mut j: Run) {
             command: j.shown.clone(),
             call_id: j.call_id,
             log: j.log_path,
+            name: None,
+            pty: false,
         })
         .await;
     }
@@ -1311,6 +1464,7 @@ pub(crate) mod tests {
                 quiet,
                 shell: ShellTool::build_shell().await.unwrap(),
                 put_back: Arc::new(|_| {}),
+                root: fx.dir.clone(),
                 activity: None,
             })
             .await
@@ -1726,6 +1880,7 @@ pub(crate) mod tests {
             session: fx.session,
             call_id: String::new(),
             quiet: false,
+            resources: crate::SessionResources::durable_arc(&fx.dir),
         };
         let cd = Tool::call(
             &tool,
@@ -1747,5 +1902,32 @@ pub(crate) mod tests {
         .await
         .unwrap();
         assert_eq!(pwd.content, "/tmp\nexit code: 0");
+    }
+
+    #[tokio::test]
+    async fn close_sessions_kills_reaps_and_removes_logs() {
+        let fx = fixture(Duration::from_millis(200), Duration::from_secs(60)).await;
+        let StartReply::Running { log, .. } = spawn_job(&fx, "sh -c 'echo $$; exec sleep 30'").await
+        else {
+            panic!("expected Running");
+        };
+        let pid: i32 = list(&fx).await[0].tail.trim().parse().unwrap();
+        assert!(nix::sys::signal::kill(Pid::from_raw(pid), None).is_ok());
+        assert_eq!(log, fx.dir.join("jobs").join(fx.session.to_string()).join("j1.log"));
+        assert!(log.is_file());
+
+        let ack = fx
+            .jobs
+            .ask(CloseSessions {
+                sessions: vec![fx.session, SessionId::new()],
+                cancel: CancellationToken::new(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(ack.owner, "jobs");
+        assert!(ack.ok, "{ack:?}");
+        assert!(nix::sys::signal::kill(Pid::from_raw(pid), None).is_err());
+        assert!(!log.parent().unwrap().exists());
+        assert!(list(&fx).await.is_empty());
     }
 }

@@ -16,6 +16,7 @@ use crate::model::{
     TodoCard, TurnAction, UiEvent, action_name, agent_row, artifact_row, artifact_size, describe,
     gate_name, k, meta_line, now_ms, progress_line, result_line, short, slash_matches, window,
 };
+use crate::model::{Grouped, terminal_row};
 use crate::search::{self, Focus, Preview};
 
 /// Channels handed to the app through iocraft context (owned so the receiver
@@ -152,9 +153,11 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                         Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => return,
                     }
                 }
-                // A due search request (debounce, indexing poll) wakes an idle loop.
+                // A due search request (debounce, indexing poll) or terminal
+                // poll (51 §7.3) wakes an idle loop.
                 let now = now_ms();
-                let due = model.read().search_wake().is_some_and(|t| t <= now);
+                let due = model.read().search_wake().is_some_and(|t| t <= now)
+                    || model.read().terminal_wake().is_some_and(|t| t <= now);
                 if pending.is_empty() && !model.read().animating() && !due {
                     continue;
                 }
@@ -168,6 +171,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                     m.tick();
                 }
                 m.search_tick(now, &commands);
+                m.terminal_tick(now, &commands);
                 // A withdrawn steer comes back into the (empty) editor.
                 if let Some(text) = m.recall.take() {
                     input.set(text);
@@ -211,6 +215,28 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 {
                     let _ = commands.send(Command::ListPeers(*session));
                     let _ = commands.send(Command::ListPeerRequests(*session));
+                }
+                // The ledger moved (51 §6.2): the owner summary, never a local sum.
+                if std::mem::take(&mut m.refresh_cost)
+                    && let Some(session) = m.session
+                {
+                    let _ = commands.send(Command::SessionCost(session));
+                }
+                // Root metadata moved while a grouped picker is open (51 §3): re-list it.
+                if std::mem::take(&mut m.refresh_grouping) {
+                    match (&m.menu, m.session) {
+                        (Some(Menu::Sessions { .. }), _) => {
+                            let _ = commands.send(Command::ListSessions);
+                        }
+                        (Some(Menu::Artifacts { apps, .. }), Some(session)) => {
+                            let _ = commands.send(Command::ListArtifacts {
+                                session,
+                                pick: true,
+                                apps: *apps,
+                            });
+                        }
+                        _ => {}
+                    }
                 }
             }
         }
@@ -479,6 +505,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 search_box(&m, model, search_handle, width, budget)
             })
         })
+        .or_else(|| terminal_box(&m, width, height))
         .or_else(|| menu(&m, &input.read(), width, height));
     // A secret's value (or a provider's key) shows as dots.
     let mask = (m.secret_request().is_some() || m.prompt.as_ref().is_some_and(Prompt::masked))
@@ -722,20 +749,24 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
             "sessions  ⏎ switch  esc close  (the one you leave keeps running)".to_owned(),
             items
                 .iter()
-                .map(|s| {
-                    // Row prefix (mark, id, stamp, model, gaps, box) is ~52 columns; the title gets the rest.
-                    let room = usize::from(width).saturating_sub(52).max(16);
-                    let title: String = s.title.chars().take(room).collect();
-                    format!(
-                        "{} {}  {}  {:<20} {}",
-                        if Some(s.id) == m.session { "●" } else { " " },
-                        short(s.id),
-                        s.updated_at
-                            .with_timezone(&chrono::Local)
-                            .format("%m-%d %H:%M"),
-                        s.model.rsplit('/').next().unwrap_or(&s.model),
-                        title
-                    )
+                .map(|row| match row {
+                    Grouped::Heading(h) => h.clone(),
+                    Grouped::Item((s, depth)) => {
+                        // Row prefix (mark, id, stamp, model, gaps, box) is ~52 columns; the title gets the rest.
+                        let room = usize::from(width).saturating_sub(52 + 2 * depth).max(16);
+                        let title: String = s.title.chars().take(room).collect();
+                        format!(
+                            "{} {}{}  {}  {:<20} {}",
+                            if Some(s.id) == m.session { "●" } else { " " },
+                            "  ".repeat(*depth),
+                            short(s.id),
+                            s.updated_at
+                                .with_timezone(&chrono::Local)
+                                .format("%m-%d %H:%M"),
+                            s.model.rsplit('/').next().unwrap_or(&s.model),
+                            title
+                        )
+                    }
                 })
                 .collect(),
             *cursor,
@@ -771,7 +802,7 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
             "agents  ⏎ open  esc close  (the one you leave keeps running)".to_owned(),
             items
                 .iter()
-                .map(|a| agent_row(a, m.spinner(), width))
+                .map(|a| format!("{}{}", agent_row(a, m.spinner(), width), m.child_cost_tag(a.info.id)))
                 .collect(),
             *cursor,
         ),
@@ -928,7 +959,13 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
             } else {
                 "artifacts  ⏎ open  s show inline  e export to ~/Downloads  esc close".to_owned()
             },
-            items.iter().map(artifact_row).collect(),
+            items
+                .iter()
+                .map(|r| match r {
+                    Grouped::Heading(h) => h.clone(),
+                    Grouped::Item(a) => format!("    {}", artifact_row(a)),
+                })
+                .collect(),
             *cursor,
         ),
         Menu::Shake(s) => (s.title(), s.rows(), s.cursor),
@@ -947,15 +984,33 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
             *cursor,
         ),
         Menu::KnowledgeHistory { .. } => m.knowledge_history_menu(),
+        Menu::Cost { cost, cursor } => (
+            format!(
+                "cost · {} · rev {}   esc close   (owner summary; nothing is summed here)",
+                short(cost.session),
+                cost.revision
+            ),
+            m.cost_rows(),
+            *cursor,
+        ),
+        Menu::Terminals { items, cursor } => (
+            "terminals  ⏎ observe (read-only)  r refresh  esc close".to_owned(),
+            items.iter().map(terminal_row).collect(),
+            *cursor,
+        ),
+        // Drawn by `terminal_box`, never here.
+        Menu::Terminal(_) => return None,
     };
     let cursor = cursor.min(rows.len().saturating_sub(1));
-    // A diff gets the screen minus the frame around the box; lists stay short.
+    // A diff or the cost breakdown gets the screen minus the frame around the box; lists stay short.
     let tall = matches!(
         m.menu,
-        Some(Menu::KnowledgeHistory {
-            revision: Some(_),
-            ..
-        })
+        Some(
+            Menu::KnowledgeHistory {
+                revision: Some(_),
+                ..
+            } | Menu::Cost { .. }
+        )
     );
     let max = if tall {
         usize::from(height).saturating_sub(10).max(MENU_ROWS)
@@ -985,6 +1040,117 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
         }
         .into_any(),
     )
+}
+
+/// The `/terminals` observer (51 §7.4): the page's cells as styled text
+/// runs, the cursor cell inverted, `col` leading columns panned off, then a
+/// status row for what the page cannot show. Attributes the toolkit lacks
+/// (background colour) drop; the redacted text is the same either way.
+fn terminal_box(m: &Model, width: u16, height: u16) -> Option<AnyElement<'static>> {
+    let Some(Menu::Terminal(v)) = &m.menu else {
+        return None;
+    };
+    let dim = Color::DarkGrey;
+    // Border 2 + padding 2; rows stay one cell short so taffy never wraps them.
+    let inner = usize::from(width).saturating_sub(5).max(8);
+    // Border, title and status around the page; the page gets the rest of the screen.
+    let budget = usize::from(height).saturating_sub(10).max(5);
+    let mut body: Vec<AnyElement<'static>> = Vec::new();
+    match &v.page {
+        None => body.push(
+            element!(Text(content: if v.unavailable { "" } else { "loading…" }, color: dim))
+                .into_any(),
+        ),
+        Some(p) => {
+            for (r, row) in p.lines.iter().take(budget).enumerate() {
+                let cursor = p
+                    .cursor
+                    .filter(|(cr, _)| usize::from(*cr) == r)
+                    .map(|(_, c)| usize::from(c));
+                body.push(terminal_line(row, v.col, inner, cursor));
+            }
+        }
+    }
+    let status = v.status();
+    let title = search::fit(&v.title(), inner);
+    Some(
+        element! {
+            View(border_style: BorderStyle::Round, border_color: Color::Blue, flex_direction: FlexDirection::Column, padding_left: 1, padding_right: 1, width) {
+                Text(content: title, color: dim, wrap: TextWrap::NoWrap)
+                #(body)
+                #(status.map(|s| element!(Text(content: search::fit(&s, inner), color: Color::Yellow, wrap: TextWrap::NoWrap))))
+            }
+        }
+        .into_any(),
+    )
+}
+
+/// One page row: cells from column `skip` on, at most `fit` columns, each
+/// run's style mapped to the toolkit's; the cursor column inverted.
+fn terminal_line(
+    row: &[tools::StyledRun],
+    skip: usize,
+    fit: usize,
+    cursor: Option<usize>,
+) -> AnyElement<'static> {
+    let mut contents: Vec<MixedTextContent> = Vec::new();
+    let mut col = 0usize;
+    for run in row {
+        let mut text = String::new();
+        for cell in &run.cells {
+            let here = col;
+            col += 1;
+            if here < skip || here >= skip + fit {
+                continue;
+            }
+            // A wide glyph cut in half by the pan shows as a blank column.
+            if cell.continuation && here == skip {
+                text.push(' ');
+                continue;
+            }
+            if cursor == Some(here) {
+                if !text.is_empty() {
+                    contents.push(styled(&run.style, MixedTextContent::new(std::mem::take(&mut text))));
+                }
+                let glyph = if cell.text.is_empty() { " " } else { cell.text.as_str() };
+                contents.push(styled(&run.style, MixedTextContent::new(glyph)).invert());
+                continue;
+            }
+            text.push_str(&cell.text);
+        }
+        if !text.is_empty() {
+            contents.push(styled(&run.style, MixedTextContent::new(text)));
+        }
+    }
+    if contents.is_empty() {
+        contents.push(MixedTextContent::new(" "));
+    }
+    element!(MixedText(contents, wrap: TextWrap::NoWrap)).into_any()
+}
+
+/// A PTY cell style on a text run: foreground colour, weight, italic,
+/// underline, inverse. Background colour has no toolkit counterpart.
+fn styled(s: &tools::Style, mut c: MixedTextContent) -> MixedTextContent {
+    match s.fg {
+        tools::Color::Default => {}
+        tools::Color::Idx { idx } => c = c.color(Color::AnsiValue(idx)),
+        tools::Color::Rgb { r, g, b } => c = c.color(Color::Rgb { r, g, b }),
+    }
+    if s.bold {
+        c = c.weight(Weight::Bold);
+    } else if s.dim {
+        c = c.weight(Weight::Light);
+    }
+    if s.italic {
+        c = c.italic();
+    }
+    if s.underline {
+        c = c.decoration(TextDecoration::Underline);
+    }
+    if s.inverse {
+        c = c.invert();
+    }
+    c
 }
 
 /// Rows the transcript pane gets: the terminal minus everything drawn

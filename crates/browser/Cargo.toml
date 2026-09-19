@@ -13,6 +13,7 @@ tools = { workspace = true }
 web = { workspace = true }
 kameo = { workspace = true }
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 schemars = { workspace = true }

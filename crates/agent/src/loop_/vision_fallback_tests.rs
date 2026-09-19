@@ -312,7 +312,7 @@ impl Harness {
         let store = Store::open(&dir.join("sessions.sqlite")).await.unwrap();
         let id = SessionId::new();
         store
-            .create_session(id, "openai/textonly", None, None)
+            .create_session(id, "openai/textonly", None, None, None)
             .await
             .unwrap();
         let rt = Runtime::new(figment::Figment::new(), dir.clone());
@@ -364,6 +364,7 @@ impl Harness {
             self.catalog.clone(),
             None,
             Arc::new(Semaphore::new(1)),
+            SessionResources::durable_arc(&self.dir),
         );
         let tid = TurnId::new();
         let turn = Turn::new(

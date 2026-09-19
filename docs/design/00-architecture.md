@@ -407,6 +407,19 @@ append; `list_sessions` orders by it),
 observation record on a vision-fallback note, `0014_vision`: 52 §6).
 `sqlx::migrate!`.
 
+**AS BUILT — session lifecycle, project metadata, model cost, and terminal
+observation (51; implemented 2026-09-19, automated checks recorded in 51 §Status):**
+[`51-session-lifecycle-costs-and-terminals.md`](51-session-lifecycle-costs-and-terminals.md)
+specifies private root trees that never enter the durable store, one exact
+nullable project label, native per-call and remote cumulative cost provenance
+with recursive child rollups, and authoritative styled read-only windows for
+agent-created PTYs. It keeps policy
+and storage with their current owners and uses the same `rpc::Api` in every
+frontend; it does not add a project/workspace service, billing service,
+terminal broker, generic resource registry, or delete-after-persist privacy
+path. Accepted with the evidence recorded in 51 §Status; as-built deviations
+from the design body are listed there.
+
 **Vision fallback** (52, built 2026-09-19): `agent.vision_model` is a
 title-style setting (`/vision`, `vision_model`/`set_vision_model` RPC, shared
 Settings › General row). `backend::supports_images` decides whether the

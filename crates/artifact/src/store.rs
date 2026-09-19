@@ -4,9 +4,10 @@
 //! one OS-locked file per live opener ([`OWNERS`]). Truth is the index; blobs
 //! without a row are swept at start.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
@@ -15,6 +16,7 @@ use runtime::{Runtime, SessionId};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
+use tools::SessionResources;
 
 use crate::kind::{self, Receipt};
 use crate::pdf::{self, Source};
@@ -185,22 +187,26 @@ pub struct Shown {
 
 /// Blob directory + index + the runtime that publishes [`ArtifactShown`].
 pub struct State {
-    /// `<data_dir>/artifacts/`.
+    /// `<data_dir>/artifacts/`, or `<scratch>/artifacts/` for a private tree.
     pub dir: PathBuf,
     pool: SqlitePool,
     rt: Runtime,
     /// Extra font directories for PDF compiles (`artifact.fonts`).
     pub fonts: Vec<PathBuf>,
     /// Writers (`show`, `commit`) hold it shared from first blob write to row
-    /// insert; [`State::sweep`] holds it exclusively, so it never collects a
-    /// blob whose row is about to exist.
+    /// insert; [`State::sweep`] and [`State::close`] hold it exclusively, so
+    /// neither collects a blob whose row is about to exist.
     gate: tokio::sync::RwLock<()>,
+    /// Set by [`State::close`] before it waits on the gate: a writer that
+    /// gets the gate afterwards writes nothing (51 §4.4).
+    closing: AtomicBool,
     /// Name of this opener's file in [`OWNERS`]; stamped on the invocations
     /// it claims.
     owner: String,
     /// The OS lock on that file, held for the process lifetime: released by
-    /// the kernel when the process dies, so liveness is never guessed from a pid.
-    _owner_lock: std::fs::File,
+    /// the kernel when the process dies, so liveness is never guessed from a
+    /// pid. `None` for a private tree, whose rows die with the process anyway.
+    _owner_lock: Option<std::fs::File>,
     /// Derived search index (design doc 49 §3.2); invalidated by
     /// [`State::show`], [`State::commit`] and [`State::delete_session`], the
     /// only writers.
@@ -517,10 +523,73 @@ impl State {
             rt,
             fonts,
             gate: tokio::sync::RwLock::new(()),
+            closing: AtomicBool::new(false),
             owner,
-            _owner_lock: owner_lock,
+            _owner_lock: Some(owner_lock),
             search: Arc::default(),
         })
+    }
+
+    /// A private tree's store (51 §4.5): the same schema in a single-connection
+    /// `:memory:` database (every SQLite memory connection is its own database),
+    /// no journal, `temp_store=MEMORY`, blobs under `<root>/artifacts/` created
+    /// mode 0700. No owner lock and no recovery: nothing outlives the process.
+    pub async fn open_private(root: &Path, rt: Runtime, fonts: Vec<PathBuf>) -> anyhow::Result<Self> {
+        let dir = root.join(DIR);
+        let mut b = std::fs::DirBuilder::new();
+        b.recursive(true);
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
+        b.create(&dir)
+            .with_context(|| format!("create {}", dir.display()))?;
+        let opts = SqliteConnectOptions::new()
+            .in_memory(true)
+            .journal_mode(SqliteJournalMode::Memory)
+            .pragma("temp_store", "MEMORY");
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .min_connections(1)
+            .connect_with(opts)
+            .await
+            .context("open in-memory artifact index")?;
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .context("run migrations")?;
+        Ok(Self {
+            dir,
+            pool,
+            rt,
+            fonts,
+            gate: tokio::sync::RwLock::new(()),
+            closing: AtomicBool::new(false),
+            owner: "private".to_owned(),
+            _owner_lock: None,
+            search: Arc::default(),
+        })
+    }
+
+    /// Close barrier of a private tree (51 §4.4): refuse every writer from
+    /// now on, wait for the admitted ones, drop the database, remove the
+    /// blobs. Idempotent; a missing blob directory is already clean.
+    pub async fn close(&self) -> anyhow::Result<()> {
+        self.closing.store(true, Ordering::Release);
+        let _exclusive = self.gate.write().await;
+        self.pool.close().await;
+        match tokio::fs::remove_dir_all(&self.dir).await {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e).with_context(|| format!("remove {}", self.dir.display())),
+        }
+    }
+
+    /// `Err` once [`State::close`] began: checked under the shared gate, so a
+    /// writer either finishes before the close or writes nothing.
+    fn admit(&self) -> Result<(), String> {
+        if self.closing.load(Ordering::Acquire) {
+            return Err("session is closing".into());
+        }
+        Ok(())
     }
 
     /// Write `<dir>/<file>` unless it already exists (same hash = same bytes).
@@ -608,6 +677,7 @@ impl State {
         let mut heading_src: Option<&str> = None;
         let mut compiled = false;
         let _writing = self.gate.read().await;
+        self.admit().map_err(|e| format!("{name}: {e}"))?;
 
         let bytes = match (kind, &content) {
             (Kind::Pdf, Some(content)) => {
@@ -826,6 +896,8 @@ impl State {
         }
 
         let _writing = self.gate.read().await;
+        self.admit()
+            .map_err(|e| CommitError::Other(format!("{}: {e}", artifact.name)))?;
         if let (Some(f), Some((_, src))) = (&source_file, &m.source) {
             self.put_blob(f, src)
                 .await
@@ -1284,6 +1356,142 @@ impl State {
             }
         }
         Ok(removed)
+    }
+}
+
+/// Which [`State`] a session's rows and blobs live in (51 §4.5): the durable
+/// one for every session except the members of an open private tree, which
+/// share their root's in-memory state under its scratch dir. Populated by
+/// `TreeOpened`, emptied by `CloseTree`; the actor and the `show` tool hold
+/// it together.
+pub struct Stores {
+    durable: Arc<State>,
+    trees: parking_lot::RwLock<Trees>,
+}
+
+#[derive(Default)]
+struct Trees {
+    /// Member → its root's state.
+    members: HashMap<SessionId, Arc<State>>,
+    /// Root → its state and members, for the close.
+    roots: HashMap<SessionId, (Arc<State>, Vec<SessionId>)>,
+    /// Members of closed trees: a straggler is refused, never routed to the
+    /// durable store.
+    closed: HashSet<SessionId>,
+}
+
+impl Stores {
+    /// Wrap the durable store; private trees register through `TreeOpened`.
+    pub fn new(durable: Arc<State>) -> Self {
+        Self {
+            durable,
+            trees: parking_lot::RwLock::default(),
+        }
+    }
+
+    /// The durable store: the explorer's `List`, search, sweep.
+    pub fn durable(&self) -> &Arc<State> {
+        &self.durable
+    }
+
+    /// The store `session` reads and writes. `Err` for a member of a closed
+    /// private tree.
+    pub fn state_for(&self, session: SessionId) -> Result<Arc<State>, String> {
+        let t = self.trees.read();
+        if let Some(s) = t.members.get(&session) {
+            return Ok(s.clone());
+        }
+        if t.closed.contains(&session) {
+            return Err(format!("{session}: private session is closed"));
+        }
+        Ok(self.durable.clone())
+    }
+
+    /// The private store of `session`, or `None` when it is not a member of
+    /// an open private tree: what a caller whose resources say private must
+    /// use, so a tree that has not been announced yet never falls through to
+    /// the durable store.
+    pub fn private_for(&self, session: SessionId) -> Option<Arc<State>> {
+        self.trees.read().members.get(&session).cloned()
+    }
+
+    /// Every store, durable first: id-keyed lookups (a record by call id, an
+    /// invocation by request id) carry no session and try each.
+    pub fn all(&self) -> Vec<Arc<State>> {
+        let t = self.trees.read();
+        std::iter::once(self.durable.clone())
+            .chain(t.roots.values().map(|(s, _)| s.clone()))
+            .collect()
+    }
+
+    /// `TreeOpened`: open the root's private store on first sight and map
+    /// every listed session to it. Durable resources are a no-op. Idempotent:
+    /// a repeat adds the new members.
+    pub async fn open_tree(
+        &self,
+        root: SessionId,
+        sessions: &[SessionId],
+        resources: &SessionResources,
+    ) -> anyhow::Result<()> {
+        if !resources.is_private() {
+            return Ok(());
+        }
+        let existing = self.trees.read().roots.get(&root).map(|(s, _)| s.clone());
+        let state = match existing {
+            Some(s) => s,
+            None => Arc::new(
+                State::open_private(
+                    &resources.root,
+                    self.durable.rt.clone(),
+                    self.durable.fonts.clone(),
+                )
+                .await?,
+            ),
+        };
+        let mut t = self.trees.write();
+        let Trees { members, roots, .. } = &mut *t;
+        let (state, known) = roots.entry(root).or_insert((state, Vec::new()));
+        for &s in std::iter::once(&root).chain(sessions) {
+            if !known.contains(&s) {
+                known.push(s);
+            }
+            members.insert(s, state.clone());
+        }
+        Ok(())
+    }
+
+    /// `CloseTree`: for every root in `subtree`, unmap its members (they are
+    /// refused from now on), then [`State::close`] its store. Ids that are
+    /// not private roots are left alone: a deleted child's rows go with
+    /// `SessionDeleted`.
+    pub async fn close_tree(&self, subtree: &[SessionId]) -> Result<(), String> {
+        let states: Vec<Arc<State>> = {
+            let mut t = self.trees.write();
+            let mut states = Vec::new();
+            for root in subtree {
+                let Some((state, known)) = t.roots.remove(root) else {
+                    continue;
+                };
+                state.closing.store(true, Ordering::Release);
+                for m in known {
+                    t.members.remove(&m);
+                    t.closed.insert(m);
+                }
+                states.push(state);
+            }
+            states
+        };
+        let mut errors = Vec::new();
+        for state in states {
+            if let Err(e) = state.close().await {
+                errors.push(format!("{e:#}"));
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
     }
 }
 
@@ -2093,5 +2301,103 @@ mod tests {
         s.delete_session(sess).await.unwrap();
         assert_eq!(s.sweep().await.unwrap(), 3);
         assert!(blobs(&s.dir).is_empty());
+    }
+
+    fn private(root: &Path) -> SessionResources {
+        SessionResources {
+            root: root.to_path_buf(),
+            retention: tools::Retention::Private,
+            generation: 1,
+        }
+    }
+
+    /// A private member's records and blobs live under its root's scratch dir
+    /// and in memory, never in the durable index or blob dir; the close
+    /// removes them and refuses the members afterwards.
+    #[tokio::test]
+    async fn private_tree_routes_to_scratch_and_dies_with_close() {
+        let (durable, _d) = open().await;
+        let durable = Arc::new(durable);
+        let stores = Stores::new(durable.clone());
+        let scratch = tempfile::tempdir().unwrap();
+        let (root, child) = (SessionId::new(), SessionId::new());
+        stores
+            .open_tree(root, &[root, child], &private(scratch.path()))
+            .await
+            .unwrap();
+        let artifacts = scratch.path().join(DIR);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&artifacts).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
+        let durable_blobs = blobs(&durable.dir);
+
+        let state = stores.state_for(child).unwrap();
+        assert!(Arc::ptr_eq(&state, &stores.state_for(root).unwrap()));
+        let a = state
+            .commit(app(child, "c1", "root = A\n", None))
+            .await
+            .unwrap();
+        assert!(a.path.starts_with(&artifacts), "{}", a.path.display());
+        assert!(a.path.is_file());
+        assert_eq!(blobs(&durable.dir), durable_blobs);
+        assert!(durable.record("c1").await.is_err());
+        assert!(durable.list(Some(child), false).await.unwrap().is_empty());
+        assert_eq!(state.list(Some(child), false).await.unwrap().len(), 1);
+        assert_eq!(stores.all().len(), 2);
+
+        stores.close_tree(&[root, child]).await.unwrap();
+        assert!(!artifacts.exists());
+        assert!(stores.state_for(child).is_err());
+        assert!(stores.state_for(root).is_err());
+        assert_eq!(stores.all().len(), 1);
+        // A straggler holding the old handle writes nothing.
+        assert!(state.commit(app(child, "c2", "root = B\n", None)).await.is_err());
+        assert!(!artifacts.exists());
+        // Closing again is clean; an unrelated id routes durable.
+        stores.close_tree(&[root]).await.unwrap();
+        assert!(Arc::ptr_eq(&stores.state_for(SessionId::new()).unwrap(), &durable));
+    }
+
+    /// A writer admitted before the close finishes first (the close waits on
+    /// the gate); one that reaches the gate after the close began is refused.
+    /// Either way no blob exists once the close returns.
+    #[tokio::test]
+    async fn close_waits_for_admitted_writers_and_refuses_late_ones() {
+        let (durable, _d) = open().await;
+        let stores = Arc::new(Stores::new(Arc::new(durable)));
+        let scratch = tempfile::tempdir().unwrap();
+        let root = SessionId::new();
+        stores
+            .open_tree(root, &[root], &private(scratch.path()))
+            .await
+            .unwrap();
+        let state = stores.state_for(root).unwrap();
+        let artifacts = scratch.path().join(DIR);
+
+        // Stand in for a writer between its first blob write and its row.
+        let admitted = state.gate.read().await;
+        let closing = tokio::spawn({
+            let stores = stores.clone();
+            async move { stores.close_tree(&[root]).await }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!closing.is_finished(), "close must wait for the admitted writer");
+        assert!(artifacts.exists());
+        // Reaches the gate after the close began: refused, nothing written.
+        let late = tokio::spawn({
+            let state = state.clone();
+            async move { state.commit(app(root, "late", "root = L\n", None)).await }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!late.is_finished());
+        drop(admitted);
+        closing.await.unwrap().unwrap();
+        assert!(late.await.unwrap().is_err());
+        assert!(!artifacts.exists());
     }
 }

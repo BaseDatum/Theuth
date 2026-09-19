@@ -8,8 +8,9 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::SeqCst};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -51,6 +52,182 @@ const PORT_POLL: Duration = Duration::from_millis(250);
 const CARRY: usize = 16;
 /// Reader thread buffer (22 §4.2).
 const READ_BUF: usize = 64 * 1024;
+/// Normal-screen scrollback rows retained per PTY (51 §7.1).
+const HISTORY: usize = 512;
+/// Longest `History` page (51 §7.3).
+const PAGE_MAX: u16 = 80;
+/// A serialized [`PtyPage`] is cut (top rows first) past this.
+const PAGE_BYTES: usize = 256 * 1024;
+/// Longest cell text on the wire (vt100 stores less; enforced anyway).
+const CELL_BYTES: usize = 64;
+/// Snapshot renders in flight at once, across every PTY (51 §7.4).
+pub(crate) const SNAPSHOTS: usize = 4;
+/// What one PTY is charged against [`jobs::PTY_BUDGET`] at `start`: every
+/// retained row at a generous per-cell estimate plus parser overhead. Charged
+/// once per handle; snapshot clones are transient and not charged.
+pub(crate) const RESERVE: usize =
+    (ROWS as usize + HISTORY) * COLS as usize * 96 + 4 * 1024;
+
+/// One PTY job as `list_terminals` reports it (51 §7.3).
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, kameo::Reply)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct TerminalSummary {
+    /// Owning session.
+    pub session: SessionId,
+    /// Job.
+    pub id: JobId,
+    /// `start`'s label.
+    pub name: Option<String>,
+    /// Command line, scrubbed.
+    pub command: String,
+    /// [`JobView::state`](crate::JobView::state) wording.
+    pub state: String,
+    /// Screen height.
+    pub rows: u16,
+    /// Screen width.
+    pub cols: u16,
+    /// Bumps on every rendered change and once at exit; see [`PtyScreen::if_revision`].
+    pub revision: u64,
+    /// Daemon epoch; `None` until the harness has one.
+    pub epoch: Option<String>,
+}
+
+/// Which rows of the retained terminal a [`PtyScreen`] asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(tag = "anchor", rename_all = "snake_case")]
+pub enum PtyViewport {
+    /// The 40 live rows.
+    Live,
+    /// `height` (≤ 80) scrollback rows whose bottom is `offset` rows above
+    /// the live screen's top; clamped to what is retained.
+    History {
+        /// Rows between the page's bottom and the live screen.
+        offset: u32,
+        /// Rows in the page.
+        height: u16,
+    },
+}
+
+/// Reply to [`PtyScreen`].
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, kameo::Reply)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum PtyScreenReply {
+    /// A fresh page.
+    Updated(PtyPage),
+    /// `if_revision` still matches: nothing to send.
+    Unchanged {
+        /// As requested.
+        viewport: PtyViewport,
+        /// The current revision.
+        revision: u64,
+    },
+    /// No such job, or its terminal was evicted.
+    Unavailable,
+}
+
+/// One rendered page of a PTY job's retained terminal (51 §7.3). Styled
+/// runs, never ANSI; secrets masked with `•`.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct PtyPage {
+    /// Owning session.
+    pub session: SessionId,
+    /// Job.
+    pub id: JobId,
+    /// Revision rendered.
+    pub revision: u64,
+    /// Daemon epoch; `None` until the harness has one.
+    pub epoch: Option<String>,
+    /// As requested (height clamped).
+    pub viewport: PtyViewport,
+    /// Index of `lines[0]` in the retained buffer: `0` is the oldest
+    /// scrollback row, `retained` the live screen's top.
+    pub origin: u32,
+    /// Scrollback rows retained right now (≤ 512; `0` on the alternate screen).
+    pub retained: u32,
+    /// Screen height.
+    pub rows: u16,
+    /// Screen width.
+    pub cols: u16,
+    /// The alternate screen is showing (no scrollback accrues).
+    pub alternate: bool,
+    /// `(row, col)` within `lines`, zero-based; `None` when hidden or the
+    /// page is history.
+    pub cursor: Option<(u16, u16)>,
+    /// Per row of `lines`: it soft-wraps into the next.
+    pub wrapped: Vec<bool>,
+    /// Per row: adjacent cells sharing a style.
+    pub lines: Vec<Vec<StyledRun>>,
+    /// Top rows were dropped to fit the 256 KiB reply cap; `origin` moved down.
+    pub truncated: bool,
+    /// `false` when a secret could straddle the evicted-history boundary
+    /// into this page (51 §7.2).
+    pub redaction_complete: bool,
+    /// Set once the job ended.
+    pub exit: Option<JobExit>,
+}
+
+/// Adjacent cells with one [`Style`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct StyledRun {
+    /// Shared style.
+    pub style: Style,
+    /// Cells in column order.
+    pub cells: Vec<Cell>,
+}
+
+/// Cell attributes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[allow(missing_docs)]
+pub struct Style {
+    pub fg: Color,
+    pub bg: Color,
+    pub bold: bool,
+    pub dim: bool,
+    pub italic: bool,
+    pub underline: bool,
+    pub inverse: bool,
+}
+
+/// A terminal colour.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[allow(missing_docs)]
+pub enum Color {
+    #[default]
+    Default,
+    Idx { idx: u8 },
+    Rgb { r: u8, g: u8, b: u8 },
+}
+
+impl From<vt100::Color> for Color {
+    fn from(c: vt100::Color) -> Self {
+        match c {
+            vt100::Color::Default => Color::Default,
+            vt100::Color::Idx(idx) => Color::Idx { idx },
+            vt100::Color::Rgb(r, g, b) => Color::Rgb { r, g, b },
+        }
+    }
+}
+
+/// One cell. `wide`/`continuation` are omitted on the wire when false.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct Cell {
+    /// Grapheme(s), `" "` when blank, `""` for a wide continuation, `"•"` when masked.
+    pub text: String,
+    /// Occupies this column and the next.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub wide: bool,
+    /// The second column of a wide cell.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub continuation: bool,
+}
 
 /// Arguments for [`StartTool`] (22 §2.1).
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -193,6 +370,9 @@ impl From<Signal> for nix::sys::signal::Signal {
 pub(crate) struct PtyHandle {
     writer: Mutex<Box<dyn Write + Send>>,
     parser: Mutex<vt100::Parser>,
+    /// Bumped under `parser`'s lock after each `process` and once at exit
+    /// (51 §7.3): equal revisions mean an identical retained buffer.
+    revision: AtomicU64,
     output: Notify,
     /// `== pgid`: the child is a session leader.
     pid: u32,
@@ -200,24 +380,301 @@ pub(crate) struct PtyHandle {
     exit: Mutex<Option<JobExit>>,
 }
 
+/// The screen cloned under the lock, with what else a page reports.
+pub(crate) struct Capture {
+    screen: vt100::Screen,
+    revision: u64,
+    exit: Option<JobExit>,
+}
+
+/// [`render`]'s result: a [`PtyPage`] short of its job identity, and the
+/// text rows the tools show.
+pub(crate) struct PtySnapshot {
+    revision: u64,
+    viewport: PtyViewport,
+    origin: u32,
+    retained: u32,
+    alternate: bool,
+    cursor_pos: (u16, u16),
+    cursor_hidden: bool,
+    wrapped: Vec<bool>,
+    lines: Vec<Vec<StyledRun>>,
+    redaction_complete: bool,
+    exit: Option<JobExit>,
+}
+
 impl PtyHandle {
-    /// Current screen per 22 §4.3, scrubbed of vault values (37 §3.4): this
-    /// is the one source for the `screen` tool, `JobView.tail`, `JobEvent::Screen`
-    /// and the final `<job_result>` of a pty job.
+    pub(crate) fn revision(&self) -> u64 {
+        self.revision.load(SeqCst)
+    }
+
+    /// Clone the screen under the lock (≈ 2 MiB at most; the render happens
+    /// on the clone, never on the live parser).
+    pub(crate) fn capture(&self) -> Capture {
+        let (screen, revision) = {
+            let p = lock(&self.parser);
+            (p.screen().clone(), self.revision.load(SeqCst))
+        };
+        Capture {
+            screen,
+            revision,
+            exit: self.exit(),
+        }
+    }
+
+    /// One page, rendered outside the lock with the installed scrubber.
+    pub(crate) fn snapshot(&self, viewport: PtyViewport) -> PtySnapshot {
+        render(
+            self.capture(),
+            viewport,
+            &crate::secrets::redact_spans,
+            crate::secrets::max_literal_len(),
+        )
+    }
+
+    /// Current screen per 22 §4.3, scrubbed of vault values (37 §3.4) by
+    /// the same masking pass as [`PtyPage`]: this is the one source for the
+    /// `screen` tool, `JobView.tail`, `JobEvent::Screen` and the final
+    /// `<job_result>` of a pty job.
     pub(crate) fn screen(&self) -> (Vec<String>, (u16, u16)) {
-        let (rows, cursor) = screen_text(lock(&self.parser).screen());
-        let rows = rows
-            .into_iter()
-            .map(|r| match crate::secrets::redact(&r) {
-                std::borrow::Cow::Owned(clean) => clean,
-                std::borrow::Cow::Borrowed(_) => r,
-            })
-            .collect();
-        (rows, cursor)
+        let s = self.snapshot(PtyViewport::Live);
+        (s.text(), s.cursor_pos)
     }
 
     fn exit(&self) -> Option<JobExit> {
         lock(&self.exit).clone()
+    }
+}
+
+impl PtySnapshot {
+    /// Rows right-trimmed, trailing blank rows dropped (22 §4.3).
+    fn text(&self) -> Vec<String> {
+        let mut rows: Vec<String> = self
+            .lines
+            .iter()
+            .map(|runs| {
+                let mut r: String = runs
+                    .iter()
+                    .flat_map(|run| run.cells.iter().map(|c| c.text.as_str()))
+                    .collect();
+                r.truncate(r.trim_end().len());
+                r
+            })
+            .collect();
+        let last = rows
+            .iter()
+            .rposition(|r| !r.is_empty())
+            .map_or(0, |i| i + 1);
+        rows.truncate(last);
+        rows
+    }
+
+    /// The wire page, top rows dropped by halves until it serializes under
+    /// [`PAGE_BYTES`] (never below one row).
+    pub(crate) fn into_page(self, session: SessionId, id: JobId) -> PtyPage {
+        let cursor = (!self.cursor_hidden && self.viewport == PtyViewport::Live)
+            .then_some(self.cursor_pos);
+        let mut page = PtyPage {
+            session,
+            id,
+            revision: self.revision,
+            epoch: None,
+            viewport: self.viewport,
+            origin: self.origin,
+            retained: self.retained,
+            rows: ROWS,
+            cols: COLS,
+            alternate: self.alternate,
+            cursor,
+            wrapped: self.wrapped,
+            lines: self.lines,
+            truncated: false,
+            redaction_complete: self.redaction_complete,
+            exit: self.exit,
+        };
+        while page.lines.len() > 1
+            && serde_json::to_vec(&page).is_ok_and(|v| v.len() > PAGE_BYTES)
+        {
+            let drop = page.lines.len() / 2;
+            page.lines.drain(..drop);
+            page.wrapped.drain(..drop);
+            page.origin += drop as u32;
+            page.truncated = true;
+            page.cursor = page.cursor.and_then(|(r, c)| {
+                r.checked_sub(drop as u16).map(|r| (r, c))
+            });
+        }
+        page
+    }
+}
+
+/// A page cell before styling into runs, with its span in the logical text.
+struct Raw {
+    text: String,
+    style: Style,
+    wide: bool,
+    continuation: bool,
+    at: usize,
+    len: usize,
+}
+
+fn style_of(c: &vt100::Cell) -> Style {
+    Style {
+        fg: c.fgcolor().into(),
+        bg: c.bgcolor().into(),
+        bold: c.bold(),
+        dim: c.dim(),
+        italic: c.italic(),
+        underline: c.underline(),
+        inverse: c.inverse(),
+    }
+}
+
+/// First ≤ [`CELL_BYTES`] bytes on a char boundary.
+fn clip(t: &str) -> &str {
+    let mut n = t.len().min(CELL_BYTES);
+    while !t.is_char_boundary(n) {
+        n -= 1;
+    }
+    &t[..n]
+}
+
+/// 51 §7.2–7.3: page the retained buffer (`0` = oldest scrollback row,
+/// `retained` = live top), build the logical text of the whole buffer —
+/// soft-wrapped rows joined, others `\n`-separated, wide continuations
+/// skipped — run `spans` over it, mask every page cell a span touches with
+/// `•` (style dropped, width kept), then merge same-style cells into runs.
+/// `spans` must return ascending, non-overlapping byte ranges; `max_len` is
+/// the longest literal it can match (`0`: nothing installed, page rows only).
+fn render(
+    cap: Capture,
+    viewport: PtyViewport,
+    spans: &dyn Fn(&str) -> Vec<Range<usize>>,
+    max_len: usize,
+) -> PtySnapshot {
+    let Capture {
+        mut screen,
+        revision,
+        exit,
+    } = cap;
+    screen.set_scrollback(usize::MAX);
+    let retained = screen.scrollback();
+    let live = usize::from(ROWS);
+    let (start, end, viewport) = match viewport {
+        PtyViewport::Live => (retained, retained + live, viewport),
+        PtyViewport::History { offset, height } => {
+            let height = height.clamp(1, PAGE_MAX);
+            let end = retained - (offset as usize).min(retained);
+            (
+                end.saturating_sub(usize::from(height)),
+                end,
+                PtyViewport::History { offset, height },
+            )
+        }
+    };
+    let scan = if max_len > 0 { 0..retained + live } else { start..end };
+    let mut text = String::new();
+    let mut page: Vec<Vec<Raw>> = Vec::with_capacity(end - start);
+    let mut wrapped = Vec::with_capacity(end - start);
+    let mut page_at = 0;
+    for i in scan {
+        // Row `i` is visible row 0 at offset `retained - i` while in
+        // scrollback, else live row `i - retained`. `set_scrollback` is a
+        // field write; `cell` is O(1) over the visible rows.
+        screen.set_scrollback(retained.saturating_sub(i));
+        let r = i.saturating_sub(retained) as u16;
+        let in_page = (start..end).contains(&i);
+        if in_page && i == start {
+            page_at = text.len();
+        }
+        let mut row = in_page.then(|| Vec::with_capacity(usize::from(COLS)));
+        for c in 0..COLS {
+            let at = text.len();
+            let cell = screen.cell(r, c);
+            let continuation = cell.is_some_and(vt100::Cell::is_wide_continuation);
+            if !continuation {
+                match cell.map(vt100::Cell::contents).filter(|t| !t.is_empty()) {
+                    Some(t) => text.push_str(clip(t)),
+                    None => text.push(' '),
+                }
+            }
+            if let Some(row) = &mut row {
+                row.push(Raw {
+                    text: text[at..].to_owned(),
+                    style: cell.map(style_of).unwrap_or_default(),
+                    wide: cell.is_some_and(vt100::Cell::is_wide),
+                    continuation,
+                    at,
+                    len: text.len() - at,
+                });
+            }
+        }
+        let soft = screen.row_wrapped(r);
+        if let Some(row) = row {
+            page.push(row);
+            wrapped.push(soft);
+        }
+        if !soft {
+            text.push('\n');
+        }
+    }
+    let mut ranges = (max_len > 0)
+        .then(|| spans(&text))
+        .unwrap_or_default()
+        .into_iter()
+        .peekable();
+    let mut prev_masked = false;
+    for cell in page.iter_mut().flatten() {
+        while ranges.peek().is_some_and(|s| s.end <= cell.at) {
+            ranges.next();
+        }
+        let hit = if cell.continuation {
+            prev_masked
+        } else {
+            ranges.peek().is_some_and(|s| s.start < cell.at + cell.len)
+        };
+        if hit {
+            cell.text = if cell.continuation { String::new() } else { "•".to_owned() };
+            cell.style = Style::default();
+        }
+        prev_masked = hit;
+    }
+    let lines = page
+        .into_iter()
+        .map(|row| {
+            let mut runs: Vec<StyledRun> = Vec::new();
+            for c in row {
+                let cell = Cell {
+                    text: c.text,
+                    wide: c.wide,
+                    continuation: c.continuation,
+                };
+                match runs.last_mut() {
+                    Some(run) if run.style == c.style => run.cells.push(cell),
+                    _ => runs.push(StyledRun {
+                        style: c.style,
+                        cells: vec![cell],
+                    }),
+                }
+            }
+            runs
+        })
+        .collect();
+    // A literal that began in evicted rows can only reach this page if the
+    // page starts within `max_len - 1` bytes of the retained boundary.
+    let redaction_complete = !(max_len > 0 && retained >= HISTORY && page_at < max_len - 1);
+    PtySnapshot {
+        revision,
+        viewport,
+        origin: start as u32,
+        retained: retained as u32,
+        alternate: screen.alternate_screen(),
+        cursor_pos: screen.cursor_position(),
+        cursor_hidden: screen.hide_cursor(),
+        wrapped,
+        lines,
+        redaction_complete,
+        exit,
     }
 }
 
@@ -234,6 +691,9 @@ pub struct StartPty {
     pub cwd: PathBuf,
     /// `ready` deadline when `args.ready.timeout` is absent.
     pub ready_timeout: Duration,
+    /// The session's [`crate::SessionResources::root`] (51 §4.5): the log
+    /// is `<root>/jobs/<session>/<id>.log`.
+    pub root: PathBuf,
     /// [`activity::current`] at the caller; see [`jobs::Start::activity`].
     /// The readiness wait runs under it too.
     pub activity: Option<Activity>,
@@ -267,6 +727,26 @@ pub struct Wait {
     pub args: WaitArgs,
     /// [`activity::current`] at the caller: the wait runs under it.
     pub activity: Option<Activity>,
+}
+
+/// `ask` → `Vec<TerminalSummary>`: every PTY job of these sessions whose
+/// terminal is still retained (51 §7.3). The RPC resolves the subtree.
+pub struct ListTerminals {
+    /// Sessions to list.
+    pub sessions: Vec<SessionId>,
+}
+
+/// `ask` → `Result<PtyScreenReply, String>`: one page of a PTY job's
+/// retained terminal (51 §7.3). `Err` = every render slot is busy; retry.
+pub struct PtyScreen {
+    /// Owning session.
+    pub session: SessionId,
+    /// Job.
+    pub id: JobId,
+    /// Which rows.
+    pub viewport: PtyViewport,
+    /// The revision the caller already has: equal → `Unchanged`.
+    pub if_revision: Option<u64>,
 }
 
 /// A resolved PTY job as the tool paths see it, detached from the actor.
@@ -478,12 +958,20 @@ impl Message<Launch<StartPty>> for Jobs {
                 j.id
             ));
         }
-        let dir = self.rt.data_dir.join("jobs").join(m.session.to_string());
+        let dir = m.root.join("jobs").join(m.session.to_string());
         let log_path = dir.join(format!("{id}.log"));
+        // 51 §7.4: the retained-terminal budget admits before anything spawns;
+        // exited terminals go first, oldest across every session.
+        self.make_room(RESERVE);
+        if self.pty_bytes + RESERVE > jobs::PTY_BUDGET {
+            return Err("terminal capacity exhausted (64 MiB retained-terminal budget)".into());
+        }
         let s = spawn(&dir, &log_path, &m.args, &m.cwd).map_err(|e| format!("{e:#}"))?;
+        self.pty_bytes += RESERVE;
         let pty = Arc::new(PtyHandle {
             writer: Mutex::new(s.writer),
-            parser: Mutex::new(vt100::Parser::new(ROWS, COLS, 0)),
+            parser: Mutex::new(vt100::Parser::new(ROWS, COLS, HISTORY)),
+            revision: AtomicU64::new(0),
             output: Notify::new(),
             pid: s.pid,
             exit: Mutex::new(None),
@@ -507,6 +995,7 @@ impl Message<Launch<StartPty>> for Jobs {
             session: m.session,
             id: id.clone(),
             command: shown.clone(),
+            name: m.args.name.clone(),
             call_id: m.call_id,
             log_path: log_path.clone(),
             log: log.clone(),
@@ -521,21 +1010,25 @@ impl Message<Launch<StartPty>> for Jobs {
             activity,
         }))
         .abort_handle();
-        self.sessions.entry(m.session).or_default().push(Job {
-            id,
-            op,
-            command: shown,
-            started,
-            exit: None,
-            secs: 0,
-            log_path: log_path.clone(),
-            log,
-            pgids: Arc::new(Mutex::new(vec![s.pid as i32])),
-            cancel,
-            task,
-            name: m.args.name,
-            pty: Some(Arc::clone(&pty)),
-        });
+        self.push(
+            m.session,
+            Job {
+                id,
+                op,
+                command: shown,
+                started,
+                exit: None,
+                secs: 0,
+                log_path: log_path.clone(),
+                log,
+                pgids: Arc::new(Mutex::new(vec![s.pid as i32])),
+                cancel,
+                task,
+                name: m.args.name,
+                on_pty: true,
+                pty: Some(Arc::clone(&pty)),
+            },
+        );
         Ok(Running {
             done,
             claimable,
@@ -592,6 +1085,76 @@ impl Message<Wait> for Jobs {
             }
             Err(e) => tx.send(Err(e)),
         }
+        reply
+    }
+}
+
+impl Message<ListTerminals> for Jobs {
+    type Reply = Vec<TerminalSummary>;
+
+    async fn handle(&mut self, m: ListTerminals, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        m.sessions
+            .iter()
+            .filter_map(|s| self.sessions.get(s).map(|sj| (*s, sj)))
+            .flat_map(|(session, sj)| {
+                sj.jobs.iter().filter_map(move |j| {
+                    j.pty.as_ref().map(|p| TerminalSummary {
+                        session,
+                        id: j.id.clone(),
+                        name: j.name.clone(),
+                        command: j.command.clone(),
+                        state: j.state(),
+                        rows: ROWS,
+                        cols: COLS,
+                        revision: p.revision(),
+                        epoch: None,
+                    })
+                })
+            })
+            .collect()
+    }
+}
+
+impl Message<PtyScreen> for Jobs {
+    type Reply = DelegatedReply<Result<PtyScreenReply, String>>;
+
+    async fn handle(&mut self, m: PtyScreen, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let pty = self
+            .sessions
+            .get(&m.session)
+            .and_then(|s| s.jobs.iter().find(|j| j.id == m.id))
+            .and_then(|j| j.pty.as_ref());
+        let Some(pty) = pty else {
+            tx.send(Ok(PtyScreenReply::Unavailable));
+            return reply;
+        };
+        let revision = pty.revision();
+        if m.if_revision == Some(revision) {
+            tx.send(Ok(PtyScreenReply::Unchanged {
+                viewport: m.viewport,
+                revision,
+            }));
+            return reply;
+        }
+        // Admission (51 §7.4): the clone is the mailbox's only work; the
+        // render and its serialization run off it under one of the permits.
+        let Ok(permit) = Arc::clone(&self.snapshots).try_acquire_owned() else {
+            tx.send(Err("terminal snapshot busy; retry".into()));
+            return reply;
+        };
+        let cap = pty.capture();
+        tokio::spawn(async move {
+            let _permit = permit;
+            let snap = render(
+                cap,
+                m.viewport,
+                &crate::secrets::redact_spans,
+                crate::secrets::max_literal_len(),
+            );
+            tx.send(Ok(PtyScreenReply::Updated(snap.into_page(m.session, m.id))));
+        });
         reply
     }
 }
@@ -673,6 +1236,7 @@ struct Run {
     session: SessionId,
     id: JobId,
     command: String,
+    name: Option<String>,
     call_id: String,
     log_path: PathBuf,
     log: Arc<Mutex<Log>>,
@@ -752,6 +1316,8 @@ async fn run(mut j: Run) {
         command: j.command.clone(),
         call_id: j.call_id,
         log: j.log_path,
+        name: j.name,
+        pty: true,
     })
     .await;
 
@@ -840,6 +1406,7 @@ async fn run(mut j: Run) {
         }
     };
     *lock(&j.pty.exit) = Some(exit.clone());
+    j.pty.revision.fetch_add(1, SeqCst);
     j.pty.output.notify_waiters();
     j.rt.publish(JobEvent::Screen {
         session: j.session,
@@ -878,27 +1445,11 @@ fn ingest(pty: &PtyHandle, log: &Mutex<Log>, carry: &mut Vec<u8>, chunk: &[u8]) 
     let cursor = {
         let mut p = lock(&pty.parser);
         p.process(chunk);
+        pty.revision.fetch_add(1, SeqCst);
         p.screen().cursor_position()
     };
     respond(pty, carry, chunk, cursor);
     pty.output.notify_waiters();
-}
-
-/// 22 §4.3.
-fn screen_text(s: &vt100::Screen) -> (Vec<String>, (u16, u16)) {
-    let mut rows: Vec<String> = s
-        .rows(0, COLS)
-        .map(|mut r| {
-            r.truncate(r.trim_end().len());
-            r
-        })
-        .collect();
-    let last = rows
-        .iter()
-        .rposition(|r| !r.is_empty())
-        .map_or(0, |i| i + 1);
-    rows.truncate(last);
-    (rows, s.cursor_position())
 }
 
 /// Fixed-reply terminal queries (22 §4.4); `ESC[6n` is answered from the cursor.
@@ -1261,6 +1812,7 @@ impl Tool for StartTool {
                 args,
                 cwd,
                 ready_timeout: self.ready_timeout,
+                root: cx.resources.root.clone(),
                 activity: activity::current(),
             })
             .await
@@ -1356,7 +1908,179 @@ mod tests {
             session: fx.session,
             call_id: String::new(),
             quiet: false,
+            resources: crate::SessionResources::durable_arc(&fx.dir),
         }
+    }
+
+    fn capture(bytes: &[u8]) -> Capture {
+        let mut p = vt100::Parser::new(ROWS, COLS, HISTORY);
+        p.process(bytes);
+        Capture {
+            screen: p.screen().clone(),
+            revision: 1,
+            exit: None,
+        }
+    }
+
+    fn no_spans(_: &str) -> Vec<Range<usize>> {
+        Vec::new()
+    }
+
+    fn cells(row: &[StyledRun]) -> Vec<&Cell> {
+        row.iter().flat_map(|r| r.cells.iter()).collect()
+    }
+
+    fn text(row: &[StyledRun]) -> String {
+        cells(row).iter().map(|c| c.text.as_str()).collect::<String>().trim_end().to_owned()
+    }
+
+    #[test]
+    fn render_merges_same_style_cells_into_runs() {
+        let s = render(capture(b"\x1b[31mred\x1b[0m plain"), PtyViewport::Live, &no_spans, 0);
+        assert_eq!(s.origin, 0);
+        assert_eq!(s.lines.len(), 40);
+        let row = &s.lines[0];
+        assert_eq!(row.len(), 2, "{row:?}");
+        assert_eq!(row[0].style.fg, Color::Idx { idx: 1 });
+        assert_eq!(text(&row[..1]), "red");
+        assert_eq!(row[1].style, Style::default());
+        assert_eq!(row[1].cells.len(), 117);
+        assert_eq!(text(row), "red plain");
+        assert_eq!(s.cursor_pos, (0, 9));
+        assert!(!s.cursor_hidden);
+    }
+
+    #[test]
+    fn render_pages_retained_history() {
+        let mut feed = Vec::new();
+        for i in 0..600 {
+            feed.extend_from_slice(format!("line {i}\r\n").as_bytes());
+        }
+        // 601 logical rows; the buffer keeps the last 512 + 40, so absolute
+        // row `k` is `line {k + 49}`.
+        let live = render(capture(&feed), PtyViewport::Live, &no_spans, 0);
+        assert_eq!(live.retained, 512);
+        assert_eq!(live.origin, 512);
+        assert_eq!(live.lines.len(), 40);
+        assert_eq!(text(&live.lines[0]), "line 561");
+        assert_eq!(text(&live.lines[38]), "line 599");
+        assert_eq!(text(&live.lines[39]), "");
+
+        let hist = render(
+            capture(&feed),
+            PtyViewport::History {
+                offset: 10,
+                height: 80,
+            },
+            &no_spans,
+            0,
+        );
+        assert_eq!(hist.origin, 512 - 10 - 80);
+        assert_eq!(hist.lines.len(), 80);
+        assert_eq!(hist.wrapped.len(), 80);
+        assert_eq!(text(&hist.lines[0]), "line 471");
+        assert_eq!(text(&hist.lines[79]), "line 550");
+        let page = hist.into_page(SessionId::new(), JobId("j1".into()));
+        assert!(page.cursor.is_none() && !page.truncated && page.redaction_complete);
+
+        // Past the top: clamped to what is retained.
+        let top = render(
+            capture(&feed),
+            PtyViewport::History {
+                offset: 600,
+                height: 200,
+            },
+            &no_spans,
+            0,
+        );
+        assert_eq!((top.origin, top.lines.len()), (0, 0));
+    }
+
+    const LITERAL: &str = "SECRET-LITERAL-1234567890";
+
+    fn literal_spans(text: &str) -> Vec<Range<usize>> {
+        text.match_indices(LITERAL)
+            .map(|(i, m)| i..i + m.len())
+            .collect()
+    }
+
+    /// 51 §7.2: a value split by a soft wrap and by a style change is masked
+    /// as a whole; a page starting at a full buffer's edge says so.
+    #[test]
+    fn render_masks_secrets_across_wrap_and_style() {
+        let mut feed = vec![b'x'; 110];
+        feed.extend_from_slice(b"\x1b[31m");
+        feed.extend_from_slice(&LITERAL.as_bytes()[..10]);
+        feed.extend_from_slice(b"\x1b[0m");
+        feed.extend_from_slice(&LITERAL.as_bytes()[10..]);
+        feed.extend_from_slice(b" tail");
+        let s = render(capture(&feed), PtyViewport::Live, &literal_spans, LITERAL.len());
+        assert!(s.wrapped[0] && !s.wrapped[1], "{:?}", s.wrapped);
+        let (r0, r1) = (cells(&s.lines[0]), cells(&s.lines[1]));
+        assert!(r0[..110].iter().all(|c| c.text == "x"));
+        assert!(r0[110..].iter().all(|c| c.text == "•"), "{:?}", text(&s.lines[0]));
+        assert!(r1[..15].iter().all(|c| c.text == "•"), "{:?}", text(&s.lines[1]));
+        assert_eq!(text(&s.lines[1]), "•••••••••••••••  tail".replace("  ", " "));
+        assert!(s.lines[0].iter().all(|run| run.style == Style::default()));
+        let shown: String = s.lines.iter().map(|l| text(l)).collect::<Vec<_>>().join("\n");
+        for i in 0..=LITERAL.len() - 4 {
+            assert!(!shown.contains(&LITERAL[i..i + 4]), "{shown}");
+        }
+        assert!(s.redaction_complete);
+
+        let mut feed = Vec::new();
+        for i in 0..600 {
+            feed.extend_from_slice(format!("line {i}\r\n").as_bytes());
+        }
+        let edge = |offset| {
+            render(
+                capture(&feed),
+                PtyViewport::History { offset, height: 80 },
+                &literal_spans,
+                LITERAL.len(),
+            )
+        };
+        assert!(!edge(512 - 80).redaction_complete);
+        assert!(edge(10).redaction_complete);
+    }
+
+    #[tokio::test]
+    async fn pty_screen_unchanged_and_unavailable() {
+        let fx = fixture(Duration::from_millis(100), Duration::from_secs(60)).await;
+        let (start, ..) = tools(&fx);
+        let out = Tool::call(&start, start_args("sleep 30"), cx(&fx)).await.unwrap();
+        assert!(out.content.starts_with("job j1 · running"), "{}", out.content);
+        let ask = |id: &str, if_revision| {
+            fx.jobs.ask(PtyScreen {
+                session: fx.session,
+                id: JobId(id.into()),
+                viewport: PtyViewport::Live,
+                if_revision,
+            })
+        };
+        let PtyScreenReply::Updated(page) = ask("j1", None).await.unwrap() else {
+            panic!("expected a page");
+        };
+        assert_eq!((page.lines.len(), page.origin, page.rows), (40, 0, ROWS));
+        assert!(page.cursor.is_some() && page.exit.is_none());
+        let terms = fx
+            .jobs
+            .ask(ListTerminals {
+                sessions: vec![fx.session],
+            })
+            .await
+            .unwrap();
+        assert_eq!(terms.len(), 1);
+        assert_eq!((terms[0].revision, terms[0].state.as_str()), (page.revision, "running"));
+        assert!(matches!(
+            ask("j1", Some(page.revision)).await.unwrap(),
+            PtyScreenReply::Unchanged { viewport: PtyViewport::Live, revision } if revision == page.revision
+        ));
+        assert!(matches!(
+            ask("j9", None).await.unwrap(),
+            PtyScreenReply::Unavailable
+        ));
+        cancel(&fx, "j1").await;
     }
 
     fn tools(fx: &Fx) -> (StartTool, SendTool, ScreenTool, WaitTool) {

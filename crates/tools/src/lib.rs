@@ -4,11 +4,11 @@
 //! hot-reloaded; `mcp/config.yaml` overrides a tool's [`Risk`] with a [`Gate`]).
 //!
 //! Public surface consumed by other plugins:
-//! - commands on the `"tools"` actor ([`ToolRegistry`]): [`ListTools`], [`Invoke`], [`AppInvoke`], [`InspectTool`], [`DescribeTools`], [`ExternalApproval`], [`RegisterTool`], [`UnregisterTool`], [`RegisterActivity`], [`ActivityRecipient`], [`InstallCommunicationAccess`]
+//! - commands on the `"tools"` actor ([`ToolRegistry`]): [`ListTools`], [`Invoke`], [`AppInvoke`], [`InspectTool`], [`DescribeTools`], [`ExternalApproval`], [`RegisterTool`], [`UnregisterTool`], [`RegisterActivity`], [`ActivityRecipient`], [`InstallCommunicationAccess`], [`RegisterLifecycle`], [`ExpectParticipants`], [`ParticipantsReady`], [`OpenTree`], [`CloseTreeAll`]
 //! - commands on the `"approval"` actor ([`Approval`]): [`Resolve`]
 //! - commands on the `"ask"` actor ([`AskUser`]): [`AnswerAsk`]
 //! - commands on the `"mcp"` actor ([`Mcp`]): [`ListServers`], [`SetGate`], [`Restart`], [`AddServer`], [`RemoveServer`], [`AddRepo`], [`SyncMcp`], [`McpLogin`], [`McpLogout`]
-//! - commands on the `"jobs"` actor ([`Jobs`]): [`ListJobs`], [`CancelJob`]
+//! - commands on the `"jobs"` actor ([`Jobs`]): [`ListJobs`], [`CancelJob`], [`ListTerminals`], [`PtyScreen`], [`CloseSessions`]
 //! - events: [`ApprovalRequested`], [`ApprovalResolved`], [`AskRequested`], [`AskResolved`], [`JobEvent`]
 //! - activity protocol (47 §4, [`activity`]): the supervisor implements [`Admit`] and [`Settle`]
 //!   and registers an [`ActivitySink`]; producers hold an [`Activity`] guard for the real
@@ -37,6 +37,7 @@ pub mod registry;
 mod schema;
 pub mod secrets;
 pub mod shell;
+pub mod resources;
 
 pub use activity::{
     Activity, ActivitySink, Admission, Admit, Kind, Operation, OperationId, Rejected, Settle,
@@ -50,6 +51,10 @@ pub use communication::{CommunicationAccess, Disabled};
 pub use jobs::{
     CancelJob, InstallActivity, JOBS_ACTOR, JobEvent, JobExit, JobId, JobView, Jobs, ListJobs,
 };
+pub use pty::{
+    Cell, Color, ListTerminals, PtyPage, PtyScreen, PtyScreenReply, PtyViewport, Style, StyledRun,
+    TerminalSummary,
+};
 pub use mcp::{
     AddRepo, AddServer, ListServers, Mcp, McpAuth, McpLogin, McpLogout, McpProgress, McpServer,
     McpToolInfo, Progress, RemoveServer, RepoInfo, Restart, SetGate, SyncMcp,
@@ -60,6 +65,13 @@ pub use registry::{
     ListTools, RegisterActivity, RegisterPrompt, RegisterTool, SetApprovals, SetHidden, SetParent,
     ToolInspection, ToolRegistry, UnregisterPrompt, UnregisterTool, UserActivation,
 };
+pub use registry::{InstallResources, RemoveResources};
+pub use resources::{Retention, SessionResources};
+pub use jobs::CloseSessions;
+pub use registry::{
+    CloseTreeAll, ExpectParticipants, OpenTree, ParticipantsReady, RegisterLifecycle,
+};
+pub use resources::{CloseAck, CloseTree, TreeOpened};
 
 /// Registry name of the [`ToolRegistry`] actor.
 pub const REGISTRY_ACTOR: &str = "tools";
@@ -237,6 +249,9 @@ pub struct ToolCx {
     pub call_id: String,
     /// [`ToolCall::quiet`], copied from the call.
     pub quiet: bool,
+    /// Where this session's owners put files (51 §4.5); durable unless the
+    /// supervisor installed a private root.
+    pub resources: Arc<SessionResources>,
 }
 
 /// One struct per tool; the schema is derived from `Args`.

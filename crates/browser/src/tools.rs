@@ -6,6 +6,7 @@
 //! hands it back as `ToolOutput.files` (23 §5); `browser_show` publishes
 //! [`BrowserEvent::ShowLive`] instead of calling obscura.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use base64::Engine as _;
@@ -16,7 +17,7 @@ use runtime::{Runtime, SessionId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tools::{DynTool, Risk, Tool, ToolCx, ToolOutput, Tracked};
+use tools::{DynTool, Risk, SessionResources, Tool, ToolCx, ToolOutput, Tracked};
 
 use crate::{BrowserConfig, BrowserEvent, Browsers, Call};
 
@@ -27,8 +28,7 @@ pub struct Ctx {
     pub actor: ActorRef<Browsers>,
     /// `browser:` config; `max_chars` caps `browser_open` / `browser_read` replies.
     pub cfg: BrowserConfig,
-    /// Screenshots land under `<rt.data_dir>/browser/<session>/`; `browser_show`
-    /// publishes on `rt`'s bus.
+    /// `browser_show` publishes on `rt`'s bus.
     pub rt: Runtime,
 }
 
@@ -135,6 +135,15 @@ fn compact(mut v: Value) -> Value {
 /// the one obscura tool that takes only `selector` (`browser_select_option`).
 fn ref_selector(r: &str) -> String {
     format!("[data-obscura-ref=\"{r}\"]")
+}
+
+/// Where `browser_screenshot` PNGs go: `<resources>/browser/<session>`
+/// (51 §4.5). A durable root *is* the data dir, so the layout stays
+/// `<data_dir>/browser/<session>`; a private root's shots live in its
+/// scratch dir and vanish with it.
+#[must_use]
+pub fn shot_dir(resources: &SessionResources, session: SessionId) -> PathBuf {
+    resources.dir("browser").join(session.to_string())
 }
 
 /// Tidy a page text for the model (23 §4): trailing whitespace off every line,
@@ -543,7 +552,7 @@ pub struct ScreenshotArgs {
 
 browser_tool!(
     /// `browser_screenshot` → `browser_screenshot`; the PNG is written to
-    /// `<data_dir>/browser/<session>/shot-<n>.png` and attached (23 §5).
+    /// [`shot_dir`]`/shot-<n>.png` and attached (23 §5).
     ScreenshotTool, "browser_screenshot", ScreenshotArgs,
     "Render the current page to a PNG and attach it to this result as an image you can look at: use it to check layout, styling or anything text cannot show. Optional `width` / `height` in CSS pixels override the viewport. Text-only models receive a note instead of the image.",
     |ctx, a, cx| {
@@ -566,7 +575,7 @@ browser_tool!(
         let Some((w, h)) = png_size(&png) else {
             return Ok(ToolOutput::err("screenshot is not a PNG"));
         };
-        let dir = ctx.rt.data_dir.join("browser").join(cx.session.to_string());
+        let dir = shot_dir(&cx.resources, cx.session);
         tokio::fs::create_dir_all(&dir).await?;
         // ponytail: linear probe for the next free shot-<n>.png; survives restarts,
         // tens of shots per session at most.
@@ -979,5 +988,26 @@ mod tests {
             json!({ "url": "u" })
         );
         assert_eq!(ref_selector("e3"), "[data-obscura-ref=\"e3\"]");
+    }
+
+    #[test]
+    fn shot_dir_follows_resources_root() {
+        let session = SessionId::new();
+        let data = std::path::Path::new("/data");
+        assert_eq!(
+            shot_dir(&SessionResources::durable(data), session),
+            data.join("browser").join(session.to_string())
+        );
+        let private = SessionResources {
+            root: "/tmp/wth-private-x".into(),
+            retention: tools::Retention::Private,
+            generation: 3,
+        };
+        assert_eq!(
+            shot_dir(&private, session),
+            std::path::Path::new("/tmp/wth-private-x")
+                .join("browser")
+                .join(session.to_string())
+        );
     }
 }

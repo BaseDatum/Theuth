@@ -247,4 +247,10 @@ impl RpcPeer {
     pub fn is_closed(&self) -> bool {
         self.closed.is_cancelled()
     }
+
+    /// The connection's closed token itself, for owners that hold it beside
+    /// the peer id (a private root's lease, 51 §4.3).
+    pub fn closed_token(&self) -> CancellationToken {
+        self.closed.clone()
+    }
 }

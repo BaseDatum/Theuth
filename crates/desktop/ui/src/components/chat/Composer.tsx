@@ -18,6 +18,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { extFor, putAttachment } from '@/lib/files'
 import { attach, expand, type Pastes, prune, token, tokenize } from '@/lib/pastes'
 import { container, touch } from '@/lib/platform'
+import { VIEW, isPrivate, usePrivate } from '@/lib/private'
 import { queryKeys, useApi } from '@/lib/rpc'
 import * as speech from '@/lib/speech'
 import { cn } from '@/lib/utils'
@@ -30,6 +31,9 @@ import { CommunicationNotice, useCommunication } from './CommunicationNotice'
 import { ContextPicker } from './ContextPicker'
 import { QueuedChips } from './QueuedChips'
 import { type Ctx, FRESH, matches, run } from './slash'
+
+/** New Chat options (51 §8.3): `private` selects memory-only retention; `project` is root metadata. */
+export type DraftCreate = { private: boolean; project: string | null }
 
 const NONE: Pastes = new Map()
 const IMAGE = /\.(png|jpe?g|gif|webp|bmp)$/i
@@ -77,9 +81,11 @@ function SlashList({
 export function Composer({
   session,
   draftEffort,
+  draftCreate,
 }: {
   session: string | null
   draftEffort?: string | null
+  draftCreate?: DraftCreate
 }) {
   const api = useApi()
   const active = useHarnesses((s) => s.active)
@@ -112,6 +118,11 @@ export function Composer({
   const [transcribing, setTranscribing] = useState(false)
   const ref = useRef<HTMLTextAreaElement>(null)
   const { state: comm, exports } = useCommunication(session)
+  // Owned private tree (51 §4.5): uploads go to its scratch root; a private draft has no root yet, so blob uploads
+  // (which would land in the durable store) and voice notes (transcribed from the durable store) wait for the session.
+  const privateRoot = usePrivate((s) => s.current?.root)
+  const priv = session ? privateRoot !== undefined && isPrivate(session) : (draftCreate?.private ?? false)
+  const noUpload = priv && !session
 
   const slashWord = /^\/\S*$/.test(text) ? text : null
   const slash = slashWord !== null && matches(slashWord).length > 0
@@ -149,9 +160,13 @@ export function Composer({
       )
   }
 
-  // Uploads `blobs` through `put_attachment` (31 §9), then attaches the harness paths; image dims for the first image.
+  // Uploads `blobs` through `put_attachment` (31 §9) — or `put_session_attachment` for a private tree — then attaches the harness paths; image dims for the first image.
   const addBlobs = async (blobs: (File | Blob)[]) => {
     if (blobs.length === 0) return
+    if (noUpload) {
+      toast.error('Send the first message of a private session before attaching files')
+      return
+    }
     try {
       let dims: [number, number] | undefined
       const first = blobs[0]
@@ -160,7 +175,10 @@ export function Composer({
         dims = [bitmap.width, bitmap.height]
         bitmap.close()
       }
-      addFiles(await Promise.all(blobs.map((b) => putAttachment(api, b, extFor(b)))), dims)
+      addFiles(
+        await Promise.all(blobs.map((b) => putAttachment(api, b, extFor(b), priv && session ? session : undefined))),
+        dims,
+      )
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e))
     }
@@ -254,7 +272,19 @@ export function Composer({
         mode(session)
         await api.send_input(session, body, files)
       } else {
-        const id = await api.new_session()
+        let id: string
+        if (draftCreate?.private || draftCreate?.project) {
+          if (draftCreate.private && !usePrivate.getState().acknowledged)
+            throw new Error('Acknowledge the private session notice first')
+          const open = await api.create_session({
+            retention: draftCreate.private ? 'private' : 'durable',
+            project: draftCreate.project,
+            view: draftCreate.private ? VIEW : null,
+            cwd: null,
+          })
+          if (open.retention === 'private') usePrivate.getState().open(open)
+          id = open.session
+        } else id = await api.new_session()
         if (draftEffort !== undefined) await api.set_effort(id, draftEffort)
         // Seed before sending: a fast failure can finish before the RPC reply.
         loadHistory(
@@ -475,7 +505,7 @@ export function Composer({
             >
               <Square className="size-4 fill-current" />
             </Button>
-          ) : voice && (recording || !text.trim()) ? (
+          ) : voice && !priv && (recording || !text.trim()) ? (
             <Button
               variant={recording ? 'destructive' : 'default'}
               className={cn('size-9 shrink-0 rounded-full', recording && 'w-auto gap-1 px-3 tabular-nums')}

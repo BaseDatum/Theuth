@@ -430,6 +430,8 @@ mod tests {
             started_at: Some(chrono::Utc::now() - chrono::Duration::seconds(75)),
             finished_at: None,
             last: "reading the loop".into(),
+            project: None,
+            retention: agent::Retention::Durable,
         };
         r.seed(&info);
         assert_eq!(

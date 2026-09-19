@@ -11,6 +11,7 @@ import { Toaster } from '@/components/ui/sonner'
 import { describe } from '@/lib/describe'
 import { notifyIfHidden, primeNotifications } from '@/lib/notify'
 import { container } from '@/lib/platform'
+import { usePrivateOwner } from '@/lib/private'
 import { queryKeys, useInvalidateOn } from '@/lib/rpc'
 import { installSpeechListeners } from '@/lib/speech'
 import { connection, onNavigate, onQuitRequested, quitAck, relaunch } from '@/lib/tauri'
@@ -76,6 +77,8 @@ function reload(st: Stores): void {
   void st.qc.invalidateQueries({ queryKey: ['peer-messages'] })
   void st.qc.invalidateQueries({ queryKey: queryKeys.a2a })
   void st.qc.invalidateQueries({ queryKey: queryKeys.searchAll })
+  void st.qc.invalidateQueries({ queryKey: ['session-cost'] })
+  void st.qc.invalidateQueries({ queryKey: ['terminals'] })
   const api = st.connection.getState().api
   if (api) void loadInfo(st, api).catch(() => undefined)
   if (useHarnesses.getState().active === st.id)
@@ -356,6 +359,8 @@ export function App() {
   }, [hydrated, active])
 
   useTauri()
+  // 51 §8.3: one router-level owner; `reload()`'s `unload()` marks slices only, the private record (memory-only) survives a reconnect.
+  usePrivateOwner(router)
 
   return (
     <>

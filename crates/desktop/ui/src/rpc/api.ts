@@ -58,6 +58,13 @@ import type { UpdateReady } from '@/rpc/bindings/UpdateReady'
 import type { Transcript } from '@/rpc/bindings/Transcript'
 import type { JsonValue } from '@/rpc/bindings/serde_json/JsonValue'
 import type { AwsProfiles } from '@/rpc/bindings/AwsProfiles'
+import type { CloseResult } from '@/rpc/bindings/CloseResult'
+import type { CreateSessionOptions } from '@/rpc/bindings/CreateSessionOptions'
+import type { PtyScreenReply } from '@/rpc/bindings/PtyScreenReply'
+import type { PtyViewport } from '@/rpc/bindings/PtyViewport'
+import type { SessionCost } from '@/rpc/bindings/SessionCost'
+import type { SessionOpen } from '@/rpc/bindings/SessionOpen'
+import type { TerminalSummary } from '@/rpc/bindings/TerminalSummary'
 import type { RpcClient } from '@/rpc/client'
 import type {
   AgentInfo,
@@ -115,6 +122,15 @@ export interface Api {
   app_close(instance_id: string): Promise<null>
   cancel(session: SessionId): Promise<null>
   cancel_job(session: SessionId, id: JobId): Promise<null>
+  /** Live terminals of `session` (51 §7.2), `descendants` widens to its subtree. */
+  list_terminals(session: SessionId, descendants: boolean | null): Promise<TerminalSummary[]>
+  /** One rendered page of a job's screen (51 §7.3); `if_revision` answers `Unchanged` when nothing moved. */
+  pty_screen(
+    session: SessionId,
+    job: JobId,
+    viewport: PtyViewport,
+    if_revision: number | null,
+  ): Promise<PtyScreenReply>
   compact(session: SessionId, style: CompactStyle | null): Promise<number>
   compact_style(): Promise<CompactStyle>
   /** Computer-control permissions and attached displays (27 §6); rejects when the plugin is disabled. */
@@ -140,10 +156,12 @@ export interface Api {
   get_prompt(session: SessionId | null): Promise<string>
   /** Effective communication state of `session`, or the global switch alone when `null` (50 §2.1); authoritative — render `effective`/`inherited_from`, never guess. */
   get_communication(session: SessionId | null): Promise<CommunicationState>
-  /** Base64 of a file under `<data_dir>/{attachments,browser,computer,artifacts}` (31 §6.4); `-32000` elsewhere. */
-  get_attachment(path: string): Promise<string>
+  /** Base64 of a file under `<data_dir>/{attachments,browser,computer,artifacts}` (31 §6.4), or under `session`'s private scratch root (51 §4.2); `-32000` elsewhere. */
+  get_attachment(path: string, session?: SessionId | null): Promise<string>
   /** Latest committed plan of `session` (47 §5.1); works mid-turn; unknown session / failed read rejects, never an empty list. */
   get_todos(session: SessionId): Promise<TodoSnapshot>
+  /** Ledger summary of `session` (51 §6.5): returned money per currency, estimates for unavailable calls, coverage, children. */
+  session_cost(session: SessionId): Promise<SessionCost>
   info(): Promise<Info>
   knowledge_delete(id: string): Promise<null>
   knowledge_get(id: string): Promise<Concept>
@@ -246,6 +264,16 @@ export interface Api {
   pin_session(session: SessionId, pinned: boolean): Promise<null>
   /** Delete a session and its subagents; `SessionDeleted` per removed id follows. Refused mid-turn. */
   delete_session(session: SessionId): Promise<null>
+  /** New root with retention/project/cwd (51 §4.1); private needs `view` and returns a `lease_secret`. */
+  create_session(options: CreateSessionOptions): Promise<SessionOpen>
+  /** Re-attach this connection to a private root it holds the `lease_secret` for (51 §4.3). */
+  resume_private(session: SessionId, view: string, lease_secret: string): Promise<SessionOpen>
+  /** Release a private root (tears it down) or leave a durable one; `lease_secret` only for private. */
+  leave_session(session: SessionId, lease_secret: string | null): Promise<CloseResult>
+  /** Set or clear (`null`) the root's project label (51 §3); `SessionMetadataChanged` follows. */
+  set_session_project(session: SessionId, project: string | null): Promise<void>
+  /** Like `put_attachment`, but under `session`'s storage root (private scratch when private). */
+  put_session_attachment(session: SessionId, bytes_base64: string, file_ext: string): Promise<string>
   resolve_approval(id: ApprovalId, decision: Decision): Promise<boolean>
   /** Answer a pending `ask_user`: one answer per question, or `null` to dismiss the set (which cancels the turn). */
   answer_ask(id: AskId, answers: Answer[] | null): Promise<boolean>
@@ -347,6 +375,7 @@ export const METHODS = [
   'compact_style',
   'computer_permissions',
   'context_items',
+  'create_session',
   'delete_secret',
   'delete_session',
   'edit_turn',
@@ -374,6 +403,7 @@ export const METHODS = [
   'knowledge_search',
   'knowledge_sync',
   'knowledge_write',
+  'leave_session',
   'link_cancel_pair',
   'link_enable',
   'link_pair',
@@ -399,6 +429,7 @@ export const METHODS = [
   'list_secrets',
   'list_sessions',
   'list_skills',
+  'list_terminals',
   'list_tools',
   'load_session',
   'load_skill',
@@ -410,7 +441,9 @@ export const METHODS = [
   'new_session',
   'peer_message',
   'pin_session',
+  'pty_screen',
   'put_attachment',
+  'put_session_attachment',
   'redo',
   'regenerate',
   'reload_a2a',
@@ -425,10 +458,12 @@ export const METHODS = [
   'rename_session',
   'resolve_approval',
   'restore_secret',
+  'resume_private',
   'schedule_history',
   'search',
   'search_refresh',
   'send_input',
+  'session_cost',
   'set_approvals',
   'set_aws_profile',
   'set_communication',
@@ -440,6 +475,7 @@ export const METHODS = [
   'set_model',
   'set_peer_scope',
   'set_secret',
+  'set_session_project',
   'set_subagent_timeout',
   'set_title_model',
   'set_vision_model',

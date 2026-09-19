@@ -2,6 +2,7 @@
 //! `Fetcher::request` → drift check → records. Errors carry status and
 //! reason, never the request.
 
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use runtime::SessionId;
@@ -20,13 +21,14 @@ use crate::{CallReply, Routes};
 pub async fn call(
     routes: &Routes,
     session: SessionId,
+    root: Option<&Path>,
     route_id: &str,
     params: &Map<String, Value>,
 ) -> anyhow::Result<CallReply> {
     let Some((domain, _)) = route_id.split_once(':') else {
         anyhow::bail!("bad route id {route_id:?}: expected domain:METHOD:path");
     };
-    let site = routes.store.load(domain).await?;
+    let site = routes.load(root, domain).await?;
     let Some(route) = site.routes.iter().find(|r| r.id == route_id) else {
         anyhow::bail!("unknown route {route_id:?}; site_routes lists the learned ones");
     };
@@ -92,7 +94,7 @@ pub async fn call(
         .and_then(|v| drift(route, &v));
     match checked {
         Ok(records) => {
-            routes.store.mark(domain, route_id, true).await?;
+            routes.mark(root, domain, route_id, true).await?;
             Ok(CallReply {
                 url: url.into(),
                 status: resp.status,
@@ -103,7 +105,7 @@ pub async fn call(
             })
         }
         Err(reason) => {
-            routes.store.mark(domain, route_id, false).await?;
+            routes.mark(root, domain, route_id, false).await?;
             let auth_hint = if matches!(resp.status, 401 | 403) && !unarmed.is_empty() {
                 format!(
                     " — {} not armed: open the site in this session and site_learn again",

@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import { ChevronDown, ChevronRight } from 'lucide-react'
 import { useNavigate } from '@tanstack/react-router'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -20,7 +21,14 @@ import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import { AgentTree } from './AgentTree'
 import { SessionItem } from './SessionItem'
 
-type Row = { key: string; label: string } | { key: string; session: SessionSummary } | { key: string; tree: string }
+export type Row =
+  | { key: string; label: string }
+  | { key: string; project: string | null; collapsed: boolean }
+  | { key: string; session: SessionSummary }
+  | { key: string; tree: string }
+
+/** Sidebar name of the `null` project bucket (51 §3). */
+export const UNGROUPED = 'Ungrouped'
 
 const DAY = 86_400_000
 
@@ -44,24 +52,44 @@ function rootOf(sessions: SessionSummary[], id: string | undefined): string | un
   }
 }
 
-/** Pinned top-level sessions first, then the rest newest first with day-group headers; the active one's root is followed by its agent tree. */
-function buildRows(sessions: SessionSummary[], active: string | undefined): Row[] {
+/**
+ * Pinned top-level sessions first, then the rest newest first with day-group headers; the active one's root is
+ * followed by its agent tree. With any project set (51 §3), roots are bucketed by project in first-seen order of
+ * that ordering, `Ungrouped` last, under collapsible project headers (`collapsed` holds project labels, `''` = ungrouped).
+ */
+export function buildRows(sessions: SessionSummary[], active: string | undefined, collapsed: ReadonlySet<string> = new Set()): Row[] {
   const now = Date.now()
   const root = rootOf(sessions, active)
   const rows: Row[] = []
-  let label = ''
   const top = sessions
     .filter((s) => s.parent === null)
     .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updated_at.localeCompare(a.updated_at))
+  const buckets = new Map<string | null, SessionSummary[]>()
   for (const s of top) {
-    const g = s.pinned ? 'Pinned' : group(s.updated_at, now)
-    if (g !== label) rows.push({ key: `h:${g}`, label: (label = g) })
-    rows.push({ key: s.id, session: s })
-    if (s.id === root) rows.push({ key: `t:${s.id}`, tree: s.id })
+    const list = buckets.get(s.project)
+    if (list) list.push(s)
+    else buckets.set(s.project, [s])
+  }
+  const ungrouped = buckets.get(null)
+  buckets.delete(null)
+  if (ungrouped) buckets.set(null, ungrouped)
+  const grouped = buckets.size > 1 || !ungrouped
+  for (const [project, list] of buckets) {
+    if (grouped) {
+      const isCollapsed = collapsed.has(project ?? '')
+      rows.push({ key: `p:${project ?? ''}`, project, collapsed: isCollapsed })
+      if (isCollapsed) continue
+    }
+    let label = ''
+    for (const s of list) {
+      const g = s.pinned ? 'Pinned' : group(s.updated_at, now)
+      if (g !== label) rows.push({ key: `h:${project ?? ''}:${g}`, label: (label = g) })
+      rows.push({ key: s.id, session: s })
+      if (s.id === root) rows.push({ key: `t:${s.id}`, tree: s.id })
+    }
   }
   return rows
 }
-
 
 /**
  * The chat list (`list_sessions`), virtualized on the sidebar's scroll container.
@@ -72,7 +100,8 @@ export function SessionList({ scrollEl, active }: { scrollEl: HTMLDivElement | n
   const api = useApi()
   const navigate = useNavigate()
   const { data: sessions = [] } = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
-  const rows = useMemo(() => buildRows(sessions, active), [sessions, active])
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set())
+  const rows = useMemo(() => buildRows(sessions, active, collapsed), [sessions, active, collapsed])
   const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set())
   const [confirming, setConfirming] = useState(false)
   // Visible top-level order for ⇧-click ranges, and the range's start; refs so
@@ -112,7 +141,7 @@ export function SessionList({ scrollEl, active }: { scrollEl: HTMLDivElement | n
   const v = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scrollEl,
-    estimateSize: (i) => ('label' in (rows[i] ?? {}) ? 36 : 40),
+    estimateSize: (i) => ('session' in (rows[i] ?? {}) || 'tree' in (rows[i] ?? {}) ? 40 : 36),
     overscan: 8,
     getItemKey: (i) => rows[i]?.key ?? i,
   })
@@ -130,13 +159,31 @@ export function SessionList({ scrollEl, active }: { scrollEl: HTMLDivElement | n
               className="absolute top-0 left-0 w-full"
               style={{ transform: `translateY(${item.start}px)` }}
             >
-              {'label' in row ? (
+              {'project' in row ? (
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-1 px-2.5 pt-4 pb-1.5 text-xs font-semibold text-fg-secondary"
+                  aria-expanded={!row.collapsed}
+                  onClick={() =>
+                    setCollapsed((prev) => {
+                      const next = new Set(prev)
+                      const k = row.project ?? ''
+                      if (!next.delete(k)) next.add(k)
+                      return next
+                    })
+                  }
+                >
+                  {row.collapsed ? <ChevronRight className="size-3" /> : <ChevronDown className="size-3" />}
+                  <span className="truncate">{row.project ?? UNGROUPED}</span>
+                </button>
+              ) : 'label' in row ? (
                 <div className="px-2.5 pt-4 pb-1.5 text-xs font-medium text-fg-tertiary">{row.label}</div>
               ) : 'session' in row ? (
                 <SessionItem
                   id={row.session.id}
                   title={row.session.title}
                   pinned={row.session.pinned}
+                  project={row.session.project}
                   active={row.session.id === active}
                   selected={selected.has(row.session.id)}
                   selecting={selected.size > 0}

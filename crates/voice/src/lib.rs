@@ -14,6 +14,7 @@ use ptts::synth::Synth;
 use runtime::{Runtime, SessionId};
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
+use tools::{CloseAck, CloseTree, RegisterLifecycle};
 
 mod clip;
 pub mod model;
@@ -432,6 +433,24 @@ impl Message<Stop> for Voice {
     }
 }
 
+impl Message<CloseTree> for Voice {
+    type Reply = CloseAck;
+
+    /// A closing tree (51 §4.5): stop the utterance if it belongs to a
+    /// closing session (same path as [`Stop`]). Voice keeps nothing else per
+    /// session and writes no session files; clips are returned as bytes.
+    async fn handle(&mut self, m: CloseTree, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        if self
+            .current
+            .as_ref()
+            .is_some_and(|c| m.subtree.contains(&c.session))
+        {
+            self.stop_current().await;
+        }
+        CloseAck::ok("voice")
+    }
+}
+
 impl Message<Status> for Voice {
     type Reply = VoiceStatus;
     async fn handle(&mut self, _: Status, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
@@ -582,6 +601,13 @@ impl runtime::Plugin for VoicePlugin {
                 .await
             {
                 let _ = reg
+                    .ask(RegisterLifecycle {
+                        owner: "voice",
+                        opened: None,
+                        close: actor.reply_recipient(),
+                    })
+                    .await;
+                let _ = reg
                     .ask(tools::RegisterPrompt {
                         plugin: "voice",
                         text: PROMPT.to_owned(),
@@ -603,5 +629,46 @@ mod tests {
         assert_eq!(note_text("", 0), "[voice note, 1 s] ");
         assert!(is_note("  [voice note, 3 s] x"));
         assert!(!is_note("[attachment: a.m4a]"));
+    }
+
+    /// An actor with `current` set to an utterance of `session` waiting for
+    /// the model (no synthesis task to cancel, no model to load).
+    fn speaking(session: SessionId) -> (ActorRef<Voice>, SpeechId) {
+        let id = SpeechId::new();
+        let actor = Voice::spawn(Voice {
+            rt: Runtime::new(figment::Figment::new(), std::env::temp_dir()),
+            cfg: VoiceConfig::default(),
+            model: None,
+            model_state: ModelState::Missing,
+            voices: Vec::new(),
+            current: Some(Current {
+                id,
+                session,
+                cancel: None,
+                text: Some("hello".to_owned()),
+            }),
+            pending_clips: Vec::new(),
+            clip_gate: Arc::new(tokio::sync::Semaphore::new(1)),
+        });
+        (actor, id)
+    }
+
+    #[tokio::test]
+    async fn close_tree_stops_only_the_subtree_utterance() {
+        let (mine, other) = (SessionId::new(), SessionId::new());
+        let (actor, id) = speaking(mine);
+        let close = |subtree| CloseTree {
+            subtree,
+            generation: 1,
+            cancel: CancellationToken::new(),
+        };
+
+        let ack = actor.ask(close(vec![other])).await.expect("ask");
+        assert!(ack.ok && ack.owner == "voice");
+        assert_eq!(actor.ask(Status).await.expect("ask").speaking, Some(id));
+
+        let ack = actor.ask(close(vec![other, mine])).await.expect("ask");
+        assert!(ack.ok);
+        assert_eq!(actor.ask(Status).await.expect("ask").speaking, None);
     }
 }

@@ -31,7 +31,7 @@ use serde::{Deserialize, Serialize};
 pub use pdf::{Diag, Source};
 pub use store::{
     Claim, CommitError, Invocation, InvocationStatus, MAX_INVOCATION_RESULT, MAX_LIST_INVOCATIONS,
-    State, args_hash,
+    State, Stores, args_hash,
 };
 pub use svg::Raster;
 pub use tools::ShowArgs;
@@ -314,7 +314,29 @@ pub struct ListInvocations {
 /// The [`ARTIFACT_ACTOR`] actor.
 #[derive(kameo::Actor)]
 pub struct ArtifactActor {
-    state: Arc<State>,
+    stores: Arc<Stores>,
+}
+
+/// Id-keyed lookups carry no session: ask the durable store first, then every
+/// open private tree; the first answer `found` accepts wins, else the durable
+/// one.
+async fn any<T, E, Fut>(
+    states: Vec<Arc<State>>,
+    found: impl Fn(&Result<T, E>) -> bool,
+    f: impl Fn(Arc<State>) -> Fut,
+) -> Result<T, E>
+where
+    Fut: Future<Output = Result<T, E>>,
+{
+    let mut first = None;
+    for s in states {
+        let r = f(s).await;
+        if found(&r) {
+            return r;
+        }
+        first.get_or_insert(r);
+    }
+    first.expect("the durable store is always present")
 }
 
 impl Message<Show> for ArtifactActor {
@@ -323,7 +345,13 @@ impl Message<Show> for ArtifactActor {
     async fn handle(&mut self, m: Show, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        let state = self.state.clone();
+        let state = match self.stores.state_for(m.session) {
+            Ok(s) => s,
+            Err(e) => {
+                tx.send(Err(e));
+                return reply;
+            }
+        };
         tokio::spawn(async move {
             tx.send(
                 state
@@ -342,7 +370,16 @@ impl Message<List> for ArtifactActor {
     async fn handle(&mut self, m: List, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        let state = self.state.clone();
+        // `None` is the explorer: durable rows only; a private tree is never listed.
+        let state = match m.session.map_or(Ok(self.stores.durable().clone()), |s| {
+            self.stores.state_for(s)
+        }) {
+            Ok(s) => s,
+            Err(_) => {
+                tx.send(Vec::new());
+                return reply;
+            }
+        };
         // Leaves the mailbox: `descendants` asks the agent supervisor.
         tokio::spawn(async move {
             let list = state
@@ -362,7 +399,11 @@ impl Message<Export> for ArtifactActor {
     type Reply = Result<PathBuf, String>;
 
     async fn handle(&mut self, m: Export, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.state.export(&m.id, &m.dest).await
+        any(self.stores.all(), Result::is_ok, |s| {
+            let (id, dest) = (m.id.clone(), m.dest.clone());
+            async move { s.export(&id, &dest).await }
+        })
+        .await
     }
 }
 
@@ -372,7 +413,13 @@ impl Message<Commit> for ArtifactActor {
     async fn handle(&mut self, m: Commit, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        let state = self.state.clone();
+        let state = match self.stores.state_for(m.session) {
+            Ok(s) => s,
+            Err(e) => {
+                tx.send(Err(CommitError::Other(e)));
+                return reply;
+            }
+        };
         tokio::spawn(async move {
             tx.send(state.commit(m).await);
         });
@@ -390,7 +437,8 @@ impl Message<search::SearchArtifacts> for ArtifactActor {
     ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        let state = self.state.clone();
+        // Durable rows only: a private tree is never indexed (51 §4.5).
+        let state = self.stores.durable().clone();
         // Leaves the mailbox: asks the agent for live sessions, matches on the blocking pool.
         tokio::spawn(async move {
             tx.send(state.search_artifacts(m.query, m.limit).await);
@@ -403,7 +451,11 @@ impl Message<GetRecord> for ArtifactActor {
     type Reply = Result<Artifact, String>;
 
     async fn handle(&mut self, m: GetRecord, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.state.record(&m.call_id).await
+        any(self.stores.all(), Result::is_ok, |s| {
+            let call_id = m.call_id.clone();
+            async move { s.record(&call_id).await }
+        })
+        .await
     }
 }
 
@@ -415,7 +467,7 @@ impl Message<ClaimInvocation> for ArtifactActor {
         m: ClaimInvocation,
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        self.state.claim(m).await
+        self.stores.state_for(m.session)?.claim(m).await
     }
 }
 
@@ -427,7 +479,11 @@ impl Message<CompleteInvocation> for ArtifactActor {
         m: CompleteInvocation,
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        self.state.complete(m).await
+        any(self.stores.all(), Result::is_ok, |s| {
+            let m = m.clone();
+            async move { s.complete(m).await }
+        })
+        .await
     }
 }
 
@@ -439,7 +495,15 @@ impl Message<GetInvocation> for ArtifactActor {
         m: GetInvocation,
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        self.state.invocation(&m.request_id).await
+        any(
+            self.stores.all(),
+            |r| matches!(r, Ok(Some(_))),
+            |s| {
+                let request_id = m.request_id.clone();
+                async move { s.invocation(&request_id).await }
+            },
+        )
+        .await
     }
 }
 
@@ -451,7 +515,11 @@ impl Message<MarkInvocationUnknown> for ArtifactActor {
         m: MarkInvocationUnknown,
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        self.state.mark_unknown(m).await
+        any(self.stores.all(), Result::is_ok, |s| {
+            let m = m.clone();
+            async move { s.mark_unknown(m).await }
+        })
+        .await
     }
 }
 
@@ -463,9 +531,15 @@ impl Message<ListInvocations> for ArtifactActor {
         m: ListInvocations,
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        self.state
-            .list_invocations(&m.record_call_id, m.limit)
-            .await
+        any(
+            self.stores.all(),
+            |r: &Result<Vec<Invocation>, String>| matches!(r, Ok(v) if !v.is_empty()),
+            |s| {
+                let record = m.record_call_id.clone();
+                async move { s.list_invocations(&record, m.limit).await }
+            },
+        )
+        .await
     }
 }
 
@@ -479,10 +553,16 @@ impl Message<search::Get> for ArtifactActor {
     ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        let state = self.state.clone();
+        let states = self.stores.all();
         // Leaves the mailbox: asks the agent whether the owning session exists.
         tokio::spawn(async move {
-            tx.send(state.get(&m.call_id).await);
+            tx.send(
+                any(states, Result::is_ok, |s| {
+                    let call_id = m.call_id.clone();
+                    async move { s.get(&call_id).await }
+                })
+                .await,
+            );
         });
         reply
     }
@@ -498,9 +578,15 @@ impl Message<search::ReadSearchMatch> for ArtifactActor {
     ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        let state = self.state.clone();
+        let states = self.stores.all();
         tokio::spawn(async move {
-            tx.send(state.read_search_match(m.call_id, m.query).await);
+            tx.send(
+                any(states, Result::is_ok, |s| {
+                    let (call_id, query) = (m.call_id.clone(), m.query.clone());
+                    async move { s.read_search_match(call_id, query).await }
+                })
+                .await,
+            );
         });
         reply
     }
@@ -510,7 +596,9 @@ impl Message<search::RefreshSearch> for ArtifactActor {
     type Reply = ();
 
     async fn handle(&mut self, _: search::RefreshSearch, _: &mut Context<Self, Self::Reply>) {
-        self.state.refresh_search();
+        for s in self.stores.all() {
+            s.refresh_search();
+        }
     }
 }
 
@@ -518,18 +606,70 @@ impl Message<agent::AgentEvent> for ArtifactActor {
     type Reply = ();
 
     async fn handle(&mut self, ev: agent::AgentEvent, _: &mut Context<Self, Self::Reply>) {
-        if let agent::AgentEvent::SessionDeleted { session } = ev
-            && let Err(e) = self.state.delete_session(session).await
-        {
+        let agent::AgentEvent::SessionDeleted { session } = ev else {
+            return;
+        };
+        // A member of a closed private tree has nothing left; `state_for`
+        // says so. Unknown ids are durable no-ops: the delete matches no rows.
+        let Ok(state) = self.stores.state_for(session) else {
+            return;
+        };
+        if let Err(e) = state.delete_session(session).await {
             tracing::warn!(%session, "artifact rows not deleted: {e:#}");
         }
     }
 }
 
+impl Message<::tools::TreeOpened> for ArtifactActor {
+    type Reply = ();
+
+    async fn handle(&mut self, m: ::tools::TreeOpened, _: &mut Context<Self, Self::Reply>) {
+        // In the mailbox on purpose: the next message for a member must find
+        // its store. Migrating an empty in-memory index takes milliseconds.
+        if let Err(e) = self
+            .stores
+            .open_tree(m.root, &m.sessions, &m.resources)
+            .await
+        {
+            tracing::error!(root = %m.root, "private artifact store not opened: {e:#}");
+        }
+    }
+}
+
+impl Message<::tools::CloseTree> for ArtifactActor {
+    type Reply = DelegatedReply<::tools::CloseAck>;
+
+    async fn handle(
+        &mut self,
+        m: ::tools::CloseTree,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let stores = self.stores.clone();
+        // Leaves the mailbox: waits for admitted writers (a PDF compile takes
+        // seconds) and removes the blobs. Members are unmapped synchronously
+        // inside `close_tree` before the first await, so nothing new is admitted.
+        tokio::spawn(async move {
+            let (ok, detail) = match stores.close_tree(&m.subtree).await {
+                Ok(()) => (true, None),
+                Err(e) => (false, Some(e)),
+            };
+            tx.send(::tools::CloseAck {
+                owner: "artifact".into(),
+                ok,
+                detail,
+            });
+        });
+        reply
+    }
+}
+
 /// The plugin (35 §0.10): reads `artifact`, opens the store, spawns
 /// [`ArtifactActor`] as [`ARTIFACT_ACTOR`], subscribes it to
-/// [`agent::AgentEvent`], sweeps orphan blobs, and registers `show` plus the
-/// prompt block once the registry is up.
+/// [`agent::AgentEvent`], sweeps orphan blobs, and registers `show`, the
+/// prompt block and the private-tree lifecycle (51 §4.5) once the registry
+/// is up.
 pub struct ArtifactPlugin;
 
 #[async_trait::async_trait]
@@ -554,9 +694,10 @@ impl runtime::Plugin for ArtifactPlugin {
                 return Ok(());
             }
         };
+        let stores = Arc::new(Stores::new(state.clone()));
         let actor = ArtifactActor::spawn_with_mailbox(
             ArtifactActor {
-                state: state.clone(),
+                stores: stores.clone(),
             },
             runtime::subscriber_mailbox(),
         );
@@ -564,9 +705,8 @@ impl runtime::Plugin for ArtifactPlugin {
         rt.subscribe::<ArtifactActor, agent::AgentEvent>(&actor)
             .await;
 
-        let sweep = state.clone();
         tokio::spawn(async move {
-            match sweep.sweep().await {
+            match state.sweep().await {
                 Ok(0) => {}
                 Ok(n) => tracing::info!("artifact sweep removed {n} orphan blobs"),
                 Err(e) => tracing::warn!("artifact sweep failed: {e:#}"),
@@ -580,12 +720,19 @@ impl runtime::Plugin for ArtifactPlugin {
                 .await
             {
                 let _ = reg
-                    .ask(::tools::RegisterTool(Arc::new(tools::ShowTool { state })))
+                    .ask(::tools::RegisterTool(Arc::new(tools::ShowTool { stores })))
                     .await;
                 let _ = reg
                     .ask(::tools::RegisterPrompt {
                         plugin: "artifact",
                         text: tools::PROMPT.to_owned(),
+                    })
+                    .await;
+                let _ = reg
+                    .tell(::tools::RegisterLifecycle {
+                        owner: "artifact",
+                        opened: Some(actor.clone().recipient()),
+                        close: actor.reply_recipient(),
                     })
                     .await;
             }

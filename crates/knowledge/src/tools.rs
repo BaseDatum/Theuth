@@ -55,6 +55,15 @@ fn cwd() -> PathBuf {
     std::env::current_dir().unwrap_or_default()
 }
 
+/// 51 §5: a private session leaves no trace in the durable bundle.
+fn writable(cx: &ToolCx) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !cx.resources.is_private(),
+        "knowledge mutations are disabled in a private session"
+    );
+    Ok(())
+}
+
 fn meta_line(s: &mut String, m: &Meta) {
     s.push_str(&format!("`{}` — {} [{}]", m.id, m.title, m.type_));
     if !m.description.is_empty() {
@@ -237,7 +246,8 @@ impl Tool for PutTool {
             .into()
     }
 
-    async fn call(&self, p: Put, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
+    async fn call(&self, p: Put, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        writable(&cx)?;
         let (meta, created) = self.0.put(p, Source::Model).await?;
         let how = if created { "new" } else { "updated" };
         Ok(ToolOutput::ok(format!("put {} ({how})", meta.id)))
@@ -258,7 +268,8 @@ impl Tool for DeleteTool {
             .into()
     }
 
-    async fn call(&self, a: IdArgs, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
+    async fn call(&self, a: IdArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        writable(&cx)?;
         self.0.delete(&a.id).await?;
         Ok(ToolOutput::ok(format!("deleted {}", a.id)))
     }
@@ -336,7 +347,8 @@ impl Tool for RestoreTool {
             .into()
     }
 
-    async fn call(&self, a: RestoreArgs, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
+    async fn call(&self, a: RestoreArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        writable(&cx)?;
         let c = self.0.restore(&a.id, a.commit.as_deref()).await?;
         Ok(ToolOutput::ok(format!(
             "restored {} from {}",
@@ -374,5 +386,61 @@ mod tests {
         assert_eq!(PutTool::RISK, Risk::ReadOnly);
         assert_eq!(DeleteTool::RISK, Risk::Destructive);
         assert_eq!(RestoreTool::RISK, Risk::Mutating);
+    }
+
+    fn cx(private: bool) -> ToolCx {
+        let dir = std::env::temp_dir();
+        ToolCx {
+            session: runtime::SessionId::new(),
+            call_id: String::new(),
+            quiet: false,
+            resources: Arc::new(tools::SessionResources {
+                root: dir.clone(),
+                retention: if private {
+                    tools::Retention::Private
+                } else {
+                    tools::Retention::Durable
+                },
+                generation: 1,
+            }),
+        }
+    }
+
+    fn put() -> Put {
+        Put {
+            id: "facts/x".into(),
+            type_: "fact".into(),
+            title: "X".into(),
+            description: None,
+            tags: Vec::new(),
+            scope: None,
+            body: "body".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn private_session_refuses_mutations_durable_writes() {
+        let dir = std::env::temp_dir().join(format!("wth-ktools-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let rt = runtime::Runtime::new(figment::Figment::new(), dir.clone());
+        let k = Knowledge::open(&dir, rt).await.unwrap();
+        let msg = "knowledge mutations are disabled in a private session";
+        let e = PutTool(k.clone()).call(put(), cx(true)).await.unwrap_err();
+        assert_eq!(e.to_string(), msg);
+        let id = IdArgs { id: "facts/x".into() };
+        let e = DeleteTool(k.clone()).call(id, cx(true)).await.unwrap_err();
+        assert_eq!(e.to_string(), msg);
+        let restore = RestoreArgs {
+            id: "facts/x".into(),
+            commit: None,
+        };
+        let e = RestoreTool(k.clone())
+            .call(restore, cx(true))
+            .await
+            .unwrap_err();
+        assert_eq!(e.to_string(), msg);
+        assert!(k.get("facts/x").await.is_err());
+        PutTool(k.clone()).call(put(), cx(false)).await.unwrap();
+        assert!(k.get("facts/x").await.is_ok());
     }
 }
