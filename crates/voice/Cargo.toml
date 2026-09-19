@@ -28,6 +28,8 @@ symphonia = { workspace = true }
 rubato = { workspace = true }
 mp3lame-encoder = { workspace = true }
 parking_lot = { workspace = true }
+flexaudio = { workspace = true }
+wavekat-vad = { workspace = true }
 ts-rs = { workspace = true, optional = true }
 
 [features]

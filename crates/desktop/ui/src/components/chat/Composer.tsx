@@ -2,10 +2,11 @@ import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { open as pickFiles } from '@tauri-apps/plugin-dialog'
-import { ArrowUp, Mic, Paperclip, Plus, Square, X } from 'lucide-react'
+import { ArrowUp, Mic, MicVocal, Paperclip, Plus, Square, X } from 'lucide-react'
 import {
   type ClipboardEvent,
   type DragEvent,
+  Fragment,
   type KeyboardEvent,
   useEffect,
   useRef,
@@ -15,6 +16,8 @@ import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Textarea } from '@/components/ui/textarea'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import * as dictation from '@/lib/dictation'
 import { extFor, putAttachment } from '@/lib/files'
 import { usePanes } from '@/lib/panes'
 import { attach, expand, type Pastes, prune, token, tokenize } from '@/lib/pastes'
@@ -30,6 +33,7 @@ import { useSessionField, useSessions } from '@/store/sessions'
 import { Attachments } from './Attachments'
 import { CommunicationNotice, useCommunication } from './CommunicationNotice'
 import { ContextPicker } from './ContextPicker'
+import { LevelMeter } from './LevelMeter'
 import { QueuedChips } from './QueuedChips'
 import { type Ctx, FRESH, matches, run } from './slash'
 
@@ -40,6 +44,9 @@ const NONE: Pastes = new Map()
 const IMAGE = /\.(png|jpe?g|gif|webp|bmp)$/i
 /** Recorder containers in preference order (45 §7.2): WebKit gives AAC in MP4, Chromium Opus in WebM; the harness decodes all. */
 const AUDIO_MIMES = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/webm']
+/** The edit box, textarea and its read-only stand-in while dictating (54 §7). */
+const BOX =
+  'min-h-10 resize-none border-0 bg-transparent px-2 py-2 text-[17px] leading-6 shadow-none focus-visible:ring-0 md:text-[17px] dark:bg-transparent'
 
 /** The slash popup: commands matching the typed word, one highlighted. */
 function SlashList({
@@ -119,6 +126,17 @@ export function Composer({
   /** Uploading + transcribing a finished note. */
   const [transcribing, setTranscribing] = useState(false)
   const ref = useRef<HTMLTextAreaElement>(null)
+  const dict = dictation.useDictation()
+  /** This pane pressed start: the store is shared by every mounted composer, only the owner renders and finishes it. */
+  const [owner, setOwner] = useState(false)
+  const ownerRef = useRef(owner)
+  ownerRef.current = owner
+  /** Ours is running: the box is read-only and renders §5.1's spans. */
+  const dictating = owner && dict.active !== null
+  const dictReason =
+    dictation.reason(dict) ?? (dict.active !== null && !owner ? 'Dictating in another pane' : null)
+  /** Caret to place once the textarea is back after a dictation. */
+  const [pendingCaret, setPendingCaret] = useState<number | null>(null)
   const { state: comm, exports } = useCommunication(session)
   // Owned private tree (51 §4.5): uploads go to its scratch root; a private draft has no root yet, so blob uploads
   // (which would land in the durable store) and voice notes (transcribed from the durable store) wait for the session.
@@ -138,6 +156,64 @@ export function Composer({
     window.addEventListener('wth:focus-composer', focus)
     return () => window.removeEventListener('wth:focus-composer', focus)
   }, [focused])
+
+  // Dictation (54 §7): Ctrl+D / the Mic button toggles; the daemon owns the mic, we own the caret.
+  const canDictate = voice && !priv && !(running && session)
+  const dictate = () => {
+    if (!canDictate) return
+    if (dictating) {
+      // Starting/stopping: the press is swallowed; there is no id to stop yet, or a stop is already in flight.
+      if (dict.phase === 'dictating') void dictation.stop(api)
+      return
+    }
+    if (dictReason) {
+      toast(dictReason)
+      return
+    }
+    if (dict.phase !== 'idle') return
+    const ta = ref.current
+    const at = ta?.selectionStart ?? text.length
+    setOwner(true)
+    void dictation.start(api, text.slice(0, at), text.slice(at))
+  }
+  const dictateRef = useRef(dictate)
+  dictateRef.current = dictate
+  useEffect(() => {
+    if (!focused) return
+    const h = () => dictateRef.current()
+    window.addEventListener('wth:dictate', h)
+    return () => window.removeEventListener('wth:dictate', h)
+  }, [focused])
+  const live = dictating && dict.phase === 'dictating'
+  useEffect(() => {
+    if (!live) return
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key === 'Escape') void dictation.discard(api)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [live, api])
+  useEffect(
+    () =>
+      dictation.onFinish(({ value, caret }) => {
+        if (!ownerRef.current) return
+        setText(value)
+        setPendingCaret(caret)
+      }),
+    [],
+  )
+  // Idle again (finished, discarded, or `start` failed) → nobody owns it. `start` flips the phase synchronously,
+  // so the same batch that sets `owner` never sees idle.
+  useEffect(() => {
+    if (dict.phase === 'idle') setOwner(false)
+  }, [dict.phase])
+  useEffect(() => {
+    const ta = ref.current
+    if (pendingCaret === null || !ta) return
+    ta.setSelectionRange(pendingCaret, pendingCaret)
+    ta.focus()
+    setPendingCaret(null)
+  }, [pendingCaret, dictating])
 
   const insert = (s: string) => {
     const ta = ref.current
@@ -485,26 +561,87 @@ export function Composer({
             </PopoverContent>
           </Popover>
           <div className="min-w-0 flex-1">
-            <Textarea
-              ref={ref}
-              value={text}
-              onChange={(e) => {
-                setText(e.target.value)
-                setPastes(prune(e.target.value, pastes))
-                setSelected(0)
-              }}
-              onKeyDown={onKeyDown}
-              onPaste={onPaste}
-              rows={1}
-              // An exported session's human input never joins a peer task; it steers a human turn or waits behind a task (50 §6.3).
-              placeholder={running ? (exports.length ? 'Send privately…' : 'Send to steer…') : 'Ask anything'}
-              // ponytail: `field-sizing: content` grows the box (6 lines on touch, 8 on desktop, then scrolls); older WebKit keeps one line.
-              className={cn(
-                'min-h-10 resize-none border-0 bg-transparent px-2 py-2 text-[17px] leading-6 shadow-none focus-visible:ring-0 md:text-[17px] dark:bg-transparent',
-                touch() ? 'max-h-[160px]' : 'max-h-[200px]',
-              )}
-            />
+            {dictating && dict.active ? (
+              <DictatedText
+                before={dict.active.before}
+                after={dict.active.after}
+                utts={dict.active.utts}
+                className={cn(BOX, touch() ? 'max-h-[160px]' : 'max-h-[200px]')}
+              />
+            ) : (
+              <Textarea
+                ref={ref}
+                value={text}
+                onChange={(e) => {
+                  setText(e.target.value)
+                  setPastes(prune(e.target.value, pastes))
+                  setSelected(0)
+                }}
+                onKeyDown={onKeyDown}
+                onPaste={onPaste}
+                rows={1}
+                // An exported session's human input never joins a peer task; it steers a human turn or waits behind a task (50 §6.3).
+                placeholder={running ? (exports.length ? 'Send privately…' : 'Send to steer…') : 'Ask anything'}
+                // ponytail: `field-sizing: content` grows the box (6 lines on touch, 8 on desktop, then scrolls); older WebKit keeps one line.
+                className={cn(BOX, touch() ? 'max-h-[160px]' : 'max-h-[200px]')}
+              />
+            )}
           </div>
+          {canDictate && !dictating && (recording || !text.trim()) && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant={recording ? 'destructive' : 'ghost'}
+                  className={cn('size-9 shrink-0 rounded-full', recording && 'w-auto gap-1 px-3 tabular-nums')}
+                  aria-label={recording ? 'Stop recording' : 'Record voice note'}
+                  disabled={busy || transcribing}
+                  onClick={() => (recording ? stopRecording(false) : void record())}
+                >
+                  {recording ? (
+                    <>
+                      <Square className="size-4 fill-current" /> {secs} s
+                    </>
+                  ) : (
+                    <MicVocal className="size-5" />
+                  )}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Voice note</TooltipContent>
+            </Tooltip>
+          )}
+          {canDictate &&
+            (dictating && dict.active ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    className="h-9 w-24 shrink-0 rounded-full bg-fg-accent/10 p-0"
+                    aria-label="Stop dictation"
+                    onClick={dictate}
+                  >
+                    <LevelMeter levels={dict.active.levels} active />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Stop dictation (Ctrl+D)</TooltipContent>
+              </Tooltip>
+            ) : (
+              // `aria-disabled`, not `disabled`: a disabled button takes no pointer events and the tooltip could not say why.
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    className={cn('size-9 shrink-0 rounded-full', dictReason !== null && 'opacity-50')}
+                    aria-label="Dictation"
+                    aria-disabled={dictReason !== null}
+                    disabled={busy || recording}
+                    onClick={dictate}
+                  >
+                    <Mic className="size-5" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>{dictReason ?? 'Dictation (Ctrl+D)'}</TooltipContent>
+              </Tooltip>
+            ))}
           {running && session ? (
             <Button
               className="size-9 shrink-0 rounded-full"
@@ -513,27 +650,11 @@ export function Composer({
             >
               <Square className="size-4 fill-current" />
             </Button>
-          ) : voice && !priv && (recording || !text.trim()) ? (
-            <Button
-              variant={recording ? 'destructive' : 'default'}
-              className={cn('size-9 shrink-0 rounded-full', recording && 'w-auto gap-1 px-3 tabular-nums')}
-              aria-label={recording ? 'Stop recording' : 'Record voice note'}
-              disabled={busy || transcribing}
-              onClick={() => (recording ? stopRecording(false) : void record())}
-            >
-              {recording ? (
-                <>
-                  <Square className="size-4 fill-current" /> {secs} s
-                </>
-              ) : (
-                <Mic className="size-5" />
-              )}
-            </Button>
           ) : (
             <Button
               className="size-9 shrink-0 rounded-full"
               aria-label="Send"
-              disabled={!text.trim() || busy}
+              disabled={!text.trim() || busy || dictating}
               onClick={() => void submit()}
             >
               <ArrowUp className="size-5" />
@@ -541,6 +662,46 @@ export function Composer({
           )}
         </div>
       </div>
+    </div>
+  )
+}
+
+/**
+ * The read-only box while dictating (54 §5.1): `before`, a separating space when `before` does not end in one,
+ * each utterance (muted until the VAD closes it), a space when `after` does not start with one or punctuation, `after`.
+ * The spacing rules mirror `splice()`; the caret is hidden and nothing here takes input.
+ */
+function DictatedText({
+  before,
+  after,
+  utts,
+  className,
+}: {
+  before: string
+  after: string
+  utts: dictation.Utt[]
+  className: string
+}) {
+  const spoken = utts.filter((u) => u.text !== '')
+  const lead = spoken.length && before && !/\s$/.test(before) ? ' ' : ''
+  const trail = spoken.length && after && !/^[\s.,;:!?)]/.test(after) ? ' ' : ''
+  return (
+    <div
+      role="textbox"
+      aria-readonly
+      aria-live="polite"
+      className={cn(className, 'overflow-y-auto whitespace-pre-wrap break-words')}
+    >
+      {before}
+      {lead}
+      {spoken.map((u, i) => (
+        <Fragment key={i}>
+          {i > 0 && ' '}
+          <span className={cn('transition-colors duration-150', !u.final && 'text-fg-tertiary')}>{u.text}</span>
+        </Fragment>
+      ))}
+      {trail}
+      {after}
     </div>
   )
 }

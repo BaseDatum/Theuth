@@ -3,6 +3,8 @@
 //! 80 ms Mimi frame, base64 in JSON — over the bus. Voice notes (design doc
 //! 45): [`Transcriber`] turns a recorded file into text for the channels, and
 //! [`Synthesize`] renders one prose block into an MP3 [`Clip`] they can send back.
+//! Dictation (design doc 54): [`Dictation`] owns the microphone and a streaming
+//! Nemotron session; text lands at the frontend's caret as [`VoiceEvent::DictationText`].
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -17,13 +19,54 @@ use tokio_util::sync::CancellationToken;
 use tools::{CloseAck, CloseTree, RegisterLifecycle};
 
 mod clip;
+mod dictation;
+pub mod mic;
 pub mod model;
 mod speak;
 mod stt;
+pub mod vad;
 
+pub use dictation::{
+    Dictation, DictationState, DictationStatus, Prewarm, StartDictation, StopDictation,
+};
 use kameo::reply::ReplySender;
 use speak::{Progress, Report};
 pub use stt::Transcriber;
+
+/// Actor name the RPC layer looks up for live dictation (54 §4.3).
+pub const DICTATION_ACTOR: &str = "dictation";
+
+/// One dictation (mic open → mic closed). Time-ordered like [`SpeechId`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(transparent)]
+pub struct DictationId(pub uuid::Uuid);
+
+impl DictationId {
+    /// Time-ordered id.
+    pub fn new() -> Self {
+        Self(uuid::Uuid::now_v7())
+    }
+}
+
+impl Default for DictationId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::fmt::Display for DictationId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::str::FromStr for DictationId {
+    type Err = uuid::Error;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        s.parse().map(Self)
+    }
+}
 
 /// Actor name the channels look up for speech-to-text (45 §4.2).
 pub const TRANSCRIBER_ACTOR: &str = "transcriber";
@@ -165,11 +208,14 @@ pub struct VoiceStatus {
 }
 
 /// Model lifecycle.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,
+)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum ModelState {
     /// Not on disk.
+    #[default]
     Missing,
     /// Reading weights into memory.
     Loading,
@@ -239,6 +285,45 @@ pub enum VoiceEvent {
         /// How it ended.
         reason: FinishReason,
     },
+    /// Streaming (dictation) model lifecycle; distinct from `VoiceModel`, which is TTS.
+    DictationModel {
+        /// New state.
+        state: ModelState,
+    },
+    /// The mic is open and the VAD is listening. Frontends switch to the
+    /// dictating view on this, not on the RPC reply.
+    DictationStarted {
+        /// Dictation.
+        id: DictationId,
+    },
+    /// RMS per 20 ms of the last 160 ms of mic audio, 0.0–1.0, linear. 8 values, ~6 events/s.
+    DictationLevel {
+        /// Dictation.
+        id: DictationId,
+        /// Oldest first.
+        levels: Vec<f32>,
+    },
+    /// Text of utterance `utterance` (0-based within this dictation) so far. Append-only per
+    /// utterance; `final: true` is sent once, with the closed utterance's full text (may be
+    /// empty → the UI drops it).
+    DictationText {
+        /// Dictation.
+        id: DictationId,
+        /// Utterance index within the dictation.
+        utterance: u32,
+        /// Whole utterance so far.
+        text: String,
+        /// The VAD closed this utterance; no more text for it.
+        #[serde(rename = "final")]
+        is_final: bool,
+    },
+    /// Mic closed. `Done` after a stop, `Stopped` after the max-length stop, `Error` for mic/model failure.
+    DictationFinished {
+        /// Dictation.
+        id: DictationId,
+        /// How it ended.
+        reason: FinishReason,
+    },
 }
 
 /// `voice:` config section.
@@ -256,6 +341,11 @@ pub struct VoiceConfig {
     pub stt_model_dir: Option<PathBuf>,
     /// Unload the speech-to-text model after this long unused; `0` keeps it resident (45 §0.7).
     pub stt_idle_secs: u64,
+    /// A local Nemotron streaming ONNX checkpoint (encoder.onnx, decoder_joint.onnx,
+    /// tokenizer.model); `None` → `<data_dir>/models/nemotron-streaming-en` (54 §9).
+    pub dictation_model_dir: Option<PathBuf>,
+    /// A running dictation stops itself after this long (54 §0.10).
+    pub dictation_max_secs: u64,
 }
 
 impl Default for VoiceConfig {
@@ -266,6 +356,8 @@ impl Default for VoiceConfig {
             model_dir: None,
             stt_model_dir: None,
             stt_idle_secs: 600,
+            dictation_model_dir: None,
+            dictation_max_secs: 300,
         }
     }
 }
@@ -582,6 +674,16 @@ impl runtime::Plugin for VoicePlugin {
             Duration::from_secs(cfg.stt_idle_secs),
         ));
         stt.register(TRANSCRIBER_ACTOR)?;
+        let dict_dir = cfg
+            .dictation_model_dir
+            .clone()
+            .unwrap_or_else(|| rt.data_dir.join("models/nemotron-streaming-en"));
+        let dictation = Dictation::spawn(Dictation::new(
+            rt.clone(),
+            dict_dir,
+            Duration::from_secs(cfg.dictation_max_secs),
+        ));
+        dictation.register(DICTATION_ACTOR)?;
         let actor = Voice::spawn(Voice {
             rt: rt.clone(),
             cfg,

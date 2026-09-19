@@ -210,13 +210,15 @@ agent:
 #   enabled: true            # false: no tool, no prompt, no parser helper, no app RPC; existing apps stay readable as source
 
 # voice:                     # read replies aloud (design doc 43): Pocket TTS in-process, audio streamed to the frontend;
-#                            # voice notes in, spoken replies out on Signal/Slack (design doc 45)
+#                            # voice notes in, spoken replies out on Signal/Slack (design doc 45); live dictation (design doc 54)
 #   enabled: true            # false: no actor, `speak` answers \"not running\", the desktop shows no button or mic
 #   voice: peter_yearsley    # one of the checkpoint's voices; `voice_status` lists them
 #   model_dir: ~             # a local Pocket TTS checkpoint directory; default <data_dir>/models/pocket-tts
 #   stt_model_dir: ~         # Parakeet TDT ONNX checkpoint (encoder-model.onnx, decoder_joint-model.onnx, vocab.txt) plus ONNX Runtime's
 #                            # libonnxruntime.*.dylib/.so (1.17+, from its GitHub release); default <data_dir>/models/parakeet-tdt
 #   stt_idle_secs: 600       # unload the speech-to-text model after this long unused; 0 keeps it resident
+#   dictation_model_dir: ~   # nemotron-speech-streaming-en ONNX dir (encoder.onnx, decoder_joint.onnx, tokenizer.model); default <data_dir>/models/nemotron-streaming-en
+#   dictation_max_secs: 300  # a running dictation stops itself here (design doc 54)
 
 # a2a:                       # remote agents over A2A 1.0 (design doc 50 §6); peers/exports live in <data_dir>/a2a/peers.yaml, `/a2a reload` applies edits
 #   enabled: false           # false: no actor, listener, card fetch or credential load. Needs agent.communication too.
@@ -503,14 +505,15 @@ async fn run() -> anyhow::Result<()> {
     // (each plugin honours its own `<section>.enabled`, default on). Jobs
     // is registry-internal. The pairing-only run has no registry.
     if !cli.link_signal {
-        let owners: Vec<&'static str> = ["artifact", "app", "browser", "computer", "voice", "routes"]
-            .into_iter()
-            .filter(|name| {
-                rt.config
-                    .extract_inner::<bool>(&format!("{name}.enabled"))
-                    .unwrap_or(true)
-            })
-            .collect();
+        let owners: Vec<&'static str> =
+            ["artifact", "app", "browser", "computer", "voice", "routes"]
+                .into_iter()
+                .filter(|name| {
+                    rt.config
+                        .extract_inner::<bool>(&format!("{name}.enabled"))
+                        .unwrap_or(true)
+                })
+                .collect();
         let rt = rt.clone();
         tokio::spawn(async move {
             if let Some(reg) = rt

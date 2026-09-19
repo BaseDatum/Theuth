@@ -17,6 +17,7 @@ import type { ScheduleEvent } from '@/rpc/bindings/ScheduleEvent'
 import type { SecretsEvent } from '@/rpc/bindings/SecretsEvent'
 import type { SignalEvent } from '@/rpc/bindings/SignalEvent'
 import type { SlackEvent } from '@/rpc/bindings/SlackEvent'
+import type { VoiceEvent } from '@/rpc/bindings/VoiceEvent'
 import type {
   AppCallChanged,
   ArtifactShown,
@@ -26,7 +27,6 @@ import type {
   TitleChanged,
   ToolCallProgress,
   VisionProgress,
-  VoiceEvent,
 } from '@/rpc/extra'
 
 /**

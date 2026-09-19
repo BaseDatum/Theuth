@@ -457,6 +457,8 @@ it. The mirror (43 §4.6) adds `models/parakeet-tdt/<rev>/` when it is built;
 - Session voice mode: `voiceMode: Set<SessionId>` in the sessions store;
   set by a voice send, cleared by a typed `submit`. Not persisted — a fresh
   window starts silent until the next voice note.
+- Since 54 (2026-09-20) this is the `MicVocal` button; the round `Mic`
+  button beside it is dictation into the textarea (54 §7), not a voice note.
 
 ### 7.3 Speaking blocks (`lib/speech.ts`)
 
@@ -511,11 +513,12 @@ covers libopus.
 ## 9. What phase 3 (the live agent) inherits
 
 `Transcriber` (offline) becomes one of two STT paths — the live one is
-Parakeet EOU/Nemotron streaming with end-of-utterance detection, same
-crate, same `decode`/`resample`. `Synthesize` stays for channels;
-the live path is 43's `Speak` stream. The marker and prompt block are
-already the "the user spoke" convention. Barge-in is `Stop` + the agent's
-`cancel`, as 43 §9 said.
+Nemotron streaming with VAD gating, same crate, same `decode`/`resample`:
+built as `voice::stt::Stream` + `vad::Gate` + `mic::Capture` by 54
+(dictation) — phase 3 consumes them, it does not build them. `Synthesize`
+stays for channels; the live path is 43's `Speak` stream. The marker and
+prompt block are already the "the user spoke" convention. Barge-in is
+`Stop` + the agent's `cancel`, as 43 §9 said.
 
 ## 10. Phases and checks
 

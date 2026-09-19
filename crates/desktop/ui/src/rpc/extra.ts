@@ -218,13 +218,3 @@ export type VoiceStatus = {
   voices: string[]
   speaking: string | null
 }
-
-/** `voice::VoiceEvent` (43 §4.4): model lifecycle and one utterance's audio, one Opus packet per `SpeechAudio`. */
-export type VoiceEvent =
-  | { type: 'VoiceModel'; state: ModelState }
-  /** The first packet is about to arrive; `chars` is the spoken text's length. */
-  | { type: 'SpeechStarted'; id: string; session: SessionId; sample_rate: number; chars: number }
-  /** One Opus packet (mono, 80 ms = 1920 samples at `sample_rate`), base64; `seq` starts at 0, no gaps. */
-  | { type: 'SpeechAudio'; id: string; session: SessionId; seq: number; opus: string }
-  /** `done` means every packet was published — playback may still have seconds to go. */
-  | { type: 'SpeechFinished'; id: string; session: SessionId; reason: FinishReason }
