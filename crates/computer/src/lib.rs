@@ -15,7 +15,10 @@ pub mod tools;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use ::tools::{REGISTRY_ACTOR, RegisterPrompt, RegisterTool, ToolRegistry};
+use ::tools::{
+    CloseAck, CloseTree, REGISTRY_ACTOR, RegisterLifecycle, RegisterPrompt, RegisterTool,
+    ToolRegistry,
+};
 use kameo::actor::Spawn;
 use kameo::message::{Context, Message};
 use runtime::Runtime;
@@ -131,6 +134,17 @@ impl Message<Permissions> for Computer {
     }
 }
 
+impl Message<CloseTree> for Computer {
+    type Reply = CloseAck;
+
+    /// A closing tree (51 §4.5): forget its last-screenshot frames. Its PNGs
+    /// sit under the tree's resources root, which the lifecycle removes.
+    async fn handle(&mut self, m: CloseTree, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.ctx.forget(&m.subtree);
+        CloseAck::ok("computer")
+    }
+}
+
 /// The plugin (27 §3.1): reads `computer`, spawns [`Computer`] as
 /// [`COMPUTER_ACTOR`], registers the tools and the prompt block once the
 /// registry is up.
@@ -153,7 +167,6 @@ impl runtime::Plugin for ComputerPlugin {
         }
         let ctx = Arc::new(tools::Ctx {
             cfg,
-            rt: rt.clone(),
             input: input::spawn(),
             frames: Mutex::new(HashMap::new()),
         });
@@ -163,6 +176,13 @@ impl runtime::Plugin for ComputerPlugin {
         let rt = rt.clone();
         tokio::spawn(async move {
             if let Some(reg) = rt.lookup_when::<ToolRegistry>(REGISTRY_ACTOR).await {
+                let _ = reg
+                    .ask(RegisterLifecycle {
+                        owner: "computer",
+                        opened: None,
+                        close: actor.reply_recipient(),
+                    })
+                    .await;
                 for tool in tools::all(ctx.clone()) {
                     let _ = reg.ask(RegisterTool(tool)).await;
                 }

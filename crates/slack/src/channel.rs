@@ -2164,7 +2164,8 @@ impl Worker {
             | AgentEvent::ContextChanged { .. }
             | AgentEvent::TodoChanged { .. }
             | AgentEvent::SessionMetadataChanged { .. }
-            | AgentEvent::ModelUsageChanged { .. } => {}
+            | AgentEvent::ModelUsageChanged { .. }
+            | AgentEvent::SessionClosing { .. } => {}
         }
     }
 

@@ -17,20 +17,21 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use agent::cost::{Coverage, NANOS_PER_UNIT, SessionCost};
 use agent::todo::{Status, Todo};
 use agent::{
     AgentEvent, Agents, Cancel, HistoryEntry, ListSessions, LoadSession, NewSession, PeerDelivered,
-    SendInput,
+    SendInput, SessionCostQuery,
 };
 use agent_client_protocol::schema::v1::{
-    AgentCapabilities, CancelNotification, ContentBlock, ContentChunk, EmbeddedResourceResource,
-    Implementation, InitializeRequest, InitializeResponse, ListSessionsRequest,
-    ListSessionsResponse, LoadSessionRequest, LoadSessionResponse, NewSessionRequest,
-    NewSessionResponse, PermissionOption, PermissionOptionKind, Plan, PlanEntry, PlanEntryPriority,
-    PlanEntryStatus, PromptCapabilities, PromptRequest, PromptResponse, RequestPermissionOutcome,
-    RequestPermissionRequest, ResourceLink, SessionId as AcpSessionId, SessionInfo,
-    SessionNotification, SessionUpdate, StopReason, ToolCall, ToolCallContent, ToolCallStatus,
-    ToolCallUpdate, ToolCallUpdateFields, UsageUpdate,
+    AgentCapabilities, CancelNotification, ContentBlock, ContentChunk, Cost,
+    EmbeddedResourceResource, Implementation, InitializeRequest, InitializeResponse,
+    ListSessionsRequest, ListSessionsResponse, LoadSessionRequest, LoadSessionResponse,
+    NewSessionRequest, NewSessionResponse, PermissionOption, PermissionOptionKind, Plan, PlanEntry,
+    PlanEntryPriority, PlanEntryStatus, PromptCapabilities, PromptRequest, PromptResponse,
+    RequestPermissionOutcome, RequestPermissionRequest, ResourceLink, SessionId as AcpSessionId,
+    SessionInfo, SessionNotification, SessionUpdate, StopReason, ToolCall, ToolCallContent,
+    ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, UsageUpdate,
 };
 use agent_client_protocol::{Agent, Client, ConnectTo, ConnectionTo, Error, Lines, Stdio};
 use artifact::ArtifactShown;
@@ -341,6 +342,19 @@ fn stop_reason(s: String) -> StopReason {
     serde_json::from_value(serde_json::Value::String(s)).unwrap_or(StopReason::EndTurn)
 }
 
+/// 51 §8.3: outbound ACP cost carries one currency and no coverage label, so
+/// it is emitted only for a complete, single-currency returned total.
+fn acp_cost(c: &SessionCost) -> Option<Cost> {
+    let [m] = c.total.returned.as_slice() else {
+        return None;
+    };
+    (c.total.unavailable == 0
+        && c.total.unresolved == 0
+        && c.remote_meter_gaps == 0
+        && c.history_coverage == Coverage::Complete)
+        .then(|| Cost::new(m.nanos as f64 / NANOS_PER_UNIT as f64, m.currency.clone()))
+}
+
 /// One stored history entry as a `session/load` replay update. Rows removed
 /// from context (48 §2.2) keep their original text, prefixed with a marker;
 /// ACP clients have no structured tombstone.
@@ -516,10 +530,15 @@ impl Message<AgentEvent> for Relay {
             } => {
                 // ponytail: window size unknown here (the catalog lives in
                 // `models`); 0 until a client needs the ratio.
-                self.notify(
-                    session,
-                    SessionUpdate::UsageUpdate(UsageUpdate::new(u64::from(context), 0)),
-                );
+                let mut usage = UsageUpdate::new(u64::from(context), 0);
+                // 51 §8.3: the owner's total, only when one currency says it all.
+                if let Ok(Some(c)) =
+                    api::ask::<Agents, _>(agent::AGENT_ACTOR, SessionCostQuery(session)).await
+                    && let Some(cost) = acp_cost(&c)
+                {
+                    usage = usage.cost(cost);
+                }
+                self.notify(session, SessionUpdate::UsageUpdate(usage));
                 if let Some(tx) = self.waiters.remove(&session) {
                     let _ = tx.send(stop_reason);
                 }
@@ -667,6 +686,43 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     use super::*;
+
+    /// 51 §8.3: cost goes out only when one currency covers everything.
+    #[test]
+    fn acp_cost_only_for_complete_single_currency() {
+        use agent::cost::{CostBucket, CostScope, Money};
+        let usd = Money::from_f64(0.35, "USD").unwrap();
+        let mut c = SessionCost {
+            session: SessionId::new(),
+            revision: 1,
+            history_coverage: Coverage::Complete,
+            scope: CostScope::Native,
+            direct: CostBucket::default(),
+            descendants: CostBucket::default(),
+            total: CostBucket {
+                returned: vec![usd.clone()],
+                ..Default::default()
+            },
+            children: Vec::new(),
+            remote_meter_gaps: 0,
+        };
+        let cost = acp_cost(&c).unwrap();
+        assert_eq!((cost.amount, cost.currency.as_str()), (0.35, "USD"));
+
+        c.total.unavailable = 1;
+        assert!(acp_cost(&c).is_none());
+        c.total.unavailable = 0;
+        c.remote_meter_gaps = 1;
+        assert!(acp_cost(&c).is_none());
+        c.remote_meter_gaps = 0;
+        c.history_coverage = Coverage::Unknown;
+        assert!(acp_cost(&c).is_none());
+        c.history_coverage = Coverage::Complete;
+        c.total.returned.push(Money::from_f64(1.0, "EUR").unwrap());
+        assert!(acp_cost(&c).is_none());
+        c.total.returned.clear();
+        assert!(acp_cost(&c).is_none());
+    }
 
     #[test]
     fn plan_keeps_blocked_and_dropped_honest() {

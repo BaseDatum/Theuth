@@ -691,6 +691,9 @@ pub struct StartPty {
     pub cwd: PathBuf,
     /// `ready` deadline when `args.ready.timeout` is absent.
     pub ready_timeout: Duration,
+    /// The session's [`crate::SessionResources::root`] (51 §4.5): the log
+    /// is `<root>/jobs/<session>/<id>.log`.
+    pub root: PathBuf,
     /// [`activity::current`] at the caller; see [`jobs::Start::activity`].
     /// The readiness wait runs under it too.
     pub activity: Option<Activity>,
@@ -955,7 +958,7 @@ impl Message<Launch<StartPty>> for Jobs {
                 j.id
             ));
         }
-        let dir = self.rt.data_dir.join("jobs").join(m.session.to_string());
+        let dir = m.root.join("jobs").join(m.session.to_string());
         let log_path = dir.join(format!("{id}.log"));
         // 51 §7.4: the retained-terminal budget admits before anything spawns;
         // exited terminals go first, oldest across every session.
@@ -1809,6 +1812,7 @@ impl Tool for StartTool {
                 args,
                 cwd,
                 ready_timeout: self.ready_timeout,
+                root: cx.resources.root.clone(),
                 activity: activity::current(),
             })
             .await
@@ -1904,7 +1908,7 @@ mod tests {
             session: fx.session,
             call_id: String::new(),
             quiet: false,
-            resources: crate::SessionResources::durable_arc(&std::env::temp_dir()),
+            resources: crate::SessionResources::durable_arc(&fx.dir),
         }
     }
 

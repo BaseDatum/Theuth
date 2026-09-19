@@ -36,6 +36,7 @@ use crate::communication::{PeerConsumed, PeerTurnFinished};
 use crate::continuation::{
     self, InputConsumed, InputDropped, InputTicket, SessionUnknown, TurnEntered, TurnReturned,
 };
+use crate::cost::{MeterUpdate, Money};
 use crate::loop_::{
     CancelPeerScope, CancelTurn, IsRunning, PEER_INTAKE, PeerInput, PeerMeta, SuppressPeerInputs,
     UserInput, peer_wrapper, refuse_peer,
@@ -75,6 +76,8 @@ pub struct AcpChild {
     turn: Option<Turn>,
     /// The row's title was checked/set.
     titled: bool,
+    /// An unusable `usage_update.cost` was already logged (once per connection).
+    meter_warned: bool,
 }
 
 /// One input waiting its turn: the caller's [`InputId`], the supervisor's
@@ -102,6 +105,9 @@ pub(crate) struct Turn {
     last_tool: Option<String>,
     /// Last `usage_update.used`; `TurnFinished.context`.
     context: u32,
+    /// `usage_update.cost` of the last update (51 §6.3): the harness's
+    /// cumulative total, taken by the actor after translation.
+    pub(crate) meter: Option<(f64, String)>,
     /// Cancelled with the turn: pending permission asks answer `cancelled`.
     cancel: CancellationToken,
     /// Kill timer armed by [`CancelTurn`].
@@ -119,6 +125,7 @@ impl Turn {
             text: String::new(),
             last_tool: None,
             context: 0,
+            meter: None,
             cancel: CancellationToken::new(),
             kill: None,
             scope,
@@ -167,11 +174,40 @@ impl AcpChild {
             queue: VecDeque::new(),
             turn: None,
             titled: false,
+            meter_warned: false,
         }
     }
 
     async fn publish(&self, ev: AgentEvent) {
         self.rt.publish(ev).await;
+    }
+
+    /// 51 §6.3: one `usage_update.cost` observation → the ledger. An
+    /// unusable amount/currency is logged once, without its content.
+    async fn meter(&mut self, amount: f64, currency: &str) {
+        let Some(h) = &self.harness else { return };
+        match meter_update(&self.name, h.session_id(), amount, currency, !h.resumed()) {
+            Ok(update) => self.apply_meter(update).await,
+            Err(why) => {
+                if !self.meter_warned {
+                    self.meter_warned = true;
+                    tracing::warn!(session = %self.id, "usage_update.cost ignored: {why}");
+                }
+            }
+        }
+    }
+
+    /// Persist `update` on this session's owner and publish every bumped revision.
+    async fn apply_meter(&self, update: MeterUpdate) {
+        match self.store.apply_meter(self.id, update).await {
+            Ok(bumped) => {
+                for (session, revision) in bumped {
+                    self.publish(AgentEvent::ModelUsageChanged { session, revision })
+                        .await;
+                }
+            }
+            Err(e) => tracing::warn!(session = %self.id, "apply_meter: {e:#}"),
+        }
     }
 
     /// Persist `m`; its seq, or 0 when the write failed (logged).
@@ -620,6 +656,25 @@ fn outcome(
         })
 }
 
+/// 51 §6.3: the harness `name`'s cumulative `amount` on external session
+/// `external` as a ledger update; `new_session` when this wrapper created that
+/// session (baseline known zero). `Err` is content-free.
+pub(crate) fn meter_update(
+    name: &str,
+    external: &str,
+    amount: f64,
+    currency: &str,
+    new_session: bool,
+) -> Result<MeterUpdate, String> {
+    Ok(MeterUpdate {
+        origin: name.to_owned(),
+        external_session: external.to_owned(),
+        cumulative: Money::from_f64(amount, currency)?,
+        confirmed_new_session: new_session,
+        report_id: None,
+    })
+}
+
 /// 06 §3.3: one `session/update` → the [`AgentEvent`]s to publish, with the
 /// text and context window accumulating on `turn`.
 pub(crate) fn translate(update: SessionUpdate, turn: &mut Turn) -> Vec<AgentEvent> {
@@ -686,6 +741,7 @@ pub(crate) fn translate(update: SessionUpdate, turn: &mut Turn) -> Vec<AgentEven
         SessionUpdate::Plan(_) => Vec::new(),
         SessionUpdate::UsageUpdate(u) => {
             turn.context = u32::try_from(u.used).unwrap_or(u32::MAX);
+            turn.meter = u.cost.map(|c| (c.amount, c.currency));
             Vec::new()
         }
         // user_message_chunk (load replay, 06 §8.11), commands, modes, config, info.
@@ -799,6 +855,18 @@ impl Message<Connected> for AcpChild {
                 }
                 if let Err(e) = self.store.set_acp_session(self.id, h.session_id()).await {
                     tracing::warn!(session = %self.id, "set_acp_session: {e:#}");
+                }
+                // 51 §6.3: a session this wrapper created has a known-zero
+                // baseline; persist that before any prompt so the first
+                // cumulative total is attributed in full.
+                // ponytail: the zero row needs a currency; USD is the only one
+                // OMP emits. A non-USD harness's first total opens an imported
+                // epoch instead — teach `apply_meter` to carry a zero known-zero
+                // baseline across a currency change when that shows up.
+                if !h.resumed()
+                    && let Ok(zero) = meter_update(&self.name, h.session_id(), 0.0, "USD", true)
+                {
+                    self.apply_meter(zero).await;
                 }
                 self.harness = Some(h);
                 let me = ctx.actor_ref().clone();
@@ -945,8 +1013,12 @@ impl Message<Update> for AcpChild {
             Update::Session(update) => {
                 let Some(turn) = &mut self.turn else { return };
                 let events = translate(update, turn);
+                let meter = turn.meter.take();
                 for ev in events {
                     self.publish(ev).await;
+                }
+                if let Some((amount, currency)) = meter {
+                    self.meter(amount, &currency).await;
                 }
             }
             Update::Permission(p) => self.permission(p),
@@ -1036,7 +1108,7 @@ impl Message<IsRunning> for AcpChild {
 #[cfg(test)]
 mod tests {
     use agent_client_protocol::schema::v1::{
-        ContentBlock, ContentChunk, PlanEntry, PlanEntryPriority, ToolCall, ToolCallContent,
+        ContentBlock, ContentChunk, Cost, PlanEntry, PlanEntryPriority, ToolCall, ToolCallContent,
         ToolCallUpdate, ToolCallUpdateFields, ToolKind, UsageUpdate,
     };
     use serde_json::json;
@@ -1207,6 +1279,39 @@ mod tests {
         );
         assert!(ev.is_empty());
         assert_eq!(t.context, 12_345);
+        assert_eq!(t.meter, None);
+
+        let ev = translate(
+            SessionUpdate::UsageUpdate(UsageUpdate::new(12_345, 200_000).cost(Cost::new(0.35, "USD"))),
+            &mut t,
+        );
+        assert!(ev.is_empty());
+        assert_eq!(t.meter, Some((0.35, "USD".into())));
+    }
+
+    /// 51 §6.3: the wrapper's own new session has a known-zero baseline
+    /// (persisted at `Connected` as a zero total), so replayed and rising
+    /// cumulative totals attribute exactly the high water once, under the
+    /// inclusive remote scope. An unusable cost never reaches the ledger.
+    #[tokio::test]
+    async fn cumulative_meter_attributes_high_water_once() {
+        let store = Store::open_memory().await.unwrap();
+        let child = SessionId::new();
+        store.ensure_owner(child, None).await.unwrap();
+
+        assert!(meter_update("omp", "ext", 0.2, "usd", true).is_err());
+        assert!(meter_update("omp", "ext", f64::NAN, "USD", true).is_err());
+
+        let zero = meter_update("omp", "ext", 0.0, "USD", true).unwrap();
+        assert!(!store.apply_meter(child, zero).await.unwrap().is_empty());
+        for amount in [0.20, 0.20, 0.35] {
+            let u = meter_update("omp", "ext", amount, "USD", true).unwrap();
+            store.apply_meter(child, u).await.unwrap();
+        }
+        let cost = store.session_cost(child).await.unwrap().unwrap();
+        assert_eq!(cost.direct.returned, vec![Money::from_f64(0.35, "USD").unwrap()]);
+        assert_eq!(cost.scope, crate::cost::CostScope::OpaqueRemoteInclusive);
+        assert_eq!(cost.remote_meter_gaps, 0);
     }
 
     /// 47 §5.3: the harness owns its plan. The stored snapshot carries the

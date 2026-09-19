@@ -13,7 +13,9 @@ pub mod tools;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use ::tools::{REGISTRY_ACTOR, RegisterTool, ToolRegistry, Tracked};
+use ::tools::{
+    CloseAck, CloseTree, REGISTRY_ACTOR, RegisterLifecycle, RegisterTool, ToolRegistry, Tracked,
+};
 use kameo::actor::Spawn;
 use kameo::message::{Context, Message};
 use kameo::reply::DelegatedReply;
@@ -26,6 +28,11 @@ pub const BROWSER_ACTOR: &str = "browser";
 
 /// How often the actor drops isolates idle longer than `idle_secs` (23 §3.2).
 const SWEEP_EVERY: Duration = Duration::from_secs(30);
+
+/// Longest a [`CloseTree`] waits for the dropped isolates' threads to end
+/// before acking `ok: false` (51 §4.5): a page script can hold a thread for
+/// up to `script_deadline_ms`, and a close must not hang on it.
+const CLOSE_WAIT: Duration = Duration::from_secs(10);
 
 /// `browser:` config section (23 §6). Every field has a default; the section
 /// may be absent.
@@ -137,7 +144,8 @@ pub fn warmup(cfg: &BrowserConfig) {
 
 /// The per-session isolate map, registered as [`BROWSER_ACTOR`] (23 §3.2).
 /// `Call` creates the handle on first use; a sweeper drops handles idle
-/// longer than `idle_secs`; `Close` drops one now; `rt.shutdown` drops all.
+/// longer than `idle_secs`; `Close` drops one now; `rt.shutdown` drops all;
+/// [`CloseTree`] drops a whole tree and waits for the threads to end (51 §4.5).
 #[derive(kameo::Actor)]
 pub struct Browsers {
     cfg: BrowserConfig,
@@ -340,6 +348,40 @@ impl Message<CloseAll> for Browsers {
     }
 }
 
+impl Message<CloseTree> for Browsers {
+    type Reply = DelegatedReply<CloseAck>;
+
+    async fn handle(&mut self, m: CloseTree, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        // Same as `Close` per session: dropping the map's handle closes the
+        // command channel. The thread (and with it the isolate's cookie jar
+        // and storage) ends once any in-flight command finishes; we wait for
+        // that off the mailbox, bounded, so a hung page cannot stall the ack.
+        let exits: Vec<_> = m
+            .subtree
+            .iter()
+            .filter_map(|s| self.sessions.remove(s))
+            .map(|(handle, _)| handle.exited())
+            .collect();
+        let Some(tx) = tx else { return reply };
+        tokio::spawn(async move {
+            let n = exits.len();
+            let drained = tokio::time::timeout(CLOSE_WAIT, futures::future::join_all(exits)).await;
+            tx.send(match drained {
+                Ok(_) => CloseAck::ok("browser"),
+                Err(_) => CloseAck::failed(
+                    "browser",
+                    format!(
+                        "{n} isolate(s) still finishing a command after {}s",
+                        CLOSE_WAIT.as_secs()
+                    ),
+                ),
+            });
+        });
+        reply
+    }
+}
+
 /// The plugin (23 §3.1): reads `browser`, runs the sweeper, spawns
 /// [`Browsers`] as [`BROWSER_ACTOR`], registers the tools once the registry
 /// is up and the render provider once `web` is up.
@@ -385,6 +427,13 @@ impl runtime::Plugin for BrowserPlugin {
         let rt = rt.clone();
         tokio::spawn(async move {
             if let Some(reg) = rt.lookup_when::<ToolRegistry>(REGISTRY_ACTOR).await {
+                let _ = reg
+                    .ask(RegisterLifecycle {
+                        owner: "browser",
+                        opened: None,
+                        close: actor.clone().reply_recipient(),
+                    })
+                    .await;
                 for tool in tools::all(actor, cfg, rt) {
                     let _ = reg.ask(RegisterTool(tool)).await;
                 }

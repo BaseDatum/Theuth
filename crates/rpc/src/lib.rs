@@ -99,7 +99,9 @@ impl runtime::Plugin for RpcPlugin {
 /// dispatches decrypted requests into with `raw_json_request` (31 §6.2).
 pub async fn methods(rt: Runtime) -> jsonrpsee::Methods {
     let events = bridge::start(&rt).await;
-    api::Server { events, rt }.into_rpc().into()
+    let mut server = api::Server::new(rt);
+    server.events = events;
+    server.into_rpc().into()
 }
 
 /// Start the bridge and the server; returns the bound address. The server

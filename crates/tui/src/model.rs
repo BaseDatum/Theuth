@@ -4515,7 +4515,9 @@ impl Model {
                 self.interject(Entry::Info(format!("knowledge +{added} ~{updated}")))
             }
             AgentEvent::SkillsChanged { skills, .. } => self.loaded_skills = skills,
-            AgentEvent::SessionMetadataChanged { .. } | AgentEvent::ModelUsageChanged { .. } => {}
+            AgentEvent::SessionMetadataChanged { .. }
+            | AgentEvent::ModelUsageChanged { .. }
+            | AgentEvent::SessionClosing { .. } => {}
         }
     }
 

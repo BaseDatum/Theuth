@@ -4,10 +4,15 @@
 //! channel and the loop mirrors `obscura_mcp::run`: between commands it pumps
 //! `advance_active_page_tasks` so timers and fetches keep running. Dropping
 //! every [`Handle`] closes the channel, the loop ends and the isolate dies
-//! with the thread.
+//! with the thread; [`Handle::exited`] observes that (51 §4.5 close barrier).
+//!
+//! The isolate *is* the profile: `BrowserState` holds the cookie jar and
+//! storage in memory and obscura writes nothing to disk, so a private root's
+//! browser state never touches the data dir and is gone once the thread ends.
 
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
+use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 
 use crate::BrowserConfig;
 
@@ -29,6 +34,8 @@ enum Cmd {
 #[derive(Clone)]
 pub struct Handle {
     tx: mpsc::Sender<Cmd>,
+    /// Cancelled when the thread ends (or never started).
+    exited: CancellationToken,
 }
 
 impl Handle {
@@ -52,6 +59,13 @@ impl Handle {
     pub fn is_closed(&self) -> bool {
         self.tx.is_closed()
     }
+
+    /// Resolves once the browser thread has ended. Every [`Handle`] must be
+    /// dropped first (the future holds none), or the loop never sees its
+    /// channel close.
+    pub fn exited(&self) -> WaitForCancellationFutureOwned {
+        self.exited.clone().cancelled_owned()
+    }
 }
 
 /// Start a browser thread for one session and return its handle. A thread
@@ -60,16 +74,23 @@ impl Handle {
 /// spawns a fresh one on the next call (23 §4 errors).
 pub fn spawn(cfg: &BrowserConfig) -> Handle {
     let (tx, rx) = mpsc::channel(16);
+    let exited = CancellationToken::new();
+    // Cancels on any exit path — normal end, panic unwinding, or the closure
+    // being dropped because the thread never started.
+    let guard = exited.clone().drop_guard();
     let proxy = cfg.proxy.clone();
     let user_agent = cfg.user_agent.clone();
     let stealth = cfg.stealth;
     let spawned = std::thread::Builder::new()
         .name("browser".to_owned())
-        .spawn(move || run(rx, proxy, user_agent, stealth));
+        .spawn(move || {
+            let _exit = guard;
+            run(rx, proxy, user_agent, stealth);
+        });
     if let Err(e) = spawned {
         tracing::error!("cannot start browser thread: {e}");
     }
-    Handle { tx }
+    Handle { tx, exited }
 }
 
 /// Thread body: `current_thread` runtime, one `BrowserState`, the pump loop.

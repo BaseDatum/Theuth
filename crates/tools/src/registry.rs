@@ -11,7 +11,8 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use kameo::actor::{ActorRef, Spawn};
+use brush_core::Shell;
+use kameo::actor::{ActorRef, Recipient, ReplyRecipient, Spawn};
 use kameo::message::{Context, Message};
 use kameo::reply::DelegatedReply;
 use runtime::{Runtime, SessionId};
@@ -21,12 +22,15 @@ use crate::activity::{self, Activity, ActivitySink, Kind, OperationId};
 use crate::approval::{Approval, Decision, RequestApproval};
 use crate::ask::{AskUser, AskUserTool};
 use crate::communication::{self, Admitted, CommunicationAccess};
-use crate::jobs::{InstallActivity, JOBS_ACTOR, Jobs, lock};
-use crate::resources::SessionResources;
+use crate::jobs::{CloseSessions, InstallActivity, JOBS_ACTOR, Jobs, lock};
+use crate::resources::{CloseAck, CloseTree, SessionResources, TreeOpened};
 use crate::{
     APPROVAL_ACTOR, ASK_ACTOR, DynTool, Policy, PolicyAction, REGISTRY_ACTOR, Risk, ToolCall,
     ToolCx, ToolOutput, ToolSource, ToolSpec, ToolsConfig, fs, jobs, pty, schema, shell,
 };
+
+/// [`CloseTreeAll`]'s wait on one participant before its ack is `timeout`.
+const CLOSE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The registry actor. Look up with `ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR)`.
 /// `policy` is the only permission input; a tool's `ToolSpec.risk` is the
@@ -82,6 +86,20 @@ pub struct ToolRegistry {
     /// The caller's execution bound (50 §8), from [`InstallExecutionGate`];
     /// `None`: waits are not reported to anyone.
     gate: Option<Arc<dyn ExecutionGate>>,
+    /// Lifecycle owners from [`RegisterLifecycle`] (51 §4.4), by name; a
+    /// second registration under a name replaces the first.
+    participants: Vec<(
+        &'static str,
+        Option<Recipient<TreeOpened>>,
+        ReplyRecipient<CloseTree, CloseAck>,
+    )>,
+    /// Owner names [`ExpectParticipants`] said must register before
+    /// [`ParticipantsReady`] says so.
+    expected: Vec<&'static str>,
+    /// The `shell` tool's per-session shells, dropped for a closed subtree.
+    shells: Arc<Mutex<HashMap<SessionId, Shell>>>,
+    /// How long [`CloseTreeAll`] waits on one participant.
+    close_timeout: Duration,
 }
 
 /// `ask` → `Vec<ToolSpec>` for every registered tool, sorted by name; with a
@@ -370,7 +388,9 @@ impl Message<SetParent> for ToolRegistry {
 /// subagents inherit through [`SetParent`].
 #[derive(Clone, Debug)]
 pub struct InstallResources {
+    /// The root whose tool writes are being redirected.
     pub session: SessionId,
+    /// Where `session` and its subagents write from now on.
     pub resources: Arc<SessionResources>,
 }
 
@@ -392,6 +412,171 @@ impl Message<RemoveResources> for ToolRegistry {
 
     async fn handle(&mut self, m: RemoveResources, _: &mut Context<Self, Self::Reply>) {
         self.resources.remove(&m.0);
+    }
+}
+
+/// `ask` → `()`. An owner joins the lifecycle barrier (51 §4.4): `opened`,
+/// when given, is told every [`OpenTree`]; `close` is asked every
+/// [`CloseTreeAll`]. Registering the same `owner` again replaces the first.
+pub struct RegisterLifecycle {
+    /// The owner's name, as [`ExpectParticipants`] lists it and acks carry it.
+    pub owner: &'static str,
+    /// Told each [`TreeOpened`]; `None` for an owner with nothing to prepare.
+    pub opened: Option<Recipient<TreeOpened>>,
+    /// Asked each [`CloseTree`].
+    pub close: ReplyRecipient<CloseTree, CloseAck>,
+}
+
+/// `ask` → `()`. The names of the enabled owners that must have registered
+/// before [`ParticipantsReady`] says so; sent once by composition. `"jobs"`
+/// is internal and never listed.
+#[derive(Clone, Debug)]
+pub struct ExpectParticipants(pub Vec<&'static str>);
+
+/// `ask` → `Result<(), String>`: `Ok` once every [`ExpectParticipants`] name
+/// registered; `Err` names the missing ones, comma-joined.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ParticipantsReady;
+
+/// `ask` → `()`. Installs `resources` for every listed session and tells
+/// every participant's `opened` recipient (off the mailbox, fire-and-forget).
+#[derive(Clone, Debug)]
+pub struct OpenTree(pub TreeOpened);
+
+/// `ask` → `Vec<CloseAck>`: every participant's answer to the [`CloseTree`]
+/// (a participant past the per-owner timeout or unreachable answers
+/// `ok: false`), plus Jobs' own once it cancelled and reaped the subtree's
+/// jobs and removed their logs. The subtree's shells and this actor's
+/// `resources`/parent/hidden/bypass entries go with it.
+#[derive(Clone, Debug)]
+pub struct CloseTreeAll(pub CloseTree);
+
+/// `tell` from the [`CloseTreeAll`] task: the subtree's entries go.
+struct Forget(Vec<SessionId>);
+
+impl Message<RegisterLifecycle> for ToolRegistry {
+    type Reply = ();
+
+    async fn handle(&mut self, m: RegisterLifecycle, _: &mut Context<Self, Self::Reply>) {
+        self.participants.retain(|(o, ..)| *o != m.owner);
+        self.participants.push((m.owner, m.opened, m.close));
+        tracing::info!(owner = m.owner, "registered lifecycle participant");
+    }
+}
+
+impl Message<ExpectParticipants> for ToolRegistry {
+    type Reply = ();
+
+    async fn handle(&mut self, m: ExpectParticipants, _: &mut Context<Self, Self::Reply>) {
+        self.expected = m.0;
+    }
+}
+
+impl Message<ParticipantsReady> for ToolRegistry {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        _: ParticipantsReady,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let missing: Vec<&str> = self
+            .expected
+            .iter()
+            .copied()
+            .filter(|e| !self.participants.iter().any(|(o, ..)| o == e))
+            .collect();
+        if missing.is_empty() {
+            Ok(())
+        } else {
+            Err(missing.join(", "))
+        }
+    }
+}
+
+impl Message<OpenTree> for ToolRegistry {
+    type Reply = ();
+
+    async fn handle(&mut self, m: OpenTree, _: &mut Context<Self, Self::Reply>) {
+        for s in &m.0.sessions {
+            self.resources.insert(*s, Arc::clone(&m.0.resources));
+        }
+        let opened: Vec<_> = self
+            .participants
+            .iter()
+            .filter_map(|(_, o, _)| o.clone())
+            .collect();
+        tokio::spawn(async move {
+            for o in opened {
+                let _ = o.tell(m.0.clone()).await;
+            }
+        });
+    }
+}
+
+impl Message<CloseTreeAll> for ToolRegistry {
+    type Reply = DelegatedReply<Vec<CloseAck>>;
+
+    async fn handle(&mut self, m: CloseTreeAll, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let tree = m.0;
+        let parts: Vec<_> = self
+            .participants
+            .iter()
+            .map(|(o, _, c)| (*o, c.clone()))
+            .collect();
+        let jobs = ActorRef::<Jobs>::lookup(JOBS_ACTOR).ok().flatten();
+        let timeout = self.close_timeout;
+        let shells = Arc::clone(&self.shells);
+        let me = ctx.actor_ref().clone();
+        tokio::spawn(async move {
+            let owners = parts.into_iter().map(|(owner, close)| {
+                let tree = tree.clone();
+                async move {
+                    match tokio::time::timeout(timeout, close.ask(tree)).await {
+                        Ok(Ok(ack)) => ack,
+                        Ok(Err(e)) => CloseAck::failed(owner, e.to_string()),
+                        Err(_) => CloseAck::failed(owner, "timeout"),
+                    }
+                }
+            });
+            let jobs = async {
+                let Some(jobs) = jobs else {
+                    return CloseAck::failed("jobs", "jobs actor not running");
+                };
+                jobs.ask(CloseSessions {
+                    sessions: tree.subtree.clone(),
+                    cancel: tree.cancel.clone(),
+                })
+                .await
+                .unwrap_or_else(|e| CloseAck::failed("jobs", e.to_string()))
+            };
+            let (mut acks, jobs) = futures::join!(futures::future::join_all(owners), jobs);
+            acks.push(jobs);
+            {
+                let mut shells = lock(&shells);
+                for s in &tree.subtree {
+                    shells.remove(s);
+                }
+            }
+            let _ = me.tell(Forget(tree.subtree)).await;
+            tx.send(acks);
+        });
+        reply
+    }
+}
+
+impl Message<Forget> for ToolRegistry {
+    type Reply = ();
+
+    async fn handle(&mut self, m: Forget, _: &mut Context<Self, Self::Reply>) {
+        for s in &m.0 {
+            self.resources.remove(s);
+            self.parents.remove(s);
+            self.hidden.remove(s);
+            self.bypass.remove(s);
+        }
     }
 }
 
@@ -1182,7 +1367,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
         Arc::new(shell),
         Arc::new(pty::StartTool::new(
             jobs.clone(),
-            shells,
+            Arc::clone(&shells),
             Duration::from_secs(cfg.pty_ready_timeout_secs),
         )),
         Arc::new(pty::SendTool(jobs.clone())),
@@ -1215,6 +1400,10 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
             untracked: Arc::default(),
             communication: None,
             gate: None,
+            participants: Vec::new(),
+            expected: Vec::new(),
+            shells,
+            close_timeout: CLOSE_TIMEOUT,
         },
         runtime::subscriber_mailbox(),
     );
@@ -1273,6 +1462,10 @@ mod tests {
             untracked: Arc::default(),
             communication: None,
             gate: None,
+            participants: Vec::new(),
+            expected: Vec::new(),
+            shells: Arc::default(),
+            close_timeout: Duration::from_millis(100),
         }
     }
 
@@ -2073,5 +2266,138 @@ mod tests {
             "{model:?}"
         );
         assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// A lifecycle owner: records what it was told opened; on close, acks
+    /// under its name or, when `hang`, never answers.
+    #[derive(kameo::Actor)]
+    struct Participant {
+        owner: &'static str,
+        hang: bool,
+        opened: Arc<Mutex<Vec<TreeOpened>>>,
+    }
+
+    impl Message<TreeOpened> for Participant {
+        type Reply = ();
+        async fn handle(&mut self, m: TreeOpened, _: &mut Context<Self, Self::Reply>) {
+            lock(&self.opened).push(m);
+        }
+    }
+
+    impl Message<CloseTree> for Participant {
+        type Reply = CloseAck;
+        async fn handle(&mut self, _: CloseTree, _: &mut Context<Self, Self::Reply>) -> CloseAck {
+            if self.hang {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+            }
+            CloseAck::ok(self.owner)
+        }
+    }
+
+    /// Reports the root the registry resolved for the call.
+    struct Root;
+
+    #[async_trait::async_trait]
+    impl Tool for Root {
+        const NAME: &'static str = "root";
+        const RISK: Risk = Risk::ReadOnly;
+        type Args = serde_json::Value;
+        fn description(&self) -> String {
+            String::new()
+        }
+        async fn call(&self, _: Self::Args, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+            Ok(ToolOutput::ok(cx.resources.root.display().to_string()))
+        }
+    }
+
+    #[tokio::test]
+    async fn lifecycle_barrier_waits_for_expected_and_collects_acks() {
+        let reg = registry(vec![Arc::new(Root)], None);
+        reg.ask(ExpectParticipants(vec!["x", "y"])).await.unwrap();
+        let Err(kameo::error::SendError::HandlerError(missing)) =
+            reg.ask(ParticipantsReady).await
+        else {
+            panic!("ready before anyone registered");
+        };
+        assert_eq!(missing, "x, y");
+
+        let opened = Arc::new(Mutex::new(Vec::new()));
+        let x = Participant::spawn(Participant {
+            owner: "x",
+            hang: false,
+            opened: Arc::clone(&opened),
+        });
+        reg.ask(RegisterLifecycle {
+            owner: "x",
+            opened: Some(x.clone().recipient()),
+            close: x.reply_recipient(),
+        })
+        .await
+        .unwrap();
+        assert!(matches!(
+            reg.ask(ParticipantsReady).await,
+            Err(kameo::error::SendError::HandlerError(m)) if m == "y"
+        ));
+        let y = Participant::spawn(Participant {
+            owner: "y",
+            hang: true,
+            opened: Arc::default(),
+        });
+        reg.ask(RegisterLifecycle {
+            owner: "y",
+            opened: None,
+            close: y.reply_recipient(),
+        })
+        .await
+        .unwrap();
+        reg.ask(ParticipantsReady).await.unwrap();
+
+        let root = SessionId::new();
+        let child = SessionId::new();
+        let resources = Arc::new(SessionResources {
+            root: PathBuf::from("/tmp/private-root"),
+            retention: crate::Retention::Private,
+            generation: 1,
+        });
+        reg.ask(OpenTree(TreeOpened {
+            root,
+            sessions: vec![root, child],
+            resources: Arc::clone(&resources),
+        }))
+        .await
+        .unwrap();
+        let mut shown = None;
+        for _ in 0..50 {
+            if lock(&opened).len() == 1 {
+                shown = Some(());
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(shown.is_some(), "x was not told the tree opened");
+        assert_eq!(lock(&opened)[0].sessions, [root, child]);
+        // Both sessions resolve to the installed root until the close.
+        let root_of = |s: SessionId| {
+            let reg = reg.clone();
+            async move { reg.ask(Invoke(call("root", s))).await.unwrap().content }
+        };
+        assert_eq!(root_of(child).await, "/tmp/private-root");
+
+        let acks = reg
+            .ask(CloseTreeAll(CloseTree {
+                subtree: vec![root, child],
+                generation: 1,
+                cancel: tokio_util::sync::CancellationToken::new(),
+            }))
+            .await
+            .unwrap();
+        let by = |o: &str| acks.iter().find(|a| a.owner == o).unwrap_or_else(|| panic!("{o}"));
+        assert!(by("x").ok);
+        assert!(!by("y").ok);
+        assert_eq!(by("y").detail.as_deref(), Some("timeout"));
+        assert!(!by("jobs").ok, "no jobs actor in this test");
+        assert_eq!(acks.len(), 3);
+        assert_eq!(root_of(root).await, "/tmp");
+        assert_eq!(root_of(child).await, "/tmp");
     }
 }

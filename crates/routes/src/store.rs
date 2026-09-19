@@ -58,55 +58,68 @@ impl Store {
         Ok(())
     }
 
-    /// Merge freshly classified routes by `id`: known routes get `seen + 1`,
-    /// refreshed shape and unioned query holes; new ones `seen = 1`; `stale`
-    /// clears. Rows sharing an id (files from before ids were unique) are
-    /// folded together first.
+    /// Merge freshly classified routes by `id` ([`merge_into`]) and save.
     pub async fn merge(&self, domain: &str, routes: Vec<Route>) -> anyhow::Result<SiteRoutes> {
         let mut site = self.load(domain).await?;
-        let mut i = 0;
-        while i < site.routes.len() {
-            match site.routes[..i]
-                .iter()
-                .position(|r| r.id == site.routes[i].id)
-            {
-                Some(j) => {
-                    let dup = site.routes.remove(i);
-                    fold(&mut site.routes[j], dup);
-                }
-                None => i += 1,
-            }
-        }
-        for fresh in routes {
-            match site.routes.iter_mut().find(|r| r.id == fresh.id) {
-                Some(r) => {
-                    r.seen += 1;
-                    r.stale = false;
-                    fold(r, fresh);
-                }
-                None => site.routes.push(Route { seen: 1, ..fresh }),
-            }
-        }
-        site.learned_at = Some(chrono::Utc::now().to_rfc3339());
+        merge_into(&mut site, routes);
         self.save(&site).await?;
         Ok(site)
     }
 
-    /// Record a replay outcome: `ok` sets `last_ok` and clears `stale`;
-    /// `!ok` sets `stale`. Unknown `route_id` is a no-op.
+    /// Record a replay outcome ([`mark_in`]). Unknown `route_id` is a no-op.
     pub async fn mark(&self, domain: &str, route_id: &str, ok: bool) -> anyhow::Result<()> {
         let mut site = self.load(domain).await?;
-        let Some(r) = site.routes.iter_mut().find(|r| r.id == route_id) else {
-            return Ok(());
-        };
-        if ok {
-            r.last_ok = Some(chrono::Utc::now().to_rfc3339());
-            r.stale = false;
-        } else {
-            r.stale = true;
+        if mark_in(&mut site, route_id, ok) {
+            self.save(&site).await?;
         }
-        self.save(&site).await
+        Ok(())
     }
+}
+
+/// Merge freshly classified routes by `id`: known routes get `seen + 1`,
+/// refreshed shape and unioned query holes; new ones `seen = 1`; `stale`
+/// clears. Rows sharing an id (files from before ids were unique) are
+/// folded together first.
+pub(crate) fn merge_into(site: &mut SiteRoutes, routes: Vec<Route>) {
+    let mut i = 0;
+    while i < site.routes.len() {
+        match site.routes[..i]
+            .iter()
+            .position(|r| r.id == site.routes[i].id)
+        {
+            Some(j) => {
+                let dup = site.routes.remove(i);
+                fold(&mut site.routes[j], dup);
+            }
+            None => i += 1,
+        }
+    }
+    for fresh in routes {
+        match site.routes.iter_mut().find(|r| r.id == fresh.id) {
+            Some(r) => {
+                r.seen += 1;
+                r.stale = false;
+                fold(r, fresh);
+            }
+            None => site.routes.push(Route { seen: 1, ..fresh }),
+        }
+    }
+    site.learned_at = Some(chrono::Utc::now().to_rfc3339());
+}
+
+/// Record a replay outcome: `ok` sets `last_ok` and clears `stale`; `!ok`
+/// sets `stale`. `false` when `route_id` is unknown (nothing changed).
+pub(crate) fn mark_in(site: &mut SiteRoutes, route_id: &str, ok: bool) -> bool {
+    let Some(r) = site.routes.iter_mut().find(|r| r.id == route_id) else {
+        return false;
+    };
+    if ok {
+        r.last_ok = Some(chrono::Utc::now().to_rfc3339());
+        r.stale = false;
+    } else {
+        r.stale = true;
+    }
+    true
 }
 
 /// Refresh `r` from `fresh` (same id): scalar shape and path holes are taken

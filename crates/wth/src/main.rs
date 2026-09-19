@@ -493,6 +493,30 @@ async fn run() -> anyhow::Result<()> {
         plugins
     };
 
+    // 51 §8.2: the owners the registry must hear from before a private
+    // root may open — every lifecycle participant whose plugin runs here
+    // (each plugin honours its own `<section>.enabled`, default on). Jobs
+    // is registry-internal. The pairing-only run has no registry.
+    if !cli.link_signal {
+        let owners: Vec<&'static str> = ["artifact", "app", "browser", "computer", "voice", "routes"]
+            .into_iter()
+            .filter(|name| {
+                rt.config
+                    .extract_inner::<bool>(&format!("{name}.enabled"))
+                    .unwrap_or(true)
+            })
+            .collect();
+        let rt = rt.clone();
+        tokio::spawn(async move {
+            if let Some(reg) = rt
+                .lookup_when::<tools::ToolRegistry>(tools::REGISTRY_ACTOR)
+                .await
+            {
+                let _ = reg.tell(tools::ExpectParticipants(owners)).await;
+            }
+        });
+    }
+
     for plugin in plugins {
         let name = plugin.name();
         plugin

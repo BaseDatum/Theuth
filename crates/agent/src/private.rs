@@ -15,6 +15,7 @@ const PREFIX: &str = "wth-private-";
 /// directory for [`sweep_stale`]; [`Scratch::remove`] deletes it now.
 #[derive(Debug)]
 pub struct Scratch {
+    /// The mode-0700 scratch directory owners write under.
     pub root: PathBuf,
     /// `<root>/.lock`, exclusively locked; the field order drops it last.
     lock: File,

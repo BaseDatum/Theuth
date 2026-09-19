@@ -4,11 +4,11 @@
 //! hot-reloaded; `mcp/config.yaml` overrides a tool's [`Risk`] with a [`Gate`]).
 //!
 //! Public surface consumed by other plugins:
-//! - commands on the `"tools"` actor ([`ToolRegistry`]): [`ListTools`], [`Invoke`], [`AppInvoke`], [`InspectTool`], [`DescribeTools`], [`ExternalApproval`], [`RegisterTool`], [`UnregisterTool`], [`RegisterActivity`], [`ActivityRecipient`], [`InstallCommunicationAccess`]
+//! - commands on the `"tools"` actor ([`ToolRegistry`]): [`ListTools`], [`Invoke`], [`AppInvoke`], [`InspectTool`], [`DescribeTools`], [`ExternalApproval`], [`RegisterTool`], [`UnregisterTool`], [`RegisterActivity`], [`ActivityRecipient`], [`InstallCommunicationAccess`], [`RegisterLifecycle`], [`ExpectParticipants`], [`ParticipantsReady`], [`OpenTree`], [`CloseTreeAll`]
 //! - commands on the `"approval"` actor ([`Approval`]): [`Resolve`]
 //! - commands on the `"ask"` actor ([`AskUser`]): [`AnswerAsk`]
 //! - commands on the `"mcp"` actor ([`Mcp`]): [`ListServers`], [`SetGate`], [`Restart`], [`AddServer`], [`RemoveServer`], [`AddRepo`], [`SyncMcp`], [`McpLogin`], [`McpLogout`]
-//! - commands on the `"jobs"` actor ([`Jobs`]): [`ListJobs`], [`CancelJob`], [`ListTerminals`], [`PtyScreen`]
+//! - commands on the `"jobs"` actor ([`Jobs`]): [`ListJobs`], [`CancelJob`], [`ListTerminals`], [`PtyScreen`], [`CloseSessions`]
 //! - events: [`ApprovalRequested`], [`ApprovalResolved`], [`AskRequested`], [`AskResolved`], [`JobEvent`]
 //! - activity protocol (47 §4, [`activity`]): the supervisor implements [`Admit`] and [`Settle`]
 //!   and registers an [`ActivitySink`]; producers hold an [`Activity`] guard for the real
@@ -66,6 +66,11 @@ pub use registry::{
 };
 pub use registry::{InstallResources, RemoveResources};
 pub use resources::{Retention, SessionResources};
+pub use jobs::CloseSessions;
+pub use registry::{
+    CloseTreeAll, ExpectParticipants, OpenTree, ParticipantsReady, RegisterLifecycle,
+};
+pub use resources::{CloseAck, CloseTree, TreeOpened};
 
 /// Registry name of the [`ToolRegistry`] actor.
 pub const REGISTRY_ACTOR: &str = "tools";

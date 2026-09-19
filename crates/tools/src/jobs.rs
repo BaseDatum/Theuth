@@ -1,6 +1,6 @@
 //! `Jobs` actor (14 §2): every process the model starts is a background job.
 //! Owns each job's process groups, streams output to
-//! `<data_dir>/jobs/<session>/<id>.log`, publishes [`JobEvent`]s on the bus,
+//! `<resources.root>/jobs/<session>/<id>.log`, publishes [`JobEvent`]s on the bus,
 //! and kills everything still running on `rt.shutdown`. Registered as
 //! [`JOBS_ACTOR`]; `shell` starts jobs with [`Start`], `jobs` / `cancel_job`
 //! (also here) ask [`ListJobs`] / [`CancelJob`].
@@ -30,8 +30,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Notify, oneshot};
 use tokio::task::{AbortHandle, JoinHandle};
+use tokio_util::sync::CancellationToken;
 
 use crate::activity::{self, Activity, ActivitySink, Kind, OperationId, Rejected};
+use crate::resources::CloseAck;
 use crate::{Risk, Tool, ToolCx, ToolOutput};
 
 /// Registry name of the [`Jobs`] actor.
@@ -216,6 +218,9 @@ pub struct Start {
     pub shell: Shell,
     /// Where the finished shell goes.
     pub put_back: PutBack,
+    /// The session's [`crate::SessionResources::root`] (51 §4.5): the log
+    /// is `<root>/jobs/<session>/<id>.log`, the data dir for a durable tree.
+    pub root: PathBuf,
     /// [`activity::current`] at the caller. The job's own lifetime is admitted
     /// as a child of a *tracked* invocation (47 §4.2 rule 3); an untracked or
     /// absent parent (pre-registration invocation, RPC, tests) admits under
@@ -252,6 +257,21 @@ pub struct CancelJob {
     pub session: SessionId,
     /// Job.
     pub id: JobId,
+}
+
+/// `ask` → [`CloseAck`] (owner `"jobs"`): the [`crate::CloseTree`] barrier's Jobs
+/// half (51 §4.4). Every row of `sessions` goes at once (`ListJobs` is empty
+/// on reply); running jobs are cancelled and their process groups killed;
+/// the ack waits for the tasks to settle (bounded by `cancel`) and then
+/// removes each session's `<root>/jobs/<session>` log directory. `ok` is
+/// false when a task was still settling at `cancel` or a directory could
+/// not be removed.
+#[derive(Clone, Debug)]
+pub struct CloseSessions {
+    /// The closing subtree.
+    pub sessions: Vec<SessionId>,
+    /// The closer stopped waiting: reply with what is still unsettled.
+    pub cancel: CancellationToken,
 }
 
 /// `tell` from a job task: the actual work settled.
@@ -636,7 +656,7 @@ impl Message<Launch<Start>> for Jobs {
     ) -> Self::Reply {
         let Launch { m, id, activity } = l;
         let quiet = m.quiet;
-        let dir = self.rt.data_dir.join("jobs").join(m.session.to_string());
+        let dir = m.root.join("jobs").join(m.session.to_string());
         let log_path = dir.join(format!("{id}.log"));
         let pgids: Arc<Mutex<Vec<i32>>> = Arc::default();
         let log_file = (!quiet).then_some(log_path.as_path());
@@ -736,6 +756,76 @@ impl Message<CancelJob> for Jobs {
         // would race its normal-exit arm into `Exited(137)`.
         job.cancel.notify_one();
         Ok(())
+    }
+}
+
+impl Message<CloseSessions> for Jobs {
+    type Reply = DelegatedReply<CloseAck>;
+
+    async fn handle(
+        &mut self,
+        m: CloseSessions,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let mut tasks = Vec::new();
+        let mut dirs = Vec::new();
+        for session in &m.sessions {
+            let Some(sj) = self.sessions.remove(session) else {
+                continue;
+            };
+            for job in sj.jobs {
+                if job.exit.is_none() {
+                    // As `CancelJob`: the task reports `Killed` and settles;
+                    // the kill here only makes sure nothing survives a task
+                    // that is never polled again.
+                    job.cancel.notify_one();
+                    kill(&job.pgids);
+                    tasks.push((job.id, job.task));
+                }
+                if job.pty.is_some() {
+                    self.pty_bytes -= crate::pty::RESERVE;
+                }
+                if let Some(dir) = job.log_path.parent()
+                    && !dirs.iter().any(|d| d == dir)
+                {
+                    dirs.push(dir.to_path_buf());
+                }
+            }
+        }
+        let Some(tx) = tx else { return reply };
+        tokio::spawn(async move {
+            let mut doubts = Vec::new();
+            let settled = async {
+                while tasks.iter().any(|(_, t)| !t.is_finished()) {
+                    tokio::time::sleep(GROUP_POLL).await;
+                }
+            };
+            tokio::select! {
+                biased;
+                () = settled => {}
+                () = m.cancel.cancelled() => {
+                    for (id, t) in &tasks {
+                        if !t.is_finished() {
+                            doubts.push(format!("{id}: still settling at cancel"));
+                        }
+                    }
+                }
+            }
+            for dir in dirs {
+                match tokio::fs::remove_dir_all(&dir).await {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => doubts.push(format!("{}: {e}", dir.display())),
+                }
+            }
+            tx.send(if doubts.is_empty() {
+                CloseAck::ok("jobs")
+            } else {
+                CloseAck::failed("jobs", doubts.join("; "))
+            });
+        });
+        reply
     }
 }
 
@@ -1374,6 +1464,7 @@ pub(crate) mod tests {
                 quiet,
                 shell: ShellTool::build_shell().await.unwrap(),
                 put_back: Arc::new(|_| {}),
+                root: fx.dir.clone(),
                 activity: None,
             })
             .await
@@ -1789,7 +1880,7 @@ pub(crate) mod tests {
             session: fx.session,
             call_id: String::new(),
             quiet: false,
-            resources: crate::SessionResources::durable_arc(&std::env::temp_dir()),
+            resources: crate::SessionResources::durable_arc(&fx.dir),
         };
         let cd = Tool::call(
             &tool,
@@ -1811,5 +1902,32 @@ pub(crate) mod tests {
         .await
         .unwrap();
         assert_eq!(pwd.content, "/tmp\nexit code: 0");
+    }
+
+    #[tokio::test]
+    async fn close_sessions_kills_reaps_and_removes_logs() {
+        let fx = fixture(Duration::from_millis(200), Duration::from_secs(60)).await;
+        let StartReply::Running { log, .. } = spawn_job(&fx, "sh -c 'echo $$; exec sleep 30'").await
+        else {
+            panic!("expected Running");
+        };
+        let pid: i32 = list(&fx).await[0].tail.trim().parse().unwrap();
+        assert!(nix::sys::signal::kill(Pid::from_raw(pid), None).is_ok());
+        assert_eq!(log, fx.dir.join("jobs").join(fx.session.to_string()).join("j1.log"));
+        assert!(log.is_file());
+
+        let ack = fx
+            .jobs
+            .ask(CloseSessions {
+                sessions: vec![fx.session, SessionId::new()],
+                cancel: CancellationToken::new(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(ack.owner, "jobs");
+        assert!(ack.ok, "{ack:?}");
+        assert!(nix::sys::signal::kill(Pid::from_raw(pid), None).is_err());
+        assert!(!log.parent().unwrap().exists());
+        assert!(list(&fx).await.is_empty());
     }
 }

@@ -6,6 +6,8 @@ use std::collections::HashSet;
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 use ::search::SearchCategory;
 use a2a::{A2A_ACTOR, A2aActor, A2aStatus};
@@ -25,6 +27,10 @@ use agent::{
     Steer, SyncSkills, Undo, UseSkill, Withdraw,
 };
 use agent::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
+use agent::{
+    Authorize, Authorized, CloseResult, CreateSession, CreateSessionOptions, LeaveSession,
+    PrivateTrees, ResumePrivate, SessionCost, SessionCostQuery, SessionOpen, SetSessionProject,
+};
 use app::{AppDoc, AppToolResult, Apps, CallArgs, CallStatusOf, CallTool, CloseApp, GetApp};
 use artifact::search::ArtifactMatchContext;
 use base64::Engine as _;
@@ -40,6 +46,7 @@ use kameo::actor::ActorRef;
 use kameo::error::SendError;
 use kameo::message::Message;
 use kameo::reply::Reply;
+use parking_lot::RwLock;
 use knowledge::search::HistoricalConcept;
 use knowledge::{
     Change, Concept, Delete, Get, HarvestResult, History, HistoryOf, Hit, KNOWLEDGE_ACTOR,
@@ -62,6 +69,7 @@ use tools::{
     McpLogin, McpLogout, McpProgress, McpServer, Progress, RemoveServer, RepoInfo, Resolve,
     SetApprovals, SetGate, SetHidden, SyncMcp, ToolRegistry, ToolSpec,
 };
+use tools::{ListTerminals, PtyScreen, PtyScreenReply, PtyViewport, Retention, TerminalSummary};
 use uuid::Uuid;
 use voice::{SpeechId, VoiceStatus};
 
@@ -124,7 +132,7 @@ pub trait Api {
     async fn new_session(&self) -> RpcResult<SessionId>;
     /// Start a turn; `session: None` creates an `owner`-scope root first.
     /// `files` are image files (17 §2) attached to the message. Returns once queued.
-    #[method(name = "send_input")]
+    #[method(name = "send_input", with_extensions)]
     async fn send_input(
         &self,
         session: Option<SessionId>,
@@ -133,7 +141,7 @@ pub trait Api {
     ) -> RpcResult<SessionId>;
     /// Queue a user message after the current tool batch; returns the id (minted
     /// when omitted). `files` are image files (17 §2).
-    #[method(name = "steer")]
+    #[method(name = "steer", with_extensions)]
     async fn steer(
         &self,
         session: SessionId,
@@ -142,24 +150,43 @@ pub trait Api {
         files: Vec<PathBuf>,
     ) -> RpcResult<InputId>;
     /// Pull a queued message back out; returns its text.
-    #[method(name = "withdraw")]
+    #[method(name = "withdraw", with_extensions)]
     async fn withdraw(&self, session: SessionId, id: InputId) -> RpcResult<String>;
     /// Messages waiting for the current tool batch to end.
-    #[method(name = "list_queued")]
+    #[method(name = "list_queued", with_extensions)]
     async fn list_queued(&self, session: SessionId) -> RpcResult<Vec<QueuedInput>>;
     /// Abort the in-flight turn.
-    #[method(name = "cancel")]
+    #[method(name = "cancel", with_extensions)]
     async fn cancel(&self, session: SessionId) -> RpcResult<()>;
     /// Background jobs of a session (14 §2): id, state, seconds, log path, tail.
-    #[method(name = "list_jobs")]
+    #[method(name = "list_jobs", with_extensions)]
     async fn list_jobs(&self, session: SessionId) -> RpcResult<Vec<JobView>>;
     /// Kill a running job; `Err` when unknown or already finished.
-    #[method(name = "cancel_job")]
+    #[method(name = "cancel_job", with_extensions)]
     async fn cancel_job(&self, session: SessionId, id: JobId) -> RpcResult<()>;
+    /// PTY jobs of `session` (and, with `descendants: true`, its subtree)
+    /// whose terminal is still retained (51 §7.3).
+    #[method(name = "list_terminals", with_extensions)]
+    async fn list_terminals(
+        &self,
+        session: SessionId,
+        descendants: Option<bool>,
+    ) -> RpcResult<Vec<TerminalSummary>>;
+    /// One page of a PTY job's retained terminal (51 §7): `Unchanged` when
+    /// `if_revision` still matches, `Unavailable` when the job's terminal is
+    /// gone. An error `terminal busy` means every render slot is taken; retry.
+    #[method(name = "pty_screen", with_extensions)]
+    async fn pty_screen(
+        &self,
+        session: SessionId,
+        job: JobId,
+        viewport: PtyViewport,
+        if_revision: Option<u64>,
+    ) -> RpcResult<PtyScreenReply>;
     /// Current page of `session`'s embedded browser as a base64 PNG for a live
     /// view (23 §3.2); `None` when the session has no live isolate or no open
     /// page. Polling never spawns an isolate.
-    #[method(name = "browser_screenshot")]
+    #[method(name = "browser_screenshot", with_extensions)]
     async fn browser_screenshot(&self, session: SessionId) -> RpcResult<Option<String>>;
     /// Computer-control permissions and attached displays (design doc 27 §6);
     /// errors with "actor not running" when `computer.enabled` is false.
@@ -168,24 +195,24 @@ pub trait Api {
     /// Fold the conversation now (design doc 07 §8.6 / 11 §4.2); returns the
     /// new epoch. `style: None` uses the configured default. Refused while a
     /// turn is running.
-    #[method(name = "compact")]
+    #[method(name = "compact", with_extensions)]
     async fn compact(&self, session: SessionId, style: Option<CompactStyle>) -> RpcResult<u32>;
     /// Hide the last turn from the frame; returns its first line.
-    #[method(name = "undo")]
+    #[method(name = "undo", with_extensions)]
     async fn undo(&self, session: SessionId) -> RpcResult<String>;
     /// Restore the last undone turn; returns its first line.
-    #[method(name = "redo")]
+    #[method(name = "redo", with_extensions)]
     async fn redo(&self, session: SessionId) -> RpcResult<String>;
     /// Inventory of the active context (design doc 48 §3.2): revision,
     /// editability, and every removable message/binary/head with its
     /// protocol companions. No bodies. Native sessions only.
-    #[method(name = "context_items")]
+    #[method(name = "context_items", with_extensions)]
     async fn context_items(&self, session: SessionId) -> RpcResult<ContextSnapshot>;
     /// Remove `targets` from the active context at `expected_revision`
     /// (design doc 48 §3.2). Atomic: stale revision, unknown targets or an
     /// incomplete protocol group refuse and write nothing. Refused while a
     /// turn is running; a `ContextChanged` follows on the stream.
-    #[method(name = "remove_context")]
+    #[method(name = "remove_context", with_extensions)]
     async fn remove_context(
         &self,
         session: SessionId,
@@ -195,12 +222,12 @@ pub trait Api {
     /// Regenerate the reply to the turn opened at `turn` (a `HistoryEntry`
     /// `turn` handle): drop it and everything after, replay the stored opener
     /// (design doc 29 §3). Refused while a turn is running.
-    #[method(name = "regenerate")]
+    #[method(name = "regenerate", with_extensions)]
     async fn regenerate(&self, session: SessionId, turn: i64) -> RpcResult<()>;
     /// Replace the turn opened at `turn` with `text` (+ `files`): drop it and
     /// everything after, start a turn with the new input (design doc 29 §3).
     /// Refused while a turn is running.
-    #[method(name = "edit_turn")]
+    #[method(name = "edit_turn", with_extensions)]
     async fn edit_turn(
         &self,
         session: SessionId,
@@ -211,7 +238,7 @@ pub trait Api {
     /// New session with a copy of the conversation through the turn opened at
     /// `through` (all of it when `None`); returns its id (design doc 29 §3).
     /// The source is untouched. Refused for external harness sessions.
-    #[method(name = "fork_session")]
+    #[method(name = "fork_session", with_extensions)]
     async fn fork_session(
         &self,
         session: SessionId,
@@ -241,14 +268,14 @@ pub trait Api {
     async fn list_sessions(&self) -> RpcResult<Vec<SessionSummary>>;
     /// The subtree under `session` (children, grandchildren, …), pre-order,
     /// each with its live state (19 §2.1).
-    #[method(name = "list_agents")]
+    #[method(name = "list_agents", with_extensions)]
     async fn list_agents(&self, session: SessionId) -> RpcResult<Vec<AgentInfo>>;
     /// Rendered history of one session plus whether a turn is in flight.
     /// `before`/`limit` page the entries (25 §7): those with `seq < before`,
     /// the last `limit` of them; both omitted = everything. `settled_only`
     /// (48 §5) reads through the idle session actor; while busy the reply
     /// has `settled: false` and `context_editable: false` with a reason.
-    #[method(name = "load_session")]
+    #[method(name = "load_session", with_extensions)]
     async fn load_session(
         &self,
         session: SessionId,
@@ -259,18 +286,67 @@ pub trait Api {
     /// The session's current plan (47 §5.1): the latest committed snapshot,
     /// readable while a turn runs; `TodoChanged` carries later versions.
     /// An unknown session or a failed read is an error, never an empty list.
-    #[method(name = "get_todos")]
+    #[method(name = "get_todos", with_extensions)]
     async fn get_todos(&self, session: SessionId) -> RpcResult<TodoSnapshot>;
+    /// Model-usage summary of `session` as an accounting owner (51 §6.5):
+    /// direct, descendants, total, children, coverage and a revision that
+    /// `ModelUsageChanged` bumps. `Err` when the session owns no ledger.
+    #[method(name = "session_cost", with_extensions)]
+    async fn session_cost(&self, session: SessionId) -> RpcResult<SessionCost>;
     /// Set a session's title by hand; `TitleChanged` follows on the stream.
-    #[method(name = "rename_session")]
+    #[method(name = "rename_session", with_extensions)]
     async fn rename_session(&self, session: SessionId, title: String) -> RpcResult<()>;
     /// Pin or unpin a session; pinned sessions lead `list_sessions`.
-    #[method(name = "pin_session")]
+    #[method(name = "pin_session", with_extensions)]
     async fn pin_session(&self, session: SessionId, pinned: bool) -> RpcResult<()>;
     /// Delete a session and its subagents for good; a `SessionDeleted` per removed session
     /// follows on the stream. Refused while any of them is mid-turn.
-    #[method(name = "delete_session")]
+    #[method(name = "delete_session", with_extensions)]
     async fn delete_session(&self, session: SessionId) -> RpcResult<()>;
+    /// Open a root with explicit storage (51 §4.1): `retention: durable`
+    /// (default) is `new_session` plus `project`; `private` needs `view` and
+    /// binds the tree to the calling connection, returning the lease secret
+    /// it presents on `resume_private` / `leave_session`. Always returns
+    /// `SessionOpen`.
+    #[method(name = "create_session", with_extensions)]
+    async fn create_session(&self, options: CreateSessionOptions) -> RpcResult<SessionOpen>;
+    /// Rebind a private root to this connection within the reconnect window
+    /// (51 §4.3): same `view`, the current `lease_secret`; rotates the secret.
+    #[method(name = "resume_private", with_extensions)]
+    async fn resume_private(
+        &self,
+        session: SessionId,
+        view: String,
+        lease_secret: String,
+    ) -> RpcResult<SessionOpen>;
+    /// Release a root this connection owns (51 §4.3): private → the tree
+    /// closes now and `CloseResult` says how far cleanup got; durable →
+    /// `revoked: false`, nothing to clean.
+    #[method(name = "leave_session", with_extensions)]
+    async fn leave_session(
+        &self,
+        session: SessionId,
+        lease_secret: Option<String>,
+    ) -> RpcResult<CloseResult>;
+    /// Set (or clear with `None`) the project label of `session`'s root
+    /// (51 §3); `SessionMetadataChanged` follows on the stream.
+    #[method(name = "set_session_project", with_extensions)]
+    async fn set_session_project(
+        &self,
+        session: SessionId,
+        project: Option<String>,
+    ) -> RpcResult<()>;
+    /// Store base64 `bytes` under `session`'s tree (51 §8.1): the durable
+    /// attachments dir, or the private scratch root — ownership is resolved
+    /// before any byte is written. Same extension / size rules as
+    /// `put_attachment` (`file_ext` ∈ png, jpg, …).
+    #[method(name = "put_session_attachment", with_extensions)]
+    async fn put_session_attachment(
+        &self,
+        session: SessionId,
+        bytes: String,
+        file_ext: String,
+    ) -> RpcResult<PathBuf>;
     /// Unified human search (design doc 49 §4.2) over sessions, artifacts,
     /// current knowledge and knowledge history: one group per selected category
     /// in fixed order, each `ready`/`indexing`/`unavailable`/`error` on its own.
@@ -310,18 +386,18 @@ pub trait Api {
     #[method(name = "set_aws_profile")]
     async fn set_aws_profile(&self, profile: Option<String>) -> RpcResult<AwsProfiles>;
     /// Switch `session` (and the default for new sessions) to `model`.
-    #[method(name = "set_model")]
+    #[method(name = "set_model", with_extensions)]
     async fn set_model(&self, session: Option<SessionId>, model: String) -> RpcResult<ModelInfo>;
     /// Set (or clear with `None`) the reasoning effort for `session` from its next turn, and as
     /// the default (`agent.effort`). Values come from the model's catalog entry
     /// (`ModelInfo.efforts`, or an integer token budget within `budget_min..budget_max`);
     /// `EffortChanged` follows on the stream.
-    #[method(name = "set_effort")]
+    #[method(name = "set_effort", with_extensions)]
     async fn set_effort(&self, session: Option<SessionId>, effort: Option<String>)
     -> RpcResult<()>;
     /// MCP servers, their tools, and their `mcp/config.yaml` risk lines; with
     /// a session, which tools it hid (`set_mcp_hidden`).
-    #[method(name = "list_mcp")]
+    #[method(name = "list_mcp", with_extensions)]
     async fn list_mcp(&self, session: Option<SessionId>) -> RpcResult<Vec<McpServer>>;
     /// MCP connection progress snapshot (`McpProgress`), for a UI attaching after startup.
     #[method(name = "mcp_status")]
@@ -338,7 +414,7 @@ pub trait Api {
     /// Hide (or show again) registered tools for one session and its
     /// subagents, in memory: absent from the model's tool list, `unknown tool`
     /// when called. The persistent form is `set_mcp_gate(.., Some(Off))`.
-    #[method(name = "set_mcp_hidden")]
+    #[method(name = "set_mcp_hidden", with_extensions)]
     async fn set_mcp_hidden(
         &self,
         session: SessionId,
@@ -346,7 +422,7 @@ pub trait Api {
         hidden: bool,
     ) -> RpcResult<()>;
     /// Turn approval prompts on/off for `session`, or globally (persisted) with `None`.
-    #[method(name = "set_approvals")]
+    #[method(name = "set_approvals", with_extensions)]
     async fn set_approvals(
         &self,
         session: Option<SessionId>,
@@ -355,12 +431,12 @@ pub trait Api {
     /// Effective communication state (50 §10): the global switch alone with
     /// `None`, else `session`'s inherited/opted-out view, scope and alias.
     /// Authoritative: render it, never guess it.
-    #[method(name = "get_communication")]
+    #[method(name = "get_communication", with_extensions)]
     async fn get_communication(&self, session: Option<SessionId>) -> RpcResult<CommunicationState>;
     /// `/communication on|off` for `session` (memory-only opt-out), or the
     /// persisted global ceiling with `None`. A session cannot override an
     /// ancestor or global off; the returned state says what blocks it.
-    #[method(name = "set_communication")]
+    #[method(name = "set_communication", with_extensions)]
     async fn set_communication(
         &self,
         session: Option<SessionId>,
@@ -368,7 +444,7 @@ pub trait Api {
     ) -> RpcResult<CommunicationState>;
     /// Owner-only root scope (`owner` | `isolated`) and alias (50 §2.3);
     /// `alias: None` keeps, `Some("")` clears. `Err` for a non-root.
-    #[method(name = "set_peer_scope")]
+    #[method(name = "set_peer_scope", with_extensions)]
     async fn set_peer_scope(
         &self,
         root: SessionId,
@@ -377,7 +453,7 @@ pub trait Api {
     ) -> RpcResult<CommunicationState>;
     /// The directory `session` may address (50 §5.1), the same permission
     /// filter the model's `discover_peers` sees; bounded fields only.
-    #[method(name = "list_peers")]
+    #[method(name = "list_peers", with_extensions)]
     async fn list_peers(
         &self,
         session: SessionId,
@@ -387,13 +463,13 @@ pub trait Api {
     ) -> RpcResult<PeerPage>;
     /// `session`'s own record of exchange `id` (50 §5.2); `Err` when it is
     /// neither sender nor recipient.
-    #[method(name = "peer_message")]
+    #[method(name = "peer_message", with_extensions)]
     async fn peer_message(&self, session: SessionId, id: Uuid) -> RpcResult<PeerRecord>;
     /// `session`'s sent and received exchanges, newest first, with the exact
     /// ids a human may resolve now (`awaiting_answer` / `awaiting_reply`);
     /// `pending_only` restricts the rows to those. The durable snapshot a UI
     /// reloads after `PeerMessageChanged` or a reconnect.
-    #[method(name = "list_peer_messages")]
+    #[method(name = "list_peer_messages", with_extensions)]
     async fn list_peer_messages(
         &self,
         session: SessionId,
@@ -405,7 +481,7 @@ pub trait Api {
     /// as its recipient the answer travels to the sender as a peer message
     /// from `session`; as its blocked sender its own wait resolves. Either
     /// way `answered_by = owner:<session>`; never an arbitrary waiter.
-    #[method(name = "answer_peer_request")]
+    #[method(name = "answer_peer_request", with_extensions)]
     async fn answer_peer_request(
         &self,
         session: SessionId,
@@ -413,7 +489,7 @@ pub trait Api {
         text: String,
     ) -> RpcResult<PeerReceipt>;
     /// The assembled system prompt; without `session` the peers section is omitted.
-    #[method(name = "get_prompt")]
+    #[method(name = "get_prompt", with_extensions)]
     async fn get_prompt(&self, session: Option<SessionId>) -> RpcResult<String>;
     /// Every skill under `<data_dir>/skills`.
     #[method(name = "list_skills")]
@@ -424,7 +500,7 @@ pub trait Api {
     /// Hand a skill to the model as user input: its body wrapped in
     /// `<skill name="…">`, then `args` (design doc 04 §2.4). New turn when
     /// idle, steer when running; `None` session starts one.
-    #[method(name = "use_skill")]
+    #[method(name = "use_skill", with_extensions)]
     async fn use_skill(
         &self,
         session: Option<SessionId>,
@@ -501,7 +577,7 @@ pub trait Api {
     #[method(name = "knowledge_restore")]
     async fn knowledge_restore(&self, id: String, commit: Option<String>) -> RpcResult<Change>;
     /// Harvest `session`'s finished frame now (design doc 10 §5.2). Refused while a turn is running.
-    #[method(name = "knowledge_harvest")]
+    #[method(name = "knowledge_harvest", with_extensions)]
     async fn knowledge_harvest(&self, session: SessionId) -> RpcResult<HarvestResult>;
     /// Write `mcp/<name>.json` and connect; returns the server with its tools.
     #[method(name = "add_mcp_server")]
@@ -628,10 +704,12 @@ pub trait Api {
     #[method(name = "put_attachment")]
     async fn put_attachment(&self, bytes: String, ext: String) -> RpcResult<PathBuf>;
     /// Read a file the harness produced or stored, base64-encoded. Only
-    /// paths under `<data_dir>/{attachments,browser,computer}` (after
-    /// canonicalization) are served.
-    #[method(name = "get_attachment")]
-    async fn get_attachment(&self, path: PathBuf) -> RpcResult<String>;
+    /// paths under `<root>/{attachments,browser,computer,artifacts}` (after
+    /// canonicalization) are served, where `<root>` is `data_dir`, or with
+    /// `session` the tree's own root — a private tree's files are served to
+    /// its owner only, and never without naming the session (51 §4.2).
+    #[method(name = "get_attachment", with_extensions)]
+    async fn get_attachment(&self, path: PathBuf, session: Option<SessionId>) -> RpcResult<String>;
     /// Paired nodes with liveness and child counts (32 §6.6).
     #[method(name = "list_nodes")]
     async fn list_nodes(&self) -> RpcResult<Vec<nodes::Node>>;
@@ -660,7 +738,7 @@ pub trait Api {
     /// Read `text` (markdown) aloud in `session`'s name, stopping whatever is
     /// speaking first (43 §5). Replies with the utterance's id at once; audio
     /// follows as `SpeechAudio` events on `subscribe_events`.
-    #[method(name = "speak")]
+    #[method(name = "speak", with_extensions)]
     async fn speak(&self, session: SessionId, text: String) -> RpcResult<SpeechId>;
     /// Stop utterance `id`, or whatever is speaking when `null`. Idempotent.
     #[method(name = "stop_speaking")]
@@ -693,7 +771,7 @@ pub trait Api {
     /// Every artifact shown in `session` (`null` = every session), newest
     /// first; `descendants: true` (default `false`) widens to the session's
     /// subtree (35 §3.5).
-    #[method(name = "list_artifacts")]
+    #[method(name = "list_artifacts", with_extensions)]
     async fn list_artifacts(
         &self,
         session: Option<SessionId>,
@@ -762,7 +840,7 @@ pub trait Api {
     /// also delivers events of every session in `session`'s subtree, plus
     /// `SubagentSpawned` whose `parent` is in it (19 §2.2). A slow client sees
     /// `{"type":"Lagged","count":n}` where `n` events were dropped.
-    #[subscription(name = "subscribe_events", unsubscribe = "unsubscribe_events", item = serde_json::Value)]
+    #[subscription(name = "subscribe_events", unsubscribe = "unsubscribe_events", item = serde_json::Value, with_extensions)]
     async fn subscribe_events(
         &self,
         session: Option<SessionId>,
@@ -770,12 +848,25 @@ pub trait Api {
     ) -> SubscriptionResult;
 }
 
+/// Members of private trees this process knows: `member → (root, owner
+/// peer)`. The event filter drops any event naming a member for every peer
+/// but its owner (51 §4.2). Insert-only: broadcast fan-out hands every
+/// subscription task the same event in no fixed order, so removing an entry
+/// on `SessionDeleted` / leave would let the *next* task pass that event to a
+/// non-owner; ids are UUIDs and never reused, so a dead entry is harmless.
+/// One per process so the TUI's in-process `Server` and `serve`'s share it.
+pub type PrivateMap = Arc<RwLock<HashMap<SessionId, (SessionId, u64)>>>;
+
+static PRIVATE: LazyLock<PrivateMap> = LazyLock::new(Default::default);
+
 /// Server state: the event feed and the runtime (for `shutdown`).
 pub struct Server {
     /// Feed from [`crate::bridge`].
     pub events: broadcast::Sender<Event>,
     /// `rt.shutdown` is cancelled by `shutdown`.
     pub rt: Runtime,
+    /// Private-tree membership for admission of events; see [`PrivateMap`].
+    pub private: PrivateMap,
 }
 
 impl Server {
@@ -785,7 +876,49 @@ impl Server {
         Self {
             events: broadcast::channel(1).0,
             rt,
+            private: PRIVATE.clone(),
         }
+    }
+
+    /// The one admission check (51 §4.2): the calling connection may act on
+    /// `session`. Durable sessions admit any authenticated peer; a private
+    /// one only its owner; unknown or closing ids fail closed.
+    async fn authorize(&self, ext: &Extensions, session: SessionId) -> RpcResult<Authorized> {
+        let peer = peer(ext)?.id();
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            Authorize {
+                session,
+                peer: Some(peer),
+            },
+        )
+        .await
+    }
+
+    /// `authorize` when a session is named; `None` is the caller's own root
+    /// or the global scope, nothing to admit.
+    async fn authorize_opt(&self, ext: &Extensions, session: Option<SessionId>) -> RpcResult<()> {
+        if let Some(s) = session {
+            self.authorize(ext, s).await?;
+        }
+        Ok(())
+    }
+
+    /// Record a freshly opened private tree as `peer`'s: every known member
+    /// of its root moves to `peer` (a resume rebinds the whole tree), and
+    /// the opened session and root join.
+    fn track(&self, open: &SessionOpen, peer: u64) {
+        if open.retention != Retention::Private {
+            return;
+        }
+        let mut map = self.private.write();
+        for v in map.values_mut() {
+            if v.0 == open.root {
+                v.1 = peer;
+            }
+        }
+        map.insert(open.root, (open.root, peer));
+        map.insert(open.session, (open.root, peer));
     }
 }
 
@@ -989,6 +1122,27 @@ const MAX_PDF: usize = 32 * 1024 * 1024;
 /// Largest decoded audio note `put_attachment` accepts (45 §7.1).
 const MAX_AUDIO: usize = 16 * 1024 * 1024;
 
+/// Validate `ext` and the size cap for its kind, then decode base64 `bytes`
+/// (`put_attachment`, `put_session_attachment`).
+fn decode_attachment(bytes: String, ext: &str) -> RpcResult<Vec<u8>> {
+    let cap = match ext {
+        "png" | "jpg" | "jpeg" | "gif" | "webp" => MAX_IMAGE,
+        "pdf" => MAX_PDF,
+        "m4a" | "mp4" | "webm" | "ogg" | "opus" | "mp3" | "wav" => MAX_AUDIO,
+        _ => return Err(failed(format!("unsupported attachment type .{ext}"))),
+    };
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(bytes)
+        .map_err(|e| failed(format!("bad base64: {e}")))?;
+    if bytes.len() > cap {
+        return Err(failed(format!(
+            "attachment is {} bytes; the cap for .{ext} is {cap}",
+            bytes.len()
+        )));
+    }
+    Ok(bytes)
+}
+
 #[async_trait]
 impl ApiServer for Server {
     async fn info(&self) -> RpcResult<Info> {
@@ -1030,10 +1184,12 @@ impl ApiServer for Server {
 
     async fn send_input(
         &self,
+        ext: &Extensions,
         session: Option<SessionId>,
         text: String,
         files: Vec<PathBuf>,
     ) -> RpcResult<SessionId> {
+        self.authorize_opt(ext, session).await?;
         let session = match session {
             Some(s) => s,
             None => owner_root().await?,
@@ -1051,11 +1207,13 @@ impl ApiServer for Server {
 
     async fn steer(
         &self,
+        ext: &Extensions,
         session: SessionId,
         text: String,
         id: Option<InputId>,
         files: Vec<PathBuf>,
     ) -> RpcResult<InputId> {
+        self.authorize(ext, session).await?;
         let id = id.unwrap_or_default();
         ask::<Agents, _>(
             agent::AGENT_ACTOR,
@@ -1070,27 +1228,71 @@ impl ApiServer for Server {
         Ok(id)
     }
 
-    async fn withdraw(&self, session: SessionId, id: InputId) -> RpcResult<String> {
+    async fn withdraw(&self, ext: &Extensions, session: SessionId, id: InputId) -> RpcResult<String> {
+        self.authorize(ext, session).await?;
         ask::<Agents, _>(agent::AGENT_ACTOR, Withdraw { session, id }).await
     }
 
-    async fn list_queued(&self, session: SessionId) -> RpcResult<Vec<QueuedInput>> {
+    async fn list_queued(&self, ext: &Extensions, session: SessionId) -> RpcResult<Vec<QueuedInput>> {
+        self.authorize(ext, session).await?;
         ask::<Agents, _>(agent::AGENT_ACTOR, ListQueued { session }).await
     }
 
-    async fn cancel(&self, session: SessionId) -> RpcResult<()> {
+    async fn cancel(&self, ext: &Extensions, session: SessionId) -> RpcResult<()> {
+        self.authorize(ext, session).await?;
         ask::<Agents, _>(agent::AGENT_ACTOR, Cancel { session }).await
     }
 
-    async fn list_jobs(&self, session: SessionId) -> RpcResult<Vec<JobView>> {
+    async fn list_jobs(&self, ext: &Extensions, session: SessionId) -> RpcResult<Vec<JobView>> {
+        self.authorize(ext, session).await?;
         ask::<Jobs, _>(JOBS_ACTOR, ListJobs(session)).await
     }
 
-    async fn cancel_job(&self, session: SessionId, id: JobId) -> RpcResult<()> {
+    async fn cancel_job(&self, ext: &Extensions, session: SessionId, id: JobId) -> RpcResult<()> {
+        self.authorize(ext, session).await?;
         ask::<Jobs, _>(JOBS_ACTOR, CancelJob { session, id }).await
     }
 
-    async fn browser_screenshot(&self, session: SessionId) -> RpcResult<Option<String>> {
+    async fn list_terminals(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        descendants: Option<bool>,
+    ) -> RpcResult<Vec<TerminalSummary>> {
+        self.authorize(ext, session).await?;
+        let mut sessions = vec![session];
+        if descendants == Some(true) {
+            let agents = ask::<Agents, _>(agent::AGENT_ACTOR, ListAgents { session }).await?;
+            sessions.extend(agents.into_iter().map(|a| a.id));
+        }
+        ask::<Jobs, _>(JOBS_ACTOR, ListTerminals { sessions }).await
+    }
+
+    async fn pty_screen(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        job: JobId,
+        viewport: PtyViewport,
+        if_revision: Option<u64>,
+    ) -> RpcResult<PtyScreenReply> {
+        self.authorize(ext, session).await?;
+        lookup::<Jobs>(JOBS_ACTOR)?
+            .ask(PtyScreen {
+                session,
+                id: job,
+                viewport,
+                if_revision,
+            })
+            .await
+            .map_err(|e| match e {
+                SendError::HandlerError(busy) => failed(format!("terminal busy: {busy}")),
+                other => failed(other.to_string()),
+            })
+    }
+
+    async fn browser_screenshot(&self, ext: &Extensions, session: SessionId) -> RpcResult<Option<String>> {
+        self.authorize(ext, session).await?;
         ask::<Browsers, _>(BROWSER_ACTOR, Screenshot { session }).await
     }
 
@@ -1098,28 +1300,34 @@ impl ApiServer for Server {
         ask::<Computer, _>(COMPUTER_ACTOR, Permissions).await
     }
 
-    async fn compact(&self, session: SessionId, style: Option<CompactStyle>) -> RpcResult<u32> {
+    async fn compact(&self, ext: &Extensions, session: SessionId, style: Option<CompactStyle>) -> RpcResult<u32> {
+        self.authorize(ext, session).await?;
         ask::<Agents, _>(agent::AGENT_ACTOR, Compact { session, style }).await
     }
 
-    async fn undo(&self, session: SessionId) -> RpcResult<String> {
+    async fn undo(&self, ext: &Extensions, session: SessionId) -> RpcResult<String> {
+        self.authorize(ext, session).await?;
         ask::<Agents, _>(agent::AGENT_ACTOR, Undo { session }).await
     }
 
-    async fn redo(&self, session: SessionId) -> RpcResult<String> {
+    async fn redo(&self, ext: &Extensions, session: SessionId) -> RpcResult<String> {
+        self.authorize(ext, session).await?;
         ask::<Agents, _>(agent::AGENT_ACTOR, Redo { session }).await
     }
 
-    async fn context_items(&self, session: SessionId) -> RpcResult<ContextSnapshot> {
+    async fn context_items(&self, ext: &Extensions, session: SessionId) -> RpcResult<ContextSnapshot> {
+        self.authorize(ext, session).await?;
         ask::<Agents, _>(agent::AGENT_ACTOR, ContextItems { session }).await
     }
 
     async fn remove_context(
         &self,
+        ext: &Extensions,
         session: SessionId,
         expected_revision: String,
         targets: Vec<ContextTarget>,
     ) -> RpcResult<ContextRemoval> {
+        self.authorize(ext, session).await?;
         ask::<Agents, _>(
             agent::AGENT_ACTOR,
             RemoveContext {
@@ -1131,17 +1339,20 @@ impl ApiServer for Server {
         .await
     }
 
-    async fn regenerate(&self, session: SessionId, turn: i64) -> RpcResult<()> {
+    async fn regenerate(&self, ext: &Extensions, session: SessionId, turn: i64) -> RpcResult<()> {
+        self.authorize(ext, session).await?;
         ask::<Agents, _>(agent::AGENT_ACTOR, Regenerate { session, turn }).await
     }
 
     async fn edit_turn(
         &self,
+        ext: &Extensions,
         session: SessionId,
         turn: i64,
         text: String,
         files: Vec<PathBuf>,
     ) -> RpcResult<()> {
+        self.authorize(ext, session).await?;
         ask::<Agents, _>(
             agent::AGENT_ACTOR,
             EditTurn {
@@ -1156,11 +1367,13 @@ impl ApiServer for Server {
 
     async fn fork_session(
         &self,
+        ext: &Extensions,
         session: SessionId,
         through: Option<i64>,
         reply: Option<u32>,
     ) -> RpcResult<SessionId> {
-        ask::<Agents, _>(
+        let source = self.authorize(ext, session).await?;
+        let forked = ask::<Agents, _>(
             agent::AGENT_ACTOR,
             ForkSession {
                 session,
@@ -1168,7 +1381,14 @@ impl ApiServer for Server {
                 reply,
             },
         )
-        .await
+        .await?;
+        // A private fork is a new private root owned by the same connection
+        // (51 §4.1): admit its events to this peer only.
+        if source.retention == Retention::Private {
+            let owner = peer(ext)?.id();
+            self.private.write().insert(forked, (forked, owner));
+        }
+        Ok(forked)
     }
 
     async fn compact_style(&self) -> RpcResult<CompactStyle> {
@@ -1199,17 +1419,20 @@ impl ApiServer for Server {
         ask::<Agents, _>(agent::AGENT_ACTOR, ListSessions).await
     }
 
-    async fn list_agents(&self, session: SessionId) -> RpcResult<Vec<AgentInfo>> {
+    async fn list_agents(&self, ext: &Extensions, session: SessionId) -> RpcResult<Vec<AgentInfo>> {
+        self.authorize(ext, session).await?;
         ask::<Agents, _>(agent::AGENT_ACTOR, ListAgents { session }).await
     }
 
     async fn load_session(
         &self,
+        ext: &Extensions,
         session: SessionId,
         before: Option<i64>,
         limit: Option<u32>,
         settled_only: Option<bool>,
     ) -> RpcResult<Loaded> {
+        self.authorize(ext, session).await?;
         ask::<Agents, _>(
             agent::AGENT_ACTOR,
             LoadSession {
@@ -1222,20 +1445,113 @@ impl ApiServer for Server {
         .await
     }
 
-    async fn get_todos(&self, session: SessionId) -> RpcResult<TodoSnapshot> {
+    async fn get_todos(&self, ext: &Extensions, session: SessionId) -> RpcResult<TodoSnapshot> {
+        self.authorize(ext, session).await?;
         ask::<Agents, _>(agent::AGENT_ACTOR, GetTodos { session }).await
     }
 
-    async fn rename_session(&self, session: SessionId, title: String) -> RpcResult<()> {
+    async fn session_cost(&self, ext: &Extensions, session: SessionId) -> RpcResult<SessionCost> {
+        self.authorize(ext, session).await?;
+        ask::<Agents, _>(agent::AGENT_ACTOR, SessionCostQuery(session))
+            .await?
+            .ok_or_else(|| failed(format!("{session}: no accounting owner")))
+    }
+
+    async fn rename_session(&self, ext: &Extensions, session: SessionId, title: String) -> RpcResult<()> {
+        self.authorize(ext, session).await?;
         ask::<Agents, _>(agent::AGENT_ACTOR, RenameSession { session, title }).await
     }
 
-    async fn pin_session(&self, session: SessionId, pinned: bool) -> RpcResult<()> {
+    async fn pin_session(&self, ext: &Extensions, session: SessionId, pinned: bool) -> RpcResult<()> {
+        self.authorize(ext, session).await?;
         ask::<Agents, _>(agent::AGENT_ACTOR, PinSession { session, pinned }).await
     }
 
-    async fn delete_session(&self, session: SessionId) -> RpcResult<()> {
+    async fn delete_session(&self, ext: &Extensions, session: SessionId) -> RpcResult<()> {
+        self.authorize(ext, session).await?;
         ask::<Agents, _>(agent::AGENT_ACTOR, DeleteSession { session }).await
+    }
+
+    async fn create_session(
+        &self,
+        ext: &Extensions,
+        options: CreateSessionOptions,
+    ) -> RpcResult<SessionOpen> {
+        let peer = peer(ext)?;
+        let open = ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            CreateSession {
+                options,
+                peer: Some((peer.id(), peer.closed_token())),
+            },
+        )
+        .await?;
+        self.track(&open, peer.id());
+        Ok(open)
+    }
+
+    async fn resume_private(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        view: String,
+        lease_secret: String,
+    ) -> RpcResult<SessionOpen> {
+        let peer = peer(ext)?;
+        let open = ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            ResumePrivate {
+                session,
+                view,
+                lease_secret,
+                peer: (peer.id(), peer.closed_token()),
+            },
+        )
+        .await?;
+        self.track(&open, peer.id());
+        Ok(open)
+    }
+
+    async fn leave_session(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        lease_secret: Option<String>,
+    ) -> RpcResult<CloseResult> {
+        let peer = peer(ext)?.id();
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            LeaveSession {
+                session,
+                lease_secret,
+                peer,
+            },
+        )
+        .await
+    }
+
+    async fn set_session_project(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        project: Option<String>,
+    ) -> RpcResult<()> {
+        self.authorize(ext, session).await?;
+        ask::<Agents, _>(agent::AGENT_ACTOR, SetSessionProject { session, project }).await
+    }
+
+    async fn put_session_attachment(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        bytes: String,
+        file_ext: String,
+    ) -> RpcResult<PathBuf> {
+        // Ownership first: nothing is decoded or written for a session the
+        // caller may not touch (51 §8.1).
+        let authorized = self.authorize(ext, session).await?;
+        let bytes = decode_attachment(bytes, &file_ext)?;
+        save_blob(&bytes, &file_ext, &authorized.resources.root).map_err(|e| failed(e.to_string()))
     }
 
     async fn search(
@@ -1283,19 +1599,23 @@ impl ApiServer for Server {
         ask::<Agents, _>(agent::AGENT_ACTOR, SetAwsProfile { profile }).await
     }
 
-    async fn set_model(&self, session: Option<SessionId>, model: String) -> RpcResult<ModelInfo> {
+    async fn set_model(&self, ext: &Extensions, session: Option<SessionId>, model: String) -> RpcResult<ModelInfo> {
+        self.authorize_opt(ext, session).await?;
         ask::<Agents, _>(agent::AGENT_ACTOR, SetModel { session, model }).await
     }
 
     async fn set_effort(
         &self,
+        ext: &Extensions,
         session: Option<SessionId>,
         effort: Option<String>,
     ) -> RpcResult<()> {
+        self.authorize_opt(ext, session).await?;
         ask::<Agents, _>(agent::AGENT_ACTOR, SetEffort { session, effort }).await
     }
 
-    async fn list_mcp(&self, session: Option<SessionId>) -> RpcResult<Vec<McpServer>> {
+    async fn list_mcp(&self, ext: &Extensions, session: Option<SessionId>) -> RpcResult<Vec<McpServer>> {
+        self.authorize_opt(ext, session).await?;
         ask::<Mcp, _>(tools::MCP_ACTOR, ListServers { session }).await
     }
 
@@ -1314,10 +1634,12 @@ impl ApiServer for Server {
 
     async fn set_mcp_hidden(
         &self,
+        ext: &Extensions,
         session: SessionId,
         tools: Vec<String>,
         hidden: bool,
     ) -> RpcResult<()> {
+        self.authorize(ext, session).await?;
         ask::<ToolRegistry, _>(
             tools::REGISTRY_ACTOR,
             SetHidden {
@@ -1331,40 +1653,49 @@ impl ApiServer for Server {
 
     async fn set_approvals(
         &self,
+        ext: &Extensions,
         session: Option<SessionId>,
         enabled: bool,
     ) -> RpcResult<ApprovalsState> {
+        self.authorize_opt(ext, session).await?;
         ask::<ToolRegistry, _>(tools::REGISTRY_ACTOR, SetApprovals { session, enabled }).await
     }
 
-    async fn get_communication(&self, session: Option<SessionId>) -> RpcResult<CommunicationState> {
+    async fn get_communication(&self, ext: &Extensions, session: Option<SessionId>) -> RpcResult<CommunicationState> {
+        self.authorize_opt(ext, session).await?;
         ask::<Agents, _>(agent::AGENT_ACTOR, GetCommunication { session }).await
     }
 
     async fn set_communication(
         &self,
+        ext: &Extensions,
         session: Option<SessionId>,
         enabled: bool,
     ) -> RpcResult<CommunicationState> {
+        self.authorize_opt(ext, session).await?;
         ask::<Agents, _>(agent::AGENT_ACTOR, SetCommunication { session, enabled }).await
     }
 
     async fn set_peer_scope(
         &self,
+        ext: &Extensions,
         root: SessionId,
         scope: PeerScope,
         alias: Option<String>,
     ) -> RpcResult<CommunicationState> {
+        self.authorize(ext, root).await?;
         ask::<Agents, _>(agent::AGENT_ACTOR, SetPeerScope { root, scope, alias }).await
     }
 
     async fn list_peers(
         &self,
+        ext: &Extensions,
         session: SessionId,
         query: Option<String>,
         cursor: Option<String>,
         limit: Option<u16>,
     ) -> RpcResult<PeerPage> {
+        self.authorize(ext, session).await?;
         ask::<Agents, _>(
             agent::AGENT_ACTOR,
             ListPeers {
@@ -1377,17 +1708,20 @@ impl ApiServer for Server {
         .await
     }
 
-    async fn peer_message(&self, session: SessionId, id: Uuid) -> RpcResult<PeerRecord> {
+    async fn peer_message(&self, ext: &Extensions, session: SessionId, id: Uuid) -> RpcResult<PeerRecord> {
+        self.authorize(ext, session).await?;
         ask::<Agents, _>(agent::AGENT_ACTOR, GetPeerMessage { session, id }).await
     }
 
     async fn list_peer_messages(
         &self,
+        ext: &Extensions,
         session: SessionId,
         cursor: Option<String>,
         limit: Option<u16>,
         pending_only: bool,
     ) -> RpcResult<PeerMessagePage> {
+        self.authorize(ext, session).await?;
         ask::<Agents, _>(
             agent::AGENT_ACTOR,
             ListPeerMessages {
@@ -1402,10 +1736,12 @@ impl ApiServer for Server {
 
     async fn answer_peer_request(
         &self,
+        ext: &Extensions,
         session: SessionId,
         reply_to: Uuid,
         text: String,
     ) -> RpcResult<PeerReceipt> {
+        self.authorize(ext, session).await?;
         ask::<Agents, _>(
             agent::AGENT_ACTOR,
             AnswerPeerRequest {
@@ -1417,7 +1753,8 @@ impl ApiServer for Server {
         .await
     }
 
-    async fn get_prompt(&self, session: Option<SessionId>) -> RpcResult<String> {
+    async fn get_prompt(&self, ext: &Extensions, session: Option<SessionId>) -> RpcResult<String> {
+        self.authorize_opt(ext, session).await?;
         ask::<Agents, _>(agent::AGENT_ACTOR, ShowPrompt { session }).await
     }
 
@@ -1431,10 +1768,12 @@ impl ApiServer for Server {
 
     async fn use_skill(
         &self,
+        ext: &Extensions,
         session: Option<SessionId>,
         name: String,
         args: String,
     ) -> RpcResult<SessionId> {
+        self.authorize_opt(ext, session).await?;
         let session = match session {
             Some(s) => s,
             None => owner_root().await?,
@@ -1563,7 +1902,8 @@ impl ApiServer for Server {
         send(&knowledge()?, Restore { id, commit }).await
     }
 
-    async fn knowledge_harvest(&self, session: SessionId) -> RpcResult<HarvestResult> {
+    async fn knowledge_harvest(&self, ext: &Extensions, session: SessionId) -> RpcResult<HarvestResult> {
+        self.authorize(ext, session).await?;
         ask::<Agents, _>(agent::AGENT_ACTOR, Harvest { session }).await
     }
 
@@ -1759,7 +2099,8 @@ impl ApiServer for Server {
         send(&update_actor()?, update::Status).await
     }
 
-    async fn speak(&self, session: SessionId, text: String) -> RpcResult<SpeechId> {
+    async fn speak(&self, ext: &Extensions, session: SessionId, text: String) -> RpcResult<SpeechId> {
+        self.authorize(ext, session).await?;
         send(&voice()?, voice::Speak { session, text }).await
     }
 
@@ -1803,9 +2144,11 @@ impl ApiServer for Server {
 
     async fn list_artifacts(
         &self,
+        ext: &Extensions,
         session: Option<SessionId>,
         descendants: Option<bool>,
     ) -> RpcResult<Vec<artifact::Artifact>> {
+        self.authorize_opt(ext, session).await?;
         send(
             &artifact()?,
             artifact::List {
@@ -1896,31 +2239,28 @@ impl ApiServer for Server {
     }
 
     async fn put_attachment(&self, bytes: String, ext: String) -> RpcResult<PathBuf> {
-        let (ext, cap) = match ext.as_str() {
-            "png" | "jpg" | "jpeg" | "gif" | "webp" => (ext.as_str(), MAX_IMAGE),
-            "pdf" => ("pdf", MAX_PDF),
-            "m4a" | "mp4" | "webm" | "ogg" | "opus" | "mp3" | "wav" => (ext.as_str(), MAX_AUDIO),
-            _ => return Err(failed(format!("unsupported attachment type .{ext}"))),
-        };
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(bytes)
-            .map_err(|e| failed(format!("bad base64: {e}")))?;
-        if bytes.len() > cap {
-            return Err(failed(format!(
-                "attachment is {} bytes; the cap for .{ext} is {cap}",
-                bytes.len()
-            )));
-        }
-        save_blob(&bytes, ext, &self.rt.data_dir).map_err(|e| failed(e.to_string()))
+        let bytes = decode_attachment(bytes, &ext)?;
+        save_blob(&bytes, &ext, &self.rt.data_dir).map_err(|e| failed(e.to_string()))
     }
 
-    async fn get_attachment(&self, path: PathBuf) -> RpcResult<String> {
+    async fn get_attachment(
+        &self,
+        ext: &Extensions,
+        path: PathBuf,
+        session: Option<SessionId>,
+    ) -> RpcResult<String> {
+        // A private tree's files live under its scratch root, never under
+        // `data_dir`: without the owning session they are not served at all.
+        let root = match session {
+            Some(s) => self.authorize(ext, s).await?.resources.root.clone(),
+            None => self.rt.data_dir.clone(),
+        };
         let real =
             std::fs::canonicalize(&path).map_err(|e| failed(format!("{}: {e}", path.display())))?;
         let allowed = ["attachments", "browser", "computer", "artifacts"]
             .iter()
             .any(|d| {
-                std::fs::canonicalize(self.rt.data_dir.join(d))
+                std::fs::canonicalize(root.join(d))
                     .is_ok_and(|dir| real.starts_with(dir))
             });
         if !allowed {
@@ -1935,6 +2275,7 @@ impl ApiServer for Server {
     async fn subscribe_events(
         &self,
         pending: PendingSubscriptionSink,
+        ext: &Extensions,
         session: Option<SessionId>,
         descendants: Option<bool>,
     ) -> SubscriptionResult {
@@ -1942,21 +2283,47 @@ impl ApiServer for Server {
         // in between is missed; a child in both the snapshot and the feed is
         // inserted twice, harmlessly.
         let mut rx = self.events.subscribe();
-        let mut tree: Option<HashSet<String>> = match (session, descendants) {
-            (Some(root), Some(true)) => {
-                let mut set: HashSet<String> = self
-                    .list_agents(root)
-                    .await?
-                    .into_iter()
-                    .map(|a| a.id.to_string())
-                    .collect();
-                set.insert(root.to_string());
-                Some(set)
+        // Admission first; a refusal is answered as the call's error (the
+        // peer gate's `-32002`), not jsonrpsee's anonymous internal error.
+        let admit = async {
+            let peer = peer(ext)?.id();
+            // Private trees opened elsewhere (another process's server, before
+            // this map existed) become known here; the filter fails closed on
+            // every member for everyone but its owner (51 §4.2).
+            if let Ok(trees) = ask::<Agents, _>(agent::AGENT_ACTOR, PrivateTrees).await {
+                self.private
+                    .write()
+                    .extend(trees.into_iter().map(|(member, root, owner)| (member, (root, owner))));
             }
-            _ => None,
+            let tree: Option<HashSet<String>> = match (session, descendants) {
+                (Some(root), Some(true)) => {
+                    let mut set: HashSet<String> = self
+                        .list_agents(ext, root)
+                        .await?
+                        .into_iter()
+                        .map(|a| a.id.to_string())
+                        .collect();
+                    set.insert(root.to_string());
+                    Some(set)
+                }
+                (Some(root), _) => {
+                    self.authorize(ext, root).await?;
+                    None
+                }
+                _ => None,
+            };
+            RpcResult::Ok((peer, tree))
+        };
+        let (peer, mut tree) = match admit.await {
+            Ok(v) => v,
+            Err(e) => {
+                pending.reject(e).await;
+                return Ok(());
+            }
         };
         let sink = pending.accept().await?;
         let session = session.map(|s| s.to_string());
+        let private = self.private.clone();
         // Replay in-flight asks so a client that subscribes (or reconnects over
         // the relay) *after* the AskRequested broadcast still gets the card,
         // rather than a card that never arrives and a tool that blocks until
@@ -1968,7 +2335,7 @@ impl ApiServer for Server {
                 let Ok(v) = serde_json::to_value(&a) else {
                     continue;
                 };
-                if !wanted(&v, session.as_deref(), tree.as_mut()) {
+                if !wanted(&v, session.as_deref(), tree.as_mut()) || !admitted(&v, peer, &private) {
                     continue;
                 }
                 if let Ok(raw) = serde_json::value::to_raw_value(&v) {
@@ -1982,7 +2349,9 @@ impl ApiServer for Server {
                     _ = sink.closed() => return,
                     r = rx.recv() => match r {
                         Ok(ev) => {
-                            if !wanted(&ev, session.as_deref(), tree.as_mut()) {
+                            if !wanted(&ev, session.as_deref(), tree.as_mut())
+                                || !admitted(&ev, peer, &private)
+                            {
                                 continue;
                             }
                             serde_json::value::to_raw_value(&*ev)
@@ -2001,6 +2370,38 @@ impl ApiServer for Server {
         });
         Ok(())
     }
+}
+
+/// Does `peer` get `ev` past private ownership (51 §4.2)? An event naming a
+/// private member in `session`, `parent` or `child` reaches only that tree's
+/// owner; a `SubagentSpawned` under a private parent enrols `child` first so
+/// its own later events are filtered too. Events naming no known member pass:
+/// durable trees are not tracked.
+fn admitted(ev: &serde_json::Value, peer: u64, private: &PrivateMap) -> bool {
+    let id = |k: &str| {
+        ev.get(k)
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<SessionId>().ok())
+    };
+    if ev.get("type").and_then(|t| t.as_str()) == Some("SubagentSpawned")
+        && let (Some(parent), Some(child)) = (id("parent"), id("child"))
+    {
+        let known = private
+            .read()
+            .get(&parent)
+            .copied();
+        if let Some((root, owner)) = known {
+            private
+                .write()
+                .insert(child, (root, owner));
+            return owner == peer;
+        }
+    }
+    let map = private.read();
+    ["session", "parent", "child"]
+        .into_iter()
+        .filter_map(id)
+        .all(|s| map.get(&s).is_none_or(|&(_, owner)| owner == peer))
 }
 
 /// Does a subscription on `session` forward `ev`? With `tree` (descendants
@@ -2056,6 +2457,57 @@ mod tests {
         assert!(wanted(&root, Some("c"), Some(&mut tree)));
         assert!(!wanted(&other, Some("c"), None));
         assert!(!wanted(&other, Some("c"), Some(&mut tree)));
+    }
+
+    /// Private events reach their owner only (51 §4.2): a member's event is
+    /// dropped for every other peer; `SubagentSpawned` under a private parent
+    /// enrols the child so its own events are filtered too; events naming no
+    /// private member pass for everyone.
+    #[test]
+    fn private_events_reach_only_their_owner() {
+        let (p, c, d) = (SessionId::new(), SessionId::new(), SessionId::new());
+        let private: PrivateMap = Default::default();
+        private.write().insert(p, (p, 7));
+        let title = serde_json::json!({ "type": "TitleChanged", "session": p, "title": "x" });
+        assert!(admitted(&title, 7, &private));
+        assert!(!admitted(&title, 8, &private));
+
+        let spawned = serde_json::json!({ "type": "SubagentSpawned", "parent": p, "child": c });
+        assert!(!admitted(&spawned, 8, &private));
+        assert!(admitted(&spawned, 7, &private));
+        assert_eq!(private.read().get(&c), Some(&(p, 7)));
+        let child = serde_json::json!({ "type": "TextDelta", "session": c, "text": "hi" });
+        assert!(admitted(&child, 7, &private));
+        assert!(!admitted(&child, 8, &private));
+
+        let durable = serde_json::json!({ "type": "TitleChanged", "session": d, "title": "y" });
+        let none = serde_json::json!({ "type": "Lagged", "count": 1 });
+        for peer in [7, 8] {
+            assert!(admitted(&durable, peer, &private));
+            assert!(admitted(&none, peer, &private));
+        }
+    }
+
+    /// Reads and mutations on a session need an authenticated connection
+    /// before anything else is consulted; a subscription is no exception.
+    #[tokio::test]
+    async fn session_calls_need_an_authenticated_peer() {
+        let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
+        let methods: jsonrpsee::Methods = Server::new(rt).into_rpc().into();
+        let id = SessionId::new();
+        for req in [
+            format!(r#"{{"jsonrpc":"2.0","method":"get_todos","params":["{id}"],"id":1}}"#),
+            format!(r#"{{"jsonrpc":"2.0","method":"session_cost","params":["{id}"],"id":1}}"#),
+            format!(
+                r#"{{"jsonrpc":"2.0","method":"put_session_attachment","params":["{id}","AA==","png"],"id":1}}"#
+            ),
+            r#"{"jsonrpc":"2.0","method":"create_session","params":[{}],"id":1}"#.to_owned(),
+            r#"{"jsonrpc":"2.0","method":"subscribe_events","params":[null,null],"id":1}"#.to_owned(),
+        ] {
+            let (resp, _) = methods.raw_json_request(&req, 1).await.unwrap();
+            let v: serde_json::Value = serde_json::from_str(resp.get()).unwrap();
+            assert_eq!(v["error"]["code"].as_i64(), Some(i64::from(UNAUTHORIZED)), "{req}");
+        }
     }
 
     /// The JSON-RPC error code of a raw `app_close` on `methods`.

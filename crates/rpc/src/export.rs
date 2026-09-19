@@ -176,7 +176,14 @@ async fn export_bindings() {
         agent::SessionOpen,
         agent::CloseResult,
         agent::CleanupStatus,
-        tools::Retention
+        tools::Retention,
+        agent::SessionCost,
+        agent::CostBucket,
+        agent::ChildCost,
+        agent::Money,
+        agent::CostScope,
+        agent::Coverage,
+        agent::TokenTotals
     );
 
     use crate::ApiServer;

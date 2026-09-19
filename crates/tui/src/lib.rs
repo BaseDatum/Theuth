@@ -82,10 +82,17 @@ impl runtime::Plugin for TuiPlugin {
         rt.subscribe::<Bridge, agent::PeerDelivered>(&bridge).await;
         rt.subscribe::<Bridge, a2a::A2aChanged>(&bridge).await;
         let api = Arc::new(Server::new(rt.clone()));
+        // The TUI is the one in-process caller; one peer for its lifetime so
+        // `with_extensions` methods see a stable, authenticated connection.
+        let ext = Arc::new({
+            let mut e = jsonrpsee::Extensions::new();
+            e.insert(link::RpcPeer::internal());
+            e
+        });
         // The one startup fact the runtime does not hand out as a config
         // section: whether the app plugin runs (46 §9, `Info.app_enabled`).
         let app_enabled = api.info().await.is_ok_and(|i| i.app_enabled);
-        tokio::spawn(run_commands(api, commands_rx, events_tx));
+        tokio::spawn(run_commands(api, ext, commands_rx, events_tx));
 
         let default_model = rt.section::<AgentConfig>("agent").unwrap_or_default().model;
         let approvals = rt
@@ -178,21 +185,28 @@ forward!(
 /// own task so a slow call never delays the next one.
 async fn run_commands(
     api: Arc<Server>,
+    ext: Arc<jsonrpsee::Extensions>,
     mut rx: UnboundedReceiver<Command>,
     tx: UnboundedSender<UiEvent>,
 ) {
     while let Some(cmd) = rx.recv().await {
         let tx = tx.clone();
         let api = api.clone();
+        let ext = ext.clone();
         tokio::spawn(async move {
-            if let Err(e) = execute(&api, cmd, &tx).await {
+            if let Err(e) = execute(&api, &ext, cmd, &tx).await {
                 let _ = tx.send(UiEvent::Error(format!("{e:#}")));
             }
         });
     }
 }
 
-async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> anyhow::Result<()> {
+async fn execute(
+    api: &Server,
+    ext: &jsonrpsee::Extensions,
+    cmd: Command,
+    tx: &UnboundedSender<UiEvent>,
+) -> anyhow::Result<()> {
     let reply = match cmd {
         Command::Resolve { id, decision } => {
             if !msg(api.resolve_approval(id, decision).await)? {
@@ -210,34 +224,34 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             session,
             text,
             files,
-        } => UiEvent::SessionCreated(msg(api.send_input(session, text, files).await)?),
+        } => UiEvent::SessionCreated(msg(api.send_input(ext, session, text, files).await)?),
         Command::Steer {
             session,
             id,
             text,
             files,
         } => {
-            msg(api.steer(session, text, Some(id), files).await)?;
+            msg(api.steer(ext, session, text, Some(id), files).await)?;
             return Ok(());
         }
         Command::Withdraw { session, id } => UiEvent::Withdrawn {
             id,
-            text: msg(api.withdraw(session, id).await)?,
+            text: msg(api.withdraw(ext, session, id).await)?,
         },
         // The transcript is reloaded here, not from the UI: commands run
         // concurrently and the notice must land before the new history.
         Command::Undo(session) => {
-            let _ = tx.send(UiEvent::Undone(msg(api.undo(session).await)?));
+            let _ = tx.send(UiEvent::Undone(msg(api.undo(ext, session).await)?));
             UiEvent::History(
                 session,
-                msg(api.load_session(session, None, None, None).await)?,
+                msg(api.load_session(ext, session, None, None, None).await)?,
             )
         }
         Command::Redo(session) => {
-            let _ = tx.send(UiEvent::Redone(msg(api.redo(session).await)?));
+            let _ = tx.send(UiEvent::Redone(msg(api.redo(ext, session).await)?));
             UiEvent::History(
                 session,
-                msg(api.load_session(session, None, None, None).await)?,
+                msg(api.load_session(ext, session, None, None, None).await)?,
             )
         }
         // Same shape as undo: the notice, then the settled transcript (48
@@ -249,7 +263,7 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             targets,
         } => {
             match api
-                .remove_context(session, expected_revision, targets)
+                .remove_context(ext, session, expected_revision, targets)
                 .await
             {
                 Ok(r) => {
@@ -261,24 +275,24 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             }
             UiEvent::Refreshed(
                 session,
-                msg(api.load_session(session, None, None, Some(true)).await)?,
+                msg(api.load_session(ext, session, None, None, Some(true)).await)?,
             )
         }
         Command::ContextItems { session, category } => UiEvent::ContextItems {
             session,
             category,
-            snapshot: msg(api.context_items(session).await)?,
+            snapshot: msg(api.context_items(ext, session).await)?,
         },
         // The UI already truncated its transcript at the turn (29 §3); the
         // new turn streams back through ordinary events. On refusal, the
         // error lands first, then the transcript reloads to undo the cut.
-        Command::Regenerate { session, turn } => match api.regenerate(session, turn).await {
+        Command::Regenerate { session, turn } => match api.regenerate(ext, session, turn).await {
             Ok(()) => return Ok(()),
             Err(e) => {
                 let _ = tx.send(UiEvent::Error(e.message().to_owned()));
                 UiEvent::History(
                     session,
-                    msg(api.load_session(session, None, None, None).await)?,
+                    msg(api.load_session(ext, session, None, None, None).await)?,
                 )
             }
         },
@@ -286,25 +300,25 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             session,
             turn,
             text,
-        } => match api.edit_turn(session, turn, text, Vec::new()).await {
+        } => match api.edit_turn(ext, session, turn, text, Vec::new()).await {
             Ok(()) => return Ok(()),
             Err(e) => {
                 let _ = tx.send(UiEvent::Error(e.message().to_owned()));
                 UiEvent::History(
                     session,
-                    msg(api.load_session(session, None, None, None).await)?,
+                    msg(api.load_session(ext, session, None, None, None).await)?,
                 )
             }
         },
         Command::Fork { session, through } => {
-            let id = msg(api.fork_session(session, through, None).await)?;
-            UiEvent::Forked(id, msg(api.load_session(id, None, None, None).await)?)
+            let id = msg(api.fork_session(ext, session, through, None).await)?;
+            UiEvent::Forked(id, msg(api.load_session(ext, id, None, None, None).await)?)
         }
         Command::Cancel(session) => {
-            msg(api.cancel(session).await)?;
+            msg(api.cancel(ext, session).await)?;
             return Ok(());
         }
-        Command::ListJobs(session) => UiEvent::Jobs(msg(api.list_jobs(session).await)?),
+        Command::ListJobs(session) => UiEvent::Jobs(msg(api.list_jobs(ext, session).await)?),
         Command::ListSchedules => UiEvent::Schedules(msg(api.list_schedules().await)?),
         Command::FireSchedule(name) => {
             let id = msg(api.fire_schedule(name.clone()).await)?;
@@ -328,11 +342,11 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
         }
         Command::ComputerStatus => UiEvent::Computer(msg(api.computer_permissions().await)?),
         Command::CancelJob { session, id } => {
-            msg(api.cancel_job(session, tools::JobId(id.clone())).await)?;
+            msg(api.cancel_job(ext, session, tools::JobId(id.clone())).await)?;
             UiEvent::Info(format!("killed {id}"))
         }
         Command::Compact { session, style } => {
-            let epoch = msg(api.compact(session, style).await)?;
+            let epoch = msg(api.compact(ext, session, style).await)?;
             UiEvent::Info(match style {
                 // The `Compacted` event wipes the transcript and announces it.
                 Some(CompactStyle::Clear) => return Ok(()),
@@ -361,12 +375,12 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
         // Every search reply carries the view generation that asked, errors
         // included, so a superseded request can never land (49 §6.1).
         Command::Search(search::Request { generation, kind }) => {
-            UiEvent::Search(generation, search_request(api, kind).await)
+            UiEvent::Search(generation, search_request(api, ext, kind).await)
         }
-        Command::ListAgents(session) => UiEvent::Agents(msg(api.list_agents(session).await)?),
+        Command::ListAgents(session) => UiEvent::Agents(msg(api.list_agents(ext, session).await)?),
         // A failed read must not leave the card looking current: the plan is
         // marked stale first, then the error line explains why (47 §5.4).
-        Command::GetTodos(session) => match msg(api.get_todos(session).await) {
+        Command::GetTodos(session) => match msg(api.get_todos(ext, session).await) {
             Ok(s) => UiEvent::Todos(session, Some(s)),
             Err(e) => {
                 let _ = tx.send(UiEvent::Todos(session, None));
@@ -378,7 +392,7 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             settled_only,
         } => {
             let loaded = msg(api
-                .load_session(session, None, None, Some(settled_only))
+                .load_session(ext, session, None, None, Some(settled_only))
                 .await)?;
             if settled_only {
                 UiEvent::Refreshed(session, loaded)
@@ -388,13 +402,13 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
         }
         Command::ListModels => UiEvent::Models(msg(api.list_models().await)?),
         Command::SetModel { session, model } => {
-            UiEvent::ModelSet(msg(api.set_model(session, model).await)?)
+            UiEvent::ModelSet(msg(api.set_model(ext, session, model).await)?)
         }
         Command::SetEffort { session, effort } => {
-            msg(api.set_effort(session, effort.clone()).await)?;
+            msg(api.set_effort(ext, session, effort.clone()).await)?;
             UiEvent::EffortSet(effort)
         }
-        Command::ListMcp(session) => UiEvent::Mcp(msg(api.list_mcp(session).await)?),
+        Command::ListMcp(session) => UiEvent::Mcp(msg(api.list_mcp(ext, session).await)?),
         Command::McpStatus => UiEvent::McpProgress(msg(api.mcp_status().await)?),
         Command::SetGate {
             server,
@@ -404,7 +418,7 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
         } => {
             msg(api.set_mcp_gate(server, tool, gate).await)?;
             // Re-list here, not from the UI: commands run concurrently.
-            UiEvent::Mcp(msg(api.list_mcp(session).await)?)
+            UiEvent::Mcp(msg(api.list_mcp(ext, session).await)?)
         }
         Command::SetHidden {
             session,
@@ -419,20 +433,20 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
                     s
                 }
             };
-            msg(api.set_mcp_hidden(session, tools, hidden).await)?;
-            UiEvent::Mcp(msg(api.list_mcp(Some(session)).await)?)
+            msg(api.set_mcp_hidden(ext, session, tools, hidden).await)?;
+            UiEvent::Mcp(msg(api.list_mcp(ext, Some(session)).await)?)
         }
         Command::SetApprovals { session, enabled } => {
-            UiEvent::Approvals(msg(api.set_approvals(session, enabled).await)?)
+            UiEvent::Approvals(msg(api.set_approvals(ext, session, enabled).await)?)
         }
-        Command::ShowPrompt(session) => UiEvent::Prompt(msg(api.get_prompt(session).await)?),
+        Command::ShowPrompt(session) => UiEvent::Prompt(msg(api.get_prompt(ext, session).await)?),
         Command::ListSkills => UiEvent::Skills(msg(api.list_skills().await)?),
         Command::LoadSkill(name) => UiEvent::Skill(msg(api.load_skill(name).await)?),
         Command::UseSkill {
             session,
             name,
             args,
-        } => UiEvent::SessionCreated(msg(api.use_skill(session, name, args).await)?),
+        } => UiEvent::SessionCreated(msg(api.use_skill(ext, session, name, args).await)?),
         Command::AddSkillRepo(url) => {
             UiEvent::SkillsAdded(msg(api.add_skill_repo(url, None).await)?)
         }
@@ -471,7 +485,7 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
         Command::KnowledgeRestore { id, commit } => {
             UiEvent::KnowledgeRestored(msg(api.knowledge_restore(id, commit).await)?)
         }
-        Command::Harvest(session) => UiEvent::Harvested(msg(api.knowledge_harvest(session).await)?),
+        Command::Harvest(session) => UiEvent::Harvested(msg(api.knowledge_harvest(ext, session).await)?),
         Command::AddMcp { name, entry } => {
             UiEvent::McpAdded(msg(api.add_mcp_server(name, entry).await)?)
         }
@@ -502,7 +516,7 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
                 })
                 .collect();
             rows.extend(
-                msg(api.list_mcp(None).await)?
+                msg(api.list_mcp(ext, None).await)?
                     .into_iter()
                     .filter(|s| s.auth != McpAuth::None)
                     .map(|s| LoginRow {
@@ -600,7 +614,7 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             pick,
             apps,
         } => {
-            let mut items = msg(api.list_artifacts(Some(session), Some(true)).await)?;
+            let mut items = msg(api.list_artifacts(ext, Some(session), Some(true)).await)?;
             if apps {
                 items.retain(|a| a.kind == artifact::Kind::App);
             }
@@ -645,7 +659,7 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             return Ok(());
         }
         Command::GetCommunication(session) => {
-            UiEvent::Communication(msg(api.get_communication(session).await)?)
+            UiEvent::Communication(msg(api.get_communication(ext, session).await)?)
         }
         // The shown session's view, not the switched one's: a global flip
         // is read back through the session it affects.
@@ -654,32 +668,32 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             enabled,
             view,
         } => {
-            let state = msg(api.set_communication(session, enabled).await)?;
+            let state = msg(api.set_communication(ext, session, enabled).await)?;
             if session == view {
                 UiEvent::Communication(state)
             } else {
-                UiEvent::Communication(msg(api.get_communication(view).await)?)
+                UiEvent::Communication(msg(api.get_communication(ext, view).await)?)
             }
         }
         Command::SetPeerScope { root, scope, alias } => {
-            UiEvent::Communication(msg(api.set_peer_scope(root, scope, alias).await)?)
+            UiEvent::Communication(msg(api.set_peer_scope(ext, root, scope, alias).await)?)
         }
         // Off is a reason, not an empty page: it lands in the menu.
         Command::ListPeers(session) => UiEvent::Peers(
             session,
-            api.list_peers(session, None, None, None)
+            api.list_peers(ext, session, None, None, None)
                 .await
                 .map_err(|e| e.message().to_owned()),
         ),
         Command::ListPeerRequests(session) => UiEvent::PeerRequests(
             session,
-            msg(api.list_peer_messages(session, None, None, true).await)?,
+            msg(api.list_peer_messages(ext, session, None, None, true).await)?,
         ),
         Command::AnswerPeerRequest {
             session,
             reply_to,
             text,
-        } => UiEvent::PeerAnswered(msg(api.answer_peer_request(session, reply_to, text).await)?),
+        } => UiEvent::PeerAnswered(msg(api.answer_peer_request(ext, session, reply_to, text).await)?),
         Command::A2aStatus => UiEvent::A2a(msg(api.a2a_status().await)?),
         Command::ReloadA2a => UiEvent::A2a(msg(api.reload_a2a().await)?),
     };
@@ -689,7 +703,11 @@ async fn execute(api: &Server, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
 
 /// One `/search` request against the API (49 §6–7). Failures are the reply's
 /// `Err`, never a bare `UiEvent::Error`: the menu needs the identity.
-async fn search_request(api: &Server, kind: search::RequestKind) -> search::Reply {
+async fn search_request(
+    api: &Server,
+    ext: &jsonrpsee::Extensions,
+    kind: search::RequestKind,
+) -> search::Reply {
     use search::{Reply, RequestKind};
     let text = |e: jsonrpsee::types::ErrorObjectOwned| e.message().to_owned();
     match kind {
@@ -747,6 +765,7 @@ async fn search_request(api: &Server, kind: search::RequestKind) -> search::Repl
             seq,
             result: api
                 .load_session(
+                    ext,
                     session,
                     Some(seq.saturating_add(1)),
                     Some(search::PAGE),

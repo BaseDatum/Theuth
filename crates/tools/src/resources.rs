@@ -6,8 +6,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use runtime::SessionId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use tokio_util::sync::CancellationToken;
 
 /// What happens to a root tree's data when it closes.
 #[derive(
@@ -34,6 +36,7 @@ pub enum Retention {
 pub struct SessionResources {
     /// Data dir (durable) or scratch dir (private).
     pub root: PathBuf,
+    /// Whether `root` is the data dir or a scratch dir that dies on close.
     pub retention: Retention,
     /// Lifecycle generation that admitted the holder; a close bumps it, so a
     /// writer that outlived its generation can tell.
@@ -55,6 +58,7 @@ impl SessionResources {
         Arc::new(Self::durable(data_dir))
     }
 
+    /// `true` when `retention` is [`Retention::Private`].
     pub fn is_private(&self) -> bool {
         self.retention == Retention::Private
     }
@@ -63,5 +67,64 @@ impl SessionResources {
     /// spill, jobs, …).
     pub fn dir(&self, sub: &str) -> PathBuf {
         self.root.join(sub)
+    }
+}
+
+/// A root tree is open (51 §4.4): every owner that registered an `opened`
+/// recipient learns which sessions write under `resources`. `sessions` is
+/// the root plus the descendants known so far; re-sent as a superset when
+/// more appear, so handlers must be idempotent.
+#[derive(Clone, Debug)]
+pub struct TreeOpened {
+    /// The tree's root session.
+    pub root: SessionId,
+    /// Root plus known descendants.
+    pub sessions: Vec<SessionId>,
+    /// Where the tree's owners write.
+    pub resources: Arc<SessionResources>,
+}
+
+/// The close barrier (51 §4.4): every owner drops what it holds for the
+/// `subtree` and replies [`CloseAck`]. `cancel` fires when the closer stops
+/// waiting; work past it is best effort and its ack is not read.
+#[derive(Clone, Debug)]
+pub struct CloseTree {
+    /// Every session of the closing tree, root included.
+    pub subtree: Vec<SessionId>,
+    /// The generation being closed; a later one is not this close.
+    pub generation: u64,
+    /// The closer stopped waiting.
+    pub cancel: CancellationToken,
+}
+
+/// One owner's answer to [`CloseTree`]: `ok` when nothing of the subtree
+/// remains under it; `detail` says what could not be verified.
+#[derive(Clone, Debug, kameo::Reply)]
+pub struct CloseAck {
+    /// The participant's registered name.
+    pub owner: String,
+    /// Nothing of the subtree remains under the owner.
+    pub ok: bool,
+    /// What could not be verified or removed.
+    pub detail: Option<String>,
+}
+
+impl CloseAck {
+    /// `ok: true`, no detail.
+    pub fn ok(owner: impl Into<String>) -> Self {
+        Self {
+            owner: owner.into(),
+            ok: true,
+            detail: None,
+        }
+    }
+
+    /// `ok: false` with `detail`.
+    pub fn failed(owner: impl Into<String>, detail: impl Into<String>) -> Self {
+        Self {
+            owner: owner.into(),
+            ok: false,
+            detail: Some(detail.into()),
+        }
     }
 }

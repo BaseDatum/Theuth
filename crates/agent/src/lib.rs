@@ -66,8 +66,11 @@ pub use user::{
     UserSink,
 };
 pub use lifecycle::{
-    CleanupStatus, CloseAck, CloseParticipants, CloseResult, CloseTree, CreateSessionOptions,
-    PrivateOwner, RegisterCloseParticipant, SessionOpen,
+    CleanupStatus, CloseAck, CloseResult, CloseTree, CreateSessionOptions, PrivateOwner,
+    SessionOpen,
+};
+pub use lifecycle::{
+    Authorize, Authorized, CreateSession, LeaveSession, PrivateTrees, ResumePrivate, TreeOpened,
 };
 pub use tools::Retention;
 pub use cost::{
@@ -1315,6 +1318,17 @@ pub enum AgentEvent {
         #[cfg_attr(feature = "ts", ts(type = "number"))]
         revision: u64,
     },
+    /// A private root tree is closing (51 §4.4): every member's data is
+    /// being torn down under `generation`; owners fence late writes on it.
+    /// `SessionDeleted` follows per member once cleanup ends.
+    SessionClosing {
+        /// Root session.
+        session: SessionId,
+        /// Lifecycle generation being torn down; writers holding an older
+        /// one must drop their work.
+        #[cfg_attr(feature = "ts", ts(type = "number"))]
+        generation: u64,
+    },
 }
 
 impl AgentEvent {
@@ -1346,7 +1360,8 @@ impl AgentEvent {
             | Self::TodoChanged { session, .. }
             | Self::SessionMetadataChanged { session, .. }
             | Self::Error { session, .. }
-            | Self::ModelUsageChanged { session, .. } => Some(*session),
+            | Self::ModelUsageChanged { session, .. }
+            | Self::SessionClosing { session, .. } => Some(*session),
             Self::SubagentSpawned { child, .. } => Some(*child),
         }
     }
