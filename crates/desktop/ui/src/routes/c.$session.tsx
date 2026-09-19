@@ -1,6 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useCallback, useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
+import { Badge } from '@/components/ui/badge'
 import { Composer } from '@/components/chat/Composer'
 import { Header } from '@/components/chat/Header'
 import { lastCode } from '@/components/chat/MessageAssistant'
@@ -8,10 +9,11 @@ import { SearchSession } from '@/components/chat/SearchSession'
 import { TodoCard } from '@/components/chat/TodoCard'
 import { Transcript } from '@/components/chat/Transcript'
 import { SearchReturn } from '@/components/sidebar/SearchReturn'
+import { disconnectText, inTree, remaining, resumed, usePrivate } from '@/lib/private'
 import { useApi } from '@/lib/rpc'
 import { type SearchDestination, isSearchDestination, useSearchOrigin } from '@/lib/search'
 import { useScope } from '@/store/harness-scope'
-import { freshness, on, useSessionField } from '@/store/sessions'
+import { freshness, on, useSessionField, useSessions } from '@/store/sessions'
 
 /** `seq`: a search hit's stored message seq (49 §7); anything but a safe non-negative integer is dropped. */
 type Search = { seq?: number }
@@ -72,6 +74,8 @@ function LiveSession({ session }: { session: string }) {
   }, [api, session, store])
 
   const load = useCallback(async () => {
+    // A reconnect rebinds an owned private tree first (51 §4.3); a read before that lands on the old peer and is refused.
+    await resumed()
     const before = store.getState().sessions[session]
     const fresh = before && freshness(before)
     const [page, agents, artifacts] = await Promise.all([
@@ -178,6 +182,7 @@ function LiveSession({ session }: { session: string }) {
   return (
     <>
       <Header session={session} />
+      <PrivateStrip session={session} />
       {fromSearch && (
         <div className="mx-auto flex w-full shrink-0 justify-end md:max-w-[768px] px-4">
           <SearchReturn />
@@ -187,5 +192,30 @@ function LiveSession({ session }: { session: string }) {
       <TodoCard key={`d:${session}`} session={session} />
       <Composer key={`c:${session}`} session={session} />
     </>
+  )
+}
+
+/** `Private` badge for a chat in the owned tree, plus the bounded reconnect countdown while its transport is down (51 §4.3). */
+function PrivateStrip({ session }: { session: string }) {
+  const p = usePrivate((s) => s.current)
+  const member = useSessions((s) => p !== null && inTree(p.root, session, s.sessions))
+  const lost = p?.disconnectedAt
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (lost === undefined) return
+    setNow(Date.now())
+    const t = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(t)
+  }, [lost])
+  if (!member) return null
+  return (
+    <div className="mx-auto flex w-full shrink-0 items-center gap-3 px-4 py-1 text-xs md:max-w-[768px]">
+      <Badge variant="outline">Private</Badge>
+      {lost !== undefined && (
+        <span role="status" className="text-amber-600 dark:text-amber-400">
+          {disconnectText(remaining(lost, now))}
+        </span>
+      )}
+    </div>
   )
 }

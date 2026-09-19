@@ -25,17 +25,19 @@ import { SidebarMenuAction, SidebarMenuButton } from '@/components/ui/sidebar'
 import { touch } from '@/lib/hotkeys'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { SelectMode } from '@/lib/selection'
+import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import { cn } from '@/lib/utils'
 import { useSessionField } from '@/store/sessions'
 
 /**
- * One chat in the list: title (live from `TitleChanged`), active highlight, hover `…` menu with
- * pin, inline rename and delete. ⌘-click / ⇧-click / menu > Select feed the list's multi-selection.
+ * One chat in the list: title (live from `TitleChanged`), project pill (51 §3), active highlight, hover `…` menu with
+ * pin, inline rename, move to project and delete. ⌘-click / ⇧-click / menu > Select feed the list's multi-selection.
  */
 export const SessionItem = memo(function SessionItem({
   id,
   title,
   pinned,
+  project,
   active,
   selected,
   selecting,
@@ -44,6 +46,7 @@ export const SessionItem = memo(function SessionItem({
   id: string
   title: string
   pinned: boolean
+  project: string | null
   active: boolean
   selected: boolean
   selecting: boolean
@@ -56,7 +59,8 @@ export const SessionItem = memo(function SessionItem({
   const raw = live || title || id.slice(0, 8)
   // A session opened by a voice note is titled from its input; the `[voice note, N s]` marker is not a title (45 §7.4).
   const shown = parseNote(raw)?.body || raw
-  const [editing, setEditing] = useState<string | null>(null)
+  // Inline editor: the title, or the project label (with the known projects as a native datalist).
+  const [editing, setEditing] = useState<{ field: 'title' | 'project'; value: string } | null>(null)
   const [confirming, setConfirming] = useState(false)
 
   const remove = async () => {
@@ -79,6 +83,18 @@ export const SessionItem = memo(function SessionItem({
     }
   }
 
+  const move = async (value: string | null) => {
+    setEditing(null)
+    const next = value?.trim() || null
+    if (next === project) return
+    try {
+      await api.set_session_project(id, next)
+      void qc.invalidateQueries({ queryKey: queryKeys.sessions })
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e))
+    }
+  }
+
   const pin = async () => {
     try {
       await api.pin_session(id, !pinned)
@@ -91,17 +107,28 @@ export const SessionItem = memo(function SessionItem({
   return (
     <div className="group/menu-item relative">
       {editing !== null ? (
-        <Input
-          autoFocus
-          value={editing}
-          onChange={(e) => setEditing(e.target.value)}
-          onBlur={() => setEditing(null)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') void rename(editing)
-            if (e.key === 'Escape') setEditing(null)
-          }}
-          className="h-9 rounded-[10px] text-sm"
-        />
+        <>
+          <Input
+            autoFocus
+            list={editing.field === 'project' ? `projects-${id}` : undefined}
+            placeholder={editing.field === 'project' ? 'Project' : undefined}
+            value={editing.value}
+            onChange={(e) => setEditing({ field: editing.field, value: e.target.value })}
+            onBlur={() => setEditing(null)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') void (editing.field === 'title' ? rename(editing.value) : move(editing.value))
+              if (e.key === 'Escape') setEditing(null)
+            }}
+            className="h-9 rounded-[10px] text-sm"
+          />
+          {editing.field === 'project' && (
+            <datalist id={`projects-${id}`}>
+              {[...new Set((qc.getQueryData<SessionSummary[]>(queryKeys.sessions) ?? []).flatMap((s) => (s.project ? [s.project] : [])))].map(
+                (p) => <option key={p} value={p} />,
+              )}
+            </datalist>
+          )}
+        </>
       ) : (
         <>
           <SidebarMenuButton
@@ -134,6 +161,11 @@ export const SessionItem = memo(function SessionItem({
                 </span>
               )}
               <span className="truncate">{shown}</span>
+              {project && (
+                <span className="ml-auto shrink-0 rounded-full border border-border-subtle px-1.5 text-[10px] leading-4 text-fg-tertiary">
+                  {project}
+                </span>
+              )}
             </Link>
           </SidebarMenuButton>
           <DropdownMenu>
@@ -143,8 +175,12 @@ export const SessionItem = memo(function SessionItem({
               </SidebarMenuAction>
             </DropdownMenuTrigger>
             <DropdownMenuContent side="right" align="start" className="w-48">
-              <DropdownMenuItem onSelect={() => setEditing(shown)}>Rename</DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => setEditing({ field: 'title', value: shown })}>Rename</DropdownMenuItem>
               <DropdownMenuItem onSelect={() => void pin()}>{pinned ? 'Unpin' : 'Pin'}</DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => setEditing({ field: 'project', value: project ?? '' })}>
+                Move to project…
+              </DropdownMenuItem>
+              {project && <DropdownMenuItem onSelect={() => void move(null)}>Remove from project</DropdownMenuItem>}
               <DropdownMenuItem onSelect={() => select(id, 'toggle')}>
                 {selected ? 'Deselect' : 'Select'}
               </DropdownMenuItem>

@@ -319,6 +319,43 @@ async fn execute(
             return Ok(());
         }
         Command::ListJobs(session) => UiEvent::Jobs(msg(api.list_jobs(ext, session).await)?),
+        Command::SetSessionProject { session, project } => {
+            msg(api.set_session_project(ext, session, project.clone()).await)?;
+            UiEvent::Info(match project {
+                Some(p) => format!("project: {p}"),
+                None => "project cleared".to_owned(),
+            })
+        }
+        Command::SessionCost(session) => {
+            UiEvent::Cost(session, msg(api.session_cost(ext, session).await)?)
+        }
+        Command::ListTerminals(session) => {
+            UiEvent::Terminals(msg(api.list_terminals(ext, session, Some(true)).await)?)
+        }
+        // Errors ride inside the reply so the observer knows its ask answered.
+        Command::PtyScreen {
+            session,
+            job,
+            viewport,
+            if_revision,
+            epoch,
+        } => UiEvent::PtyScreen {
+            session,
+            job: job.clone(),
+            viewport,
+            epoch,
+            reply: api
+                .pty_screen(ext, session, job, viewport, if_revision)
+                .await
+                .map_err(|e| e.message().to_owned()),
+        },
+        Command::CreateSession(options) => {
+            UiEvent::SessionOpened(msg(api.create_session(ext, options).await)?)
+        }
+        Command::LeaveSession { session, secret } => UiEvent::SessionLeft(
+            session,
+            msg(api.leave_session(ext, session, Some(secret)).await)?,
+        ),
         Command::ListSchedules => UiEvent::Schedules(msg(api.list_schedules().await)?),
         Command::FireSchedule(name) => {
             let id = msg(api.fire_schedule(name.clone()).await)?;
@@ -618,7 +655,18 @@ async fn execute(
             if apps {
                 items.retain(|a| a.kind == artifact::Kind::App);
             }
-            UiEvent::Artifacts { items, pick, apps }
+            // The picker groups by the owners' project (51 §3); cards need no join.
+            let sessions = if pick && !items.is_empty() {
+                msg(api.list_sessions().await)?
+            } else {
+                Vec::new()
+            };
+            UiEvent::Artifacts {
+                items,
+                pick,
+                apps,
+                sessions,
+            }
         }
         Command::ExportArtifact { id, name } => {
             let dest = std::env::home_dir()
@@ -1349,5 +1397,51 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         UiEvent::CommunicationChanged(_)
         | UiEvent::PeerMessageChanged(_)
         | UiEvent::A2aChanged(_) => Ok(()),
+        // The owner's display strings (51 §6.2), never a local sum.
+        UiEvent::Cost(_, c) => model::cost_lines(&c.total)
+            .iter()
+            .try_for_each(|l| writeln!(out, "{l}")),
+        UiEvent::Terminals(list) if list.is_empty() => {
+            writeln!(out, "no terminals in this session's tree")
+        }
+        UiEvent::Terminals(list) => list
+            .iter()
+            .try_for_each(|t| writeln!(out, "{}", model::terminal_row(t))),
+        // The observer needs a TTY; a page that lands here prints its text rows.
+        UiEvent::PtyScreen { reply: Ok(tools::PtyScreenReply::Updated(p)), .. } => {
+            p.lines.iter().try_for_each(|row| {
+                let text: String = row
+                    .iter()
+                    .flat_map(|r| r.cells.iter())
+                    .filter(|c| !c.continuation)
+                    .map(|c| c.text.as_str())
+                    .collect();
+                writeln!(out, "{}", text.trim_end())
+            })
+        }
+        UiEvent::PtyScreen { reply: Ok(tools::PtyScreenReply::Unavailable), .. } => {
+            writeln!(out, "No longer available.")
+        }
+        UiEvent::PtyScreen { reply: Ok(tools::PtyScreenReply::Unchanged { .. }), .. } => Ok(()),
+        UiEvent::PtyScreen { reply: Err(e), .. } => writeln!(out, "terminal: {e}"),
+        UiEvent::SessionOpened(o) => writeln!(
+            out,
+            "session {}{}",
+            o.session,
+            if o.retention == agent::Retention::Private {
+                " (private)"
+            } else {
+                ""
+            }
+        ),
+        UiEvent::SessionLeft(_, r) => writeln!(
+            out,
+            "private session closed{}",
+            match r.cleanup {
+                agent::CleanupStatus::Complete => "",
+                agent::CleanupStatus::Pending => " (cleanup pending)",
+                agent::CleanupStatus::Incomplete => " (cleanup incomplete)",
+            }
+        ),
     };
 }

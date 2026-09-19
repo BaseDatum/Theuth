@@ -5,6 +5,7 @@ import { memo, useEffect, useMemo, useState } from 'react'
 import { GLYPH, metaLine } from '@/components/chat/ArtifactCard'
 import { Img } from '@/components/chat/Attachments'
 import { ago } from '@/components/sidebar/AgentTree'
+import { UNGROUPED } from '@/components/sidebar/SessionList'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Skeleton } from '@/components/ui/skeleton'
 import { queryKeys, useApi } from '@/lib/rpc'
@@ -33,7 +34,7 @@ export function nameMatch(a: Artifact, q: string): boolean {
 
 /** One `name` in one session: the newest version and the older ones, newest first. */
 type Stack = { head: Artifact; older: Artifact[] }
-type Group = { session: string; stacks: Stack[] }
+export type Group = { session: string; stacks: Stack[] }
 
 /** Newest first in, grouped by session (ordered by their newest artifact) then collapsed by `name`. */
 function group(all: Artifact[], f: Filter): Group[] {
@@ -62,12 +63,42 @@ function group(all: Artifact[], f: Filter): Group[] {
   return out
 }
 
+/** Section header of artifacts whose durable owner is gone from `list_sessions` (51 §8.3). */
+export const UNAVAILABLE = 'Unavailable session'
+type Section = { title: string; groups: Group[] }
+
+/**
+ * Outer grouping by the owner's effective project (51 §3), sections in first-seen order of `groups`, `Ungrouped`
+ * then `Unavailable session` last; no sections at all while every owner is a known ungrouped session (or the
+ * session list has not loaded, when nothing can be told apart).
+ */
+export function sections(groups: Group[], sessions: SessionSummary[] | undefined): Section[] | null {
+  if (!sessions) return null
+  const by = new Map<string, Group[]>()
+  for (const g of groups) {
+    const owner = sessions.find((s) => s.id === g.session)
+    const title = owner ? (owner.project ?? UNGROUPED) : UNAVAILABLE
+    const list = by.get(title)
+    if (list) list.push(g)
+    else by.set(title, [g])
+  }
+  if (by.size === 1 && by.has(UNGROUPED)) return null
+  const out: Section[] = []
+  for (const [title, list] of by) if (title !== UNGROUPED && title !== UNAVAILABLE) out.push({ title, groups: list })
+  for (const title of [UNGROUPED, UNAVAILABLE]) {
+    const list = by.get(title)
+    if (list) out.push({ title, groups: list })
+  }
+  return out
+}
+
 /** The rail body: sessions, each its artifacts newest first. ponytail: not virtualized; virtualize past ~2000 rows. */
 export function List({ filter, active }: { filter: Filter; active: string | undefined }) {
   const api = useApi()
   const list = useArtifactList()
   const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
   const groups = useMemo(() => group(list.data ?? [], filter), [list.data, filter])
+  const split = useMemo(() => sections(groups, sessions.data), [groups, sessions.data])
 
   if (list.isPending) {
     return (
@@ -83,23 +114,35 @@ export function List({ filter, active }: { filter: Filter; active: string | unde
     return <p className="p-3 text-sm text-fg-tertiary">Nothing shown yet — ask for a report, a table or a PDF and it lands here.</p>
   }
   if (groups.length === 0) return <p className="p-3 text-sm text-fg-tertiary">No matches</p>
+  const render = (gs: Group[]) =>
+    gs.map((g) => (
+      <section key={g.session} className="mb-2">
+        <Link
+          to="/c/$session"
+          params={{ session: g.session }}
+          className="flex h-8 items-center px-2.5 text-xs font-medium text-fg-secondary hover:text-foreground"
+          title="Open chat"
+        >
+          <span className="truncate">{sessionLabel(g.session, sessions.data)}</span>
+        </Link>
+        {g.stacks.map((s) => (
+          <StackRows key={s.head.name} stack={s} active={active} />
+        ))}
+      </section>
+    ))
   return (
     <nav className="min-h-0 flex-1 overflow-y-auto px-1.5 py-1" aria-label="Artifacts">
-      {groups.map((g) => (
-        <section key={g.session} className="mb-2">
-          <Link
-            to="/c/$session"
-            params={{ session: g.session }}
-            className="flex h-8 items-center px-2.5 text-xs font-medium text-fg-secondary hover:text-foreground"
-            title="Open chat"
-          >
-            <span className="truncate">{sessionLabel(g.session, sessions.data)}</span>
-          </Link>
-          {g.stacks.map((s) => (
-            <StackRows key={s.head.name} stack={s} active={active} />
-          ))}
-        </section>
-      ))}
+      {split
+        ? split.map((sec) => (
+            <Collapsible key={sec.title} defaultOpen className="group/project mb-2">
+              <CollapsibleTrigger className="flex h-8 w-full items-center gap-1 rounded-[10px] px-2.5 text-xs font-semibold text-fg-secondary hover:bg-layer-2">
+                <ChevronRight className="size-3.5 shrink-0 transition-transform group-data-[state=open]/project:rotate-90" />
+                <span className="truncate">{sec.title}</span>
+              </CollapsibleTrigger>
+              <CollapsibleContent className="pl-2">{render(sec.groups)}</CollapsibleContent>
+            </Collapsible>
+          ))
+        : render(groups)}
     </nav>
   )
 }

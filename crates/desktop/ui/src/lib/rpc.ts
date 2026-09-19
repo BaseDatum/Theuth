@@ -33,6 +33,10 @@ export const queryKeys = {
   acp: ['acp'] as const,
   acpRegistry: ['acp', 'registry'] as const,
   agents: (id: string) => ['agents', id] as const,
+  /** `session_cost(id)` (51 §6.5); invalidated by `ModelUsageChanged`. */
+  sessionCost: (id: string) => ['session-cost', id] as const,
+  terminals: (id: string) => ['terminals', id] as const,
+  ptyScreen: (session: string, job: string) => ['pty', session, job] as const,
   jobs: (id: string) => ['jobs', id] as const,
   prompt: (id: string) => ['prompt', id] as const,
   knowledge: ['knowledge'] as const,
@@ -96,9 +100,18 @@ export function useInvalidateOn(): void {
       }),
       on('Compacted', search),
       on('ContextChanged', search),
-      on('SessionDeleted', () => {
+      on('SessionDeleted', (e) => {
         void qc.invalidateQueries({ queryKey: queryKeys.sessions })
         search()
+        window.dispatchEvent(new CustomEvent('wth:session-closing', { detail: e }))
+      }),
+      on('SessionClosing', (e) => {
+        window.dispatchEvent(new CustomEvent('wth:session-closing', { detail: e }))
+      }),
+      on('ModelUsageChanged', (e) => void qc.invalidateQueries({ queryKey: ['session-cost', e.session] })),
+      on('SessionMetadataChanged', () => {
+        sessions()
+        void qc.invalidateQueries({ queryKey: queryKeys.artifacts })
       }),
       on('McpProgress', () => void qc.invalidateQueries({ queryKey: ['mcp'] })),
       on('LoginFinished', () => void qc.invalidateQueries({ queryKey: queryKeys.logins })),

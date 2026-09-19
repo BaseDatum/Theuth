@@ -28,6 +28,11 @@ use tools::{
     AskResolved, Decision, Gate, JobEvent, JobView, McpAuth, McpProgress, McpServer, McpToolInfo,
     PolicyAction, RepoInfo,
 };
+use agent::{
+    CleanupStatus, CloseResult, CostBucket, CostScope, Coverage, CreateSessionOptions, Money,
+    Retention, SessionCost, SessionOpen,
+};
+use tools::{JobId, PtyPage, PtyScreenReply, PtyViewport, TerminalSummary};
 use uuid::Uuid;
 
 use crate::clip::Image;
@@ -212,6 +217,9 @@ pub enum UiEvent {
         pick: bool,
         /// Only [`artifact::Kind::App`] records (`/apps`, 46 §8.2).
         apps: bool,
+        /// `list_sessions` when picking: the owners whose project the rows
+        /// group under (51 §3); empty otherwise.
+        sessions: Vec<SessionSummary>,
     },
     /// Reply to [`Command::ListSecrets`]: names, notes, versions. Never values.
     Secrets(secrets::SecretsList),
@@ -241,6 +249,28 @@ pub enum UiEvent {
     PeerDelivered(PeerDelivered),
     /// Network configuration or listener state changed (bus event).
     A2aChanged(a2a::A2aChanged),
+    /// Reply to [`Command::SessionCost`]: the owner summary of `session` (51 §6.5).
+    Cost(SessionId, SessionCost),
+    /// Reply to [`Command::ListTerminals`].
+    Terminals(Vec<TerminalSummary>),
+    /// Reply to [`Command::PtyScreen`], echoing the request's identity so a
+    /// reply for a terminal or viewport left behind is dropped (51 §7.4).
+    PtyScreen {
+        /// Owning session asked.
+        session: SessionId,
+        /// Job asked.
+        job: JobId,
+        /// Viewport asked.
+        viewport: PtyViewport,
+        /// [`TerminalView::epoch`] when asked.
+        epoch: u64,
+        /// The page, or why there is none (`terminal busy` is retried).
+        reply: Result<PtyScreenReply, String>,
+    },
+    /// Reply to [`Command::CreateSession`].
+    SessionOpened(SessionOpen),
+    /// Reply to [`Command::LeaveSession`]: the root left and how far its cleanup got.
+    SessionLeft(SessionId, CloseResult),
 }
 
 /// Everything the UI can ask of the rest of the process. One task turns
@@ -638,6 +668,39 @@ pub enum Command {
     A2aStatus,
     /// `reload_a2a`: validate and swap the peer/export configuration.
     ReloadA2a,
+    /// `set_session_project`: label or clear the root's project (51 §3).
+    SetSessionProject {
+        /// Any session of the tree.
+        session: SessionId,
+        /// `None` clears.
+        project: Option<String>,
+    },
+    /// `session_cost` for the shown session.
+    SessionCost(SessionId),
+    /// `list_terminals(session, descendants: true)`.
+    ListTerminals(SessionId),
+    /// `pty_screen`: one page of a retained terminal (51 §7.4).
+    PtyScreen {
+        /// Owning session.
+        session: SessionId,
+        /// Job.
+        job: JobId,
+        /// Rows asked for.
+        viewport: PtyViewport,
+        /// Revision already shown; `Unchanged` comes back when it still holds.
+        if_revision: Option<u64>,
+        /// [`TerminalView::epoch`] at the time of asking, echoed by the reply.
+        epoch: u64,
+    },
+    /// `create_session`: explicit creation, private or durable (51 §4.1).
+    CreateSession(CreateSessionOptions),
+    /// `leave_session`: release the private root this view owns (51 §4.3).
+    LeaveSession {
+        /// The root.
+        session: SessionId,
+        /// Its lease secret.
+        secret: String,
+    },
 }
 
 /// One row of the `/login` picker.
@@ -1122,6 +1185,21 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "list this session's background jobs",
     ),
     (
+        "/terminals",
+        "",
+        "PTY jobs of this session's tree (picker: ⏎ opens a read-only observer)",
+    ),
+    (
+        "/cost",
+        "",
+        "model cost of this session's tree: returned, estimated, coverage, per child",
+    ),
+    (
+        "/project",
+        "<label|off>",
+        "label this session's root for grouping in /sessions and /artifacts (off clears)",
+    ),
+    (
         "/schedules",
         "[run <name>|history <name>|pause <name>|resume <name>]",
         "scheduled prompts: list, fire one now, show its runs, pause or resume a loop",
@@ -1139,7 +1217,11 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "search sessions, artifacts, knowledge and history (live; fzf syntax)",
     ),
     ("/resume", "<id>", "open a session"),
-    ("/new", "", "start a new session"),
+    (
+        "/new",
+        "[private]",
+        "start a new session (private: memory-only tree, closed when you leave it)",
+    ),
     (
         "/clear",
         "",
@@ -1351,8 +1433,8 @@ pub enum Menu {
     },
     /// `/sessions` picker.
     Sessions {
-        /// Top-level sessions, newest first.
-        items: Vec<SessionSummary>,
+        /// Project headings, then roots with their children under them (51 §3).
+        items: Vec<Grouped<(SessionSummary, usize)>>,
         /// Highlighted row.
         cursor: usize,
     },
@@ -1421,8 +1503,8 @@ pub enum Menu {
     },
     /// `/artifacts` picker (35 §6.2); `/apps` when `apps` (46 §8.2).
     Artifacts {
-        /// The session subtree's artifacts, newest first.
-        items: Vec<artifact::Artifact>,
+        /// Project and session headings, then the rows by name and version (51 §3).
+        items: Vec<Grouped<artifact::Artifact>>,
         /// Highlighted row.
         cursor: usize,
         /// Rows are apps: the title says so and where they run.
@@ -1481,6 +1563,423 @@ pub enum Menu {
         /// Highlighted row of [`Model::peers_rows`].
         cursor: usize,
     },
+    /// `/cost`: the shown session's owner summary (51 §6.5, §8.3).
+    Cost {
+        /// The summary at open (or the latest refresh).
+        cost: SessionCost,
+        /// Highlighted row.
+        cursor: usize,
+    },
+    /// `/terminals` picker (51 §7.4).
+    Terminals {
+        /// PTY jobs of the shown session's tree.
+        items: Vec<TerminalSummary>,
+        /// Highlighted row.
+        cursor: usize,
+    },
+    /// The read-only terminal observer (51 §7.4); drawn by `terminal_box`, never `menu`.
+    Terminal(Box<TerminalView>),
+}
+
+/// The private root this view owns (51 §4.3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Private {
+    /// The root.
+    pub root: SessionId,
+    /// Lease secret presented on leave.
+    pub secret: String,
+    /// Tree members seen so far (the root, its subtree as listed or spawned):
+    /// navigating among them is not a leave.
+    pub members: std::collections::HashSet<SessionId>,
+}
+
+impl Private {
+    /// `id` is in the owned tree as far as this view has seen.
+    pub fn member(&self, id: SessionId) -> bool {
+        id == self.root || self.members.contains(&id)
+    }
+}
+
+/// A picker row that may be a heading: the cursor skips headings.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Grouped<T> {
+    /// Non-selectable label.
+    Heading(String),
+    /// A selectable row.
+    Item(T),
+}
+
+impl<T> Grouped<T> {
+    /// The item, if this is one.
+    pub fn item(&self) -> Option<&T> {
+        match self {
+            Grouped::Item(t) => Some(t),
+            Grouped::Heading(_) => None,
+        }
+    }
+}
+
+/// Cursor after moving `delta` selectable rows from `cursor` (headings skipped, ends clamp).
+pub fn grouped_step<T>(rows: &[Grouped<T>], cursor: usize, delta: isize) -> usize {
+    let mut at = cursor.min(rows.len().saturating_sub(1));
+    for _ in 0..delta.unsigned_abs() {
+        let next = if delta < 0 {
+            (0..at).rev().find(|&i| rows[i].item().is_some())
+        } else {
+            (at + 1..rows.len()).find(|&i| rows[i].item().is_some())
+        };
+        match next {
+            Some(i) => at = i,
+            None => break,
+        }
+    }
+    at
+}
+
+/// First selectable row (`0` when there is none).
+pub fn grouped_first<T>(rows: &[Grouped<T>]) -> usize {
+    rows.iter().position(|r| r.item().is_some()).unwrap_or(0)
+}
+
+/// Heading for a project label; labels are display data, control characters dropped.
+fn project_heading(project: Option<&str>) -> String {
+    match project {
+        Some(p) => p.chars().filter(|c| !c.is_control()).collect(),
+        None => "Ungrouped".to_owned(),
+    }
+}
+
+/// Projects in first-seen order over `roots` (the pinned/newest list order), `None` last (51 §3).
+fn project_order<'a>(roots: impl Iterator<Item = Option<&'a str>>) -> Vec<Option<&'a str>> {
+    let mut order: Vec<Option<&str>> = Vec::new();
+    let mut ungrouped = false;
+    for p in roots {
+        match p {
+            None => ungrouped = true,
+            Some(p) if !order.contains(&Some(p)) => order.push(Some(p)),
+            Some(_) => {}
+        }
+    }
+    if ungrouped {
+        order.push(None);
+    }
+    order
+}
+
+/// `/sessions` rows: a heading per project in first-seen order of the roots
+/// (Ungrouped last), each root followed by its descendants, depth-first, in
+/// list order (51 §3).
+pub fn session_rows(list: Vec<SessionSummary>) -> Vec<Grouped<(SessionSummary, usize)>> {
+    let mut children: HashMap<SessionId, Vec<usize>> = HashMap::new();
+    for (i, s) in list.iter().enumerate() {
+        if let Some(p) = s.parent {
+            children.entry(p).or_default().push(i);
+        }
+    }
+    let roots: Vec<usize> = (0..list.len()).filter(|&i| list[i].parent.is_none()).collect();
+    let order = project_order(roots.iter().map(|&i| list[i].project.as_deref()));
+    fn walk(
+        list: &[SessionSummary],
+        children: &HashMap<SessionId, Vec<usize>>,
+        i: usize,
+        depth: usize,
+        out: &mut Vec<Grouped<(SessionSummary, usize)>>,
+    ) {
+        out.push(Grouped::Item((list[i].clone(), depth)));
+        for &c in children.get(&list[i].id).map_or(&[][..], Vec::as_slice) {
+            walk(list, children, c, depth + 1, out);
+        }
+    }
+    let mut rows = Vec::with_capacity(list.len() + order.len());
+    for project in order {
+        rows.push(Grouped::Heading(project_heading(project)));
+        for &r in roots.iter().filter(|&&r| list[r].project.as_deref() == project) {
+            walk(&list, &children, r, 0, &mut rows);
+        }
+    }
+    rows
+}
+
+/// What `/artifacts` knows about an owner: its effective project and a label.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Owner {
+    /// Effective project of the owner's root.
+    pub project: Option<String>,
+    /// Heading text: `short-id  title`, a peer name, or `Unavailable session`.
+    pub label: String,
+}
+
+/// `/artifacts` rows grouped effective project → session → name/version
+/// (51 §3). `owner` resolves an artifact's session; `None` is a missing
+/// durable owner, shown as `Unavailable session` under Ungrouped.
+pub fn artifact_rows(
+    items: Vec<artifact::Artifact>,
+    owner: impl Fn(SessionId) -> Option<Owner>,
+) -> Vec<Grouped<artifact::Artifact>> {
+    // Sessions in first-seen order (the list is newest first), each with its rows.
+    let mut sessions: Vec<(SessionId, Owner, Vec<artifact::Artifact>)> = Vec::new();
+    for a in items {
+        match sessions.iter_mut().find(|(s, ..)| *s == a.session) {
+            Some((_, _, rows)) => rows.push(a),
+            None => {
+                let o = owner(a.session).unwrap_or(Owner {
+                    project: None,
+                    label: "Unavailable session".to_owned(),
+                });
+                sessions.push((a.session, o, vec![a]));
+            }
+        }
+    }
+    for (_, _, rows) in &mut sessions {
+        rows.sort_by(|a, b| a.name.cmp(&b.name).then(a.version.cmp(&b.version)));
+    }
+    let order = project_order(sessions.iter().map(|(_, o, _)| o.project.as_deref()));
+    let mut out = Vec::new();
+    for project in order {
+        out.push(Grouped::Heading(project_heading(project)));
+        for (_, o, rows) in sessions
+            .iter()
+            .filter(|(_, o, _)| o.project.as_deref() == project)
+        {
+            out.push(Grouped::Heading(format!("  {}", o.label)));
+            out.extend(rows.iter().cloned().map(Grouped::Item));
+        }
+    }
+    out
+}
+
+/// Poll period of the open terminal observer (51 §7.3: at most one ask per half second).
+pub const TERMINAL_POLL_MS: u64 = 500;
+/// Rows a history page asks for.
+const TERMINAL_PAGE: u16 = 40;
+
+/// The `/terminals` observer over one PTY job (51 §7.4): what is asked
+/// for, what was last painted, and the request bookkeeping that keeps one
+/// ask in flight and drops replies for a selection or viewport left behind.
+#[derive(Debug)]
+pub struct TerminalView {
+    /// Owning session.
+    pub session: SessionId,
+    /// Job.
+    pub job: JobId,
+    /// `name · command` for the title.
+    pub label: String,
+    /// Rows wanted; `Live` follows the screen.
+    pub viewport: PtyViewport,
+    /// Bumped by [`Model`] whenever the selected terminal changes; a reply
+    /// with another epoch is dropped even if session and job match.
+    pub epoch: u64,
+    /// Last page painted.
+    pub page: Option<PtyPage>,
+    /// Revision of `page` (or of the last `Unchanged`).
+    pub revision: Option<u64>,
+    /// An ask is out; nothing else is sent until it answers.
+    pub inflight: bool,
+    /// Something changed while an ask was out: re-ask as soon as it answers.
+    pub dirty: bool,
+    /// Unix ms of the next scheduled poll.
+    pub next_poll: u64,
+    /// Leading columns dropped (horizontal pan).
+    pub col: usize,
+    /// The owner said the terminal is gone.
+    pub unavailable: bool,
+    /// Daemon epoch of the first page; another one means the daemon restarted.
+    pub daemon_epoch: Option<Option<String>>,
+    /// A later page named another daemon epoch.
+    pub restarted: bool,
+    /// The last failed ask, shown in the status row.
+    pub error: Option<String>,
+}
+
+impl TerminalView {
+    /// A fresh observer on `t`, following the live screen.
+    pub fn new(t: &TerminalSummary, epoch: u64) -> Self {
+        let label = match &t.name {
+            Some(n) => format!("{n} · {}", t.command),
+            None => t.command.clone(),
+        };
+        Self {
+            session: t.session,
+            job: t.id.clone(),
+            label,
+            viewport: PtyViewport::Live,
+            epoch,
+            page: None,
+            revision: None,
+            inflight: false,
+            dirty: false,
+            next_poll: 0,
+            col: 0,
+            unavailable: false,
+            daemon_epoch: None,
+            restarted: false,
+            error: None,
+        }
+    }
+
+    /// Change the viewport: what was painted no longer matches, so the next
+    /// ask carries no `if_revision`.
+    fn set_viewport(&mut self, v: PtyViewport) {
+        if v != self.viewport {
+            self.viewport = v;
+            self.revision = None;
+            self.dirty = true;
+            self.next_poll = 0;
+        }
+    }
+
+    /// Scroll `rows` up (negative) or down (positive) through history; past
+    /// the bottom the view is live again.
+    fn scroll(&mut self, rows: i64) {
+        let retained = self.page.as_ref().map_or(0, |p| u64::from(p.retained));
+        let (offset, height) = match self.viewport {
+            PtyViewport::Live => (0i64, TERMINAL_PAGE),
+            PtyViewport::History { offset, height } => (i64::from(offset), height),
+        };
+        // Up means an older page: a larger offset above the live screen.
+        let offset = (offset - rows).clamp(0, i64::try_from(retained).unwrap_or(i64::MAX));
+        let v = if offset == 0 {
+            PtyViewport::Live
+        } else {
+            PtyViewport::History {
+                offset: u32::try_from(offset).unwrap_or(u32::MAX),
+                height,
+            }
+        };
+        self.set_viewport(v);
+    }
+
+    /// Fold a reply in. Applies only when it answers the current selection
+    /// and viewport and is not older than what is shown; an `Unchanged` for
+    /// another viewport re-asks. Returns whether the screen changed.
+    pub fn reply(
+        &mut self,
+        session: SessionId,
+        job: &JobId,
+        viewport: PtyViewport,
+        epoch: u64,
+        reply: Result<PtyScreenReply, String>,
+    ) -> bool {
+        if session != self.session || *job != self.job || epoch != self.epoch {
+            return false;
+        }
+        self.inflight = false;
+        if viewport != self.viewport {
+            // Answers the viewport before a scroll; the scroll already re-asked.
+            self.dirty = true;
+            self.next_poll = 0;
+            return false;
+        }
+        match reply {
+            Err(e) => {
+                self.error = Some(e);
+                false
+            }
+            Ok(PtyScreenReply::Unavailable) => {
+                self.error = None;
+                self.unavailable = true;
+                true
+            }
+            Ok(PtyScreenReply::Unchanged { viewport: v, revision }) => {
+                self.error = None;
+                if v != self.viewport {
+                    self.revision = None;
+                    self.dirty = true;
+                    self.next_poll = 0;
+                } else if self.revision.is_none_or(|r| r <= revision) {
+                    self.revision = Some(revision);
+                }
+                false
+            }
+            Ok(PtyScreenReply::Updated(page)) => {
+                self.error = None;
+                if page.session != self.session
+                    || page.id != self.job
+                    || self.revision.is_some_and(|r| page.revision < r)
+                {
+                    return false;
+                }
+                match &self.daemon_epoch {
+                    None => self.daemon_epoch = Some(page.epoch.clone()),
+                    Some(e) if *e != page.epoch => self.restarted = true,
+                    Some(_) => {}
+                }
+                self.revision = Some(page.revision);
+                self.unavailable = false;
+                self.page = Some(page);
+                true
+            }
+        }
+    }
+
+    /// The next ask when one is due at `now` and none is out: marks it in
+    /// flight and schedules the following poll.
+    pub fn poll(&mut self, now: u64) -> Option<Command> {
+        if self.inflight || self.unavailable || (!self.dirty && now < self.next_poll) {
+            return None;
+        }
+        self.inflight = true;
+        self.dirty = false;
+        self.next_poll = now + TERMINAL_POLL_MS;
+        Some(Command::PtyScreen {
+            session: self.session,
+            job: self.job.clone(),
+            viewport: self.viewport,
+            if_revision: self.revision,
+            epoch: self.epoch,
+        })
+    }
+
+    /// When the event loop must next wake for this view (unix ms); `None` while nothing is due.
+    pub fn wake(&self) -> Option<u64> {
+        (!self.inflight && !self.unavailable).then_some(if self.dirty { 0 } else { self.next_poll })
+    }
+
+    /// Title row: label, owner, state, viewport and revision.
+    pub fn title(&self) -> String {
+        let state = match &self.page {
+            Some(p) => match &p.exit {
+                Some(e) => format!("exit {e}"),
+                None => "running".to_owned(),
+            },
+            None => "loading…".to_owned(),
+        };
+        let where_ = match self.viewport {
+            PtyViewport::Live => "live".to_owned(),
+            PtyViewport::History { offset, .. } => format!("history −{offset}"),
+        };
+        let rev = self
+            .revision
+            .map_or_else(String::new, |r| format!(" · rev {r}"));
+        format!(
+            "terminal · {} · {} · {state} · {where_}{rev}   ↑↓ PgUp PgDn history  ←→ pan  r refresh  esc close",
+            short(self.session),
+            self.job.0,
+        )
+    }
+
+    /// Status row under the page, if anything needs saying.
+    pub fn status(&self) -> Option<String> {
+        if self.unavailable {
+            return Some("No longer available.".to_owned());
+        }
+        let mut notes = Vec::new();
+        if self.restarted {
+            notes.push("Daemon restarted.".to_owned());
+        }
+        if let Some(p) = &self.page {
+            if !p.redaction_complete {
+                notes.push("redaction incomplete at retained boundary".to_owned());
+            }
+            if p.truncated {
+                notes.push("top rows cut to fit the reply".to_owned());
+            }
+        }
+        if let Some(e) = &self.error {
+            notes.push(format!("last ask failed: {e}"));
+        }
+        (!notes.is_empty()).then(|| notes.join(" · "))
+    }
 }
 
 /// The `/shake` argument: which kind of context item the picker lists.
@@ -2511,6 +3010,27 @@ pub struct Model {
     /// Search requests a reply produced where no sender was at hand (the
     /// refresh reply's re-ask); flushed by the next tick or key.
     search_outbox: Vec<search::Request>,
+    /// `/cost` was typed; the next `UiEvent::Cost` opens the menu (same rule as `awaiting_mcp`).
+    awaiting_cost: bool,
+    /// Latest `session_cost` of the shown session (the header tag, `/cost`,
+    /// the `/agents` child totals; 51 §8.3). `None` until fetched; never summed here.
+    pub cost: Option<SessionCost>,
+    /// The ledger of the shown session (or an ancestor) changed: the event
+    /// loop re-asks `session_cost`.
+    pub refresh_cost: bool,
+    /// Effective project of the shown session's root (`Loaded.project`).
+    pub project: Option<String>,
+    /// A `/sessions` or `/artifacts` menu is open and session metadata
+    /// changed: the event loop re-lists it.
+    pub refresh_grouping: bool,
+    /// The private root this view owns (51 §4): its id, lease secret and
+    /// the tree members seen so far. Leaving the tree releases it.
+    pub private: Option<Private>,
+    /// The retention warning was shown once this run.
+    private_warned: bool,
+    /// Bumped whenever a terminal observer opens: replies carry the epoch
+    /// they were asked under and older ones are dropped.
+    terminal_epoch: u64,
 }
 
 impl Model {
@@ -2540,6 +3060,9 @@ impl Model {
             refresh_communication: true,
             app_enabled: self.app_enabled,
             search: std::mem::take(&mut self.search),
+            private: self.private.take(),
+            private_warned: self.private_warned,
+            terminal_epoch: self.terminal_epoch,
             ..Self::new(std::mem::take(&mut self.model_id), self.approvals_global)
         };
     }
@@ -2580,6 +3103,9 @@ impl Model {
         self.context_editable = loaded.context_editable;
         self.context_reason = loaded.context_reason;
         self.context_stale = false;
+        self.project = loaded.project;
+        // The header's cost tag is the owner's summary, re-read on every load (51 §6.2).
+        self.refresh_cost = true;
         if let Some(n) = loaded.context_estimate {
             self.context = n;
         }
@@ -3433,15 +3959,18 @@ impl Model {
             }
             UiEvent::AskResolved(r) => self.asks.retain(|a| a.req.id != r.id),
             UiEvent::Sessions(list) => {
-                let items: Vec<SessionSummary> =
-                    list.into_iter().filter(|s| s.parent.is_none()).collect();
-                if items.is_empty() {
+                if list.is_empty() {
                     self.entries.push(Entry::Info("no sessions".into()));
                 } else {
-                    let cursor = items
-                        .iter()
-                        .position(|s| Some(s.id) == self.session)
-                        .unwrap_or(0);
+                    let items = session_rows(list);
+                    // A refresh of an open menu keeps the highlight where it was.
+                    let cursor = match &self.menu {
+                        Some(Menu::Sessions { cursor, .. }) => *cursor,
+                        _ => items
+                            .iter()
+                            .position(|r| r.item().is_some_and(|(s, _)| Some(s.id) == self.session))
+                            .unwrap_or_else(|| grouped_first(&items)),
+                    };
                     self.menu = Some(Menu::Sessions { items, cursor });
                 }
             }
@@ -3466,6 +3995,12 @@ impl Model {
                         (row.info.id, row)
                     })
                     .collect();
+                // The owned tree's roster: navigating within it is not a leave (51 §4.3).
+                if let Some(p) = &mut self.private
+                    && self.session.is_some_and(|s| p.member(s))
+                {
+                    p.members.extend(self.agents.keys().copied());
+                }
                 self.approvals
                     .retain(|a| Some(a.session) == self.session || self.agents.contains_key(&a.session));
                 if !std::mem::take(&mut self.agents_picker_pending) {
@@ -3524,6 +4059,7 @@ impl Model {
                     self.session = Some(id);
                     // The global default was shown; now this session's own view.
                     self.refresh_communication = true;
+                    self.refresh_cost = true;
                 }
                 if let Some((s, message)) = self.send_error.take()
                     && s == id
@@ -3842,7 +4378,12 @@ impl Model {
                 }
             }
             UiEvent::ScrapeProgress(_) => {}
-            UiEvent::Artifacts { items, pick, apps } => {
+            UiEvent::Artifacts {
+                items,
+                pick,
+                apps,
+                sessions,
+            } => {
                 if !pick {
                     for a in items {
                         self.attach_artifact(a);
@@ -3852,9 +4393,14 @@ impl Model {
                         if apps { "no apps" } else { "no artifacts" }.into(),
                     ));
                 } else {
+                    let items = artifact_rows(items, |id| self.owner(&sessions, id));
+                    let cursor = match &self.menu {
+                        Some(Menu::Artifacts { cursor, .. }) => *cursor,
+                        _ => grouped_first(&items),
+                    };
                     self.menu = Some(Menu::Artifacts {
                         items,
-                        cursor: 0,
+                        cursor,
                         apps,
                     });
                 }
@@ -4031,6 +4577,7 @@ impl Model {
                 self.awaiting_link = false;
                 self.awaiting_secrets = false;
                 self.awaiting_nodes = false;
+                self.awaiting_cost = false;
                 self.notice = None;
                 // A knowledge request that was in flight failed: the menu
                 // shows it where the rows would be (`r` retries).
@@ -4048,6 +4595,75 @@ impl Model {
                     return;
                 }
                 self.entries.push(Entry::Error(e));
+            }
+            // The owner's summary, never a local sum (51 §6.2): a reply for
+            // a session left behind is dropped.
+            UiEvent::Cost(id, cost) => {
+                if self.session != Some(id) {
+                    return;
+                }
+                if let Some(Menu::Cost { cost: shown, .. }) = &mut self.menu {
+                    *shown = cost.clone();
+                } else if std::mem::take(&mut self.awaiting_cost) {
+                    self.menu = Some(Menu::Cost {
+                        cost: cost.clone(),
+                        cursor: 0,
+                    });
+                }
+                self.cost = Some(cost);
+            }
+            UiEvent::Terminals(items) => {
+                if items.is_empty() {
+                    self.entries
+                        .push(Entry::Info("no terminals in this session's tree".into()));
+                } else {
+                    self.menu = Some(Menu::Terminals { items, cursor: 0 });
+                }
+            }
+            UiEvent::PtyScreen {
+                session,
+                job,
+                viewport,
+                epoch,
+                reply,
+            } => {
+                if let Some(Menu::Terminal(v)) = &mut self.menu {
+                    v.reply(session, &job, viewport, epoch, reply);
+                }
+            }
+            UiEvent::SessionOpened(open) => {
+                self.reset();
+                self.session = Some(open.session);
+                self.refresh_communication = true;
+                self.refresh_cost = true;
+                if open.retention == Retention::Private
+                    && let Some(secret) = open.lease_secret
+                {
+                    self.private = Some(Private {
+                        root: open.root,
+                        secret,
+                        members: std::collections::HashSet::new(),
+                    });
+                    if !std::mem::replace(&mut self.private_warned, true) {
+                        self.entries.push(Entry::Info(PRIVATE_WARNING.into()));
+                    }
+                    self.entries.push(Entry::Info(format!(
+                        "private session {} — leaving it (/new, /sessions, /resume, /quit) closes the tree",
+                        short(open.root)
+                    )));
+                } else {
+                    self.entries.push(Entry::Info("new session".into()));
+                }
+            }
+            UiEvent::SessionLeft(_, result) => {
+                self.entries.push(Entry::Info(
+                    match result.cleanup {
+                        CleanupStatus::Complete => "private session closed",
+                        CleanupStatus::Pending => "private session closed (cleanup pending)",
+                        CleanupStatus::Incomplete => "private session closed (cleanup incomplete)",
+                    }
+                    .into(),
+                ));
             }
         }
     }
@@ -4230,6 +4846,11 @@ impl Model {
                         }),
                     );
                 }
+                if let Some(p) = &mut self.private
+                    && p.member(*parent)
+                {
+                    p.members.insert(*child);
+                }
                 if self.session == Some(*parent) {
                     self.interject(Entry::Info(format!("↳ spawned {name}")));
                 }
@@ -4291,6 +4912,43 @@ impl Model {
                 if self.session == Some(*session) {
                     let newer = revision(rev) > revision(&self.context_revision);
                     self.refresh_context |= (newer && reason != "settled") || self.context_stale;
+                }
+                return;
+            }
+            // Root metadata moved (51 §3): an open grouped picker re-lists;
+            // the shown tree's label follows. Session chrome, never a transcript row.
+            AgentEvent::SessionMetadataChanged { session, project } => {
+                if self.session == Some(*session) || self.session_parent == Some(*session) {
+                    self.project = project.clone();
+                }
+                self.refresh_grouping |= matches!(
+                    self.menu,
+                    Some(Menu::Sessions { .. } | Menu::Artifacts { .. })
+                );
+                return;
+            }
+            // The ledger of the shown session or an ancestor moved: re-read
+            // the owner summary rather than sum deltas (51 §6.2).
+            AgentEvent::ModelUsageChanged { session, .. } => {
+                self.refresh_cost |= self.session == Some(*session)
+                    || self.session_parent == Some(*session)
+                    || self.private.as_ref().is_some_and(|p| p.root == *session);
+                return;
+            }
+            // The owned private tree is closing (a leave from here already
+            // dropped `private`; this is the harness's own close): let go of
+            // everything it held.
+            AgentEvent::SessionClosing { session, .. } => {
+                if self.private.as_ref().is_some_and(|p| p.root == *session) {
+                    let shown = self.session.is_some_and(|s| {
+                        self.private.as_ref().is_some_and(|p| p.member(s))
+                    });
+                    self.private = None;
+                    if shown {
+                        self.reset();
+                        self.entries
+                            .push(Entry::Info("private session closed by the harness".into()));
+                    }
                 }
                 return;
             }
@@ -4630,7 +5288,11 @@ impl Model {
             .split_once(' ')
             .map_or((line, ""), |(c, a)| (c, a.trim()));
         match cmd {
-            "/quit" | "/exit" => self.quit = true,
+            "/quit" | "/exit" => {
+                // Leaving the process leaves the owned private tree (51 §4.3).
+                self.leave_private(tx);
+                self.quit = true;
+            }
             "/sessions" => send(tx, Command::ListSessions),
             "/search" => self.open_search(arg, tx),
             "/resume" => match arg.parse::<SessionId>() {
@@ -4639,7 +5301,9 @@ impl Model {
                     .entries
                     .push(Entry::Error(format!("not a session id: {arg:?}"))),
             },
+            "/new" if arg == "private" => self.new_private(tx),
             "/new" => {
+                self.leave_private(tx);
                 self.reset();
                 self.entries.push(Entry::Info("new session".into()));
             }
@@ -4734,6 +5398,30 @@ impl Model {
                 _ => self
                     .entries
                     .push(Entry::Error("usage: /jobs [kill <id>]".into())),
+            },
+            "/project" => match (self.session, arg) {
+                (None, _) => self.entries.push(Entry::Info("no session".into())),
+                (Some(_), "") => self
+                    .entries
+                    .push(Entry::Error("usage: /project <label|off>".into())),
+                (Some(session), label) => send(
+                    tx,
+                    Command::SetSessionProject {
+                        session,
+                        project: (label != "off" && label != "clear").then(|| label.to_owned()),
+                    },
+                ),
+            },
+            "/cost" => match self.session {
+                Some(session) => {
+                    self.awaiting_cost = true;
+                    send(tx, Command::SessionCost(session));
+                }
+                None => self.entries.push(Entry::Info("no session".into())),
+            },
+            "/terminals" => match self.session {
+                Some(session) => send(tx, Command::ListTerminals(session)),
+                None => self.entries.push(Entry::Info("no session".into())),
             },
             "/apps" if !self.app_enabled => self.entries.push(Entry::Info(
                 "apps are off (app.enabled); /artifacts lists their sources".into(),
@@ -4855,6 +5543,10 @@ impl Model {
     pub fn resume(&mut self, id: SessionId, tx: &UnboundedSender<Command>) {
         let approvals = std::mem::take(&mut self.approvals);
         let asks = std::mem::take(&mut self.asks);
+        // Root→child→parent moves stay inside the owned tree; anything else releases it (51 §4.3).
+        if self.private.as_ref().is_some_and(|p| !p.member(id)) {
+            self.leave_private(tx);
+        }
         self.reset();
         self.approvals = approvals;
         self.asks = asks;
@@ -5204,8 +5896,9 @@ impl Model {
                 };
                 (
                     format!(
-                        "{model}{effort}  ·  ctx {used} / {} ({pct}%){cache}{}{}{}{}{}",
+                        "{model}{effort}  ·  ctx {used} / {} ({pct}%){cache}{}{}{}{}{}{}",
                         k(limit),
+                        self.cost_tag(),
                         self.approvals_tag(),
                         self.communication_tag(),
                         self.link_tag(),
@@ -5217,7 +5910,8 @@ impl Model {
             }
             _ => (
                 format!(
-                    "{model}{effort}  ·  ctx {used}{cache}{}{}{}{}{}",
+                    "{model}{effort}  ·  ctx {used}{cache}{}{}{}{}{}{}",
+                    self.cost_tag(),
                     self.approvals_tag(),
                     self.communication_tag(),
                     self.link_tag(),
@@ -6476,6 +7170,9 @@ impl Model {
             Some(Menu::Peers { .. }) => self.peers_key(code, tx),
             Some(Menu::Knowledge { .. }) => self.knowledge_key(code, tx),
             Some(Menu::KnowledgeHistory { .. }) => self.knowledge_history_key(code, tx),
+            Some(Menu::Cost { .. }) => self.cost_key(code),
+            Some(Menu::Terminals { .. }) => self.terminals_key(code, tx),
+            Some(Menu::Terminal(_)) => self.terminal_key(code, tx),
         }
     }
 
@@ -6633,11 +7330,11 @@ impl Model {
             return MenuKey::Consumed;
         };
         match code {
-            KeyCode::Up => *cursor = cursor.saturating_sub(1),
-            KeyCode::Down => *cursor = (*cursor + 1).min(items.len().saturating_sub(1)),
+            KeyCode::Up => *cursor = grouped_step(items, *cursor, -1),
+            KeyCode::Down => *cursor = grouped_step(items, *cursor, 1),
             KeyCode::Esc => self.menu = None,
             KeyCode::Enter => {
-                let picked = items.get(*cursor).map(|s| s.id);
+                let picked = items.get(*cursor).and_then(|r| r.item()).map(|(s, _)| s.id);
                 self.menu = None;
                 match picked {
                     Some(id) if Some(id) == self.session => {}
@@ -7021,17 +7718,17 @@ impl Model {
             return MenuKey::Consumed;
         };
         match code {
-            KeyCode::Up => *cursor = cursor.saturating_sub(1),
-            KeyCode::Down => *cursor = (*cursor + 1).min(items.len().saturating_sub(1)),
+            KeyCode::Up => *cursor = grouped_step(items, *cursor, -1),
+            KeyCode::Down => *cursor = grouped_step(items, *cursor, 1),
             KeyCode::Esc => self.menu = None,
             KeyCode::Enter => {
-                if let Some(a) = items.get(*cursor) {
+                if let Some(a) = items.get(*cursor).and_then(Grouped::item) {
                     send(tx, Command::OpenPath(a.path.clone()));
                 }
                 self.menu = None;
             }
             KeyCode::Char('e') => {
-                if let Some(a) = items.get(*cursor) {
+                if let Some(a) = items.get(*cursor).and_then(Grouped::item) {
                     send(
                         tx,
                         Command::ExportArtifact {
@@ -7043,7 +7740,7 @@ impl Model {
                 self.menu = None;
             }
             KeyCode::Char('s') => {
-                let picked = items.get(*cursor).cloned();
+                let picked = items.get(*cursor).and_then(Grouped::item).cloned();
                 self.menu = None;
                 if let Some(a) = picked {
                     let text = artifact_body(&a, &self.assistant_options());
@@ -8654,6 +9351,328 @@ fn ago(d: chrono::Duration) -> String {
         60..3600 => format!("{}m ago", s / 60),
         3600..86_400 => format!("{}h ago", s / 3600),
         _ => format!("{}d ago", s / 86_400),
+    }
+}
+
+/// Shown once per run before the first private session (51 §1).
+pub const PRIVATE_WARNING: &str = "private session: its records live in memory only and are gone when you leave or the harness restarts; \
+files its tools write are real files under a temporary root, deleted on close; \
+provider retention, swap, crash dumps and effects outside the tree are not undone";
+
+/// Nanos as units with three decimals, rounded half up: `0.123`. Integer
+/// arithmetic only (51 §6.2: nanos never go through a float).
+pub fn money_units(nanos: u64) -> String {
+    let millis = (nanos / 1_000_000) + u64::from(nanos % 1_000_000 >= 500_000);
+    format!("{}.{:03}", millis / 1000, millis % 1000)
+}
+
+/// `USD 0.123 · EUR 0.010`: one entry per currency, as sorted by the owner.
+fn money_list(list: &[Money], prefix: &str) -> String {
+    list.iter()
+        .map(|m| format!("{prefix}{} {}", m.currency, money_units(m.nanos)))
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+/// The display rules of 51 §6.2 over one bucket: `Returned cost —` when
+/// nothing was dispatched; `Returned cost USD 0.123`; partial coverage adds
+/// `· N unavailable` and a second line `Estimate for unavailable calls
+/// ~USD 0.023`. Returned and estimated never share a line.
+pub fn cost_lines(b: &CostBucket) -> Vec<String> {
+    let mut first = String::from("Returned cost ");
+    if b.dispatched == 0 || b.returned.is_empty() {
+        first.push('—');
+    } else {
+        first.push_str(&money_list(&b.returned, ""));
+    }
+    if b.unavailable > 0 {
+        first.push_str(&format!(" · {} unavailable", b.unavailable));
+    }
+    let mut lines = vec![first];
+    if !b.estimated_for_unavailable.is_empty() {
+        lines.push(format!(
+            "Estimate for unavailable calls {}",
+            money_list(&b.estimated_for_unavailable, "~")
+        ));
+    }
+    lines
+}
+
+/// One `/terminals` row: `● abcd1234  j3  name · command  running  rev 12`.
+pub fn terminal_row(t: &TerminalSummary) -> String {
+    let label = match &t.name {
+        Some(n) => format!("{n} · {}", t.command),
+        None => t.command.clone(),
+    };
+    let label: String = label.chars().take(48).collect();
+    format!(
+        "{} {}  {:<4} {:<48} {:<9} rev {}",
+        if t.state == "running" { "●" } else { "○" },
+        short(t.session),
+        t.id.0,
+        label,
+        t.state,
+        t.revision
+    )
+}
+
+impl Model {
+    /// This view's stable id for the private lease (51 §4.1): one per process.
+    fn view_id() -> String {
+        format!("tui-{}", std::process::id())
+    }
+
+    /// `/new private`: release any owned tree first, then ask for a fresh
+    /// private root labelled with the shown project (51 §4.1).
+    fn new_private(&mut self, tx: &UnboundedSender<Command>) {
+        self.leave_private(tx);
+        let project = self.project.clone();
+        self.reset();
+        self.entries
+            .push(Entry::Info("opening a private session…".into()));
+        send(
+            tx,
+            Command::CreateSession(CreateSessionOptions {
+                retention: Retention::Private,
+                project,
+                view: Some(Self::view_id()),
+                cwd: std::env::current_dir()
+                    .ok()
+                    .map(|p| p.display().to_string()),
+            }),
+        );
+    }
+
+    /// Release the owned private tree, if any (51 §4.3). The caller resets
+    /// what was shown; the reply says how far cleanup got.
+    fn leave_private(&mut self, tx: &UnboundedSender<Command>) {
+        if let Some(p) = self.private.take() {
+            send(
+                tx,
+                Command::LeaveSession {
+                    session: p.root,
+                    secret: p.secret,
+                },
+            );
+        }
+    }
+
+    /// What `/artifacts` knows about `id`: a listed durable session, the
+    /// shown session or a roster member (the owned private tree included).
+    /// `None` is a missing durable owner (51 §3).
+    fn owner(&self, sessions: &[SessionSummary], id: SessionId) -> Option<Owner> {
+        if let Some(s) = sessions.iter().find(|s| s.id == id) {
+            let title: String = s.title.chars().take(40).collect();
+            return Some(Owner {
+                project: s.project.clone(),
+                label: format!("{}  {title}", short(id)),
+            });
+        }
+        if self.session == Some(id) {
+            return Some(Owner {
+                project: self.project.clone(),
+                label: format!(
+                    "{}  {}",
+                    short(id),
+                    self.session_name.as_deref().unwrap_or("this session")
+                ),
+            });
+        }
+        self.agents.get(&id).map(|a| Owner {
+            project: a.info.project.clone().or_else(|| self.project.clone()),
+            label: format!("{}  {}", short(id), a.info.name),
+        })
+    }
+
+    /// `  ·  Returned cost USD 0.123 · 2 unavailable` for the shown session's
+    /// inclusive total; empty until the owner summary arrived (51 §8.3).
+    fn cost_tag(&self) -> String {
+        match &self.cost {
+            Some(c) => format!("  ·  {}", cost_lines(&c.total)[0]),
+            None => String::new(),
+        }
+    }
+
+    /// A direct child's inclusive total for its `/agents` row: `  ·  USD 0.123`
+    /// (`—` when nothing was dispatched); empty for deeper rows and before the summary arrived.
+    pub fn child_cost_tag(&self, id: SessionId) -> String {
+        let Some(child) = self
+            .cost
+            .as_ref()
+            .and_then(|c| c.children.iter().find(|ch| ch.session == id))
+        else {
+            return String::new();
+        };
+        let line = cost_lines(&child.total).swap_remove(0);
+        format!("  ·  {}", line.trim_start_matches("Returned cost "))
+    }
+
+    /// `/cost` rows (51 §8.3): direct, descendants and total buckets, the
+    /// estimate line, unresolved attempts, history coverage, remote-meter
+    /// gaps, scope, then one row per immediate child.
+    pub fn cost_rows(&self) -> Vec<String> {
+        let Some(Menu::Cost { cost: c, .. }) = &self.menu else {
+            return Vec::new();
+        };
+        let bucket = |name: &str, b: &CostBucket| {
+            let mut lines = cost_lines(b);
+            lines[0] = format!("{name:<12}{}", lines[0]);
+            for l in &mut lines[1..] {
+                *l = format!("{:<12}{l}", "");
+            }
+            lines
+        };
+        let mut rows = bucket("direct", &c.direct);
+        rows.extend(bucket("descendants", &c.descendants));
+        rows.extend(bucket("total", &c.total));
+        rows.push(format!(
+            "{:<12}{} calls · {} dispatched · {} unavailable · {} unresolved",
+            "attempts", c.total.calls, c.total.dispatched, c.total.unavailable, c.total.unresolved
+        ));
+        rows.push(format!(
+            "{:<12}in {} · out {} · cache read {} · cache write {}{}",
+            "tokens",
+            k(u32::try_from(c.total.tokens.input).unwrap_or(u32::MAX)),
+            k(u32::try_from(c.total.tokens.output).unwrap_or(u32::MAX)),
+            k(u32::try_from(c.total.tokens.cache_read).unwrap_or(u32::MAX)),
+            k(u32::try_from(c.total.tokens.cache_write).unwrap_or(u32::MAX)),
+            match c.total.tokens.unknown_calls {
+                0 => String::new(),
+                n => format!(" · {n} calls without token counts"),
+            }
+        ));
+        rows.push(format!(
+            "{:<12}{}",
+            "history",
+            match c.history_coverage {
+                Coverage::Complete => "complete",
+                Coverage::Unknown => "historical cost unknown (ledger starts after this session did)",
+                Coverage::Ambiguous => "ambiguous",
+            }
+        ));
+        if c.remote_meter_gaps > 0 {
+            rows.push(format!(
+                "{:<12}{} remote meter(s) with incomplete coverage",
+                "remote", c.remote_meter_gaps
+            ));
+        }
+        rows.push(format!(
+            "{:<12}{}",
+            "scope",
+            match c.scope {
+                CostScope::Native => "native",
+                CostScope::OpaqueRemoteInclusive => "includes hidden remote descendants",
+            }
+        ));
+        for ch in &c.children {
+            let total = cost_lines(&ch.total).swap_remove(0);
+            rows.push(format!(
+                "  ↳ {} · {}{}{}",
+                ch.name.as_deref().unwrap_or("(unnamed)"),
+                total.trim_start_matches("Returned cost "),
+                if ch.deleted { " · deleted" } else { "" },
+                match ch.scope {
+                    CostScope::Native => "",
+                    CostScope::OpaqueRemoteInclusive => " · remote inclusive",
+                }
+            ));
+        }
+        rows
+    }
+
+    /// `/cost`: a read-only list; esc closes.
+    fn cost_key(&mut self, code: KeyCode) -> MenuKey {
+        let rows = self.cost_rows().len();
+        let Some(Menu::Cost { cursor, .. }) = &mut self.menu else {
+            return MenuKey::Consumed;
+        };
+        match code {
+            KeyCode::Up => *cursor = cursor.saturating_sub(1),
+            KeyCode::Down => *cursor = (*cursor + 1).min(rows.saturating_sub(1)),
+            KeyCode::Esc => self.menu = None,
+            _ => {}
+        }
+        MenuKey::Consumed
+    }
+
+    /// `/terminals`: ⏎ opens the observer on the highlighted job, `r` re-lists.
+    fn terminals_key(&mut self, code: KeyCode, tx: &UnboundedSender<Command>) -> MenuKey {
+        let Some(Menu::Terminals { items, cursor }) = &mut self.menu else {
+            return MenuKey::Consumed;
+        };
+        match code {
+            KeyCode::Up => *cursor = cursor.saturating_sub(1),
+            KeyCode::Down => *cursor = (*cursor + 1).min(items.len().saturating_sub(1)),
+            KeyCode::Esc => self.menu = None,
+            KeyCode::Char('r') => {
+                if let Some(session) = self.session {
+                    send(tx, Command::ListTerminals(session));
+                }
+            }
+            KeyCode::Enter => {
+                if let Some(t) = items.get(*cursor) {
+                    self.terminal_epoch += 1;
+                    let mut view = TerminalView::new(t, self.terminal_epoch);
+                    if let Some(cmd) = view.poll(now_ms()) {
+                        send(tx, cmd);
+                    }
+                    self.menu = Some(Menu::Terminal(Box::new(view)));
+                }
+            }
+            _ => {}
+        }
+        MenuKey::Consumed
+    }
+
+    /// The observer's keys (51 §7.4): history scrolling, horizontal pan,
+    /// `r` refresh, esc back to the picker. Nothing reaches the process.
+    fn terminal_key(&mut self, code: KeyCode, tx: &UnboundedSender<Command>) -> MenuKey {
+        let Some(Menu::Terminal(v)) = &mut self.menu else {
+            return MenuKey::Consumed;
+        };
+        match code {
+            KeyCode::Up => v.scroll(-1),
+            KeyCode::Down => v.scroll(1),
+            KeyCode::PageUp => v.scroll(-i64::from(TERMINAL_PAGE)),
+            KeyCode::PageDown => v.scroll(i64::from(TERMINAL_PAGE)),
+            KeyCode::Left => v.col = v.col.saturating_sub(DIFF_STEP),
+            KeyCode::Right => {
+                let cols = v.page.as_ref().map_or(120, |p| usize::from(p.cols));
+                v.col = (v.col + DIFF_STEP).min(cols.saturating_sub(DIFF_STEP));
+            }
+            KeyCode::Char('r') => {
+                v.revision = None;
+                v.dirty = true;
+                v.next_poll = 0;
+            }
+            // Closes the overlay only; the owned tree is untouched (51 §4.3, §7.4).
+            KeyCode::Esc => {
+                self.menu = None;
+                return MenuKey::Consumed;
+            }
+            _ => {}
+        }
+        if let Some(cmd) = v.poll(now_ms()) {
+            send(tx, cmd);
+        }
+        MenuKey::Consumed
+    }
+
+    /// When the event loop must next wake for the observer (unix ms); `None` while none is open.
+    pub fn terminal_wake(&self) -> Option<u64> {
+        match &self.menu {
+            Some(Menu::Terminal(v)) => v.wake(),
+            _ => None,
+        }
+    }
+
+    /// Send the observer's due poll, if any (51 §7.3: one in flight, one per half second).
+    pub fn terminal_tick(&mut self, now: u64, tx: &UnboundedSender<Command>) {
+        if let Some(Menu::Terminal(v)) = &mut self.menu
+            && let Some(cmd) = v.poll(now)
+        {
+            send(tx, cmd);
+        }
     }
 }
 
@@ -12003,6 +13022,7 @@ mod tests {
             items: vec![app],
             pick: true,
             apps: true,
+            sessions: Vec::new(),
         });
         assert!(matches!(m.menu, Some(Menu::Artifacts { apps: true, .. })));
         m.menu_key(KeyCode::Char('s'), "", &tx);
@@ -12025,6 +13045,7 @@ mod tests {
             items: Vec::new(),
             pick: true,
             apps: true,
+            sessions: Vec::new(),
         });
         assert!(matches!(m.entries.last(), Some(Entry::Info(t)) if t == "no apps"));
         std::fs::remove_file(&path).unwrap();
@@ -12442,5 +13463,238 @@ mod tests {
             state: agent::PeerMessageState::Replied,
         }));
         assert!(m.refresh_peers);
+    }
+
+    fn summary(id: SessionId, parent: Option<SessionId>, project: Option<&str>) -> SessionSummary {
+        SessionSummary {
+            id,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            title: String::new(),
+            model: "m".into(),
+            parent,
+            name: parent.map(|_| "child".to_owned()),
+            effort: None,
+            agent: None,
+            cwd: None,
+            pinned: false,
+            project: project.map(str::to_owned),
+            retention: Retention::Durable,
+        }
+    }
+
+    /// 51 §3: headings in first-seen order of the roots, Ungrouped last,
+    /// children under their roots; the cursor never rests on a heading.
+    #[test]
+    fn sessions_group_by_project_with_children_under_roots() {
+        let ids: Vec<SessionId> = (0..5).map(|_| SessionId::new()).collect();
+        let list = vec![
+            summary(ids[0], None, Some("B")),
+            summary(ids[1], None, Some("A")),
+            summary(ids[2], None, None),
+            summary(ids[3], None, Some("B")),
+            // A child listed first still lands under its root.
+            summary(ids[4], Some(ids[1]), None),
+        ];
+        let rows = session_rows(list);
+        let shape: Vec<String> = rows
+            .iter()
+            .map(|r| match r {
+                Grouped::Heading(h) => format!("# {h}"),
+                Grouped::Item((s, d)) => format!("{d}:{}", ids.iter().position(|i| *i == s.id).unwrap()),
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            ["# B", "0:0", "0:3", "# A", "0:1", "1:4", "# Ungrouped", "0:2"]
+        );
+        assert_eq!(grouped_first(&rows), 1);
+        assert_eq!(grouped_step(&rows, 2, 1), 4, "down skips the A heading");
+        assert_eq!(grouped_step(&rows, 4, -1), 2, "up skips it too");
+        assert_eq!(grouped_step(&rows, 1, -1), 1, "the top clamps");
+        assert_eq!(grouped_step(&rows, 7, 1), 7, "the bottom clamps");
+    }
+
+    /// 51 §6.2 display strings over one bucket.
+    #[test]
+    fn cost_lines_follow_the_display_rules() {
+        let usd = |nanos| Money {
+            currency: "USD".into(),
+            nanos,
+        };
+        let mut b = CostBucket::default();
+        assert_eq!(cost_lines(&b), ["Returned cost —"]);
+        b.calls = 3;
+        b.dispatched = 3;
+        b.returned = vec![usd(123_000_000)];
+        assert_eq!(cost_lines(&b), ["Returned cost USD 0.123"]);
+        b.returned = vec![usd(100_000_000)];
+        b.unavailable = 2;
+        b.estimated_for_unavailable = vec![usd(23_400_000)];
+        assert_eq!(
+            cost_lines(&b),
+            [
+                "Returned cost USD 0.100 · 2 unavailable",
+                "Estimate for unavailable calls ~USD 0.023"
+            ]
+        );
+        b.unavailable = 0;
+        b.estimated_for_unavailable.clear();
+        b.returned = vec![
+            Money {
+                currency: "EUR".into(),
+                nanos: 1_999_500_000,
+            },
+            usd(5_000_000),
+        ];
+        assert_eq!(cost_lines(&b), ["Returned cost EUR 2.000 · USD 0.005"]);
+        // Nanos never touch a float: the u64 ceiling formats exactly.
+        assert_eq!(money_units(u64::MAX), "18446744073.710");
+    }
+
+    fn page(session: SessionId, job: &str, revision: u64, viewport: PtyViewport) -> PtyPage {
+        PtyPage {
+            session,
+            id: JobId(job.into()),
+            revision,
+            epoch: None,
+            viewport,
+            origin: 0,
+            retained: 100,
+            rows: 40,
+            cols: 120,
+            alternate: false,
+            cursor: None,
+            wrapped: Vec::new(),
+            lines: Vec::new(),
+            truncated: false,
+            redaction_complete: true,
+            exit: None,
+        }
+    }
+
+    /// 51 §7.4: a reply paints only when it answers the current selection,
+    /// epoch and viewport and is not older than what is shown; an
+    /// `Unchanged` for another viewport re-asks.
+    #[test]
+    fn terminal_replies_are_guarded_by_epoch_viewport_and_revision() {
+        let s = SessionId::new();
+        let t = TerminalSummary {
+            session: s,
+            id: JobId("j1".into()),
+            name: None,
+            command: "top".into(),
+            state: "running".into(),
+            rows: 40,
+            cols: 120,
+            revision: 3,
+            epoch: None,
+        };
+        let mut v = TerminalView::new(&t, 7);
+        assert!(matches!(v.poll(1000), Some(Command::PtyScreen { epoch: 7, if_revision: None, .. })));
+        assert!(v.poll(1000).is_none(), "one ask in flight");
+        // A reply asked under the previous selection is dropped, and does not free the slot.
+        let live = PtyViewport::Live;
+        assert!(!v.reply(s, &JobId("j1".into()), live, 6, Ok(PtyScreenReply::Updated(page(s, "j1", 9, live)))));
+        assert!(v.page.is_none() && v.inflight);
+        // The current one paints.
+        assert!(v.reply(s, &JobId("j1".into()), live, 7, Ok(PtyScreenReply::Updated(page(s, "j1", 4, live)))));
+        assert_eq!(v.revision, Some(4));
+        assert!(!v.inflight);
+        // Scrolling into history: the next ask carries no `if_revision` and goes out at once.
+        v.scroll(-10);
+        let hist = PtyViewport::History {
+            offset: 10,
+            height: TERMINAL_PAGE,
+        };
+        assert_eq!(v.viewport, hist);
+        assert!(matches!(v.poll(1100), Some(Command::PtyScreen { viewport, if_revision: None, .. }) if viewport == hist));
+        // `Unchanged` echoing the old viewport is not an answer: re-ask.
+        assert!(!v.reply(s, &JobId("j1".into()), hist, 7, Ok(PtyScreenReply::Unchanged { viewport: live, revision: 4 })));
+        assert!(v.dirty && v.revision.is_none());
+        assert_eq!(v.wake(), Some(0));
+        assert!(v.poll(1200).is_some());
+        // A higher revision from the job selected before does not paint the new selection.
+        let mut next = TerminalView::new(
+            &TerminalSummary {
+                id: JobId("j2".into()),
+                ..t.clone()
+            },
+            8,
+        );
+        next.poll(2000);
+        assert!(!next.reply(s, &JobId("j1".into()), live, 8, Ok(PtyScreenReply::Updated(page(s, "j1", 99, live)))));
+        assert!(next.page.is_none());
+        assert!(next.reply(s, &JobId("j2".into()), live, 8, Ok(PtyScreenReply::Updated(page(s, "j2", 1, live)))));
+        // An older page than the one shown is dropped; gone is gone.
+        assert!(!next.reply(s, &JobId("j2".into()), live, 8, Ok(PtyScreenReply::Updated(page(s, "j2", 0, live)))));
+        assert!(next.reply(s, &JobId("j2".into()), live, 8, Ok(PtyScreenReply::Unavailable)));
+        assert_eq!(next.status().as_deref(), Some("No longer available."));
+        assert!(next.wake().is_none(), "no more polls for a gone terminal");
+    }
+
+    /// 51 §4.3: leaving the owned tree for another root releases it once;
+    /// moving within the tree does not.
+    #[test]
+    fn private_tree_is_left_only_when_navigating_outside_it() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        m.submit("/new private", &tx);
+        let Ok(Command::CreateSession(opts)) = rx.try_recv() else {
+            panic!("expected create_session");
+        };
+        assert_eq!(opts.retention, Retention::Private);
+        assert!(opts.view.as_deref().is_some_and(|v| v.starts_with("tui-")));
+        let root = SessionId::new();
+        m.apply(UiEvent::SessionOpened(SessionOpen {
+            session: root,
+            root,
+            retention: Retention::Private,
+            lease_secret: Some("s3cret".into()),
+        }));
+        assert_eq!(m.session, Some(root));
+        assert!(m.entries.iter().any(|e| matches!(e, Entry::Info(t) if t == PRIVATE_WARNING)));
+        let child = SessionId::new();
+        m.apply(UiEvent::Agent(AgentEvent::SubagentSpawned {
+            parent: root,
+            child,
+            name: "worker".into(),
+        }));
+        while rx.try_recv().is_ok() {}
+        // Root → child → parent: no leave.
+        m.resume(child, &tx);
+        m.resume(root, &tx);
+        assert!(m.private.is_some());
+        while let Ok(c) = rx.try_recv() {
+            assert!(!matches!(c, Command::LeaveSession { .. }));
+        }
+        // Another root: leave first, exactly once, with the secret.
+        m.resume(SessionId::new(), &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::LeaveSession { session, secret }) if session == root && secret == "s3cret"
+        ));
+        assert!(m.private.is_none());
+        m.apply(UiEvent::SessionLeft(
+            root,
+            CloseResult {
+                revoked: true,
+                cleanup: CleanupStatus::Pending,
+            },
+        ));
+        assert!(matches!(
+            m.entries.last(),
+            Some(Entry::Info(t)) if t == "private session closed (cleanup pending)"
+        ));
+        // The warning shows once per run (the open resets the transcript).
+        m.submit("/new private", &tx);
+        m.apply(UiEvent::SessionOpened(SessionOpen {
+            session: root,
+            root,
+            retention: Retention::Private,
+            lease_secret: Some("next".into()),
+        }));
+        assert!(m.private.is_some());
+        assert!(!m.entries.iter().any(|e| matches!(e, Entry::Info(t) if t == PRIVATE_WARNING)));
     }
 }

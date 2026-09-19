@@ -29,6 +29,8 @@ const loaded = (rev = '1'): Omit<LoadedPage, 'history' | 'first_seq' | 'more'> =
   settled: true,
   todos: null,
   communication: null,
+  project: null,
+  retention: 'durable',
 })
 const msg = (seq: number): ContextEntry => ({ target: { kind: 'message', seq }, active: true, removed: false, remove_with: [], attachments: [] })
 /** A native plan at `version` whose items are `texts`, all pending. */
@@ -306,7 +308,7 @@ test('route leaves untouched slices alone and ignores foreign events', () => {
 
 test('job tail attaches to the tool card by call id, follows output, freezes or drops on finish', () => {
   let s = run([{ type: 'ToolCallStarted', session: S, turn: T, call_id: 'c1', name: 'shell', args: { command: 'make' } }])
-  s = apply(s, { type: 'JobStarted', session: S, id: 'j1', command: 'make', call_id: 'c1', log: '/l' }, ctx())
+  s = apply(s, { type: 'JobStarted', session: S, id: 'j1', command: 'make', call_id: 'c1', log: '/l', name: null, pty: false }, ctx())
   s = apply(s, { type: 'JobOutput', session: S, id: 'j1', chunk: '10%\r55%\ndone' }, ctx())
   expect(s.entries[0]).toMatchObject({ job: { id: 'j1', lines: ['55%', 'done'] } })
   const inline = apply(s, { type: 'JobFinished', session: S, id: 'j1', command: 'make', exit: { exited: 0 }, secs: 2n, output: '', inline: true, pty: false }, ctx())

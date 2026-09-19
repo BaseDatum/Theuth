@@ -47,9 +47,10 @@ const toBase64 = (bytes: Uint8Array): string => {
   return btoa(s)
 }
 
-/** Upload `file` and get back the harness-side path for `send_input.files`. */
-export async function putAttachment(api: Api, file: Blob, ext: string): Promise<string> {
-  return api.put_attachment(toBase64(new Uint8Array(await file.arrayBuffer())), ext)
+/** Upload `file` and get back the harness-side path for `send_input.files`; a private `session` routes it to its scratch root (51 §4.5). */
+export async function putAttachment(api: Api, file: Blob, ext: string, session?: string): Promise<string> {
+  const b64 = toBase64(new Uint8Array(await file.arrayBuffer()))
+  return session ? api.put_session_attachment(session, b64, ext) : api.put_attachment(b64, ext)
 }
 
 /** The file is on this machine (macOS shell talking to the local daemon): paths open, reveal and `asset://` work. */
