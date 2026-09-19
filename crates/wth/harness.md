@@ -46,7 +46,9 @@ agent:
   model: anthropic/claude-sonnet-4-5   # provider/model, or bare id resolved against configured providers
   effort: null                         # low | high | off | token budget; provider default when unset
   aws_profile: null                    # Bedrock; /aws or Settings → Connections selects a harness-wide profile
-  max_tool_rounds: 32                  # tool-call rounds per turn before the loop asks for a text reply; also Settings → General
+  max_tool_rounds: 32                  # tool-call rounds per turn before the loop asks for a text reply; also Settings → Agent loop
+  stream_idle_secs: 120                # seconds without a stream event before a model call is abandoned as a dead socket (36 §2.3)
+  max_salvages: 2                      # interrupted-reply recoveries per turn (stalled stream or output cap) before the turn errors; 0 = off
   max_tool_output_chars: 32000
   runtime_only: true                   # false: every tool is also a direct definition, not just python + user/agent tools
   compact_at: 0.8                      # auto-compact at this fraction of the context window; 0 = off

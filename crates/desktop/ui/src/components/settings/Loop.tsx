@@ -1,0 +1,208 @@
+import { useQuery } from '@tanstack/react-query'
+import { Row, Section, refreshInfo, useAction } from '@/components/settings/shared'
+import { Input } from '@/components/ui/input'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
+import { useNudges } from '@/lib/nudges'
+import { queryKeys, useApi } from '@/lib/rpc'
+import type { CompactStyle } from '@/rpc/bindings/CompactStyle'
+import { useConnection } from '@/store/connection'
+
+const COMPACT: [CompactStyle, string][] = [
+  ['summary', 'Summary'],
+  ['cut', 'Cut'],
+  ['snap', 'Snap'],
+]
+
+/** A whole-number `Info` field edited on blur/Enter; values below `min` are ignored. */
+function Count({
+  value,
+  min,
+  action,
+}: {
+  value: number | undefined
+  min: number
+  action: { mutate: (n: number) => void; isPending: boolean }
+}) {
+  return (
+    <Input
+      key={value}
+      type="number"
+      min={min}
+      defaultValue={value}
+      disabled={value === undefined || action.isPending}
+      className="w-28 text-right"
+      onBlur={(e) => {
+        const n = Math.floor(Number(e.currentTarget.value))
+        if (n >= min && n !== value) action.mutate(n)
+      }}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') e.currentTarget.blur()
+      }}
+    />
+  )
+}
+
+/** Settings › Agent loop: how a turn runs — model calls, recovery, compaction, helper models. */
+export function Loop() {
+  const api = useApi()
+  const info = useConnection((s) => s.info)
+  const showNudges = useNudges((s) => s.show)
+  const models = useQuery({
+    queryKey: queryKeys.models,
+    queryFn: () => api.list_models(),
+  })
+  const titleModel = useQuery({
+    queryKey: queryKeys.titleModel,
+    queryFn: () => api.title_model(),
+  })
+  const visionModel = useQuery({
+    queryKey: queryKeys.visionModel,
+    queryFn: () => api.vision_model(),
+  })
+
+  const setTitleModel = useAction((id: string) => api.set_title_model(id === 'off' ? null : id), {
+    keys: [queryKeys.titleModel],
+  })
+  const setVisionModel = useAction((id: string) => api.set_vision_model(id === 'off' ? null : id), {
+    keys: [queryKeys.visionModel],
+  })
+  const setCompact = useAction((style: CompactStyle) =>
+    api.set_compact_style(style).then(() => refreshInfo(api)),
+  )
+  const setSubagentTimeout = useAction((seconds: number) =>
+    api.set_subagent_timeout(seconds).then(() => refreshInfo(api)),
+  )
+  const setMaxToolRounds = useAction((rounds: number) =>
+    api.set_max_tool_rounds(rounds).then(() => refreshInfo(api)),
+  )
+  const setStreamIdle = useAction((seconds: number) =>
+    api.set_stream_idle(seconds).then(() => refreshInfo(api)),
+  )
+  const setMaxSalvages = useAction((count: number) =>
+    api.set_max_salvages(count).then(() => refreshInfo(api)),
+  )
+
+  // 52 §3.2: only models whose backend can actually receive images (`ModelInfo.image` is effective support).
+  const visionModels = models.data?.filter((m) => m.image) ?? []
+  const vision = visionModel.data
+  // A saved selection whose provider went away stays visible as unavailable, never as Off.
+  const unavailable =
+    vision && models.isSuccess && !visionModels.some((m) => m.id === vision.id) ? vision.id : null
+
+  return (
+    <>
+      <Section title="Model calls">
+        <Row
+          label="Stream idle timeout"
+          description="Seconds without any output from the model before the call is abandoned as a dead connection. Raise it if long tool arguments stall on your provider. New sessions only."
+        >
+          <Count value={info?.stream_idle_secs} min={1} action={setStreamIdle} />
+        </Row>
+        <Row
+          label="Reply recoveries per turn"
+          description="How many times per turn the harness picks up a reply cut off by a stalled stream or the output token limit before the turn stops with an error. 0 turns recovery off. New sessions only."
+        >
+          <Count value={info?.max_salvages} min={0} action={setMaxSalvages} />
+        </Row>
+        <Row
+          label="Tool rounds per turn"
+          description="Tool-call rounds a turn may run before the model is asked to reply with text. New sessions only."
+        >
+          <Count value={info?.max_tool_rounds} min={1} action={setMaxToolRounds} />
+        </Row>
+        <Row
+          label="Subagent timeout"
+          description="Maximum runtime for a newly spawned subagent turn, in seconds."
+        >
+          <Count value={info?.subagent_timeout_secs} min={1} action={setSubagentTimeout} />
+        </Row>
+      </Section>
+      <Section title="Context">
+        <Row
+          label="Default compact style"
+          description="How a compaction builds the new context head."
+        >
+          <Select
+            value={info?.compact_style}
+            disabled={!info || setCompact.isPending}
+            onValueChange={(v) => setCompact.mutate(v as CompactStyle)}
+          >
+            <SelectTrigger className="w-40">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {COMPACT.map(([id, label]) => (
+                <SelectItem key={id} value={id}>
+                  {label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Row>
+        <Row
+          label="Show harness nudges"
+          description="Show the harness's mid-turn notes to the model (continue, tool rounds, context pressure) in the chat. Display only."
+        >
+          <Switch checked={showNudges} onCheckedChange={useNudges.getState().setShow} />
+        </Row>
+      </Section>
+      <Section title="Helper models">
+        <Row label="Title model" description="Names new chats after the first exchange.">
+          <Select
+            value={titleModel.data ? titleModel.data.id : 'off'}
+            disabled={titleModel.isPending || setTitleModel.isPending}
+            onValueChange={(v) => setTitleModel.mutate(v)}
+          >
+            <SelectTrigger className="max-w-64">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="off">Off</SelectItem>
+              {models.data?.map((m) => (
+                <SelectItem key={m.id} value={m.id}>
+                  {m.id}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Row>
+        <Row
+          label="Vision fallback model"
+          description={
+            visionModel.isError
+              ? `Could not read the vision fallback: ${visionModel.error.message}`
+              : unavailable
+                ? `${unavailable} is selected but not available on this harness; pick another or Off.`
+                : 'Used only when the main model cannot view images. It receives the image and a question written by the main model. Images may go to a different configured provider, and each new image batch costs a question call and a vision call; text redaction cannot remove secrets shown in pixels.'
+          }
+        >
+          <Select
+            value={vision ? vision.id : 'off'}
+            disabled={!visionModel.isSuccess || setVisionModel.isPending}
+            onValueChange={(v) => setVisionModel.mutate(v)}
+          >
+            <SelectTrigger aria-label="Vision fallback model" className="max-w-64">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="off">Off</SelectItem>
+              {visionModels.map((m) => (
+                <SelectItem key={m.id} value={m.id}>
+                  {m.id}
+                </SelectItem>
+              ))}
+              {unavailable && <SelectItem value={unavailable}>{unavailable} (unavailable)</SelectItem>}
+            </SelectContent>
+          </Select>
+        </Row>
+      </Section>
+    </>
+  )
+}

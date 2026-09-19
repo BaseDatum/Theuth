@@ -163,8 +163,8 @@ at config extraction. No startup vision request is made.
 | TUI `/vision` | Show selected fallback or Off and the command to set it. |
 | TUI `/vision <provider/model>` | Set through RPC; show the canonical returned selection. |
 | TUI `/vision off` or `/vision clear` | Send null; no fallback. |
-| Desktop/mobile Settings → General | “Vision fallback model” beside “Title model”; Off plus available, effective vision-capable models. |
-| Desktop/mobile `/vision` | Open General, matching bare `/title`. Explicit ID/off/clear uses the same RPC. |
+| Desktop/mobile Settings → Agent loop | “Vision fallback model” beside “Title model”; Off plus available, effective vision-capable models. |
+| Desktop/mobile `/vision` | Open Agent loop, matching bare `/title`. Explicit ID/off/clear uses the same RPC. |
 
 Description: “Used only when the main model cannot view images. It receives
 the image and a question written by the main model.” Mention that this can
@@ -641,7 +641,7 @@ any sketch in §§3–6.
 
 - **Setting.** `agent.vision_model` (`AgentConfig`); RPC `vision_model()` /
   `set_vision_model(model | null)`; TUI `/vision [model|off]`; shared
-  desktop/mobile Settings › General row "Vision fallback model" beside "Title
+  desktop/mobile Settings › Agent loop row "Vision fallback model" beside "Title
   model", options filtered to image-capable models. The setter requires an
   exact catalog `provider/model` whose effective image support is true and
   whose provider is configured; validation runs before the config write and
@@ -741,7 +741,7 @@ cannot receive images". `config.yaml` followed each change.
 **Shared desktop UI** (browser mode at `localhost:1420`, headless Chromium
 driven from the orchestrating session, `agent.model: ollama/textonly`):
 
-- Settings › General: "Vision fallback model" row under "Title model" with the
+- Settings › Agent loop (then General; moved 2026-09-19): "Vision fallback model" row under "Title model" with the
   disclosure description ("Used only when the main model cannot view images.
   It receives the image and a question written by the main model. Images may
   go to a different configured provider, and each new image batch costs a
@@ -758,7 +758,7 @@ driven from the orchestrating session, `agent.model: ollama/textonly`):
   bubble with the image, then a collapsible card `Vision observation ·
   ollama/eyes <name>.png` (expands to sources, question, answer), then the
   reply. A page reload rebuilt the same rows from `load_session`.
-- Mobile viewport 390×844: Settings › General shows the same combobox with
+- Mobile viewport 390×844: Settings › Agent loop shows the same combobox with
   value `ollama/eyes`, hit box 126×36 px.
 
 User visual sign-off on the four screenshots (settings row, composer warning,

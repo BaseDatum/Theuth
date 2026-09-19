@@ -16,15 +16,17 @@ use agent::{
     AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentConfig, AgentInfo, Agents, AnswerPeerRequest,
     Cancel, CommunicationState, Compact, CompactStyle, ContextItems, ContextRemoval,
     ContextSnapshot, ContextTarget, DeleteSession, EditTurn, ForkSession, GetCommunication,
-    GetCompactStyle, GetMaxToolRounds, GetPeerMessage, GetSubagentTimeout, GetTitleModel, GetTodos,
-    GetVisionModel, Harvest, ListAcp, ListAgents, ListLogins, ListModels, ListPeerMessages,
+    GetCompactStyle, GetMaxSalvages, GetMaxToolRounds, GetPeerMessage, GetStreamIdle,
+    GetSubagentTimeout, GetTitleModel, GetTodos, GetVisionModel, Harvest, ListAcp, ListAgents,
+    ListLogins, ListModels, ListPeerMessages,
     ListPeers, ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills, LoadSession,
     LoadSkill, Loaded, Login, LoginInfo, Logout, ModelInfo, NewRootSession, PeerMessagePage,
     PeerPage, PeerReceipt, PeerRecord, PeerScope, PinSession, ProviderInfo, QueuedInput, Redo,
     Regenerate, RemoveAcp, RemoveContext, RemoveProvider, RemoveSkill, RemoveSkillRepo,
     RenameSession, SendInput, SessionSummary, SetCommunication, SetCompactStyle, SetEffort,
-    SetMaxToolRounds, SetModel, SetPeerScope, SetSubagentTimeout, SetTitleModel, SetVisionModel,
-    ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw,
+    SetMaxSalvages, SetMaxToolRounds, SetModel, SetPeerScope, SetStreamIdle, SetSubagentTimeout,
+    SetTitleModel, SetVisionModel, ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo,
+    UseSkill, Withdraw,
 };
 use agent::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 use agent::{
@@ -105,6 +107,10 @@ pub struct Info {
     pub subagent_timeout_secs: u64,
     /// `agent.max_tool_rounds`: tool-call rounds a turn may run before the loop lands.
     pub max_tool_rounds: u32,
+    /// `agent.stream_idle_secs`: seconds without a stream event before a model call is abandoned.
+    pub stream_idle_secs: u64,
+    /// `agent.max_salvages`: interrupted-reply recoveries per turn before it stops with an error.
+    pub max_salvages: u32,
     /// Harness display name (`link.name`, else the hostname): what a linked
     /// device shows in its harness switcher (31 §6.4).
     pub name: String,
@@ -257,6 +263,12 @@ pub trait Api {
     /// Persist `agent.max_tool_rounds`; new sessions use it.
     #[method(name = "set_max_tool_rounds")]
     async fn set_max_tool_rounds(&self, rounds: u32) -> RpcResult<()>;
+    /// Persist `agent.stream_idle_secs`; new sessions use it.
+    #[method(name = "set_stream_idle")]
+    async fn set_stream_idle(&self, seconds: u64) -> RpcResult<()>;
+    /// Persist `agent.max_salvages`; new sessions use it.
+    #[method(name = "set_max_salvages")]
+    async fn set_max_salvages(&self, count: u32) -> RpcResult<()>;
     /// The live title model (`agent.title_model`), if set.
     #[method(name = "title_model")]
     async fn title_model(&self) -> RpcResult<Option<ModelInfo>>;
@@ -1165,6 +1177,8 @@ impl ApiServer for Server {
         let subagent_timeout_secs =
             ask::<Agents, _>(agent::AGENT_ACTOR, GetSubagentTimeout).await?;
         let max_tool_rounds = ask::<Agents, _>(agent::AGENT_ACTOR, GetMaxToolRounds).await?;
+        let stream_idle_secs = ask::<Agents, _>(agent::AGENT_ACTOR, GetStreamIdle).await?;
+        let max_salvages = ask::<Agents, _>(agent::AGENT_ACTOR, GetMaxSalvages).await?;
         let name = match self.rt.section::<LinkConfig>("link") {
             Ok(c) if !c.name.is_empty() => c.name,
             _ => HOSTNAME.clone(),
@@ -1180,6 +1194,8 @@ impl ApiServer for Server {
             compact_style,
             subagent_timeout_secs,
             max_tool_rounds,
+            stream_idle_secs,
+            max_salvages,
             name,
             communication,
             app_enabled: apps().is_ok(),
@@ -1413,6 +1429,14 @@ impl ApiServer for Server {
 
     async fn set_max_tool_rounds(&self, rounds: u32) -> RpcResult<()> {
         ask::<Agents, _>(agent::AGENT_ACTOR, SetMaxToolRounds { rounds }).await
+    }
+
+    async fn set_stream_idle(&self, seconds: u64) -> RpcResult<()> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, SetStreamIdle { seconds }).await
+    }
+
+    async fn set_max_salvages(&self, count: u32) -> RpcResult<()> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, SetMaxSalvages { count }).await
     }
 
     async fn title_model(&self) -> RpcResult<Option<ModelInfo>> {

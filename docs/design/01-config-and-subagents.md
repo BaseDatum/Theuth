@@ -49,7 +49,9 @@ overlay `WTH_<SECTION>__<KEY>` unchanged. Same sections, same structs:
 agent:
   model: claude-sonnet-4-5
   # standing instructions live in <data_dir>/prompt.md (design doc 04)
-  max_tool_rounds: 50
+  max_tool_rounds: 32
+  stream_idle_secs: 120        # 36 §2.3: no stream event for this long abandons the model call
+  max_salvages: 2              # 36 §2.4/§2.6: interrupted-reply recoveries per turn; 0 = off
   communication: false         # 50 §2.1: harness-wide ceiling on model-to-model communication; missing = off
   subagents:                   # §2.6
     model: null                # default: agent.model

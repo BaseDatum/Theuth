@@ -159,7 +159,9 @@ Config (`~/.wth/`, created on first run; details in
     # effort: high        # low|medium|high|… per model (/model lists them); unset = provider default
     # vision_model: anthropic/claude-haiku-4-5  # answers the main model's questions about images it cannot see (design doc 52);
                              # unset: no fallback. Must be an exact catalog `provider/model` that accepts images;
-                             # images then go to that provider, with extra calls. /vision or Settings → General
+                             # images then go to that provider, with extra calls. /vision or Settings → Agent loop
+    # stream_idle_secs: 120  # seconds without a stream event before a model call is abandoned (design doc 36 §2.3)
+    # max_salvages: 2        # interrupted-reply recoveries per turn (stalled stream or output cap) before the turn errors; 0 = off
     # aws_profile: work   # Bedrock inference; /aws or Settings → Connections selects it
     compact_at: 0.8        # compact when the context is this full; 0 disables
     compact_style: summary  # summary | cut | snap

@@ -94,10 +94,6 @@ const CACHE_FLOOR: u32 = 4096;
 const RETRY_BACKOFF: [u64; 3] = [2, 10, 30];
 /// Transient resends allowed across one turn (36 §2.2).
 const RETRY_MAX_PER_TURN: u32 = 10;
-/// No stream event for this long is a dead socket, not a slow model (36 §2.3).
-const STREAM_IDLE: Duration = Duration::from_secs(120);
-/// Partial-reply plus length salvages allowed per turn (36 §2.4, §2.6).
-const SALVAGE_MAX_PER_TURN: u32 = 2;
 /// Wall clock on one summariser call; expiry degrades the compaction to `cut` (36 §6.1).
 const SUMMARISE_TIMEOUT: Duration = Duration::from_secs(300);
 /// Smallest a tool result is shrunk to by the batch budget: a spill marker plus a hint (36 §4.2).
@@ -2372,8 +2368,8 @@ impl Turn {
     }
 
     /// One open + drain. Streamed assistant text accumulates in `text`; `calls`
-    /// is set once a tool-call chunk arrived. No event for [`STREAM_IDLE`] is a
-    /// transient `stream idle for 120s` (36 §2.3).
+    /// is set once a tool-call chunk arrived. No event for `agent.stream_idle_secs`
+    /// is a transient `stream idle for Ns` (36 §2.3).
     async fn stream_once(
         &self,
         current: &Current,
@@ -2395,15 +2391,16 @@ impl Turn {
         let session = self.shared.id;
         let mut pending: Vec<String> = Vec::new();
         let mut progress: HashMap<String, Progress> = HashMap::new();
+        let idle = Duration::from_secs(self.shared.cfg.stream_idle_secs);
         loop {
             let ev = tokio::select! {
                 _ = self.cancel.cancelled() => return Err(Abort::Cancelled),
-                ev = tokio::time::timeout(STREAM_IDLE, stream.next()) => match ev {
+                ev = tokio::time::timeout(idle, stream.next()) => match ev {
                     Ok(ev) => ev,
                     Err(_) => {
                         return Err(Abort::Model(format!(
                             "stream idle for {}s",
-                            STREAM_IDLE.as_secs()
+                            idle.as_secs()
                         )));
                     }
                 },
@@ -3171,7 +3168,7 @@ impl Turn {
             Err(Abort::Cancelled) => return Round::Stop("cancelled".into()),
             // 36 §2.4: keep what streamed, ask the model to carry on.
             Err(Abort::Partial { text, err }) => {
-                if self.salvaged >= SALVAGE_MAX_PER_TURN {
+                if self.salvaged >= self.shared.cfg.max_salvages {
                     self.error(format!("model: {err}")).await;
                     return Round::Stop("error".into());
                 }
@@ -3288,7 +3285,7 @@ impl Turn {
                 }
             }
             // 36 §2.6: output cap hit; the cut-off reply is persisted, ask for the rest.
-            if (stop == "max_tokens" || stop == "length") && self.salvaged < SALVAGE_MAX_PER_TURN {
+            if (stop == "max_tokens" || stop == "length") && self.salvaged < self.shared.cfg.max_salvages {
                 self.salvaged += 1;
                 tracing::info!(session = %self.shared.id, stop = %stop, "salvaging length-capped reply");
                 self.note(

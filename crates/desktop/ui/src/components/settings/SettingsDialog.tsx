@@ -13,6 +13,7 @@ import {
   MessageSquare,
   Monitor,
   Radio,
+  RefreshCw,
   Server,
   Settings2,
   ShieldCheck,
@@ -30,6 +31,7 @@ import { Computer } from '@/components/settings/Computer'
 import { Connections } from '@/components/settings/Connections'
 import { General } from '@/components/settings/General'
 import { Link } from '@/components/settings/Link'
+import { Loop } from '@/components/settings/Loop'
 import { Nodes } from '@/components/settings/Nodes'
 import { Schedules } from '@/components/settings/Schedules'
 import { Secrets } from '@/components/settings/Secrets'
@@ -43,6 +45,7 @@ import { useHasNodes } from '@/link/nodes'
 
 const TABS = [
   ['general', 'General', Settings2],
+  ['loop', 'Agent loop', RefreshCw],
   ['approvals', 'Approvals', ShieldCheck],
   ['communication', 'Communication', Radio],
   ['tools', 'Tools', Wrench],
@@ -79,6 +82,7 @@ function Pane({ tab, session, peer, onClose }: Omit<Props, 'onTab'>) {
   return (
     <>
       {tab === 'general' && <General />}
+      {tab === 'loop' && <Loop />}
       {tab === 'approvals' && <Approvals session={session} onClose={onClose} />}
       {tab === 'communication' && <Communication session={session} focus={peer} />}
       {tab === 'tools' && <Tools session={session} />}

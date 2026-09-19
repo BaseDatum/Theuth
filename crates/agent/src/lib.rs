@@ -283,6 +283,28 @@ pub struct SetMaxToolRounds {
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct GetMaxToolRounds;
 
+/// `ask` → `Result<(), String>`: persist `agent.stream_idle_secs` and use it for new sessions.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct SetStreamIdle {
+    /// Seconds without a stream event before the call is abandoned; `0` is rejected.
+    pub seconds: u64,
+}
+
+/// `ask` → `u64`: the live `agent.stream_idle_secs`.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct GetStreamIdle;
+
+/// `ask` → `Result<(), String>`: persist `agent.max_salvages` and use it for new sessions.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct SetMaxSalvages {
+    /// Interrupted-reply recoveries per turn; `0` turns salvage off.
+    pub count: u32,
+}
+
+/// `ask` → `u32`: the live `agent.max_salvages`.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct GetMaxSalvages;
+
 /// `ask` → `Result<Option<ModelInfo>, String>`: persist `agent.title_model` and
 /// use it for every session's next title call; `None` clears it (session model).
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1448,6 +1470,11 @@ pub struct AgentConfig {
     pub aws_profile: Option<String>,
     /// Max tool-call rounds per turn before the loop stops itself.
     pub max_tool_rounds: u32,
+    /// No stream event for this long is a dead socket, not a slow model (36 §2.3).
+    pub stream_idle_secs: u64,
+    /// Interrupted-reply recoveries per turn — a stalled stream or the output
+    /// token cap — before the turn stops with an error (36 §2.4, §2.6).
+    pub max_salvages: u32,
     /// Max characters of tool output sent back to the model.
     pub max_tool_output_chars: usize,
     /// With the runtime on, only `python` and the tools that talk to the user
@@ -1490,6 +1517,8 @@ impl Default for AgentConfig {
             effort: None,
             aws_profile: None,
             max_tool_rounds: 32,
+            stream_idle_secs: 120,
+            max_salvages: 2,
             max_tool_output_chars: 32_000,
             runtime_only: true,
             communication: false,

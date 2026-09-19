@@ -49,10 +49,13 @@ Two rules, both consequences of 07 §0:
    `tracing::info!` line naming the cause; nothing retries forever, nothing
    retries silently.
 
-Constants live in code, not config (07 §14 "one knob"): none of them has a
-reason to differ per install. Numbers come from grok-build's production
-defaults (`sampler_turn.rs:16-79`, `length_salvage.rs:5-14`,
-`agent/compaction.rs:29-35`) where they exist.
+Constants live in code, not config (07 §14 "one knob"), with two exceptions
+that turned out to differ per provider: `agent.stream_idle_secs` and
+`agent.max_salvages` (§2.3, §2.4; Settings › Agent loop). Bedrock stalls for
+minutes mid tool-argument on long documents where Anthropic direct does not,
+so the idle floor and the recovery budget are the user's call. Numbers come
+from grok-build's production defaults (`sampler_turn.rs:16-79`,
+`length_salvage.rs:5-14`, `agent/compaction.rs:29-35`) where they exist.
 
 ## 2. Model call: classify, retry, recover
 
@@ -107,14 +110,16 @@ outside `call` and unchanged.
 
 ### 2.3 Idle timeout
 
-Inside the stream loop, `tokio::time::timeout(STREAM_IDLE, stream.next())`.
-`STREAM_IDLE = 120 s`; every event — text, reasoning, tool-call chunk,
+Inside the stream loop, `tokio::time::timeout(idle, stream.next())` with
+`idle = agent.stream_idle_secs` (default 120 s, snapshotted per session like
+`max_tool_rounds`); every event — text, reasoning, tool-call chunk,
 `Heartbeat` — resets it. Expiry is `Transient` with the message
-`stream idle for 120s`. Reasoning models emit `ReasoningChunk`s while they
+`stream idle for {N}s`. Reasoning models emit `ReasoningChunk`s while they
 think and Anthropic sends `Heartbeat`/`ping` on long gaps, so 120 s is a dead
 socket, not a slow model. jarvis distinguishes a 600 s "tool arguments
 streaming" idle (`run.rs:100-125`); a chunk of arguments is still a chunk, so
-one timer covers it.
+one timer covers it — a provider that goes silent that long mid-argument gets
+a longer `stream_idle_secs`, not a second timer.
 
 ### 2.4 Salvage a partial reply
 
@@ -131,9 +136,10 @@ partial text is often most of the answer. Instead, in `round`:
    tool call was in progress, make it again.")` — fixed bytes.
 3. `Round::Tools` — call again; counts as a round.
 
-Cap `SALVAGE_MAX_PER_TURN = 2` (shared with §2.6); past it the error ends the
-turn as today. The frame stays append-only: assistant, then a user-role note,
-then the next assistant — the same shape as a steering message.
+Cap `agent.max_salvages` (default 2, shared with §2.6; `0` disables salvage);
+past it the error ends the turn as today. The frame stays append-only:
+assistant, then a user-role note, then the next assistant — the same shape as
+a steering message.
 
 ### 2.5 Overflow needles
 
@@ -163,7 +169,7 @@ turn ends. Instead, when `calls.is_empty()`:
    above. If a newer user message follows this note, answer that instead.")`;
 3. `Round::Tools`.
 
-Cap `SALVAGE_MAX_PER_TURN = 2` per turn (grok's default budget). With tool
+Cap `agent.max_salvages` (default 2, grok's default budget) per turn. With tool
 calls present and `max_tokens`, the arguments are truncated JSON; genai's
 `captured_tool_calls` either fails to parse (→ treated as no calls, salvage
 above) or yields calls the tool will reject with a parse error, which is the
@@ -369,8 +375,8 @@ projection stands in.
 |---|---|---|
 | `RETRY_BACKOFF` | `[2, 10, 30]` s + 0–1 s jitter | grok `sampler_turn.rs:16-69` |
 | `RETRY_MAX_PER_TURN` | 10 | grok "10 per prompt" |
-| `STREAM_IDLE` | 120 s | jarvis `run.rs:100-125` (cold idle) |
-| `SALVAGE_MAX_PER_TURN` | 2 (transport + length together) | grok `length_salvage.rs:5-8` |
+| `agent.stream_idle_secs` | 120 s | jarvis `run.rs:100-125` (cold idle) |
+| `agent.max_salvages` | 2 (transport + length together) | grok `length_salvage.rs:5-8` |
 | `SUMMARISE_TIMEOUT` | 300 s | grok `agent/compaction.rs:32` |
 | `SUMMARY_MIN_CHARS` | 500 | grok `code_compaction/config.rs:21` |
 | batch budget | `limit / 4`, floor 1 000 chars/result | this doc |
@@ -378,7 +384,8 @@ projection stands in.
 | `files_written` cap | 40 | this doc |
 | epoch transcript | bounded by the folded span (already capped) | — |
 
-New config keys: none.
+New config keys: `agent.stream_idle_secs`, `agent.max_salvages` (both also
+`Info` fields and `set_stream_idle` / `set_max_salvages` RPCs; new sessions only).
 
 ## 8. Rejected
 
@@ -386,7 +393,7 @@ New config keys: none.
   bash 20k / generic 40k). The batch budget (§4.2) bounds the round; a second
   table of caps is a second knob for the same protection.
 - **Separate idle timers for "thinking" vs "tool arguments streaming"**
-  (jarvis 120/600 s). Both emit chunks; one timer.
+  (jarvis 120/600 s). Both emit chunks; one timer, one knob.
 - **Retry counting per 10-minute episode window** (grok). Per-call and
   per-turn caps are enough; a turn is the episode.
 - **Provider-ratio reseed of `used` after compaction** (grok
@@ -480,7 +487,7 @@ Each item is a runnable check. Results as of 2026-09-16: `just check`, `just cli
    incl. 503, 408, `http 422 schema`), `overflow_needles` extended with the 413 /
    "too long for this model" positives and the `too many requests` negative.
 3. **Idle.** Shim that accepts and never writes; call returns `Transient`
-   after 120 s ± 1, retry follows.
+   after `stream_idle_secs` ± 1, retry follows.
 4. **Salvage.** Shim streams 200 tokens then closes the socket; history gains
    an assistant text + `<recovery>` note + a second assistant; `/undo` removes
    all three as one turn.

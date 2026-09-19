@@ -146,6 +146,7 @@ export function surfaceOf(e: Event): Surface | null {
 
 export type SettingsTab =
   | 'general'
+  | 'loop'
   | 'approvals'
   | 'communication'
   | 'tools'
@@ -260,15 +261,15 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       await api.set_effort(session, arg === 'clear' ? null : arg)
       return
     case '/title': {
-      if (!arg) return settings(navigate, 'general', session)
+      if (!arg) return settings(navigate, 'loop', session)
       const m = await api.set_title_model(arg === 'off' || arg === 'clear' ? null : arg)
       active().qc.setQueryData(queryKeys.titleModel, m)
       toast(m ? `title model: ${m.id}` : 'title model: off')
       return
     }
-    // 52 §3.2: the General dropdown's RPC and query; the server rejects unavailable/text-only ids.
+    // 52 §3.2: the Agent loop dropdown's RPC and query; the server rejects unavailable/text-only ids.
     case '/vision': {
-      if (!arg) return settings(navigate, 'general', session)
+      if (!arg) return settings(navigate, 'loop', session)
       const m = await api.set_vision_model(arg === 'off' || arg === 'clear' ? null : arg)
       active().qc.setQueryData(queryKeys.visionModel, m)
       toast(m ? `vision fallback: ${m.id}` : 'vision fallback: off')

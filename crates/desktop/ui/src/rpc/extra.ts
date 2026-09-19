@@ -23,6 +23,10 @@ export type Info = {
   compact_style: CompactStyle
   subagent_timeout_secs: number
   max_tool_rounds: number
+  /** `agent.stream_idle_secs`; absent on an older harness. */
+  stream_idle_secs?: number
+  /** `agent.max_salvages`; absent on an older harness. */
+  max_salvages?: number
   /** Harness display name (`link.name`, else the hostname; 31 §6.4). */
   name: string
   /** `std::env::consts::OS`: `macos`, `linux`, … (32 §15 row 2). */

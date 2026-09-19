@@ -72,14 +72,16 @@ use crate::user::{MessageUserTool, USER_ACTOR, UserChannels};
 use crate::{
     AGENT_ACTOR, AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentConfig, AgentEvent, AgentInfo,
     AgentState, AncestorInfo, Ancestors, Cancel, Compact, CompactStyle, ContextItems,
-    DeleteSession, EditTurn, ForkSession, GetCompactStyle, GetMaxToolRounds, GetSubagentTimeout,
-    GetTitleModel, GetTodos, GetVisionModel, Harvest, HistoryEntry, ListAcp, ListAgents,
+    DeleteSession, EditTurn, ForkSession, GetCompactStyle, GetMaxSalvages, GetMaxToolRounds,
+    GetStreamIdle, GetSubagentTimeout, GetTitleModel, GetTodos, GetVisionModel, Harvest,
+    HistoryEntry, ListAcp, ListAgents,
     ListLogins, ListModels, ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills,
     LoadSession, LoadSkill, Loaded, Login, LoginFinished, LoginInfo, Logout, ModelInfo,
     NewRootSession, NewSession, PinSession, ProviderInfo, QueuedInput, Redo, Regenerate, RemoveAcp,
     RemoveContext, RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession, SearchRefresh,
-    SearchSessionPage, SendInput, SessionSummary, SetCompactStyle, SetEffort, SetMaxToolRounds,
-    SetModel, SetSubagentTimeout, SetTitleModel, SetVisionModel, ShowPrompt, SkillBody, SkillMeta,
+    SearchSessionPage, SendInput, SessionSummary, SetCompactStyle, SetEffort, SetMaxSalvages,
+    SetMaxToolRounds, SetModel, SetStreamIdle, SetSubagentTimeout, SetTitleModel, SetVisionModel,
+    ShowPrompt, SkillBody, SkillMeta,
     Steer, SyncSkills, Undo, UseSkill, Withdraw, effort_of,
 };
 use crate::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
@@ -2150,6 +2152,63 @@ impl Message<GetMaxToolRounds> for Agents {
 
     async fn handle(&mut self, _: GetMaxToolRounds, _: &mut Context<Self, Self::Reply>) -> u32 {
         self.cfg.max_tool_rounds
+    }
+}
+
+impl Message<SetStreamIdle> for Agents {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        m: SetStreamIdle,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<(), String> {
+        if m.seconds == 0 {
+            return Err("stream_idle_secs must be at least 1".into());
+        }
+        Arc::make_mut(&mut self.cfg).stream_idle_secs = m.seconds;
+        let path = self.rt.data_dir.join("config.yaml");
+        if let Err(e) =
+            runtime::write_config_value(&path, "agent", "stream_idle_secs", &m.seconds.to_string())
+        {
+            tracing::warn!("config.yaml: {e}");
+        }
+        Ok(())
+    }
+}
+
+impl Message<GetStreamIdle> for Agents {
+    type Reply = u64;
+
+    async fn handle(&mut self, _: GetStreamIdle, _: &mut Context<Self, Self::Reply>) -> u64 {
+        self.cfg.stream_idle_secs
+    }
+}
+
+impl Message<SetMaxSalvages> for Agents {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        m: SetMaxSalvages,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<(), String> {
+        Arc::make_mut(&mut self.cfg).max_salvages = m.count;
+        let path = self.rt.data_dir.join("config.yaml");
+        if let Err(e) =
+            runtime::write_config_value(&path, "agent", "max_salvages", &m.count.to_string())
+        {
+            tracing::warn!("config.yaml: {e}");
+        }
+        Ok(())
+    }
+}
+
+impl Message<GetMaxSalvages> for Agents {
+    type Reply = u32;
+
+    async fn handle(&mut self, _: GetMaxSalvages, _: &mut Context<Self, Self::Reply>) -> u32 {
+        self.cfg.max_salvages
     }
 }
 

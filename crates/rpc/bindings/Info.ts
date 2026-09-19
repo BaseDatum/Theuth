@@ -42,6 +42,14 @@ subagent_timeout_secs: bigint,
  */
 max_tool_rounds: number, 
 /**
+ * `agent.stream_idle_secs`: seconds without a stream event before a model call is abandoned.
+ */
+stream_idle_secs: bigint, 
+/**
+ * `agent.max_salvages`: interrupted-reply recoveries per turn before it stops with an error.
+ */
+max_salvages: number, 
+/**
  * Harness display name (`link.name`, else the hostname): what a linked
  * device shows in its harness switcher (31 §6.4).
  */

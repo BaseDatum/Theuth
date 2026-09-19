@@ -422,7 +422,7 @@ from the design body are listed there.
 
 **Vision fallback** (52, built 2026-09-19): `agent.vision_model` is a
 title-style setting (`/vision`, `vision_model`/`set_vision_model` RPC, shared
-Settings › General row). `backend::supports_images` decides whether the
+Settings › Agent loop row). `backend::supports_images` decides whether the
 session's main model can receive images through its backend (Cursor cannot);
 `ModelInfo.image` reports that effective value. An image-capable main model
 takes the native path untouched. Otherwise, before a round, a summary

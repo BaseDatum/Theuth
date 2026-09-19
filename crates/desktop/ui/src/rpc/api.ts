@@ -309,12 +309,16 @@ export interface Api {
   set_communication(session: SessionId | null, enabled: boolean): Promise<CommunicationState>
   set_compact_style(style: CompactStyle): Promise<null>
   set_effort(session: SessionId | null, effort: string | null): Promise<null>
+  /** Persist `agent.max_salvages`: interrupted-reply recoveries per turn; `0` turns recovery off. New sessions only. */
+  set_max_salvages(count: number): Promise<null>
   set_max_tool_rounds(rounds: number): Promise<null>
   set_mcp_gate(server: string, tool: string | null, gate: Gate | null): Promise<null>
   set_mcp_hidden(session: SessionId, tools: string[], hidden: boolean): Promise<null>
   set_model(session: SessionId | null, model: string): Promise<ModelInfo>
   /** Set a root's scope and owner alias (50 §2.3); roots only, `alias: null` clears it. */
   set_peer_scope(root: SessionId, scope: PeerScope, alias: string | null): Promise<CommunicationState>
+  /** Persist `agent.stream_idle_secs`: seconds without a stream event before a model call is abandoned; `0` rejects. New sessions only. */
+  set_stream_idle(seconds: number): Promise<null>
   set_subagent_timeout(seconds: number): Promise<null>
   set_title_model(model: string | null): Promise<ModelInfo | null>
   /** Persist `agent.vision_model` (52 §3.1): `null` turns the fallback off; an unavailable or text-only id rejects and leaves the selection unchanged. */
@@ -469,6 +473,7 @@ export const METHODS = [
   'set_communication',
   'set_compact_style',
   'set_effort',
+  'set_max_salvages',
   'set_max_tool_rounds',
   'set_mcp_gate',
   'set_mcp_hidden',
@@ -476,6 +481,7 @@ export const METHODS = [
   'set_peer_scope',
   'set_secret',
   'set_session_project',
+  'set_stream_idle',
   'set_subagent_timeout',
   'set_title_model',
   'set_vision_model',

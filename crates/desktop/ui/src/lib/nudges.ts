@@ -1,4 +1,4 @@
-// Settings › General › Show harness nudges: a client-only display preference, persisted like the
+// Settings › Agent loop › Show harness nudges: a client-only display preference, persisted like the
 // theme. Nothing here changes what the harness sends; hidden nudges stay in the session and its context.
 
 import { create } from 'zustand'
