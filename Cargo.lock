@@ -267,6 +267,7 @@ dependencies = [
  "tracing",
  "ts-rs",
  "uuid",
+ "wiremock",
 ]
 
 [[package]]

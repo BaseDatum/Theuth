@@ -1495,6 +1495,9 @@ mod tests {
         let Some(pool) = monty_pool().await else {
             return;
         };
+        let _registry = crate::REGISTRY_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let dir = tempdir();
         std::fs::write(dir.join("a.txt"), "hello mount").unwrap();
         let cx = run_cx(&dir).await;

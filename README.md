@@ -82,7 +82,10 @@ display as an image, then native mouse and keyboard on the user's own desktop �
 [`docs/design/10-knowledge.md`](docs/design/10-knowledge.md)), `agent` (genai
 loop, sqlite sessions with compaction epochs, skills, subagents, persistent
 Python runtime over monty worker subprocesses —
-[`docs/design/08-repl.md`](docs/design/08-repl.md); `message_user` sends text
+[`docs/design/08-repl.md`](docs/design/08-repl.md); with `agent.vision_model`
+set, a text-only main model still sees images: it writes a question, that
+image-capable fallback model answers it, and the answer is appended as an observation —
+[`docs/design/52-vision-fallback.md`](docs/design/52-vision-fallback.md); `message_user` sends text
 and files to the user on Slack or Signal out of band —
 [`docs/design/24-message-user.md`](docs/design/24-message-user.md); `ask_user`
 puts one or more multiple-choice questions to the user — pick, type your own,
@@ -154,6 +157,9 @@ Config (`~/.wth/`, created on first run; details in
     model: anthropic/claude-sonnet-4-5
     communication: false   # model-to-model communication (design doc 50, below): off = no spawn_subagent, discover_peers or send_message; `/communication on always` writes true
     # effort: high        # low|medium|high|… per model (/model lists them); unset = provider default
+    # vision_model: anthropic/claude-haiku-4-5  # answers the main model's questions about images it cannot see (design doc 52);
+                             # unset: no fallback. Must be an exact catalog `provider/model` that accepts images;
+                             # images then go to that provider, with extra calls. /vision or Settings → General
     # aws_profile: work   # Bedrock inference; /aws or Settings → Connections selects it
     compact_at: 0.8        # compact when the context is this full; 0 disables
     compact_style: summary  # summary | cut | snap

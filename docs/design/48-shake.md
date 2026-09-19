@@ -142,11 +142,22 @@ After success:
 
 **Not data erasure or semantic forgetting.** Provider requests already sent
 cannot be recalled. Later replies, independent summary text, snap pixels,
-knowledge, runtime variables, spill files, source/attachment files, titles,
-children and pre-existing forks may contain copies or derived facts. The
-feature does not scrub those. Search remains transcript search, including
-archive content, but results must visibly identify removed material and must
-not turn a hit into a model input automatically.
+vision observations (52: the `<vision_observation>` note a text-only main
+model received about an image is its own row — removing the image leaves it
+standing, and it was already sent to the fallback provider), knowledge,
+runtime variables, spill files, source/attachment files, titles, children and
+pre-existing forks may contain copies or derived facts. The feature does not
+scrub those. Search remains transcript search, including archive content, but
+results must visibly identify removed material and must not turn a hit into a
+model input automatically.
+
+The reverse also holds (52 §6, built 2026-09-19): an observation counts for
+an image only while its note row is visible, in the tail and not removed
+(`Store::vision_frame`). Removing the note with `/shake messages` while the
+image stays makes that image pending again, so the next user turn on a
+text-only main model consults the fallback afresh — a paid call the
+confirmation does not currently warn about. Removing the image forbids
+forwarding that occurrence; it does not erase the note.
 
 A transcript entry folded before `tail_from` is already outside the active
 context. Its control says **Already outside current context** rather than

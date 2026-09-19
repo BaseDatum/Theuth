@@ -39,6 +39,18 @@ The only permitted exceptions are three named, counted, logged events:
   unchanged, the changed request bytes are the miss. Frames before and
   after the edit append normally.
 
+Two request families sit outside the invariant because they are not the
+session's conversation: the summariser/harvest continuations (§8.3, 10 §5)
+and, since 52 (built 2026-09-19), the vision fallback's **question** and
+**vision** calls. Those are dead-end auxiliary requests — no tools, a
+text-only rendering or the images alone, an auxiliary conversation id derived
+from the session — and nothing from them is persisted except the one
+user-role `<vision_observation>` note that `Turn::prepare_images` appends at
+the tail before the next ordinary call. The projected image markers the note
+refers to are byte-identical in every later request; the note itself is an
+ordinary append. Title, summary, harvest and vision frames carry no `tools`
+key at all (`Frame::request` attaches tools only when the frame has any).
+
 Everything else in this doc is a consequence: where volatile text may live
 (only at the tail), how tool output is bounded (at append time, never later),
 how the window is measured (from the provider's own usage report, never a
@@ -170,6 +182,8 @@ per-transport difference.
 | epoch summary | head | compaction | new epoch |
 | model | request param | `/model` | outside the cached prefix; a different model is a different cache anyway |
 | peer directory (`discover_peers`), peer receipts (`peer_message`) | history tail, as tool results | on demand | append; never a live roster, card, heartbeat or remote skill list in the system prompt (50 §1) |
+| image markers on a text-only main model (52 §4) | a request copy of history/head: `vision::project_frame` (called from the turn before `Frame::request`) replaces each stored image with `[image m<seq>.p<part>[.i<n>]: <label>, <mime>, fp <16hex>]` | never — the marker depends only on the stored bytes and coordinates | stable projection; the stored row keeps the image, `/model` to a vision model sends it natively |
+| `<vision_observation>` note (52 §5) | history tail, user role, typed `messages.vision` | once per new image batch on a text-only main model with a fallback set, after the question and vision calls | append; the question and vision requests themselves are dead-end auxiliary calls with no tools and no effect on the session's prefix |
 
 ## 3. Provider facts we rely on
 

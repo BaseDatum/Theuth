@@ -1,14 +1,16 @@
 # 52 — Vision fallback: the main model asks, a vision model looks
 
-Status: **proposed · 2026-09-19 · design only, not implemented**.
+Status: **as-built · 2026-09-19 (proposed the same day)**. §§0–10 are the
+proposal as written; §11 records what was built, the evidence, and what was
+not exercised. Where §11 disagrees with an earlier section, §11 wins.
 
 Extends [00](00-architecture.md), [02](02-models-and-menus.md),
 [07](07-context.md), [08](08-repl.md), [17](17-images.md),
 [23](23-browser.md), [25](25-desktop.md), [31](31-link.md), and
-[48](48-shake.md). Source observations describe the inspected tree, not
-implementation claims. [28](28-untrusted-content.md) and
+[48](48-shake.md). Source observations in §2 describe the tree inspected
+before implementation. [28](28-untrusted-content.md) and
 [51](51-session-lifecycle-costs-and-terminals.md) remain proposals, not
-prerequisites this design can assume are built.
+prerequisites this design assumes are built.
 
 ## 0. Decisions
 
@@ -585,7 +587,8 @@ Rejected:
 
 ## 10. Acceptance and verification plan
 
-These are implementation gates, **not checks run for this design document**.
+These are implementation gates, **not checks run for this design document**;
+§11 records which of them were run and how.
 Use a synthetic image with a fact that is absent from filenames, user text,
 and tool text. Capture test-provider requests at the transport seam; merely
 seeing a plausible final answer is not proof that routing was correct.
@@ -615,7 +618,7 @@ then actual TUI and shared desktop/mobile UI interaction. Remove synthetic
 attachments/scripts after the run. Report provider/transport or packaged-iOS
 paths not actually exercised rather than calling them verified.
 
-### Design-document verification
+### Design-document verification (before implementation)
 
 This proposal was grounded in the source paths/symbols in §2 and the design
 invariants in §1. It does not claim that the fallback exists, that model calls
@@ -625,5 +628,157 @@ loss) are required implementation work, not silently assumed infrastructure.
 
 Document checks: all 16 relative design links resolve, all 17 explicitly
 checked implementation paths exist, and Markdown code fences are balanced.
-The architecture document links this proposal as unimplemented. No build or
-runtime/UI tests were run for this documentation-only change.
+The architecture document linked this proposal as unimplemented at that
+point. No build or runtime/UI tests were run for the documentation-only
+change; §11 records the checks run for the implementation.
+
+## 11. As built (2026-09-19)
+
+Implemented on `feature/vision-fallback`. Type definitions in source override
+any sketch in §§3–6.
+
+### 11.1 What exists
+
+- **Setting.** `agent.vision_model` (`AgentConfig`); RPC `vision_model()` /
+  `set_vision_model(model | null)`; TUI `/vision [model|off]`; shared
+  desktop/mobile Settings › General row "Vision fallback model" beside "Title
+  model", options filtered to image-capable models. The setter requires an
+  exact catalog `provider/model` whose effective image support is true and
+  whose provider is configured; validation runs before the config write and
+  the live swap. An invalid saved selection at startup logs an error, leaves
+  the fallback off and the file untouched, and does not reset `agent.model`.
+- **Capability.** `backend::supports_images` makes `ModelInfo.image` the
+  *effective* input support in every producer; Cursor rows are `false`.
+- **Loop.** `Turn::prepare_images` runs before a round, before summary
+  compaction, and before harvest. On the text-only path every image
+  occurrence is projected by `vision::project_frame` to a stable marker
+  `[image m<seq>.p<part>[.i<n>]: <label>, <mime>, fp <16hex>]`; the same bytes
+  appear in the question request and every later main request. Question
+  call: `vision::QUESTION_SYSTEM`, no tools, an auxiliary conversation id
+  derived by sha256 from the session (not the live cache key). Vision call:
+  `vision::VISION_SYSTEM`, no tools, question text plus the labelled images,
+  reply parsed as a JSON array with one `{ref, status, text}` per reference.
+  Result: one user-role `<vision_observation>` note (sources, vision model,
+  question model, per-source answers or `NOT SEEN (…)`), typed
+  `messages.vision` metadata (`0014_vision.sql`, `VisionNote {version,
+  question_model, vision_model, observations}`), `HistoryEntry::User.vision`,
+  and `AgentEvent::VisionProgress` at `questioning` → `inspecting` →
+  `completed(seq)` | `failed`. Fallback unset: markers plus one `<vision>`
+  notice per turn, no auxiliary call. A failure suppresses another attempt for
+  that occurrence within the turn; a later user turn retries once.
+- **Ingress.** Python inner-tool image files are snapshotted at the moment the
+  inner result arrives (`tools::images::snapshot` into `<spill>/<session>`)
+  and travel on the outer cell's `ToolOutput.files`; MCP image blocks are
+  decoded to validated image files under `<data_dir>/mcp/images/<session>`.
+- **Frame.** `Frame::request` attaches `tools` only when the frame has any;
+  auxiliary and title requests carry no `tools` key (found during
+  verification: OpenAI-compatible endpoints reject `"tools": []`).
+
+### 11.2 Verification record
+
+**Contract test** — `crates/agent/src/loop_/vision_fallback_tests.rs`
+(`cargo test -p agent --lib vision_fallback_tests`: 1 passed, 0.46 s). A
+wiremock OpenAI-compatible SSE endpoint routes on the leading system message;
+catalog from a temp `models.json` (`openai/textonly` image:false,
+`openai/eyes` image:true, `openai/broken` → HTTP 500); a real 4×4 red PNG
+whose colour appears in no text. Requests are asserted on the wire:
+
+| Scenario | Observed |
+|---|---|
+| Text-only main, fallback `eyes` | Exactly 3 requests in order. Question: model `textonly`, system `QUESTION_SYSTEM`, no `tools` key, zero `image_url`, marker `[image m0.p1: shot.png, image/png, fp …]`. Vision: model `eyes`, system `VISION_SYSTEM`, no `tools` key, one `image_url` data URL, the exact question text, none of the conversation. Main: 14 tools, zero `image_url`, byte-identical marker, `<vision_observation>` carrying the answer. Store: one typed note; pending 0; rows user → note → assistant. Events `Questioning` → `Inspecting` → `Completed(seq == note seq)`; `TurnFinished stop`. |
+| Vision-capable main, fallback `broken` | Exactly 1 request, model `eyes`, contains the image; zero fallback requests, no note, no `VisionProgress`. |
+| Text-only main, fallback unset | Exactly 1 request, marker present, one `<vision>` notice ("no vision fallback model is configured"), no note; pending stays 1. |
+| Malformed fallback JSON | Turn 1: exactly 3 requests (no in-turn retry); main text `m0.p1: NOT SEEN (vision model openai/eyes: …)`; one `Failed` note; stages `Questioning` → `Inspecting` → `Failed`. Turn 2: one retry (2 `VISION_SYSTEM` requests total), 2 notes. |
+| Cancel during the question call | 1 request, zero vision requests, no note, store holds only the user row; `TurnFinished cancelled`. |
+
+Captured vision request (base64 elided): `{"model":"eyes","stream":true,
+"messages":[{"role":"system","content":"You describe images for another
+assistant that cannot see them. …"},{"role":"user","content":[{"type":"text",
+"text":"Question:\n<Q>\n\nImages, in order:\n- m0.p1: shot.png\n"},{"type":
+"text","text":"Image m0.p1:"},{"type":"image_url","image_url":{"url":
+"data:image/png;base64,…"}}]}],"stream_options":{"include_usage":true},
+"prompt_cache_key":"<sha256-derived uuid>","prompt_cache_retention":"24h"}` —
+no `tools` key.
+
+**Headless live run** — throwaway fake provider (genai's `ollama` adapter is
+native `/api/chat` NDJSON, not OpenAI-shaped; images ride as
+`message.images`), `wth --headless` on a throwaway data dir, Bun JSON-RPC
+client; every script and data dir deleted afterwards:
+
+- `vision_model` → `null`; `set_vision_model("ollama/textonly")` → error
+  "`ollama/textonly` cannot receive images"; `set_vision_model("nope/x")` →
+  error "`nope/x` is not an exact catalog entry; a vision fallback must name one
+  as `provider/model` (add it to models.json first)";
+  `set_vision_model("ollama/eyes")` → `ModelInfo {id: ollama/eyes, image:
+  true, …}`, `config.yaml` gains `agent.vision_model: ollama/eyes` with
+  `agent.model` unchanged.
+- `send_input(null, "What is in the picture?", [8×8 red PNG])`: events
+  `TurnStarted` → `VisionProgress questioning (ollama/textonly, m0.p1)` →
+  `inspecting (ollama/eyes)` → `completed (seq 1)` → `TextDelta` → `TurnFinished`.
+  Provider log: question (`tools` absent, 0 images, marker present) → vision
+  (`tools` absent, 1 image, question text + `Image m0.p1:`) → main (7 tools,
+  0 images, marker byte-identical, full `<vision_observation>`).
+  `load_session`: the user row with the attachment, a `user` entry with
+  `vision {version 1, question_model ollama/textonly, vision_model
+  ollama/eyes, observations [m0.p1 answered]}`, the assistant reply.
+- Second input "Anything else?": title call (`tools` absent) and one main
+  request with the observation; zero `VisionProgress`, zero auxiliary calls.
+- `set_model(session, "ollama/eyes")` then a third input: one request, model
+  `eyes`, image present, no marker, no fallback call.
+- Daemon restart with `vision_model: ollama/eyes` → `vision_model` returns
+  it. Hand-edited `vision_model: ollama/textonly` → startup log
+  `agent.vision_model: \`ollama/textonly\` cannot receive images; vision
+  fallback is off`, `vision_model` → `null`, `default_model` unchanged,
+  `config.yaml` checksum identical before and after.
+
+**TUI on a pty** (own in-process runtime, separate data dir): `/vision` →
+`vision fallback: off — a text-only main model gets images as omitted (/vision
+<model> to set one)`; `/vision ollama/eyes` → `vision fallback: ollama/eyes
+(eyes) — used only when the main model cannot view images; …`;
+`/vision off` → the off line; `/vision ollama/textonly` → "`ollama/textonly`
+cannot receive images". `config.yaml` followed each change.
+
+**Shared desktop UI** (browser mode at `localhost:1420`, headless Chromium
+driven from the orchestrating session, `agent.model: ollama/textonly`):
+
+- Settings › General: "Vision fallback model" row under "Title model" with the
+  disclosure description ("Used only when the main model cannot view images.
+  It receives the image and a question written by the main model. Images may
+  go to a different configured provider, and each new image batch costs a
+  question call and a vision call; text redaction cannot remove secrets shown
+  in pixels."). The dropdown held 130 options including `Off`; `ollama/eyes`
+  present, `ollama/textonly` absent. Selecting `ollama/eyes` set the value.
+- Composer `/vision off` → toast `vision fallback: off`, `vision_model:`
+  cleared in `config.yaml`; `/vision ollama/textonly` → toast "`ollama/textonly`
+  cannot receive images"; `/vision ollama/eyes` → toast `vision fallback:
+  ollama/eyes`, `vision_model: ollama/eyes` written, composer cleared.
+- Attaching a PNG through the composer file input: warning `Text Only does not
+  accept images; ollama/eyes will inspect them`.
+- Sending "What is in the picture?" with the image: transcript shows the user
+  bubble with the image, then a collapsible card `Vision observation ·
+  ollama/eyes <name>.png` (expands to sources, question, answer), then the
+  reply. A page reload rebuilt the same rows from `load_session`.
+- Mobile viewport 390×844: Settings › General shows the same combobox with
+  value `ollama/eyes`, hit box 126×36 px.
+
+User visual sign-off on the four screenshots (settings row, composer warning,
+expanded observation card, mobile General) was requested and pending when
+this section was written.
+
+### 11.3 Not exercised
+
+Not run by the contract test or the live runs above (unit tests in the
+named modules cover some of it, none of it end to end): Anthropic, Cursor,
+and named-gateway transports (the contract test and live run use the
+OpenAI-compatible and native Ollama shapes only); iOS packaging; Python and
+MCP image ingress live (`repl.rs` and `tools/src/images.rs` test two
+screenshots overwriting one path; `tools/src/mcp.rs` tests image blocks
+becoming files in source order and malformed blocks rejected without echo);
+multiple images and split groups; snap-head images and images already present
+on resume or a model switch; steering, queued input and inbound-ACP image
+parity; summary/harvest consuming observations; missing-auth, oversize and
+store-failure paths; mid-consultation main or fallback switches; auxiliary
+usage accounting; a failed config write leaving the live value unchanged
+(`supervisor.rs` tests an unconfigured provider being rejected with nothing
+written); an unavailable saved selection rendered as unavailable rather than
+Off. §10's gates for those rows remain open.

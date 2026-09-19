@@ -52,6 +52,7 @@ a2a-types = { workspace = true }
 [dev-dependencies]
 figment = { workspace = true }
 aws-types = { workspace = true }
+wiremock = { workspace = true }
 
 [features]
 ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "knowledge/ts", "secrets/ts", "search/ts"]

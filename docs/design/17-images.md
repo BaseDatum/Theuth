@@ -5,7 +5,9 @@ Status: as-built v0 · 2026-09-12 (draft v0 same day) · extends `07-context.md`
 `09-signal.md` §7.4. §9 lists what the build changed against the draft; where
 §9 disagrees with §1–§8, §9 wins. §11 (2026-09-18) records how images leave
 the context again ([48](48-shake.md)); it supersedes §3.5's "no per-image
-identity" reading of history.
+identity" reading of history. §12 (2026-09-19) records how a text-only main
+model now sees images through a vision fallback ([52](52-vision-fallback.md));
+it supersedes §3.3's "omitted" placeholder.
 
 Verified 2026-09-12 against a generated 400×300 PNG (red square left, blue
 circle right). ACP (`wth --acp`, throwaway Bun client): `initialize` →
@@ -182,6 +184,20 @@ needs doing:
 
 No new `AgentEvent` for "image stripped": the placeholder is what the model
 sees, and the user is told before Enter by the TUI pre-check (§4.4).
+
+**Superseded 2026-09-19 by 52** (as built, §12): the blind `[image omitted:
+model is text-only]` placeholder is gone from the text-only path. The turn
+projects every effective image occurrence to a stable marker
+`[image m<seq>.p<part>[.i<n>]: <label>, <mime>, fp <16hex>]` before the
+frame is built and, when `agent.vision_model` is set, asks the main model
+what it needs to know, sends that question with the images to the fallback,
+and appends the answer as a `<vision_observation>` note; unset, the request
+carries the markers plus one `<vision>` notice per turn. Summary compaction
+and harvest run the same preparation first. The `/model` back-and-forth
+guarantee above still holds: the stored row keeps the bytes. §4.4's pre-check
+now reads `<model> is text-only; <fallback> will inspect the image for it and
+answer its question (/vision to change)` or `…; the image will be sent as
+omitted — /model to switch or /vision <model> to set a fallback`.
 
 ### 3.4 `est`
 
@@ -481,3 +497,24 @@ and later conversation. Serialization was checked against the genai
 Anthropic/OpenAI/Gemini/Bedrock adapters with loopback fixture responses —
 valid request shapes, not provider acceptance or cost. Not exercised: the
 iOS container visually, a Noise-relayed phone (31), attachment GC (§6).
+
+## 12. A text-only main model sees through a fallback (added in 52, as-built 2026-09-19)
+
+§3.3 stripped images to a placeholder and told the user before Enter. [52](52-vision-fallback.md)
+keeps the pre-check and replaces the placeholder: `Turn::prepare_images`
+(before a round, a summary compaction or a harvest) projects each active
+image occurrence — user attachments, `ToolResponse.images`, snap-head frames
+— to a stable marker via `vision::project_frame`, then, with
+`agent.vision_model` set, runs a tool-free question call to the main model and
+a tool-free vision call to the fallback and appends one user-role
+`<vision_observation>` note with typed `messages.vision` metadata. The main
+model reads the answer as image-derived evidence and continues; the original
+bytes stay in the row, so `/model` to a vision model sends them natively and
+skips the fallback entirely. `ModelInfo.image` now reports effective support
+(02 §1), so the §4.4 pre-check (TUI, wording in §3.3) and the desktop composer
+warning (`<model> does not accept images; <fallback> will inspect them` —
+observed on the shared UI — or `…; they will be omitted unless a vision
+fallback is set (/vision)`) say whether the configured fallback will inspect
+the image instead of promising omission. Python inner-tool images and MCP image blocks now arrive
+as image files too (08 §4.1, 52 §11.1). Evidence and what was not exercised:
+52 §11.

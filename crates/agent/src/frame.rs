@@ -136,7 +136,12 @@ impl Frame<'_> {
             last.options = Some(CacheControl::Ephemeral.into());
         }
 
-        let mut req = ChatRequest::new(messages).with_tools(self.tools.iter().cloned());
+        // No tools → no `tools` key: an empty array is a provider error on
+        // OpenAI-compatible APIs, and the auxiliary calls (title, 52 §5.2) offer none.
+        let mut req = ChatRequest::new(messages);
+        if !self.tools.is_empty() {
+            req = req.with_tools(self.tools.iter().cloned());
+        }
         if t != Transport::Anthropic {
             req = req.with_system(self.system);
         }

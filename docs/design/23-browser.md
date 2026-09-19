@@ -37,8 +37,10 @@ shipped and what was not exercised.
    `genai::Binary` on the `ToolResponse` (a genai fork patch, §5); Anthropic
    gets `tool_result.content: [text, image]`, OpenAI-compatible gets a
    following user turn with the image, Gemini gets `inline_data` parts.
-   Text-only models get `[screenshot omitted]` via the existing `Frame.vision`
-   strip (17 §3.3).
+   Text-only models got `[screenshot omitted]` via the `Frame.vision` strip
+   (17 §3.3); since 52 (2026-09-19) they get a stable marker and, with
+   `agent.vision_model` set, a fallback model's answer to the main model's
+   question (17 §12).
 7. **Browser tools are `Risk::ReadOnly`, except cookie import.** The profile
    is ephemeral: fresh cookie jar per session, nothing outlives it, no user
    credentials — *unless* `browser.import_cookies` is on, which adds two agent
@@ -282,6 +284,14 @@ first tool that hands one *back*. Three layers, each one field:
 
 TUI/Slack/Signal show the text line; rendering the PNG in a frontend is
 not v0 (Slack upload would be `files.uploadV2`, one call, when asked).
+
+Since 52 (built 2026-09-19) a `browser_screenshot` called from inside a
+`python` cell also reaches the model: the inner result's file is snapshotted
+into `<spill>/<session>` when it arrives and rides on the cell's
+`ToolOutput.files` (08 §4.1), so the same `ToolResponse.images` path applies;
+two screenshots overwriting `shot-<n>.png` stay two distinct images. Before
+this the Python value conversion dropped the file. Not exercised live in the
+52 run; the repl has a unit test for the overwrite case.
 
 ## 6. Config
 

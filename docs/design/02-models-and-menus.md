@@ -36,7 +36,12 @@ minus dropped fields):
 
 `image` is the one field not copied verbatim: `trim` folds models.dev
 `modalities.input ∋ "image"` into it (`#[serde(default)]`, so a silent
-catalog means `false`); it gates snap compaction (13 §3).
+catalog means `false`); it gates snap compaction (13 §3). Since 52 (built
+2026-09-19) `ModelInfo.image` is the *effective* value — the catalog flag
+constrained by `backend::supports_images`, so a Cursor row reports `false`
+even when its catalog sibling accepts images — and the same predicate
+decides whether the loop sends images natively or runs the vision fallback.
+Frontends filter on `ModelInfo.image`; none re-derives backend rules.
 
 `include_str!` + `serde_json` on first use (`LazyLock`). Measured: full
 api.json 4.5 MB; trimmed to these fields 1.8 MB; filtered to routable

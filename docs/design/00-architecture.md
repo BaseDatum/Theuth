@@ -401,10 +401,28 @@ flowchart LR
 writes it; UIs read via `ask(ListSessions)`/`ask(LoadSession)`). Tables:
 `sessions(id, created_at, updated_at, title, model, …)` (`updated_at` = last
 append; `list_sessions` orders by it),
-`messages(session_id, seq, role, body_json, excluded)`,
+`messages(session_id, seq, role, body_json, excluded, vision)`,
 `epochs(session_id, n, at_seq, tail_from, head, created_at, excluded)` (`07 §8.4`;
-`excluded` and `sessions.context_revision`: 48 §4.1).
+`excluded` and `sessions.context_revision`: 48 §4.1; `vision`, the typed
+observation record on a vision-fallback note, `0014_vision`: 52 §6).
 `sqlx::migrate!`.
+
+**Vision fallback** (52, built 2026-09-19): `agent.vision_model` is a
+title-style setting (`/vision`, `vision_model`/`set_vision_model` RPC, shared
+Settings › General row). `backend::supports_images` decides whether the
+session's main model can receive images through its backend (Cursor cannot);
+`ModelInfo.image` reports that effective value. An image-capable main model
+takes the native path untouched. Otherwise, before a round, a summary
+compaction or a harvest, `Turn::prepare_images` projects every image to a
+stable text marker, asks the main model (no tools) what it needs to know,
+sends that question plus the images to the fallback (no tools), and appends
+one user-role `<vision_observation>` note with typed `messages.vision`
+metadata; `VisionProgress` events and `HistoryEntry::User.vision` expose it.
+Original images stay in history; unset fallback yields markers plus a
+`<vision>` notice. Agent-owned model adaptation, not a plugin or peer. The
+same change made Python inner-tool images and MCP image blocks survive as
+image files. Verified on the OpenAI-compatible and native Ollama shapes only
+(52 §11).
 
 **Skills** (phase 2): markdown files with front matter (`gray_matter`) under
 `<data_dir>/skills`; the agent lists names+descriptions in the system prompt
@@ -686,7 +704,10 @@ the union of all config. Layout, first run, secrets and MCP drop-in files:
 `agent.communication` (default `false`; the global communication ceiling,
 50 §2.1) is agent config; `a2a.*` (`enabled: false` by default, `listen`,
 `public_url`; `<data_dir>/a2a/peers.yaml` for owner-managed peer/export
-bindings) belongs to the `a2a` plugin. Missing keys are off; a malformed
+bindings) belongs to the `a2a` plugin. `agent.vision_model` (52 §3; unset =
+no fallback) names an exact, image-capable catalog model; a saved value that
+fails that check is reported and disables only the fallback — the rest of
+the `agent` section still loads. Missing keys are off; a malformed
 section fails closed with a visible error.
 
 Hot reload (v0 read everything once; added in 01 §1.4 because MCP drop-ins
@@ -954,6 +975,7 @@ Each phase ends with a runnable check, not a test suite.
 | 29 | unified search (49): sessions, artifacts, knowledge, knowledge history behind one `search` RPC and one `search` tool; `search_refresh`; exact readers `get_artifact`/`artifact_search_match`/`knowledge_read_revision` | 49 §8 | done 2026-09-18 (fixture RPC smoke 62/62; tool invoked by a real model in runtime, native child, headless, `--print` and `--acp` runs; search and reads through the encrypted link; desktop/mobile dialog approved by the user; `/search` query, chips and artifact preview on a pty; release large corpus warm p95 2.4 ms, cold first reply 1.7 ms, all groups ready 4.0 s; peak RSS, the full 8.3 TUI matrix and the packaged iOS keyboard not measured; 49 §11) |
 | 30 | apps (46): `app` publishes an OpenUI screen the desktop renders progressively; a press runs its Mutation with zero approval cards; edits are CAS-atomic; TUI/Slack/Signal show source | 46 §10 | done 2026-09-18 on `feature/apps`, merge with limitation (packages/apps 78 tests, desktop 150 tests + build, `crates/app` publish→open→call→edit test; real RPC smoke 14/14 incl. mutating/destructive/secret presses with zero `ApprovalRequested`, `needs_approval` for automatic asks, duplicate/mismatched IDs, stale generation, peer close, CAS conflict; relay probe 7/7 through a real local relay with the desktop's link crypto — pair, get_app, press, status, reconnect, revoke; DOM click on the fixture panel → `Healthy`, count 1; visuals accepted by the user at the production URL; frontier steering 15/15 first pass, vehicle 19/20, small model not run; performance: dev-build trace first statement 9.2 s before commit, frame interval p95 18 ms; production cold load one 146 ms long task and frame budget uncertified — accepted limitation, not a gate; **not run**: Linux runtime, phone hardware, Developer ID/notarized clean machine (signing external), a real streaming-provider capture, `add_mcp_server`-installed backend restart; 46 §12) |
 | 31 | agent communication (50): default-off global ceiling + inherited opt-out; sibling/cross-root discovery; durable exchanges with exact `reply_to`; suppression/generation revocation; `a2a` plugin over the official SDK | 50 §12.2 scenarios; 50 §12.1 library gate | implemented 2026-09-18, verification pending — code paths landed in `agent`, `tools`, `a2a`, `rpc`, frontends; no runnable check or conformance run recorded yet; not as-built until that record lands |
+| 32 | vision fallback (52): `agent.vision_model` beside the title model in TUI and shared General; text-only main model asks, tool-free vision model answers, one typed `<vision_observation>` note appended; image-capable mains bypass; Python/MCP images survive as files | 52 §10 gates, request order captured at the transport seam | built 2026-09-19 on `feature/vision-fallback`; verified per 52 §11 (wiremock contract test: question → vision → main with no `tools` on the auxiliary calls, native bypass, unset notice, malformed-reply failure without in-turn retry, cancel; headless live run over RPC incl. restart persistence and invalid-selection startup; `/vision` on a pty; shared UI settings row, slash toasts, composer warning, observation card + reload, 390×844 General). User visual sign-off pending; Anthropic/Cursor/gateway transports, iOS, and live Python/MCP image ingress not exercised |
 
 Known gaps carried forward: cancel/error paths in the loop are code-reviewed,
 not smoke-tested; the `Jobs` actor kills every process group on shutdown
@@ -962,6 +984,12 @@ brush `on_spawn` patch; RPC token compare is plain `==` (loopback only);
 session actors are never evicted from the supervisor; `cargo test -p
 knowledge` hung once (2026-09-11, 0% CPU, parallel threads; 1/7 runs), not
 reproduced - run with `--test-threads=1` if it recurs and bisect gix vs sqlite.
+The same hang reproduces in `cargo test -p agent --lib` on `main` (2026-09-19,
+1/6 runs, also 1/4 on the vision branch): ~15 sqlite-backed tests park on
+SQLite's unix VFS mutex in `sqlite3LeaveMutexAndCloseZombie` while other
+`Store::open`s fail with `pool timed out while waiting for an open
+connection`; it is sqlx/sqlite teardown under parallel test threads, not any
+one test. `--test-threads=1` is the workaround.
 ACP: binary registry installs and terminal-type login messages are not
 smoke-tested; ACP children cannot message their parent (no MCP back-channel,
 06 §3.8). web: hosted providers (Firecrawl, Brave API, SearXNG, OpenSERP)

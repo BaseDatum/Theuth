@@ -4411,6 +4411,10 @@ fn progress_due(prev: Option<&Progress>, now: Instant, len: usize) -> bool {
     }
 }
 
+/// 52 §10 gates against a fake provider, through a real turn.
+#[cfg(test)]
+mod vision_fallback_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;

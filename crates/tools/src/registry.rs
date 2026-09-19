@@ -957,7 +957,9 @@ impl Message<Invoke> for ToolRegistry {
                 return reply;
             }
         };
-        self.dispatch(tool, spec, call, approval, admitted, move |out| tx.send(out));
+        self.dispatch(tool, spec, call, approval, admitted, move |out| {
+            tx.send(out)
+        });
         reply
     }
 }
@@ -1100,10 +1102,31 @@ pub(crate) fn config(rt: &Runtime) -> anyhow::Result<ToolsConfig> {
     }
 }
 
+/// Drop a registered name whose actor is no longer alive: an actor whose
+/// runtime went away is aborted without its `on_stop` unregistration, and
+/// the stale entry would otherwise refuse every later `start` in the process
+/// (test binaries run one runtime per test). A live actor is never displaced.
+fn evict_dead<A: kameo::Actor>(name: &'static str) {
+    if ActorRef::<A>::lookup(name)
+        .ok()
+        .flatten()
+        .is_some_and(|a| !a.is_alive())
+    {
+        kameo::registry::ACTOR_REGISTRY
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(name);
+    }
+}
+
 /// Spawn registry, approval and jobs actors and register builtins. Returns the
 /// registry so the caller can attach further tool sources (MCP).
 pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
     let cfg = config(rt)?;
+    evict_dead::<Approval>(APPROVAL_ACTOR);
+    evict_dead::<AskUser>(ASK_ACTOR);
+    evict_dead::<Jobs>(JOBS_ACTOR);
+    evict_dead::<ToolRegistry>(REGISTRY_ACTOR);
 
     let approval = Approval::spawn_with_mailbox(
         Approval::new(rt.clone(), Duration::from_secs(cfg.approval_timeout_secs)),

@@ -366,6 +366,17 @@ every UI shows them as tool cards under the `python` card with the same
 `describe` rendering, and approvals show the same modal. The user sees
 exactly what ran.
 
+Inner tool **image files** (52 §7.1, built 2026-09-19): when an inner
+`Invoke` returns `ToolOutput.files`, `snapshot_files` copies each image via
+`tools::images::snapshot` into `<spill_dir>/<session>` the moment the result
+arrives — so a later inner call overwriting the same path (a second
+`browser_screenshot`) cannot change what this occurrence showed — and the
+paths accumulate on the outer cell's `ToolOutput.files` in invocation order,
+including a cell that later raises. Before this the Python value conversion
+dropped them and an image-only inner result never reached the model. A file
+that is not a bounded image is dropped, named in the output, and the cell
+result becomes an error. The Python return value is unchanged.
+
 ### 4.2 Names → tools, transparently
 
 The registry is the source of truth (`ListTools`, already sorted). A

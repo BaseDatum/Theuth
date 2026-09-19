@@ -47,6 +47,12 @@ pub mod todo;
 pub mod user;
 pub mod vision;
 
+/// Tests that start the process-global `tools` registry actor hold this for
+/// their whole run: two test runtimes registering the same name race, and
+/// the name is freed only when the first test's runtime drops the actor.
+#[cfg(test)]
+pub(crate) static REGISTRY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub use aws::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 pub use communication::{
     AnswerPeerRequest, CommunicationChanged, CommunicationState, GetCommunication, GetPeerMessage,
