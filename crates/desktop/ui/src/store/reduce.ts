@@ -262,8 +262,8 @@ function userEntries(
           text: c.text,
           context,
         };
-      case "nudge":
-        return { id: nextId(), kind: "nudge", text: c.text, context };
+      case "harness":
+        return { id: nextId(), ...c, context };
     }
   });
 }
@@ -360,6 +360,8 @@ function signature(e: Entry): string {
       return `c${e.epoch}`;
     case "peer":
       return e.origin ? `p${e.origin.id}` : `p${e.from}\n${e.text}`;
+    case "harness":
+      return `h${e.notice}\n${e.text}`;
     case "user":
     case "assistant":
       return `${e.kind[0]}${e.turn ?? ""}\n${e.text}`;

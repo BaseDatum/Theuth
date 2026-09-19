@@ -1,5 +1,6 @@
 import { type StoreApi, createStore } from "zustand";
 import { subscribeWithSelector } from "zustand/middleware";
+import type { Injected } from '@/lib/injected';
 import type { CompactStyle } from "@/rpc/bindings/CompactStyle";
 import type { ContextEntry } from "@/rpc/bindings/ContextEntry";
 import type { JobExit } from "@/rpc/bindings/JobExit";
@@ -104,7 +105,7 @@ export type Entry = { id: string; context?: ContextEntry } & (
       origin?: PeerOrigin;
       seq?: number;
     }
-  | { kind: "nudge"; text: string }
+  | Extract<Injected, { kind: 'harness' }>
   | { kind: "info"; text: string }
   | { kind: "error"; text: string }
   | { kind: "compacted"; epoch: number; style: CompactStyle; summary?: string }

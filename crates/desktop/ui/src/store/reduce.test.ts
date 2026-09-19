@@ -72,7 +72,8 @@ test('stored todo continuation renders as a harness nudge with literal task text
   const body = 'Unfinished work:\n- Check &lt;button&gt; &amp; &amp;lt;literal&amp;gt;\nContinue working.'
   const [entry] = fromHistory({ role: 'user', text: `<todo_continue>\n${body}\n</todo_continue>`, turn: null, context: msg(3) })
   expect(entry).toMatchObject({
-    kind: 'nudge',
+    kind: 'harness',
+    notice: 'todo_continue',
     text: 'Unfinished work:\n- Check <button> & &lt;literal&gt;\nContinue working.',
     context: msg(3),
   })

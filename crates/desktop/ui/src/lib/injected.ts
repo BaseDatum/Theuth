@@ -1,3 +1,16 @@
+/** Mid-turn harness notes share one transcript presentation; context summaries already have their own card. */
+export const HARNESS_NOTICES = {
+  todo_continue: { title: 'Nudge', description: 'The harness asked the model to continue unfinished todos.' },
+  rounds: { title: 'Tool rounds', description: 'The harness asked the model to wrap up within the tool-round limit.' },
+  context_pressure: { title: 'Context pressure', description: 'The harness warned the model that context compaction is near.' },
+  recovery: { title: 'Recovery', description: 'The harness asked the model to resume an interrupted reply.' },
+  continue: { title: 'Continuation', description: 'The harness asked the model to continue a reply cut off by the output limit.' },
+  steer: { title: 'Tool correction', description: 'The harness asked the model to change a repeatedly failing tool call.' },
+  surface_error: { title: 'Display correction', description: 'The harness asked the model to fix content that could not be rendered.' },
+  todo: { title: 'Todo reminder', description: 'The harness reminded the model of its current plan.' },
+  knowledge: { title: 'Knowledge reminder', description: 'The harness suggested relevant knowledge for the model to consult.' },
+}
+
 /** One card a harness-wrapped input renders as. */
 export type Injected =
   | { kind: 'skill'; name: string; words: string }
@@ -5,11 +18,11 @@ export type Injected =
   | { kind: 'subagent'; name: string; text: string }
   | { kind: 'job'; id: string; command: string; exit: string; secs: string; pty: boolean; text: string }
   | { kind: 'schedule'; name: string; at: string; quiet: boolean; text: string }
-  | { kind: 'nudge'; text: string }
+  | { kind: 'harness'; notice: keyof typeof HARNESS_NOTICES; text: string }
 
 /** Wrappers that render a card, with the attribute naming the sender, and wrappers that render nothing. */
 const CARD: Record<string, string> = { subagent_result: 'name="', message: 'from="', job_result: 'id="', schedule: 'name="' }
-const HIDDEN: Record<string, true> = { context_summary: true, todo: true, context_pressure: true, runtime: true, knowledge: true }
+const HIDDEN: Record<string, true> = { context_summary: true, runtime: true }
 
 /** Value of `key` (`name="`) in an open tag, up to the closing quote. */
 const attr = (open: string, key: string) => open.split(key, 2)[1]?.split('"', 1)[0]
@@ -20,8 +33,8 @@ const attr = (open: string, key: string) => open.split(key, 2)[1]?.split('"', 1)
  * plus the user's words) is one card; an input made entirely of harness
  * wrappers (`<subagent_result>`, `<message>`, `<job_result>`, `<schedule>` blocks joined
  * by newlines, harness notes such as `<context_summary>`) is one card per
- * block: todo nudges are visible, other notes yield none. `null` for human text (or anything not
- * entirely made of wrappers).
+ * block: mid-turn notices are visible; context summaries and runtime wrappers yield none.
+ * `null` for human text (or anything not entirely made of wrappers).
  */
 export function classify(text: string): Injected[] | null {
   let rest = text.trimStart()
@@ -37,16 +50,16 @@ export function classify(text: string): Injected[] | null {
     const open = rest.slice(1, gt)
     const name = open.split(' ', 1)[0] as string
     const key = CARD[name]
-    if (key === undefined && !HIDDEN[name] && open !== 'todo_continue') return null
+    const notice = Object.hasOwn(HARNESS_NOTICES, open) ? open as keyof typeof HARNESS_NOTICES : undefined
+    if (key === undefined && !HIDDEN[name] && notice === undefined) return null
     const close = `</${name}>`
     const end = rest.indexOf(close, gt)
     if (end < 0) return null
-    if (open === 'todo_continue') {
-      const body = rest.slice(gt + 1, end).trim()
-        .replaceAll('&lt;', '<')
-        .replaceAll('&gt;', '>')
-        .replaceAll('&amp;', '&')
-      out.push({ kind: 'nudge', text: body })
+    if (notice !== undefined) {
+      let body = rest.slice(gt + 1, end).trim()
+      // Only todo continuations escape their body at emission; other notes are already literal text.
+      if (notice === 'todo_continue') body = body.replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&')
+      out.push({ kind: 'harness', notice, text: body })
     } else if (key !== undefined) {
       const from = attr(open, key)
       if (from === undefined) return null

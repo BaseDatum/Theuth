@@ -665,12 +665,13 @@ overflow and stop the turn.
 A **note** is a user-role message the harness appends at the tail before a
 model call: `Turn::note(kind, text)` → `persist(ChatMessage::user(format!(
 "<{kind}>\n{text}\n</{kind}>")))`. Notes are ordinary history afterwards:
-persisted, frozen, replayed on resume, hidden by UIs the way `<message>`
-wrappers are (`tui::model::injected`). They are the *only* way the harness
-speaks to the model mid-turn, and they are append-only by construction —
-this is what replaces jarvis's `retain()+push()` stickies.
+persisted, frozen, and replayed on resume. The desktop renders mid-turn notes
+as collapsible harness cards, sharing Nudge's bell icon, attribution, and
+literal expandable body; they are not user messages or tool calls. They are
+the *only* way the harness speaks to the model mid-turn, and they are
+append-only by construction — this replaces jarvis's `retain()+push()` stickies.
 
-Seven kinds exist:
+Nine kinds exist (including the surface correction wrapper):
 
 - `context_pressure` — once per epoch (`pressure_sent`, reset by
   compaction), when `compact_at > 0.1` and `projected / window >= compact_at
@@ -680,6 +681,7 @@ Seven kinds exist:
   right before the summariser needs it. The `> 0.1` guard keeps a tiny
   test threshold from sending the note on round one.
 - `todo` — the reminder in §9.
+- `todo_continue` — the yield reminder for unfinished actionable todos (47 §2.3).
 - `knowledge` — matching concept ids (`10-knowledge.md` §4): at turn start
   against the input, then every `hint_rounds` rounds against what was
   appended since; each id once per epoch (`hinted`); nothing when nothing
@@ -695,6 +697,13 @@ Seven kinds exist:
   `max_tool_rounds` ("No tool rounds remain… reply with text now"), then one
   more call: the turn lands with an answer instead of `Error("stopped after
   …")` (36 §5).
+- `surface_error` — a correction request when generated display blocks cannot
+  render (30 §5); persisted directly with its wrapper rather than via `note`.
+
+Desktop cards use descriptive labels for tool rounds, context pressure,
+recovery, continuation, tool/display corrections, todo and knowledge reminders.
+They retain stored context-removal and archive controls. Context summaries keep
+their existing compaction presentation; runtime wrappers stay with tool output.
 
 A lost or crashed runtime is *not* a note: the `<runtime>` line opens the
 result of the cell that discovered it (`08-repl.md` §5), where the model

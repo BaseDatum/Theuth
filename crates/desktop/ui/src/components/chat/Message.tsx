@@ -1,5 +1,6 @@
 import { BellRing, ChevronRight, Trash2 } from 'lucide-react'
 import { memo, type ReactNode, useState } from 'react'
+import { HARNESS_NOTICES } from '@/lib/injected'
 import type { Prompt } from '@/store/approvals'
 import type { Entry } from '@/store/sessions'
 import { ApprovalCard } from './ApprovalCard'
@@ -26,8 +27,8 @@ function body(entry: Entry, session: string, readOnly?: boolean) {
       return <MessageTool tool={entry} session={session} readOnly={readOnly} />
     case 'peer':
       return <MessagePeer from={entry.from} text={entry.text} origin={entry.origin} seq={entry.seq} session={session} />
-    case 'nudge':
-      return <HarnessNudge text={entry.text} />
+    case 'harness':
+      return <HarnessNotice notice={entry.notice} text={entry.text} />
     case 'info':
       return <MessageInfo text={entry.text} />
     case 'error':
@@ -37,17 +38,18 @@ function body(entry: Entry, session: string, readOnly?: boolean) {
   }
 }
 
-/** A harness continuation, not a user request or a model tool call. Task text stays literal. */
-function HarnessNudge({ text }: { text: string }) {
+/** A harness notice, not a user request or a model tool call. Its body stays literal. */
+function HarnessNotice({ notice, text }: Pick<Extract<Entry, { kind: 'harness' }>, 'notice' | 'text'>) {
+  const { title, description } = HARNESS_NOTICES[notice]
   return (
-    <details className="group/nudge my-2 min-w-0 rounded-xl border border-info-border/30 bg-info-bg/40 px-4 py-3 text-sm">
+    <details className="group/notice my-2 min-w-0 rounded-xl border border-info-border/30 bg-info-bg/40 px-4 py-3 text-sm">
       <summary className="flex min-h-11 cursor-pointer list-none items-center gap-3 rounded-sm focus-visible:outline-2 [&::-webkit-details-marker]:hidden">
         <BellRing className="size-4 shrink-0 text-info" aria-hidden="true" />
         <span className="min-w-0 flex-1">
-          <span className="block font-medium text-info">Nudge</span>
-          <span className="block text-xs text-fg-secondary">The harness asked the model to continue unfinished todos.</span>
+          <span className="block font-medium text-info">{title}</span>
+          <span className="block text-xs text-fg-secondary">{description}</span>
         </span>
-        <ChevronRight className="size-4 shrink-0 text-info transition-transform group-open/nudge:rotate-90" aria-hidden="true" />
+        <ChevronRight className="size-4 shrink-0 text-info transition-transform group-open/notice:rotate-90" aria-hidden="true" />
       </summary>
       <div className="mt-3 border-t border-info-border/20 pt-3 leading-6 wrap-anywhere whitespace-pre-wrap text-fg-secondary">{text}</div>
     </details>
@@ -67,8 +69,8 @@ function describe(entry: Entry): string {
       return `tool ${entry.name}`
     case 'peer':
       return `message from ${entry.from}`
-    case 'nudge':
-      return 'nudge'
+    case 'harness':
+      return HARNESS_NOTICES[entry.notice].title;
     case 'compacted':
       return 'summary'
     default:
@@ -150,7 +152,7 @@ export const Message = memo(function Message({
   const card =
     entry.context?.removed ? (
       <Tombstone entry={entry} session={session} readOnly={readOnly} reveal={reveal} />
-    ) : !readOnly && (entry.kind === 'tool' || entry.kind === 'peer' || entry.kind === 'nudge') ? (
+    ) : !readOnly && (entry.kind === 'tool' || entry.kind === 'peer' || entry.kind === 'harness') ? (
       <Card entry={entry} session={session}>
         {body(entry, session)}
       </Card>

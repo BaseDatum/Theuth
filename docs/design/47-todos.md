@@ -158,7 +158,8 @@ The desktop transcript renders this wrapper as a collapsible **Nudge** card
 with a bell icon and harness attribution, distinct from a user message or a
 model tool call. Expanding it shows the reminder body as literal text, with
 wrapper escaping decoded once. Stored nudges retain the usual context-removal
-and archive controls; other hidden harness notes remain hidden.
+and archive controls. Other mid-turn harness notices share this presentation
+with descriptive labels (07 §8.7); ordinary user text remains unchanged.
 
 ## 3. The quiescence contract
 

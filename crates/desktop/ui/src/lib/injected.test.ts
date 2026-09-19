@@ -12,17 +12,34 @@ test('skill injection: chip plus the words after it', () => {
   ])
 })
 
-test('harness notes render nothing', () => {
-  expect(classify('<context_summary>\nfolded\n</context_summary>\n<todo>x</todo>')).toEqual([])
+test('context summaries and runtime wrappers do not duplicate existing surfaces', () => {
+  expect(classify('<context_summary>\nfolded\n</context_summary>\n<runtime>x</runtime>')).toEqual([])
 })
 
 test('todo nudges compose with harness blocks but never swallow surrounding human text', () => {
   expect(classify('<todo>x</todo>\n<todo_continue>\nContinue working\n</todo_continue>')).toEqual([
-    { kind: 'nudge', text: 'Continue working' },
+    { kind: 'harness', notice: 'todo', text: 'x' },
+    { kind: 'harness', notice: 'todo_continue', text: 'Continue working' },
   ])
   expect(classify('Explain this: <todo_continue>work</todo_continue>')).toBeNull()
   expect(classify('<todo_continue>work</todo_continue> is what I saw')).toBeNull()
   expect(classify('<todo_continue>unterminated')).toBeNull()
+})
+
+test('harness notices compose without losing their type or literal body', () => {
+  const notices = ['rounds', 'context_pressure', 'recovery', 'continue', 'steer', 'surface_error', 'todo', 'knowledge']
+  const body = 'Check <button> &lt;literal&gt; &amp; text.'
+  expect(classify(notices.map((notice) => `<${notice}>\n${body}\n</${notice}>`).join('\n'))).toEqual(
+    notices.map((notice) => ({ kind: 'harness', notice, text: body })),
+  )
+})
+
+test('notice-like human text and malformed wrappers stay intact', () => {
+  expect(classify('Explain <rounds>2 remain</rounds>')).toBeNull()
+  expect(classify('<rounds>2 remain</rounds> is what I saw')).toBeNull()
+  expect(classify('<rounds>unterminated')).toBeNull()
+  expect(classify('<rounds source="user">2 remain</rounds>')).toBeNull()
+  expect(classify('<unknown>keep this</unknown>')).toBeNull()
 })
 
 test('peer and subagent blocks joined by newlines are one card each', () => {
