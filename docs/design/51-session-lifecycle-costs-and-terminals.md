@@ -1,14 +1,15 @@
 # 51 — Session lifecycle, project metadata, model cost, and terminal observation
 
-Status: **proposed draft · 2026-09-18 · design only, not implemented**.
+Status: **as built · 2026-09-19 · implemented on branch session-lifecycle; automated checks recorded below**.
 
 Extends [00](00-architecture.md), [07](07-context.md),
 [12](12-course-correction.md), [14](14-jobs.md), [19](19-subagent-board.md),
 [22](22-pty.md), [25](25-desktop.md), [31](31-link.md),
 [35](35-artifacts.md), [36](36-survival.md), [37](37-secrets.md),
 [47](47-todos.md), [49](49-search.md), and [50](50-agent-communication.md).
-Source observations below are current starting points, not claims that this
-proposal is implemented. The proposed amendment in 00 remains a proposal.
+Source observations below were the 2026-09-18 starting points; the design body
+is left as written. Where delivery diverged, the Status section lists the
+deviation. The 00 amendment is accepted with the evidence recorded there.
 
 ## 0. Decisions
 
@@ -451,7 +452,7 @@ disjoint, prefer the inclusive meter once.
 
 ### 6.4 Durable lineage and schema
 
-Proposed next migration (`0013_session_lifecycle.sql`, number recheck at delivery):
+Delivered migration `0015_session_lifecycle.sql` (0014 belongs to 52):
 the Agent store owns `cost_owners`, minimal billing-attribution nodes rather than
 another session registry. Their ids match session ids, but they deliberately have
 **no FK to live sessions**. Deleting conversation rows cannot cascade spend away.
@@ -819,8 +820,8 @@ cost. PTY input, new permissions, and provider spending limits are not added.
 Existing sessions migrate with `project=NULL`, accounting lineage backfilled,
 and historical cost coverage explicitly unknown. No transcript reconstruction,
 repricing, or retroactive estimate fills that gap.
-Private pools run the same schema in memory; recheck the migration number at
-delivery. Old clients keep the exact durable creation/upload methods. Contract
+Private pools run the same schema in memory. Old clients keep the exact durable
+creation/upload methods. Contract
 checks require options and a `SessionOpen` result from additive `create_session`;
 omitted arguments are invalid. New wire fields are additive, and private mode
 appears only when every retention participant is ready.
@@ -995,5 +996,83 @@ Paths are relative to `~/Develop/oh-my-pi`.
 
 ## Status
 
-Proposed and source-reviewed on 2026-09-18; nothing implemented or tested.
-The 00 amendment remains proposed until acceptance evidence is recorded.
+As built 2026-09-19 on branch `session-lifecycle`; commits `6c63f74`, `4738eb3`,
+and the wave-3 commit. The design body above is unchanged from the 2026-09-18
+draft; deviations are listed below rather than rewritten in.
+
+Verification (orchestrator, 2026-09-19):
+
+- `cargo check --workspace --all-targets`: 0 errors, 0 warnings.
+- `cargo test --workspace --lib`: 944 passed, 0 failed.
+- `cargo test -p rpc --features ts export_bindings`: ok; `bindings/methods.json`
+  lists `create_session`, `resume_private`, `leave_session`,
+  `set_session_project`, `session_cost`, `put_session_attachment`,
+  `list_terminals`, `pty_screen`.
+- Desktop: `tsc -b --noEmit` clean; vitest 29 files / 170 tests pass.
+- No LSP servers configured; cargo and tsc are the diagnostics.
+- Migration is `crates/agent/migrations/0015_session_lifecycle.sql`; schema as
+  §6.4 plus a `cost_owners` backfill for existing sessions with
+  `history_coverage='unknown'`.
+- Cost worked example (§6, R/C/G 0.60/0.50/0.60) and replay tests pass; a real
+  local SSE transport test asserts returned USD 0.25 → ledger → `session_cost`.
+
+Built: §3 (`normalize_project`; effective project via root CTE on every summary;
+fork copies once; `SetSessionProject`/`SessionMetadataChanged`; TUI and desktop
+grouping/menus). §6 (`cost.rs` Money nanos-as-string; `store/accounting.rs`
+reserve→dispatch→settle with per-attempt `call_id`, `request_id` per
+`Turn::call`, kinds round/compaction/harvest/title; `ModelUsageChanged` to owner
+and live ancestors; genai fork `e65f7e3` carries
+`Usage.cost: Option<UsageCost{amount,currency,source}>` keyed on raw provider
+`cost`; ACP cumulative meter with known-zero baseline at connect and imported
+baseline otherwise; outbound ACP cost only when complete single-currency;
+startup unresolve). §7 (vt100 scrollback 512, styled runs, cross-wrap/style
+redaction spans with `redaction_complete`, 64 MiB Jobs budget evicting exited
+PTYs first then rejecting, 4-permit snapshot semaphore, 256 KiB page cap,
+`JobView.session`, `Started{name,pty}`, `list_terminals`/`pty_screen`; TUI
+observer and desktop `TerminalViewer` with 500 ms polling, one in flight,
+`TerminalKey`/epoch/viewport reply guard; daemon epoch is always `None` today so
+"Daemon restarted" never renders). §4/§5 (`create_session`/`resume_private`/
+`leave_session`; one `PrivateOwner` = view + `RpcPeer` id + closed token +
+generation + secret; 30 s grace watcher; closing barrier: mailbox-linearized
+revoke + `SessionClosing` → off-mailbox `CloseTreeAll` through the tools
+`ToolRegistry` participants hub (artifact, app, browser, computer, voice,
+routes, jobs) with 30 s per-participant timeout → drop in-memory Store +
+Scratch → `SessionDeleted` children-first; lazy-create gate; ACP/node/remote
+children refused before dispatch; per-tree in-memory SQLite (1 connection,
+`temp_store=MEMORY`, journal MEMORY); 0700 flock'd scratch under the temp dir,
+sweep only after acquiring the lock; artifact in-memory state per root with
+writer drain; Jobs `CloseSessions` kills/reaps/removes logs; routes private in
+memory; knowledge mutations refused and auto-harvest/hints off privately; RPC
+per-peer `Authorize` on every session method, private event filter with a
+process-global owner map, `get_attachment` fails closed for private scratch;
+desktop memory-only private state, router-level coordinator, reconnect banner,
+grep proof of no new persistent storage; TUI `/new` private + explicit leave).
+
+As built — deviations:
+
+1. The close-barrier hub lives in `tools::ToolRegistry`
+   (`RegisterLifecycle`/`ExpectParticipants`/`ParticipantsReady`/`OpenTree`/
+   `CloseTreeAll`), not in agent, because browser/computer/voice/routes depend
+   on tools but not agent. Agent still defines and owns `CreateSession` etc.;
+   `main.rs` sends `ExpectParticipants` for enabled owners.
+2. A private fork shares the source tree's in-memory Store and lease (same
+   owner) instead of minting a new secret; teardown closes the pool when the
+   last tree drops it.
+3. The title-task fence is the session's `closed` token (cancelled in
+   `Session::on_stop`) rather than a generation compare.
+4. The RPC private owner map is insert-only (UUIDs are never reused).
+5. No HTTP attachment route exists in `crates/rpc`, so `Cache-Control:
+   no-store` was not applicable; JSON-RPC `get_attachment` requires the owning
+   session for private paths.
+6. Browser (obscura) is an in-memory engine with no on-disk profile; "isolated
+   volatile profile" is the per-session isolate. Only screenshots touch disk,
+   under the scratch root.
+7. `put_session_attachment(session, bytes: base64 string, file_ext)`.
+8. The ACP zero-baseline row is USD; a later non-USD meter opens an imported
+   epoch.
+9. `Turn::knowledge()` also disables knowledge hints (reads) in private
+   sessions.
+10. Quiet REPL shell jobs have no row and are bounded by the job timeout rather
+    than `CloseSessions`.
+11. Manual acceptance scenarios §9.1–9.7 were not executed end-to-end on real
+    devices/harnesses; the automated unit/integration tests listed above ran.
