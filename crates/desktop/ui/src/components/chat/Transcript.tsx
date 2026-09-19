@@ -3,6 +3,7 @@ import { ArrowDown, ChevronDown, ChevronUp } from 'lucide-react'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { useNudges } from '@/lib/nudges'
 import { useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import { type Prompt, useApprovals, useAsks, useSecretRequests } from '@/store/approvals'
@@ -128,7 +129,10 @@ function Ruler({ ticks, at, onJump }: { ticks: Tick[]; at: number; onJump(index:
 /** The session's transcript: virtualized, pinned to the bottom until the user scrolls up, paged backwards from the top. */
 export function Transcript({ session }: { session: string }) {
   const api = useApi()
-  const entries = useEntries(session)
+  const all = useEntries(session)
+  const showNudges = useNudges((s) => s.show)
+  // Display-only: hidden nudges remain in the session and its context.
+  const entries = useMemo(() => (showNudges ? all : all.filter((e) => e.kind !== 'harness')), [all, showNudges])
   const approvals = useApprovals((s) => s.pending)
   const asks = useAsks((s) => s.pending)
   const secrets = useSecretRequests((s) => s.pending)

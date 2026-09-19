@@ -12,6 +12,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
+import { useNudges } from '@/lib/nudges'
 import { container } from '@/lib/platform'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { isTauri } from '@/lib/tauri'
@@ -43,6 +44,7 @@ export function General() {
   // Autostart and the window hotkey belong to the macOS shell with its own daemon (31 §9).
   const desktop = useHarnesses((s) => s.active) === LOCAL && container() === 'macos'
   const [theme, setThemeState] = useState(currentTheme)
+  const showNudges = useNudges((s) => s.show)
   const models = useQuery({
     queryKey: queryKeys.models,
     queryFn: () => api.list_models(),
@@ -230,6 +232,12 @@ export function General() {
               if (e.key === 'Enter') e.currentTarget.blur()
             }}
           />
+        </Row>
+        <Row
+          label="Show harness nudges"
+          description="Show the harness's mid-turn notes to the model (continue, tool rounds, context pressure) in the chat. Display only."
+        >
+          <Switch checked={showNudges} onCheckedChange={useNudges.getState().setShow} />
         </Row>
         {desktop && (
           <>
