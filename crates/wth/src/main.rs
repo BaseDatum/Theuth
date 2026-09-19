@@ -120,6 +120,9 @@ agent:
                              # Off is a ceiling no session can override; `/communication on always` writes true here.
                              # `/communication off` in a session is memory-only and ends with the process.
   # title_model: anthropic/claude-haiku-4-5   # names sessions in the history list (07 §15); default: the session's model
+  # vision_model: anthropic/claude-haiku-4-5  # answers the main model's questions about images it cannot see (52 §3);
+                             # unset: no fallback. Must be an exact catalog `provider/model` that accepts images;
+                             # images then go to that provider, with extra calls. /vision or Settings → General
   # aws_profile: work          # Bedrock inference for every session; /aws or Settings → Connections
   # subagents:
   #   model: null              # default: agent.model

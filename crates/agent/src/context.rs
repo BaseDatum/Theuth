@@ -181,6 +181,9 @@ pub struct ContextEntry {
     pub remove_with: Vec<ContextTarget>,
     /// Binary occurrences with their own targets.
     pub attachments: Vec<ContextAttachment>,
+    /// Typed consultation metadata when the row is a vision note (52 §6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vision: Option<crate::vision::VisionNote>,
 }
 
 /// Result of a committed (or no-op) removal.
@@ -918,11 +921,12 @@ pub fn entry(
         removed: mask.whole,
         remove_with,
         attachments: attachments(owner, m, mask),
+        vision: None,
     }
 }
 
-/// File name of a binary, else its MIME type.
-fn binary_name(b: &Binary) -> String {
+/// File name of a binary, else its MIME type. Never a directory component.
+pub(crate) fn binary_name(b: &Binary) -> String {
     let name = b.name.as_deref().unwrap_or(&b.content_type);
     Path::new(name)
         .file_name()

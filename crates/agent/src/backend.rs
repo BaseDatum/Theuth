@@ -134,6 +134,16 @@ pub(crate) async fn cursor_models(token: &str) -> Result<Vec<cursor::Model>, Str
     cursor::models(token).await
 }
 
+/// Whether `resolved` can receive image parts through the backend that
+/// would stream it (52 §3): the catalog says the model accepts images
+/// **and** the backend is genai. Cursor's AgentService serialises text parts
+/// only, so a Cursor id is text-only whatever its catalog sibling supports.
+/// This is the one capability rule for `ModelInfo.image`, the loop's routing
+/// branch, and vision-fallback validation.
+pub(crate) fn supports_images(resolved: &Resolved) -> bool {
+    ns(&resolved.genai) != "cursor" && resolved.model.as_ref().is_some_and(|m| m.image)
+}
+
 /// The gateway `resolved`'s provider names, if any.
 fn gateway(auth: &Auth, resolved: &Resolved) -> Option<Gateway> {
     resolved.provider.as_deref().and_then(|p| auth.gateway(p))
@@ -164,5 +174,35 @@ mod tests {
             crate::compact::classify(&message),
             crate::compact::Failure::Deterministic
         );
+    }
+
+    #[test]
+    fn cursor_never_supports_images() {
+        let eyes = models::Model {
+            id: "claude-sonnet-4-5".into(),
+            name: "Sonnet".into(),
+            limit: models::Limit {
+                context: 200_000,
+                output: 8_192,
+            },
+            cost: None,
+            reasoning: false,
+            tool_call: true,
+            image: true,
+            reasoning_options: vec![],
+        };
+        let mut r = Resolved {
+            id: "cursor/claude-sonnet-4-5".into(),
+            genai: "cursor::claude-sonnet-4-5".into(),
+            provider: Some("cursor".into()),
+            model: Some(eyes.clone()),
+        };
+        assert!(!supports_images(&r));
+        r.genai = "anthropic::claude-sonnet-4-5".into();
+        assert!(supports_images(&r));
+        r.model.as_mut().unwrap().image = false;
+        assert!(!supports_images(&r));
+        r.model = None;
+        assert!(!supports_images(&r));
     }
 }

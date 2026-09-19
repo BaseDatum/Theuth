@@ -15,14 +15,14 @@ use agent::{
     Cancel, CommunicationState, Compact, CompactStyle, ContextItems, ContextRemoval,
     ContextSnapshot, ContextTarget, DeleteSession, EditTurn, ForkSession, GetCommunication,
     GetCompactStyle, GetMaxToolRounds, GetPeerMessage, GetSubagentTimeout, GetTitleModel, GetTodos,
-    Harvest, ListAcp, ListAgents, ListLogins, ListModels, ListPeerMessages, ListPeers,
-    ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills, LoadSession, LoadSkill,
-    Loaded, Login, LoginInfo, Logout, ModelInfo, NewRootSession, PeerMessagePage, PeerPage,
-    PeerReceipt, PeerRecord, PeerScope, PinSession, ProviderInfo, QueuedInput, Redo, Regenerate,
-    RemoveAcp, RemoveContext, RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession,
-    SendInput, SessionSummary, SetCommunication, SetCompactStyle, SetEffort, SetMaxToolRounds,
-    SetModel, SetPeerScope, SetSubagentTimeout, SetTitleModel, ShowPrompt, SkillBody, SkillMeta,
-    Steer, SyncSkills, Undo, UseSkill, Withdraw,
+    GetVisionModel, Harvest, ListAcp, ListAgents, ListLogins, ListModels, ListPeerMessages,
+    ListPeers, ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills, LoadSession,
+    LoadSkill, Loaded, Login, LoginInfo, Logout, ModelInfo, NewRootSession, PeerMessagePage,
+    PeerPage, PeerReceipt, PeerRecord, PeerScope, PinSession, ProviderInfo, QueuedInput, Redo,
+    Regenerate, RemoveAcp, RemoveContext, RemoveProvider, RemoveSkill, RemoveSkillRepo,
+    RenameSession, SendInput, SessionSummary, SetCommunication, SetCompactStyle, SetEffort,
+    SetMaxToolRounds, SetModel, SetPeerScope, SetSubagentTimeout, SetTitleModel, SetVisionModel,
+    ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw,
 };
 use agent::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 use app::{AppDoc, AppToolResult, Apps, CallArgs, CallStatusOf, CallTool, CloseApp, GetApp};
@@ -236,6 +236,14 @@ pub trait Api {
     /// Persist `agent.title_model`; `None` clears it (titles use the session's model).
     #[method(name = "set_title_model")]
     async fn set_title_model(&self, model: Option<String>) -> RpcResult<Option<ModelInfo>>;
+    /// The live vision fallback model (`agent.vision_model`), if set (52 §3.1).
+    #[method(name = "vision_model")]
+    async fn vision_model(&self) -> RpcResult<Option<ModelInfo>>;
+    /// Persist `agent.vision_model`; `None` clears it (no fallback). Rejects
+    /// anything but an exact, image-capable catalog entry on a configured
+    /// provider; a failed config write is an error and changes nothing.
+    #[method(name = "set_vision_model")]
+    async fn set_vision_model(&self, model: Option<String>) -> RpcResult<Option<ModelInfo>>;
     /// Every session, newest first.
     #[method(name = "list_sessions")]
     async fn list_sessions(&self) -> RpcResult<Vec<SessionSummary>>;
@@ -1193,6 +1201,14 @@ impl ApiServer for Server {
 
     async fn set_title_model(&self, model: Option<String>) -> RpcResult<Option<ModelInfo>> {
         ask::<Agents, _>(agent::AGENT_ACTOR, SetTitleModel { model }).await
+    }
+
+    async fn vision_model(&self) -> RpcResult<Option<ModelInfo>> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, GetVisionModel).await
+    }
+
+    async fn set_vision_model(&self, model: Option<String>) -> RpcResult<Option<ModelInfo>> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, SetVisionModel { model }).await
     }
 
     async fn list_sessions(&self) -> RpcResult<Vec<SessionSummary>> {

@@ -51,6 +51,10 @@ export function General() {
     queryKey: queryKeys.titleModel,
     queryFn: () => api.title_model(),
   })
+  const visionModel = useQuery({
+    queryKey: queryKeys.visionModel,
+    queryFn: () => api.vision_model(),
+  })
   const autostart = useQuery({
     queryKey: AUTOSTART,
     queryFn: isEnabled,
@@ -73,6 +77,9 @@ export function General() {
   const setTitleModel = useAction((id: string) => api.set_title_model(id === 'off' ? null : id), {
     keys: [queryKeys.titleModel],
   })
+  const setVisionModel = useAction((id: string) => api.set_vision_model(id === 'off' ? null : id), {
+    keys: [queryKeys.visionModel],
+  })
   const setCompact = useAction((style: CompactStyle) =>
     api.set_compact_style(style).then(() => refreshInfo(api)),
   )
@@ -85,6 +92,13 @@ export function General() {
   const setAutostart = useAction((on: boolean) => (on ? enable() : disable()), {
     onSuccess: (_, on) => qc.setQueryData(AUTOSTART, on),
   })
+
+  // 52 §3.2: only models whose backend can actually receive images (`ModelInfo.image` is effective support).
+  const visionModels = models.data?.filter((m) => m.image) ?? []
+  const vision = visionModel.data
+  // A saved selection whose provider went away stays visible as unavailable, never as Off.
+  const unavailable =
+    vision && models.isSuccess && !visionModels.some((m) => m.id === vision.id) ? vision.id : null
 
   return (
     <>
@@ -125,6 +139,35 @@ export function General() {
                   {m.id}
                 </SelectItem>
               ))}
+            </SelectContent>
+          </Select>
+        </Row>
+        <Row
+          label="Vision fallback model"
+          description={
+            visionModel.isError
+              ? `Could not read the vision fallback: ${visionModel.error.message}`
+              : unavailable
+                ? `${unavailable} is selected but not available on this harness; pick another or Off.`
+                : 'Used only when the main model cannot view images. It receives the image and a question written by the main model. Images may go to a different configured provider, and each new image batch costs a question call and a vision call; text redaction cannot remove secrets shown in pixels.'
+          }
+        >
+          <Select
+            value={vision ? vision.id : 'off'}
+            disabled={!visionModel.isSuccess || setVisionModel.isPending}
+            onValueChange={(v) => setVisionModel.mutate(v)}
+          >
+            <SelectTrigger aria-label="Vision fallback model" className="max-w-64">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="off">Off</SelectItem>
+              {visionModels.map((m) => (
+                <SelectItem key={m.id} value={m.id}>
+                  {m.id}
+                </SelectItem>
+              ))}
+              {unavailable && <SelectItem value={unavailable}>{unavailable} (unavailable)</SelectItem>}
             </SelectContent>
           </Select>
         </Row>

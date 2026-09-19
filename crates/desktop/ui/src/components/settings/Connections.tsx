@@ -41,7 +41,8 @@ function Logins() {
     queryKey: queryKeys.mcp(null),
     queryFn: () => api.list_mcp(null),
   })
-  const keys = [queryKeys.logins, queryKeys.mcp(null)]
+  // A logout changes which providers `list_models` may offer (52 §3.2); a login refreshes via `LoginFinished`.
+  const keys = [queryKeys.logins, queryKeys.mcp(null), queryKeys.models]
   // Over link the daemon opens its own browser on the harness (31 §9): the URL is only shown here, as text.
   const [remote, setRemote] = useState<{ name: string; url: string } | null>(null)
   const login = useAction(async (v: { name: string; mcp: boolean }) => {
@@ -222,7 +223,7 @@ function Bedrock() {
     queryFn: () => api.list_aws_profiles(),
   })
   const set = useAction((profile: string | null) => api.set_aws_profile(profile), {
-    keys: [queryKeys.awsProfiles],
+    keys: [queryKeys.awsProfiles, queryKeys.models],
     onSuccess: (r) => toast.success(r.selected ? `Bedrock uses profile ${r.selected}` : 'Bedrock uses the AWS default chain'),
   })
   const d = aws.data

@@ -289,6 +289,8 @@ export interface Api {
   set_peer_scope(root: SessionId, scope: PeerScope, alias: string | null): Promise<CommunicationState>
   set_subagent_timeout(seconds: number): Promise<null>
   set_title_model(model: string | null): Promise<ModelInfo | null>
+  /** Persist `agent.vision_model` (52 §3.1): `null` turns the fallback off; an unavailable or text-only id rejects and leaves the selection unchanged. */
+  set_vision_model(model: string | null): Promise<ModelInfo | null>
   shutdown(): Promise<null>
   signal_allow(number: string): Promise<null>
   signal_link(): Promise<string>
@@ -314,6 +316,8 @@ export interface Api {
   /** The self-updater's latest state (39 §4.3). */
   update_status(): Promise<UpdateReady | null>
   use_skill(session: SessionId | null, name: string, args: string): Promise<SessionId>
+  /** The vision fallback model (52 §3.1), `null` when off; may name a model that is no longer available. */
+  vision_model(): Promise<ModelInfo | null>
   /** Model state, voices and the utterance in flight (43 §6); `-32001` when the voice plugin is disabled. */
   voice_status(): Promise<VoiceStatus>
   withdraw(session: SessionId, id: InputId): Promise<string>
@@ -438,6 +442,7 @@ export const METHODS = [
   'set_secret',
   'set_subagent_timeout',
   'set_title_model',
+  'set_vision_model',
   'shutdown',
   'signal_allow',
   'signal_link',
@@ -459,6 +464,7 @@ export const METHODS = [
   'undo',
   'update_status',
   'use_skill',
+  'vision_model',
   'voice_status',
   'withdraw',
 ] as const satisfies readonly (keyof Api)[]

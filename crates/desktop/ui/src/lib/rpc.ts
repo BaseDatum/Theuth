@@ -53,6 +53,8 @@ export const queryKeys = {
   artifactSearchMatch: (callId: string, q: string) => ['artifacts', 'match', callId, q] as const,
   info: ['info'] as const,
   titleModel: ['title-model'] as const,
+  /** `vision_model()` (52 §3.2); slash setters and the General dropdown invalidate this same key. */
+  visionModel: ['vision-model'] as const,
   signal: ['signal'] as const,
   slack: ['slack'] as const,
   computer: ['computer'] as const,
@@ -84,6 +86,14 @@ export function useInvalidateOn(): void {
       )
     }
     const search = () => void qc.invalidateQueries({ queryKey: queryKeys.searchAll })
+    // The model inventory and both model settings depend on configured providers (52 §3.2): refetch
+    // after an auth change and after a reconnect/`Lagged` reload (`App.reload`), whose gap may have hidden one.
+    const models = () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.models })
+      void qc.invalidateQueries({ queryKey: queryKeys.titleModel })
+      void qc.invalidateQueries({ queryKey: queryKeys.visionModel })
+    }
+    window.addEventListener('wth:reload-session', models)
     const offs = [
       on('TurnFinished', () => {
         sessions()
@@ -101,7 +111,10 @@ export function useInvalidateOn(): void {
         search()
       }),
       on('McpProgress', () => void qc.invalidateQueries({ queryKey: ['mcp'] })),
-      on('LoginFinished', () => void qc.invalidateQueries({ queryKey: queryKeys.logins })),
+      on('LoginFinished', () => {
+        void qc.invalidateQueries({ queryKey: queryKeys.logins })
+        models()
+      }),
       on('KnowledgeChanged', (e) => {
         void qc.invalidateQueries({ queryKey: queryKeys.knowledgeList })
         void qc.invalidateQueries({ queryKey: queryKeys.knowledgeDoc(e.id) })
@@ -131,6 +144,7 @@ export function useInvalidateOn(): void {
     ]
     return () => {
       clearTimeout(timer)
+      window.removeEventListener('wth:reload-session', models)
       for (const off of offs) off()
     }
   }, [qc])

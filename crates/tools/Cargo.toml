@@ -36,6 +36,8 @@ portable-pty = { workspace = true }
 vt100 = { workspace = true }
 sha2 = { workspace = true }
 jsonschema = { workspace = true }
+image = { workspace = true, features = ["jpeg", "gif", "webp"] }
+base64 = { workspace = true }
 
 [features]
 ts = ["dep:ts-rs", "runtime/ts"]

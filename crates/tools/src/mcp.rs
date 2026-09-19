@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use futures::future::BoxFuture;
 use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
@@ -30,7 +32,7 @@ use serde_json::Value;
 use crate::registry::{HiddenTools, ListTools, RegisterTool, ToolRegistry, UnregisterTool};
 use crate::{
     DynTool, ErasedTool, Gate, MCP_ACTOR, McpEntry, Policy, PolicyAction, Risk, ToolCx, ToolOutput,
-    ToolSource, ToolSpec, git, secrets,
+    ToolSource, ToolSpec, git, images, secrets,
 };
 
 mod oauth;
@@ -452,6 +454,8 @@ struct McpTool {
     source: ToolSource,
     /// [`ServerSpec::origin`] of the owning server; private to the identity hash.
     origin: String,
+    /// `<data_dir>/mcp/images`; image blocks land in `<images>/<session>/`.
+    images: PathBuf,
 }
 
 impl ErasedTool for McpTool {
@@ -467,7 +471,7 @@ impl ErasedTool for McpTool {
         self.origin.clone()
     }
 
-    fn call(&self, args: Value, _: ToolCx) -> BoxFuture<'_, anyhow::Result<ToolOutput>> {
+    fn call(&self, args: Value, cx: ToolCx) -> BoxFuture<'_, anyhow::Result<ToolOutput>> {
         Box::pin(async move {
             let arguments = match args {
                 Value::Object(m) => m,
@@ -477,22 +481,102 @@ impl ErasedTool for McpTool {
             let params =
                 CallToolRequestParams::new(self.remote_name.clone()).with_arguments(arguments);
             let result = self.service.call_tool(params).await?;
-            let content = result
-                .content
-                .iter()
-                .map(|block| match block {
-                    ContentBlock::Text(t) => t.text.clone(),
-                    other => serde_json::to_string(other).unwrap_or_default(),
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            Ok(ToolOutput {
-                content,
-                is_error: result.is_error.unwrap_or(false),
-                structured: result.structured_content,
-                files: Vec::new(),
-            })
+            Ok(output(result, &self.images.join(cx.session.to_string())))
         })
+    }
+}
+
+/// Longest base64 text that can decode to [`images::MAX_IMAGE_BYTES`].
+const MAX_IMAGE_BASE64: usize = (images::MAX_IMAGE_BYTES as usize).div_ceil(3) * 4;
+
+/// Decode one image block (52 §7.1): size is bounded on the encoded text
+/// before anything is allocated; content is validated by [`images::save`].
+/// The error never quotes the payload.
+fn image_block(data: &str, mime: &str, dir: &Path) -> anyhow::Result<PathBuf> {
+    if data.len() > MAX_IMAGE_BASE64 {
+        anyhow::bail!("exceeds {} MB", images::MAX_IMAGE_BYTES >> 20);
+    }
+    let bytes = BASE64
+        .decode(data)
+        .map_err(|_| anyhow::anyhow!("data is not base64"))?;
+    images::save(&bytes, mime, dir)
+}
+
+/// Replace every string in `v` that is exactly one of `payloads` (an image
+/// block's base64 the server repeated in `structuredContent`) with the
+/// matching file path. Exact known strings only; nothing is scanned for.
+fn replace_payloads(v: &mut Value, payloads: &[(&str, &Path)]) {
+    match v {
+        Value::String(s) => {
+            if let Some((_, p)) = payloads.iter().find(|(d, _)| *d == s.as_str()) {
+                *s = p.display().to_string();
+            }
+        }
+        Value::Array(a) => a.iter_mut().for_each(|v| replace_payloads(v, payloads)),
+        Value::Object(o) => o.values_mut().for_each(|v| replace_payloads(v, payloads)),
+        _ => {}
+    }
+}
+
+/// The model-facing form of a `tools/call` result (52 §7.1). Text blocks and
+/// text resources pass through; image blocks become validated files under
+/// `dir`, in source order, each leaving a path line where the block was;
+/// audio and blob resources leave a placeholder instead of their base64;
+/// anything else keeps the JSON dump. A malformed image block makes the
+/// whole result an error naming the block, with no payload text. Base64 the
+/// server repeated verbatim in `structuredContent` is replaced by the path.
+fn output(result: rmcp::model::CallToolResult, dir: &Path) -> ToolOutput {
+    let mut files = Vec::new();
+    let mut lines = Vec::with_capacity(result.content.len());
+    for (i, block) in result.content.iter().enumerate() {
+        match block {
+            ContentBlock::Text(t) => lines.push(t.text.clone()),
+            ContentBlock::Image(img) => match image_block(&img.data, &img.mime_type, dir) {
+                Ok(path) => {
+                    lines.push(format!("image saved to {}", path.display()));
+                    files.push(path);
+                }
+                Err(e) => {
+                    return ToolOutput::err(format!(
+                        "content block {i}: invalid {} image: {e}",
+                        img.mime_type
+                    ));
+                }
+            },
+            ContentBlock::Audio(a) => lines.push(format!("[audio {} omitted]", a.mime_type)),
+            ContentBlock::Resource(r) => match &r.resource {
+                rmcp::model::ResourceContents::TextResourceContents { text, .. } => {
+                    lines.push(text.clone());
+                }
+                rmcp::model::ResourceContents::BlobResourceContents { uri, mime_type, .. } => {
+                    lines.push(format!(
+                        "[resource {uri} ({}) omitted]",
+                        mime_type.as_deref().unwrap_or("application/octet-stream")
+                    ));
+                }
+                _ => lines.push(serde_json::to_string(block).unwrap_or_default()),
+            },
+            other => lines.push(serde_json::to_string(other).unwrap_or_default()),
+        }
+    }
+    let mut structured = result.structured_content;
+    if let Some(s) = structured.as_mut().filter(|_| !files.is_empty()) {
+        let payloads: Vec<(&str, &Path)> = result
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Image(img) => Some(img.data.as_str()),
+                _ => None,
+            })
+            .zip(files.iter().map(PathBuf::as_path))
+            .collect();
+        replace_payloads(s, &payloads);
+    }
+    ToolOutput {
+        content: lines.join("\n"),
+        is_error: result.is_error.unwrap_or(false),
+        structured,
+        files,
     }
 }
 
@@ -1564,6 +1648,7 @@ async fn register(
                         entry: r.spec.entry(dir),
                     },
                     origin: r.spec.origin(server),
+                    images: dir.join("images"),
                 },
             ));
         }
@@ -1676,6 +1761,140 @@ mod tests {
                 cwd: None,
             },
         }
+    }
+
+    fn call_result(v: Value) -> rmcp::model::CallToolResult {
+        serde_json::from_value(v).unwrap()
+    }
+
+    fn b64(bytes: &[u8]) -> String {
+        BASE64.encode(bytes)
+    }
+
+    #[test]
+    fn output_turns_image_blocks_into_files_in_source_order() {
+        use image::ImageFormat;
+        let dir = std::env::temp_dir().join(format!("wth-mcp-img-{}", uuid::Uuid::new_v4()));
+        let (png, jpg) = (
+            b64(&images::tests::encoded(ImageFormat::Png, 2, 2, 1)),
+            b64(&images::tests::encoded(ImageFormat::Jpeg, 2, 2, 1)),
+        );
+        let out = output(
+            call_result(serde_json::json!({
+                "content": [
+                    { "type": "text", "text": "before" },
+                    { "type": "image", "data": png, "mimeType": "image/png" },
+                    { "type": "audio", "data": "AAAA", "mimeType": "audio/wav" },
+                    { "type": "resource", "resource": { "uri": "file:///r.txt", "text": "embedded" } },
+                    { "type": "resource", "resource": { "uri": "file:///r.bin", "blob": "AAAA" } },
+                    { "type": "image", "data": jpg, "mimeType": "image/jpeg" },
+                    { "type": "text", "text": "after" },
+                ],
+                "structuredContent": { "shot": png, "nested": [ { "again": png } ], "other": "kept" },
+            })),
+            &dir,
+        );
+        assert!(!out.is_error);
+        assert_eq!(out.files.len(), 2);
+        assert_eq!(out.files[0].extension().unwrap(), "png");
+        assert_eq!(out.files[1].extension().unwrap(), "jpg");
+        assert!(out.files.iter().all(|f| f.starts_with(&dir) && f.is_file()));
+        let lines: Vec<&str> = out.content.lines().collect();
+        assert_eq!(lines.len(), 7);
+        assert_eq!(lines[0], "before");
+        assert_eq!(
+            lines[1],
+            format!("image saved to {}", out.files[0].display())
+        );
+        assert_eq!(lines[2], "[audio audio/wav omitted]");
+        assert_eq!(lines[3], "embedded");
+        assert_eq!(
+            lines[4],
+            "[resource file:///r.bin (application/octet-stream) omitted]"
+        );
+        assert_eq!(
+            lines[5],
+            format!("image saved to {}", out.files[1].display())
+        );
+        assert_eq!(lines[6], "after");
+        // No base64 anywhere the model reads; exact repeats in structured
+        // content became the path, everything else stayed.
+        let structured = out.structured.unwrap();
+        let dump = serde_json::to_string(&structured).unwrap();
+        assert!(!out.content.contains(&png) && !out.content.contains(&jpg));
+        assert!(!dump.contains(&png));
+        let path = out.files[0].display().to_string();
+        assert_eq!(structured["shot"], path);
+        assert_eq!(structured["nested"][0]["again"], path);
+        assert_eq!(structured["other"], "kept");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn output_rejects_malformed_images_without_echoing_them() {
+        use image::ImageFormat;
+        let dir = std::env::temp_dir().join(format!("wth-mcp-bad-{}", uuid::Uuid::new_v4()));
+        let png = images::tests::encoded(ImageFormat::Png, 2, 2, 1);
+        let check = |data: String, mime: &str, needle: &str| {
+            let out = output(
+                call_result(serde_json::json!({
+                    "content": [
+                        { "type": "text", "text": "ok" },
+                        { "type": "image", "data": data, "mimeType": mime },
+                    ],
+                })),
+                &dir,
+            );
+            assert!(out.is_error, "{mime}: {}", out.content);
+            assert!(
+                out.content.starts_with("content block 1: invalid"),
+                "{}",
+                out.content
+            );
+            assert!(out.content.contains(needle), "{}", out.content);
+            assert!(
+                !out.content.contains(&data[..8]),
+                "payload leaked: {}",
+                out.content
+            );
+            assert!(out.files.is_empty());
+        };
+        check(
+            b64(&png),
+            "image/jpeg",
+            "content is image/png but was labeled image/jpeg",
+        );
+        check(
+            b64(b"not an image at all"),
+            "image/png",
+            "not a recognized image",
+        );
+        check(b64(&png[..png.len() / 2]), "image/png", "invalid image/png");
+        check("%%%not base64%%%".into(), "image/png", "not base64");
+        check(b64(&png), "image/bmp", "not a supported image type");
+        // Oversize is refused on the encoded length, before decoding.
+        check(
+            "A".repeat(MAX_IMAGE_BASE64 + 4),
+            "image/png",
+            "exceeds 5 MB",
+        );
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn output_keeps_plain_results_as_before() {
+        let out = output(
+            call_result(serde_json::json!({
+                "content": [{ "type": "text", "text": "a" }, { "type": "text", "text": "b" }],
+                "structuredContent": { "n": 1 },
+                "isError": true,
+            })),
+            Path::new("/nonexistent"),
+        );
+        assert_eq!(out.content, "a\nb");
+        assert!(out.is_error);
+        assert_eq!(out.structured, Some(serde_json::json!({ "n": 1 })));
+        assert!(out.files.is_empty());
     }
 
     #[test]

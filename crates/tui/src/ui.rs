@@ -137,6 +137,9 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             let _ = commands.send(Command::ListSkills);
             // The global communication default, before any session is shown (50 §10).
             let _ = commands.send(Command::GetCommunication(None));
+            // The harness-wide vision fallback, so attaching an image to a
+            // text-only model can say who will look at it (52 §3.2).
+            let _ = commands.send(Command::GetVisionModel);
             let mut frames = tokio::time::interval(std::time::Duration::from_millis(16));
             frames.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             let mut pending = Vec::new();

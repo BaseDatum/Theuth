@@ -16,9 +16,16 @@
 //! transaction as every append, epoch, exclusion edit, undo/redo and
 //! committed cut; never reset when seq/epoch numbers are reused.
 //!
+//! Vision notes (52 §6): `messages.vision` holds the typed [`VisionNote`] of
+//! a consultation row, NULL otherwise. Only that column marks a note; such
+//! rows never open a turn and are transparent when a turn reader looks for
+//! the preceding role. [`Store::vision_frame`] reads the effective frame,
+//! the original-coordinate image index and the active notes in one snapshot.
+//!
 //! Communication accounting (50 §7: root scope, peer exchanges, A2A
 //! contexts/tasks, peer bindings) lives in [`communication`] on the same pool.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Duration;
 
@@ -35,6 +42,7 @@ use crate::context::{
 };
 use crate::loop_::text_of;
 use crate::todo::{Todo, TodoSnapshot, TodoSource};
+use crate::vision::{VisionImage, VisionNote};
 
 pub mod communication;
 
@@ -55,6 +63,38 @@ pub struct Epoch {
     pub tail_from: i64,
     /// The `<context_summary>` user message.
     pub head: ChatMessage,
+}
+
+/// One transaction-consistent read for text-only preparation (52 §4.2, §6):
+/// the effective frame as [`Store::frame`] returns it, every active image
+/// occurrence addressed by its **original** coordinates (raw rows + masks,
+/// head first, then rows by seq) and the typed notes whose rows are still
+/// effective, all at `revision`.
+#[derive(Debug)]
+pub struct VisionFrame {
+    /// Current epoch; 0 before any compaction.
+    pub epoch: u32,
+    /// Effective head (`None`: no epoch, or the user removed it).
+    pub head: Option<ChatMessage>,
+    /// Effective tail rows from `tail_from`.
+    pub tail: Vec<(i64, ChatMessage)>,
+    /// Active, unmasked image occurrences (never PDFs or removed images).
+    pub images: Vec<VisionImage>,
+    /// Typed notes of active, unmasked rows by seq.
+    pub notes: BTreeMap<i64, VisionNote>,
+    /// Decimal `sessions.context_revision` everything above was read at.
+    pub revision: String,
+}
+
+/// One visible or hidden raw `messages` row.
+struct Row {
+    seq: i64,
+    message: ChatMessage,
+    mask: Mask,
+    /// Raw `messages.vision`; `Some` marks a typed note (parsed lazily by
+    /// the readers that need it, so a corrupt note cannot hide a transcript
+    /// from turn readers).
+    vision: Option<String>,
 }
 
 /// Raw `sessions` row; ids and timestamps are TEXT and parsed on the way out.
@@ -237,6 +277,83 @@ impl Store {
         Ok(seq)
     }
 
+    /// Append a vision consultation note with its typed metadata in one
+    /// transaction (52 §6): the row, `updated_at` and the revision commit
+    /// together, so a note is either durable and typed or absent.
+    pub async fn append_vision(
+        &self,
+        id: SessionId,
+        message: &ChatMessage,
+        note: &VisionNote,
+    ) -> anyhow::Result<i64> {
+        let vision = serde_json::to_string(note)?;
+        let mut tx = self.pool.begin().await?;
+        let seq = insert_in(&mut tx, &id.to_string(), message, Some(&vision)).await?;
+        tx.commit().await?;
+        Ok(seq)
+    }
+
+    /// Typed notes of every visible raw row, by seq (history rendering).
+    /// Masks and the epoch boundary are not applied; malformed metadata is
+    /// an error, never a plain message.
+    pub async fn vision_notes(&self, id: SessionId) -> anyhow::Result<BTreeMap<i64, VisionNote>> {
+        let mut conn = self.pool.acquire().await?;
+        rows_in(&mut conn, id, 0)
+            .await?
+            .iter()
+            .filter_map(|r| r.vision.as_deref().map(|raw| (r.seq, raw)))
+            .map(|(seq, raw)| Ok((seq, note_of(id, seq, raw)?)))
+            .collect()
+    }
+
+    /// The effective frame plus the image index and active notes at one
+    /// revision, for text-only preparation (52 §4.2, §6). Images come from
+    /// the raw head/rows and their masks, so each carries its original
+    /// coordinates even when the projected part vector is shorter. A note
+    /// counts only while its row is visible, in the tail and not removed.
+    pub async fn vision_frame(&self, id: SessionId) -> anyhow::Result<VisionFrame> {
+        let sid = id.to_string();
+        let mut tx = self.pool.begin().await?;
+        let revision = revision_in(&mut tx, &sid).await?.to_string();
+        let latest = epochs_in(&mut tx, &sid).await?.pop();
+        let (epoch, tail_from, head) = match latest {
+            Some((e, mask)) => (e.n, e.tail_from, Some((e.head, mask))),
+            None => (0, 0, None),
+        };
+        let rows = rows_in(&mut tx, id, tail_from).await?;
+        drop(tx);
+        let mut images = Vec::new();
+        if let Some((h, mask)) = &head {
+            images.extend(crate::vision::images(ContextOwner::Head { epoch }, h, mask));
+        }
+        let mut notes = BTreeMap::new();
+        for r in &rows {
+            images.extend(crate::vision::images(
+                ContextOwner::Message { seq: r.seq },
+                &r.message,
+                &r.mask,
+            ));
+            if let (false, Some(raw)) = (r.mask.whole, r.vision.as_deref()) {
+                notes.insert(r.seq, note_of(id, r.seq, raw)?);
+            }
+        }
+        let active = Active {
+            epoch,
+            tail_from,
+            head,
+            rows: rows.into_iter().map(Row::into_active).collect(),
+        };
+        let (head, tail) = active.effective();
+        Ok(VisionFrame {
+            epoch,
+            head,
+            tail,
+            images,
+            notes,
+            revision,
+        })
+    }
+
     /// [`Store::append`] plus the plan it produced, in one transaction: the
     /// snapshot is anchored at the new row's seq so it shares its visibility
     /// (47 §5.2). An unchanged plan writes no snapshot and keeps its version.
@@ -319,20 +436,20 @@ impl Store {
         Ok(rows_in(&mut conn, id, 0)
             .await?
             .into_iter()
-            .map(|(seq, m, _)| (seq, m))
+            .map(|r| (r.seq, r.message))
             .collect())
     }
 
     /// Rows hidden by undo (`seq >= cut_at`); empty when `cut_at` is NULL.
-    async fn messages_hidden(&self, id: SessionId) -> anyhow::Result<Vec<(i64, ChatMessage)>> {
-        let rows: Vec<(i64, String)> = sqlx::query_as(
-            "SELECT seq, body FROM messages WHERE session_id = ?1 \
+    async fn hidden(&self, id: SessionId) -> anyhow::Result<Vec<Row>> {
+        let rows = sqlx::query_as(
+            "SELECT seq, body, excluded, vision FROM messages WHERE session_id = ?1 \
              AND seq >= (SELECT cut_at FROM sessions WHERE id = ?1) ORDER BY seq",
         )
         .bind(id.to_string())
         .fetch_all(&self.pool)
         .await?;
-        Ok(decode_rows(id, rows))
+        decode_masked(id, rows)
     }
 
     /// `(id, title, updated_at)` of every session, for the search index (26 §2).
@@ -400,42 +517,45 @@ impl Store {
     /// Hide the last visible turn (its user message and everything after).
     /// `None` when nothing is left to hide; `Some` is the hidden turn's user text.
     pub async fn undo(&self, id: SessionId) -> anyhow::Result<Option<String>> {
-        let visible = self.messages(id).await?;
-        let Some(i) = turn_starts(&visible).last() else {
+        let mut conn = self.pool.acquire().await?;
+        let visible = rows_in(&mut conn, id, 0).await?;
+        drop(conn);
+        let Some(&i) = turn_starts(&visible).last() else {
             return Ok(None);
         };
-        let (seq, m) = &visible[i];
-        self.set_cut(id, Some(*seq)).await?;
-        Ok(Some(text_of(&m.content)))
+        let r = &visible[i];
+        self.set_cut(id, Some(r.seq)).await?;
+        Ok(Some(text_of(&r.message.content)))
     }
 
     /// Restore the oldest hidden turn. `None` when nothing is hidden; `Some`
     /// is the restored turn's user text.
     pub async fn redo(&self, id: SessionId) -> anyhow::Result<Option<String>> {
-        let hidden = self.messages_hidden(id).await?;
-        let mut starts = turn_starts(&hidden);
-        let Some(first) = starts.next() else {
+        let hidden = self.hidden(id).await?;
+        let starts = turn_starts(&hidden);
+        let Some(&first) = starts.first() else {
             return Ok(None);
         };
-        let next = starts.next().map(|i| hidden[i].0);
+        let next = starts.get(1).map(|&i| hidden[i].seq);
         self.set_cut(id, next).await?;
-        Ok(Some(text_of(&hidden[first].1.content)))
+        Ok(Some(text_of(&hidden[first].message.content)))
     }
 
     /// Hide `seq >= turn` (a visible turn start) and return the opener row
     /// (design doc 29 §4.1). `Err("not a turn start")` when `turn` is not a
     /// visible turn start; the marker is untouched then.
     pub async fn cut_to(&self, id: SessionId, turn: i64) -> anyhow::Result<ChatMessage> {
-        let visible = self.messages(id).await?;
-        let i = visible
-            .iter()
-            .position(|(s, _)| *s == turn)
-            .filter(|&i| is_turn_start(i.checked_sub(1).map(|p| &visible[p].1), &visible[i].1));
+        let mut conn = self.pool.acquire().await?;
+        let visible = rows_in(&mut conn, id, 0).await?;
+        drop(conn);
+        let i = turn_starts(&visible)
+            .into_iter()
+            .find(|&i| visible[i].seq == turn);
         let Some(i) = i else {
             anyhow::bail!("not a turn start");
         };
         self.set_cut(id, Some(turn)).await?;
-        Ok(visible[i].1.clone())
+        Ok(visible[i].message.clone())
     }
 
     /// Delete the hidden tail for real and clear `cut_at`; no-op when nothing
@@ -500,9 +620,9 @@ impl Store {
     ) -> anyhow::Result<SessionId> {
         let mut tx = self.pool.begin().await?;
         let rows = rows_in(&mut tx, src, 0).await?;
-        let mut starts = (0..rows.len())
-            .filter(|&i| is_turn_start(i.checked_sub(1).map(|p| &rows[p].1), &rows[i].1))
-            .map(|i| rows[i].0)
+        let mut starts = turn_starts(&rows)
+            .into_iter()
+            .map(|i| rows[i].seq)
             .peekable();
         if starts.peek().is_none() {
             anyhow::bail!("nothing to fork");
@@ -520,12 +640,17 @@ impl Store {
         // tool calls is copied without them.
         let mut stripped: Option<(i64, String, Option<String>)> = None;
         if let (Some(t), Some(n)) = (through, reply) {
-            let (seq, m, mask) = rows
+            let Row {
+                seq,
+                message: m,
+                mask,
+                ..
+            } = rows
                 .iter()
-                .filter(|(s, m, _)| {
-                    (t..end).contains(s)
-                        && m.role == ChatRole::Assistant
-                        && !text_of(&m.content).is_empty()
+                .filter(|r| {
+                    (t..end).contains(&r.seq)
+                        && r.message.role == ChatRole::Assistant
+                        && !text_of(&r.message.content).is_empty()
                 })
                 .nth(n as usize)
                 .ok_or_else(|| anyhow::anyhow!("no such reply"))?;
@@ -570,8 +695,8 @@ impl Store {
             anyhow::bail!("no such session");
         }
         sqlx::query(
-            "INSERT INTO messages (session_id, seq, body, excluded) \
-             SELECT ?1, seq, body, excluded FROM messages WHERE session_id = ?2 AND seq < ?3 \
+            "INSERT INTO messages (session_id, seq, body, excluded, vision) \
+             SELECT ?1, seq, body, excluded, vision FROM messages WHERE session_id = ?2 AND seq < ?3 \
              AND seq < COALESCE((SELECT cut_at FROM sessions WHERE id = ?2), 9223372036854775807)",
         )
         .bind(&new)
@@ -640,8 +765,8 @@ impl Store {
 
     /// Number of turns hidden by undo (the redo depth).
     pub async fn hidden_turns(&self, id: SessionId) -> anyhow::Result<u32> {
-        let hidden = self.messages_hidden(id).await?;
-        Ok(u32::try_from(turn_starts(&hidden).count())?)
+        let hidden = self.hidden(id).await?;
+        Ok(u32::try_from(turn_starts(&hidden).len())?)
     }
 
     /// All visible epochs of a session, by `n` ascending. Raw heads (masks not applied).
@@ -866,7 +991,9 @@ impl Store {
 
     /// Raw cut-visible messages and epochs with their context metadata and
     /// the active inventory, all read at one revision (48 §5). Bodies are
-    /// the stored rows; previews are the caller's to materialize.
+    /// the stored rows; previews are the caller's to materialize. A vision
+    /// note's entry carries its typed metadata (52 §6); malformed metadata
+    /// is an error rather than a plain message.
     pub async fn context_history(&self, id: SessionId) -> anyhow::Result<ContextHistory> {
         let sid = id.to_string();
         let mut tx = self.pool.begin().await?;
@@ -884,33 +1011,32 @@ impl Store {
                 .map(|(e, mask)| (e.head.clone(), mask.clone())),
             rows: rows
                 .iter()
-                .filter(|(seq, _, _)| *seq >= tail_from)
-                .cloned()
+                .filter(|r| r.seq >= tail_from)
+                .map(|r| (r.seq, r.message.clone(), r.mask.clone()))
                 .collect(),
         };
         let groups = active.groups();
         let snapshot = active.snapshot(&revision, &groups);
-        let entries = rows
-            .iter()
-            .map(|(seq, m, mask)| {
-                let active_row = *seq >= tail_from;
-                let remove_with = if active_row && !mask.whole {
-                    groups.remove_with(*seq)
-                } else {
-                    Vec::new()
-                };
-                (
-                    *seq,
-                    entry(
-                        ContextOwner::Message { seq: *seq },
-                        m,
-                        mask,
-                        active_row,
-                        remove_with,
-                    ),
-                )
-            })
-            .collect();
+        let mut entries = BTreeMap::new();
+        for r in &rows {
+            let active_row = r.seq >= tail_from;
+            let remove_with = if active_row && !r.mask.whole {
+                groups.remove_with(r.seq)
+            } else {
+                Vec::new()
+            };
+            let mut e = entry(
+                ContextOwner::Message { seq: r.seq },
+                &r.message,
+                &r.mask,
+                active_row,
+                remove_with,
+            );
+            if let Some(raw) = &r.vision {
+                e.vision = Some(note_of(id, r.seq, raw)?);
+            }
+            entries.insert(r.seq, e);
+        }
         let heads = epochs
             .iter()
             .map(|(e, mask)| {
@@ -928,7 +1054,7 @@ impl Store {
             .collect();
         Ok(ContextHistory {
             revision,
-            messages: rows.into_iter().map(|(seq, m, _)| (seq, m)).collect(),
+            messages: rows.into_iter().map(|r| (r.seq, r.message)).collect(),
             epochs: epochs.into_iter().map(|(e, _)| e).collect(),
             entries,
             heads,
@@ -1064,17 +1190,19 @@ impl Store {
     }
 
     /// Assistant text after the last user message, joined by newlines: the
-    /// "final answer" of the most recent turn.
+    /// "final answer" of the most recent turn. Vision notes are not user
+    /// messages here: a maintenance note after a reply does not erase it.
     pub async fn last_turn_text(&self, id: SessionId) -> anyhow::Result<String> {
-        let messages = self.messages(id).await?;
-        let start = messages
+        let mut conn = self.pool.acquire().await?;
+        let rows = rows_in(&mut conn, id, 0).await?;
+        let start = rows
             .iter()
-            .rposition(|(_, m)| m.role == ChatRole::User)
+            .rposition(|r| r.message.role == ChatRole::User && r.vision.is_none())
             .map_or(0, |i| i + 1);
-        Ok(messages[start..]
+        Ok(rows[start..]
             .iter()
-            .filter(|(_, m)| m.role == ChatRole::Assistant)
-            .map(|(_, m)| text_of(&m.content))
+            .filter(|r| r.message.role == ChatRole::Assistant)
+            .map(|r| text_of(&r.message.content))
             .filter(|t| !t.is_empty())
             .collect::<Vec<_>>()
             .join("\n"))
@@ -1083,14 +1211,44 @@ impl Store {
 
 /// A user message that opens a turn: first in the session or right after an
 /// assistant reply. Steers and notes follow Tool/User rows and never count.
+/// Callers with vision notes in `rows` use [`turn_openers`], which skips them.
 pub(crate) fn is_turn_start(prev: Option<&ChatMessage>, m: &ChatMessage) -> bool {
     m.role == ChatRole::User && prev.is_none_or(|p| p.role == ChatRole::Assistant)
 }
 
-/// Indices of turn starts within `rows` (in order).
-fn turn_starts(rows: &[(i64, ChatMessage)]) -> impl Iterator<Item = usize> + '_ {
-    (0..rows.len())
-        .filter(move |&i| is_turn_start(i.checked_sub(1).map(|p| &rows[p].1), &rows[i].1))
+/// Indices of turn starts among `(message, is_vision_note)` rows, in order.
+/// A typed vision note never opens a turn and is skipped when locating the
+/// preceding role (52 §6): a note appended after an assistant reply is no
+/// phantom turn, and the real user message after it still opens one.
+fn openers<'a>(rows: impl Iterator<Item = (&'a ChatMessage, bool)>) -> Vec<usize> {
+    let mut prev: Option<&ChatMessage> = None;
+    let mut out = Vec::new();
+    for (i, (m, note)) in rows.enumerate() {
+        if note {
+            continue;
+        }
+        if is_turn_start(prev, m) {
+            out.push(i);
+        }
+        prev = Some(m);
+    }
+    out
+}
+
+/// Indices of turn starts within `rows`.
+fn turn_starts(rows: &[Row]) -> Vec<usize> {
+    openers(rows.iter().map(|r| (&r.message, r.vision.is_some())))
+}
+
+/// Seqs opening a turn in raw `(seq, message)` rows, for readers outside the
+/// store (history turn handles). `note(seq)` says whether the row is a typed
+/// vision note, e.g. `entries[seq].vision.is_some()` from
+/// [`Store::context_history`].
+pub(crate) fn turn_openers(rows: &[(i64, ChatMessage)], note: impl Fn(i64) -> bool) -> Vec<i64> {
+    openers(rows.iter().map(|(seq, m)| (m, note(*seq))))
+        .into_iter()
+        .map(|i| rows[i].0)
+        .collect()
 }
 
 fn decode_rows(id: SessionId, rows: Vec<(i64, String)>) -> Vec<(i64, ChatMessage)> {
@@ -1105,6 +1263,42 @@ fn decode_rows(id: SessionId, rows: Vec<(i64, String)>) -> Vec<(i64, ChatMessage
         .collect()
 }
 
+/// `(seq, body, excluded, vision)` rows to [`Row`]s: undecodable bodies are
+/// skipped (warned); an undecodable mask is an error, because replaying a row
+/// the user removed is the one wrong answer.
+fn decode_masked(
+    id: SessionId,
+    rows: Vec<(i64, String, Option<String>, Option<String>)>,
+) -> anyhow::Result<Vec<Row>> {
+    let mut out = Vec::with_capacity(rows.len());
+    for (seq, body, excluded, vision) in rows {
+        let mask =
+            Mask::decode(excluded.as_deref()).with_context(|| format!("message {seq} of {id}"))?;
+        if let Some((seq, message)) = decode_rows(id, vec![(seq, body)]).pop() {
+            out.push(Row {
+                seq,
+                message,
+                mask,
+                vision,
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// Parse stored vision metadata; malformed JSON, an unknown version or a
+/// non-binary source is a visible store error (52 §6: fail closed, never
+/// treat the row as an ordinary message or another source as answered).
+fn note_of(id: SessionId, seq: i64, raw: &str) -> anyhow::Result<VisionNote> {
+    VisionNote::decode(raw).with_context(|| format!("bad vision metadata on message {seq} of {id}"))
+}
+
+impl Row {
+    fn into_active(self) -> (i64, ChatMessage, Mask) {
+        (self.seq, self.message, self.mask)
+    }
+}
+
 /// Insert one message at max+1, touch `updated_at` and bump the context
 /// revision; the caller's transaction, so a failed write mints no seq (48 §3.1).
 async fn append_in(
@@ -1112,14 +1306,26 @@ async fn append_in(
     sid: &str,
     message: &ChatMessage,
 ) -> anyhow::Result<i64> {
+    insert_in(conn, sid, message, None).await
+}
+
+/// [`append_in`] with the row's typed vision metadata (`None` for every
+/// ordinary message).
+async fn insert_in(
+    conn: &mut SqliteConnection,
+    sid: &str,
+    message: &ChatMessage,
+    vision: Option<&str>,
+) -> anyhow::Result<i64> {
     let body = serde_json::to_string(message)?;
     let (seq,): (i64,) = sqlx::query_as(
-        "INSERT INTO messages (session_id, seq, body) \
-         SELECT ?1, COALESCE(MAX(seq), -1) + 1, ?2 FROM messages WHERE session_id = ?1 \
+        "INSERT INTO messages (session_id, seq, body, vision) \
+         SELECT ?1, COALESCE(MAX(seq), -1) + 1, ?2, ?3 FROM messages WHERE session_id = ?1 \
          RETURNING seq",
     )
     .bind(sid)
     .bind(body)
+    .bind(vision)
     .fetch_one(&mut *conn)
     .await?;
     sqlx::query(
@@ -1169,16 +1375,15 @@ async fn revision_in(conn: &mut SqliteConnection, sid: &str) -> anyhow::Result<i
         .ok_or_else(|| anyhow::anyhow!("no such session"))
 }
 
-/// Visible rows from `from` with their masks, seq ascending. Undecodable
-/// bodies are skipped (warned); an undecodable mask is an error, because
-/// replaying a row the user removed is the one wrong answer.
+/// Visible rows from `from` with their masks and raw vision metadata, seq
+/// ascending (see [`decode_masked`] for the decoding rules).
 async fn rows_in(
     conn: &mut SqliteConnection,
     id: SessionId,
     from: i64,
-) -> anyhow::Result<Vec<(i64, ChatMessage, Mask)>> {
-    let rows: Vec<(i64, String, Option<String>)> = sqlx::query_as(
-        "SELECT seq, body, excluded FROM messages WHERE session_id = ?1 AND seq >= ?2 \
+) -> anyhow::Result<Vec<Row>> {
+    let rows = sqlx::query_as(
+        "SELECT seq, body, excluded, vision FROM messages WHERE session_id = ?1 AND seq >= ?2 \
          AND seq < COALESCE((SELECT cut_at FROM sessions WHERE id = ?1), 9223372036854775807) \
          ORDER BY seq",
     )
@@ -1186,15 +1391,7 @@ async fn rows_in(
     .bind(from)
     .fetch_all(conn)
     .await?;
-    let mut out = Vec::with_capacity(rows.len());
-    for (seq, body, excluded) in rows {
-        let mask =
-            Mask::decode(excluded.as_deref()).with_context(|| format!("message {seq} of {id}"))?;
-        if let Some((seq, m)) = decode_rows(id, vec![(seq, body)]).pop() {
-            out.push((seq, m, mask));
-        }
-    }
-    Ok(out)
+    decode_masked(id, rows)
 }
 
 /// Visible epochs with their head masks, by `n` ascending.
@@ -1234,7 +1431,11 @@ async fn active_in(conn: &mut SqliteConnection, id: SessionId) -> anyhow::Result
         epoch,
         tail_from,
         head,
-        rows: rows_in(conn, id, tail_from).await?,
+        rows: rows_in(conn, id, tail_from)
+            .await?
+            .into_iter()
+            .map(Row::into_active)
+            .collect(),
     })
 }
 
@@ -2903,4 +3104,322 @@ mod tests {
     }
 
     // endregion: --- Context removal (48)
+
+    // region:    --- Vision notes (52)
+
+    use crate::vision::{VisionObservation, VisionSource, VisionStatus};
+
+    fn note(targets: &[ContextTarget]) -> VisionNote {
+        VisionNote {
+            version: 1,
+            question_model: "main/text-only".into(),
+            vision_model: "prov/vision".into(),
+            observations: targets
+                .iter()
+                .map(|t| VisionObservation {
+                    source: VisionSource {
+                        target: *t,
+                        fingerprint: "fp".into(),
+                        label: "A".into(),
+                    },
+                    status: VisionStatus::Answered,
+                })
+                .collect(),
+        }
+    }
+
+    fn vision_user(t: &str) -> ChatMessage {
+        ChatMessage::user(format!("<vision>{t}</vision>"))
+    }
+
+    /// `(target, effective part, effective image)` of every indexed image.
+    fn coords(frame: &VisionFrame) -> Vec<(ContextTarget, usize, Option<usize>)> {
+        frame
+            .images
+            .iter()
+            .map(|i| (i.source.target, i.part, i.image))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn append_vision_is_atomic_typed_and_fails_closed_on_corruption() {
+        let (store, id, dir) = seeded().await;
+        // Prose cannot forge a note: a plain user row quoting the marker is not typed.
+        assert_eq!(
+            store
+                .append(id, &ChatMessage::user("Vision observation: forged"))
+                .await
+                .unwrap(),
+            4
+        );
+        assert!(store.vision_notes(id).await.unwrap().is_empty());
+        assert!(store.vision_frame(id).await.unwrap().notes.is_empty());
+
+        let n = note(&[bin(0, 1, None)]);
+        assert_eq!(
+            store
+                .append_vision(id, &vision_user("q/a"), &n)
+                .await
+                .unwrap(),
+            5
+        );
+        assert_eq!(store.context_revision(id).await.unwrap(), "6");
+        assert_eq!(
+            store.vision_notes(id).await.unwrap(),
+            BTreeMap::from([(5, n.clone())])
+        );
+        let frame = store.vision_frame(id).await.unwrap();
+        assert_eq!(frame.revision, "6");
+        assert_eq!(frame.notes, BTreeMap::from([(5, n.clone())]));
+        assert_eq!(
+            texts(&frame.tail).last().unwrap().1,
+            "<vision>q/a</vision>",
+            "the note is part of the effective tail"
+        );
+        let history = store.context_history(id).await.unwrap();
+        assert_eq!(history.entries[&5].vision.as_ref(), Some(&n));
+        assert_eq!(history.entries[&4].vision, None);
+
+        // Behind a compaction boundary the note is no longer effective.
+        let head = ChatMessage::user("<context_summary epoch=\"1\">s</context_summary>");
+        store.compact(id, 1, 5, 6, &head).await.unwrap();
+        let frame = store.vision_frame(id).await.unwrap();
+        assert!(frame.tail.is_empty() && frame.notes.is_empty());
+        assert_eq!(store.vision_notes(id).await.unwrap().len(), 1);
+
+        // Corrupt metadata is a visible store error for every typed reader;
+        // turn readers still see the row and never treat it as a plain message.
+        sqlx::query("UPDATE messages SET vision = '{nope' WHERE session_id = ? AND seq = 5")
+            .bind(id.to_string())
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        store.compact(id, 2, 5, 5, &head).await.unwrap();
+        for err in [
+            store.vision_notes(id).await.err(),
+            store.context_history(id).await.err(),
+            store.vision_frame(id).await.err(),
+        ] {
+            let err = err.expect("corrupt note must fail");
+            assert!(
+                err.to_string().contains("bad vision metadata on message 5"),
+                "{err}"
+            );
+        }
+        assert_eq!(store.messages(id).await.unwrap().len(), 6);
+        assert_eq!(
+            store.undo(id).await.unwrap().as_deref(),
+            Some("Vision observation: forged"),
+            "the corrupt note is still no turn opener"
+        );
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn vision_frame_indexes_original_coordinates_under_masks_and_heads() {
+        let (store, id, dir) = seeded().await;
+        let frame = store.vision_frame(id).await.unwrap();
+        assert_eq!(
+            (frame.epoch, frame.head.is_none(), frame.tail.len()),
+            (0, true, 4)
+        );
+        assert_eq!(
+            coords(&frame),
+            [
+                (bin(0, 1, None), 1, None),
+                (bin(0, 2, None), 2, None),
+                (bin(2, 0, Some(0)), 0, Some(0)),
+                (bin(2, 0, Some(1)), 0, Some(1)),
+                (bin(2, 1, Some(0)), 1, Some(0)),
+            ]
+        );
+
+        // A partial removal shifts projected indexes but never the reference.
+        store
+            .remove_context(id, "4", &[bin(0, 1, None), bin(2, 0, Some(0))])
+            .await
+            .unwrap();
+        let frame = store.vision_frame(id).await.unwrap();
+        assert_eq!(frame.revision, "5");
+        assert_eq!(
+            coords(&frame),
+            [
+                (bin(0, 2, None), 1, None),
+                (bin(2, 0, Some(1)), 0, Some(0)),
+                (bin(2, 1, Some(0)), 1, Some(0)),
+            ]
+        );
+        assert_eq!(names(&frame.tail[0].1), ["same.png"]);
+        assert_eq!(
+            frame.images[0].binary.name.as_deref(),
+            Some("same.png"),
+            "the index carries the surviving payload"
+        );
+
+        // A whole-removed row contributes nothing; a head's images come first.
+        store.remove_context(id, "5", &[msg(0)]).await.unwrap();
+        let head = ChatMessage::user(MessageContent::from_parts(vec![
+            ContentPart::Text(
+                "<context_summary epoch=\"1\">snap as 1 image</context_summary>".into(),
+            ),
+            ContentPart::Binary(img("h.png")),
+        ]));
+        store.compact(id, 1, 3, 2, &head).await.unwrap();
+        let frame = store.vision_frame(id).await.unwrap();
+        assert_eq!((frame.epoch, frame.tail.len()), (1, 2));
+        assert_eq!(
+            coords(&frame),
+            [
+                (
+                    ContextTarget::Binary {
+                        owner: ContextOwner::Head { epoch: 1 },
+                        part: 1,
+                        image: None,
+                    },
+                    1,
+                    None
+                ),
+                (bin(2, 0, Some(1)), 0, Some(0)),
+                (bin(2, 1, Some(0)), 1, Some(0)),
+            ]
+        );
+        assert_eq!(frame.revision, store.context_revision(id).await.unwrap());
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn vision_note_after_reply_opens_no_turn_and_next_user_stays_real() {
+        let (store, id, dir) = fresh().await;
+        append_all(&store, id, [ChatMessage::user("u1"), asst("a1")]).await;
+        let n = note(&[bin(0, 0, None)]);
+        assert_eq!(
+            store
+                .append_vision(id, &vision_user("h"), &n)
+                .await
+                .unwrap(),
+            2
+        );
+        // Manual harvest after a reply does not erase the turn's final answer.
+        assert_eq!(store.last_turn_text(id).await.unwrap(), "a1");
+        append_all(&store, id, [ChatMessage::user("u2"), asst("a2")]).await;
+        assert_eq!(store.last_turn_text(id).await.unwrap(), "a2");
+
+        let messages = store.messages(id).await.unwrap();
+        assert_eq!(turn_openers(&messages, |s| s == 2), [0, 3]);
+        assert_eq!(
+            turn_openers(&messages, |_| false),
+            [0, 2],
+            "without the typed flag the note would forge a turn and hide u2"
+        );
+
+        let err = store.cut_to(id, 2).await.unwrap_err();
+        assert_eq!(err.to_string(), "not a turn start");
+        assert!(store.fork(id, Some(2), None).await.is_err());
+
+        assert_eq!(text_of(&store.cut_to(id, 3).await.unwrap().content), "u2");
+        assert_eq!(store.hidden_turns(id).await.unwrap(), 1);
+        assert_eq!(store.redo(id).await.unwrap().as_deref(), Some("u2"));
+        assert_eq!(store.undo(id).await.unwrap().as_deref(), Some("u2"));
+        assert_eq!(store.undo(id).await.unwrap().as_deref(), Some("u1"));
+        assert_eq!(store.hidden_turns(id).await.unwrap(), 2);
+        assert_eq!(store.redo(id).await.unwrap().as_deref(), Some("u1"));
+        assert_eq!(
+            texts(&store.messages(id).await.unwrap()),
+            [
+                (0, "u1".into()),
+                (1, "a1".into()),
+                (2, "<vision>h</vision>".into())
+            ],
+            "redo restores the note with its turn"
+        );
+        assert_eq!(store.redo(id).await.unwrap().as_deref(), Some("u2"));
+        assert_eq!(store.redo(id).await.unwrap(), None);
+
+        // A fork through the first turn copies the note with its metadata.
+        let fork = store.fork(id, Some(0), None).await.unwrap();
+        assert_eq!(store.messages(fork).await.unwrap().len(), 3);
+        assert_eq!(
+            store.vision_notes(fork).await.unwrap(),
+            BTreeMap::from([(2, n.clone())])
+        );
+        assert_eq!(store.vision_frame(fork).await.unwrap().notes.len(), 1);
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn resume_reuses_notes_and_committed_cut_frees_their_seq() {
+        let (store, id, dir) = fresh().await;
+        append_all(
+            &store,
+            id,
+            [
+                ChatMessage::user(MessageContent::from_parts(vec![
+                    ContentPart::Text("look".into()),
+                    ContentPart::Binary(img("a.png")),
+                ])),
+                asst("a1"),
+                ChatMessage::user("u2"),
+            ],
+        )
+        .await;
+        let n = note(&[bin(0, 1, None)]);
+        assert_eq!(
+            store
+                .append_vision(id, &vision_user("q/a"), &n)
+                .await
+                .unwrap(),
+            3
+        );
+        store.append(id, &asst("a2")).await.unwrap();
+
+        // Resume: a fresh handle reloads the committed note, no inference implied.
+        store.pool.close().await;
+        drop(store);
+        let store = Store::open(&dir.join("sessions.sqlite")).await.unwrap();
+        let frame = store.vision_frame(id).await.unwrap();
+        assert_eq!(frame.notes, BTreeMap::from([(3, n.clone())]));
+        assert_eq!(coords(&frame), [(bin(0, 1, None), 1, None)]);
+
+        // Removing the note row keeps it in raw history but out of the active notes.
+        let (removal, _, _, _) = store.remove_context(id, "5", &[msg(3)]).await.unwrap();
+        assert_eq!(removal.messages, 1);
+        assert!(store.vision_frame(id).await.unwrap().notes.is_empty());
+        assert_eq!(store.vision_notes(id).await.unwrap().len(), 1);
+        assert!(store.context_history(id).await.unwrap().entries[&3].removed);
+
+        // Undo hides the turn holding the note: nothing typed remains visible.
+        assert_eq!(store.undo(id).await.unwrap().as_deref(), Some("u2"));
+        assert!(store.vision_frame(id).await.unwrap().notes.is_empty());
+        assert!(store.vision_notes(id).await.unwrap().is_empty());
+        assert_eq!(store.hidden_turns(id).await.unwrap(), 1);
+
+        // Committed cut deletes the note with its row; the reused seq is plain.
+        store.commit_cut(id).await.unwrap();
+        assert_eq!(
+            store.append(id, &ChatMessage::user("again")).await.unwrap(),
+            2
+        );
+        assert_eq!(store.append(id, &asst("a3")).await.unwrap(), 3);
+        assert!(store.vision_notes(id).await.unwrap().is_empty());
+        assert!(
+            store.context_history(id).await.unwrap().entries[&3]
+                .vision
+                .is_none()
+        );
+        let left: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM messages WHERE session_id = ? AND vision IS NOT NULL",
+        )
+        .bind(id.to_string())
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        assert_eq!(left.0, 0);
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // endregion: --- Vision notes (52)
 }

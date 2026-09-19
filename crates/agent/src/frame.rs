@@ -103,6 +103,8 @@ pub struct Frame<'a> {
     /// Every message since the epoch began, verbatim, in order.
     pub history: &'a [ChatMessage],
     /// Whether the model takes image parts; `false` strips them (17 §3.3).
+    /// A text-only turn runs [`crate::vision::project_frame`] first so images
+    /// become stable references; the strip then only reaches PDFs (52 §4.2).
     pub vision: bool,
 }
 

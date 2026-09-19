@@ -4,7 +4,7 @@
 //!
 //! - commands on the `"agent"` actor ([`Agents`]): [`SendInput`], [`Steer`],
 //!   [`Withdraw`], [`ListQueued`], [`Undo`], [`Redo`], [`Cancel`], [`Compact`],
-//!   [`SetCompactStyle`], [`SetTitleModel`], [`GetTitleModel`], [`ListSessions`], [`LoadSession`], [`RenameSession`], [`ListAgents`],
+//!   [`SetCompactStyle`], [`SetTitleModel`], [`GetTitleModel`], [`SetVisionModel`], [`GetVisionModel`], [`ListSessions`], [`LoadSession`], [`RenameSession`], [`ListAgents`],
 //!   [`ListModels`], [`SetModel`], [`SetEffort`], [`ShowPrompt`], [`ListSkills`],
 //!   [`LoadSkill`], [`UseSkill`], [`AddSkill`], [`RemoveSkill`], [`AddSkillRepo`],
 //!   [`RemoveSkillRepo`], [`SyncSkills`], [`ListLogins`], [`Login`], [`Logout`],
@@ -43,6 +43,7 @@ pub mod supervisor;
 pub mod title;
 pub mod todo;
 pub mod user;
+pub mod vision;
 
 pub use aws::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 pub use communication::{
@@ -268,6 +269,21 @@ pub struct SetTitleModel {
 /// `ask` → `Option<ModelInfo>`: the live title model, if set.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct GetTitleModel;
+
+/// `ask` → `Result<Option<ModelInfo>, String>`: persist `agent.vision_model`
+/// and use it for the next vision consultation (52 §3.1); `None` clears it
+/// (no fallback). `Some` must name an exact catalog entry that accepts images
+/// through its backend on a configured provider; the file is written before
+/// the live value changes, so a failed write leaves the selection as it was.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetVisionModel {
+    /// `provider/model`, a unique bare id, or `None`.
+    pub model: Option<String>,
+}
+
+/// `ask` → `Option<ModelInfo>`: the live vision fallback model, if set.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct GetVisionModel;
 
 /// `ask` → `Result<knowledge::HarvestResult, String>`: harvest a session's
 /// finished frame now (design doc 10 §5.2). `Err("turn in flight")` while it runs.
@@ -1320,6 +1336,10 @@ pub struct AgentConfig {
     pub compact_style: CompactStyle,
     /// Model for session titles (07 §15), ideally cheap and fast; unset = the session's model.
     pub title_model: Option<String>,
+    /// Model that answers the main model's questions about images it cannot
+    /// see itself (52 §3); unset = no fallback, never the main model. Must be
+    /// an exact catalog entry that accepts images through its backend.
+    pub vision_model: Option<String>,
     /// How the loop uses the knowledge plugin (12 §9.2); the store itself is `knowledge.enabled`.
     pub knowledge: KnowledgeUse,
     /// The top-level `surface:` section (design doc 30 §12), filled by
@@ -1342,6 +1362,7 @@ impl Default for AgentConfig {
             compact_at: 0.8,
             compact_style: CompactStyle::Summary,
             title_model: None,
+            vision_model: None,
             knowledge: KnowledgeUse::default(),
             surface: SurfaceConfig::default(),
         }

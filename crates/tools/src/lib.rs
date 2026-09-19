@@ -29,6 +29,7 @@ pub mod communication;
 pub mod doc;
 pub mod fs;
 pub mod git;
+pub mod images;
 pub mod jobs;
 pub mod mcp;
 pub mod pty;

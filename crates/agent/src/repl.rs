@@ -597,6 +597,8 @@ fn cap(s: &str, marker: impl FnOnce(usize) -> String) -> String {
 
 /// A pending inner tool call: sandbox future id → what to invoke.
 struct PendingCall {
+    /// Invocation order within the cell (the `n` of `"{call_id}.{n}"`).
+    seq: u32,
     id: String,
     name: String,
     args: Value,
@@ -610,6 +612,9 @@ pub struct Repl {
     /// `None` between a crash and the next cell (re-checked-out lazily).
     checkout: Option<Checkout>,
     mounts: Vec<MountSpec>,
+    /// `<spill_dir>/<session>`: the `/spill` mount's host side; inner tool
+    /// images are snapshotted here (52 §7.1).
+    spill: PathBuf,
     dump_path: PathBuf,
     names_path: PathBuf,
     /// Last good dump: restored into a fresh checkout after a crash.
@@ -664,6 +669,7 @@ impl Repl {
             cx,
             checkout: None,
             mounts,
+            spill,
             last_dump: std::fs::read(&dump_path).ok(),
             dump_path,
             names_path,
@@ -743,15 +749,23 @@ impl Repl {
     pub async fn run(&mut self, call_id: &str, code: &str) -> ToolOutput {
         self.refresh_stubs().await;
         if let Err(e) = self.ensure_checkout().await {
-            return self.finish_output(format!("RuntimeError: runtime unavailable ({e})"), true);
+            return self.finish_output(
+                format!("RuntimeError: runtime unavailable ({e})"),
+                true,
+                Vec::new(),
+            );
         }
         let cell_names = candidates(code);
         self.candidates.extend(cell_names.iter().cloned());
 
         let mut stdout = String::new();
+        // 52 §7.1: every inner image this cell produced, in call/file order,
+        // snapshotted as each inner result arrived. Owned by this call so a
+        // dropped (cancelled) cell drops it and nothing reaches the next cell.
+        let mut files = Vec::new();
         let mut on_print = on_print_sync(|_, t| stdout.push_str(t));
         let outcome = self
-            .drive(code, Vec::new(), false, call_id, &mut on_print)
+            .drive(code, Vec::new(), false, call_id, &mut files, &mut on_print)
             .await;
         drop(on_print);
 
@@ -773,7 +787,7 @@ impl Repl {
                 (join_out(&stdout, &text), true)
             }
             Err(PoolError::Typing(diag)) => {
-                return self.finish_output(format!("type check failed:\n{diag}"), true);
+                return self.finish_output(format!("type check failed:\n{diag}"), true, files);
             }
             Err(e) => {
                 // Worker gone (crash, memory limit, timeout, protocol): the heap
@@ -786,6 +800,7 @@ impl Repl {
                 return self.finish_output(
                     format!("RuntimeError: runtime crashed ({e}); {restored} — this cell's effects are lost"),
                     true,
+                    files,
                 );
             }
         };
@@ -802,7 +817,14 @@ impl Repl {
             body = render_capped(&stdout, &name, &body);
             let mut quiet = on_print_sync(|_, _| {});
             if let Err(e) = self
-                .drive(&format!("{name} = ''"), Vec::new(), false, "", &mut quiet)
+                .drive(
+                    &format!("{name} = ''"),
+                    Vec::new(),
+                    false,
+                    "",
+                    &mut Vec::new(),
+                    &mut quiet,
+                )
                 .await
             {
                 tracing::warn!("runtime: declaring {name}: {e}");
@@ -835,13 +857,14 @@ impl Repl {
             }
         }
         self.dump().await;
-        self.finish_output(body, is_error)
+        self.finish_output(body, is_error, files)
     }
 
-    /// Prepend the pending `<runtime>` line, fill in `(no output)`, and scrub
-    /// known secret values (37 §3.4: `open('/cwd/.env').read()` after a
-    /// `write_file` that expanded a placeholder).
-    fn finish_output(&mut self, body: String, is_error: bool) -> ToolOutput {
+    /// Prepend the pending `<runtime>` line, fill in `(no output)`, attach
+    /// the cell's inner images, and scrub known secret values (37 §3.4:
+    /// `open('/cwd/.env').read()` after a `write_file` that expanded a
+    /// placeholder).
+    fn finish_output(&mut self, body: String, is_error: bool, files: Vec<PathBuf>) -> ToolOutput {
         let body = if body.is_empty() {
             "(no output)".to_owned()
         } else {
@@ -856,6 +879,7 @@ impl Repl {
         } else {
             ToolOutput::ok(content)
         };
+        out.files = files;
         tools::secrets::redact_output(&mut out);
         out
     }
@@ -865,7 +889,10 @@ impl Repl {
     async fn probe(&mut self, inputs: Vec<(String, MontyObject)>) {
         let code = probe_code(&self.candidates);
         let mut quiet = on_print_sync(|_, _| {});
-        match self.drive(&code, inputs, true, "", &mut quiet).await {
+        match self
+            .drive(&code, inputs, true, "", &mut Vec::new(), &mut quiet)
+            .await
+        {
             Ok(MontyObject::List(rows)) => {
                 let mut seen = BTreeMap::new();
                 for row in &rows {
@@ -935,20 +962,25 @@ impl Repl {
     }
 
     /// Feed one snippet and answer every suspension until it completes.
+    /// Inner tool images are snapshotted the moment each result arrives and
+    /// appended to `files` in call/file order (52 §7.1).
     async fn drive(
         &mut self,
         code: &str,
         inputs: Vec<(String, MontyObject)>,
         skip_type_check: bool,
         call_id: &str,
+        files: &mut Vec<PathBuf>,
         on_print: OnPrint<'_>,
     ) -> Result<MontyObject, PoolError> {
         let Self {
             checkout,
             cx,
             mounts,
+            spill,
             ..
         } = self;
+        let (cx, spill): (&RunCx, &Path) = (cx, spill);
         let checkout = checkout.as_mut().ok_or(PoolError::Finished)?;
         let mut pending: HashMap<u32, PendingCall> = HashMap::new();
         let mut n = 0u32;
@@ -1047,6 +1079,7 @@ impl Repl {
                                 pending.insert(
                                     fid,
                                     PendingCall {
+                                        seq: n,
                                         id,
                                         name: spec.name,
                                         args,
@@ -1060,18 +1093,24 @@ impl Repl {
                     checkout.resume(answer, &mut *on_print).await?
                 }
                 TurnEvent::ResolveFutures { pending_call_ids } => {
-                    let calls: Vec<(u32, PendingCall)> = pending_call_ids
+                    // In invocation order (gather input order), whatever order
+                    // the sandbox lists the futures in.
+                    let mut calls: Vec<(u32, PendingCall)> = pending_call_ids
                         .iter()
                         .filter_map(|id| pending.remove(id).map(|c| (*id, c)))
                         .collect();
+                    calls.sort_unstable_by_key(|(_, c)| c.seq);
                     // Suspended computation, not execution: the calls count
                     // themselves through the registry's seam (a blocking peer
                     // send or an approval alone releases the permit; a sibling
                     // still running keeps it), and the interpreter resumes only
                     // once a permit is held again.
                     drop(running.take());
-                    let outs = join_all(calls.iter().map(|(_, c)| {
-                        cx.registry
+                    // Each result's images are copied as it lands: a sibling
+                    // still running may overwrite the same path next.
+                    let outs = join_all(calls.iter().map(|(_, c)| async move {
+                        let mut out = cx
+                            .registry
                             .ask(Invoke(tools::ToolCall {
                                 id: c.id.clone(),
                                 name: c.name.clone(),
@@ -1080,13 +1119,15 @@ impl Repl {
                                 quiet: false,
                             }))
                             .send()
+                            .await
+                            .unwrap_or_else(|e| ToolOutput::err(format!("tool registry: {e}")));
+                        snapshot_files(&mut out, spill);
+                        out
                     }))
                     .await;
                     running = hold(cx.permit.as_ref()).await?;
                     let mut results = Vec::with_capacity(calls.len());
-                    for ((fid, call), out) in calls.into_iter().zip(outs) {
-                        let out =
-                            out.unwrap_or_else(|e| ToolOutput::err(format!("tool registry: {e}")));
+                    for ((fid, call), mut out) in calls.into_iter().zip(outs) {
                         cx.rt
                             .publish(AgentEvent::ToolCallFinished {
                                 session: cx.session,
@@ -1097,6 +1138,7 @@ impl Repl {
                                 files: out.files.clone(),
                             })
                             .await;
+                        files.append(&mut out.files);
                         results.push((fid, tool_result(&call.name, out)));
                     }
                     // Ids we never registered (should not happen): fail them
@@ -1190,6 +1232,33 @@ fn merge_args(
         obj.insert(key, from_monty(v));
     }
     Value::Object(obj)
+}
+
+/// 52 §7.1: replace each inner tool image path with a snapshot under `dir`,
+/// taken now so a later inner call overwriting the same path (a second
+/// screenshot) cannot change what this occurrence showed. Every occurrence
+/// is kept — never deduplicated by path. A file that is not a bounded image
+/// is dropped and named in the output, and the result becomes an error, so
+/// neither the model nor the cell mistakes the omission for success; the
+/// snapshots that did succeed still travel with it. Failure text carries the
+/// file name and reason only — never bytes or the full path.
+fn snapshot_files(out: &mut ToolOutput, dir: &Path) {
+    let mut failed = String::new();
+    out.files
+        .retain_mut(|f| match tools::images::snapshot(f, dir) {
+            Ok(p) => {
+                *f = p;
+                true
+            }
+            Err(e) => {
+                failed.push_str(&format!("\nimage dropped: {e}"));
+                false
+            }
+        });
+    if !failed.is_empty() {
+        out.content.push_str(&failed);
+        out.is_error = true;
+    }
 }
 
 /// Tool output → sandbox return value or exception (08 §3.3, §4.2).
@@ -1387,10 +1456,9 @@ mod tests {
         assert_eq!(from_monty(&d), serde_json::json!({"1": "a"}));
     }
 
-    /// Drives a real checkout through a `monty` binary on `PATH` (the test
-    /// runner is not a worker); skipped when absent.
-    #[tokio::test]
-    async fn capping_binds_out_name() {
+    /// A pool over the `monty` binary on `PATH` (the test runner is not a
+    /// worker); `None`, with a note, when absent so the test skips.
+    async fn monty_pool() -> Option<Arc<Pool>> {
         let monty = std::env::var_os("PATH").and_then(|path| {
             std::env::split_paths(&path)
                 .map(|d| d.join("monty"))
@@ -1398,26 +1466,39 @@ mod tests {
         });
         let Some(monty) = monty else {
             eprintln!("monty not on PATH; skipping");
-            return;
+            return None;
         };
-        let Some(pool) = open_pool(&monty, 1).await else {
+        let pool = open_pool(&monty, 1).await;
+        if pool.is_none() {
             eprintln!("monty pool failed to start; skipping");
-            return;
-        };
-        let dir = tempdir();
-        let rt = runtime::Runtime::new(figment::Figment::new(), dir.clone());
+        }
+        pool
+    }
+
+    async fn run_cx(dir: &Path) -> RunCx {
+        let rt = runtime::Runtime::new(figment::Figment::new(), dir.to_path_buf());
         let registry = tools::registry::start(&rt).await.unwrap();
-        std::fs::write(dir.join("a.txt"), "hello mount").unwrap();
-        let session = SessionId::new();
-        let cx = RunCx {
-            session,
+        RunCx {
+            session: SessionId::new(),
             turn: TurnId::new(),
             rt,
             registry,
             spill_dir: dir.join("spill"),
-            cwd: dir.clone(),
+            cwd: dir.to_path_buf(),
             permit: None,
+        }
+    }
+
+    /// Drives a real checkout through `monty`; skipped when absent.
+    #[tokio::test]
+    async fn capping_binds_out_name() {
+        let Some(pool) = monty_pool().await else {
+            return;
         };
+        let dir = tempdir();
+        std::fs::write(dir.join("a.txt"), "hello mount").unwrap();
+        let cx = run_cx(&dir).await;
+        let session = cx.session;
         let mut repl = Repl::open(&pool, session, &dir, cx.clone()).await;
         let out = repl
             .run(
@@ -1526,7 +1607,7 @@ mod tests {
             b"garbage",
         )
         .unwrap();
-        let mut repl = Repl::open(&pool, session, &dir, cx).await;
+        let mut repl = Repl::open(&pool, session, &dir, cx.clone()).await;
         let out = repl.run("c11", "1 + 1").await;
         assert!(
             out.content
@@ -1542,7 +1623,162 @@ mod tests {
             out.content
         );
         repl.close().await;
+        // Same process-wide registry (`start` registers a global actor name),
+        // fresh session and data dir.
+        let dir = tempdir();
+        inner_images_survive_overwrite_and_errors(
+            &pool,
+            &dir,
+            RunCx {
+                session: SessionId::new(),
+                spill_dir: dir.join("spill"),
+                cwd: dir.clone(),
+                ..cx
+            },
+        )
+        .await;
         pool.close().await;
+    }
+
+    /// A screenshot-like tool: writes a 1×1 grayscale image whose pixel is
+    /// `v` to `<dir>/<name>.png` (`shot.png` by default, so successive calls
+    /// overwrite the same path like a real screenshot tool). With `junk` it
+    /// also lists a text file wearing `.png` and a path that does not exist.
+    struct Shot(PathBuf);
+
+    #[derive(Deserialize, JsonSchema)]
+    struct ShotArgs {
+        v: u8,
+        name: Option<String>,
+        junk: Option<bool>,
+    }
+
+    #[async_trait::async_trait]
+    impl tools::Tool for Shot {
+        const NAME: &'static str = "shot";
+        const RISK: Risk = Risk::ReadOnly;
+        type Args = ShotArgs;
+        fn description(&self) -> String {
+            "Take a screenshot.".into()
+        }
+        async fn call(&self, a: ShotArgs, _: tools::ToolCx) -> anyhow::Result<ToolOutput> {
+            let mut bytes = Vec::new();
+            let mut enc = png::Encoder::new(&mut bytes, 1, 1);
+            enc.set_color(png::ColorType::Grayscale);
+            enc.set_depth(png::BitDepth::Eight);
+            let mut w = enc.write_header()?;
+            w.write_image_data(&[a.v])?;
+            w.finish()?;
+            let path = self
+                .0
+                .join(a.name.as_deref().unwrap_or("shot"))
+                .with_extension("png");
+            std::fs::write(&path, bytes)?;
+            let mut files = vec![path];
+            if a.junk.unwrap_or(false) {
+                let junk = self.0.join("junk.png");
+                std::fs::write(&junk, b"not a png")?;
+                files.push(junk);
+                files.push(self.0.join("missing.png"));
+            }
+            Ok(ToolOutput {
+                files,
+                ..ToolOutput::ok("shot")
+            })
+        }
+    }
+
+    fn pixel(p: &Path) -> u8 {
+        let mut r = png::Decoder::new(std::fs::File::open(p).unwrap())
+            .read_info()
+            .unwrap();
+        let mut px = vec![0u8; r.output_buffer_size()];
+        r.next_frame(&mut px).unwrap();
+        px[0]
+    }
+
+    /// 52 §7.1: inner images reach the cell result as snapshots taken when
+    /// each inner result arrived, in call order, even when the same path was
+    /// overwritten and even when the cell later raises; nothing carries over.
+    async fn inner_images_survive_overwrite_and_errors(pool: &Arc<Pool>, dir: &Path, cx: RunCx) {
+        let shot = dir.join("shot.png");
+        cx.registry
+            .ask(tools::registry::RegisterTool(Arc::new(Shot(
+                dir.to_path_buf(),
+            ))))
+            .await
+            .unwrap();
+        let spill = dir.join("spill").join(cx.session.to_string());
+        let mut repl = Repl::open(pool, cx.session, dir, cx).await;
+
+        // Sequential overwrite: both occurrences survive, in order, as copies.
+        let out = repl
+            .run("c1", "a = await shot(v=1)\nb = await shot(v=2)\n(a, b)")
+            .await;
+        assert!(
+            out.content.starts_with("→ ('shot', 'shot')"),
+            "{}",
+            out.content
+        );
+        assert_eq!(out.files.len(), 2, "{:?}", out.files);
+        assert!(
+            out.files
+                .iter()
+                .all(|f| f != &shot && f.starts_with(&spill)),
+            "{:?}",
+            out.files
+        );
+        assert_eq!([pixel(&out.files[0]), pixel(&out.files[1])], [1, 2]);
+        assert_eq!(pixel(&shot), 2);
+
+        // Gathered to distinct paths: gather input order, not completion order.
+        let out = repl
+            .run("c2", "import asyncio\nr = await asyncio.gather(shot(v=3, name='x'), shot(v=4, name='y'), shot(v=5, name='z'))")
+            .await;
+        assert!(!out.is_error, "{}", out.content);
+        let px: Vec<u8> = out.files.iter().map(|f| pixel(f)).collect();
+        assert_eq!(px, [3, 4, 5]);
+
+        // A cell that raises after its screenshots still returns them.
+        let out = repl
+            .run("c3", "await shot(v=6)\nawait shot(v=7)\n1/0")
+            .await;
+        assert!(
+            out.is_error && out.content.ends_with("ZeroDivisionError: division by zero"),
+            "{}",
+            out.content
+        );
+        let px: Vec<u8> = out.files.iter().map(|f| pixel(f)).collect();
+        assert_eq!(px, [6, 7]);
+
+        // A file that is not an image fails that inner call visibly — the
+        // cell sees the exception, its text names the file, not the path —
+        // while the good snapshot from the same result and later ones stay.
+        let out = repl
+            .run(
+                "c4",
+                "try:\n    await shot(v=8, junk=True)\nexcept RuntimeError as e:\n    err = str(e)\nawait shot(v=9)\nerr",
+            )
+            .await;
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains("junk.png") && out.content.contains("missing.png"),
+            "{}",
+            out.content
+        );
+        assert!(
+            !out.content.contains(dir.to_str().unwrap()),
+            "{}",
+            out.content
+        );
+        let px: Vec<u8> = out.files.iter().map(|f| pixel(f)).collect();
+        assert_eq!(px, [8, 9]);
+
+        // The next cell starts empty: no inheritance through the probe or the runtime.
+        let out = repl.run("c5", "1 + 1").await;
+        assert_eq!(out.content, "→ 2");
+        assert!(out.files.is_empty(), "{:?}", out.files);
+        repl.close().await;
     }
 
     fn tempdir() -> PathBuf {

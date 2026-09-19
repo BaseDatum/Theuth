@@ -141,6 +141,9 @@ pub enum UiEvent {
     CompactStyle(CompactStyle),
     /// Reply to [`Command::GetTitleModel`] / [`Command::SetTitleModel`].
     TitleModel(Option<ModelInfo>),
+    /// Reply to [`Command::GetVisionModel`] / [`Command::SetVisionModel`]:
+    /// the harness-wide vision fallback (52 §3), `None` = off.
+    VisionModel(Option<ModelInfo>),
     /// Reply to [`Command::ListAwsProfiles`] (`pick`) / [`Command::SetAwsProfile`].
     AwsProfiles {
         /// Discovered profiles and the harness-wide selection.
@@ -337,6 +340,10 @@ pub enum Command {
     GetTitleModel,
     /// `set_title_model`; `None` clears it.
     SetTitleModel(Option<String>),
+    /// `vision_model`.
+    GetVisionModel,
+    /// `set_vision_model`; `None` turns the fallback off.
+    SetVisionModel(Option<String>),
     /// `list_aws_profiles`.
     ListAwsProfiles,
     /// `set_aws_profile`; `None` restores the AWS default credential chain.
@@ -1072,6 +1079,11 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "/title",
         "[model|off]",
         "model that names sessions in the history list (off = the session's model)",
+    ),
+    (
+        "/vision",
+        "[model|off]",
+        "model that inspects images when the main model cannot (off = images are omitted)",
     ),
     (
         "/effort",
@@ -2371,6 +2383,13 @@ pub struct Model {
     /// `Info.app_enabled`: the app plugin runs, so `/apps` is offered. Off,
     /// app records stay readable under `/artifacts` (46 §9).
     pub app_enabled: bool,
+    /// The harness-wide vision fallback (52 §3): a text-only shown model
+    /// says at attach time whether this model will inspect the image.
+    /// Asked once at startup; `/vision` replies keep it current.
+    pub vision_model: Option<ModelInfo>,
+    /// `/vision` was typed: the next reply prints its line (the startup
+    /// fetch is silent).
+    awaiting_vision: bool,
     /// Latest MCP reconcile snapshot; `None` before the first.
     pub mcp: Option<McpProgress>,
     /// A reconcile settled while the `/mcp` menu is open: the event loop
@@ -2539,6 +2558,7 @@ impl Model {
             // (the global default after `/new`).
             refresh_communication: true,
             app_enabled: self.app_enabled,
+            vision_model: self.vision_model.take(),
             search: std::mem::take(&mut self.search),
             ..Self::new(std::mem::take(&mut self.model_id), self.approvals_global)
         };
@@ -3100,8 +3120,15 @@ impl Model {
             .and_then(|c| c.closest(&self.model_id))
             .is_some_and(|m| !m.image);
         if text_only {
+            let tail = match &self.vision_model {
+                Some(v) => format!(
+                    "{} will inspect the image for it and answer its question (/vision to change)",
+                    v.id
+                ),
+                None => "the image will be sent as omitted — /model to switch or /vision <model> to set a fallback".to_owned(),
+            };
             self.entries.push(Entry::Info(format!(
-                "{} is text-only; the image will be sent as omitted — /model to switch",
+                "{} is text-only; {tail}",
                 self.model_id
             )));
         }
@@ -3911,6 +3938,14 @@ impl Model {
                 "compact style: {s} (default)\n  summary  cache-hot LLM fold (07 §8.3)\n  cut      drop the folded span, keep the tail, no model call\n  snap     rasterize the folded span to images (vision model)"
             ))),
             UiEvent::TitleModel(m) => self.entries.push(Entry::Info(title_model_line(m.as_ref()))),
+            // The startup fetch only primes the attach notice; `/vision` prints.
+            UiEvent::VisionModel(m) => {
+                if std::mem::take(&mut self.awaiting_vision) {
+                    self.entries
+                        .push(Entry::Info(vision_model_line(m.as_ref())));
+                }
+                self.vision_model = m;
+            }
             // Status always; the picker when there is a choice to make or a
             // stale selection to clear (row 0 restores the default chain).
             UiEvent::AwsProfiles { info, pick } => {
@@ -4028,6 +4063,7 @@ impl Model {
                 // A failed `/compact` answers here, not with an agent event.
                 self.compacting = false;
                 self.awaiting_effort = false;
+                self.awaiting_vision = false;
                 self.awaiting_link = false;
                 self.awaiting_secrets = false;
                 self.awaiting_nodes = false;
@@ -4651,6 +4687,19 @@ impl Model {
                 tx,
                 Command::SetTitleModel((arg != "off" && arg != "clear").then(|| arg.to_owned())),
             ),
+            "/vision" => {
+                self.awaiting_vision = true;
+                send(
+                    tx,
+                    if arg.is_empty() {
+                        Command::GetVisionModel
+                    } else {
+                        Command::SetVisionModel(
+                            (arg != "off" && arg != "clear").then(|| arg.to_owned()),
+                        )
+                    },
+                );
+            }
             "/effort" if arg.is_empty() => {
                 let items = self
                     .catalog
@@ -8304,6 +8353,18 @@ pub fn title_model_line(m: Option<&ModelInfo>) -> String {
     }
 }
 
+/// The `/vision` reply: the model that inspects images for a text-only main
+/// model (52 §3), or off.
+pub fn vision_model_line(m: Option<&ModelInfo>) -> String {
+    match m {
+        Some(m) => format!(
+            "vision fallback: {} ({}) — used only when the main model cannot view images; it receives the image and a question written by the main model, an extra call to that provider",
+            m.id, m.name
+        ),
+        None => "vision fallback: off — a text-only main model gets images as omitted (/vision <model> to set one)".into(),
+    }
+}
+
 /// The `/aws` reply: which AWS profile Bedrock calls use, harness-wide.
 pub fn aws_profile_line(p: &AwsProfiles) -> String {
     let now = match &p.selected {
@@ -8989,6 +9050,7 @@ mod tests {
                 removed,
                 remove_with: vec![],
                 attachments,
+                vision: None,
             })
         };
         let shot = |removed| ContextAttachment {
@@ -9163,6 +9225,7 @@ mod tests {
                 removed: false,
                 remove_with: vec![],
                 attachments: vec![],
+                vision: None,
             }),
         };
         let loaded = Loaded {
@@ -11124,6 +11187,113 @@ mod tests {
         };
         assert_eq!(text, "only this");
         assert_eq!(files, vec![PathBuf::from("/tmp/my shot.jpg")]);
+    }
+
+    #[test]
+    fn vision_sets_clears_and_shows_the_harness_fallback() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        let info = |id: &str| ModelInfo {
+            id: id.into(),
+            name: "Haiku".into(),
+            provider: "anthropic".into(),
+            context: 200_000,
+            reasoning: false,
+            image: true,
+            efforts: vec![],
+            budget_min: None,
+            budget_max: None,
+        };
+        // The startup fetch primes state silently.
+        m.apply(UiEvent::VisionModel(Some(info(
+            "anthropic/claude-haiku-4-5",
+        ))));
+        assert_eq!(
+            m.vision_model.as_ref().map(|v| v.id.as_str()),
+            Some("anthropic/claude-haiku-4-5")
+        );
+        assert!(m.entries.is_empty());
+        // Bare `/vision` asks and prints the canonical reply; never a prompt.
+        m.submit("/vision", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::GetVisionModel)));
+        m.apply(UiEvent::VisionModel(Some(info(
+            "anthropic/claude-haiku-4-5",
+        ))));
+        assert!(matches!(
+            m.entries.last(),
+            Some(Entry::Info(t)) if t.starts_with("vision fallback: anthropic/claude-haiku-4-5 (Haiku)")
+        ));
+        // Set sends the id; `off` and `clear` send None.
+        m.submit("/vision openai/gpt-5", &tx);
+        assert!(
+            matches!(rx.try_recv(), Ok(Command::SetVisionModel(Some(id))) if id == "openai/gpt-5")
+        );
+        m.submit("/vision off", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::SetVisionModel(None))));
+        m.submit("/vision clear", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::SetVisionModel(None))));
+        assert!(rx.try_recv().is_err(), "no Send slipped through");
+        // A rejected selection is an error line; the old selection stands,
+        // and the flag it left behind does not make a later silent reply print.
+        m.apply(UiEvent::Error("not image-capable".into()));
+        assert!(matches!(m.entries.last(), Some(Entry::Error(e)) if e == "not image-capable"));
+        assert!(m.vision_model.is_some());
+        let n = m.entries.len();
+        m.apply(UiEvent::VisionModel(None));
+        assert!(m.vision_model.is_none() && m.entries.len() == n);
+        // Off reply after `/vision off` prints the off line.
+        m.submit("/vision off", &tx);
+        m.apply(UiEvent::VisionModel(None));
+        assert!(
+            matches!(m.entries.last(), Some(Entry::Info(t)) if t.starts_with("vision fallback: off"))
+        );
+        // Harness-wide: `/new` keeps it.
+        m.apply(UiEvent::VisionModel(Some(info(
+            "anthropic/claude-haiku-4-5",
+        ))));
+        m.submit("/new", &tx);
+        assert!(m.vision_model.is_some());
+    }
+
+    #[test]
+    fn attach_notice_names_the_vision_fallback_for_a_text_only_model() {
+        let catalog = Catalog::load(std::env::temp_dir().join("wth-tui-no-user-file").as_path());
+        let (provider, model) = catalog
+            .providers()
+            .flat_map(|p| p.models.values().map(move |m| (&p.id, m)))
+            .find(|(_, m)| !m.image && m.limit.context > 0)
+            .map(|(p, m)| (p.clone(), m.id.clone()))
+            .expect("a text-only model in the bundled catalog");
+        let mut m = Model::new(format!("{provider}/{model}"), true);
+        m.catalog = Some(Arc::new(catalog));
+        let shot = Image {
+            path: PathBuf::from("/tmp/a.png"),
+            w: 1,
+            h: 1,
+        };
+        m.attach(shot.clone());
+        assert!(
+            matches!(m.entries.last(), Some(Entry::Info(t)) if t.contains("text-only") && t.contains("omitted") && t.contains("/vision <model>")),
+            "{:?}",
+            m.entries.last()
+        );
+        m.apply(UiEvent::VisionModel(Some(ModelInfo {
+            id: "anthropic/claude-haiku-4-5".into(),
+            name: "Haiku".into(),
+            provider: "anthropic".into(),
+            context: 200_000,
+            reasoning: false,
+            image: true,
+            efforts: vec![],
+            budget_min: None,
+            budget_max: None,
+        })));
+        m.attach(shot);
+        assert!(
+            matches!(m.entries.last(), Some(Entry::Info(t)) if t.contains("anthropic/claude-haiku-4-5 will inspect the image")),
+            "{:?}",
+            m.entries.last()
+        );
     }
 
     #[test]

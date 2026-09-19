@@ -23,6 +23,11 @@ export const COMMANDS: readonly { name: string; hint: string; desc: string }[] =
     desc: "model that names sessions in the history list (off = the session's model)",
   },
   {
+    name: '/vision',
+    hint: '[model|off]',
+    desc: 'model that inspects images when the main model cannot (off = images are omitted)',
+  },
+  {
     name: '/effort',
     hint: '[level|clear]',
     desc: 'reasoning effort (picker without arg)',
@@ -252,7 +257,16 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
     case '/title': {
       if (!arg) return settings(navigate, 'general', session)
       const m = await api.set_title_model(arg === 'off' || arg === 'clear' ? null : arg)
+      active().qc.setQueryData(queryKeys.titleModel, m)
       toast(m ? `title model: ${m.id}` : 'title model: off')
+      return
+    }
+    // 52 §3.2: the General dropdown's RPC and query; the server rejects unavailable/text-only ids.
+    case '/vision': {
+      if (!arg) return settings(navigate, 'general', session)
+      const m = await api.set_vision_model(arg === 'off' || arg === 'clear' ? null : arg)
+      active().qc.setQueryData(queryKeys.visionModel, m)
+      toast(m ? `vision fallback: ${m.id}` : 'vision fallback: off')
       return
     }
     case '/approvals': {

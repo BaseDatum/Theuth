@@ -73,14 +73,14 @@ use crate::{
     AGENT_ACTOR, AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentConfig, AgentEvent, AgentInfo,
     AgentState, AncestorInfo, Ancestors, Cancel, Compact, CompactStyle, ContextItems,
     DeleteSession, EditTurn, ForkSession, GetCompactStyle, GetMaxToolRounds, GetSubagentTimeout,
-    GetTitleModel, GetTodos, Harvest, HistoryEntry, ListAcp, ListAgents, ListLogins, ListModels,
-    ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills, LoadSession, LoadSkill,
-    Loaded, Login, LoginFinished, LoginInfo, Logout, ModelInfo, NewRootSession, NewSession,
-    PinSession, ProviderInfo, QueuedInput, Redo, Regenerate, RemoveAcp, RemoveContext,
-    RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession, SearchRefresh, SearchSessionPage,
-    SendInput, SessionSummary, SetCompactStyle, SetEffort, SetMaxToolRounds, SetModel,
-    SetSubagentTimeout, SetTitleModel, ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo,
-    UseSkill, Withdraw, effort_of,
+    GetTitleModel, GetTodos, GetVisionModel, Harvest, HistoryEntry, ListAcp, ListAgents,
+    ListLogins, ListModels, ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills,
+    LoadSession, LoadSkill, Loaded, Login, LoginFinished, LoginInfo, Logout, ModelInfo,
+    NewRootSession, NewSession, PinSession, ProviderInfo, QueuedInput, Redo, Regenerate, RemoveAcp,
+    RemoveContext, RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession, SearchRefresh,
+    SearchSessionPage, SendInput, SessionSummary, SetCompactStyle, SetEffort, SetMaxToolRounds,
+    SetModel, SetSubagentTimeout, SetTitleModel, SetVisionModel, ShowPrompt, SkillBody, SkillMeta,
+    Steer, SyncSkills, Undo, UseSkill, Withdraw, effort_of,
 };
 use crate::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 use crate::{frame, repl, search, spill};
@@ -98,6 +98,17 @@ pub struct Agents {
     compact_style: Arc<RwLock<CompactStyle>>,
     /// Live title model (07 §15); `None` = each session's own model. Shared with every session.
     title_model: Arc<RwLock<Option<Resolved>>>,
+    /// Live vision fallback model (52 §3.1); `None` = no fallback. Shared with
+    /// every native session once the loop consults it; snapshot, never hold
+    /// the lock across an await.
+    pub(crate) vision_model: Arc<RwLock<Option<Resolved>>>,
+    /// Why `agent.vision_model` from the config file was not selected at
+    /// startup (invalid id or capability; 52 §3.1). The file is left as is
+    /// and only the fallback is off; cleared by a successful [`SetVisionModel`].
+    /// Retained here (logged at error level too) until the next wave's
+    /// vision progress event carries it to the UI; no session exists at
+    /// startup for `AgentEvent::Error`.
+    pub vision_error: Option<String>,
     catalog: Arc<Catalog>,
     /// Python runtime workers; `None` when the `monty` binary was not found (design doc 08 §9).
     pool: Option<Arc<monty_pool::Pool>>,
@@ -2113,6 +2124,62 @@ impl Message<GetTitleModel> for Agents {
     }
 }
 
+impl Agents {
+    /// [`SetVisionModel`] (52 §3.1): validate, persist, then swap — a rejected
+    /// id or a failed config write leaves the live selection untouched.
+    fn set_vision_model(&mut self, model: Option<&str>) -> Result<Option<ModelInfo>, String> {
+        let resolved = match model {
+            Some(id) => {
+                let r = vision_candidate(&self.catalog, &*self.configured, id)?;
+                let provider = r.provider.as_deref().unwrap_or_default();
+                if !(self.configured)(Catalog::adapter(provider)) {
+                    return Err(format!(
+                        "provider `{provider}` is not configured; add a key, log in, or add a gateway first"
+                    ));
+                }
+                Some(r)
+            }
+            None => None,
+        };
+        let info = resolved.as_ref().map(ModelInfo::from);
+        let path = self.rt.data_dir.join("config.yaml");
+        let value = info.as_ref().map(|i| i.id.as_str()).unwrap_or_default();
+        runtime::write_config_value(&path, "agent", "vision_model", value)
+            .map_err(|e| format!("config.yaml: {e}"))?;
+        *self.vision_model.write().unwrap_or_else(|p| p.into_inner()) = resolved;
+        self.vision_error = None;
+        Ok(info)
+    }
+}
+
+impl Message<SetVisionModel> for Agents {
+    type Reply = Result<Option<ModelInfo>, String>;
+
+    async fn handle(
+        &mut self,
+        m: SetVisionModel,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<Option<ModelInfo>, String> {
+        self.set_vision_model(m.model.as_deref())
+    }
+}
+
+impl Message<GetVisionModel> for Agents {
+    type Reply = Option<ModelInfo>;
+
+    async fn handle(
+        &mut self,
+        _: GetVisionModel,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Option<ModelInfo> {
+        self.vision_model
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .map(ModelInfo::from)
+    }
+}
+
 impl Message<Harvest> for Agents {
     type Reply = kameo::reply::DelegatedReply<Result<knowledge::HarvestResult, String>>;
 
@@ -4013,7 +4080,9 @@ impl Message<ListModels> for Agents {
                         ModelInfo {
                             context: near.map_or(0, |n| n.limit.context),
                             reasoning: near.is_some_and(|n| n.reasoning),
-                            image: near.is_some_and(|n| n.image),
+                            // Cursor's backend is text-only whatever the sibling says
+                            // (`backend::supports_images`).
+                            image: false,
                             efforts: near.map(|n| n.efforts()).unwrap_or_default(),
                             budget_min: near.and_then(|n| n.budget()).map(|b| b.0),
                             budget_max: near.and_then(|n| n.budget()).and_then(|b| b.1),
@@ -4471,7 +4540,8 @@ impl ModelInfo {
             provider: provider.to_owned(),
             context: m.limit.context,
             reasoning: m.reasoning,
-            image: m.image,
+            // Effective input support (52 §3.2), the `backend::supports_images` rule.
+            image: m.image && Catalog::adapter(provider) != "cursor",
             efforts: m.efforts(),
             budget_min: budget.map(|b| b.0),
             budget_max: budget.and_then(|b| b.1),
@@ -4492,7 +4562,7 @@ impl From<&Resolved> for ModelInfo {
             provider: r.provider.clone().unwrap_or_default(),
             context: r.model.as_ref().map_or(0, |m| m.limit.context),
             reasoning: r.model.as_ref().is_some_and(|m| m.reasoning),
-            image: r.model.as_ref().is_some_and(|m| m.image),
+            image: crate::backend::supports_images(r),
             efforts: r.model.as_ref().map(|m| m.efforts()).unwrap_or_default(),
             budget_min: budget.map(|b| b.0),
             budget_max: budget.and_then(|b| b.1),
@@ -4517,13 +4587,16 @@ fn render(
     // ponytail: linear scan; one round's calls, never more than a handful.
     let mut pending: Vec<(i64, &genai::chat::ToolCall)> = Vec::new();
     let mut current_turn: Option<i64> = None;
-    let mut prev: Option<&ChatMessage> = None;
+    // 52 §6: a typed vision note neither opens a turn nor hides the next
+    // real user message's handle; the store decides from the metadata.
+    let openers = store::turn_openers(messages, |s| {
+        entries.get(&s).is_some_and(|e| e.vision.is_some())
+    });
     for (seq, m) in messages {
-        let opens = store::is_turn_start(prev, m);
+        let opens = openers.contains(seq);
         if opens {
             current_turn = Some(*seq);
         }
-        prev = Some(m);
         let context = entries.get(seq);
         match m.role {
             ChatRole::User => out.push((
@@ -4850,12 +4923,45 @@ fn configured(auth: Auth) -> Arc<dyn Fn(&str) -> bool + Send + Sync> {
     })
 }
 
+/// The vision fallback's id/capability rule (52 §3.1), shared by
+/// [`SetVisionModel`] and [`start`]: `id` must resolve (an ambiguous bare id
+/// is the catalog's error) to an **exact** merged catalog entry — no fuzzy
+/// sibling, no pass-through — that receives images through its backend
+/// ([`crate::backend::supports_images`]: Cursor and text-only entries fail).
+/// Whether the provider is configured is the setter's extra check: a saved
+/// selection whose credentials disappeared stays selected and fails at use.
+fn vision_candidate(
+    catalog: &Catalog,
+    configured: &dyn Fn(&str) -> bool,
+    id: &str,
+) -> Result<Resolved, String> {
+    let resolved = catalog.resolve(id, configured)?;
+    if catalog.get(&resolved.id).is_none() {
+        return Err(format!(
+            "`{id}` is not an exact catalog entry; a vision fallback must name one as `provider/model` (add it to models.json first)"
+        ));
+    }
+    if !crate::backend::supports_images(&resolved) {
+        return Err(format!("`{}` cannot receive images", resolved.id));
+    }
+    Ok(resolved)
+}
+
+/// The `agent:` section: absent = defaults; present but malformed (a
+/// wrongly typed `vision_model`, say) is an error, not a silent reset of
+/// every `agent.*` value to its default (52 §3.1).
+fn agent_config(rt: &Runtime) -> anyhow::Result<AgentConfig> {
+    if rt.config.contains("agent") {
+        rt.section("agent")
+            .map_err(|e| e.context("[agent] config section"))
+    } else {
+        Ok(AgentConfig::default())
+    }
+}
+
 /// Open the store, spawn and register the supervisor.
 pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
-    let mut cfg: AgentConfig = rt.section("agent").unwrap_or_else(|e| {
-        tracing::debug!("no [agent] config section, using defaults: {e}");
-        AgentConfig::default()
-    });
+    let mut cfg = agent_config(rt)?;
     // Design doc 30 §12: its own top-level section, carried on `cfg` so the loop sees it.
     if rt.config.contains("surface") {
         cfg.surface = rt.section("surface")?;
@@ -4902,6 +5008,21 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             .map_err(|e| tracing::warn!("agent.title_model: {e}"))
             .ok()
     });
+    // 52 §3.1: id/capability are validated like the setter does, but a valid
+    // selection whose credentials went away stays selected and fails at use.
+    // An invalid one disables only the fallback; the file is left alone and
+    // the reason is kept for the API (`Agents::vision_error`).
+    let (vision_model, vision_error) = match cfg.vision_model.as_deref() {
+        None => (None, None),
+        Some(id) => match vision_candidate(&catalog, &*configured, id) {
+            Ok(r) => (Some(r), None),
+            Err(e) => {
+                let e = format!("agent.vision_model: {e}; vision fallback is off");
+                tracing::error!("{e}");
+                (None, Some(e))
+            }
+        },
+    };
     let nodes = Nodes::default();
     // 50 §2.1: the switch and where it came from; every persisted root and
     // parent link root-first, so the registry's synchronous view never sees
@@ -4932,6 +5053,8 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             default_effort: cfg.effort.clone(),
             compact_style: Arc::new(RwLock::new(cfg.compact_style)),
             title_model: Arc::new(RwLock::new(title_model)),
+            vision_model: Arc::new(RwLock::new(vision_model)),
+            vision_error,
             catalog,
             pool,
             configured,
@@ -5184,6 +5307,53 @@ pub(crate) mod tests {
         ));
     }
 
+    /// 52 §6: a typed vision note appended after an assistant reply (manual
+    /// harvest) is no turn handle, and the real user message after it still
+    /// opens one; a plain user message saying the same words is a turn.
+    #[test]
+    fn render_skips_vision_notes_as_turn_openers() {
+        let messages = vec![
+            (0, ChatMessage::user("look")),
+            (1, ChatMessage::assistant("done")),
+            (2, ChatMessage::user("Vision observation: a cat")),
+            (3, ChatMessage::user("next")),
+        ];
+        let mut entries = BTreeMap::new();
+        entries.insert(
+            2,
+            ContextEntry {
+                target: ContextTarget::Message { seq: 2 },
+                active: true,
+                removed: false,
+                remove_with: Vec::new(),
+                attachments: Vec::new(),
+                vision: Some(crate::vision::VisionNote {
+                    version: 1,
+                    question_model: "x/text".into(),
+                    vision_model: "x/eyes".into(),
+                    observations: Vec::new(),
+                }),
+            },
+        );
+        let turns: Vec<Option<i64>> = render(&messages, &entries)
+            .into_iter()
+            .filter_map(|(_, e)| match e {
+                HistoryEntry::User { turn, .. } => Some(turn),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(turns, [Some(0), None, Some(3)]);
+        // Untyped: only prose, so the quoted note text is an ordinary turn.
+        let turns: Vec<Option<i64>> = render(&messages, &BTreeMap::new())
+            .into_iter()
+            .filter_map(|(_, e)| match e {
+                HistoryEntry::User { turn, .. } => Some(turn),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(turns, [Some(0), Some(2), None]);
+    }
+
     /// A tool response's binary parts carry the produced files' paths in `name`
     /// (`loop_::round`); the history entry lists them so a reloaded transcript
     /// shows the same thumbnails the live `ToolCallFinished` did.
@@ -5269,6 +5439,7 @@ pub(crate) mod tests {
                 removed: false,
                 remove_with: vec![ContextTarget::Message { seq: 0 }],
                 attachments: vec![attachment(0, "a.png"), attachment(1, "b.png")],
+                vision: None,
             },
         );
         let got = render(&messages, &entries);
@@ -5347,6 +5518,7 @@ pub(crate) mod tests {
                 removed: false,
                 remove_with: Vec::new(),
                 attachments,
+                vision: None,
             })
         };
         let mut history = vec![
@@ -5605,6 +5777,8 @@ pub(crate) mod tests {
             cfg,
             compact_style: Arc::default(),
             title_model: Arc::default(),
+            vision_model: Arc::default(),
+            vision_error: None,
             catalog: Arc::new(Catalog::load(&dir)),
             pool: None,
             configured: Arc::new(|_: &str| false),
@@ -5630,6 +5804,164 @@ pub(crate) mod tests {
             nodes: Nodes::default(),
             ledger: Ledger::default(),
         }
+    }
+
+    /// A catalog with an image-capable `testvis/eyes`, a text-only
+    /// `testvis/blind`, and a second provider also offering `eyes`.
+    fn vision_catalog(dir: &Path) -> Catalog {
+        let model = |id: &str, image: bool| {
+            serde_json::json!({
+                "id": id, "name": id,
+                "limit": { "context": 100_000, "output": 4_096 },
+                "image": image
+            })
+        };
+        let user = serde_json::json!({
+            "testvis": {
+                "id": "testvis", "name": "Test Vision",
+                "models": { "eyes": model("eyes", true), "blind": model("blind", false) }
+            },
+            "othervis": {
+                "id": "othervis", "name": "Other",
+                "models": { "eyes": model("eyes", true) }
+            }
+        });
+        std::fs::write(dir.join("models.json"), user.to_string()).unwrap();
+        Catalog::load(dir)
+    }
+
+    /// 52 §3.1: the fallback must be an exact, image-capable catalog entry —
+    /// fuzzy siblings, pass-through ids, text-only entries, and ambiguous
+    /// bare ids are rejected; a unique bare id canonicalises.
+    #[test]
+    fn vision_candidate_requires_exact_image_capable_entry() {
+        let dir = std::env::temp_dir().join(format!("wth-vision-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let catalog = vision_catalog(&dir);
+        let only_test = |ns: &str| ns == "testvis";
+        let both = |ns: &str| ns == "testvis" || ns == "othervis";
+
+        assert_eq!(
+            vision_candidate(&catalog, &only_test, "testvis/eyes")
+                .unwrap()
+                .id,
+            "testvis/eyes"
+        );
+        assert_eq!(
+            vision_candidate(&catalog, &only_test, "eyes").unwrap().id,
+            "testvis/eyes"
+        );
+        // A provider that is not configured still passes the id/capability rule
+        // (startup keeps such a selection); the setter adds the provider check.
+        assert!(vision_candidate(&catalog, &|_| false, "testvis/eyes").is_ok());
+        assert_eq!(
+            vision_candidate(&catalog, &only_test, "testvis/blind").unwrap_err(),
+            "`testvis/blind` cannot receive images"
+        );
+        // Fuzzy sibling (`closest` would find `eyes`) and pass-through ids are not exact.
+        for id in ["testvis/eyes-fast", "nowhere/eyes", "no-such-model"] {
+            let e = vision_candidate(&catalog, &only_test, id).unwrap_err();
+            assert!(e.contains("not an exact catalog entry"), "{id}: {e}");
+        }
+        assert!(
+            vision_candidate(&catalog, &both, "eyes")
+                .unwrap_err()
+                .starts_with("ambiguous model `eyes`")
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// 52 §3.1: the setter validates, writes `config.yaml`, then swaps the live
+    /// value; an unconfigured provider or a failed write changes nothing, and
+    /// `None` clears both. A startup diagnostic is cleared by a successful set.
+    #[tokio::test]
+    async fn set_vision_model_persists_before_swapping() {
+        let mut a = agents().await;
+        let dir = a.rt.data_dir.clone();
+        a.catalog = Arc::new(vision_catalog(&dir));
+        a.vision_error = Some("stale".into());
+        let live = |a: &Agents| {
+            a.vision_model
+                .read()
+                .unwrap()
+                .as_ref()
+                .map(|r| r.id.clone())
+        };
+
+        // Valid entry, provider not configured: rejected, nothing written.
+        let e = a.set_vision_model(Some("testvis/eyes")).unwrap_err();
+        assert!(e.contains("`testvis` is not configured"), "{e}");
+        assert_eq!(live(&a), None);
+        assert!(!dir.join("config.yaml").exists());
+        assert_eq!(a.vision_error.as_deref(), Some("stale"));
+
+        a.configured = Arc::new(|ns: &str| ns == "testvis");
+        let info = a.set_vision_model(Some("eyes")).unwrap().unwrap();
+        assert_eq!(info.id, "testvis/eyes");
+        assert!(info.image);
+        assert_eq!(live(&a).as_deref(), Some("testvis/eyes"));
+        assert_eq!(a.vision_error, None);
+        let yaml = std::fs::read_to_string(dir.join("config.yaml")).unwrap();
+        assert!(yaml.contains("  vision_model: testvis/eyes\n"), "{yaml}");
+
+        // A write failure leaves the live value as it was.
+        std::fs::remove_file(dir.join("config.yaml")).unwrap();
+        std::fs::create_dir(dir.join("config.yaml")).unwrap();
+        let e = a.set_vision_model(None).unwrap_err();
+        assert!(e.starts_with("config.yaml: "), "{e}");
+        assert_eq!(live(&a).as_deref(), Some("testvis/eyes"));
+        std::fs::remove_dir(dir.join("config.yaml")).unwrap();
+
+        assert!(a.set_vision_model(None).unwrap().is_none());
+        assert_eq!(live(&a), None);
+        let yaml = std::fs::read_to_string(dir.join("config.yaml")).unwrap();
+        assert!(yaml.contains("  vision_model: \n"), "{yaml}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// `ModelInfo.image` is effective input support (52 §3.2): a Cursor id
+    /// with an image-capable catalog sibling reports `false`.
+    #[test]
+    fn model_info_image_is_effective_support() {
+        let dir = std::env::temp_dir().join(format!("wth-vision-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let catalog = vision_catalog(&dir);
+        let (p, m) = catalog.get("testvis/eyes").unwrap();
+        assert!(ModelInfo::new(&p.id, m).image);
+        assert!(!ModelInfo::new("cursor", m).image);
+        let mut r = catalog.resolve("testvis/eyes", &|_| true).unwrap();
+        assert!(ModelInfo::from(&r).image);
+        r.genai = "cursor::eyes".into();
+        assert!(!ModelInfo::from(&r).image);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// 52 §3.1: a wrongly typed `agent.vision_model` is a startup error that
+    /// names the section, never a silent reset of `agent.model` and friends
+    /// to defaults; an absent section still means defaults.
+    #[tokio::test]
+    async fn malformed_agent_section_is_reported_not_defaulted() {
+        use figment::providers::{Format, Yaml};
+        let dir = std::env::temp_dir();
+        let rt = |yaml: &str| {
+            Runtime::new(
+                figment::Figment::new().merge(Yaml::string(yaml)),
+                dir.clone(),
+            )
+        };
+        let cfg = agent_config(&rt("agent:\n  model: x/y\n  vision_model: x/eyes\n")).unwrap();
+        assert_eq!(cfg.model, "x/y");
+        assert_eq!(cfg.vision_model.as_deref(), Some("x/eyes"));
+        let e = agent_config(&rt("agent:\n  model: x/y\n  vision_model: [1, 2]\n"))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("[agent] config section"), "{e}");
+        assert!(
+            agent_config(&rt("rpc:\n  listen: 127.0.0.1:1\n"))
+                .unwrap()
+                .vision_model
+                .is_none()
+        );
     }
 
     /// 50 §2.1: a session created here is mirrored into the policy with its
