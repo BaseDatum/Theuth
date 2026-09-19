@@ -15,7 +15,8 @@ use agent::{
     CompactStyle, ContextAttachment, ContextEntry, ContextItem, ContextKind, ContextRemoval,
     ContextSnapshot, ContextTarget, HistoryEntry, Loaded, ModelInfo, PeerDelivered, PeerInfo,
     PeerMessageChanged, PeerMessagePage, PeerOrigin, PeerPage, PeerReceipt, PeerRecord, PeerScope,
-    ProviderInfo, QueuedInput, SessionSummary, SkillBody, SkillMeta, Usage,
+    ProviderInfo, QueuedInput, SessionSummary, SkillBody, SkillMeta, Usage, VisionNote,
+    VisionStage, VisionStatus,
 };
 use iocraft::KeyCode;
 use knowledge::{Change, ChangeStatus, HarvestResult, History, Meta, Revision};
@@ -868,6 +869,9 @@ pub enum CardKind {
     /// A message the user removed from the model's context (48 §2.2): the
     /// original stays in the archive, shown only when expanded.
     Removed,
+    /// A vision consultation note (52 §6): the main model's question and
+    /// the fallback's answer, shown only when expanded.
+    Vision,
 }
 
 impl CardKind {
@@ -882,6 +886,7 @@ impl CardKind {
             CardKind::Link | CardKind::Node => "⌁",
             CardKind::Artifact => "▣",
             CardKind::Removed => "⊘",
+            CardKind::Vision => "◉",
         }
     }
 }
@@ -2424,6 +2429,9 @@ pub struct Model {
     pub compacting: bool,
     /// The shown session's harvest call is in flight (`Harvesting`).
     pub harvesting: bool,
+    /// The shown session's vision consultation step in flight
+    /// (`VisionProgress`, 52 §6): the status-line text until it settles.
+    pub vision: Option<String>,
     /// The user asked to leave.
     pub quit: bool,
     /// Skill index (`list_skills`), fetched at start and by `/skills`: names
@@ -3286,6 +3294,7 @@ impl Model {
             || self.mcp_connecting()
             || self.compacting
             || self.harvesting
+            || self.vision.is_some()
             || self.agents.values().any(AgentRow::live)
             || self.pairing.is_some()
             || self.invite.is_some()
@@ -3343,6 +3352,9 @@ impl Model {
         }
         if self.harvesting {
             return Some("harvesting…".into());
+        }
+        if let Some(v) = &self.vision {
+            return Some(v.clone());
         }
         if !self.streaming {
             return None;
@@ -4490,6 +4502,7 @@ impl Model {
                 self.context = context;
                 self.compacting = false;
                 self.harvesting = false;
+                self.vision = None;
             }
             AgentEvent::ModelChanged { model, .. } => {
                 self.entries.push(Entry::Info(format!("model → {model}")));
@@ -4534,6 +4547,7 @@ impl Model {
             AgentEvent::Error { message, .. } => {
                 self.compacting = false;
                 self.harvesting = false;
+                self.vision = None;
                 self.entries.push(Entry::Error(message));
             }
             AgentEvent::SubagentSpawned { .. }
@@ -4549,6 +4563,28 @@ impl Model {
                 self.interject(Entry::Info(format!("knowledge +{added} ~{updated}")))
             }
             AgentEvent::SkillsChanged { skills, .. } => self.loaded_skills = skills,
+            // The consultation's steps in the status line; the settled note
+            // is one collapsed card naming the sources (52 §6). Its body text
+            // arrives with the reloaded transcript, not on the wire.
+            AgentEvent::VisionProgress {
+                stage,
+                model,
+                sources,
+                ..
+            } => {
+                let line = vision_line(stage, &model, sources.len());
+                if matches!(stage, VisionStage::Questioning | VisionStage::Inspecting) {
+                    self.vision = Some(line);
+                } else {
+                    self.vision = None;
+                    let body = sources
+                        .iter()
+                        .map(|s| format!("{} · {}", s.label, s.reference()))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    self.interject(card(CardKind::Vision, line, &body));
+                }
+            }
         }
     }
 
@@ -7737,11 +7773,25 @@ static FENCE: LazyLock<markdown::FenceHook> = LazyLock::new(|| Arc::new(surface:
 fn from_history(h: HistoryEntry, opts: &markdown::Options) -> Vec<Entry> {
     let removed = |c: &Option<ContextEntry>| c.as_ref().is_some_and(|c| c.removed);
     match h {
+        // A consultation note (52 §6) is harness-authored, never `◆ you`:
+        // one collapsed card, the question and answer on Ctrl+O.
+        HistoryEntry::User {
+            text,
+            context,
+            vision: Some(note),
+            ..
+        } => {
+            if removed(&context) {
+                return vec![removed_card("vision", &text)];
+            }
+            vec![card(CardKind::Vision, note_title(&note), &text)]
+        }
         HistoryEntry::User {
             text,
             turn,
             context,
             peer,
+            vision: None,
         } => {
             if removed(&context) {
                 return vec![removed_card("you", &text)];
@@ -7835,6 +7885,41 @@ fn removed_card(what: &str, original: &str) -> Entry {
         format!("{what} · removed from context"),
         original,
     )
+}
+
+/// One `VisionProgress` step as a line (52 §6): the status text while the
+/// question or inspection is in flight, the card title once it settled
+/// (every source answered on `Completed`, none on `Failed`). `pub` for
+/// print mode.
+pub fn vision_line(stage: VisionStage, model: &str, n: usize) -> String {
+    match stage {
+        VisionStage::Questioning => format!("asking {model} what to look for…"),
+        VisionStage::Inspecting => format!("{model} inspecting {n} image(s)…"),
+        VisionStage::Completed => vision_title(model, n, n),
+        VisionStage::Failed => vision_title(model, 0, n),
+    }
+}
+
+/// Header of a vision card: `vision: <fallback> inspected 2 image(s)`,
+/// `… inspected 1 of 3 image(s)`, or `… failed on 3 image(s)` when nothing
+/// was answered. Shared by [`vision_line`] and the reloaded note
+/// ([`note_title`]).
+fn vision_title(model: &str, answered: usize, total: usize) -> String {
+    match answered {
+        0 => format!("vision: {model} failed on {total} image(s)"),
+        a if a == total => format!("vision: {model} inspected {total} image(s)"),
+        a => format!("vision: {model} inspected {a} of {total} image(s)"),
+    }
+}
+
+/// [`vision_title`] of a stored note, counting its answered observations.
+pub fn note_title(note: &VisionNote) -> String {
+    let answered = note
+        .observations
+        .iter()
+        .filter(|o| o.status == VisionStatus::Answered)
+        .count();
+    vision_title(&note.vision_model, answered, note.observations.len())
 }
 
 /// One line per attachment occurrence of a history row: `⎘ shot.png
@@ -9070,6 +9155,7 @@ mod tests {
                 turn: Some(1),
                 context: entry(true, vec![shot(false)]),
                 peer: None,
+                vision: None,
             },
             &opts,
         );
@@ -9084,6 +9170,7 @@ mod tests {
                 turn: Some(1),
                 context: entry(false, vec![shot(true)]),
                 peer: None,
+                vision: None,
             },
             &opts,
         );
@@ -11725,6 +11812,7 @@ mod tests {
                         turn: Some(1),
                         context: None,
                         peer: None,
+                        vision: None,
                     },
                     HistoryEntry::Error {
                         text: message.into(),
@@ -11739,6 +11827,139 @@ mod tests {
         assert!(matches!(m.entries.last(), Some(Entry::Error(_))));
         // A long provider message is measured wrapped, not as one row.
         assert_eq!(Entry::Error("x".repeat(50)).height(20), 3);
+    }
+
+    /// One consultation (52 §6): `Questioning` and `Inspecting` name the
+    /// model in the status line, the terminal step clears it and leaves
+    /// exactly one collapsed vision card, never a `◆ you` row.
+    #[test]
+    fn vision_progress_drives_the_status_and_settles_into_one_card() {
+        let mut m = Model::new("m".into(), true);
+        let s = SessionId::new();
+        let turn = TurnId::new();
+        m.session = Some(s);
+        m.streaming = true;
+        let source = agent::VisionSource {
+            target: ContextTarget::Binary {
+                owner: agent::ContextOwner::Message { seq: 4 },
+                part: 1,
+                image: None,
+            },
+            fingerprint: "abcd".into(),
+            label: "shot.png".into(),
+        };
+        let step = |stage, model: &str, seq| AgentEvent::VisionProgress {
+            session: s,
+            turn: Some(turn),
+            stage,
+            model: model.into(),
+            sources: vec![source.clone()],
+            seq,
+        };
+        m.apply_agent(step(VisionStage::Questioning, "text/main", None));
+        assert_eq!(
+            m.activity().as_deref(),
+            Some("asking text/main what to look for…")
+        );
+        assert!(m.animating());
+        m.apply_agent(step(VisionStage::Inspecting, "prov/eyes", None));
+        assert_eq!(
+            m.activity().as_deref(),
+            Some("prov/eyes inspecting 1 image(s)…")
+        );
+        m.apply_agent(step(VisionStage::Completed, "prov/eyes", Some(5)));
+        assert!(m.vision.is_none());
+        assert_eq!(m.activity().as_deref(), Some("thinking…"));
+        let cards: Vec<_> = m
+            .entries
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    Entry::Card {
+                        kind: CardKind::Vision,
+                        ..
+                    }
+                )
+            })
+            .collect();
+        assert_eq!(cards.len(), 1);
+        assert!(matches!(
+            cards[0],
+            Entry::Card { title, expanded: false, .. }
+                if title == "vision: prov/eyes inspected 1 image(s)"
+        ));
+        assert!(!m.entries.iter().any(|e| matches!(e, Entry::User { .. })));
+        // A failure names the count it missed and also settles the status.
+        m.apply_agent(step(VisionStage::Inspecting, "prov/eyes", None));
+        m.apply_agent(step(VisionStage::Failed, "prov/eyes", Some(7)));
+        assert!(m.vision.is_none());
+        assert!(matches!(
+            m.entries.last(),
+            Some(Entry::Card { kind: CardKind::Vision, title, .. })
+                if title == "vision: prov/eyes failed on 1 image(s)"
+        ));
+    }
+
+    /// A reloaded note row (`HistoryEntry::User { vision }`) is the vision
+    /// card with the note body behind Ctrl+O, not the human's `◆ you` row;
+    /// removing it from context keeps the `⊘` archive card convention.
+    #[test]
+    fn vision_note_history_renders_as_a_card_not_a_user_row() {
+        let opts = markdown::Options::default();
+        let source = |seq| agent::VisionSource {
+            target: ContextTarget::Binary {
+                owner: agent::ContextOwner::Message { seq },
+                part: 1,
+                image: None,
+            },
+            fingerprint: format!("f{seq}"),
+            label: "shot.png".into(),
+        };
+        let note = |statuses: &[VisionStatus]| VisionNote {
+            version: agent::vision::NOTE_VERSION,
+            question_model: "text/main".into(),
+            vision_model: "prov/eyes".into(),
+            observations: statuses
+                .iter()
+                .enumerate()
+                .map(|(i, &status)| agent::VisionObservation {
+                    source: source(i as i64),
+                    status,
+                })
+                .collect(),
+        };
+        let body = "<vision_observation>\nQ: what is highlighted?\nA: $420\n</vision_observation>";
+        let row = |note: VisionNote, removed| HistoryEntry::User {
+            text: body.into(),
+            turn: None,
+            context: Some(ContextEntry {
+                target: ContextTarget::Message { seq: 9 },
+                active: true,
+                removed,
+                remove_with: vec![],
+                attachments: vec![],
+                vision: Some(note.clone()),
+            }),
+            peer: None,
+            vision: Some(note),
+        };
+        let out = from_history(
+            row(note(&[VisionStatus::Answered, VisionStatus::Failed]), false),
+            &opts,
+        );
+        assert_eq!(out.len(), 1);
+        assert!(matches!(
+            &out[0],
+            Entry::Card { kind: CardKind::Vision, expanded: false, title, .. }
+                if title == "vision: prov/eyes inspected 1 of 2 image(s)"
+        ));
+        let out = from_history(row(note(&[VisionStatus::Answered]), true), &opts);
+        assert!(matches!(
+            &out[0],
+            Entry::Card { kind: CardKind::Removed, title, .. }
+                if title == "vision · removed from context"
+        ));
     }
 
     /// The first send is refused before any turn (`Error { turn: None }`)
@@ -11898,6 +12119,7 @@ mod tests {
                     turn: Some(1),
                     context: None,
                     peer: None,
+                    vision: None,
                 }],
                 ..Loaded::default()
             },

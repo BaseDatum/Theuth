@@ -858,6 +858,20 @@ fn print_history(out: &mut impl Write, loaded: &agent::Loaded) -> std::io::Resul
     };
     let removed = |c: &Option<agent::ContextEntry>| c.as_ref().is_some_and(|c| c.removed);
     loaded.history.iter().try_for_each(|h| match h {
+        // A consultation note (52 §6) is harness-authored: one header line,
+        // never echoed as the human's `>` prompt or the assistant's reply.
+        agent::HistoryEntry::User {
+            vision: Some(note),
+            context,
+            ..
+        } => {
+            let title = model::note_title(note);
+            if removed(context) {
+                writeln!(out, "⊘ removed from context: ◉ {title}")
+            } else {
+                writeln!(out, "◉ {title}")
+            }
+        }
         agent::HistoryEntry::User { text, context, .. } if removed(context) => writeln!(
             out,
             "⊘ removed from context: > {}",
@@ -976,6 +990,18 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         UiEvent::Agent(AgentEvent::ContextChanged { reason, .. }) => {
             writeln!(out, "context changed ({reason})")
         }
+        // A consultation step (52 §6): one status line; auxiliary question
+        // text never streams, so nothing here can pass for the reply.
+        UiEvent::Agent(AgentEvent::VisionProgress {
+            stage,
+            model,
+            sources,
+            ..
+        }) => writeln!(
+            out,
+            "◉ {}",
+            model::vision_line(*stage, model, sources.len())
+        ),
         UiEvent::Agent(_) => Ok(()),
         // An app is a pointer to its source here: it runs on desktop/web (46 §8.2).
         UiEvent::ArtifactShown(ev) if ev.artifact.kind == artifact::Kind::App => writeln!(

@@ -3,7 +3,7 @@ import type { ContextEntry } from '@/rpc/bindings/ContextEntry'
 import type { Usage } from '@/rpc/bindings/Usage'
 import type { TodoSnapshot } from '@/rpc/bindings/TodoSnapshot'
 import type { WireEvent } from '@/rpc/events'
-import type { LoadedPage } from '@/rpc/extra'
+import type { LoadedPage, VisionNote, VisionSource } from '@/rpc/extra'
 import { adopt, apply, empty, fromHistory, route, type Ctx } from './reduce'
 import { type Freshness, type SessionSlice, freshness, useSessions } from './sessions'
 
@@ -362,6 +362,49 @@ test('fromHistory carries the turn on openers; a steer has none', () => {
   expect(fromHistory({ role: 'user', text: '<skill name="k">\nb\n</skill>\n\nwords', turn: 3 })[0]).toMatchObject({ kind: 'user', skill: 'k', turn: 3 })
   const steer = fromHistory({ role: 'user', text: 'steer', turn: null })[0]
   expect(steer?.kind === 'user' ? steer.turn : 'not a user row').toBeUndefined()
+})
+
+const src = (seq: number, label: string): VisionSource => ({
+  target: { kind: 'binary', owner: { kind: 'message', seq }, part: 0, image: null },
+  fingerprint: `fp${seq}`,
+  label,
+})
+
+test('VisionProgress: questioning/inspecting set the status line; the terminal stage clears it and yields one vision card', () => {
+  const sources = [src(3, 'a.png'), src(3, 'b.png')]
+  const started = run([{ type: 'TurnStarted', session: S, turn: T, text: 'look', turn_seq: 3, model: 'm' }])
+  const asking = apply(started, { type: 'VisionProgress', session: S, turn: T, stage: 'questioning', model: 'main/m', sources, seq: null }, ctx())
+  expect(asking).toMatchObject({ activity: 'vision', visionStatus: 'asking main/m what to look for…' })
+  const looking = apply(asking, { type: 'VisionProgress', session: S, turn: T, stage: 'inspecting', model: 'v/eyes', sources, seq: null }, ctx())
+  expect(looking.visionStatus).toBe('v/eyes inspecting 2 images…')
+  const done = apply(looking, { type: 'VisionProgress', session: S, turn: T, stage: 'completed', model: 'v/eyes', sources, seq: 4 }, ctx())
+  expect(done).toMatchObject({ activity: 'thinking', visionStatus: undefined })
+  expect(done.entries.map((e) => e.kind)).toEqual(['user', 'vision'])
+  expect(done.entries[1]).toMatchObject({ kind: 'vision', model: 'v/eyes', sources, seq: 4, text: '' })
+  expect(done.entries[1]).not.toHaveProperty('failed')
+  const failed = apply(looking, { type: 'VisionProgress', session: S, turn: T, stage: 'failed', model: 'v/eyes', sources: [sources[0]!], seq: 5 }, ctx())
+  expect(failed.entries[1]).toMatchObject({ kind: 'vision', failed: true, seq: 5 })
+  expect(failed.activity).toBe('thinking')
+})
+
+test('fromHistory: a row with a vision note is a vision card carrying the note, never a user bubble; the live card adopts its id', () => {
+  const note: VisionNote = {
+    version: 1,
+    question_model: 'main/m',
+    vision_model: 'v/eyes',
+    observations: [
+      { source: src(3, 'a.png'), status: 'answered' },
+      { source: src(3, 'b.png'), status: 'failed' },
+    ],
+  }
+  const text = '<vision_observation>\nSources: …\n</vision_observation>'
+  const cards = fromHistory({ role: 'user', text, turn: null, context: msg(4), vision: note })
+  expect(cards).toHaveLength(1)
+  expect(cards[0]).toMatchObject({ kind: 'vision', model: 'v/eyes', note, text, seq: 4, sources: note.observations.map((o) => o.source), context: msg(4) })
+  // The same note on `context.vision` (the row's stored metadata) is enough.
+  expect(fromHistory({ role: 'user', text, turn: null, context: { ...msg(4), vision: note } })[0]?.kind).toBe('vision')
+  const live = run([{ type: 'VisionProgress', session: S, turn: T, stage: 'completed', model: 'v/eyes', sources: [], seq: 4 }])
+  expect(adopt(live.entries, cards)[0]?.id).toBe(live.entries[0]?.id)
 })
 
 test('store: Lagged counts, history replace then prepend keeps newer entries and sets paging', () => {

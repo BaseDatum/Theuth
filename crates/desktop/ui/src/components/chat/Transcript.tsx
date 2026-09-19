@@ -31,6 +31,7 @@ const WORD: Record<Activity, string> = {
   tool: 'running tool…',
   compacting: 'compacting…',
   harvesting: 'harvesting…',
+  vision: 'inspecting images…',
 }
 
 type Row = { key: string; entry: Entry; prompts: Prompt[] | null } | { key: string; prompt: Prompt }
@@ -136,6 +137,7 @@ export function Transcript({ session }: { session: string }) {
   const firstSeq = useSessionField(session, 'firstSeq')
   const running = useSessionField(session, 'running')
   const activity = useSessionField(session, 'activity') ?? 'idle'
+  const visionStatus = useSessionField(session, 'visionStatus')
   // This harness's store, read after the await: a page landing after a switch must not touch another harness's slice.
   const { sessions: store } = useScope()
   const ref = useRef<HTMLDivElement>(null)
@@ -239,7 +241,7 @@ export function Transcript({ session }: { session: string }) {
         {(running || activity !== 'idle') && (
           <div className="mx-auto flex w-full md:max-w-[768px] items-center gap-2 px-8 py-3 text-sm text-fg-secondary">
             <Pulse />
-            {WORD[activity]}
+            {(activity === 'vision' && visionStatus) || WORD[activity]}
           </div>
         )}
       </div>

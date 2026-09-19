@@ -2162,7 +2162,8 @@ impl Worker {
             | AgentEvent::ToolCallProgress { .. }
             | AgentEvent::SessionDeleted { .. }
             | AgentEvent::ContextChanged { .. }
-            | AgentEvent::TodoChanged { .. } => {}
+            | AgentEvent::TodoChanged { .. }
+            | AgentEvent::VisionProgress { .. } => {}
         }
     }
 

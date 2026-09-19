@@ -1343,6 +1343,7 @@ fn entry(e: &Entry, spinner: &str, skip: usize, width: u16) -> AnyElement<'stati
                 CardKind::Link | CardKind::Node => LINK,
                 CardKind::Artifact => TOOL,
                 CardKind::Removed => PROMPT,
+                CardKind::Vision => JOB,
             };
             let v = text.view();
             let lines = v.lines().count();

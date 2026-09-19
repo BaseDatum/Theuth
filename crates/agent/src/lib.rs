@@ -15,6 +15,8 @@
 //!   [`GetCommunication`], [`SetCommunication`], [`SetPeerScope`], [`ListPeers`],
 //!   [`GetPeerMessage`], [`AnswerPeerRequest`]
 //! - the `"user"` actor ([`UserChannels`]) and the `message_user` tool (design doc 24) in [`user`].
+//! - vision fallback for a text-only main model (design doc 52) in [`vision`]:
+//!   [`VisionNote`] on `HistoryEntry::User`, [`AgentEvent::VisionProgress`] live.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -62,6 +64,7 @@ pub use user::{
     Deliver, MessageUserTool, Outbound, OutboundFile, RegisterUserSink, USER_ACTOR, UserChannels,
     UserSink,
 };
+pub use vision::{VisionNote, VisionObservation, VisionSource, VisionStatus};
 
 /// Registry name of the [`Agents`] supervisor actor.
 pub const AGENT_ACTOR: &str = "agent";
@@ -904,6 +907,12 @@ pub enum HistoryEntry {
         #[serde(default)]
         #[cfg_attr(feature = "ts", ts(optional))]
         peer: Option<PeerOrigin>,
+        /// Set when this row is a vision consultation note (design doc 52 §6):
+        /// the typed record of which images were inspected and how it went.
+        /// The body text is the note itself. `None` for every other user row.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        vision: Option<VisionNote>,
     },
     /// Assistant text.
     Assistant {
@@ -1264,6 +1273,26 @@ pub enum AgentEvent {
         /// The whole list with its projection version.
         snapshot: todo::TodoSnapshot,
     },
+    /// A vision consultation step (design doc 52 §5.1): `Questioning` when
+    /// the main model is asked to write the question (`model` = main id),
+    /// `Inspecting` when the fallback call starts (`model` = fallback id),
+    /// `Completed` / `Failed` once the note row committed, with its `seq`.
+    /// `sources` are the images of this consultation, original coordinates.
+    VisionProgress {
+        /// Session.
+        session: SessionId,
+        /// Turn, when consulted mid-turn.
+        turn: Option<TurnId>,
+        /// Which step.
+        stage: VisionStage,
+        /// Canonical id of the model this step calls (or called).
+        model: String,
+        /// Images covered by this consultation.
+        sources: Vec<VisionSource>,
+        /// Seq of the committed note row; `Some` only for `Completed` / `Failed`.
+        #[cfg_attr(feature = "ts", ts(type = "number | null"))]
+        seq: Option<i64>,
+    },
 }
 
 impl AgentEvent {
@@ -1293,10 +1322,26 @@ impl AgentEvent {
             | Self::SessionDeleted { session }
             | Self::ContextChanged { session, .. }
             | Self::TodoChanged { session, .. }
+            | Self::VisionProgress { session, .. }
             | Self::Error { session, .. } => Some(*session),
             Self::SubagentSpawned { child, .. } => Some(*child),
         }
     }
+}
+
+/// Step of a vision consultation, carried by [`AgentEvent::VisionProgress`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum VisionStage {
+    /// The main model is writing the question.
+    Questioning,
+    /// The fallback model is looking at the images.
+    Inspecting,
+    /// The note committed with at least one answered image.
+    Completed,
+    /// The note committed with every image failed (or no note could be built).
+    Failed,
 }
 
 /// `[agent]` config section.

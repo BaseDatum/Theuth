@@ -47,6 +47,7 @@ use knowledge::{HarvestResult, KNOWLEDGE_ACTOR, Knowledge, KnowledgeActor, Put, 
 use models::Resolved;
 use monty_pool::Pool;
 use runtime::{InputId, Runtime, SessionId, TurnId};
+use sha2::Digest as _;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 use tools::{Invoke, ListPrompts, ListTools, REGISTRY_ACTOR, ToolOutput, ToolRegistry, ToolSpec};
@@ -69,9 +70,10 @@ use crate::store::Store;
 use crate::store::communication::CommError;
 use crate::supervisor::{Auth, PeerContext, Roster};
 use crate::title;
+use crate::vision::{self, VisionImage, VisionSource, VisionStatus};
 use crate::{
     AGENT_ACTOR, AgentConfig, AgentEvent, Agents, CompactStyle, QueuedInput, SurfaceConfig, Usage,
-    compact, skills, spill, todo,
+    VisionStage, compact, skills, spill, todo,
 };
 
 /// Characters of tool output shown in [`AgentEvent::ToolCallFinished`].
@@ -92,6 +94,8 @@ const SALVAGE_MAX_PER_TURN: u32 = 2;
 const SUMMARISE_TIMEOUT: Duration = Duration::from_secs(300);
 /// Smallest a tool result is shrunk to by the batch budget: a spill marker plus a hint (36 §4.2).
 const TOOL_RESULT_FLOOR_CHARS: usize = 1000;
+/// Stored payload bytes one vision consultation batch may carry (52 §5.3).
+const VISION_BATCH_BYTES: usize = 4 * 1024 * 1024;
 
 /// The consumption barrier of 50 §8 (recheck point 3). A peer exchange is
 /// consumed under the read side — generation check and store transaction
@@ -464,6 +468,9 @@ struct Shared {
     compact_style: Arc<RwLock<CompactStyle>>,
     /// Model for title calls (07 §15); `None` = the session's model. Shared with the supervisor.
     title_model: Arc<RwLock<Option<Resolved>>>,
+    /// Vision fallback (52 §3.1); `None` = no fallback. Shared with the
+    /// supervisor; snapshotted per consultation, never held across an await.
+    vision_model: Arc<RwLock<Option<Resolved>>>,
     store: Store,
     client: Client,
     auth: Auth,
@@ -507,11 +514,10 @@ impl Current {
         }
     }
 
-    /// Whether the model takes image parts (13 §0.5, 17 §3.3): the Cursor
-    /// backend serialises text parts only, so it is text-only whatever the model.
+    /// Whether the model takes image parts through its backend (52 §4.1,
+    /// [`crate::backend::supports_images`]): Cursor serialises text only.
     fn vision(&self) -> bool {
-        matches!(self.backend, Backend::Genai { .. })
-            && self.model.model.as_ref().is_some_and(|m| m.image)
+        crate::backend::supports_images(&self.model)
     }
 }
 
@@ -530,6 +536,7 @@ impl Session {
         cfg: Arc<AgentConfig>,
         compact_style: Arc<RwLock<CompactStyle>>,
         title_model: Arc<RwLock<Option<Resolved>>>,
+        vision_model: Arc<RwLock<Option<Resolved>>>,
         store: Store,
         client: Client,
         auth: Auth,
@@ -551,6 +558,7 @@ impl Session {
                 cfg,
                 compact_style,
                 title_model,
+                vision_model,
                 store,
                 client,
                 auth,
@@ -1667,6 +1675,11 @@ struct Turn {
     peer_work: Option<PeerWork>,
     /// Seq of this turn's first persisted row; bounds [`Turn::result_text`].
     first_seq: Option<i64>,
+    /// Image occurrences whose consultation failed this turn (52 §5.3): not
+    /// retried before the next turn; a later turn may.
+    vision_failed: BTreeSet<VisionSource>,
+    /// The "no vision fallback configured" note was appended this turn.
+    vision_noticed: bool,
 }
 
 /// Execution accounting of a peer-opened turn (50 §8): the wall deadline of
@@ -1865,6 +1878,8 @@ impl Turn {
             scope: TurnScope::default(),
             peer_work: None,
             first_seq: None,
+            vision_failed: BTreeSet::new(),
+            vision_noticed: false,
         }
     }
 
@@ -2090,6 +2105,8 @@ impl Turn {
 
     /// Open the stream for `frame` and drain it to its `End`. With `live`,
     /// deltas and pending tool calls are published; the summariser passes `None`.
+    /// `conversation` is the provider-side conversation/cache id: the session
+    /// for the live frame, [`aux_conversation`] for a stateless auxiliary call.
     /// Transient failures before anything streamed are resent with backoff
     /// (36 §2.2); one that dies mid-reply is `Abort::Partial` (36 §2.4).
     async fn call(
@@ -2098,13 +2115,22 @@ impl Turn {
         frame: Frame<'_>,
         transport: Transport,
         live: Option<TurnId>,
+        conversation: SessionId,
     ) -> Result<StreamEnd, Abort> {
         let mut attempt = 0;
         loop {
             let mut text = String::new();
             let mut calls = false;
             let e = match self
-                .stream_once(current, &frame, transport, live, &mut text, &mut calls)
+                .stream_once(
+                    current,
+                    &frame,
+                    transport,
+                    live,
+                    conversation,
+                    &mut text,
+                    &mut calls,
+                )
                 .await
             {
                 Ok(end) => return Ok(end),
@@ -2146,13 +2172,14 @@ impl Turn {
         frame: &Frame<'_>,
         transport: Transport,
         live: Option<TurnId>,
+        conversation: SessionId,
         text: &mut String,
         calls: &mut bool,
     ) -> Result<StreamEnd, Abort> {
-        let (req, opts) = frame.request(transport, self.shared.id, current.effort.clone());
+        let (req, opts) = frame.request(transport, conversation, current.effort.clone());
         let open = current
             .backend
-            .stream(&current.model, req, &opts, self.shared.id);
+            .stream(&current.model, req, &opts, conversation);
         let mut stream = tokio::select! {
             _ = self.cancel.cancelled() => return Err(Abort::Cancelled),
             r = open => r.map_err(Abort::Model)?,
@@ -2783,6 +2810,17 @@ impl Turn {
                 return Round::Stop("error".into());
             }
         };
+        // 52 §5.1: a text-only main model has its pending images inspected
+        // before anything else this round; the notes it appends are part of
+        // the trigger projection below and of the frame.
+        let images = match self.prepare_images(&current).await {
+            Ok(images) => images,
+            Err(e) if e == "cancelled" => return Round::Stop("cancelled".into()),
+            Err(e) => {
+                self.error(format!("vision: {e}")).await;
+                return Round::Stop("error".into());
+            }
+        };
 
         // 07 §8.1 trigger, §8.7 pressure note, §9 todo reminder — all before the call.
         let window = self.window(&current.model);
@@ -2857,15 +2895,18 @@ impl Turn {
             }
         }
 
-        let msgs = messages(&self.state.history);
+        let (head, msgs) = self.projected(&images);
         let frame = Frame {
             tools: &self.tools,
             system: &self.state.baseline,
-            head: self.state.head.as_ref(),
+            head: head.as_ref(),
             history: &msgs,
             vision: current.vision(),
         };
-        let end = match self.call(&current, frame, transport, Some(turn)).await {
+        let end = match self
+            .call(&current, frame, transport, Some(turn), self.shared.id)
+            .await
+        {
             Ok(end) => end,
             Err(Abort::Cancelled) => return Round::Stop("cancelled".into()),
             // 36 §2.4: keep what streamed, ask the model to carry on.
@@ -3419,9 +3460,6 @@ impl Turn {
         } else {
             window
         };
-        let n_msgs = self.state.history.len();
-        let mut full = Vec::with_capacity(n_msgs + 1);
-        full.extend(self.state.history.iter().map(|(_, m)| m.clone()));
         let cfg_style = *self
             .shared
             .compact_style
@@ -3429,6 +3467,17 @@ impl Turn {
             .unwrap_or_else(|p| p.into_inner());
         let vision = current.vision();
         let mut style = compact::resolve(r#override, cfg_style, reason, vision)?;
+        // 52 §7.2: a summary reads the images, so pending ones are inspected
+        // first (and the notes counted below); cut/clear/snap discard or keep
+        // them as they are and make no vision call.
+        let images = if style == CompactStyle::Summary {
+            self.prepare_images(current).await?
+        } else {
+            Vec::new()
+        };
+        let n_msgs = self.state.history.len();
+        let (head, mut full) = self.projected(&images);
+        full.reserve(1);
         // `/clear` (11 §2.4): the fold is the whole frame, nothing is kept.
         let keep_from = if style == CompactStyle::Clear {
             n_msgs
@@ -3500,12 +3549,11 @@ impl Turn {
                 "Context cleared by the user. Nothing of the earlier conversation is carried over; the session and its settings continue.".to_owned()
             }
             CompactStyle::Summary => {
-                if !vision {
-                    full.iter_mut().for_each(frame::strip_images);
-                }
+                // `full` is the text-only projection when the model cannot see
+                // images (52 §4.2); `Frame::request` still strips PDFs.
                 full.push(ChatMessage::user(compact::COMPACT_INSTRUCTION));
                 match self
-                    .summarise(current, transport, &mut full, keep_from)
+                    .summarise(current, transport, head.as_ref(), &mut full, keep_from)
                     .await
                 {
                     // 36 §6.1: the tag the model just saw must not prime its next reply.
@@ -3531,7 +3579,7 @@ impl Turn {
         // todos, runtime inventory, concepts read, running jobs, files written, epoch file.
         let n = self.state.epoch + 1;
         // 36 §6.4: the folded span verbatim (from `history`, not `full`: the summariser
-        // may have stripped images) as a file the model can read back.
+        // may have seen the text-only projection) as a file the model can read back.
         let folded: Vec<ChatMessage> = self.state.history[..keep_from]
             .iter()
             .map(|(_, m)| m.clone())
@@ -3700,13 +3748,14 @@ impl Turn {
         &self,
         current: &Current,
         transport: Transport,
+        head: Option<&ChatMessage>,
         full: &mut Vec<ChatMessage>,
         keep_from: usize,
     ) -> Result<String, String> {
         let mut trimmed = false;
         loop {
             match self
-                .continuation(current, transport, full, compact::COMPACT_INSTRUCTION)
+                .continuation(current, transport, head, full, compact::COMPACT_INSTRUCTION)
                 .await
             {
                 Ok(text) => return Ok(text),
@@ -3721,17 +3770,19 @@ impl Turn {
         }
     }
 
-    /// A cache-hot continuation of the live frame (07 §8.3, 10 §5.4): `full`
-    /// is the history plus `instruction` as its last message. Retries once
-    /// with a `Text only.` prefix when the reply carries only tool calls or,
-    /// for the compaction instruction, is shorter than
-    /// [`compact::SUMMARY_MIN_CHARS`] (36 §6.1). Bounded by
+    /// A cache-hot continuation of the live frame (07 §8.3, 10 §5.4): `head`
+    /// and `full` are the frame as the model receives it (the text-only
+    /// projection for a model without vision, 52 §4.2), `full` ending in
+    /// `instruction`. Retries once with a `Text only.` prefix when the reply
+    /// carries only tool calls or, for the compaction instruction, is shorter
+    /// than [`compact::SUMMARY_MIN_CHARS`] (36 §6.1). Bounded by
     /// [`SUMMARISE_TIMEOUT`]. `Err` is the raw model error (callers test
     /// `compact::is_overflow`), `summariser timed out` or `degenerate summary`.
     async fn continuation(
         &self,
         current: &Current,
         transport: Transport,
+        head: Option<&ChatMessage>,
         full: &mut Vec<ChatMessage>,
         instruction: &str,
     ) -> Result<String, String> {
@@ -3742,11 +3793,11 @@ impl Turn {
             let frame = Frame {
                 tools: &self.tools,
                 system: &self.state.baseline,
-                head: self.state.head.as_ref(),
+                head,
                 history: full.as_slice(),
                 vision: current.vision(),
             };
-            let call = self.call(current, frame, transport, None);
+            let call = self.call(current, frame, transport, None, self.shared.id);
             match tokio::time::timeout(SUMMARISE_TIMEOUT, call).await {
                 Err(_) => return Err("summariser timed out".into()),
                 Ok(Ok(end)) => {
@@ -3809,10 +3860,12 @@ impl Turn {
             });
         let cwd = self.cwd.to_string_lossy();
         let instruction = knowledge::harvest::instruction(&related, &cwd);
-        let mut full = messages(&self.state.history);
+        // 52 §7.2: the harvest reads the frame, so pending images are inspected first.
+        let images = self.prepare_images(current).await?;
+        let (head, mut full) = self.projected(&images);
         full.push(ChatMessage::user(&instruction));
         let text = self
-            .continuation(current, transport, &mut full, &instruction)
+            .continuation(current, transport, head.as_ref(), &mut full, &instruction)
             .await?;
 
         let mut result = HarvestResult::default();
@@ -3859,6 +3912,335 @@ impl Turn {
         .await;
         Ok(result)
     }
+
+    // region:    --- Vision fallback (52 §5)
+
+    /// The frame as the model receives it: the live head and rows, or with
+    /// `images` (the text-only index) their stable-reference projection
+    /// (52 §4.2); PDFs are left for `Frame::request` to strip.
+    fn projected(&self, images: &[VisionImage]) -> (Option<ChatMessage>, Vec<ChatMessage>) {
+        if images.is_empty() {
+            return (self.state.head.clone(), messages(&self.state.history));
+        }
+        vision::project_frame(
+            self.state.epoch,
+            self.state.head.as_ref(),
+            &self.state.history,
+            images,
+        )
+    }
+
+    /// Snapshot of the fallback selection (52 §3.1).
+    fn vision_model(&self) -> Option<Resolved> {
+        self.shared
+            .vision_model
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
+    /// 52 §5.1: before a text-only request, every active image without an
+    /// effective observation is consulted about, one group at a time and in
+    /// order, each appending its note; the returned index projects the frame.
+    /// Empty (no store read) when `current` sees images itself or the frame
+    /// has none. Without a fallback the images stay stable markers and one
+    /// note per turn says so. The model is re-read before every group (52
+    /// §7.2: a switch to a vision model stops preparation). `Err`: cancelled,
+    /// a model resolution error, or a store refusal — an uncommitted
+    /// observation is not evidence, so the caller stops.
+    async fn prepare_images(&mut self, current: &Current) -> Result<Vec<VisionImage>, String> {
+        if current.vision()
+            || !(self.state.head.as_ref().is_some_and(has_images)
+                || self.state.history.iter().any(|(_, m)| has_images(m)))
+        {
+            return Ok(Vec::new());
+        }
+        let vf = self
+            .shared
+            .store
+            .vision_frame(self.shared.id)
+            .await
+            .map_err(|e| format!("store: {e:#}"))?;
+        let pending: Vec<&VisionImage> = vision::pending(&vf.images, &vf.notes)
+            .into_iter()
+            .filter(|im| !self.vision_failed.contains(&im.source))
+            .collect();
+        for group in &vision::groups(&pending, VISION_BATCH_BYTES) {
+            if self.cancel.is_cancelled() {
+                return Err("cancelled".into());
+            }
+            let current = self.model();
+            if let Some(e) = &current.error {
+                return Err(format!("model: {e}"));
+            }
+            if current.vision() {
+                break;
+            }
+            let Some(fallback) = self.vision_model() else {
+                self.no_fallback(&current, &pending).await;
+                break;
+            };
+            self.consult(&current, &fallback, &vf.images, group).await?;
+        }
+        Ok(vf.images)
+    }
+
+    /// 52 §4.1: no fallback configured — the model is told once per turn that
+    /// nobody has seen the pending images; their markers stay as they are.
+    async fn no_fallback(&mut self, current: &Current, pending: &[&VisionImage]) {
+        if self.vision_noticed {
+            return;
+        }
+        self.vision_noticed = true;
+        let refs: Vec<String> = pending.iter().map(|im| im.source.reference()).collect();
+        self.note(
+            "vision",
+            &format!(
+                "{} is text-only and no vision fallback model is configured, so nobody has looked \
+                 at image(s) {}. Say so rather than guessing their content; the user can set one \
+                 with `/vision <provider/model>`.",
+                current.model.id,
+                refs.join(", ")
+            ),
+        )
+        .await;
+    }
+
+    /// One consultation (52 §5.1 steps 3–5): `current` writes the question
+    /// about `group`, `fallback` answers it, one typed note commits. Every
+    /// failure short of `Err` (no usable question, fallback off, provider
+    /// rejection, unparseable reply) is recorded in the note as a failure
+    /// naming the model, and its sources are not retried this turn.
+    async fn consult(
+        &mut self,
+        current: &Current,
+        fallback: &Resolved,
+        images: &[VisionImage],
+        group: &[&VisionImage],
+    ) -> Result<(), String> {
+        let session = self.shared.id;
+        let sources: Vec<VisionSource> = group.iter().map(|im| im.source.clone()).collect();
+        let transport = self
+            .transport(current)
+            .await
+            .map_err(|e| format!("model: {e}"))?;
+        self.publish(AgentEvent::VisionProgress {
+            session,
+            turn: self.turn,
+            stage: VisionStage::Questioning,
+            model: current.model.id.clone(),
+            sources: sources.clone(),
+            seq: None,
+        })
+        .await;
+        let (head, tail) = self.projected(images);
+        let prompt = vision::question_prompt(head.as_ref(), &tail, group);
+        let question = match self.question(current, transport, prompt).await {
+            Ok(q) => Ok(q),
+            Err(e) if e == "cancelled" => return Err(e),
+            Err(e) => Err(format!("no usable question from {}: {e}", current.model.id)),
+        };
+        let outcomes = match &question {
+            Err(reason) => vision::Outcome::failed(group, reason),
+            // 52 §7.2: turned off while the question was written → nothing is sent.
+            Ok(_) if self.vision_model().is_none() => vision::Outcome::failed(
+                group,
+                "the vision fallback was turned off before the images were sent",
+            ),
+            Ok(q) => {
+                self.publish(AgentEvent::VisionProgress {
+                    session,
+                    turn: self.turn,
+                    stage: VisionStage::Inspecting,
+                    model: fallback.id.clone(),
+                    sources: sources.clone(),
+                    seq: None,
+                })
+                .await;
+                match self.inspect(fallback, q, group).await {
+                    Ok(outcomes) => outcomes,
+                    Err(e) if e == "cancelled" => return Err(e),
+                    Err(e) => vision::Outcome::failed(
+                        group,
+                        &format!("vision model {}: {e}", fallback.id),
+                    ),
+                }
+            }
+        };
+        // 52 §5.3: a reply landing after cancellation appends nothing.
+        if self.cancel.is_cancelled() {
+            return Err("cancelled".into());
+        }
+        let (msg, note) = vision::note(
+            &current.model.id,
+            &fallback.id,
+            question.as_deref().ok(),
+            &outcomes,
+        );
+        let seq = self
+            .shared
+            .store
+            .append_vision(session, &msg, &note)
+            .await
+            .map_err(|e| format!("store: {e:#}"))?;
+        self.first_seq.get_or_insert(seq);
+        self.state.history.push((seq, msg));
+        let mut answered = 0;
+        for o in &outcomes {
+            if o.status == VisionStatus::Failed {
+                self.vision_failed.insert(o.source.clone());
+            } else {
+                answered += 1;
+            }
+        }
+        self.publish(AgentEvent::VisionProgress {
+            session,
+            turn: self.turn,
+            stage: if answered == 0 {
+                VisionStage::Failed
+            } else {
+                VisionStage::Completed
+            },
+            model: fallback.id.clone(),
+            sources,
+            seq: Some(seq),
+        })
+        .await;
+        Ok(())
+    }
+
+    /// The question call (52 §5.2): one "question text only" retry when the
+    /// reply has tool calls or no text; the result is scrubbed of known
+    /// secrets (52 §5.3), and that scrubbed text is what the note records.
+    async fn question(
+        &mut self,
+        current: &Current,
+        transport: Transport,
+        mut prompt: String,
+    ) -> Result<String, String> {
+        let mut retried = false;
+        loop {
+            let message = ChatMessage::user(prompt.clone());
+            match self
+                .aux_call(current, transport, vision::QUESTION_SYSTEM, message, false)
+                .await?
+            {
+                Some(text) => return Ok(tools::secrets::redact(text.trim()).into_owned()),
+                None if !retried => {
+                    retried = true;
+                    tracing::info!(session = %self.shared.id, "vision question call replied without a usable question; retrying");
+                    prompt = format!(
+                        "Reply with the question text only: no tool calls, no preamble.\n\n{prompt}"
+                    );
+                }
+                None => return Err("replied without a usable question twice".into()),
+            }
+        }
+    }
+
+    /// The vision call (52 §5.1 step 4): the fallback's own backend and
+    /// transport, the question plus `group`'s images and nothing else.
+    async fn inspect(
+        &mut self,
+        fallback: &Resolved,
+        question: &str,
+        group: &[&VisionImage],
+    ) -> Result<Vec<vision::Outcome>, String> {
+        let current = Current::new(
+            fallback.clone(),
+            None,
+            &self.shared.client,
+            &self.shared.auth,
+        );
+        let transport = current.backend.transport(fallback).await?;
+        let message = vision::vision_message(question, group);
+        let reply = self
+            .aux_call(&current, transport, vision::VISION_SYSTEM, message, true)
+            .await?
+            .ok_or("replied without text")?;
+        vision::parse_reply(&reply, group)
+    }
+
+    /// A stateless auxiliary call (52 §5.2): `system` plus one user message,
+    /// no tools, no live events, under [`aux_conversation`], bounded by
+    /// [`SUMMARISE_TIMEOUT`]; transient retries and cancellation as any call
+    /// (`Err("cancelled")`). `Ok(None)`: the reply carried tool calls or no
+    /// text. Its usage counts toward the turn, never the main context meter.
+    async fn aux_call(
+        &mut self,
+        current: &Current,
+        transport: Transport,
+        system: &str,
+        message: ChatMessage,
+        vision: bool,
+    ) -> Result<Option<String>, String> {
+        let frame = Frame {
+            tools: &[],
+            system,
+            head: None,
+            history: std::slice::from_ref(&message),
+            vision,
+        };
+        let call = self.call(
+            current,
+            frame,
+            transport,
+            None,
+            aux_conversation(self.shared.id),
+        );
+        let end = match tokio::time::timeout(SUMMARISE_TIMEOUT, call).await {
+            Err(_) => {
+                return Err(format!("timed out after {}s", SUMMARISE_TIMEOUT.as_secs()));
+            }
+            Ok(Err(Abort::Cancelled)) => return Err("cancelled".into()),
+            Ok(Err(Abort::Model(e))) | Ok(Err(Abort::Partial { err: e, .. })) => return Err(e),
+            Ok(Ok(end)) => end,
+        };
+        self.account(&end);
+        if end.captured_tool_calls().is_some_and(|c| !c.is_empty()) {
+            return Ok(None);
+        }
+        let text = end.captured_texts().map(|t| t.concat()).unwrap_or_default();
+        Ok((!text.trim().is_empty()).then_some(text))
+    }
+
+    /// Add an auxiliary call's provider usage to the turn's totals (52 §7.2):
+    /// not `state.used` nor the cache baseline, which meter the main frame.
+    fn account(&mut self, end: &StreamEnd) {
+        let Some(u) = &end.captured_usage else { return };
+        let n = |v: Option<i32>| v.unwrap_or(0).max(0) as u32;
+        self.usage.prompt += n(u.prompt_tokens);
+        self.usage.completion += n(u.completion_tokens);
+        self.usage.cached += n(u
+            .prompt_tokens_details
+            .as_ref()
+            .and_then(|d| d.cached_tokens));
+    }
+
+    // endregion: --- Vision fallback
+}
+
+/// Whether `m` carries an image a text-only model cannot receive (user
+/// binary or tool-response image; PDFs have their own path, 52 §4.2).
+fn has_images(m: &ChatMessage) -> bool {
+    m.content.iter().any(|p| match p {
+        ContentPart::Binary(b) => !b.is_pdf(),
+        ContentPart::ToolResponse(r) => r.images.iter().any(|b| !b.is_pdf()),
+        _ => false,
+    })
+}
+
+/// The conversation/cache id of a session's auxiliary calls (52 §5.2): a
+/// stable derivative of the live id, never the live id itself, so Cursor's
+/// conversation and the OpenAI-like cache namespace stay distinct.
+fn aux_conversation(session: SessionId) -> SessionId {
+    let hash = sha2::Sha256::new()
+        .chain_update(b"vision:")
+        .chain_update(session.0.as_bytes())
+        .finalize();
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&hash[..16]);
+    SessionId(Uuid::from_bytes(bytes))
 }
 
 /// The user message for one input: text, then one `Binary` part per file
@@ -4140,6 +4522,7 @@ mod tests {
             None,
             state,
             Arc::new(AgentConfig::default()),
+            Arc::default(),
             Arc::default(),
             Arc::default(),
             store.clone(),
@@ -4655,6 +5038,7 @@ mod tests {
             Arc::new(AgentConfig::default()),
             Arc::default(),
             Arc::default(),
+            Arc::default(),
             store.clone(),
             Client::new().unwrap(),
             Auth::stub(&dir),
@@ -4711,6 +5095,170 @@ mod tests {
 
         // No assistant text yet: the turn's result is empty, not a stale row.
         assert_eq!(turn.result_text(), "");
+        drop(turn);
+        drop(store);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 52 §4.1/§5.1/§5.3: preparation is a no-op for a main model that sees
+    /// images (nothing read, nothing appended, live rows); a text-only main
+    /// without a fallback indexes the image, projects it to its stable marker
+    /// and says so once per turn with an untyped note; a switch to a vision
+    /// model before a group is dispatched stops preparation; a committed
+    /// failure keeps the image pending for a later turn while this turn's
+    /// failure set leaves nothing to consult; a committed answer removes it
+    /// from `pending` at the next snapshot and the marker stays put.
+    #[tokio::test]
+    async fn prepare_images_branches_on_vision_and_projects_text_only_frames() {
+        let dir = std::env::temp_dir().join(format!("wth-vision-{}", Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open(&dir.join("sessions.sqlite")).await.unwrap();
+        let id = SessionId::new();
+        store.create_session(id, "m", None, None).await.unwrap();
+        let shot = Binary::from_base64("image/png", "AAAA", Some("shot.png".into()));
+        let user = ChatMessage::user(MessageContent::from_parts(vec![
+            ContentPart::Text("look".into()),
+            ContentPart::Binary(shot),
+        ]));
+        store.append(id, &user).await.unwrap();
+        store
+            .append(id, &ChatMessage::assistant("a1"))
+            .await
+            .unwrap();
+        let (epoch, head, history) = store.frame(id).await.unwrap();
+        let text_only = Resolved {
+            id: "m".into(),
+            genai: "m".into(),
+            provider: None,
+            model: None,
+        };
+        let eyes = Resolved {
+            id: "anthropic/claude-sonnet-4-5".into(),
+            genai: "anthropic::claude-sonnet-4-5".into(),
+            provider: Some("anthropic".into()),
+            model: Some(models::Model {
+                id: "claude-sonnet-4-5".into(),
+                name: "Sonnet".into(),
+                limit: models::Limit {
+                    context: 200_000,
+                    output: 8_192,
+                },
+                cost: None,
+                reasoning: false,
+                tool_call: true,
+                image: true,
+                reasoning_options: vec![],
+            }),
+        };
+        let vision_model: Arc<RwLock<Option<Resolved>>> = Arc::default();
+        let mut session = Session::new(
+            id,
+            0,
+            (text_only.clone(), None),
+            None,
+            SessionState::resume(epoch, head, history),
+            Arc::new(AgentConfig::default()),
+            Arc::default(),
+            Arc::default(),
+            vision_model.clone(),
+            store.clone(),
+            Client::new().unwrap(),
+            Auth::stub(&dir),
+            Runtime::new(figment::Figment::new(), dir.clone()),
+            Arc::new(models::Catalog::load(&dir)),
+            None,
+            Arc::new(Semaphore::new(1)),
+        );
+        let mut turn = Turn::new(
+            session.shared.clone(),
+            Some(TurnId::new()),
+            CancellationToken::new(),
+            session.state.take().unwrap(),
+        );
+        let seeing = Current::new(eyes.clone(), None, &turn.shared.client, &turn.shared.auth);
+        let blind = turn.model();
+        assert!(seeing.vision() && !blind.vision());
+
+        // (a) The main model sees images: no index, nothing appended, live rows.
+        let images = turn.prepare_images(&seeing).await.unwrap();
+        assert!(images.is_empty());
+        assert_eq!(turn.state.history.len(), 2);
+        let (head, msgs) = turn.projected(&images);
+        assert!(head.is_none());
+        assert_eq!(msgs[0].content.binaries().len(), 1);
+
+        // (b) Text-only, no fallback: indexed, projected to its marker, one
+        // untyped notice per turn (a plain row marks nothing).
+        let images = turn.prepare_images(&blind).await.unwrap();
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].source.reference(), "m0.p1");
+        assert_eq!(turn.state.history.len(), 3);
+        let notice = text_of(&turn.state.history[2].1.content);
+        assert!(
+            notice.starts_with("<vision>")
+                && notice.contains("m0.p1")
+                && notice.contains("no vision fallback"),
+            "{notice}"
+        );
+        assert!(store.vision_notes(id).await.unwrap().is_empty());
+        let (_, msgs) = turn.projected(&images);
+        assert!(msgs[0].content.binaries().is_empty());
+        assert!(text_of(&msgs[0].content).contains(&images[0].marker()));
+        assert_eq!(turn.prepare_images(&blind).await.unwrap().len(), 1);
+        assert_eq!(turn.state.history.len(), 3, "one notice per turn");
+
+        // (c) Fallback set, but the live model can see now: no dispatch, no note.
+        *vision_model.write().unwrap_or_else(|p| p.into_inner()) = Some(eyes.clone());
+        *turn.shared.model.lock().unwrap_or_else(|p| p.into_inner()) = seeing.clone();
+        assert_eq!(turn.prepare_images(&blind).await.unwrap().len(), 1);
+        assert_eq!(turn.state.history.len(), 3);
+        *turn.shared.model.lock().unwrap_or_else(|p| p.into_inner()) = blind.clone();
+
+        // (d) A committed failure keeps the image pending for a later turn;
+        // this turn's failure set leaves nothing to consult (no call is made).
+        let src = images[0].source.clone();
+        let outcome = |status, text: &str| vision::Outcome {
+            source: src.clone(),
+            status,
+            text: text.into(),
+        };
+        let (msg, note) = vision::note(
+            &text_only.id,
+            &eyes.id,
+            Some("q"),
+            &[outcome(VisionStatus::Failed, "timed out")],
+        );
+        let seq = store.append_vision(id, &msg, &note).await.unwrap();
+        turn.state.history.push((seq, msg));
+        let vf = store.vision_frame(id).await.unwrap();
+        assert_eq!(vision::pending(&vf.images, &vf.notes).len(), 1);
+        turn.vision_failed.insert(src.clone());
+        assert_eq!(turn.prepare_images(&blind).await.unwrap().len(), 1);
+        assert_eq!(turn.state.history.len(), 4);
+
+        // (e) A committed answer: nothing pending at the next snapshot, the
+        // marker stays, the observation is in the frame.
+        turn.vision_failed.clear();
+        let (msg, note) = vision::note(
+            &text_only.id,
+            &eyes.id,
+            Some("q"),
+            &[outcome(VisionStatus::Answered, "a red button")],
+        );
+        let seq = store.append_vision(id, &msg, &note).await.unwrap();
+        turn.state.history.push((seq, msg));
+        let vf = store.vision_frame(id).await.unwrap();
+        assert!(vision::pending(&vf.images, &vf.notes).is_empty());
+        let images = turn.prepare_images(&blind).await.unwrap();
+        assert_eq!((images.len(), turn.state.history.len()), (1, 5));
+        let (_, msgs) = turn.projected(&images);
+        assert!(msgs[0].content.binaries().is_empty());
+        assert!(text_of(&msgs[0].content).contains(&images[0].marker()));
+        assert!(text_of(&msgs[4].content).contains("a red button"));
+
+        // Auxiliary calls never reuse the live conversation id.
+        assert_ne!(aux_conversation(id), id);
+        assert_eq!(aux_conversation(id), aux_conversation(id));
         drop(turn);
         drop(store);
         std::fs::remove_dir_all(&dir).ok();

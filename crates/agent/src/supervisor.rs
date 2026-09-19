@@ -492,6 +492,7 @@ impl Agents {
             self.cfg.clone(),
             self.compact_style.clone(),
             self.title_model.clone(),
+            self.vision_model.clone(),
             self.store.clone(),
             self.client.clone(),
             self.auth.clone(),
@@ -4606,6 +4607,8 @@ fn render(
                     turn: opens.then_some(*seq),
                     context: context.cloned(),
                     peer: None,
+                    // 52 §6: the consultation card renders from the typed metadata.
+                    vision: context.and_then(|c| c.vision.clone()),
                 },
             )),
             ChatRole::Assistant => {
@@ -5530,6 +5533,7 @@ pub(crate) mod tests {
                     vec![att(msg(0), 1, None), att(msg(0), 2, None)],
                 ),
                 peer: None,
+                vision: None,
             },
             HistoryEntry::Tool {
                 call_id: "c1".into(),
@@ -5589,6 +5593,7 @@ pub(crate) mod tests {
             turn: None,
             context: None,
             peer: None,
+            vision: None,
         };
         let tool = |id: &str, result| HistoryEntry::Tool {
             call_id: id.into(),
@@ -5642,6 +5647,7 @@ pub(crate) mod tests {
             turn: None,
             context: None,
             peer: None,
+            vision: None,
         };
         let tool = |id: &str| HistoryEntry::Tool {
             call_id: id.into(),

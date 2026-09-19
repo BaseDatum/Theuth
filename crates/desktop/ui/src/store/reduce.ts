@@ -3,11 +3,10 @@ import { resultLine } from "@/lib/describe";
 import { classify, type Injected } from "@/lib/injected";
 import { pushChunk } from "@/lib/jobTail";
 import type { ContextEntry } from "@/rpc/bindings/ContextEntry";
-import type { HistoryEntry } from "@/rpc/bindings/HistoryEntry";
 import type { PeerOrigin } from "@/rpc/bindings/PeerOrigin";
 import type { TodoSnapshot } from "@/rpc/bindings/TodoSnapshot";
 import type { WireEvent } from "@/rpc/events";
-import type { AgentInfo, AppCallChanged } from "@/rpc/extra";
+import type { AgentInfo, AppCallChanged, HistoryEntry } from "@/rpc/extra";
 import type { AppDraft, Entry, JobTail, SessionSlice } from "./sessions";
 
 /** What the reducer needs beside the slice: texts we sent, to skip their echo. */
@@ -292,7 +291,22 @@ function peerEntry(origin: PeerOrigin, text: string, seq?: number, context?: Con
 export function fromHistory(h: HistoryEntry): Entry[] {
   const context = h.context ?? undefined;
   switch (h.role) {
-    case "user":
+    case "user": {
+      // 52 §6: the typed metadata, never the `<vision_observation>` prose, makes a row a consultation note.
+      const vision = h.vision ?? context?.vision;
+      if (vision)
+        return [
+          {
+            id: nextId(),
+            kind: "vision",
+            model: vision.vision_model,
+            sources: vision.observations.map((o) => o.source),
+            note: vision,
+            text: h.text,
+            seq: context?.target.kind === "message" ? context.target.seq : undefined,
+            context,
+          },
+        ];
       if (h.peer)
         return [peerEntry(h.peer, peerBody(h.text), undefined, context)];
       return userEntries(
@@ -302,6 +316,7 @@ export function fromHistory(h: HistoryEntry): Entry[] {
         h.turn ?? undefined,
         context,
       );
+    }
     case "assistant":
       return h.text.trim()
         ? [
@@ -365,6 +380,8 @@ function signature(e: Entry): string {
       return e.origin ? `p${e.origin.id}` : `p${e.from}\n${e.text}`;
     case "harness":
       return `h${e.notice}\n${e.text}`;
+    case "vision":
+      return e.seq === undefined ? `v${e.model}\n${e.text}` : `v${e.seq}`;
     case "user":
     case "assistant":
       return `${e.kind[0]}${e.turn ?? ""}\n${e.text}`;
@@ -841,6 +858,32 @@ function turn(
           text: `knowledge +${e.added} ~${e.updated}`,
         },
       );
+    // 52 §6: the consultation's status line while it runs; its committed note becomes a card once it ends. The live
+    // card knows the sources and the model only; the settled reload supplies the body text and per-source statuses.
+    case "VisionProgress": {
+      if (e.stage === "questioning")
+        return { ...s, activity: "vision", visionStatus: `asking ${e.model} what to look for…` };
+      if (e.stage === "inspecting") {
+        const n = e.sources.length;
+        return {
+          ...s,
+          activity: "vision",
+          visionStatus: `${e.model} inspecting ${n} image${n === 1 ? "" : "s"}…`,
+        };
+      }
+      return interject(
+        { ...s, activity: idle, visionStatus: undefined },
+        {
+          id: nextId(),
+          kind: "vision",
+          model: e.model,
+          sources: e.sources,
+          text: "",
+          seq: e.seq ?? undefined,
+          ...(e.stage === "failed" ? { failed: true } : {}),
+        },
+      );
+    }
     default:
       return undefined;
   }

@@ -95,6 +95,11 @@ export function Composer({
     queryKey: queryKeys.models,
     queryFn: () => api.list_models(),
   })
+  // 52 §3.2: what happens to an image the main model cannot see; the server stays authoritative when this is stale.
+  const { data: visionModel } = useQuery({
+    queryKey: queryKeys.visionModel,
+    queryFn: () => api.vision_model(),
+  })
   const [text, setText] = useState('')
   const [pastes, setPastes] = useState<Pastes>(NONE)
   const [selected, setSelected] = useState(0)
@@ -137,7 +142,11 @@ export function Composer({
     const id = model ?? defaultModel
     const info = models?.find((m) => m.id === id)
     if (info && !info.image && paths.some((p) => IMAGE.test(p)))
-      toast.warning(`${info.name} does not accept images`)
+      toast.warning(
+        visionModel
+          ? `${info.name} does not accept images; ${visionModel.id} will inspect them`
+          : `${info.name} does not accept images; they will be omitted unless a vision fallback is set (/vision)`,
+      )
   }
 
   // Uploads `blobs` through `put_attachment` (31 §9), then attaches the harness paths; image dims for the first image.

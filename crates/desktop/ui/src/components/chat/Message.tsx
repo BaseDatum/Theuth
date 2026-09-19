@@ -12,6 +12,7 @@ import { MessagePeer } from './MessagePeer'
 import { MessageReasoning } from './MessageReasoning'
 import { MessageTool } from './MessageTool'
 import { MessageUser } from './MessageUser'
+import { MessageVision } from './MessageVision'
 import { SecretRequestCard } from './SecretRequestCard'
 
 /** `readOnly`: an archive/inspection rendering (search's Earlier messages page): no turn, fork or context-removal controls. */
@@ -29,6 +30,8 @@ function body(entry: Entry, session: string, readOnly?: boolean) {
       return <MessagePeer from={entry.from} text={entry.text} origin={entry.origin} seq={entry.seq} session={session} />
     case 'harness':
       return <HarnessNotice notice={entry.notice} text={entry.text} />
+    case 'vision':
+      return <MessageVision entry={entry} />
     case 'info':
       return <MessageInfo text={entry.text} />
     case 'error':
@@ -73,6 +76,8 @@ function describe(entry: Entry): string {
       return HARNESS_NOTICES[entry.notice].title;
     case 'compacted':
       return 'summary'
+    case 'vision':
+      return `vision observation · ${entry.model}`
     default:
       return 'message'
   }
@@ -152,7 +157,7 @@ export const Message = memo(function Message({
   const card =
     entry.context?.removed ? (
       <Tombstone entry={entry} session={session} readOnly={readOnly} reveal={reveal} />
-    ) : !readOnly && (entry.kind === 'tool' || entry.kind === 'peer' || entry.kind === 'harness') ? (
+    ) : !readOnly && (entry.kind === 'tool' || entry.kind === 'peer' || entry.kind === 'harness' || entry.kind === 'vision') ? (
       <Card entry={entry} session={session}>
         {body(entry, session)}
       </Card>

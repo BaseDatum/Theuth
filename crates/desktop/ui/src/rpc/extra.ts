@@ -8,6 +8,10 @@ import type { CommunicationState } from '@/rpc/bindings/CommunicationState'
 import type { Kind } from '@/rpc/bindings/Kind'
 import type { Loaded } from '@/rpc/bindings/Loaded'
 import type { SessionId } from '@/rpc/bindings/SessionId'
+import type { HistoryEntry as BoundHistory } from '@/rpc/bindings/HistoryEntry'
+import type { TurnId } from '@/rpc/bindings/TurnId'
+import type { VisionNote } from '@/rpc/bindings/VisionNote'
+import type { VisionSource } from '@/rpc/bindings/VisionSource'
 
 /** `info()`: what the TUI reads from config in-process. */
 export type Info = {
@@ -93,6 +97,31 @@ export type SessionDeleted = {
   type: 'SessionDeleted'
   session: SessionId
 }
+
+/** 52 §6: consultation metadata (`agent::vision`), generated bindings re-exported so callers import one module. */
+export type { VisionNote, VisionSource }
+export type { VisionObservation } from '@/rpc/bindings/VisionObservation'
+export type { VisionStatus } from '@/rpc/bindings/VisionStatus'
+
+/** `agent::VisionStage` (`#[serde(rename_all = "snake_case")]`): where a consultation is. */
+export type VisionStage = 'questioning' | 'inspecting' | 'completed' | 'failed'
+
+/** `AgentEvent::VisionProgress` (52 §6): `questioning` names the main model, `inspecting` the fallback; the terminal
+ * stages carry the `seq` of the committed note row. No prompts or payloads. */
+export type VisionProgress = {
+  type: 'VisionProgress'
+  session: SessionId
+  turn: TurnId | null
+  stage: VisionStage
+  model: string
+  sources: VisionSource[]
+  seq: number | null
+}
+
+/** `HistoryEntry` with `User.vision` (52 §6): the typed note of a consultation row, absent on ordinary input. */
+export type HistoryEntry =
+  | Exclude<BoundHistory, { role: 'user' }>
+  | (Extract<BoundHistory, { role: 'user' }> & { vision?: VisionNote | null })
 
 /** `artifact::Kind` (35 §3.2, 46 §3): the generated binding; `app` is an OpenUI screen. */
 export type { Kind }

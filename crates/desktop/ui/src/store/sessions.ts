@@ -14,6 +14,8 @@ import type {
   AppCallChanged,
   Artifact,
   LoadedPage,
+  VisionNote,
+  VisionSource,
 } from "@/rpc/extra";
 import {
   adopt,
@@ -106,6 +108,18 @@ export type Entry = { id: string; context?: ContextEntry } & (
       seq?: number;
     }
   | Extract<Injected, { kind: 'harness' }>
+  /** A vision consultation note (52 §6): a stored user-role row, never a `you` bubble. `text` is the row body
+   * (`<vision_observation>…`), empty for a live card until the settled reload; `note` is the typed metadata,
+   * absent live. `failed` marks a live `VisionProgress` failure whose per-source statuses are not known yet. */
+  | {
+      kind: "vision";
+      model: string;
+      sources: VisionSource[];
+      note?: VisionNote;
+      text: string;
+      seq?: number;
+      failed?: boolean;
+    }
   | { kind: "info"; text: string }
   | { kind: "error"; text: string }
   | { kind: "compacted"; epoch: number; style: CompactStyle; summary?: string }
@@ -119,7 +133,8 @@ export type Activity =
   | "reasoning"
   | "tool"
   | "compacting"
-  | "harvesting";
+  | "harvesting"
+  | "vision";
 
 /** Everything the transcript and sidebar need for one session. */
 export type SessionSlice = {
@@ -129,6 +144,8 @@ export type SessionSlice = {
   /** Turn started, no delta yet. */
   waiting: boolean;
   activity: Activity;
+  /** Status line while `activity === 'vision'` (52 §6): which model is asking or inspecting how many images. */
+  visionStatus?: string;
   model?: string;
   effort?: string | null;
   usage?: Usage;
