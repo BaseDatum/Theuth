@@ -101,8 +101,14 @@ impl Backend {
                     .into(),
                     None => resolved.genai.as_str().into(),
                 };
+                // The catalog's output limit is the request's `max_tokens`; genai's
+                // per-adapter guesses are wrong for new ids (Bedrock falls back to 4096).
+                let mut opts = opts.clone();
+                if let Some(m) = &resolved.model {
+                    opts = opts.with_max_tokens(m.limit.output);
+                }
                 client
-                    .exec_chat_stream(spec, req, Some(opts))
+                    .exec_chat_stream(spec, req, Some(&opts))
                     .await
                     .map(|r| -> EventStream {
                         Box::pin(r.stream.map(|ev| ev.map_err(provider_error)))
