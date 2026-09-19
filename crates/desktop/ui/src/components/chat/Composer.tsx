@@ -16,6 +16,7 @@ import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Textarea } from '@/components/ui/textarea'
 import { extFor, putAttachment } from '@/lib/files'
+import { usePanes } from '@/lib/panes'
 import { attach, expand, type Pastes, prune, token, tokenize } from '@/lib/pastes'
 import { container, touch } from '@/lib/platform'
 import { VIEW, isPrivate, usePrivate } from '@/lib/private'
@@ -128,11 +129,14 @@ export function Composer({
   const slash = slashWord !== null && matches(slashWord).length > 0
   const files = [...pastes.values()].flatMap((p) => (p.kind === 'file' ? [p.path] : []))
 
+  // ⇧Esc lands in the focused pane's composer (or the new-chat draft).
+  const focused = usePanes((s) => session === null || s.focused === session)
   useEffect(() => {
+    if (!focused) return
     const focus = () => ref.current?.focus()
     window.addEventListener('wth:focus-composer', focus)
     return () => window.removeEventListener('wth:focus-composer', focus)
-  }, [])
+  }, [focused])
 
   const insert = (s: string) => {
     const ta = ref.current

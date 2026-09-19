@@ -23,6 +23,7 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { useSessionDrag } from '@/components/chat/Panes'
 import { useProjects } from '@/components/chat/ProjectPicker'
 import { parseNote } from '@/lib/voice-note'
 import { Input } from '@/components/ui/input'
@@ -104,6 +105,7 @@ export const SessionItem = memo(function SessionItem({
   const raw = live || title || id.slice(0, 8)
   // A session opened by a voice note is titled from its input; the `[voice note, N s]` marker is not a title (45 §7.4).
   const shown = parseNote(raw)?.body || raw
+  const drag = useSessionDrag(id, shown)
   // Inline editor: the title, or the name of a new project.
   const [editing, setEditing] = useState<{ field: 'title' | 'project'; value: string } | null>(null)
   const [confirming, setConfirming] = useState(false)
@@ -177,6 +179,7 @@ export const SessionItem = memo(function SessionItem({
               to="/c/$session"
               params={{ session: id }}
               title={shown}
+              {...drag}
               onClick={(e) => {
                 if (!touch() && (selecting || e.metaKey || e.shiftKey)) {
                   e.preventDefault()

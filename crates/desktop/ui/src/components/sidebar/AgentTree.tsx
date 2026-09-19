@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { memo, useEffect, useState } from 'react'
+import { useSessionDrag } from '@/components/chat/Panes'
 import { costLines, formatMoney } from '@/lib/money'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
@@ -39,10 +40,12 @@ const Row = memo(function Row({
   /** The child's inclusive total from the root's `session_cost` (51 §6.5); unknown for deeper rows. */
   cost: CostBucket | undefined
 }) {
+  const drag = useSessionDrag(row.id, row.name)
   return (
     <Link
       to="/c/$session"
       params={{ session: row.id }}
+      {...drag}
       className={cn(
         'flex h-7 items-center gap-1.5 rounded-md pr-2 text-xs text-fg-secondary hover:bg-sidebar-accent',
         active && 'bg-sidebar-accent font-medium text-foreground',

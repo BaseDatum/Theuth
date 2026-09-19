@@ -10,6 +10,7 @@ import { PairScreen } from '@/components/link/PairScreen'
 import { Toaster } from '@/components/ui/sonner'
 import { describe } from '@/lib/describe'
 import { notifyIfHidden, primeNotifications } from '@/lib/notify'
+import { leaves, usePanes } from '@/lib/panes'
 import { container } from '@/lib/platform'
 import { usePrivateOwner } from '@/lib/private'
 import { queryKeys, useInvalidateOn } from '@/lib/rpc'
@@ -220,6 +221,13 @@ function useTauri(): void {
   }, [])
 }
 
+/** `session` is on screen: the URL's chat, or any pane split beside it. */
+function visible(session: string): boolean {
+  if (router.state.location.pathname === `/c/${session}`) return true
+  const { root } = usePanes.getState()
+  return root !== null && leaves(root).includes(session)
+}
+
 /** 25 §4.5 notifications, the `Lagged` reload and the tray badge; per active harness. */
 function useEventSideEffects(st: Stores): void {
   const qc = useQueryClient()
@@ -234,7 +242,7 @@ function useEventSideEffects(st: Stores): void {
         (e) => void notifyIfHidden(`Approval: ${e.tool}`, describe(e.tool, e.args).join('\n')),
       ),
       on('TurnFinished', (e) => {
-        if (router.state.location.pathname === `/c/${e.session}`) return
+        if (visible(e.session)) return
         const slice = st.sessions.getState().sessions[e.session]
         const summary = qc
           .getQueryData<SessionSummary[]>(queryKeys.sessions)
@@ -243,8 +251,11 @@ function useEventSideEffects(st: Stores): void {
         void notifyIfHidden('Turn finished', slice?.title ?? summary?.title ?? '')
       }),
       on('BrowserShowLive', (e) => {
-        if (router.state.location.pathname !== `/c/${e.session}`)
-          router.history.push(`/c/${e.session}`)
+        if (!visible(e.session)) router.history.push(`/c/${e.session}`)
+      }),
+      on('SessionDeleted', (e) => {
+        const to = usePanes.getState().close(e.session)
+        if (to) router.history.push(`/c/${to}`)
       }),
       st.approvals.subscribe((s, prev) => {
         if (container() !== 'macos' || s.pending.length === prev.pending.length) return
@@ -353,6 +364,8 @@ export function App() {
       const { pathname, href } = router.state.location
       if (pathname.startsWith('/c/')) lastChat.set(shown.current, href)
       else lastChat.delete(shown.current)
+      // Panes name sessions of the harness being left.
+      usePanes.setState({ root: null, focused: null, drag: null })
       router.history.push(lastChat.get(active) ?? '/')
     }
     shown.current = active

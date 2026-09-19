@@ -1,14 +1,16 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Composer } from '@/components/chat/Composer'
 import { Header } from '@/components/chat/Header'
 import { lastCode } from '@/components/chat/MessageAssistant'
+import { Panes } from '@/components/chat/Panes'
 import { SearchSession } from '@/components/chat/SearchSession'
 import { TodoCard } from '@/components/chat/TodoCard'
 import { Transcript } from '@/components/chat/Transcript'
 import { SearchReturn } from '@/components/sidebar/SearchReturn'
+import { usePanes } from '@/lib/panes'
 import { disconnectText, inTree, remaining, resumed, usePrivate } from '@/lib/private'
 import { useApi } from '@/lib/rpc'
 import { type SearchDestination, isSearchDestination, useSearchOrigin } from '@/lib/search'
@@ -34,18 +36,24 @@ const fail = (e: unknown) => toast.error(e instanceof Error ? e.message : String
 type ReloadDetail = { session?: string; settled?: boolean }
 
 /** One chat. With a validated `seq` the route is the read-only Earlier messages inspection ending at that message (49 §7),
- * keyed so another target remounts it; otherwise the live chat. The live tree is not mounted under `seq`, so nothing
- * loads or appends to the canonical tail behind the preview. */
+ * keyed so another target remounts it; otherwise the live chat, tiled with any other panes the user split off. The live
+ * tree is not mounted under `seq`, so nothing loads or appends to the canonical tail behind the preview. */
 function SessionRoute() {
   const { session } = Route.useParams()
   const { seq } = Route.useSearch()
+  // The URL names the focused pane: a sidebar click lands in it, a pane press moves the URL to it.
+  useEffect(() => usePanes.getState().show(session), [session])
   if (seq !== undefined) return <SearchSession key={`${session}:${seq}`} session={session} seq={seq} />
-  return <LiveSession session={session} />
+  return <Panes session={session} render={(id, first) => <LiveSession session={id} first={first} />} />
 }
 
-/** Header, transcript, todo card, composer. Loads the newest page and the agent subtree on first visit; events keep both live. */
-function LiveSession({ session }: { session: string }) {
+/** Header, transcript, todo card, composer. Loads the newest page and the agent subtree on first visit; events keep both live.
+ * `first`: the top-left pane, the only one that inserts the sidebar toggle and macOS traffic-light inset. */
+function LiveSession({ session, first }: { session: string; first: boolean }) {
   const api = useApi()
+  const navigate = useNavigate()
+  const focused = usePanes((s) => s.focused) === session
+  const split = usePanes((s) => s.root !== null)
   // The harness this route mounted under: an RPC landing after a switch writes to its own stores, never the new harness's (48 §5).
   const { sessions: store } = useScope()
   const title = useSessionField(session, 'title')
@@ -56,8 +64,8 @@ function LiveSession({ session }: { session: string }) {
   const fromSearch = isSearchDestination(origin, destination)
 
   useEffect(() => {
-    document.title = `${title ?? ''}${running ? ' ·' : ''}`
-  }, [title, running])
+    if (focused) document.title = `${title ?? ''}${running ? ' ·' : ''}`
+  }, [title, running, focused])
 
   // The plan (47 §5.4): one `get_todos` when the page carried none (an older harness, a refused read) or a gap
   // marked it stale. `setTodos` only moves forward, so a cached list is never wiped; a failed read leaves the
@@ -159,7 +167,9 @@ function LiveSession({ session }: { session: string }) {
     }
   }, [load, settle, session])
 
+  // ⇧⌘C / ⇧⌘; address the focused pane only.
   useEffect(() => {
+    if (!focused) return
     const last = () => store.getState().sessions[session]?.entries.findLast((e) => e.kind === 'assistant')
     const response = () => {
       const e = last()
@@ -176,12 +186,17 @@ function LiveSession({ session }: { session: string }) {
       window.removeEventListener('wth:copy-last-response', response)
       window.removeEventListener('wth:copy-last-code', code)
     }
-  }, [session, store])
+  }, [session, store, focused])
+
+  const close = () => {
+    const to = usePanes.getState().close(session)
+    if (to) void navigate({ to: '/c/$session', params: { session: to } })
+  }
 
   // Keyed so refs/drafts reset per session; the keys must differ between siblings.
   return (
     <>
-      <Header session={session} />
+      <Header session={session} first={first} onClose={split ? close : undefined} />
       <PrivateStrip session={session} />
       {fromSearch && (
         <div className="mx-auto flex w-full shrink-0 justify-end md:max-w-[768px] px-4">

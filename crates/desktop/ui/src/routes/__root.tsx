@@ -1,5 +1,6 @@
 import { Outlet, createRootRoute, useNavigate, useParams } from '@tanstack/react-router'
 import { type CSSProperties, useEffect, useState } from 'react'
+import { DragOverlay } from '@/components/chat/Panes'
 import { settings } from '@/components/chat/slash'
 import { AppSidebar } from '@/components/sidebar/AppSidebar'
 import { SearchDialog } from '@/components/sidebar/SearchDialog'
@@ -36,6 +37,7 @@ function Root() {
     <SidebarProvider open={open} onOpenChange={setOpen} style={WIDTH} className="h-band min-h-0">
       <AppSidebar session={session} />
       <SearchHost />
+      <DragOverlay />
       <SidebarInset className="min-h-0 overflow-hidden pt-[var(--safe-top)] pr-[var(--safe-right)] pb-[var(--safe-bottom)] pl-[var(--safe-left)]">
         <Outlet />
       </SidebarInset>

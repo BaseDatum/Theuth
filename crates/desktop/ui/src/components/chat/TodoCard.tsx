@@ -1,6 +1,7 @@
 import { ChevronRight } from 'lucide-react'
 import { useEffect } from 'react'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
+import { usePanes } from '@/lib/panes'
 import { cn } from '@/lib/utils'
 import type { Todo } from '@/rpc/bindings/Todo'
 import type { TodoSnapshot } from '@/rpc/bindings/TodoSnapshot'
@@ -57,8 +58,10 @@ export function TodoCard({ session }: { session: string }) {
   const stale = useSessionField(session, 'todosStale') ?? false
   const expanded = useSessionField(session, 'todosExpanded') ?? false
 
-  // `/todos` toggles the disclosure without moving focus (the composer keeps it).
+  // `/todos` toggles the disclosure without moving focus (the composer keeps it); only in the pane that typed it.
+  const focused = usePanes((s) => s.focused === session)
   useEffect(() => {
+    if (!focused) return
     const on = (e: Event) => {
       if (surfaceOf(e) !== 'todos') return
       const { sessions, setTodosExpanded } = store.getState()
@@ -66,7 +69,7 @@ export function TodoCard({ session }: { session: string }) {
     }
     window.addEventListener('wth:open', on)
     return () => window.removeEventListener('wth:open', on)
-  }, [session, store])
+  }, [session, store, focused])
 
   if (!todos?.items.length) {
     const text = note(todos, stale)

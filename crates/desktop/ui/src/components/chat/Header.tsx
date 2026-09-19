@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { Globe, PanelLeft, ShieldOff } from 'lucide-react'
+import { Globe, PanelLeft, ShieldOff, X } from 'lucide-react'
 import { useState } from 'react'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
 import { Badge } from '@/components/ui/badge'
@@ -69,15 +69,21 @@ function Artifacts({ session }: { session: string }) {
   )
 }
 
-/** 52 px bar over the column: model on the left, context / approvals / session menu on the right. Draggable window region. */
+/** 52 px bar over the column: model on the left, context / approvals / session menu on the right. Draggable window region.
+ * `first` (default): this column touches the window's top-left, so it carries the sidebar toggle and the traffic-light
+ * inset; `onClose` adds a close control for a split pane. */
 export function Header({
   session,
   draftEffort,
   onDraftEffort,
+  first = true,
+  onClose,
 }: {
   session: string | null
   draftEffort?: string | null
   onDraftEffort?(effort: string | null): void
+  first?: boolean
+  onClose?(): void
 }) {
   const { open, isMobile } = useSidebar()
   const info = useConnection((s) => s.info)
@@ -91,9 +97,9 @@ export function Header({
   return (
     <header
       data-tauri-drag-region={mac || undefined}
-      className={cn('flex h-[52px] shrink-0 items-center gap-2 px-3', !open && mac && 'pl-20')}
+      className={cn('flex h-[52px] shrink-0 items-center gap-2 px-3', first && !open && mac && 'pl-20')}
     >
-      {(!open || isMobile) && (
+      {first && (!open || isMobile) && (
         <div className="flex shrink-0 items-center">
           <SearchTrigger />
           <SidebarToggle />
@@ -137,6 +143,11 @@ export function Header({
         </Button>
       )}
       {session && <SessionMenu session={session} />}
+      {onClose && (
+        <Button variant="ghost" size="icon" className="rounded-lg text-fg-secondary" aria-label="Close pane" onClick={onClose}>
+          <X className="size-5" />
+        </Button>
+      )}
       <ApprovalsSheet open={sheet} onOpenChange={setSheet} />
       {session && (
         <BrowserLive

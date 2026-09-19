@@ -13,6 +13,7 @@ import {
   CommandSeparator,
 } from '@/components/ui/command'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { usePanes } from '@/lib/panes'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { useConnection } from '@/store/connection'
 import { useSessionField } from '@/store/sessions'
@@ -43,11 +44,13 @@ export function ModelMenu({
   const current = models.find((m) => m.id === model)
   const [open, setOpen] = useState(false)
 
+  const focused = usePanes((s) => session === null || s.focused === session)
   useEffect(() => {
+    if (!focused) return
     const on = (e: Event) => surfaceOf(e) === 'model' && setOpen(true)
     window.addEventListener('wth:open', on)
     return () => window.removeEventListener('wth:open', on)
-  }, [])
+  }, [focused])
 
   const setModel = async (id: string) => {
     setOpen(false)

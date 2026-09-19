@@ -15,6 +15,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
+import { leaves, usePanes } from '@/lib/panes'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { nextSelection, type SelectMode } from '@/lib/selection'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
@@ -53,13 +54,14 @@ function rootOf(sessions: SessionSummary[], id: string | undefined): string | un
 }
 
 /**
- * Pinned top-level sessions first, then the rest newest first with day-group headers; the active one's root is
- * followed by its agent tree. With any project set (51 §3), roots are bucketed by project in first-seen order of
- * that ordering, `Ungrouped` last, under collapsible project headers (`collapsed` holds project labels, `''` = ungrouped).
+ * Pinned top-level sessions first, then the rest newest first with day-group headers; the root of every open
+ * chat (the URL's and each split pane's) is followed by its agent tree. With any project set (51 §3), roots are
+ * bucketed by project in first-seen order of that ordering, `Ungrouped` last, under collapsible project headers
+ * (`collapsed` holds project labels, `''` = ungrouped).
  */
-export function buildRows(sessions: SessionSummary[], active: string | undefined, collapsed: ReadonlySet<string> = new Set()): Row[] {
+export function buildRows(sessions: SessionSummary[], open: readonly string[], collapsed: ReadonlySet<string> = new Set()): Row[] {
   const now = Date.now()
-  const root = rootOf(sessions, active)
+  const roots = new Set(open.map((id) => rootOf(sessions, id)))
   const rows: Row[] = []
   const top = sessions
     .filter((s) => s.parent === null)
@@ -85,7 +87,7 @@ export function buildRows(sessions: SessionSummary[], active: string | undefined
       const g = s.pinned ? 'Pinned' : group(s.updated_at, now)
       if (g !== label) rows.push({ key: `h:${project ?? ''}:${g}`, label: (label = g) })
       rows.push({ key: s.id, session: s })
-      if (s.id === root) rows.push({ key: `t:${s.id}`, tree: s.id })
+      if (roots.has(s.id)) rows.push({ key: `t:${s.id}`, tree: s.id })
     }
   }
   return rows
@@ -101,7 +103,9 @@ export function SessionList({ scrollEl, active }: { scrollEl: HTMLDivElement | n
   const navigate = useNavigate()
   const { data: sessions = [] } = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set())
-  const rows = useMemo(() => buildRows(sessions, active, collapsed), [sessions, active, collapsed])
+  const root = usePanes((s) => s.root)
+  const open = useMemo(() => (root ? leaves(root) : active ? [active] : []), [root, active])
+  const rows = useMemo(() => buildRows(sessions, open, collapsed), [sessions, open, collapsed])
   const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set())
   const [confirming, setConfirming] = useState(false)
   // Visible top-level order for ⇧-click ranges, and the range's start; refs so

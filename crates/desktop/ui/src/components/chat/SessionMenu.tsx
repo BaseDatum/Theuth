@@ -29,6 +29,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet'
+import { usePanes } from '@/lib/panes'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { CompactStyle } from '@/rpc/bindings/CompactStyle'
 import { useSessionField, useSessions } from '@/store/sessions'
@@ -199,14 +200,16 @@ export function SessionMenu({ session }: { session: string }) {
   const [rename, setRename] = useState(false)
   const [sheet, setSheet] = useState<Surface | null>(null)
 
+  const focused = usePanes((s) => s.focused === session)
   useEffect(() => {
+    if (!focused) return
     const on = (e: Event) => {
       const s = surfaceOf(e)
       if (s === 'prompt' || s === 'jobs') setSheet(s)
     }
     window.addEventListener('wth:open', on)
     return () => window.removeEventListener('wth:open', on)
-  }, [])
+  }, [focused])
 
   const ctx: Ctx = {
     api,
