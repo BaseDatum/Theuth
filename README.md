@@ -283,8 +283,9 @@ forgets one; `/skills` lists skills (⏎ hands one to the model, `s` shows it; `
 approval prompts for this session, `/approvals off always` for good
 (`tools.approvals` in config.yaml). Typing while the model works queues the
 message: it is shown under the response until it enters the context (after
-the current tool batch or when the turn ends), and `⌥↑` pulls the newest one
-back into the editor. Shift+Enter inserts a newline; PgUp/PgDn (or the
+the current tool batch or when the turn ends), `⌃↵`/`⌘↵` interjects instead
+(the turn is cancelled and the message starts the next one now), and `⌥↑`
+pulls the newest queued one back into the editor. Shift+Enter inserts a newline; PgUp/PgDn (or the
 wheel, ↑/↓) scroll the whole history — what you are reading stays put while
 a reply streams, PgDn to the bottom follows again; select
 text with the mouse to copy it (terminal-native). Images: **Ctrl+V** (not

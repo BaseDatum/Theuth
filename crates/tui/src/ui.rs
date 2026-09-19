@@ -451,7 +451,12 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             match code {
                 KeyCode::Enter => {
                     let line = std::mem::take(&mut *input.write());
-                    m.submit(&line, &commands);
+                    // Ctrl/Cmd+Enter (kitty-protocol terminals report both): interject instead of steer.
+                    if modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER) {
+                        m.submit_now(&line, &commands);
+                    } else {
+                        m.submit(&line, &commands);
+                    }
                 }
                 KeyCode::Esc if m.prompt.is_some() => m.cancel_prompt(),
                 // Cleared here, not via `recall`: the event loop only drains

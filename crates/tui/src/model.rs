@@ -290,7 +290,8 @@ pub enum Command {
         /// Attached image files (17 §2).
         files: Vec<PathBuf>,
     },
-    /// `steer`: queued until the current tool batch ends.
+    /// `steer`: queued until the current tool batch ends. `interject`: `cancel`
+    /// first (one task, so the order holds), and the queued text starts the next turn now.
     Steer {
         /// Target.
         session: SessionId,
@@ -300,6 +301,8 @@ pub enum Command {
         text: String,
         /// Attached image files (17 §2).
         files: Vec<PathBuf>,
+        /// Ctrl/Cmd+Enter: abort the in-flight turn before queueing.
+        interject: bool,
     },
     /// `withdraw`: take a steer back out of the queue.
     Withdraw {
@@ -5323,6 +5326,17 @@ impl Model {
 
     /// Handle a submitted input line: slash command or message.
     pub fn submit(&mut self, line: &str, tx: &UnboundedSender<Command>) {
+        self.submit_with(line, false, tx);
+    }
+
+    /// Ctrl/Cmd+Enter: like `submit`, but a mid-turn message interjects —
+    /// the turn is cancelled and the message starts the next one now. Slash
+    /// commands, prompt answers and idle sessions behave as `submit`.
+    pub fn submit_now(&mut self, line: &str, tx: &UnboundedSender<Command>) {
+        self.submit_with(line, true, tx);
+    }
+
+    fn submit_with(&mut self, line: &str, interject: bool, tx: &UnboundedSender<Command>) {
         let line = line.trim();
         // An empty note is an answer (keep / none); every other step waits for text.
         if line.is_empty() && !matches!(self.prompt, Some(Prompt::SecretNote { .. })) {
@@ -5597,6 +5611,7 @@ impl Model {
                                 id,
                                 text,
                                 files,
+                                interject,
                             },
                         );
                     }
@@ -12570,6 +12585,24 @@ mod tests {
             id: other,
         });
         assert!(m.queued.is_empty());
+    }
+
+    #[test]
+    fn interject_flags_the_steer_and_sends_idle_input_plainly() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::new("m".into(), true);
+        let s = SessionId::new();
+        m.session = Some(s);
+        m.streaming = true;
+        m.submit_now("stop, do Y instead", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::Steer { interject: true, .. })));
+        m.submit("also do X", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::Steer { interject: false, .. })));
+        // Idle: a plain send.
+        m.streaming = false;
+        m.submit_now("hello", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::Send { .. })));
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]

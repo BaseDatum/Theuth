@@ -75,7 +75,8 @@ function SlashList({
 
 /**
  * ChatGPT's composer: `+` attach on the left, send / stop on the right, Enter
- * sends, Shift+Enter breaks a line. Large pastes and attachments become
+ * sends (mid-turn: queues a steer), ⌘/Ctrl+Enter interjects (cancels the turn
+ * so the message runs now), Shift+Enter breaks a line. Large pastes and attachments become
  * `[⎘ …]` tokens (`lib/pastes`) expanded on submit. `/` at column 0 opens
  * the command list; other `/x` runs `use_skill`.
  */
@@ -251,8 +252,9 @@ export function Composer({
     },
   }
 
-  /** Send `spoken` (a `[voice note …]` line) or the textarea; a voice send enters voice mode, a typed one leaves it (45 §7.2). */
-  const submit = async (spoken?: string) => {
+  /** Send `spoken` (a `[voice note …]` line) or the textarea; a voice send enters voice mode, a typed one leaves it (45 §7.2).
+   * `interject` (⌘/Ctrl+Enter) mid-turn: cancel the turn, then queue; the queued message starts the next turn now. */
+  const submit = async (spoken?: string, interject = false) => {
     const line = spoken ?? text.trim()
     if (!line || busy) return
     setBusy(true)
@@ -270,6 +272,8 @@ export function Composer({
         const id = crypto.randomUUID()
         applyEvents([{ type: 'InputQueued', session, id, text: body }])
         mode(session)
+        // Cancel first: its epoch bump would stale a steer admitted before it (todo auto-continue).
+        if (interject) await api.cancel(session)
         await api.steer(session, body, id, files)
       } else if (session) {
         markSent(session, body, files)
@@ -401,7 +405,7 @@ export function Composer({
     // Fingers: Enter breaks a line and only the send button sends (31 §8.1).
     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && !touch()) {
       e.preventDefault()
-      void submit()
+      void submit(undefined, e.metaKey || e.ctrlKey)
     }
   }
 

@@ -230,7 +230,12 @@ async fn execute(
             id,
             text,
             files,
+            interject,
         } => {
+            // Cancel first: its epoch bump would stale a steer admitted before it (todo auto-continue).
+            if interject {
+                msg(api.cancel(ext, session).await)?;
+            }
             msg(api.steer(ext, session, text, Some(id), files).await)?;
             return Ok(());
         }
