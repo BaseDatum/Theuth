@@ -1,8 +1,9 @@
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { Command as CommandPrimitive } from 'cmdk'
-import { Check, ChevronDown, CircleHelp, FileText, History, MessageSquare, RefreshCw, Search, X } from 'lucide-react'
+import { Check, ChevronDown, CircleHelp, FileText, History, MessageSquare, Mic, RefreshCw, Search, X } from 'lucide-react'
 import { type ReactNode, useEffect, useRef, useState } from 'react'
+import { LevelMeter } from '@/components/chat/LevelMeter'
 import { Button } from '@/components/ui/button'
 import { Command, CommandGroup, CommandItem, CommandList } from '@/components/ui/command'
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
@@ -14,7 +15,9 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
+import * as dictation from '@/lib/dictation'
 import { queryKeys, useApi } from '@/lib/rpc'
+import * as speech from '@/lib/speech'
 import {
   CATEGORIES,
   CATEGORY_LABEL,
@@ -30,6 +33,7 @@ import {
   patch,
   useSearchState,
 } from '@/lib/search'
+import { LOCAL, useHarnesses } from '@/link/harnesses'
 import { cn } from '@/lib/utils'
 import type { ArtifactSearchHit } from '@/rpc/bindings/ArtifactSearchHit'
 import type { ConceptSearchHit } from '@/rpc/bindings/ConceptSearchHit'
@@ -133,6 +137,10 @@ export function SearchDialog({ open, onOpenChange, request }: Props) {
   const listRef = useRef<HTMLDivElement>(null)
   const opener = useRef<HTMLElement | null>(null)
   const activated = useRef(false)
+  // Dictation into the query (54; `dictation.useBox`): the finished text lands through `setTyped` like typing.
+  const voice = speech.useVoice()
+  const mic = useHarnesses((s) => s.active) !== LOCAL
+  const dict = dictation.useBox(api, typed, setTyped, inputRef, mic)
   const wasOpen = useRef(false)
   const pendingScroll = useRef<number | null>(null)
   const refreshGen = useRef(0)
@@ -411,7 +419,8 @@ export function SearchDialog({ open, onOpenChange, request }: Props) {
             <Search className="size-4 shrink-0 opacity-50" aria-hidden />
             <CommandPrimitive.Input
               ref={inputRef}
-              value={typed}
+              value={dict.shown}
+              readOnly={dict.dictating}
               onValueChange={setTyped}
               onCompositionStart={() => setComposing(true)}
               onCompositionEnd={() => setComposing(false)}
@@ -447,6 +456,22 @@ export function SearchDialog({ open, onOpenChange, request }: Props) {
                 }}
               >
                 Clear
+              </Button>
+            )}
+            {voice && (
+              <Button
+                variant="ghost"
+                className={cn(
+                  'shrink-0 rounded-full',
+                  dict.dictating ? 'h-8 w-20 bg-fg-accent/10 p-0' : 'size-8',
+                  dict.reason && !dict.dictating && 'opacity-50',
+                )}
+                aria-label={dict.dictating ? 'Stop dictation' : 'Dictate'}
+                aria-disabled={dict.reason !== null && !dict.dictating}
+                title={dict.reason ?? undefined}
+                onClick={dict.toggle}
+              >
+                {dict.dictating && dict.dict.active ? <LevelMeter levels={dict.dict.active.levels} active /> : <Mic className="size-4" />}
               </Button>
             )}
           </div>
