@@ -27,13 +27,26 @@ let next = 0
 /** Utterance being played; packets for any other id are late and dropped. */
 let id: string | null = null
 
-/** Create (once) and resume the shared context; call from a click. The wire is 24 kHz (43 §0.5). */
+/**
+ * iOS WKWebView files bare Web Audio under `AmbientSound`, which the ringer switch mutes (WebKit#251532);
+ * `playback` plays like media, `play-and-record` keeps the mic open. The type is a hard override, so each
+ * side sets its own before touching audio. No-op where the API is absent.
+ */
+function session(type: 'playback' | 'play-and-record'): void {
+  const nav = navigator as Navigator & { audioSession?: { type: string } }
+  if (nav.audioSession) nav.audioSession.type = type
+}
+
+/** Create (once) and resume the shared context; call from the record tap, before `getUserMedia`. The wire is 24 kHz (43 §0.5). */
 export function unlock(): void {
+  session('play-and-record')
   audioCtx ??= new AudioContext({ sampleRate: SAMPLE_RATE })
   void audioCtx.resume()
 }
 
+// ponytail: `start` during an in-progress recording flips the mic to `playback`; a record button while speaking is not a flow yet.
 function graph(sampleRate: number): AudioContext {
+  session('playback')
   if (ctx && ctx.state !== 'closed' && ctx.sampleRate === sampleRate && out) return ctx
   if (ctx && ctx !== audioCtx) void ctx.close()
   ctx = audioCtx?.sampleRate === sampleRate ? audioCtx : new AudioContext({ sampleRate })
