@@ -52,10 +52,11 @@ function graph(): AudioContext {
   return ctx
 }
 
-/** Create (once) and resume the context; call from the record tap, before `getUserMedia`. */
-export function unlock(): void {
+/** Create (once) and resume the context; call from the record tap, before `getUserMedia`. Returns it so
+ * dictation's mic tap shares the one device-rate context instead of opening a second one (WKWebView). */
+export function unlock(): AudioContext {
   session('play-and-record')
-  graph()
+  return graph()
 }
 
 function cut(): void {

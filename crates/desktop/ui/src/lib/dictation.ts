@@ -90,40 +90,37 @@ const subs = new Set<() => void>()
 const finishers = new Set<(r: Splice) => void>()
 
 /** The browser-side mic graph of a remote-source dictation (54 §4.5); `null` while the daemon owns the mic. */
-type Capture = { stream: MediaStream; ctx: AudioContext; src: AudioNode | null; batcher: Batcher | null }
+type Capture = { stream: MediaStream; ctx: AudioContext; nodes: AudioNode[]; batcher: Batcher | null }
 let capture: Capture | null = null
+/** Contexts whose worklet already has `wth-tap`; a second `registerProcessor` of the same name rejects. */
+const tapped = new WeakSet<AudioContext>()
 
 /** One `AudioWorkletProcessor` that posts each 128-frame render quantum of its mono input to the main thread. */
 const WORKLET_SRC = `registerProcessor('wth-tap', class extends AudioWorkletProcessor {
   process(inputs) { const ch = inputs[0][0]; if (ch) this.port.postMessage(ch.slice()); return true }
 })`
 
-/** Release the mic, the graph and the context; idempotent. */
+/** Release the mic and the tap nodes; idempotent. The context is speech's and stays open. */
 function teardownCapture(): void {
   const c = capture
   if (!c) return
   capture = null
   for (const t of c.stream.getTracks()) t.stop()
-  c.src?.disconnect()
-  void c.ctx.close()
+  for (const n of c.nodes) n.disconnect()
 }
 
 /**
- * Open the mic inside the click gesture (the permission prompt needs it) and a context at the daemon's
- * 16 kHz when the browser allows; the daemon resamples any other rate as long as 20 ms chunks are whole.
+ * Open the mic inside the click gesture (the permission prompt needs it) on speech's one device-rate
+ * context; the daemon resamples (ponytail: ~1 Mbit/s of PCM at 48 kHz — decimate here if the relay minds).
  */
 async function openCapture(): Promise<Capture> {
-  // Also unlocks the reply `AudioContext` while we hold a gesture, as the voice-note button does (45 §7.3).
-  speech.unlock()
+  const ctx = speech.unlock()
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
   })
-  const ctx = new AudioContext({ sampleRate: 16_000 })
-  const c: Capture = { stream, ctx, src: null, batcher: null }
+  const c: Capture = { stream, ctx, nodes: [], batcher: null }
   capture = c
   if (ctx.sampleRate % 50 !== 0) throw new Error('unsupported microphone rate')
-  // Created after an `await`, so iOS may hand it over suspended; a no-op when it already runs.
-  await ctx.resume()
   return c
 }
 
@@ -137,11 +134,15 @@ async function wire(api: Api, id: string, c: Capture): Promise<void> {
   mute.connect(ctx.destination)
   let tap: AudioNode
   if (ctx.audioWorklet) {
-    const url = URL.createObjectURL(new Blob([WORKLET_SRC], { type: 'text/javascript' }))
-    try {
-      await ctx.audioWorklet.addModule(url)
-    } finally {
-      URL.revokeObjectURL(url)
+    if (!tapped.has(ctx)) {
+      // `blob:` needs `script-src blob:` in the Tauri CSP (tauri.conf.json).
+      const url = URL.createObjectURL(new Blob([WORKLET_SRC], { type: 'text/javascript' }))
+      try {
+        await ctx.audioWorklet.addModule(url)
+      } finally {
+        URL.revokeObjectURL(url)
+      }
+      tapped.add(ctx)
     }
     // Torn down while the module loaded (Esc, a fast `DictationFinished`).
     if (capture !== c) return
@@ -156,7 +157,7 @@ async function wire(api: Api, id: string, c: Capture): Promise<void> {
   }
   const src = ctx.createMediaStreamSource(c.stream)
   src.connect(tap).connect(mute)
-  c.src = src
+  c.nodes = [src, tap, mute]
   c.batcher = batcher
 }
 

@@ -41,12 +41,15 @@ places the files).
    `AudioIn` from the webview, Opus in the other direction"): *remote*
    (relay-linked) clients — a phone through the relay — capture in the
    webview and stream mono i16 PCM (base64, ~100 ms per `dictation_audio`
-   call; 16 kHz when the browser honours the `AudioContext` rate hint, else
-   the device rate, resampled in the daemon) into the same pipeline;
+   call, at the device rate — the tap rides `speech.ts`'s single
+   `AudioContext`, since WKWebView runs a second, rate-forced context
+   silent — resampled to 16 kHz in the daemon) into the same pipeline;
    `dictation_start(sample_rate)` selects `AudioSource::Remote`, `null`
-   keeps the daemon mic for local peers. Raw PCM is ≈350 kbit/s at 16 kHz;
-   ponytail: Opus via WebCodecs `AudioEncoder` once the WKWebView floor
-   reaches iOS 26. Nothing for the TUI over the wire — it is in-process.
+   keeps the daemon mic for local peers. The `AudioWorklet` module is a
+   `blob:` URL, so the Tauri CSP carries `script-src … blob:`. Raw PCM is
+   ≈1 Mbit/s at 48 kHz; ponytail: decimate in the worklet, or Opus via
+   WebCodecs `AudioEncoder` once the WKWebView floor reaches iOS 26.
+   Nothing for the TUI over the wire — it is in-process.
    Permission: macOS attributes the TCC prompt to the responsible process —
    the `.app` when it spawned the daemon (`Info.plist` already carries
    `NSMicrophoneUsageDescription`, 45 §7.5), the terminal app for a `wth`
