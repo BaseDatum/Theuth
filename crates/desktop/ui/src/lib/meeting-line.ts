@@ -3,7 +3,7 @@
 // pattern), so the transcript card recognises them by parsing, not by metadata.
 
 export type MeetingLine = {
-  kind: 'batch' | 'started' | 'request' | 'tapped' | 'dismissed' | 'deeper' | 'nudge'
+  kind: 'batch' | 'started' | 'request' | 'tapped' | 'dismissed' | 'deeper' | 'nudge' | 'summary'
   /** Chip text: `transcript 00:14:32`, `request · typed`, `tapped "KEDA"`, … */
   label: string
   /** The rest, verbatim (batch: `live:/dismissed:` header then `them:`/`me:` rows). */
@@ -36,5 +36,6 @@ export function parseMeetingLine(text: string): MeetingLine | null {
   if (tap) return { kind: 'tapped', label: `tapped “${tap[1]}”`, body }
   const deep = /^deeper on "([^"]*)"/.exec(head)
   if (deep) return { kind: 'deeper', label: `deeper on “${deep[1]}”`, body }
+  if (head === 'summary') return { kind: 'summary', label: 'summary requested', body }
   return null
 }

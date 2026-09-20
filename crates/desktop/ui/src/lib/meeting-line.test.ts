@@ -18,6 +18,11 @@ test('recognises every daemon line shape and nothing else', () => {
     label: 'deeper on “AWS EFS”',
     body: '- a\n- b',
   })
+  expect(parseMeetingLine('[meeting summary] The meeting has ended and the transcript was reviewed. Use `meeting_read`…')).toEqual({
+    kind: 'summary',
+    label: 'summary requested',
+    body: 'The meeting has ended and the transcript was reviewed. Use `meeting_read`…',
+  })
   expect(parseMeetingLine('[meeting: no brief was produced for the request "SQS" — the user sees only briefs, never text. Call `meeting_brief` now.]')).toEqual({
     kind: 'nudge',
     label: 'reminder: brief it',
