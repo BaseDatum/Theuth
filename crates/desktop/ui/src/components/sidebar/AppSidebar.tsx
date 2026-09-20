@@ -46,9 +46,6 @@ export function AppSidebar({ session }: { session: string | undefined }) {
         data-tauri-drag-region={isMacDesktop() || undefined}
         className={cn('h-[52px] flex-row items-center', isMacDesktop() && 'pl-20')}
       >
-        <Link to="/" aria-label="theuth" className="shrink-0 text-foreground">
-          <Mark className="size-6" />
-        </Link>
         <HarnessSwitcher className="min-w-0 flex-1 justify-start" />
         <div className="ml-auto flex shrink-0 items-center">
           <SearchTrigger />
@@ -65,6 +62,13 @@ export function AppSidebar({ session }: { session: string | undefined }) {
       </SidebarHeader>
       <SidebarContent ref={setScrollEl} className="gap-0 overflow-y-auto">
         <SidebarMenu className="px-1.5">
+          <SidebarMenuItem>
+            <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5 font-semibold tracking-[.08em]">
+              <Link to="/" aria-label="theuth home">
+                <Mark /> THEUTH
+              </Link>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
           <SidebarMenuItem>
             <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5">
               <Link to="/">
