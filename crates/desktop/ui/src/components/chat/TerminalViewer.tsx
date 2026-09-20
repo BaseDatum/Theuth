@@ -15,9 +15,9 @@ import type { StyledRun } from '@/rpc/bindings/StyledRun'
 import { useScope } from '@/store/harness-scope'
 import { useSessionField } from '@/store/sessions'
 
-// Fixed dark canvas so the 16-colour palette reads on either app theme.
-const BG = '#1e1e1e'
-const FG = '#e5e5e5'
+// Fixed soot canvas so the 16-colour palette reads on either app theme.
+const BG = '#12100e'
+const FG = '#e8dcc8'
 
 const NAV_KEYS: Record<string, Nav> = { ArrowUp: 'up', ArrowDown: 'down', PageUp: 'pageUp', PageDown: 'pageDown', End: 'live' }
 

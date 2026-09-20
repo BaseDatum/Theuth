@@ -145,11 +145,31 @@ different capabilities means the TUI stays the real one.
 - Store has `write_concept(id, text)` (used by `restore`) and public
   `sync()`; neither is on RPC yet.
 
-### 2.4 ChatGPT UI (chatgpt.com, unauthenticated shell, Chromium 1280×860, 2026-09-14)
+### 2.4 Palette and shell geometry
 
-Measured with computed styles; the full dumps are `assets/25-chatgpt-tokens.md`
-(all 90 `:root` custom properties, dark and light) and
-`assets/25-chatgpt-geometry.json` (element rects and computed styles). The authenticated
+Palette (`crates/desktop/ui/src/styles.css`; the TUI's consts in `crates/tui/src/ui.rs`
+use the dark set): warm ink on bone, mineral accents, never pure `#000`/`#FFF`.
+
+| token | light | dark | use |
+|---|---|---|---|
+| bg-page | bone `#E8DCC8` | soot `#12100E` | page |
+| bg-layer-1 / elevated / sidebar | bone-2 `#F3EADF` | soot-2 `#1C1915` | raised surface: sidebar, cards, input |
+| bg-layer-2 | limestone `#D4C4A8` | basalt `#2A241C` | hover wash, input wells |
+| bg-layer-3 | papyrus `#C9B48A` | char `#3A3228` | secondary fills, code well |
+| fg-primary | soot `#1A1612` | bone `#E8DCC8` | text, icon |
+| fg-secondary | ash `#6B5E4F` | bone-dim `#C9B89A` | secondary text |
+| fg-tertiary | dust `#8F7F6A` | sand `#9A8B72` | placeholders |
+| fg-accent / -hover | ochre `#B4531E` / `#8A3E16` | gold-ochre `#C47A2C` / `#A36220` | links, focus, send |
+| success | malachite `#2F5D4A` | `#4A8A6E` | done |
+| info | faience `#3D6B66` | `#5B8F8A` | agent state |
+| danger | carnelian `#9B2D1F` | `#C45A48` | error, stop |
+| warning | ochre-dim | gold-ochre | no separate hue; reuses the accent |
+
+Status `-bg` tokens are the status colour at 12–15% alpha; `-border` is the colour itself.
+
+Shell geometry was measured from chatgpt.com (unauthenticated shell, Chromium 1280×860,
+2026-09-14) with computed styles; dumps in `assets/25-chatgpt-tokens.md` (its colours are
+superseded by the palette above) and `assets/25-chatgpt-geometry.json`. The authenticated
 app is the same shell with a populated sidebar; the relay into the user's
 Firefox tab did not attach, so §4.4's build step re-verifies against it.
 
@@ -328,11 +348,12 @@ sequenceDiagram
 
 ### 4.4 Visual spec
 
-- `tailwind.css` defines the §2.4 tokens as CSS variables under `:root` and
+- `styles.css` defines the §2.4 palette as CSS variables under `:root` and
   `.dark`, and aliases shadcn's variables to them (`--background:
   var(--bg-page)`, `--card: var(--bg-elevated)`, `--muted:
   var(--bg-layer-2)`, `--border: var(--border-default)`, `--radius: 0.75rem`).
-  No hard-coded colour in a component.
+  No hard-coded colour in a component; status dots and notices use the
+  `success`/`warning`/`danger` utilities, never Tailwind's own palette.
 - Shell: sidebar 260 px (collapsible to 0 with ⇧⌘S, ChatGPT's animation),
   traffic lights inset into the sidebar header (`titleBarStyle: Overlay`,
   `hiddenTitle: true`, `data-tauri-drag-region` on the header bars).

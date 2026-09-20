@@ -174,7 +174,7 @@ function LiveLog({ id }: { id: string }) {
               {r.track === 'Mic' ? 'me:' : 'them:'}
             </span>
             <span className="min-w-0 break-words">
-              {r.request && <span className="mr-1 rounded bg-fg-accent px-1 text-[10px] text-white">request</span>}
+              {r.request && <span className="mr-1 rounded bg-fg-accent px-1 text-[10px] text-primary-foreground">request</span>}
               {r.text}
             </span>
           </div>

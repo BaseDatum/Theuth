@@ -282,7 +282,7 @@ export function Island() {
                 <ChevronUp className="size-4" />
               </button>
               {unseen > 0 && (
-                <span className="rounded-full bg-fg-accent px-1.5 text-[10px] leading-4 text-white">↑ {unseen} new</span>
+                <span className="rounded-full bg-fg-accent px-1.5 text-[10px] leading-4 text-primary-foreground">↑ {unseen} new</span>
               )}
               <button
                 type="button"

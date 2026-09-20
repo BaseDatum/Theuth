@@ -4,65 +4,68 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* Measured chatgpt.com tokens (docs/design/25-desktop.md §2.4, assets/25-chatgpt-tokens.md). */
+/* theuth palette: warm ink on bone (docs/design/25-desktop.md §2.4). No pure #000/#FFF; accents are
+   mineral (ochre, malachite, faience, carnelian). Status washes are the status colour at low alpha. */
 :root {
   color-scheme: light;
-  --bg-page: #fff;
-  --bg-layer-1: #fff;
-  --bg-layer-2: #f3f3f3;
-  --bg-layer-3: #e8e8e8;
-  --bg-elevated: #fff;
-  --fg-primary: #0d0d0d;
-  --fg-secondary: #5d5d5d;
-  --fg-tertiary: #8f8f8f;
-  --fg-inverse: #fff;
-  --fg-accent: oklch(62.6176% 0.205304 254.998);
-  --border-subtle: #0000000d;
-  --border-default: #0000001a;
-  --border-strong: #0003;
-  --status-danger-bg: #fbe9e8;
-  --status-danger-border: oklch(65.2741% 0.241466 26.767);
-  --status-danger-fg: #b3261e;
-  --status-info-bg: #e6f0fd;
-  --status-info-border: oklch(62.6176% 0.205304 254.998);
-  --status-info-fg: #1b5cc7;
-  --status-success-bg: #e6f4eb;
-  --status-success-border: oklch(68.2472% 0.195111 148.214);
-  --status-success-fg: #0f7a3d;
-  --status-warning-bg: #fdf2dc;
-  --status-warning-border: oklch(75.1371% 0.156458 78.7733);
-  --status-warning-fg: #9a5b00;
-  --sidebar: #f9f9f9;
+  --bg-page: #e8dcc8; /* bone */
+  --bg-layer-1: #f3eadf; /* bone-2: raised surface */
+  --bg-layer-2: #d4c4a8; /* limestone: hover wash */
+  --bg-layer-3: #c9b48a; /* papyrus: secondary fills, code well */
+  --bg-elevated: #f3eadf;
+  --fg-primary: #1a1612; /* soot */
+  --fg-secondary: #6b5e4f; /* ash */
+  --fg-tertiary: #8f7f6a; /* dust */
+  --fg-inverse: #e8dcc8;
+  --fg-accent: #b4531e; /* ochre */
+  --fg-accent-hover: #8a3e16; /* ochre-dim */
+  --border-subtle: #d4c4a880;
+  --border-default: #d4c4a8; /* limestone */
+  --border-strong: #c9b48a; /* papyrus */
+  --status-danger-bg: #9b2d1f1f;
+  --status-danger-border: #9b2d1f;
+  --status-danger-fg: #9b2d1f; /* carnelian */
+  --status-info-bg: #3d6b661f;
+  --status-info-border: #3d6b66;
+  --status-info-fg: #3d6b66; /* faience */
+  --status-success-bg: #2f5d4a1f;
+  --status-success-border: #2f5d4a;
+  --status-success-fg: #2f5d4a; /* malachite */
+  --status-warning-bg: #b4531e1f;
+  --status-warning-border: #b4531e;
+  --status-warning-fg: #8a3e16; /* ochre-dim: the palette has no separate warning hue */
+  --sidebar: #f3eadf;
 }
 
 .dark {
   color-scheme: dark;
-  --bg-page: #000;
-  --bg-layer-1: #212121;
-  --bg-layer-2: #303030;
-  --bg-layer-3: #414141;
-  --bg-elevated: #303030;
-  --fg-primary: #fff;
-  --fg-secondary: #cdcdcd;
-  --fg-tertiary: #afafaf;
-  --fg-inverse: #0d0d0d;
-  --fg-accent: oklch(71.8574% 0.153638 247.945);
-  --border-subtle: #ffffff1a;
-  --border-default: #ffffff26;
-  --border-strong: #fff3;
-  --status-danger-bg: #421a19;
-  --status-danger-border: oklch(65.2741% 0.241466 26.767);
-  --status-danger-fg: #ff9b97;
-  --status-info-bg: #102a4d;
-  --status-info-border: oklch(62.6176% 0.205304 254.998);
-  --status-info-fg: #8ec5ff;
-  --status-success-bg: #123321;
-  --status-success-border: oklch(68.2472% 0.195111 148.214);
-  --status-success-fg: #76d89c;
-  --status-warning-bg: oklch(34.6399% 0.0799531 61.3069);
-  --status-warning-border: oklch(75.1371% 0.156458 78.7733);
-  --status-warning-fg: #ffd15c;
-  --sidebar: #000;
+  --bg-page: #12100e; /* soot */
+  --bg-layer-1: #1c1915; /* soot-2: raised surface */
+  --bg-layer-2: #2a241c; /* basalt: input wells */
+  --bg-layer-3: #3a3228; /* char: hover, code well */
+  --bg-elevated: #1c1915;
+  --fg-primary: #e8dcc8; /* bone */
+  --fg-secondary: #c9b89a; /* bone-dim */
+  --fg-tertiary: #9a8b72; /* sand */
+  --fg-inverse: #12100e;
+  --fg-accent: #c47a2c; /* gold-ochre */
+  --fg-accent-hover: #a36220; /* gold-ochre-dim */
+  --border-subtle: #2a241c99;
+  --border-default: #2a241c; /* basalt */
+  --border-strong: #3a3228; /* char */
+  --status-danger-bg: #c45a4826;
+  --status-danger-border: #c45a48;
+  --status-danger-fg: #c45a48; /* carnelian-bright */
+  --status-info-bg: #5b8f8a26;
+  --status-info-border: #5b8f8a;
+  --status-info-fg: #5b8f8a; /* faience-bright */
+  --status-success-bg: #4a8a6e26;
+  --status-success-border: #4a8a6e;
+  --status-success-fg: #4a8a6e; /* malachite-bright */
+  --status-warning-bg: #c47a2c26;
+  --status-warning-border: #c47a2c;
+  --status-warning-fg: #c47a2c; /* gold-ochre */
+  --sidebar: #1c1915;
 }
 
 /* shadcn variables, aliased onto the tokens; no component hard-codes a colour. */
@@ -129,6 +132,7 @@
   --color-fg-secondary: var(--fg-secondary);
   --color-fg-tertiary: var(--fg-tertiary);
   --color-fg-accent: var(--fg-accent);
+  --color-fg-accent-hover: var(--fg-accent-hover);
   --color-border-subtle: var(--border-subtle);
   --color-border-strong: var(--border-strong);
   --color-danger: var(--status-danger-fg);

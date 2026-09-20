@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="60 60 904 904">
+  <mask id="eye">
+    <rect x="60" y="60" width="904" height="904" fill="#fff"/>
+    <circle cx="610" cy="288" r="36" fill="#000"/>
+  </mask>
+  <g fill="#000" mask="url(#eye)">
+    <circle cx="640" cy="340" r="165"/>
+    <path d="M 660 178 C 400 196, 230 470, 186 846 L 244 890 C 300 570, 400 380, 600 500 Z"/>
+  </g>
+</svg>

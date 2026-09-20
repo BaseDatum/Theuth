@@ -59,7 +59,7 @@ function CreateOptions({
         </div>
       </div>
       {priv && (
-        <div className="mt-3 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3">
+        <div className="mt-3 rounded-xl border border-warning-border/40 bg-warning-bg p-3">
           <p className="font-medium">Private session</p>
           <ul className="mt-1 list-disc space-y-0.5 pl-5 text-fg-secondary">
             <li>theuth keeps this conversation, its artifacts and cost records in memory only; leaving or closing it deletes them.</li>

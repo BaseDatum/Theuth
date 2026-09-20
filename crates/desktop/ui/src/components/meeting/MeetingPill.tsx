@@ -41,7 +41,7 @@ export function MeetingPill() {
         title={activity ? `Meeting session: ${activity}` : 'Open the meeting'}
         onClick={() => void navigate({ to: '/meetings/$id', params: { id: meeting } })}
       >
-        <span className={state === 'Paused' ? 'size-2 rounded-full bg-fg-tertiary' : 'size-2 animate-pulse rounded-full bg-red-500'} />
+        <span className={state === 'Paused' ? 'size-2 rounded-full bg-fg-tertiary' : 'size-2 animate-pulse rounded-full bg-danger'} />
         {mmss(elapsed(useMeeting.getState(), now))}
       </button>
       {state === 'Paused' ? (

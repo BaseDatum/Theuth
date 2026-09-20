@@ -45,22 +45,46 @@ pub struct Links {
 const MENU_ROWS: usize = 10;
 /// Rows the board shows at most; the rest fold into `… n more (/agents)`.
 const BOARD_ROWS: usize = 6;
+// theuth dark palette (docs/design/25-desktop.md §2.4), truecolor. The terminal's own
+// background stays; primary text is left uncoloured so it follows the terminal's fg.
+// ponytail: assumes a dark terminal; query OSC 11 and swap to the light set if that hurts.
+const fn rgb(hex: u32) -> Color {
+    Color::Rgb {
+        r: (hex >> 16) as u8,
+        g: (hex >> 8) as u8,
+        b: hex as u8,
+    }
+}
+/// Highlighted rows, focused labels.
+const BONE: Color = rgb(0xE8DCC8);
+/// Secondary text.
+const BONE_DIM: Color = rgb(0xC9B89A);
+/// Tertiary text, hints, quiet borders.
+const SAND: Color = rgb(0x9A8B72);
+/// Accent: focus borders, headings, hints, the human's turn.
+const OCHRE: Color = rgb(0xC47A2C);
+/// Success / done.
+const MALACHITE: Color = rgb(0x4A8A6E);
+/// Info / agent state: tools, peers, asks.
+const FAIENCE: Color = rgb(0x5B8F8A);
+/// Error / stop.
+const CARNELIAN: Color = rgb(0xC45A48);
 /// Human turn cards.
-const USER: Color = Color::AnsiValue(117);
+const USER: Color = OCHRE;
 /// Tool call cards.
-const TOOL: Color = Color::Cyan;
+const TOOL: Color = FAIENCE;
 /// Peer (subagent / parent) message cards.
-const PEER: Color = Color::Magenta;
-/// Skill body cards.
+const PEER: Color = FAIENCE;
 /// Markdown headings in assistant text.
-const HEADING: Color = Color::Yellow;
-const SKILL: Color = Color::Yellow;
+const HEADING: Color = OCHRE;
+/// Skill body cards.
+const SKILL: Color = OCHRE;
 /// System prompt cards.
-const PROMPT: Color = Color::DarkGrey;
+const PROMPT: Color = SAND;
 /// Finished background job cards.
-const JOB: Color = Color::Green;
+const JOB: Color = MALACHITE;
 /// `/link pair` and `/nodes` invite QR cards.
-const LINK: Color = Color::Cyan;
+const LINK: Color = FAIENCE;
 
 /// Run the fullscreen UI until the user quits. Mouse capture stays off so
 /// the terminal's own selection (and copy-on-select) keeps working. Ctrl+C
@@ -520,10 +544,10 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             .map_or_else(String::new, |n| format!("  [agent: {n}]"));
         let open = if Some(req.session) == m.session { "" } else { "  [o] open" };
         element! {
-            View(border_style: BorderStyle::Double, border_color: Color::Yellow, flex_direction: FlexDirection::Column, padding_left: 1, padding_right: 1) {
+            View(border_style: BorderStyle::Double, border_color: OCHRE, flex_direction: FlexDirection::Column, padding_left: 1, padding_right: 1) {
                 Text(content: format!("approval: {}  ({}){agent}", req.tool, risk_name(req.risk)), weight: Weight::Bold)
-                #(describe(&req.tool, &req.args).into_iter().map(|l| element!(Text(content: l, color: Color::Cyan, wrap: TextWrap::Wrap))))
-                Text(content: format!("[y] allow  [n/esc] deny{open}"), color: Color::Yellow)
+                #(describe(&req.tool, &req.args).into_iter().map(|l| element!(Text(content: l, color: FAIENCE, wrap: TextWrap::Wrap))))
+                Text(content: format!("[y] allow  [n/esc] deny{open}"), color: OCHRE)
             }
         }
         .into_any()
@@ -551,9 +575,9 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     let has_focus = m.input_focused();
     let (header, level) = m.header(&catalog);
     let header_color = match level {
-        Level::Normal => Color::DarkGrey,
-        Level::Warn => Color::Yellow,
-        Level::Danger => Color::Red,
+        Level::Normal => SAND,
+        Level::Warn => OCHRE,
+        Level::Danger => CARNELIAN,
     };
 
     // Only the slice that can reach the screen is built; see `Model::window`.
@@ -594,12 +618,12 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             // Activity and steers not yet in the context sit under the
             // transcript, in view whatever you scrolled to.
             #(m.waiting().then(|| element!(View(margin_top: 1) {
-                Text(content: format!("{} thinking…", m.spinner()), color: Color::DarkGrey, italic: true)
+                Text(content: format!("{} thinking…", m.spinner()), color: SAND, italic: true)
             })))
             #(m.queued.iter().map(|q| element! {
-                View(flex_direction: FlexDirection::Column, border_style: BorderStyle::Round, border_color: Color::DarkGrey, padding_left: 1, padding_right: 1, margin_top: 1) {
-                    Text(content: "◇ queued · ⌥↑ edit", color: Color::DarkGrey, weight: Weight::Bold)
-                    Text(content: queued_text(&q.text), color: Color::DarkGrey, wrap: TextWrap::Wrap)
+                View(flex_direction: FlexDirection::Column, border_style: BorderStyle::Round, border_color: SAND, padding_left: 1, padding_right: 1, margin_top: 1) {
+                    Text(content: "◇ queued · ⌥↑ edit", color: SAND, weight: Weight::Bold)
+                    Text(content: queued_text(&q.text), color: SAND, wrap: TextWrap::Wrap)
                 }
             }))
             #(board(&m, width))
@@ -607,12 +631,12 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             #(modal)
             #(m.inspect_line().map(|hint| {
                 element!(View(height: 1, padding_left: 1) {
-                    Text(content: hint, color: Color::Yellow, wrap: TextWrap::NoWrap)
+                    Text(content: hint, color: OCHRE, wrap: TextWrap::NoWrap)
                 })
             }))
             #(m.prompt.as_ref().map(|p| {
                 element!(View(height: 1, padding_left: 1) {
-                    Text(content: p.hint(), color: Color::Yellow)
+                    Text(content: p.hint(), color: OCHRE)
                 })
             }))
             View(height: 1, padding_left: 1) {
@@ -626,7 +650,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             // While dictating the box turns cyan and shows the region (54 §6)
             // over a hidden, still-mounted editor: unmounting it would lose
             // its cursor state and the handle the stop restores through.
-            View(border_style: BorderStyle::Round, border_color: if m.dictation.is_some() { Color::Cyan } else { Color::Blue }, min_height: 3, flex_shrink: 0.0, flex_direction: FlexDirection::Column) {
+            View(border_style: BorderStyle::Round, border_color: if m.dictation.is_some() { FAIENCE } else { OCHRE }, min_height: 3, flex_shrink: 0.0, flex_direction: FlexDirection::Column) {
                 View(width: 100pct, display: if m.dictation.is_some() { Display::None } else { Display::Flex }) {
                     TextInput(
                         handle,
@@ -645,8 +669,8 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 #(m.dictation.as_ref().map(|d| element!(MixedText(contents: dictation_region(d), wrap: TextWrap::Wrap))))
             }
             View(height: 1, padding_left: 1, padding_right: 1, justify_content: JustifyContent::SpaceBetween) {
-                Text(content: m.status(), color: Color::DarkGrey)
-                Text(content: m.mcp_status(), color: Color::DarkGrey)
+                Text(content: m.status(), color: SAND)
+                Text(content: m.mcp_status(), color: SAND)
             }
         }
     }
@@ -666,11 +690,10 @@ fn dictation_header(d: &Dictating, frame: usize) -> Vec<MixedTextContent> {
         Phase::Stopping => "stopping",
     };
     vec![
-        MixedTextContent::new(format!("{dot}{state}  ")).color(Color::Cyan),
-        MixedTextContent::new(dictation::meter(&d.levels, dictation::METER_CELLS))
-            .color(Color::Cyan),
+        MixedTextContent::new(format!("{dot}{state}  ")).color(FAIENCE),
+        MixedTextContent::new(dictation::meter(&d.levels, dictation::METER_CELLS)).color(FAIENCE),
         MixedTextContent::new(format!("  {}", d.clock())),
-        MixedTextContent::new(" (Ctrl+D stop · Esc discard)").color(Color::DarkGrey),
+        MixedTextContent::new(" (Ctrl+D stop · Esc discard)").color(SAND),
     ]
 }
 
@@ -685,7 +708,7 @@ fn dictation_region(d: &Dictating) -> Vec<MixedTextContent> {
         first = false;
         let mut c = MixedTextContent::new(&u.text);
         if !u.is_final {
-            c = c.color(Color::DarkGrey);
+            c = c.color(SAND);
         }
         out.push(c);
     }
@@ -722,11 +745,11 @@ fn secret_box(m: &Model) -> Option<AnyElement<'static>> {
     );
     Some(
         element! {
-            View(border_style: BorderStyle::Double, border_color: Color::Magenta, flex_direction: FlexDirection::Column, padding_left: 1, padding_right: 1) {
+            View(border_style: BorderStyle::Double, border_color: FAIENCE, flex_direction: FlexDirection::Column, padding_left: 1, padding_right: 1) {
                 Text(content: "secret requested", weight: Weight::Bold)
-                Text(content: head, color: Color::Cyan, wrap: TextWrap::Wrap)
-                Text(content: version, color: Color::Grey)
-                Text(content: "type it below · [⏎] store  [esc] decline", color: Color::Magenta)
+                Text(content: head, color: FAIENCE, wrap: TextWrap::Wrap)
+                Text(content: version, color: BONE_DIM)
+                Text(content: "type it below · [⏎] store  [esc] decline", color: FAIENCE)
             }
         }
         .into_any(),
@@ -757,7 +780,7 @@ fn ask_box(m: &Model) -> Option<AnyElement<'static>> {
         element! {
             Text(
                 content: format!("{} {}. {}{desc}{rec}", if here { "›" } else { " " }, i + 1, c.label),
-                color: if here { Color::White } else { Color::Grey },
+                color: if here { BONE } else { BONE_DIM },
                 weight: if here { Weight::Bold } else { Weight::Normal },
                 wrap: TextWrap::Wrap,
             )
@@ -783,12 +806,12 @@ fn ask_box(m: &Model) -> Option<AnyElement<'static>> {
     };
     Some(
         element! {
-            View(border_style: BorderStyle::Double, border_color: Color::Magenta, flex_direction: FlexDirection::Column, padding_left: 1, padding_right: 1) {
+            View(border_style: BorderStyle::Double, border_color: FAIENCE, flex_direction: FlexDirection::Column, padding_left: 1, padding_right: 1) {
                 Text(content: title, weight: Weight::Bold)
-                Text(content: q.question.clone(), color: Color::Cyan, wrap: TextWrap::Wrap)
+                Text(content: q.question.clone(), color: FAIENCE, wrap: TextWrap::Wrap)
                 #(rows)
-                Text(content: own, color: if a.cursor == n || a.typing { Color::White } else { Color::Grey }, weight: if a.cursor == n || a.typing { Weight::Bold } else { Weight::Normal })
-                #((!keys.is_empty()).then(|| element!(Text(content: keys, color: Color::Magenta))))
+                Text(content: own, color: if a.cursor == n || a.typing { BONE } else { BONE_DIM }, weight: if a.cursor == n || a.typing { Weight::Bold } else { Weight::Normal })
+                #((!keys.is_empty()).then(|| element!(Text(content: keys, color: FAIENCE))))
             }
         }
         .into_any(),
@@ -1117,11 +1140,11 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
     let fit = usize::from(width).saturating_sub(7);
     Some(
         element! {
-            View(border_style: BorderStyle::Round, border_color: Color::DarkGrey, flex_direction: FlexDirection::Column, padding_left: 1, padding_right: 1) {
-                Text(content: title, color: Color::DarkGrey)
+            View(border_style: BorderStyle::Round, border_color: SAND, flex_direction: FlexDirection::Column, padding_left: 1, padding_right: 1) {
+                Text(content: title, color: SAND)
                 #(rows[shown.clone()].iter().enumerate().map(|(i, row)| {
                     let here = shown.start + i == cursor;
-                    let color = if here { Color::White } else { Color::Grey };
+                    let color = if here { BONE } else { BONE_DIM };
                     let weight = if here { Weight::Bold } else { Weight::Normal };
                     let text: String = row.chars().take(fit).collect();
                     element!(Text(
@@ -1145,7 +1168,7 @@ fn terminal_box(m: &Model, width: u16, height: u16) -> Option<AnyElement<'static
     let Some(Menu::Terminal(v)) = &m.menu else {
         return None;
     };
-    let dim = Color::DarkGrey;
+    let dim = SAND;
     // Border 2 + padding 2; rows stay one cell short so taffy never wraps them.
     let inner = usize::from(width).saturating_sub(5).max(8);
     // Border, title and status around the page; the page gets the rest of the screen.
@@ -1170,10 +1193,10 @@ fn terminal_box(m: &Model, width: u16, height: u16) -> Option<AnyElement<'static
     let title = search::fit(&v.title(), inner);
     Some(
         element! {
-            View(border_style: BorderStyle::Round, border_color: Color::Blue, flex_direction: FlexDirection::Column, padding_left: 1, padding_right: 1, width) {
+            View(border_style: BorderStyle::Round, border_color: OCHRE, flex_direction: FlexDirection::Column, padding_left: 1, padding_right: 1, width) {
                 Text(content: title, color: dim, wrap: TextWrap::NoWrap)
                 #(body)
-                #(status.map(|s| element!(Text(content: search::fit(&s, inner), color: Color::Yellow, wrap: TextWrap::NoWrap))))
+                #(status.map(|s| element!(Text(content: search::fit(&s, inner), color: OCHRE, wrap: TextWrap::NoWrap))))
             }
         }
         .into_any(),
@@ -1323,8 +1346,8 @@ fn search_box(
 ) -> AnyElement<'static> {
     let s = &m.search;
     let (inner, area, chips, compact) = search_layout(m, width, budget);
-    let dim = Color::DarkGrey;
-    let border = Color::Blue;
+    let dim = SAND;
+    let border = OCHRE;
     if let Some(p) = s.previews.last() {
         let title = search::fit(&p.title(), inner);
         let rows: Vec<AnyElement<'static>> = match p.rows(inner) {
@@ -1334,10 +1357,10 @@ fn search_box(
                 .take(area)
                 .map(|r| {
                     let color = match (p, r.chars().next()) {
-                        (Preview::Changes { .. }, Some('+')) => Color::Green,
-                        (Preview::Changes { .. }, Some('-')) => Color::Red,
-                        (Preview::Changes { .. }, Some('@')) => Color::Cyan,
-                        _ => Color::Grey,
+                        (Preview::Changes { .. }, Some('+')) => MALACHITE,
+                        (Preview::Changes { .. }, Some('-')) => CARNELIAN,
+                        (Preview::Changes { .. }, Some('@')) => FAIENCE,
+                        _ => BONE_DIM,
                     };
                     element!(Text(content: search::fit(&r, inner), wrap: TextWrap::NoWrap, color))
                         .into_any()
@@ -1371,7 +1394,7 @@ fn search_box(
     body.push(
         element! {
             View(flex_direction: FlexDirection::Row, height: 1) {
-                Text(content: "Query: ", color: if query_focus { Color::White } else { dim }, weight: Weight::Bold)
+                Text(content: "Query: ", color: if query_focus { BONE } else { dim }, weight: Weight::Bold)
                 View(flex_grow: 1.0, height: 1) {
                     TextInput(
                         handle,
@@ -1392,8 +1415,7 @@ fn search_box(
                 contents.push(MixedTextContent::new(" "));
             }
             let on = text.contains('✓');
-            let mut c =
-                MixedTextContent::new(text).color(if on { Color::Cyan } else { Color::Grey });
+            let mut c = MixedTextContent::new(text).color(if on { FAIENCE } else { BONE_DIM });
             if s.focus == Focus::Filters(*i) {
                 c = c.invert().weight(Weight::Bold);
                 target = body.len();
@@ -1404,7 +1426,7 @@ fn search_box(
     }
     let status = search::fit(&s.status(), inner);
     body.push(
-        element!(Text(content: status, color: if s.notice.is_some() { Color::Yellow } else { dim }, wrap: TextWrap::NoWrap))
+        element!(Text(content: status, color: if s.notice.is_some() { OCHRE } else { dim }, wrap: TextWrap::NoWrap))
             .into_any(),
     );
     // Result rows: the window starting at the clamped scroll.
@@ -1422,7 +1444,7 @@ fn search_box(
             target = body.len();
         }
         let mark = if here { "› " } else { "  " };
-        let color = if here { Color::White } else { Color::Grey };
+        let color = if here { BONE } else { BONE_DIM };
         let weight = if here { Weight::Bold } else { Weight::Normal };
         match row {
             search::Row::Header(t) => body.push(
@@ -1432,7 +1454,7 @@ fn search_box(
                 element!(Text(content: format!("  {}", search::fit(t, text_fit)), color: dim, italic: true, wrap: TextWrap::NoWrap)).into_any(),
             ),
             search::Row::More(g) => body.push(
-                element!(Text(content: format!("{mark}{}", s.more_label(*g)), color: if here { Color::White } else { Color::Cyan }, weight, wrap: TextWrap::NoWrap)).into_any(),
+                element!(Text(content: format!("{mark}{}", s.more_label(*g)), color: if here { BONE } else { FAIENCE }, weight, wrap: TextWrap::NoWrap)).into_any(),
             ),
             search::Row::Recent(i) => {
                 let Some(sess) = s.recent.as_ref().and_then(|r| r.get(*i)) else { continue };
@@ -1463,7 +1485,7 @@ fn search_box(
                     let mut contents = vec![MixedTextContent::new(format!("    {label}")).color(dim)];
                     let max = text_fit.saturating_sub(2 + search::cells(label));
                     for (text, hot) in search::runs(snippet, ranges, max) {
-                        let mut c = MixedTextContent::new(text).color(if hot { HEADING } else { Color::Grey });
+                        let mut c = MixedTextContent::new(text).color(if hot { HEADING } else { BONE_DIM });
                         if hot {
                             c = c.weight(Weight::Bold);
                         }
@@ -1483,7 +1505,7 @@ fn search_box(
         footer.push(MixedTextContent::new(LEGEND).color(dim));
     }
     for (i, action) in search::FOOTER.iter().enumerate() {
-        let mut c = MixedTextContent::new(format!("[{action}]")).color(Color::Grey);
+        let mut c = MixedTextContent::new(format!("[{action}]")).color(BONE_DIM);
         if s.focus == Focus::Footer(i) {
             c = c.invert().weight(Weight::Bold);
         }
@@ -1520,21 +1542,21 @@ fn board(m: &Model, width: u16) -> Option<AnyElement<'static>> {
     let fit = usize::from(width).saturating_sub(5);
     Some(
         element! {
-            View(border_style: BorderStyle::Round, border_color: Color::DarkGrey, flex_direction: FlexDirection::Column, padding_left: 1, padding_right: 1) {
-                Text(content: "agents", color: Color::DarkGrey)
+            View(border_style: BorderStyle::Round, border_color: SAND, flex_direction: FlexDirection::Column, padding_left: 1, padding_right: 1) {
+                Text(content: "agents", color: SAND)
                 #(rows.iter().take(BOARD_ROWS).map(|r| {
                     let row = agent_row(r, m.spinner(), width);
                     let (glyph, rest) = split_chars(&row, 2);
                     let (name, rest) = split_chars(rest, 15);
                     element! {
                         View(flex_direction: FlexDirection::Row) {
-                            Text(content: glyph.to_owned(), color: Color::Grey, wrap: TextWrap::NoWrap)
+                            Text(content: glyph.to_owned(), color: BONE_DIM, wrap: TextWrap::NoWrap)
                             Text(content: name.to_owned(), color: PEER, wrap: TextWrap::NoWrap)
-                            Text(content: rest.chars().take(fit.saturating_sub(17)).collect::<String>(), color: Color::Grey, wrap: TextWrap::NoWrap)
+                            Text(content: rest.chars().take(fit.saturating_sub(17)).collect::<String>(), color: BONE_DIM, wrap: TextWrap::NoWrap)
                         }
                     }
                 }))
-                #((more > 0).then(|| element!(Text(content: format!("… {more} more (/agents)"), color: Color::DarkGrey))))
+                #((more > 0).then(|| element!(Text(content: format!("… {more} more (/agents)"), color: SAND))))
             }
         }
         .into_any(),
@@ -1545,17 +1567,13 @@ fn board(m: &Model, width: u16) -> Option<AnyElement<'static>> {
 /// body rows in view and the overflow indicator. Session chrome beside the
 /// board, never a transcript entry; F2 gives it the keys.
 fn todo_card(c: TodoCard) -> AnyElement<'static> {
-    let border = if c.focused {
-        Color::Blue
-    } else {
-        Color::DarkGrey
-    };
-    let head = if c.focused { Color::White } else { Color::Grey };
+    let border = if c.focused { OCHRE } else { SAND };
+    let head = if c.focused { BONE } else { BONE_DIM };
     let paint = |s: Option<TodoStatus>| match s {
-        Some(TodoStatus::InProgress) => Color::Cyan,
-        Some(TodoStatus::Pending) => Color::Grey,
-        Some(TodoStatus::Blocked) => Color::Yellow,
-        Some(TodoStatus::Done | TodoStatus::Dropped) | None => Color::DarkGrey,
+        Some(TodoStatus::InProgress) => FAIENCE,
+        Some(TodoStatus::Pending) => BONE_DIM,
+        Some(TodoStatus::Blocked) => OCHRE,
+        Some(TodoStatus::Done | TodoStatus::Dropped) | None => SAND,
     };
     element! {
         View(border_style: BorderStyle::Round, border_color: border, flex_direction: FlexDirection::Column, padding_left: 1, padding_right: 1) {
@@ -1563,7 +1581,7 @@ fn todo_card(c: TodoCard) -> AnyElement<'static> {
             #(c.rows.into_iter().map(|(status, text)| {
                 element!(Text(content: text, color: paint(status), wrap: TextWrap::NoWrap))
             }))
-            #(c.overflow.map(|s| element!(Text(content: s, color: Color::DarkGrey, wrap: TextWrap::NoWrap))))
+            #(c.overflow.map(|s| element!(Text(content: s, color: SAND, wrap: TextWrap::NoWrap))))
         }
     }
     .into_any()
@@ -1648,7 +1666,7 @@ fn entry(e: &Entry, spinner: &str, skip: usize, width: u16) -> AnyElement<'stati
             } else {
                 text.clone()
             };
-            plain(&shown, TextWrap::Wrap, |c| c.color(Color::DarkGrey).italic())
+            plain(&shown, TextWrap::Wrap, |c| c.color(SAND).italic())
         }
         Entry::Pending { name, progress, .. } => {
             let row = match progress {
@@ -1657,7 +1675,7 @@ fn entry(e: &Entry, spinner: &str, skip: usize, width: u16) -> AnyElement<'stati
             };
             element! {
                 View(margin_top: 1) {
-                    Text(content: format!("{spinner} {row}"), color: Color::DarkGrey, italic: true)
+                    Text(content: format!("{spinner} {row}"), color: SAND, italic: true)
                 }
             }
             .into_any()
@@ -1691,16 +1709,16 @@ fn entry(e: &Entry, spinner: &str, skip: usize, width: u16) -> AnyElement<'stati
             let path = a.path.display().to_string();
             let link = vec![
                 MixedTextContent::new(&path)
-                    .color(Color::DarkGrey)
+                    .color(SAND)
                     .decoration(TextDecoration::Underline)
                     .hyperlink(format!("file://{path}")),
-                MixedTextContent::new(format!("   {hint}")).color(Color::DarkGrey),
+                MixedTextContent::new(format!("   {hint}")).color(SAND),
             ];
             element! {
                 View(flex_direction: FlexDirection::Column, border_style: BorderStyle::Round, border_color: TOOL, padding_left: 1, padding_right: 1, margin_top: 1, margin_bottom: 1) {
                     Text(content: header, color: TOOL, weight: Weight::Bold)
                     #((a.title != a.name).then(|| element!(Text(content: a.title.clone(), wrap: TextWrap::Wrap))))
-                    #(error.map(|e| element!(Text(content: e, color: Color::Red, wrap: TextWrap::Wrap))))
+                    #(error.map(|e| element!(Text(content: e, color: CARNELIAN, wrap: TextWrap::Wrap))))
                     MixedText(contents: link, wrap: TextWrap::Wrap)
                     #(expanded.as_ref().map(|t| element!(View(flex_direction: FlexDirection::Column, margin_top: 1) {
                         #(t.view().lines().map(line))
@@ -1725,15 +1743,15 @@ fn entry(e: &Entry, spinner: &str, skip: usize, width: u16) -> AnyElement<'stati
             let job = job.as_ref().map(|j| {
                 element! {
                     View(flex_direction: FlexDirection::Column, margin_top: 1) {
-                        Text(content: j.header(), color: Color::DarkGrey, italic: true, wrap: TextWrap::NoWrap)
-                        #(j.rows().map(|l| element!(Text(content: l.chars().take(fit).collect::<String>(), color: Color::Grey, wrap: TextWrap::NoWrap))))
+                        Text(content: j.header(), color: SAND, italic: true, wrap: TextWrap::NoWrap)
+                        #(j.rows().map(|l| element!(Text(content: l.chars().take(fit).collect::<String>(), color: BONE_DIM, wrap: TextWrap::NoWrap))))
                     }
                 }
             });
             let summary = match result {
                 None => (
                     format!("{spinner} {}", scrape.as_deref().unwrap_or("running…")),
-                    Color::DarkGrey,
+                    SAND,
                 ),
                 Some((output, is_error)) => {
                     let mark = if *is_error { "✗" } else { "✓" };
@@ -1744,7 +1762,7 @@ fn entry(e: &Entry, spinner: &str, skip: usize, width: u16) -> AnyElement<'stati
                     };
                     (
                         format!("{mark} {}{hint}", result_line(output)),
-                        if *is_error { Color::Red } else { Color::Green },
+                        if *is_error { CARNELIAN } else { MALACHITE },
                     )
                 }
             };
@@ -1790,8 +1808,8 @@ fn entry(e: &Entry, spinner: &str, skip: usize, width: u16) -> AnyElement<'stati
             }
             .into_any()
         }
-        Entry::Info(t) => plain(t, TextWrap::Wrap, |c| c.color(Color::DarkGrey)),
-        Entry::Error(t) => plain(t, TextWrap::Wrap, |c| c.color(Color::Red)),
+        Entry::Info(t) => plain(t, TextWrap::Wrap, |c| c.color(SAND)),
+        Entry::Error(t) => plain(t, TextWrap::Wrap, |c| c.color(CARNELIAN)),
     }
 }
 
@@ -1842,7 +1860,7 @@ fn line(l: &markdown::Line) -> AnyElement<'static> {
                 c = c.italic();
             }
             if s.style.strike || s.style.dim {
-                c = c.color(Color::DarkGrey);
+                c = c.color(SAND);
             }
             if s.style.heading > 0 {
                 c = c.color(HEADING);
@@ -1851,7 +1869,7 @@ fn line(l: &markdown::Line) -> AnyElement<'static> {
                 }
             }
             if s.style.code {
-                c = c.color(Color::Cyan);
+                c = c.color(FAIENCE);
             }
             if let Some(url) = &s.style.link {
                 c = c.decoration(TextDecoration::Underline).hyperlink(url);

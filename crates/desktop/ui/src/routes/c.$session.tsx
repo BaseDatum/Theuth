@@ -227,7 +227,7 @@ function PrivateStrip({ session }: { session: string }) {
     <div className="mx-auto flex w-full shrink-0 items-center gap-3 px-4 py-1 text-xs md:max-w-[768px]">
       <Badge variant="outline">Private</Badge>
       {lost !== undefined && (
-        <span role="status" className="text-amber-600 dark:text-amber-400">
+        <span role="status" className="text-warning">
           {disconnectText(remaining(lost, now))}
         </span>
       )}

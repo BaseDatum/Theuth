@@ -205,7 +205,7 @@ function ScheduleRow({
           />
           {s.running ? (
             <span className="flex items-center gap-1.5">
-              <Pulse className="bg-emerald-500" /> running
+              <Pulse className="bg-success" /> running
             </span>
           ) : s.error !== null ? (
             <span className="text-danger">error</span>
@@ -252,7 +252,7 @@ function History({ name, onOpen }: { name: string; onOpen: (session: string) => 
               <td className="px-2 py-1 tabular-nums" title={r.fired_at}>
                 {new Date(r.fired_at).toLocaleString()}
               </td>
-              <td className="px-2 py-1 tabular-nums">{r.finished_at ? took(r.fired_at, r.finished_at) : <Pulse className="bg-emerald-500" />}</td>
+              <td className="px-2 py-1 tabular-nums">{r.finished_at ? took(r.fired_at, r.finished_at) : <Pulse className="bg-success" />}</td>
               <td className="px-2 py-1 font-mono">{r.result ?? 'running'}</td>
               <td className="px-2 py-1 text-fg-secondary">
                 {r.report !== null && (

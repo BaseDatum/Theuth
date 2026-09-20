@@ -96,7 +96,7 @@ export function Nodes() {
 }
 
 function Dot({ on }: { on: boolean }) {
-  return <span className={`inline-block size-2 shrink-0 rounded-full ${on ? 'bg-emerald-500' : 'bg-fg-tertiary/40'}`} />
+  return <span className={`inline-block size-2 shrink-0 rounded-full ${on ? 'bg-success' : 'bg-fg-tertiary/40'}`} />
 }
 
 function NodeRow({ node: n, onRename, onRemove }: { node: Node; onRename: (name: string) => void; onRemove: () => void }) {

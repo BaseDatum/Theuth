@@ -646,7 +646,7 @@ export function Composer({
             ))}
           {running && session ? (
             <Button
-              className="size-9 shrink-0 rounded-full"
+              className="size-9 shrink-0 rounded-full bg-danger text-primary-foreground hover:bg-danger/90"
               aria-label="Stop"
               onClick={() => void api.cancel(session)}
             >
@@ -654,7 +654,7 @@ export function Composer({
             </Button>
           ) : (
             <Button
-              className="size-9 shrink-0 rounded-full"
+              className="size-9 shrink-0 rounded-full bg-fg-accent text-primary-foreground hover:bg-fg-accent-hover"
               aria-label="Send"
               disabled={!text.trim() || busy || dictating}
               onClick={() => void submit()}
