@@ -18,7 +18,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 fn tool(allow: Vec<std::net::SocketAddr>, deadline: Duration) -> HttpRequestTool {
     HttpRequestTool {
         fetcher: Arc::new(
-            Fetcher::new_with_timeouts("wth-test", MAX_BYTES, 5, TIMEOUT, CONNECT_TIMEOUT)
+            Fetcher::new_with_timeouts("theuth-test", MAX_BYTES, 5, TIMEOUT, CONNECT_TIMEOUT)
                 .expect("client")
                 .allowing(allow),
         ),

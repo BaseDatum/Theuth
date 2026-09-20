@@ -13,7 +13,7 @@ names the alternative it beat and why.
 ## 1. Non-negotiables
 
 1. **No branding.** Crates, modules, types, config keys are named by function.
-   The only product name is the binary `wth`.
+   The only product name is the binary `theuth`.
 2. **No reinvented wheels.** Off-the-shelf library first; we write glue. A
    custom implementation needs a written reason in this doc.
 3. **Patch dependencies when needed, don't wait on upstream.** Patches live
@@ -57,7 +57,7 @@ or history index exists, and caches are owner-local and disposable (49 §4).
 
 ## 2. Process model
 
-One process. `wth` runs the bus, the agent, the tools, and the terminal UI
+One process. `theuth` runs the bus, the agent, the tools, and the terminal UI
 in-process. The RPC server is a plugin; enabling it turns the same binary into
 a headless daemon that a Tauri app or a second terminal attaches to.
 
@@ -66,20 +66,20 @@ interaction through serialization before there is a second UI.
 
 **How a GUI starts the daemon.** A Tauri `.app` launched from Finder has
 launchd's environment, not the shell's. It opens a pty and runs
-`$SHELL -l -i -c 'exec wth --headless'` on it - a terminal for one command,
+`$SHELL -l -i -c 'exec t --headless'` on it - a terminal for one command,
 no window - so the daemon is exactly the process a terminal would have
 produced. Design doc 18; the bundle around it (sidecar, signing, tray) is
-25 §5. **How a server starts it.** `wth --install-service` writes a launchd
+25 §5. **How a server starts it.** `t --install-service` writes a launchd
 LaunchAgent or a systemd user unit whose command is the same
-`$SHELL -l -i -c 'exec wth --headless'` without the pty (the journal /
+`$SHELL -l -i -c 'exec t --headless'` without the pty (the journal /
 `logs/service.log` is the transcript), starts it, and pairs the box to the
 user's main harness as a node; 32 §5.1. How any of them stays current: 39
 (added in 39, 2026-09-17).
 
 **Apps helper subprocess (46, added 2026-09-18):** the one exception to
-"everything in-process". Final OpenUI validation runs in `wth-app-parser-<hash>`,
+"everything in-process". Final OpenUI validation runs in `theuth-app-parser-<hash>`,
 a Bun-compiled copy of the same pinned upstream TypeScript parser the desktop
-renders with, shipped beside `wth` and spawned lazily by `crates/app` on the
+renders with, shipped beside `theuth` and spawned lazily by `crates/app` on the
 first `app` call (`--version` must print this binary's library hash first;
 JSON lines over stdio, 8 queued requests, 2 s deadline, killed and replaced on
 timeout or crash). It sees a final source and a tool snapshot and returns
@@ -87,7 +87,7 @@ diagnostics and metadata — never a render tree, never a tool call. Rationale:
 one maintained grammar instead of a Rust reimplementation, and the boundary is
 cold (one document per publish; per-token parsing stays in the client's JS
 heap). No custom Rust grammar, no Monty app backend, no generic JS plugin
-runtime. `wth --app-parser-hash` lets packaging and the updater (39) check the
+runtime. `t --app-parser-hash` lets packaging and the updater (39) check the
 helper against the binary.
 
 ## 3. Message bus: kameo
@@ -161,7 +161,7 @@ pub struct Runtime {
 // helpers: rt.publish(event), rt.subscribe::<A, T>(&actor), subscriber_mailbox()
 ```
 
-`wth/main.rs` is, in full: build `Runtime`, `for p in plugins { p.start(&rt).await? }`,
+`theuth/main.rs` is, in full: build `Runtime`, `for p in plugins { p.start(&rt).await? }`,
 wait for shutdown. Plugin order is the vector order; a plugin needing another
 looks it up by name at first use. A plugin may wait for a named actor at
 start (`Runtime::lookup_when`, 12 §2); it must not assume vector order.
@@ -170,7 +170,7 @@ Shared crate `runtime` contains exactly `Plugin`, `Runtime` (+ the three
 helpers above), `SessionId`, `TurnId`. Nothing else. The tool and approval
 contracts live in `tools`; the agent's commands and its `AgentEvent` live in
 `agent`. Plugins depend on each other's crates for those types along the
-`runtime ← tools ← secrets ← knowledge ← agent ← link ← {signal, slack, nodes, schedule, artifact, update, voice} ← rpc ← tui ← wth`
+`runtime ← tools ← secrets ← knowledge ← agent ← link ← {signal, slack, nodes, schedule, artifact, update, voice} ← rpc ← tui ← theuth`
 (`knowledge` joins the chain in 12 §9; `secrets` in 37 §0.10 — `web`,
 `search-providers`, `agent`, `slack`, `rpc`, `signal` depend on it; `update`
 in 39: depends on `agent` only, `rpc` forwards its `UpdateReady`; the
@@ -573,7 +573,7 @@ and `export_artifact(id, dest)` (35 §3.5, added 2026-09-16)
 are the two asks on the artifact actor; the desktop's `resolveFile` fetches
 artifact blobs and previews through `get_attachment` unchanged.
 
-**ACP.** `wth --acp` speaks the Agent Client Protocol on stdio
+**ACP.** `t --acp` speaks the Agent Client Protocol on stdio
 (`rpc::AcpPlugin`, `crates/rpc/src/acp.rs`): the same actor lookups as the
 methods above, a bus-subscribed `Relay` translating
 `AgentEvent`/`ApprovalRequested` into `session/update`/`session/request_permission`.
@@ -699,8 +699,8 @@ the terminal already does).
 
 ## 9. Config
 
-`figment` 0.10: `<data_dir>/config.yaml` merged with `WTH_*` env; data dir
-defaults to `~/.wth`, with `secrets.vault` (encrypted vault: provider keys,
+`figment` 0.10: `<data_dir>/config.yaml` merged with `THEUTH_*` env; data dir
+defaults to `~/.theuth`, with `secrets.vault` (encrypted vault: provider keys,
 web keys, Slack tokens, the user's secrets — 37) and `secrets.key` (only
 without a keychain), `mcp/`, `skills/`,
 `knowledge/` (the OKF knowledge bundle, a git repository kept in-process by
@@ -730,7 +730,7 @@ the `agent` section still loads. Missing keys are off; a malformed
 section fails closed with a visible error.
 
 Hot reload (v0 read everything once; added in 01 §1.4 because MCP drop-ins
-are edited while `wth` runs): `mcp/` is watched (`notify`, 300 ms debounce).
+are edited while `theuth` runs): `mcp/` is watched (`notify`, 300 ms debounce).
 Skills (04 §1.1) and knowledge (10) resync at turn start by mtime. The
 direct tool list is read once per turn (12 §4).
 
@@ -766,24 +766,24 @@ crates/
   artifact/           plugin: show tool, content-addressed artifact store + index, Typst PDF compile and page render, SVG rasterise, prompt block + pdf skill, occurrence search over saved bytes (35, 49 §3.2)
   app/                plugin: `app` tool (OpenUI Lang source → `Kind::App` artifact via the helper subprocess), `Apps` actor (`get_app`/`app_call_tool`/`app_call_status`/`app_close`, one-press consent, admission, durable pressed invocations), `AppCallChanged`, bundled `apps` skill (46)
   packages/apps/      TS: curated OpenUI library + compatibility hash, `check`, helper (`bun build --compile`), patched renderer adapter shared with desktop (46 §4, §6.2, §7)
-  update/             plugin: silent self-update of the `wth` binary — manifest GET, minisign verify, atomic rename; `--update` (added in 39)
+  update/             plugin: silent self-update of the `theuth` binary — manifest GET, minisign verify, atomic rename; `--update` (added in 39)
   voice/              plugin: read replies aloud — Pocket TTS via `ptts`, `markdown::spoken`, Opus packets as `SpeechAudio` events (43); live dictation (Nemotron streaming) into the composer (54)
-  relay/              bin: wth-relay, stateless encrypted-frame relay (31)
+  relay/              bin: theuth-relay, stateless encrypted-frame relay (31)
   tui/                plugin: iocraft frontend (§8)
   a2a/                plugin: A2A network boundary — official Rust SDK client/server, loopback listener gated by `a2a.enabled` and the global communication switch, `peers.yaml` bindings, `/a2a` status/reload (50 §6; implemented 2026-09-18, verification pending)
   desktop/            app: Tauri menubar frontend, RPC client of `Api` - not a plugin (designed in 25)
-  wth/                bin: config load, plugin list from CLI flags, run (§2); service.rs: --install-service / --uninstall-service (32 §5.1)
+  theuth/                bin: config load, plugin list from CLI flags, run (§2); service.rs: --install-service / --uninstall-service (32 §5.1)
 docs/design/          this file and per-plugin decisions
 ```
 
 v0 named six crates (`runtime`, `agent`, `oauth`, `tools`, `rpc`, `tui`) plus
-the `wth` bin; the rest were added by the docs named beside them, each as the kind
+the `theuth` bin; the rest were added by the docs named beside them, each as the kind
 (plugin or library) that doc argued for. `rpc` starts with `--serve` or
 `--headless`. Budget: `runtime` ≤ 400 lines. `agent` is the loop and what
 the loop must own (store, frame, compact, repl); frontends do not grow it.
 New subsystems earn a plugin. `agent/src/lib.rs` re-exports; command structs
 live next to the handler that answers them (12 §8). Dependency order:
-`runtime ← tools ← secrets ← knowledge ← agent ← link ← {signal, slack, nodes, schedule, artifact, update, voice, a2a} ← rpc ← tui ← wth`
+`runtime ← tools ← secrets ← knowledge ← agent ← link ← {signal, slack, nodes, schedule, artifact, update, voice, a2a} ← rpc ← tui ← theuth`
 (`update` depends on `agent` and `runtime` only, `rpc` forwards
 `UpdateReady` and answers `update_status`, 39 §4.3; `voice` depends on
 `runtime` and `markdown` only, `rpc` forwards `VoiceEvent` and answers
@@ -794,13 +794,13 @@ live next to the handler that answers them (12 §8). Dependency order:
 imports `link::qr`; `nodes` imports `link`'s identity, initiator and record
 codec; `tui` renders `link`'s status and QR; `rpc` sends `link` its
 dispatch as a `SetDispatch` message at start, 32 §3.1 — never a handle
-threaded through `wth`; `artifact` depends on `agent` for
+threaded through `theuth`; `artifact` depends on `agent` for
 `AgentEvent::SessionDeleted` — subscribed — and asks `agent::ListSessions`
 once per search build so an orphaned record is never searchable (49 §4.3);
 it also depends on `tools`/`runtime`; nothing below `rpc` depends on it, 35
 §13; `search` depends on no workspace crate and `knowledge`, `agent`,
 `artifact`, `rpc`, `tui` depend on it, 49 §4.1; `rpc::SearchToolsPlugin` is
-listed in both agent-bearing plugin vectors of `wth` independently of
+listed in both agent-bearing plugin vectors of `theuth` independently of
 `RpcPlugin`, so the `search` tool exists in plain TUI, `--print` and `--acp`
 runs without the listener, 49 §4.4;
 `scrape → {firecrawl-native, web, browser}` and `browser → web`, so there is
@@ -858,7 +858,7 @@ Workspace dependencies (versions verified 2026-09-09 via `cargo info`):
 | image | 0.25 (png) | resize + PNG for screenshots (27; ends 13 §0.4's avoidance) |
 | snow | 0.10 | Noise `IKpsk2`/`IK` on the harness side (31) |
 | tokio-tungstenite | 0.30 | relay uplink WebSocket client (31) |
-| axum / axum-server | 0.8 / 0.8 | `wth-relay` HTTP + WebSocket, `--tls` (31) |
+| axum / axum-server | 0.8 / 0.8 | `theuth-relay` HTTP + WebSocket, `--tls` (31) |
 | tower-http | 0.6 | relay: static UI bundle, CSP header (31) |
 | dashmap | 6 | relay: harness id → uplink table (31) |
 | rand | 0.9 | pairing secrets, relay cookie secret (31) |
@@ -959,8 +959,8 @@ Each phase ends with a runnable check, not a test suite.
 
 | Phase | Deliverable | Check | Status (2026-09-11) |
 |---|---|---|---|
-| 0 | workspace, `runtime`, `wth` starts an empty plugin list | `wth --version` | done |
-| 1 | agent + tui: streamed chat, sessions persisted and resumable | chat, quit, `wth --resume <id>` shows history | done; verified in a real pty |
+| 0 | workspace, `runtime`, `theuth` starts an empty plugin list | `t --version` | done |
+| 1 | agent + tui: streamed chat, sessions persisted and resumable | chat, quit, `t --resume <id>` shows history | done; verified in a real pty |
 | 1 | tools: shell via brush + fs, approval gate in tui | ask model to `ls`; approval modal; output returned | done; orphan kill verified (`sleep 30` group dead after timeout) |
 | 1 | mcp: one configured stdio server's tools callable | `@modelcontextprotocol/server-everything` `echo` | done (`everything__echo` → `Echo: hi`; registered as plain `echo` since 01 §1.4) |
 | 2 | rpc plugin, `--serve`; ts-rs bindings emitted | subscribe + send_input round trip over WS | done; headless e2e: shell + write/read + list/load sessions + shutdown, all over the wire |
@@ -971,7 +971,7 @@ Each phase ends with a runnable check, not a test suite.
 | 6 | steering ids + undo/redo | 01 §2.3, 07 §8.8 | done 2026-09-11 |
 | 7 | snap compaction (13) | `/compact snap` on a vision model; a fact only in the archive is recalled | done 2026-09-11 (4 frames, 10/10 offsets recalled without tools; ~4.5k tokens/frame measured) |
 | 8 | background jobs (14) | `shell` returns within grace; `<job_result>` starts a turn; no orphans at shutdown | done 2026-09-11 (stub → wake turn, mid-turn inject, inline once, `sleep 300` dead after shutdown) |
-| 9 | ACP (06): external harnesses as subagents, `wth --acp` | opencode child streams, approval relayed, result delivered, resume via session/load; stdio client runs prompt/deny/cancel/load | done 2026-09-12 |
+| 9 | ACP (06): external harnesses as subagents, `t --acp` | opencode child streams, approval relayed, result delivered, resume via session/load; stdio client runs prompt/deny/cancel/load | done 2026-09-12 |
 | 10 | server configuration (15): owners, per-user sandboxed workers (Landlock/Seatbelt), postgres later | — | shelved 2026-09-12; preconditions in 15 §9 |
 | 11 | web (16): `search_web`/`read_url` plugin + `search-providers` plugin (Firecrawl, SearXNG, OpenSERP, Brave) | keyless search merges engines with SERP features; SSRF matrix rejects; rendered fetch via a provider | done 2026-09-12 (search_web merges duckduckgo+wikipedia with a knowledge panel; SSRF refusals; rendered errors without a provider; firecrawl default-on, key-gated) |
 | 12 | Slack (21) | Socket Mode channel, streamed threads, approvals, subagent threads | done 2026-09-14 (21 §19) |
@@ -981,14 +981,14 @@ Each phase ends with a runnable check, not a test suite.
 | 16 | session search (26) | `search_sessions` over a real store ranks the expected session first with a highlighted snippet; ⌘K and `/search` show it | done 2026-09-15 (26 §8); public `search_sessions` replaced by `search` in phase 29 |
 | 17 | computer (27) | composite screenshot of two displays described; TextEdit typed into and verified from the PNG; a click on display 2 lands | done 2026-09-15 (screenshot + open/key/type/refusal smoked on two displays; live click aborted by the user mid-turn, mapping unit-tested only; 27 §13) |
 | 18 | rewind (29): edit, regenerate, fork | 29 §9 checks 1–6 headless, 7–8 in both UIs | in progress 2026-09-15 |
-| 19 | link (31): phone/browser drives the harness through a stateless relay, Noise E2E, same JSON-RPC | 31 §12 | done 2026-09-15 (relay + headless + `wth --link` QR; browser paired IKpsk2, reconnected IK, no secrets in storage; device script paired/reconnected/revoked; relay restart re-registers <4 s; TUI `/link` card and badge in a pty; iOS build, camera scan and 31 §11 bench not run; 31 §13) |
+| 19 | link (31): phone/browser drives the harness through a stateless relay, Noise E2E, same JSON-RPC | 31 §12 | done 2026-09-15 (relay + headless + `t --link` QR; browser paired IKpsk2, reconnected IK, no secrets in storage; device script paired/reconnected/revoked; relay restart re-registers <4 s; TUI `/link` card and badge in a pty; iOS build, camera scan and 31 §11 bench not run; 31 §13) |
 | 20 | nodes (32): a harness on another machine paired to this one; `spawn_subagent` runs there over a link mode-1 conn | 32 §11 | in progress 2026-09-15 |
 | 21 | schedule (34) | an `every: 20s` file fires a titled session twice; a `cron` reply lands in the owner DM; a laptop-sleep fire arrives once on wake | done 2026-09-16 (20 s cadence, restart reuse + `lost`, one-shot consumed, `busy` skip, model-made `demo-cron` via the tool; owner-DM delivery, timeout and laptop sleep not exercised; 34 §13) |
 | 22 | artifacts (35) | 35 §11 checks: a `.pdf` show compiles and its page-1 image comes back to the model; the card, panel and Slack thread each show it; a phone fetches it through the relay | done 2026-09-16 (headless: md/csv/svg/pdf shown, page-1 PNG to the model, compile error located `5:16`, v2 on re-show, list/get/export over RPC; TUI card, Ctrl+O and `/artifacts` on a pty; desktop webview, Slack/Signal live and the relay not exercised; 35 §14) |
 | 23 | loops (33) | a `0s` file with `until` runs until the check passes and removes itself; `schedule_done` from a run ends it; `pause`/`resume` flips the line; a run with a live child stays open; `schedule_status` reports from chat | done 2026-09-16 (all five headless; also `max_runs` cap, broken check, `removed`, restart → `lost` + resume, status from history after the file is gone; three defects found and fixed in smoke — tick wake, pending children, settle; owner-DM delivery, subtree timeout, the §2 port loop with an external harness not exercised; 33 §11) |
 | 24 | secrets (37) | a `shell` echoing `{{secret:T}}` shows the placeholder in every frontend and in `messages.body`; `secret_capture` stores a token the transcript never contains; a rotated key is reachable as `:-1` and restorable; a data dir with `credentials.yaml` starts with the file imported and gone; a placeholder in `read_url` asks | done 2026-09-16 (all headless with a real model, plus the TUI on a pty; three leaks found and fixed in smoke — expanded job `command` in `JobEvent`, capture output through `JobEvent`, pty tail; keychain key store and the desktop panes not exercised; 37 §15) |
 | 25 | scrape (38) + in-tree SERP (16 §3.2) | crawl a docs site scoped to its directory; `map_site` via sitemap; `search_web` keyless on google/bing/brave/qwant/duckduckgo | done 2026-09-17 (fetch tier live: docs.rs and tokio.rs crawls fill their budgets in scope, `map_site` 11 URLs with titles; SERP live: brave + duckduckgo answer, google/qwant walled, bing served decoys → `reject_decoys`; two crawl defects found and fixed in smoke — duplicate links eating the budget, nav chrome surviving `only_main_content`; headless `list_tools`/`get_prompt` checked; render tier, a real model turn and the UI on a live run not exercised; 38 §11; search_web one-call read+passages 2026-09-17, 16 §4.7) |
-| 26 | update (39): `wth` and `wth.app` update themselves, silently; Homebrew tap; Linux CLI tarballs | 39 §12 steps 1–10 | in progress 2026-09-17 |
+| 26 | update (39): `theuth` and `theuth.app` update themselves, silently; Homebrew tap; Linux CLI tarballs | 39 §12 steps 1–10 | in progress 2026-09-17 |
 | 27 | triggers (40): `on: hook` through the relay, `on: fs`, `when:` shell check on `every:` files | 40 §11 steps 1–6 | shelved 2026-09-17; preconditions in 40 §12 |
 | 28 | knowledge checks (41): `check:` on a concept, daily sweep, `(stale: …)` hints, `knowledge_verify`, picker/explorer run · edit · accept · fix with an agent | 41 §14 steps 1–6 | planned 2026-09-17 |
 | 29 | unified search (49): sessions, artifacts, knowledge, knowledge history behind one `search` RPC and one `search` tool; `search_refresh`; exact readers `get_artifact`/`artifact_search_match`/`knowledge_read_revision` | 49 §8 | done 2026-09-18 (fixture RPC smoke 62/62; tool invoked by a real model in runtime, native child, headless, `--print` and `--acp` runs; search and reads through the encrypted link; desktop/mobile dialog approved by the user; `/search` query, chips and artifact preview on a pty; release large corpus warm p95 2.4 ms, cold first reply 1.7 ms, all groups ready 4.0 s; peak RSS, the full 8.3 TUI matrix and the packaged iOS keyboard not measured; 49 §11) |

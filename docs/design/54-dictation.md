@@ -52,7 +52,7 @@ places the files).
    Nothing for the TUI over the wire — it is in-process.
    Permission: macOS attributes the TCC prompt to the responsible process —
    the `.app` when it spawned the daemon (`Info.plist` already carries
-   `NSMicrophoneUsageDescription`, 45 §7.5), the terminal app for a `wth`
+   `NSMicrophoneUsageDescription`, 45 §7.5), the terminal app for a `theuth`
    launched from a shell [INFERENCE; §10 check 8 verifies both].
 3. **STT is the cache-aware streaming transducer from `meetings/02-live.md`
    §0.1b: `nemotron-speech-streaming-en-0.6b` (int8) via
@@ -172,7 +172,7 @@ be built and dogfooded before a meeting depends on it.
 ## 3. Shape
 
 ```
- frontend (TUI in-process / desktop over WS)            wth daemon: voice plugin
+ frontend (TUI in-process / desktop over WS)            theuth daemon: voice plugin
  ┌──────────────────────────────────────────┐          ┌──────────────────────────────────────────────┐
  │ connect ──dictation_prewarm──────────────────────────▶ Dictation actor: Stream::open + Vad (blocking)│
  │                                          │◀─ DictationModel{Ready} ─┤                              │
@@ -385,7 +385,7 @@ the TUI in its status line, the desktop as a toast.
   `dictation.is_some()` so the 16 ms loop redraws. `/dictate` in
   `COMMANDS` toggles the same (menus, 02).
 - Status line reasons: "dictation: model loading…", "dictation: model
-  missing (~/.wth/models/nemotron-streaming-en)", "voice is disabled".
+  missing (~/.theuth/models/nemotron-streaming-en)", "voice is disabled".
 
 ## 7. Desktop
 
@@ -403,11 +403,11 @@ the TUI in its status line, the desktop as a toast.
   idempotent server-side).
 - `lib/hotkeys.ts`: `Binding` gains `ctrl?: boolean` (literal Ctrl,
   bypassing the `mod` mapping); `{ code: 'KeyD', ctrl: true, event:
-  'wth:dictate', inEditable: true }`; `Hotkey` union gains `'wth:dictate'`.
+  'theuth:dictate', inEditable: true }`; `Hotkey` union gains `'theuth:dictate'`.
   The handler's "bail on the other modifier" rule is skipped for bindings
   with `ctrl: true`.
 - `Composer.tsx`:
-  - `wth:dictate` listener (gated on `focused`, like `wth:focus-composer`):
+  - `theuth:dictate` listener (gated on `focused`, like `theuth:focus-composer`):
     idle → `start(api, text.slice(0, ta.selectionStart), text.slice(ta.selectionStart))`
     (a selection is collapsed to its start; nothing is replaced); dictating
     → `stop`. Escape while dictating → `discard` (the existing Escape
@@ -514,9 +514,9 @@ Each step ends with a runnable check (00 §12).
    (`dictation_status.active` set) and Ctrl+D there says so; text lands
    only in the one that started.
 6. **Permission.** check: fresh TCC state → first `dictation_start` from
-   the `.app` shows the system mic prompt attributed to wth; denial →
+   the `.app` shows the system mic prompt attributed to theuth; denial →
    `Finished{Error}` + toast, second attempt shows the settings hint (the
-   Computer pane's opener, 27); from a terminal-launched `wth` the prompt
+   Computer pane's opener, 27); from a terminal-launched `theuth` the prompt
    is attributed to the terminal (record which).
 7. **Phone over the relay.** check: link a phone (31) and open a chat →
    the dictation button is shown and enabled once the harness reports
@@ -544,7 +544,7 @@ Each step ends with a runnable check (00 §12).
   `meetings/02-live.md` §1: `Stream`, `vad::Gate` and the `ort` init order
   already exist from 54 — phase 2 consumes, does not build;
   `meetings/01-capture.md` §4.2: the mic fallback path is `voice::mic`.
-- `crates/wth/src/main.rs` `DEFAULT_CONFIG` voice section: the two keys;
+- `crates/theuth/src/main.rs` `DEFAULT_CONFIG` voice section: the two keys;
   repo `README.md` config bullet.
 
 ## 12. Rejected

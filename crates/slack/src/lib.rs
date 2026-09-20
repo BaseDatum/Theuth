@@ -4,7 +4,7 @@
 //! [`channel`] routes inbound messages to agent asks and agent events into
 //! per-thread workers, [`bubble`] renders one streamed message per turn,
 //! [`threads`] persists thread ↔ session bindings, [`commands`] answers
-//! `/wth`, [`user`] delivers `message_user` (24 §5).
+//! `/theuth`, [`user`] delivers `message_user` (24 §5).
 //!
 //! - commands on the `"slack"` actor: [`Status`], [`Allow`], [`RemoveAllowed`],
 //!   [`AllowChannel`], [`RemoveChannel`]
@@ -37,7 +37,7 @@ pub mod user;
 /// Registry name of the plugin's actor.
 pub const SLACK_ACTOR: &str = "slack";
 
-/// The Slack app manifest (21 §10.3); printed by `wth --slack-manifest`.
+/// The Slack app manifest (21 §10.3); printed by `t --slack-manifest`.
 pub const MANIFEST: &str = include_str!("../manifest.yaml");
 
 /// `[slack]` config section (21 §12).
@@ -51,7 +51,7 @@ pub struct SlackConfig {
     pub owner: String,
     /// More user ids allowed to talk; each owns their threads.
     pub allowed: Vec<String>,
-    /// Channels where `@wth` is honoured; empty = DMs only.
+    /// Channels where `@theuth` is honoured; empty = DMs only.
     pub channels: Vec<String>,
     /// Which tool calls become timeline cards.
     pub tools: ToolCards,
@@ -128,7 +128,7 @@ pub enum SlackEvent {
     },
     /// Tokens missing; nothing started.
     Unconfigured,
-    /// Terminal mode: the channel only runs in `wth --headless`.
+    /// Terminal mode: the channel only runs in `t --headless`.
     DaemonOnly,
 }
 
@@ -144,7 +144,7 @@ pub struct CallStats {
     pub rate_limited: u64,
 }
 
-/// Snapshot served by [`Status`], `/wth slack status`, `slack_status` and RPC (21 §13).
+/// Snapshot served by [`Status`], `/theuth slack status`, `slack_status` and RPC (21 §13).
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, kameo::Reply)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct SlackStatus {
@@ -158,7 +158,7 @@ pub struct SlackStatus {
     pub owner: String,
     /// Allowed user ids (excluding the owner).
     pub allowed: Vec<String>,
-    /// Channels where `@wth` is honoured.
+    /// Channels where `@theuth` is honoured.
     pub channels: Vec<String>,
     /// `channel:ts` → session bindings.
     pub threads: Vec<(String, SessionId)>,
@@ -371,7 +371,7 @@ impl runtime::Plugin for SlackPlugin {
                 (Some(bot), Some(app)) => Some((bot.as_str().to_owned(), app.as_str().to_owned())),
                 _ => {
                     tracing::warn!(
-                        "slack: secrets `slack_bot` (xoxb-…) and `slack_app` (xapp-…) must both be set (wth --slack-setup); slack not started"
+                        "slack: secrets `slack_bot` (xoxb-…) and `slack_app` (xapp-…) must both be set (t --slack-setup); slack not started"
                     );
                     None
                 }
@@ -473,9 +473,9 @@ pub fn render_status(s: &SlackStatus) -> String {
             format!("stream fallback for {session}: {reason}")
         }
         Some(SlackEvent::Unconfigured) => {
-            "unconfigured (secrets slack_bot / slack_app missing; run wth --slack-setup)".into()
+            "unconfigured (secrets slack_bot / slack_app missing; run t --slack-setup)".into()
         }
-        Some(SlackEvent::DaemonOnly) => "daemon only (runs in wth --headless)".into(),
+        Some(SlackEvent::DaemonOnly) => "daemon only (runs in t --headless)".into(),
     };
     let dash = |v: &[String]| {
         if v.is_empty() {
@@ -541,7 +541,7 @@ mod tests {
     #[test]
     fn manifest_parses() {
         let m: serde_yaml::Value = serde_yaml::from_str(MANIFEST).unwrap();
-        assert_eq!(m["features"]["slash_commands"][0]["command"], "/wth");
+        assert_eq!(m["features"]["slash_commands"][0]["command"], "/theuth");
         assert_eq!(m["settings"]["socket_mode_enabled"], true);
     }
 }

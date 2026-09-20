@@ -9,9 +9,9 @@ macOS. Recon (§2) is from the tree as of 2026-09-15 and from
 `../jarvis/crates/jarvis-bridge` + `../jarvis/docs/design/remote-ui-bridge.md`,
 which this design replaces in spirit (§1.1).
 
-Vocabulary. **Harness**: a running `wth` (terminal or headless). **Device**: a
+Vocabulary. **Harness**: a running `theuth` (terminal or headless). **Device**: a
 client that drives it — iPhone/iPad app, the desktop app, or a browser tab.
-**Relay**: the `wth-relay` server both dial into. **Link**: the feature — the
+**Relay**: the `theuth-relay` server both dial into. **Link**: the feature — the
 harness-side plugin, the device-side transport, and the pairing flow.
 
 ## 0. Decisions in one screen
@@ -161,7 +161,7 @@ the single-reader rule on the uplink socket (`bridge_uplink.rs:8-14`).
   re-subscribes on reconnect, demux by `params.subscription`
   (`ui/src/rpc/client.ts:18-20, 48-59, 112-151`). `useConnection { state,
   client, api, info }` (`store/connection.ts:6-30`). `connection()` Tauri
-  command or `VITE_WTH_URL/TOKEN` (`lib/tauri.ts:19-32`).
+  command or `VITE_THEUTH_URL/TOKEN` (`lib/tauri.ts:19-32`).
 - CSP `connect-src … ws://127.0.0.1:* ws://localhost:*` (`tauri.conf.json:34`).
 - shadcn Sidebar already switches to a `Sheet` under 768 px
   (`ui/sidebar.tsx:181-230`, `hooks/use-mobile.ts`), the only responsive
@@ -196,7 +196,7 @@ the single-reader rule on the uplink socket (`bridge_uplink.rs:8-14`).
 ## 3. Shape
 
 ```
-  harness (wth)                          relay (wth-relay)                    devices
+  harness (theuth)                          relay (theuth-relay)                    devices
   ┌──────────────────────┐   wss /h/<id>  ┌───────────────────┐  wss /h/<id>  ┌─────────────┐
   │ link plugin          │──────────────► │ id → uplink       │ ◄─────────────│ iPhone app  │
   │  identity (X25519)   │  one socket,   │ conn ↔ device ws  │  one socket   ├─────────────┤
@@ -211,11 +211,11 @@ Three deliverables, three crates/dirs:
 
 | part | where | kind | depends on |
 |---|---|---|---|
-| relay | `crates/relay/` → binary `wth-relay` | bin, not a plugin | tokio, axum, tokio-tungstenite, snow, tower-http, rustls (optional) |
+| relay | `crates/relay/` → binary `theuth-relay` | bin, not a plugin | tokio, axum, tokio-tungstenite, snow, tower-http, rustls (optional) |
 | link plugin | `crates/link/` | plugin (00 §4; `docs/plugins.md`) | runtime, snow, tokio-tungstenite, jsonrpsee (`Methods` only), qrcode — **not** `rpc`: `rpc::Api` returns `LinkStatus` and `bridge.rs` forwards `LinkEvent`, so `rpc → link`; the dispatch handle arrives as a message (§6.2) |
 | device transport + UI | `crates/desktop/ui/src/link/` and responsive changes across `ui/src` | TS | WebCrypto, `@tauri-apps/plugin-barcode-scanner`, `-deep-link` |
 
-Dependency order: `runtime ← link ← signal ← rpc ← tui ← wth`. `link` sits
+Dependency order: `runtime ← link ← signal ← rpc ← tui ← theuth`. `link` sits
 with the channel plugins below `rpc` (which names its types, like every
 plugin's); `signal` imports `link::qr` (one QR renderer); `tui` renders
 `link`'s status and QR. The `Methods` that `link` dispatches into is not
@@ -246,7 +246,7 @@ transport messages carrying JSON-RPC.
 
 ### 4.2 Relay layer
 
-Subprotocol `wth-link-1` on the upgrade. All frames binary. Text frames,
+Subprotocol `theuth-link-1` on the upgrade. All frames binary. Text frames,
 unknown ops and oversize frames close the socket (code 1002/1009).
 
 **Harness uplink** — `GET /h/<id>?role=harness`, one per harness. Frame:
@@ -293,7 +293,7 @@ messages on a conn are the handshake; the device is always the initiator.
 knows the harness static `Hs` and the one-time secret `psk`:
 
 ```
-Noise_IKpsk2_25519_AESGCM_SHA256   prologue = "wth-link-1" ‖ harness_id
+Noise_IKpsk2_25519_AESGCM_SHA256   prologue = "theuth-link-1" ‖ harness_id
 → e, es, s, ss          payload: PairHello { name: String, platform: String }
 ← e, ee, se, psk        payload: PairAccept { name: String /* harness display name */ }
 ```
@@ -312,7 +312,7 @@ is recorded.
 `devices.yaml`:
 
 ```
-Noise_IK_25519_AESGCM_SHA256       prologue = "wth-link-1" ‖ harness_id
+Noise_IK_25519_AESGCM_SHA256       prologue = "theuth-link-1" ‖ harness_id
 → e, es, s, ss          payload: mode:u8 | empty      (empty ≡ mode 0)
 ← e, ee, se             payload: SessionHello { name, version }
 ```
@@ -359,7 +359,7 @@ harness display name. Total ≈ 140–170 chars → QR version 7–8 (≈ 45×45
 modules, 45×23 terminal cells in `Dense1x2`). The relay's WebSocket URL is
 derived: `wss://<relay-host>[:port]/h/<b64url(Hs)>`.
 
-Why a URL and not `wth://…`: the system camera opens it. With the iOS app
+Why a URL and not `theuth://…`: the system camera opens it. With the iOS app
 installed and a universal link registered for `/link` (§8.3) the app opens
 and pairs; without the app, the relay serves the web build at `/link`, which
 reads `location.hash` and pairs in the browser. The fragment is never sent
@@ -379,7 +379,7 @@ paste box accepts; the parser also accepts the bare `1.<…>.<…>` part.
 | pending handshake per conn | 10 s to first valid transport record ⁽ʰ⁾ | `CLOSE 3` |
 | pairing | one pending, 5 min, single use ⁽ʰ⁾ | new `link_pair` replaces it |
 
-## 5. Relay: `crates/relay` → `wth-relay`
+## 5. Relay: `crates/relay` → `theuth-relay`
 
 ### 5.1 Hot path
 
@@ -418,7 +418,7 @@ struct Uplink { tx: mpsc::Sender<Bytes>, conns: DashMap<u32, mpsc::Sender<Bytes>
 ### 5.3 CLI and config
 
 ```
-wth-relay --listen 0.0.0.0:443 [--tls <cert.pem> <key.pem>] [--web <dir>]
+theuth-relay --listen 0.0.0.0:443 [--tls <cert.pem> <key.pem>] [--web <dir>]
           [--max-conns 64] [--cookie-secret <hex>]
 ```
 
@@ -431,7 +431,7 @@ start (browser sessions reset on restart; fine).
 
 `deploy/relay/Dockerfile`: `rustup target add x86_64-unknown-linux-musl`,
 `cargo build --release -p relay --target …-musl` (rustls, no OpenSSL),
-`FROM scratch`, `USER 65532`, `ENTRYPOINT ["/wth-relay"]`. Expected image
+`FROM scratch`, `USER 65532`, `ENTRYPOINT ["/theuth-relay"]`. Expected image
 ≈ 8–12 MB. `deploy/relay/compose.yaml`: the relay plus a Caddy for TLS as
 the boring default. No kustomize in v0 — one process is the deployment;
 §5.5 is how it grows.
@@ -466,7 +466,7 @@ connected, not what they say."*
 ```yaml
 link:
   enabled: false                          # `/link on`, Settings toggle, or hand-edit; hot
-  relay: wss://relay.wth.rwx.dev          # operator-chosen default (§16); self-host: your URL
+  relay: wss://relay.theuth.io          # operator-chosen default (§16); self-host: your URL
   name: ""                                # display name in the QR and on devices; "" → hostname
   max_devices: 16
 ```
@@ -474,7 +474,7 @@ link:
 `enabled: false` leaves `link/identity` and `link/devices.yaml` in place
 (re-enabling does not re-pair). The actor watches its own `Enable{bool}`
 command and persists through `write_config_value`; a `relay` change
-reconnects. Env: `WTH_LINK__ENABLED`, `WTH_LINK__RELAY`.
+reconnects. Env: `THEUTH_LINK__ENABLED`, `THEUTH_LINK__RELAY`.
 
 ### 6.2 Actor, commands, events
 
@@ -583,7 +583,7 @@ phone as on the desktop.
 "pair and manage phones")`; `Menu::Link` (modal) renders:
 
 ```
- link · relay.wth.rwx.dev · connected · Studio Mac (Hs 7Kq2…)
+ link · relay.theuth.io · connected · Studio Mac (Hs 7Kq2…)
  ● Sky's iPhone      iOS      paired 3d ago    online
  ○ laptop            macOS    paired 1d ago    seen 2h ago
  ─────────────────────────────────────────────
@@ -596,15 +596,15 @@ from `LinkPairing`, replaced by `paired: Sky's iPhone` on `LinkPaired`.
 `r`/`n` use the existing `Prompt` multi-step input (`model.rs:1045-1077`).
 Bare `/link` opens the menu; `/link on` when disabled enables and opens it.
 
-### 6.6 CLI: `wth --link`
+### 6.6 CLI: `t --link`
 
-For a headless box with no TUI: `wth --link` connects to the running daemon
+For a headless box with no TUI: `t --link` connects to the running daemon
 as an RPC client (`rpc.listen` + `<data_dir>/token`, jsonrpsee `ws-client`
 — today a dev-dep), calls `link_pair`, prints the QR and the key, waits for
 `LinkPaired` on `subscribe_events`, prints `paired: <name>` and exits.
 `--link` conflicts with `--headless`/`--serve`/`--acp`/`-p` like
 `--link-signal`. If the daemon is not running: `no harness on
-<rpc.listen>; start `wth --headless` first`.
+<rpc.listen>; start `t --headless` first`.
 
 ## 7. Device side (`crates/desktop/ui`)
 
@@ -707,7 +707,7 @@ authoritative history and no removed item can be shown from a stale cache.
 
 ```
  Link                                                   [on ]
- Relay   relay.wth.rwx.dev                 connected ●
+ Relay   relay.theuth.io                 connected ●
  Name    Studio Mac                                    [edit]
  ────────────────────────────────────────────────────────────
  Pair a device                                [Show QR]
@@ -851,7 +851,7 @@ Nothing above changes a desktop pixel at ≥ 768 px with a fine pointer; the
   plugin list is split `#[cfg(desktop)]` / `#[cfg(mobile)]` (`barcode-scanner`,
   `deep-link`).
 - `cargo tauri ios init` → `gen/apple/` (Xcode project committed; `build/` and
-  Externals gitignored). Bundle id `dev.rwx.wth.ios`;
+  Externals gitignored). Bundle id `io.theuth.ios`;
   `tauri.ios.conf.json` overlay: `identifier`, `bundle.iOS.minimumSystemVersion
   "17.0"`, no `externalBin`, CSP `connect-src 'self' ipc: http://ipc.localhost wss:`.
 - Universal link: `apple-app-site-association` served by the relay at
@@ -910,7 +910,7 @@ rows that assume the client is on the harness host:
 
 | what | budget | check |
 |---|---|---|
-| relay added latency | p99 < 1 ms, one core, 10 k device sockets on 100 harness uplinks, 100 msg/s each (1 M frames/s aggregate) | `crates/relay/bench/` throwaway: a bun or Rust driver that plays both ends against `wth-relay` on loopback and histograms echo RTT; deleted after the number is recorded in §13 |
+| relay added latency | p99 < 1 ms, one core, 10 k device sockets on 100 harness uplinks, 100 msg/s each (1 M frames/s aggregate) | `crates/relay/bench/` throwaway: a bun or Rust driver that plays both ends against `theuth-relay` on loopback and histograms echo RTT; deleted after the number is recorded in §13 |
 | relay memory | ≤ 16 KiB RSS per idle socket at 100 k sockets (≈ 1.6 GB) | same driver, idle phase, `ps` |
 | relay CPU per frame | ≤ 2 µs | driver, `perf`/Instruments |
 | phone end-to-end | a `TextDelta` published on the harness renders on the phone within 40 ms over LAN (relay on the LAN), 150 ms over cellular | timestamp in a debug event; measured once |
@@ -926,7 +926,7 @@ Each ends with a runnable check, not a test suite.
 |---|---|---|
 | 1 | `crates/relay`: uplink `NK`, device sockets, `OPEN/DATA/CLOSE/PRESENCE`, limits, `/healthz`, `/metrics`, `--tls`, Dockerfile | bench (§11) numbers recorded; two harness ids and eight devices on one relay: frames never cross conns (assert payload tags); a slow device gets `CLOSE 1` while its siblings keep streaming; killing the relay and restarting it: uplink and devices reconnect and resume |
 | 2 | `crates/link`: identity, uplink, `IKpsk2` pairing, `IK` sessions, records, `raw_json_request` dispatch, `devices.yaml`, actor + events; `rpc`: idempotent `bridge::start`, `Api` additions, bindings | a bun script implementing the device side with WebCrypto (`noise.ts`, run under Node 22) pairs with a headless harness through a local relay, calls `list_sessions`, subscribes, sends `send_input`, sees `TextDelta`s, uploads a PNG with `put_attachment` and gets it back with `get_attachment`; `snow ⇄ noise.ts` vectors both directions; revoke mid-stream → the script's socket closes and its next `IK` is refused; `Lagged` observed when the script stops reading |
-| 3 | TUI `/link` menu + QR card; `wth --link` | pair a second `wth` (as the script) from the TUI card; rename and revoke from the menu; `wth --link` against a headless daemon prints a scannable QR (phone camera reads the URL) |
+| 3 | TUI `/link` menu + QR card; `t --link` | pair a second `theuth` (as the script) from the TUI card; rename and revoke from the menu; `t --link` against a headless daemon prints a scannable QR (phone camera reads the URL) |
 | 4 | UI: `Transport` seam, `LinkTransport`, `noise.ts`, IDB keys, harness store, per-harness stores, `/link` route (paste), switcher, Settings › Link/Harnesses, `put/get_attachment` in every path, `save_attachment` deleted | Chromium at `localhost:1420`: paste a key, chat with a streaming tool call and an approval card, paste an image, switch to a second harness and back with no event bleed (the perf fixture from 25 §6.3 runs on harness A while B is visible: B's store receives nothing); vitest: `noise.ts` vectors, pairing-string parse, `resolveFile`, `methods.json` ⇄ `api.ts` |
 | 5 | mobile accommodations (§8.1) | Chromium device emulation iPhone 15 and iPad: every §8.1 row visible; desktop screenshots of 25 §4.4's four screens byte-identical before/after at 1280×860 |
 | 6 | iOS packaging (§8.3): `[lib]`, `cfg(desktop)` split, `tauri ios init`, scanner, deep link, AASA | on an iPhone over cellular against a harness at home through a self-hosted relay: scan from Settings › Link → chat → approve a `shell` call → switch harness → background 10 min → foreground reconnects; camera-app scan opens the app and pairs; revoke from the Mac → phone shows "revoked by Studio Mac" |
@@ -935,8 +935,8 @@ Each ends with a runnable check, not a test suite.
 
 ## 13. Status (as-built v0, 2026-09-15)
 
-Shipped: crates `relay` (`wth-relay`, §5) and `link` (§6); `rpc` gains the
-§6.4 methods, `LinkEvent` forwarding and the four exports; `wth` gains
+Shipped: crates `relay` (`theuth-relay`, §5) and `link` (§6); `rpc` gains the
+§6.4 methods, `LinkEvent` forwarding and the four exports; `theuth` gains
 `--link` and the plugin wiring; `tui` gains `/link`. UI: `src/link/*`
 (`transport.ts`, `noise.ts`, `keys.ts`, `idb.ts`, `harnesses.ts`,
 `frames.ts`, `pairing.ts`), `src/rpc/transport.ts`, `store/harness-scope.tsx`,
@@ -950,7 +950,7 @@ Deviations from the sections above:
 
 - **`link` does not depend on `rpc`** (§3 table, §6.2 "Methods object"): the
   dispatch arrives as a `SetDispatch { methods, acp }` message from
-  `rpc::RpcPlugin::start` (32 §3.1); the `MethodsFactory` that `wth/main.rs`
+  `rpc::RpcPlugin::start` (32 §3.1); the `MethodsFactory` that `theuth/main.rs`
   first injected was removed as 00 §1.4 god-wiring.
 - **`LinkPaired` is published before `LinkPairing { None }`** (§6.2 events):
   a listener sees the device before the pending row clears.
@@ -981,8 +981,8 @@ Verified (2026-09-15):
   workspace; `cargo check -p rpc --features ts`; `just ts-desktop` exported
   `LinkStatus`/`Device`/`Pairing`/`LinkEvent` and `methods.json` gained the
   nine methods; UI `tsc -b`, vitest 15 files / 89 tests, `vite build`.
-- Live: `wth-relay --listen 127.0.0.1:8787 --web crates/desktop/ui/dist` +
-  `wth --headless` with `link.enabled` → relay `/metrics uplinks 1`. `wth
+- Live: `theuth-relay --listen 127.0.0.1:8787 --web crates/desktop/ui/dist` +
+  `t --headless` with `link.enabled` → relay `/metrics uplinks 1`. `theuth
   --link` printed a scannable QR + key and `paired: Chrome` after the
   browser paired.
 - Browser container: headless Chromium at 390×844 opened
@@ -1107,8 +1107,8 @@ unchanged. User visual approval is owed.
   `rpc::Api` beside the TUI; `put_attachment`/`get_attachment` as `Api`
   methods; `rpc::bridge::start` idempotent (registered `"rpc.events"`).
 - **00 §10**: `link/  plugin: relay uplink, Noise pairing and sessions,
-  device registry (31)`; `relay/  bin: wth-relay, stateless encrypted-frame
-  relay (31)`; dependency order `runtime ← link ← signal ← rpc ← tui ← wth`;
+  device registry (31)`; `relay/  bin: theuth-relay, stateless encrypted-frame
+  relay (31)`; dependency order `runtime ← link ← signal ← rpc ← tui ← theuth`;
   `signal::qr` moves to `link::qr`.
 - **00 §12**: row 19 `link (31)`, with §12 here as its check column.
 - **25 §0.4**: still true (the webview owns the socket) — now through a
@@ -1117,7 +1117,7 @@ unchanged. User visual approval is owed.
   host" is reversed by §6.4 here; `save_attachment` is removed from
   `commands.rs` and §4.2's file list. **25 §5**: unchanged for macOS; §8.3
   here is the iOS sibling. Settings tab "Harnesses" (ACP) is renamed
-  "Agents" so "Harnesses" can mean wth harnesses (`TABS`, `SettingsTab`,
+  "Agents" so "Harnesses" can mean theuth harnesses (`TABS`, `SettingsTab`,
   `slack.rs`/`slash.ts` references, 06 §4 wording).
 - **09 §11**: `qr` now imported from `link`.
 - **`docs/plugins.md` §1 table**: a row for "a network peer that
@@ -1144,7 +1144,7 @@ unchanged. User visual approval is owed.
   PSK already proves. Optional `link.confirm` kept for the paranoid. §10.
 - **Passkeys / community account**: the console is single-user; a harness is
   an identity; there is no server to hold an account. §1.1.
-- **`wth://` custom scheme in the QR**: cannot be opened by a phone without
+- **`theuth://` custom scheme in the QR**: cannot be opened by a phone without
   the app; a URL with a fragment serves every path and hides the secret.
   §4.4.
 - **Loopback WebSocket from the link plugin to the rpc server** (jarvis B):
@@ -1177,7 +1177,7 @@ unchanged. User visual approval is owed.
 
 | # | question | default |
 |---|---|---|
-| 1 | default `link.relay` hostname | `wss://relay.wth.rwx.dev`; the operator of that host decides; self-host is one binary |
+| 1 | default `link.relay` hostname | `wss://relay.theuth.io`; the operator of that host decides; self-host is one binary |
 | 2 | `curve25519-dalek` fork under presage vs `x25519-dalek` 2 (snow's default resolver) | spike in step 2; if features do not unify, snow's `ring-resolver` |
 | 3 | `link.confirm` (Allow prompt on the harness) default | off |
 | 4 | record batching per tick | decided by §11's cellular measurement |

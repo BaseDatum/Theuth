@@ -133,7 +133,7 @@ mod tests {
 
     fn tempdir() -> PathBuf {
         let d = std::env::temp_dir().join(format!(
-            "wth-acp-{}-{:?}",
+            "theuth-acp-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));

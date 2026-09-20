@@ -16,7 +16,7 @@ and the `/skills` picker marks them `●`.
 ## Location
 
 `<data_dir>/skills/`, walked recursively on every model call (no restart, no
-reload). `<data_dir>` is `--data-dir` / `WTH_DATA_DIR`, else `~/.wth`. A
+reload). `<data_dir>` is `--data-dir` / `THEUTH_DATA_DIR`, else `~/.theuth`. A
 missing directory means no skills.
 
 | path                          | is                                                         |
@@ -50,7 +50,7 @@ manifest. Its skills show `[repo-name]` in `/skills` and refuse `add_skill` /
 `remove_skill` (edit upstream, or `remove_skill_repo`).
 
 ```
-~/.wth/skills/
+~/.theuth/skills/
   commit.md                   loose skill
   review/SKILL.md             directory skill
   anthropics-skills/          clone (/skills add https://github.com/anthropics/skills)

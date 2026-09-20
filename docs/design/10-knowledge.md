@@ -74,7 +74,7 @@ Verified against `crates/jarvis-okf/src/{store,rank,service}.rs`,
 | Project scoping "Phase D — later" | a fact about repo A is hinted while working in repo B | `scope` frontmatter key + boost (§2.3) |
 | Kept: hard-facts-only, ids in hints and `okf_get` before relying, own ranker, filesystem truth, reserved `index.md`/`log.md`, atomic writes, alpha crate isolated behind one module | | all kept |
 
-jarvis also pairs OKF with a "soft" memory (Hindsight retain/recall). wth has
+jarvis also pairs OKF with a "soft" memory (Hindsight retain/recall). theuth has
 no soft memory and this doc adds none: the compaction summary's `## Notes`
 carries soft context inside a session, and anything durable is a concept.
 
@@ -83,15 +83,15 @@ carries soft context inside a session, and anything durable is a concept.
 ### 2.1 Layout
 
 ```
-~/.wth/knowledge/
+~/.theuth/knowledge/
   index.md                      generated (okf::index::regenerate_indexes) after every write
-  log.md                        appended per write: "- put facts/wth-toolchain" under today's date
-  .git/                         created by Repo::open (gix init, isolated options); one commit per write, committer "wth <wth@localhost>"
-  facts/wth-toolchain.md        a concept; id = facts/wth-toolchain
+  log.md                        appended per write: "- put facts/theuth-toolchain" under today's date
+  .git/                         created by Repo::open (gix init, isolated options); one commit per write, committer "theuth <theuth@localhost>"
+  facts/theuth-toolchain.md        a concept; id = facts/theuth-toolchain
   entities/grafana-dev.md
   decisions/std-mutex-not-parking-lot.md
   procedures/signal-link.md
-  projects/wth.md
+  projects/theuth.md
 ```
 
 Directories are free; the harvest instruction (§5.3) and the guidance sentence
@@ -107,21 +107,21 @@ refuses ids with more than three segments (deep trees hide concepts from
 ```markdown
 ---
 type: fact
-title: wth's Rust toolchain lives under rustup, not on PATH
+title: theuth's Rust toolchain lives under rustup, not on PATH
 description: cargo/rustc are at ~/.rustup/toolchains/stable-aarch64-apple-darwin/bin; homebrew's rustup does not proxy them
-tags: [rust, toolchain, wth]
-scope: /Users/Sky.Moore/Develop/wth
+tags: [rust, toolchain, theuth]
+scope: /Users/Sky.Moore/Develop/theuth
 source: harvest
 timestamp: 2026-09-10T09:41:03Z
 ---
 `which cargo` fails in a fresh shell; the justfile prepends the toolchain bin
 (`just toolchain` prints it). Every non-`just` cargo invocation needs
 `export PATH="$(just toolchain):$PATH"`. Established 2026-09-09 when
-`cargo check` was "command not found". Related: [wth](/projects/wth.md).
+`cargo check` was "command not found". Related: [theuth](/projects/theuth.md).
 ```
 
 Frontmatter keys. OKF's: `type` (required, non-empty — the only conformance
-rule), `title`, `description`, `tags`, `timestamp`, `resource`. wth adds two,
+rule), `title`, `description`, `tags`, `timestamp`, `resource`. theuth adds two,
 both optional, both ignored by any other OKF consumer:
 
 | key | meaning |
@@ -136,8 +136,8 @@ person, account), `decision` (what was chosen and why), `procedure` (steps
 that worked), `project` (a hub concept linking the others). Unknown keys are
 preserved byte-for-byte by `okf::Frontmatter` (spec §4.1).
 
-Links are ordinary markdown links, bundle-absolute (`/projects/wth.md`) or
-relative (`./wth.md`), resolved by `okf::Link::resolve`. Broken links are kept
+Links are ordinary markdown links, bundle-absolute (`/projects/theuth.md`) or
+relative (`./theuth.md`), resolved by `okf::Link::resolve`. Broken links are kept
 (spec §5) and reported by `knowledge_get` as `→ missing`.
 
 Body cap: 16 KiB (`Err` beyond; the model is told to link, not paste).
@@ -197,11 +197,11 @@ they stay stable in logs and messages. What is used, all in
 ```
 open:      ThreadSafeRepository::open_opts(root, isolated) | init_opts(root, WithWorktree, default, isolated)    a normal .git, loose objects
 reconcile: (at open) write_blob every file under root except .git/; build the full tree from the empty tree;
-           differs from HEAD's tree → commit "reconcile" (catches edits made while wth was down and anything a failed
+           differs from HEAD's tree → commit "reconcile" (catches edits made while theuth was down and anything a failed
            commit left behind; writing an existing loose object is a no-op)
 commit:    base = HEAD's tree or the empty tree; editor = edit_tree(base); upsert(rel, Blob, write_blob(read(path)))
            per written path; remove(rel) per removed; tree == base → return HEAD's id (nothing to commit);
-           commit_as(sig, sig, "HEAD", message, tree, parent)      sig = "wth <wth@localhost>", time = now
+           commit_as(sig, sig, "HEAD", message, tree, parent)      sig = "theuth <theuth@localhost>", time = now
 history:   rev_walk([HEAD]).all(); keep a commit when the entry id at <id>.md differs from its first parent's
            (every commit when no id) → Change { commit: 7 hex, time: local "YYYY-MM-DD HH:MM", message: first line }
 show:      rev_parse_single(commit) → tree → the blob at <id>.md, as bytes; None when absent
@@ -224,7 +224,7 @@ Everything is loose objects; nothing is ever packed or gc'd by the harness.
 ```
 
 Sharing across machines is the user's `git remote add` + `push` on
-`~/.wth/knowledge` (or a future `knowledge` source like `add_skill_repo`);
+`~/.theuth/knowledge` (or a future `knowledge` source like `add_skill_repo`);
 not in this doc.
 
 ## 3. Index and ranker
@@ -325,8 +325,8 @@ mailbox; no new store.
 ```
 <knowledge>
 Concepts that may be relevant; call knowledge_get before relying on one:
-- `facts/wth-toolchain` — wth's Rust toolchain lives under rustup, not on PATH [fact]: cargo/rustc are at ~/.rustup/…
-- `procedures/signal-link` — Linking wth as a Signal device [procedure]: run --link-signal, scan, then --headless
+- `facts/theuth-toolchain` — theuth's Rust toolchain lives under rustup, not on PATH [fact]: cargo/rustc are at ~/.rustup/…
+- `procedures/signal-link` — Linking theuth as a Signal device [procedure]: run --link-signal, scan, then --headless
 </knowledge>
 ```
 
@@ -418,7 +418,7 @@ HarvestNow (ask on the Session; `/knowledge harvest`, RPC knowledge_harvest → 
 
 The cadence harvest runs **inline at the end of the turn, before
 `TurnFinished`**, not concurrently with the next one. Before: one-shot
-clients (`wth -p`) exit on `TurnFinished`, and a harvest published after it
+clients (`theuth -p`) exit on `TurnFinished`, and a harvest published after it
 was cancelled every time (found in §12.6's first run). The reply text has
 already streamed; only the idle flip waits, and `Harvesting { session }`
 lets the TUI show `harvesting…` in the status line the way `Compacting`
@@ -565,7 +565,7 @@ model records and it would stop recording. `knowledge_delete` and
 `Turn::round` records ids passed to `knowledge_get` in
 `state.knowledge_read` (a `BTreeSet<String>` per epoch) for the head (§7).
 
-The bundle is also a directory: `read_file ~/.wth/knowledge/index.md` and
+The bundle is also a directory: `read_file ~/.theuth/knowledge/index.md` and
 `grep` work, and the `/cwd` mount does not include it (08 §4.4) — the tools
 are the runtime's path to it. When `knowledge.enabled` is false the plugin
 starts nothing: no actor, no tools; when the repo failed to open,
@@ -577,7 +577,7 @@ repository)` and the rest work.
 07 §8.4's head gains a part after `Runtime:`:
 
 ```
-Knowledge: read facts/wth-toolchain, procedures/signal-link
+Knowledge: read facts/theuth-toolchain, procedures/signal-link
 ```
 
 — the ids the model fetched this epoch, so the model knows what it held
@@ -690,8 +690,8 @@ agent:
     harvest_max: 8       # documents accepted per harvest
 ```
 
-Env overrides follow 01 §1.1 (`WTH_KNOWLEDGE__ENABLED`,
-`WTH_AGENT__KNOWLEDGE__HARVEST_EVERY`).
+Env overrides follow 01 §1.1 (`THEUTH_KNOWLEDGE__ENABLED`,
+`THEUTH_AGENT__KNOWLEDGE__HARVEST_EVERY`).
 
 ## 9. Cache accounting
 
@@ -762,7 +762,7 @@ impl Knowledge {
 pub fn terms(text: &str) -> Vec<String>;                                        // §3.3
 
 // knowledge::repo (sync, blocking; called inside spawn_blocking)
-pub const SIGNATURE: (&str, &str) = ("wth", "wth@localhost");
+pub const SIGNATURE: (&str, &str) = ("theuth", "theuth@localhost");
 pub struct Repo { root: PathBuf, inner: gix::ThreadSafeRepository }
 impl Repo {
     pub fn open(root: &Path) -> anyhow::Result<Self>;                              // open_opts | init_opts, isolated; then reconcile
@@ -858,9 +858,9 @@ by the e2e pass.
    `facts/toolchain`; the TUI hides it; `sessions.sqlite` has it as a user
    row. `cache 0%` on call one (fresh session), then ≥ 90 % on the next
    round with no `prefix cache miss` warning.
-      Result 2026-09-10: PASS. Seeded `facts/wth-toolchain`; input about `cargo check`
+      Result 2026-09-10: PASS. Seeded `facts/theuth-toolchain`; input about `cargo check`
    → history row 1 is the `<knowledge>` note naming it, the model called
-   `knowledge_get facts/wth-toolchain` in round 0, TUI hides the note; no
+   `knowledge_get facts/theuth-toolchain` in round 0, TUI hides the note; no
    `prefix cache miss` warning.
 2. **Hints, mid-turn.** A turn that reads `crates/signal/src/channel.rs` in
    round 2 with a seeded concept tagged `signal`; round 4 shows the note;
@@ -871,8 +871,8 @@ by the e2e pass.
    byte-identical to the pre-10 frame except the guidance sentence.
       Result 2026-09-10: not run end to end; `hint()` returns nothing for an
    empty index (unit-tested) and the loop appends no note on empty hits.
-4. **Ranker.** Unit: `terms("read /Users/x/wth/crates/agent/src/loop_.rs")`
-   → `users wth crates agent src loop` (`read` is a stopword, `x` and `rs`
+4. **Ranker.** Unit: `terms("read /Users/x/theuth/crates/agent/src/loop_.rs")`
+   → `users theuth crates agent src loop` (`read` is a stopword, `x` and `rs`
    are under three chars); a concept matching only `src` is not hinted
    (two-term rule); scoped concept ranks above an unscoped twin when cwd
    matches and below it when not.
@@ -881,10 +881,10 @@ by the e2e pass.
 5. **Sync.** Edit a concept's title in an editor → next turn's `/knowledge`
    shows the new title; delete the file → the row goes; `rm
    knowledge.sqlite` → rebuilt on start with the same row count.
-      Result 2026-09-10: PASS. Title edited in an editor while wth was down →
+      Result 2026-09-10: PASS. Title edited in an editor while theuth was down →
    next start `knowledge sync updated=1` and a `reconcile` commit; `/knowledge`
    list shows the new title; `index_rebuilt_when_deleted` covers the `rm`.
-6. **Harvest.** Three turns that run tools in `/tmp/wth-know` with the
+6. **Harvest.** Three turns that run tools in `/tmp/theuth-know` with the
    toolchain fact discovered in turn one; after the third `TurnFinished` the
    log shows `harvest added=1`, `knowledge/facts/*.md` exists with `source:
    harvest` and a body citing the command, `knowledge_history` shows one
@@ -923,7 +923,7 @@ by the e2e pass.
    `Knowledge: read …` when `knowledge_get` was called in the epoch.
       Result 2026-09-10: PASS. `compact_at: 0.02`: log shows `harvest` (epoch 0)
    immediately before `compaction epoch=1`; the epoch-1 head ends with
-   `Knowledge: read facts/wth-toolchain`. First run showed the hook not firing
+   `Knowledge: read facts/theuth-toolchain`. First run showed the hook not firing
    on a session's first turn (`turns_since_harvest == 0`) — fixed by counting
    this turn's calls (§5.2).
 9. **Tools.** In one turn: `knowledge_put` (no approval prompt),
@@ -955,7 +955,7 @@ by the e2e pass.
 
 ## 13. Implementation order
 
-Each step leaves `wth` runnable. Steps 1–7 are built; 8 moved the module out
+Each step leaves `theuth` runnable. Steps 1–7 are built; 8 moved the module out
 of `agent` (paths above are post-move; steps 1–7 name the module as it was).
 
 1. ✅ `agent::knowledge`: `Knowledge` store (open, sync, get, put, delete,

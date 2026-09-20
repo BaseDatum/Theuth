@@ -975,7 +975,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn registered_tool_obeys_the_registry_and_reports_owner_states() {
         use runtime::Plugin;
-        let dir = std::env::temp_dir().join(format!("wth-search-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("theuth-search-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let rt = Runtime::new(figment::Figment::new(), dir.clone());
         let plugins: [Box<dyn Plugin>; 4] = [

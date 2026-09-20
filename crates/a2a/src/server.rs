@@ -1,5 +1,5 @@
 //! Server side (design doc 50 §4, §6): the SDK's `agent_card_router` and
-//! `jsonrpc_router` per export, behind wth's HTTP layer (bearer auth →
+//! `jsonrpc_router` per export, behind theuth's HTTP layer (bearer auth →
 //! trusted principal header, no CORS, private cards, 64 KiB body bound,
 //! per-peer rate/concurrency caps), with a [`RequestHandler`] that only
 //! translates typed requests into agent commands. No task store lives here.
@@ -42,7 +42,7 @@ use crate::config::{Staged, Token};
 /// Trusted seam between the HTTP layer and the handler (§6.1): the verified
 /// binding UUID. The released `jsonrpc_router` hands the handler only the
 /// lowercased header map, so the layer strips any inbound copy first.
-pub const PRINCIPAL_HEADER: &str = "x-wth-a2a-principal";
+pub const PRINCIPAL_HEADER: &str = "x-theuth-a2a-principal";
 /// `a2a_types::SVC_PARAM_VERSION` as axum lowercases it.
 const VERSION_PARAM: &str = "a2a-version";
 /// Outer JSON body bound (§8); the SDK's 10 MiB inner limit never applies.

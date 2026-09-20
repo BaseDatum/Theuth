@@ -87,7 +87,7 @@ for both windows, and watch the live log in the main window.
   "width": 440, "height": 44, "shadow": false }`. `bundle.macOS.minimumSystemVersion`
   `"12.0"` → `"15.0"` (53 §2.3; also makes `LSMinimumSystemVersion` 15).
   Note in 25 at integration.
-- `Info.plist` gains `NSAudioCaptureUsageDescription` ("wth records the
+- `Info.plist` gains `NSAudioCaptureUsageDescription` ("theuth records the
   audio of the meeting app you choose while a meeting is recording.") beside
   `NSMicrophoneUsageDescription` (update its text: it now also covers
   meetings).
@@ -291,8 +291,8 @@ Implemented 2026-09-20. Rust: `crates/desktop/src/island.rs` (+≈170), `lib.rs`
 `components/chat/MeetingCard.tsx`, `components/settings/Meetings.tsx`, routes
 `/island`, `/meetings`, `/meetings/new`, `/meetings/$id`, `dev/meeting-fixture.ts`;
 `api.ts`/`events.ts`/`rpc.ts` wiring; sidebar link + glyph. Verified with
-`bun run tauri dev` (`WTH_DATA_DIR=/tmp/wth-meet`, the phase-2 scratch dir,
-`target/debug/wth`, haiku as `session_model`) on macOS 15, one external LG
+`bun run tauri dev` (`THEUTH_DATA_DIR=/tmp/theuth-meet`, the phase-2 scratch dir,
+`target/debug/t`, haiku as `session_model`) on macOS 15, one external LG
 2560×1440 (lid closed — no notch present during the shell-side checks),
 QuickTime Player playing the phase-2 two-voice clip as the meeting app.
 
@@ -313,7 +313,7 @@ QuickTime Player playing the phase-2 two-voice clip as the meeting app.
    Drag → `Moved` → saved under key `0,0,2560,1440`; the next show re-applied
    the saved point; the user's drags during dogfood were remembered across
    stop/start. Both webviews share one `localStorage` (one
-   `localstorage.sqlite3` under `~/Library/WebKit/wth-desktop`, the origin is
+   `localstorage.sqlite3` under `~/Library/WebKit/theuth-desktop`, the origin is
    the same) — decision 3's inference holds; each webview nonetheless
    persists what it reads and the `capture-hidden` event syncs the eye, so
    nothing depends on it. Notch placement and the external-display
@@ -346,7 +346,7 @@ QuickTime Player playing the phase-2 two-voice clip as the meeting app.
   per app; check 6 PTT end to end (the hotkey registers/unregisters on
   `Recording|Paused` — exercised only as ⌥⇧E); check 9 conflicting-chord toast;
   check 10 disabled mode (needs a daemon relaunch with
-  `WTH_MEETING__ENABLED=false`); the `.app` bundle (TCC prompts are the
+  `THEUTH_MEETING__ENABLED=false`); the `.app` bundle (TCC prompts are the
   real ones only there).
 
 ### Deviations from the design above

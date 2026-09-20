@@ -252,7 +252,7 @@ struct Harness {
 
 impl Harness {
     async fn new(fake: Fake) -> Self {
-        let dir = std::env::temp_dir().join(format!("wth-vision-e2e-{}", Uuid::now_v7()));
+        let dir = std::env::temp_dir().join(format!("theuth-vision-e2e-{}", Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
         let model = |id: &str, image: bool| {
             json!({
@@ -554,7 +554,7 @@ async fn vision_fallback_contract_against_fake_provider() {
     let _registry = crate::REGISTRY_TEST_LOCK
         .lock()
         .unwrap_or_else(|p| p.into_inner());
-    let reg_dir = std::env::temp_dir().join(format!("wth-vision-reg-{}", Uuid::now_v7()));
+    let reg_dir = std::env::temp_dir().join(format!("theuth-vision-reg-{}", Uuid::now_v7()));
     std::fs::create_dir_all(&reg_dir).unwrap();
     let reg_rt = Runtime::new(figment::Figment::new(), reg_dir.clone());
     tools::registry::start(&reg_rt).await.unwrap();

@@ -1,10 +1,10 @@
-# Agent Client Protocol: external harnesses as subagents, wth as an agent
+# Agent Client Protocol: external harnesses as subagents, theuth as an agent
 
 Status: as-built v0 · 2026-09-12 (draft v0 2026-09-09) · extends `00-architecture.md` §5, §7; `01-config-and-subagents.md` §2. §8 lists what the build changed against the draft; where §8 disagrees with §1-§7, §8 wins. §8.1 (2026-09-18) records the boundary with agent communication (50); its integration is implemented but not yet verified against a running harness.
 
 Verified 2026-09-12. Client half (headless, real models; harness `opencode acp` 1.18.20 from `agents.yaml`, parent claude-sonnet-4-5): `spawn_subagent{agent:"opencode"}` → `SubagentSpawned`, child `TurnStarted{model:"opencode"}`, `ToolCallStarted bash`, `ToolCallFinished`, `TextDelta "ACP-OK-17"`, `TurnFinished end_turn`, parent turn with `<subagent_result stop="end_turn">ACP-OK-17</subagent_result>`; `send_message` with `await_reply` → second `session/prompt` on the same ACP session, answered from the child's context, `MessageDelivered` published; an entry with `OPENCODE_CONFIG` permission `bash: ask` → `ApprovalRequested{tool:"echo PERM-OK-5", risk: mutating, args:{command, kind:"execute"}}` on the child session, `resolve_approval allow` ran it, `deny` gave the harness `The user rejected permission to use this specific tool call.` and a silent turn end (result falls back to `[no reply; last tool result]`, §8.17); `cancel` on a child running `sleep 120` → `session/cancel` → `TurnFinished cancelled`, `<subagent_result stop="cancelled">`, process stays (idle child); RPC `shutdown` → zero `opencode acp` processes; restart + `send_message` to a store-only child respawned and `session/load`ed (harness recalled its first turn); unknown agent → tool error `unknown agent \`nope\`; configured: opencode, opencode-ask`; `list_acp(probe:true)` → `ok` for both; `command: /nonexistent/harness` → child `Error "spawn failed: Internal error: No such file or directory (os error 2)"` + `TurnFinished error`, parent `<subagent_result stop="error">` with that text.
 Registry: `list_acp_registry` → 40 agents; `add_acp("codex-acp")` wrote `codex-acp: {command: npx, args: [-y, "@agentclientprotocol/codex-acp@1.11.0"], description: "ACP adapter for OpenAI's coding assistant"}`; `spawn_subagent{agent:"codex-acp"}` streamed `CODEX-OK` and delivered the result (codex login already on disk); `remove_acp` removed entries.
-Agent half (`wth --acp` driven by a throwaway Bun stdio client): `initialize` → `{protocolVersion:1, agentCapabilities:{loadSession:true, promptCapabilities:{embeddedContext:true}}, authMethods:[], agentInfo:{name:"wth", version}}`; `session/new` → wth session id; `session/prompt` streamed `tool_call{title:"shell", kind:"execute", in_progress}`, `session/request_permission` with `allow_once`/`reject_once`, `tool_call_update completed` with the shell output, `agent_message_chunk`, `usage_update`, `{stopReason:"end_turn"}`; `reject_once` → `tool_call_update failed "shell: denied by user"` and the model explained the denial; `session/cancel` during `sleep 30` → `{stopReason:"cancelled"}`; `session/load` replayed `user_message_chunk`, `tool_call`, `agent_message_chunk` and a follow-up prompt answered from the replayed history; `session/list` returned the session with `cwd` and title; stdin EOF → exit 0, no leftover process.
+Agent half (`t --acp` driven by a throwaway Bun stdio client): `initialize` → `{protocolVersion:1, agentCapabilities:{loadSession:true, promptCapabilities:{embeddedContext:true}}, authMethods:[], agentInfo:{name:"theuth", version}}`; `session/new` → theuth session id; `session/prompt` streamed `tool_call{title:"shell", kind:"execute", in_progress}`, `session/request_permission` with `allow_once`/`reject_once`, `tool_call_update completed` with the shell output, `agent_message_chunk`, `usage_update`, `{stopReason:"end_turn"}`; `reject_once` → `tool_call_update failed "shell: denied by user"` and the model explained the denial; `session/cancel` during `sleep 30` → `{stopReason:"cancelled"}`; `session/load` replayed `user_message_chunk`, `tool_call`, `agent_message_chunk` and a follow-up prompt answered from the replayed history; `session/list` returned the session with `cwd` and title; stdin EOF → exit 0, no leftover process.
 TUI on a pty: `/acp` opened the menu (entries, blank, registry rows `+ id  name version  description`); `p` showed `probing…` then `ok`.
 Not exercised: `binary` distribution install (download/sha256/tar|unzip), the `terminal`-type auth message, Zed/acpx as clients (not installed), `session/set_config_option`.
 
@@ -12,17 +12,17 @@ Not exercised: `binary` distribution install (download/sha256/tar|unzip), the `t
 (an LLM harness: Claude Code, Codex, Gemini CLI, OpenCode, Goose, Copilot,
 Cursor, Kiro, …) and a **Client** (an editor or any other UI). One crate,
 [`agent-client-protocol`](https://docs.rs/agent-client-protocol) 2.1.0,
-implements both roles. wth wants both, in this order of value:
+implements both roles. theuth wants both, in this order of value:
 
 1. **Client** — `spawn_subagent{agent: "codex"}` starts an installed harness
    as a child session. The parent, the roster, the approval modal, result
    delivery and peer messaging are the ones doc 01 §2 already has; only the
    thing running the turn changes. Every harness on the machine becomes a
    worker with its own model access, tools and subscription.
-2. **Agent** — `wth --acp` speaks ACP on stdio, so Zed, JetBrains, neovim,
+2. **Agent** — `t --acp` speaks ACP on stdio, so Zed, JetBrains, neovim,
    Emacs, VS Code, Obsidian, mobile and chat bridges (the
    [client list](https://agentclientprotocol.com/get-started/clients)) are
-   wth frontends without writing one. This replaces the "Tauri later" plan in
+   theuth frontends without writing one. This replaces the "Tauri later" plan in
    `00-architecture.md` §9 as the second-frontend milestone.
 
 The `cursor` crate is the pattern *not* to repeat: per-vendor reverse
@@ -67,17 +67,17 @@ Only agents that implement `authMethods` are listed (CI-verified).
 An ACP child is not a model. It brings its own tools, its own approval
 policy, its own context management and its own login (a Claude Max
 subscription through `claude-agent-acp`, ChatGPT through `codex-acp`). What
-wth gets back is a finished task, a transcript, and a stop reason — exactly
+theuth gets back is a finished task, a transcript, and a stop reason — exactly
 what `<subagent_result>` already carries. Modelling it as a session-shaped
 peer keeps every existing surface (`/agents` picker, approvals, `send_message`,
 `list_agents`, RPC events) working unchanged; modelling it as a model would
-force wth's loop to drive a harness that already has one.
+force theuth's loop to drive a harness that already has one.
 
 ## 3. Client: external harnesses as subagents
 
 ### 3.1 Which harnesses exist
 
-`~/.wth/acp/agents.yaml`, one entry per runnable harness:
+`~/.theuth/acp/agents.yaml`, one entry per runnable harness:
 
 ```yaml
 claude:
@@ -106,11 +106,11 @@ the registry already knows them.
 `npx` → `command: npx, args: [-y, <package>, ...args]`; `uvx` → `command:
 uvx, args: [<package>, ...args]`; `binary` → the `cmd`'s basename on `PATH`
 when the user already has it (the daemon runs under the login shell, doc 18),
-else download the current platform's archive into `~/.wth/acp/bin/<id>/`,
+else download the current platform's archive into `~/.theuth/acp/bin/<id>/`,
 verify `sha256`, extract, `command:` the extracted `cmd`. `/acp remove <name>`
 deletes the entry (and `bin/<id>` if
 present). The registry JSON is fetched on first `/acp` and re-fetched when
-older than a day (`~/.wth/acp/registry.json`); offline shows the cached one.
+older than a day (`~/.theuth/acp/registry.json`); offline shows the cached one.
 Hot-reloaded like `mcp/` (same `notify` watcher pattern, doc 01 §1.4): edit
 the file, next spawn sees it.
 
@@ -129,10 +129,10 @@ hourly).
 struct SpawnSubagentArgs {
     task: String,
     name: Option<String>,
-    /// An external harness from ~/.wth/acp/agents.yaml; default: a wth subagent.
+    /// An external harness from ~/.theuth/acp/agents.yaml; default: a theuth subagent.
     #[serde(default)]
     agent: Option<String>,
-    /// Absolute working directory for an external harness; default: wth's cwd.
+    /// Absolute working directory for an external harness; default: theuth's cwd.
     #[serde(default)]
     cwd: Option<PathBuf>,
 }
@@ -152,7 +152,7 @@ uniquified within the parent, `SubagentSpawned` published, permit acquired,
 runtime timer armed) but spawns an `AcpChild` actor instead of a `Session`:
 
 ```rust
-/// One external harness process bound to one wth session (crates/acp).
+/// One external harness process bound to one theuth session (crates/acp).
 pub struct AcpChild { … }
 impl Actor for AcpChild {
     /// Spawns the process, runs `initialize`, `session/new`; fails the actor
@@ -200,7 +200,7 @@ column now and makes this a one-call upgrade.
 
 ### 3.3 Event translation
 
-`AcpChild` turns `session/update` into `AgentEvent`s on its wth `SessionId`,
+`AcpChild` turns `session/update` into `AgentEvent`s on its theuth `SessionId`,
 so the TUI, RPC subscribers and the supervisor see a normal session.
 
 | `session/update` | `AgentEvent` |
@@ -243,9 +243,9 @@ request_permission {toolCall: {toolCallId, title, kind, rawInput}, options}
     turn cancelled  ⇒ outcome cancelled   (spec: MUST, when session/cancel was sent)
 ```
 
-`risk(kind)`: `read`/`search`/`fetch`/`think` → `ReadOnly`; `edit`/`move`/`execute`/`other` → `Mutating`; `delete` → `Destructive`. This is only the label the modal shows and the class `tools.policy` consults when `approvals` is on; the harness has already decided the call needs a human, so wth never auto-allows a request by policy alone — except `approvals: false` (session or global), which answers `allow_once` immediately, matching what it means for native tools.
+`risk(kind)`: `read`/`search`/`fetch`/`think` → `ReadOnly`; `edit`/`move`/`execute`/`other` → `Mutating`; `delete` → `Destructive`. This is only the label the modal shows and the class `tools.policy` consults when `approvals` is on; the harness has already decided the call needs a human, so theuth never auto-allows a request by policy alone — except `approvals: false` (session or global), which answers `allow_once` immediately, matching what it means for native tools.
 
-`allow_always` is never chosen on the human's behalf: wth's approval is
+`allow_always` is never chosen on the human's behalf: theuth's approval is
 per-call, and "always" would be remembered by the harness, outside our
 config. The handler must not await inside the dispatch loop (SDK §1):
 it `cx.spawn`s the `Approval` round-trip and responds from the task.
@@ -266,7 +266,7 @@ parent or resolves an `await_reply` waiter. What differs:
   so the transcript shows the real order.
 - **Child → parent.** The harness has no `send_message` tool, so an ACP child
   cannot ask the parent; its turn either finishes or times out. Upgrade
-  (§3.8): pass a wth MCP server in `session/new.mcpServers` that exposes
+  (§3.8): pass a theuth MCP server in `session/new.mcpServers` that exposes
   `send_message`. 50 does not change this (§8.1): A2A gives *independently
   operated* agents a channel, not an ACP child a reverse tool.
 - **Cancel** → `session/cancel`; the prompt response then arrives with
@@ -319,50 +319,50 @@ method types exist (spec `authentication.md`):
    same line next to the entry. Running it in a suspended-TUI shell (like
    `git` drops into `$EDITOR`) is the upgrade if this proves annoying.
 
-Keys the harness reads from the environment are the entry's `env` or wth's
-own environment; the child inherits both. wth does not proxy harness logins:
-its `/login` (doc 05) is for providers wth calls directly, and a harness's
+Keys the harness reads from the environment are the entry's `env` or theuth's
+own environment; the child inherits both. theuth does not proxy harness logins:
+its `/login` (doc 05) is for providers theuth calls directly, and a harness's
 subscription is already on disk once the user has used the harness.
 
 ### 3.8 Deliberately out of scope
 
 - **Client `fs`/`terminal` capabilities.** We advertise none: the harness
   uses its own tools, which is what the user runs it for. Advertising `fs`
-  would route every edit through wth for unsaved-buffer awareness we do not
-  have. Add when an editor-integrated wth needs it (§4.4).
-- **MCP back-channel** (`session/new.mcpServers` pointing at a wth-hosted
+  would route every edit through theuth for unsaved-buffer awareness we do not
+  have. Add when an editor-integrated theuth needs it (§4.4).
+- **MCP back-channel** (`session/new.mcpServers` pointing at a theuth-hosted
   MCP server exposing `send_message`, skills, the shared approval gate): the
-  right way to give children a voice and wth's tools. Needs an MCP *server*
-  in wth (`rmcp` `server` feature) reachable from a subprocess — a stdio
-  shim `wth mcp --session <id>` proxying to the daemon over RPC. One
+  right way to give children a voice and theuth's tools. Needs an MCP *server*
+  in theuth (`rmcp` `server` feature) reachable from a subprocess — a stdio
+  shim `theuth mcp --session <id>` proxying to the daemon over RPC. One
   transcript showing a stuck child that should have asked a question
   triggers it. (A remote child on a node, 32, is in the same position: it
   cannot ask its parent either.)
-- **Forwarding `~/.wth/mcp/*.json` to children.** Same mechanism
+- **Forwarding `~/.theuth/mcp/*.json` to children.** Same mechanism
   (`mcpServers`), zero code beyond a mapping — but doubles every MCP server
   process per child and bypasses our gates. Off by default; `agents.yaml`
   entry flag `mcp: inherit` when wanted.
 - **`session/list` / registry-driven install of `binary` distributions on
-  Windows** (no Windows build of wth).
-- **ACP proxies/conductor**: wth as a proxy that adds its skills and tools
+  Windows** (no Windows build of theuth).
+- **ACP proxies/conductor**: theuth as a proxy that adds its skills and tools
   to any agent for any editor. Attractive, orthogonal; separate doc if ever.
 
-## 4. Agent: `wth --acp`
+## 4. Agent: `t --acp`
 
-`wth --acp` is `--headless` with ACP on stdio instead of jsonrpsee on a
-socket: a full wth (plugins, sqlite, MCP servers, approvals) whose only
+`t --acp` is `--headless` with ACP on stdio instead of jsonrpsee on a
+socket: a full theuth (plugins, sqlite, MCP servers, approvals) whose only
 frontend is the ACP client that spawned it. Zed config, for example:
-`"agent_servers": {"wth": {"command": "wth", "args": ["--acp"]}}`.
+`"agent_servers": {"theuth": {"command": "t", "args": ["--acp"]}}`.
 
 ### 4.1 Mapping
 
 Same "registry lookup + `ask`" glue as `rpc/src/api.rs`; the bridge already
 serialises every wire-visible event.
 
-| ACP | wth |
+| ACP | theuth |
 |---|---|
-| `initialize` | `protocolVersion: 1`, `agentCapabilities: {loadSession: true, promptCapabilities: {image: false, embeddedContext: true}}`, `authMethods: []` (wth authenticates providers itself; a missing key surfaces as an `Error` update), `agentInfo: {name: "wth", version}` |
-| `session/new {cwd}` | `Agents.session(None)`; `cwd` is recorded on the session (new nullable column) and prepended to the system prompt as the working directory — wth's own tools already run relative to the process cwd, which the client set when spawning us |
+| `initialize` | `protocolVersion: 1`, `agentCapabilities: {loadSession: true, promptCapabilities: {image: false, embeddedContext: true}}`, `authMethods: []` (theuth authenticates providers itself; a missing key surfaces as an `Error` update), `agentInfo: {name: "theuth", version}` |
+| `session/new {cwd}` | `Agents.session(None)`; `cwd` is recorded on the session (new nullable column) and prepended to the system prompt as the working directory — theuth's own tools already run relative to the process cwd, which the client set when spawning us |
 | `session/load {sessionId}` | `LoadSession`; replay `Loaded.history` as `user_message_chunk` / `agent_message_chunk` / `tool_call`+`tool_call_update` (completed), then respond |
 | `session/list` | `ListSessions` |
 | `session/prompt {prompt}` | text blocks and `resource` blocks (embedded context → fenced with the uri) joined → `SendInput`; the handler `cx.spawn`s a task that awaits this session's `TurnFinished` on a `broadcast::Receiver` and responds `{stopReason}`; `"cancelled"`/`"error"` map to `cancelled`/`end_turn` + an `Error` update |
@@ -370,8 +370,8 @@ serialises every wire-visible event.
 | `session/update` ← `AgentEvent` | `TextDelta`→`agent_message_chunk`, `ReasoningDelta`→`agent_thought_chunk`, `ToolCallStarted`→`tool_call {title: name, kind: kind(name, risk), rawInput: args, status: in_progress}`, `ToolCallFinished`→`tool_call_update {status, content: [text]}`, `TurnFinished`→`usage_update {used: context, size: catalog context window}`, `MessageDelivered`→`user_message_chunk` (peer traffic is visible in editors too), `SubagentSpawned`/`ModelChanged`→ ignored |
 | `session/request_permission` ← `ApprovalRequested` | options `[allow_once "Allow", reject_once "Deny"]`; `selected` → `Resolve {decision}`; `cancelled` → `Resolve Deny` |
 | `session/set_config_option` / `config_option_update` | `model_config` category listing `ListModels`; select → `SetModel`. v1, not v0 |
-| `available_commands_update` | none in v0; wth's slash commands are UI, not model input |
-| `_wth/steer`, `_wth/list_agents`, … | extension methods, only if a client wants them; the jsonrpsee surface stays for the TUI and config menus |
+| `available_commands_update` | none in v0; theuth's slash commands are UI, not model input |
+| `_theuth/steer`, `_theuth/list_agents`, … | extension methods, only if a client wants them; the jsonrpsee surface stays for the TUI and config menus |
 
 `kind(name, risk)`: `read_file`/`glob`/`grep`→`read`/`search`,
 `write_file`/`edit`→`edit`, `shell`→`execute`, `spawn_subagent`/`send_message`→`other`,
@@ -379,24 +379,24 @@ MCP tools → by risk (`ReadOnly`→`other`, else `execute`). Labels only.
 
 ### 4.2 One process per client
 
-ACP clients spawn the agent. Two editors → two `wth --acp` processes on one
-`~/.wth`: sqlite is fine (WAL, one writer at a time per statement; sqlx's
+ACP clients spawn the agent. Two editors → two `t --acp` processes on one
+`~/.theuth`: sqlite is fine (WAL, one writer at a time per statement; sqlx's
 busy timeout covers it), MCP servers start twice (their cost), `token` and
 the RPC port are not used. A TUI running alongside sees the ACP sessions in
 `/sessions` after the fact but not live. Acceptable for v0; the fix is the
-same stdio shim as §3.8's MCP back-channel (`wth --acp` connecting to a
+same stdio shim as §3.8's MCP back-channel (`t --acp` connecting to a
 running daemon over jsonrpsee instead of hosting plugins), and the
 Transports WG's Streamable HTTP/WebSocket RFD may make the shim unnecessary.
 The in-daemon ACP server over a link mode-1 conn (32 §4.3;
 `rpc::acp::serve_records`, one `Relay` per process with per-connection
 session ownership) is the shim this paragraph anticipated, without a
 shim: the running daemon serves ACP itself and the sessions are its own.
-`wth --acp` on stdio stays for editors.
+`t --acp` on stdio stays for editors.
 
 ### 4.3 What the client sees that the TUI does not
 
-Nothing wth-specific: no `/model`, `/mcp`, `/login`, `/skills`. Those stay
-in the TUI or over jsonrpsee. A user of wth-in-Zed configures wth in the
+Nothing theuth-specific: no `/model`, `/mcp`, `/login`, `/skills`. Those stay
+in the TUI or over jsonrpsee. A user of theuth-in-Zed configures theuth in the
 terminal once; the editor is for turns. Config options (§4.1 `model_config`)
 close the most common gap.
 
@@ -428,7 +428,7 @@ crates/rpc/src/acp.rs   agent half: AcpPlugin + Relay bus actor (AgentEvent, app
                        connection that made them); serve_records for link mode-1 conns (32 §4.3).
                        RPC: list_acp(probe), add_acp(id), remove_acp(name),
                        list_acp_registry(). TS bindings EntryInfo.ts, RegistryAgent.ts.
-crates/wth/          --acp flag (conflicts with headless/serve/-p/link-signal): plugins
+crates/theuth/          --acp flag (conflicts with headless/serve/-p/link-signal): plugins
                        tools, knowledge, agent, signal (channel off), rpc::AcpPlugin;
                        first_run creates acp/.
 crates/tui/          /acp menu (Menu::Acp; keys p/⏎/d; /acp add <id>, /acp remove <name>);
@@ -442,7 +442,7 @@ no tokio dependency and adds `async-io`, `async-process`, `blocking`,
 
 ## 6. Implementation order (as executed)
 
-Each step left `wth` runnable.
+Each step left `theuth` runnable.
 
 1. `acp` crate: `agents.yaml` loader, `Harness` (`initialize` → `session/new`
    → `session/prompt`), renderers, `risk`/`kind`, `probe`. Checked through
@@ -464,7 +464,7 @@ Each step left `wth` runnable.
    Checked: `list_acp_registry` → 40 agents; `add_acp("codex-acp")` wrote
    the `npx` entry and `spawn_subagent{agent:"codex-acp"}` streamed
    `CODEX-OK`; `remove_acp` removed it. `binary` install not exercised live.
-4. `wth --acp`: `initialize`, `session/new`, `session/prompt` with streaming
+4. `t --acp`: `initialize`, `session/new`, `session/prompt` with streaming
    updates, `request_permission`, `session/cancel`, `session/load`,
    `session/list`. Checked with a throwaway Bun stdio client (Zed/acpx not
    installed): a turn streamed `tool_call` → `request_permission` →
@@ -487,9 +487,9 @@ Each step left `wth` runnable.
   exact command; `/acp`'s probe shows which entries actually work before a
   model tries one.
 - **Permission semantics.** A harness with its own "always allow" state
-  will stop asking; wth cannot see those calls beyond `tool_call` updates.
+  will stop asking; theuth cannot see those calls beyond `tool_call` updates.
   Acceptable — the user chose that harness and its policy — and stated in
-  the `/acp` entry line (`approvals: the harness's own; wth relays what it
+  the `/acp` entry line (`approvals: the harness's own; theuth relays what it
   asks`).
 - **Cost visibility.** External turns bill the harness's account;
   `usage_update` is optional and often absent, so `TurnFinished.usage` is
@@ -520,7 +520,7 @@ decision.
    `on_receive_request(AgentRequest → method_not_found)` is mandatory.
 4. **`AcpAgentConfig` has no cwd and denies unknown fields.** `agents.yaml`
    deserialises into our own `Entry { command, args, env, description }`
-   and builds the SDK config; the process inherits wth's cwd; `cwd` goes
+   and builds the SDK config; the process inherits theuth's cwd; `cwd` goes
    only into `session/new`.
 5. **No `crates/acp` actor, no `ChildSink` trait.** `AgentEvent` lives in
    `agent`; an actor in `acp` publishing it would need `agent` (cycle) or a
@@ -563,7 +563,7 @@ decision.
     the RPC bridge carries JSON and only exists with `RpcPlugin`. `rpc::acp`
     registers its own kameo actor on the bus for `AgentEvent`,
     `ApprovalRequested`, `ApprovalResolved` (same shape as both bridges) and
-    keeps per-session prompt waiters. The wth `SessionId` string *is* the ACP
+    keeps per-session prompt waiters. The theuth `SessionId` string *is* the ACP
     session id (no table).
 13. **`--acp` builds its own plugin vector**: tools, knowledge, agent,
     signal (channel off), `rpc::AcpPlugin`. Not `--headless` (which turns on
@@ -590,7 +590,7 @@ superseded. Nothing in this subsection has been exercised end to end; the
 - **Same transport, no reverse tools.** `AcpChild`, `Transport::{Process,
   Dial}`, the `session/prompt` queue and the §3.3 translation are unchanged.
   50 adds no ACP method, injects nothing into `session/new.mcpServers`, and
-  does not translate ACP tool calls into wth peer tools. An ACP child still
+  does not translate ACP tool calls into theuth peer tools. An ACP child still
   cannot `discover_peers`/`send_message`/`spawn_subagent`; `PeerInfo` for a
   `PeerKind::Acp` row says so (`send: true`, `reply: false` — it cannot
   answer with `reply_to`; `supervisor.rs::directory`) and it is still never
@@ -606,7 +606,7 @@ superseded. Nothing in this subsection has been exercised end to end; the
   §3.5.
 - **A2A is a separate, optional plugin.** `crates/a2a` (SDK client/server,
   `a2a.enabled: false` by default; only in the default plugin vector of
-  `wth/src/main.rs`, not `--acp`'s) is not a mode of `acp`, of `wth --acp`
+  `theuth/src/main.rs`, not `--acp`'s) is not a mode of `acp`, of `t --acp`
   or of `agents.yaml`. An external harness that implements A2A itself is
   configured as an A2A peer in `<data_dir>/a2a/peers.yaml`, with its own
   credential and export grants; bidirectionality then comes from *its*
@@ -614,7 +614,7 @@ superseded. Nothing in this subsection has been exercised end to end; the
   §8.10) and A2A context ids stay separate; an `agents.yaml` name and an
   A2A peer name are different namespaces and one entry never implies the
   other.
-- **`wth --acp` agent half.** Serves ACP to the editor as before. It does
+- **`t --acp` agent half.** Serves ACP to the editor as before. It does
   not expose A2A (no `a2a` plugin in that vector) and an ACP client's
   `session/prompt` is not a peer message: no `PeerRecord`, no
   provenance wrapper, no communication switch consulted.

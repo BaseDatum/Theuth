@@ -36,7 +36,7 @@ const SUB_BUF: usize = 4096;
 pub struct PairHello {
     /// Device display name.
     pub name: String,
-    /// `ios` | `macos` | `web` | `wth` | …
+    /// `ios` | `macos` | `web` | `theuth` | …
     pub platform: String,
 }
 

@@ -84,10 +84,10 @@ either to an agent.
 ```markdown
 ---
 type: fact
-title: wth's Rust toolchain lives under rustup, not on PATH
+title: theuth's Rust toolchain lives under rustup, not on PATH
 description: cargo/rustc are at ~/.rustup/toolchains/stable-aarch64-apple-darwin/bin
-tags: [rust, toolchain, wth]
-scope: /Users/Sky.Moore/Develop/wth
+tags: [rust, toolchain, theuth]
+scope: /Users/Sky.Moore/Develop/theuth
 source: harvest
 timestamp: 2026-09-10T09:41:03Z
 check: test -x ~/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo
@@ -212,7 +212,7 @@ Bindings via `just ts`.
 ### 6.1 Hint line (10 §4.1)
 
 ```
-- `facts/wth-toolchain` — wth's Rust toolchain lives under rustup, not on PATH [fact] (stale: check failed 2026-09-17): cargo/rustc are at …
+- `facts/theuth-toolchain` — theuth's Rust toolchain lives under rustup, not on PATH [fact] (stale: check failed 2026-09-17): cargo/rustc are at …
 ```
 
 Only `Failed` adds a suffix. The ranker (10 §3.3) is unchanged: a stale
@@ -243,7 +243,7 @@ changes; the branch is still one call on the cached frame.
 ### 6.3 Compaction head (10 §7)
 
 The `Runtime:` part lists stale concept ids that were hinted this epoch,
-one line: `Stale knowledge hinted: facts/wth-toolchain, entities/pg-staging`.
+one line: `Stale knowledge hinted: facts/theuth-toolchain, entities/pg-staging`.
 Fixed shape, only when non-empty.
 
 ## 7. Tools (10 §6)
@@ -290,7 +290,7 @@ The brief a UI sends to a new session (§9.3) is plain `new_session` +
 static card of 10 §8. Rows:
 
 ```
-✗ facts/wth-toolchain      — wth's Rust toolchain lives under rustup [fact]   failed 2026-09-17
+✗ facts/theuth-toolchain      — theuth's Rust toolchain lives under rustup [fact]   failed 2026-09-17
 ✓ entities/pg-staging      — staging Postgres [entity]                        passed 3h ago
 ? facts/relay-port         — relay listens on 8787 [fact]                     proposed
   decisions/kameo-bus      — kameo over ractor [decision]
@@ -358,12 +358,12 @@ FIX_BRIEF)`. `knowledge::fix_brief(concept) -> String` builds it so the two
 frontends do not carry two templates:
 
 ```
-<knowledge_check id="facts/wth-toolchain" title="wth's Rust toolchain lives under rustup, not on PATH" state="failed" at="2026-09-17T09:12:03Z" exit="1" took="0.3s">
+<knowledge_check id="facts/theuth-toolchain" title="theuth's Rust toolchain lives under rustup, not on PATH" state="failed" at="2026-09-17T09:12:03Z" exit="1" took="0.3s">
 $ test -x ~/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo
 (no output)
 </knowledge_check>
 
-The check on the knowledge concept `facts/wth-toolchain` (/knowledge/facts/wth-toolchain) failed.
+The check on the knowledge concept `facts/theuth-toolchain` (/knowledge/facts/theuth-toolchain) failed.
 Read it with knowledge_get. Find out what is true now — run commands, look at the machine.
 Then do one or both, and say which and why:
 - the fact changed → update the concept with knowledge_put, same id, with the evidence;

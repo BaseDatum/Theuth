@@ -172,7 +172,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock")
             .as_nanos();
-        std::env::temp_dir().join(format!("wth-routes-{test}-{nanos}"))
+        std::env::temp_dir().join(format!("theuth-routes-{test}-{nanos}"))
     }
 
     #[tokio::test]

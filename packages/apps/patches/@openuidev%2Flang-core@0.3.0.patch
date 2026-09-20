@@ -8,7 +8,7 @@ index 1676e13723d3006b839bb202f3ef68279784dcac..a80c9e550d4a19563ae97a8adc64cc36
 @@ -1,5 +1,43 @@
  import * as z from "zod/v4/core";
  
-+//#region wth/limits.d.ts (patch)
++//#region theuth/limits.d.ts (patch)
 +/** Named work bounds enforced by the patched parser, materializer and evaluator. */
 +declare const LIMITS: Readonly<{
 +  /** Source size in UTF-8 bytes accepted by parse()/streaming parser. */
@@ -121,7 +121,7 @@ index 8d3e88b2e739d9bb089b2267a80e0bca62795437..2ac0bb0956f6b0e4f3a69b9af75e2de7
  import { n as getPostHogConfig, o as normalizeProjectIdentity, r as isRuntimeTelemetryEnabled, t as TELEMETRY_REQUEST_TIMEOUT_MS } from "./shared-Dzgc28Wo.mjs";
  import { object } from "zod/v4";
  import * as z from "zod/v4/core";
-+//#region wth/limits.ts (patch: bounded parsing, materialization and evaluation — see packages/apps/patches)
++//#region theuth/limits.ts (patch: bounded parsing, materialization and evaluation — see packages/apps/patches)
 +/** Source size in UTF-8 bytes accepted by parse()/streaming parser (same unit the harness enforces). */
 +const MAX_SOURCE_BYTES = 131072;
 +/** Statements (`id = expr`) per program. */

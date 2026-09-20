@@ -101,7 +101,7 @@ const generated: GeneratedLibrary = {
 // ── catalog: compact named signatures for the prompt/skill ──
 const lines: string[] = [];
 lines.push(
-  `# wth apps component catalog (library ${hash.slice(0, 12)}) — root statement: root = ${LIBRARY_ROOT}([...])`,
+  `# theuth apps component catalog (library ${hash.slice(0, 12)}) — root statement: root = ${LIBRARY_ROOT}([...])`,
 );
 lines.push(
   "Positional arguments follow each signature; `name?` is optional; `$binding<T>` accepts a $state variable.",

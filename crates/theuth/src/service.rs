@@ -1,4 +1,4 @@
-//! `wth --install-service` / `wth --uninstall-service`: run this harness as a
+//! `t --install-service` / `t --uninstall-service`: run this harness as a
 //! background service through the login shell and pair it to a parent as a
 //! node (design doc 32 §5.1; the shell argument is 18 §2 with the pty
 //! dropped). A launchd LaunchAgent on macOS, a systemd user unit on Linux;
@@ -19,7 +19,7 @@ pub struct Opts {
 }
 
 /// Unit name on both platforms.
-const UNIT: &str = "wth";
+const UNIT: &str = "theuth";
 /// 18 §4: readiness is the port, not the log.
 const READY_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -268,7 +268,7 @@ fn plist(argv: &[String], data_dir: &Path) -> String {
 {args}  </array>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>WTH_LAUNCH</key>
+    <key>THEUTH_LAUNCH</key>
     <string>1</string>
     <key>TERM</key>
     <string>xterm-256color</string>
@@ -299,8 +299,8 @@ fn systemd_unit(argv: &[String]) -> String {
     let (shell, cmd) = argv.split_at(argv.len() - 1);
     let cmd = cmd[0].replace('\\', r"\\").replace('"', r#"\""#);
     format!(
-        "[Unit]\nDescription=wth harness\nAfter=network-online.target\n\n[Service]\nExecStart={} \"{cmd}\"\n\
-         Environment=WTH_LAUNCH=1 TERM=xterm-256color\nStandardInput=null\nRestart=on-failure\nRestartSec=2\n\n\
+        "[Unit]\nDescription=theuth harness\nAfter=network-online.target\n\n[Service]\nExecStart={} \"{cmd}\"\n\
+         Environment=THEUTH_LAUNCH=1 TERM=xterm-256color\nStandardInput=null\nRestart=on-failure\nRestartSec=2\n\n\
          [Install]\nWantedBy=default.target\n",
         shell.join(" ")
     )
@@ -347,14 +347,14 @@ fn remove(p: &Path) -> std::io::Result<()> {
     }
 }
 
-/// This machine's hostname; `"wth"` when `hostname` fails.
+/// This machine's hostname; `"theuth"` when `hostname` fails.
 fn hostname() -> String {
     std::process::Command::new("hostname")
         .output()
         .ok()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
         .filter(|h| !h.is_empty())
-        .unwrap_or_else(|| "wth".to_owned())
+        .unwrap_or_else(|| "theuth".to_owned())
 }
 
 #[cfg(test)]
@@ -364,8 +364,8 @@ mod tests {
     fn argv() -> Vec<String> {
         shell_argv(
             &(PathBuf::from("/bin/zsh"), true),
-            Path::new("/Applications/My Tools/wth"),
-            Path::new("/Users/me/it's here/.wth"),
+            Path::new("/Applications/My Tools/t"),
+            Path::new("/Users/me/it's here/.theuth"),
         )
     }
 
@@ -375,18 +375,18 @@ mod tests {
         assert_eq!(&a[..4], ["/bin/zsh", "-l", "-i", "-c"]);
         assert_eq!(
             a[4],
-            r"exec '/Applications/My Tools/wth' --headless --data-dir '/Users/me/it'\''s here/.wth'"
+            r"exec '/Applications/My Tools/t' --headless --data-dir '/Users/me/it'\''s here/.theuth'"
         );
     }
 
     #[test]
     fn plist_carries_exec_and_log() {
-        let p = plist(&argv(), Path::new("/Users/me/it's here/.wth"));
+        let p = plist(&argv(), Path::new("/Users/me/it's here/.theuth"));
         assert!(p.contains(
-            r"<string>exec '/Applications/My Tools/wth' --headless --data-dir '/Users/me/it'\''s here/.wth'</string>"
+            r"<string>exec '/Applications/My Tools/t' --headless --data-dir '/Users/me/it'\''s here/.theuth'</string>"
         ));
-        assert!(p.contains("<string>/Users/me/it's here/.wth/logs/service.log</string>"));
-        assert!(p.contains("<key>WTH_LAUNCH</key>\n    <string>1</string>"));
+        assert!(p.contains("<string>/Users/me/it's here/.theuth/logs/service.log</string>"));
+        assert!(p.contains("<key>THEUTH_LAUNCH</key>\n    <string>1</string>"));
     }
 
     #[test]
@@ -394,11 +394,11 @@ mod tests {
         let u = systemd_unit(&argv());
         assert!(
             u.contains(
-                r#"ExecStart=/bin/zsh -l -i -c "exec '/Applications/My Tools/wth' --headless --data-dir '/Users/me/it'\\''s here/.wth'""#
+                r#"ExecStart=/bin/zsh -l -i -c "exec '/Applications/My Tools/t' --headless --data-dir '/Users/me/it'\\''s here/.theuth'""#
             ),
             "{u}"
         );
-        assert!(u.contains("Environment=WTH_LAUNCH=1 TERM=xterm-256color\nStandardInput=null"));
+        assert!(u.contains("Environment=THEUTH_LAUNCH=1 TERM=xterm-256color\nStandardInput=null"));
         assert!(u.contains("WantedBy=default.target"));
     }
 

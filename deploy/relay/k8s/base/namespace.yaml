@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: wth
+  name: theuth
   labels:
-    app.kubernetes.io/name: wth
-    app.kubernetes.io/part-of: wth
+    app.kubernetes.io/name: theuth
+    app.kubernetes.io/part-of: theuth

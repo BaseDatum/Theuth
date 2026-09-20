@@ -40,7 +40,7 @@ impl Message<Settle> for Ledger {
 }
 
 const PAGE: &str = r#"<!doctype html><html><head><title>Fixture</title></head><body>
-<h1>WTH_FIXTURE_ALPHA</h1>
+<h1>THEUTH_FIXTURE_ALPHA</h1>
 <p>Hello from the fixture.</p>
 <form method="post" action="/submitted"><input name="q"><button type="submit">Go</button></form>
 </body></html>"#;
@@ -177,7 +177,7 @@ async fn drives_fixture_page() {
 
     let started = Instant::now();
     let port = serve();
-    let data_dir = std::env::temp_dir().join(format!("wth-browser-live-{}", uuid_ish()));
+    let data_dir = std::env::temp_dir().join(format!("theuth-browser-live-{}", uuid_ish()));
     std::fs::create_dir_all(&data_dir).expect("temp dir");
 
     let rt = runtime::Runtime::new(figment::Figment::new(), data_dir.clone());
@@ -203,7 +203,7 @@ async fn drives_fixture_page() {
             json!({ "url": format!("http://127.0.0.1:{port}/") }),
         )
         .await;
-    assert!(open.contains("WTH_FIXTURE_ALPHA"), "open reply: {open}");
+    assert!(open.contains("THEUTH_FIXTURE_ALPHA"), "open reply: {open}");
 
     let elements = kit.ok("browser_elements", json!({})).await;
     assert!(elements.contains("ref=e"), "elements: {elements}");
@@ -211,7 +211,7 @@ async fn drives_fixture_page() {
 
     kit.ok(
         "browser_fill",
-        json!({ "selector": "input[name=q]", "value": "hello wth" }),
+        json!({ "selector": "input[name=q]", "value": "hello theuth" }),
     )
     .await;
 
@@ -221,7 +221,7 @@ async fn drives_fixture_page() {
             json!({ "selector": "button[type=submit]" }),
         )
         .await;
-    let echoed = if clicked.contains("you sent: hello wth") {
+    let echoed = if clicked.contains("you sent: hello theuth") {
         clicked
     } else {
         eprintln!("click reply lacked the echo, waiting:\n{clicked}");
@@ -230,7 +230,7 @@ async fn drives_fixture_page() {
         kit.ok("browser_read", json!({})).await
     };
     assert!(
-        echoed.contains("you sent: hello wth"),
+        echoed.contains("you sent: hello theuth"),
         "after submit: {echoed}"
     );
 
@@ -283,7 +283,7 @@ async fn drives_fixture_page() {
         message: Call {
             session: kit.session,
             name: "browser_wait_for_text".to_owned(),
-            args: json!({ "text": "WTH_NEVER_APPEARS", "timeout": 2 }),
+            args: json!({ "text": "THEUTH_NEVER_APPEARS", "timeout": 2 }),
         },
         activity: Some(activity),
     });
@@ -314,7 +314,7 @@ async fn drives_fixture_page() {
     // The isolate is intact and serves the next command.
     let read = kit.ok("browser_read", json!({})).await;
     assert!(
-        read.contains("you sent: hello wth"),
+        read.contains("you sent: hello theuth"),
         "read after wait: {read}"
     );
 

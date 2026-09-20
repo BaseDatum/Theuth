@@ -94,8 +94,8 @@ impl std::fmt::Display for CaptureError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NoScreenRecording => f.write_str(
-                "screen recording not granted for the app that launched wth (your terminal, or wth.app): \
-                 System Settings › Privacy & Security › Screen Recording, enable it, then restart wth",
+                "screen recording not granted for the app that launched theuth (your terminal, or theuth.app): \
+                 System Settings › Privacy & Security › Screen Recording, enable it, then restart theuth",
             ),
             Self::NoSuchDisplay { wanted, have } => {
                 write!(f, "display {wanted} does not exist ({have} displays)")

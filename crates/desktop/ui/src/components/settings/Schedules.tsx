@@ -77,7 +77,7 @@ export function Schedules() {
   const list = schedules.data
   return (
     <Section title="Schedules">
-      {list?.length === 0 && <Empty>No schedule yet. Ask the model to `schedule` one, or drop a markdown file in ~/.wth/schedules/.</Empty>}
+      {list?.length === 0 && <Empty>No schedule yet. Ask the model to `schedule` one, or drop a markdown file in ~/.theuth/schedules/.</Empty>}
       {list && list.length > 0 && (
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -122,7 +122,7 @@ export function Schedules() {
         </div>
       )}
       <p className="pt-4 text-[13px] text-fg-tertiary">
-        Schedules are markdown files in ~/.wth/schedules/ — edit or delete them there, or ask the model to `schedule`.
+        Schedules are markdown files in ~/.theuth/schedules/ — edit or delete them there, or ask the model to `schedule`.
       </p>
     </Section>
   )

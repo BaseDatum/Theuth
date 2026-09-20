@@ -505,7 +505,7 @@ fn signal_status(s: &SignalStatus) -> String {
             format!("disconnected; retry in {retry_in_secs}s")
         }
         Some(SignalEvent::Unlinked) => "unlinked".to_owned(),
-        Some(SignalEvent::DaemonOnly) => "daemon only; run wth --headless".to_owned(),
+        Some(SignalEvent::DaemonOnly) => "daemon only; run t --headless".to_owned(),
     };
     let allowed = if s.allowed.is_empty() {
         "(none)".to_owned()

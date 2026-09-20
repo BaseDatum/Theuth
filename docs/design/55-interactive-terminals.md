@@ -82,7 +82,7 @@ Resolves the *running* job under `session` (exact `j{n}`; names are a tool
 convenience and stay out of this path). Under the parser lock, reads the
 modes and `encode`s (§2.2); under the writer mutex, `write_all` + `flush`
 (`spawn_blocking`, as `send` does). Stores `now_ms()` into
-`PtyHandle.user_input: AtomicU64`. Returns. Not appended to the log by wth;
+`PtyHandle.user_input: AtomicU64`. Returns. Not appended to the log by theuth;
 the process's own echo lands in the log as today.
 
 ### 2.2 `Key` grows; one encoder
@@ -294,7 +294,7 @@ Tests that stay:
 
 ## 9. Order
 
-Each step leaves `wth` green and is independently useful.
+Each step leaves `theuth` green and is independently useful.
 
 1. `encode()` with modes, `Key` growth, `PtyInput`, `user_input` trailer,
    RPC method + binding; tests. (The desktop can type the moment step 3

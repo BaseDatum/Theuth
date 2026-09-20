@@ -34,7 +34,7 @@ const WATCH: Duration = Duration::from_secs(60);
 pub const WINDOW: usize = 8_960;
 
 /// ONNX Runtime is loaded at run time, from the first of: the bundle (`Contents/Frameworks/`
-/// beside the `.app`'s `MacOS/wth`, or the binary's own directory — `package-macos.sh` ships
+/// beside the `.app`'s `MacOS/theuth`, or the binary's own directory — `package-macos.sh` ships
 /// it there, signed), the checkpoint directory, `$ORT_DYLIB_PATH`, Homebrew's
 /// (`brew install onnxruntime`). Linked statically it brings protobuf 3.21, which cannot share
 /// a process with the protobuf-lite 3.14 inside `sentencepiece` (ptts): the TTS load aborts. As
@@ -459,14 +459,14 @@ mod tests {
     #[test]
     fn engine_returns_words_with_monotonic_times() {
         let dir = match std::env::var_os("HOME") {
-            Some(h) => PathBuf::from(h).join(".wth/models").join(crate::TDT_MODEL_SUBDIR),
+            Some(h) => PathBuf::from(h).join(".theuth/models").join(crate::TDT_MODEL_SUBDIR),
             None => return,
         };
         if !dir.is_dir() {
             eprintln!("skipped: no TDT model at {}", dir.display());
             return;
         }
-        let path = std::env::temp_dir().join(format!("wth-stt-{}.wav", uuid::Uuid::now_v7()));
+        let path = std::env::temp_dir().join(format!("theuth-stt-{}.wav", uuid::Uuid::now_v7()));
         let ok = std::process::Command::new("say")
             .args(["-o"])
             .arg(&path)

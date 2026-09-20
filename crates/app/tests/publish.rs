@@ -1,7 +1,7 @@
 //! Publish → open → call, end to end through the real tool registry and
 //! artifact store, with a canned parser helper (the real one is a compiled
 //! Bun binary; its contract is exercised in `packages/apps`). One test: the
-//! kameo registry names and `WTH_APP_PARSER` are process-global.
+//! kameo registry names and `THEUTH_APP_PARSER` are process-global.
 
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -139,7 +139,7 @@ fn fake_helper(dir: &std::path::Path, body: &str) -> std::path::PathBuf {
     std::fs::write(
         &p,
         format!(
-            "#!/bin/sh\nif [ \"$1\" = --version ]; then echo \"wth-app-parser {}\"; exit 0; fi\n\
+            "#!/bin/sh\nif [ \"$1\" = --version ]; then echo \"theuth-app-parser {}\"; exit 0; fi\n\
              body='{body}'\n\
              while IFS= read -r line; do\n\
              id=$(printf '%s' \"$line\" | sed -E 's/^\\{{\"id\":\"([^\"]*)\".*/\\1/')\n\
@@ -248,7 +248,7 @@ async fn publish_open_call_edit_end_to_end() {
     .to_string();
     let body = &body[1..body.len() - 1];
     // SAFETY: one test in this binary; nothing else reads the environment concurrently.
-    unsafe { std::env::set_var("WTH_APP_PARSER", fake_helper(dir.path(), body)) };
+    unsafe { std::env::set_var("THEUTH_APP_PARSER", fake_helper(dir.path(), body)) };
     Box::new(AppPlugin).start(&rt).await.unwrap();
     for _ in 0..200 {
         let specs = reg.ask(tools::ListTools(None)).await.unwrap();

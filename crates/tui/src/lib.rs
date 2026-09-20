@@ -37,9 +37,9 @@ use model::{Command, LoginRow, Model, UiEvent};
 
 /// The plugin.
 pub struct TuiPlugin {
-    /// Session to open on start (`wth --resume <id>`); `None` starts fresh.
+    /// Session to open on start (`t --resume <id>`); `None` starts fresh.
     pub resume: Option<SessionId>,
-    /// `wth -p <text>`: submit this, print the stream, exit at `TurnFinished`.
+    /// `theuth -p <text>`: submit this, print the stream, exit at `TurnFinished`.
     pub prompt: Option<String>,
 }
 
@@ -1326,7 +1326,7 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         UiEvent::Nodes(list) => list.iter().try_for_each(|n| {
             writeln!(
                 out,
-                "{} {}  {}  wth {}  {}",
+                "{} {}  {}  theuth {}  {}",
                 if n.online { "●" } else { "○" },
                 n.name,
                 n.platform,

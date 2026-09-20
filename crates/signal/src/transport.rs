@@ -86,7 +86,7 @@ pub struct IncomingAttachment {
     pub duration_ms: Option<u64>,
 }
 
-/// A reaction the sender put on one of our messages (wth 09 §2.2 edit 1).
+/// A reaction the sender put on one of our messages (theuth 09 §2.2 edit 1).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IncomingReaction {
     /// The emoji.
@@ -114,7 +114,7 @@ pub struct SignalEnvelope {
     pub quote_text: Option<String>,
     /// Downloaded attachments.
     pub attachments: Vec<IncomingAttachment>,
-    /// A reaction instead of a message (wth 09 §2.2 edit 1); `text` and
+    /// A reaction instead of a message (theuth 09 §2.2 edit 1); `text` and
     /// `attachments` are empty when set.
     pub reaction: Option<IncomingReaction>,
 }
@@ -158,11 +158,11 @@ pub trait SignalTransport: Send + Sync {
     fn incoming(&self) -> BoxStream<'static, SignalEnvelope>;
 
     /// Sends a text message; returns its sent timestamp (ms), the target of
-    /// any later reaction to it (wth 09 §2.2 edit 2).
+    /// any later reaction to it (theuth 09 §2.2 edit 2).
     async fn send_text(&self, to: &Recipient, text: &str) -> Result<u64>;
 
     /// Sends an attachment with an optional file name (shown for non-media
-    /// types; wth 09 §2.2 edit 3) and an optional caption.
+    /// types; theuth 09 §2.2 edit 3) and an optional caption.
     async fn send_attachment(
         &self,
         to: &Recipient,

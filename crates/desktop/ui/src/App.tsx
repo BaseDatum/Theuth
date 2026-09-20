@@ -106,7 +106,7 @@ function reload(st: Stores): void {
   const api = st.connection.getState().api
   if (api) void loadInfo(st, api).catch(() => undefined)
   if (useHarnesses.getState().active === st.id)
-    window.dispatchEvent(new Event('wth:reload-session'))
+    window.dispatchEvent(new Event('theuth:reload-session'))
 }
 
 /**
@@ -159,7 +159,7 @@ function boot(st: Stores, make: () => Promise<RpcClient>, signal: AbortSignal): 
   })
   const fail = (e: unknown) => {
     if (signal.aborted) return
-    // -32601 on `info` = an older `wth --headless` already owns the configured port.
+    // -32601 on `info` = an older `t --headless` already owns the configured port.
     conn.setError(
       e instanceof RpcError && e.code === -32601
         ? `The daemon already running on this port is older than this app (no "info" method). Quit it and relaunch.`
@@ -222,7 +222,7 @@ function useTauri(): void {
       onQuitRequested(() => void quit()),
     ]
     const onQuit = () => void quit()
-    window.addEventListener('wth:quit', onQuit)
+    window.addEventListener('theuth:quit', onQuit)
     const desktop = container() === 'macos'
     void primeNotifications()
     if (desktop) {
@@ -244,7 +244,7 @@ function useTauri(): void {
     }
     return () => {
       for (const u of unlistens) void u.then((f) => f())
-      window.removeEventListener('wth:quit', onQuit)
+      window.removeEventListener('theuth:quit', onQuit)
       if (desktop) void unregister([TOGGLE_SHORTCUT, CANCEL_SHORTCUT])
     }
   }, [])

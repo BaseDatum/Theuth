@@ -1,9 +1,9 @@
 {
-  "name": "@wth/apps",
+  "name": "@theuth/apps",
   "private": true,
   "version": "0.0.0",
   "type": "module",
-  "description": "OpenUI Lang adapter for wth apps: curated library, generated catalog/hash, headless check/merge helper (design 46).",
+  "description": "OpenUI Lang adapter for theuth apps: curated library, generated catalog/hash, headless check/merge helper (design 46).",
   "exports": {
     ".": "./src/index.ts",
     "./check": "./src/check.ts",

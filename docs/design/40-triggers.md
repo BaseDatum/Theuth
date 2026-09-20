@@ -10,7 +10,7 @@ in §7 are the ones the harness has today.
 
 ## 0. Why
 
-wth has two initiators: the user (a turn) and the clock (`schedules/`, 34).
+theuth has two initiators: the user (a turn) and the clock (`schedules/`, 34).
 The world cannot start work. A CI failure, an email, a file landing in
 `~/Downloads`, a Stripe dispute, a Shortcut on the phone — each is a prompt
 the user would type if they were looking, at the moment they are not. 34 §0
@@ -225,7 +225,7 @@ repeated by `schedule_status`.
 **Sender → relay.** TLS. The relay is stateless: presence check, size cap,
 two token buckets, `202`. Plaintext body at the relay is unavoidable
 (senders cannot Noise) and is the same exposure as any hosted webhook
-receiver; `wth-relay` self-hosts in one container (31 §5.4) for anyone who
+receiver; `theuth-relay` self-hosts in one container (31 §5.4) for anyone who
 minds.
 
 **Relay → harness.** The uplink is authenticated by the existing `Noise_NK`
@@ -317,9 +317,9 @@ Each step ends with something runnable (00 §12), not a suite.
    the §2 rules; unit tests on the parser only (34 §11's pattern). Check:
    a file without `hook:` gets one written back on load.
 2. **`when:`** in `tick`. Check, headless on a scratch data dir: `every:
-   30s`, `when: test -f /tmp/wth-when` → no run; `touch` → one run whose
+   30s`, `when: test -f /tmp/theuth-when` → no run; `touch` → one run whose
    input contains the check's output; the run row says `fired by: when`.
-3. **`fs`**: watcher per file. Check: `on: fs: /tmp/wth-drop/*.txt`; write
+3. **`fs`**: watcher per file. Check: `on: fs: /tmp/theuth-drop/*.txt`; write
    two files 200 ms apart → one run listing both paths.
 4. **Relay + link**: route, op, `HookReceived`. Check with `just relay` and
    `curl -d '{"a":1}' http://127.0.0.1:8787/h/<id>/hook/<slug>` → `202`;

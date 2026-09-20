@@ -38,16 +38,16 @@ pub struct SpawnSubagentArgs {
     /// Stable peer name (used to address it with send_message); generated when omitted.
     #[serde(default)]
     pub name: Option<String>,
-    /// An external harness from ~/.wth/acp/agents.yaml or a node (another machine running wth); default: a wth subagent.
+    /// An external harness from ~/.theuth/acp/agents.yaml or a node (another machine running theuth); default: a theuth subagent.
     #[serde(default)]
     pub agent: Option<String>,
-    /// Absolute working directory for an external harness; default: wth's cwd.
+    /// Absolute working directory for an external harness; default: theuth's cwd.
     #[serde(default)]
     pub cwd: Option<PathBuf>,
-    /// Model for a wth subagent as `provider/model` (see list_models); default: the configured subagent model. Not for external harnesses.
+    /// Model for a theuth subagent as `provider/model` (see list_models); default: the configured subagent model. Not for external harnesses.
     #[serde(default)]
     pub model: Option<String>,
-    /// Reasoning effort for a wth subagent: low|medium|high|off|default or a token budget; default: the configured one.
+    /// Reasoning effort for a theuth subagent: low|medium|high|off|default or a token budget; default: the configured one.
     #[serde(default)]
     pub effort: Option<String>,
 }
@@ -90,7 +90,7 @@ pub(crate) fn describe_nodes(nodes: &BTreeMap<String, String>) -> String {
     }
     let items: Vec<String> = nodes.iter().map(|(n, d)| format!("{n} — {d}")).collect();
     format!(
-        "Nodes (wth on other machines, same tools, their own cwd and credentials): {}",
+        "Nodes (theuth on other machines, same tools, their own cwd and credentials): {}",
         items.join("; ")
     )
 }
@@ -130,7 +130,7 @@ impl Tool for SpawnSubagentTool {
             "Delegate a complete, self-contained task to a subagent running in its own session while you continue. \
              Returns immediately with its name and address; its final message arrives later as a <message from=\"session:<id>\"> input (when communication is on), so do not poll. \
              Several calls in one message run concurrently. Message it with send_message. \
-             For a wth subagent you choose `model` and `effort`; pick a little more capability than the task seems to need.",
+             For a theuth subagent you choose `model` and `effort`; pick a little more capability than the task seems to need.",
         );
         let line = acp::describe(&harnesses(&self.data_dir));
         if !line.is_empty() {
@@ -452,7 +452,7 @@ impl Tool for PeerMessageTool {
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
 pub struct ListModelsArgs {}
 
-/// The models a parent may give a wth subagent.
+/// The models a parent may give a theuth subagent.
 pub struct ListModelsTool;
 
 #[async_trait::async_trait]
@@ -520,7 +520,7 @@ mod tests {
 
     #[test]
     fn spawn_description_lists_configured_harnesses() {
-        let dir = std::env::temp_dir().join(format!("wth-peers-{}", uuid::Uuid::now_v7()));
+        let dir = std::env::temp_dir().join(format!("theuth-peers-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
         let plain = SpawnSubagentTool {
             data_dir: dir.clone(),
@@ -555,7 +555,7 @@ mod tests {
     /// name, and an unknown name's error lists it.
     #[test]
     fn spawn_description_and_unknown_list_nodes() {
-        let dir = std::env::temp_dir().join(format!("wth-peers-{}", uuid::Uuid::now_v7()));
+        let dir = std::env::temp_dir().join(format!("theuth-peers-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
         let nodes = Nodes::default();
         {
@@ -570,7 +570,7 @@ mod tests {
             w.insert(
                 "build-box".into(),
                 (
-                    "linux · wth 0.4.1".into(),
+                    "linux · theuth 0.4.1".into(),
                     Arc::new(NoDial) as Arc<dyn acp::Dialer>,
                 ),
             );
@@ -580,8 +580,8 @@ mod tests {
             nodes: nodes.clone(),
         }
         .description();
-        let line = "Nodes (wth on other machines, same tools, their own cwd and credentials): \
-                    build-box — linux · wth 0.4.1; mac-mini — macos · offline";
+        let line = "Nodes (theuth on other machines, same tools, their own cwd and credentials): \
+                    build-box — linux · theuth 0.4.1; mac-mini — macos · offline";
         assert!(desc.contains(line), "{desc}");
         assert!(desc.find("External harnesses").unwrap() < desc.find("Nodes (").unwrap());
 

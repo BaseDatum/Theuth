@@ -113,7 +113,7 @@ impl Track {
             Stem::System => "system",
             Stem::Mix => "mix",
         };
-        let serial = u32::from_le_bytes(*b"wth\0") + stem as u32;
+        let serial = u32::from_le_bytes(*b"theu") + stem as u32;
         let out = Writer::new(
             file,
             serial,

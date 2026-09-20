@@ -1,9 +1,9 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "wth",
-  "version": "1.6.0",
-  "mainBinaryName": "wth-desktop",
-  "identifier": "wth.rwx.dev",
+  "productName": "theuth",
+  "version": "1.7.0",
+  "mainBinaryName": "theuth-desktop",
+  "identifier": "io.theuth.mac",
   "build": {
     "devUrl": "http://localhost:1420",
     "frontendDist": "ui/dist",
@@ -72,7 +72,7 @@
   "plugins": {
     "updater": {
       "pubkey": "REPLACE-ME",
-      "endpoints": ["https://s3.rwx.dev/wth/releases/latest.json"]
+      "endpoints": ["https://s3.rwx.dev/theuth/releases/latest.json"]
     }
   }
 }

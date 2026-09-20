@@ -3,14 +3,14 @@ import { container } from '@/lib/platform'
 
 /** Window `CustomEvent` names the shell dispatches; consumers `addEventListener` on `window`. */
 export type Hotkey =
-  | 'wth:new-chat'
-  | 'wth:search'
-  | 'wth:toggle-sidebar'
-  | 'wth:focus-composer'
-  | 'wth:copy-last-response'
-  | 'wth:copy-last-code'
-  | 'wth:shortcuts'
-  | 'wth:dictate'
+  | 'theuth:new-chat'
+  | 'theuth:search'
+  | 'theuth:toggle-sidebar'
+  | 'theuth:focus-composer'
+  | 'theuth:copy-last-response'
+  | 'theuth:copy-last-code'
+  | 'theuth:shortcuts'
+  | 'theuth:dictate'
 
 type Binding = {
   code: string
@@ -28,49 +28,49 @@ const BINDINGS: Binding[] = [
     code: 'KeyO',
     mod: true,
     shift: true,
-    event: 'wth:new-chat',
+    event: 'theuth:new-chat',
     inEditable: false,
   },
   {
     code: 'KeyK',
     mod: true,
     shift: false,
-    event: 'wth:search',
+    event: 'theuth:search',
     inEditable: true,
   },
   {
     code: 'KeyS',
     mod: true,
     shift: true,
-    event: 'wth:toggle-sidebar',
+    event: 'theuth:toggle-sidebar',
     inEditable: false,
   },
   {
     code: 'Escape',
     mod: false,
     shift: true,
-    event: 'wth:focus-composer',
+    event: 'theuth:focus-composer',
     inEditable: true,
   },
   {
     code: 'KeyC',
     mod: true,
     shift: true,
-    event: 'wth:copy-last-response',
+    event: 'theuth:copy-last-response',
     inEditable: false,
   },
   {
     code: 'Semicolon',
     mod: true,
     shift: true,
-    event: 'wth:copy-last-code',
+    event: 'theuth:copy-last-code',
     inEditable: false,
   },
   {
     code: 'Slash',
     mod: true,
     shift: false,
-    event: 'wth:shortcuts',
+    event: 'theuth:shortcuts',
     inEditable: false,
   },
   {
@@ -78,7 +78,7 @@ const BINDINGS: Binding[] = [
     mod: false,
     ctrl: true,
     shift: false,
-    event: 'wth:dictate',
+    event: 'theuth:dictate',
     inEditable: true,
   },
 ]
@@ -102,7 +102,7 @@ export const isMacDesktop = (): boolean => container() === 'macos'
  */
 export function useHotkeys(): void {
   useEffect(() => {
-    const bindings = touch() ? BINDINGS.filter((b) => b.event === 'wth:search') : BINDINGS
+    const bindings = touch() ? BINDINGS.filter((b) => b.event === 'theuth:search') : BINDINGS
     const apple = isApple()
     const onKey = (e: KeyboardEvent) => {
       // A `ctrl` binding matches literal Ctrl alone; the rest bail when the other modifier is held.

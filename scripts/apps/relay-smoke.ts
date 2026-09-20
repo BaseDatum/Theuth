@@ -1,19 +1,19 @@
 /**
  * Apps-over-relay acceptance probe (design 46 + 31): the same app RPC the desktop UI issues,
- * but as a paired *device* through a real `wth-relay`, using the UI's own Noise IK/IKpsk2
+ * but as a paired *device* through a real `theuth-relay`, using the UI's own Noise IK/IKpsk2
  * transport (`crates/desktop/ui/src/link/*`). Nothing here fakes the relay or the harness.
  *
  * Prerequisites the parent launches (this script starts nothing):
  *
- *   target/debug/wth-relay --listen 127.0.0.1:18780                       (no --web: no cookie gate)
- *   target/debug/wth --headless --data-dir /tmp/wth-apps-e2e.XXXX          with config.yaml
+ *   target/debug/theuth-relay --listen 127.0.0.1:18780                       (no --web: no cookie gate)
+ *   target/debug/t --headless --data-dir /tmp/theuth-apps-e2e.XXXX          with config.yaml
  *       link: { enabled: true, relay: ws://127.0.0.1:18780 }               and rpc.listen
  *   an app record already published on that harness (smoke.ts `publish` → record_call_id)
  *
  * Run:
  *
- *   bun scripts/apps/relay-smoke.ts --url ws://127.0.0.1:7777 --data-dir /tmp/wth-apps-e2e.XXXX \
- *     --record-call-id <call_id> [--relay ws://127.0.0.1:18780] [--state /tmp/wth-apps-e2e.XXXX/argo-state.json] \
+ *   bun scripts/apps/relay-smoke.ts --url ws://127.0.0.1:7777 --data-dir /tmp/theuth-apps-e2e.XXXX \
+ *     --record-call-id <call_id> [--relay ws://127.0.0.1:18780] [--state /tmp/theuth-apps-e2e.XXXX/argo-state.json] \
  *     [--name relay-smoke] [--timeout-ms 20000] [--keep] [--out result.json]
  *
  * Steps (each an assertion group; the run stops at the first group that cannot continue):

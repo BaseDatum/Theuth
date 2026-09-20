@@ -299,7 +299,7 @@ mod tests {
     async fn save_roundtrip_and_remove() {
         use kameo::actor::Spawn;
         use std::sync::Arc;
-        let dir = std::env::temp_dir().join(format!("wth-prov-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("theuth-prov-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let vault = Arc::new(secrets::Vault::open(&dir, secrets::KeyStore::File).unwrap());
         let rt = runtime::Runtime::new(figment::Figment::new(), dir.clone());

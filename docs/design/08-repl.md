@@ -627,7 +627,7 @@ answers = await asyncio.gather(*(send_message(to=n, message="report", await_repl
 ```
 
 That is prime-agent's blog-era `llm_batch` (values back into the program)
-built from wth's existing detached model, without a new tool.
+built from theuth's existing detached model, without a new tool.
 
 ## 9. The worker is this binary
 
@@ -638,7 +638,7 @@ replaces on crash. The reference worker, the `monty` binary from
 `monty-runtime`, is 135 lines of stdio glue (`src/subprocess.rs`) over two
 library crates: `monty-proto` (`worker` feature: the `Child` protocol state
 machine plus the interpreter) and `monty-alloc` (the memory-limiting
-allocator). So `wth` is the worker: `crates/wth/src/worker.rs` is that
+allocator). So `theuth` is the worker: `crates/theuth/src/worker.rs` is that
 shell (ported, MIT, attributed in its header), `main` runs it when
 `argv[1] == "subprocess"` before clap, tokio or logging exist (stdout is the
 protocol channel), and `repl::open_pool` hands `std::env::current_exe()` to
@@ -646,7 +646,7 @@ protocol channel), and `repl::open_pool` hands `std::env::current_exe()` to
 longer touches monty and there is no `agent.repl` config section.
 
 The price: `monty_alloc::LimitedAllocator` must be the process's
-`#[global_allocator]` (`set_limit` refuses otherwise), so every `wth`
+`#[global_allocator]` (`set_limit` refuses otherwise), so every `theuth`
 process runs it. Unarmed — the parent never calls `set_limit` — it is
 `System` plus one atomic live-byte add per allocation. The worker arms it
 per session; a cell that exceeds `max_memory` gets `MemoryError: memory
@@ -767,7 +767,7 @@ Then, runnable checks (not a suite). Results as of 2026-09-10:
    a `python` tool message under 400 chars; `TurnFinished.usage.prompt`
    grows by < 500 tokens for that round. **Not exercised end to end**; the
    cap and binding are unit-tested (item 6).
-9. **Persistence**: bind values, quit `wth`, `--resume`, read them back;
+9. **Persistence**: bind values, quit `theuth`, `--resume`, read them back;
    `runtime/<id>.monty` exists; corrupt the file → the next cell's result
    opens with the `<runtime>` loss line. **Pass** — `x = 21`, `r = 'Echo:
    hi'`, `data = {'a': [1, 2, 3]}` bound in one process; after exit and
@@ -786,7 +786,7 @@ Then, runnable checks (not a suite). Results as of 2026-09-10:
 
 ## 12. Implementation order (done)
 
-Each step left `wth` runnable.
+Each step left `theuth` runnable.
 
 1. **Spikes 1–6.** Residue recorded in §2.
 2. **Bridge + tool.** `ToolOutput.structured`; `agent::repl` with `open`/
@@ -828,12 +828,12 @@ Each step left `wth` runnable.
 - **CPython worker** (prime-agent, cave-agent's `IPyKernelRuntime`,
   codemcp). Full stdlib and pandas are real advantages, and the price is a
   Python install, `dill` (lossy), a process to babysit, and no sandbox.
-  wth is not a coding agent; the runtime is for orchestrating tools and
+  theuth is not a coding agent; the runtime is for orchestrating tools and
   holding their results, which the monty subset covers. If a transcript
   shows the model needing `pandas`, the shell tool has the user's Python.
 - **Anything other than `monty-pool` + the `monty` worker binary**: the
   in-process `monty` crate (a sandbox abort would take every session down)
-  or a fork that embeds the worker loop in `wth` (a lib target upstream
+  or a fork that embeds the worker loop in `theuth` (a lib target upstream
   does not have, plus `monty-alloc` as the whole harness's allocator). The
   pool over subprocess workers is the documented Rust embedding; we use it
   as documented.

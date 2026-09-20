@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "@wth/apps",
+      "name": "@theuth/apps",
       "dependencies": {
         "@modelcontextprotocol/sdk": "^1.20.0",
         "@openuidev/lang-core": "0.3.0",

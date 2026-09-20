@@ -1,4 +1,4 @@
-//! `wth --slack-setup` (21 §10.3): create or update the Slack app from
+//! `t --slack-setup` (21 §10.3): create or update the Slack app from
 //! [`crate::MANIFEST`], collect and verify the bot and app-level tokens and
 //! the owner, write the tokens into the secrets vault (37 §3.6: `slack_bot`,
 //! `slack_app`) and the owner into `config.yaml`. Every step is re-runnable;
@@ -97,7 +97,7 @@ async fn run_with(
     io: &mut dyn SetupIo,
     api: &dyn SetupApi,
 ) -> anyhow::Result<()> {
-    io.say("wth slack setup — stop any running `wth --headless` first");
+    io.say("theuth slack setup — stop any running `t --headless` first");
     let manifest: Value = serde_yaml::from_str(crate::MANIFEST).context("manifest.yaml")?;
     let manifest = manifest.to_string();
 
@@ -217,7 +217,7 @@ async fn run_with(
     }
     runtime::write_config_value(&config, "slack", "owner", &format!("\"{owner}\""))?;
     runtime::write_config_value(&config, "slack", "enabled", "true")?;
-    io.say("slack ready: run wth --headless and DM the bot");
+    io.say("slack ready: run t --headless and DM the bot");
     Ok(())
 }
 
@@ -247,11 +247,11 @@ fn owner_id(s: &str) -> Option<&str> {
 }
 
 /// The vault as the daemon would open it: `secrets.key_store` from the same
-/// Figment `main` builds (`config.yaml` + `WTH_*` env).
+/// Figment `main` builds (`config.yaml` + `THEUTH_*` env).
 fn open_vault(data_dir: &Path, config: &Path) -> anyhow::Result<secrets::Vault> {
     let figment = Figment::new()
         .merge(Yaml::file(config))
-        .merge(Env::prefixed("WTH_").split("__"));
+        .merge(Env::prefixed("THEUTH_").split("__"));
     let cfg: secrets::SecretsConfig = if figment.contains("secrets") {
         figment.extract_inner("secrets")?
     } else {
@@ -335,7 +335,7 @@ mod tests {
                "credentials": {"client_id": "1", "client_secret": "2", "signing_secret": "3"}})
     }
     fn authed() -> Value {
-        json!({"ok": true, "user": "wth", "team": "acme", "user_id": "UBOT", "team_id": "T1"})
+        json!({"ok": true, "user": "theuth", "team": "acme", "user_id": "UBOT", "team_id": "T1"})
     }
     fn opened() -> Value {
         json!({"ok": true, "url": "wss://x"})
@@ -401,13 +401,13 @@ mod tests {
             io.out
         );
         assert!(
-            io.out.iter().any(|l| l.contains("@wth in acme")),
+            io.out.iter().any(|l| l.contains("@theuth in acme")),
             "{:?}",
             io.out
         );
         assert_eq!(
             io.out.last().unwrap(),
-            "slack ready: run wth --headless and DM the bot"
+            "slack ready: run t --headless and DM the bot"
         );
     }
 

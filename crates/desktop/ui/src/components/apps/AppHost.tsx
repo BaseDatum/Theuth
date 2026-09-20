@@ -6,8 +6,8 @@
 import "@openuidev/react-ui/layered/styles/index.css";
 import { ThemeProvider } from "@openuidev/react-ui";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { library, libraryHash } from "@wth/apps";
-import { AppRenderer, type AppRendererProps } from "@wth/apps/renderer";
+import { library, libraryHash } from "@theuth/apps";
+import { AppRenderer, type AppRendererProps } from "@theuth/apps/renderer";
 import { Loader2 } from "lucide-react";
 import {
   type ReactNode,
@@ -164,7 +164,7 @@ export default function AppHost({ session, artifact, draft }: AppViewProps) {
       program = {
         kind: "source",
         source: docQ.data.source,
-        reason: `This app was published for app library ${short(docQ.data.library_hash)}; this desktop runs ${short(libraryHash)}. Update wth and the desktop to matching versions, or ask for the app to be republished.`,
+        reason: `This app was published for app library ${short(docQ.data.library_hash)}; this desktop runs ${short(libraryHash)}. Update theuth and the desktop to matching versions, or ask for the app to be republished.`,
       };
     else if (
       attached &&

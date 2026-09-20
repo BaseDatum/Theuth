@@ -63,7 +63,7 @@ to be reached, and a TUI session has no better hint. Alternative rejected:
 channel the user is actually watching.
 
 No sink at all (neither plugin enabled, or both running without a channel
-— `wth` TUI mode starts plugins with `channel: false`) → the tool errors
+— `theuth` TUI mode starts plugins with `channel: false`) → the tool errors
 `no user channel: slack and signal are not running`, and the model falls
 back to saying it in the reply.
 
@@ -261,7 +261,7 @@ Deviations from the sections above:
 - `Ok(Vec<String>)` from `Deliver` carries sink failures as extra entries
   (`signal failed: …`) when another sink delivered, so the model sees both.
 
-Smoke (headless, `claude-sonnet-4-5`, `/tmp/wth-title` with the real Slack
+Smoke (headless, `claude-sonnet-4-5`, `/tmp/theuth-title` with the real Slack
 app, no Signal link): "take a screenshot of example.com and send it to me
 on Slack" from an unbound RPC session → `browser_open`,
 `browser_screenshot`, `message_user { text, files: [shot-1.png] }`; result

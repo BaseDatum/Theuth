@@ -124,8 +124,8 @@ impl Message<Permissions> for Computer {
                 })
                 .collect(),
             note: if cfg!(target_os = "macos") {
-                "Grant in System Settings › Privacy & Security to the app that launched wth (your terminal, or wth.app). \
-                 Screen Recording takes effect after wth restarts."
+                "Grant in System Settings › Privacy & Security to the app that launched theuth (your terminal, or theuth.app). \
+                 Screen Recording takes effect after theuth restarts."
                     .to_owned()
             } else {
                 String::new()

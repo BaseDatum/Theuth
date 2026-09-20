@@ -12,7 +12,7 @@ bounded where it is appended), `08-repl.md` §3–4 (python host calls are
 (sinks — a draft; §8 says what this doc does before and after it lands),
 `25-desktop.md` §3 (parity), `32-nodes.md` §5.1 (servers without a
 keyboard). Wins over 01 §1.3 and 05 §3 where they disagree. Every claim
-about wth cites `file:line` as of this tree.
+about theuth cites `file:line` as of this tree.
 
 ## 0. Decisions in one screen
 
@@ -83,7 +83,7 @@ about wth cites `file:line` as of this tree.
    mode 0600 when no keychain is reachable (`secrets.key_store`). Why
    01 §1.3's rejection no longer stands: (a) the user asked for encryption;
    (b) the Tauri build 01 said to wait for exists (00 §12 phase 19); (c)
-   the adversary is *the agent itself* running `read_file ~/.wth/secrets.*`
+   the adversary is *the agent itself* running `read_file ~/.theuth/secrets.*`
    or `security find-generic-password` as the user. A 0600 file does not
    stop the same user; a keychain item's ACL does (the `security` CLI
    prompts). Rejected: `age` (recipients, armor, not in tree — for one
@@ -106,11 +106,11 @@ about wth cites `file:line` as of this tree.
    kind of thing); keeping the file as an unencrypted fallback (it would
    be the one everyone edits).
 8. **Servers get a CLI.** A node or service box (32 §5.1) has no TUI, and
-   the file it used to `vi` over ssh is gone: `wth --secret-set NAME`
+   the file it used to `vi` over ssh is gone: `t --secret-set NAME`
    (value from the tty with echo off, or from stdin when piped),
    `--secret-rm NAME`, `--secret-list`. It opens the vault as a library,
    the running daemon sees the change on its next read (§3.5 mtime
-   reload). `wth --slack-setup` writes its tokens the same way.
+   reload). `t --slack-setup` writes its tokens the same way.
    Rejected: `set_secret` over the relay only — pairing needs a main
    harness that already has a key.
 9. **Names are namespaced for backends that do not exist yet.** A local
@@ -132,11 +132,11 @@ about wth cites `file:line` as of this tree.
 
 ## 1. What exists
 
-| Layer | wth today | Cite |
+| Layer | theuth today | Cite |
 |---|---|---|
 | Credential storage | `credentials.yaml` plaintext, 0600, warn if wider; `oauth/<ns>.json` 0600; MCP tokens 0600; link identity 0600 | `runtime/src/lib.rs:203-224`, `agent/src/providers.rs:270-288`, `oauth/src/lib.rs:446-447`, `link/src/identity.rs:89-90` |
 | Credential readers | `runtime::credentials(data_dir)` once at start: agent `Auth { creds: Arc<HashMap> }` cloned into genai's `with_auth_resolver_fn`; `web` engines; `search-providers`; `slack` tokens; `--slack-setup` | `agent/src/supervisor.rs:2371-2549`, `web/src/lib.rs:104-109`, `search-providers/src/lib.rs:168`, `slack/src/lib.rs:361-363`, `slack/src/setup.rs:142-168` |
-| Credential writers | `upsert_credential`/`remove_credential` (line-preserving YAML, atomic 0600) from `/provider add|rm`; `--slack-setup`; `first_run` writes the commented template | `agent/src/providers.rs:134-178, 254-266`, `slack/src/setup.rs:210`, `wth/src/main.rs:185-189, 248-260` |
+| Credential writers | `upsert_credential`/`remove_credential` (line-preserving YAML, atomic 0600) from `/provider add|rm`; `--slack-setup`; `first_run` writes the commented template | `agent/src/providers.rs:134-178, 254-266`, `slack/src/setup.rs:210`, `theuth/src/main.rs:185-189, 248-260` |
 | Encryption in tree | `snow` (Noise), `sha2`; `chacha20poly1305 0.10`, `aes-gcm 0.10`, `zeroize 1.9`, `hkdf`, `aho-corasick 1.1`, `argon2 0.5` in `Cargo.lock` transitively; no `keyring`, no `rpassword` | `Cargo.toml:63-193`, `Cargo.lock` |
 | Tool dispatch choke point | `Message<Invoke>` → `gate` → spawned `invoke(tool, spec, call, approval)`; approval sees `call.args`; then `tool.call(call.args, cx)`; `ToolOutput` returned untouched. No hook/middleware concept | `tools/src/registry.rs:432-495` |
 | Who publishes args/output | agent publishes `ToolCallStarted { args }` *before* `Invoke` and `ToolCallFinished { output }` from the returned `ToolOutput`; same in the python bridge | `agent/src/loop_.rs:1751-1830`, `agent/src/repl.rs:1012-1064` |
@@ -148,7 +148,7 @@ about wth cites `file:line` as of this tree.
 | Masked input | desktop: one `<Input type="password">` (gateway key); TUI: `/provider add` collects the key in the shared `TextInput` unmasked, never writes it to the transcript (test) | `desktop/ui/src/components/settings/Connections.tsx:189-196`, `tui/src/model.rs:3993-4018, 5927-5948`, `tui/src/ui.rs:402-411` |
 | Arg display | `describe` (TUI) / `describe.ts` (desktop) render the model's args; nested objects as one JSON line cut at 120 chars | `tui/src/model.rs:986-1024`, `desktop/ui/src/lib/describe.ts:14-33` |
 | Phones | a paired device dispatches into the same `jsonrpsee::Methods`, no per-method filter | `rpc/src/lib.rs:60-83`, `link/src/conn.rs:484-506` |
-| One-shot CLI modes | `--slack-setup` runs before the plugin vector, against the data dir directly | `wth/src/main.rs:43-89, 292-295` |
+| One-shot CLI modes | `--slack-setup` runs before the plugin vector, against the data dir directly | `theuth/src/main.rs:43-89, 292-295` |
 | Downward handle pattern | `RegisterUserSink(Arc<dyn UserSink>)`, `RegisterNode { dialer: Arc<dyn Dialer> }`, `SetDispatch { methods }`; hot-path handle: `knowledge::Handle → Arc<Knowledge>` | `agent/src/user.rs:31-84`, `supervisor.rs:235-249`, `link/src/types.rs:177-184`, plugins.md §3.4 |
 
 The gap in one sentence: the only way the agent can use a token today is to
@@ -219,7 +219,7 @@ pub struct ListArgs {}
 // NAME = "secret_list", RISK = ReadOnly, RETURNS = "list[dict]"
 // → one line per secret: `NAME · v7 (3 kept) · note · updated · local`
 //   structured: [{name, note, source, current: 7, versions: [{v, created, source}], updated}]
-// → empty vault: "no secrets; the user adds them with /secrets add, Settings › Secrets or `wth --secret-set`, or call secret_request"
+// → empty vault: "no secrets; the user adds them with /secrets add, Settings › Secrets or `t --secret-set`, or call secret_request"
 
 /// `secret_request`: ask the user to type a secret into a masked field.
 pub struct RequestArgs {
@@ -402,9 +402,9 @@ compaction summariser and `tool_result` all consume the already-scrubbed
 ### 3.5 Vault and key (`crates/secrets/src/vault.rs`, `key.rs`)
 
 ```
-<data_dir>/secrets.vault      truth; b"wth-secrets-1\n" ‖ nonce[24] ‖ XChaCha20-Poly1305(key, nonce, aad = magic, plaintext)
+<data_dir>/secrets.vault      truth; b"theuth-secrets-1\n" ‖ nonce[24] ‖ XChaCha20-Poly1305(key, nonce, aad = magic, plaintext)
 <data_dir>/secrets.key        truth, only with key_store = file (or auto without a keychain); 32 bytes base64, 0600, create_new
-keychain item                  truth, service "wth", account "secrets:<absolute data_dir>"; value = 32 bytes base64
+keychain item                  truth, service "theuth", account "secrets:<absolute data_dir>"; value = 32 bytes base64
 ```
 
 plaintext:
@@ -510,12 +510,12 @@ keeps its signature and writes through the actor. `set_secret` is the
 second method after `add_provider` that carries a raw secret over the
 wire; both are loopback-token or Noise-encrypted (00 §7, 31 §6).
 
-### 3.9 CLI (`crates/wth/src/main.rs`, `secret_cli.rs` ≈ 80 lines)
+### 3.9 CLI (`crates/theuth/src/main.rs`, `secret_cli.rs` ≈ 80 lines)
 
 ```
-wth --secret-set NAME [--note "…"]   value: rpassword on a tty (no echo, asked twice), else the first line of stdin
-wth --secret-rm NAME
-wth --secret-list                     NAME · vN (k kept) · note · updated   (+ "key: file" header)
+t --secret-set NAME [--note "…"]   value: rpassword on a tty (no echo, asked twice), else the first line of stdin
+t --secret-rm NAME
+t --secret-list                     NAME · vN (k kept) · note · updated   (+ "key: file" header)
 ```
 
 One-shot like `--slack-setup`; `conflicts_with_all` the other modes;
@@ -523,7 +523,7 @@ One-shot like `--slack-setup`; `conflicts_with_all` the other modes;
 Figment `main` builds; exit 0/1; nothing printed but the receipt
 `stored NAME v2`. This is how a node (32 §5.1) gets its `anthropic` key
 after `--install-service`, and how any user scripts a rotation
-(`gh auth token | wth --secret-set github`).
+(`gh auth token | t --secret-set github`).
 
 ## 4. Prompting
 
@@ -610,17 +610,17 @@ keyboard, or delete one*.
 ## 7. Slack, Signal, ACP, nodes
 
 - **Slack / Signal**: subscribe `SecretsEvent::Requested`; for a session (or
-  ancestor, 24 §2) bound to a thread, post one line: *wth asks for secret
+  ancestor, 24 §2) bound to a thread, post one line: *theuth asks for secret
   `NAME` — note. Enter it in the desktop app, the TUI (`/secrets add
-  NAME`) or `wth --secret-set NAME`; it will not be read from this chat.*
+  NAME`) or `t --secret-set NAME`; it will not be read from this chat.*
   Nothing is answerable in-channel: the value would sit in Slack's
   history. A session born from a non-owner principal (28 §5) can *use*
   placeholders; the gate rule (§0.4) makes every such call an approval
   that reaches the owner.
 - **ACP children** (`acp_child.rs`) do not route tool calls through
   `Invoke`; an external harness sees `{{secret:NAME}}` as literal text.
-  Secrets are a wth capability; not extended to foreign harnesses in v0.
-- **Nodes** (32): a subagent on another machine runs in *that* wth, whose
+  Secrets are a theuth capability; not extended to foreign harnesses in v0.
+- **Nodes** (32): a subagent on another machine runs in *that* theuth, whose
   placeholders resolve against *that* vault, filled with `--secret-set`
   on that box. Nothing crosses the link.
 - **Peers and A2A** (50, 2026-09-18; §15.3): a peer message body, answer or
@@ -669,7 +669,7 @@ that the gate does not see.
   brush Shell::env_mut().set_env_global in ShellTool::call (needs the value
   on ToolCx) if a transcript shows it matters`.
 - **Disk.** `secrets.vault` is ciphertext; `read_file` on it is harmless.
-  With `key_store: file`, `read_file ~/.wth/secrets.key` is one `ReadOnly`
+  With `key_store: file`, `read_file ~/.theuth/secrets.key` is one `ReadOnly`
   call — the doc says so, `/secrets` shows `key: file`, and the user chose
   a server without a keychain. Scrubbed job logs and spill files hold
   placeholders, not values. `write_file` with an expanded placeholder puts
@@ -712,7 +712,7 @@ that the gate does not see.
 ## 9. Config
 
 ```yaml
-secrets:                       # design doc 37; `/secrets`, Settings › Secrets, `wth --secret-set`
+secrets:                       # design doc 37; `/secrets`, Settings › Secrets, `t --secret-set`
   key_store: auto              # auto | keychain | file — where the vault key lives; auto = keychain when one answers, else <data_dir>/secrets.key (0600) with a warning
   tools: true                  # false: no secret_* tools, no prompt block, `{{secret:…}}` stays literal, nothing is scrubbed; the vault, /secrets and the harness's own keys are unaffected
   request_timeout_secs: 1800   # `secret_request` gives up (the model sees "no answer") after this
@@ -723,8 +723,8 @@ without it has env-var and `/login` auth only — that is what a failed key
 store gives you (§3.3), with a log line and a `/secrets` header saying so,
 not a switch. `tools: false` is the agent-facing off switch and passes
 plugins.md §1's test ("turn it off and still have a working harness").
-`WTH_SECRETS__KEY_STORE=file` as everywhere. `DEFAULT_CONFIG` in
-`wth/src/main.rs` and the README config list gain the section, commented.
+`THEUTH_SECRETS__KEY_STORE=file` as everywhere. `DEFAULT_CONFIG` in
+`theuth/src/main.rs` and the README config list gain the section, commented.
 
 ## 10. Data on disk
 
@@ -732,7 +732,7 @@ plugins.md §1's test ("turn it off and still have a working harness").
 |---|---|---|
 | `secrets.vault` | truth | one encrypted blob, §3.5, incl. the provider keys; delete = forget every secret |
 | `secrets.key` | truth (file key store only) | 32-byte key, base64, 0600; delete = the vault is unrecoverable |
-| keychain `wth / secrets:<data_dir>` | truth (keychain key store) | same key; `security delete-generic-password -s wth` = the vault is unrecoverable |
+| keychain `theuth / secrets:<data_dir>` | truth (keychain key store) | same key; `security delete-generic-password -s theuth` = the vault is unrecoverable |
 | `credentials.yaml` | **gone** | imported and unlinked at the first start with this crate (§3.6) |
 | `jobs/<session>/<id>.log`, `spill/…`, `messages.body` | derived (agent, tools) | now hold `{{secret:NAME}}` where a value echoed; unchanged otherwise |
 
@@ -807,7 +807,7 @@ pub struct UnregisterBackend(pub &'static str);
 Estimated crate: `lib.rs` (config, actor, events, plugin) ≈ 320 lines,
 `vault.rs` ≈ 260 incl. tests (versions, import), `key.rs` ≈ 80,
 `tools.rs` ≈ 260; `tools/src/secrets.rs` ≈ 130 + ≈ 20 lines of call
-sites; `wth/src/secret_cli.rs` ≈ 80; consumer edits ≈ 60 lines net
+sites; `theuth/src/secret_cli.rs` ≈ 80; consumer edits ≈ 60 lines net
 negative (the YAML rewriters go).
 
 1. **Vault + key + import** (`crates/secrets/src/{vault,key}.rs`). Encrypt
@@ -818,7 +818,7 @@ negative (the YAML rewriters go).
    (exact + base64, all versions, min length, longest match, `:-N`
    replacement text), `credentials.yaml` import is idempotent and unlinks.
    Check: `cargo test -p secrets`; `keyring` on macOS creates the item
-   once and a second run does not prompt; `WTH_SECRETS__KEY_STORE=file` on
+   once and a second run does not prompt; `THEUTH_SECRETS__KEY_STORE=file` on
    a Linux box with no D-Bus writes `secrets.key` 0600.
 2. **Credentials cutover.** `Handle`; agent `Auth.vault`, live resolver,
    `configured`, gateways via the actor; `web`, `search-providers`,
@@ -828,9 +828,9 @@ negative (the YAML rewriters go).
    with a real `credentials.yaml` (`anthropic`, `firecrawl`, `slack_bot`)
    starts, logs the import, the file is gone, `/model` still lists
    anthropic, `search_web` still uses Firecrawl, Slack still connects;
-   `printf %s "$KEY" | wth --secret-set openai --data-dir /tmp/wth-x` then
+   `printf %s "$KEY" | t --secret-set openai --data-dir /tmp/theuth-x` then
    `/model` in the running TUI lists openai without a restart;
-   `/provider add` round-trips and `wth --secret-list` shows the gateway
+   `/provider add` round-trips and `t --secret-list` shows the gateway
    name.
 3. **`tools::secrets` hook + registry sites** (`tools/src/secrets.rs`,
    `registry.rs`). Check, headless on a scratch data dir: `set_secret("T",
@@ -923,7 +923,7 @@ negative (the YAML rewriters go).
   (credentials)*; the body becomes: *Provider keys are secrets in the
   encrypted vault of doc 37, under the genai adapter names (`anthropic`,
   `openai`, …) plus gateway names, web keys and Slack tokens. Enter them
-  with `/secrets add`, Settings › Secrets, `/provider add`, or `wth
+  with `/secrets add`, Settings › Secrets, `/provider add`, or `theuth
   --secret-set <name>` on a box without a UI. Precedence: vault beats
   `/login` beats env. An existing `credentials.yaml` is imported and
   removed on the first start.* The `credentials.yaml` row of the §1.1
@@ -934,7 +934,7 @@ negative (the YAML rewriters go).
   gets its key): one sentence each pointing here.
 - README: the `credentials.yaml` bullet becomes the vault bullet; crate
   list; `TUI:` paragraph gains `/secrets`; the quick-start's
-  `export ANTHROPIC_API_KEY=…` line gains `# or: wth --secret-set anthropic`.
+  `export ANTHROPIC_API_KEY=…` line gains `# or: t --secret-set anthropic`.
 
 ## 15. Status (as-built, 2026-09-16)
 
@@ -1020,7 +1020,7 @@ Not exercised: `key_store: keychain` (the macOS prompt needs a hand on the
 box; §2's ACL claim is from `keyring`'s docs); the desktop panes and
 `SecretRequestCard` beyond `tsc`/vitest (no Tauri session driven); Slack and
 Signal notices; `{{secret:…}}` in `mcp/*.json` headers against a live
-server; `WTH_SECRETS__TOOLS=false`; two writers racing on one vault.
+server; `THEUTH_SECRETS__TOOLS=false`; two writers racing on one vault.
 
 ### 15.3 Agent communication (50), 2026-09-18 — pending verification
 

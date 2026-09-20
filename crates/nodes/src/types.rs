@@ -35,7 +35,7 @@ pub struct Node {
     pub relay: String,
     /// Host OS as `info` reports it; `""` until the first connect.
     pub platform: String,
-    /// `wth` version as `info` reports it; `""` until the first connect.
+    /// `theuth` version as `info` reports it; `""` until the first connect.
     pub version: String,
     /// Unix ms.
     pub paired_at_ms: u64,
@@ -86,7 +86,7 @@ pub struct Status;
 /// (this harness is the `IKpsk2` initiator).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Add {
-    /// The pairing string printed by `wth --install-service` / `wth --link`.
+    /// The pairing string printed by `t --install-service` / `t --link`.
     pub key: String,
     /// Local alias; `None` → the name the node announces.
     pub name: Option<String>,

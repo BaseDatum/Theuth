@@ -1267,14 +1267,14 @@ fn link() -> RpcResult<ActorRef<LinkActor>> {
     })
 }
 
-/// This machine's hostname, read once; `"wth"` when `hostname` fails.
+/// This machine's hostname, read once; `"theuth"` when `hostname` fails.
 static HOSTNAME: LazyLock<String> = LazyLock::new(|| {
     std::process::Command::new("hostname")
         .output()
         .ok()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "wth".to_owned())
+        .unwrap_or_else(|| "theuth".to_owned())
 });
 
 /// Write `bytes` as `<data_dir>/attachments/<sha256[..16]>.<ext>`; an existing

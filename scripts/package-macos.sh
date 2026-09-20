@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
-# Package wth.app + wth.dmg for macOS (jarvis pipeline, stripped).
+# Package theuth.app + theuth.dmg for macOS (jarvis pipeline, stripped).
 #
-#   1. cargo build --release -p wth  (daemon sidecar, host arch)
-#      + packages/apps: bun build --compile → wth-app-parser (46 §2.1; scripts/app-parser-env.sh)
-#   2. stage sidecar as binaries/wth-<host-triple>
+#   1. cargo build --release -p theuth  (daemon sidecar, host arch)
+#      + packages/apps: bun build --compile → theuth-app-parser (46 §2.1; scripts/app-parser-env.sh)
+#   2. stage sidecar as binaries/t-<host-triple>
 #   3. cargo tauri build --config tauri.bundle.conf.json  (app bundle only)
 #      + libonnxruntime.dylib (Microsoft's release, pinned) into Contents/Frameworks (45 §2.1)
-#      + wth-app-parser-<hash> into Contents/MacOS beside the sidecar
-#   4. codesign inside-out (hardened runtime): $WTH_SIGN_IDENTITY, else ad-hoc "-"
+#      + theuth-app-parser-<hash> into Contents/MacOS beside the sidecar
+#   4. codesign inside-out (hardened runtime): $THEUTH_SIGN_IDENTITY, else ad-hoc "-"
 #      the helper gets scripts/entitlements-app-parser.plist (Bun JIT)
 #   5. hdiutil DMG (after signing — Tauri's dmg target would snapshot pre-signature)
 #
 # Arm64-only: built on/for the host. Universal binaries are out of scope.
 #
 # Env:
-#   WTH_SIGN_IDENTITY      codesign identity (default: "-" ad-hoc)
-#   WTH_SKIP_BUN_INSTALL=1 skip `bun install` (desktop UI and packages/apps)
+#   THEUTH_SIGN_IDENTITY      codesign identity (default: "-" ad-hoc)
+#   THEUTH_SKIP_BUN_INSTALL=1 skip `bun install` (desktop UI and packages/apps)
 # Optional local defaults: repo-root `.env.signing`.
 set -euo pipefail
 
@@ -29,10 +29,10 @@ cd "$ROOT"
 source "$ROOT/scripts/app-parser-env.sh"
 
 HOST_TRIPLE="$(rustc -vV | awk '/^host:/ {print $2}')"
-IDENTITY="${WTH_SIGN_IDENTITY:--}"
-BUNDLE_ID="wth.rwx.dev"
+IDENTITY="${THEUTH_SIGN_IDENTITY:--}"
+BUNDLE_ID="io.theuth.mac"
 BUNDLE_DIR="target/release/bundle/macos"
-APP="$BUNDLE_DIR/wth.app"
+APP="$BUNDLE_DIR/theuth.app"
 # ONNX Runtime for speech-to-text (45 §2.1): dlopened by the sidecar from Contents/Frameworks.
 ORT_VERSION="1.27.0"
 ORT_SHA256="545e81c58152353acb0d1e8bd6ce4b62f830c0961f5b3acfedc790ffd76e477a"
@@ -43,24 +43,24 @@ HELPER_ENTITLEMENTS="scripts/entitlements-app-parser.plist"
 echo "==> [1/5] TypeScript bindings"
 just ts-desktop
 
-echo "==> [1/5] building wth (release, $HOST_TRIPLE)"
-cargo build --release -p wth
+echo "==> [1/5] building theuth (release, $HOST_TRIPLE)"
+cargo build --release -p theuth
 
 echo "==> [1/5] building $HELPER (bun build --compile)"
 build_helper
 
 echo "==> [2/5] staging sidecar"
 mkdir -p crates/desktop/binaries
-cp target/release/wth "crates/desktop/binaries/wth-$HOST_TRIPLE"
+cp target/release/t "crates/desktop/binaries/t-$HOST_TRIPLE"
 
 echo "==> [3/5] tauri build (release app bundle)"
-if [[ "${WTH_SKIP_BUN_INSTALL:-0}" != "1" ]]; then
+if [[ "${THEUTH_SKIP_BUN_INSTALL:-0}" != "1" ]]; then
   (cd crates/desktop/ui && bun install)
 fi
 (cd crates/desktop && TAURI_FRONTEND_PATH=ui cargo tauri build --config tauri.bundle.conf.json)
 [[ -d "$APP" ]] || { echo "error: $APP not produced" >&2; exit 1; }
-[[ -x "$APP/Contents/MacOS/wth" ]] || { echo "error: sidecar missing at $APP/Contents/MacOS/wth" >&2; exit 1; }
-[[ -x "$APP/Contents/MacOS/wth-desktop" ]] || { echo "error: app binary missing at $APP/Contents/MacOS/wth-desktop" >&2; exit 1; }
+[[ -x "$APP/Contents/MacOS/t" ]] || { echo "error: sidecar missing at $APP/Contents/MacOS/t" >&2; exit 1; }
+[[ -x "$APP/Contents/MacOS/theuth-desktop" ]] || { echo "error: app binary missing at $APP/Contents/MacOS/theuth-desktop" >&2; exit 1; }
 
 echo "==> [3/5] libonnxruntime ${ORT_VERSION} → Contents/Frameworks"
 if [[ ! -f "$ORT_TGZ" ]] || ! echo "$ORT_SHA256  $ORT_TGZ" | shasum -a 256 -c --status; then
@@ -72,11 +72,11 @@ tar -xzf "$ORT_TGZ" -O "onnxruntime-osx-arm64-${ORT_VERSION}/lib/libonnxruntime.
 chmod 755 "$APP/Contents/Frameworks/libonnxruntime.dylib"
 
 echo "==> [3/5] $HELPER → Contents/MacOS"
-rm -f "$APP/Contents/MacOS"/wth-app-parser-*
+rm -f "$APP/Contents/MacOS"/theuth-app-parser-*
 install -m 755 "$HELPER_SRC" "$APP/Contents/MacOS/$HELPER"
 
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")"
-DMG="$BUNDLE_DIR/wth_${VERSION}_$(uname -m).dmg"
+DMG="$BUNDLE_DIR/theuth_${VERSION}_$(uname -m).dmg"
 
 echo "==> [4/5] codesign (identity: $IDENTITY, hardened runtime)"
 TIMESTAMP_FLAG="--timestamp"
@@ -89,8 +89,8 @@ codesign --force --options runtime $TIMESTAMP_FLAG --sign "$IDENTITY" \
   --entitlements "$HELPER_ENTITLEMENTS" "$APP/Contents/MacOS/$HELPER"
 check_helper "$APP/Contents/MacOS/$HELPER"
 codesign --force --options runtime $TIMESTAMP_FLAG --sign "$IDENTITY" \
-  -i "${BUNDLE_ID}.wth" \
-  --entitlements "$ENTITLEMENTS" "$APP/Contents/MacOS/wth"
+  -i "${BUNDLE_ID}.t" \
+  --entitlements "$ENTITLEMENTS" "$APP/Contents/MacOS/t"
 codesign --force --options runtime $TIMESTAMP_FLAG --sign "$IDENTITY" \
   --entitlements "$ENTITLEMENTS" "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"
@@ -100,10 +100,10 @@ spctl --assess --type execute -vv "$APP" || true
 echo "==> [5/5] building DMG"
 STAGING="$(mktemp -d)"
 trap 'rm -rf "$STAGING"' EXIT
-ditto "$APP" "$STAGING/wth.app"
+ditto "$APP" "$STAGING/theuth.app"
 ln -s /Applications "$STAGING/Applications"
 rm -f "$DMG"
-hdiutil create -volname "wth" -srcfolder "$STAGING" -ov -format UDZO "$DMG" >/dev/null
+hdiutil create -volname "theuth" -srcfolder "$STAGING" -ov -format UDZO "$DMG" >/dev/null
 if [[ "$IDENTITY" != "-" ]]; then
   codesign --force $TIMESTAMP_FLAG --sign "$IDENTITY" "$DMG"
 fi
@@ -114,6 +114,6 @@ echo "  app: $APP"
 echo "  helper: $APP/Contents/MacOS/$HELPER"
 echo "  dmg: $DMG"
 if [[ "$IDENTITY" == "-" ]]; then
-  echo "  signed: ad-hoc (set WTH_SIGN_IDENTITY for a Developer ID build," \
+  echo "  signed: ad-hoc (set THEUTH_SIGN_IDENTITY for a Developer ID build," \
        "then run just notarize-macos)"
 fi

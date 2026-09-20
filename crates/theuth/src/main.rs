@@ -1,5 +1,5 @@
-//! `wth`: build the runtime, start the plugin list, wait for shutdown.
-//! Also the Python runtime worker: `wth subprocess` (design doc 08 §9, [`worker`]).
+//! `theuth`: build the runtime, start the plugin list, wait for shutdown.
+//! Also the Python runtime worker: `t subprocess` (design doc 08 §9, [`worker`]).
 
 mod link_cli;
 mod secret_cli;
@@ -14,16 +14,16 @@ use figment::providers::{Env, Format, Yaml};
 use runtime::{Plugin, Runtime, SessionId};
 
 /// The worker's memory limits are enforced by the allocator, so the process
-/// that runs `wth subprocess` must own it. Unarmed (every other mode) it is
+/// that runs `t subprocess` must own it. Unarmed (every other mode) it is
 /// `System` plus one live-byte counter.
 #[global_allocator]
 static ALLOC: monty_alloc::LimitedAllocator = monty_alloc::LimitedAllocator;
 
 #[derive(Parser, Debug)]
-#[command(name = "wth", version, about = "what the harness")]
+#[command(name = "t", version, about = "what the harness")]
 struct Cli {
     /// Data directory (config, secrets vault, mcp/, sqlite, logs, token, skills).
-    #[arg(long, env = "WTH_DATA_DIR")]
+    #[arg(long, env = "THEUTH_DATA_DIR")]
     data_dir: Option<PathBuf>,
     /// Config file; defaults to `<data_dir>/config.yaml`.
     #[arg(long)]
@@ -66,11 +66,11 @@ struct Cli {
     #[arg(long, requires = "slack_setup")]
     app: Option<String>,
     /// Pair a phone with the running daemon (one-shot: prints a QR and the
-    /// key, waits for the scan, exits). Needs `wth --headless` on this box.
+    /// key, waits for the scan, exits). Needs `t --headless` on this box.
     #[arg(long, conflicts_with_all = ["headless", "serve", "acp", "prompt", "link_signal", "slack_manifest", "slack_setup"])]
     link: bool,
     /// Install this harness as a background service (launchd LaunchAgent or
-    /// systemd user unit) that runs `wth --headless` through the login shell,
+    /// systemd user unit) that runs `t --headless` through the login shell,
     /// set `link.enabled: true`, start it, then pair it to your main harness
     /// as a node (design doc 32 §5.1).
     #[arg(long, conflicts_with_all = ["headless", "serve", "acp", "prompt", "link_signal", "slack_manifest", "slack_setup", "link", "resume", "uninstall_service"])]
@@ -101,18 +101,18 @@ struct Cli {
     #[arg(long, conflicts_with_all = ["headless", "serve", "acp", "prompt", "resume", "link_signal", "slack_manifest", "slack_setup", "link", "install_service", "uninstall_service"])]
     secret_list: bool,
     /// Check the release manifest once, verify, replace this binary on disk
-    /// (or `brew upgrade wth` for a Homebrew install), print one line, exit (39 §3.2).
+    /// (or `brew upgrade theuth` for a Homebrew install), print one line, exit (39 §3.2).
     #[arg(long, conflicts_with_all = ["headless", "serve", "acp", "prompt", "resume", "link_signal", "slack_manifest", "slack_setup", "link", "install_service", "uninstall_service", "secret_set", "secret_rm", "secret_list"])]
     update: bool,
     /// Print the app library compatibility hash this binary was built with and
-    /// exit (46 §2.1): the updater checks a staged `wth-app-parser-<hash>` helper
+    /// exit (46 §2.1): the updater checks a staged `theuth-app-parser-<hash>` helper
     /// against it. Before config, logging or any plugin.
     #[arg(long, conflicts_with_all = ["headless", "serve", "acp", "prompt", "resume", "link_signal", "slack_manifest", "slack_setup", "link", "install_service", "uninstall_service", "secret_set", "secret_rm", "secret_list", "update"])]
     app_parser_hash: bool,
 }
 
-const DEFAULT_CONFIG: &str = "# wth configuration. Every plugin reads its own section.
-# Env overrides: WTH_<SECTION>__<KEY>, e.g. WTH_RPC__LISTEN=127.0.0.1:7799
+const DEFAULT_CONFIG: &str = "# theuth configuration. Every plugin reads its own section.
+# Env overrides: THEUTH_<SECTION>__<KEY>, e.g. THEUTH_RPC__LISTEN=127.0.0.1:7799
 
 agent:
   model: anthropic/claude-sonnet-4-5
@@ -165,7 +165,7 @@ agent:
 
 # search_providers:          # optional external engines registered with `web` (design doc 16 §3); the
 #                            # built-in keyless engines above need none of these
-#   firecrawl:               # inert until the `firecrawl` secret exists (`wth --secret-set firecrawl`)
+#   firecrawl:               # inert until the `firecrawl` secret exists (`t --secret-set firecrawl`)
 #     base_url: https://api.firecrawl.dev
 #   searxng:                 # a SearXNG instance you run
 #     base_url: http://127.0.0.1:8080
@@ -184,13 +184,13 @@ agent:
 #   enabled: true            # the OS permission prompts are the consent; actions still ask
 #   max_edge: 1568           # screenshot long edge after logical scaling (~1280 for Anthropic click accuracy)
 
-# link:                      # drive this harness from a phone through the relay (design doc 31). `wth --link` / `/link` pair; `wth --install-service` runs it as a node (32).
+# link:                      # drive this harness from a phone through the relay (design doc 31). `t --link` / `/link` pair; `t --install-service` runs it as a node (32).
 #   enabled: false           # `/link on`, Settings › Link or hand-edit; the uplink dials out, nothing listens
-#   relay: wss://relay.wth.rwx.dev   # self-host: your `wth-relay` URL
+#   relay: wss://relay.theuth.io   # self-host: your `theuth-relay` URL
 #   name: \"\"                 # display name in the QR and on devices; \"\" → hostname
 #   max_devices: 16
 
-# nodes:                     # harnesses on other machines this one can run sessions on (design doc 32). `/nodes add <key>` pairs; the node runs `wth --install-service`.
+# nodes:                     # harnesses on other machines this one can run sessions on (design doc 32). `/nodes add <key>` pairs; the node runs `t --install-service`.
 #   enabled: true            # false: no dials, nodes invisible to the model and the UI; nodes.yaml kept
 
 # schedule:                  # scheduled runs from <data_dir>/schedules/*.md files (design doc 34); `/schedules` lists them
@@ -198,9 +198,9 @@ agent:
 #   run_timeout_secs: 1800   # a run still going after this is cancelled and reported as `timeout`
 
 # update:                    # self-update (design doc 39): check the release bucket, verify the signature, replace this
-#                            # binary on disk; takes effect at the next start. Nothing is ever asked. `wth --update` forces a check.
+#                            # binary on disk; takes effect at the next start. Nothing is ever asked. `t --update` forces a check.
 #   enabled: true
-#   url: https://s3.rwx.dev/wth/releases/latest.json
+#   url: https://s3.rwx.dev/theuth/releases/latest.json
 
 # artifact:                  # `show` tool: files the agent makes for the user, as cards in the chat (design doc 35); `/artifacts` lists them
 #   enabled: true            # false: no `show` tool, no prompt block, no /artifacts; blobs and index kept
@@ -246,7 +246,7 @@ tools:
     destructive: ask
   # approvals: false   # never prompt; `/approvals off always` writes this
 
-# secrets:                   # design doc 37; `/secrets`, Settings › Secrets, `wth --secret-set`
+# secrets:                   # design doc 37; `/secrets`, Settings › Secrets, `t --secret-set`
 #   key_store: auto          # auto | keychain | file — where the vault key lives; auto = keychain when one answers, else <data_dir>/secrets.key (0600) with a warning
 #   tools: true              # false: no secret_* tools, no prompt block, `{{secret:…}}` stays literal, nothing is scrubbed; the vault, /secrets and the harness's own keys are unaffected
 #   request_timeout_secs: 1800   # `secret_request` gives up (the model sees \"no answer\") after this
@@ -254,18 +254,18 @@ tools:
 rpc:
   listen: 127.0.0.1:7777
 
-# signal:                   # phone frontend; runs in `wth --headless`. Pair with `wth --link-signal`.
+# signal:                   # phone frontend; runs in `t --headless`. Pair with `t --link-signal`.
 #   enabled: true           # daemon starts the channel when linked
-#   device_name: wth        # shown in the phone's Linked devices list
+#   device_name: theuth        # shown in the phone's Linked devices list
 #   owner: \"+15551234567\"   # set by --link-signal / signal_link; owner-only commands
 #   allowed: []             # more E.164s; each gets its own thread
 
-# slack:                    # Slack frontend; runs in `wth --headless`. `wth --slack-setup` creates the app and fills
-#                           # this in; `wth --slack-manifest` prints the manifest for the manual path (tokens → `wth --secret-set slack_bot` / `slack_app`).
+# slack:                    # Slack frontend; runs in `t --headless`. `t --slack-setup` creates the app and fills
+#                           # this in; `t --slack-manifest` prints the manifest for the manual path (tokens → `t --secret-set slack_bot` / `slack_app`).
 #   enabled: true           # daemon opens the socket when tokens are present
 #   owner: U0123456789      # owner-only commands; may click any approval; receives unbound approvals
 #   allowed: []             # more user ids; each owns their threads
-#   channels: []            # channel ids where @wth is honoured; empty = DMs only
+#   channels: []            # channel ids where @theuth is honoured; empty = DMs only
 #   tools: all              # all | errors | none — task cards per tool call
 #   reasoning: true         # post the quoted reasoning message
 #   approvals: all          # all | threads — approvals for sessions not bound to a thread go to the owner DM (all) or nowhere (threads)
@@ -353,14 +353,14 @@ async fn run() -> anyhow::Result<()> {
 
     let data_dir = cli
         .data_dir
-        .or_else(|| dirs::home_dir().map(|h| h.join(".wth")))
+        .or_else(|| dirs::home_dir().map(|h| h.join(".theuth")))
         .ok_or_else(|| anyhow::anyhow!("cannot determine data dir; pass --data-dir"))?;
 
     let config_path = cli.config.unwrap_or_else(|| data_dir.join("config.yaml"));
     first_run(&data_dir, &config_path)?;
     let config = Figment::new()
         .merge(Yaml::file(&config_path))
-        .merge(Env::prefixed("WTH_").split("__"));
+        .merge(Env::prefixed("THEUTH_").split("__"));
     if cli.update {
         let cfg: update::UpdateConfig = config.extract_inner("update").unwrap_or_default();
         return update_cli(&cfg, &data_dir).await;
@@ -405,7 +405,7 @@ async fn run() -> anyhow::Result<()> {
     let logs = data_dir.join("logs");
     std::fs::create_dir_all(&logs)?;
     let (writer, _guard) =
-        tracing_appender::non_blocking(tracing_appender::rolling::daily(&logs, "wth.log"));
+        tracing_appender::non_blocking(tracing_appender::rolling::daily(&logs, "theuth.log"));
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env().add_directive("info".parse()?),
@@ -560,8 +560,8 @@ async fn run() -> anyhow::Result<()> {
     std::process::exit(0)
 }
 
-/// `wth --update` (39 §3.2): one foreground check, one line on stdout.
-/// Logs go to stderr so `RUST_LOG=debug wth --update` shows the debug lines.
+/// `t --update` (39 §3.2): one foreground check, one line on stdout.
+/// Logs go to stderr so `RUST_LOG=debug t --update` shows the debug lines.
 async fn update_cli(cfg: &update::UpdateConfig, data_dir: &Path) -> anyhow::Result<()> {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -569,9 +569,9 @@ async fn update_cli(cfg: &update::UpdateConfig, data_dir: &Path) -> anyhow::Resu
         .try_init();
     match update::run_once(cfg, data_dir).await {
         Ok(update::Outcome::UpToDate) => println!("up to date ({})", env!("CARGO_PKG_VERSION")),
-        Ok(update::Outcome::Applied { from, to }) => println!("wth {from} → {to}"),
+        Ok(update::Outcome::Applied { from, to }) => println!("theuth {from} → {to}"),
         Ok(update::Outcome::Available { version, path }) => println!(
-            "wth {version} available; {} is not writable — run `sudo wth --update`",
+            "theuth {version} available; {} is not writable — run `sudo t --update`",
             path.display()
         ),
         Err(e) => {

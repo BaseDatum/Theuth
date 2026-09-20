@@ -9,7 +9,7 @@ import { defineConfig } from 'vitest/config'
 /** The product version: `just bump-version` keeps tauri.conf.json and Cargo.toml in lockstep. */
 const { version } = JSON.parse(readFileSync(new URL('../tauri.conf.json', import.meta.url), 'utf8')) as { version: string }
 
-/** `@wth/apps` (46) is consumed from its repo sources, not installed: no copy to go stale, and its `node_modules`
+/** `@theuth/apps` (46) is consumed from its repo sources, not installed: no copy to go stale, and its `node_modules`
  * holds the one pinned, patched OpenUI install every `@openuidev/*` import resolves to (tsconfig `paths` mirrors this). */
 const apps = fileURLToPath(new URL('../../../packages/apps', import.meta.url))
 
@@ -19,7 +19,7 @@ const apps = fileURLToPath(new URL('../../../packages/apps', import.meta.url))
  * and only the patched ESM builds under `packages/apps/node_modules` are ever loaded, whoever imports them.
  */
 const openui = (): Plugin => ({
-  name: 'wth:openui-single-instance',
+  name: 'theuth:openui-single-instance',
   enforce: 'pre',
   resolveId(source, importer, options) {
     if (!source.startsWith('@openuidev/')) return null
@@ -34,8 +34,8 @@ export default defineConfig({
   resolve: {
     alias: [
       { find: '@', replacement: fileURLToPath(new URL('./src', import.meta.url)) },
-      { find: /^@wth\/apps$/, replacement: `${apps}/src/index.ts` },
-      { find: /^@wth\/apps\/renderer$/, replacement: `${apps}/src/renderer.tsx` },
+      { find: /^@theuth\/apps$/, replacement: `${apps}/src/index.ts` },
+      { find: /^@theuth\/apps\/renderer$/, replacement: `${apps}/src/renderer.tsx` },
     ],
     // The package's `node_modules` carries its own React/zod/zustand; one copy each, ours.
     dedupe: ['react', 'react-dom', 'zod', 'zustand'],

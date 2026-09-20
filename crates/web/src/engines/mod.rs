@@ -43,7 +43,7 @@ pub const BUILTIN: &[&str] = &[
 ];
 
 /// Identifiable user agent for APIs that require one (Wikimedia, GitHub).
-pub const USER_AGENT: &str = "wth/0.1 (+https://github.com/skymoore/wth)";
+pub const USER_AGENT: &str = "theuth/0.1 (+https://github.com/skymoore/theuth)";
 
 /// Construct a built-in engine by name; `github` reads the optional
 /// `github` credential. `None` for an unknown name.

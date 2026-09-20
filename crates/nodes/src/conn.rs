@@ -59,7 +59,7 @@ pub fn relay_url(parsed: &Parsed) -> String {
     format!("{scheme}://{}", parsed.relay_host)
 }
 
-/// Connect to `<relay>/h/<b64(harness_pub)>` with the `wth-link-1` subprotocol.
+/// Connect to `<relay>/h/<b64(harness_pub)>` with the `theuth-link-1` subprotocol.
 pub async fn open(relay: &str, harness_pub: &[u8; 32]) -> anyhow::Result<Socket> {
     let url = format!("{}/h/{}", relay.trim_end_matches('/'), b64(harness_pub));
     let mut req = url.as_str().into_client_request()?;

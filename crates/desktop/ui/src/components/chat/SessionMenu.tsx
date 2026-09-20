@@ -207,8 +207,8 @@ export function SessionMenu({ session }: { session: string }) {
       const s = surfaceOf(e)
       if (s === 'prompt' || s === 'jobs') setSheet(s)
     }
-    window.addEventListener('wth:open', on)
-    return () => window.removeEventListener('wth:open', on)
+    window.addEventListener('theuth:open', on)
+    return () => window.removeEventListener('theuth:open', on)
   }, [focused])
 
   const ctx: Ctx = {

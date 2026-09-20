@@ -6,7 +6,7 @@ import type { Source } from "./Source";
  */
 export type Meta = { 
 /**
- * OKF concept id: the path without `.md` (`facts/wth-toolchain`).
+ * OKF concept id: the path without `.md` (`facts/theuth-toolchain`).
  */
 id: string, 
 /**

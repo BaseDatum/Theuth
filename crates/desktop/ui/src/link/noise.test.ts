@@ -86,6 +86,6 @@ test('IK: a tampered message 2 fails to decrypt', async () => {
   await expect(hs.finish(bad)).rejects.toThrow()
 })
 
-test('prologue is "wth-link-1" followed by the harness id', () => {
-  expect(new TextDecoder().decode(prologue('abc'))).toBe('wth-link-1abc')
+test('prologue is "theuth-link-1" followed by the harness id', () => {
+  expect(new TextDecoder().decode(prologue('abc'))).toBe('theuth-link-1abc')
 })

@@ -26,7 +26,7 @@ against `../jarvis`, file:line in the map):
 | Dead weight | `phase_gating` persisted per job and never applied at fire (`fire_job` passes `None`); `update_job` = list + find + merge + full replace ("O(n) and racy", its own design doc); briefing jobs whose agent run was a one-sentence "ack" while goals did the work off the `JobFired` event |
 | Core | "run prompt X at time Y, one conversation per job, record last status" ≈ **300 of the 2 899 lines** |
 
-Every passenger solved a problem the harness around it had. wth already has
+Every passenger solved a problem the harness around it had. theuth already has
 the primitives those passengers were substitutes for: a session that can be
 woken by a harness input (14 §3), `/clear` as an epoch (11 §2.4), one
 delivery path to the user (24), `Risk` as the whole permission contract,
@@ -36,7 +36,7 @@ registry (01 §1.4, 04 §0), and a turn cancel. So the scheduler here is the
 
 ## 1. Decisions in one screen
 
-1. **A schedule is a markdown file.** `~/.wth/schedules/<name>.md`: front
+1. **A schedule is a markdown file.** `~/.theuth/schedules/<name>.md`: front
    matter says *when*, the body is the prompt. The directory is the
    registry; there is no table, no id, no `update` — edit the file. Same
    rule as `mcp/` and `skills/` (04: "a directory is the registry; tools
@@ -103,7 +103,7 @@ registry (01 §1.4, 04 §0), and a turn cancel. So the scheduler here is the
 8. **The model gets one tool, `schedule`.** It validates and writes the
    file and answers with the next fire time. Everything else is the file
    system it already has: `read_file` to see a schedule, `list_dir
-   ~/.wth/schedules` to list, `shell rm` to cancel. Every one of those is
+   ~/.theuth/schedules` to list, `shell rm` to cancel. Every one of those is
    gated by its own `Risk` as today. Rejected: `list_jobs`, `get_job`,
    `update_job`, `cancel_job`, `run_job`, `job_decision` (jarvis, six
    tools + three MCP mirrors for one file).
@@ -117,7 +117,7 @@ registry (01 §1.4, 04 §0), and a turn cancel. So the scheduler here is the
 ### 2.1 Directory
 
 ```
-~/.wth/schedules/
+~/.theuth/schedules/
   morning-brief.md        one schedule; the stem is its name
   queue-watch.md
 ```
@@ -389,7 +389,7 @@ so the answer is what the actor will actually do.
 Prompt block (`RegisterPrompt { plugin: "schedule", text: PROMPT }`, one
 static paragraph, 00 §4):
 
-> Schedules are markdown files in `~/.wth/schedules/` (front matter
+> Schedules are markdown files in `~/.theuth/schedules/` (front matter
 > `cron:` in local time, `every:`, or `at:`; body = the prompt). Create or
 > replace one with `schedule`; read them with `read_file`, list with
 > `list_dir`, cancel by deleting the file. An input wrapped in
@@ -499,7 +499,7 @@ schedule:
   run_timeout_secs: 1800   # a run still going after this is cancelled and reported as `timeout`
 ```
 
-`WTH_SCHEDULE__RUN_TIMEOUT_SECS` as everywhere. No `max_concurrent`, no
+`THEUTH_SCHEDULE__RUN_TIMEOUT_SECS` as everywhere. No `max_concurrent`, no
 `timezone`, no `tick`, no heartbeat keys (jarvis: `max_concurrent_jobs`,
 `heartbeat_enabled`, `heartbeat_interval_mins`, `heartbeat_run_timeout_mins`,
 `[goals].timezone`).
@@ -556,7 +556,7 @@ crate: `lib.rs` (config, actor, loop, delivery) ≈ 350 lines, `file.rs`
    `schedule <name> timeout`.
 4. **Tool + prompt block.** From a TUI session: "every weekday at 9
    brief me on my calendar" → one `schedule` call, approval prompt,
-   `~/.wth/schedules/<name>.md` exists with `cron: "0 9 * * 1-5"`, reply
+   `~/.theuth/schedules/<name>.md` exists with `cron: "0 9 * * 1-5"`, reply
    names the next fire; "remind me in 20 minutes to stretch" →
    `at:`, the file disappears after it fires, the reminder arrives;
    "cancel it" → `shell rm`. `/prompt` shows the block.
@@ -602,10 +602,10 @@ Shipped 2026-09-16: `crates/schedule` (`lib.rs` actor + plugin ≈ 560 lines,
 ≈ 110, one migration); `rpc` methods `list_schedules` / `fire_schedule` /
 `schedule_history` + `ScheduleEvent` on the stream + bindings; TUI
 `/schedules [run|history]` and the `◷` card; desktop Settings › Schedules
-(`Schedules.tsx`, classifier arm, `events.ts`, `reduce.ts`); `wth` plugin
+(`Schedules.tsx`, classifier arm, `events.ts`, `reduce.ts`); `theuth` plugin
 vector + `DEFAULT_CONFIG`; README; 00 §4/§9/§10/§12/§13; 25 §3. Gates:
 `cargo clippy --workspace --all-targets -D warnings`, `cargo test` on
-`schedule`/`agent`/`tui`/`rpc`/`wth`, `just ts-desktop`, desktop `tsc -b`
+`schedule`/`agent`/`tui`/`rpc`/`theuth`, `just ts-desktop`, desktop `tsc -b`
 and vitest (96) all green. Doc number: 33 was taken by `33-loops.md` an
 hour earlier; the user chose to build this and fold loops in later.
 
@@ -638,7 +638,7 @@ Deviations from §§1–9:
 - `write_atomic` uses `<dir>/.<name>.md.tmp` (dotfile → invisible to the
   loader) then rename.
 
-Smoke (headless, `claude-sonnet-4-5`, `/tmp/wth-sched`, `RUST_LOG=schedule=debug`):
+Smoke (headless, `claude-sonnet-4-5`, `/tmp/theuth-sched`, `RUST_LOG=schedule=debug`):
 
 - `every: 20s` file → session created, titled (after the agent fix; the
   pre-fix session kept its wrapper title), run `end_turn` in ~2 s, `Fired`,

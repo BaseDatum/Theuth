@@ -6,7 +6,7 @@ Status: as-built v0 · 2026-09-10 · extends `00-architecture.md` §4, §7;
 
 Signal is a frontend, like the terminal UI: it sends `SendInput`/`Steer`/
 `Cancel`/`Resolve` and renders `AgentEvent`s. It runs **only in the daemon**
-(`wth --headless`). It is also the only frontend whose transport code is
+(`t --headless`). It is also the only frontend whose transport code is
 *imported*, not written: the presage layer jarvis spent weeks debugging is
 copied byte-for-byte and never edited beyond three additive hunks (§2.2).
 
@@ -21,7 +21,7 @@ Not goals, with the reason:
 
 - **Groups.** presage drops `group_v2` (jarvis `presage.rs:892`); one contact
   = one thread keeps the trust model a list of numbers. Revisit with a spike.
-- **Voice/STT/TTS, images to the model.** wth's `SendInput` is text. Inbound
+- **Voice/STT/TTS, images to the model.** theuth's `SendInput` is text. Inbound
   files are saved and their path is handed to the model (§7.4), which can
   `read_file` them; that covers the useful 80 %.
 - **Streaming to the phone.** Signal cannot edit a sent message; a burst of
@@ -32,7 +32,7 @@ Not goals, with the reason:
   never opens the store except to link: the one-shot CLI (§11.1) or the
   in-process `signal_link` tool (§11.3).
 
-Deployment fact, stated once: wth links as a *secondary device* of a Signal
+Deployment fact, stated once: theuth links as a *secondary device* of a Signal
 account, so that account needs a primary phone. In the usual setup the daemon
 owns a **dedicated number** and the owner messages it from their personal
 account. Messaging your own account ("Note to Self") arrives as a sync
@@ -53,7 +53,7 @@ crates/signal/
     text.rs       FROZEN  jarvis crates/jarvis-signal/src/text.rs
     error.rs      FROZEN  jarvis error.rs minus the `Core` variant and its `From`
     mock.rs       FROZEN  the `MockTransport` half of jarvis mock.rs (`#[cfg(test)]`)
-~/.wth/signal/
+~/.theuth/signal/
   presage.db      presage's own sqlite (protocol state, identity keys, contacts); schema is presage's
   threads.json    { "+15551234567": { "session": "<uuid>", "aci": "<uuid>" }, … }  contact → live session + ACI (§6)
   inbox/          inbound attachments, `<timestamp>-<name>` (§7.4)
@@ -94,7 +94,7 @@ changes an existing branch.
 3. **`send_attachment` takes a `file_name: Option<&str>`** (before `caption`;
    trait, presage, mock, the presage unit test). presage's `AttachmentSpec`
    already has the field; jarvis never sent files and hard-coded `None`. A
-   nameless PDF is unusable on the phone, so the wth outbound path (§8.4)
+   nameless PDF is unusable on the phone, so the theuth outbound path (§8.4)
    passes the file's name through. Images and audio ignore it.
 4. **Mock records the full `Recipient`.** `MockTransport` keeps a
    `recipients: Vec<Recipient>` parallel to `sent` (whose items carry only the
@@ -149,13 +149,13 @@ after `agent`. `start`:
 As built, the terminal-mode actor answers `Status` with
 `state: Some(DaemonOnly)`, `registered: <presage.db exists>`,
 `number: None`, `owner`/`allowed` from config, `threads` read from
-`threads.json`; `Link` → `Err("signal runs in the daemon (wth --headless);
-link with wth --link-signal")`; `Allow`/`RemoveAllowed` edit config only;
+`threads.json`; `Link` → `Err("signal runs in the daemon (t --headless);
+link with t --link-signal")`; `Allow`/`RemoveAllowed` edit config only;
 `Unlink` deletes `presage.db*` directly.
 
 ### 3.1 The supervisor (`channel::run`), ported
 
-Control flow and constants are jarvis's (`channel.rs:1230-1455`), with wth
+Control flow and constants are jarvis's (`channel.rs:1230-1455`), with theuth
 events. Nothing here is a design choice; it is the shape that stayed up.
 
 ```
@@ -274,7 +274,7 @@ envelope (frozen pump: text/attachments/quote/reaction, sender aci+number)
   ask failed → send `⚠️ <error>`, react ❌
 ```
 
-Follow-ups while a turn runs become `Steer` — wth already has the exact
+Follow-ups while a turn runs become `Steer` — theuth already has the exact
 primitive jarvis had to build a FIFO queue for (`channel.rs:1755-1760`). The
 steer lands after the current tool batch, which is what a phone user typing
 "also check the tests" means.
@@ -289,7 +289,7 @@ png, jpeg, gif, webp, pdf and ogg, jarvis `channel.rs:139`) and one line is
 appended to the user text:
 
 ```
-[attachment: /Users/x/.wth/signal/inbox/1757500000000-0.png (image/png, 82 KiB)]
+[attachment: /Users/x/.theuth/signal/inbox/1757500000000-0.png (image/png, 82 KiB)]
 ```
 
 The model reads it with `read_file` if it wants to (a PDF or Office file
@@ -394,7 +394,7 @@ Commands never reach the model.
 | `/signal [status\|link\|allow <n>\|rm <n>\|unlink]` | owner only; bare = `status`; `link` replies the current provisioning URL (text, no QR); `allow`/`rm` go through the `"signal"` actor (live list + `write_config_value`), reply `<n> allowed` / `<n> removed`; `unlink` deletes `presage.db` and returns to linking, no reply (the device is gone) | `Status`, `Link`, `Allow`, `RemoveAllowed`, `Unlink` |
 
 Missing on purpose: opening a child (a transcript dump is not phone content —
-it is `wth --resume <id>` territory, 19 §4), `/quit`/`/exit` (the daemon is not yours to stop
+it is `t --resume <id>` territory, 19 §4), `/quit`/`/exit` (the daemon is not yours to stop
 from a phone; `shutdown` stays RPC). Replies are plain text, ≤ 2000 chars
 per chunk, tables as aligned monospace lines inside a fence (rendered
 verbatim by `markdown_to_plain`).
@@ -469,7 +469,7 @@ half-blocks, `Dense1x2`, no quiet zone: QR version ≈ 6, about 41×21 cells,
 ### 11.1 CLI, one-shot
 
 ```
-wth --link-signal [--owner <E.164>] [--device-name <name>]
+t --link-signal [--owner <E.164>] [--device-name <name>]
   --link-signal   Pair this machine as a Signal linked device (one-shot: prints a QR,
                   waits for the scan, writes `signal.owner`/`device_name`, exits).
   --owner         Owner E.164 (`+15551234567`) for --link-signal; prompted on a TTY when absent.
@@ -478,7 +478,7 @@ wth --link-signal [--owner <E.164>] [--device-name <name>]
 
 `--owner` and `--device-name` `requires = "link_signal"`. `main::link_signal`
 runs before the runtime: `signal::link_oneshot` opens the store, refuses when
-already registered (`already linked as +1555…; wth --headless to run,
+already registered (`already linked as +1555…; t --headless to run,
 /signal unlink to relink`), then `link_device`, prints the QR and the URL
 (`scan from Signal → Settings → Linked devices (expires in ~90 s; a fresh
 code follows):`), waits for `done` rotating URLs per §3.1 (link_device
@@ -488,7 +488,7 @@ errors → `backoff_delay`), and returns the account number. Then the owner:
 or absent answer prints `…; set signal.owner in <config> yourself` and
 leaves it unset. `signal.owner` (when set, double-quoted) and
 `signal.device_name` are written with `write_config_value`; prints
-`linked as +1555…; owner +1444…; run wth --headless`, exits 0.
+`linked as +1555…; owner +1444…; run t --headless`, exits 0.
 
 As built there is no dedicated "a daemon holds the store" message: a locked
 or unreadable store surfaces as the transport's own error from
@@ -562,12 +562,12 @@ it.
 ```yaml
 signal:
   enabled: true            # daemon starts the channel when linked
-  device_name: wth         # shown in the phone's Linked devices list
+  device_name: theuth         # shown in the phone's Linked devices list
   owner: "+15551234567"    # set by --link-signal / signal_link; owner-only commands
   allowed: []              # more E.164s; each gets its own thread
 ```
 
-Env overrides as everywhere (`WTH_SIGNAL__OWNER`). No quiet hours, no
+Env overrides as everywhere (`THEUTH_SIGNAL__OWNER`). No quiet hours, no
 approval timers (§10), no phone_number (the account tells us).
 
 ## 13. Types
@@ -608,7 +608,7 @@ struct Channel {
 - **Editing the protocol tier beyond §2.2.** Every jarvis gotcha (multi-thread
   runtime + LocalSet keepalive starvation, PNI rejection, trusted-contact
   filter, stable-disconnect backoff reset, URL rotation cadence) is either
-  inside the frozen files or ported as constants. Rewriting "in wth style"
+  inside the frozen files or ported as constants. Rewriting "in theuth style"
   is how the bugs come back.
 - **Text-only approvals (jarvis parity).** Two additive lines buy 👍/👎; the
   code path stays as fallback. Cheap, and the phone-native gesture.
@@ -670,8 +670,8 @@ Unit tests live in the module they check (`cargo test -p signal`):
    `allowed_list_is_quoted_flow_yaml`): render a `sgnl://linkdevice?uuid=…&pub_key=…`
    with `Dense1x2`, assert `< 2000` chars and ≥ 20 lines.
 7. **e2e, manual, real account** — **pending the user's test**, to be
-   recorded in the PR: `wth --link-signal` → scan → `linked as`;
-   `wth --headless`; text "hi" → 👀 → typing → reply → ✅; "run `ls`" with
+   recorded in the PR: `t --link-signal` → scan → `linked as`;
+   `t --headless`; text "hi" → 👀 → typing → reply → ✅; "run `ls`" with
    `mutating: ask` → approval message → 👍 → tool runs; `/new`, `/sessions`,
    `/resume` round-trip; unlink from the phone → `Unlinked` → new QR in the
    log within 5 s; kill the daemon mid-turn, restart → thread still bound.

@@ -65,7 +65,7 @@ pub fn backoff_delay(attempt: u32) -> Duration {
 #[must_use]
 pub fn secret_notice(name: &str, note: &str) -> String {
     format!(
-        "wth asks for secret {name} — {note}. Enter it in the desktop app, the TUI (/secrets add {name}) or `wth --secret-set {name}`; it will not be read from this chat."
+        "theuth asks for secret {name} — {note}. Enter it in the desktop app, the TUI (/secrets add {name}) or `t --secret-set {name}`; it will not be read from this chat."
     )
 }
 
@@ -1975,9 +1975,9 @@ mod tests {
         f.until(|f| f.link_urls() == 12).await;
         assert_eq!(
             f.handle.link().await.unwrap(),
-            "sgnl://linkdevice?uuid=mock&device=wth"
+            "sgnl://linkdevice?uuid=mock&device=theuth"
         );
-        assert!(f.transport.linked_device_names().iter().all(|n| n == "wth"));
+        assert!(f.transport.linked_device_names().iter().all(|n| n == "theuth"));
     }
 
     #[tokio::test(start_paused = true)]

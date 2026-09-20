@@ -21,7 +21,7 @@ use tokio_util::sync::CancellationToken;
 use crate::frame::{self, reason};
 
 /// WebSocket subprotocol every socket must request.
-pub const PROTOCOL: &str = "wth-link-1";
+pub const PROTOCOL: &str = "theuth-link-1";
 const NOISE: &str = "Noise_NK_25519_AESGCM_SHA256";
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 const PING_EVERY: Duration = Duration::from_secs(30);

@@ -157,7 +157,7 @@ check on each, before microphones and turn-taking multiply the unknowns.
   blocks of a streaming reply (03 §2).
 - Bus: `Guaranteed` + unbounded subscriber mailboxes; payloads cloned once
   per subscriber, so deltas carry `Arc<str>` (00 §3).
-- Release bucket: `https://s3.rwx.dev/wth/…` (`update`, 39;
+- Release bucket: `https://s3.rwx.dev/theuth/…` (`update`, 39;
   `scripts/release-s3.sh`); `reqwest` (rustls, stream) is a workspace dep.
 
 ### 2.3 Desktop
@@ -180,7 +180,7 @@ check on each, before microphones and turn-taking multiply the unknowns.
 ## 3. Shape
 
 ```
- desktop (webview)                         wth --headless
+ desktop (webview)                         t --headless
  ┌──────────────────────────┐              ┌──────────────────────────────────────┐
  │ MessageAssistant         │  speak()     │ rpc::Api ──ask──▶ voice::Voice actor │
  │  [🔊] ─────────────────────────────────▶│                   │  markdown::spoken│
@@ -510,7 +510,7 @@ Each ends with a runnable check, not a test suite.
    log), `model.rs`, `speak.rs` with the Opus encoder, events, `main.rs`
    vector line, `DEFAULT_CONFIG` section, `[workspace.dependencies]`
    entries for `voice`, `ptts`, `opus`. check: headless
-   (`WTH_RPC__LISTEN=127.0.0.1:7791 wth --headless --data-dir /tmp/wth-v`)
+   (`THEUTH_RPC__LISTEN=127.0.0.1:7791 t --headless --data-dir /tmp/theuth-v`)
    on a fresh data dir: a ws script calls `speak` →
    `VoiceModel{Downloading…}` → `Ready` → `SpeechStarted` → `SpeechAudio`
    × n → `SpeechFinished{Done}`; the script decodes the packets with
@@ -534,7 +534,7 @@ Each ends with a runnable check, not a test suite.
 ## 11. Status (as-built 2026-09-17)
 
 Implemented in one pass; every check below ran against
-`~/.wth/models/pocket-tts/` on an M3 Max. What differs from the design
+`~/.theuth/models/pocket-tts/` on an M3 Max. What differs from the design
 above is recorded here rather than rewritten into it.
 
 - **Model files: `model_dir` only, no mirror yet.** The mirror (§0.3, §4.6,
@@ -571,14 +571,14 @@ above is recorded here rather than rewritten into it.
   through `opus-decoder` (the webview's decoder) to a WAV that reads the
   fixture as `spoken()` renders it — heard by the user. `stop_speaking`
   after `seq` 3 → `{stopped}`, zero late packets. Two `speak`s back to back
-  → `stopped` then `done`. `WTH_VOICE__ENABLED=false` → `voice_status` is
+  → `stopped` then `done`. `THEUTH_VOICE__ENABLED=false` → `voice_status` is
   −32001 `voice is disabled`.
 - **Gates:** `cargo check`/`clippy -D warnings`/`test` for `voice`, `rpc`,
-  `wth`, `markdown`; `just ts` (bindings + `methods.json` gained the three
+  `theuth`, `markdown`; `just ts` (bindings + `methods.json` gained the three
   methods); `bun run check` and 112/112 vitest in `desktop/ui`.
 - **Desktop (step 6):** button renders first in the action bar; the click →
   audio path is being exercised by the user in browser dev mode
-  (`VITE_WTH_URL`) against the headless daemon. Not exercised: the Tauri
+  (`VITE_THEUTH_URL`) against the headless daemon. Not exercised: the Tauri
   `.app`, a hidden window, Linux/WebKitGTK, a phone through the relay.
 - **Deviations kept:** no "Nothing to read" toast (an empty `spoken()`
   yields `SpeechFinished{done}` at once and the button clears); the

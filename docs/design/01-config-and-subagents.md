@@ -2,7 +2,7 @@
 
 Status: draft v0 · 2026-09-09 · extends `00-architecture.md` §5, §9
 
-Two changes. (1) Config moves to `~/.wth/` as YAML with secrets and MCP
+Two changes. (1) Config moves to `~/.theuth/` as YAML with secrets and MCP
 servers split out. (2) Subagents stop being a blocking tool call: the parent
 keeps working, the child's result arrives as a new turn, and peers message each
 other through one tool. Both are modelled on oh-my-pi (`docs/tools/task.md`,
@@ -20,7 +20,7 @@ read-only or "delivered", the 50 paragraphs marked *Amendment* win. The
 ### 1.1 Layout
 
 ```
-~/.wth/
+~/.theuth/
   config.yaml          every plugin reads its own section (unchanged rule)
   secrets.vault        encrypted vault: provider keys, gateway keys, web keys (`brave`, `firecrawl`, `github`; doc 16 §6), Slack tokens, the user's secrets (doc 37)
   secrets.key          vault key, 0600 — only without an OS keychain (doc 37 §3.5)
@@ -36,14 +36,14 @@ read-only or "delivered", the 50 paragraphs marked *Amendment* win. The
   token                (existing, rpc bearer)
 ```
 
-`--data-dir` / `WTH_DATA_DIR` still relocate the whole tree. Default was
-`dirs::data_dir()/wth`; becomes `dirs::home_dir()/.wth`. Nothing else in the
+`--data-dir` / `THEUTH_DATA_DIR` still relocate the whole tree. Default was
+`dirs::data_dir()/theuth`; becomes `dirs::home_dir()/.theuth`. Nothing else in the
 tree moves.
 
 ### 1.2 `config.yaml`
 
 figment `Yaml::file(...)` replaces `Toml::file(...)` (feature `yaml`). Env
-overlay `WTH_<SECTION>__<KEY>` unchanged. Same sections, same structs:
+overlay `THEUTH_<SECTION>__<KEY>` unchanged. Same sections, same structs:
 
 ```yaml
 agent:
@@ -78,7 +78,7 @@ Removed: `tools.mcp` list (moved to `mcp/`), `agent.subagent_model` (now
 `agent.subagents.model`). No compatibility shim: nobody has a config file yet.
 
 Rejected: TOML (user preference; figment makes it a one-token swap either
-way), project-local config (`./.wth/`) — the harness runs for the user, not
+way), project-local config (`./.theuth/`) — the harness runs for the user, not
 per repository; add when a real per-directory need shows up.
 
 ### 1.3 `secrets.vault` (credentials)
@@ -86,16 +86,16 @@ per repository; add when a real per-directory need shows up.
 Provider keys are secrets in the encrypted vault of doc 37, under the genai
 adapter names (`anthropic`, `openai`, …) plus gateway names, web keys and
 Slack tokens. Enter them with `/secrets add`, Settings › Secrets, `/provider
-add`, or `wth --secret-set <name>` on a box without a UI. Precedence: vault
+add`, or `t --secret-set <name>` on a box without a UI. Precedence: vault
 beats `/login` beats env. An existing `credentials.yaml` is imported and
 removed on the first start.
 
 ### 1.4 `mcp/` — drop-in server files, hot-reloaded
 
-Goal: copy any `mcp.json` from any README into `~/.wth/mcp/`, and its servers
+Goal: copy any `mcp.json` from any README into `~/.theuth/mcp/`, and its servers
 are usable on the next turn. No restart, no reformatting, no prefixes.
 
-**Files.** Every `*.json` in `~/.wth/mcp/` (non-recursive; `repos/` holds git
+**Files.** Every `*.json` in `~/.theuth/mcp/` (non-recursive; `repos/` holds git
 clones and is never scanned) may hold one server or many; the user organises
 by file however they like (`research.json`, `home-automation.json`,
 `everything.json`). Formats are detected structurally, not by a wrapper-key
@@ -135,7 +135,7 @@ Anything else in an entry is ignored. A file that fails to parse is logged
 (`mcp/foo.json: expected …`) and skipped; the other files still load. Same
 server name in two files: first by sorted path wins, warning names both files.
 
-**Hot reload.** `tools` watches `~/.wth/mcp/` with `notify` (create, modify,
+**Hot reload.** `tools` watches `~/.theuth/mcp/` with `notify` (create, modify,
 remove, rename), debounces 300 ms, then reconciles desired vs running by
 server name: new → connect + register tools; removed → unregister its tools +
 drop the connection (child process exits with it); changed (normalised entry
@@ -173,7 +173,7 @@ be gated, hidden or turned off on its own. The prefix disappears again when
 only one server is left offering the name. `/mcp` shows the registered name
 (`as grafana-qe__query_prometheus`) next to the remote one.
 
-**Risk override — `~/.wth/mcp/config.yaml`** (same watcher, same reconcile; 12 §5):
+**Risk override — `~/.theuth/mcp/config.yaml`** (same watcher, same reconcile; 12 §5):
 
 ```yaml
 servers:
@@ -213,7 +213,7 @@ server-driven tool changes are rare).
 
 ### 1.5 First run
 
-`wth` creates `~/.wth/`, writes a commented `config.yaml` (same defaults as
+`theuth` creates `~/.theuth/`, writes a commented `config.yaml` (same defaults as
 today's `DEFAULT_CONFIG`, in YAML) and an empty `mcp/`. Existing behaviour,
 new format. No credentials template: the vault is created on the first
 `set` (37 §3.5).
@@ -404,10 +404,10 @@ return is a structured `PeerReceipt` plus concise text, not the bare
 struct SpawnSubagentArgs {
     task: String,             // complete, self-contained instructions
     name: Option<String>,     // stable peer id; default generated (adjective-noun)
-    agent: Option<String>,    // an external harness from acp/agents.yaml; default: a wth subagent
+    agent: Option<String>,    // an external harness from acp/agents.yaml; default: a theuth subagent
     cwd: Option<PathBuf>,
-    model: Option<String>,    // wth child only: `provider/model`; default subagents.model, then agent.model
-    effort: Option<String>,   // wth child only: low|medium|high|off|default|<budget>; default subagents.effort, then agent.effort
+    model: Option<String>,    // theuth child only: `provider/model`; default subagents.model, then agent.model
+    effort: Option<String>,   // theuth child only: low|medium|high|off|default|<budget>; default subagents.effort, then agent.effort
 }
 // -> "Spawned `grep-logs` (session 01a0…). Its result will arrive as a
 //     <subagent_result> when it finishes; message it with send_message."
@@ -482,7 +482,7 @@ injected text is capped at `max_tool_output_chars` with a spill marker
 naming `spill/<parent>/<child>.txt`, the waiter branch alike (36 §4.1); after a
 compaction the head carries `Subagents: grep-logs (running), fix-tests
 (idle)` (`Roster`, `07 §8.4`). The how-to (delegate by default, choose
-between an external harness and a wth subagent, choose the child's model,
+between an external harness and a theuth subagent, choose the child's model,
 write a complete brief, verify before reporting) is static text in
 `frame::baseline`'s `GUIDANCE` (07 §4).
 
@@ -532,7 +532,7 @@ status is derived from them. No `SubagentFinished` event: that is the child's
 
 Store: `sessions` gains `name TEXT` (nullable; unique per parent). Peer
 addressing by name survives restart because names, parents and histories are
-all in sqlite; a parent messaging a child after `wth` restarts lazily loads
+all in sqlite; a parent messaging a child after `theuth` restarts lazily loads
 the child session exactly as `--resume` does. Injected messages are persisted
 as ordinary user-role messages (with their wrapper) — no new table.
 
@@ -559,7 +559,7 @@ and `send_input` already takes one.
 
 - Parent cancelled (`Cancel`) → every running descendant is cancelled too
   (supervisor walks the subtree, 19 §2.3). Idle descendants are left alone.
-- `wth` exits with children running → their turns die with the process; on
+- `theuth` exits with children running → their turns die with the process; on
   next start nothing is auto-resumed (same as the parent today). The parent's
   history shows the spawn but no result; a human or the model can
   `send_message` the child to continue.
@@ -589,12 +589,12 @@ set) — they would be one more markdown-with-frontmatter loader next to skills.
 
 ## 3. Implementation order
 
-Each step leaves `wth` runnable.
+Each step leaves `theuth` runnable.
 
-1. Config: `~/.wth`, YAML, the credentials-file resolver (since replaced by the secrets vault, 37), `mcp/` structural
+1. Config: `~/.theuth`, YAML, the credentials-file resolver (since replaced by the secrets vault, 37), `mcp/` structural
    loader + watcher + `config.yaml` gate, remove `tools.mcp` +
-   `agent.subagent_model`. Check: fresh `~/.wth` created; model call
-   authenticates from the file with `ANTHROPIC_API_KEY` unset; while `wth`
+   `agent.subagent_model`. Check: fresh `~/.theuth` created; model call
+   authenticates from the file with `ANTHROPIC_API_KEY` unset; while `theuth`
    runs, dropping a Claude-Desktop-style and an OpenCode-style file into
    `mcp/` makes `echo` callable on the next turn without a restart, and
    setting `gate: ask` in `mcp/config.yaml` makes the next `echo` prompt.

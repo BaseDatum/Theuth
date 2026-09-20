@@ -1942,7 +1942,7 @@ mod tests {
     use super::*;
 
     async fn fresh() -> (Store, SessionId, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!("wth-comm-{}", Uuid::now_v7()));
+        let dir = std::env::temp_dir().join(format!("theuth-comm-{}", Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
         let store = Store::open(&dir.join("sessions.sqlite")).await.unwrap();
         let id = SessionId::new();

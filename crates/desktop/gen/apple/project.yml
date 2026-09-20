@@ -1,6 +1,6 @@
 name: desktop
 options:
-  bundleIdPrefix: dev.rwx.wth.ios
+  bundleIdPrefix: io.theuth.ios
   deploymentTarget:
     iOS: 17.0
 fileGroups: [../../src]
@@ -10,8 +10,8 @@ configs:
 settingGroups:
   app:
     base:
-      PRODUCT_NAME: wth
-      PRODUCT_BUNDLE_IDENTIFIER: dev.rwx.wth.ios
+      PRODUCT_NAME: theuth
+      PRODUCT_BUNDLE_IDENTIFIER: io.theuth.ios
       DEVELOPMENT_TEAM: 8H548FVL95
 targetTemplates:
   app:

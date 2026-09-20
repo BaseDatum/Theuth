@@ -266,13 +266,13 @@ skipped:
 
 ```
 1. [Claude Code identity line, when the anthropic login is used]   (05 §2.3)
-2. identity (wth as a meta-harness that delegates, checks and reports; rewritten 2026-09-14), working directory, date
+2. identity (theuth as a meta-harness that delegates, checks and reports; rewritten 2026-09-14), working directory, date
 3. <data_dir>/prompt.md
 4. always-skill bodies, name order
 5. skills index
 6. peer line: `PeerContext { session }` → "## Peers\nYou are `x`, a subagent of session …" for children, else ""
 7. plugin prompt blocks: `ask(ListPrompts)` on the tool registry, sorted by plugin name, joined by blank lines (00 §4); "" when none. Registered today: `agent` (data dir path, what each file is, "load the `harness` skill before editing", what is read at startup vs live), `knowledge` (when to use the store), `tools` (`mcp/` layout, shell expansion, `mcp/config.yaml` gate schema, `<server>__<tool>` naming, what `tools.policy` does and that the model cannot approve or log in). Each is a function of config only.
-8. GUIDANCE const (rewritten 2026-09-14 for the meta-harness role): delegate by default; external harness (`agent`, `cwd`) for repository work vs wth subagent (with `model`/`effort` the parent picks, erring towards more capability; `list_models`) for research and fan-out; `task` as a complete brief; results as <subagent_result>, steer with send_message, approvals go to the user; verify before reporting; the todo sentence (§9). Static: the configured harness names stay in `spawn_subagent`'s description.
+8. GUIDANCE const (rewritten 2026-09-14 for the meta-harness role): delegate by default; external harness (`agent`, `cwd`) for repository work vs theuth subagent (with `model`/`effort` the parent picks, erring towards more capability; `list_models`) for research and fan-out; `task` as a complete brief; results as <subagent_result>, steer with send_message, approvals go to the user; verify before reporting; the todo sentence (§9). Static: the configured harness names stay in `spawn_subagent`'s description.
 ```
 
 `Turn::rebase` then appends `repl::prompt_block(ListTools)` (`08 §3.2`) when
@@ -281,10 +281,10 @@ everything the roster used to contribute per turn is gone.
 
 The long tail of harness knowledge - every `config.yaml` key, the MCP entry
 shapes, what only the user can do - is the bundled `harness` skill
-(`crates/wth/harness.md`, written to `<data_dir>/skills/harness.md` on every
+(`crates/theuth/harness.md`, written to `<data_dir>/skills/harness.md` on every
 start so it matches the binary): one index line in part 5, body on
 `load_skill`. Rejected: putting it all in prompt blocks (~1.5k tokens on
-every call for text needed in maybe one turn in fifty) and a `wth_help` tool
+every call for text needed in maybe one turn in fifty) and a `theuth_help` tool
 (a skill already is that).
 
 `SessionState` keeps `baseline: String` across turns. At turn start the new
@@ -1078,7 +1078,7 @@ each item.
 
 ## 13. Implementation order (done)
 
-Each step left `wth` runnable.
+Each step left `theuth` runnable.
 
 1. **Frame + marks + measurement.** `agent::frame` (`Frame`, `Transport`,
    per-turn `baseline`), `Usage.cached`, header `cache NN%`, miss warning,
@@ -1212,7 +1212,7 @@ the title call is cold by construction, so a small model is the right default
 there.
 
 **Not done**: subagent sessions (depth > 0: their task text is the title);
-`wth -p` one-shot sessions (the process exits on `TurnFinished`, before the
+`theuth -p` one-shot sessions (the process exits on `TurnFinished`, before the
 detached call returns); a `TitleChanged` event (pickers reload the list on
 open). Smoke 2026-09-13 (haiku titler): turn 1 "what is a Rust Arc<T>" →
 "Rust Arc<T> reference counting explained"; four nginx-gzip turns later →

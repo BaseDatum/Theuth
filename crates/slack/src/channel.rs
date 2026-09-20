@@ -46,7 +46,7 @@ pub const RECENT_KEYS: usize = 1024;
 pub const TITLE_MAX: usize = 200;
 /// A child's task text cap in its `▸ **task**` line (21 §9.1).
 pub const TASK_MAX: usize = 3000;
-/// How long an instant `/wth` answer may take before it goes through `response_url` (21 §10.2).
+/// How long an instant `/theuth` answer may take before it goes through `response_url` (21 §10.2).
 pub const ACK_BUDGET: Duration = Duration::from_millis(2500);
 
 /// `<data_dir>/slack/threads.json`.
@@ -59,7 +59,7 @@ pub fn threads_path(data_dir: &Path) -> PathBuf {
 #[must_use]
 pub fn secret_notice(name: &str, note: &str) -> String {
     format!(
-        "wth asks for secret `{name}` — {note}. Enter it in the desktop app, the TUI (/secrets add {name}) or `wth --secret-set {name}`; it will not be read from this chat."
+        "theuth asks for secret `{name}` — {note}. Enter it in the desktop app, the TUI (/secrets add {name}) or `t --secret-set {name}`; it will not be read from this chat."
     )
 }
 
@@ -661,7 +661,7 @@ impl Channel {
         let _ = self.inbound_tx.send(ev);
     }
 
-    /// `/wth …` inside Slack's 3 s ack window (21 §10.2): instant answers
+    /// `/theuth …` inside Slack's 3 s ack window (21 §10.2): instant answers
     /// come back in the ack, the rest through `response_url`.
     pub async fn command(self: &Arc<Self>, ev: SlackCommandEvent) -> SlackCommandEventResponse {
         let user = ev.user_id.0;
@@ -1180,7 +1180,7 @@ impl Channel {
             Some(id) => self.port.send_input(Some(id), input, files).await,
             // A new root: the authenticated owner's is `owner` scope, anyone
             // else's stays `isolated` (50 §2.3). An existing thread's session
-            // is never promoted here; `/wth peers scope` does that explicitly.
+            // is never promoted here; `/theuth peers scope` does that explicitly.
             None if m.user == self.owner => match self.port.new_root(PeerScope::Owner).await {
                 Ok(id) => self.port.send_input(Some(id), input, files).await,
                 Err(e) => Err(e),
@@ -3238,7 +3238,7 @@ pub(crate) mod tests {
                 OWNER,
                 asks::ACTION_TEXT,
                 &format!("ask_text:{}:1", id.0),
-                Some("wth"),
+                Some("theuth"),
             ))
             .await;
         assert_eq!(
@@ -3247,7 +3247,7 @@ pub(crate) mod tests {
                 id,
                 Some(vec![
                     Answer::Choice { index: 1 },
-                    Answer::Text { text: "wth".into() },
+                    Answer::Text { text: "theuth".into() },
                 ]),
             )]
         );
@@ -3384,10 +3384,10 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn wth_help_answers_in_the_ack_with_blocks() {
+    async fn theuth_help_answers_in_the_ack_with_blocks() {
         let f = fixture();
         let ev: SlackCommandEvent = serde_json::from_value(json!({
-            "team_id": "T1", "channel_id": DM, "user_id": OWNER, "command": "/wth",
+            "team_id": "T1", "channel_id": DM, "user_id": OWNER, "command": "/theuth",
             "text": "help", "response_url": "https://hooks.slack.com/commands/T1/1/x", "trigger_id": "tr1",
         }))
         .unwrap();

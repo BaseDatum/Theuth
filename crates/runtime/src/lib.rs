@@ -310,7 +310,7 @@ mod tests {
 
     #[test]
     fn write_back_edits_in_place_or_appends() {
-        let dir = std::env::temp_dir().join(format!("wth-wb-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("theuth-wb-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.yaml");
 

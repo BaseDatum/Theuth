@@ -1,17 +1,17 @@
-# Slack app manifest for wth (design doc 21 §10.3). Create the app from this at
+# Slack app manifest for theuth (design doc 21 §10.3). Create the app from this at
 # https://api.slack.com/apps → "From a manifest", install it, then store the bot
 # token (xoxb-…) as secret `slack_bot` and an app-level token with
-# `connections:write` (xapp-…) as `slack_app` (`wth --secret-set slack_bot`).
+# `connections:write` (xapp-…) as `slack_app` (`t --secret-set slack_bot`).
 display_information:
-  name: wth
-  description: the wth agent, in your workspace
+  name: theuth
+  description: theuth agent, in your workspace
   background_color: "#1f1f1f"
 features:
   bot_user:
-    display_name: wth
+    display_name: theuth
     always_online: true
   agent_view:
-    agent_description: Talks to the wth daemon; streams answers, tool calls and approvals into a thread per session.
+    agent_description: Talks to the theuth daemon; streams answers, tool calls and approvals into a thread per session.
     suggested_prompts:
       - title: What can you do here?
         message: What can you do here?
@@ -20,8 +20,8 @@ features:
       - title: Show running agents
         message: Show running agents
   slash_commands:
-    - command: /wth
-      description: wth commands (help, status, sessions, resume, cancel, …)
+    - command: /theuth
+      description: theuth commands (help, status, sessions, resume, cancel, …)
       usage_hint: help
       should_escape: false
 oauth_config:

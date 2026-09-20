@@ -1,5 +1,5 @@
 {
-  "$comment": "Design 46 §10.7 real-model evaluation cases. `steering`: 15 app-authoring prompts (5 prototypes, 5 read panels, 5 action panels) run against the real registry (native tools + the argo MCP fixture). `vehicle`: 20 prompts where the correct vehicle is `app` (app tool), `fence` (```json-render / ```mermaid in the reply) or `show` (show tool). Expectations are structural (bindings/state from @wth/apps check); positional/visual intent is never judged here and every app output is flagged for user review.",
+  "$comment": "Design 46 §10.7 real-model evaluation cases. `steering`: 15 app-authoring prompts (5 prototypes, 5 read panels, 5 action panels) run against the real registry (native tools + the argo MCP fixture). `vehicle`: 20 prompts where the correct vehicle is `app` (app tool), `fence` (```json-render / ```mermaid in the reply) or `show` (show tool). Expectations are structural (bindings/state from @theuth/apps check); positional/visual intent is never judged here and every app output is flagged for user review.",
   "catalog_required": ["app", "show", "argo_app_health", "argo_sync"],
   "thresholds": {
     "steering": { "frontier": 12, "small": 9 },

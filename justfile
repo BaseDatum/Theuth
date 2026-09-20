@@ -28,24 +28,24 @@ fmt:
     cargo fmt --all
 
 run *ARGS:
-    cargo run -p wth -- {{ARGS}}
+    cargo run -p theuth -- {{ARGS}}
 
-# Release build of `wth` + its app parser helper copied into ~/.cargo/bin. Not
+# Release build of `t` + its app parser helper copied into ~/.cargo/bin. Not
 # `cargo install`: that re-resolves (index + git fetch every time) and rebuilds
-# in a scratch dir. The helper lands as wth-app-parser-<hash> beside `wth`
-# (46 §2.1); older hashes are left in place for any still-running `wth`.
+# in a scratch dir. The helper lands as theuth-app-parser-<hash> beside `t`
+# (46 §2.1); older hashes are left in place for any still-running `t`.
 install: helper
     #!/usr/bin/env bash
     set -euo pipefail
     source scripts/app-parser-env.sh
-    cargo build --release -p wth
+    cargo build --release -p theuth
     bin="${CARGO_HOME:-$HOME/.cargo}/bin"
     install -m 755 "$HELPER_SRC" "$bin/$HELPER.new" && mv -f "$bin/$HELPER.new" "$bin/$HELPER"
-    install -m 755 target/release/wth "$bin/wth.new" && mv -f "$bin/wth.new" "$bin/wth"
-    echo "installed $(command -v wth) + $bin/$HELPER"
+    install -m 755 target/release/t "$bin/t.new" && mv -f "$bin/t.new" "$bin/t"
+    echo "installed $(command -v t) + $bin/$HELPER"
 
-# Standalone app parser helper (bun build --compile) → packages/apps/dist/wth-app-parser,
-# checked against packages/apps/generated/library-hash.txt. WTH_SKIP_BUN_INSTALL=1 skips bun install.
+# Standalone app parser helper (bun build --compile) → packages/apps/dist/theuth-app-parser,
+# checked against packages/apps/generated/library-hash.txt. THEUTH_SKIP_BUN_INSTALL=1 skips bun install.
 helper:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -63,42 +63,42 @@ ts-desktop: ts
     mkdir -p crates/desktop/ui/src/rpc/bindings
     cp -R bindings/. crates/desktop/ui/src/rpc/bindings/
 
-# Desktop app in dev mode against `target/debug/wth` (or `$WTH_BIN`); `WTH_DATA_DIR` overrides ~/.wth.
+# Desktop app in dev mode against `target/debug/t` (or `$THEUTH_BIN`); `THEUTH_DATA_DIR` overrides ~/.theuth.
 # `TAURI_FRONTEND_PATH`: the UI lives inside the crate (not beside it as Tauri assumes), so the
 # before*Command cwd must be pinned.
 desktop: ts-desktop
-    cargo build -p wth
+    cargo build -p theuth
     cd crates/desktop/ui && bun install
-    cd crates/desktop && TAURI_FRONTEND_PATH=ui WTH_BIN="${WTH_BIN:-$PWD/../../target/debug/wth}" cargo tauri dev
+    cd crates/desktop && TAURI_FRONTEND_PATH=ui THEUTH_BIN="${THEUTH_BIN:-$PWD/../../target/debug/t}" cargo tauri dev
 
-# `wth.app` + DMG: release sidecar, codesign, hdiutil (scripts/package-macos.sh).
+# `theuth.app` + DMG: release sidecar, codesign, hdiutil (scripts/package-macos.sh).
 # `externalBin` lives in tauri.bundle.conf.json so `cargo check` does not need the binary.
-# Signing: $WTH_SIGN_IDENTITY or .env.signing, else ad-hoc.
+# Signing: $THEUTH_SIGN_IDENTITY or .env.signing, else ad-hoc.
 package-macos:
     ./scripts/package-macos.sh
 
-# Install/overwrite /Applications/wth.app from the last package (or $WTH_APP).
+# Install/overwrite /Applications/theuth.app from the last package (or $THEUTH_APP).
 install-macos:
     ./scripts/install-macos.sh
 
-# Submit the packaged DMG to notarytool (needs WTH_NOTARY_* or .env.signing).
+# Submit the packaged DMG to notarytool (needs THEUTH_NOTARY_* or .env.signing).
 notarize-macos:
     ./scripts/notarize-macos.sh
 
-# Update payloads from the notarized wth.app: .app.tar.gz, CLI tar.gz, DMG → target/release/dist (39 §5.1).
+# Update payloads from the notarized theuth.app: .app.tar.gz, CLI tar.gz, DMG → target/release/dist (39 §5.1).
 package-update-macos:
     ./scripts/package-update-macos.sh
 
-# Linux CLI tarball, built natively in Docker and staged at s3://wth/staging/<ver>/ (39 §5.1).
+# Linux CLI tarball, built natively in Docker and staged at s3://theuth/staging/<ver>/ (39 §5.1).
 # Run on an arm64 Mac for linux-aarch64 and on an x86_64 Linux box for linux-x86_64; never QEMU.
 stage-linux:
     ./scripts/stage-linux.sh
 
-# Gates, sign, upload <ver>/, verify, latest.json, tap bump (39 §5.2-5.4). Needs WTH_S3_*/WTH_UPDATE_KEY in .env.signing.
+# Gates, sign, upload <ver>/, verify, latest.json, tap bump (39 §5.2-5.4). Needs THEUTH_S3_*/THEUTH_UPDATE_KEY in .env.signing.
 release-s3:
     ./scripts/release-s3.sh
 
-# Annotated tag v<ver> pushed to origin. WTH_RELEASE_NO_PUSH=1 keeps it local.
+# Annotated tag v<ver> pushed to origin. THEUTH_RELEASE_NO_PUSH=1 keeps it local.
 tag-release:
     ./scripts/tag-release.sh
 
@@ -144,13 +144,13 @@ ios-init:
 # committed, so rerun this after changing icons/icon.png; `ios-init` resets it.
 # App Store Connect rejects icons with an alpha channel; `tauri icon` keeps one.
 ios-icons:
-    cd crates/desktop && cargo tauri icon icons/icon.png -o /tmp/wth-icons --ios-color '#000000' \
-      && cp /tmp/wth-icons/ios/*.png gen/apple/Assets.xcassets/AppIcon.appiconset/ \
+    cd crates/desktop && cargo tauri icon icons/icon.png -o /tmp/theuth-icons --ios-color '#000000' \
+      && cp /tmp/theuth-icons/ios/*.png gen/apple/Assets.xcassets/AppIcon.appiconset/ \
       && swift ../../scripts/flatten-png.swift gen/apple/Assets.xcassets/AppIcon.appiconset/*.png
 
 # iOS app in dev mode on a simulator/device. tauri.ios.conf.json overlays the bundle
 # id, iOS 17 floor and the universal-link host: `plugins.deep-link.mobile[].host`
-# must be the relay the operator serves /link from (relay.wth.rwx.dev by default).
+# must be the relay the operator serves /link from (relay.theuth.io by default).
 ios:
     cd crates/desktop/ui && bun install
     cd crates/desktop && TAURI_FRONTEND_PATH=ui cargo tauri ios dev --config tauri.ios.conf.json
@@ -158,14 +158,14 @@ ios:
 # App Store Connect archive. Alias of package-ios.
 ios-bundle: package-ios
 
-# Local relay for link development (31 §5); pair with `wth link pair` against ws://127.0.0.1:8787.
+# Local relay for link development (31 §5); pair with `t link pair` against ws://127.0.0.1:8787.
 relay *ARGS:
     cargo run -p relay -- --listen 127.0.0.1:8787 {{ARGS}}
 
 # Static UI build for the browser container (31 §7.6), served by the relay.
 web-build:
     cd crates/desktop/ui && bun install && bun run build
-    @echo "serve it: wth-relay --listen 0.0.0.0:8787 --web crates/desktop/ui/dist"
+    @echo "serve it: theuth-relay --listen 0.0.0.0:8787 --web crates/desktop/ui/dist"
 
 # Multi-arch (amd64+arm64) build+push. Needs buildx + ghcr login.
 # SPA compiles once on the host arch (Dockerfile FROM --platform=$BUILDPLATFORM).
@@ -176,10 +176,10 @@ relay-docker-push tag="":
     set -euo pipefail
     TAG="{{tag}}"
     if [ -z "$TAG" ]; then
-      TAG="${WTH_RELAY_TAG:-$(git rev-parse --short HEAD 2>/dev/null || echo dev)}"
+      TAG="${THEUTH_RELAY_TAG:-$(git rev-parse --short HEAD 2>/dev/null || echo dev)}"
     fi
-    IMAGE="${WTH_RELAY_IMAGE:-ghcr.io/skymoore/wth/relay}"
-    PLATFORM="${WTH_RELAY_PLATFORM:-linux/amd64,linux/arm64}"
+    IMAGE="${THEUTH_RELAY_IMAGE:-ghcr.io/skymoore/theuth/relay}"
+    PLATFORM="${THEUTH_RELAY_PLATFORM:-linux/amd64,linux/arm64}"
     echo "==> buildx build+push ${IMAGE}:${TAG} (${PLATFORM})"
     docker buildx build \
       --platform "${PLATFORM}" \

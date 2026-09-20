@@ -47,7 +47,7 @@ not concealed behind “official.” Nothing here calls the SDK mature.
 5. **Availability is not approval.** Communication controls determine whether
    a route exists. `Risk → PolicyAction` still determines whether a tool
    call is permitted. Neither an A2A credential nor a peer's “approved” text
-   resolves a wth approval. Explicit `Deny` always wins.
+   resolves a theuth approval. Explicit `Deny` always wins.
 6. **Authenticated identity and reply correlation are structured state.**
    Session IDs come from `ToolCx`, remote identity from verified credentials;
    neither comes from message text. Replace `mN`/pair-keyed waiting with
@@ -60,7 +60,7 @@ not concealed behind “official.” Nothing here calls the SDK mature.
    TUI calls it in process, desktop/mobile over existing transports. Settings
    expose authoritative effective state and reasons, not frontend guesses.
 
-## 1. Why this fits wth
+## 1. Why this fits theuth
 
 [00 §1–4](00-architecture.md#1-non-negotiables) supplies the design philosophy:
 functional names; library-first glue; one process; plugin-owned contracts;
@@ -112,7 +112,7 @@ more durable than line numbers in this actively changing tree.
 | Child results are capped, ordinary peer messages are not. | `child_finished`, `spill::cap`, `Deliver`. Apply one bounded intake contract. |
 | Approval prompting is `global && !self_or_ancestor_bypass`; session-on cannot defeat global-off or ancestor-off. | `tools/src/registry.rs::{SetApprovals, GetApprovals, SetParent, bypassed, gate}`. Match this precedence explicitly. |
 | Approval setters update memory before attempting the global config write; there is no shared settings-change event. | Same file. Copy the UX pattern, not the write-failure or stale-client behavior. |
-| ACP/node children receive prompts and return results, but cannot invoke wth peer tools through ACP. | `agent/src/acp_child.rs`; `acp/src/harness.rs`; `nodes/src/dialer.rs`. A translated child is not automatically a bidirectional A2A agent. |
+| ACP/node children receive prompts and return results, but cannot invoke theuth peer tools through ACP. | `agent/src/acp_child.rs`; `acp/src/harness.rs`; `nodes/src/dialer.rs`. A translated child is not automatically a bidirectional A2A agent. |
 | RPC bearer auth grants broad console access; no per-session peer ACL. | `rpc/src/lib.rs`, `rpc/src/acp.rs`. Never give a remote agent the console token. |
 | Canceling a turn need not stop a registry invocation; pending work can outlive its caller. | `tools/src/registry.rs::Invoke`; `loop_.rs::CancelTurn`. Revocation must invalidate admission, not merely drop an awaiting future. |
 
@@ -140,8 +140,8 @@ plugin. Missing keys default to false. Fail-closed as built: an unparsable
 `agent` section falls back to `AgentConfig::default()` (communication off)
 with a debug-level log, not a user-visible error; an unparsable `a2a` section
 starts a status-only actor that reports the error through `/a2a` and never
-listens. Environment overlay uses the existing `WTH_AGENT__COMMUNICATION`,
-`WTH_A2A__ENABLED`, `WTH_A2A__LISTEN`, `WTH_A2A__PUBLIC_URL` convention.
+listens. Environment overlay uses the existing `THEUTH_AGENT__COMMUNICATION`,
+`THEUTH_A2A__ENABLED`, `THEUTH_A2A__LISTEN`, `THEUTH_A2A__PUBLIC_URL` convention.
 Configuration is loaded at startup; user commands update the live global
 communication switch and the YAML line. Environment-derived startup values
 are reported as such (`source: env`); the command's persisted YAML value does
@@ -159,8 +159,8 @@ are startup state: `/a2a reload` re-reads `a2a/peers.yaml` only.
 | `/a2a` | Network status, configured peers/exports and adoption/configuration errors. |
 | `/a2a reload` | Validate and atomically replace peer/export configuration; revoke removed bindings. Owner only. Listener settings require restart. |
 
-Slack spells these `/wth communication …`, `/wth peers …`, `/wth requests …`,
-`/wth a2a …`; all four are owner-only there and on Signal. The desktop's bare
+Slack spells these `/theuth communication …`, `/theuth peers …`, `/theuth requests …`,
+`/theuth a2a …`; all four are owner-only there and on Signal. The desktop's bare
 `/communication`, `/peers` and `/a2a` open Settings → Communication. TUI and
 desktop call `rpc::Api` (§10); Slack and Signal send the same typed owner
 commands to `Agents` in process.
@@ -236,7 +236,7 @@ opt-out complete rather than silently meaning “network only.”
 
 ### 2.3 Who can discover whom
 
-No multi-user platform is invented here. wth remains the single-owner process
+No multi-user platform is invented here. theuth remains the single-owner process
 of [15](15-server-config.md); same-UID shell/filesystem access is not sandboxed.
 Nevertheless, chat contacts and external agents must not automatically gain a
 catalogue of unrelated owner conversations.
@@ -278,7 +278,7 @@ client and server. Published package names differ from their Rust imports:
 | [`a2a-server-lf` 0.4.4][server] | `a2a_server` | Published 2026-09-14; Axum routers, `RequestHandler`, executor/store hooks. |
 
 Apache-2.0; declared Rust 1.85 / edition 2024. Verify the resolved dependency
-graph on wth's actual stable toolchain and macOS/Linux targets; a manifest
+graph on theuth's actual stable toolchain and macOS/Linux targets; a manifest
 MSRV is not proof of transitive compatibility. Axum 0.8, reqwest 0.13, Tokio
 and tower 0.5 align with existing workspace dependencies. HTTP-only use still
 pulls some protobuf support; do not promise a protobuf-free graph.
@@ -295,7 +295,7 @@ a2a-client = { package = "a2a-client-lf", version = "=0.2.5" }
 a2a-server = { package = "a2a-server-lf", version = "=0.4.4" }
 ```
 
-Use default rustls features (`rustls-tls` = aws-lc-rs, the provider `wth::main`
+Use default rustls features (`rustls-tls` = aws-lc-rs, the provider `theuth::main`
 already installs because ring is also linked). There are no features named
 `jsonrpc`, `client` or `server` on these client/server packages. Do not enable
 separate gRPC or SLIMRPC crates, push delivery, signing infrastructure or a
@@ -330,7 +330,7 @@ branch. Two crates in the graph are vendored path patches (§3.4).
 |---|---|---|
 | [`a2a-protocol-sdk` 0.12.1][alternative-sdk], `tomtom215/a2a-rust` | A2A 1.0; client/server/SSE, optional SQL/auth/Axum; detailed conformance reporting; Apache-2.0, declared Rust 1.88. | Independent SDK; its [stability policy][alternative-stability] was adopted 2026-09-09 and records recent breaking changes and unmet 1.0 gates. Its [TCK findings][alternative-tck] also contain failures/unmeasured requirements. Not a demonstrably mature substitute. Different suites mean scores cannot be ranked directly. |
 | [`ra2a` 0.10.1][ra2a], `qntx/ra2a` | Client/server, Axum/SSE, optional SQL and gRPC; MIT or Apache-2.0; A2A 1.0. | Latest observed publication 2026-04-08; README explicitly says not independently audited; no external conformance report found in inspected sources. No declared MSRV found. |
-| Handwritten JSON-RPC/SSE or a generic agent framework | Could reproduce a narrow demo. | Violates 00 §1.2 and the user's library requirement; commits wth to protocol drift. |
+| Handwritten JSON-RPC/SSE or a generic agent framework | Could reproduce a narrow demo. | Violates 00 §1.2 and the user's library requirement; commits theuth to protocol drift. |
 | Python/Go SDK sidecar | Official alternatives exist. | Does not satisfy a mature **Rust** dependency requirement and adds a process/runtime boundary unnecessarily. Not silently substituted. |
 
 The user has accepted the young SDK (§3.4); the alternatives above remain
@@ -351,7 +351,7 @@ The 0.x Rust crate versions are not A2A protocol 0.3. Use SDK serialization,
 canonical PascalCase methods (`SendMessage`, `GetTask`, etc.) and
 `A2A-Version: 1.0`. Reject unsupported versions; do not interpret an absent
 header's legacy 0.3 semantics as permission to silently serve 1.0. No dual
-0.3/1.0 compatibility layer in wth.
+0.3/1.0 compatibility layer in theuth.
 
 ### 3.4 SDK acceptance, integration probe and known wire gaps
 
@@ -362,7 +362,7 @@ What it does not waive: every §12 gate, the application-owned handler
 (§4), principal scoping (§6.1), bounded intake (§8) and the official
 conformance/interop runs. A gate failure caused by the SDK is still a
 blocker; the remedy is a narrow, removable upstream patch (00 §1.3), never a
-custom protocol layer in wth.
+custom protocol layer in theuth.
 
 **Probe.** `a2a_sdk_probe.rs` was a throwaway integration probe against the
 exact pins: an `agent` example with its own `a2a-client`/`a2a-server`/`axum`/
@@ -371,7 +371,7 @@ the tree**: it was removed before merge together with those dev-dependencies,
 and its source is preserved outside the repository as a proof artifact only.
 Nothing in this section is a runnable path. It ran the SDK `jsonrpc_router`
 and `agent_card_router` nested under `/agents/probe`, behind an Axum bearer
-layer, with a wth-style application `RequestHandler` (principal-scoped
+layer, with a theuth-style application `RequestHandler` (principal-scoped
 in-memory tasks/contexts), and drove them with `AgentCardResolver`,
 `A2AClientFactory` + `JsonRpcTransportFactory`, and interceptor-set
 credentials. Three modes: an in-process self-test (one `ok`/`FAIL` line per
@@ -445,24 +445,24 @@ unmeasured requirements are mapped to it there.
 router][server-jsonrpc], [card route][server-card], [released
 handler][released-handler] and [client transport][client-jsonrpc]; each is
 either an application duty or a candidate upstream patch, never a reason for
-a wth codec):
+a theuth codec):
 
-| Gap | Consequence for wth |
+| Gap | Consequence for theuth |
 |---|---|
 | `jsonrpc_router` never reads `A2A-Version`; the handler receives lowercased header names (`a2a-version`, not `a2a::SVC_PARAM_VERSION`). | Version negotiation (§3.3), including “empty means 0.3 → `VERSION_NOT_SUPPORTED`”, is the handler's duty on every method. |
 | Only `ServiceParams` (the raw header map) reaches `RequestHandler`; `CallContext`/`User`/`InterceptedHandler` in `a2a_server::middleware` are not wired into the JSON-RPC route. | The trusted principal seam (§6.1) is an HTTP layer that strips any inbound copy of an internal header and sets the verified value; the handler must never read `Authorization` itself. |
-| JSON-RPC errors are always HTTP 200; the router has no auth hook. | 401/403 come from the wth Axum layer before the SDK router; the kit tests that when `securitySchemes` is declared. |
+| JSON-RPC errors are always HTTP 200; the router has no auth hook. | 401/403 come from the theuth Axum layer before the SDK router; the kit tests that when `securitySchemes` is declared. |
 | `agent_card_router` unconditionally emits `Access-Control-Allow-Origin` (`*`, or the request origin with `allow-credentials: true`) and serializes the card with serde, not ProtoJSON. | Wrap with `map_response` to strip CORS headers and add `Cache-Control: private, no-store`; card and RPC JSON are both camelCase, so serde/ProtoJSON agree for the card. |
-| `MAX_REQUEST_BODY_BYTES` (10 MiB) is baked into `jsonrpc_router` via `DefaultBodyLimit`. | wth's 64 KiB bound (§8) is an outer `RequestBodyLimitLayer`; the inner limit never applies. |
-| `DefaultRequestHandler::prepare_task_for_execution` creates a task for an unknown client `taskId` and adopts the stored context over a mismatching request context; list/get are not caller-scoped. | wth does not use `DefaultRequestHandler` or `InMemoryTaskStore` at all (§4). |
+| `MAX_REQUEST_BODY_BYTES` (10 MiB) is baked into `jsonrpc_router` via `DefaultBodyLimit`. | theuth's 64 KiB bound (§8) is an outer `RequestBodyLimitLayer`; the inner limit never applies. |
+| `DefaultRequestHandler::prepare_task_for_execution` creates a task for an unknown client `taskId` and adopts the stored context over a mismatching request context; list/get are not caller-scoped. | theuth does not use `DefaultRequestHandler` or `InMemoryTaskStore` at all (§4). |
 | `task_store::apply_history_length` is `pub(crate)`; `pagination::resolve_page_size` is public. | Reimplement the six-line history rule; reuse the page-size rule. |
 | SSE keep-alive is fixed at 15 s; event ids restart per response; a mid-stream `A2AError` is emitted as a JSON-RPC error frame and the stream continues until the handler stream ends. | Stream termination and per-subscriber bounds (§8) are the handler's responsibility. |
 | `AgentCardResolver` has no interceptor hook; `AgentCardResolver::new(None)` and `JsonRpcTransportFactory::new(None)` `expect(...)` on client construction. | Card credentials are default headers on a dedicated `reqwest::Client`; always pass an explicit client. |
 | Client transport applies every interceptor value as an additional header; `A2AClient::new` pre-sets `A2A-Version: 1.0`. | Set `authorization` exactly once (interceptor **or** default header, not both). |
 | Client `send_streaming_message` treats a response without `Content-Type` as SSE and a `text/event-stream` body that is a plain JSON-RPC envelope as an error frame. | Acceptable; noted so a proxy that strips content types is diagnosed correctly. |
 | `a2a-pb` 0.2.1 [`pbconv::from_proto_send_message_request`][pbconv] replaces an absent `message` with `Message::new(Role::User, vec![])` (fresh random `messageId`, `ROLE_USER`, no parts), and present-but-empty fields decode to proto3 defaults (`""`, `ROLE_UNSPECIFIED`, `[]`). `a2a.proto` marks `Message.message_id`/`role`/`parts` and `SendMessageRequest.message` REQUIRED; the router enforces none of them, so `params: {}` reaches the handler as a plausible request whose only trace is `parts.is_empty()`. | The handler validates required fields itself before anything else: empty `messageId`, unspecified role or no parts → `INVALID_PARAMS` (-32602), no task or context minted. The probe does this; the production adapter must too. |
-| `pbjson-types` 0.9.0 (under `a2a-pb`) serializes `google.protobuf.Timestamp` with chrono's `to_rfc3339()`, emitting `+00:00`; the [protobuf JSON mapping][proto-json] requires Z-normalized output with 0, 3, 6 or 9 fractional digits, and a2a-tck `DM-SERIAL003` checks the `Z` form. | Vendored patch below; every SDK timestamp (task status, JSON-RPC and SSE payloads) inherits the fix. Not a wth codec. |
-| `a2a-client-lf` 0.2.5 [`jsonrpc::parse_sse_bytes`][client-jsonrpc] (shared by the JSON-RPC and REST SSE paths) appends every body chunk to a `Vec<u8>` and only then looks for an event terminator; a peer that never sends the blank line, or sends one enormous frame, grows the buffer until the connection drops. wth's §8 caps run after decoding, so they never see it. | Vendored patch below: the raw event is bounded at 64 KiB before the append; an oversized frame yields one SDK `A2AError` and ends the stream. No wth codec, no plugin change. |
+| `pbjson-types` 0.9.0 (under `a2a-pb`) serializes `google.protobuf.Timestamp` with chrono's `to_rfc3339()`, emitting `+00:00`; the [protobuf JSON mapping][proto-json] requires Z-normalized output with 0, 3, 6 or 9 fractional digits, and a2a-tck `DM-SERIAL003` checks the `Z` form. | Vendored patch below; every SDK timestamp (task status, JSON-RPC and SSE payloads) inherits the fix. Not a theuth codec. |
+| `a2a-client-lf` 0.2.5 [`jsonrpc::parse_sse_bytes`][client-jsonrpc] (shared by the JSON-RPC and REST SSE paths) appends every body chunk to a `Vec<u8>` and only then looks for an event terminator; a peer that never sends the blank line, or sends one enormous frame, grows the buffer until the connection drops. theuth's §8 caps run after decoding, so they never see it. | Vendored patch below: the raw event is bounded at 64 KiB before the append; an oversized frame yields one SDK `A2AError` and ends the stream. No theuth codec, no plugin change. |
 
 **Dependency patch record (00 §1.3, §12.1).** `vendor/pbjson-types` is
 crates.io `pbjson-types` 0.9.0 (MIT; [influxdata/pbjson][pbjson] commit
@@ -577,7 +577,7 @@ TUI / desktop / phone -> rpc::Api -> Agents and A2A control actor
 Dependency direction:
 
 ```text
-runtime <- tools <- secrets <- agent <- a2a plugin <- rpc <- tui <- wth
+runtime <- tools <- secrets <- agent <- a2a plugin <- rpc <- tui <- theuth
                                ^
                           a2a-types SDK
 ```
@@ -593,7 +593,7 @@ local `a2a` plugin. No copies of A2A wire structs in `runtime` or `rpc`.
 | `tools` | Existing invocation/approval gate, authoritative capability visibility, cancellation admission context and secrets hook. No remote task store. |
 | `a2a` plugin | SDK client/server adapters, TLS/auth boundary, configured peer/export mappings, connection lifetime, translation into agent commands. No model loop or second durable inbox. |
 | `rpc` | Owner control methods and event bridge. No protocol-task policy in frontend adapters. |
-| `wth` | Plugin vector and first-run config only. No SDK construction or handle threading in `main`. |
+| `theuth` | Plugin vector and first-run config only. No SDK construction or handle threading in `main`. |
 
 The plugin registers remote endpoints through an agent-owned
 `RegisterPeerSender` message carrying its sender implementation, following
@@ -605,7 +605,7 @@ not an implementation of an unnecessary universal transport framework.
 Use SDK `jsonrpc::jsonrpc_router` and `agent_card::agent_card_router`.
 Implement the SDK's **`RequestHandler` application seam**, not its framing or
 serializers: map typed requests to agent-owned intake, storage and lifecycle.
-This is necessary because wth already owns sessions and because
+This is necessary because theuth already owns sessions and because
 `DefaultRequestHandler` plus a shared `InMemoryTaskStore` neither isolates
 principals nor supplies the required durability. The default handler's
 synchronous optional `RequestAuthorizer` cannot filter a caller's paginated
@@ -660,7 +660,7 @@ Add `discover_peers { query?: String, cursor?: String, limit?: u16 }`:
   heartbeat or execution-liveness guarantee.
 
 A2A standardizes Agent Cards, **not a live session registry or broadcast
-presence**. The local directory is wth state; no custom A2A registry extension,
+presence**. The local directory is theuth state; no custom A2A registry extension,
 mDNS scan, fleet broadcast or auto-import of a peer's contacts is required.
 
 ### 5.2 Keep one send tool
@@ -795,7 +795,7 @@ strip/reject any incoming headers used internally to represent that context.
 | `SubscribeToTask` | Current task snapshot first, subsequent updates; reconnect is not a replay guarantee. On a terminal task return `UNSUPPORTED_OPERATION`, the pinned kit's reading of the spec. |
 | Push notifications | Explicitly false; all push-config operations return the standard unsupported error. No callback URL/SSRF surface. |
 | Extended card | Explicitly false; no second private schema. Ordinary export cards are already authenticated. |
-| gRPC, REST, SLIMRPC | Not advertised by wth's server. SDK support does not obligate wth to expose them. |
+| gRPC, REST, SLIMRPC | Not advertised by theuth's server. SDK support does not obligate theuth to expose them. |
 | Binary/data parts, remote file URIs | Not accepted in this text communication profile. Return standard unsupported-content errors; never fetch/execute silently. |
 | Required extensions | Reject unsupported required extensions. No private extension is needed for basic messages/tasks. |
 
@@ -812,7 +812,7 @@ separate operation, not inferred from a timeout.
 
 ### 6.3 Sessions, contexts and tasks are not the same identity
 
-An export selects a wth session. An A2A context is an opaque, server-minted
+An export selects a theuth session. An A2A context is an opaque, server-minted
 conversation handle **within `(principal, export)`**. A task is one request's
 execution, possibly spanning several native turns and child/job completions.
 Neither is the SessionId or an authorization credential.
@@ -850,7 +850,7 @@ Neither is the SessionId or an authorization credential.
   built. The remaining exposure is the one stated in the notice: the model
   may summarize anything already in the session's context into its reply to
   the peer (§9).
-- A2A history contains only exchanged messages for the task, not the wth
+- A2A history contains only exchanged messages for the task, not the theuth
   transcript, system prompt, reasoning, tool arguments/results or another
   caller's context. Final output is a text Artifact. Task status messages are
   progress/questions, not a copy of every local event.
@@ -893,8 +893,8 @@ that one principal's exchanges, not isolated model memories within a session.
 
 An incoming `AUTH_REQUIRED` message never approves anything. Human approvals
 are local, expire normally, and resume the native task when resolved. A remote
-agent's own tool policy is outside wth's control; its Agent Card must not be
-read as a promise that wth approvals mediate every remote action.
+agent's own tool policy is outside theuth's control; its Agent Card must not be
+read as a promise that theuth approvals mediate every remote action.
 
 ### 6.4 ACP and nodes
 
@@ -905,7 +905,7 @@ truthfully: `send: true`, native reverse peer tool access: false.
 
 Do not claim A2A makes an arbitrary ACP child able to discover/call siblings.
 An external harness with its own A2A implementation can be configured as an
-A2A peer; bidirectionality then uses its A2A endpoint and grants. A remote wth
+A2A peer; bidirectionality then uses its A2A endpoint and grants. A remote theuth
 can likewise export sessions independently. ACP remote session IDs and A2A
 contexts stay separate. No automatic fleet-wide export, token sync or mapping
 of a node's whole subtree into the parent's namespace.
@@ -930,7 +930,7 @@ Use SDK types for protocol snapshots, not hand-maintained parallel wire
 schemas. Inbound task state is retained in full and without a TTL until the
 owning session is deleted; the store's `status`/`error` columns are
 authoritative after a restart and are projected over a stale snapshot. The
-wth transcript is never appended to a Task's history by these paths. Outbound
+theuth transcript is never appended to a Task's history by these paths. Outbound
 (client-side) remote task snapshots and follower state are memory only; the
 durable exchange keeps the remote task id, body, reply, state and error, not
 the remote history or artifacts. In-process wait channels, network sockets,
@@ -1233,7 +1233,7 @@ Before network A2A is marked shippable:
 1. Pin compatible published SDK releases and protocol/test-kit revisions;
    record license, toolchain/target builds, dependency/security review and
    any narrow upstream patch with its removal condition.
-2. Run the actual wth adapter through the official conformance kit for the
+2. Run the actual theuth adapter through the official conformance kit for the
    advertised JSONRPC/text/streaming profile. Every applicable MUST passes;
    a skipped required case is not a pass. For a kit/spec disagreement, retain
    a pinned reproducer and authoritative adjudication, not blanket exclusions.
@@ -1245,7 +1245,7 @@ Before network A2A is marked shippable:
    caller-unscoped list, permissive missing-capability behavior, or cancel race
    in the chosen application+SDK path. Current published default-handler
    behavior does not meet this gate unchanged.
-5. Record remaining operational maturity evidence honestly. Passing wth's
+5. Record remaining operational maturity evidence honestly. Passing theuth's
    profile does not establish years of production hardening or an independent
    audit. The user explicitly accepted the younger dependency on 2026-09-18
    (§3.4); that acceptance lowers only the mature-library requirement for the
@@ -1296,7 +1296,7 @@ model passed all 16 global/ancestor/self enablement combinations; symmetric
 sender/receiver and scope checks; duplicate acceptance and changed-input
 rejection; single history consumption; suppression across re-enable;
 transaction rollback; and out-of-order, forged and late reply correlation.
-That model exercised proposed policy/storage semantics, not wth's production
+That model exercised proposed policy/storage semantics, not theuth's production
 actors or SDK.
 
 Revision 2026-09-18 (SDK acceptance): SDK sources at tags `a2a-lf-v0.3.1`,
@@ -1331,7 +1331,7 @@ a test suite, or a conformance claim.
 | Runtime (Rust) tests: `agent`, `a2a`, `tools` | 273 passed (189 + 24 + 60), final rerun after every review correction | Counts are this run's; unrelated work moves them. |
 | Channel/TUI/RPC tests: `rpc`, `signal`, `slack`, `tui` | 208 passed (3 + 57 + 90 + 58) | Command parsing, status rendering, request answering; no live Slack/Signal. |
 | Frontend (`crates/desktop/ui`): `vitest` + `tsc` | 134 passed, `tsc` clean | Reducers, RPC surface, settings/peers components. |
-| `wth` binary build (`cargo build`) | Green | |
+| `theuth` binary build (`cargo build`) | Green | |
 | `cargo clippy` | Not clean: two **preexisting** warnings in code this work did not touch, `clippy::collapsible_if` at `crates/tools/src/jobs.rs:697` and `clippy::type_complexity` at `crates/tools/src/pty.rs:706` | Left as found; unrelated to communication and out of scope for this change. `clippy::all` is `warn`, not `deny` (00 §10). |
 | Native smoke driver (`communication_smoke`, 57 checks) | 57/57 `ok`, exit 0, rerun after every review correction | Inert provider (every completion HTTP 400): proves routing, gating, intake, waiters, suppression, inheritance and accounting; not model execution, peer-visible text or approval prompting. |
 | Network smoke driver (`a2a-smoke.py smoke`) with the official Python SDK `a2a-sdk` 1.1.4 against a running production export | 39/39, final rerun against the production binary after every review correction | Loopback, plain HTTP, bearer auth; every send starts and cancels a real turn; the model's output is not asserted. |
@@ -1379,7 +1379,7 @@ instead of the probe; results above, contents here. Neither is in the tree.
 - `communication_smoke.rs` (local boundary, §§2, 5, 7,
   8): boots the real `tools` and `agent` plugins over a fresh temp data dir
   and drives the production supervisor, store and registry through their
-  public commands. `agent.model` is `omlx/wth-smoke-inert` with the genai
+  public commands. `agent.model` is `omlx/theuth-smoke-inert` with the genai
   `omlx` endpoint pointed at a loopback listener owned by the example that
   answers every completion HTTP 400, so every turn ends `stop_reason =
   "error"` after exactly one local request and no provider is contacted. It
@@ -1434,7 +1434,7 @@ than counted as passes:
 | Requirements | Disposition |
 |---|---|
 | AUTH-SERVER-002, AUTH-SCOPE-001/002/003 | Applicable; covered by `a2a-smoke.py` (401 before existence, per-principal `TASK_NOT_FOUND`, scoped list, 404 non-disclosure). Kit cannot send credentials at `263b9cf`. |
-| VER-SERVER-001, VER-CLIENT-002 | Applicable; covered by `a2a-smoke.py` version checks. VER-CLIENT-001 is a client duty: the SDK sets `A2A-Version` itself; wth's client pre-sets it (§3.4). |
+| VER-SERVER-001, VER-CLIENT-002 | Applicable; covered by `a2a-smoke.py` version checks. VER-CLIENT-001 is a client duty: the SDK sets `A2A-Version` itself; theuth's client pre-sets it (§3.4). |
 | CORE-CAP-004 | Applicable; covered (`EXTENSION_SUPPORT_REQUIRED`). |
 | CARD-EXT-001/002 | Not advertised (`extendedAgentCard: false`); the wire answer is still checked (-32004/-32007, never a card). |
 | PUSH-CREATE/GET/LIST/DEL/DELIVER-* (10) | Not advertised (`pushNotifications: false`); refusal path checked on send and create. |
@@ -1459,7 +1459,7 @@ here depends on them:
   behind the export (§3.4).
 - The Go CLI in either direction against the production adapter (probe only).
   Gate 3 is covered for the production adapter by the official Python SDK as
-  a client, not by Go, and not for wth as a client of an official server.
+  a client, not by Go, and not for theuth as a client of an official server.
 - An HTTPS deployment behind a reverse proxy: every network run was loopback
   HTTP (AUTH-TLS-001 is manual on the deployment).
 - A real, paid model answering a peer with its text asserted; every smoke
@@ -1476,7 +1476,7 @@ here depends on them:
 - Automatic all-session export, global bare-name resolution, public discovery,
   unsolicited transcript sharing or credential inheritance between peers.
 - Replacing ACP/link, pretending an ACP harness gained reverse tools, or requiring
-  every remote agent to implement a private wth extension.
+  every remote agent to implement a private theuth extension.
 - Claiming the SDK's in-memory store, a oneshot or the RPC broadcast bridge is
   durable delivery; claiming exactly-once side effects across crashes.
 - Webhooks, arbitrary URL attachments, gRPC/SLIMRPC, an OAuth issuer or a generic

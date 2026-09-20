@@ -1,9 +1,9 @@
 /**
- * @wth/apps — OpenUI Lang adapter for wth apps (design 46).
+ * @theuth/apps — OpenUI Lang adapter for theuth apps (design 46).
  *
  * Frontend entry: curated `library`, compatibility `libraryHash`, and the shared `check`/`mergeCheck`
  * validator. Pulls the react-ui component graph; load it lazily on first app preview/open.
- * The renderer wrapper lives at `@wth/apps/renderer`; the headless helper imports `./check.ts` only.
+ * The renderer wrapper lives at `@theuth/apps/renderer`; the headless helper imports `./check.ts` only.
  */
 export {
   CURATED_COMPONENTS,

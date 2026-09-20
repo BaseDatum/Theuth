@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "identifier": "dev.rwx.wth.ios",
+  "identifier": "io.theuth.ios",
   "app": {
     "windows": [],
     "trayIcon": null
@@ -16,7 +16,7 @@
     "deep-link": {
       "mobile": [
         {
-          "host": "relay.wth.rwx.dev",
+          "host": "relay.theuth.io",
           "pathPrefix": ["/link"]
         }
       ]

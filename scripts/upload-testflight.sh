@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Upload a packaged wth.ipa to App Store Connect (TestFlight).
+# Upload a packaged theuth.ipa to App Store Connect (TestFlight).
 #
 # NOT run by `just package-ios` — upload needs an App Store Connect API key.
 # Run after a signed app-store-connect IPA:
@@ -75,5 +75,5 @@ xcrun altool --upload-app \
 
 echo
 echo "done. Apple will process the build (often 5–20 min), then it appears"
-echo "under App Store Connect → wth → TestFlight. Add testers there."
+echo "under App Store Connect → theuth → TestFlight. Add testers there."
 echo "  https://appstoreconnect.apple.com/apps"

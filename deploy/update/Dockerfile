@@ -1,12 +1,12 @@
 # syntax=docker/dockerfile:1
-# Linux `wth` + `wth-app-parser-<hash>` for the update bucket (design docs 39 §5.1, 46 §2.1). Build from the repo root:
+# Linux `theuth` + `theuth-app-parser-<hash>` for the update bucket (design docs 39 §5.1, 46 §2.1). Build from the repo root:
 #   docker build -f deploy/update/Dockerfile --output type=local,dest=target/linux-out .
 # The output stage is `FROM scratch` with two files, so `--output type=local` yields
-# `target/linux-out/wth` and `target/linux-out/wth-app-parser-<hash>`.
+# `target/linux-out/t` and `target/linux-out/theuth-app-parser-<hash>`.
 #
 # The helper is a `bun build --compile` executable: Bun is pinned by version + sha256 and used
 # at build time only; the output embeds its own runtime, so no Bun/Node on the target box.
-# The hash is packages/apps/generated/library-hash.txt, the value `wth` embeds (scripts/app-parser-env.sh).
+# The hash is packages/apps/generated/library-hash.txt, the value `theuth` embeds (scripts/app-parser-env.sh).
 #
 # Why ubuntu:22.04 and not musl/alpine?
 #   glibc 2.35 is the oldest we support (Ubuntu 22.04+, Debian 12+, Fedora 36+, Homebrew on
@@ -61,25 +61,25 @@ RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-too
 COPY . /src
 # Cache ids are per-arch (deploy/relay/Dockerfile:32-35). Cache mounts are not part of the
 # layer, so the binary is copied out before the mount goes away.
-RUN --mount=type=cache,id=wth-update-cargo-registry-${TARGETARCH},target=/usr/local/cargo/registry \
-    --mount=type=cache,id=wth-update-cargo-git-${TARGETARCH},target=/usr/local/cargo/git \
-    --mount=type=cache,id=wth-update-cargo-target-${TARGETARCH},target=/src/target \
-    cargo build --release -p wth \
- && cp target/release/wth /wth \
- && /wth --version
+RUN --mount=type=cache,id=theuth-update-cargo-registry-${TARGETARCH},target=/usr/local/cargo/registry \
+    --mount=type=cache,id=theuth-update-cargo-git-${TARGETARCH},target=/usr/local/cargo/git \
+    --mount=type=cache,id=theuth-update-cargo-target-${TARGETARCH},target=/src/target \
+    cargo build --release -p theuth \
+ && cp target/release/t /t \
+ && /t --version
 
 # Helper: native target (the running bun is the embedded runtime — no cross-target download).
 # Named by the committed library hash; `--version` must echo it and EOF on stdin must exit 0.
-RUN --mount=type=cache,id=wth-update-bun-${TARGETARCH},target=/root/.bun/install/cache \
+RUN --mount=type=cache,id=theuth-update-bun-${TARGETARCH},target=/root/.bun/install/cache \
     cd packages/apps \
  && bun install --frozen-lockfile \
  && bun run build:helper \
  && hash="$(tr -d '[:space:]' <generated/library-hash.txt)" \
  && echo "$hash" | grep -Eqx '[0-9a-f]{64}' \
- && install -m 755 dist/wth-app-parser "/wth-app-parser-$hash" \
- && "/wth-app-parser-$hash" --version | grep -q "$hash" \
- && printf '' | "/wth-app-parser-$hash"
+ && install -m 755 dist/theuth-app-parser "/theuth-app-parser-$hash" \
+ && "/theuth-app-parser-$hash" --version | grep -q "$hash" \
+ && printf '' | "/theuth-app-parser-$hash"
 
 # ── output ────────────────────────────────────────────────────────────────────
 FROM scratch
-COPY --from=build /wth /wth-app-parser-* /
+COPY --from=build /t /theuth-app-parser-* /

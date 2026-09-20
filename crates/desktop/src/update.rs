@@ -49,8 +49,8 @@ pub fn start(app: &AppHandle) {
 
 /// One check: manifest → compare → download (minisign-verified) → park in [`Pending`].
 async fn tick(app: &AppHandle) -> anyhow::Result<()> {
-    // 39 §7: `WTH_UPDATE_URL` points a scratch bucket; default is tauri.conf.json.
-    let builder = match std::env::var("WTH_UPDATE_URL")
+    // 39 §7: `THEUTH_UPDATE_URL` points a scratch bucket; default is tauri.conf.json.
+    let builder = match std::env::var("THEUTH_UPDATE_URL")
         .ok()
         .and_then(|s| s.parse::<Url>().ok())
     {
@@ -102,7 +102,7 @@ pub fn install_pending(app: &AppHandle) {
     }
 }
 
-/// `<x>.app` from `<x>.app/Contents/MacOS/wth-desktop`.
+/// `<x>.app` from `<x>.app/Contents/MacOS/theuth-desktop`.
 fn bundle_dir() -> anyhow::Result<PathBuf> {
     let exe = std::env::current_exe()?;
     exe.ancestors()

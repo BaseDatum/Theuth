@@ -47,7 +47,7 @@ implementation and is historical.
    It returns the same typed groups, snippets, coverage and stable source ids as
    the UI, without opening a screen, resuming a session, or restoring knowledge.
 
-## 1. Why this fits wth
+## 1. Why this fits theuth
 
 ### 1.1 The design philosophy, applied
 
@@ -82,7 +82,7 @@ references; some source files were changing during this investigation.
 | `crates/tui/src/model.rs`: `Menu::Search`, `search_key`, `UiEvent::Search`; `ui.rs`: TextInput/event routing; `lib.rs`: concurrent command executor. | Current search is submit-once and its replies can reopen a dismissed menu. Live search needs a real input and request identity on success and failure. |
 | TUI knowledge results discard snippets and Enter opens history; artifacts have open/export/inline display paths. | Add a current-concept reader and preserve search-return state. Do not map every new hit to the nearest existing, wrong destination. |
 | `store/harness-scope.tsx` and `App.tsx`: per-harness QueryClient/store boundary; `lib/rpc.ts`: existing search keys omit selection and search invalidation. | Extend existing scope/key/invalidation logic rather than create a global cache. |
-| `crates/wth/src/main.rs`: RPC listener plugin is conditional; plain TUI/print and `--acp` can run an agent without it. `tools/src/lib.rs`: `Tool`, `RETURNS`, `DIRECT`, `ToolOutput`; `knowledge/src/tools.rs`: structured result and registration precedent. | Register unified search independently of the socket server and reuse the ordinary tool/runtime contract (§4.4). |
+| `crates/theuth/src/main.rs`: RPC listener plugin is conditional; plain TUI/print and `--acp` can run an agent without it. `tools/src/lib.rs`: `Tool`, `RETURNS`, `DIRECT`, `ToolOutput`; `knowledge/src/tools.rs`: structured result and registration precedent. | Register unified search independently of the socket server and reuse the ordinary tool/runtime contract (§4.4). |
 
 Older inventory tables in 10/25/35 and some statements in 26 are historical.
 In particular, current search is not titles-only, full history inspection
@@ -544,7 +544,7 @@ the tool and its static usage guidance, and returns promptly. It owns no actor,
 database, service, optional-provider registry, or config section. This is a
 lifecycle hook for cross-owner glue, not another search subsystem.
 
-Add that plugin to both agent-bearing vectors in `crates/wth/src/main.rs`,
+Add that plugin to both agent-bearing vectors in `crates/theuth/src/main.rs`,
 independently of `RpcPlugin`'s `--serve`/`--headless` gate. Plain TUI/print mode
 and `--acp` do not necessarily start the WebSocket RPC server. Registering only
 inside `RpcPlugin::start`, the desktop, `Server::new`, or an RPC connection would
@@ -1065,7 +1065,7 @@ claims a measurement or check that §11 does not list.
 | Session hit | `agent::search::SearchHit` (26's shape, `context_removed` kept), inside `SearchPage<SearchHit>`. The design's `SessionSearchHit` name was not introduced. |
 | Other hits | `artifact::search::ArtifactSearchHit { artifact, match, content_coverage }`, `ArtifactMatchContext`; `knowledge::search::ConceptSearchHit { meta, match }`, `HistorySearchHit`, `HistoricalConcept`. |
 | Public RPC | `search`, `search_refresh`, `get_artifact`, `artifact_search_match`, `knowledge_read_revision`. `search_sessions` removed from `Api`, `METHODS`, export list and bindings. `knowledge_search` untouched. |
-| Tool (§4.4) | `rpc::search::SearchTool`: `NAME = "search"`, `Risk::ReadOnly`, `RETURNS = "dict"`, `Args = SearchArgs { query, categories?, limit? }`; static `PROMPT` via `RegisterPrompt`. Registered by `rpc::SearchToolsPlugin` (name `search`), listed in both agent-bearing plugin vectors of `wth/src/main.rs`, independent of `RpcPlugin`. |
+| Tool (§4.4) | `rpc::search::SearchTool`: `NAME = "search"`, `Risk::ReadOnly`, `RETURNS = "dict"`, `Args = SearchArgs { query, categories?, limit? }`; static `PROMPT` via `RegisterPrompt`. Registered by `rpc::SearchToolsPlugin` (name `search`), listed in both agent-bearing plugin vectors of `theuth/src/main.rs`, independent of `RpcPlugin`. |
 | Frontends | App: root-mounted `SearchDialog` with `ToggleGroup` chips, header magnifier beside the sidebar toggle, `SearchReturn` (Back to results), `lib/search.ts` per-harness view state. TUI: `tui::search::{State, Request, Inspect}`, `Menu::Search`. |
 | Destinations (§7) | App `/c/$session?seq=` renders `SearchSession` — the read-only **Earlier messages** page (`before = seq + 1`, no composer, **Jump to latest**); artifact `Viewer` and knowledge `Document` each show a **Matched text** panel fed by `artifact_search_match` / the hit's `TextMatch`; `Document` reads `knowledge_read_revision` in historical mode. TUI: `Inspect` replaces the transcript with the page ending at the match; artifact preview carries the matched-text panel; `Historical`/`Revision` requests open the reader. |
 

@@ -981,7 +981,7 @@ impl Message<McpLogin> for Mcp {
             .map_err(|e| e.to_string())?;
         manager.set_metadata(resolved.metadata);
         let redirect = redirect.unwrap_or_else(|| format!("http://127.0.0.1:{port}/callback"));
-        let mut req = AuthorizationRequest::new(redirect).with_client_name("wth");
+        let mut req = AuthorizationRequest::new(redirect).with_client_name("theuth");
         if let Some(id) = oauth.client_id {
             req = req.with_preregistered_client(id);
             if let Some(s) = oauth.client_secret {
@@ -1309,7 +1309,7 @@ async fn expand(raw: &str) -> anyhow::Result<String> {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
     let out = tokio::process::Command::new(shell)
         .arg("-c")
-        .arg(format!("cat <<__wth_mcp__\n{s}\n__wth_mcp__"))
+        .arg(format!("cat <<__theuth_mcp__\n{s}\n__theuth_mcp__"))
         .stdin(std::process::Stdio::null())
         .output()
         .await?;
@@ -1774,7 +1774,7 @@ mod tests {
     #[test]
     fn output_turns_image_blocks_into_files_in_source_order() {
         use image::ImageFormat;
-        let dir = std::env::temp_dir().join(format!("wth-mcp-img-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("theuth-mcp-img-{}", uuid::Uuid::new_v4()));
         let (png, jpg) = (
             b64(&images::tests::encoded(ImageFormat::Png, 2, 2, 1)),
             b64(&images::tests::encoded(ImageFormat::Jpeg, 2, 2, 1)),
@@ -1833,7 +1833,7 @@ mod tests {
     #[test]
     fn output_rejects_malformed_images_without_echoing_them() {
         use image::ImageFormat;
-        let dir = std::env::temp_dir().join(format!("wth-mcp-bad-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("theuth-mcp-bad-{}", uuid::Uuid::new_v4()));
         let png = images::tests::encoded(ImageFormat::Png, 2, 2, 1);
         let check = |data: String, mime: &str, needle: &str| {
             let out = output(
@@ -1983,9 +1983,9 @@ mod tests {
     #[tokio::test]
     async fn expand_uses_the_shell_and_keeps_quotes_literal() {
         // SAFETY: test-only unique key, set before any thread reads it.
-        unsafe { std::env::set_var("WTH_MCP_T", "tok") };
+        unsafe { std::env::set_var("THEUTH_MCP_T", "tok") };
         assert_eq!(
-            expand("Bearer ${WTH_MCP_T}-$(printf hi)-\"q\" \\$lit")
+            expand("Bearer ${THEUTH_MCP_T}-$(printf hi)-\"q\" \\$lit")
                 .await
                 .unwrap(),
             "Bearer tok-hi-\"q\" $lit"
@@ -2013,7 +2013,7 @@ mod tests {
 
     #[test]
     fn repo_detected_from_cwd_inside_a_clone() {
-        let dir = std::env::temp_dir().join(format!("wth-mcp-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("theuth-mcp-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(dir.join("repos/srv/.git")).unwrap();
         std::fs::create_dir_all(dir.join("repos/plain")).unwrap();
         let spec = |cwd: &str| {

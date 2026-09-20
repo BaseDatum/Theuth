@@ -48,8 +48,8 @@ export function ModelMenu({
   useEffect(() => {
     if (!focused) return
     const on = (e: Event) => surfaceOf(e) === 'model' && setOpen(true)
-    window.addEventListener('wth:open', on)
-    return () => window.removeEventListener('wth:open', on)
+    window.addEventListener('theuth:open', on)
+    return () => window.removeEventListener('theuth:open', on)
   }, [focused])
 
   const setModel = async (id: string) => {

@@ -8,7 +8,7 @@
  * The last user message names the key (`[[probe:<key>]]`); requests without a marker use key
  * `default`. Nothing here reaches a real service; no paid model is ever called.
  *
- *   bun /Users/Sky.Moore/Develop/wth-apps/scripts/apps/perf-fixture.ts --port 18790
+ *   bun /Users/Sky.Moore/Develop/theuth-apps/scripts/apps/perf-fixture.ts --port 18790
  *
  * Register: add_provider("perf", "http://127.0.0.1:18790/v1", "perf-key") → set_model(s, "perf/app-fixture").
  *

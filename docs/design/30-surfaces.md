@@ -9,7 +9,7 @@ shapes) and §10 (crate table), `25-desktop.md` §0.5 (streamdown),
 `../jarvis/crates/jarvis-agent/src/rich_content.rs`,
 `../jarvis/crates/jarvis-agent/prompts/desktop_ui.md`,
 `../jarvis/ui/src/components/rich-content/{JsonRenderSurface,MermaidDiagram}.tsx`,
-re-read today. Every claim about wth cites `file:line` as of this tree.
+re-read today. Every claim about theuth cites `file:line` as of this tree.
 
 ## 0. Decisions in one screen
 
@@ -24,7 +24,7 @@ re-read today. Every claim about wth cites `file:line` as of this tree.
 2. **No new wire types. No promotion at completion.** jarvis re-parses the
    finished message into `ContentPart::Mermaid | JsonRender` and persists
    those (`rich_content.rs:160-187`); it needs that for surface ids and
-   server-side programs. wth v0 has neither. Rendering is a *frontend*
+   server-side programs. theuth v0 has neither. Rendering is a *frontend*
    concern at the moment `mdstream` commits the fence (03 §2); the store,
    RPC and `HistoryEntry` are untouched.
 3. **One Rust crate, `crates/surface`, UI-agnostic like `markdown`.** Parse +
@@ -65,7 +65,7 @@ re-read today. Every claim about wth cites `file:line` as of this tree.
    `registry.rs:98-106`) names when to draw, when not to, and the compact
    catalog; a bundled `visualize` skill carries the full schema and
    examples, written to `skills/` on start like `harness.md`
-   (`crates/wth/src/main.rs:165-179`).
+   (`crates/theuth/src/main.rs:165-179`).
 9. **Interactive surfaces are not v0.** jarvis's `programs` + QuickJS-Wasm
    sandbox + MCP allowlist + approval flow is the bulk of its code. If we
    want buttons later, a press becomes a user-turn message
@@ -78,7 +78,7 @@ re-read today. Every claim about wth cites `file:line` as of this tree.
 
 ## 1. What exists
 
-| Layer | wth today | jarvis |
+| Layer | theuth today | jarvis |
 |---|---|---|
 | Model → fence | nothing tells the model it may draw; `GUIDANCE` is delegation only (`crates/agent/src/frame.rs:25-43`) | `desktop_ui.md` supplement, UI channel only (`prompt.rs:216-224`) |
 | Fence detection | `markdown::Renderer` sees `Tag::CodeBlock(Fenced(lang))`, emits dim `╭ {lang}`, then raw lines (`crates/markdown/src/lib.rs:479-488, 428-441, 560-571`) | post-completion line scanner (`rich_content.rs:104-158`) |
@@ -666,9 +666,9 @@ telemetry, and the number the calibration in §4 reads.
 7. **Channels**: `flatten` in Slack bubble, Signal reply, `message_user`.
    Check: unit test that a reply with a `json-render` fence arrives as a
    monospace block of the rendered text.
-8. **Steering measurement** (§6.4): 30 prompts through `wth -p` against
+8. **Steering measurement** (§6.4): 30 prompts through `theuth -p` against
    the configured model, before/after; counts into §16.
-9. **pty run** as in 03 §4: 100×40, Anthropic, "explain how wth's TUI,
+9. **pty run** as in 03 §4: 100×40, Anthropic, "explain how theuth's TUI,
    agent and store talk": a flowchart appears once its fence closes;
    frames sampled at 100 ms show raw ```` ```mermaid ```` lines typing
    out, then the box-drawn diagram in one frame.
@@ -754,7 +754,7 @@ valid `||--o|` in `erDiagram`. Consequences below.
   everything until the fence closed.
 - **Skill generation is a runtime template**, not `build.rs` (§6.1):
   `crates/surface/visualize.md` with `{{catalog}}` filled by
-  `surface::visualize_skill()` from `catalog_schema()`; `crates/wth`
+  `surface::visualize_skill()` from `catalog_schema()`; `crates/theuth`
   depends on `surface` directly and writes `skills/visualize.md` beside
   `harness.md`.
 - **Config**: `SurfaceConfig { enabled, correct }` lives on
@@ -796,8 +796,8 @@ valid `||--o|` in `erDiagram`. Consequences below.
 
 ### 16.3 Smoke (step 8/9 precursor)
 
-`wth --data-dir /tmp/wth-verify -p "Explain in a short answer how a request
-flows from the wth TUI through the agent to the model provider and back,
+`t --data-dir /tmp/theuth-verify -p "Explain in a short answer how a request
+flows from the theuth TUI through the agent to the model provider and back,
 including the sessions store."` with `anthropic/claude-sonnet-4-5`, effort
 low, fresh data dir: `skills/visualize.md` written on start; the reply
 (18.6 s, 11 707↑ 660↓) ended with a closed ```` ```mermaid ```` `sequenceDiagram`

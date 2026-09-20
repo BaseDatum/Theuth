@@ -1561,7 +1561,7 @@ mod tests {
 
     #[test]
     fn save_blob_names_by_content_hash() {
-        let dir = std::env::temp_dir().join(format!("wth-blob-{}", uuid::Uuid::now_v7()));
+        let dir = std::env::temp_dir().join(format!("theuth-blob-{}", uuid::Uuid::now_v7()));
         let p = save_blob(b"hello", "png", &dir).unwrap();
         let hex = format!("{:x}", Sha256::digest(b"hello"));
         assert_eq!(

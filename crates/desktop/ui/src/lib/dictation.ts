@@ -92,11 +92,11 @@ const finishers = new Set<(r: Splice) => void>()
 /** The browser-side mic graph of a remote-source dictation (54 §4.5); `null` while the daemon owns the mic. */
 type Capture = { stream: MediaStream; ctx: AudioContext; nodes: AudioNode[]; batcher: Batcher | null }
 let capture: Capture | null = null
-/** Contexts whose worklet already has `wth-tap`; a second `registerProcessor` of the same name rejects. */
+/** Contexts whose worklet already has `theuth-tap`; a second `registerProcessor` of the same name rejects. */
 const tapped = new WeakSet<AudioContext>()
 
 /** One `AudioWorkletProcessor` that posts each 128-frame render quantum of its mono input to the main thread. */
-const WORKLET_SRC = `registerProcessor('wth-tap', class extends AudioWorkletProcessor {
+const WORKLET_SRC = `registerProcessor('theuth-tap', class extends AudioWorkletProcessor {
   process(inputs) { const ch = inputs[0][0]; if (ch) this.port.postMessage(ch.slice()); return true }
 })`
 
@@ -146,7 +146,7 @@ async function wire(api: Api, id: string, c: Capture): Promise<void> {
     }
     // Torn down while the module loaded (Esc, a fast `DictationFinished`).
     if (capture !== c) return
-    const node = new AudioWorkletNode(ctx, 'wth-tap')
+    const node = new AudioWorkletNode(ctx, 'theuth-tap')
     node.port.onmessage = (e: MessageEvent<Float32Array>) => batcher.push(e.data)
     tap = node
   } else {

@@ -1,5 +1,5 @@
 /**
- * Apps end-to-end smoke driver (design 46): real `wth --headless` over its WebSocket RPC,
+ * Apps end-to-end smoke driver (design 46): real `t --headless` over its WebSocket RPC,
  * a scripted OpenAI-compatible model and an ordinary MCP stdio fixture. No mocks of the app
  * plugin: publishing goes model → `app` tool → artifact store → `ArtifactShown`; every
  * Query/Mutation goes through `app_call_tool` → registry → the MCP fixture.
@@ -7,15 +7,15 @@
  * Prerequisites the parent launches (this script starts nothing but the model fixture, and
  * only when `--fixture-url` is absent):
  *
- *   target/debug/wth --headless --data-dir /tmp/wth-apps-e2e.XXXX        (rpc.listen in config.yaml)
+ *   target/debug/t --headless --data-dir /tmp/theuth-apps-e2e.XXXX        (rpc.listen in config.yaml)
  *   bun scripts/apps/fixture-server.ts --mode openai --port 8765          (optional; else spawned here)
  *
  * Run:
  *
- *   bun /Users/Sky.Moore/Develop/wth-apps/scripts/apps/smoke.ts \
- *     --url ws://127.0.0.1:7777 --data-dir /tmp/wth-apps-e2e.XXXX \
+ *   bun /Users/Sky.Moore/Develop/theuth-apps/scripts/apps/smoke.ts \
+ *     --url ws://127.0.0.1:7777 --data-dir /tmp/theuth-apps-e2e.XXXX \
  *     [--fixture-url http://127.0.0.1:8765] [--fixture-port 8765] \
- *     [--state /tmp/wth-apps-e2e.XXXX/argo-state.json] \
+ *     [--state /tmp/theuth-apps-e2e.XXXX/argo-state.json] \
  *     [--only publish,auto_read,press] [--skip cas_edit] \
  *     [--expect-destructive ask|deny] [--record-call-id <call_id>] [--timeout-ms 30000] [--keep] [--out result.json]
  *
@@ -870,7 +870,7 @@ async function main() {
   const timeout = Number(str("timeout-ms", "30000"));
   const statePath = str(
     "state",
-    join(tmpdir(), "wth-apps-fixture", "argo-state.json"),
+    join(tmpdir(), "theuth-apps-fixture", "argo-state.json"),
   )!;
   const expectDestructive =
     str("expect-destructive", "ask") === "deny" ? "deny" : "ask";

@@ -1,1 +1,1 @@
-REPLACE-ME: paste the base64 minisign public key from `cargo tauri signer generate -w ~/.tauri/wth.key` (docs/update-setup.md §2); until then every verification fails closed and the harness logs `update: pubkey not configured` at debug.
+REPLACE-ME: paste the base64 minisign public key from `cargo tauri signer generate -w ~/.tauri/theuth.key` (docs/update-setup.md §2); until then every verification fails closed and the harness logs `update: pubkey not configured` at debug.

@@ -1,4 +1,4 @@
-# wth apps component catalog (library 8dc9c11b7273) — root statement: root = Stack([...])
+# theuth apps component catalog (library 8dc9c11b7273) — root statement: root = Stack([...])
 Positional arguments follow each signature; `name?` is optional; `$binding<T>` accepts a $state variable.
 
 ## Layout

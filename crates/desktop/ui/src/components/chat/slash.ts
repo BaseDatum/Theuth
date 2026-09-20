@@ -131,14 +131,14 @@ export const COMMANDS: readonly { name: string; hint: string; desc: string }[] =
 /** Commands whose name starts with the typed word (`/mo` → `/model`). */
 export const matches = (word: string) => COMMANDS.filter((c) => c.name.startsWith(word))
 
-/** Header surfaces a command can open; the header listens for `wth:open`. */
+/** Header surfaces a command can open; the header listens for `theuth:open`. */
 export type Surface = 'model' | 'prompt' | 'jobs' | 'todos'
 
 export function openSurface(surface: Surface): void {
-  window.dispatchEvent(new CustomEvent('wth:open', { detail: surface }))
+  window.dispatchEvent(new CustomEvent('theuth:open', { detail: surface }))
 }
 
-/** `wth:open` detail, when it names a surface. */
+/** `theuth:open` detail, when it names a surface. */
 export function surfaceOf(e: Event): Surface | null {
   const d: unknown = e instanceof CustomEvent ? e.detail : null
   return d === 'model' || d === 'prompt' || d === 'jobs' || d === 'todos' ? d : null
@@ -236,7 +236,7 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
   switch (cmd) {
     case '/quit':
     case '/exit':
-      window.dispatchEvent(new Event('wth:quit'))
+      window.dispatchEvent(new Event('theuth:quit'))
       return
     case '/search':
       openSearch(arg ? { query: arg } : undefined)
@@ -464,10 +464,10 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       return
     }
     case '/cost':
-      window.dispatchEvent(new CustomEvent('wth:open-cost', { detail: { session: need(session) } }))
+      window.dispatchEvent(new CustomEvent('theuth:open-cost', { detail: { session: need(session) } }))
       return
     case '/terminals':
-      window.dispatchEvent(new CustomEvent('wth:terminals', { detail: { session: need(session) } }))
+      window.dispatchEvent(new CustomEvent('theuth:terminals', { detail: { session: need(session) } }))
       return
     case '/compact': {
       if (!arg) return compact(api, need(session), null)

@@ -93,7 +93,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             m.app_enabled = app_enabled;
             m.catalog = Some(catalog);
             m.entries.push(Entry::Info(
-                concat!("wth ", env!("CARGO_PKG_VERSION")).into(),
+                concat!("theuth ", env!("CARGO_PKG_VERSION")).into(),
             ));
             m
         }

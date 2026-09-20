@@ -1,10 +1,10 @@
-//! Update plugin: check the release manifest, verify, replace `wth` on disk;
+//! Update plugin: check the release manifest, verify, replace `theuth` on disk;
 //! never ask (design doc 39).
 //!
 //! Public surface consumed by other plugins:
 //! - commands on the [`UPDATE_ACTOR`] actor ([`UpdateActor`]): [`Status`], [`SetAttached`]
 //! - events: [`UpdateReady`]
-//! - [`run_once`] for `wth --update`
+//! - [`run_once`] for `t --update`
 
 use std::collections::HashMap;
 use std::os::unix::fs::PermissionsExt as _;
@@ -27,7 +27,7 @@ use tokio::time::Instant;
 pub const UPDATE_ACTOR: &str = "update";
 
 /// Where `latest.json` lives (39 §3.1). `update.url` overrides it.
-pub const URL: &str = "https://s3.rwx.dev/wth/releases/latest.json";
+pub const URL: &str = "https://s3.rwx.dev/theuth/releases/latest.json";
 
 /// The minisign public key every payload is verified against (39 §5.1), in
 /// Tauri's encoding (the `.pub` file, base64). Shared with the desktop's
@@ -79,7 +79,7 @@ impl Default for UpdateConfig {
 pub struct UpdateReady {
     /// The version that is ready (`0.2.0`).
     pub version: String,
-    /// `true`: the next start of `wth` runs it. `false`: `wth --update`
+    /// `true`: the next start of `theuth` runs it. `false`: `t --update`
     /// (with `sudo`) installs it.
     pub applied: bool,
 }
@@ -156,7 +156,7 @@ impl Message<Landed> for UpdateActor {
     }
 }
 
-/// What one foreground check did (`wth --update`).
+/// What one foreground check did (`t --update`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Outcome {
     /// The manifest names nothing newer for this platform.
@@ -227,7 +227,7 @@ fn pubkey() -> anyhow::Result<PublicKey> {
     PublicKey::decode(&text).map_err(|_| anyhow::anyhow!("update: pubkey not configured"))
 }
 
-/// One check-and-apply in the foreground (39 §3.2 `wth --update`).
+/// One check-and-apply in the foreground (39 §3.2 `t --update`).
 /// `data_dir` is the harness data dir; the tarball is spooled under
 /// `<data_dir>/updates/`.
 pub async fn run_once(cfg: &UpdateConfig, data_dir: &Path) -> anyhow::Result<Outcome> {
@@ -247,13 +247,13 @@ async fn check_and_apply(
     let exe = std::env::current_exe()
         .and_then(|p| p.canonicalize())
         .context("current_exe")?;
-    let homebrew = exe.to_string_lossy().contains("/Cellar/wth/");
+    let homebrew = exe.to_string_lossy().contains("/Cellar/theuth/");
 
     // Step 1: the manifest.
     let client = reqwest::Client::builder()
         .connect_timeout(HTTP_TIMEOUT)
         .read_timeout(HTTP_TIMEOUT)
-        .user_agent(format!("wth/{}", env!("CARGO_PKG_VERSION")))
+        .user_agent(format!("theuth/{}", env!("CARGO_PKG_VERSION")))
         .build()?;
     let manifest: Manifest = client
         .get(&cfg.url)
@@ -292,7 +292,7 @@ async fn check_and_apply(
     let dir = exe.parent().context("current_exe has no parent")?;
     if !writable(dir) {
         tracing::info!(
-            "update: {version} is available but {} is not writable; `sudo wth --update` installs it",
+            "update: {version} is available but {} is not writable; `sudo t --update` installs it",
             exe.display()
         );
         return Ok(Outcome::Available { version, path: exe });
@@ -307,7 +307,7 @@ async fn check_and_apply(
     // `--update` beside the tick loop) must never truncate the tarball this
     // one verified and is about to unpack.
     let tarball = updates.join(format!(
-        "wth_{version}.{:016x}.tar.gz.part",
+        "theuth_{version}.{:016x}.tar.gz.part",
         rand::random::<u64>()
     ));
     let result = match download(&client, &platform.url, &platform.signature, &tarball).await {
@@ -319,12 +319,12 @@ async fn check_and_apply(
     Ok(done)
 }
 
-/// Step H: `brew upgrade --formula wth`, then confirm the Cellar holds `version`.
+/// Step H: `brew upgrade --formula theuth`, then confirm the Cellar holds `version`.
 async fn brew_upgrade(version: &str) -> anyhow::Result<()> {
     let out = tokio::time::timeout(
         BREW_TIMEOUT,
         tokio::process::Command::new("brew")
-            .args(["upgrade", "--formula", "wth"])
+            .args(["upgrade", "--formula", "theuth"])
             .env("HOMEBREW_AUTO_UPDATE_SECS", "0")
             .env("HOMEBREW_NO_ENV_HINTS", "1")
             .env("HOMEBREW_NO_INSTALL_CLEANUP", "1")
@@ -351,14 +351,14 @@ async fn brew_upgrade(version: &str) -> anyhow::Result<()> {
         );
     }
     let out = tokio::process::Command::new("brew")
-        .args(["list", "--versions", "wth"])
+        .args(["list", "--versions", "theuth"])
         .output()
         .await
         .context("brew list")?;
     let listed = String::from_utf8_lossy(&out.stdout);
     if !listed.split_whitespace().any(|v| v == version) {
         anyhow::bail!(
-            "brew upgrade ran but `brew list --versions wth` says `{}`",
+            "brew upgrade ran but `brew list --versions theuth` says `{}`",
             listed.trim()
         );
     }
@@ -367,7 +367,7 @@ async fn brew_upgrade(version: &str) -> anyhow::Result<()> {
 
 /// Step 4 probe: can this user create a file in `dir`?
 fn writable(dir: &Path) -> bool {
-    let probe = dir.join(".wth-update-probe");
+    let probe = dir.join(".theuth-update-probe");
     let ok = std::fs::write(&probe, b"").is_ok();
     let _ = std::fs::remove_file(&probe);
     ok
@@ -405,16 +405,16 @@ async fn download(
     Ok(())
 }
 
-/// Prefix of the app parser helper beside `wth` (46 §2.1): the file is
-/// `wth-app-parser-<library sha256 hex>`, immutable per hash.
-const HELPER_PREFIX: &str = "wth-app-parser-";
-/// Upper bound on one tarball entry. A release `wth` is ~330 MB today, the
+/// Prefix of the app parser helper beside `theuth` (46 §2.1): the file is
+/// `theuth-app-parser-<library sha256 hex>`, immutable per hash.
+const HELPER_PREFIX: &str = "theuth-app-parser-";
+/// Upper bound on one tarball entry. A release `theuth` is ~330 MB today, the
 /// helper ~60 MiB; the bound only stops a runaway header, not a real build.
 const MAX_ENTRY: u64 = 2 << 30;
-/// `wth.new --app-parser-hash` budget: the probe answers from a constant.
+/// `theuth.new --app-parser-hash` budget: the probe answers from a constant.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// `wth-app-parser-<64 lowercase hex>`.
+/// `theuth-app-parser-<64 lowercase hex>`.
 fn is_helper_name(name: &str) -> bool {
     name.strip_prefix(HELPER_PREFIX).is_some_and(|h| {
         h.len() == 64
@@ -423,21 +423,21 @@ fn is_helper_name(name: &str) -> bool {
     })
 }
 
-/// Step 3: the payload holds exactly two regular files, `wth` and one
-/// `wth-app-parser-<hash>`. Both land beside `exe` as `<name>.new.<pid>-<nonce>`,
-/// `chmod 755`; the new `wth` is asked which helper hash it was compiled against
+/// Step 3: the payload holds exactly two regular files, `theuth` and one
+/// `theuth-app-parser-<hash>`. Both land beside `exe` as `<name>.new.<pid>-<nonce>`,
+/// `chmod 755`; the new `theuth` is asked which helper hash it was compiled against
 /// and must name the one shipped beside it; then rename: helper first, then
-/// `wth`, so a `wth` that exists always has its helper. Same directory, so each
+/// `theuth`, so a `theuth` that exists always has its helper. Same directory, so each
 /// rename is atomic and the running image is untouched (39 §2.2 `ETXTBSY`).
 /// The staging names are private to this install (created with `create_new`),
-/// so two updaters aimed at one `wth` never probe, rename, or delete each
+/// so two updaters aimed at one `theuth` never probe, rename, or delete each
 /// other's files: the pair that lands is always the pair that was probed. A
 /// helper already installed under the payload's hash is kept, not replaced:
 /// the name is the library hash, one ABI contract per name, and a running
-/// `wth` may be spawning it. Old helpers are never removed here: any number of
-/// older `wth` processes may still spawn theirs (46 §2.1).
+/// `theuth` may be spawning it. Old helpers are never removed here: any number of
+/// older `theuth` processes may still spawn theirs (46 §2.1).
 // ponytail: helpers accumulate one file per library hash; sweep them from a
-// place that knows every live `wth` (a `wth --gc-helpers` on the newest
+// place that knows every live `theuth` (a `t --gc-helpers` on the newest
 // binary) if the directory ever gets noisy.
 async fn install(tarball: &Path, exe: &Path) -> anyhow::Result<()> {
     let dir = exe.parent().context("current_exe has no parent")?;
@@ -468,37 +468,37 @@ async fn install(tarball: &Path, exe: &Path) -> anyhow::Result<()> {
 
 /// Run the signature-verified new binary once: `--app-parser-hash` prints the
 /// library hash it embeds, which must be the helper in the same payload; a
-/// `wth` that could never find its helper is not installed.
-async fn probe(new_wth: &Path, hash: &str) -> anyhow::Result<()> {
+/// `theuth` that could never find its helper is not installed.
+async fn probe(new_theuth: &Path, hash: &str) -> anyhow::Result<()> {
     let out = tokio::time::timeout(
         PROBE_TIMEOUT,
-        tokio::process::Command::new(new_wth)
+        tokio::process::Command::new(new_theuth)
             .arg("--app-parser-hash")
             .stdin(std::process::Stdio::null())
             .kill_on_drop(true)
             .output(),
     )
     .await
-    .context("probe `wth.new --app-parser-hash`: timed out")?
-    .context("probe `wth.new --app-parser-hash`")?;
+    .context("probe `t.new --app-parser-hash`: timed out")?
+    .context("probe `t.new --app-parser-hash`")?;
     let got = String::from_utf8_lossy(&out.stdout);
     let got = got.trim();
     if !out.status.success() {
         anyhow::bail!(
-            "probe `wth.new --app-parser-hash`: {}: {}",
+            "probe `t.new --app-parser-hash`: {}: {}",
             out.status,
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
     if got != hash {
-        anyhow::bail!("payload helper is {HELPER_PREFIX}{hash} but the new wth wants {got:?}");
+        anyhow::bail!("payload helper is {HELPER_PREFIX}{hash} but the new t wants {got:?}");
     }
     Ok(())
 }
 
 /// Extract the validated entries to `<dest><tag>`, each created fresh
 /// (`create_new`) so the path is provably this install's; `staged` is filled in
-/// commit order (helper, then `wth`), including on error so the caller can
+/// commit order (helper, then `theuth`), including on error so the caller can
 /// clean up. Returns the helper's hash.
 fn unpack(
     tarball: &Path,
@@ -509,7 +509,7 @@ fn unpack(
 ) -> anyhow::Result<String> {
     let file = std::fs::File::open(tarball).with_context(|| tarball.display().to_string())?;
     let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(file));
-    let mut wth = false;
+    let mut theuth = false;
     let mut helper: Option<String> = None;
     for entry in archive.entries().context("tarball")? {
         let mut entry = entry.context("tarball entry")?;
@@ -528,8 +528,8 @@ fn unpack(
         if size > MAX_ENTRY {
             anyhow::bail!("tarball entry `{name}`: {size} bytes exceeds {MAX_ENTRY}");
         }
-        let (dup, dest) = if name == "wth" {
-            (std::mem::replace(&mut wth, true), exe.to_path_buf())
+        let (dup, dest) = if name == "t" {
+            (std::mem::replace(&mut theuth, true), exe.to_path_buf())
         } else if is_helper_name(&name) {
             (
                 helper
@@ -558,10 +558,10 @@ fn unpack(
     let Some(hash) = helper else {
         anyhow::bail!("tarball has no `{HELPER_PREFIX}<hash>` entry");
     };
-    if !wth {
-        anyhow::bail!("tarball has no `wth` entry");
+    if !theuth {
+        anyhow::bail!("tarball has no `t` entry");
     }
-    // Commit order: helper first, `wth` last.
+    // Commit order: helper first, `t` last.
     staged.sort_by_key(|(_, dest)| dest == exe);
     Ok(hash)
 }
@@ -713,7 +713,7 @@ mod tests {
         }
     }
 
-    /// `.tar.gz` of `entries` at `<dir>/wth_0.2.0.tar.gz.part`.
+    /// `.tar.gz` of `entries` at `<dir>/theuth_0.2.0.tar.gz.part`.
     fn tarball(dir: &Path, entries: &[Entry<'_>]) -> PathBuf {
         use std::io::Write as _;
 
@@ -733,15 +733,15 @@ mod tests {
         }
         let mut gz = tar.into_inner().unwrap();
         gz.flush().unwrap();
-        let path = dir.join("wth_0.2.0.tar.gz.part");
+        let path = dir.join("theuth_0.2.0.tar.gz.part");
         std::fs::write(&path, gz.finish().unwrap()).unwrap();
         path
     }
 
-    /// A dir holding an old `wth` and its old helper, as after a previous update.
+    /// A dir holding an old `theuth` and its old helper, as after a previous update.
     fn installed() -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
-        let exe = dir.path().join("wth");
+        let exe = dir.path().join("t");
         std::fs::write(&exe, b"old").unwrap();
         std::fs::write(
             dir.path().join(format!("{HELPER_PREFIX}{OLD_HASH}")),
@@ -766,8 +766,8 @@ mod tests {
         v
     }
 
-    /// A stand-in `wth`: answers `--app-parser-hash` with `hash`.
-    fn fake_wth(hash: &str) -> Vec<u8> {
+    /// A stand-in `theuth`: answers `--app-parser-hash` with `hash`.
+    fn fake_theuth(hash: &str) -> Vec<u8> {
         format!("#!/bin/sh\necho {hash}\n").into_bytes()
     }
 
@@ -776,17 +776,17 @@ mod tests {
         let (dir, exe) = installed();
         let helper = format!("{HELPER_PREFIX}{HASH}");
         let old_helper = format!("{HELPER_PREFIX}{OLD_HASH}");
-        let new_wth = fake_wth(HASH);
+        let new_theuth = fake_theuth(HASH);
         let tb = tarball(
             dir.path(),
             &[
                 file(&helper, b"#!/bin/sh\necho helper\n"),
-                file("wth", &new_wth),
+                file("t", &new_theuth),
             ],
         );
 
         install(&tb, &exe).await.unwrap();
-        assert_eq!(std::fs::read(&exe).unwrap(), new_wth);
+        assert_eq!(std::fs::read(&exe).unwrap(), new_theuth);
         assert_eq!(
             std::fs::read(dir.path().join(&helper)).unwrap(),
             b"#!/bin/sh\necho helper\n"
@@ -801,11 +801,11 @@ mod tests {
         assert_eq!(
             std::fs::read(dir.path().join(&old_helper)).unwrap(),
             b"old helper",
-            "an older wth may still be running"
+            "an older theuth may still be running"
         );
         assert_eq!(
             names(dir.path()),
-            sorted(&["wth", &helper, &old_helper, "wth_0.2.0.tar.gz.part"]),
+            sorted(&["t", &helper, &old_helper, "theuth_0.2.0.tar.gz.part"]),
             "no .new leftovers"
         );
     }
@@ -817,76 +817,76 @@ mod tests {
         let helper = format!("{HELPER_PREFIX}{HASH}");
         let old_helper = format!("{HELPER_PREFIX}{OLD_HASH}");
         let upper = format!("{HELPER_PREFIX}{}", HASH.to_uppercase());
-        let wants_old = fake_wth(OLD_HASH);
+        let wants_old = fake_theuth(OLD_HASH);
         let cases: Vec<(&str, Vec<Entry<'_>>)> = vec![
             (
-                "wth compiled against another helper",
-                vec![file("wth", &wants_old), file(&helper, b"h")],
+                "t compiled against another helper",
+                vec![file("t", &wants_old), file(&helper, b"h")],
             ),
             (
-                "wth probe fails",
-                vec![file("wth", b"#!/bin/sh\nexit 3\n"), file(&helper, b"h")],
+                "t probe fails",
+                vec![file("t", b"#!/bin/sh\nexit 3\n"), file(&helper, b"h")],
             ),
             (
-                "wth not executable",
-                vec![file("wth", b"not a program"), file(&helper, b"h")],
+                "t not executable",
+                vec![file("t", b"not a program"), file(&helper, b"h")],
             ),
-            ("no helper", vec![file("wth", b"new")]),
-            ("no wth", vec![file(&helper, b"h")]),
+            ("no helper", vec![file("t", b"new")]),
+            ("no t", vec![file(&helper, b"h")]),
             (
                 "unqualified helper",
-                vec![file("wth", b"new"), file("wth-app-parser", b"h")],
+                vec![file("t", b"new"), file("theuth-app-parser", b"h")],
             ),
             (
                 "short hash",
-                vec![file("wth", b"new"), file("wth-app-parser-abc123", b"h")],
+                vec![file("t", b"new"), file("theuth-app-parser-abc123", b"h")],
             ),
             (
                 "uppercase hash",
-                vec![file("wth", b"new"), file(&upper, b"h")],
+                vec![file("t", b"new"), file(&upper, b"h")],
             ),
             (
                 "two helpers",
                 vec![
-                    file("wth", b"new"),
+                    file("t", b"new"),
                     file(&helper, b"h"),
                     file(&old_helper, b"h2"),
                 ],
             ),
             (
-                "two wth",
+                "two t",
                 vec![
-                    file("wth", b"new"),
-                    file("wth", b"new2"),
+                    file("t", b"new"),
+                    file("t", b"new2"),
                     file(&helper, b"h"),
                 ],
             ),
             (
                 "stray file",
                 vec![
-                    file("wth", b"new"),
+                    file("t", b"new"),
                     file(&helper, b"h"),
-                    file("._wth", b"applesauce"),
+                    file("._t", b"applesauce"),
                 ],
             ),
             (
                 "traversal",
-                vec![file("../wth", b"new"), file(&helper, b"h")],
+                vec![file("../theuth", b"new"), file(&helper, b"h")],
             ),
-            ("absolute", vec![file("/wth", b"new"), file(&helper, b"h")]),
-            ("nested", vec![file("bin/wth", b"new"), file(&helper, b"h")]),
+            ("absolute", vec![file("/t", b"new"), file(&helper, b"h")]),
+            ("nested", vec![file("bin/t", b"new"), file(&helper, b"h")]),
             (
-                "symlink wth",
-                vec![typed("wth", Symlink), file(&helper, b"h")],
+                "symlink t",
+                vec![typed("t", Symlink), file(&helper, b"h")],
             ),
             (
                 "symlink helper",
-                vec![file("wth", b"new"), typed(&helper, Symlink)],
+                vec![file("t", b"new"), typed(&helper, Symlink)],
             ),
             (
                 "directory",
                 vec![
-                    file("wth", b"new"),
+                    file("t", b"new"),
                     file(&helper, b"h"),
                     typed("d", Directory),
                 ],
@@ -895,7 +895,7 @@ mod tests {
                 "oversized (header claims > MAX_ENTRY)",
                 vec![
                     Entry {
-                        name: "wth",
+                        name: "theuth",
                         kind: tar::EntryType::Regular,
                         data: b"new",
                         claimed: Some(MAX_ENTRY + 1),
@@ -916,14 +916,14 @@ mod tests {
             );
             assert_eq!(
                 names(dir.path()),
-                sorted(&["wth", &old_helper, "wth_0.2.0.tar.gz.part"]),
+                sorted(&["t", &old_helper, "theuth_0.2.0.tar.gz.part"]),
                 "{what}: staged files must be removed ({err:#})"
             );
         }
     }
 
-    /// Two updaters aimed at one `wth`, interleaved: A is parked inside its hash
-    /// probe (its fake `wth` waits for a gate file) while B fails, then another
+    /// Two updaters aimed at one `theuth`, interleaved: A is parked inside its hash
+    /// probe (its fake `theuth` waits for a gate file) while B fails, then another
     /// B succeeds; then A is released. Each install must probe, rename, and
     /// clean only its own stage: B's failure must not strip A's files, B's
     /// success must land B's own helper, and A must still land its pair.
@@ -936,13 +936,13 @@ mod tests {
         let helper_a = format!("{HELPER_PREFIX}{HASH}");
         let helper_b = format!("{HELPER_PREFIX}{B_HASH}");
         let old_helper = format!("{HELPER_PREFIX}{OLD_HASH}");
-        let wth_a = format!(
+        let theuth_a = format!(
             "#!/bin/sh\nwhile [ ! -e '{}' ]; do sleep 0.01; done\necho {HASH}\n",
             gate.display()
         )
         .into_bytes();
-        let wth_b = fake_wth(B_HASH);
-        let wth_b_bad = fake_wth(OLD_HASH);
+        let theuth_b = fake_theuth(B_HASH);
+        let theuth_b_bad = fake_theuth(OLD_HASH);
         let staged = |dir: &Path| {
             names(dir)
                 .into_iter()
@@ -952,7 +952,7 @@ mod tests {
 
         let tb_a = tarball(
             scratch.path(),
-            &[file(&helper_a, b"helper a"), file("wth", &wth_a)],
+            &[file(&helper_a, b"helper a"), file("t", &theuth_a)],
         );
         let a = tokio::spawn({
             let exe = exe.clone();
@@ -966,20 +966,20 @@ mod tests {
         // B fails its probe while A is staged: A's files survive.
         let tb = tarball(
             scratch.path(),
-            &[file(&helper_b, b"helper b"), file("wth", &wth_b_bad)],
+            &[file(&helper_b, b"helper b"), file("t", &theuth_b_bad)],
         );
         install(&tb, &exe).await.unwrap_err();
         assert_eq!(std::fs::read(&exe).unwrap(), b"old");
         assert_eq!(staged(dir.path()), 2, "B's cleanup removed A's stage");
         assert!(!dir.path().join(&helper_b).exists());
 
-        // B succeeds while A is staged: B's own wth and helper land.
+        // B succeeds while A is staged: B's own theuth and helper land.
         let tb = tarball(
             scratch.path(),
-            &[file(&helper_b, b"helper b"), file("wth", &wth_b)],
+            &[file(&helper_b, b"helper b"), file("t", &theuth_b)],
         );
         install(&tb, &exe).await.unwrap();
-        assert_eq!(std::fs::read(&exe).unwrap(), wth_b);
+        assert_eq!(std::fs::read(&exe).unwrap(), theuth_b);
         assert_eq!(
             std::fs::read(dir.path().join(&helper_b)).unwrap(),
             b"helper b"
@@ -987,10 +987,10 @@ mod tests {
         assert_eq!(staged(dir.path()), 2, "B's rename consumed A's stage");
         assert!(!a.is_finished());
 
-        // A is released: the probed wth A lands with helper A.
+        // A is released: the probed theuth A lands with helper A.
         std::fs::write(&gate, b"").unwrap();
         a.await.unwrap().unwrap();
-        assert_eq!(std::fs::read(&exe).unwrap(), wth_a);
+        assert_eq!(std::fs::read(&exe).unwrap(), theuth_a);
         assert_eq!(
             std::fs::read(dir.path().join(&helper_a)).unwrap(),
             b"helper a"
@@ -1001,7 +1001,7 @@ mod tests {
         );
         assert_eq!(
             names(dir.path()),
-            sorted(&["wth", &helper_a, &helper_b, &old_helper]),
+            sorted(&["t", &helper_a, &helper_b, &old_helper]),
             "no .new leftovers"
         );
     }

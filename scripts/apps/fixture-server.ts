@@ -4,9 +4,9 @@
  *
  * ## `--mode openai` — scripted OpenAI-compatible model
  *
- *   bun /Users/Sky.Moore/Develop/wth-apps/scripts/apps/fixture-server.ts --mode openai --port 8765 [--chunk 200] [--delay-ms 60]
+ *   bun /Users/Sky.Moore/Develop/theuth-apps/scripts/apps/fixture-server.ts --mode openai --port 8765 [--chunk 200] [--delay-ms 60]
  *
- * Register in wth with `add_provider("fixture", "http://127.0.0.1:8765/v1", "fixture-key")`,
+ * Register in theuth with `add_provider("fixture", "http://127.0.0.1:8765/v1", "fixture-key")`,
  * then `set_model(session, "fixture/app-fixture")`.
  *
  *   GET  /v1/models                → {data:[{id:"app-fixture"}]}
@@ -25,7 +25,7 @@
  *
  * ## `--mode mcp` — ordinary MCP stdio server with a durable counter
  *
- *   bun /Users/Sky.Moore/Develop/wth-apps/scripts/apps/fixture-server.ts --mode mcp --state /abs/path/argo-state.json
+ *   bun /Users/Sky.Moore/Develop/theuth-apps/scripts/apps/fixture-server.ts --mode mcp --state /abs/path/argo-state.json
  *
  * Register through the real RPC:
  *   add_mcp_server("argo", {command:"bun", args:[<this file>, "--mode", "mcp", "--state", <state path>]})
@@ -239,7 +239,7 @@ interface State {
 
 async function mcp() {
   const statePath =
-    typeof args.state === "string" ? args.state : join(tmpdir(), "wth-apps-fixture", "argo-state.json");
+    typeof args.state === "string" ? args.state : join(tmpdir(), "theuth-apps-fixture", "argo-state.json");
   mkdirSync(dirname(statePath), { recursive: true });
 
   const load = (): State => {
@@ -308,7 +308,7 @@ async function mcp() {
     },
   ];
 
-  const server = new Server({ name: "wth-apps-fixture", version: "0.0.0" }, { capabilities: { tools: {} } });
+  const server = new Server({ name: "theuth-apps-fixture", version: "0.0.0" }, { capabilities: { tools: {} } });
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const tool = req.params.name;

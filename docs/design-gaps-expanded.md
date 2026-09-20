@@ -52,7 +52,7 @@ Do not read the rest as “the architecture broke.” These rules held:
 | No shared `Event` enum | Events are per-plugin types; `AgentEvent` is one stream owned by agent (00 §4 allows this) |
 | Typed kameo bus | `Runtime::publish` / `subscribe` in `runtime/src/lib.rs` |
 | One `Approval` actor | `tools::APPROVAL_ACTOR`; `Invoke` still ends at `RequestApproval` |
-| `Plugin` trait is the extension point | `wth/src/main.rs` still `for plugin in plugins { plugin.start(&rt) }` |
+| `Plugin` trait is the extension point | `theuth/src/main.rs` still `for plugin in plugins { plugin.start(&rt) }` |
 | One process | TUI, agent, tools, optional RPC/Signal in one binary |
 | Tool types live in `tools`, not `runtime` | Better than original §4 table, which put `Tool`/`Risk` in `runtime` |
 
@@ -217,7 +217,7 @@ its own plugin crate (12 §9), so `agent` is smaller today.
 | crate | lines | `Plugin`? | In an original phase? |
 |---|---|---|---|
 | runtime | 225 | trait only | yes |
-| wth | 388 | binary | yes |
+| theuth | 388 | binary | yes |
 | models | 393 | no | no (could have lived in agent) |
 | markdown | 685 | no | no (could have lived in tui) |
 | rpc | 815 | yes | phase 2 |
@@ -324,12 +324,12 @@ imported every subsystem and threaded handles between them.)”*
 
 00 §4, still:
 
-> `wth/main.rs` is, in full: build `Runtime`, `for p in plugins {
+> `theuth/main.rs` is, in full: build `Runtime`, `for p in plugins {
 > p.start(&rt).await? }`, wait for shutdown.
 
 ### What the code does
 
-`crates/wth/src/main.rs` is 267 lines plus `worker.rs` (121). The plugin
+`crates/theuth/src/main.rs` is 267 lines plus `worker.rs` (121). The plugin
 loop is still there (`run()` around the `Vec<Box<dyn Plugin>>`). Around it:
 
 1. A process-global allocator and a `subprocess` argv branch *before clap*,
@@ -397,7 +397,7 @@ another bug, not an architecture choice.
    model) as a deliberate exception: the Python worker *is* this binary, so
    `main` must branch before the plugin list. That is not god-wiring.
 
-3. Leave `first_run` in `wth` (data-dir skeleton is the binary’s job) or
+3. Leave `first_run` in `theuth` (data-dir skeleton is the binary’s job) or
    move it onto `Runtime::new`. Either is fine; it is not a plugin handle.
 
 4. The `process::exit` after sleep is a known gap (00 §12 already lists
@@ -872,7 +872,7 @@ const CLAUDE_CODE_IDENTITY: &str =
 
 That is a provider constraint for the Claude Code OAuth login (05 §2.3),
 and it is also product branding in the system prompt (00 §1.1: *the only
-product name is the binary `wth`*).
+product name is the binary `theuth`*).
 
 ### Why it matters
 
@@ -893,7 +893,7 @@ the token.
 3. Claude Code identity: keep the sentence when that login is active
    (the API 403s without it). Document under 00 §1.1: *Provider-required
    identity lines are not product branding; they are not shown for key
-   auth.* Do not put `wth` in that sentence.
+   auth.* Do not put `theuth` in that sentence.
 
 If you want §1.8 to stay as written, delete the cursor crate. That is the
 only consistent reading. Not recommended: the login is doing work.
@@ -1077,7 +1077,7 @@ is gone).
 |---|---|---|
 | G1 | §1.7, §4 permission | `crates/tools/src/registry.rs`, `crates/tools/src/lib.rs` (`ErasedTool::gate`), `docs/design/01-config-and-subagents.md` §1.4 |
 | G2 | §1.6, §10, §13 | `Cargo.toml` members, `crates/agent/src/knowledge/`, `crates/signal/`, `crates/cursor/` |
-| G3 | §1.4, §4 `main.rs` | `crates/wth/src/main.rs` (`link_signal`, `subprocess`, `process::exit`) |
+| G3 | §1.4, §4 `main.rs` | `crates/theuth/src/main.rs` (`link_signal`, `subprocess`, `process::exit`) |
 | G4 | §4 start-order | `crates/signal/src/lib.rs` (`Plugin::start`), `crates/agent/src/supervisor.rs` (`for _ in 0..50`) |
 | G5 | §1.2, §5 | `crates/agent/src/loop_.rs` (`ns == "cursor"`), `crates/cursor/src/lib.rs` |
 | G6 | §8, §1.5, §7 | `crates/tui/src/model.rs` (`Command`, `UiEvent`), `crates/rpc/src/api.rs`, `crates/rpc/src/bridge.rs` |

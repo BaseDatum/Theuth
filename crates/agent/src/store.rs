@@ -1642,7 +1642,7 @@ mod tests {
 
     /// Fresh store in a temp dir with one session; caller removes `dir` at the end.
     async fn fresh() -> (Store, SessionId, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!("wth-store-{}", uuid::Uuid::now_v7()));
+        let dir = std::env::temp_dir().join(format!("theuth-store-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
         let store = Store::open(&dir.join("sessions.sqlite")).await.unwrap();
         let id = SessionId::new();

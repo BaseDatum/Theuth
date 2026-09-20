@@ -22,7 +22,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// The fields of `rpc::Info` a parent reads (32 §6.6); the rest is ignored.
 #[derive(Clone, Debug, Deserialize)]
 pub struct HarnessInfo {
-    /// `wth` version.
+    /// `theuth` version.
     pub version: String,
     /// `std::env::consts::OS` of the node.
     pub platform: String,

@@ -29,7 +29,7 @@
       "destroyText = TextContent(destroyResult.status == \"success\" ? destroyResult.data.message : \"\")",
       "slowText = TextContent(\"Slow read: \" + slow.status)",
       "echoText = TextContent(\"Echo: \" + echoed.echoed + \" (\" + echoed.length + \" chars)\")",
-      "note1 = TextContent(\"This panel is the wth apps acceptance fixture. Sync increments a durable counter in the fixture state file; Destroy resets it to zero. Neither touches anything outside the fixture temp file.\")",
+      "note1 = TextContent(\"This panel is the theuth apps acceptance fixture. Sync increments a durable counter in the fixture state file; Destroy resets it to zero. Neither touches anything outside the fixture temp file.\")",
       "note2 = TextContent(\"Health and the slow read are read-only queries. The slow read sleeps to exercise generation cancellation and peer disconnect; echo sends a vault placeholder the harness expands and scrubs. syncProbe is a Query bound to the mutating sync tool: it needs an explicit Load and never runs on a timer. \" + syncProbe.count)"
     ],
     "statements": {

@@ -46,7 +46,7 @@ function LinkStartup({ id }: { id: string }) {
         {presence === 'connecting' && <p className="text-xs text-fg-secondary">Relay unreachable</p>}
         <p className="text-sm text-fg-secondary">
           {refused
-            ? 'The harness no longer knows this device (revoked, or its device list was reset). Show a new pairing code there (Settings › Link, or `wth --link`), pair again, then forget this entry.'
+            ? 'The harness no longer knows this device (revoked, or its device list was reset). Show a new pairing code there (Settings › Link, or `t --link`), pair again, then forget this entry.'
             : 'The harness is offline or the relay is unreachable. This screen closes when it is back.'}
         </p>
         <div className="flex flex-wrap justify-end gap-2">

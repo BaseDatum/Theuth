@@ -2,7 +2,7 @@
 
 Status: design v0 · 2026-09-15 · implemented after 31 is built and its §12
 checks pass · extends `31-link.md` (§4.3 handshake payload, §6.2 conn
-dispatch, §6.6 `wth --link`, §7.3 harness store), `06-acp.md` (§3.2 spawn,
+dispatch, §6.6 `t --link`, §7.3 harness store), `06-acp.md` (§3.2 spawn,
 §4.2 "one process per client", §8.5 `acp` as a library), `18-app-launch.md`
 (§5: a background service launches through the login shell),
 `00-architecture.md` §4, §10, §12. Where 31 and this doc disagree on the
@@ -18,10 +18,10 @@ else is 31's: harness, device, relay, link.
 ## 0. Decisions in one screen
 
 1. **A node is an ordinary 31 harness; the parent is one of its devices.**
-   The node runs `wth --headless` with `link.enabled: true`, registers at
+   The node runs `t --headless` with `link.enabled: true`, registers at
    `/h/<node_id>`, and hands out a 31 §4.4 pairing string. The parent
    pastes that string, runs `Noise_IKpsk2` as the *initiator*, and is
-   recorded in the node's `devices.yaml` as `{ platform: "wth" }`. Nothing on
+   recorded in the node's `devices.yaml` as `{ platform: "theuth" }`. Nothing on
    the node knows it is a node. No new relay op, no new frame, no new key:
    the parent's `link/identity` is its static in both roles (a WireGuard
    peer does the same). Rejected: the node dialling the parent as a device
@@ -30,7 +30,7 @@ else is 31's: harness, device, relay, link.
 2. **Subagents on a node are ACP children, over the link conn.** A paired
    device may open a conn in *ACP mode*: the `Noise_IK` message-1 payload,
    empty in 31, carries `mode:u8` (`absent|0` = `Api`, `1` = ACP). On such a
-   conn the node serves the same ACP agent half that `wth --acp` serves on
+   conn the node serves the same ACP agent half that `t --acp` serves on
    stdio (`rpc::acp`, 06 §4). On the parent, `spawn_subagent{agent:
    "build-box"}` resolves the name to a node and `AcpChild` (06 §3.2) runs
    unchanged with a dial transport instead of a subprocess. 06 §4.2's "the
@@ -47,13 +47,13 @@ else is 31's: harness, device, relay, link.
    first sight, without a click. Rejected: `send_input{node}` proxied through
    the parent — every `TextDelta` serialised twice, ~100 methods proxied, and
    the sessions would live in the wrong store.
-4. **`wth --install-service` is how a node comes to exist.** One flag on the
+4. **`t --install-service` is how a node comes to exist.** One flag on the
    remote box: write a launchd LaunchAgent or a systemd user unit that runs
-   `$SHELL -l -i -c 'exec wth --headless'` (18's environment argument, the
+   `$SHELL -l -i -c 'exec t --headless'` (18's environment argument, the
    pty dropped), set `link.enabled: true`, start it, wait for the port, then
-   run 31 §6.6's `wth --link` step and print the key with the sentence to
-   paste it into the parent. `wth --uninstall-service` reverses the unit and
-   nothing else. Rejected: a `wth install service` subcommand (the binary's
+   run 31 §6.6's `t --link` step and print the key with the sentence to
+   paste it into the parent. `t --uninstall-service` reverses the unit and
+   nothing else. Rejected: a `theuth install service` subcommand (the binary's
    one-shots are flags: `--link-signal`, `--slack-setup`, `--acp`);
    `systemd-run`/Docker (15 is shelved); a Windows service (no build).
 5. **The `nodes` plugin sits below `rpc`, beside `link`.** `rpc::Api` names
@@ -67,9 +67,9 @@ else is 31's: harness, device, relay, link.
    parent cascades to its nodes (one static per device → the same 8-char id
    on every harness, 31 §4.1). Compromise of the parent is compromise of the
    fleet; the doc says so once (§9) and does not build a second policy.
-7. **Nothing is synced.** A node has its own `~/.wth`: config, secrets
+7. **Nothing is synced.** A node has its own `~/.theuth`: config, secrets
    vault, skills, MCP servers, knowledge, sessions. The service installer creates
-   the skeleton (`first_run`) and the user runs `wth --secret-set anthropic`
+   the skeleton (`first_run`) and the user runs `t --secret-set anthropic`
    over the same ssh session that ran the installer (37 §3.9). Rejected for now:
    credential/skill sync over link — a real want, a separate doc when
    someone has three nodes (§15).
@@ -86,11 +86,11 @@ through the same relay, with one pairing per machine, not one per
 (machine, device).
 
 **What already works with zero code, and why it is not enough.** An
-`agents.yaml` entry `remote: { command: ssh, args: [box, wth, --acp] }`
+`agents.yaml` entry `remote: { command: ssh, args: [box, theuth, --acp] }`
 makes `spawn_subagent{agent: "remote"}` run a child on `box` today (06
-§3.1; `wth --acp` is a full harness on stdio). It needs ssh keys and an
+§3.1; `t --acp` is a full harness on stdio). It needs ssh keys and an
 inbound port on the box, gives no presence, no UI sessions, no pairing UX,
-and the child's `wth --acp` is a second process with its own MCP servers
+and the child's `t --acp` is a second process with its own MCP servers
 and no view in the box's `/sessions` (06 §4.2). Nodes are the relay path for
 that entry plus the three things it cannot do.
 
@@ -98,16 +98,16 @@ that entry plus the three things it cannot do.
 
 ### 2.1 Binary and plugins
 
-- `crates/wth/src/main.rs:19-65`: one-shots are clap flags with
+- `crates/theuth/src/main.rs:19-65`: one-shots are clap flags with
   `conflicts_with_all` (`--link-signal`, `--slack-manifest`, `--slack-setup`,
   `--acp`); `--headless` implies `--serve`. `:284-341`: three plugin vectors
   (link-signal, acp, default); `rpc::RpcPlugin` is pushed when
   `serve || headless`. `first_run(data_dir, config_path)` (`:176-218`) creates
-  the skeleton and never overwrites. `wth subprocess` is the Python worker
+  the skeleton and never overwrites. `t subprocess` is the Python worker
   (08 §9) — the only argv shape that is not a flag.
 - `runtime::write_config_value(path, section, key, value)` persists one key
-  (31 §2.1). `WTH_LAUNCH=1` is the rc-file guard marker 18 §4 established;
-  nothing in `wth` reads it.
+  (31 §2.1). `THEUTH_LAUNCH=1` is the rc-file guard marker 18 §4 established;
+  nothing in `theuth` reads it.
 - `agent/src/user.rs:31-83`: `UserSink` trait, `UserChannels` actor
   (`"user"`), `RegisterUserSink(Arc<dyn UserSink>)` — a plugin above `agent`
   hands `agent` a trait object at start (24 §3). `signal/src/lib.rs:368`,
@@ -137,7 +137,7 @@ that entry plus the three things it cannot do.
   returns**. `:74-190` `connect` is `Agent.builder()…connect_with(Stdio::new(),
   …)`: handlers for `initialize`, `session/new`, `session/load`,
   `session/prompt`, `session/cancel`, `session/list`; `initialize` advertises
-  `loadSession: true`, `embeddedContext`, `image`. The wth `SessionId`
+  `loadSession: true`, `embeddedContext`, `image`. The theuth `SessionId`
   string *is* the ACP session id (06 §8.12).
 - 06 §8.5: `acp` is a library with no dependency on `agent` or `tools`; the
   `AcpChild` actor lives in `agent` so it can reach the store and
@@ -155,7 +155,7 @@ that entry plus the three things it cannot do.
   parses once. 31 §4.5: 64 conns per harness on the relay, 16
   `link.max_devices`, one pending pairing per harness, 5 min, single use.
 - 31 §6.2 conn task: handshake → records → `methods.raw_json_request` per
-  request. 31 §6.6: `wth --link` = RPC client of the local daemon
+  request. 31 §6.6: `t --link` = RPC client of the local daemon
   (`rpc.listen` + `<data_dir>/token`, jsonrpsee `ws-client`) that calls
   `link_pair`, prints QR + key, waits for `LinkPaired`, exits.
 - 31 §7.2–7.4: device identity is one X25519 static per install; harness
@@ -175,13 +175,13 @@ that entry plus the three things it cannot do.
 ## 3. Shape
 
 ```
- parent (wth)                                                      node (wth --headless, service)
+ parent (theuth)                                                      node (t --headless, service)
  ┌────────────────────────────────┐   wss /h/<node_id>   relay   ┌──────────────────────────────┐
  │ nodes plugin                   │ ───── control conn ───────── │ link plugin (31, unchanged   │
  │  nodes.yaml                    │      mode 0: Api             │  except mode byte)           │
  │  dial(node) → Noise IK init.   │ ───── acp conn per child ─── │  mode 0 → raw_json_request   │
  │  jsonrpsee client (info,       │      mode 1: ACP             │  mode 1 → rpc::acp::serve    │
- │   link_pair, link_revoke_…)    │                              │  devices.yaml: {parent: wth, │
+ │   link_pair, link_revoke_…)    │                              │  devices.yaml: {parent: theuth, │
  │  RegisterNode ──► agent        │                              │                phone, laptop}│
  │ agent: AcpChild(Dial) ◄────────┼──── session/update ───────── │  sessions.sqlite (the        │
  │ rpc: list/add/remove/rename/   │                              │   children live here)        │
@@ -195,7 +195,7 @@ Deliverables:
 
 | part | where | kind | depends on |
 |---|---|---|---|
-| service installer | `crates/wth/src/service.rs` (+ two flags) | bin code | `link` (the `--link` step), `runtime::write_config_value` |
+| service installer | `crates/theuth/src/service.rs` (+ two flags) | bin code | `link` (the `--link` step), `runtime::write_config_value` |
 | ACP over a link conn | `crates/link` (mode byte, conn dispatch), `crates/rpc/src/acp.rs` (`serve(transport)`) | amendments | 31 |
 | nodes plugin | `crates/nodes/` | plugin (00 §4; `docs/plugins.md`) | `runtime`, `link` (identity, Noise, frames, dial), `acp` (`Dialer`), `agent` (`RegisterNode`), `jsonrpsee` (core client), `tokio-tungstenite`, `snow` |
 | `Api` additions + bindings | `crates/rpc` | amendments | `nodes` |
@@ -205,7 +205,7 @@ Deliverables:
 ### 3.1 Dependency order (amends 31 §3)
 
 ```
-runtime ← tools ← knowledge ← agent ← { signal, slack, link, nodes } ← rpc ← tui ← wth
+runtime ← tools ← knowledge ← agent ← { signal, slack, link, nodes } ← rpc ← tui ← theuth
                                                     ▲        │
                                                     └────────┘  nodes → link (identity, dial, frames)
 ```
@@ -215,7 +215,7 @@ runtime ← tools ← knowledge ← agent ← { signal, slack, link, nodes } ←
 `raw_json_request` and, now, the ACP server — arrives as a message from
 `rpc::RpcPlugin::start` (after `serve`, on a spawned task:
 `rt.lookup_when::<link::LinkActor>(LINK_ACTOR)` then `tell`). The
-`MethodsFactory` that 31's build first threaded through `wth/main.rs` is
+`MethodsFactory` that 31's build first threaded through `theuth/main.rs` is
 deleted: that was the binary handing one plugin another's handle (00 §1.4).
 
 ```rust
@@ -246,14 +246,14 @@ The parent's device static is `<data_dir>/link/identity` — the same 32
 bytes 31 §4.1 uses as its harness static. Its device id on every node is
 therefore `base64url(pub)[..8]`, the same string 31 shows the parent's own
 devices for *their* keys. Pairing (`IKpsk2`, `PairHello { name: link.name
-or hostname, platform: "wth" }`) and sessions (`IK`) are byte-identical to
+or hostname, platform: "theuth" }`) and sessions (`IK`) are byte-identical to
 a phone's; `snow` plays the initiator (31 already links it for the
-responder). Prologue `"wth-link-1" ‖ node_id`.
+responder). Prologue `"theuth-link-1" ‖ node_id`.
 
 ### 4.2 Conn mode
 
 ```
-Noise_IK_25519_AESGCM_SHA256       prologue = "wth-link-1" ‖ harness_id
+Noise_IK_25519_AESGCM_SHA256       prologue = "theuth-link-1" ‖ harness_id
 → e, es, s, ss          payload: mode:u8 | empty          (31: empty)
 ← e, ee, se             payload: SessionHello { name, version }
 ```
@@ -302,11 +302,11 @@ the 31 §6.5 QR card for five minutes — harmless and true.
 
 ## 5. Node side
 
-### 5.1 `wth --install-service`
+### 5.1 `t --install-service`
 
 ```
-wth --install-service [--relay <wss url>] [--name <display name>] [--no-pair]
-wth --uninstall-service
+t --install-service [--relay <wss url>] [--name <display name>] [--no-pair]
+t --uninstall-service
 ```
 
 Both conflict with every other mode flag (`headless`, `serve`, `acp`,
@@ -320,31 +320,31 @@ Both conflict with every other mode flag (`headless`, `serve`, `acp`,
    user's shell from `passwd` (18 §2; fallback `/bin/zsh` on macOS,
    `/bin/sh -l -c` elsewhere), and `data_dir`:
 
-   **macOS** — `~/Library/LaunchAgents/wth.plist`:
+   **macOS** — `~/Library/LaunchAgents/theuth.plist`:
 
    ```xml
-   Label            wth
-   ProgramArguments [<shell>, -l, -i, -c, exec '<wth>' --headless --data-dir '<data_dir>']
-   EnvironmentVariables { WTH_LAUNCH: 1, TERM: xterm-256color }
+   Label            theuth
+   ProgramArguments [<shell>, -l, -i, -c, exec '<theuth>' --headless --data-dir '<data_dir>']
+   EnvironmentVariables { THEUTH_LAUNCH: 1, TERM: xterm-256color }
    RunAtLoad true · KeepAlive { SuccessfulExit: false } · ThrottleInterval 5
    StandardOutPath / StandardErrorPath  <data_dir>/logs/service.log
    ```
 
-   `launchctl bootout gui/$UID/wth` (ignore "not found") then `launchctl
+   `launchctl bootout gui/$UID/theuth` (ignore "not found") then `launchctl
    bootstrap gui/$UID <plist>`. A LaunchAgent runs while the user is
    logged in; the installer prints one line saying so and pointing at
    System Settings › Users › Login Options › automatic login for a Mac
    nobody sits at.
 
-   **Linux** — `~/.config/systemd/user/wth.service`:
+   **Linux** — `~/.config/systemd/user/theuth.service`:
 
    ```ini
    [Unit]
-   Description=wth harness
+   Description=theuth harness
    After=network-online.target
    [Service]
-   ExecStart=<shell> -l -i -c "exec '<wth>' --headless --data-dir '<data_dir>'"
-   Environment=WTH_LAUNCH=1 TERM=xterm-256color
+   ExecStart=<shell> -l -i -c "exec '<theuth>' --headless --data-dir '<data_dir>'"
+   Environment=THEUTH_LAUNCH=1 TERM=xterm-256color
    StandardInput=null
    Restart=on-failure
    RestartSec=2
@@ -354,7 +354,7 @@ Both conflict with every other mode flag (`headless`, `serve`, `acp`,
 
    `loginctl enable-linger $USER` (so the user manager runs without a
    login session; prints the `sudo` command if it fails), `systemctl --user
-   daemon-reload`, `systemctl --user enable --now wth`.
+   daemon-reload`, `systemctl --user enable --now theuth`.
 
    Why `-l -i` without a pty: 18's argument (the daemon must have the
    environment a terminal would: `PATH` for `npx`/`uvx` MCP servers,
@@ -365,7 +365,7 @@ Both conflict with every other mode flag (`headless`, `serve`, `acp`,
    cosmetic, noted so nobody "fixes" it. An rc file that waits for input
    fails fast on `StandardInput=null` instead of hanging (18 §4).
    `ponytail:` if a real rc file needs a real tty, the upgrade is the unit
-   running `wth --headless --via-shell` which re-execs itself through
+   running `t --headless --via-shell` which re-execs itself through
    `portable-pty` (22) exactly as 18 §2 — kept out until a log shows it.
 
    Anything else (FreeBSD rc.d, OpenRC, Windows): print the exact
@@ -378,21 +378,21 @@ Both conflict with every other mode flag (`headless`, `serve`, `acp`,
    in-process (same function), with this banner before the QR:
 
    ```
-   service installed: launchd gui/501/wth · relay relay.wth.rwx.dev · name build-box
+   service installed: launchd gui/501/theuth · relay relay.theuth.io · name build-box
    pair this harness to your main one — on it, run  /nodes add <key>
    or paste the key in Settings › Nodes › Add node, or scan with the phone app:
    <QR>
    <key>
-   waiting for the pairing… (Ctrl+C to skip; later: wth --link)
+   waiting for the pairing… (Ctrl+C to skip; later: t --link)
    ```
 
-   `LinkPaired { device.platform == "wth" }` → `paired to Studio Mac as a
+   `LinkPaired { device.platform == "theuth" }` → `paired to Studio Mac as a
    node`; a phone or laptop pairing instead → `paired: Sky's iPhone` (a
    device of this harness, 31) and keep waiting for a parent until the
    pairing expires. Exit 0.
 
 `--uninstall-service`: `launchctl bootout` + remove the plist, or
-`systemctl --user disable --now wth` + remove the unit + `daemon-reload`.
+`systemctl --user disable --now theuth` + remove the unit + `daemon-reload`.
 `data_dir`, `link/identity`, `devices.yaml` untouched — the harness can be
 run by hand or re-installed and every pairing survives.
 
@@ -401,14 +401,14 @@ The unit's non-zero-exit restart policy (`KeepAlive.SuccessfulExit false`,
 exits `75` to come back on the new binary. Do not change it to restart on
 any exit.
 
-A node has no TUI, so its provider key is entered with `wth --secret-set
+A node has no TUI, so its provider key is entered with `t --secret-set
 anthropic` on the box (value from the tty with echo off, or piped on
 stdin; 37 §3.9); the running service sees it on its next model call.
 
 ### 5.2 What the node keeps
 
 Nothing new on disk. `devices.yaml` has a `{ name: "Studio Mac", platform:
-"wth" }` row; `/link` and Settings › Link show it with the others; revoking
+"theuth" }` row; `/link` and Settings › Link show it with the others; revoking
 it there unpairs the parent (its control conn and every ACP conn get
 `CLOSE 3`, the parent marks the node `revoked`). Remote children are rows in
 the node's `sessions.sqlite` with `cwd` set (06 §8.10), so the user who
@@ -472,7 +472,7 @@ pub enum NodeEvent {
 ```
 
 `Add`: parse the string; dial `wss://<host>/h/<Hs>`; `IKpsk2` with
-`PairHello { name: link.name or hostname, platform: "wth" }`; on
+`PairHello { name: link.name or hostname, platform: "theuth" }`; on
 `PairAccept` write the row (name from the accept unless `name` given), open
 the control conn (§6.3), publish `NodeAdded`. Errors are 31 §7.5's three
 (expired/used key, harness offline, relay unreachable) plus "this key is
@@ -531,7 +531,7 @@ pub struct Connect { pub transport: Transport, pub cwd, pub resume, pub stderr_l
 24 §3):
 
 ```rust
-pub struct RegisterNode { pub name: String, pub describe: String /* "linux · wth 0.4.1" */, pub dialer: Arc<dyn acp::Dialer> }
+pub struct RegisterNode { pub name: String, pub describe: String /* "linux · theuth 0.4.1" */, pub dialer: Arc<dyn acp::Dialer> }
 pub struct UnregisterNode { pub name: String }
 ```
 
@@ -578,8 +578,8 @@ names.
 
 ```
  nodes · 2 paired
- ● build-box   linux   wth 0.4.1   2 running   paired 3d ago
- ○ mac-mini    macos   wth 0.4.1   seen 2h ago
+ ● build-box   linux   theuth 0.4.1   2 running   paired 3d ago
+ ○ mac-mini    macos   theuth 0.4.1   seen 2h ago
  ─────────────────────────────────────────────
  a add (paste key)   i invite (QR for a phone)   r rename   x remove   Esc
 ```
@@ -588,7 +588,7 @@ names.
 31 §6.5 QR card with the node's name in the header (a phone that scans it
 pairs with the node directly). Driving a node's session *from this TUI* is
 not built: the TUI's `Api` handle is in-process and its events are a bus
-subscription (00 §8); `ssh box wth` is the terminal answer and the desktop
+subscription (00 §8); `ssh box theuth` is the terminal answer and the desktop
 and phone are the switcher answer (§8). Revisit when a transcript shows a
 user wanting it.
 
@@ -598,7 +598,7 @@ user wanting it.
 external harnesses:
 
 ```
-Nodes (wth on other machines, same tools, their own cwd and credentials): build-box — linux · wth 0.4.1; mac-mini — macos · offline
+Nodes (theuth on other machines, same tools, their own cwd and credentials): build-box — linux · theuth 0.4.1; mac-mini — macos · offline
 ```
 
 Names share one namespace with `agents.yaml` so the model has one field to
@@ -652,9 +652,9 @@ A tab beside Settings › Link, available when the active harness answers
 ```
  Nodes
  Machines this harness and your devices can run sessions on.
- ● build-box   linux   wth 0.4.1   2 running   paired 3 d ago   [QR] [rename] [remove]
+ ● build-box   linux   theuth 0.4.1   2 running   paired 3 d ago   [QR] [rename] [remove]
  ○ mac-mini    macos   seen 2 h ago                              [QR] [rename] [remove]
- Add node   [ paste the key printed by `wth --install-service` ]  [Add]
+ Add node   [ paste the key printed by `t --install-service` ]  [Add]
 ```
 
 Phone: the `/link` route (31 §7.5) already parses a scanned or opened
@@ -686,7 +686,7 @@ user's devices from it — they paired with it themselves; the copy says so.
 |---|---|
 | Parent compromised | every node is reachable as a device: same blast radius as the parent's own `data_dir` plus each node's. Stated in Settings › Nodes. Node-side mitigation is 31's: revoke the parent in the node's `/link` |
 | Node compromised | it sees the tasks the parent sends it and can put text in `<subagent_result>` — untrusted content (28), as every child's result is. It cannot reach the parent's `Api`: the parent is the initiator, the node has no static of the parent's devices |
-| Stolen pairing key from a terminal / scrollback | 5-min TTL, single use (31 §4.5); the node's TUI/`/link` shows who paired (`platform: wth`, name); revoke there |
+| Stolen pairing key from a terminal / scrollback | 5-min TTL, single use (31 §4.5); the node's TUI/`/link` shows who paired (`platform: theuth`, name); revoke there |
 | A device coerces `invite_node` to reach a node | only a device already paired to the parent can call it, and the parent could run anything on the node anyway; the invite grants the same |
 | Relay learns the fleet shape | it sees that `/h/<node>` has a device whose IP is the parent's and sockets from the same phones — 31 §5.6's disclosure, now "your devices, this harness and its nodes" |
 | A node's own `link.confirm` (31 §10, optional) | applies to the parent's pairing too: the node's operator clicks Allow on the node; the installer prints "confirm on the node" |
@@ -709,8 +709,8 @@ After 31 §12 is green. Each ends with a runnable check.
 |---|---|---|
 | 1 | 31 amendments: `link` below `rpc`, `SetDispatch`, mode byte, `Info.platform` | 31 step-2 bun script unchanged (empty payload) passes; a conn with mode `7` gets `CLOSE 3`; `link_status` over the wire still types |
 | 2 | `rpc::acp::serve(transport)`, `Relay` per process with per-session connections, `link` mode 1 → `serve` | the bun script opens mode 1: `initialize` → `session/new` → `session/prompt` streams `agent_message_chunk`, a `shell` call raises `request_permission`, `allow_once` runs it, `end_turn`; a second mode-1 conn from the same device runs a second session concurrently and each conn only sees its own updates; the node's `/sessions` lists both |
-| 3 | `crates/nodes`: identity reuse, `Add` (`IKpsk2` initiator), control conn + presence, jsonrpsee client over records, `nodes.yaml`, `RegisterNode`/`Dialer`, `acp::Transport`, `Api` additions, bindings | two headless `wth` on one machine (two data dirs, two ports) through a local relay: parent `add_node(key)` → `NodeAdded`; `spawn_subagent{agent:"node-b", task:"print the hostname and list ~"}` → child rows `(node-b)` in the parent's `/agents`, `ApprovalRequested` on the parent, allow, `<subagent_result>` with node-b's home listing; `send_message` follow-up answered from context; `kill` node-b mid-turn → `TurnFinished error` on the parent, `NodeOnline false`; restart → `NodeOnline true`, `send_message` respawns via `session/load`; revoke the parent in node-b's `devices.yaml` → `NodeRevoked`; `METHODS` ⊂ `methods.json` test |
-| 4 | `wth --install-service` / `--uninstall-service` (launchd, systemd), `first_run`, config writes, port wait, `--link` step | over ssh to a Linux box: `wth --install-service --relay wss://…` prints the banner and QR; `/nodes add <key>` on the parent → `paired to Studio Mac as a node` on the box; `sudo reboot` → node back online with no login; a child spawned there sees the rc-file `PATH` (an `npx` MCP server in the node's `mcp/` connects); `--uninstall-service` → unit gone, `devices.yaml` intact, `wth --headless` by hand re-pairs nothing. Same on a Mac mini with automatic login |
+| 3 | `crates/nodes`: identity reuse, `Add` (`IKpsk2` initiator), control conn + presence, jsonrpsee client over records, `nodes.yaml`, `RegisterNode`/`Dialer`, `acp::Transport`, `Api` additions, bindings | two headless `theuth` on one machine (two data dirs, two ports) through a local relay: parent `add_node(key)` → `NodeAdded`; `spawn_subagent{agent:"node-b", task:"print the hostname and list ~"}` → child rows `(node-b)` in the parent's `/agents`, `ApprovalRequested` on the parent, allow, `<subagent_result>` with node-b's home listing; `send_message` follow-up answered from context; `kill` node-b mid-turn → `TurnFinished error` on the parent, `NodeOnline false`; restart → `NodeOnline true`, `send_message` respawns via `session/load`; revoke the parent in node-b's `devices.yaml` → `NodeRevoked`; `METHODS` ⊂ `methods.json` test |
+| 4 | `t --install-service` / `--uninstall-service` (launchd, systemd), `first_run`, config writes, port wait, `--link` step | over ssh to a Linux box: `t --install-service --relay wss://…` prints the banner and QR; `/nodes add <key>` on the parent → `paired to Studio Mac as a node` on the box; `sudo reboot` → node back online with no login; a child spawned there sees the rc-file `PATH` (an `npx` MCP server in the node's `mcp/` connects); `--uninstall-service` → unit gone, `devices.yaml` intact, `t --headless` by hand re-pairs nothing. Same on a Mac mini with automatic login |
 | 5 | TUI `/nodes` | add, rename, remove, invite (QR scannable by the phone → the phone lists the node as a harness) |
 | 6 | UI: `parent` in IDB, nested switcher, auto-pair, Settings › Nodes, phone `/link` choice, revoke cascade | desktop connected to the parent shows `build-box` under it within 2 s of first connect with no click; switch → node's sessions; new session streams; switch back with no event bleed (31 step 4's fixture); phone scans a node's QR → "as a node of Studio Mac" → row appears on the desktop too; revoke the phone on the parent → the phone loses the parent *and* the node (`revoked by Studio Mac`) |
 | 7 | docs: 00 §10/§12, 31 §3/§4.3/§6.2 amendments, 06 §4.2 note, README `## Nodes` (install on a server in three lines) | docs and tree agree |
@@ -720,7 +720,7 @@ After 31 §12 is green. Each ends with a runnable check.
 Shipped in three commits after 31: foundations (`link` `SetDispatch` +
 mode byte + `initiator`, `rpc::acp::serve_records` + per-connection `Relay`,
 `acp::Transport::{Process, Dial}` + `Dialer`, `agent::RegisterNode`,
-`wth --install-service`/`--uninstall-service`), then `crates/nodes` + the
+`t --install-service`/`--uninstall-service`), then `crates/nodes` + the
 five `Api` methods + TUI `/nodes` + device UI, then docs. Deviations from
 the design text are listed under §13.
 
@@ -729,15 +729,15 @@ Gates: `cargo clippy --workspace --all-targets -D warnings`, `cargo test
 `Info.platform`, five method names), UI `tsc -b`, vitest 16 files / 95
 tests, `vite build` — all green.
 
-Verified live (one Mac, local `wth-relay --listen 127.0.0.1:8787 --web`,
-two headless `wth` on separate data dirs, `claude-haiku-4-5`):
+Verified live (one Mac, local `theuth-relay --listen 127.0.0.1:8787 --web`,
+two headless `theuth` on separate data dirs, `claude-haiku-4-5`):
 
 - **Step 1/2**: the 31 device script (`link-smoke.ts`) still pairs and
   gets `hello:` + `list_sessions:` after `SetDispatch` replaced the
   `main.rs` factory. Mode 1 is exercised end to end by step 3 (the parent's
   `Dialer` opens it).
 - **Step 3**: `add_node(key)` from node-b's `link_pair` → `NodeAdded`,
-  `online: true` within 3 s; node-b's `link_status` lists `parent-a / wth /
+  `online: true` within 3 s; node-b's `link_status` lists `parent-a / theuth /
   online`. `invite_node` returned a fresh node pairing. `send_input` on the
   parent → the model called `spawn_subagent{agent: "node-b"}` →
   `SubagentSpawned`, child `TurnStarted { model: "node-b" }`; node-b's own
@@ -749,17 +749,17 @@ two headless `wth` on separate data dirs, `claude-haiku-4-5`):
   lived. `link_revoke_device(parent)` on node-b → parent saw `NodeOnline
   false` then `NodeRevoked`, row `online: false, revoked: true`;
   `remove_node` emptied the list. `METHODS ⊂ methods.json` unit test.
-- **Step 4** (macOS only): `wth --install-service --no-pair --relay … --name
+- **Step 4** (macOS only): `t --install-service --no-pair --relay … --name
   svc-test` on a scratch data dir wrote `link.{enabled,relay,name}`, wrote
-  `~/Library/LaunchAgents/wth.plist` (`/bin/zsh -l -i -c exec … --headless`,
-  `WTH_LAUNCH=1`, `service.log`), bootstrapped `gui/501/wth` (launchctl
+  `~/Library/LaunchAgents/theuth.plist` (`/bin/zsh -l -i -c exec … --headless`,
+  `THEUTH_LAUNCH=1`, `service.log`), bootstrapped `gui/501/theuth` (launchctl
   `state = running`), the relay's `uplinks` went 2 → 3 within 2 s; exit 0.
   `--uninstall-service` booted it out, removed the plist, uplinks 3 → 2,
   `link/identity` intact. Not exercised: the pairing step of the installer
   (`--no-pair`), Linux/systemd, reboot survival, the rc-file `PATH` check
   under launchd (18 §6 covered the same exec line).
 - **Step 5**: TUI on a pty: `/nodes add <key>` → `paired node node-b`,
-  header badge `nodes ●1`, `/nodes` menu row `● node-b macOS wth 0.1.0
+  header badge `nodes ●1`, `/nodes` menu row `● node-b macOS theuth 0.1.0
   paired 4s ago`, `i` → `⌁ node invite · node-b` QR card counting down
   from 4:59. Rename/remove verbs unit-tested only.
 - **Step 6**: browser container (relay-served build, fresh IndexedDB):
@@ -768,7 +768,7 @@ two headless `wth` on separate data dirs, `claude-haiku-4-5`):
   `Chrome / web`, IDB `harnesses` had `node-b { parent: <parent id> }`;
   switching to node-b showed the header `node-b · via parent-a` and the
   node's session list (the remote child's session); Settings › Nodes on the
-  parent rendered `● node-b · macos · wth 0.1.0 · paired 9m ago` with QR /
+  parent rendered `● node-b · macos · theuth 0.1.0 · paired 9m ago` with QR /
   rename / Remove and the disclosure sentence; on a harness without nodes
   the tab shows the empty-state copy. Not exercised: the phone "as a node
   of" choice (no second pairing string scanned), `pairing failed · retry`,
@@ -793,13 +793,13 @@ revoke-cascade copy on a live revoke.
   beside Link; revoke copy.
 - **06 §3.2/§5**: `Connect.transport: Transport` (was `config`); `Dialer`;
   `probe(Transport)`. **06 §4.2**: the in-daemon ACP server over a link
-  conn is the "shim" — `wth --acp` on stdio stays for editors. **06 §3.8**:
+  conn is the "shim" — `t --acp` on stdio stays for editors. **06 §3.8**:
   MCP back-channel note unchanged (a remote child still cannot ask its
   parent).
 - **00 §4**: `RegisterNode` joins `RegisterUserSink` as the second
   "higher plugin hands `agent` a trait object" message; the sentence about
   it names both. **00 §10**: `nodes/  plugin: paired remote harnesses,
-  control conns, dial transport for ACP children (32)`; `wth/src/service.rs`.
+  control conns, dial transport for ACP children (32)`; `theuth/src/service.rs`.
   **00 §12**: row `nodes (32)`, §11 here as its check column. **00 §2**: a
   second sentence after "How a GUI starts the daemon": how a server does
   (`--install-service`, 32 §5.1).
@@ -810,13 +810,13 @@ revoke-cascade copy on a live revoke.
   proxies into `agent` as a harness source" → plugin (`nodes`); note that
   a plugin needing a handle only a higher plugin can build receives it as
   a message (`SetDispatch`, `RegisterNode`), never by depending upward.
-- **README**: `## Nodes` — `ssh box; curl … | sh; wth --install-service;
+- **README**: `## Nodes` — `ssh box; curl … | sh; t --install-service;
   paste the key into /nodes add`.
 
 **Deviations** (the tree over the text above; §12 records the smoke):
 
 - **§3.1 / 31 §6.2**: `SetDispatch { methods, acp }` also carries the ACP
-  server and replaces the `MethodsFactory` `wth/main.rs` threaded through
+  server and replaces the `MethodsFactory` `theuth/main.rs` threaded through
   31's first build (`link::types`, `rpc/src/lib.rs`).
 - **§4.3, §5.3**: the duplex is not `AsyncRead`/`AsyncWrite`. `AcpServe`
   is `Fn(Runtime, RecordChannel)`; `RecordChannel` is a pair of `mpsc`
@@ -879,7 +879,7 @@ transport". The decisions, as implemented in `crates/a2a` and
   `spawn_subagent{agent: "<node>"}` and `send_message` to that child exactly
   as for an ACP subprocess; off refuses with the blocker named and does not
   touch the node's conn or its sessions.
-- **A remote wth is an A2A peer only when it publishes exports.** If a node
+- **A remote theuth is an A2A peer only when it publishes exports.** If a node
   operator wants sibling-to-sibling or node-to-parent *model* messaging,
   that node enables `a2a` itself and exports sessions with its own
   credentials, and the parent lists it in `<data_dir>/a2a/peers.yaml` like
@@ -904,7 +904,7 @@ Owed before "as built": a paired node with the parent's communication off
 refuses the spawn and the control conn stays up; with it on, the §12 step-3
 flow repeats unchanged; a node with `a2a.enabled: false` (the installer's
 default) presents no listener, and `link_status` on the node still lists the
-parent as an ordinary `wth` device.
+parent as an ordinary `theuth` device.
 
 ## 14. Rejected
 
@@ -925,14 +925,14 @@ parent as an ordinary `wth` device.
 - **One multiplexed ACP conn per node**: `AcpChild` is one connection per
   child today; conns are cheap and per-child close is per-child
   lifecycle. Noted as the upgrade in §6.5.
-- **A `wth install service` subcommand**: the binary's one-shots are flags;
-  `wth subprocess` is the worker, not a convention. §0.4.
+- **A `theuth install service` subcommand**: the binary's one-shots are flags;
+  `t subprocess` is the worker, not a convention. §0.4.
 - **Running the service through `portable-pty`** (18 §2 verbatim): the pty
   existed so a GUI could show the shell's transcript; a service has a
   journal. Kept as the `ponytail:` upgrade in §5.1.
 - **Syncing secrets, skills, knowledge, MCP entries to nodes**: a real
   want; a node is a harness with a `data_dir` of its own, and the same
-  ssh session that installs it can `wth --secret-set` (37 §3.9). Separate doc
+  ssh session that installs it can `t --secret-set` (37 §3.9). Separate doc
   when it hurts. §0.7, §15.
 - **Fleet-wide session list / search on the parent**: the switcher is per
   harness (31 §7.4's "never two harnesses in one store"); a cross-node
@@ -955,6 +955,6 @@ parent as an ordinary `wth` device.
 | 2 | `Info.platform` values | `std::env::consts::OS` (`macos`, `linux`) |
 | 3 | credential sync (`put_credentials` over the control conn) | not built; separate doc |
 | 4 | children multiplexed on one ACP conn | when a node approaches the relay conn cap |
-| 5 | TUI driving a node's session | not built; `ssh box wth` |
+| 5 | TUI driving a node's session | not built; `ssh box theuth` |
 | 6 | Windows service / FreeBSD rc.d | print the `ExecStart` line, exit 2 |
 | 7 | auto-pair opt-out per device ("show nodes but ask before pairing") | off; a device paired to the parent already trusts it |

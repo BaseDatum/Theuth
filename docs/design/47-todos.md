@@ -44,7 +44,7 @@ safety condition; a three-line `if todos && !running` would not meet it.
 
 ## 1. What exists, and what cannot be reused as proof
 
-### 1.1 wth
+### 1.1 theuth
 
 | Current behavior | Source / consequence |
 |---|---|
@@ -82,7 +82,7 @@ Do **not** transplant its predicate or scheduler. Its todo gate filters out
 watched/acknowledged jobs and does not establish absence of jobless active
 children, all supervised-process completions, or all peer-message wakes.
 `TodoTracker.checkCompletion` also awaits event publication between checking
-eligibility and appending the reminder. wth must not inherit that stale-check
+eligibility and appending the reminder. theuth must not inherit that stale-check
 window. First-message punctuation heuristics and prose question detection are
 not reliable task or pause state either.
 
@@ -509,7 +509,7 @@ Persist updates at the current ACP history boundary and publish after commit.
 Remove the duplicate transient plan-as-`TextDelta` path and replace its
 implementation-pinning test with structured plan behavior coverage.
 
-Do not send wth todo-tool instructions to an external harness or enforce wth
+Do not send theuth todo-tool instructions to an external harness or enforce theuth
 reminders inside its loop: it owns those semantics. The external child's
 activity and result delivery still block the native parent's nudge. Parent and
 child cards never merge lists or mark parent items done on child finish.
@@ -650,7 +650,7 @@ call a running-set heuristic complete.
 
 Keep public `TurnStarted/TurnFinished` semantics for real turns. A same-turn
 reminder adds neither event. Therefore parent result routing, ACP prompt
-completion, `wth -p`, schedule completion, and Signal/Slack turn flushing must
+completion, `theuth -p`, schedule completion, and Signal/Slack turn flushing must
 not observe an artificial finish. Existing jobs/children may still produce
 later normal turns after a scheduling pause; this design does not turn print
 mode or ACP into a forever-waiting session client. Do not retrofit the schedule
@@ -714,7 +714,7 @@ was changed, and no application/UI test is claimed by this document.
 
 A targeted concurrency smoke should exercise real shell/PTY completion and a
 real child wake with an open todo. Capture model calls, notes and public turn
-events. For `wth -p` and ACP, prove an accepted reminder happens before their
+events. For `theuth -p` and ACP, prove an accepted reminder happens before their
 completion boundary. Test actor-mailbox liveness with concurrent ingress and
 activity acknowledgements; a deadlocked gate is not safe completion.
 

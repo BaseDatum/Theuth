@@ -223,7 +223,7 @@ mod desktop {
     fn setup(app: &AppHandle) -> anyhow::Result<()> {
         app.asset_protocol_scope()
             .allow_directory(launch::data_dir(), true)
-            .context("allow WTH_DATA_DIR in asset protocol")?;
+            .context("allow THEUTH_DATA_DIR in asset protocol")?;
         let state_file = app
             .path()
             .app_config_dir()?

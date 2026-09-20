@@ -146,7 +146,7 @@ pub fn build(
         match key(credentials, "brave") {
             Some(k) => out.push(Arc::new(brave::Brave::new(k))),
             None => tracing::warn!(
-                "search-providers: brave needs the `brave` secret (/secrets add or `wth --secret-set brave`); skipped"
+                "search-providers: brave needs the `brave` secret (/secrets add or `t --secret-set brave`); skipped"
             ),
         }
     }

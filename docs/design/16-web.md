@@ -96,7 +96,7 @@ local BM25 — no external API was added.
 
 ## 1. Why
 
-wth has no way to read the web: no search, no URL fetch. Every agent needs
+theuth has no way to read the web: no search, no URL fetch. Every agent needs
 both daily; it is the single biggest hole against oh-my-pi's tool set
 (URL `read`, web search). jarvis built it, then buried a working core
 under a roadmap towards OpenSERP that never landed (§7).
@@ -448,7 +448,7 @@ web:                          # design doc 16 - built-in engines, fetch, tools
   read_chars: 2500            # passage budget per read page (§4.7)
   read_timeout_ms: 25000      # per-page read deadline: obscura needs ~20s on a heavy client-rendered page (rtings.com, measured 2026-09-17); was 8000, §13.17
   feature_max_chars: 600
-  user_agent: "wth/0.1 (+https://github.com/skymoore/wth)"
+  user_agent: "theuth/0.1 (+https://github.com/skymoore/theuth)"
 
 search_providers:             # design doc 16 §3 - external engines; each block's presence enables it
   firecrawl:                  # the one block present by default; inert without the `firecrawl` secret
@@ -467,7 +467,7 @@ only `firecrawl` is on, and only once its secret exists. The built-in engines
 need no block under `search_providers`.
 
 Keys are secrets in the encrypted vault next to the provider keys (37;
-`/secrets add`, Settings › Secrets or `wth --secret-set`), under the names
+`/secrets add`, Settings › Secrets or `t --secret-set`), under the names
 `brave`, `firecrawl`, `github`, `openserp` (hosted only); `search-providers`
 reads them through `secrets::Handle` at start (37 §3.6). No new environment variables; jarvis's
 `JARVIS_USE_SYSTEM_ROOTS` / `JARVIS_EXTRA_CA_CERTS` (`http_tls.rs:14,32`)
@@ -535,7 +535,7 @@ parsing: every external provider returns JSON.
 ## 9. Branding removed
 
 Crate `jarvis-search` → `web`; `DEFAULT_USER_AGENT` (`config.rs:51-52`) →
-`wth/0.1 (+…)` (the binary name is the one permitted product name, 00 §1);
+`theuth/0.1 (+…)` (the binary name is the one permitted product name, 00 §1);
 `JARVIS_*` env vars gone (§6); `from_jarvis_settings` and its tests gone;
 fixture headers and doc comments rewritten. Tool names changed for a
 different reason (§13).
@@ -576,7 +576,7 @@ different reason (§13).
 
 ## 11. Implementation order
 
-Each step leaves `wth` runnable.
+Each step leaves `theuth` runnable.
 
 1. `web` crate: fetch + SSRF + url canonicalisation ported with tests;
    `read_url` registered. Checked: `https://example.com/` as markdown

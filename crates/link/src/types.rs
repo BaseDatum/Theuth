@@ -16,7 +16,7 @@ pub const LINK_ACTOR: &str = "link";
 pub struct LinkConfig {
     /// `false`: nothing dials out; `identity` and `devices.yaml` stay on disk.
     pub enabled: bool,
-    /// Relay WebSocket origin, e.g. `wss://relay.wth.rwx.dev` or `ws://127.0.0.1:8787`.
+    /// Relay WebSocket origin, e.g. `wss://relay.theuth.io` or `ws://127.0.0.1:8787`.
     pub relay: String,
     /// Display name in the pairing string and on devices; `""` → hostname.
     pub name: String,
@@ -28,7 +28,7 @@ impl Default for LinkConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            relay: "wss://relay.wth.rwx.dev".to_owned(),
+            relay: "wss://relay.theuth.io".to_owned(),
             name: String::new(),
             max_devices: 16,
         }

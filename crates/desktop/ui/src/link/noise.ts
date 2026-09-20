@@ -214,5 +214,5 @@ export const handshakeIK = (input: HandshakeInput): Promise<Initiator> => ik(inp
 /** `Noise_IKpsk2_25519_AESGCM_SHA256` initiator (pairing, 31 §4.3); `psk` is the 32-byte pairing secret. */
 export const handshakeIKpsk2 = (input: HandshakeInput, psk: Uint8Array<ArrayBuffer>): Promise<Initiator> => ik(input, psk)
 
-/** `"wth-link-1" ‖ harness id` (ASCII). */
-export const prologue = (harnessId: string): Uint8Array<ArrayBuffer> => new TextEncoder().encode(`wth-link-1${harnessId}`)
+/** `"theuth-link-1" ‖ harness id` (ASCII). */
+export const prologue = (harnessId: string): Uint8Array<ArrayBuffer> => new TextEncoder().encode(`theuth-link-1${harnessId}`)

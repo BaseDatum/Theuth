@@ -60,7 +60,7 @@ pub enum KnowledgeOp {
 )]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct Meta {
-    /// OKF concept id: the path without `.md` (`facts/wth-toolchain`).
+    /// OKF concept id: the path without `.md` (`facts/theuth-toolchain`).
     pub id: String,
     /// Frontmatter `type` (the one conformance requirement).
     #[serde(rename = "type")]

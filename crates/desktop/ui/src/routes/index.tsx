@@ -62,10 +62,10 @@ function CreateOptions({
         <div className="mt-3 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3">
           <p className="font-medium">Private session</p>
           <ul className="mt-1 list-disc space-y-0.5 pl-5 text-fg-secondary">
-            <li>wth keeps this conversation, its artifacts and cost records in memory only; leaving or closing it deletes them.</li>
+            <li>theuth keeps this conversation, its artifacts and cost records in memory only; leaving or closing it deletes them.</li>
             <li>Scratch files it writes are real files in a temporary directory, removed on close (best effort: a crash or snapshot may keep them).</li>
             <li>This is not a sandbox: what a tool explicitly writes, sends or runs outside that directory is not undone.</li>
-            <li>Model providers still see the request; their retention is not controlled by wth.</li>
+            <li>Model providers still see the request; their retention is not controlled by theuth.</li>
             <li>A reload or a lost connection longer than 30 s closes the session.</li>
           </ul>
           <label className="mt-2 flex items-center gap-2">

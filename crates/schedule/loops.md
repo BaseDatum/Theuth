@@ -5,7 +5,7 @@ description: Design a schedule that loops until done — retry loops and supervi
 
 # Loops: a schedule with a stop
 
-A loop is a schedule file in `~/.wth/schedules/<name>.md` with a stop. Nothing
+A loop is a schedule file in `~/.theuth/schedules/<name>.md` with a stop. Nothing
 else is new: the `schedule` tool writes it, `/schedules` lists it, deleting the
 file cancels it. Each fire is one **iteration**: a fresh context, the prompt
 as the whole input, and the run's reply delivered when it ends (unless
@@ -52,7 +52,7 @@ Placeholders to replace: the `until` script (anything that exits 0 when the
 work is finished and 1 with the remaining units on stdout), `max_runs` (a
 ceiling, not a target), `cwd` (the repo), the plan file name (`PORT.md`), the
 unit of work ("one test"), the harness (`agent: opencode` — any name from
-`~/.wth/acp/agents.yaml`, or omit `agent` for a wth subagent), and the body's
+`~/.theuth/acp/agents.yaml`, or omit `agent` for a theuth subagent), and the body's
 verification step ("run the suite yourself").
 
 ## The plan file contract
@@ -111,7 +111,7 @@ every: 0s
 until: cargo test -p agent
 max_runs: 20
 approvals: false
-cwd: ~/Develop/wth
+cwd: ~/Develop/theuth
 quiet: true
 ---
 `cargo test -p agent` is failing (the `<until>` block has the tail). Fix one
@@ -138,7 +138,7 @@ A weekday brief until the incident closes; the check is a script:
 ---
 cron: "0 7 * * 1-5"
 until: test "$(gh issue view 42 --json state -q .state)" = CLOSED
-cwd: ~/Develop/wth
+cwd: ~/Develop/theuth
 ---
 Summarise the last 24 h of activity on issue #42 (`gh issue view 42 --comments`)
 in five lines: what changed, who is blocked, what happens today.

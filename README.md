@@ -1,37 +1,37 @@
-# wth
+# theuth
 
 A single-process AI harness that does things for the user. Plugins are Rust
 crates talking over a typed message bus; any frontend attaches over JSON-RPC.
 Design: [`docs/design/00-architecture.md`](docs/design/00-architecture.md).
 Adding a plugin: [`docs/plugins.md`](docs/plugins.md).
 
-Install without building: `brew install skymoore/tap/wth` (the CLI, macOS
-arm64 and Linux) or `brew install --cask skymoore/tap/wth` (the macOS app).
+Install without building: `brew install skymoore/tap/theuth` (the CLI, macOS
+arm64 and Linux) or `brew install --cask skymoore/tap/theuth` (the macOS app).
 Both keep themselves current ([`docs/design/39-update.md`](docs/design/39-update.md));
-`wth --update` forces a check. Building from source:
+`t --update` forces a check. Building from source:
 
 ```sh
 just setup                 # rustup toolchain; `just toolchain` prints its bin dir
-export ANTHROPIC_API_KEY=… # any genai provider works; default model in config   # or: wth --secret-set anthropic
-just run                   # terminal UI; data dir is ~/.wth (--data-dir / WTH_DATA_DIR relocate it)
+export ANTHROPIC_API_KEY=… # any genai provider works; default model in config   # or: t --secret-set anthropic
+just run                   # terminal UI; data dir is ~/.theuth (--data-dir / THEUTH_DATA_DIR relocate it)
 just run -- --headless     # JSON-RPC only, ws://127.0.0.1:7777 with <data_dir>/token
 just run -- --resume <id>  # reopen a session
 just run -- -p "prompt"    # print mode: stream the reply, exit when the turn ends
 echo "prompt" | just run -- -p   # same, prompt from stdin
 just run -- --link-signal --owner +15551234567   # pair as a Signal linked device (one-shot QR), then run --headless
-just run -- --link             # pair a phone with the running daemon (one-shot QR + key); needs `wth --headless` on this box
-just run -- --install-service --relay wss://relay.example.com   # on a server: run wth --headless as a launchd/systemd user service through your login shell, print the key to pair it to your main harness as a node
+just run -- --link             # pair a phone with the running daemon (one-shot QR + key); needs `t --headless` on this box
+just run -- --install-service --relay wss://relay.example.com   # on a server: run t --headless as a launchd/systemd user service through your login shell, print the key to pair it to your main harness as a node
 just run -- --uninstall-service                                  # remove that unit; the data dir and every pairing stay
-just relay                     # local wth-relay on 127.0.0.1:8787 for link development; `just web-build` builds the browser UI it serves
+just relay                     # local theuth-relay on 127.0.0.1:8787 for link development; `just web-build` builds the browser UI it serves
 just run -- --slack-setup      # create the Slack app from the manifest, verify tokens, write config; then run --headless
 just run -- --slack-manifest   # manual path: print the Slack app manifest for api.slack.com/apps → From a manifest
-just run -- --acp          # Agent Client Protocol on stdio: use wth from Zed/editors (agent_servers: {"wth": {"command": "wth", "args": ["--acp"]}})
+just run -- --acp          # Agent Client Protocol on stdio: use theuth from Zed/editors (agent_servers: {"theuth": {"command": "t", "args": ["--acp"]}})
 just ts                    # TypeScript bindings for the wire types → bindings/
-just helper                # app parser helper (bun build --compile) → packages/apps/dist/wth-app-parser; apps need it beside `wth`
-WTH_APP_PARSER=packages/apps/dist/wth-app-parser just run   # dev run with that helper (release layouts find wth-app-parser-<hash> next to `wth` on their own)
-just install               # release `wth` + `wth-app-parser-<hash>` into ~/.cargo/bin; older helpers stay for any still-running wth
+just helper                # app parser helper (bun build --compile) → packages/apps/dist/theuth-app-parser; apps need it beside `t`
+THEUTH_APP_PARSER=packages/apps/dist/theuth-app-parser just run   # dev run with that helper (release layouts find theuth-app-parser-<hash> next to `t` on their own)
+just install               # release `t` + `theuth-app-parser-<hash>` into ~/.cargo/bin; older helpers stay for any still-running t
 just desktop               # macOS menubar app in dev mode (Tauri + Vite); starts the daemon itself
-just package-macos         # wth.app + dmg; ad-hoc unless WTH_SIGN_IDENTITY / .env.signing
+just package-macos         # theuth.app + dmg; ad-hoc unless THEUTH_SIGN_IDENTITY / .env.signing
 just package-ios           # signed IPA for TestFlight (Apple Distribution)
 just testflight            # upload last IPA to App Store Connect
 just install-macos         # copy the packaged app to /Applications
@@ -42,12 +42,12 @@ BoringSSL (`brew install cmake llvm` / `apt install cmake clang libclang-dev`),
 network on the first build for the prebuilt V8 archive (set
 `RUSTY_V8_ARCHIVE` to a local copy to build offline), and `bun` to *build* the
 app parser helper (`brew install oven-sh/bun/bun`) — the result is a standalone
-executable, so an installed `wth` needs no Node or Bun at run time. The Homebrew
-formula and the self-updater install the helper with `wth`.
+executable, so an installed `t` needs no Node or Bun at run time. The Homebrew
+formula and the self-updater install the helper with `t`.
 
 macOS permissions: `computer_*` needs Screen Recording and Accessibility
-granted to the app that launched wth — your terminal (Ghostty, iTerm,
-Terminal) or wth.app — in System Settings › Privacy & Security. Screen
+granted to the app that launched theuth — your terminal (Ghostty, iTerm,
+Terminal) or theuth.app — in System Settings › Privacy & Security. Screen
 Recording takes effect only after restarting that app; Accessibility is
 immediate. `/computer` shows what is granted.
 
@@ -105,9 +105,9 @@ you ask the agent to find something you did earlier —
 [`docs/design/49-search.md`](docs/design/49-search.md)),
 `link` (drive the harness from a phone or browser through a relay: Noise
 end-to-end encryption, pairing QR, device registry —
-[`docs/design/31-link.md`](docs/design/31-link.md)), `relay` (the `wth-relay`
+[`docs/design/31-link.md`](docs/design/31-link.md)), `relay` (the `theuth-relay`
 binary: a stateless relay that copies encrypted frames between one harness
-and its devices), `schedule` (scheduled runs and loops: one `~/.wth/schedules/<name>.md`
+and its devices), `schedule` (scheduled runs and loops: one `~/.theuth/schedules/<name>.md`
 per schedule with `cron:` / `every:` / `at:` front matter and the prompt as
 body; each fire is a turn in that schedule's own session, the reply is
 delivered to the user; add `until:` (a shell check) or `max_runs:` and it
@@ -117,17 +117,17 @@ unattended, `schedule_done` when the model decides —
 [`docs/design/33-loops.md`](docs/design/33-loops.md)), `artifact`
 (the `show` tool: files the agent makes for you, shown as cards in the chat —
 markdown, code, CSV, images, SVG, PDFs compiled in-process from markdown or
-Typst; a content-addressed store under `~/.wth/artifacts/` —
+Typst; a content-addressed store under `~/.theuth/artifacts/` —
 [`docs/design/35-artifacts.md`](docs/design/35-artifacts.md)), `a2a` (remote
 agents over A2A 1.0 on the official Rust SDK: configured peers and exports,
 off by default — Communication below,
 [`docs/design/50-agent-communication.md`](docs/design/50-agent-communication.md)),
 [`docs/design/35-artifacts.md`](docs/design/35-artifacts.md)), `app` (the
 `app` tool: interactive OpenUI Lang screens the agent publishes as `.openui`
-artifacts and you use on desktop/web; a headless `wth-app-parser-<hash>`
+artifacts and you use on desktop/web; a headless `theuth-app-parser-<hash>`
 helper validates source, `app_*` RPC runs an app's Query/Mutation bindings
 through the tool registry — [`docs/design/46-apps.md`](docs/design/46-apps.md)),
-`tui` (iocraft), `wth` (binary).
+`tui` (iocraft), `theuth` (binary).
 
 Bedrock: select an `amazon-bedrock/<model-id>` through `/model` (cross-region
 inference profile ids such as `us.anthropic.…` work too). Configure AWS normally;
@@ -139,7 +139,7 @@ request; `/aws clear` restores automatic authentication. An explicit profile
 overrides ambient access keys and Bedrock bearer keys. Otherwise a `bedrock_api`
 vault secret, `BEDROCK_API_KEY` or `AWS_BEARER_TOKEN_BEDROCK` wins over the default
 AWS chain. The SDK owns region, credentials and SSO; sign in with
-`aws sso login --profile work` when required. No AWS credentials enter wth's UI.
+`aws sso login --profile work` when required. No AWS credentials enter theuth's UI.
 
 Chat failures (including denied model/region access and expired AWS sessions) stay
 in the TUI and desktop/mobile transcript after the turn finishes, on reload, and
@@ -147,10 +147,10 @@ when reopening the session. They are not sent to the model as conversation text.
 AWS credential failures include SSO login guidance; fix the profile/login or
 model access, then send the request again.
 
-Config (`~/.wth/`, created on first run; details in
+Config (`~/.theuth/`, created on first run; details in
 [`docs/design/01-config-and-subagents.md`](docs/design/01-config-and-subagents.md) §1):
 
-- `config.yaml` — every plugin reads its own section; `WTH_<SECTION>__<KEY>` env overrides. `agent.model` is a models.dev id (`anthropic/claude-sonnet-4-5`); `/model` rewrites that one line in place. The `agent`, `tools`, `secrets`, `knowledge`, `web`, `scrape`, `search_providers`, `browser`, `computer`, `link`, `nodes`, `schedule`, `a2a`, `update`, `artifact`, `app`, `voice` and `slack` sections with their defaults:
+- `config.yaml` — every plugin reads its own section; `THEUTH_<SECTION>__<KEY>` env overrides. `agent.model` is a models.dev id (`anthropic/claude-sonnet-4-5`); `/model` rewrites that one line in place. The `agent`, `tools`, `secrets`, `knowledge`, `web`, `scrape`, `search_providers`, `browser`, `computer`, `link`, `nodes`, `schedule`, `a2a`, `update`, `artifact`, `app`, `voice` and `slack` sections with their defaults:
 
   ```yaml
   agent:
@@ -175,7 +175,7 @@ Config (`~/.wth/`, created on first run; details in
     job_timeout_secs: 1800 # kill the process group after this; result exit="timeout"
     pty_ready_timeout_secs: 30   # `start` readiness wait when `ready` gives no timeout
     ask_timeout_secs: 1800  # `ask_user` gives up (the model sees "no answer") after this
-  secrets:                       # design doc 37; `/secrets`, Settings › Secrets, `wth --secret-set`
+  secrets:                       # design doc 37; `/secrets`, Settings › Secrets, `t --secret-set`
     key_store: auto              # auto | keychain | file — where the vault key lives; auto = keychain when one answers, else <data_dir>/secrets.key (0600) with a warning
     tools: true                  # false: no secret_* tools, no prompt block, `{{secret:…}}` stays literal, nothing is scrubbed; the vault, /secrets and the harness's own keys are unaffected
     request_timeout_secs: 1800   # `secret_request` gives up (the model sees "no answer") after this
@@ -214,21 +214,21 @@ Config (`~/.wth/`, created on first run; details in
     max_edge: 1568                # long edge of a screenshot after logical scaling (17 §1; ~1280 for Anthropic click accuracy)
   link:                           # design doc 31; `/link on`, Settings › Link or hand-edit
     enabled: false                # the uplink dials out; nothing listens
-    relay: wss://relay.wth.rwx.dev   # self-host: your `wth-relay` URL
+    relay: wss://relay.theuth.io   # self-host: your `theuth-relay` URL
     name: ""                      # display name in the QR and on devices; "" → hostname
     max_devices: 16
-  nodes:                          # design doc 32; `/nodes add <key>` pairs, the node ran `wth --install-service`
+  nodes:                          # design doc 32; `/nodes add <key>` pairs, the node ran `t --install-service`
     enabled: true                 # false: no dials, nodes invisible to the model and the UI; nodes.yaml kept
-  schedule:                       # design docs 34 + 33; `~/.wth/schedules/*.md` files, `/schedules` lists them
+  schedule:                       # design docs 34 + 33; `~/.theuth/schedules/*.md` files, `/schedules` lists them
     enabled: true                 # false: no watcher, no actor, no `schedule` tool, no prompt block
     run_timeout_secs: 1800        # a run still going after this is cancelled and reported as `timeout`
-  a2a:                            # design doc 50 §6; remote agents over A2A 1.0. `/a2a` shows status, `/a2a reload` re-reads ~/.wth/a2a/peers.yaml
+  a2a:                            # design doc 50 §6; remote agents over A2A 1.0. `/a2a` shows status, `/a2a reload` re-reads ~/.theuth/a2a/peers.yaml
     enabled: false                # false: no actor, no listener, no card fetch, no credential load. Also needs agent.communication: true
     listen: 127.0.0.1:7780        # loopback only; restart to change
     public_url: null              # the HTTPS base your reverse proxy publishes; without it the listener is plain HTTP for loopback development only
   update:                         # design doc 39; self-update, silent: verify the signature, replace the binary on disk, live at the next start
-    enabled: true                 # false: never checks; `wth --update` still works
-    url: https://s3.rwx.dev/wth/releases/latest.json   # the release manifest; point at a scratch bucket to test
+    enabled: true                 # false: never checks; `t --update` still works
+    url: https://s3.rwx.dev/theuth/releases/latest.json   # the release manifest; point at a scratch bucket to test
   artifact:                       # design doc 35; the `show` tool, `/artifacts` lists a session's
     enabled: true                 # false: no `show` tool, no prompt block, no /artifacts; blobs and index kept
     fonts: []                     # extra directories searched for PDF fonts, besides system fonts and the embedded set
@@ -237,29 +237,29 @@ Config (`~/.wth/`, created on first run; details in
   voice:                          # design docs 43 + 45 + 54; Read-aloud, voice notes and dictation: Pocket TTS, Parakeet and Nemotron streaming STT in the harness
     enabled: true                 # false: no actors, `speak`/`transcribe` answer "not running", the desktop shows no speaker or mic
     voice: peter_yearsley         # a `voices/<name>.safetensors` in the checkpoint directory
-    # model_dir: ~/.wth/models/pocket-tts   # the Pocket TTS checkpoint (weights, tokenizer.model, voices/); this is the default
-    # stt_model_dir: ~/.wth/models/parakeet-tdt  # Parakeet TDT ONNX (encoder-model.onnx, decoder_joint-model.onnx, vocab.txt) plus libonnxruntime.{dylib,so}; this is the default
+    # model_dir: ~/.theuth/models/pocket-tts   # the Pocket TTS checkpoint (weights, tokenizer.model, voices/); this is the default
+    # stt_model_dir: ~/.theuth/models/parakeet-tdt  # Parakeet TDT ONNX (encoder-model.onnx, decoder_joint-model.onnx, vocab.txt) plus libonnxruntime.{dylib,so}; this is the default
     stt_idle_secs: 600            # unload the speech-to-text model (1.7 GB resident) after this long unused; 0 keeps it resident
-    # dictation_model_dir: ~/.wth/models/nemotron-streaming-en  # Nemotron streaming STT ONNX (encoder.onnx, decoder_joint.onnx, tokenizer.model) for live dictation; this is the default
+    # dictation_model_dir: ~/.theuth/models/nemotron-streaming-en  # Nemotron streaming STT ONNX (encoder.onnx, decoder_joint.onnx, tokenizer.model) for live dictation; this is the default
     dictation_max_secs: 300       # a running dictation stops itself after this long (design doc 54)
   slack:
     # owner: U0123456789           # owner-only commands, may click any approval, receives unbound approvals
     allowed: []                    # more user ids; each owns their threads
-    channels: []                   # channel ids where @wth is honoured; empty = DMs only
+    channels: []                   # channel ids where @theuth is honoured; empty = DMs only
     tools: all                     # all | errors | none — task cards per tool call
     reasoning: true                # the quoted reasoning message
     approvals: all                 # all | threads — where approvals for non-Slack sessions go
   ```
 
-  The Python runtime is always on: the worker is the `wth` binary itself (`wth subprocess`, nothing to install); every tool is an `async` function inside the sandbox and state persists across turns.
-- `secrets.vault` — encrypted (XChaCha20-Poly1305) vault of named, versioned secrets; the key lives in the OS keychain (or `secrets.key`, mode 0600, where there is none). Provider keys (genai adapter names: `anthropic`, `openai`, …) beat env vars; a provider with a key, a login, or its env var is "configured": `/model` lists only those. Named OpenAI-compatible gateways (`/provider add`) store their key here under the gateway name; web search keys (`firecrawl`, `brave`, optional `github`) and the Slack tokens (`slack_bot`, `slack_app`) live here too. Add, replace, restore or delete with `/secrets`, Settings › Secrets or `wth --secret-set NAME` (a server over ssh; value read without echo or piped on stdin). The agent uses a secret by name — `{{secret:NAME}}` in any tool argument — and never sees its value; an existing `credentials.yaml` is imported into the vault and removed on first start. See [`docs/design/37-secrets.md`](docs/design/37-secrets.md).
+  The Python runtime is always on: the worker is the `theuth` binary itself (`t subprocess`, nothing to install); every tool is an `async` function inside the sandbox and state persists across turns.
+- `secrets.vault` — encrypted (XChaCha20-Poly1305) vault of named, versioned secrets; the key lives in the OS keychain (or `secrets.key`, mode 0600, where there is none). Provider keys (genai adapter names: `anthropic`, `openai`, …) beat env vars; a provider with a key, a login, or its env var is "configured": `/model` lists only those. Named OpenAI-compatible gateways (`/provider add`) store their key here under the gateway name; web search keys (`firecrawl`, `brave`, optional `github`) and the Slack tokens (`slack_bot`, `slack_app`) live here too. Add, replace, restore or delete with `/secrets`, Settings › Secrets or `t --secret-set NAME` (a server over ssh; value read without echo or piped on stdin). The agent uses a secret by name — `{{secret:NAME}}` in any tool argument — and never sees its value; an existing `credentials.yaml` is imported into the vault and removed on first start. See [`docs/design/37-secrets.md`](docs/design/37-secrets.md).
 - `providers.yaml` — named OpenAI-compatible gateways (`name: { base_url }`); keys live in the vault. `/provider add` writes both and fetches `GET {base}models` into `models.json`.
 - `models.json` — optional, same shape as the bundled catalog; adds or overrides models (local `ollama/...`, private gateways). Refresh the bundled data with `just models`. `/provider add` writes the fetched model list here.
 - `oauth/` — tokens from `/login` (`openai.json` = ChatGPT subscription via the Codex client, `anthropic.json` = Claude Pro/Max via the Claude Code client, `cursor.json` = Cursor subscription, `xai.json` = SuperGrok via the Grok CLI client; `mcp/<server>.json` = MCP servers that answered 401), mode 0600; `/logout <name>` deletes one. See [`docs/design/05-oauth.md`](docs/design/05-oauth.md).
 - `prompt.md` — standing instructions, read into the system prompt on every model call; `/prompt` shows the assembled prompt.
 - `mcp/*.json` — drop in any `mcp.json` (Claude Desktop, Cursor, OpenCode, …); hot-reloaded, tools registered under their own names — a name two servers both offer (four `grafana-*` entries) registers as `<server>__<name>` for each. `${VAR}` and `$(cmd)` in `command`/`args`/`env`/`url`/`headers` expand through your shell when the server starts (`"GITHUB_PERSONAL_ACCESS_TOKEN=$(gh auth token)"`); `{{secret:NAME}}` in the same fields is filled from the vault, so a token never sits in the file. `cwd` (relative → `mcp/`) points a server at a checkout under `mcp/repos/`, where `/mcp add <url>` clones and `/mcp sync` pulls. A remote entry's optional `oauth: {client_id, client_secret, scopes, redirect_uri}` shapes its login; `redirect_uri` (`http://localhost:8765/callback`) is for servers that only accept a registered loopback URL.
 - `mcp/config.yaml` — per-server / per-tool risk override (`read_only` | `mutating` | `destructive` | `off`); `/mcp` edits it (`off` on a server = disabled). An MCP tool's risk defaults to its annotations, and one without annotations prompts by default; set `risk: read_only` on a trusted server once.
-- `acp/agents.yaml` — one entry per external harness (`name: {command, args, env, description}`); `/acp` lists, probes, adds from the registry (`/acp add <id>`), removes. The model spawns one with `spawn_subagent{agent}`; it runs as a child session like a wth subagent.
+- `acp/agents.yaml` — one entry per external harness (`name: {command, args, env, description}`); `/acp` lists, probes, adds from the registry (`/acp add <id>`), removes. The model spawns one with `spawn_subagent{agent}`; it runs as a child session like a theuth subagent.
 - `a2a/peers.yaml` — remote A2A agents and the local sessions published to them (see Communication below); owner-edited, `/a2a reload` validates and applies it atomically. No model tool writes it.
 - `skills/` — `<name>/SKILL.md` directories, loose `*.md`, or git clones (`/skills add <url>`, `/skills sync`); see [`docs/skills.md`](docs/skills.md). `harness.md` is written here on every start: the model's manual for this data dir and its config, loaded on demand.
 - `knowledge/` — the knowledge bundle (OKF markdown, one `<id>.md` per concept, a git repo kept in-process); `knowledge.sqlite` beside it is its search index and can be deleted.
@@ -327,7 +327,7 @@ together with it. See [`docs/design/49-search.md`](docs/design/49-search.md).
 
 Knowledge: durable facts about your machines, projects, accounts and
 decisions, kept across sessions as plain markdown concepts in
-`~/.wth/knowledge/` (Google's Open Knowledge Format — any editor works). The
+`~/.theuth/knowledge/` (Google's Open Knowledge Format — any editor works). The
 agent reads it through `knowledge_search`/`knowledge_get`, and matching
 concepts are surfaced to it as `<knowledge>` hints at the start of a turn and
 every few tool rounds. It is built while you work: after every third turn
@@ -352,7 +352,7 @@ Files the agent makes for you: when the deliverable is a document — a report,
 a table, a chart, a PDF — the agent calls `show` instead of pasting it into
 the reply. `show{path}` displays a file that exists (something it wrote, a
 screenshot, a PDF you dropped); `show{content, name}` writes one under
-`~/.wth/artifacts/` and displays it. The extension decides the rendering:
+`~/.theuth/artifacts/` and displays it. The extension decides the rendering:
 `.md` as markdown, `.csv` as a table, `.png`/`.svg` as a picture, `.pdf`
 compiled from the markdown (or Typst) in `content` into a real PDF — the
 model gets the first page back as an image and fixes what it sees. Every
@@ -383,9 +383,9 @@ immutable `.openui` artifact (`edit: true` merges a patch onto the receipt's
 app's tool bindings are pinned by identity and schema, so a changed MCP
 server shows as unavailable rather than silently rebinding. Where an app
 cannot run — the TUI, Slack, Signal — its card is a receipt plus read-only
-source (`/apps`). Validation runs in `wth-app-parser-<hash>` beside the `wth`
-binary (one immutable file per library hash; `wth --app-parser-hash` prints
-the one this build wants; `WTH_APP_PARSER=<path>` points at another
+source (`/apps`). Validation runs in `theuth-app-parser-<hash>` beside the `theuth`
+binary (one immutable file per library hash; `t --app-parser-hash` prints
+the one this build wants; `THEUTH_APP_PARSER=<path>` points at another
 executable for development); a missing helper fails the `app` call with
 `apps are unavailable on this harness: parser helper missing at …`, a
 wrong-version one with both hashes, and nothing else stops working. Turn off with `app.enabled: false`: no `app`
@@ -394,20 +394,20 @@ written, and existing apps stay readable as source. See
 [`docs/design/46-apps.md`](docs/design/46-apps.md).
 
 Signal: a phone-side frontend that runs only in the daemon. Pair once with
-`wth --link-signal --owner +15551234567` (scan the QR from Signal → Settings
+`t --link-signal --owner +15551234567` (scan the QR from Signal → Settings
 → Linked devices on the phone that owns the account; the daemon is a linked
 device, so that account needs a primary phone — usually a dedicated number
-you text from your own), then `wth --headless`. The owner's number must be
+you text from your own), then `t --headless`. The owner's number must be
 saved as a contact on that primary phone, or its messages arrive without a
 number and are dropped. Texts become turns in a per-contact session (👀
 while working, ✅/🛑/❌ when done; a message mid-turn steers it); the slash
 commands mirror the TUI (`/status`, `/new`, `/sessions`, `/resume <id>`,
 `/model`, `/effort`, `/compact`, `/clear`, `/undo`, `/redo`, `/signal allow <n>`, …); tool approvals arrive as a
 message you answer with 👍/👎 or `/approve <code>`. Inbound files land in
-`~/.wth/signal/inbox/`. See
+`~/.theuth/signal/inbox/`. See
 [`docs/design/09-signal.md`](docs/design/09-signal.md).
 
-Slack: a workspace-side frontend that runs only in the daemon. `wth
+Slack: a workspace-side frontend that runs only in the daemon. `theuth
 --slack-setup` walks through it in one terminal session: it asks for an
 app configuration token (api.slack.com/apps → Your App Configuration
 Tokens), creates the app from the bundled manifest (`--app <A…>` updates an
@@ -416,10 +416,10 @@ existing one instead), prints the install URL, verifies the bot token
 `connections:write`) with `apps.connections.open`, asks for your member id
 (`U…`), and writes `slack_bot`/`slack_app` into the secrets vault and
 `slack.owner`/`slack.enabled` into `config.yaml`; re-running skips every
-step whose token still verifies. The manual path is `wth --slack-manifest`:
+step whose token still verifies. The manual path is `t --slack-manifest`:
 create the app from the printed manifest at api.slack.com/apps, install it,
-store the two tokens with `wth --secret-set slack_bot` / `slack_app` and set `slack.owner` yourself.
-Then `wth --headless`. Each top-level message in the bot's DM (or an `@wth` mention in
+store the two tokens with `t --secret-set slack_bot` / `slack_app` and set `slack.owner` yourself.
+Then `t --headless`. Each top-level message in the bot's DM (or an `@theuth` mention in
 a `slack.channels` channel) opens a session whose replies stream live into
 the thread — one message per turn with task cards for tool calls, a quoted
 reasoning message when `slack.reasoning` is on, and a footer with model,
@@ -427,7 +427,7 @@ tokens and elapsed time; a reply in the thread steers a running turn or
 starts the next one. Tool approvals arrive as a card with Allow/Deny
 buttons (in the session's thread, or in the owner's DM for sessions started
 elsewhere when `slack.approvals: all`). Every subagent gets its own thread
-with a live board of descendants in the parent thread. The `/wth` slash
+with a live board of descendants in the parent thread. The `/theuth` slash
 command carries the sub-commands (replies are ephemeral): `help` — the
 list; `status` — daemon and session state; `sessions` — recent sessions;
 `resume <id>` — bind a new thread to a session; `cancel [id]` — stop the
@@ -453,11 +453,11 @@ kind (markdown, highlighted code, CSV table, image, native PDF) and Copy /
 Save as / Open / Reveal; an app card opens the running app in that panel
 (provisional while its source streams, live once committed); a `▣ N` button
 in the header lists the session's artifacts. It has no Dock icon; the tray icon or
-⌥Space toggles the window. On launch it reuses a running `wth --serve` on
-the configured port, otherwise it starts the bundled `wth --headless` on a
+⌥Space toggles the window. On launch it reuses a running `t --serve` on
+the configured port, otherwise it starts the bundled `t --headless` on a
 pseudo-terminal through your login shell so the daemon has exactly the
 environment a terminal would (design doc 18). `just desktop` runs it
-against `target/debug/wth`; `just package-macos` produces `wth.app`. See
+against `target/debug/theuth`; `just package-macos` produces `theuth.app`. See
 [`docs/design/25-desktop.md`](docs/design/25-desktop.md).
 
 ## Link
@@ -467,8 +467,8 @@ Pair in three steps:
 
 1. Run the daemon with link on: set `link.enabled: true` (or `/link on` in
    the TUI, or the toggle in the desktop app's Settings › Link) and start
-   `wth --headless`.
-2. Show a pairing code: `wth --link` on the same machine, `/link pair` (or
+   `t --headless`.
+2. Show a pairing code: `t --link` on the same machine, `/link pair` (or
    `/link` then `p`) in the TUI, or Settings › Link › Pair a device. It is
    a QR of `https://<relay>/link#1.…` plus the same string as text, valid
    for a few minutes; the secret is in the URL fragment, which the relay
@@ -480,7 +480,7 @@ Pair in three steps:
    `/link` or Settings › Link.
 
 Self-host the relay (the default `link.relay` is the operator's; any
-`wth-relay` works):
+`theuth-relay` works):
 
 ```sh
 just web-build                                                             # browser UI → crates/desktop/ui/dist
@@ -521,7 +521,7 @@ parent, no peer message is delivered. Existing configs without
 spawns. To get subagents back:
 
 ```text
-/communication on always      # writes agent.communication: true; same command in the TUI and desktop, `/wth communication …` on Slack, `/communication …` on Signal
+/communication on always      # writes agent.communication: true; same command in the TUI and desktop, `/theuth communication …` on Slack, `/communication …` on Signal
 /communication off always     # turn it off again for good
 /communication off            # this session and its descendants only; in memory, gone at daemon restart
 /communication on             # undo that; cannot override a global off or an ancestor's off
@@ -530,7 +530,7 @@ spawns. To get subagents back:
 ```
 
 Or set it in `config.yaml` (`agent.communication: true`) or the environment
-(`WTH_AGENT__COMMUNICATION=true`; an env value wins over the file on every
+(`THEUTH_AGENT__COMMUNICATION=true`; an env value wins over the file on every
 start, and the status says where the value came from). The global switch is a
 ceiling, like `/approvals`: a session can opt out under it, never opt in above
 it. Session opt-outs are memory-only and end with the process. Approvals stay
@@ -551,13 +551,13 @@ list; the model never sees another root's title, cwd or transcript.
 listens, dials, fetches a card or loads a credential until `a2a.enabled: true`
 is in `config.yaml` **and** communication is on; the default first-run config
 has the section commented out. Peers and exports are the owner's file
-`~/.wth/a2a/peers.yaml`:
+`~/.theuth/a2a/peers.yaml`:
 
 ```yaml
 peers:
   lab:
     card_url: https://lab.example/agents/research/.well-known/agent-card.json
-    outbound_secret: a2a_lab_outbound   # vault names (`wth --secret-set a2a_lab_outbound`), never the value
+    outbound_secret: a2a_lab_outbound   # vault names (`t --secret-set a2a_lab_outbound`), never the value
     inbound_secret: a2a_lab_inbound
     sessions: ["<local-root-uuid>"]     # local roots whose enabled trees may send to `lab`
     exports: [research]                 # exports `lab` may call
@@ -597,9 +597,9 @@ Give the model, and your phone, another machine. Four lines on the box:
 
 ```sh
 ssh box
-brew install skymoore/tap/wth         # or `just install` (release `wth` + its `wth-app-parser-<hash>` into ~/.cargo/bin), or copy both binaries over
-wth --secret-set anthropic            # a model key, typed without echo (or piped: `printf %s "$KEY" | wth --secret-set anthropic`)
-wth --install-service --relay wss://relay.example.com   # writes a launchd LaunchAgent / systemd user unit running `$SHELL -l -i -c 'exec wth --headless'`, sets link.enabled, starts it, prints a QR + key
+brew install skymoore/tap/theuth         # or `just install` (release `theuth` + its `theuth-app-parser-<hash>` into ~/.cargo/bin), or copy both binaries over
+t --secret-set anthropic            # a model key, typed without echo (or piped: `printf %s "$KEY" | t --secret-set anthropic`)
+t --install-service --relay wss://relay.example.com   # writes a launchd LaunchAgent / systemd user unit running `$SHELL -l -i -c 'exec t --headless'`, sets link.enabled, starts it, prints a QR + key
 ```
 
 On your main harness, `/nodes add <key>` in the TUI (or Settings › Nodes ›
@@ -608,7 +608,7 @@ node of …"). From then on `spawn_subagent{agent: "<node>"}` runs the child
 on that machine over the same encrypted link conn, its approvals land in
 your UI, and the desktop and phone switcher list the node nested under its
 parent — your devices pair with it automatically, so switching to it shows
-its own sessions. `/nodes` lists, renames, removes and invites; `wth
+its own sessions. `/nodes` lists, renames, removes and invites; `theuth
 --uninstall-service` removes the unit and nothing else. The node has its own
-`~/.wth` (config, secrets vault, skills, MCP servers): nothing is synced.
+`~/.theuth` (config, secrets vault, skills, MCP servers): nothing is synced.
 Design: [`docs/design/32-nodes.md`](docs/design/32-nodes.md).

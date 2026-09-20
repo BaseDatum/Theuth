@@ -11,7 +11,7 @@ use snow::resolvers::{CryptoResolver, DefaultResolver};
 /// Noise suite of every pattern (contract §Noise).
 pub const SUITE: &str = "25519_AESGCM_SHA256";
 /// Subprotocol / prologue prefix.
-pub const PROTOCOL: &str = "wth-link-1";
+pub const PROTOCOL: &str = "theuth-link-1";
 
 /// The harness static keypair and its derived id.
 #[derive(Clone)]
@@ -59,7 +59,7 @@ impl Identity {
         }
     }
 
-    /// `"wth-link-1" ‖ harness_id` as bytes.
+    /// `"theuth-link-1" ‖ harness_id` as bytes.
     pub fn prologue(&self) -> Vec<u8> {
         let mut p = Vec::with_capacity(PROTOCOL.len() + self.id.len());
         p.extend_from_slice(PROTOCOL.as_bytes());
@@ -127,7 +127,7 @@ mod tests {
 
     #[test]
     fn identity_round_trips_through_disk() {
-        let dir = std::env::temp_dir().join(format!("wth-link-id-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("theuth-link-id-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let a = Identity::load_or_create(&dir).unwrap();
         let b = Identity::load_or_create(&dir).unwrap();

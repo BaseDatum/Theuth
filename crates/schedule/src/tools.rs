@@ -17,7 +17,7 @@ use crate::file::{self, FileArgs, When};
 
 /// The plugin's system-prompt block (34 §6, 33 §5.2). Static, so it never
 /// busts the system cache.
-pub const PROMPT: &str = "Schedules are markdown files in `~/.wth/schedules/` (front matter `cron:` in local time, \
+pub const PROMPT: &str = "Schedules are markdown files in `~/.theuth/schedules/` (front matter `cron:` in local time, \
 `every:`, or `at:`; body = the prompt). Create or replace one with `schedule`; read them with `read_file`, \
 list with `list_dir`, cancel by deleting the file. An input wrapped in `<schedule name=… at=…>` is a timer \
 firing, not a person: nobody will answer a question, so act on the prompt as written. Your reply is \

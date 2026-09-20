@@ -274,7 +274,7 @@ or too costly; until then it would be a knob set wrong.
 
 ## 8. Implementation order
 
-Each step leaves `wth` green.
+Each step leaves `theuth` green.
 
 1. **`Model.image`.** `models/src/lib.rs` `Model { image: bool }`,
    `bin/trim.rs` keeps `modalities.input`, `ModelInfo.image`, `just models`

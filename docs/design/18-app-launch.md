@@ -8,9 +8,9 @@ the `~/.zshrc` exports and `PATH`).
 
 ## 0. The question in one screen
 
-A Tauri `.app` (or any GUI) needs a running `wth --headless` to talk to over
+A Tauri `.app` (or any GUI) needs a running `t --headless` to talk to over
 `ws://127.0.0.1:<port>` with `<data_dir>/token`. That daemon must be **the
-same process a user gets by opening a terminal and typing `wth`**: same
+same process a user gets by opening a terminal and typing `theuth`**: same
 `PATH`, same exports, same certificates, same tty-dependent variables. Not
 approximately - the daemon spawns tools, MCP servers and `$(gh auth token)`
 subshells (01 §1.4), and each of those resolves binaries and reads variables
@@ -59,17 +59,17 @@ emulator does, minus the window:
    a single command that replaces the shell:
 
    ```
-   $SHELL -l -i -c 'exec wth --headless --data-dir <dir>'
+   $SHELL -l -i -c 'exec t --headless --data-dir <dir>'
    ```
 
    Environment handed to the shell: the app's own (launchd's) plus
-   `TERM=xterm-256color`, `WTH_RPC__LISTEN=127.0.0.1:<port>` (the `WTH_<SECTION>__<KEY>` env
+   `TERM=xterm-256color`, `THEUTH_RPC__LISTEN=127.0.0.1:<port>` (the `THEUTH_<SECTION>__<KEY>` env
    override, 01 §1; the port the app chose). `$SHELL` comes from `passwd`
    (`SHELL` in the launchd env is set from it).
 3. The shell sources exactly what a new terminal tab would (`zsh`:
    `.zshenv`, `.zprofile`, `.zshrc`, `.zlogin`; `bash -l -i`:
    `.bash_profile` and, if it chains it, `.bashrc`; `fish -l -i`:
-   `config.fish`), then `exec` replaces the shell process with `wth`. No
+   `config.fish`), then `exec` replaces the shell process with `theuth`. No
    fork: the daemon **is** the process the shell produced - same
    environment, cwd (`$HOME`), umask, resource limits, controlling tty.
 4. The app drains the pty master into a startup log (rc-file output such
@@ -87,7 +87,7 @@ The daemon then spawns `shell`, MCP servers, ACP harnesses and the 01 §1.4
 ## 3. Lifecycle
 
 - **App quits → daemon exits.** Closing the pty master sends `SIGHUP` to
-  the session; `wth` has no handler for it (`main.rs` selects on `ctrl_c`
+  the session; `theuth` has no handler for it (`main.rs` selects on `ctrl_c`
   only), so the default action terminates it, and the `Jobs` actor's
   process-group kill (14 §2) never runs. Acceptable for v0: the data dir
   holds every session; the next launch resumes. If orphaned tool processes
@@ -96,17 +96,17 @@ The daemon then spawns `shell`, MCP servers, ACP harnesses and the 01 §1.4
   app cleanly should still prefer `shutdown` over RPC first, then close
   the pty.
 - **Daemon dies → app notices** the WebSocket close and the pty EOF; it
-  shows the pty log tail (the shell's or `wth`'s last words) and offers
+  shows the pty log tail (the shell's or `theuth`'s last words) and offers
   relaunch. No auto-restart loop in v0. Still true for a desktop-spawned
   daemon; a service-managed daemon exits `75` after an update when nothing
   is attached and the service manager restarts it (39 §3.4).
-- **Second app instance / a terminal `wth` already running** on the same
+- **Second app instance / a terminal `theuth` already running** on the same
   data dir: nothing enforces one process per data dir today. The app
   should first try the configured port with the token; a live daemon is
   reused, not duplicated. `sessions.sqlite` is WAL and survives two
   writers, but two agents on one bus do not share state.
 - **Port.** The app picks a free loopback port per launch and passes it
-  as `WTH_RPC__LISTEN`; fixed `7777` collides with a terminal daemon.
+  as `THEUTH_RPC__LISTEN`; fixed `7777` collides with a terminal daemon.
 
 ## 4. Hazards, named
 
@@ -124,9 +124,9 @@ All come from running the user's real rc files, which is the point.
 - **An rc file that execs into something else** (`exec tmux`, oh-my-zsh
   `ZSH_TMUX_AUTOSTART=true`). The `-c` command never runs; tmux owns the
   pty. Same timeout, same transcript; the fix is the user's (`[[ -o
-  interactive ]] && [[ -z "$WTH_LAUNCH" ]]` guards are conventional). The
-  app sets `WTH_LAUNCH=1` in the child environment so a user can guard on
-  it; nothing in `wth` reads it.
+  interactive ]] && [[ -z "$THEUTH_LAUNCH" ]]` guards are conventional). The
+  app sets `THEUTH_LAUNCH=1` in the child environment so a user can guard on
+  it; nothing in `theuth` reads it.
 - **Slow rc files.** A terminal user pays it on every tab; the app pays it
   once per launch. Measured 0.4 s here. Not a design problem.
 - **`SHELL` unset or not executable** (deleted Homebrew shell): fall back
@@ -134,7 +134,7 @@ All come from running the user's real rc files, which is the point.
   log.
 - **Windows.** No launchd/rc-file split of this kind; PowerShell profiles
   run for `-Interactive` sessions only. Out of scope until there is a
-  Windows build; the same shape applies (`pwsh -NoExit -Command "& wth"`
+  Windows build; the same shape applies (`pwsh -NoExit -Command "& theuth"`
   on a ConPTY).
 
 ## 5. Rejected
@@ -151,26 +151,26 @@ All come from running the user's real rc files, which is the point.
 - **Ship the desktop app's daemon as a LaunchAgent (`launchd` service) the
   app talks to**: same environment problem, plus lifecycle the user cannot
   see. This rejection is scoped to the app's daemon. The background service
-  this bullet reserved is 32 §5.1 (`wth --install-service`, a node on a
-  server nobody sits at): its unit runs the same `$SHELL -l -i -c 'exec wth
+  this bullet reserved is 32 §5.1 (`t --install-service`, a node on a
+  server nobody sits at): its unit runs the same `$SHELL -l -i -c 'exec t
   --headless'` command line, as §2 requires, with the pty dropped — under a
   service the journal / `<data_dir>/logs/service.log` is the transcript,
   and the systemd unit's `StandardInput=null` makes an rc file that waits
   for input fail fast instead of hanging (§4).
-- **Open a real Terminal/Ghostty window running `wth --headless`**: works,
+- **Open a real Terminal/Ghostty window running `t --headless`**: works,
   visibly clunky, and depends on which terminal is installed and its
   AppleScript/CLI surface.
 - **`$SHELL -l -c` without `-i`**: §1 table.
 - **A user-editable `env:` block in `config.yaml`**: 01 §1 already has
-  `WTH_<SECTION>__<KEY>` overrides for wth's own settings; a general env
+  `THEUTH_<SECTION>__<KEY>` overrides for theuth's own settings; a general env
   block would be the snapshot again.
 
 ## 6. Verification
 
 Stand-in for the app (`python3`, `pty.fork`): environment reduced to
 `HOME`, `USER`, `SHELL=/bin/zsh`, `PATH=/usr/bin:/bin:/usr/sbin:/sbin`,
-`TMPDIR`, `TERM`, `WTH_RPC__LISTEN=127.0.0.1:7802`, `RUST_LOG`; child
-`zsh -l -i -c 'exec target/debug/wth --headless --data-dir /tmp/wth-exp'`.
+`TMPDIR`, `TERM`, `THEUTH_RPC__LISTEN=127.0.0.1:7802`, `RUST_LOG`; child
+`zsh -l -i -c 'exec target/debug/t --headless --data-dir /tmp/theuth-exp'`.
 After 20 s, `ps eww -p <pid>` on the daemon (same pid as the shell - the
 `exec` held):
 
@@ -191,14 +191,14 @@ expansion ran in the inherited environment. `SHLVL` is `0` after the exec
 
 Not exercised: bash and fish as `$SHELL`; a blocking rc file against the
 timeout path (§4); Linux desktop launch; the Tauri sidecar bundling itself
-(`Contents/MacOS/wth`, `tauri.conf.json` `externalBin`).
+(`Contents/MacOS/t`, `tauri.conf.json` `externalBin`).
 
 ## 7. Build order (when the Tauri phase starts)
 
 1. `crates/launch` (or a module in the Tauri crate): `spawn(data_dir,
    port) -> Launched { pty_master, pid }` using `portable-pty`; ~40 lines.
    One test: spawn `$SHELL -l -i -c 'exec env'` on a pty, assert `TERM` and
-   `WTH_LAUNCH` present.
+   `THEUTH_LAUNCH` present.
 2. Tauri: startup screen streams the pty transcript until the port
    accepts; on timeout, keeps the transcript visible with the §4 message.
 3. Quit: RPC `shutdown`, then close the master.

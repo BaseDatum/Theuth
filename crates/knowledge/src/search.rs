@@ -759,7 +759,7 @@ mod tests {
     use crate::types::{Put, Source};
 
     async fn open() -> Arc<Knowledge> {
-        let dir = std::env::temp_dir().join(format!("wth-ksearch-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("theuth-ksearch-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let rt = Runtime::new(figment::Figment::new(), dir.clone());
         Knowledge::open(&dir, rt).await.unwrap()

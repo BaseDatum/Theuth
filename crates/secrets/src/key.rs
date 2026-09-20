@@ -1,5 +1,5 @@
 //! The 32-byte vault key (design doc 37 §3.5): an OS keychain item (service
-//! `wth`, account `secrets:<absolute data_dir>`) or `<data_dir>/secrets.key`
+//! `theuth`, account `secrets:<absolute data_dir>`) or `<data_dir>/secrets.key`
 //! (base64, mode 0600). `Auto` tries the keychain and falls back to the file
 //! on any keyring error, saying so in the log.
 
@@ -13,7 +13,7 @@ use zeroize::Zeroizing;
 
 use crate::vault::KeyStore;
 
-const SERVICE: &str = "wth";
+const SERVICE: &str = "theuth";
 const FILE: &str = "secrets.key";
 
 /// Load the key for `data_dir`, creating it on first use. Returns the key

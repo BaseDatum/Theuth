@@ -209,7 +209,7 @@ mod tests {
 
     fn tmp() -> PathBuf {
         std::env::temp_dir()
-            .join(format!("wth-slack-{}", uuid::Uuid::new_v4()))
+            .join(format!("theuth-slack-{}", uuid::Uuid::new_v4()))
             .join("slack")
             .join("threads.json")
     }

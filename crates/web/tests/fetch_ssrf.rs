@@ -10,7 +10,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 const HTML: &str = include_str!("fixtures/fetch_sample.html");
 
 fn fetcher(server: &MockServer) -> Fetcher {
-    Fetcher::new("wth-test", 2_097_152, 5)
+    Fetcher::new("theuth-test", 2_097_152, 5)
         .expect("client")
         .allowing(vec![*server.address()])
 }
@@ -61,7 +61,7 @@ async fn allows_public_ip_literal() {
 
 #[tokio::test]
 async fn fetcher_rejects_loopback_and_metadata_without_allowlist() {
-    let fetcher = Fetcher::new("wth-test", 2_097_152, 5).expect("client");
+    let fetcher = Fetcher::new("theuth-test", 2_097_152, 5).expect("client");
     for s in [
         "http://169.254.169.254/latest/meta-data",
         "http://localhost:1/",

@@ -152,7 +152,7 @@ mod tests {
 
     #[test]
     fn yaml_round_trip() {
-        let dir = std::env::temp_dir().join(format!("wth-link-dev-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("theuth-link-dev-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let key = [7u8; 32];
         let row = Row {

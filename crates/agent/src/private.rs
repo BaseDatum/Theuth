@@ -9,7 +9,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 /// Names of every scratch directory this process (or a dead one) made.
-const PREFIX: &str = "wth-private-";
+const PREFIX: &str = "theuth-private-";
 
 /// A live scratch root. Dropping it releases the lock and leaves the
 /// directory for [`sweep_stale`]; [`Scratch::remove`] deletes it now.
@@ -22,7 +22,7 @@ pub struct Scratch {
 }
 
 impl Scratch {
-    /// `temp_dir()/wth-private-<128 random bits>`, created 0700 and locked.
+    /// `temp_dir()/theuth-private-<128 random bits>`, created 0700 and locked.
     pub fn create() -> io::Result<Self> {
         let root = std::env::temp_dir().join(format!(
             "{PREFIX}{}",
@@ -70,7 +70,7 @@ fn remove_root(root: &Path) -> io::Result<()> {
     fs::remove_dir_all(root)
 }
 
-/// Remove every `wth-private-*` directory in the temp dir whose lock can be
+/// Remove every `theuth-private-*` directory in the temp dir whose lock can be
 /// taken (its owner is dead); return how many went. Symlinks, live roots
 /// and anything whose lock cannot be proven free are left alone.
 pub fn sweep_stale() -> usize {

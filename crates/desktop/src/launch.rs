@@ -1,6 +1,6 @@
-//! Design doc 18: reach a `wth --headless` daemon. Probe the configured port first
-//! (a terminal `wth --serve` or another app instance is reused, 18 §3); otherwise
-//! be a terminal for one command: `$SHELL -l -i -c 'exec wth --headless …'` on a
+//! Design doc 18: reach a `t --headless` daemon. Probe the configured port first
+//! (a terminal `t --serve` or another app instance is reused, 18 §3); otherwise
+//! be a terminal for one command: `$SHELL -l -i -c 'exec t --headless …'` on a
 //! pty, so the daemon inherits exactly the environment a terminal tab would give
 //! it (18 §2). The pty transcript is drained into a 64 KiB ring and streamed to
 //! the webview as `launch-log` events; readiness is the port, never the log.
@@ -121,12 +121,12 @@ impl Launch {
     }
 }
 
-/// `$WTH_DATA_DIR`, else `~/.wth` (the same directory the terminal uses, 25 §5).
+/// `$THEUTH_DATA_DIR`, else `~/.theuth` (the same directory the terminal uses, 25 §5).
 pub fn data_dir() -> PathBuf {
-    std::env::var_os("WTH_DATA_DIR")
+    std::env::var_os("THEUTH_DATA_DIR")
         .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|h| h.join(".wth")))
-        .unwrap_or_else(|| PathBuf::from(".wth"))
+        .or_else(|| dirs::home_dir().map(|h| h.join(".theuth")))
+        .unwrap_or_else(|| PathBuf::from(".theuth"))
 }
 
 /// 18 §3: a live daemon on the configured `rpc.listen` is reused, not duplicated.
@@ -177,7 +177,7 @@ fn spawn(
     let shell = shell(log);
     let script = format!(
         "exec {} --headless --data-dir {}",
-        sq(&wth_bin().to_string_lossy()),
+        sq(&cli_bin().to_string_lossy()),
         sq(&data_dir.to_string_lossy())
     );
     let child = pair
@@ -196,14 +196,14 @@ fn spawn(
 }
 
 /// 18 §2 step 2: the user's login, interactive shell running one command, with
-/// the app's environment plus `TERM`, the `WTH_LAUNCH=1` guard (18 §4) and the
+/// the app's environment plus `TERM`, the `THEUTH_LAUNCH=1` guard (18 §4) and the
 /// port override (01 §1). cwd is `$HOME`, as for a new terminal tab.
 fn command(shell: &Path, script: &str, port: u16) -> CommandBuilder {
     let mut cmd = CommandBuilder::new(shell);
     cmd.args(["-l", "-i", "-c", script]);
     cmd.env("TERM", "xterm-256color");
-    cmd.env("WTH_LAUNCH", "1");
-    cmd.env("WTH_RPC__LISTEN", format!("127.0.0.1:{port}"));
+    cmd.env("THEUTH_LAUNCH", "1");
+    cmd.env("THEUTH_RPC__LISTEN", format!("127.0.0.1:{port}"));
     if let Some(home) = dirs::home_dir() {
         cmd.cwd(home);
     }
@@ -221,17 +221,17 @@ fn shell(log: &Mutex<Vec<u8>>) -> PathBuf {
     }
 }
 
-/// `$WTH_BIN`, else the bundled sidecar beside this executable (25 §5), else
-/// `wth` on the shell's PATH.
-fn wth_bin() -> PathBuf {
-    if let Some(p) = std::env::var_os("WTH_BIN") {
+/// `$THEUTH_BIN`, else the bundled sidecar beside this executable (25 §5), else
+/// `t` on the shell's PATH.
+fn cli_bin() -> PathBuf {
+    if let Some(p) = std::env::var_os("THEUTH_BIN") {
         return PathBuf::from(p);
     }
     std::env::current_exe()
         .ok()
-        .map(|exe| exe.with_file_name("wth"))
+        .map(|exe| exe.with_file_name("t"))
         .filter(|p| p.is_file())
-        .unwrap_or_else(|| PathBuf::from("wth"))
+        .unwrap_or_else(|| PathBuf::from("t"))
 }
 
 /// POSIX single-quote for `sh -c`.
@@ -344,8 +344,8 @@ mod tests {
         child.wait().unwrap();
         let out = String::from_utf8_lossy(&out);
         assert!(out.contains("TERM=xterm-256color"), "{out}");
-        assert!(out.contains("WTH_LAUNCH=1"), "{out}");
-        assert!(out.contains("WTH_RPC__LISTEN=127.0.0.1:7802"), "{out}");
+        assert!(out.contains("THEUTH_LAUNCH=1"), "{out}");
+        assert!(out.contains("THEUTH_RPC__LISTEN=127.0.0.1:7802"), "{out}");
     }
 
     #[test]

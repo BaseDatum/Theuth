@@ -4,7 +4,7 @@ Status: as-built v0 · 2026-09-14 (draft same day) · extends `12` §10
 (`read_file`), `16` (web fetch), `09` §7.4 (Signal attachments), `17`
 (images: the `files` path the native tier widens).
 
-Ported from `../jarvis/crates/jarvis-docconv`, minus the parts wth already
+Ported from `../jarvis/crates/jarvis-docconv`, minus the parts theuth already
 has or does not need (§7).
 
 ## 0. Problem
@@ -41,7 +41,7 @@ the model today in three ways, all dead ends:
   `content_type: application/pdf` becomes Anthropic's `document` block
   (`anthropic/adapter_shared.rs:219-241`), Gemini's `document`, OpenAI
   Responses' `input_file` (`openai_resp/adapter_impl.rs:492-512`), Bedrock's
-  `document`. The provider renders and OCRs scanned pages itself. wth's
+  `document`. The provider renders and OCRs scanned pages itself. theuth's
   `user_message` (`loop_.rs:1960`) already builds `Binary::from_file` parts;
   only `check_files`' `image/*` gate, the flat `IMAGE_TOKENS` estimate and
   the text-only strip (17 §3) assume images. Cost: Anthropic bills a PDF
@@ -244,7 +244,7 @@ build machine 403s static.crates.io for those crates and for lopdf 0.44's
 4. `tui` `dropped_file` + token text; `signal` `save_attachments`; `rpc`
    `prompt_parts` blob arm. One-line changes each plus the existing tests'
    fixture rows.
-5. Smoke, not tests: `wth` TUI, `read_file` on a real PDF, a `.docx`, an
+5. Smoke, not tests: `theuth` TUI, `read_file` on a real PDF, a `.docx`, an
    `.xlsx`; `offset`/`limit` page through the PDF's Markdown; `fetch` of a
    public arXiv PDF URL returns headings; Signal-attached PDF from the
    phone → `[attachment: …]` → model reads it in one call; a scanned PDF →
@@ -263,7 +263,7 @@ build machine 403s static.crates.io for those crates and for lopdf 0.44's
   `pages 1 of 1 are scanned (need OCR); ask for the file as an attachment …`
   in 129 ms; `encrypted-secret123.pdf` → `document is encrypted`; a `.rs`
   source → not a document (text path).
-- Native tier over ACP (`wth --acp`, throwaway Bun client): `session/prompt`
+- Native tier over ACP (`t --acp`, throwaway Bun client): `session/prompt`
   with a text block and a `resource` block `{ mimeType: application/pdf,
   blob }` of that same scanned PDF, `anthropic/claude-opus-4-8` → the
   `messages.body` row holds `[Text, Binary{application/pdf}]`, reply quotes

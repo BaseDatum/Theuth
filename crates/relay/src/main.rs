@@ -1,4 +1,4 @@
-//! `wth-relay`: a stateless relay that maps a harness id to one harness
+//! `theuth-relay`: a stateless relay that maps a harness id to one harness
 //! WebSocket and copies opaque encrypted frames between it and that
 //! harness's devices (design doc 31 §5).
 
@@ -29,12 +29,12 @@ use clap::Parser;
 
 use crate::relay::Relay;
 
-/// `wth-relay --listen 0.0.0.0:8787 [--tls <cert.pem> <key.pem>] [--web <dir>] [--max-conns 64] [--cookie-secret <hex>]`
+/// `theuth-relay --listen 0.0.0.0:8787 [--tls <cert.pem> <key.pem>] [--web <dir>] [--max-conns 64] [--cookie-secret <hex>]`
 #[derive(Parser, Debug)]
 #[command(
-    name = "wth-relay",
+    name = "theuth-relay",
     version,
-    about = "Stateless encrypted-frame relay between wth harnesses and devices"
+    about = "Stateless encrypted-frame relay between theuth harnesses and devices"
 )]
 struct Cli {
     /// Address to listen on.
@@ -50,7 +50,7 @@ struct Cli {
     #[arg(long, default_value_t = 64)]
     max_conns: usize,
     /// Hex secret for the browser cookie HMAC; empty or absent → random per start.
-    #[arg(long, env = "WTH_RELAY_COOKIE_SECRET")]
+    #[arg(long, env = "THEUTH_RELAY_COOKIE_SECRET")]
     cookie_secret: Option<String>,
 }
 
@@ -126,7 +126,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         ),
         None => tokio::spawn(server.acceptor(NoDelayAcceptor).serve(svc)),
     };
-    tracing::info!(listen = %cli.listen, tls = cli.tls.is_some(), web = ?cli.web, max_conns = cli.max_conns, "wth-relay up");
+    tracing::info!(listen = %cli.listen, tls = cli.tls.is_some(), web = ?cli.web, max_conns = cli.max_conns, "theuth-relay up");
 
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     tokio::select! {
@@ -180,7 +180,7 @@ async fn socket(
     if ws.selected_protocol().is_none() {
         return (
             StatusCode::BAD_REQUEST,
-            "Sec-WebSocket-Protocol: wth-link-1 required",
+            "Sec-WebSocket-Protocol: theuth-link-1 required",
         )
             .into_response();
     }

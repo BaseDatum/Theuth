@@ -187,7 +187,7 @@ mod tests {
 
     #[test]
     fn cap_spills_head_marker_tail() {
-        let dir = std::env::temp_dir().join(format!("wth-spill-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("theuth-spill-{}", uuid::Uuid::new_v4()));
         let session = SessionId::new();
         // Multibyte chars so char/byte boundaries differ.
         let content: String = (0..3000)
@@ -227,7 +227,7 @@ mod tests {
 
     #[test]
     fn epoch_writes_transcript_and_summary() {
-        let dir = std::env::temp_dir().join(format!("wth-spill-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("theuth-spill-{}", uuid::Uuid::new_v4()));
         let session = SessionId::new();
         let folded = [
             ChatMessage::user("what time is it"),

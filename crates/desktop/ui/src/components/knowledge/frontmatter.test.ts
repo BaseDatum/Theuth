@@ -30,15 +30,15 @@ describe('stripFrontmatter', () => {
 
 describe('scaffold', () => {
   it('types the concept by its first segment', () => {
-    expect(scaffold('facts/wth', 'Wth')).toBe('---\ntype: facts\ntitle: Wth\ndescription: \ntags: []\n---\n\n')
+    expect(scaffold('facts/theuth', 'Theuth')).toBe('---\ntype: facts\ntitle: Theuth\ndescription: \ntags: []\n---\n\n')
     expect(scaffold('solo', 'S')).toContain('type: solo\n')
   })
 })
 
 describe('checkId', () => {
   it('lowercases and reports it', () => {
-    expect(checkId('Facts/WTH')).toEqual({ id: 'facts/wth', lowered: true, error: null })
-    expect(checkId('facts/wth').lowered).toBe(false)
+    expect(checkId('Facts/THEUTH')).toEqual({ id: 'facts/theuth', lowered: true, error: null })
+    expect(checkId('facts/theuth').lowered).toBe(false)
   })
 
   it('rejects too many segments, bad characters and reserved names', () => {

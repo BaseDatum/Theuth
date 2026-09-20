@@ -64,7 +64,7 @@ impl<W: Write> Writer<W> {
             0,
         )?;
         pw.write_packet(
-            opus_tags("wth", comments),
+            opus_tags("theuth", comments),
             serial,
             PacketWriteEndInfo::EndPage,
             0,
@@ -127,15 +127,15 @@ mod tests {
 
     #[test]
     fn opus_tags_bytes() {
-        let t = opus_tags("wth", &[("TITLE", "Meeting"), ("TRACK", "mic")]);
+        let t = opus_tags("theuth", &[("TITLE", "Meeting"), ("TRACK", "mic")]);
         assert_eq!(&t[..8], b"OpusTags");
-        assert_eq!(&t[8..12], &3u32.to_le_bytes());
-        assert_eq!(&t[12..15], b"wth");
-        assert_eq!(&t[15..19], &2u32.to_le_bytes());
-        assert_eq!(&t[19..23], &13u32.to_le_bytes());
-        assert_eq!(&t[23..36], b"TITLE=Meeting");
-        assert_eq!(&t[36..40], &9u32.to_le_bytes());
-        assert_eq!(&t[40..], b"TRACK=mic");
+        assert_eq!(&t[8..12], &6u32.to_le_bytes());
+        assert_eq!(&t[12..18], b"theuth");
+        assert_eq!(&t[18..22], &2u32.to_le_bytes());
+        assert_eq!(&t[22..26], &13u32.to_le_bytes());
+        assert_eq!(&t[26..39], b"TITLE=Meeting");
+        assert_eq!(&t[39..43], &9u32.to_le_bytes());
+        assert_eq!(&t[43..], b"TRACK=mic");
     }
 
     #[test]

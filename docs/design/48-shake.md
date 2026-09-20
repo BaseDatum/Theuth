@@ -36,12 +36,12 @@ not; §9 lists where the build differs from the original proposal.
    while retaining its reasoning, arguments, or image payloads.
 7. **Idle native sessions only.** The session actor, not a frontend's running
    flag, owns admission. Native roots and children work; translated external
-   ACP sessions refuse because wth does not own their actual context.
+   ACP sessions refuse because theuth does not own their actual context.
 8. **Desktop and mobile are one UI.** Reuse the shared React transcript,
    shadcn controls, lucide icons, RPC client, and per-harness store. TUI uses
    its existing command/menu flow; no terminal image renderer is needed.
 
-## 1. Why this fits wth
+## 1. Why this fits theuth
 
 [00 §1](00-architecture.md#1-non-negotiables) defines a general assistant,
 not a coding-agent product: functional names, library-first glue, typed
@@ -399,7 +399,7 @@ the commit, strictly over the whole post-edit frame: no empty message, calls
 only in assistant rows and results only in tool rows, unique call ids on
 each side, every call batch answered by the tool rows that immediately
 follow it, no result without its call, no dangling trailing call. A failing
-edit refuses and writes nothing. This is a wth-side structural check, not a
+edit refuses and writes nothing. This is a theuth-side structural check, not a
 run through the genai provider serializers (see §9); provider shape was
 smoked separately (§7).
 
@@ -605,7 +605,7 @@ the implementing subagents:
 
 - Final `cargo check --workspace --all-targets` passed. `cargo test -p agent
   -p rpc -p tui -p tools`: **245 passed across 8 suites**. Generated bindings
-  export and `cargo build -p wth` passed. Desktop `bun run check`, `bun run
+  export and `cargo build -p theuth` passed. Desktop `bun run check`, `bun run
   test`, and `bun run build` passed: **22 test files, 131 tests**. The Vite
   bundle reports its large-chunk warning; no build or type errors remain.
 - **Provider shape (check 8, local only):** a throwaway `context_smoke`
@@ -619,7 +619,7 @@ the implementing subagents:
   limits observed: Bedrock drops tool images and signatures itself, Gemini
   maps calls by name, OpenAI has no signed-thinking slot; the feature does not
   claim to preserve what an adapter never serializes.
-- **Daemon RPC (checks 1–5):** on an isolated `wth` daemon, `context_items`
+- **Daemon RPC (checks 1–5):** on an isolated `theuth` daemon, `context_items`
   and `remove_context` removed exact direct and nested (tool-response) image
   occurrences with siblings and PDFs retained; a stale revision refused; a
   whole tool group removed; head omission kept epoch 1 and `tail_from` 4; an
@@ -683,7 +683,7 @@ behavior.
 - **Protocol validation is structural, not adapter-driven.** §4.2 proposed
   validating the projected request through the existing genai adapters. The
   build validates with `Active::validate` inside the store transaction — a
-  strict wth-side check of message emptiness, call/result placement, ids and
+  strict theuth-side check of message emptiness, call/result placement, ids and
   ordering — and does not serialize through provider adapters on the commit
   path. Adapter output for the post-edit frame was captured by the local
   `context_smoke` example (§7) and matched. Neither path certifies remote

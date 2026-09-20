@@ -25,13 +25,13 @@ function Root() {
     const toggle = () => setOpen((o) => !o)
     const fresh = () => void navigate({ to: '/' })
     const shortcuts = () => void settings(navigate, 'shortcuts', session)
-    window.addEventListener('wth:toggle-sidebar', toggle)
-    window.addEventListener('wth:new-chat', fresh)
-    window.addEventListener('wth:shortcuts', shortcuts)
+    window.addEventListener('theuth:toggle-sidebar', toggle)
+    window.addEventListener('theuth:new-chat', fresh)
+    window.addEventListener('theuth:shortcuts', shortcuts)
     return () => {
-      window.removeEventListener('wth:toggle-sidebar', toggle)
-      window.removeEventListener('wth:new-chat', fresh)
-      window.removeEventListener('wth:shortcuts', shortcuts)
+      window.removeEventListener('theuth:toggle-sidebar', toggle)
+      window.removeEventListener('theuth:new-chat', fresh)
+      window.removeEventListener('theuth:shortcuts', shortcuts)
     }
   }, [navigate, session])
 
@@ -48,7 +48,7 @@ function Root() {
 }
 
 /**
- * The one search instance (49 §5.1): every trigger, ⌘K, `/search` and `/sessions` open it through `wth:search`;
+ * The one search instance (49 §5.1): every trigger, ⌘K, `/search` and `/sessions` open it through `theuth:search`;
  * a `CustomEvent` carries the `openSearch` request, a plain `Event` means an ordinary open. Lives inside
  * `HarnessProvider` (App mounts the router under it) but outside the sidebar's mobile Sheet, so opening can
  * dismiss the drawer without unmounting the dialog — one modal, one focus trap. Focus return is the dialog's.
@@ -63,8 +63,8 @@ function SearchHost() {
       setRequest({ ...((e as CustomEvent<SearchRequest | undefined>).detail ?? {}) })
       setOpen(true)
     }
-    window.addEventListener('wth:search', show)
-    return () => window.removeEventListener('wth:search', show)
+    window.addEventListener('theuth:search', show)
+    return () => window.removeEventListener('theuth:search', show)
   }, [isMobile, setOpenMobile])
   return <SearchDialog open={open} onOpenChange={setOpen} request={request} />
 }

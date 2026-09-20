@@ -339,7 +339,7 @@ mod tests {
 
     #[test]
     fn remove_missing_bin_is_ok() {
-        let dir = std::env::temp_dir().join(format!("wth-acp-reg-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("theuth-acp-reg-{}", std::process::id()));
         remove_bin(&dir, "nope").unwrap();
         std::fs::create_dir_all(bin_dir(&dir, "x")).unwrap();
         remove_bin(&dir, "x").unwrap();

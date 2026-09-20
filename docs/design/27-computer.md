@@ -18,7 +18,7 @@ Where this doc and 00 disagree, 00 wins; §11 lists the 00 lines it amends.
    `Ctx`, `Risk` as the only permission input, screenshots as image parts.
    Nothing from jarvis's safety engine and nothing from oh-my-pi's Eval
    facade (`computer.run(code)` in a Bun worker, P:`T/computer.ts:53-75`) —
-   wth tools are tools.
+   theuth tools are tools.
 2. **`enabled: true`.** The OS is the consent layer: on macOS nothing
    captures or clicks until the user grants Screen Recording and
    Accessibility to the process in System Settings, and every action is
@@ -72,12 +72,12 @@ Where this doc and 00 disagree, 00 wins; §11 lists the 00 lines it amends.
 
 ## 1. Why
 
-wth can drive a page (23) but not the machine: no native app, no dialog,
+theuth can drive a page (23) but not the machine: no native app, no dialog,
 no menu, nothing in the user's own signed-in browser. Jarvis had this and
 it was used; oh-my-pi has a deeper version. This doc takes the model both
 proved — screenshot → pixel coordinates → input, with a frame that makes
 coordinates mean something on Retina and multi-monitor desktops — and
-ships it as wth tools, no more.
+ships it as theuth tools, no more.
 
 ## 2. Facts relied on
 
@@ -117,8 +117,8 @@ ships it as wth tools, no more.
 ### 2.2 macOS TCC (jarvis spec 11; J:`src/platform/macos.rs`)
 
 - Grants attach to the **responsible process**: the terminal app when
-  `wth` runs in one, the `wth.app` bundle when the desktop spawns the
-  daemon on its pty (18 §2). The pane row reads "ghostty" or "wth"; a
+  `theuth` runs in one, the `theuth.app` bundle when the desktop spawns the
+  daemon on its pty (18 §2). The pane row reads "ghostty" or "theuth"; a
   terminal grant covers everything that terminal runs. §10 step 1 records
   both.
 - `AXIsProcessTrusted` and `CGPreflightScreenCaptureAccess` are booleans;
@@ -344,7 +344,7 @@ each). Coordinates are `u32` pixels of the session's last screenshot.
 Errors the model must act on (all `ToolOutput::err`, exact texts fixed in
 code):
 - `screen recording not granted for "<responsible app>": System Settings ›
-  Privacy & Security › Screen Recording, enable it, then restart wth`
+  Privacy & Security › Screen Recording, enable it, then restart theuth`
 - `accessibility not granted for "<responsible app>": … › Accessibility
   (the system prompt was shown)`
 - `take a computer_screenshot first: coordinates are pixels of that image`
@@ -372,7 +372,7 @@ computer:                 # design doc 27
 ```
 
 `enabled: false` leaves nothing behind: no actor, no tools, no prompt
-block, no thread, no probes, no files. `WTH_COMPUTER__MAX_EDGE=1280`.
+block, no thread, no probes, no files. `THEUTH_COMPUTER__MAX_EDGE=1280`.
 
 ## 6. UI surface
 
@@ -458,11 +458,11 @@ time; nothing is rebuilt from them.
    reply names windows on both displays; `display: 2` → that display only;
    persisted tool message carries `images: [{image/png}]`; capture +
    composite + encode time logged. Repeat from a terminal (grant lands on
-   ghostty) and from the `.app` (grant lands on wth) — records §2.2's
+   ghostty) and from the `.app` (grant lands on theuth) — records §2.2's
    attribution and whether Accessibility needed a restart. Before granting:
    the tool returns the pane text and the system prompt appeared once.
 2. **Input** (`input.rs`, seven tools). Check: "open TextEdit, new
-   document, type `hello from wth`, screenshot" → `computer_open`,
+   document, type `hello from theuth`, screenshot" → `computer_open`,
    `computer_key "cmd+n"`, `computer_type`, `computer_screenshot`; the text
    is in the PNG. Double-click a word → selected in the next screenshot.
    `computer_key "cmd+q"` → refused. On the composite frame, click a
@@ -528,7 +528,7 @@ Computer, ⌥Esc cancel-all, Shortcuts row; docs per §11.
 Deviations from §1–§12 (the code wins):
 - xcap is `0.9` (resolved 0.9.8); enigo `0.6.1`.
 - `screen recording not granted …` / `accessibility not granted …` name
-  "the app that launched wth (your terminal, or wth.app)" — the responsible
+  "the app that launched theuth (your terminal, or theuth.app)" — the responsible
   process name is not resolved (no public API; the string is enough).
 - `InputError::Recovered` also covers "input thread gone" (channel closed).
 - `Key::Insert` is not in enigo's macOS `Key`; `insert` parses only off-macOS.
@@ -538,7 +538,7 @@ Deviations from §1–§12 (the code wins):
 Gates: `cargo check/clippy -D warnings/test --workspace`, `just ts`,
 desktop `bun run check` + `bun run test` (48) — all green.
 
-Smoke (headless, `claude-sonnet-4-5`, `/tmp/wth-title`, approvals off, two
+Smoke (headless, `claude-sonnet-4-5`, `/tmp/theuth-title`, approvals off, two
 2560×1440 scale-1 displays stacked vertically, daemon launched by the
 harness's process broker):
 - Before the grant: `computer_permissions` → `accessibility: true,
@@ -550,8 +550,8 @@ harness's process broker):
   → image (0,0)-(1394,784) · display 2 … → image (0,784)-(1394,1568) ·
   cursor at (779,445)`; the reply named Teams and a Safari Confluence page
   visible only in the PNG. `computer_open TextEdit`, `computer_key cmd+n`,
-  `computer_type "hello from wth"`, second screenshot → the model confirmed
-  the text; verified independently from `shot-2.png` ("Hello from wth",
+  `computer_type "hello from theuth"`, second screenshot → the model confirmed
+  the text; verified independently from `shot-2.png` ("Hello from theuth",
   TextEdit's autocapitalisation; two screens with the seam visible).
   `computer_key cmd+q` → `refused: this chord quits or logs out; ask the
   user to press it`, relayed verbatim.
@@ -563,7 +563,7 @@ harness's process broker):
 Not exercised: a live `computer_click` / `computer_drag` / `computer_scroll`
 / `computer_move`; a Retina (scale 2) or fractional-scale display; a display
 with a non-zero x origin (both were stacked, x = 0); TCC attribution from
-`wth.app` (25 §5 bundle) and from a plain terminal — this run's grant landed
+`theuth.app` (25 §5 bundle) and from a plain terminal — this run's grant landed
 on the harness's broker process, consistent with §2.2's responsible-process
 rule; whether Accessibility needs a restart (it was already granted);
 Linux/Windows paths; hot-plug; ⌥Esc and Settings › Computer in the running

@@ -69,8 +69,8 @@ at 0.3.2 through `flexaudio-os-macos`; for the process list, §4.1). `ts-rs`
 optional. Feature `ts = ["dep:ts-rs", "runtime/ts", "agent/ts"]`. Root
 `[workspace.dependencies]`: `meeting = { path = "crates/meeting" }`, plus
 `rtrb`, `ogg`, `coreaudio-rs`, `objc2-core-audio` with a `# 53` comment.
-`crates/wth/Cargo.toml`
-gains `meeting`; `crates/wth/src/main.rs:469-495` default plugin vector gains
+`crates/theuth/Cargo.toml`
+gains `meeting`; `crates/theuth/src/main.rs:469-495` default plugin vector gains
 `Box::new(meeting::MeetingPlugin)` after `voice::VoicePlugin` (L482); the
 `--acp` branch omits it like `voice`. `DEFAULT_CONFIG` (main.rs:126-262) gains
 the commented `meeting:` section from README §3.
@@ -213,7 +213,7 @@ frames; each packet → `ogg::PacketWriter::write_packet(.., granule)` with
 granule = 48 kHz-based sample count per RFC 7845 (pre-skip from
 `encoder.lookahead()`), page flushed every 1 s (`PacketWriteEndInfo::EndPage`)
 so a dead daemon leaves playable files. `OpusHead` (version 1, channels 1,
-pre-skip, input rate 48000) and `OpusTags` (vendor `wth`, `TITLE`, `TRACK`)
+pre-skip, input rate 48000) and `OpusTags` (vendor `theuth`, `TITLE`, `TRACK`)
 written at open. RMS per track computed here and sent to the actor's
 `Level` task over a `watch` channel at 10 Hz.
 
@@ -344,13 +344,13 @@ notch or not, QuickTime Player or Music playing a known clip as the
 10. `meeting.enabled: false`, restart → `meeting_start` answers "meetings
     are disabled".
 11. Deny the audio-capture TCC prompt on a fresh TCC state (`tccutil reset
-    All wth.rwx.dev` is not enough for audio capture on 15; use a fresh
+    All io.theuth.mac` is not enough for audio capture on 15; use a fresh
     user or accept "not exercised") → `Failed` with `PermissionDenied`.
 
 ## 9. Status
 
-Implemented 2026-09-20 (`crates/meeting`, ~2 700 lines incl. tests; rpc/wth
-wiring +184 lines). Verified headless over RPC on `/tmp/wth-meet`, macOS 15,
+Implemented 2026-09-20 (`crates/meeting`, ~2 700 lines incl. tests; rpc/theuth
+wiring +184 lines). Verified headless over RPC on `/tmp/theuth-meet`, macOS 15,
 QuickTime Player playing a 100 s `say`-generated speech clip, an external mic
 on a dock with the laptop lid closed, built-in speakers.
 
@@ -361,7 +361,7 @@ on a dock with the laptop lid closed, built-in speakers.
    `ogg::PacketReader`, clock gaps, encoder stall/backlog, manifest round trip
    + index rebuild + delete); `cargo check -p rpc --features ts`; `just ts`
    emits `MeetingEvent.ts` (+ 23 more) with `final: boolean` from `r#final`.
-   `cargo clippy -p meeting -p rpc -p wth --all-targets --no-deps -D warnings`
+   `cargo clippy -p meeting -p rpc -p theuth --all-targets --no-deps -D warnings`
    clean. **The workspace-wide clippy run fails in `crates/tools`** (three
    pre-existing lints — `obfuscated_if_else` in `pty.rs:621`, `type_complexity`
    in `registry.rs:91`, `too_many_arguments` in `registry.rs:1251` — raised by
@@ -400,7 +400,7 @@ on a dock with the laptop lid closed, built-in speakers.
 9. `meeting_delete` of the crashed meeting → directory gone, row gone,
    session gone from `list_sessions`, `Deleted` event; refused for the
    current recording.
-10. `WTH_MEETING__ENABLED=false` → log "meeting disabled by config";
+10. `THEUTH_MEETING__ENABLED=false` → log "meeting disabled by config";
     `meeting_start`/`meeting_list` answer `-32001 "meetings are disabled"`.
 
 ### Not exercised

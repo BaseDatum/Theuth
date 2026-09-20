@@ -2900,7 +2900,7 @@ impl Turn {
                 repl.close().await;
             }
         }
-        // 10 §5.2 trigger (a), before `TurnFinished`: one-shot clients (`wth -p`)
+        // 10 §5.2 trigger (a), before `TurnFinished`: one-shot clients (`theuth -p`)
         // exit on that event, so a harvest published after it is always cancelled.
         // Inline rather than concurrent with the next turn: the state is still
         // owned here, so input arriving meanwhile queues as steering.
@@ -4977,7 +4977,7 @@ mod tests {
     /// projection is that frame's estimate.
     #[tokio::test]
     async fn context_edit_is_idle_only_and_installs_committed_frame() {
-        let dir = std::env::temp_dir().join(format!("wth-loop-{}", uuid::Uuid::now_v7()));
+        let dir = std::env::temp_dir().join(format!("theuth-loop-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
         let store = Store::open(&dir.join("sessions.sqlite")).await.unwrap();
         let id = SessionId::new();
@@ -5317,11 +5317,11 @@ mod tests {
 
     #[test]
     fn prompt_parts_in_order_with_blank_lines() {
-        let data_dir = std::env::temp_dir().join(format!("wth-prompt-{}", uuid::Uuid::new_v4()));
+        let data_dir = std::env::temp_dir().join(format!("theuth-prompt-{}", uuid::Uuid::new_v4()));
         let skills_dir = skills::dir(&data_dir);
         std::fs::create_dir_all(&skills_dir).unwrap();
         let bare = frame::baseline(&data_dir, "", "", false);
-        assert!(bare.starts_with("You are wth, a meta-harness"));
+        assert!(bare.starts_with("You are theuth, a meta-harness"));
         assert!(!bare.contains("## Skills"));
 
         std::fs::write(data_dir.join("prompt.md"), "Standing rule.\n\n").unwrap();
@@ -5509,7 +5509,7 @@ mod tests {
     async fn peer_input_consumes_once_and_never_after_revocation() {
         use crate::communication::PeerMessageState;
         use crate::store::communication::AcceptExchange;
-        let dir = std::env::temp_dir().join(format!("wth-peer-{}", Uuid::now_v7()));
+        let dir = std::env::temp_dir().join(format!("theuth-peer-{}", Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
         let store = Store::open(&dir.join("sessions.sqlite")).await.unwrap();
         let (mut policy, sender, id, generation) = route();
@@ -5623,7 +5623,7 @@ mod tests {
     /// from `pending` at the next snapshot and the marker stays put.
     #[tokio::test]
     async fn prepare_images_branches_on_vision_and_projects_text_only_frames() {
-        let dir = std::env::temp_dir().join(format!("wth-vision-{}", Uuid::now_v7()));
+        let dir = std::env::temp_dir().join(format!("theuth-vision-{}", Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
         let store = Store::open(&dir.join("sessions.sqlite")).await.unwrap();
         let id = SessionId::new();
@@ -6255,7 +6255,7 @@ mod tests {
     /// shows it as returned money, and the bus announces the new revision.
     #[tokio::test]
     async fn accounted_call_settles_returned_cost_and_announces() {
-        let dir = std::env::temp_dir().join(format!("wth-cost-{}", Uuid::now_v7()));
+        let dir = std::env::temp_dir().join(format!("theuth-cost-{}", Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
         let store = Store::open_memory().await.unwrap();
         let id = SessionId::new();
@@ -6305,7 +6305,7 @@ mod tests {
     /// `settled`; only the settled one carries money.
     #[tokio::test]
     async fn retried_attempts_share_a_request_under_distinct_call_ids() {
-        let dir = std::env::temp_dir().join(format!("wth-cost-{}", Uuid::now_v7()));
+        let dir = std::env::temp_dir().join(format!("theuth-cost-{}", Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
         let store = Store::open_memory().await.unwrap();
         let id = SessionId::new();
@@ -6344,7 +6344,7 @@ mod tests {
     /// and the endpoint is never contacted.
     #[tokio::test]
     async fn refused_reservation_aborts_before_transport() {
-        let dir = std::env::temp_dir().join(format!("wth-cost-{}", Uuid::now_v7()));
+        let dir = std::env::temp_dir().join(format!("theuth-cost-{}", Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
         let store = Store::open_memory().await.unwrap();
         let orphan = SessionId::new();

@@ -23,12 +23,12 @@ Open questions this doc does not close (the reason it is exploratory):
 whether the handoff is worth its `Live` arm versus "the model just runs
 `start {command: "claude --resume …"}`" (§8 last bullet); which harnesses
 beyond Claude Code and Codex have a resumable id (§1.2); whether a
-model-callable switch is wanted (§2.3); how TUI-era turns get into wth
+model-callable switch is wanted (§2.3); how TUI-era turns get into theuth
 history (§3.4).
 
 ## 0. Decisions in one screen (provisional)
 
-1. **One transport per external child at a time: `acp` or `pty`.** The wth
+1. **One transport per external child at a time: `acp` or `pty`.** The theuth
    session row, its `agent`, `cwd` and `acp_session` columns, the roster
    entry and approval routing are the same in both. `acp` is today's
    `AcpChild` (structured events, `send_message`, results to the parent).
@@ -43,7 +43,7 @@ history (§3.4).
    automatic: when the TUI exits the `Live::Pty` marker is dropped and the
    existing "idle (process gone) → respawn with `session/load`" path (06
    §3.2, `supervisor.rs:645-656`) takes over on the next `send_message`.
-3. **Every harness process for one wth child is exclusive.** Two processes
+3. **Every harness process for one theuth child is exclusive.** Two processes
    on one Claude JSONL / Codex thread corrupt it. The `Live` map is the lock:
    a `Pty` entry blocks `enqueue_peer`'s respawn (`supervisor.rs:1026-1099`),
    an `Acp` entry blocks `set_transport(pty)` unless idle. Test: no state
@@ -74,7 +74,7 @@ history (§3.4).
 ACP is JSON-RPC over the agent process's stdin/stdout (v1, and the v2 draft:
 `docs/protocol/v2/overview.mdx`). The SDK we pin spawns the harness with all
 three stdio piped, in its own process group, no PTY
-(`agent-client-protocol-2.1.0/src/acp_agent.rs:250-307`); wth never sees the
+(`agent-client-protocol-2.1.0/src/acp_agent.rs:250-307`); theuth never sees the
 pid (`harness.rs:156-161`). The adapters are not TUIs: `claude-agent-acp`
 wraps the Claude Agent SDK, `codex-acp` wraps `codex app-server`, `opencode
 acp` starts a *private* per-process server (opencode.ai/v2/docs/cli/acp). No
@@ -103,7 +103,7 @@ client a terminal it runs; the opposite direction (§8).
   no `tui` block → `set_transport(pty)` refused: "no tui command configured
   for <name>".
 
-### 1.3 What wth already has
+### 1.3 What theuth already has
 
 | Need | Exists | Where |
 |---|---|---|
@@ -244,11 +244,11 @@ refused in private trees (51 §4.1); `pty` children inherit that.
 
 ### 3.4 History (open)
 
-While the transport is `pty`, wth writes no messages for the child. On the
+While the transport is `pty`, theuth writes no messages for the child. On the
 next ACP respawn `session/load` replays, but `acp_child.rs` persists the
 replay only when local history is empty (06 §3.6). TUI-era turns end up in
 the harness's transcript and on the final screen the parent received, not in
-wth's rows. Options: dedupe replay against the last persisted
+theuth's rows. Options: dedupe replay against the last persisted
 `user_message_chunk` (one function); or accept the gap. Decide after spike 1
 shows what `session/load` replays for Claude in practice.
 
@@ -278,7 +278,7 @@ None new. `agent-client-protocol` =2.1.0 (v1, `session/load`) is enough; v2
 ## 6. Config
 
 None new. `tools.pty_ready_timeout_secs` (22 §6) bounds `tui.ready`. The
-`tui` block lives in `~/.wth/acp/agents.yaml`.
+`tui` block lives in `~/.theuth/acp/agents.yaml`.
 
 ## 7. Spikes (before any of §3 is built)
 

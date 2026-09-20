@@ -2,7 +2,7 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <!-- wth-app-parser-<hash> (design doc 46 §2.1) is a compiled Bun executable (bun build, compile flag).
+  <!-- theuth-app-parser-<hash> (design doc 46 §2.1) is a compiled Bun executable (bun build, compile flag).
        JavaScriptCore JITs through MAP_JIT, which allow-jit covers on arm64. Bun's signing
        guide also lists allow-unsigned-executable-memory, disable-executable-page-protection,
        allow-dyld-environment-variables and disable-library-validation; none is granted until

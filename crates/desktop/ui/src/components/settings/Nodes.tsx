@@ -63,7 +63,7 @@ export function Nodes() {
     <>
       <Section title="Nodes">
         <p className="pb-2 text-[13px] text-fg-secondary">Machines this harness and your devices can run sessions on.</p>
-        {list?.length === 0 && <Empty>No node yet. Run `wth --install-service` on the machine and paste the key below.</Empty>}
+        {list?.length === 0 && <Empty>No node yet. Run `t --install-service` on the machine and paste the key below.</Empty>}
         {list?.map((n) => (
           <NodeRow key={n.id} node={n} onRename={(name) => rename.mutate({ id: n.id, name })} onRemove={() => remove.mutate(n.id)} />
         ))}
@@ -77,7 +77,7 @@ export function Nodes() {
             onKeyDown={(e) => {
               if (e.key === 'Enter' && key.trim()) add.mutate(key.trim())
             }}
-            placeholder="paste the key printed by wth --install-service"
+            placeholder="paste the key printed by t --install-service"
             autoCapitalize="off"
             autoCorrect="off"
             spellCheck={false}
@@ -111,7 +111,7 @@ function NodeRow({ node: n, onRename, onRemove }: { node: Node; onRename: (name:
       : seen
         ? `seen ${ago(new Date(seen).toISOString())} ago`
         : 'never seen'
-  const parts = [n.platform, `wth ${n.version}`, n.children > 0 && `${n.children} running`, when].filter(Boolean)
+  const parts = [n.platform, `theuth ${n.version}`, n.children > 0 && `${n.children} running`, when].filter(Boolean)
   return (
     <Row
       label={

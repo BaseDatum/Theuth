@@ -1,7 +1,7 @@
 //! The vault (design doc 37 §3.5): `<data_dir>/secrets.vault` is one
 //! XChaCha20-Poly1305 blob holding every secret's last [`KEEP`] versions.
 //! Loaded once, reloaded whenever the file's mtime moves (a TUI, a daemon
-//! and `wth --secret-set` on one data dir see each other's writes), written
+//! and `t --secret-set` on one data dir see each other's writes), written
 //! atomically. Values never leave this module except through [`Vault::get`]
 //! and [`Vault::expand`]; [`Vault::redact`] turns them back into placeholders.
 
@@ -32,7 +32,7 @@ pub const MIN_REDACT: usize = 8;
 /// Regex source for a placeholder: group 1 = name, group 2 = versions back (1..=4).
 pub const PLACEHOLDER: &str = r"\{\{secret:([A-Za-z0-9_.\-]+)(?::-([1-4]))?\}\}";
 
-const MAGIC: &[u8] = b"wth-secrets-1\n";
+const MAGIC: &[u8] = b"theuth-secrets-1\n";
 const FILE: &str = "secrets.vault";
 const NONCE: usize = 24;
 
@@ -598,7 +598,7 @@ fn load(path: &Path, key: &[u8; 32]) -> anyhow::Result<Option<BTreeMap<String, E
         Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
     };
     let Some(rest) = bytes.strip_prefix(MAGIC).filter(|r| r.len() > NONCE) else {
-        anyhow::bail!("{} is not a wth secrets vault", path.display());
+        anyhow::bail!("{} is not a theuth secrets vault", path.display());
     };
     let (nonce, sealed) = rest.split_at(NONCE);
     let nonce: [u8; NONCE] = nonce.try_into().expect("split_at(NONCE)");

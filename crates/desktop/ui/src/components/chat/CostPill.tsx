@@ -68,8 +68,8 @@ export function CostPill({ session }: { session: string }) {
     const h = (e: Event) => {
       if ((e as CustomEvent<{ session: string }>).detail.session === session) setOpen(true)
     }
-    window.addEventListener('wth:open-cost', h)
-    return () => window.removeEventListener('wth:open-cost', h)
+    window.addEventListener('theuth:open-cost', h)
+    return () => window.removeEventListener('theuth:open-cost', h)
   }, [session])
   if (!data) return null
   const amount = data.total.returned.length ? data.total.returned.map(formatMoney).join(' + ') : '—'

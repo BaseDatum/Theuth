@@ -542,7 +542,7 @@ mod tests {
     /// `Missing`, and stopping an unknown id is a no-op `Ok`.
     #[tokio::test]
     async fn missing_model_fails_parked_start() {
-        let dir = std::env::temp_dir().join("wth-no-such-dictation-model");
+        let dir = std::env::temp_dir().join("theuth-no-such-dictation-model");
         let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
         let actor = Dictation::spawn(Dictation::new(rt, dir.clone(), Duration::from_secs(1)));
 
@@ -575,7 +575,7 @@ mod tests {
         let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
         let actor = Dictation::spawn(Dictation::new(
             rt,
-            std::env::temp_dir().join("wth-no-such-dictation-model"),
+            std::env::temp_dir().join("theuth-no-such-dictation-model"),
             Duration::from_secs(1),
         ));
         let err = match actor

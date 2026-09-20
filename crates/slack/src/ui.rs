@@ -1,4 +1,4 @@
-//! Block Kit panels for `/wth` replies (design doc 21 §10.2): pure
+//! Block Kit panels for `/theuth` replies (design doc 21 §10.2): pure
 //! builders, one per row of the §10.2 table. `commands` fills them;
 //! `channel` sends them and routes the `cmd:*` clicks back.
 //!
@@ -64,7 +64,7 @@ pub fn paginate<T>(items: &[T], page: usize) -> (&[T], Option<usize>) {
     (&items[start..end], (end < items.len()).then_some(page + 1))
 }
 
-/// The `/wth` panel: one section per command group and the common buttons.
+/// The `/theuth` panel: one section per command group and the common buttons.
 #[must_use]
 pub fn help() -> Reply {
     const GROUPS: [(&str, &[&str]); 3] = [
@@ -90,7 +90,7 @@ pub fn help() -> Reply {
             ],
         ),
     ];
-    let mut blocks = vec![header("wth")];
+    let mut blocks = vec![header("theuth")];
     for (group, names) in GROUPS {
         let lines: Vec<String> = COMMANDS
             .iter()
@@ -101,7 +101,7 @@ pub fn help() -> Reply {
                 } else {
                     format!(" {a}")
                 };
-                format!("• `/wth {n}{arg}` — {d}")
+                format!("• `/theuth {n}{arg}` — {d}")
             })
             .collect();
         blocks.push(section(&format!("*{group}*\n{}", lines.join("\n"))));
@@ -112,7 +112,7 @@ pub fn help() -> Reply {
         button("cmd:models", "Models", None),
         button("cmd:status", "Status", None),
     ]));
-    Reply::blocks("wth: /wth <sub-command>; /wth help lists them", blocks)
+    Reply::blocks("theuth: /theuth <sub-command>; /theuth help lists them", blocks)
 }
 
 /// `status`: the §13 snapshot as fields, call counts as context, a Refresh button.
@@ -306,7 +306,7 @@ pub fn models(models: &[ModelInfo], current: &str) -> Reply {
     let mut blocks = vec![section_with(&format!("current: {current}"), select)];
     if models.len() > OPTIONS_MAX {
         blocks.push(context(&format!(
-            "{} more; /wth model <id> to set one",
+            "{} more; /theuth model <id> to set one",
             models.len() - OPTIONS_MAX
         )));
     }

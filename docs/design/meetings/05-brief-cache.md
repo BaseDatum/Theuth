@@ -300,9 +300,9 @@ paragraph + `TopicArgs.brief`/`BriefArgs.aliases`, actor hot path and six
 messages); `crates/rpc` six methods + three wire types + bridge forward;
 desktop `routes/briefs.tsx`, `components/briefs/{BriefSearch,BriefCard,BriefEditor}.tsx`,
 sidebar link, island dot, control-center `cached` link, store/rpc/events/api
-wiring. Verified headless over JSON-RPC on `/tmp/wth-meet` (the phase-2/3/4
+wiring. Verified headless over JSON-RPC on `/tmp/theuth-meet` (the phase-2/3/4
 scratch dir; `RUST_LOG=info,meeting=debug`, `ORT_DYLIB_PATH` at the TDT
-dylib, `WTH_SECRETS__KEY_STORE=file`), macOS 15, `anthropic/claude-haiku-4-5`,
+dylib, `THEUTH_SECRETS__KEY_STORE=file`), macOS 15, `anthropic/claude-haiku-4-5`,
 the phase-2 knowledge bundle, QuickTime Player playing the 114 s two-voice
 `say` clip, the external mic live (speakers, no headphones — the mic track
 carries the far end, 01 §9 check 5), a debug build. The user spoke for the
@@ -326,7 +326,7 @@ mic track in meeting 2.
    topic, an Auto topic written to the cache blocks the scan too;
    `session` — `age` 3d/2h/11m/0m/`?`, `SRE-2386 (cached 3d)` in the batch
    header, the request suffix). `cargo check --workspace --all-targets`,
-   `cargo clippy -p meeting -p rpc -p wth --all-targets --no-deps -D warnings`,
+   `cargo clippy -p meeting -p rpc -p theuth --all-targets --no-deps -D warnings`,
    `cargo check -p rpc --features ts`, `just ts-desktop` clean; `bun run check`
    clean; vitest 34 files / 185 (one pre-existing `link/pairing.test.ts`
    timing flake under the full parallel run, green alone and on rerun).

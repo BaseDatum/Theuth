@@ -47,7 +47,7 @@ new permissions (first-use prompts only).
    must own — a recorder is not that); a Swift helper process (00 §2: one
    process; Core Audio taps and ONNX both have Rust bindings).
 2. **The intelligence is the agent loop, not a second model loop.** A meeting
-   *is* a wth session. Every transcript batch is one user input, prefixed
+   *is* a theuth session. Every transcript batch is one user input, prefixed
    `[meeting 00:14:32]`, in the pattern 45 §0.2 set for voice notes: the
    marker is the mode flag, one static prompt block says what it means. Topics
    and briefs are two ReadOnly tools the model calls (`meeting_topic`,

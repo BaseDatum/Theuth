@@ -166,7 +166,7 @@ fn http(
         .connect_timeout(CONNECT_TIMEOUT)
         .resolve_to_addrs(host, addrs)
         .https_only(base.scheme() == "https")
-        .user_agent(concat!("wth-a2a/", env!("CARGO_PKG_VERSION")));
+        .user_agent(concat!("theuth-a2a/", env!("CARGO_PKG_VERSION")));
     match card {
         Some(token) => {
             let mut h = HeaderMap::new();

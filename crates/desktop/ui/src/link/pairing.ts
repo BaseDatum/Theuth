@@ -18,7 +18,7 @@ export type PairingKey = {
 }
 
 /** WebSocket subprotocol both relay sockets negotiate. */
-export const SUBPROTOCOL = 'wth-link-1'
+export const SUBPROTOCOL = 'theuth-link-1'
 
 /** Test/script seams: a WebSocket constructor and a device identity (the script has no IndexedDB). */
 export type LinkOptions = {

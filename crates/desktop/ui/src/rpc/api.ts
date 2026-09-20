@@ -126,7 +126,7 @@ export interface Api {
   /** `/a2a`: listener, configured peers and exports (50 §10); `enabled: false` with an empty status when `a2a.enabled` is off. */
   a2a_status(): Promise<A2aStatus>
   add_acp(id: string): Promise<EntryInfo>
-  /** Pair this harness with a node from the key `wth --install-service` printed (32 §6.6); `NodeAdded` follows. */
+  /** Pair this harness with a node from the key `t --install-service` printed (32 §6.6); `NodeAdded` follows. */
   add_node(key: string, name: string | null): Promise<Node>
   add_mcp_repo(url: string, name: string | null): Promise<RepoInfo>
   add_mcp_server(name: string, entry: JsonValue): Promise<McpServer>
@@ -259,7 +259,7 @@ export interface Api {
   link_status(): Promise<LinkStatus>
   /** Nodes of this harness (32 §6.6); method-not-found (-32601) on a harness without the `nodes` plugin. */
   list_nodes(): Promise<Node[]>
-  /** Every file in `~/.wth/schedules/`, parsed or not (34 §8). */
+  /** Every file in `~/.theuth/schedules/`, parsed or not (34 §8). */
   list_schedules(): Promise<ScheduleInfo[]>
   /** A fresh 31 §4.4 pairing string issued by the node, so a device pairs with it directly (32 §4.4). */
   invite_node(id: string): Promise<Pairing>

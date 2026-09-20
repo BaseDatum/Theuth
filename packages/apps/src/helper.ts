@@ -1,5 +1,5 @@
 /**
- * `wth-app-parser`: headless final-validation helper (design 46 §2.1).
+ * `theuth-app-parser`: headless final-validation helper (design 46 §2.1).
  *
  * JSON lines on stdin → one JSON line per request on stdout; logs go to stderr only.
  * Compiles the library schema once at startup. Trusted, harness-owned parser code: it never
@@ -7,8 +7,8 @@
  * Requests are served strictly in order, one at a time; the Rust side owns admission (≤8
  * pending) and the 2 s deadline/kill policy.
  *
- *   wth-app-parser --version      → "wth-app-parser <library_hash>"
- *   printf '' | wth-app-parser    → exit 0 on EOF
+ *   theuth-app-parser --version      → "theuth-app-parser <library_hash>"
+ *   printf '' | theuth-app-parser    → exit 0 on EOF
  */
 import { check, libraryHash, mergeCheck } from "./check.ts";
 import type {
@@ -20,12 +20,12 @@ import type {
 
 const argv = process.argv.slice(2);
 if (argv.includes("--version") || argv.includes("-V")) {
-  process.stdout.write(`wth-app-parser ${libraryHash}\n`);
+  process.stdout.write(`theuth-app-parser ${libraryHash}\n`);
   process.exit(0);
 }
 if (argv.length) {
   process.stderr.write(
-    `wth-app-parser: unknown arguments ${argv.join(" ")} (stdin JSON lines only; --version)\n`,
+    `theuth-app-parser: unknown arguments ${argv.join(" ")} (stdin JSON lines only; --version)\n`,
   );
   process.exit(2);
 }

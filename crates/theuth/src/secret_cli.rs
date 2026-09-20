@@ -1,4 +1,4 @@
-//! `wth --secret-set NAME [--secret-note …]`, `--secret-rm NAME`,
+//! `t --secret-set NAME [--secret-note …]`, `--secret-rm NAME`,
 //! `--secret-list` (design doc 37 §3.9): the vault for boxes without a TUI.
 //! One-shot like `--slack-setup`: opens `<data_dir>/secrets.vault` as a
 //! library; a running daemon sees the change on its next read (37 §3.5).

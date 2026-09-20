@@ -1,5 +1,5 @@
 //! The headless parser helper (46 §2.1): one lazy, long-lived
-//! `wth-app-parser` child per harness, JSON lines over stdio, served strictly
+//! `theuth-app-parser` child per harness, JSON lines over stdio, served strictly
 //! in order. This side owns admission ([`PENDING`] queued requests, more →
 //! [`Error::Busy`]), the [`DEADLINE`] covering write and response read, and
 //! the kill/replace policy: a timeout, a crash, an oversized or malformed
@@ -396,7 +396,7 @@ mod tests {
         std::fs::write(
             &p,
             format!(
-                "#!/bin/sh\nif [ \"$1\" = --version ]; then echo \"wth-app-parser {HASH}\"; exit 0; fi\n{body}\n"
+                "#!/bin/sh\nif [ \"$1\" = --version ]; then echo \"theuth-app-parser {HASH}\"; exit 0; fi\n{body}\n"
             ),
         )
         .unwrap();
@@ -434,7 +434,7 @@ done"#;
         let dir = tempfile::tempdir().unwrap();
         // `script` always prints HASH for `--version`; this one lies about its library.
         let other = script(dir.path(), "other.sh", ECHO);
-        std::fs::write(&other, "#!/bin/sh\necho 'wth-app-parser deadbeef'\n").unwrap();
+        std::fs::write(&other, "#!/bin/sh\necho 'theuth-app-parser deadbeef'\n").unwrap();
         let h = helper(other);
         assert_eq!(
             h.check("x", &[]).await.unwrap_err(),

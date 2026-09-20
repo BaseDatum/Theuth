@@ -9,7 +9,7 @@ use snow::{Builder, HandshakeState, TransportState};
 use crate::conn::{MAX_MSG, PairHello};
 use crate::identity::{Identity, PROTOCOL, b64, params};
 
-/// `"wth-link-1" ‖ base64url(harness_pub)` — the prologue a harness with this
+/// `"theuth-link-1" ‖ base64url(harness_pub)` — the prologue a harness with this
 /// static expects ([`Identity::prologue`] from the other side).
 pub fn prologue_for(harness_pub: &[u8; 32]) -> Vec<u8> {
     let id = b64(harness_pub);
@@ -139,7 +139,7 @@ mod tests {
         let psk = [7u8; 32];
         let hello = PairHello {
             name: "Studio Mac".into(),
-            platform: "wth".into(),
+            platform: "theuth".into(),
         };
         let (hs, msg1) = pair(&d, &h.public, &psk, &hello).unwrap();
         let Some(Handshake::Pair {
@@ -151,7 +151,7 @@ mod tests {
         assert_eq!(key, d.public);
         assert_eq!(
             (hello.name.as_str(), hello.platform.as_str()),
-            ("Studio Mac", "wth")
+            ("Studio Mac", "theuth")
         );
         let (_, accept) = finish(hs, &msg2).unwrap();
         assert_eq!(accept, br#"{"name":"Node"}"#);

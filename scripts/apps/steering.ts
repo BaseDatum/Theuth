@@ -4,7 +4,7 @@
  *
  * Runs `steering-cases.json` through the real agent loop (RPC `send_input`), records every
  * `app`/`show` tool call, harness error, `ArtifactShown` and the reply text, re-validates each
- * `app` source locally with `@wth/apps/check` against the live tool catalog, and scores
+ * `app` source locally with `@theuth/apps/check` against the live tool catalog, and scores
  * first-pass validity (≥12/15 frontier, ≥9/15 small) and vehicle choice (≥16/20). Positional /
  * visual intent is never judged: every app output is written to disk and flagged for user review.
  *
@@ -15,7 +15,7 @@
  * generated `apps` skill for signatures (46 §9); a `load_skill` call before the first `app` call
  * does not affect first-pass scoring, which counts app attempts only.
  *
- *   bun scripts/apps/steering.ts --data-dir /tmp/wth-apps-e2e.XXXX [--url ws://127.0.0.1:7777]
+ *   bun scripts/apps/steering.ts --data-dir /tmp/theuth-apps-e2e.XXXX [--url ws://127.0.0.1:7777]
  *       [--models "amazon-bedrock/us.openai.gpt-6-astra:frontier,other/model:small"] [--effort high]
  *       [--suite all|steering|vehicle] [--limit N] [--concurrency 2] [--timeout 240000]
  *       [--fixture-state /abs/argo-state.json] [--visible a,b] [--out /tmp/dir] [--dry-run] [--self-test]
@@ -570,7 +570,7 @@ async function main() {
   };
   if (args["self-test"]) return selfTest();
 
-  const dataDir = str("data-dir", "/tmp/wth-apps-e2e.B4KN1l")!;
+  const dataDir = str("data-dir", "/tmp/theuth-apps-e2e.B4KN1l")!;
   const url = str("url", "ws://127.0.0.1:7777")!;
   const token = str("token") ?? readToken(dataDir);
   const suite = str("suite", "all")!;
@@ -580,7 +580,7 @@ async function main() {
   const effort = str("effort");
   const outDir = str(
     "out",
-    `/tmp/wth-apps-steering-${new Date().toISOString().replace(/[:.]/g, "-")}`,
+    `/tmp/theuth-apps-steering-${new Date().toISOString().replace(/[:.]/g, "-")}`,
   )!;
   const defaultTier = str("tier", "frontier")!;
   const visible: Record<string, true> = {};

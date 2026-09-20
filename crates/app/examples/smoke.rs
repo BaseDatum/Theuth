@@ -5,11 +5,11 @@
 //! secret-bearing press (no approval dialog, placeholder preserved in the
 //! result), duplicate ids, status, an atomic edit and its conflict.
 //!
-//!   WTH_APP_PARSER=packages/apps/dist/wth-app-parser \
+//!   THEUTH_APP_PARSER=packages/apps/dist/theuth-app-parser \
 //!     cargo run -p app --example smoke -- <data_dir> [record_call_id]
 //!
-//! Without `WTH_APP_PARSER` the helper is looked up beside this executable as
-//! `wth-app-parser-<hash>` (the production rule). With `record_call_id`, the
+//! Without `THEUTH_APP_PARSER` the helper is looked up beside this executable as
+//! `theuth-app-parser-<hash>` (the production rule). With `record_call_id`, the
 //! run skips publishing and reopens that record: a restart check. Each step
 //! prints one JSON line; a failed check exits 1.
 
@@ -245,9 +245,9 @@ fn press(
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber_init();
     let mut argv = std::env::args().skip(1);
-    let data_dir = match argv.next().or_else(|| std::env::var("WTH_DATA_DIR").ok()) {
+    let data_dir = match argv.next().or_else(|| std::env::var("THEUTH_DATA_DIR").ok()) {
         Some(d) => std::path::PathBuf::from(d),
-        None => std::env::temp_dir().join(format!("wth-app-smoke-{}", std::process::id())),
+        None => std::env::temp_dir().join(format!("theuth-app-smoke-{}", std::process::id())),
     };
     let reopen = argv.next();
     let reopened = reopen.is_some();
@@ -627,8 +627,8 @@ fn uuid_like() -> String {
 }
 
 fn tracing_subscriber_init() {
-    // Logs to stderr keep stdout as JSON lines; WTH_LOG=debug for the helper/tool path.
-    let filter = std::env::var("WTH_LOG").unwrap_or_else(|_| "warn".into());
+    // Logs to stderr keep stdout as JSON lines; THEUTH_LOG=debug for the helper/tool path.
+    let filter = std::env::var("THEUTH_LOG").unwrap_or_else(|_| "warn".into());
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)

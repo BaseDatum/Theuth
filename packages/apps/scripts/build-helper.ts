@@ -4,8 +4,8 @@
  *   OPENUI_TELEMETRY_DISABLED=1 DO_NOT_TRACK=1 bun run build:helper [--target bun-linux-x64]
  *
  * Outputs (packages/apps/dist/):
- *   wth-app-parser              stable name for local use
- *   wth-app-parser-<hash>       immutable name for release manifests
+ *   theuth-app-parser              stable name for local use
+ *   theuth-app-parser-<hash>       immutable name for release manifests
  *   library-hash                the hash as one lowercase hex line (same as generated/library-hash.txt)
  *
  * Fails if the bundle would contain React or the component UI: the helper must stay core-only.
@@ -58,7 +58,7 @@ for (const forbidden of [
     );
 }
 
-const stable = join(distDir, "wth-app-parser");
+const stable = join(distDir, "theuth-app-parser");
 const args = [
   "build",
   "--compile",

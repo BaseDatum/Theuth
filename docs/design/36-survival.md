@@ -403,7 +403,7 @@ New config keys: `agent.stream_idle_secs`, `agent.max_salvages` (both also
 - **Two-pass prefire compaction** (grok, default off upstream). Latency of the
   summariser has not been measured as a problem; a cache-hot continuation is
   already the cheap variant.
-- **Compaction suppression state machine** (grok `SUPPRESS_*`). wth's
+- **Compaction suppression state machine** (grok `SUPPRESS_*`). theuth's
   compaction cannot fail short of `keep_from == 0`: every summariser failure
   falls back to `cut`. Nothing to suppress.
 - **Stale-while-revalidate baseline** (jarvis `ReplacementBlocked`: keep the
@@ -411,7 +411,7 @@ New config keys: `agent.stream_idle_secs`, `agent.max_salvages` (both also
   has no fallible input today that renders as absence; revisit if the rebase
   log ever shows an A→B→A flap.
 - **Dropping the kept tail entirely at compaction** (grok: "frees almost
-  nothing and re-cues re-reading files"). wth's `limit/8` tail was tuned in
+  nothing and re-cues re-reading files"). theuth's `limit/8` tail was tuned in
   07 §14; a `compact_at`-relative A/B is a future experiment, not a change.
 - **Memory flush as a second pre-compaction call** (grok `flush.rs`, jarvis
   `memory_flush_prompt`). Harvest before the cut (10 §7) is that call.
@@ -467,7 +467,7 @@ it into a verification entry in §10.
   `cut` (§6.1); the epoch transcript file (§6.4).
 - `01-config-and-subagents.md` §2.5: the child result is capped (§4.1).
 - `13-snap.md` §0.6: superseded by §6.5.
-- `crates/wth/harness.md`: `spill/<session>/epoch_<n>.txt` listed beside the
+- `crates/theuth/harness.md`: `spill/<session>/epoch_<n>.txt` listed beside the
   tool-output spill files.
 
 ## 10. Verification
@@ -523,7 +523,7 @@ Each item is a runnable check. Results as of 2026-09-16: `just check`, `just cli
 
 ## 11. Implementation order (done)
 
-Each step leaves `wth` runnable.
+Each step leaves `theuth` runnable.
 
 1. `compact::classify` + needle corpus (§2.1, §2.5) — tests only.
 2. Retry loop and idle timer in `Turn::call` (§2.2, §2.3).

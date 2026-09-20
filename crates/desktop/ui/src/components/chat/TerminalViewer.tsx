@@ -237,7 +237,7 @@ export function TerminalViewer({ session, open, onOpenChange }: { session: strin
 /**
  * Header icon, shown once the session (or its subtree) has a PTY: a live `JobStarted.pty` or a retained terminal
  * found on load, the same way the globe follows the first `browser_*` call. `/terminals` reaches the viewer through
- * the `wth:terminals` window event even before then.
+ * the `theuth:terminals` window event even before then.
  */
 export function TerminalButton({ session }: { session: string }) {
   const api = useApi()
@@ -253,8 +253,8 @@ export function TerminalButton({ session }: { session: string }) {
     const h = (e: Event) => {
       if ((e as CustomEvent<{ session?: string }>).detail?.session === session) setOpen(true)
     }
-    window.addEventListener('wth:terminals', h)
-    return () => window.removeEventListener('wth:terminals', h)
+    window.addEventListener('theuth:terminals', h)
+    return () => window.removeEventListener('theuth:terminals', h)
   }, [session])
   return (
     <>

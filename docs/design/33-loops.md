@@ -19,7 +19,7 @@ it already does. Source material unchanged:
 ## 0. Decisions in one screen
 
 1. **A loop is a schedule file with a stop.** `until:` and/or `max_runs:`
-   on a 34 file. Nothing else is new: `~/.wth/schedules/<name>.md`, the
+   on a 34 file. Nothing else is new: `~/.theuth/schedules/<name>.md`, the
    watcher, the tick, one session per schedule, the wrapper, `Deliver`,
    `schedule.sqlite`, the `schedule` tool, `/schedules`, Settings ›
    Schedules, the RPC — all 34. Rejected (v0): a `loops/` directory and
@@ -302,7 +302,7 @@ JSON.
 > loop is going, call `schedule_status`. Read `skills/loops.md` before
 > designing one that supervises subagents.
 
-Measured, not asserted (30 §6.4), through `wth -p`: five requests that
+Measured, not asserted (30 §6.4), through `theuth -p`: five requests that
 should become loops ("keep fixing until the tests pass", "check this page
 every 10 minutes until it changes", "port these files, at most 8 tries",
 "brief me every weekday until #42 is closed", "set up a loop that ports
@@ -380,8 +380,8 @@ needs more than two minutes).
    `count_since_end` (test: fires · a skip · an end row · fires → count is
    the fires after the end row).
 3. **`lib.rs`**: §3 entire. Check, headless on a scratch data dir:
-   `every: 0s`, `until: test -f /tmp/wth-x`, `max_runs: 3`, `approvals:
-   false`, body "create /tmp/wth-x with `touch`" → one run, the next
+   `every: 0s`, `until: test -f /tmp/theuth-x`, `max_runs: 3`, `approvals:
+   false`, body "create /tmp/theuth-x with `touch`" → one run, the next
    tick's check passes, the file is gone, history ends `done: until passed
    after 1 runs`, log `delivered`/`not delivered`; body "do nothing" →
    three runs then `max_runs 3 reached`; `until: nonexistent-cmd` → no
@@ -416,7 +416,7 @@ rules, `set_enabled`, `yaml_str`, 4 tests), `store.rs` +60 + migration
 `enable_schedule`, TUI `pause`/`resume` + columns + history header,
 desktop toggle/columns/report, README, 34 pointers, 00 phase 23. Gates:
 `cargo clippy --workspace --all-targets -D warnings`, `cargo test` on
-`schedule` (16) / `tui` (43) / `rpc` / `wth`, `just ts-desktop`, `tsc -b`,
+`schedule` (16) / `tui` (43) / `rpc` / `theuth`, `just ts-desktop`, `tsc -b`,
 vitest 101 — green.
 
 Smoke found three defects in the first build; each is in §3 now:

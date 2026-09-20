@@ -478,7 +478,7 @@ Applied 2026-09-10. `Model.image` landed with 13.
 
 ## 10. Implementation order
 
-Each step leaves `wth` runnable. Snap is last on purpose.
+Each step leaves `theuth` runnable. Snap is last on purpose.
 
 1. **`CompactStyle` + plumbing, behaviour still `summary`.** Enum,
    `AgentConfig.compact_style`, `Compact.style: Option<_>`, thread

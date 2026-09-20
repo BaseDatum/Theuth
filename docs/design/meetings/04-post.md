@@ -332,9 +332,9 @@ Implemented 2026-09-20. `crates/meeting` +≈2 100 lines incl. tests
 `crates/voice/src/stt.rs` `Engine`/`Piece`/`Word` (+≈150); agent
 `Compact.head` (+≈40, five callers updated); rpc 8 methods + 9 wire types;
 desktop UI `components/meeting/{Review,Summary}.tsx`, store/rpc/api/settings
-additions. Verified headless over JSON-RPC on `/tmp/wth-meet` (the phase-2/3
+additions. Verified headless over JSON-RPC on `/tmp/theuth-meet` (the phase-2/3
 scratch dir; `ORT_DYLIB_PATH` at the TDT checkpoint's dylib,
-`WTH_SECRETS__KEY_STORE=file`, `models/` → `~/.wth/models` with
+`THEUTH_SECRETS__KEY_STORE=file`, `models/` → `~/.theuth/models` with
 `pyannote/{segmentation-3.0.onnx, wespeaker_en_voxceleb_CAM++.onnx}`),
 macOS 15, `anthropic/claude-haiku-4-5`, the phase-2 knowledge bundle, a debug
 build. The recordings used were phase-2/3 meetings of the two-voice `say`
@@ -360,7 +360,7 @@ carries the far end, 01 §9 check 5).
    `words: false` → text only). `cargo test -p agent`: the vision contract
    test extended — `compact_now(Some(Summary), Some(head))` installs the given
    text as the epoch head with zero model requests. `cargo check --workspace
-   --all-targets`, `cargo clippy -p meeting -p voice -p rpc -p wth
+   --all-targets`, `cargo clippy -p meeting -p voice -p rpc -p theuth
    --all-targets --no-deps -D warnings`, `cargo check -p rpc --features ts`,
    `just ts-desktop` clean; `bun run check` clean, vitest 34 files / 185.
 2. `meeting_post_retry` on the 150 s recording: `State{Post(Transcribing)}`,

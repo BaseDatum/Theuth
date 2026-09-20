@@ -16,8 +16,8 @@ use crate::ProgressCx;
 use crate::engine::Scrape;
 use web::progress::report;
 
-/// Token our requests present to `robots.txt` (`User-agent: wth`).
-const ROBOTS_UA: &str = "wth";
+/// Token our requests present to `robots.txt` (`User-agent: theuth`).
+const ROBOTS_UA: &str = "theuth";
 /// Body cap for one sitemap document.
 const SITEMAP_CHARS: usize = 8_000_000;
 /// Raw sitemap URLs gathered before scoping; bounds memory on huge indexes.
@@ -701,7 +701,7 @@ mod tests {
     }
 
     fn scrape_with(server: &MockServer, robots: bool) -> Scrape {
-        let fetcher = Fetcher::new("wth-test", 2_097_152, 5)
+        let fetcher = Fetcher::new("theuth-test", 2_097_152, 5)
             .expect("client")
             .allowing(vec![*server.address()]);
         let cfg = ScrapeConfig {

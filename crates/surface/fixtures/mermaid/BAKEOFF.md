@@ -42,7 +42,7 @@ carry byte offsets (`token: (21, Sep, 22)`), not line/col.
 
 ### Dependency weight and compile time
 
-| Crate | `cargo tree` crates (fresh project) | `cargo tree -d` duplicate versions | crates **new to the wth workspace** (`Cargo.lock` name diff) | cold `cargo build --release` of the harness |
+| Crate | `cargo tree` crates (fresh project) | `cargo tree -d` duplicate versions | crates **new to the theuth workspace** (`Cargo.lock` name diff) | cold `cargo build --release` of the harness |
 |---|---|---|---|---|
 | merman 0.7 (`ascii`) | 139 | 71 | 8: `merman merman-ascii merman-core htmlize json5 lalrpop-util lol_html ryu-js` | 33.9 s |
 | mmdflux 2.6 (no `cli`) | 30 | 12 | 1: `mmdflux` | 23.2 s |

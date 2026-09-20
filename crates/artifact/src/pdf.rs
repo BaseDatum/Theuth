@@ -118,7 +118,7 @@ pub fn format_diags(diags: &[Diag]) -> String {
     out
 }
 
-/// The `pdf` skill body (front matter `name: pdf`), for `wth` to write to `<data_dir>/skills/pdf.md`.
+/// The `pdf` skill body (front matter `name: pdf`), for `theuth` to write to `<data_dir>/skills/pdf.md`.
 pub fn skill() -> String {
     include_str!("../pdf.md").to_owned()
 }
@@ -501,7 +501,7 @@ impl Files {
             .pop()
             .unwrap_or_else(|| {
                 let n = self.0.minted.fetch_add(1, Ordering::Relaxed);
-                format!("/wth-{n}.typ").as_str().into_file_id()
+                format!("/theuth-{n}.typ").as_str().into_file_id()
             });
         self.0
             .live

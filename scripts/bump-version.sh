@@ -3,7 +3,7 @@
 #
 # One version, two files kept in lockstep:
 #   Cargo.toml                       [workspace.package].version — every crate
-#                                    (version.workspace = true), `wth --version`,
+#                                    (version.workspace = true), `t --version`,
 #                                    the TUI banner, macOS bundle, release scripts
 #   crates/desktop/tauri.conf.json   version — iOS CFBundleShortVersionString
 #                                    (tauri ios build has no Cargo.toml fallback)

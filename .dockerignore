@@ -33,7 +33,7 @@ crates/desktop/gen
 # Noise
 docs
 bindings
-wth.tar.gz
+theuth.tar.gz
 **/*.log
 **/*.md
 !README.md

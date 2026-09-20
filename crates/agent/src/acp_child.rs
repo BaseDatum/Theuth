@@ -1,9 +1,9 @@
 //! [`AcpChild`]: one external harness — a process from `agents.yaml` or a
-//! dialled node (32 §6.5) — bound to one wth session (design doc 06 §3.2–§3.5,
+//! dialled node (32 §6.5) — bound to one theuth session (design doc 06 §3.2–§3.5,
 //! §8.7). It answers the same [`UserInput`], [`CancelTurn`] and [`IsRunning`]
 //! messages as a native `Session`, so the supervisor, roster, approvals and
 //! `<subagent_result>` delivery are unchanged; every `session/update` becomes
-//! an [`AgentEvent`] on the wth session id (§3.3), every
+//! an [`AgentEvent`] on the theuth session id (§3.3), every
 //! `session/request_permission` goes through the registry's one approval gate
 //! (§3.4, §8.8). Turn claims, input consumption and returns go to the
 //! supervisor's continuation ledger (47 §4.3); the harness's plan is the
@@ -94,9 +94,9 @@ struct Queued {
 
 /// Per-turn state the translation accumulates into (06 §3.3).
 pub(crate) struct Turn {
-    /// wth session.
+    /// theuth session.
     session: SessionId,
-    /// wth turn.
+    /// theuth turn.
     id: TurnId,
     /// Accumulated `agent_message_chunk` text: the assistant message persisted at the end.
     text: String,
@@ -749,7 +749,7 @@ pub(crate) fn translate(update: SessionUpdate, turn: &mut Turn) -> Vec<AgentEven
     }
 }
 
-/// 47 §5.3: an ACP plan as wth todo items, upstream order and content kept.
+/// 47 §5.3: an ACP plan as theuth todo items, upstream order and content kept.
 /// Pending/in-progress/completed map directly; a status this build does not
 /// know is shown as pending rather than claimed done.
 fn plan_items(plan: &Plan) -> Vec<Todo> {
@@ -1257,7 +1257,7 @@ mod tests {
             ],
             "upstream order and status, nothing renamed or reordered"
         );
-        // ACP owns its plan: no wth cap, no duplicate transcript rendering.
+        // ACP owns its plan: no theuth cap, no duplicate transcript rendering.
         let long = Plan::new(
             (0..40)
                 .map(|i| {
@@ -1321,7 +1321,7 @@ mod tests {
     /// authoritative empty list, not a missing one.
     #[tokio::test]
     async fn stored_acp_plan_keeps_source_status_and_reopens() {
-        let dir = std::env::temp_dir().join(format!("wth-acp-{}", uuid::Uuid::now_v7()));
+        let dir = std::env::temp_dir().join(format!("theuth-acp-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
         let store = Store::open(&dir.join("sessions.sqlite")).await.unwrap();
         let id = SessionId::new();

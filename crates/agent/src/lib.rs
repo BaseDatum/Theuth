@@ -607,7 +607,7 @@ pub struct AgentInfo {
     pub parent: SessionId,
     /// 1 = direct child of the asked session.
     pub depth: u8,
-    /// External harness (`agents.yaml` key); `None` = wth.
+    /// External harness (`agents.yaml` key); `None` = theuth.
     pub agent: Option<String>,
     /// Model used.
     pub model: String,

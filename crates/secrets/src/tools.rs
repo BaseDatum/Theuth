@@ -88,7 +88,7 @@ impl Tool for SecretListTool {
         let list = self.0.list();
         if list.is_empty() {
             return Ok(ToolOutput::ok(
-                "no secrets; the user adds them with /secrets add, Settings › Secrets or `wth --secret-set`, \
+                "no secrets; the user adds them with /secrets add, Settings › Secrets or `t --secret-set`, \
                  or call secret_request",
             ));
         }

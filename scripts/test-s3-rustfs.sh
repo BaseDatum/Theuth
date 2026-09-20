@@ -4,19 +4,19 @@
 # Verifies the ops setup release-s3.sh and stage-linux.sh rely on:
 #   1. authenticated access (head/list bucket)
 #   2. authenticated PutObject under releases/ and staging/
-#   3. anonymous GET 200 under releases/ (bucket policy scripts/s3/wth-bucket-policy.json)
+#   3. anonymous GET 200 under releases/ (bucket policy scripts/s3/theuth-bucket-policy.json)
 #   4. anonymous GET 403 under staging/ (unsigned Linux tarballs stay private)
 #   5. anonymous PUT rejected
-# Cleans up its probe objects on exit (unless WTH_S3_KEEP_PROBE=1).
+# Cleans up its probe objects on exit (unless THEUTH_S3_KEEP_PROBE=1).
 #
 # Apply the policy first (admin creds; once per bucket):
-#   aws --endpoint-url "$WTH_S3_ENDPOINT" --region us-east-1 \
-#     s3api put-bucket-policy --bucket wth --policy file://scripts/s3/wth-bucket-policy.json
+#   aws --endpoint-url "$THEUTH_S3_ENDPOINT" --region us-east-1 \
+#     s3api put-bucket-policy --bucket t --policy file://scripts/s3/theuth-bucket-policy.json
 #
 # Env (same knobs and defaults as release-s3.sh; .env.signing loaded):
 #   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
-#   WTH_S3_ENDPOINT (https://s3.rwx.dev)  WTH_S3_BUCKET (wth)  WTH_S3_PREFIX (releases)
-#   WTH_S3_PUBLIC_BASE_URL (${ENDPOINT}/${BUCKET})   WTH_S3_DRY_RUN=1   WTH_S3_KEEP_PROBE=1
+#   THEUTH_S3_ENDPOINT (https://s3.rwx.dev)  THEUTH_S3_BUCKET (theuth)  THEUTH_S3_PREFIX (releases)
+#   THEUTH_S3_PUBLIC_BASE_URL (${ENDPOINT}/${BUCKET})   THEUTH_S3_DRY_RUN=1   THEUTH_S3_KEEP_PROBE=1
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -27,14 +27,14 @@ cd "$ROOT"
 command -v aws >/dev/null 2>&1 || { echo "error: aws CLI v2 required (brew install awscli)" >&2; exit 1; }
 command -v curl >/dev/null 2>&1 || { echo "error: curl required" >&2; exit 1; }
 
-ENDPOINT="${WTH_S3_ENDPOINT:-https://s3.rwx.dev}"; ENDPOINT="${ENDPOINT%/}"
-BUCKET="${WTH_S3_BUCKET:-wth}"
-PREFIX="${WTH_S3_PREFIX:-releases}"; PREFIX="${PREFIX#/}"; PREFIX="${PREFIX%/}"
+ENDPOINT="${THEUTH_S3_ENDPOINT:-https://s3.rwx.dev}"; ENDPOINT="${ENDPOINT%/}"
+BUCKET="${THEUTH_S3_BUCKET:-theuth}"
+PREFIX="${THEUTH_S3_PREFIX:-releases}"; PREFIX="${PREFIX#/}"; PREFIX="${PREFIX%/}"
 # Bucket root, not the releases prefix: the probe also GETs staging/.
-PUBLIC_BASE="${WTH_S3_PUBLIC_BASE_URL:-${ENDPOINT}/${BUCKET}/${PREFIX}}"; PUBLIC_BASE="${PUBLIC_BASE%/}"
+PUBLIC_BASE="${THEUTH_S3_PUBLIC_BASE_URL:-${ENDPOINT}/${BUCKET}/${PREFIX}}"; PUBLIC_BASE="${PUBLIC_BASE%/}"
 PUBLIC_ROOT="${PUBLIC_BASE%/"$PREFIX"}"
-DRY_RUN="${WTH_S3_DRY_RUN:-0}"
-KEEP_PROBE="${WTH_S3_KEEP_PROBE:-0}"
+DRY_RUN="${THEUTH_S3_DRY_RUN:-0}"
+KEEP_PROBE="${THEUTH_S3_KEEP_PROBE:-0}"
 
 [[ "$DRY_RUN" == "1" || ( -n "${AWS_ACCESS_KEY_ID:-}" && -n "${AWS_SECRET_ACCESS_KEY:-}" ) ]] \
   || { echo "error: AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY unset (see .env.signing.example)" >&2; exit 1; }
@@ -53,11 +53,11 @@ bad()  { echo "  FAIL: $1" >&2; FAIL=$((FAIL + 1)); }
 skip() { echo "  SKIP: $1"; SKIP=$((SKIP + 1)); }
 
 PROBE_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
-PROBE_BODY="wth rustfs probe ${PROBE_ID}"
+PROBE_BODY="theuth rustfs probe ${PROBE_ID}"
 PROBE_FILE="$(mktemp)"
 printf '%s\n' "$PROBE_BODY" >"$PROBE_FILE"
-REL_KEY="${PREFIX}/.wth-s3-probe/${PROBE_ID}.txt"
-STG_KEY="staging/.wth-s3-probe/${PROBE_ID}.txt"
+REL_KEY="${PREFIX}/.theuth-s3-probe/${PROBE_ID}.txt"
+STG_KEY="staging/.theuth-s3-probe/${PROBE_ID}.txt"
 UPLOADED=()
 
 cleanup() {
@@ -115,7 +115,7 @@ else
     ok "anonymous GET ${PUBLIC_ROOT}/${REL_KEY}"
   else
     bad "anonymous GET HTTP $CODE for ${PUBLIC_ROOT}/${REL_KEY} (expected 200 + body match)"
-    echo "    hint: aws --endpoint-url $ENDPOINT s3api put-bucket-policy --bucket $BUCKET --policy file://scripts/s3/wth-bucket-policy.json" >&2
+    echo "    hint: aws --endpoint-url $ENDPOINT s3api put-bucket-policy --bucket $BUCKET --policy file://scripts/s3/theuth-bucket-policy.json" >&2
   fi
   rm -f "$BODY"
 fi
@@ -137,7 +137,7 @@ echo "==> [5/5] public write rejected (anonymous PUT)"
 if [[ "$DRY_RUN" == "1" ]]; then
   skip "anonymous PUT (dry-run)"
 else
-  DENY_KEY="${PREFIX}/.wth-s3-probe/should-not-write-${PROBE_ID}.txt"
+  DENY_KEY="${PREFIX}/.theuth-s3-probe/should-not-write-${PROBE_ID}.txt"
   CODE="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 -X PUT -H 'Content-Type: text/plain' \
     --data should-fail "${PUBLIC_ROOT}/${DENY_KEY}" || echo 000)"
   case "$CODE" in

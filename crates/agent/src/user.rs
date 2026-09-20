@@ -406,7 +406,7 @@ mod tests {
 
     #[tokio::test]
     async fn validation_refuses_bad_input() {
-        let dir = std::env::temp_dir().join(format!("wth-user-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("theuth-user-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let png = dir.join("shot.png");
         std::fs::write(&png, b"12").unwrap();

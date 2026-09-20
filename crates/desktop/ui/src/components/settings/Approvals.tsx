@@ -49,7 +49,7 @@ export function Approvals({ session, onClose }: { session: string | null; onClos
               size="sm"
               onClick={() => {
                 onClose()
-                window.dispatchEvent(new CustomEvent('wth:approvals'))
+                window.dispatchEvent(new CustomEvent('theuth:approvals'))
               }}
             >
               Review

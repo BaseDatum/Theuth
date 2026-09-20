@@ -5,7 +5,7 @@ index fb50f51..0012650 100644
 @@ -1,4 +1,5 @@
 -import { ACTION_STEPS, ACTION_STEPS as ACTION_STEPS$1, BuiltinActionType, BuiltinActionType as BuiltinActionType$1, ToolNotFoundError, ToolNotFoundError as ToolNotFoundError$1, builtInValidators, createLibrary, createParser, createQueryManager, createStore, createStreamingParser, createStreamingParser as createStreamingParser$1, defineComponent, enrichErrors, evaluate, evaluateElementProps, extractToolResult, extractToolResult as extractToolResult$1, generatePrompt, generateSystemPrompt, isReactiveAssign, markReactive, mergeStatements, parseRules, parseStructuredRules, resolveStateField, tagSchemaId, validate, validate as validate$1 } from "@openuidev/lang-core";
 +import { ACTION_STEPS as ACTION_STEPS$1, BuiltinActionType, BuiltinActionType as BuiltinActionType$1, LimitError, ToolNotFoundError, ToolNotFoundError as ToolNotFoundError$1, builtInValidators, createEvalBudget, createLibrary, createParser, createStore, createStreamingParser, createStreamingParser as createStreamingParser$1, defineComponent, enrichErrors, evaluateElementProps, extractToolResult, extractToolResult as extractToolResult$1, generatePrompt, generateSystemPrompt, isReactiveAssign, markReactive, mergeStatements, parseRules, parseStructuredRules, resolveStateField, tagSchemaId, validate, validate as validate$1 } from "@openuidev/lang-core";
-+import { createActionId, createQueryManager, evaluateBudgeted, runActionPlan } from "./wth-runtime.mjs";
++import { createActionId, createQueryManager, evaluateBudgeted, runActionPlan } from "./theuth-runtime.mjs";
  import { observability } from "@openuidev/observability";
  import { Component, Fragment, createContext, useCallback, useContext, useEffect, useInsertionEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
  import { jsx, jsxs } from "react/jsx-runtime";
@@ -444,7 +444,7 @@ index 1f165ea..abba2e8 100644
 +++ b/dist/exports-CqIWw0ev.d.mts
 @@ -1,4 +1,6 @@
  import { ACTION_STEPS as ACTION_STEPS$1, ActionEvent, ActionEvent as ActionEvent$1, ActionPlan, ActionPlan as ActionPlan$1, ActionStep, BuiltinActionType as BuiltinActionType$1, ComponentGroup, ComponentPromptSpec, ComponentRenderProps, DefinedComponent, ElementNode, EvaluationContext, InferStateFieldValue, Library, LibraryDefinition, McpClientLike, McpClientLike as McpClientLike$1, OpenUIError, OpenUIError as OpenUIError$1, ParseResult, ParseResult as ParseResult$1, ParsedRule, ParsedRule as ParsedRule$1, PromptOptions, PromptSpec, ReactiveAssign, StateField, StateField as StateField$1, SubComponentOf, SystemPromptOptions, SystemPromptSpec, ToolDescriptor, ToolNotFoundError as ToolNotFoundError$1, ToolProvider, ToolSpec, ValidatorFn, builtInValidators, createParser, createStreamingParser as createStreamingParser$1, extractToolResult as extractToolResult$1, generatePrompt, generateSystemPrompt, isReactiveAssign, mergeStatements, parseRules, parseStructuredRules, tagSchemaId, validate as validate$1 } from "@openuidev/lang-core";
-+import { ActionEndEvent, ActionStartEvent, QueryStatus, ScopedActionEvent, ToolCallMeta } from "./wth-runtime.mjs";
++import { ActionEndEvent, ActionStartEvent, QueryStatus, ScopedActionEvent, ToolCallMeta } from "./theuth-runtime.mjs";
 +import { MutationResult } from "@openuidev/lang-core";
  import * as _$react from "react";
  import React$1, { ReactNode } from "react";
@@ -453,7 +453,7 @@ index 1f165ea..abba2e8 100644
  declare function createLibrary$1(input: LibraryDefinition$1): Library$1;
  //#endregion
  //#region src/Renderer.d.ts
-+/** Function provider receiving wth provenance with every call (patch). */
++/** Function provider receiving theuth provenance with every call (patch). */
 +type MetaToolProviderFn = (toolName: string, args: Record<string, unknown>, meta: ToolCallMeta) => Promise<unknown>;
 +/** Host handle published through `RendererProps.runtimeRef` (patch). */
 +interface OpenUIRuntime {
@@ -547,15 +547,15 @@ index c5b3745..befd76f 100644
 +import { $ as ComponentRenderer, A as parseRules, B as FormNameContext, C as createParser, D as generateSystemPrompt, E as generatePrompt, F as FormValidationContextValue, G as useRenderNode, H as useGetFieldValue, I as useCreateFormValidation, J as useTriggerAction, K as useSetDefaultValue, L as useFormValidation, M as tagSchemaId, N as validate, O as isReactiveAssign, P as FormValidationContext, Q as ComponentRenderProps, R as useStateField, S as builtInValidators, T as extractToolResult, U as useIsQueryLoading, V as useFormName, W as useIsStreaming, X as RendererProps, Y as Renderer, Z as ComponentGroup, _ as SystemPromptSpec, a as BuiltinActionType, at as ToolDescriptor, b as ToolSpec, c as EvaluationContext, d as ParseResult, et as DefinedComponent, f as ParsedRule, g as SystemPromptOptions, h as StateField, i as ActionStep, it as SubComponentOf, j as parseStructuredRules, k as mergeStatements, l as McpClientLike, m as ReactiveAssign, n as ActionEvent, nt as LibraryDefinition, o as ComponentPromptSpec, ot as createLibrary, p as PromptSpec, q as useSetFieldValue, r as ActionPlan, rt as PromptOptions, s as ElementNode, st as defineComponent, t as ACTION_STEPS, tt as Library, u as OpenUIError, v as ToolNotFoundError, w as createStreamingParser, x as ValidatorFn, y as ToolProvider, z as reactive, MetaToolProviderFn, OpenUIRuntime } from "./exports-CqIWw0ev.mjs";
 +export { MetaToolProviderFn, OpenUIRuntime, ACTION_STEPS, ActionEvent, ActionPlan, ActionStep, BuiltinActionType, ComponentGroup, ComponentPromptSpec, ComponentRenderProps, ComponentRenderer, DefinedComponent, ElementNode, EvaluationContext, FormNameContext, FormValidationContext, FormValidationContextValue, Library, LibraryDefinition, McpClientLike, OpenUIError, ParseResult, ParsedRule, PromptOptions, PromptSpec, ReactiveAssign, Renderer, RendererProps, StateField, SubComponentOf, SystemPromptOptions, SystemPromptSpec, ToolDescriptor, ToolNotFoundError, ToolProvider, ToolSpec, ValidatorFn, builtInValidators, createLibrary, createParser, createStreamingParser, defineComponent, extractToolResult, generatePrompt, generateSystemPrompt, isReactiveAssign, mergeStatements, parseRules, parseStructuredRules, reactive, tagSchemaId, useCreateFormValidation, useFormName, useFormValidation, useGetFieldValue, useIsQueryLoading, useIsStreaming, useRenderNode, useSetDefaultValue, useSetFieldValue, useStateField, useTriggerAction, validate };
 \ No newline at end of file
-diff --git a/dist/wth-runtime.d.mts b/dist/wth-runtime.d.mts
+diff --git a/dist/theuth-runtime.d.mts b/dist/theuth-runtime.d.mts
 new file mode 100644
 index 0000000..0ac9d38
 --- /dev/null
-+++ b/dist/wth-runtime.d.mts
++++ b/dist/theuth-runtime.d.mts
 @@ -0,0 +1,93 @@
 +import { ActionEvent, ActionPlan, EvaluationContext, MutationNode, MutationResult, OpenUIError, ParseResult, QueryNode, QuerySnapshot, Store } from "@openuidev/lang-core";
 +
-+//#region wth/runtime.d.ts (patch)
++//#region theuth/runtime.d.ts (patch)
 +/** Why a provider call happens. Timers are `refresh`; only real activations are `press`. */
 +type ToolCallTrigger = "load" | "refresh" | "state_change" | "press";
 +/** Provenance attached to every provider call by the patched renderer. */
@@ -646,16 +646,16 @@ index 0000000..0ac9d38
 +declare function runActionPlan(input: RunActionPlanInput): Promise<void>;
 +//#endregion
 +export { type ActionEndEvent, type ActionStartEvent, MIN_REFRESH_INTERVAL_S, type MetaToolProvider, type QueryManager, type QueryManagerOptions, type QueryStatus, type RunActionPlanInput, STATE_CHANGE_DEBOUNCE_MS, type ScopedActionEvent, type ToolCallMeta, type ToolCallTrigger, createActionId, createQueryManager, evaluateBudgeted, runActionPlan };
-diff --git a/dist/wth-runtime.mjs b/dist/wth-runtime.mjs
+diff --git a/dist/theuth-runtime.mjs b/dist/theuth-runtime.mjs
 new file mode 100644
 index 0000000..3938f7e
 --- /dev/null
-+++ b/dist/wth-runtime.mjs
++++ b/dist/theuth-runtime.mjs
 @@ -0,0 +1,582 @@
 +import { ACTION_STEPS, BuiltinActionType, McpToolError, ToolNotFoundError, createEvalBudget, evaluate } from "@openuidev/lang-core";
-+//#region wth/runtime.ts (patch)
++//#region theuth/runtime.ts (patch)
 +/**
-+* wth patch: replaces lang-core's createQueryManager for the React renderer and owns
++* theuth patch: replaces lang-core's createQueryManager for the React renderer and owns
 +* action-plan execution. Every provider call receives ToolCallMeta
 +* {statementId, trigger, actionId?, signal}. Triggers: load (first fetch), refresh
 +* (timer), state_change (arguments changed), press (real activation: mutation, pressed
@@ -1243,9 +1243,9 @@ index dce573d..cc410b4 100644
          "default": "./dist/index.cjs"
        }
 +    },
-+    "./wth-runtime": {
-+      "types": "./dist/wth-runtime.d.mts",
-+      "default": "./dist/wth-runtime.mjs"
++    "./theuth-runtime": {
++      "types": "./dist/theuth-runtime.d.mts",
++      "default": "./dist/theuth-runtime.mjs"
      }
    },
    "react-native": "./dist/index.native.cjs",

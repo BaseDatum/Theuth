@@ -420,7 +420,7 @@ mod tests {
 
     #[tokio::test]
     async fn private_session_refuses_mutations_durable_writes() {
-        let dir = std::env::temp_dir().join(format!("wth-ktools-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("theuth-ktools-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let rt = runtime::Runtime::new(figment::Figment::new(), dir.clone());
         let k = Knowledge::open(&dir, rt).await.unwrap();

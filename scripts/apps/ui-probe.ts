@@ -8,7 +8,7 @@
  * Launch (both long-running; the parent starts them, e.g. through `hub start`):
  *
  *   bun scripts/apps/perf-fixture.ts --port 18790
- *   bun scripts/apps/ui-probe.ts --url ws://127.0.0.1:18776 --data-dir /tmp/wth-apps-e2e.XXXX \
+ *   bun scripts/apps/ui-probe.ts --url ws://127.0.0.1:18776 --data-dir /tmp/theuth-apps-e2e.XXXX \
  *       --fixture-url http://127.0.0.1:18790 [--port 18779] [--provider perf]
  *
  * On boot it connects, subscribes to every event (timestamped on arrival), registers the provider

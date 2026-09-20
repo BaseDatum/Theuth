@@ -314,7 +314,7 @@ impl Suspension {
 /// replaces it for new invocations.
 pub struct InstallExecutionGate(pub Arc<dyn ExecutionGate>);
 
-/// `ask` → [`Decision`]: the same gate as [`Invoke`] for a tool call wth does
+/// `ask` → [`Decision`]: the same gate as [`Invoke`] for a tool call theuth does
 /// not run itself — an external harness's `session/request_permission`
 /// (design doc 06 §3.4, §8.8). Timeout and a missing approval actor are `Deny`.
 #[derive(Clone, Debug)]
@@ -731,7 +731,7 @@ impl ToolRegistry {
         action
     }
 
-    /// [`Self::effective`] for a call wth runs or vouches for, shared by
+    /// [`Self::effective`] for a call theuth runs or vouches for, shared by
     /// [`Invoke`] and [`ExternalApproval`]: `Ok(None)` run now,
     /// `Ok(Some(approval))` ask the human first, `Err(why)` refuse.
     fn gate(

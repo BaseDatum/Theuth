@@ -39,11 +39,11 @@ async function run(stdin: string): Promise<{
   return { code, lines, stdout };
 }
 
-describe("wth-app-parser protocol", () => {
+describe("theuth-app-parser protocol", () => {
   test("--version prints the library hash", async () => {
     const r = await spawnHelper("", "--version");
     expect(r.code).toBe(0);
-    expect(r.stdout).toBe(`wth-app-parser ${libraryHash}\n`);
+    expect(r.stdout).toBe(`theuth-app-parser ${libraryHash}\n`);
   });
 
   test("EOF with no requests exits 0 and prints nothing", async () => {

@@ -91,10 +91,10 @@ struct Live {
     rpc: Option<Arc<Rpc>>,
 }
 
-/// `"<platform> · wth <version>"`, or `"<platform> · offline"` (32 §6.5, §7).
+/// `"<platform> · theuth <version>"`, or `"<platform> · offline"` (32 §6.5, §7).
 fn describe(row: &Row, online: bool) -> String {
     match (online, row.platform.is_empty()) {
-        (true, _) => format!("{} · wth {}", row.platform, row.version),
+        (true, _) => format!("{} · theuth {}", row.platform, row.version),
         (false, true) => "offline".to_owned(),
         (false, false) => format!("{} · offline", row.platform),
     }
@@ -440,7 +440,7 @@ async fn add(ctx: Arc<Ctx>, m: Add) -> Result<Node, String> {
     }
     let hello = PairHello {
         name: ctx.hello_name.clone(),
-        platform: "wth".to_owned(),
+        platform: "theuth".to_owned(),
     };
     let (transport, accept) = match conn::pair(&mut sock, &ctx.identity, &parsed, &hello).await {
         Ok(x) => x,
@@ -661,14 +661,14 @@ impl Message<LinkEvent> for NodesActor {
     }
 }
 
-/// This machine's hostname; `"wth"` when `hostname` fails.
+/// This machine's hostname; `"theuth"` when `hostname` fails.
 fn hostname() -> String {
     std::process::Command::new("hostname")
         .output()
         .ok()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "wth".to_owned())
+        .unwrap_or_else(|| "theuth".to_owned())
 }
 
 #[async_trait::async_trait]
@@ -794,7 +794,7 @@ mod tests {
         assert_eq!(describe(&row, false), "offline");
         row.platform = "linux".into();
         row.version = "0.4.1".into();
-        assert_eq!(describe(&row, true), "linux · wth 0.4.1");
+        assert_eq!(describe(&row, true), "linux · theuth 0.4.1");
         assert_eq!(describe(&row, false), "linux · offline");
     }
 }

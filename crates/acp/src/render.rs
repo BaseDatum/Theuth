@@ -103,7 +103,7 @@ pub fn risk(kind: ToolKind) -> Risk {
     }
 }
 
-/// The ACP kind label for one of wth's tools (06 §4.1): builtins by name, the
+/// The ACP kind label for one of theuth's tools (06 §4.1): builtins by name, the
 /// rest (MCP tools) by risk — `ReadOnly` → `other`, else `execute`.
 #[must_use]
 pub fn kind(tool_name: &str, risk: Risk) -> ToolKind {

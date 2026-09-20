@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
-# wth-relay + browser UI (design doc 31 §5.4 / §7.6). Build from the repo root:
-#   docker build -f deploy/relay/Dockerfile -t wth-relay .
+# theuth-relay + browser UI (design doc 31 §5.4 / §7.6). Build from the repo root:
+#   docker build -f deploy/relay/Dockerfile -t theuth-relay .
 # Static musl binary, rustls (no OpenSSL), `FROM scratch`. UI is Vite `dist/` at `/web`.
 #
 # Why BUILDPLATFORM on the UI stage?
@@ -33,17 +33,17 @@ RUN sed -i 's|members = \["crates/\*"\]|members = ["crates/relay"]|' Cargo.toml 
 ENV RUSTFLAGS="-C target-feature=+crt-static"
 # Cache ids are per-platform: buildx runs amd64+arm64 in parallel and a shared
 # registry cache races on `.cargo-ok` (`File exists`).
-RUN --mount=type=cache,id=wth-relay-cargo-registry-${TARGETPLATFORM},target=/usr/local/cargo/registry \
-    --mount=type=cache,id=wth-relay-cargo-target-${TARGETPLATFORM},target=/src/target \
+RUN --mount=type=cache,id=theuth-relay-cargo-registry-${TARGETPLATFORM},target=/usr/local/cargo/registry \
+    --mount=type=cache,id=theuth-relay-cargo-target-${TARGETPLATFORM},target=/src/target \
     target="$(rustc -vV | sed -n 's/^host: //p')" \
  && cargo build --release -p relay --target "$target" \
- && cp "target/$target/release/wth-relay" /wth-relay
+ && cp "target/$target/release/theuth-relay" /theuth-relay
 
 # ── runtime ───────────────────────────────────────────────────────────────────
 FROM scratch
-COPY --from=build /wth-relay /wth-relay
+COPY --from=build /theuth-relay /theuth-relay
 COPY --from=web --chown=65532:65532 /desktop/ui/dist /web
 USER 65532
 EXPOSE 8787
-ENTRYPOINT ["/wth-relay"]
+ENTRYPOINT ["/theuth-relay"]
 CMD ["--listen", "0.0.0.0:8787", "--web", "/web"]

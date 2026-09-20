@@ -51,7 +51,7 @@ export function openContextPicker(
   expectedRevision?: string,
 ): void {
   window.dispatchEvent(
-    new CustomEvent<Request>('wth:shake', { detail: { session, category, targets, expectedRevision } }),
+    new CustomEvent<Request>('theuth:shake', { detail: { session, category, targets, expectedRevision } }),
   )
 }
 
@@ -120,7 +120,7 @@ type Phase =
  * Mounted once in `Composer`. Fetches the server inventory of the whole active
  * context, lets the user pick, reviews the exact expanded set, then sends one
  * `remove_context`. No optimistic transcript surgery: success emits
- * `wth:reload-session` and a toast; failure keeps everything and never retries
+ * `theuth:reload-session` and a toast; failure keeps everything and never retries
  * a destructive RPC by itself.
  */
 export function ContextPicker({ session }: { session: string }) {
@@ -137,8 +137,8 @@ export function ContextPicker({ session }: { session: string }) {
       if (!api) return toast.error('Not connected')
       setReq({ ...d, api, harness })
     }
-    window.addEventListener('wth:shake', on)
-    return () => window.removeEventListener('wth:shake', on)
+    window.addEventListener('theuth:shake', on)
+    return () => window.removeEventListener('theuth:shake', on)
   }, [session])
 
   // Inventory load; `req` identity guards a reply for a picker already closed or reopened.
@@ -220,7 +220,7 @@ export function ContextPicker({ session }: { session: string }) {
       // `ContextChanged` marks the slice stale; the settled reload here only targets the harness still on screen.
       if (useHarnesses.getState().active === req.harness)
         window.dispatchEvent(
-          new CustomEvent('wth:reload-session', { detail: { session: req.session, settled: true } }),
+          new CustomEvent('theuth:reload-session', { detail: { session: req.session, settled: true } }),
         )
       setReq(null)
     } catch (e) {
@@ -250,7 +250,7 @@ export function ContextPicker({ session }: { session: string }) {
         onCloseAutoFocus={(e) => {
           // The opener may be a transcript button unmounted by the reload; the composer is always there.
           e.preventDefault()
-          window.dispatchEvent(new Event('wth:focus-composer'))
+          window.dispatchEvent(new Event('theuth:focus-composer'))
         }}
       >
         <DialogHeader>

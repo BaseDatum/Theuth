@@ -223,7 +223,7 @@ struct Live {
     parent: Option<(SessionId, String)>,
 }
 
-/// What runs a session's turns: wth's own loop, or an external ACP harness
+/// What runs a session's turns: theuth's own loop, or an external ACP harness
 /// (design doc 06 §3.2). Both take [`UserInput`], [`CancelTurn`] and [`IsRunning`].
 #[derive(Clone)]
 enum LiveActor {
@@ -275,7 +275,7 @@ impl LiveActor {
         }
     }
 
-    /// The wth loop behind this session; `Err` for an external harness.
+    /// The theuth loop behind this session; `Err` for an external harness.
     fn native(&self) -> Result<&ActorRef<Session>, String> {
         match self {
             Self::Native(a) => Ok(a),
@@ -313,9 +313,9 @@ pub struct SpawnChild {
     pub name: Option<String>,
     /// First input of the child.
     pub task: String,
-    /// External harness (`agents.yaml` key) or registered node (32 §6.5); `None` runs a wth subagent (design doc 06 §3.2).
+    /// External harness (`agents.yaml` key) or registered node (32 §6.5); `None` runs a theuth subagent (design doc 06 §3.2).
     pub agent: Option<String>,
-    /// Working directory for an external harness's `session/new`; default: wth's cwd.
+    /// Working directory for an external harness's `session/new`; default: theuth's cwd.
     pub cwd: Option<PathBuf>,
     /// Child model (`provider/model`); default `agent.subagents.model`, then `agent.model`.
     pub model: Option<String>,
@@ -382,7 +382,7 @@ pub struct Roster {
 pub struct RegisterNode {
     /// The name the model uses; one namespace with `agents.yaml`.
     pub name: String,
-    /// The description shown after the name, e.g. `linux · wth 0.4.1` or `macos · offline`.
+    /// The description shown after the name, e.g. `linux · theuth 0.4.1` or `macos · offline`.
     pub describe: String,
     /// Opens one connection per remote child.
     pub dialer: Arc<dyn acp::Dialer>,
@@ -3042,7 +3042,7 @@ impl Agents {
                     relationship,
                     state,
                     send: true,
-                    // An external harness cannot call wth peer tools (50 §6.4).
+                    // An external harness cannot call theuth peer tools (50 §6.4).
                     reply: kind == PeerKind::Native,
                     stream: false,
                 };
@@ -4034,7 +4034,7 @@ impl Message<ContextItems> for Agents {
         let row = self.stored(m.session).await?;
         let live = self.live(m.session).and_then(|a| a.native().ok());
         match (row.agent.is_some(), live) {
-            // The wth loop owns admission: busy shows as `editable: false` with its reason.
+            // The theuth loop owns admission: busy shows as `editable: false` with its reason.
             (false, Some(a)) => a.ask(ContextItemsNow).await.map_err(|e| e.to_string()),
             (external, None) | (external @ true, Some(_)) => {
                 let mut s = self
@@ -5247,7 +5247,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
     // 50 §2.1: the switch and where it came from; every persisted root and
     // parent link root-first, so the registry's synchronous view never sees
     // a dangling ancestor; then restart accounting (§7: nothing re-runs).
-    let source = if std::env::var_os("WTH_AGENT__COMMUNICATION").is_some() {
+    let source = if std::env::var_os("THEUTH_AGENT__COMMUNICATION").is_some() {
         "env"
     } else if rt.config.contains("agent.communication") {
         "config"
@@ -5354,11 +5354,11 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             .ask(RegisterPrompt {
                 plugin: "agent",
                 text: format!(
-                    "This harness is `wth`; its state is under {d}: config.yaml (every plugin's section: \
+                    "This harness is `theuth`; its state is under {d}: config.yaml (every plugin's section: \
                      `agent.model` = default `provider/model`, `tools.policy`, `rpc`, `web`, `knowledge`, `surface`, `signal`, `secrets`), \
                      secrets.vault (encrypted; provider keys and every other secret — secret_list shows the names, never values), \
                      prompt.md (standing instructions, read every call), \
-                     skills/ (markdown skills; this index), knowledge/, sessions.sqlite, logs/wth.log.<date>. \
+                     skills/ (markdown skills; this index), knowledge/, sessions.sqlite, logs/theuth.log.<date>. \
                      Load the `harness` skill before editing any of them; it has the full layout and every key. \
                      config.yaml is read once at startup (mcp/, skills/, prompt.md and the vault are live); \
                      the user switches the running model with /model.",
@@ -6353,7 +6353,7 @@ pub(crate) mod tests {
                 ),
             },
         ];
-        let dir = std::env::temp_dir().join(format!("wth-preview-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("theuth-preview-{}", uuid::Uuid::new_v4()));
         materialize(&mut history, &messages, &epochs, &dir);
         let paths: Vec<Option<String>> = history
             .iter()
@@ -6510,7 +6510,7 @@ pub(crate) mod tests {
 
     #[test]
     fn check_files_rejects_what_a_provider_would() {
-        let dir = std::env::temp_dir().join(format!("wth-attach-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("theuth-attach-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let png = dir.join("shot.png");
         std::fs::write(&png, b"\x89PNG").unwrap();
@@ -6570,7 +6570,7 @@ pub(crate) mod tests {
     /// [`agents`] with `agent.communication` preset. Shared with the network
     /// module's tests, which drive the same value through its hooks.
     pub(crate) async fn agents_with(communication: bool) -> Agents {
-        let dir = std::env::temp_dir().join(format!("wth-agents-{}", uuid::Uuid::now_v7()));
+        let dir = std::env::temp_dir().join(format!("theuth-agents-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
         let cfg = Arc::new(AgentConfig::default());
         Agents {
@@ -6645,7 +6645,7 @@ pub(crate) mod tests {
     /// bare ids are rejected; a unique bare id canonicalises.
     #[test]
     fn vision_candidate_requires_exact_image_capable_entry() {
-        let dir = std::env::temp_dir().join(format!("wth-vision-{}", uuid::Uuid::now_v7()));
+        let dir = std::env::temp_dir().join(format!("theuth-vision-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
         let catalog = vision_catalog(&dir);
         let only_test = |ns: &str| ns == "testvis";
@@ -6733,7 +6733,7 @@ pub(crate) mod tests {
     /// with an image-capable catalog sibling reports `false`.
     #[test]
     fn model_info_image_is_effective_support() {
-        let dir = std::env::temp_dir().join(format!("wth-vision-{}", uuid::Uuid::now_v7()));
+        let dir = std::env::temp_dir().join(format!("theuth-vision-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
         let catalog = vision_catalog(&dir);
         let (p, m) = catalog.get("testvis/eyes").unwrap();
@@ -7144,7 +7144,7 @@ pub(crate) mod tests {
     /// write into an unwritable location changes nothing.
     #[test]
     fn global_switch_write_is_atomic_and_line_preserving() {
-        let dir = std::env::temp_dir().join(format!("wth-cfg-{}", uuid::Uuid::now_v7()));
+        let dir = std::env::temp_dir().join(format!("theuth-cfg-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.yaml");
         std::fs::write(&path, "agent:\n  model: x # keep\n  communication: false\n").unwrap();
@@ -7278,7 +7278,7 @@ pub(crate) mod tests {
             Some(p),
             None,
             "x".into(),
-            vec![PathBuf::from("/nonexistent/wth.png")],
+            vec![PathBuf::from("/nonexistent/theuth.png")],
             InputOrigin::External,
         )
         .await;

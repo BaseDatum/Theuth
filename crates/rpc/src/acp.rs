@@ -1,5 +1,5 @@
 //! The agent half of the Agent Client Protocol (design doc 06 §4, §8.12-13):
-//! `wth --acp` on stdio, and one connection per link mode-1 conn when this
+//! `t --acp` on stdio, and one connection per link mode-1 conn when this
 //! harness is a node (32 §4.3, §5.3). The same "registry lookup + `ask`"
 //! glue as [`crate::api`], with the ACP client (an editor, or a parent
 //! harness) as the only frontend.
@@ -8,7 +8,7 @@
 //! the bus: it turns [`AgentEvent`]s into `session/update` notifications on
 //! the connection that owns the session, answers `session/prompt` when the
 //! session's `TurnFinished` arrives, and forwards [`ApprovalRequested`] as
-//! `session/request_permission`. The wth [`SessionId`] string *is* the ACP
+//! `session/request_permission`. The theuth [`SessionId`] string *is* the ACP
 //! session id.
 
 use std::collections::HashMap;
@@ -137,7 +137,7 @@ async fn serve(
     let for_prompt = relay.clone();
     let result = Agent
         .builder()
-        .name("wth")
+        .name("theuth")
         .on_receive_request(
             async move |req: InitializeRequest, responder, _cx| {
                 responder.respond(
@@ -149,7 +149,7 @@ async fn serve(
                                     PromptCapabilities::new().embedded_context(true).image(true),
                                 ),
                         )
-                        .agent_info(Implementation::new("wth", env!("CARGO_PKG_VERSION"))),
+                        .agent_info(Implementation::new("theuth", env!("CARGO_PKG_VERSION"))),
                 )
             },
             agent_client_protocol::on_receive_request!(),
@@ -260,7 +260,7 @@ fn rpc_error(e: ErrorObjectOwned) -> Error {
     Error::new(e.code(), e.message())
 }
 
-/// The wth session behind an ACP session id.
+/// The theuth session behind an ACP session id.
 fn parse_session(id: &AcpSessionId) -> Result<SessionId, Error> {
     id.0.parse()
         .map_err(|_| Error::invalid_params().data(format!("unknown session {id}")))
@@ -336,7 +336,7 @@ fn save_blob(data: &str, mime: &str, data_dir: &Path) -> anyhow::Result<Option<P
     Ok(Some(api::save_blob(&bytes, ext, data_dir)?))
 }
 
-/// wth's stop reason string as ACP's: matching serde names pass through,
+/// theuth's stop reason string as ACP's: matching serde names pass through,
 /// anything else (`error`, provider-specific) is `end_turn`.
 fn stop_reason(s: String) -> StopReason {
     serde_json::from_value(serde_json::Value::String(s)).unwrap_or(StopReason::EndTurn)
@@ -565,7 +565,7 @@ impl Message<AgentEvent> for Relay {
     }
 }
 
-/// A wth todo list as an ACP plan, order kept. Pending / in progress / done
+/// A theuth todo list as an ACP plan, order kept. Pending / in progress / done
 /// map directly. ACP has no blocked or dropped status: blocked stays pending
 /// with the reason in the text, dropped is completed but says so — a client
 /// must not read a dropped item as work done. Priority is not tracked here.
@@ -757,7 +757,7 @@ mod tests {
 
     #[test]
     fn image_block_becomes_sha_named_file() {
-        let dir = std::env::temp_dir().join(format!("wth-acp-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("theuth-acp-{}", uuid::Uuid::new_v4()));
         let bytes = b"\x89PNG\r\n\x1a\nnot really a png";
         let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
         let pdf = b"%PDF-1.7 not really";

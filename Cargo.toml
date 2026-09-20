@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "1.6.0"
+version = "1.7.0"
 edition = "2024"
 publish = false
 
@@ -167,7 +167,7 @@ anydoc = "0.2"
 monty-pool = "0.0.23"
 monty-types = "0.0.23"
 monty-fs = "0.0.23"
-# The worker lives inside `wth` (`wth subprocess`, design doc 08 §9): the protocol state
+# The worker lives inside `theuth` (`t subprocess`, design doc 08 §9): the protocol state
 # machine + interpreter, and the limiting allocator it requires as the global allocator.
 monty-proto = { version = "0.0.23", features = ["worker"] }
 monty-alloc = { version = "0.0.23", features = ["exit-code"] }
@@ -186,7 +186,7 @@ presage-store-sqlite = { git = "https://github.com/whisperfish/presage", rev = "
 qrcode = { version = "0.14", default-features = false }
 # Snap compaction frames (design doc 13 §0.4): 8-bit grayscale encode only; not `image`.
 png = "0.17"
-# Agent Client Protocol (design doc 06): external harnesses as subagents, `wth --acp`.
+# Agent Client Protocol (design doc 06): external harnesses as subagents, `t --acp`.
 # 2.x is a rewrite; pinned exactly, only the v1 schema module is used (06 §7).
 agent-client-protocol = "=2.1.0"
 # Image input (design doc 17): OS clipboard image read — bracketed paste is text-only.
@@ -219,7 +219,7 @@ enigo = "0.6"
 image = { version = "0.25", default-features = false, features = ["png"] }
 objc2-core-graphics = { version = "0.3", features = ["CGWindow"] }
 # Desktop menubar app (design doc 25): Tauri 2 shell around the RPC client; the daemon is the
-# bundled `wth` sidecar started on a pty (design doc 18). Plugins replace hand-written
+# bundled `theuth` sidecar started on a pty (design doc 18). Plugins replace hand-written
 # NSStatusItem / LaunchServices / NSUserNotification glue.
 tauri = { version = "2", features = ["tray-icon", "image-png", "protocol-asset", "macos-private-api"] }  # macos-private-api: the transparent island (53 decision 8)
 tauri-build = "2"
@@ -240,7 +240,7 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 # Link (design doc 31): the harness pairs with phones through a stateless relay.
 # snow = Noise handshakes (NK registration, IKpsk2 pairing, IK sessions; suite
 # 25519_AESGCM_SHA256 so the device side is pure WebCrypto). tokio-tungstenite =
-# harness → relay WebSocket; axum/axum-server/tower-http = the `wth-relay` server
+# harness → relay WebSocket; axum/axum-server/tower-http = the `theuth-relay` server
 # (crates/relay); dashmap = its id → uplink table.
 snow = "0.10"
 tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
@@ -252,7 +252,7 @@ dashmap = "6"
 # accepted with an explicit maturity waiver; the conformance/interop gates of 50 §12 still apply.
 # Published names carry `-lf`; the future local plugin crate is `a2a`, so the core SDK is aliased
 # `a2a-types` (imports are `a2a_types::…`). Default `rustls-tls` = aws-lc-rs, the provider
-# `wth::main` installs. Both pull `a2a-pb` (prost/pbjson): the HTTP wire is ProtoJSON.
+# `theuth::main` installs. Both pull `a2a-pb` (prost/pbjson): the HTTP wire is ProtoJSON.
 a2a-types = { package = "a2a-lf", version = "=0.3.1" }
 a2a-client = { package = "a2a-client-lf", version = "=0.2.5" }
 a2a-server = { package = "a2a-server-lf", version = "=0.4.4" }
@@ -322,7 +322,7 @@ pbjson-types = { path = "vendor/pbjson-types" }
 # a2a-client-lf (the A2A SDK client): its shared SSE parser appended every body chunk to an
 # unbounded reassembly buffer before looking for an event terminator, so a peer that never
 # sends the blank line (or sends one huge frame) could grow memory without limit ahead of
-# wth's post-decode caps (50 §8). `vendor/a2a-client` = crates.io 0.2.5 (a2aproject/a2a-rs
+# theuth's post-decode caps (50 §8). `vendor/a2a-client` = crates.io 0.2.5 (a2aproject/a2a-rs
 # 365d056) + `MAX_SSE_EVENT_BYTES` (64 KiB) enforced in `parse_sse_bytes` before the
 # append; an oversized event yields one `A2AError` and ends the stream (50 §3.4). Drop when
 # an a2a-client-lf release bounds the frame.

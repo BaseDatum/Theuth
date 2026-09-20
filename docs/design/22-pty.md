@@ -67,7 +67,7 @@ reads as noise to the model.
    cursor row/col, not omp's fixed `1;1`) and never logs the reply.
 9. **Fixed 120×40, `TERM=xterm-256color`.** Big enough for anything the
    model will drive; resize is a later op if a transcript needs it.
-10. **In-process.** wth is one daemon already (00 §2); `Jobs` is the
+10. **In-process.** theuth is one daemon already (00 §2); `Jobs` is the
     broker, RPC is the socket, the bearer token is the auth. omp's
     separate broker process, project-scoped names, `persist`/`detached`
     tiers and restart back-off are not needed by a single-process harness
@@ -132,7 +132,7 @@ Descriptions, one line each, in the tool JSON (cache-safe, static):
 
 ```
 job j4 (py) · running · pid 41822 · ready: log matched `>>> `
-log: /Users/x/.wth/jobs/<session>/j4.log
+log: /Users/x/.theuth/jobs/<session>/j4.log
 screen:
 Python 3.13.2 (main) [Clang 17.0.0]
 >>> 
@@ -357,13 +357,13 @@ apply (§1.6); the log dir is 14's.
 7. `jobs::tests` unchanged (pipes path untouched).
 8. Headless smoke, real model: "start a python REPL, compute 2**100 in
    it, then quit it" → three tool calls (`start`, `send`, `send ctrl_d`),
-   one `<job_result>`; then "run `wth --data-dir /tmp/x` and tell me what
+   one `<job_result>`; then "run `t --data-dir /tmp/x` and tell me what
    the first screen says" → the harness drives its own TUI and reads the
    status line. Record in Status.
 
 ## 8. Order
 
-Each step leaves `wth` green.
+Each step leaves `theuth` green.
 
 1. `pty.rs`: spawn, reader thread, parser, responder, `screen_text`;
    `StartPty`/`Send`/`Screen`/`Wait` on `Jobs`; the four tools registered
@@ -443,12 +443,12 @@ Deviations from the sections above (the code wins):
   drop-master `SIGHUP` (§2.4) and parks that thread; `poll(2)` + a stop
   flag if it ever matters.
 
-Smoke (§7.8, headless, claude-sonnet-4-5, `/tmp/wth-title`): "start a
+Smoke (§7.8, headless, claude-sonnet-4-5, `/tmp/theuth-title`): "start a
 python3 REPL … 2**100 … quit" → exactly three tool calls (`start {command:
 "python3 -q", name: "py", ready: {log: ">>> "}}`, `send {id: "py", text:
 "2**100"}`, `send {id: "py", keys: ["ctrl_d"]}`), the reply carried
 `1267650600228229401496703205376`, 9 `JobScreen` events, one `JobFinished
-{exit: 0, pty: true}`. Then "run `./target/debug/wth --data-dir …` and tell
+{exit: 0, pty: true}`. Then "run `./target/debug/t --data-dir …` and tell
 me the bottom line of the screen" → `start` (cwd set), `wait {pattern:
 ".", timeout: 3}`, `screen`, `cancel_job`; the reply was `no session
 idle` — the harness read its own TUI's status line off a pty — and

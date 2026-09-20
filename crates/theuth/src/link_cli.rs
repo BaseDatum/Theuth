@@ -1,4 +1,4 @@
-//! `wth --link`: pair a phone from a box with no TUI (design doc 31 §6.6).
+//! `t --link`: pair a phone from a box with no TUI (design doc 31 §6.6).
 //! An RPC client of the running daemon: `link_pair`, print the QR and the
 //! key, wait for `LinkPaired` on `subscribe_events`, exit.
 
@@ -13,7 +13,7 @@ use jsonrpsee::ws_client::{HeaderMap, HeaderValue, WsClient, WsClientBuilder};
 pub async fn run(data_dir: &Path, config: &figment::Figment) -> anyhow::Result<()> {
     let Ok(client) = connect(data_dir, &listen(config)).await else {
         eprintln!(
-            "no harness on {}; start `wth --headless` first",
+            "no harness on {}; start `t --headless` first",
             listen(config)
         );
         std::process::exit(1);
@@ -30,7 +30,7 @@ pub(crate) fn listen(config: &figment::Figment) -> String {
 }
 
 /// `link_pair` on the daemon, print QR + key, wait for `LinkPaired`.
-/// `wait_for_parent` (32 §5.1 step 5): a `wth` pairing ends the wait; a
+/// `wait_for_parent` (32 §5.1 step 5): a `theuth` pairing ends the wait; a
 /// phone or laptop is announced, and since a pairing is single use (31
 /// §4.5) a fresh key is issued and the wait goes on until that one expires.
 pub async fn pair(client: &WsClient, wait_for_parent: bool) -> anyhow::Result<()> {
@@ -47,7 +47,7 @@ pub async fn pair(client: &WsClient, wait_for_parent: bool) -> anyhow::Result<()
         println!("{}", link::qr(&pairing.key));
         println!("{}", pairing.key);
         if wait_for_parent {
-            println!("waiting for the pairing… (Ctrl+C to skip; later: wth --link)");
+            println!("waiting for the pairing… (Ctrl+C to skip; later: t --link)");
         } else {
             println!("scan with your phone (expires in 5:00)");
         }
@@ -66,8 +66,8 @@ pub async fn pair(client: &WsClient, wait_for_parent: bool) -> anyhow::Result<()
                     .pointer("/device/name")
                     .and_then(|n| n.as_str())
                     .unwrap_or("device");
-                let is_wth = ev.pointer("/device/platform").and_then(|p| p.as_str()) == Some("wth");
-                if wait_for_parent && is_wth {
+                let is_theuth = ev.pointer("/device/platform").and_then(|p| p.as_str()) == Some("theuth");
+                if wait_for_parent && is_theuth {
                     println!("paired to {name} as a node");
                     return Ok(());
                 }

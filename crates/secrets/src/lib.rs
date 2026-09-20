@@ -14,7 +14,7 @@
 //! - commands on the [`SECRETS_ACTOR`] actor ([`SecretsActor`]): [`List`],
 //!   [`Set`], [`Restore`], [`Delete`], [`Request`], [`Answer`], [`Handle`]
 //! - events: [`SecretsEvent`]
-//! - [`Vault`] as a library, for `wth --secret-set` and `--slack-setup`
+//! - [`Vault`] as a library, for `t --secret-set` and `--slack-setup`
 
 mod key;
 pub mod tools;

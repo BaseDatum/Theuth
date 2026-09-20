@@ -102,7 +102,7 @@ used for display and for `sync`.
 ### 2.1 Layout
 
 ```
-~/.wth/skills/
+~/.theuth/skills/
   commit.md                      loose skill (human or add_skill)
   review/SKILL.md                directory skill
   anthropics-skills/             git clone (add_skill_repo / `/skills add`)
@@ -215,7 +215,7 @@ loader, both shapes already exist in the wild:
 ### 3.1 Layout
 
 ```
-~/.wth/mcp/
+~/.theuth/mcp/
   config.yaml                    gates (unchanged)
   everything.json                package server (npx …)
   my-server.json                 { "command": "node", "args": ["dist/index.js"], "cwd": "repos/my-server" }

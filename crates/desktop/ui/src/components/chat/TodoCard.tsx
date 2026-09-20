@@ -67,8 +67,8 @@ export function TodoCard({ session }: { session: string }) {
       const { sessions, setTodosExpanded } = store.getState()
       setTodosExpanded(session, !sessions[session]?.todosExpanded)
     }
-    window.addEventListener('wth:open', on)
-    return () => window.removeEventListener('wth:open', on)
+    window.addEventListener('theuth:open', on)
+    return () => window.removeEventListener('theuth:open', on)
   }, [session, store, focused])
 
   if (!todos?.items.length) {

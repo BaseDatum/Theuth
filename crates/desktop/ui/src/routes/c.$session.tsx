@@ -32,7 +32,7 @@ const SETTLE_TRIES = 3
 
 const fail = (e: unknown) => toast.error(e instanceof Error ? e.message : String(e))
 
-/** `wth:reload-session` detail: `session` narrows it to one chat; `settled` asks for the mutation-refresh path (48 §5). A bare `Event` reloads in full. */
+/** `theuth:reload-session` detail: `session` narrows it to one chat; `settled` asks for the mutation-refresh path (48 §5). A bare `Event` reloads in full. */
 type ReloadDetail = { session?: string; settled?: boolean }
 
 /** One chat. With a validated `seq` the route is the read-only Earlier messages inspection ending at that message (49 §7),
@@ -157,12 +157,12 @@ function LiveSession({ session, first }: { session: string; first: boolean }) {
       if (detail?.settled) settle()
       else void load().catch(fail)
     }
-    window.addEventListener('wth:reload-session', reload)
+    window.addEventListener('theuth:reload-session', reload)
     const off = on('ContextChanged', (e) => {
       if (e.session === session) settle()
     })
     return () => {
-      window.removeEventListener('wth:reload-session', reload)
+      window.removeEventListener('theuth:reload-session', reload)
       off()
     }
   }, [load, settle, session])
@@ -180,11 +180,11 @@ function LiveSession({ session, first }: { session: string; first: boolean }) {
       const block = e && lastCode(e.text)
       if (block) void navigator.clipboard.writeText(block)
     }
-    window.addEventListener('wth:copy-last-response', response)
-    window.addEventListener('wth:copy-last-code', code)
+    window.addEventListener('theuth:copy-last-response', response)
+    window.addEventListener('theuth:copy-last-code', code)
     return () => {
-      window.removeEventListener('wth:copy-last-response', response)
-      window.removeEventListener('wth:copy-last-code', code)
+      window.removeEventListener('theuth:copy-last-response', response)
+      window.removeEventListener('theuth:copy-last-code', code)
     }
   }, [session, store, focused])
 

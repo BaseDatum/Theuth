@@ -1,7 +1,7 @@
 // Typed wrappers for the Tauri commands and events of `crates/desktop/src/commands.rs`
 // and `main.rs`. Outside Tauri (`bun run dev` in a browser) the connection comes
-// from `VITE_WTH_URL` / `VITE_WTH_TOKEN` instead, so the UI can be worked on
-// against a terminal `wth --serve` without the shell.
+// from `VITE_THEUTH_URL` / `VITE_THEUTH_TOKEN` instead, so the UI can be worked on
+// against a terminal `t --serve` without the shell.
 
 import { invoke } from '@tauri-apps/api/core'
 import { type UnlistenFn, listen } from '@tauri-apps/api/event'
@@ -22,11 +22,11 @@ export const isIsland = (): boolean =>
   isTauri() ? getCurrentWindow().label === 'island' : location.pathname === '/island'
 
 const devConnection = (): Connection => {
-  const url = import.meta.env.VITE_WTH_URL
-  const token = import.meta.env.VITE_WTH_TOKEN
+  const url = import.meta.env.VITE_THEUTH_URL
+  const token = import.meta.env.VITE_THEUTH_TOKEN
   if (typeof url !== 'string' || typeof token !== 'string') {
     throw new Error(
-      'Not running in the app; set VITE_WTH_URL and VITE_WTH_TOKEN to connect to a daemon',
+      'Not running in the app; set VITE_THEUTH_URL and VITE_THEUTH_TOKEN to connect to a daemon',
     )
   }
   return { url, token, data_dir: '', owned: false }

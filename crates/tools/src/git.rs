@@ -159,7 +159,7 @@ mod tests {
 
     #[tokio::test]
     async fn clone_pull_and_list_against_a_local_bare_repo() {
-        let root = std::env::temp_dir().join(format!("wth-git-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("theuth-git-{}", uuid::Uuid::new_v4()));
         let src = root.join("src");
         let bare = root.join("bare.git");
         let dir = root.join("skills");

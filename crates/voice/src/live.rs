@@ -268,14 +268,14 @@ mod tests {
     /// The dictation checkpoint where the daemon keeps it; `None` skips the test.
     fn model_dir() -> Option<std::path::PathBuf> {
         let dir = std::path::PathBuf::from(std::env::var_os("HOME")?)
-            .join(".wth/models")
+            .join(".theuth/models")
             .join(crate::STREAMING_MODEL_SUBDIR);
         dir.is_dir().then_some(dir)
     }
 
     /// `say` renders `text` as 16-bit mono 48 kHz PCM; `None` off macOS or without `say`.
     fn speech(text: &str) -> Option<Vec<f32>> {
-        let path = std::env::temp_dir().join(format!("wth-live-{}.wav", uuid::Uuid::now_v7()));
+        let path = std::env::temp_dir().join(format!("theuth-live-{}.wav", uuid::Uuid::now_v7()));
         let ok = std::process::Command::new("say")
             .args(["-o"])
             .arg(&path)

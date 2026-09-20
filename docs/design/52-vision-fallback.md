@@ -36,9 +36,9 @@ prerequisites this design assumes are built.
    controls. No vision plugin, child session, peer exchange, autonomous
    worker, second provider client, or caption cache service.
 
-## 1. Philosophy: what wth is optimizing for
+## 1. Philosophy: what theuth is optimizing for
 
-[00 §1](00-architecture.md#1-non-negotiables) makes wth a general assistant
+[00 §1](00-architecture.md#1-non-negotiables) makes theuth a general assistant
 that acts on the user's machine, not a coding-agent framework. Libraries do
 protocol work; plugins own their contracts; `main.rs` does not wire feature
 handles between subsystems. A crate must earn its existence. Here the
@@ -87,12 +87,12 @@ it needs to know.
 | Lifecycle | Store seq/epoch numbers can be reused after a committed rewind. `context_revision` changes on every append and edit. It is a freshness guard, not a stable image identity. |
 | Shared UI | `tui/src/{model,lib}.rs`; `rpc/src/api.rs`; `desktop/ui/src/components/settings/General.tsx`, `SettingsDialog.tsx`, and `components/chat/slash.ts`. Desktop/mobile already share the title controls. |
 
-**Scope boundary:** this covers every model request whose context wth's
+**Scope boundary:** this covers every model request whose context theuth's
 native `Session` owns, including native subagents and inputs received through
-RPC, TUI, desktop/mobile, Signal, Slack, and wth's inbound ACP server. An
+RPC, TUI, desktop/mobile, Signal, Slack, and theuth's inbound ACP server. An
 external ACP harness owns its own model/context and tools; its translated
 transcript is not that context. This setting must not claim to intercept
-hidden external calls. A remote wth node applies its own setting locally;
+hidden external calls. A remote theuth node applies its own setting locally;
 no fallback credentials or global setting are copied over a peer connection.
 
 ## 3. Configuration and UI contract
@@ -104,7 +104,7 @@ agent:
 ```
 
 The model is an example, not a new default. Missing/null disables fallback.
-`WTH_AGENT__VISION_MODEL` follows existing Figment precedence. Setters write
+`THEUTH_AGENT__VISION_MODEL` follows existing Figment precedence. Setters write
 `<data_dir>/config.yaml`, as title/model setters do today; a separately
 supplied `--config` file is not rewritten, and an environment override wins
 again on restart. State these existing limitations rather than redesigning
@@ -514,7 +514,7 @@ The vision model is an interpreter, not an agent. It gets no tools, shell,
 network-fetch capability, writable memory, subagent authority, or approval
 handle. Its instruction says to answer the supplied visual question, quote
 observed text as data, distinguish inference, and report unreadable details.
-Instructions embedded in pixels are not instructions to wth.
+Instructions embedded in pixels are not instructions to theuth.
 
 Label the returned note as image-derived, fallible evidence, never a system
 message or user authorization. Retain source provenance and scrub known
@@ -539,7 +539,7 @@ vision-only trust engine.
 Implementation should proceed in this order; this document changes no code:
 
 1. **Setting and capability contract:** `agent/src/{lib,supervisor,backend,loop_}.rs`,
-   `rpc/src/api.rs`, first-run config in `wth/src/main.rs`. Reuse catalog
+   `rpc/src/api.rs`, first-run config in `theuth/src/main.rs`. Reuse catalog
    metadata; unify effective capability for the loop and `ModelInfo`.
 2. **Lossless ingress:** `agent/src/repl.rs`, `tools/src/mcp.rs`, existing
    attachment/file helpers. Prove images reach durable user/tool binaries
@@ -702,7 +702,7 @@ no `tools` key.
 
 **Headless live run** — throwaway fake provider (genai's `ollama` adapter is
 native `/api/chat` NDJSON, not OpenAI-shaped; images ride as
-`message.images`), `wth --headless` on a throwaway data dir, Bun JSON-RPC
+`message.images`), `t --headless` on a throwaway data dir, Bun JSON-RPC
 client; every script and data dir deleted afterwards:
 
 - `vision_model` → `null`; `set_vision_model("ollama/textonly")` → error

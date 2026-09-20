@@ -98,7 +98,7 @@ pub struct AgentInfo {
     pub name: String,                 // peer name (unique per parent)
     pub parent: SessionId,
     pub depth: u8,                    // 1 = direct child of `session`
-    pub agent: Option<String>,        // external harness name (06), None = wth
+    pub agent: Option<String>,        // external harness name (06), None = theuth
     pub model: String,
     pub state: AgentState,
     pub started_at: Option<DateTime<Utc>>,  // current turn start; None when not running
@@ -319,7 +319,7 @@ someone reaches for it.
 `/agents` renders `list_agents` for the bound session: `name · state · last
 · age` (state word as in §3.1; no glyphs). `/cancel <name>`. No opening of a
 child (09 §8 stands: one bound session per chat; a child is
-`wth --resume <id>` territory).
+`t --resume <id>` territory).
 
 ## 5. Tauri (18)
 
@@ -348,7 +348,7 @@ amendment). The parent still does not learn that a human intervened.
 
 ## 7. Implementation order
 
-Each step leaves `wth` runnable; formatters and the suite once per step.
+Each step leaves `theuth` runnable; formatters and the suite once per step.
 
 1. **Store + supervisor.** `Store::descendants(root)` (recursive CTE),
    `AgentInfo`/`AgentState`, `ListAgents` (replaces `ListChildren`; `Roster`
@@ -442,7 +442,7 @@ amendments as *implementation pending verification*; the 2026-09-13
 verification record in §7 step 1 covers the pre-50 waiter and steer
 behaviour and is not evidence for `answer_peer_request` or conditional
 delivery. 06 §3.8's limitation stands: ACP children remain result-only
-proxies with no wth peer tools (50 §6.4).
+proxies with no theuth peer tools (50 §6.4).
 
 ## 10. Not in this doc
 

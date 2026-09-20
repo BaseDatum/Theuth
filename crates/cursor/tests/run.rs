@@ -192,7 +192,7 @@ async fn handle(req: http::Request<h2::RecvStream>, mut respond: h2::server::Sen
         let ctx = ok.request_context.unwrap();
         assert_eq!(ctx.rules[0].content, "Be terse.");
         assert_eq!(ctx.tools[0].tool_name, "grep");
-        assert_eq!(ctx.tools[0].provider_identifier, "wth");
+        assert_eq!(ctx.tools[0].provider_identifier, "theuth");
 
         // KV: fetch the system-prompt blob.
         send.send_data(

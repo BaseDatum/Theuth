@@ -433,12 +433,12 @@ recorded two-person conversation that mentions both, the mic live:
 Implemented 2026-09-20 (`crates/meeting` +≈1 900 lines incl. tests: `batch.rs`,
 `session.rs`, `stt.rs`, `tools.rs`, `topics.rs`, actor/state additions;
 `crates/voice/src/live.rs` +330 extracted from `dictation.rs`; agent +≈120;
-rpc/wth wiring). Verified headless over JSON-RPC on `/tmp/wth-meet`
-(`WTH_RPC__LISTEN=127.0.0.1:7791 ./target/debug/wth --headless --data-dir
-/tmp/wth-meet`, plus `ORT_DYLIB_PATH` pointing at the TDT checkpoint's
-`libonnxruntime.1.27.0.dylib` and `WTH_SECRETS__KEY_STORE=file` — the rebuilt
+rpc/theuth wiring). Verified headless over JSON-RPC on `/tmp/theuth-meet`
+(`THEUTH_RPC__LISTEN=127.0.0.1:7791 ./target/debug/t --headless --data-dir
+/tmp/theuth-meet`, plus `ORT_DYLIB_PATH` pointing at the TDT checkpoint's
+`libonnxruntime.1.27.0.dylib` and `THEUTH_SECRETS__KEY_STORE=file` — the rebuilt
 binary otherwise blocks on a Keychain dialog; `models/` symlinked to
-`~/.wth/models`), macOS 15, `anthropic/claude-haiku-4-5` as `session_model`,
+`~/.theuth/models`), macOS 15, `anthropic/claude-haiku-4-5` as `session_model`,
 a knowledge bundle with `tickets/sre-2386` and `systems/keda`, QuickTime
 Player playing a 114 s two-voice `say` clip (Samantha/Daniel: SRE-2386 spoken
 as digits, KEDA, a `?` question, a 40 s monologue), the external mic live,
@@ -461,7 +461,7 @@ are from runs 1–4.
    extended: `SetCompaction` replaces the threshold (also with an unknown
    window), the hint rides behind `COMPACT_INSTRUCTION` and the prefix test
    still classes it a summary, `None` clears both. `cargo check --workspace
-   --all-targets` clean; `cargo clippy -p meeting -p voice -p rpc -p wth
+   --all-targets` clean; `cargo clippy -p meeting -p voice -p rpc -p theuth
    --all-targets --no-deps -D warnings` clean. **`cargo clippy -p agent` fails
    on 14 pre-existing sites** (`communication/network.rs`, `store/
    communication.rs`, `store/accounting.rs`, `supervisor.rs:3130`,
@@ -517,7 +517,7 @@ are from runs 1–4.
 9. Six live topics; the seventh and eighth `meeting_topic` each produced
    `TopicRemoved{Expired}` for the oldest untouched plus `TopicAdded`.
    TTL expiry (600 s unmentioned) was not waited for; unit-tested.
-10. `WTH_MEETING__CONTEXT_TOKENS=4000`: `Compacted{style: summary}` on the
+10. `THEUTH_MEETING__CONTEXT_TOKENS=4000`: `Compacted{style: summary}` on the
     meeting session every round (`before` 13–16 k — the system prompt and
     tools alone exceed 4 k — `after` ≈ 1 k); the head lists *"Live topics:
     "Cutover date confirmation", "SQS quota hitting weekly" — none

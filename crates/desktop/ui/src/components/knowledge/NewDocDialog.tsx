@@ -58,7 +58,7 @@ function Form({ initial, close }: { initial: Props['initial']; close: () => void
     >
       <DialogHeader>
         <DialogTitle>New document</DialogTitle>
-        <DialogDescription>Up to three segments, like facts/wth-toolchain.</DialogDescription>
+        <DialogDescription>Up to three segments, like facts/theuth-toolchain.</DialogDescription>
       </DialogHeader>
       <div className="grid gap-4 py-2">
         <div className="grid gap-2">
@@ -68,7 +68,7 @@ function Form({ initial, close }: { initial: Props['initial']; close: () => void
             autoFocus
             value={rawId}
             spellCheck={false}
-            placeholder="projects/wth"
+            placeholder="projects/theuth"
             onChange={(e) => setRawId(e.target.value)}
             aria-invalid={check.error !== null}
           />

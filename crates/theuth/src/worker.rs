@@ -1,9 +1,9 @@
-//! `wth subprocess`: the Python runtime worker, inside this binary (design doc 08 §9).
+//! `t subprocess`: the Python runtime worker, inside this binary (design doc 08 §9).
 //!
 //! `monty-pool` spawns `<binary> subprocess` and speaks framed protobuf over
 //! the child's stdio. The reference worker (`monty-runtime`'s
 //! `src/subprocess.rs`, MIT, pydantic) is a thin shell around
-//! `monty_proto::worker::Child`; this is that shell, so `wth` needs no `monty`
+//! `monty_proto::worker::Child`; this is that shell, so `theuth` needs no `monty`
 //! install next to it. Crash isolation is unchanged: the worker is still a
 //! separate process, and the parent treats an exit without `FatalError` as a crash.
 //!
@@ -84,7 +84,7 @@ pub fn run() -> u8 {
 fn apply_memory_limit(child: &Child) {
     let budget = child.session_budget();
     monty_alloc::set_limit(budget.max_memory, budget.type_check)
-        .expect("wth installs monty_alloc::LimitedAllocator as the global allocator");
+        .expect("theuth installs monty_alloc::LimitedAllocator as the global allocator");
 }
 
 /// Framed child events to stdout. Framing is stateless and `Stdout` handles
@@ -99,7 +99,7 @@ impl EventSink for StdoutSink {
 
 /// Best-effort `FatalError` event, duplicated to stderr; the child exits right after.
 fn fatal(child: &Child, sink: &mut impl EventSink, message: &str) {
-    eprintln!("wth subprocess fatal error: {message}");
+    eprintln!("t subprocess fatal error: {message}");
     let _ = sink.send(&child.fatal_event(message));
 }
 

@@ -1,14 +1,14 @@
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: wth-relay
+  name: theuth-relay
   labels:
-    app.kubernetes.io/name: wth-relay
+    app.kubernetes.io/name: theuth-relay
     app.kubernetes.io/component: relay
-    app.kubernetes.io/part-of: wth
+    app.kubernetes.io/part-of: theuth
 spec:
   minAvailable: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: wth-relay
+      app.kubernetes.io/name: theuth-relay
       app.kubernetes.io/component: relay

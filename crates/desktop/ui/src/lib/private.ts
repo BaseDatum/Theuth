@@ -253,12 +253,12 @@ export function usePrivateOwner(r: AnyRouter): void {
       const p = current()
       if (p) void scope(p.harness).connection.getState().api?.leave_session(p.root, p.secret).catch(() => undefined)
     }
-    window.addEventListener('wth:session-closing', onClosing)
+    window.addEventListener('theuth:session-closing', onClosing)
     window.addEventListener('pagehide', onHide)
     return () => {
       for (const off of offs) off()
       offConn?.()
-      window.removeEventListener('wth:session-closing', onClosing)
+      window.removeEventListener('theuth:session-closing', onClosing)
       window.removeEventListener('pagehide', onHide)
       router = null
     }

@@ -19,11 +19,11 @@ inventory and the measured ChatGPT tokens are recorded in §2.
    toggles a normal resizable window. Rejected: an `NSPanel` popover
    (`tauri-nspanel`, private API, hides on blur - wrong for a transcript you
    read for minutes) and a Dock app (the user asked for a menubar app).
-3. **The daemon is the bundled `wth` sidecar, started exactly as 18 says**:
-   `portable-pty` + `$SHELL -l -i -c 'exec <Contents/MacOS/wth> --headless
-   --data-dir ~/.wth'`, `WTH_RPC__LISTEN=127.0.0.1:<free port>`,
-   `WTH_LAUNCH=1`. Before spawning, probe the configured port with the token
-   and reuse a live daemon (18 §3). Same `~/.wth` as the terminal: sessions,
+3. **The daemon is the bundled `theuth` sidecar, started exactly as 18 says**:
+   `portable-pty` + `$SHELL -l -i -c 'exec <Contents/MacOS/t> --headless
+   --data-dir ~/.theuth'`, `THEUTH_RPC__LISTEN=127.0.0.1:<free port>`,
+   `THEUTH_LAUNCH=1`. Before spawning, probe the configured port with the token
+   and reuse a live daemon (18 §3). Same `~/.theuth` as the terminal: sessions,
    knowledge, skills and logins are shared.
 4. **The webview owns the WebSocket.** The Rust side does launch, probe,
    quit and OS integration only; it never proxies RPC. Still true since 31:
@@ -79,7 +79,7 @@ different capabilities means the TUI stays the real one.
 ### 2.1 RPC (`crates/rpc`)
 
 - jsonrpsee 0.26, JSON-RPC 2.0 over WebSocket on `rpc.listen`
-  (default `127.0.0.1:7777`, env `WTH_RPC__LISTEN`); token 64-hex at
+  (default `127.0.0.1:7777`, env `THEUTH_RPC__LISTEN`); token 64-hex at
   `<data_dir>/token`, presented as `Authorization: Bearer` **or** `?token=`
   on the upgrade (`lib.rs:120-141`). Loopback only, no TLS.
 - 80 methods on `trait Api` (`api.rs:52-341`), every one a thin `ask`.
@@ -132,8 +132,8 @@ different capabilities means the TUI stays the real one.
   lowercased on write, reserved `index`/`log`. YAML-subset frontmatter
   (`type,title,description,tags,scope,source,timestamp`; unknown keys
   preserved by okf, **dropped by `knowledge_put`** which rebuilds it).
-- Links are plain markdown: `[t](/projects/wth.md)` (bundle-absolute) or
-  `[t](./wth.md)` (relative to the source's directory); `#anchor` stripped;
+- Links are plain markdown: `[t](/projects/theuth.md)` (bundle-absolute) or
+  `[t](./theuth.md)` (relative to the source's directory); `#anchor` stripped;
   `.md` stripped from the last segment; external schemes ignored; fenced and
   inline code skipped (`okf links.rs:38-146`). Resolution does **not**
   lowercase. Broken links are legal; `Concept.links: [id, exists][]`,
@@ -196,7 +196,7 @@ Every row is an `Api` call already present unless marked **new** (§7).
 | `/communication [on\|off] [always]` (bare = status), `/peers [scope owner\|isolated [alias]]` (bare = picker + pending requests by id: `i` inspect, `a` answer), `/a2a [reload]` (50, 2026-09-18) | Settings › Communication beside Approvals: global and this-session switches with 50 §2's precedence (session-on cannot defeat global-off or an ancestor's off; a disabled row names the blocking session), root scope `owner`/`isolated` + alias, network status from `a2a_status()` and **Reload** → `reload_a2a`; state from `get_communication`, never guessed. Peer picker over `list_peers` (the model's permitted directory, not `/agents`); `⟵ name` cards carry structured provenance (`PeerRecord`: sender/recipient keys, `reply_to`, state), and pending requests come from `list_peer_messages(…, pending_only)` with **Answer** → `answer_peer_request(session, reply_to, text)` by explicit id. Implemented; pending §12.2 verification |
 | approval modal `y/n/o` | inline card at the tool row: `approval: tool (risk)`, described args, **Allow** / **Deny** buttons; also a sheet listing all pending approvals across sessions (badge on tray title); `o` = the card's "open session" link; macOS notification when the window is hidden |
 | `/mcp` menu (switch, scope prompt, gate cycle, expand, `l`, `s`) | Settings › Tools: server rows with connect state, `On / Off here / Off always` segmented control (→ `set_mcp_hidden` / `set_mcp_gate`), tool sub-rows with risk select (→ `set_mcp_gate`), Login/Logout, Sync, Add (JSON or git URL), Remove (**exposes `remove_mcp_server`, which the TUI never did**); refreshed on `McpProgress` |
-| `/acp` (`p` probe, add, remove) | Settings › Agents (was "Harnesses" until 31; "harness" now means a wth harness): installed + registry, Probe, Add, Remove |
+| `/acp` (`p` probe, add, remove) | Settings › Agents (was "Harnesses" until 31; "harness" now means a theuth harness): installed + registry, Probe, Add, Remove |
 | `/skills`, `/skills add|rm|sync`, `/<skill> args`, `s` show | Settings › Skills (list, body viewer, add repo, remove, sync); composer `/` popup runs `use_skill` for skill names as the TUI does |
 | `/login`, `/logout`, `LoginFinished` | Settings › Connections: providers + OAuth MCP servers, Login opens the URL via the opener plugin, row flips on `LoginFinished` |
 | `/provider`, `/provider add`, `/provider rm` | Settings › Connections › Gateways: table + add form (name, base URL, key; key never echoed) |
@@ -264,9 +264,9 @@ ChatGPT affordances with no TUI counterpart:
 ```
 crates/desktop/                 Tauri crate (workspace member by glob; kind: app, not a plugin)
   Cargo.toml                    tauri, tauri-build, portable-pty, tauri-plugin-*
-  tauri.conf.json               productName "wth", mainBinaryName "wth-desktop", externalBin ["binaries/wth"]
+  tauri.conf.json               productName "theuth", mainBinaryName "theuth-desktop", externalBin ["binaries/t"]
   capabilities/default.json     core:default, opener, notification, global-shortcut, autostart, positioner, window-state, dialog(open)
-  binaries/                     wth-aarch64-apple-darwin (copied by `just desktop-bundle`; gitignored)
+  binaries/                     t-aarch64-apple-darwin (copied by `just desktop-bundle`; gitignored)
   icons/                        template tray icon (monochrome), app icon (plain glyph, no wordmark)
   src/main.rs                   Builder: plugins, tray, activation policy, window show/hide, quit sequence
   src/launch.rs                 18 §7 step 1: probe → spawn on pty → drain transcript → wait for port
@@ -300,15 +300,15 @@ Tauri build deps prove slow; default is in, like every other crate.
 sequenceDiagram
   participant App as Tauri (Rust)
   participant Sh as $SHELL -l -i (pty)
-  participant D as wth --headless
+  participant D as t --headless
   participant W as webview
-  App->>App: read ~/.wth/config.yaml rpc.listen, ~/.wth/token
+  App->>App: read ~/.theuth/config.yaml rpc.listen, ~/.theuth/token
   App->>D: probe ws://127.0.0.1:7777/?token=… (500 ms)
-  alt live daemon (terminal `wth --serve`, another app instance)
+  alt live daemon (terminal `t --serve`, another app instance)
     App->>W: connection{url, token, owned:false}
   else none
-    App->>Sh: spawn on pty, env += TERM, WTH_LAUNCH=1, WTH_RPC__LISTEN=127.0.0.1:<free>
-    Sh->>D: exec <bundle>/wth --headless --data-dir ~/.wth
+    App->>Sh: spawn on pty, env += TERM, THEUTH_LAUNCH=1, THEUTH_RPC__LISTEN=127.0.0.1:<free>
+    Sh->>D: exec <bundle>/t --headless --data-dir ~/.theuth
     App-->>W: launch_log events (pty transcript) until port accepts (≤15 s) or timeout screen
     App->>W: connection{url, token, owned:true}
   end
@@ -322,9 +322,9 @@ sequenceDiagram
 - Reconnect: the store marks `connection.state = reconnecting`; on
   reconnect it re-subscribes, re-fetches `list_sessions` and reloads the
   visible session (everything between is lost by design, §2.1).
-- Dev (`just desktop`): `WTH_BIN` env or `target/debug/wth` replaces the
-  bundled path; `--data-dir` may be overridden with `WTH_DATA_DIR` so the
-  smoke data dir (`/tmp/wth-title`) can be used without touching `~/.wth`.
+- Dev (`just desktop`): `THEUTH_BIN` env or `target/debug/t` replaces the
+  bundled path; `--data-dir` may be overridden with `THEUTH_DATA_DIR` so the
+  smoke data dir (`/tmp/theuth-title`) can be used without touching `~/.theuth`.
 
 ### 4.4 Visual spec
 
@@ -376,39 +376,39 @@ sequenceDiagram
 18 decided how a `.app` starts the daemon and verified the mechanism with a
 Python stand-in. This section is the bundle around it.
 
-- **Sidecar.** `bundle.externalBin: ["binaries/wth"]` in
+- **Sidecar.** `bundle.externalBin: ["binaries/t"]` in
   `tauri.bundle.conf.json` (not `tauri.conf.json`: tauri-build fails
   `cargo check` when the sidecar file is absent). `just package-macos`
-  copies `target/release/wth` to `crates/desktop/binaries/wth-<host-triple>`.
-  Tauri places it at `Contents/MacOS/wth`; `launch.rs` resolves it as a
+  copies `target/release/t` to `crates/desktop/binaries/t-<host-triple>`.
+  Tauri places it at `Contents/MacOS/t`; `launch.rs` resolves it as a
   sibling of `current_exe()`. The exec line in 18 §2 becomes
   `exec '<that path>' --headless --data-dir <dir>`; nothing else changes.
-- **Names.** `productName: "wth"` (the `.app` name, 00 §1.1: the only
-  product name is the binary's), `mainBinaryName: "wth-desktop"` so the
-  Tauri executable and the sidecar do not both want `Contents/MacOS/wth`.
-  Identifier `wth.rwx.dev`.
+- **Names.** `productName: "theuth"` (the `.app` name, 00 §1.1: the only
+  product name is the binary's), `mainBinaryName: "theuth-desktop"` so the
+  Tauri executable and the sidecar do not both want `Contents/MacOS/t`.
+  Identifier `io.theuth.mac`.
 - **Version lock.** The sidecar is built from the same commit as the UI;
-  the terminal's `~/.cargo/bin/wth` from `just install` may differ. Both
-  read `~/.wth`; `sessions.sqlite` is WAL and the schema is additive so far.
+  the terminal's `~/.cargo/bin/theuth` from `just install` may differ. Both
+  read `~/.theuth`; `sessions.sqlite` is WAL and the schema is additive so far.
   Settings › General shows the daemon version from `info()` (version string
-  only; no name). Both `~/.cargo/bin/wth` and the sidecar update themselves
+  only; no name). Both `~/.cargo/bin/theuth` and the sidecar update themselves
   to the same `latest.json`; skew lasts until the next restart of whichever
   is behind (39).
 - **Signing / notarization.** `scripts/package-macos.sh` codesigns
-  inside-out (sidecar `wth.rwx.dev.wth`, then the `.app`) with hardened
+  inside-out (sidecar `io.theuth.mac.t`, then the `.app`) with hardened
   runtime after Tauri bundles, then `hdiutil` builds the DMG so the
-  snapshot includes the signatures. `WTH_SIGN_IDENTITY` or `.env.signing`;
+  snapshot includes the signatures. `THEUTH_SIGN_IDENTITY` or `.env.signing`;
   unset → ad-hoc (`-`). `just notarize-macos` is a separate notarytool
   submit + staple. Entitlement: `cs.allow-jit` (V8 / obscura under the
-  hardened runtime). Nested helpers keep the `wth.rwx.dev.*` identifier
+  hardened runtime). Nested helpers keep the `io.theuth.mac.*` identifier
   prefix so macOS 15+ Local Network Privacy attributes to the app.
 - **Targets.** Overlay `bundle.targets: ["app"]` (DMG is hdiutil);
   `macOS.minimumSystemVersion` 12.0; arm64 host-only in v0. The CLI also
   ships for `linux-x86_64` / `linux-aarch64` (39 §5.1); the `.app` stays
   arm64 macOS.
-- **Data dir.** `~/.wth` by default (18: same as the terminal). The app
+- **Data dir.** `~/.theuth` by default (18: same as the terminal). The app
   never writes outside it except its own window state
-  (`~/Library/Application Support/wth.rwx.dev/`, Tauri's default).
+  (`~/Library/Application Support/io.theuth.mac/`, Tauri's default).
 - **Updater.** 39: `tauri-plugin-updater` for the bundle, installed at quit
   (`RunEvent::Exit`, after the sidecar is stopped); the harness updates its
   own binary. No prompt, no relaunch. (Was "Not in v0" until 2026-09-17.)
@@ -627,14 +627,14 @@ temporarily incomplete; knowledge source and RPC behavior were unchanged.
 | step | deliverable | check |
 |---|---|---|
 | 1 | §7 server additions + bindings + `methods.json` | `cargo test -p rpc --features ts`; `bindings/methods.json` lists `info`, `rename_session`, `knowledge_write`, `knowledge_sync`; a headless `TitleChanged` observed over ws after `rename_session` |
-| 2 | `crates/desktop` shell: launch.rs, tray, Accessory, StartupScreen | `cargo test -p desktop` spawns `$SHELL -l -i -c 'exec env'` on a pty and finds `TERM`, `WTH_LAUNCH` (18 §7.1); `just desktop` from Finder-like env (`env -i HOME=… PATH=/usr/bin:/bin`) shows the transcript then connects; `ps eww` on the daemon shows the rc-file `PATH` |
+| 2 | `crates/desktop` shell: launch.rs, tray, Accessory, StartupScreen | `cargo test -p desktop` spawns `$SHELL -l -i -c 'exec env'` on a pty and finds `TERM`, `THEUTH_LAUNCH` (18 §7.1); `just desktop` from Finder-like env (`env -i HOME=… PATH=/usr/bin:/bin`) shows the transcript then connects; `ps eww` on the daemon shows the rc-file `PATH` |
 | 3 | RPC client + store + reducer | vitest: `api.ts` ⟷ `methods.json`; `reduce.ts` fixtures (TextDelta append/close, ToolCallPending→Started by call_id, InputQueued dedupe, Compacted divider, SubagentSpawned adds child, Lagged flag); frame demux |
-| 4 | chat shell: sidebar, transcript, composer, model menu, approvals, steering, attachments | smoke against `/tmp/wth-title`: send, stream, tool call with approval allowed from the card, steer while streaming, withdraw, paste an image, `⌘K` open another session, child opened from the tree, undo/redo |
+| 4 | chat shell: sidebar, transcript, composer, model menu, approvals, steering, attachments | smoke against `/tmp/theuth-title`: send, stream, tool call with approval allowed from the card, steer while streaming, withdraw, paste an image, `⌘K` open another session, child opened from the tree, undo/redo |
 | 5 | settings dialog (all tabs) | every §3 settings row round-trips: toggle an MCP server off-here and see the tool list shrink on the next turn; add a provider; login flow opens the browser and the row flips |
 | 6 | knowledge explorer | open a concept, follow an absolute and a relative link, edit and save (frontmatter unknown key survives), create from a broken link, restore a previous commit, external edit + focus shows the change |
 | 7 | visual clone | §4.4 side-by-side screenshots, four screens, light and dark |
 | 8 | performance | §6.3 trace: no frame > 16 ms with 50 streaming sessions |
-| 9 | packaging | `just desktop-bundle` produces `wth.app` with `Contents/MacOS/wth` and `wth-desktop`; launched from Finder with a `.zshrc` that exports a marker, the daemon's environment has it; quit leaves no `wth` process |
+| 9 | packaging | `just desktop-bundle` produces `theuth.app` with `Contents/MacOS/t` and `theuth-desktop`; launched from Finder with a `.zshrc` that exports a marker, the daemon's environment has it; quit leaves no `theuth` process |
 
 Unit tests earn their place only where a plausible bug fails them:
 `reduce.ts`, `resolveLink.ts`, `describe.ts`, `pastes.ts`, `client.ts`
@@ -709,7 +709,7 @@ Deviations from the sections above:
   do not trigger a mid-session full reload (dev only; the bundle is static).
 
 Verified (2026-09-15, browser-mode UI at `localhost:1420` against
-`/tmp/wth-title`, then the real Tauri binary):
+`/tmp/theuth-title`, then the real Tauri binary):
 
 - Gates: `cargo clippy --workspace --all-targets -D warnings`, `cargo test
   --workspace` (incl. `desktop`'s pty env test), `tsc -b`, vitest 47/47
@@ -731,11 +731,11 @@ Verified (2026-09-15, browser-mode UI at `localhost:1420` against
   streaming at once (~11 000 events in 18 s, peak ≈ 700 `TextDelta`/s) with
   one open in the UI: 959 frames in 16 s = **59.9 fps, worst frame gap 25
   ms, zero long tasks, heap 81 MB**. The budget in §6 holds with margin.
-- **Launch (18)**: `wth-desktop` started under `env -i HOME USER SHELL TMPDIR
-  PATH=/usr/bin:/bin:/usr/sbin:/sbin` spawned `wth --headless` on a pty via
+- **Launch (18)**: `theuth-desktop` started under `env -i HOME USER SHELL TMPDIR
+  PATH=/usr/bin:/bin:/usr/sbin:/sbin` spawned `t --headless` on a pty via
   `zsh -l -i -c exec …`; a `shell` tool call inside that daemon printed
-  `WTH_DESKTOP_MARK=rc-was-sourced` (a marker exported from `~/.zshrc`),
-  `WTH_LAUNCH=1`, `TERM=xterm-256color` and the rc-file `PATH` (rbenv, atuin,
+  `THEUTH_DESKTOP_MARK=rc-was-sourced` (a marker exported from `~/.zshrc`),
+  `THEUTH_LAUNCH=1`, `TERM=xterm-256color` and the rc-file `PATH` (rbenv, atuin,
   homebrew). The webview connected (two established sockets). `SIGTERM` to
   the app left no daemon behind.
 

@@ -1,7 +1,7 @@
 # 17 — Images: sending them to models, pasting them in the TUI
 
 Status: as-built v0 · 2026-09-12 (draft v0 same day) · extends `07-context.md`
-(frame, `est`), `08-repl.md`/TUI input, `06-acp.md` §4 (wth as agent),
+(frame, `est`), `08-repl.md`/TUI input, `06-acp.md` §4 (theuth as agent),
 `09-signal.md` §7.4. §9 lists what the build changed against the draft; where
 §9 disagrees with §1–§8, §9 wins. §11 (2026-09-18) records how images leave
 the context again ([48](48-shake.md)); it supersedes §3.5's "no per-image
@@ -10,17 +10,17 @@ model now sees images through a vision fallback ([52](52-vision-fallback.md));
 it supersedes §3.3's "omitted" placeholder.
 
 Verified 2026-09-12 against a generated 400×300 PNG (red square left, blue
-circle right). ACP (`wth --acp`, throwaway Bun client): `initialize` →
+circle right). ACP (`t --acp`, throwaway Bun client): `initialize` →
 `promptCapabilities {image: true, audio: false, embeddedContext: true}`;
 `session/prompt` with a text block and an `image` block, parent
-`anthropic/claude-sonnet-4-5` → `~/.wth/attachments/0aaee72171ac58d9.png`
+`anthropic/claude-sonnet-4-5` → `~/.theuth/attachments/0aaee72171ac58d9.png`
 written, `messages.body` row holds `[Text, Binary{image/png, Base64}]`
 (2040 B), reply `A red square and a blue circle.`, `end_turn`; `session/load`
 replayed `user_message_chunk` ending in `[image: 0aaee72171ac58d9.png]`.
-Same prompt with `WTH_AGENT__MODEL=cursor/gpt-5` → `I wasn't given the
+Same prompt with `THEUTH_AGENT__MODEL=cursor/gpt-5` → `I wasn't given the
 image—only the note "[image omitted: model is text-only]".` TUI on a pty
 (`osascript` set the clipboard from the PNG): `\x16` → `[⎘ image 1: 400×300]`
-in the input; bracketed paste of `'/tmp/wth-img/shapes.png'` → `[⎘ image 2:
+in the input; bracketed paste of `'/tmp/theuth-img/shapes.png'` → `[⎘ image 2:
 shapes.png]`; question + Enter → transcript kept the tokens, reply from
 `openai/gpt-5.6-luna`: `Both images show a red square and a blue circle.`
 Unit: `est` flat per image, `Frame::request(vision=false)` strips,
@@ -37,7 +37,7 @@ Most of the model side is built; snap compaction (13) needed it.
 |---|---|---|
 | History element | genai `ChatMessage { content: MessageContent(Vec<ContentPart>) }`; `ContentPart::Binary(Binary { content_type, source: Base64(Arc<str>) \| Url, name })` | genai `chat/binary.rs`, `message_content.rs` |
 | Multipart user message | built for snap heads: `ContentPart::from_binary_base64("image/png", …, Some("frame-N.png"))` inside `ChatMessage::user(MessageContent::from_parts(parts))` | `agent/src/loop_.rs:1531-1548` |
-| Provider bodies | every genai adapter maps a user-role `Binary` itself: Anthropic `{"type":"image","source":{"type":"base64",…}}`, OpenAI chat `image_url` data-URL, Responses `input_image`, Gemini `inline_data`, Bedrock, Ollama. wth builds no JSON. | genai `adapter/adapters/*` |
+| Provider bodies | every genai adapter maps a user-role `Binary` itself: Anthropic `{"type":"image","source":{"type":"base64",…}}`, OpenAI chat `image_url` data-URL, Responses `input_image`, Gemini `inline_data`, Bedrock, Ollama. theuth builds no JSON. | genai `adapter/adapters/*` |
 | Persistence | `messages.body TEXT` = whole `ChatMessage` as JSON; `Binary` parts round-trip (test `snap_head_round_trips_parts`) | `agent/src/store.rs:191-205, 669-711` |
 | Frame | `Frame::request` copies history verbatim — content-agnostic | `agent/src/frame.rs:68-112` |
 | Vision flag | `models::Model.image` from models.dev `modalities.input` → `ModelInfo.image`; gate `vision = Genai && model.image` | `agent/src/loop_.rs:1421-1424` |
@@ -314,7 +314,7 @@ files)`; same for `Steer`. Two lines.
   becomes `prompt_parts(&[ContentBlock]) -> (String, Vec<PathBuf>)`:
   `ContentBlock::Image(img)` → base64-decode `img.data`, write
   `<data_dir>/attachments/<sha256[..16]>.<ext from mime_type>`, push the path;
-  text handling unchanged. Zed/JetBrains pasting an image into their wth
+  text handling unchanged. Zed/JetBrains pasting an image into their theuth
   panel now works.
 - **Signal** (`signal/src/channel.rs:956-983`): `save_attachments` already
   writes the file and emits `[attachment: path (mime, size)]`. Pass image

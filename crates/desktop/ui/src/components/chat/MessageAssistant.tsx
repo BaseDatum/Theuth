@@ -141,7 +141,7 @@ export function rewind(session: string, turn: number, rpc: () => Promise<unknown
   useSessions.getState().truncate(session, turn)
   rpc().catch((e: unknown) => {
     toast.error(e instanceof Error ? e.message : String(e))
-    window.dispatchEvent(new Event('wth:reload-session'))
+    window.dispatchEvent(new Event('theuth:reload-session'))
   })
 }
 

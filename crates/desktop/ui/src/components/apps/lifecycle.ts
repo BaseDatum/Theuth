@@ -4,7 +4,7 @@
  * complete-statement split of a streaming patch. No React, no DOM; `AppHost` wires these to a view.
  */
 import { autoClose, mergeStatements } from "@openuidev/lang-core";
-import type { AppRendererProps } from "@wth/apps/renderer";
+import type { AppRendererProps } from "@theuth/apps/renderer";
 import type { Api } from "@/rpc/api";
 import { RpcError } from "@/rpc/client";
 import type { AppToolResult, CallArgs, CallStatus } from "@/rpc/extra";

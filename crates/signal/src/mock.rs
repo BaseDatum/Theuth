@@ -29,7 +29,7 @@ pub enum SentItem {
         to: String,
         /// Message body.
         text: String,
-        /// Sent timestamp returned to the caller (wth 09 §2.2 edit 2).
+        /// Sent timestamp returned to the caller (theuth 09 §2.2 edit 2).
         timestamp: u64,
     },
     /// An attachment.
@@ -40,7 +40,7 @@ pub enum SentItem {
         mime: String,
         /// Attachment bytes.
         bytes: Vec<u8>,
-        /// Optional file name (wth 09 §2.2 edit 3).
+        /// Optional file name (theuth 09 §2.2 edit 3).
         file_name: Option<String>,
         /// Optional caption.
         caption: Option<String>,
@@ -98,7 +98,7 @@ struct Inner {
     link_scripts: Mutex<VecDeque<LinkScript>>,
     account: Mutex<Option<Recipient>>,
     uuid_directory: Mutex<HashMap<String, Uuid>>,
-    /// wth 09 §2.2 edit 4: the full `Recipient` of every successful send,
+    /// theuth 09 §2.2 edit 4: the full `Recipient` of every successful send,
     /// parallel to `sent` (which keeps only the number).
     recipients: Mutex<Vec<Recipient>>,
 }
@@ -196,7 +196,7 @@ impl MockTransport {
     }
 
     /// The `Recipient` of every successful send, in `sent()` order
-    /// (wth 09 §2.2 edit 4).
+    /// (theuth 09 §2.2 edit 4).
     #[must_use]
     pub fn sent_recipients(&self) -> Vec<Recipient> {
         lock(&self.inner.recipients).clone()
@@ -307,7 +307,7 @@ impl SignalTransport for MockTransport {
                 .store(failures - 1, Ordering::SeqCst);
             return Err(SignalError::Transport("injected failure".into()));
         }
-        // wth 09 §2.2 edit 2: deterministic, strictly increasing timestamps
+        // theuth 09 §2.2 edit 2: deterministic, strictly increasing timestamps
         // so tests can target a sent message with a reaction.
         lock(&self.inner.recipients).push(to.clone());
         let mut sent = lock(&self.inner.sent);

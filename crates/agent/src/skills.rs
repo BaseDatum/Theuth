@@ -580,7 +580,7 @@ mod tests {
     use super::*;
 
     fn tmp() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("wth-skills-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("theuth-skills-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }

@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 use crate::proto::{self, conversation_action::Action};
 
 /// Tool provider tag Cursor echoes back on every MCP call.
-pub const PROVIDER: &str = "wth";
+pub const PROVIDER: &str = "theuth";
 const DEFAULT_SYSTEM: &str = "You are a helpful assistant.";
 
 /// sha256 id → bytes.
@@ -165,7 +165,7 @@ pub fn request_context(req: &ChatRequest) -> proto::RequestContext {
         .into_iter()
         .enumerate()
         .map(|(i, content)| proto::CursorRule {
-            full_path: format!("/wth/system-prompt/{i}.mdc"),
+            full_path: format!("/t/system-prompt/{i}.mdc"),
             content: content.to_owned(),
             r#type: Some(proto::CursorRuleType {
                 r#type: Some(proto::cursor_rule_type::Type::Global(
@@ -645,7 +645,7 @@ mod tests {
             json!({"type": "object", "properties": {"q": {"type": "string"}}}),
         )]);
         let ctx = request_context(&r);
-        assert_eq!(ctx.rules[0].full_path, "/wth/system-prompt/0.mdc");
+        assert_eq!(ctx.rules[0].full_path, "/t/system-prompt/0.mdc");
         assert_eq!(ctx.rules[0].content, "Be terse.");
         assert_eq!(ctx.tools[0].provider_identifier, PROVIDER);
         assert_eq!(

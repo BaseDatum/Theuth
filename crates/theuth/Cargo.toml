@@ -1,12 +1,12 @@
 [package]
-name = "wth"
+name = "theuth"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
 description = "Binary: load config, start the plugin list, wait for shutdown"
 
 [[bin]]
-name = "wth"
+name = "t"
 path = "src/main.rs"
 
 [dependencies]

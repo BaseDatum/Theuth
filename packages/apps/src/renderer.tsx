@@ -19,7 +19,7 @@ import type {
   QueryStatus as MetaQueryStatus,
   ScopedActionEvent,
   ToolCallMeta,
-} from "@openuidev/react-lang/wth-runtime";
+} from "@openuidev/react-lang/theuth-runtime";
 import type {
   ActionResult,
   ActionScope,

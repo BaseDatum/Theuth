@@ -153,8 +153,8 @@ export function Composer({
   useEffect(() => {
     if (!focused) return
     const focus = () => ref.current?.focus()
-    window.addEventListener('wth:focus-composer', focus)
-    return () => window.removeEventListener('wth:focus-composer', focus)
+    window.addEventListener('theuth:focus-composer', focus)
+    return () => window.removeEventListener('theuth:focus-composer', focus)
   }, [focused])
 
   // Dictation (54 §7): Ctrl+D / the Mic button toggles; we own the caret. The local daemon owns the mic; on a
@@ -182,8 +182,8 @@ export function Composer({
   useEffect(() => {
     if (!focused) return
     const h = () => dictateRef.current()
-    window.addEventListener('wth:dictate', h)
-    return () => window.removeEventListener('wth:dictate', h)
+    window.addEventListener('theuth:dictate', h)
+    return () => window.removeEventListener('theuth:dictate', h)
   }, [focused])
   const live = dictating && dict.phase === 'dictating'
   useEffect(() => {

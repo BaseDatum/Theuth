@@ -1111,7 +1111,7 @@ mod tests {
     use super::*;
 
     fn tempdir() -> PathBuf {
-        let d = std::env::temp_dir().join(format!("wth-knowledge-{}", uuid::Uuid::new_v4()));
+        let d = std::env::temp_dir().join(format!("theuth-knowledge-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&d).unwrap();
         d
     }
@@ -1142,7 +1142,7 @@ mod tests {
                 put(
                     "facts/toolchain",
                     "Toolchain",
-                    "See [wth](/projects/wth.md) and [gone](./missing.md).",
+                    "See [theuth](/projects/theuth.md) and [gone](./missing.md).",
                 ),
                 Source::Model,
             )
@@ -1155,12 +1155,12 @@ mod tests {
         assert!(meta.timestamp.unwrap().ends_with('Z'));
 
         let (_, created) = k
-            .put(put("projects/wth", "wth", "hub"), Source::User)
+            .put(put("projects/theuth", "theuth", "hub"), Source::User)
             .await
             .unwrap();
         assert!(created);
         let (_, created) = k
-            .put(put("projects/wth", "wth2", "hub"), Source::User)
+            .put(put("projects/theuth", "wth2", "hub"), Source::User)
             .await
             .unwrap();
         assert!(!created, "second put on the same id is an update");
@@ -1171,10 +1171,10 @@ mod tests {
             c.links,
             vec![
                 ("facts/missing".to_string(), false),
-                ("projects/wth".to_string(), true)
+                ("projects/theuth".to_string(), true)
             ]
         );
-        let w = k.get("/projects/wth.md").await.unwrap();
+        let w = k.get("/projects/theuth.md").await.unwrap();
         assert_eq!(w.meta.title, "wth2");
         assert_eq!(w.cited_by, vec!["facts/toolchain".to_string()]);
         assert!(k.root().join("index.md").exists());
@@ -1186,7 +1186,7 @@ mod tests {
 
         k.delete("facts/toolchain").await.unwrap();
         assert!(k.get("facts/toolchain").await.is_err());
-        assert!(k.get("projects/wth").await.unwrap().cited_by.is_empty());
+        assert!(k.get("projects/theuth").await.unwrap().cited_by.is_empty());
         assert!(
             !k.root().join("facts").exists(),
             "emptied directory and its index.md go"
@@ -1251,8 +1251,8 @@ mod tests {
     #[test]
     fn terms_example() {
         assert_eq!(
-            terms("read /Users/x/wth/crates/agent/src/loop_.rs"),
-            ["users", "wth", "crates", "agent", "src", "loop"]
+            terms("read /Users/x/theuth/crates/agent/src/loop_.rs"),
+            ["users", "theuth", "crates", "agent", "src", "loop"]
         );
         assert_eq!(terms("The file, the FILE!"), Vec::<String>::new());
         assert_eq!(terms("Toolchain toolchain rustup").len(), 2);
@@ -1291,7 +1291,7 @@ mod tests {
         );
 
         let mut scoped = put("b/scoped", "cargo path", "cargo lives here");
-        scoped.scope = Some(PathBuf::from("/work/wth"));
+        scoped.scope = Some(PathBuf::from("/work/theuth"));
         k.put(scoped, Source::Model).await.unwrap();
         k.put(
             put("b/global", "cargo path", "cargo lives here"),
@@ -1301,7 +1301,7 @@ mod tests {
         .unwrap();
         let ids = |hits: Vec<Hit>| hits.into_iter().map(|h| h.meta.id).collect::<Vec<_>>();
         let inside = ids(k
-            .search("cargo path", Path::new("/work/wth/crates"), 10)
+            .search("cargo path", Path::new("/work/theuth/crates"), 10)
             .await
             .unwrap());
         assert_eq!(inside, ["b/scoped", "b/global"]);
@@ -1331,7 +1331,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let text = "read /Users/x/wth/crates/agent/src/loop_.rs";
+        let text = "read /Users/x/theuth/crates/agent/src/loop_.rs";
         let hinted = k
             .hint(text, Path::new("/tmp"), &BTreeSet::new(), 5)
             .await

@@ -3,9 +3,9 @@
 <plist version="1.0">
 <dict>
   <key>NSCameraUsageDescription</key>
-  <string>wth scans pairing QR codes to link this phone to your harness.</string>
+  <string>theuth scans pairing QR codes to link this phone to your harness.</string>
   <key>NSMicrophoneUsageDescription</key>
-  <string>wth records voice notes you send to your harness.</string>
+  <string>theuth records voice notes you send to your harness.</string>
   <!-- Skip the App Store Connect encryption questionnaire on every upload. -->
   <key>ITSAppUsesNonExemptEncryption</key>
   <false/>

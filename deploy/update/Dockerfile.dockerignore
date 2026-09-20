@@ -1,5 +1,5 @@
 # Context filter for deploy/update/Dockerfile (BuildKit picks <Dockerfile>.dockerignore
-# over the root .dockerignore). The root file drops **/*.md, which `cargo build -p wth`
+# over the root .dockerignore). The root file drops **/*.md, which `cargo build -p theuth`
 # needs (crates/*/… are include_str!'d). Keep only build output and secrets out.
 .git
 .github

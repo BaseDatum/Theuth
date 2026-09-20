@@ -2,7 +2,7 @@
 //!
 //! The protocol tier ([`transport`], [`presage`], [`text`], [`error`],
 //! [`mock`]) is copied from jarvis and frozen (09 §2.1–2.2). Everything else
-//! is wth glue: [`channel`] supervises link/connect and turns envelopes into
+//! is theuth glue: [`channel`] supervises link/connect and turns envelopes into
 //! agent asks; [`commands`] answers slash commands; [`approvals`] routes
 //! approval requests to the phone and reactions back; [`user`] delivers
 //! `message_user` text and files (24 §6).
@@ -57,7 +57,7 @@ impl Default for SignalConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            device_name: "wth".into(),
+            device_name: "theuth".into(),
             owner: String::new(),
             allowed: Vec::new(),
         }
@@ -91,7 +91,7 @@ pub enum SignalEvent {
     },
     /// Registration lost (device removed on the phone); back to `LinkUrl`.
     Unlinked,
-    /// Terminal mode: the channel only runs in `wth --headless`.
+    /// Terminal mode: the channel only runs in `t --headless`.
     DaemonOnly,
 }
 
@@ -137,7 +137,7 @@ pub struct RemoveAllowed(pub String);
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Unlink;
 
-/// `wth --link-signal` inputs (09 §11.1, 12 §3).
+/// `t --link-signal` inputs (09 §11.1, 12 §3).
 pub struct LinkOpts {
     /// Owner E.164; prompted on a TTY when absent and not already configured.
     pub owner: Option<String>,
@@ -157,7 +157,7 @@ pub struct SignalPlugin {
 }
 
 /// Terminal-mode answer to [`Link`] (09 §11.1).
-const DAEMON_HINT: &str = "signal runs in the daemon (wth --headless); link with wth --link-signal";
+const DAEMON_HINT: &str = "signal runs in the daemon (t --headless); link with t --link-signal";
 
 /// How long the terminal-mode `signal_link` tool waits for the first URL.
 const FIRST_URL_WAIT: Duration = Duration::from_secs(30);
@@ -372,7 +372,7 @@ impl runtime::Plugin for SignalPlugin {
     }
 }
 
-/// `wth --link-signal` (09 §11.1): pair, print the QR, persist
+/// `t --link-signal` (09 §11.1): pair, print the QR, persist
 /// `signal.owner`/`signal.device_name`. Runs regardless of `signal.enabled`.
 async fn pair(
     mut cfg: SignalConfig,
@@ -422,7 +422,7 @@ async fn pair(
         runtime::write_config_value(config_path, "signal", "owner", &yaml_str(&owner))?;
     }
     runtime::write_config_value(config_path, "signal", "device_name", &cfg.device_name)?;
-    println!("linked as {number}; owner {owner}; run wth --headless");
+    println!("linked as {number}; owner {owner}; run t --headless");
     Ok(())
 }
 
@@ -446,7 +446,7 @@ pub async fn link_oneshot(
             .flatten()
             .map_or_else(|| "<unknown>".to_owned(), |r| r.number);
         anyhow::bail!(
-            "already linked as {number}; wth --headless to run, /signal unlink to relink"
+            "already linked as {number}; t --headless to run, /signal unlink to relink"
         );
     }
     let mut expired: u32 = 0;
@@ -632,7 +632,7 @@ pub fn render_status(s: &SignalStatus) -> String {
             format!("disconnected; retry in {retry_in_secs} s")
         }
         Some(SignalEvent::Unlinked) => "unlinked; waiting to link".into(),
-        Some(SignalEvent::DaemonOnly) => "daemon only (runs in wth --headless)".into(),
+        Some(SignalEvent::DaemonOnly) => "daemon only (runs in t --headless)".into(),
     };
     let mut out = format!(
         "state: {state}\nregistered: {}\nnumber: {}\nowner: {}\nallowed: {}\n",

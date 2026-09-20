@@ -1,5 +1,5 @@
 //! Throwaway relay bench (design doc 31 §11): plays both ends against a
-//! running `wth-relay` on loopback and histograms DATA echo RTT.
+//! running `theuth-relay` on loopback and histograms DATA echo RTT.
 //!
 //! ```text
 //! cargo run --release -p relay --example bench -- ws://127.0.0.1:8787 <harnesses> <devices-per-harness> <msgs/s per device> <seconds> [relay-pid]
@@ -61,7 +61,7 @@ fn request(url: &str, n: usize) -> http::Request<()> {
     let mut req = url.into_client_request().expect("url");
     req.headers_mut().insert(
         "Sec-WebSocket-Protocol",
-        HeaderValue::from_static("wth-link-1"),
+        HeaderValue::from_static("theuth-link-1"),
     );
     let ip = format!("10.{}.{}.{}", (n >> 16) & 255, (n >> 8) & 255, n & 255);
     req.headers_mut()
@@ -86,7 +86,7 @@ async fn harness(
 ) -> anyhow::Result<()> {
     let id = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&keys.public);
     let mut ws = connect(&format!("{url}/h/{id}?role=harness"), n, &sem).await?;
-    let mut prologue = b"wth-link-1".to_vec();
+    let mut prologue = b"theuth-link-1".to_vec();
     prologue.extend_from_slice(id.as_bytes());
     let mut hs = snow::Builder::new(NOISE.parse()?)
         .local_private_key(&keys.private)?
@@ -180,7 +180,7 @@ async fn device(
 fn rss_kib(pid: Option<u32>) -> Option<u64> {
     let pid = pid.or_else(|| {
         let out = std::process::Command::new("pgrep")
-            .args(["-x", "wth-relay"])
+            .args(["-x", "theuth-relay"])
             .output()
             .ok()?;
         String::from_utf8_lossy(&out.stdout)

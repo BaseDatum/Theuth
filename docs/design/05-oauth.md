@@ -5,7 +5,7 @@ Status: draft v0 · 2026-09-09 · extends `01-config-and-subagents.md` §1.3–1
 Two logins that look the same to the user and share one small crate:
 
 1. **Provider login** — use a ChatGPT subscription instead of an API key.
-   `wth` is the OAuth client; the token turns into the auth of every model call
+   `theuth` is the OAuth client; the token turns into the auth of every model call
    through genai's resolver hooks. No new LLM code path.
 2. **MCP login** — a remote (`url`) server answers 401. `rmcp` already
    implements the whole MCP authorization spec (discovery, dynamic client
@@ -20,7 +20,7 @@ messages on actors that already exist.
 ## 1. Layout
 
 ```
-~/.wth/oauth/
+~/.theuth/oauth/
   openai.json          provider tokens, mode 0600 (file stem = genai namespace)
   mcp/<server>.json    rmcp StoredCredentials, mode 0600 (file stem = server name)
 ```
@@ -245,7 +245,7 @@ pub struct McpLogout { pub server: String }   // ask → Result<(), String>
 `http://127.0.0.1:<port>/callback`; `AuthorizationManager::new(url)` with the
 same `FileStore`; `resolve_metadata_from_challenge(saved challenge)` then
 `set_metadata`; `AuthorizationSession::new(manager,
-AuthorizationRequest::new(redirect).with_client_name("wth")[.with_preregistered_client(id).with_client_secret(s).with_scopes(..)])`
+AuthorizationRequest::new(redirect).with_client_name("theuth")[.with_preregistered_client(id).with_client_secret(s).with_scopes(..)])`
 — rmcp picks pre-registered → CIMD → dynamic registration in that order. The
 handler returns `session.get_authorization_url()`, opens the browser, and
 spawns: await the callback (5 min) → `session.handle_callback_url(url)` (rmcp
@@ -281,7 +281,7 @@ failed → connected is already an `McpProgress`.
 `impl rmcp::transport::auth::CredentialStore` over one JSON file:
 `load` = read + `serde_json` (missing → `None`), `save` = write-then-rename +
 `chmod 600`, `clear` = unlink. `acquire_refresh_guard` keeps the default (one
-process owns the file; a second `wth` on the same dir is already unsupported
+process owns the file; a second `theuth` on the same dir is already unsupported
 by the sqlite store).
 
 ## 4. TUI
@@ -313,7 +313,7 @@ headless verification below reads.
    `oauth` entry field. Check: `npx @modelcontextprotocol/server-everything`
    has no HTTP+OAuth mode; use rmcp's example `servers/auth_server` (or any
    public OAuth MCP server) — `login required` shown, `/login <name>` →
-   browser → connected → tools listed; restart `wth` → connects from the file
+   browser → connected → tools listed; restart `theuth` → connects from the file
    without a prompt.
 4. TUI + RPC: `/login`, `/logout`, menu key, methods, event forwarding.
 5. Docs: 00 §10 crate table, 01 §1.1 layout + §1.3 precedence, README crates

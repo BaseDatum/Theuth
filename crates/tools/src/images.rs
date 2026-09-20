@@ -148,7 +148,7 @@ pub(crate) mod tests {
     }
 
     fn tmp() -> PathBuf {
-        std::env::temp_dir().join(format!("wth-images-{}", uuid::Uuid::new_v4()))
+        std::env::temp_dir().join(format!("theuth-images-{}", uuid::Uuid::new_v4()))
     }
 
     #[test]

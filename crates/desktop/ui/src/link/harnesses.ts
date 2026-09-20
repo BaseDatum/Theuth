@@ -121,7 +121,7 @@ export function useHarnessTree(): HarnessTreeRow[] {
 
 /** Whether this container has a daemon of its own: the macOS shell, or a dev browser pointed at one. */
 export const hasLocal = (): boolean =>
-  container() === 'macos' || (typeof import.meta.env.VITE_WTH_URL === 'string' && typeof import.meta.env.VITE_WTH_TOKEN === 'string')
+  container() === 'macos' || (typeof import.meta.env.VITE_THEUTH_URL === 'string' && typeof import.meta.env.VITE_THEUTH_TOKEN === 'string')
 
 /** Nothing to connect to: no local daemon and no paired harness — show the `/link` onboarding. */
 export const useNeedsPairing = (): boolean => useHarnesses((s) => s.hydrated && s.harnesses.length === 0) && !hasLocal()

@@ -125,7 +125,7 @@ pub struct RunCx {
 // ---------------------------------------------------------------------------
 
 /// Start the worker pool on `worker`, spawned as `<worker> subprocess`. In
-/// production that is this binary (`wth subprocess`, 08 §9), so nothing has
+/// production that is this binary (`t subprocess`, 08 §9), so nothing has
 /// to be installed. `None` (with one `warn!`) when the pool fails to start:
 /// the runtime is off for the process.
 pub async fn open_pool(worker: &Path, max_processes: usize) -> Option<Arc<Pool>> {
@@ -1785,7 +1785,7 @@ mod tests {
     }
 
     fn tempdir() -> PathBuf {
-        let d = std::env::temp_dir().join(format!("wth-repl-{}", uuid::Uuid::new_v4()));
+        let d = std::env::temp_dir().join(format!("theuth-repl-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&d).unwrap();
         d
     }

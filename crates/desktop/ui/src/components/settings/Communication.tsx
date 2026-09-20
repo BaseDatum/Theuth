@@ -33,7 +33,7 @@ const TOUCH = 'pointer-coarse:min-h-11'
 function sourceText(s: CommunicationState): string {
   switch (s.source) {
     case 'env':
-      return 'Set by the environment (WTH_AGENT__COMMUNICATION); `always` writes config.yaml, but the environment wins again on restart.'
+      return 'Set by the environment (THEUTH_AGENT__COMMUNICATION); `always` writes config.yaml, but the environment wins again on restart.'
     case 'config':
       return 'From config.yaml.'
     case 'command':

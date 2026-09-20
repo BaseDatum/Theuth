@@ -56,7 +56,7 @@ Check: swap `signal` before `tools` in `main.rs`'s plugin vector, run, `/mcp`-st
 
 ## 3. G3 — pairing moves into the Signal plugin
 
-Target: `crates/wth/src/main.rs:127-178, 219-223`, `crates/signal/src/lib.rs`.
+Target: `crates/theuth/src/main.rs:127-178, 219-223`, `crates/signal/src/lib.rs`.
 
 - `SignalPlugin` gains `link: Option<LinkOpts { owner: Option<String>, device_name: Option<String> }>`.
 - `SignalPlugin::start` with `link: Some(_)`: run today's `link_signal` body (QR, `e164`, `write_config_value` on `signal.owner`/`signal.device_name`), then `rt.shutdown.cancel()`, return `Ok(())`.
@@ -65,7 +65,7 @@ Target: `crates/wth/src/main.rs:127-178, 219-223`, `crates/signal/src/lib.rs`.
 
 Leave in `main.rs`, documented in 00 §2 as deliberate: the `subprocess` argv branch before clap and `#[global_allocator]` (the Python worker *is* this binary, 08 §9), `first_run` (data-dir skeleton), the `sleep(100ms); process::exit(0)` (known gap, 00 §12 — a stuck `spawn_blocking` drain; fix the drain later, do not call it architecture).
 
-Check: `wth --link-signal --owner +1555…` still shows a QR and writes `signal.owner`; `wth` normal start unchanged. `main.rs` names nothing from `signal::` but `SignalPlugin`/`LinkOpts`.
+Check: `t --link-signal --owner +1555…` still shows a QR and writes `signal.owner`; `theuth` normal start unchanged. `main.rs` names nothing from `signal::` but `SignalPlugin`/`LinkOpts`.
 
 ## 4. G7 — direct tool list frozen per turn
 
@@ -79,7 +79,7 @@ Today `tools()` runs `ListTools` every round, hashes the result and `warn!`s whe
 
 Alternative rejected: dirty flag from the watcher applied at rebase (gaps doc G7.2) — more state for the same result; fetching once per turn is the freeze.
 
-Check: start `wth`, type before MCP servers connect, run a multi-round turn; log has no `tools changed mid-turn` (the string is gone from the code); `TurnFinished` cache ratio on round 2+ is non-zero.
+Check: start `theuth`, type before MCP servers connect, run a multi-round turn; log has no `tools changed mid-turn` (the string is gone from the code); `TurnFinished` cache ratio on round 2+ is non-zero.
 
 ## 5. G1 — one permission contract: `Risk → PolicyAction`
 
@@ -167,7 +167,7 @@ User decision, overriding the gaps doc's "keep in agent". The coupling argument 
 
 ### 9.1 Crate
 
-`crates/knowledge`, plugin. Dependency order becomes `runtime ← tools ← knowledge ← agent ← {tui, rpc, signal} ← wth`. Moved verbatim from `crates/agent/src/knowledge/`: `store.rs`, `repo.rs`, `types.rs`, `harvest.rs`, `tools.rs` (+ their tests). `okf`, `gix` deps move with them.
+`crates/knowledge`, plugin. Dependency order becomes `runtime ← tools ← knowledge ← agent ← {tui, rpc, signal} ← theuth`. Moved verbatim from `crates/agent/src/knowledge/`: `store.rs`, `repo.rs`, `types.rs`, `harvest.rs`, `tools.rs` (+ their tests). `okf`, `gix` deps move with them.
 
 ```rust
 // knowledge (lib.rs)
@@ -210,10 +210,10 @@ pub mod tools;                                     // GET: &str = "knowledge_get
 
 - `tui`: `Command::Knowledge{List,Search,History,Restore}` ask the knowledge actor (`lookup(KNOWLEDGE_ACTOR)`, `Err("knowledge is disabled")` when absent); `Command::Harvest` still asks the agent. `use knowledge::{Change, HarvestResult, History, Meta}`; `HarvestResult` stays where it is defined (`knowledge::types`), re-exported by `agent` only if the agent's own `Harvest` reply needs it — it does, so `agent` depends on `knowledge` and returns `knowledge::HarvestResult`.
 - `rpc`: `knowledge_*` methods ask the knowledge actor; `knowledge_harvest` still asks the agent; `forward!` gains `KnowledgeChanged`; `export.rs` paths become `knowledge::…`; feature `ts` forwards to `knowledge/ts`.
-- `wth/main.rs`: `Box::new(knowledge::KnowledgePlugin)` after `tools`, before `agent` (order is convention only after step 2); first-run `config.yaml` comment block gains `knowledge:\n  enabled: true` and drops `enabled` from `agent.knowledge`.
+- `theuth/main.rs`: `Box::new(knowledge::KnowledgePlugin)` after `tools`, before `agent` (order is convention only after step 2); first-run `config.yaml` comment block gains `knowledge:\n  enabled: true` and drops `enabled` from `agent.knowledge`.
 - Docs: 10 §0.2 ("Module `agent::knowledge`" → crate `knowledge`, plugin; config split), 10 §6 heading, 10 §8 (`KnowledgeChanged` is the plugin's own event), README crate list + config block, 00 §10 listing (step 1 text already names it).
 
-Check: `knowledge_search` over RPC on a fresh dir returns `[]`; a turn that reads a file three times triggers a harvest (`Harvested` event, a `put <id>` commit in `~/.wth/knowledge/.git`); `knowledge.enabled: false` → `list_tools` has no `knowledge_*`, a turn runs with no `<knowledge>` note and no harvest; `/knowledge` in the TUI lists concepts. `crates/agent/src/knowledge/` is gone; `crates/knowledge/src/lib.rs` has `impl runtime::Plugin for KnowledgePlugin`.
+Check: `knowledge_search` over RPC on a fresh dir returns `[]`; a turn that reads a file three times triggers a harvest (`Harvested` event, a `put <id>` commit in `~/.theuth/knowledge/.git`); `knowledge.enabled: false` → `list_tools` has no `knowledge_*`, a turn runs with no `<knowledge>` note and no harvest; `/knowledge` in the TUI lists concepts. `crates/agent/src/knowledge/` is gone; `crates/knowledge/src/lib.rs` has `impl runtime::Plugin for KnowledgePlugin`.
 
 ## 10. `grep` and `edit` natives (`crates/tools/src/fs.rs`)
 
@@ -248,11 +248,11 @@ Check: `grep pattern="lookup_when" glob="*.rs"` returns the three call sites; `e
 |---|---|---|---|
 | 1 honesty patch | none | 00, `tools/lib.rs` comment | text |
 | 2 `lookup_when` | none | runtime, signal, agent | ~30 net, −20 |
-| 3 link-signal | none | wth, signal | move ~50 |
+| 3 link-signal | none | theuth, signal | move ~50 |
 | 4 tools per turn | MCP visible next turn not next round (runtime-off only) | agent | −35 |
 | 5 Risk contract | **MCP defaults prompt** | tools, tui, rpc, docs | ~150 |
 | 6 backend enum | none | agent | ~80, −2 branches |
-| 9 knowledge plugin | config key moves (`knowledge.enabled`) | knowledge (new), agent, tui, rpc, wth, docs | move 3.3k, ~200 new |
+| 9 knowledge plugin | config key moves (`knowledge.enabled`) | knowledge (new), agent, tui, rpc, theuth, docs | move 3.3k, ~200 new |
 | 10 grep + edit | two new native tools | tools, 00 §6, README | ~120 |
 | 7 §8 + Tauri gate | none | 00 | text |
 | 8 lib.rs re-exports | none | agent | as touched |

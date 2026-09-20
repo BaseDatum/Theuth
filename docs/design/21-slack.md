@@ -11,7 +11,7 @@ were read from docs.slack.dev on 2026-09-14; slack-morphism facts from the
 
 Slack is a frontend, like the terminal and Signal: it sends `SendInput` /
 `Steer` / `Cancel` / `Resolve` and renders `AgentEvent`s. It runs **only in
-the daemon** (`wth --headless`). It is the first frontend that can show the
+the daemon** (`t --headless`). It is the first frontend that can show the
 whole transcript live and natively: Slack's agent surface has a
 server-rendered markdown stream with a tool-call timeline, a session status
 with a stop button, thread titles, buttons, reactions and threads. This doc
@@ -23,14 +23,14 @@ jarvis-slack is 9.4k lines (`channel.rs` 7 201, `client.rs` 1 205, `fmt.rs`
 1 011); the audit puts the essential part at ~1 200. The rest is machinery
 around decisions this doc changes.
 
-| jarvis did | why it hurt | wth does |
+| jarvis did | why it hurt | theuth does |
 |---|---|---|
 | Kept one stream alive across tool calls with no keepalive; on `msg_too_long` rolled to a new bubble up to 8× with a "never repost" invariant (C:2404-2516) | the invariant forced `streamed_total`/`uncounted_raw`/`presentation_prefix` accounting and a longest-overlap tail reconciliation (C:209-332, 5959-6005): ~1 000 lines | `markdown::Text::raw()` is the only truth; a bubble that fails is repaired with `chat.update(ts, markdown_text = raw)`; rotation is one routine with three triggers (§8.4); keepalive is a `task_update` refresh (§8.3) |
 | Two markdown dialects: stream `markdown_text` + a regex md→mrkdwn converter for `postMessage` fallbacks (F:608-771) | 1 000 lines, unhandled cases (nested lists, quotes, `_italic_`) | `markdown_text` everywhere (`postMessage`, `update`, `*Stream` all take it, 12 000 chars); `fmt.rs` does not exist |
 | `task_update` cards with only title + status, args and output withheld (C:486-500) | native look, zero observability | title = described args; `details` = first output line; full output uploaded and linked as a `source` (§8.3) |
 | slack-morphism 2.22 without `.with_rate_control` (K:828); approval countdown `chat.update` storms starved `postMessage` (C:5536) | 429s became dropped cards and lost appends | rate control on; no countdowns; one pacer for `appendStream` (§4.2) |
 | morphism's closed event enum failed on `app_context_changed` → unacked → Slack retried ×3 (C:4895) | log noise, duplicate work | upstream `Unknown(Value)` (§2.1); unknown events are acked and counted |
-| Approvals/questions/loop-ack cards with short codes, `/jarvis` operator CLI (~1 700 lines) | product surface, not a frontend | one approval card, two buttons whose `value` is the `ApprovalId` (restart-safe, C:1856); `/wth` mirrors the Signal command table |
+| Approvals/questions/loop-ack cards with short codes, `/jarvis` operator CLI (~1 700 lines) | product surface, not a frontend | one approval card, two buttons whose `value` is the `ApprovalId` (restart-safe, C:1856); `/theuth` mirrors the Signal command table |
 | Only `channel:thread_ts → conversation` persisted; live streams lost on restart → dangling "streaming…" bubbles (C:394) | | `threads.json` also lists open stream `ts`; boot stops them (§11) |
 | No subagent visibility | | a thread per child + a board message in the parent (§9) |
 
@@ -43,7 +43,7 @@ block boundaries as the only place a message may be cut (F:6-11).
 
 ## 1. Goal, and what is not one
 
-Goal: talk to the daemon from Slack (DM or `@wth` in a channel) and get the
+Goal: talk to the daemon from Slack (DM or `@theuth` in a channel) and get the
 same agent the terminal gets, rendered with Slack's agent UI: streamed
 markdown, a timeline card per tool call with its output one click away,
 reasoning in a collapsed quote, approval buttons, the native "Working…"
@@ -66,15 +66,15 @@ Not goals, with the reason:
 - **Voice/TTS.** Inbound files are saved and their path handed to the model
   (09 §7.4); images and PDFs ride along in `files` (17 §5, 20 §2.5).
 - **Slack as a data source** (`app_context_changed` entities, channel
-  history, canvases). wth has no Slack read tools; when one exists it gets
+  history, canvases). theuth has no Slack read tools; when one exists it gets
   its own doc and the context event becomes useful.
 - **Plan mode** (`task_display_mode: plan`, `plan_update`). It maps onto
-  wth's `todo` (07 §5) exactly, but the loop publishes no todo event; a
+  theuth's `todo` (07 §5) exactly, but the loop publishes no todo event; a
   `TodoChanged` `AgentEvent` is an `agent` change the TUI would also use
   (its status line shows nothing about todos today). Add the event first,
   then this is ~20 lines here. §17.
 - **Feedback buttons** (`context_actions` / `feedback_buttons` in
-  `stopStream` blocks). Nothing in wth consumes a 👍/👎 on a turn; when
+  `stopStream` blocks). Nothing in theuth consumes a 👍/👎 on a turn; when
   something does (knowledge harvest weighting?), one block.
 
 ## 2. Layout
@@ -90,10 +90,10 @@ crates/slack/
     bubble.rs     one streamed message per turn: Stream | Update mode over markdown::Text,
                   task cards, rotation, repair                                                  (~300)
     threads.rs    thread ↔ session map + open streams, `threads.json`                          (~100)
-    commands.rs   `/wth …` parser + dispatcher (09 §9 table)                                    (~300)
+    commands.rs   `/theuth …` parser + dispatcher (09 §9 table)                                    (~300)
     approvals.rs  card blocks, button routing                                                   (~100)
-  manifest.yaml   the Slack app manifest; `wth --slack-manifest` prints it
-~/.wth/slack/
+  manifest.yaml   the Slack app manifest; `t --slack-manifest` prints it
+~/.theuth/slack/
   threads.json    { threads: { "C…:1699999.123456": { session, user, team, title } }, streams: [ { channel, ts } ] }
   inbox/          inbound files, `<ts>-<name>` (09 §7.4)
 ```
@@ -246,11 +246,11 @@ only T2 pressure is one `startStream` per bubble.
 ## 5. Trust
 
 `slack.owner` (one `U…`) and `slack.allowed` (more). `slack.channels`: the
-channels where `@wth` is honoured; empty = DMs only. A DM from a user not in
+channels where `@theuth` is honoured; empty = DMs only. A DM from a user not in
 the list is dropped with one `warn!` and no reply (09 §5.1: a bot answering
 strangers advertises itself). A mention in a listed channel from a
 non-allowed user gets one `chat.postEphemeral` `not allowed`; a mention in
-an unlisted channel is ignored. Owner-only: `/wth approvals`, `/wth slack
+an unlisted channel is ignored. Owner-only: `/theuth approvals`, `/theuth slack
 …`, cards in the owner DM (§10.1). Approval buttons in a thread: owner or
 the thread's user. Ids, not names.
 
@@ -271,7 +271,7 @@ list §11).
 - **Channel**: `app_mention` only; `<@Ubot>` stripped; thread rule as above.
   Unmentioned channel traffic is never read (`channels:history` not
   requested).
-- **`/wth resume <id>`** → binds a *new* thread (rooted at a message we post:
+- **`/theuth resume <id>`** → binds a *new* thread (rooted at a message we post:
   `resumed <id> · <title>`) to an existing session (full id, unique prefix
   or suffix, 09 §6).
 - **Subagents**: `SubagentSpawned { parent, child, name }` with a bound
@@ -621,15 +621,15 @@ ephemeral `not allowed`. `ApprovalResolved` from anywhere (terminal, RPC,
 timeout) → `chat.update` the card to `✓ allowed by <@U…>` / `✗ denied` /
 `⌛ timed out`, buttons removed.
 
-Rejected: short codes and `/wth approve` (buttons are the native gesture
+Rejected: short codes and `/theuth approve` (buttons are the native gesture
 and work on the phone client; 09's code path exists because Signal has no
 buttons); 👍/👎 reactions (a second path for the same click); countdown
 edits (jarvis C:5536 — they starved `postMessage`).
 
-### 10.2 `/wth` slash command
+### 10.2 `/theuth` slash command
 
 A leading `/` in Slack is a Slack command and the client refuses unknown
-ones, so text `/status` never reaches us. One manifest command `/wth`
+ones, so text `/status` never reaches us. One manifest command `/theuth`
 carries the 09 §9 table as sub-commands with the same names, arguments and
 meaning: `help status sessions resume cancel compact model agents prompt
 skills mcp login logout approvals slack`. Not carried: `new` (a top-level
@@ -660,7 +660,7 @@ clicks, answering through the click's `response_url` with
 
 | command | blocks | actions (`action_id` → effect) |
 |---|---|---|
-| `/wth` (bare) / `help` | header `wth`, one `section` per group (session · harness · setup) with `mrkdwn` one-liners, an `actions` row of the common buttons: Sessions · Agents · Models · Status | `cmd:sessions`, `cmd:agents`, `cmd:models`, `cmd:status` re-render that panel in place |
+| `/theuth` (bare) / `help` | header `theuth`, one `section` per group (session · harness · setup) with `mrkdwn` one-liners, an `actions` row of the common buttons: Sessions · Agents · Models · Status | `cmd:sessions`, `cmd:agents`, `cmd:models`, `cmd:status` re-render that panel in place |
 | `status` | `section` with `fields` (connection · bot · team · threads · open streams · session · model · turn) + `context` of per-method call counts | `cmd:refresh` |
 | `sessions` | header + one `section` per session (title bold, `last-8 · model · age` as context) with an `overflow` menu: Resume here · Cancel · Compact | `cmd:resume:<id>` posts the root message and binds (as §6), `cmd:cancel:<id>`, `cmd:compact:<id>` |
 | `agents` | one `section` per row of `list_agents` (glyph, name, state, detail, age) with a Cancel button while running and an Open-thread link when bound | `cmd:cancel:<id>` |
@@ -683,18 +683,18 @@ the same way. Modals need `trigger_id` within 3 s of the click, so the
 ### 10.3 Manifest and setup
 
 `crates/slack/manifest.yaml` is in git and compiled in (`slack::MANIFEST`);
-`wth --slack-manifest` prints it for the paste-into-api.slack.com path.
+`t --slack-manifest` prints it for the paste-into-api.slack.com path.
 Contents: `settings.socket_mode_enabled: true`, `interactivity.is_enabled:
 true`, `features.agent_view { agent_description, suggested_prompts }` (new
 apps must use `agent_view`; prompts are static manifest data),
-`features.slash_commands: [/wth]`, `bot_user { display_name: wth,
+`features.slash_commands: [/theuth]`, `bot_user { display_name: theuth,
 always_online: true }`, `event_subscriptions.bot_events: [message.im,
 app_mention, agent_session_stopped, agent_session_title_changed]`,
 `oauth_config.scopes.bot: [chat:write, im:history, im:write,
 app_mentions:read, reactions:write, files:read, files:write, commands,
 assistant:write]`. The app-level token needs `connections:write`.
 
-**`wth --slack-setup`** drives as much of the rest as Slack's API allows,
+**`t --slack-setup`** drives as much of the rest as Slack's API allows,
 one interactive terminal session, no daemon running:
 
 1. Asks for an **app configuration token** (`xoxe.xoxp-…`, from
@@ -719,7 +719,7 @@ one interactive terminal session, no daemon running:
 5. Writes `slack_bot` / `slack_app` into the secrets vault (`Vault::open`
    directly, source `slack setup`; 37 §3.6) and
    `slack.owner` / `slack.enabled: true` into `config.yaml`
-   (`write_config_value`), prints `run wth --headless and DM the bot`.
+   (`write_config_value`), prints `run t --headless and DM the bot`.
 
 Every step is idempotent and re-runnable; a step whose input is already
 present (a token in the vault that passes `auth.test`) is
@@ -752,17 +752,17 @@ slack:
   enabled: true            # daemon opens the socket when tokens are present
   owner: "U0123456789"     # owner-only commands; may click any approval; receives unbound approvals
   allowed: []              # more user ids; each owns their threads
-  channels: []             # channels where @wth is honoured; empty = DMs only
+  channels: []             # channels where @theuth is honoured; empty = DMs only
   tools: all               # all | errors | none — task cards
   reasoning: true          # reasoning as a timeline card (stream) or quoted message (update)
   approvals: all           # all | threads — where approvals for non-Slack sessions go (§10.1)
 ```
 
 Tokens are secrets `slack_bot` (`xoxb-…`) and `slack_app` (`xapp-…`) in the
-encrypted vault (37; `wth --slack-setup` writes them, or `wth --secret-set
+encrypted vault (37; `t --slack-setup` writes them, or `t --secret-set
 slack_bot` on a box without a UI) — keys never live in `config.yaml` (01
 §1.3). Env overrides as everywhere
-(`WTH_SLACK__OWNER`). No flush/pacing knobs: they are Slack's limits, not
+(`THEUTH_SLACK__OWNER`). No flush/pacing knobs: they are Slack's limits, not
 preferences.
 
 ## 13. Types
@@ -874,7 +874,7 @@ plausible bug would break, not wiring (plugins.md §5):
    channel; `help` lists every sub-command once.
 6. **Threads** round-trip incl. `streams` and `title`; corrupt file → empty.
 7. **e2e, manual, real workspace** — recorded in the PR: create app from
-   `wth --slack-manifest`, tokens in, `wth --headless`; DM "hi" → 👀 →
+   `t --slack-manifest`, tokens in, `t --headless`; DM "hi" → 👀 →
    Working… → streamed reply → footer → ✅ → thread title appears; a reply
    with a table renders as a table; "run `ls -la` then summarise" with
    `mutating: ask` → card with buttons → Allow → timeline card `shell · ls
@@ -883,8 +883,8 @@ plausible bug would break, not wiring (plugins.md §5):
    a 6-minute turn rotates once with the timeline continuing;
    `spawn_subagent` → child thread, board updates, result card in parent;
    typing in the child thread steers it; stop button → 🛑; a terminal
-   session's approval shows up in the owner DM and Allow works; `/wth
-   sessions`, `/wth resume` in a channel with `@wth`; kill the daemon
+   session's approval shows up in the owner DM and Allow works; `/theuth
+   sessions`, `/theuth resume` in a channel with `@theuth`; kill the daemon
    mid-stream, restart → the bubble is stopped, thread still bound, next
    message continues; pause the provider > 30 s mid-text → `StreamFallback`
    and a correct final message.
@@ -931,15 +931,15 @@ after (00 §11 pattern); results are folded into §8 before step 3 of §18.
 
 ## 18. Order
 
-Each step leaves `wth` runnable; formatters and the suite once per step.
+Each step leaves `theuth` runnable; formatters and the suite once per step.
 
 1. **Spikes** (§16) on a sandbox workspace; fold results into §8.
 2. **Dependency + skeleton**: slack-morphism with the §2.1 APIs
    (originally a fork, now upstream Git); `Cargo.toml`, `lib.rs` (config, actor,
    `SlackEvent`, `SlackStatus`, `Unconfigured`/`DaemonOnly`), `api.rs`
    façade + pacer, `socket.rs` listener + dedup; `markdown::Text::committed()`.
-   Check: §15 items 1–2; `wth --headless` with tokens logs `Connected`, a DM
-   shows up as a debug line, `/wth help` answers.
+   Check: §15 items 1–2; `t --headless` with tokens logs `Connected`, a DM
+   shows up as a debug line, `/theuth help` answers.
 3. **Threads + inbound + bubble text**: `threads.rs`, `channel::inbound`,
    workers, `bubble.rs` (Stream + Update, rotation, repair), reactions,
    session status, footer. Check: §15 items 3–4 (text half); e2e "hi" →
@@ -963,7 +963,7 @@ Shipped: `crates/slack` (`lib`, `api`, `socket`, `channel`, `bubble`,
 `threads`, `commands`, `ui`, `approvals`, `board`, `setup`; `manifest.yaml`),
 slack-morphism (originally the four-commit fork; now upstream `master` pinned
 at `e2a4b014`, containing PR #388), `markdown::Text::committed()`, `rpc`
-methods/bridge/export, `wth --slack-manifest` / `--slack-setup`, README and
+methods/bridge/export, `t --slack-manifest` / `--slack-setup`, README and
 00 amendments. Steps 1–7 of §18 done; §16 spikes 1–7 answered (facts in
 §8.3–8.5 and `local` notes: stream dies at ~5 min wall, 45 s idle survives,
 `chat.update` on a live stream → `streaming_state_conflict`, on a dead one
@@ -973,14 +973,14 @@ permalinks need `chat.getPermalink` on Enterprise Grid).
 
 Dependency cutover (2026-09-18): exact upstream Git pin, fork patch removed,
 glue migrated to the merged typed task/source models and stop-stream content.
-Verified: 89 Slack tests, offline connector/request/event smoke and `wth` build.
+Verified: 89 Slack tests, offline connector/request/event smoke and `theuth` build.
 No live Slack API calls were made for this dependency change.
 
 Exercised: `cargo clippy --workspace -D warnings`, `cargo test --workspace`
 (slack: 73 tests — socket dedup, pacer spacing, bubble open/flush/keepalive/
 rotation/repair/update-mode, reasoning card and quoted fallback, task cards
 and snippet source, routing/trust/steer, approvals in thread and owner DM
-with clicks, child threads and board, `/wth` panels and `cmd:*` clicks,
+with clicks, child threads and board, `/theuth` panels and `cmd:*` clicks,
 setup create/update/skip/re-prompt, threads round-trip), `cargo check -p rpc
 --features ts`; the real workspace: `auth.test`, owner DM, boot-time
 stream cleanup, two Socket Mode connections, `slack_status` over RPC; the
@@ -991,7 +991,7 @@ below the bubble — fixed by §8.5's card.
 
 Not exercised end-to-end yet (next user pass): reasoning as a timeline card
 with a real provider; the Block Kit panels, overflow/select/radio clicks
-and the two modals; `wth --slack-setup --app` against the live app; the
+and the two modals; `t --slack-setup --app` against the live app; the
 native stop button (needs the two `agent_session_*` events on the app,
 §10.3); a > 5 min turn rotating with cards carried over; daemon restart
 mid-stream (boot cleanup ran against an empty list only); `update` mode

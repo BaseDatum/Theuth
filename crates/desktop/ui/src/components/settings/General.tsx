@@ -47,7 +47,7 @@ export function General() {
     queryFn: getVersion,
     enabled: desktop && isTauri(),
   })
-  // 39 §4.3: the daemon's own updater; `wth` on a terminal harness is not the bundled sidecar.
+  // 39 §4.3: the daemon's own updater; `theuth` on a terminal harness is not the bundled sidecar.
   const update = useQuery({
     queryKey: queryKeys.updateStatus,
     queryFn: () => api.update_status(),
@@ -100,8 +100,8 @@ export function General() {
               label="App"
               description={
                 pending
-                  ? `wth ${appVersion.data ?? ''} · ${pending} installs when you quit`
-                  : `wth ${appVersion.data ?? ''}`
+                  ? `theuth ${appVersion.data ?? ''} · ${pending} installs when you quit`
+                  : `theuth ${appVersion.data ?? ''}`
               }
             />
           </>
@@ -109,7 +109,7 @@ export function General() {
       </Section>
       {info && (
         <Section title="Harness">
-          <Row label="Name" description={`wth ${info.version}`}>
+          <Row label="Name" description={`theuth ${info.version}`}>
             <span className="text-sm">{info.name}</span>
           </Row>
           <Row label={`Data directory on ${info.name}`}>
@@ -120,7 +120,7 @@ export function General() {
           {update.data && (
             <Row
               label="Update"
-              description={`${update.data.version} ${update.data.applied ? 'ready · restarts with the daemon' : 'available · `wth --update` on the harness'}`}
+              description={`${update.data.version} ${update.data.applied ? 'ready · restarts with the daemon' : 'available · `t --update` on the harness'}`}
             />
           )}
         </Section>

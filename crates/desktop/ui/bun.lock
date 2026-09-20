@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "wth-desktop-ui",
+      "name": "theuth-desktop-ui",
       "dependencies": {
         "@codemirror/lang-markdown": "^6.5.2",
         "@codemirror/lang-yaml": "^6.1.3",

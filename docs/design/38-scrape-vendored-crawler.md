@@ -176,7 +176,7 @@ What we wrote, `crates/scrape` (2,060 lines incl. tests):
 | engine pick | `engine.rs` `fetch_page` | fetch → `is_thin` (prose gate, §0.3) → obscura; render failure keeps the thin fetch; `Fetched.tier` says which tier answered. Renders run on `RenderSlots` — a `Semaphore` over `scrape.concurrency` browser sessions (ids = `RENDER_SESSION` base + slot index) — so `search_web`'s five parallel reads and a crawl render concurrently; until 2026-09-17 one `render_lock` mutex serialised a single isolate (§12.15) |
 | markdown pipeline | `engine.rs:298-373` | `transform_html` → `html-to-markdown-rs` → `strip_base64_images` (`](<base64-image-removed>)`, upstream `removeBase64Images`) → `post_process_markdown`; empty main-content retries whole-page |
 | `normalize` | `crawl.rs:599-620` | visited key: fragment off, `www.` off, `/index.html` → `/`, `web::url::canonical_key` (tracking params, trailing slash), whole query off when `ignore_query_parameters` |
-| scope | `crawl.rs:136-166` | one `FilterLinksCall` per batch: `base_url` = seed **origin**, `initial_url` = seed, `robots_user_agent: Some("wth")`, `max_depth: 100` (our own hop-depth cap is separate) |
+| scope | `crawl.rs:136-166` | one `FilterLinksCall` per batch: `base_url` = seed **origin**, `initial_url` = seed, `robots_user_agent: Some("theuth")`, `max_depth: 100` (our own hop-depth cap is separate) |
 | BFS walk | `crawl.rs:218-343` | frontier + visited + budget + hop depth, `buffered(concurrency)`, per-page timeout `min(page_timeout, remaining)`, `ScrapeProgress` after every batch change |
 | robots | `engine.rs:163-176`, `crawl.rs:206-230` | fetched once per run (`{origin}/robots.txt`); `build_robot` for `Crawl-delay` and `Sitemap:` lines; `filter_links` applies the disallows |
 | `HostGate` | `crawl.rs:643-671` | per-host slot reservation: N concurrent requests to one host go out `delay` apart, not together; `delay = max(delay_ms, Crawl-delay)` capped at 10 s (`host_delay`, `:547-555`) |
@@ -382,7 +382,7 @@ smoke below (2026-09-17, author's network, debug build).
     titles in 2.3 s; `map_site` on docs.rs → 2 URLs (`/` and `all.html`) in
     3.1 s (docs.rs has no sitemap; the walk found the rest but the seed page
     links exceeded the budget).
-  - Headless `wth --headless --data-dir /tmp/…` over JSON-RPC: `list_tools`
+  - Headless `t --headless --data-dir /tmp/…` over JSON-RPC: `list_tools`
     shows `scrape_url`/`crawl`/`map_site` as `direct: false, risk: read_only`
     and no `map`; `get_prompt` carries the scrape block; `read_url`'s
     description names `scrape` as the renderer. The `search_web` description
@@ -434,8 +434,8 @@ Review findings that changed the design between draft and HEAD:
    as both made `filter_links` compute scope from the wrong base and drop
    sibling pages. Fixed at `crawl.rs:147-148`; `deep_seed_stays_under_directory`
    pins it.
-3. **Robots user agent is `wth`.** `build_robot` and `filter_links` were called
-   with `None`, matching only `User-agent: *`; now `Some("wth")`
+3. **Robots user agent is `theuth`.** `build_robot` and `filter_links` were called
+   with `None`, matching only `User-agent: *`; now `Some("theuth")`
    (`crawl.rs:20,155,228`), so a site can allow or deny us by name.
 4. **`map` → `map_site`** (§0.9).
 5. **No `web` config read from `scrape`.** The draft's engine read

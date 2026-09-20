@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Notarize + staple a packaged wth DMG. Not run by `just package-macos`.
+# Notarize + staple a packaged theuth DMG. Not run by `just package-macos`.
 #
-#   WTH_SIGN_IDENTITY="Developer ID Application: …" just package-macos
+#   THEUTH_SIGN_IDENTITY="Developer ID Application: …" just package-macos
 #   just notarize-macos
 #
 # Auth (first match):
-#   WTH_NOTARY_KEYCHAIN_PROFILE   notarytool store-credentials profile
-#   WTH_NOTARY_APPLE_ID + WTH_NOTARY_TEAM_ID + WTH_NOTARY_PASSWORD
+#   THEUTH_NOTARY_KEYCHAIN_PROFILE   notarytool store-credentials profile
+#   THEUTH_NOTARY_APPLE_ID + THEUTH_NOTARY_TEAM_ID + THEUTH_NOTARY_PASSWORD
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -15,18 +15,18 @@ source "$ROOT/scripts/load-signing-env.sh"
 BUNDLE_DIR="$ROOT/target/release/bundle/macos"
 DMG="${1:-}"
 if [[ -z "$DMG" ]]; then
-  DMG="$(ls -t "$BUNDLE_DIR"/wth_*.dmg 2>/dev/null | head -1 || true)"
+  DMG="$(ls -t "$BUNDLE_DIR"/t_*.dmg 2>/dev/null | head -1 || true)"
 fi
 [[ -n "$DMG" && -f "$DMG" ]] || { echo "error: no DMG found (run 'just package-macos' first or pass a path)" >&2; exit 1; }
 DMG="$(cd "$(dirname "$DMG")" && pwd)/$(basename "$DMG")"
 
-if [[ -n "${WTH_NOTARY_KEYCHAIN_PROFILE:-}" ]]; then
-  AUTH=(--keychain-profile "$WTH_NOTARY_KEYCHAIN_PROFILE")
+if [[ -n "${THEUTH_NOTARY_KEYCHAIN_PROFILE:-}" ]]; then
+  AUTH=(--keychain-profile "$THEUTH_NOTARY_KEYCHAIN_PROFILE")
 else
-  : "${WTH_NOTARY_APPLE_ID:?set WTH_NOTARY_APPLE_ID (or WTH_NOTARY_KEYCHAIN_PROFILE)}"
-  : "${WTH_NOTARY_TEAM_ID:?set WTH_NOTARY_TEAM_ID}"
-  : "${WTH_NOTARY_PASSWORD:?set WTH_NOTARY_PASSWORD (app-specific password)}"
-  AUTH=(--apple-id "$WTH_NOTARY_APPLE_ID" --team-id "$WTH_NOTARY_TEAM_ID" --password "$WTH_NOTARY_PASSWORD")
+  : "${THEUTH_NOTARY_APPLE_ID:?set THEUTH_NOTARY_APPLE_ID (or THEUTH_NOTARY_KEYCHAIN_PROFILE)}"
+  : "${THEUTH_NOTARY_TEAM_ID:?set THEUTH_NOTARY_TEAM_ID}"
+  : "${THEUTH_NOTARY_PASSWORD:?set THEUTH_NOTARY_PASSWORD (app-specific password)}"
+  AUTH=(--apple-id "$THEUTH_NOTARY_APPLE_ID" --team-id "$THEUTH_NOTARY_TEAM_ID" --password "$THEUTH_NOTARY_PASSWORD")
 fi
 
 echo "==> submitting $DMG"

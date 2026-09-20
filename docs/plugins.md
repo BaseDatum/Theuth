@@ -16,7 +16,7 @@ A plugin is a workspace crate that exports one type implementing `runtime::Plugi
 | A subsystem with its own state on disk, its own actor(s), its own tools and/or events, its own config section (`knowledge`, `signal`, `tools`, `rpc`, `tui`) | **a plugin** | this guide |
 | Another frontend (Tauri) | RPC client of `Api`; not a plugin | |
 | A network peer that authenticates itself with keys and proxies `Api` (a phone through a relay) | **a plugin** (`link`, 31) | it owns state (identity, `devices.yaml`), an actor, config and events; the peer's requests are dispatched in-process, see §4 |
-| A peer this harness *dials* and exposes to `agent` as a harness source (another wth on another machine) | **a plugin** (`nodes`, 32) | it owns state (`nodes.yaml`), an actor, config and events; what `agent` needs from it — a `Dialer` per node — arrives as a `RegisterNode` message, never by `agent` depending upward (§3.1) |
+| A peer this harness *dials* and exposes to `agent` as a harness source (another theuth on another machine) | **a plugin** (`nodes`, 32) | it owns state (`nodes.yaml`), an actor, config and events; what `agent` needs from it — a `Dialer` per node — arrives as a `RegisterNode` message, never by `agent` depending upward (§3.1) |
 
 Two tests. *Does it need to exist before `main` starts anything else?* — no plugin does; if yours does, it is part of `runtime` or the binary, and that needs a written reason. *Could a user turn it off and still have a working harness?* — a plugin can be left out of the vector or disabled by its config; if the answer is no, it is not a plugin, it is the loop.
 
@@ -77,7 +77,7 @@ workspace = true                       # missing_docs = warn, clippy::all = deny
 
 Add `foo = { path = "crates/foo" }` to the root `[workspace.dependencies]`; `members = ["crates/*"]` already globs the directory. New third-party crates go in the root `[workspace.dependencies]` with a one-line comment saying which doc chose them.
 
-**Dependency order is acyclic and downward only**: `runtime ← tools ← knowledge ← agent ← link ← {signal, slack, nodes} ← rpc ← tui ← wth` (`rpc` sits above every plugin because `Api` names all their command types; `tui` calls `Api`, so it sits above `rpc`). Depend on another plugin's crate for its *types* (message structs, events, `Tool` trait) — never to call functions on its state. If you need a crate that depends on you, you have the arrow backwards: the thing you want from it is a message — `link` needing `rpc`'s `Methods` is the worked case: `link` sits below `rpc` and `rpc` sends it a `SetDispatch` message at start (32 §3.1).
+**Dependency order is acyclic and downward only**: `runtime ← tools ← knowledge ← agent ← link ← {signal, slack, nodes} ← rpc ← tui ← theuth` (`rpc` sits above every plugin because `Api` names all their command types; `tui` calls `Api`, so it sits above `rpc`). Depend on another plugin's crate for its *types* (message structs, events, `Tool` trait) — never to call functions on its state. If you need a crate that depends on you, you have the arrow backwards: the thing you want from it is a message — `link` needing `rpc`'s `Methods` is the worked case: `link` sits below `rpc` and `rpc` sends it a `SetDispatch` message at start (32 §3.1).
 
 A plugin that needs a *handle* only a higher plugin can build (the link plugin dispatches decrypted requests into `rpc`'s `Methods`) receives it as a message from that plugin at start (`rpc::RpcPlugin::start` → `lookup_when::<link::LinkActor>` → `tell(SetDispatch { … })`), never as a constructor argument from `main.rs` (00 §1.4). The higher plugin already depends on the lower one for its types, so the tell is a downward edge that exists anyway.
 
@@ -225,23 +225,23 @@ let _ = reg.ask(tools::RegisterPrompt { plugin: "foo", text: FOO_PROMPT.to_owned
 
 - It lands in the system prompt at the next turn start, sorted with the other plugins' blocks, before the agent's own guidance (07 §4 part 7). The harness owns headings and order; write plain sentences.
 - Pure function of config: no clock, session, roster, counts. Anything that varies per turn busts the system cache for every session (07 §2.2.5). Knowledge's block is one `const` (`knowledge::tools::PROMPT`).
-- One paragraph. If you need more, the model needs a skill (`~/.wth/skills/`), not a longer prompt.
+- One paragraph. If you need more, the model needs a skill (`~/.theuth/skills/`), not a longer prompt.
 - `tools::UnregisterPrompt("foo")` when your plugin turns itself off at runtime; a plugin that never starts never registers, so `foo.enabled: false` removes the text with no extra code.
 - `/prompt` in the TUI shows the rendered result; that is the check.
 
 ### 3.6 Config
 
 - `rt.section::<FooConfig>("foo")` — one section per plugin, `#[serde(default)]`, missing section → `Err` → fall back to `Default`. Never read another plugin's section; if you need a value it owns, that is a message.
-- Env overlay is automatic: `WTH_FOO__ENABLED=false`.
+- Env overlay is automatic: `THEUTH_FOO__ENABLED=false`.
 - Writing back: `runtime::write_config_value(&rt.data_dir.join("config.yaml"), "foo", "key", "value")` rewrites one line and keeps comments (02 §2 explains why not a serde round-trip).
-- Add your section, commented, to `DEFAULT_CONFIG` in `crates/wth/src/main.rs` (first-run template) and a bullet to README's config list.
-- State on disk lives under `rt.data_dir` (`~/.wth/`); say in the doc which files are truth and which are derived and deletable.
+- Add your section, commented, to `DEFAULT_CONFIG` in `crates/theuth/src/main.rs` (first-run template) and a bullet to README's config list.
+- State on disk lives under `rt.data_dir` (`~/.theuth/`); say in the doc which files are truth and which are derived and deletable.
 
 ## 4. Integrate
 
 Order of edits once the crate compiles on its own.
 
-1. **`crates/wth/src/main.rs`** — one line in the plugin vector: `Box::new(foo::FooPlugin)`. Position is convention only (tools first, frontends last); nothing may depend on it. `wth/Cargo.toml` gains the dep.
+1. **`crates/theuth/src/main.rs`** — one line in the plugin vector: `Box::new(foo::FooPlugin)`. Position is convention only (tools first, frontends last); nothing may depend on it. `theuth/Cargo.toml` gains the dep.
 2. **Commands** — add the method to `trait Api` + `impl ApiServer` in `crates/rpc/src/api.rs` (`#[method(name = "foo_ping")]`; lookup + one `ask`, through a small `fn foo() -> RpcResult<ActorRef<FooActor>>` next to `knowledge()`). That is the whole command list; the TUI calls it in-process, Tauri over the socket. Events: each wire-visible event into `bridge.rs`'s `forward!(…)` **and** its `rt.subscribe` line; each wire type into `export.rs` for `just ts`; `rpc`'s `ts` feature forwards to `foo/ts`.
 
    A plugin that serves `Api` on a socket it owns does not add a second server: it asks `rpc::methods(rt)` for the `jsonrpsee::Methods` once and dispatches each request text with `Methods::raw_json_request` (the `link` plugin, 31 §6.2; `crates/link/src/conn.rs`). The bridge behind it is per-process (`bridge::start` finds the `"rpc.events"` actor before spawning one), so both the socket and the plugin share one event stream. Writing a lookup+ask of your own is still the thing not to do. A method whose effect must be scoped to *the connection that called it* (an open app view, a request the client may retry) is declared `with_extensions` and reads the `link::RpcPeer` the listener put into the request; no peer → `-32002`, never "treat as local" (`get_app` needs none, `app_call_tool`/`app_call_status`/`app_close` do; 46 §6.3).
@@ -265,8 +265,8 @@ cargo check -p rpc --features ts           # ts derives compile
 Then the real binary, headless, on a scratch data dir:
 
 ```sh
-WTH_RPC__LISTEN=127.0.0.1:7791 ./target/debug/wth --headless --data-dir /tmp/wth-x
-# token: /tmp/wth-x/token ; ws://127.0.0.1:7791/?token=<token> ; JSON-RPC 2.0
+THEUTH_RPC__LISTEN=127.0.0.1:7791 ./target/debug/t --headless --data-dir /tmp/theuth-x
+# token: /tmp/theuth-x/token ; ws://127.0.0.1:7791/?token=<token> ; JSON-RPC 2.0
 # list_tools → your tools present with the right risk; your methods round-trip;
 # subscribe_events → your events arrive with "type"; set foo.enabled=false, restart → tools gone, methods say disabled.
 ```
@@ -305,6 +305,6 @@ Verify
 
 **`computer`** (27): the plugin whose tools hold `Arc<Ctx>` directly (screen capture and the enigo input thread need no actor turn) and whose `Computer` actor exists only so RPC has a lookup target for `computer_permissions`.
 
-**`app`** (46): the plugin with a subprocess. Its validator is a Bun-compiled copy of the upstream TypeScript parser (`wth-app-parser-<hash>`, beside the binary), spawned lazily on the first `app` call, checked with `--version` against the crate's compiled-in library hash, spoken to over JSON lines with a queue of 8 and a 2 s deadline, killed and replaced on failure (`app::helper`). That is allowed because the boundary is cold — one final document per publish, diagnostics back, no render tree, no callback into tools — and because the alternative was a second grammar. It is not a precedent for a JS plugin runtime. Everything else is ordinary: one `Apps` actor as `"app"`, four `Api` methods that are lookup+ask, one own event `AppCallChanged`, `app: { enabled }` (disabled registers nothing, existing artifacts stay readable), typed `artifact::Commit`/`ListInvocations` commands instead of writing the artifact DB, and `tools::AppInvoke` instead of a private gate.
+**`app`** (46): the plugin with a subprocess. Its validator is a Bun-compiled copy of the upstream TypeScript parser (`theuth-app-parser-<hash>`, beside the binary), spawned lazily on the first `app` call, checked with `--version` against the crate's compiled-in library hash, spoken to over JSON lines with a queue of 8 and a 2 s deadline, killed and replaced on failure (`app::helper`). That is allowed because the boundary is cold — one final document per publish, diagnostics back, no render tree, no callback into tools — and because the alternative was a second grammar. It is not a precedent for a JS plugin runtime. Everything else is ordinary: one `Apps` actor as `"app"`, four `Api` methods that are lookup+ask, one own event `AppCallChanged`, `app: { enabled }` (disabled registers nothing, existing artifacts stay readable), typed `artifact::Commit`/`ListInvocations` commands instead of writing the artifact DB, and `tools::AppInvoke` instead of a private gate.
 
 **Not plugins, deliberately**: `models` (a data file and a resolver), `markdown` (a renderer), `oauth` (PKCE + token store), `cursor` (a protocol client behind `agent::backend`). No actors, no config sections, no events. Listed in 00 §10 as libraries. If one of them grows an actor, it becomes a plugin and gets a doc.

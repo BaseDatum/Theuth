@@ -9,7 +9,7 @@ shipped and what was not exercised.
 
 1. **Obscura, embedded.** `crates/browser` links the
    [obscura](https://github.com/h4ckf0r0day/obscura) engine (V8 via
-   `deno_core`, own DOM/layout/paint, Rust, Apache-2.0) into the wth binary.
+   `deno_core`, own DOM/layout/paint, Rust, Apache-2.0) into the theuth binary.
    No Chrome, no sidecar process, no download at runtime. 00 §1's single
    binary is not negotiable; the alternatives (§10) all put a browser
    somewhere else.
@@ -20,7 +20,7 @@ shipped and what was not exercised.
    behind `pub(crate)`. We depend on `obscura-mcp` directly and call its
    tool dispatch in-process through a 20-line fork (§3.3).
 3. **One isolate per session, on its own thread.** `Page`/`BrowserState`
-   are `!Send` (RefCell + V8). Each wth session that browses gets an OS
+   are `!Send` (RefCell + V8). Each theuth session that browses gets an OS
    thread owning a `current_thread` runtime and one `BrowserState`; commands
    arrive over a channel. Subagents are sessions, so they are isolated for
    free (cookie jar, tabs, refs). Measured: two isolates on two threads load
@@ -61,10 +61,10 @@ shipped and what was not exercised.
 
 ## 1. Why
 
-wth can search and fetch (16) but cannot *use* a page: no JavaScript, no
+theuth can search and fetch (16) but cannot *use* a page: no JavaScript, no
 forms, no clicking through, no reading a SPA, no looking at what a dev
 server actually renders. Every coding agent verifies UI in a browser; oh-my-pi
-does it with Chromium via CDP and a relay to the user's Chrome. wth's
+does it with Chromium via CDP and a relay to the user's Chrome. theuth's
 constraint is one binary with everything included, so the browser has to
 be a library.
 
@@ -79,7 +79,7 @@ depending on `obscura` + `obscura-mcp` at tag `v0.2.2`:
   through `deno_core 0.350`), not a source compile; the README's "5 min" is
   stale. The JS bootstrap snapshot is built by `obscura-js`'s build script.
 - **Binary**: 60 MiB plain, 65 MiB stealth, 86 MiB stealth+render (release,
-  unstripped). wth grows by about that.
+  unstripped). theuth grows by about that.
 - **Isolates**: `obscura-js/src/runtime.rs:50-60` — isolate *construction*
   is serialised by a process lock, execution is per-thread and parallel;
   `obscura-cdp` is thread-per-connection. Two isolates on two threads:
@@ -109,7 +109,7 @@ depending on `obscura` + `obscura-mcp` at tag `v0.2.2`:
   source). Verified by build.
 - **Build prerequisites**: `cmake` and `clang`/`libclang` for BoringSSL;
   network on first build for the V8 archive (`RUSTY_V8_ARCHIVE` for
-  offline). `panic = "unwind"` (the default, which wth keeps) is required
+  offline). `panic = "unwind"` (the default, which theuth keeps) is required
   for obscura's `catch_unwind` around DOM ops.
 - **Runtime knobs are environment variables** read by the library:
   `OBSCURA_ALLOW_PRIVATE_NETWORK`, `OBSCURA_TIMEZONE` (default
@@ -129,7 +129,7 @@ reads `browser:`, spawns the `Browsers` kameo actor registered as
 and registers the render provider once `web` is up.
 
 `browser::warmup(&BrowserConfig)` runs **on the main thread** from
-`wth/src/main.rs::run` right after the config is loaded and before plugins
+`theuth/src/main.rs::run` right after the config is loaded and before plugins
 start: it exports the environment knobs from config (`std::env::set_var`
 while the process is still effectively single-threaded — the only place
 this is safe), then builds and drops one `obscura_js::runtime::ObscuraJsRuntime`
@@ -202,7 +202,7 @@ strings written for a model that has never seen obscura: say what the
 refs are, that refs go stale after navigation, and that **forms are
 submitted by clicking their submit button** (Enter does not submit, §2).
 
-| wth tool | obscura-mcp | args | notes |
+| theuth tool | obscura-mcp | args | notes |
 |---|---|---|---|
 | `browser_open` | `browser_navigate` | `url`, `wait?: load\|domcontentloaded\|networkidle0` | reply ends with the tidied snapshot so one call reads the page |
 | `browser_read` | `browser_snapshot` / `browser_markdown` | `format?: text\|markdown` (text), `max_chars?` | text = readable body + ref count; markdown keeps links |
@@ -267,7 +267,7 @@ first tool that hands one *back*. Three layers, each one field:
      since tool messages cannot carry images.
    - Gemini: `functionResponse` parts then `inline_data` parts in the same
      user turn.
-   Rejected alternative: emit a separate user message from wth after the
+   Rejected alternative: emit a separate user message from theuth after the
    tool message — genai's Anthropic adapter already accepts `Binary` parts
    in a user message, so it would work there, but OpenAI's would drop the
    `ToolResponse` parts of a user-role message, and a user turn that is not
@@ -320,9 +320,9 @@ home user; a proxy user sets it to the exit region per obscura's guide.
 
 - SSRF: obscura's gate (loopback, RFC1918, link-local, DNS-resolution-time
   re-check, applied to redirects, JS `fetch()` and `Continue` rewrites) is on
-  unless `allow_private_network`. wth's own `read_url` guard is unchanged.
+  unless `allow_private_network`. theuth's own `read_url` guard is unchanged.
 - The isolate is the sandbox for page JavaScript; `browser_eval` runs the
-  model's JS inside the page, not in wth. It can read the page, not the
+  model's JS inside the page, not in theuth. It can read the page, not the
   machine.
 - No persistent profile: nothing the model logs into survives the session.
   With `import_cookies` off (default) no user cookies are ever loaded, which
@@ -332,7 +332,7 @@ home user; a proxy user sets it to the exit region per obscura's guide.
   profile (Chrome/Edge/Brave decryption may prompt the OS keychain), and loads
   them into an ephemeral jar that still dies with the session.
 - Heap and script deadlines are obscura's (`OBSCURA_SCRIPT_DEADLINE_MS`,
-  watchdog termination); a runaway page kills its isolate, not wth
+  watchdog termination); a runaway page kills its isolate, not theuth
   (`catch_unwind` on ops, `panic = "unwind"` kept).
 
 ## 8. Module layout and contracts
@@ -406,7 +406,7 @@ Signal for stealth (§10: two binaries by another name), and the one taken:
   Apple gap the btls fork closes).
 
 Proof: a scratch binary linking both `btls-sys` (prefixed) and Signal's
-`boring-sys` (`signal-v5.0.2`, the rev wth locks) built with no `links`
+`boring-sys` (`signal-v5.0.2`, the rev theuth locks) built with no `links`
 conflict and no duplicate symbols; `nm` shows `_btls_sys_SSL_CTX_new` and
 `_SSL_CTX_new` once each; the stealth path fetched example.com and the
 boring path created an `SSL_CTX`. Then the whole workspace built.
@@ -427,7 +427,7 @@ boring path created an `SSL_CTX`. Then the whole workspace built.
   `obscura-mcp`.
 - **Our own tool layer over `obscura_browser::Page`**: same rewrite, ~1.5k
   lines of JS-in-Rust we would maintain instead of upstream.
-- **A stealth cargo feature on wth**: two binaries by another name.
+- **A stealth cargo feature on theuth**: two binaries by another name.
 - **Gating clicks as `Mutating`**: an approval treadmill for actions with
   no persistent state behind them; revisit with persistent profiles (v1).
 - **Separate user message for screenshots** instead of the genai patch: §5.
@@ -490,7 +490,7 @@ Shipped: `crates/browser` (`lib.rs` 282 lines: config, `Browsers` actor with
 `tests/live.rs` (§11's fixture test, 0.24 s after warmup); the two obscura
 fork commits, the genai fork commit, the btls fork commit (§9.1); agent
 loop changes (§5 layer 3, with `binary_tag` shared by `text_of`, `snap.rs`
-and the history reader); `tools::ToolOutput.files`; `wth/src/main.rs`
+and the history reader); `tools::ToolOutput.files`; `theuth/src/main.rs`
 warmup on the main thread (measured 11 ms). Docs per §12.
 
 Deviations from the sections above (the code wins):
@@ -507,9 +507,9 @@ Deviations from the sections above (the code wins):
 - `text_of` now renders a `ToolResponse`'s content even without images
   (previously skipped); only the store's undo/redo path reads Tool-role text.
 - `warmup` ran on a libtest thread in `tests/live.rs` without incident,
-  consistent with §2; main-thread placement in `wth` is kept regardless.
+  consistent with §2; main-thread placement in `theuth` is kept regardless.
 
-Smoke (headless, `claude-sonnet-4-5`, `/tmp/wth-title`,
+Smoke (headless, `claude-sonnet-4-5`, `/tmp/theuth-title`,
 `browser.allow_private_network: true`): "open news.ycombinator.com and give
 me the top story" → exactly one `browser_open`, the reply named the top
 story. "Serve /tmp with `python3 -m http.server`, open a fixture page,
@@ -524,7 +524,7 @@ Firecrawl configured. No orphan processes after `cancel_job`.
 
 Gates: fmt, clippy `-D warnings` (two `result_large_err` hits fixed by
 shrinking two helpers' error type to `&'static str`), workspace tests, debug
-and release builds of `wth` (release binary 227 MiB unstripped, up from the pre-browser build).
+and release builds of `theuth` (release binary 227 MiB unstripped, up from the pre-browser build).
 
 Not exercised: Linux build (the ELF prefixing path is upstream's, unchanged
 in behaviour except the prefix string `btls_sys_` instead of

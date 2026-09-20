@@ -9,7 +9,7 @@ use wiremock::matchers::{body_string, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn fetcher(server: &MockServer, max_bytes: usize) -> Fetcher {
-    Fetcher::new("wth-test", max_bytes, 5)
+    Fetcher::new("theuth-test", max_bytes, 5)
         .expect("client")
         .allowing(vec![*server.address()])
 }
@@ -143,7 +143,7 @@ async fn cross_origin_redirect_with_caller_headers_is_rejected() {
         .expect(1)
         .mount(&b)
         .await;
-    let fetcher = Fetcher::new("wth-test", 1 << 20, 5)
+    let fetcher = Fetcher::new("theuth-test", 1 << 20, 5)
         .expect("client")
         .allowing(vec![*a.address(), *b.address()]);
     for name in ["Authorization", "cookie", "X-Api-Key", "x-custom-token"] {
@@ -218,7 +218,7 @@ fn chunked_server(total: usize) -> std::net::SocketAddr {
 #[tokio::test]
 async fn oversize_chunked_body_is_cut_and_flagged() {
     let addr = chunked_server(4096);
-    let r = Fetcher::new("wth-test", 1024, 5)
+    let r = Fetcher::new("theuth-test", 1024, 5)
         .expect("client")
         .allowing(vec![addr])
         .request("GET", &format!("http://{addr}/big"), &[], None)
@@ -246,7 +246,7 @@ async fn oversize_content_length_is_refused() {
 #[tokio::test]
 async fn loopback_without_allowlist_is_rejected() {
     let server = MockServer::start().await;
-    let fetcher = Fetcher::new("wth-test", 1 << 20, 5).expect("client");
+    let fetcher = Fetcher::new("theuth-test", 1 << 20, 5).expect("client");
     let err = fetcher
         .request("GET", &server.uri(), &[], None)
         .await

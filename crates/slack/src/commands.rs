@@ -1,4 +1,4 @@
-//! `/wth <sub-command>` (design doc 21 §10.2): the 09 §9 table as
+//! `/theuth <sub-command>` (design doc 21 §10.2): the 09 §9 table as
 //! sub-commands, each one ask plus a Block Kit panel from [`crate::ui`].
 //! The channel classifies the payload's `text`, decides ack-now vs
 //! `response_url` with [`is_instant`], routes `cmd:*` clicks through
@@ -22,7 +22,7 @@ pub use crate::ui::Reply;
 use crate::ui::{self, short};
 use crate::{SLACK_ACTOR, SlackStatus};
 
-/// A parsed `/wth` sub-command.
+/// A parsed `/theuth` sub-command.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Cmd {
     /// `help`.
@@ -164,7 +164,7 @@ pub(crate) const COMMANDS: &[(&str, &str, &str)] = &[
 ];
 
 const OWNER_MSG: &str = "This command is restricted to the owner.";
-const NO_SESSION: &str = "no active thread here; run it in a DM with the bot or /wth resume <id>";
+const NO_SESSION: &str = "no active thread here; run it in a DM with the bot or /theuth resume <id>";
 /// `prompt` body cap: at most four ≤ 3 000-char sections.
 const PROMPT_MAX: usize = 11_900;
 
@@ -365,7 +365,7 @@ async fn run(cmd: Cmd, cx: &CommandCx<'_>) -> anyhow::Result<Outcome> {
         }
         Cmd::Resume(id) => {
             if id.is_empty() {
-                return text("usage: /wth resume <id>".into());
+                return text("usage: /theuth resume <id>".into());
             }
             match resolve(&id).await? {
                 Ok(s) => Ok(Outcome::Resume {
@@ -470,7 +470,7 @@ async fn run(cmd: Cmd, cx: &CommandCx<'_>) -> anyhow::Result<Outcome> {
             };
             panel(ui::login_url(&name, &url))
         }
-        Cmd::Logout(None) => text("usage: /wth logout <name>".into()),
+        Cmd::Logout(None) => text("usage: /theuth logout <name>".into()),
         Cmd::Logout(Some(name)) => {
             if is_provider(&name).await? {
                 agent()?
@@ -589,7 +589,7 @@ async fn skills(args: &[String], page: usize) -> anyhow::Result<Outcome> {
                 format!("removed skill {name}")
             }
         }
-        _ => "usage: /wth skills [add <url> | rm <name> | sync]".to_owned(),
+        _ => "usage: /theuth skills [add <url> | rm <name> | sync]".to_owned(),
     };
     Ok(Outcome::Text(ui::result(&out)))
 }
@@ -624,7 +624,7 @@ async fn mcp_cmd(args: &[String], page: usize) -> anyhow::Result<Outcome> {
                 .map_err(err)?;
             format!("added {} ({} tools)", server.name, server.tools.len())
         }
-        _ => "usage: /wth mcp [add <url|json> | sync]".to_owned(),
+        _ => "usage: /theuth mcp [add <url|json> | sync]".to_owned(),
     };
     Ok(Outcome::Text(ui::result(&out)))
 }
@@ -659,14 +659,14 @@ async fn approvals_cmd(session: Option<SessionId>, args: &[String]) -> anyhow::R
         Some("off") => false,
         Some(_) => {
             return Ok(Outcome::Text(Reply::text(
-                "usage: /wth approvals on|off [always]",
+                "usage: /theuth approvals on|off [always]",
             )));
         }
     };
     let session = match words.next() {
         Some("always") => None,
         None => Some(session.context(
-            "no active thread here; run it in a DM with the bot, or use `/wth approvals off always`",
+            "no active thread here; run it in a DM with the bot, or use `/theuth approvals off always`",
         )?),
         Some(w) => {
             return Ok(Outcome::Text(Reply::text(format!(
@@ -716,7 +716,7 @@ async fn slack_cmd(cx: &CommandCx<'_>, args: &[String]) -> anyhow::Result<Outcom
             text(format!("channel removed {c}"))
         }
         _ => text(
-            "usage: /wth slack [status | allow <U> | rm <U> | channel add <C> | channel rm <C>]"
+            "usage: /theuth slack [status | allow <U> | rm <U> | channel add <C> | channel rm <C>]"
                 .into(),
         ),
     }
@@ -739,14 +739,14 @@ async fn communication_cmd(session: Option<SessionId>, args: &[String]) -> anyho
         Some("off") => false,
         Some(_) => {
             return Ok(Outcome::Text(Reply::text(
-                "usage: /wth communication [on|off [always]]",
+                "usage: /theuth communication [on|off [always]]",
             )));
         }
     };
     let target = match words.next() {
         Some("always") => None,
         None => Some(session.context(
-            "no active thread here; run it in a DM with the bot, or use `/wth communication on|off always` for the global switch",
+            "no active thread here; run it in a DM with the bot, or use `/theuth communication on|off always` for the global switch",
         )?),
         Some(w) => {
             return Ok(Outcome::Text(Reply::text(format!(
@@ -765,7 +765,7 @@ async fn communication_cmd(session: Option<SessionId>, args: &[String]) -> anyho
     if enabled && target.is_some() && !state.global {
         body.insert_str(
             0,
-            "still disabled globally; use /wth communication on always to enable the harness\n",
+            "still disabled globally; use /theuth communication on always to enable the harness\n",
         );
     }
     Ok(Outcome::Text(ui::code(&body)))
@@ -802,15 +802,15 @@ fn communication_text(s: &CommunicationState) -> String {
     }
     match (s.global, s.inherited_from) {
         (false, _) => lines.push(
-            "blocked: global off is a ceiling; /wth communication on always enables the harness"
+            "blocked: global off is a ceiling; /theuth communication on always enables the harness"
                 .into(),
         ),
         (true, Some(from)) if Some(from) != s.session => lines.push(format!(
-            "blocked: ancestor {} opted out; /wth communication on in that thread lifts it",
+            "blocked: ancestor {} opted out; /theuth communication on in that thread lifts it",
             short(from)
         )),
         (true, Some(_)) => {
-            lines.push("blocked: this session opted out; /wth communication on lifts it".into());
+            lines.push("blocked: this session opted out; /theuth communication on lifts it".into());
         }
         (true, None) => {}
     }
@@ -826,12 +826,12 @@ async fn peers_cmd(session: SessionId, args: &[String]) -> anyhow::Result<Outcom
     let words: Vec<&str> = args.iter().map(String::as_str).collect();
     match words.as_slice() {
         ["scope"] => Ok(Outcome::Text(Reply::text(
-            "usage: /wth peers scope owner|isolated [alias]",
+            "usage: /theuth peers scope owner|isolated [alias]",
         ))),
         ["scope", scope, alias @ ..] => {
             let Ok(scope) = scope.parse::<PeerScope>() else {
                 return Ok(Outcome::Text(Reply::text(
-                    "usage: /wth peers scope owner|isolated [alias]",
+                    "usage: /theuth peers scope owner|isolated [alias]",
                 )));
             };
             let alias = (!alias.is_empty()).then(|| alias.join(" "));
@@ -872,7 +872,7 @@ async fn peers_cmd(session: SessionId, args: &[String]) -> anyhow::Result<Outcom
             });
             let mut body = table(rows);
             if page.cursor.is_some() {
-                body.push_str("\n(more: narrow with /wth peers <query>)");
+                body.push_str("\n(more: narrow with /theuth peers <query>)");
             }
             Ok(Outcome::Text(ui::result(&body)))
         }
@@ -885,7 +885,7 @@ async fn peers_cmd(session: SessionId, args: &[String]) -> anyhow::Result<Outcom
 async fn requests_cmd(session: SessionId, args: &[String]) -> anyhow::Result<Outcome> {
     let usage = || -> anyhow::Result<Outcome> {
         Ok(Outcome::Text(Reply::text(
-            "usage: /wth requests [<id> | answer <id> <text>]",
+            "usage: /theuth requests [<id> | answer <id> <text>]",
         )))
     };
     let words: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -910,7 +910,7 @@ async fn requests_cmd(session: SessionId, args: &[String]) -> anyhow::Result<Out
             }));
             if !page.messages.is_empty() {
                 body.push_str(
-                    "\n/wth requests <id> shows one; /wth requests answer <id> <text> resolves it",
+                    "\n/theuth requests <id> shows one; /theuth requests answer <id> <text> resolves it",
                 );
             }
             Ok(Outcome::Text(ui::result(&body)))
@@ -1016,7 +1016,7 @@ async fn a2a_cmd(args: &[String]) -> anyhow::Result<Outcome> {
     let reload = match args {
         [] => false,
         [w] if w == "reload" => true,
-        _ => return Ok(Outcome::Text(Reply::text("usage: /wth a2a [reload]"))),
+        _ => return Ok(Outcome::Text(Reply::text("usage: /theuth a2a [reload]"))),
     };
     let actor = ActorRef::<a2a::A2aActor>::lookup(a2a::A2A_ACTOR)?;
     let Some(actor) = actor else {
@@ -1267,7 +1267,7 @@ mod tests {
     fn help_panel_lists_every_command_once() {
         let h = serde_json::to_string(&ui::help().blocks).unwrap();
         for (name, _, _) in COMMANDS {
-            assert_eq!(h.matches(&format!("`/wth {name}")).count(), 1, "{name}");
+            assert_eq!(h.matches(&format!("`/theuth {name}")).count(), 1, "{name}");
         }
     }
 

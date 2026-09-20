@@ -60,7 +60,7 @@ is titled **“Rewriting our Rust WASM Parser in TypeScript.”** They replaced 
 WASM parser: input/output copies and object conversion cost more than parsing.
 Their small-fixture measurements report 2.2–4.6× faster one-shot parsing and
 2.6–3.3× lower full-stream cost with incremental TS. These are upstream numbers,
-not wth benchmarks. The relevant lesson is avoiding boundaries on every chunk
+not theuth benchmarks. The relevant lesson is avoiding boundaries on every chunk
 and caching complete statements, not “Rust is slow”.
 
 Use `@openuidev/lang-core` **0.3.0**, `@openuidev/react-lang` **0.3.0**, and
@@ -85,7 +85,7 @@ Rejected:
   transport and replay problems unrelated to the runtime's context-management
   purpose (08). The apps do not need that coupling.
 
-### 1.2 Existing wth contracts this reuses
+### 1.2 Existing theuth contracts this reuses
 
 - Artifact bytes are content-addressed, but **the record key is `call_id`**.
   `Artifact.id` is a blob hash, not a session or execution identity
@@ -187,7 +187,7 @@ No handle threading through `main`, no new runtime API, no central event enum.
 
 ### 2.1 Headless parser helper
 
-One lazy, long-lived `wth-app-parser` executable per harness, built with
+One lazy, long-lived `theuth-app-parser` executable per harness, built with
 `bun build --compile` from the same TS adapter/core version used by the desktop.
 It bundles the generated library JSON schema, not React or the component UI.
 JSON-lines over stdio: request ID, operation (`check` or `merge_check`), source,
@@ -215,8 +215,8 @@ on shutdown; crash/2 s validation deadline kills and replaces the helper on
 next request, with the current request failed and nothing committed. Start
 lazily, so sessions without apps pay neither process nor parser startup cost.
 
-**As built.** The executable is `wth-app-parser-<library-hash>` beside the
-`wth` binary (`WTH_APP_PARSER` overrides the path for tests), built by
+**As built.** The executable is `theuth-app-parser-<library-hash>` beside the
+`theuth` binary (`THEUTH_APP_PARSER` overrides the path for tests), built by
 `packages/apps/scripts/build-helper.ts` with `bun build --compile --minify`
 from `src/helper.ts`; the build refuses a bundle that pulls in React,
 `react-ui`, `react-lang` or zustand. `app::helper::Helper` spawns it on the
@@ -227,7 +227,7 @@ is not this binary's `app::HASH`, then speaks JSON lines (`protocol.ts`:
 orphaned}`) with `OPENUI_TELEMETRY_DISABLED=1 DO_NOT_TRACK=1`. Constants:
 `PENDING = 8` queued requests (beyond → busy error), `DEADLINE = 2 s` per
 request, `MAX_LINE = 4 MiB`; a timeout, malformed reply or crash kills the
-child and the next request spawns a replacement. `wth --app-parser-hash`
+child and the next request spawns a replacement. `t --app-parser-hash`
 prints the expected hash for packaging and the updater (39).
 
 ## 3. Publishing, identity and edits
@@ -318,7 +318,7 @@ closed subset: `Stack`, `Card`, `CardHeader`, `TextContent`, `Button`, `Buttons`
 `Input`, `Select`, `SelectItem`, `Switch`, `TextArea`, `Image`, `Separator`,
 `Table` and its child schemas, and selected charts. The actual exported schema
 names, not this prose, decide spellings and required child types. Only include
-wth-specific display components when an existing upstream component cannot
+theuth-specific display components when an existing upstream component cannot
 express a real screen. There is no requirement to align names with surface's TUI
 catalog; that requirement was driving duplicate evaluator work.
 
@@ -341,7 +341,7 @@ values are schema-checked again immediately before invocation. Same-typed swappe
 props remain a model-quality issue, measured with actual renders, not “fixed” by
 more parser rules.
 
-**As built.** `packages/apps` (`@wth/apps`): `library.ts` exports 21
+**As built.** `packages/apps` (`@theuth/apps`): `library.ts` exports 21
 dependency-closed upstream components — `Stack` (root), `Card`, `CardHeader`,
 `Separator`, `TextContent`, `Image`, `Table`, `Col`, `BarChart`, `LineChart`,
 `AreaChart`, `PieChart`, `Series`, `Input`, `TextArea`, `Select`, `SelectItem`,
@@ -426,7 +426,7 @@ Use the first adequate rung, independent of whether the UI is called a prototype
    custom logic or reusable APIs. The model writes source under `mcp/repos/`,
    exercises it using the existing shell/tools, and installs via `add_mcp_server`
    with `command/args/cwd` (04 §3). Use the existing SDK appropriate to its language,
-   not a new wth program format. Give custom tools collision-resistant names;
+   not a new theuth program format. Give custom tools collision-resistant names;
    verify the installed tool belongs to the intended server before binding it.
 5. `@ToAssistant` for work that genuinely needs the model rather than deterministic
    application code. It uses the existing input/steering path, not a second agent.
@@ -439,8 +439,8 @@ installation contract, **not replaying development cells**. Self-tests/smoke cal
 are separate from server startup. Sessions can close, compact, or run a model
 turn without affecting an open app's query execution.
 
-Important boundary: wth gates the **MCP tool invocation**. The server's internal
-HTTP/library calls do not individually re-enter wth's registry; claiming they do
+Important boundary: theuth gates the **MCP tool invocation**. The server's internal
+HTTP/library calls do not individually re-enter theuth's registry; claiming they do
 would be false. Its tool contract must describe the action being approved.
 Installing model-authored server code already goes through the existing
 `add_mcp_server` risk/approval path, not a new “dynamic tools” dialog every session.
@@ -458,7 +458,7 @@ No expanded value enters Monty or is used to build a later `ToolCallStarted`.
 If a backend needs a secret to talk directly to its service, the MCP invocation
 is the terminal credential boundary: only the server receives it. Prefer one
 service-specific credentialed operation over passing raw tokens between tools.
-A backend that calls back into wth must forward placeholders, not expanded
+A backend that calls back into theuth must forward placeholders, not expanded
 values, and must not receive a reusable blanket app consent token.
 
 Use 37's scrubbing for content/structured results and event/log displays. It is
@@ -783,7 +783,7 @@ limits above are named constants first, not a settings page.
   skills/apps.md                       # rewritten on start from crates/app/apps.md + generated catalog
 ```
 
-Beside the binary: `wth-app-parser-<library-hash>` (§2.1). Sidecar contents
+Beside the binary: `theuth-app-parser-<library-hash>` (§2.1). Sidecar contents
 (`app::meta::AppMeta`): library hash, statements, pinned bindings with tool
 identities, publish diagnostics, state defaults, orphaned names, the bound
 `ToolInspection`s and inspection-only entry-point snapshots of bound stdio

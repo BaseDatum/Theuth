@@ -609,7 +609,7 @@ impl Actor {
             body: Some(text.to_owned()),
             ..Default::default()
         };
-        // wth 09 §2.2 edit 2: the sent timestamp is what a reaction targets.
+        // theuth 09 §2.2 edit 2: the sent timestamp is what a reaction targets.
         let timestamp = now_timestamp_millis();
         manager
             .send_message(recipient, message, timestamp)
@@ -910,7 +910,7 @@ async fn content_to_envelope(
         tracing::debug!("skipping group message (spec 06 maps contacts only)");
         return None;
     }
-    // wth 09 §2.2 edit 1: a reaction to one of our messages becomes an
+    // theuth 09 §2.2 edit 1: a reaction to one of our messages becomes an
     // envelope of its own (the channel maps it to an approval decision).
     if let Some(reaction) = data.reaction.as_ref().filter(|r| r.emoji.is_some()) {
         let number = sender_number(manager, &sender_id).await;

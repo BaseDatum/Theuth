@@ -3,10 +3,10 @@ name = "relay"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
-description = "wth-relay: stateless encrypted-frame relay between harnesses and devices (design doc 31 §5)"
+description = "theuth-relay: stateless encrypted-frame relay between harnesses and devices (design doc 31 §5)"
 
 [[bin]]
-name = "wth-relay"
+name = "theuth-relay"
 path = "src/main.rs"
 
 [dependencies]

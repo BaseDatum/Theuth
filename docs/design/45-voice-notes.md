@@ -265,8 +265,8 @@ desktop: same boundaries client-side → api.speak(session, block) queued → Sp
 voice:
   enabled: true
   voice: peter_yearsley
-  # model_dir: ~/.wth/models/pocket-tts     # Pocket TTS (43)
-  # stt_model_dir: ~/.wth/models/parakeet-tdt  # Parakeet TDT ONNX: encoder-model.onnx, decoder_joint-model.onnx, vocab.txt
+  # model_dir: ~/.theuth/models/pocket-tts     # Pocket TTS (43)
+  # stt_model_dir: ~/.theuth/models/parakeet-tdt  # Parakeet TDT ONNX: encoder-model.onnx, decoder_joint-model.onnx, vocab.txt
   stt_idle_secs: 600                          # unload the STT model after this long unused; 0 keeps it resident
 ```
 
@@ -488,7 +488,7 @@ text. The original recording is not kept for playback (it is in
 ### 7.5 Bundle
 
 - `crates/desktop/Info.plist` (new; the bundler merges it):
-  `NSMicrophoneUsageDescription` — "wth records voice notes you send to your
+  `NSMicrophoneUsageDescription` — "theuth records voice notes you send to your
   harness."
 - `ios/Info.ios.plist`: the same key.
 - CSP: unchanged — recording and Web Audio are not CSP-gated, and no
@@ -561,7 +561,7 @@ Built 2026-09-17 (steps 1–4 of §10). Exercised on an M3 Max:
   is a [clip](http://x) test.")` → 226 ms, 12 384 B of `audio/mpeg`,
   2.08 s; decoding that clip and transcribing it gives the sentence back.
 - Prompt block: a `[voice note, 7 s] …` request that needs tools made the
-  model write one sentence ("I'll check the wth cargo workspace for you -
+  model write one sentence ("I'll check the theuth cargo workspace for you -
   let me count the crates and find the biggest one by lines of Rust
   code.") before its first `python` call — captured as block 1 at
   `ToolCallPending`. The desktop renders the input as a bubble with the

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Package wth.ipa for iOS/iPadOS TestFlight.
+# Package theuth.ipa for iOS/iPadOS TestFlight.
 #
 # Pipeline:
 #   1. toolchain (full Xcode, Apple Distribution, rust iOS target)
 #   2. cargo tauri ios build --export-method app-store-connect
-#      → crates/desktop/gen/apple/build/arm64/wth.ipa
+#      → crates/desktop/gen/apple/build/arm64/theuth.ipa
 #
 # The Xcode project (crates/desktop/gen/apple) is committed. Caps live in
 # desktop_iOS/desktop_iOS.entitlements. Do not `tauri ios init` over it.
@@ -14,9 +14,9 @@
 #
 # Env:
 #   APPLE_DEVELOPMENT_TEAM     overwrite bundle.iOS.developmentTeam
-#   WTH_IOS_BUILD_NUMBER       CFBundleVersion (default: git commit count)
-#   WTH_SKIP_BUN_INSTALL=1     skip `bun install`
-#   WTH_IOS_EXPORT_METHOD      default app-store-connect
+#   THEUTH_IOS_BUILD_NUMBER       CFBundleVersion (default: git commit count)
+#   THEUTH_SKIP_BUN_INSTALL=1     skip `bun install`
+#   THEUTH_IOS_EXPORT_METHOD      default app-store-connect
 # Optional local defaults: repo-root `.env.signing`.
 set -euo pipefail
 
@@ -30,9 +30,9 @@ cd "$ROOT"
 DESKTOP="$ROOT/crates/desktop"
 APPLE_DIR="$DESKTOP/gen/apple"
 TEAM_ID="${APPLE_DEVELOPMENT_TEAM:-8H548FVL95}"
-EXPORT_METHOD="${WTH_IOS_EXPORT_METHOD:-app-store-connect}"
+EXPORT_METHOD="${THEUTH_IOS_EXPORT_METHOD:-app-store-connect}"
 VERSION="$(awk '/^\[workspace.package\]/{p=1} p&&/^version =/{gsub(/"/,""); print $3; exit}' Cargo.toml)"
-BUILD_NUMBER="${WTH_IOS_BUILD_NUMBER:-$(git -C "$ROOT" rev-list --count HEAD)}"
+BUILD_NUMBER="${THEUTH_IOS_BUILD_NUMBER:-$(git -C "$ROOT" rev-list --count HEAD)}"
 
 fail() { echo "package-ios: $*" >&2; exit 1; }
 
@@ -63,7 +63,7 @@ echo "    ok: rust target aarch64-apple-ios"
 echo "==> [2/3] Xcode project (gen/apple)"
 [[ -d "$APPLE_DIR/desktop.xcodeproj" ]] || fail "missing committed $APPLE_DIR/desktop.xcodeproj
     (the Xcode project is in git; do not tauri ios init over it)"
-if [[ "${WTH_SKIP_BUN_INSTALL:-0}" != "1" ]]; then
+if [[ "${THEUTH_SKIP_BUN_INSTALL:-0}" != "1" ]]; then
   (cd "$DESKTOP/ui" && bun install)
 fi
 just ts-desktop

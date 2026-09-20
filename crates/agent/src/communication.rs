@@ -239,7 +239,7 @@ pub struct PeerRecord {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum PeerKind {
-    /// A wth session.
+    /// A theuth session.
     Native,
     /// An installed ACP harness child.
     Acp,

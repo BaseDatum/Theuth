@@ -570,7 +570,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock")
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("wth-routes-lib-{n}-{nanos}"));
+        let dir = std::env::temp_dir().join(format!("theuth-routes-lib-{n}-{nanos}"));
         let fetcher = Fetcher::new("test", 1024, 1).expect("fetcher");
         let routes = Routes::new(RoutesConfig::default(), &dir, fetcher);
         (dir, routes)

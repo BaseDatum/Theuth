@@ -96,7 +96,7 @@ and this tree today. §12 is the as-built status and what review changed.
 
 ## 1. Why
 
-wth reads the web three ways today: `read_url` (16), `browser_*` (23),
+theuth reads the web three ways today: `read_url` (16), `browser_*` (23),
 `scrape_url`/`crawl` (38). All three hand the model a **page** — markdown or
 a snapshot — and the model extracts structure from prose. For a
 client-rendered site the page is a shell; obscura renders it, at ~20 s for a
@@ -487,7 +487,7 @@ Shipped on branch `routes`: `crates/routes` (1,985 lines incl. tests:
 (`crates/web/src/fetch/mod.rs`, byte-cap loop factored into `read_capped`
 shared with `read_body`), `browser.capture_entries` / `capture_body_bytes`
 (`crates/browser/src/lib.rs`), `RoutesPlugin` in both plugin vectors
-(`crates/wth/src/main.rs`). Fork branch `skymoore/obscura` `network-capture`
+(`crates/theuth/src/main.rs`). Fork branch `skymoore/obscura` `network-capture`
 = `002c5c6` + two commits (`95f87e0`, `accc198`; 186 lines): the tool, the
 capture buffer, and a two-line `obscura-js/src/ops.rs` fix — `op_fetch`
 fired `on_response` with the *response* headers in `RequestInfo.headers`,

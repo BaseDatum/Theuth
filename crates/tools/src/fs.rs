@@ -333,7 +333,7 @@ mod tests {
     use super::*;
 
     fn scratch(content: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!("wth-edit-{}.txt", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!("theuth-edit-{}.txt", uuid::Uuid::new_v4()));
         std::fs::write(&path, content).unwrap();
         path
     }

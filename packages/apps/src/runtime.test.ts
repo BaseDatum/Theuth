@@ -13,11 +13,11 @@ import {
   STATE_CHANGE_DEBOUNCE_MS,
   createQueryManager,
   runActionPlan,
-} from "@openuidev/react-lang/wth-runtime";
+} from "@openuidev/react-lang/theuth-runtime";
 import type {
   QueryManager,
   ToolCallMeta,
-} from "@openuidev/react-lang/wth-runtime";
+} from "@openuidev/react-lang/theuth-runtime";
 import { toProviderContext } from "./renderer.tsx";
 
 interface Call {

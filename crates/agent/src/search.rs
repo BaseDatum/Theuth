@@ -527,7 +527,7 @@ mod tests {
     #[tokio::test]
     async fn page_goes_indexing_then_ready_and_invalidate_resets() {
         use ::search::PageState;
-        let dir = std::env::temp_dir().join(format!("wth-search-{}", uuid::Uuid::now_v7()));
+        let dir = std::env::temp_dir().join(format!("theuth-search-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
         let store = Store::open(&dir.join("sessions.sqlite")).await.unwrap();
         let id = SessionId::new();

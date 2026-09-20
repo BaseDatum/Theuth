@@ -20,7 +20,7 @@ decisions that look like one:
 
 Storage is the easiest layer and the least important. The tool half is
 where the analogy to LibreChat breaks: LibreChat multiplexes model calls and
-never executes anything; wth's value is that it does. The sandbox decides
+never executes anything; theuth's value is that it does. The sandbox decides
 whether this is a product or a shared shell.
 
 **Rule carried from 00 §1:** the agent loop, the store and the tools never
@@ -34,15 +34,15 @@ boundary isolates. Anything that threads `user_id` through `loop_.rs`,
 web frontend (accounts, JWT)
      │  ws RPC (existing methods + owner filter)
      ▼
-wth --serve           control plane: model loop, store, approvals, knowledge, skills
+t --serve           control plane: model loop, store, approvals, knowledge, skills
      │  Invoke / ToolOutput over the worker's stdio (same shape as tools::Invoke)
-     ├──► wth worker  (alice)  sandboxed: shell, fs tools, jobs, MCP stdio, ACP harnesses
-     └──► wth worker  (bob)
+     ├──► theuth worker  (alice)  sandboxed: shell, fs tools, jobs, MCP stdio, ACP harnesses
+     └──► theuth worker  (bob)
 ```
 
 Control plane multi-tenant; execution plane one process tree per user. Same
 convergence as every hosted harness (Codex cloud, Claude Code web). Precedent
-in-repo: `wth subprocess` monty workers (`crates/wth/src/worker.rs`) — the
+in-repo: `t subprocess` monty workers (`crates/theuth/src/worker.rs`) — the
 binary is already its own worker executable.
 
 Invariant: **the worker never holds provider credentials.** The control plane
@@ -72,7 +72,7 @@ and the RPC token are outside every sandbox's read set.
 Size guess: ~600 lines across rpc/agent. Touches the two seams the gaps doc
 (12) already named: the RPC facade list and the approval gate.
 
-## 3. Execution plane: `wth worker`
+## 3. Execution plane: `theuth worker`
 
 One long-lived process per user, spawned on the first tool call, reaped
 when idle (`worker_idle_secs`, default 30 min). Hosts every tool that
@@ -107,13 +107,13 @@ argv prefix plus per-user paths, a config table rather than plugins:
 server:
   executor: host            # host | docker | k8s
   worker_idle_secs: 1800
-  workers_root: /srv/wth/users   # host: <root>/<name> is the only writable tree
+  workers_root: /srv/theuth/users   # host: <root>/<name> is the only writable tree
 ```
 
 | `executor` | Launch | Isolation | Adds |
 |---|---|---|---|
-| `host` | `wth worker` under Landlock (Linux) or Seatbelt (macOS), §5 | filesystem, network on/off | nothing to install |
-| `docker` | `docker run -i --rm -v <root>/<name>:/work <image> wth worker` | namespaces + cgroups | CPU/memory caps, per-user toolchain image |
+| `host` | `theuth worker` under Landlock (Linux) or Seatbelt (macOS), §5 | filesystem, network on/off | nothing to install |
+| `docker` | `docker run -i --rm -v <root>/<name>:/work <image> theuth worker` | namespaces + cgroups | CPU/memory caps, per-user toolchain image |
 | `k8s` | pod per user running the image, control plane dials its service | same as docker | scheduling across nodes; not a sandbox, a scheduler for the docker option |
 
 Docker and Kubernetes become a plugin only if lifecycle (pool, warm start,
@@ -126,7 +126,7 @@ The interesting one, and the reason this doc exists. Both are unprivileged
 (no root, no setuid helper, no daemon), both apply to the whole process
 tree, both are what the shipping coding agents use. Applied by the worker to
 **itself** before it does anything (`landlock::restrict_self` /
-`sandbox_init`), so the launcher is just `wth worker --user <name>` on
+`sandbox_init`), so the launcher is just `theuth worker --user <name>` on
 either OS and the control plane has one code path.
 
 ### 5.1 Linux: Landlock (+ seccomp)
@@ -138,7 +138,7 @@ either OS and the control plane has one code path.
   ABI it got and refuses to start below a configured floor (`landlock_min_abi`).
 - Ruleset for a worker: read+execute on `/usr`, `/lib*`, `/etc` (selected),
   the toolchains the operator lists; read+write on `<root>/<name>` and
-  `/tmp/wth-<name>`; nothing else readable — in particular not
+  `/tmp/theuth-<name>`; nothing else readable — in particular not
   `<data_dir>` (credentials, token, other users). TCP connect allowed only
   to ports the operator lists (443, 22 typically) or none.
 - Landlock cannot filter by domain and cannot restrict UDP. If per-domain
@@ -210,8 +210,8 @@ frontend, two shells.
 
 ## 8. Open questions
 
-1. Principal source of truth: `users.yaml` in wth, or JWT from the frontend
-   with wth verifying? (Leaning JWT: wth stays out of the account business.)
+1. Principal source of truth: `users.yaml` in theuth, or JWT from the frontend
+   with theuth verifying? (Leaning JWT: theuth stays out of the account business.)
 2. Per-user knowledge vs a shared team bundle — or both, with the shared one
    read-only. Doc 10's harvest instruction assumes one user.
 3. Subagents across users: never (parent/child stay within one owner) — is
@@ -234,4 +234,4 @@ frontend, two shells.
 Order when unshelved: §2 → §3 with the `host` executor (Landlock, Seatbelt)
 → `docker` when someone needs resource caps → §6 when ops demand → §5.3
 when a domain allowlist is asked for by name. Each step leaves single-user
-`wth` unchanged: the server configuration is a mode, not a fork.
+`theuth` unchanged: the server configuration is a mode, not a fork.

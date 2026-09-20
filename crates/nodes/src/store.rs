@@ -144,7 +144,7 @@ mod tests {
 
     #[test]
     fn round_trip() {
-        let dir = std::env::temp_dir().join(format!("wth-nodes-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("theuth-nodes-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let mut s = Store::load(&dir);
         assert!(s.rows().is_empty());

@@ -999,13 +999,13 @@ mod tests {
             data.join("browser").join(session.to_string())
         );
         let private = SessionResources {
-            root: "/tmp/wth-private-x".into(),
+            root: "/tmp/theuth-private-x".into(),
             retention: tools::Retention::Private,
             generation: 3,
         };
         assert_eq!(
             shot_dir(&private, session),
-            std::path::Path::new("/tmp/wth-private-x")
+            std::path::Path::new("/tmp/theuth-private-x")
                 .join("browser")
                 .join(session.to_string())
         );

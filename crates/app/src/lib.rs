@@ -68,20 +68,20 @@ impl Default for AppConfig {
     }
 }
 
-/// Where the helper executable lives: `WTH_APP_PARSER` (developer/test
+/// Where the helper executable lives: `THEUTH_APP_PARSER` (developer/test
 /// override; a file path, never a runtime to invoke) or the immutable
-/// `wth-app-parser-<hash>` beside the running binary (46 §2.1). The hash in
+/// `theuth-app-parser-<hash>` beside the running binary (46 §2.1). The hash in
 /// the name is not trusted: [`helper::Helper`] runs `--version` and refuses a
 /// mismatch before the first request.
 pub fn helper_path() -> PathBuf {
-    if let Some(p) = std::env::var_os("WTH_APP_PARSER").filter(|p| !p.is_empty()) {
+    if let Some(p) = std::env::var_os("THEUTH_APP_PARSER").filter(|p| !p.is_empty()) {
         return PathBuf::from(p);
     }
     let dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
         .unwrap_or_default();
-    dir.join(format!("wth-app-parser-{}", hash()))
+    dir.join(format!("theuth-app-parser-{}", hash()))
 }
 
 /// How a client reached a bound tool (46 §6.2).

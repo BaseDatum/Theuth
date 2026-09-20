@@ -127,7 +127,7 @@ pub struct Connect {
     /// Process to spawn or harness to dial.
     pub transport: Transport,
     /// Working directory for `session/new` / `session/load` (a process itself
-    /// inherits wth's cwd, 06 §8.4; for a node it is a path on the node).
+    /// inherits theuth's cwd, 06 §8.4; for a node it is a path on the node).
     pub cwd: PathBuf,
     /// Existing ACP session id to `session/load` when the agent advertises
     /// `loadSession`; else a new session.
@@ -360,7 +360,7 @@ impl Link {
 
 impl Harness {
     /// Open the transport, `initialize` (client capabilities: no `fs`, no
-    /// `terminal`, `auth.terminal: true`; client info `wth`/version), authenticate
+    /// `terminal`, `auth.terminal: true`; client info `theuth`/version), authenticate
     /// per 06 §3.7 (agent-type method → `authenticate` once and retry; only a
     /// terminal-type method → `Err("not logged in — run `<cmd>` in a terminal, then retry")`),
     /// then `session/load` (when `resume` is set and `loadSession` is advertised)
@@ -481,7 +481,7 @@ fn initialize_request() -> InitializeRequest {
                 .terminal(false)
                 .auth(AuthCapabilities::new().terminal(true)),
         )
-        .client_info(Implementation::new("wth", env!("CARGO_PKG_VERSION")))
+        .client_info(Implementation::new("theuth", env!("CARGO_PKG_VERSION")))
 }
 
 /// The command line the user must run for a terminal-type auth method: our
@@ -600,7 +600,7 @@ mod tests {
 
     #[tokio::test]
     async fn dial_failure_is_the_connect_error() {
-        let dir = std::env::temp_dir().join(format!("wth-acp-dial-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("theuth-acp-dial-{}", std::process::id()));
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let r = Harness::connect(
             Connect {

@@ -114,7 +114,7 @@ export function useInvalidateOn(): void {
       void qc.invalidateQueries({ queryKey: queryKeys.titleModel })
       void qc.invalidateQueries({ queryKey: queryKeys.visionModel })
     }
-    window.addEventListener('wth:reload-session', models)
+    window.addEventListener('theuth:reload-session', models)
     const offs = [
       on('TurnFinished', () => {
         sessions()
@@ -130,10 +130,10 @@ export function useInvalidateOn(): void {
       on('SessionDeleted', (e) => {
         void qc.invalidateQueries({ queryKey: queryKeys.sessions })
         search()
-        window.dispatchEvent(new CustomEvent('wth:session-closing', { detail: e }))
+        window.dispatchEvent(new CustomEvent('theuth:session-closing', { detail: e }))
       }),
       on('SessionClosing', (e) => {
-        window.dispatchEvent(new CustomEvent('wth:session-closing', { detail: e }))
+        window.dispatchEvent(new CustomEvent('theuth:session-closing', { detail: e }))
       }),
       on('ModelUsageChanged', (e) => void qc.invalidateQueries({ queryKey: ['session-cost', e.session] })),
       on('SessionMetadataChanged', () => {
@@ -201,7 +201,7 @@ export function useInvalidateOn(): void {
     ]
     return () => {
       clearTimeout(timer)
-      window.removeEventListener('wth:reload-session', models)
+      window.removeEventListener('theuth:reload-session', models)
       for (const off of offs) off()
     }
   }, [qc])

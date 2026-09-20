@@ -48,7 +48,7 @@ pub struct CommitChanges {
 }
 
 /// Committer identity; the user's git config is never read.
-pub const SIGNATURE: (&str, &str) = ("wth", "wth@localhost");
+pub const SIGNATURE: (&str, &str) = ("theuth", "theuth@localhost");
 
 /// A normal `.git` at the bundle root, loose objects only.
 pub struct Repo {
@@ -416,7 +416,7 @@ fn base_tree(repo: &Repository, head: Option<&Commit<'_>>) -> anyhow::Result<Obj
     })
 }
 
-/// Write a commit as `wth <wth@localhost>` and advance HEAD; returns the abbreviated id.
+/// Write a commit as `theuth <theuth@localhost>` and advance HEAD; returns the abbreviated id.
 fn commit(
     repo: &Repository,
     tree: ObjectId,
@@ -520,7 +520,7 @@ mod tests {
     use super::*;
 
     fn tmp() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("wth-repo-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("theuth-repo-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }

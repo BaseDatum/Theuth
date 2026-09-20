@@ -6,7 +6,7 @@ gate), §1.7; touches `01-config-and-subagents.md` (subagent inheritance),
 `21-slack.md` / `09-signal.md` (non-owner principals). Source material:
 `../jarvis/crates/jarvis-agent/src/{injection,hygiene}.rs` and its
 `RunTaint`/`SafetyHandle` path, re-read today; the research in §10. Every
-claim about wth cites `file:line` as of this morning's tree.
+claim about theuth cites `file:line` as of this morning's tree.
 
 ## 0. Decisions in one screen
 
@@ -44,7 +44,7 @@ claim about wth cites `file:line` as of this morning's tree.
 
 ## 1. Why
 
-wth can read the web (`read_url`, `search_web`, `browser_*`), run MCP
+theuth can read the web (`read_url`, `search_web`, `browser_*`), run MCP
 servers, take Slack/Signal messages from people who are not the owner, and
 act with `shell`, `write_file`, `browser_type`, `computer_*`, `knowledge_put`.
 Nothing in the tree distinguishes text the owner wrote from text a web page
@@ -69,7 +69,7 @@ the model to remember an instruction, every later session recalls it.
 
 The field's conclusion after 2025 (§10): you cannot reliably tell malicious
 text from benign text, so stop trying to, and instead make it not matter
-what the text says. wth already has the one chokepoint that makes this a
+what the text says. theuth already has the one chokepoint that makes this a
 small change — principle 7 (`00 §1`) was written for exactly this.
 
 ## 2. Contract
@@ -241,7 +241,7 @@ owner is asked too often.
 
 ACP children (`supervisor.rs:390-393`) are created tainted when the parent
 is, and **also when they have any fetch-capable tool** (06 §4.1 `Fetch`
-kind), because wth cannot see what they read; only their permission
+kind), because theuth cannot see what they read; only their permission
 requests come back (`registry.rs:268-307`). Review question: this makes
 every mutating `session/request_permission` from Claude Code / Cursor ask
 even under `/approvals off`. The alternative — treat ACP children as

@@ -219,7 +219,7 @@ export function buildCuratedLibrary(
     components,
     componentGroups: curatedGroups(keepSet, Object.keys(upstream)),
     root,
-    id: "wth-apps",
+    id: "theuth-apps",
   });
 }
 

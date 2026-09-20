@@ -7,7 +7,7 @@ contract), §5 (tools list), §7 (`get_attachment`), §8 (TUI shapes), §10
 `20-documents.md` (the inbound direction of PDFs); `24-message-user.md`
 (out-of-band delivery, unchanged); `25-desktop.md` §3 (parity table);
 `28-untrusted-content.md` (sinks); `30-surfaces.md` (inline pictures in
-prose — the sibling of this doc, and what it is not). Every claim about wth
+prose — the sibling of this doc, and what it is not). Every claim about theuth
 cites `file:line` as of this tree.
 
 ## 0. Decisions in one screen
@@ -91,7 +91,7 @@ cites `file:line` as of this tree.
 
 ## 1. What exists
 
-| Layer | wth today | Cite |
+| Layer | theuth today | Cite |
 |---|---|---|
 | Tool → file → model | `ToolOutput.files: Vec<PathBuf>`; the loop makes each an image part on the `ToolResponse`; `ToolCallFinished { files }`; `HistoryEntry::Tool { files }` rebuilt from `Binary.name` | `tools/src/lib.rs:106-116`, `agent/src/loop_.rs:1587-1633`, `supervisor.rs:2297-2323` |
 | File → frontend bytes | `get_attachment(path)` base64, only under `<data_dir>/{attachments,browser,computer}`; `put_attachment(bytes, ext)` → `attachments/<sha16>.<ext>` | `rpc/src/api.rs:467-476, 619-630, 1242-1272` |
@@ -477,7 +477,7 @@ want one.
 ```
 
 Skill `pdf` (`crates/artifact/pdf.md`, written to `skills/pdf.md` on every
-start beside `harness.md` and `visualize.md`, `wth/src/main.rs:172-179`):
+start beside `harness.md` and `visualize.md`, `theuth/src/main.rs:172-179`):
 the front matter keys, what cmarker renders and does not (no HTML, no
 `$math$` in v0), page breaks (`<!--raw-typst #pagebreak() -->`), when to switch
 to `source: typst` with a 20-line example (two-column, `#table` with
@@ -498,7 +498,7 @@ A `Tool` entry whose `name == "show"` renders as an artifact card
 ```
 ╭ ▣ report.pdf · v2 · 3 pages · 84 KB ────────────────────────────╮
 │ Quarterly summary                                                 │
-│ ~/.wth/artifacts/3f9a1c2e7b04d5aa.pdf          o open · ctrl+o   │
+│ ~/.theuth/artifacts/3f9a1c2e7b04d5aa.pdf          o open · ctrl+o   │
 ╰───────────────────────────────────────────────────────────────────╯
 ```
 
@@ -541,7 +541,7 @@ input, default `~/Downloads/<name>`). Menu is modal like the others
 
 ### 6.3 Line printer (`-p`)
 
-`[artifact: report.pdf → /Users/x/.wth/artifacts/3f9a…aa.pdf]` on its own
+`[artifact: report.pdf → /Users/x/.theuth/artifacts/3f9a…aa.pdf]` on its own
 line when `ArtifactShown` arrives. The transcript stays copy-pasteable.
 
 ## 7. Desktop
@@ -704,7 +704,7 @@ Events: `ArtifactShown` (this crate); `AgentEvent::ToolCallProgress`
 `artifacts/`. Disk: §3.4. Tracing target `artifact`:
 `show{kind, bytes, ms, compiled, pages, ok}` per call — the one number
 that says whether PDFs compile first time (§11 step 8's calibration).
-`DEFAULT_CONFIG` in `wth/src/main.rs` and the README config list gain the
+`DEFAULT_CONFIG` in `theuth/src/main.rs` and the README config list gain the
 section.
 
 ## 11. Build steps, each with its check
@@ -887,7 +887,7 @@ fixtures: 1280×720; a 4000-wide chart scaled to 1568×196.
   agent's provider options (not in this doc's scope).
 - **Desktop**: text-kind bodies fetched via `get_attachment` → `TextDecoder`
   (an `asset://` URL cannot be `fetch`ed without a `connect-src` change);
-  `openPath` scoped to `$HOME/.wth/artifacts/**` — a relocated data dir
+  `openPath` scoped to `$HOME/.theuth/artifacts/**` — a relocated data dir
   makes Open fail with a scope error while Reveal (scopeless) still works;
   Copy offered for text kinds only (no clipboard-manager plugin for images);
   panel width is component-local; auto-open tracks `turnSeq`. CSP gains
@@ -936,11 +936,11 @@ fixtures: 1280×720; a 4000-wide chart scaled to 1568×196.
   under `md` with a back chevron and `Esc`. Sidebar entry `Artifacts`
   under `Knowledge`; the card's `⋯` gains `Open in explorer`.
   `queryKeys.artifacts` is invalidated on `ArtifactShown`. Verified in a
-  browser against the headless daemon (`VITE_WTH_URL`) at 1280 and
+  browser against the headless daemon (`VITE_THEUTH_URL`) at 1280 and
   390 px: list, PDF (native viewer), markdown, CSV, details rail, mobile
   list → viewer → back.
 
-### 14.3 Smoke (headless, `claude-sonnet-4-5` effort low, `/tmp/wth-art`)
+### 14.3 Smoke (headless, `claude-sonnet-4-5` effort low, `/tmp/theuth-art`)
 
 - Start: `skills/pdf.md` written beside `harness.md`/`visualize.md`;
   `list_tools` has `show` as `read_only`.
@@ -960,7 +960,7 @@ fixtures: 1280×720; a 4000-wide chart scaled to 1568×196.
 - RPC: `list_artifacts(session, true)` returns 6 rows newest first;
   `get_attachment` serves the PDF (`%PDF-`) and the preview (`PNG`) and
   refuses the model's original `config.yaml` path (`not an attachment`);
-  `export_artifact` copies to `/tmp/wth-art-export/report.pdf` and refuses
+  `export_artifact` copies to `/tmp/theuth-art-export/report.pdf` and refuses
   the second time (`exists`); every artifact `call_id` joins a
   `HistoryEntry::Tool { name: "show" }` in `load_session`.
 - TUI on a pty (110×45, `--resume`): history load joins `list_artifacts`

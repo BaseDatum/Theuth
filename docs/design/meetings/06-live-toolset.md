@@ -136,7 +136,7 @@ Prompt blocks: `meeting`, `knowledge`, `web` in; out:
   runtime. `Toolset` is not on the wire (like `SetCompaction`).
 - `crates/meeting/src/lib.rs`: `MeetingConfig { live_tools, live_prompts }`
   with §2 defaults; `StartMeeting`/`StopMeeting`/`Failed` call
-  sites (decision 6); `DEFAULT_CONFIG` in `wth/src/main.rs` gains the keys
+  sites (decision 6); `DEFAULT_CONFIG` in `theuth/src/main.rs` gains the keys
   (commented, with the default list spelled out so the user can edit it).
 - `crates/meeting/src/tools.rs` `PROMPT`: one sentence — *"In a live meeting
   every tool you see is called directly; there is no python."*
@@ -176,7 +176,7 @@ session-side `SetToolsetOverride`/`GetToolset` and `Shared.toolset`
 `tools`: `ListPrompts` replies `(plugin, block)` pairs so the prompt allowlist
 has names to match. `meeting`: `MeetingConfig::{live_tools, live_prompts}`,
 `Setup.toolset`, the three call sites (decision 6), the `PROMPT` sentence.
-`wth`: the two commented keys. `08-repl.md` §0.4 amendment line.
+`theuth`: the two commented keys. `08-repl.md` §0.4 amendment line.
 
 Exercised:
 
@@ -188,7 +188,7 @@ Exercised:
    is byte-identical to the pre-existing behaviour (floor on with a pool,
    `todo` + `python` always, every block).
 2. `cargo check --workspace --all-targets` green; `cargo clippy -p agent
-   -p meeting -p wth --all-targets --no-deps` reports exactly the 14
+   -p meeting -p theuth --all-targets --no-deps` reports exactly the 14
    pre-existing `agent` sites and nothing in the changed code (`tools` has
    three pre-existing sites of its own; untouched).
 

@@ -118,9 +118,9 @@ export function useSearchOrigin(): SearchOrigin | null {
   return useSearchState((s) => s.origin)
 }
 
-/** Open the one search instance (root listens). Plain `wth:search` events from hotkeys/triggers mean `{}`. */
+/** Open the one search instance (root listens). Plain `theuth:search` events from hotkeys/triggers mean `{}`. */
 export function openSearch(options: SearchRequest = {}): void {
-  window.dispatchEvent(new CustomEvent<SearchRequest>('wth:search', { detail: options }))
+  window.dispatchEvent(new CustomEvent<SearchRequest>('theuth:search', { detail: options }))
 }
 
 /** Back to results: reopen search exactly as it was at activation. */

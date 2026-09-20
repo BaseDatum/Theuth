@@ -246,7 +246,7 @@ column is one `Option<String>`.
 
 `amazon-bedrock/<model-or-inference-profile-id>` keeps the public model id;
 genai's `bedrock-sigv4` feature supplies Converse streaming, signing and
-credential refresh. No AWS parser, signer or new backend in wth.
+credential refresh. No AWS parser, signer or new backend in theuth.
 
 The agent owns `ListAwsProfiles` and `SetAwsProfile { profile: Option<String> }`;
 RPC exposes `list_aws_profiles` and `set_aws_profile`. Both return
@@ -281,7 +281,7 @@ silently replaced. Profiles belong to the connected harness, not the frontend.
 Dependency patch: the existing `skymoore/rust-genai` fork tracks upstream main
 and preserves its tool-image support plus the explicit-profile provider fix
 that prevents environment credentials overriding the chosen account.
-`Cargo.lock` pins the fork's merge commit; genai source lives in the fork, not wth.
+`Cargo.lock` pins the fork's merge commit; genai source lives in the fork, not theuth.
 
 ## 3. Input header (tui crate)
 
@@ -317,7 +317,7 @@ needs an argument), Esc closes without clearing the input. Commands:
 other agents, who it may reach, and network status. `/peers` is a picker
 over peers and pending requests: ⏎ opens a peer's session, `i` inspects a
 request, `a` answers it by exact id, `r` refreshes; that answer is the only
-way a human enters a peer exchange. Slack `/wth …` and Signal have the same
+way a human enters a peer exchange. Slack `/theuth …` and Signal have the same
 four families plus `/requests`, owner-only), `/sessions`, `/resume <id>`,
 `/new`, `/cancel`,
 `/compact [summary|cut|snap|style …]` (11), `/clear` (11 §2.4: the conversation goes, the session stays), `/shake [images|documents|messages|tools|summary]` (48 §2.1, added 2026-09-18: the five literal categories are the whole

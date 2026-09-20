@@ -4604,12 +4604,12 @@ impl Model {
                 if self.update.as_ref() != Some(&ev) {
                     let text = if ev.applied {
                         format!(
-                            "wth {} is installed; it runs the next time you start wth.",
+                            "theuth {} is installed; it runs the next time you start theuth.",
                             ev.version
                         )
                     } else {
                         format!(
-                            "wth {} is available; `wth --update` installs it (the binary's directory is not writable).",
+                            "theuth {} is available; `t --update` installs it (the binary's directory is not writable).",
                             ev.version
                         )
                     };
@@ -4835,7 +4835,7 @@ impl Model {
             }
             voice::ModelState::Loading => "dictation: model loading…".to_owned(),
             voice::ModelState::Missing => {
-                "dictation: model missing (~/.wth/models/nemotron-streaming-en or voice.dictation_model_dir)"
+                "dictation: model missing (~/.theuth/models/nemotron-streaming-en or voice.dictation_model_dir)"
                     .to_owned()
             }
             voice::ModelState::Failed { message } => format!("dictation: {message}"),
@@ -8404,8 +8404,8 @@ impl Model {
         )
     }
 
-    /// `/nodes` menu rows: `● name  platform  wth <version>  [<n> running]  paired <ago>`
-    /// online, `○ name  platform  wth <version>  seen <ago>|revoked` otherwise,
+    /// `/nodes` menu rows: `● name  platform  theuth <version>  [<n> running]  paired <ago>`
+    /// online, `○ name  platform  theuth <version>  seen <ago>|revoked` otherwise,
     /// or one hint row when none is paired.
     pub fn nodes_rows(&self) -> Vec<String> {
         let now = now_ms();
@@ -8425,7 +8425,7 @@ impl Model {
                     (false, false, _, ms) => format!("seen {}", since(ms)),
                 };
                 format!(
-                    "{} {:<20} {:<8} wth {:<8} {tail}",
+                    "{} {:<20} {:<8} theuth {:<8} {tail}",
                     if n.online { "●" } else { "○" },
                     n.name.chars().take(20).collect::<String>(),
                     platform_name(&n.platform),
@@ -8524,7 +8524,7 @@ pub fn find_node<'a>(list: &'a [nodes::Node], n: &str) -> Option<&'a nodes::Node
     })
 }
 
-/// Host part of a relay origin: `wss://relay.wth.rwx.dev/x` → `relay.wth.rwx.dev`.
+/// Host part of a relay origin: `wss://relay.theuth.io/x` → `relay.theuth.io`.
 fn relay_host(relay: &str) -> &str {
     let rest = relay.split_once("://").map_or(relay, |(_, r)| r);
     rest.split('/').next().unwrap_or(rest)
@@ -10746,7 +10746,7 @@ mod tests {
                 ..Loaded::default()
             },
         ));
-        let catalog = Catalog::load(std::env::temp_dir().join("wth-tui-no-user-file").as_path());
+        let catalog = Catalog::load(std::env::temp_dir().join("theuth-tui-no-user-file").as_path());
         assert!(m.header(&catalog).0.starts_with("↳ run  child · "));
         m.submit("/parent", &tx);
         assert_eq!(m.session, Some(root));
@@ -10929,7 +10929,7 @@ mod tests {
 
     #[test]
     fn update_ready_tags_header_and_lines_once() {
-        let catalog = Catalog::load(std::env::temp_dir().join("wth-tui-no-user-file").as_path());
+        let catalog = Catalog::load(std::env::temp_dir().join("theuth-tui-no-user-file").as_path());
         let mut m = Model::new("m".into(), true);
         let ev = update::UpdateReady {
             version: "0.2.0".into(),
@@ -11037,7 +11037,7 @@ mod tests {
             rows[0].starts_with("● build-box") && rows[0].contains("2 running   paired 3d ago")
         );
         assert!(rows[1].starts_with("○ mac-mini") && rows[1].ends_with("seen 2h ago"));
-        let catalog = Catalog::load(std::env::temp_dir().join("wth-tui-no-user-file").as_path());
+        let catalog = Catalog::load(std::env::temp_dir().join("theuth-tui-no-user-file").as_path());
         assert!(m.header(&catalog).0.ends_with("  ·  nodes ●1"));
         // `x` confirms through a prompt; `n` keeps.
         m.menu_key(KeyCode::Char('x'), "", &tx);
@@ -12358,7 +12358,7 @@ mod tests {
         assert_eq!(k(12_345), "12.3k");
         assert_eq!(k(200_000), "200k");
         assert_eq!(k(1_000_000), "1.0M");
-        let catalog = Catalog::load(std::env::temp_dir().join("wth-tui-no-user-file").as_path());
+        let catalog = Catalog::load(std::env::temp_dir().join("theuth-tui-no-user-file").as_path());
         let mut m = Model::new("anthropic/claude-sonnet-4-5".into(), true);
         let limit = catalog
             .get(&m.model_id)
@@ -12485,7 +12485,7 @@ mod tests {
 
     #[test]
     fn header_shows_effort_when_set() {
-        let catalog = Catalog::load(std::env::temp_dir().join("wth-tui-no-user-file").as_path());
+        let catalog = Catalog::load(std::env::temp_dir().join("theuth-tui-no-user-file").as_path());
         let mut m = Model::new("nobody/nothing".into(), true);
         assert_eq!(m.header(&catalog).0, "nobody/nothing  ·  ctx 0");
         m.effort = Some("high".into());
@@ -12640,7 +12640,7 @@ mod tests {
 
     #[test]
     fn attach_notice_names_the_vision_fallback_for_a_text_only_model() {
-        let catalog = Catalog::load(std::env::temp_dir().join("wth-tui-no-user-file").as_path());
+        let catalog = Catalog::load(std::env::temp_dir().join("theuth-tui-no-user-file").as_path());
         let (provider, model) = catalog
             .providers()
             .flat_map(|p| p.models.values().map(move |m| (&p.id, m)))
@@ -13511,7 +13511,7 @@ mod tests {
             name: "show".into(),
             args: serde_json::json!({"name": "note.md", "content": "# Hello\n\nbody"}),
         });
-        let path = std::env::temp_dir().join(format!("wth-tui-artifact-{}.md", std::process::id()));
+        let path = std::env::temp_dir().join(format!("theuth-tui-artifact-{}.md", std::process::id()));
         std::fs::write(&path, "# Hello\n\nbody\n").unwrap();
         let artifact = artifact::Artifact {
             id: "abc".into(),
@@ -13618,7 +13618,7 @@ mod tests {
             name: "app".into(),
             args: serde_json::json!({"name": "panel", "source": "root = Card(TextContent(\"hi\"))"}),
         });
-        let path = std::env::temp_dir().join(format!("wth-tui-app-{}.openui", std::process::id()));
+        let path = std::env::temp_dir().join(format!("theuth-tui-app-{}.openui", std::process::id()));
         std::fs::write(&path, "root = Card(TextContent(\"hi\"))\n").unwrap();
         let app = artifact::Artifact {
             id: "app1".into(),
@@ -14084,7 +14084,7 @@ mod tests {
         )));
         assert!(m.communication.is_none() && m.entries.is_empty());
         m.apply(UiEvent::Communication(state(Some(s), false, false, false)));
-        let catalog = Catalog::load(std::env::temp_dir().join("wth-tui-no-user-file").as_path());
+        let catalog = Catalog::load(std::env::temp_dir().join("theuth-tui-no-user-file").as_path());
         assert!(m.header(&catalog).0.contains("communication off"));
         assert!(
             matches!(m.entries.first(), Some(Entry::Info(l)) if l.contains("disabled globally"))

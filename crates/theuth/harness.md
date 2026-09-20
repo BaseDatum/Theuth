@@ -1,14 +1,14 @@
 ---
 name: harness
-description: How wth (this harness) is laid out and configured - data dir, config.yaml keys, secrets vault, MCP files and gates, skills, knowledge, sessions, logs, what only the user can do. Load before touching any of them.
+description: How theuth (this harness) is laid out and configured - data dir, config.yaml keys, secrets vault, MCP files and gates, skills, knowledge, sessions, logs, what only the user can do. Load before touching any of them.
 ---
 
-<!-- Written by wth on every start from crates/wth/harness.md; edits here are overwritten. -->
+<!-- Written by theuth on every start from crates/theuth/harness.md; edits here are overwritten. -->
 
-# wth: operating your own harness
+# theuth: operating your own harness
 
-One process, one data dir. The data dir is `~/.wth` unless `--data-dir` /
-`WTH_DATA_DIR` moved it; the `agent` block of your system prompt names the
+One process, one data dir. The data dir is `~/.theuth` unless `--data-dir` /
+`THEUTH_DATA_DIR` moved it; the `agent` block of your system prompt names the
 real path. Everything below is relative to it.
 
 ## Layout
@@ -33,13 +33,13 @@ real path. Everything below is relative to it.
 | `artifacts/` | files shown with `show` and apps published with `app` (`.openui`): content-addressed blobs (design docs 35, 46) | live |
 | `artifacts.sqlite` | the artifact index plus one row per app invocation (view, binding, status, result). Deleting it rebuilds nothing — the blobs it named are orphaned and swept at the next start | live |
 | `artifacts.owners/` | one OS-locked file per running harness on this data dir; an invocation row belongs to the owner that dispatched it, and only rows of a provably dead owner are recovered (as `unknown`, never retried) at the next open | live |
-| `logs/wth.log.<YYYY-MM-DD>` | the process log; `RUST_LOG=debug` for more | live |
+| `logs/theuth.log.<YYYY-MM-DD>` | the process log; `RUST_LOG=debug` for more | live |
 | `token` | bearer for the JSON-RPC server | startup |
 | `signal/` | Signal linked-device state and `inbox/` for files the user texts | - |
 
 ## config.yaml
 
-Env overrides any key: `WTH_<SECTION>__<KEY>` (`WTH_RPC__LISTEN=127.0.0.1:7799`).
+Env overrides any key: `THEUTH_<SECTION>__<KEY>` (`THEUTH_RPC__LISTEN=127.0.0.1:7799`).
 
 ```yaml
 agent:
@@ -67,7 +67,7 @@ knowledge: {enabled: true}
 surface: {enabled: true, correct: true}   # replies may draw mermaid / json-render; correct = one fix-up round on invalid json-render
 artifact: {enabled: true, fonts: []}   # the `show` tool; fonts = extra directories searched when compiling PDFs (35)
 app: {enabled: true}   # the `app` tool, `/apps`, `get_app`/`app_*` RPC and the parser helper; false = none of those, published apps stay readable as source (46)
-signal: {enabled: true, device_name: wth, owner: "+1555…", allowed: []}
+signal: {enabled: true, device_name: theuth, owner: "+1555…", allowed: []}
 a2a: {enabled: false, listen: 127.0.0.1:7780, public_url: null}   # remote agents over A2A (50 §6); off = no actor or listener; peers/exports in a2a/peers.yaml, `/a2a reload`
 ```
 
@@ -151,7 +151,7 @@ are rewritten on every start.
   immediately; the child's final message arrives later as a
   `<message from="session:<id>" id="…">` input. Children see only `task`.
   `agent: <name>` runs an ACP harness from `acp/agents.yaml` in `cwd` (it
-  picks its own model); without it a wth subagent runs on `model`/`effort`
+  picks its own model); without it a theuth subagent runs on `model`/`effort`
   you choose (`list_models` shows the ids; unset =
   `agent.subagents.model`/`effort`, then `agent.model`).
 - `discover_peers{query?, cursor?, limit?}` lists who you may message with
@@ -184,7 +184,7 @@ are rewritten on every start.
   deletes a statement); a stale base returns a conflict naming the latest
   version. In the TUI, Slack and Signal the card is a receipt plus read-only
   source. `apps are unavailable on this harness: parser helper missing` means
-  the `wth-app-parser-<hash>` executable is not beside `wth` — say so and use
+  the `theuth-app-parser-<hash>` executable is not beside `theuth` — say so and use
   `show` for a static file; only the user can install it.
 - `ask_user{questions}` shows the user one or more multiple-choice questions
   (`{id, question, options: [{label, description?}], recommended?}`) and
@@ -243,5 +243,5 @@ are rewritten on every start.
 
 Restart the process, log in (providers or MCP), approve a call, switch the
 running session's model (`/model`), pair Signal, see a secret's value, add
-one from the keyboard, or delete one (`/secrets`, Settings › Secrets, `wth
+one from the keyboard, or delete one (`/secrets`, Settings › Secrets, `theuth
 --secret-set`). When a task needs one of these, stop and ask.

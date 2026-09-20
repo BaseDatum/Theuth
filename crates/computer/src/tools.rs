@@ -54,7 +54,7 @@ impl Ctx {
     /// One input action with [`InputError`] turned into the text the model reads.
     async fn act(&self, action: Action) -> Result<Reply, String> {
         self.input.run(action).await.map_err(|e| match e {
-            InputError::NoAccessibility => "accessibility not granted for the app that launched wth (your terminal, or wth.app): System Settings › Privacy & Security › Accessibility (the system prompt was shown)".to_owned(),
+            InputError::NoAccessibility => "accessibility not granted for the app that launched theuth (your terminal, or theuth.app): System Settings › Privacy & Security › Accessibility (the system prompt was shown)".to_owned(),
             InputError::Failed(s) => format!("input failed: {s}"),
             InputError::Timeout => "input timed out after 30 s".to_owned(),
             InputError::Recovered(s) => format!("input thread recovered: {s}"),
@@ -481,13 +481,13 @@ mod tests {
             data.join("computer").join(session.to_string())
         );
         let private = SessionResources {
-            root: "/tmp/wth-private-x".into(),
+            root: "/tmp/theuth-private-x".into(),
             retention: tools::Retention::Private,
             generation: 3,
         };
         assert_eq!(
             shot_dir(&private, session),
-            std::path::Path::new("/tmp/wth-private-x")
+            std::path::Path::new("/tmp/theuth-private-x")
                 .join("computer")
                 .join(session.to_string())
         );

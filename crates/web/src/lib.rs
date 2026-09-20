@@ -79,7 +79,7 @@ impl Default for WebConfig {
             feature_max_chars: 600,
             max_fetch_bytes: 2_097_152,
             max_redirects: 5,
-            user_agent: "wth/0.1 (+https://github.com/skymoore/wth)".to_owned(),
+            user_agent: "theuth/0.1 (+https://github.com/skymoore/theuth)".to_owned(),
         }
     }
 }

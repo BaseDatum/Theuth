@@ -1862,7 +1862,7 @@ mod tests {
         );
     }
 
-    /// A second opener of one data dir (another harness, a `wth --acp`) must
+    /// A second opener of one data dir (another harness, a `t --acp`) must
     /// not void the first one's in-flight calls: only rows whose owner's lock
     /// is free become `unknown`; live owners still complete theirs.
     #[tokio::test]

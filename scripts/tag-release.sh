@@ -6,7 +6,7 @@
 # commit the artifacts were built from.
 #
 # Env:
-#   WTH_RELEASE_NO_PUSH=1   create the tag locally, skip `git push`
+#   THEUTH_RELEASE_NO_PUSH=1   create the tag locally, skip `git push`
 set -euo pipefail
 
 export PATH="/opt/homebrew/opt/rustup/bin:$HOME/.cargo/bin:$PATH"
@@ -19,7 +19,7 @@ cd "$ROOT"
 command -v cargo >/dev/null 2>&1 || { echo "error: cargo not on PATH (export PATH=\"\$(just toolchain):\$PATH\")" >&2; exit 1; }
 command -v jq >/dev/null 2>&1 || { echo "error: jq required" >&2; exit 1; }
 
-VERSION="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name=="wth") | .version')"
+VERSION="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name=="theuth") | .version')"
 TAG="v${VERSION}"
 
 if [[ -n "$(git status --porcelain)" ]]; then
@@ -32,10 +32,10 @@ if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1; then
 fi
 
 echo "==> git tag -a $TAG"
-git tag -a "$TAG" -m "wth $VERSION"
+git tag -a "$TAG" -m "theuth $VERSION"
 
-if [[ "${WTH_RELEASE_NO_PUSH:-0}" == "1" ]]; then
-  echo "    WTH_RELEASE_NO_PUSH=1: not pushed"
+if [[ "${THEUTH_RELEASE_NO_PUSH:-0}" == "1" ]]; then
+  echo "    THEUTH_RELEASE_NO_PUSH=1: not pushed"
 else
   echo "==> git push origin $TAG"
   git push origin "refs/tags/$TAG"

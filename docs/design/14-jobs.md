@@ -111,7 +111,7 @@ Still running:
 
 ```
 job j3 started 3s ago, still running.
-log: /Users/x/.wth/jobs/<session>/j3.log      ← read_file for output so far
+log: /Users/x/.theuth/jobs/<session>/j3.log      ← read_file for output so far
 output so far:
 {last ≤ 2 KiB}
 Result arrives as <job_result id="j3"> when it exits — keep working, or end
@@ -393,7 +393,7 @@ else in the design changes.
 
 ## 11. Implementation order
 
-Each step leaves `wth` green; steps 2–4 are independent of each other
+Each step leaves `theuth` green; steps 2–4 are independent of each other
 after 1.
 
 1. **`Jobs` actor + shell cutover** (`tools`): `jobs.rs`, `ShellTool::call`

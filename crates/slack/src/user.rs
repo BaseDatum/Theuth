@@ -205,7 +205,7 @@ mod tests {
         let f = fixture();
         f.bind(OWNER);
         let missing = OutboundFile {
-            path: "/nonexistent/wth/file.bin".into(),
+            path: "/nonexistent/theuth/file.bin".into(),
             name: "file.bin".into(),
             mime: "application/octet-stream".into(),
             bytes: 1,
@@ -215,7 +215,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            err.starts_with("cannot read /nonexistent/wth/file.bin"),
+            err.starts_with("cannot read /nonexistent/theuth/file.bin"),
             "{err}"
         );
         assert!(f.api.calls().is_empty());

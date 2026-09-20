@@ -158,7 +158,7 @@ class FakeSocket {
 
   constructor(url: string, protocols: string[]) {
     this.url = url
-    expect(protocols).toEqual(['wth-link-1'])
+    expect(protocols).toEqual(['theuth-link-1'])
     expect(url).toBe(`ws://relay.test/h/${FakeSocket.harness.id}`)
     FakeSocket.harness.attempts++
     queueMicrotask(() => {

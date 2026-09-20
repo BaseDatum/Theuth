@@ -131,7 +131,7 @@ existing cut.
   on first visit. No `SessionCreated` event; the list is invalidated on
   `TurnFinished`/`TitleChanged`.
 - Composer prefill precedent: `QueuedChips onEdit={(t) => setText(t)}`.
-  Cross-cutting UI uses `wth:*` window events.
+  Cross-cutting UI uses `theuth:*` window events.
 
 ### 2.4 TUI (`crates/tui`)
 

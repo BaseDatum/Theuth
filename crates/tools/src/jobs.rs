@@ -1411,7 +1411,7 @@ pub(crate) mod tests {
     }
 
     pub(crate) async fn fixture(grace: Duration, timeout: Duration) -> Fx {
-        let dir = std::env::temp_dir().join(format!("wth-jobs-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("theuth-jobs-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let rt = Runtime::new(figment::Figment::new(), dir.clone());
         let events = Arc::new(Mutex::new(Vec::new()));

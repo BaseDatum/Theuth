@@ -296,14 +296,14 @@ impl Message<Revoke> for LinkActor {
     }
 }
 
-/// This machine's hostname; `"wth"` when `hostname` fails.
+/// This machine's hostname; `"theuth"` when `hostname` fails.
 fn hostname() -> String {
     std::process::Command::new("hostname")
         .output()
         .ok()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "wth".to_owned())
+        .unwrap_or_else(|| "theuth".to_owned())
 }
 
 #[async_trait::async_trait]

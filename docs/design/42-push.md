@@ -18,7 +18,7 @@ amendments to 31.
    Rejected: VoIP/audio/location modes (App Review 2.5.4), a persistent
    socket (not a thing on iOS), Web Push (Safari home-screen web apps only,
    not WKWebView).
-2. **The push carries nothing.** Title `wth`, one of three fixed bodies
+2. **The push carries nothing.** Title `theuth`, one of three fixed bodies
    (*Response ready*, *Approval needed*, *Turn failed*), no session id, no
    title, no text. Tapping opens the app; the existing foreground path
    (`RpcClient.#foreground` → reconnect → `reload()`) lands the user on a
@@ -73,7 +73,7 @@ or an approval is waiting. Today that works only if the answer arrives
 within ~30 s.
 
 The constraint that shapes everything is Apple's: pushes to the App Store
-build of `dev.rwx.wth.ios` can only be signed with the publisher's key.
+build of `io.theuth.ios` can only be signed with the publisher's key.
 "Anyone can run a relay" therefore cannot mean "anyone can push" — it means
 any relay can *forward* to the one that can, and the forwarded bytes must
 be worthless to read (§0.2, §9).
@@ -91,7 +91,7 @@ be worthless to read (§0.2, §9).
 - Per-harness state is `Uplink { tx, conns, next, gone }`
   (`relay.rs:105-110`); nothing about the harness is retained past `NK`.
 - CLI is clap `Cli { listen, tls, web, max_conns, cookie_secret }`
-  (`main.rs:38-57`), env only `WTH_RELAY_COOKIE_SECRET`. Routes `/h/{id}`,
+  (`main.rs:38-57`), env only `THEUTH_RELAY_COOKIE_SECRET`. Routes `/h/{id}`,
   `/healthz`, `/metrics`, web fallback (`main.rs:110-116`). Per-IP token
   bucket exists (`relay.allow`, 10/s burst 30).
 - Deps: tokio, axum(ws), axum-server(tls-rustls), rustls/aws-lc-rs, snow,
@@ -145,7 +145,7 @@ be worthless to read (§0.2, §9).
   over it.
 - `desktop_iOS.entitlements`: `associated-domains` only. No
   `aps-environment`. `Info.plist`: no `UIBackgroundModes` (none needed for
-  alert pushes). Bundle `dev.rwx.wth.ios`, team `8H548FVL95`, iOS 17.
+  alert pushes). Bundle `io.theuth.ios`, team `8H548FVL95`, iOS 17.
 - UI: `notify.ts` `notifyIfHidden` → `sendNotification` when the window is
   not focused/visible; `primeNotifications` asks permission at launch on
   iOS (`App.tsx:187`). `useEventSideEffects` notifies on
@@ -167,7 +167,7 @@ be worthless to read (§0.2, §9).
                                  ◀── uplink PUSH kind·token ────────────────────── link plugin
                                  no key → POST /push ──────────▶ verify, rate-limit
                                                                   JWT ES256 → POST /3/device/<hex> ─▶ APNs
-   banner "wth · Response ready" ◀───────────────────────────────────────────────────────────────────
+   banner "theuth · Response ready" ◀───────────────────────────────────────────────────────────────────
    tap → app foregrounds → RpcClient reconnects → reload()
 ```
 
@@ -231,13 +231,13 @@ bounce a token between them.
 ```
 POST https://api.push.apple.com/3/device/<hex token>     (api.sandbox.push.apple.com with --apns-sandbox)
 authorization: bearer <JWT>          ES256, header {alg, kid}, claims {iss: team, iat}; reissued after 50 min
-apns-topic: dev.rwx.wth.ios          the bundle id (--apns-topic)
+apns-topic: io.theuth.ios          the bundle id (--apns-topic)
 apns-push-type: alert
 apns-priority: 10
 apns-expiration: now + 3600          unreachable for an hour → drop; a stale "response ready" is noise
 apns-collapse-id: <kind>             three banners at most per app, the latest of each kind wins
 
-{"aps":{"alert":{"title":"wth","body":"Response ready"},"sound":"default","thread-id":"wth"}}
+{"aps":{"alert":{"title":"theuth","body":"Response ready"},"sound":"default","thread-id":"theuth"}}
 ```
 
 Bodies by kind: `1` *Response ready*, `2` *Approval needed*, `3` *Turn
@@ -248,17 +248,17 @@ failed*. No `content-available`, no `mutable-content`, no custom keys.
 ### 5.1 CLI
 
 ```
-wth-relay … [--apns-key <AuthKey.p8> --apns-key-id <KID> --apns-team <TEAM> --apns-topic <bundle id> [--apns-sandbox]]
+theuth-relay … [--apns-key <AuthKey.p8> --apns-key-id <KID> --apns-team <TEAM> --apns-topic <bundle id> [--apns-sandbox]]
             [--push-upstream <https://host>]
 ```
 
-Env: `WTH_RELAY_APNS_KEY` (path or the PEM itself), `WTH_RELAY_APNS_KEY_ID`,
-`WTH_RELAY_APNS_TEAM`, `WTH_RELAY_APNS_TOPIC`, `WTH_RELAY_APNS_SANDBOX`,
-`WTH_RELAY_PUSH_UPSTREAM`. `--apns-key` and `--push-upstream` are mutually
+Env: `THEUTH_RELAY_APNS_KEY` (path or the PEM itself), `THEUTH_RELAY_APNS_KEY_ID`,
+`THEUTH_RELAY_APNS_TEAM`, `THEUTH_RELAY_APNS_TOPIC`, `THEUTH_RELAY_APNS_SANDBOX`,
+`THEUTH_RELAY_PUSH_UPSTREAM`. `--apns-key` and `--push-upstream` are mutually
 exclusive (clap `conflicts_with`). Defaults: neither. `deploy/relay/compose.yaml`
-passes `WTH_RELAY_PUSH_UPSTREAM=${PUSH_UPSTREAM:-https://relay.wth.rwx.dev}`
+passes `THEUTH_RELAY_PUSH_UPSTREAM=${PUSH_UPSTREAM:-https://relay.theuth.io}`
 so a self-hoster gets pushes by default and can blank it to opt out; the
-k8s base adds the four APNs vars from a Secret `wth-relay/apns` (key file
+k8s base adds the four APNs vars from a Secret `theuth-relay/apns` (key file
 mounted, read-only root FS as today).
 
 ### 5.2 Module `push.rs`
@@ -429,7 +429,7 @@ kept in a `OnceLock` for the IMPs.
 - `desktop_iOS.entitlements`: add `aps-environment = production` (Xcode
   swaps to `development` for debug installs on device; TestFlight and App
   Store are production). One-time portal step: enable *Push Notifications*
-  on the `dev.rwx.wth.ios` App ID and create an *Apple Push Notifications
+  on the `io.theuth.ios` App ID and create an *Apple Push Notifications
   service (APNs)* key — the `.p8`, its Key ID, and the Team ID are §5.1's
   inputs. The key is not in the repo; `.env.signing.example` documents the
   three names.
@@ -523,7 +523,7 @@ Each ends with a runnable check, not a test suite.
    `push_sent 1`; a second relay with `--push-upstream` gets `204` end to
    end; a bad length gets `400`.
 3. **Harness.** `Row.push`, handshake tail, `UplinkHandle`, push task,
-   `caps`; check: pair the phone, `wth` prints the row with `push:`, then
+   `caps`; check: pair the phone, `theuth` prints the row with `push:`, then
    from the phone send a prompt that takes > 90 s, lock the phone; the
    banner arrives when the turn ends; tap → live transcript. Approve/deny
    path: a `mutating` tool → *Approval needed*. Against an old relay
@@ -587,6 +587,6 @@ Each ends with a runnable check, not a test suite.
 |---|---|---|
 | 1 | Encrypted payload (session id, title) sealed to the device static so a tap deep-links and the banner could show the title via an NSE | not in v0; revisit if the extra tap is complained about; the harness static ↔ device static box is 20 lines each side, the NSE is the cost |
 | 2 | `AskRequested` / `SecretRequested` as kinds 4/5 | not in v0; they are approvals in spirit and the same code path when wanted |
-| 3 | Per-harness distinguishability on a phone with several harnesses (`thread-id`, title) | fixed `wth`; the harness *name* is the only candidate and is plaintext to the upstream |
+| 3 | Per-harness distinguishability on a phone with several harnesses (`thread-id`, title) | fixed `theuth`; the harness *name* is the only candidate and is plaintext to the upstream |
 | 4 | Android (FCM) | the frame is `kind · len · token`; a `kind` family byte 2 = FCM is a relay-side sender and an Android shell registration; nothing here is iOS-specific but §7 |
 | 5 | Should the operator's public relay require anything to forward for it | no; the token is the capability, the buckets bound abuse; revisit on metrics |

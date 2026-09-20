@@ -1,5 +1,5 @@
 /**
- * Wire contract shared by the headless helper (`wth-app-parser`, JSON lines over stdio),
+ * Wire contract shared by the headless helper (`theuth-app-parser`, JSON lines over stdio),
  * the Rust app plugin and the desktop adapter. Field names are snake_case on the wire.
  *
  * Never carries a render tree: only source, diagnostics and statement/tool metadata.
