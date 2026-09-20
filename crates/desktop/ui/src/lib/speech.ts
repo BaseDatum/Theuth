@@ -117,9 +117,13 @@ export function remaining(): number {
   return ctx ? Math.max(0, next - ctx.currentTime) : 0
 }
 
-/** Halt playback now and release the decoder; the context stays open for the next gesture-free `start`. */
+/**
+ * Halt playback now and release the decoder. The context is suspended, not closed: a `playback`-type
+ * context left running keeps iOS's Now Playing ("localhost") up; `start` resumes it without a gesture.
+ */
 export function stop(): void {
   cut()
+  void ctx?.suspend()
   dec?.free()
   dec = null
   id = null
