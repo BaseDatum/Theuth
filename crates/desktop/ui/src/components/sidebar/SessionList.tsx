@@ -54,20 +54,28 @@ function rootOf(sessions: SessionSummary[], id: string | undefined): string | un
 }
 
 /**
- * Pinned top-level sessions first, then the rest newest first with day-group headers; the root of every open
- * chat (the URL's and each split pane's) is followed by its agent tree. With any project set (51 §3), roots are
- * bucketed by project in first-seen order of that ordering, `Ungrouped` last, under collapsible project headers
- * (`collapsed` holds project labels, `''` = ungrouped).
+ * Pinned top-level sessions first under one `Pinned` header, then the rest newest first with day-group headers;
+ * the root of every open chat (the URL's and each split pane's) is followed by its agent tree. With any project
+ * set (51 §3), unpinned roots are bucketed by project in first-seen order of that ordering, `Ungrouped` last,
+ * under collapsible project headers (`collapsed` holds project labels, `''` = ungrouped).
  */
 export function buildRows(sessions: SessionSummary[], open: readonly string[], collapsed: ReadonlySet<string> = new Set()): Row[] {
   const now = Date.now()
   const roots = new Set(open.map((id) => rootOf(sessions, id)))
   const rows: Row[] = []
-  const top = sessions
-    .filter((s) => s.parent === null)
-    .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updated_at.localeCompare(a.updated_at))
+  const push = (s: SessionSummary) => {
+    rows.push({ key: s.id, session: s })
+    if (roots.has(s.id)) rows.push({ key: `t:${s.id}`, tree: s.id })
+  }
+  const top = sessions.filter((s) => s.parent === null).sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+  const pinned = top.filter((s) => s.pinned)
+  if (pinned.length) {
+    rows.push({ key: 'h:pinned', label: 'Pinned' })
+    pinned.forEach(push)
+  }
   const buckets = new Map<string | null, SessionSummary[]>()
   for (const s of top) {
+    if (s.pinned) continue
     const list = buckets.get(s.project)
     if (list) list.push(s)
     else buckets.set(s.project, [s])
@@ -75,7 +83,7 @@ export function buildRows(sessions: SessionSummary[], open: readonly string[], c
   const ungrouped = buckets.get(null)
   buckets.delete(null)
   if (ungrouped) buckets.set(null, ungrouped)
-  const grouped = buckets.size > 1 || !ungrouped
+  const grouped = buckets.size > 1 || (!ungrouped && buckets.size > 0)
   for (const [project, list] of buckets) {
     if (grouped) {
       const isCollapsed = collapsed.has(project ?? '')
@@ -84,10 +92,9 @@ export function buildRows(sessions: SessionSummary[], open: readonly string[], c
     }
     let label = ''
     for (const s of list) {
-      const g = s.pinned ? 'Pinned' : group(s.updated_at, now)
+      const g = group(s.updated_at, now)
       if (g !== label) rows.push({ key: `h:${project ?? ''}:${g}`, label: (label = g) })
-      rows.push({ key: s.id, session: s })
-      if (roots.has(s.id)) rows.push({ key: `t:${s.id}`, tree: s.id })
+      push(s)
     }
   }
   return rows

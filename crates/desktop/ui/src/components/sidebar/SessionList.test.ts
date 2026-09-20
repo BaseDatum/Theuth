@@ -20,7 +20,7 @@ const s = (id: string, project: string | null, updated_at: string, pinned = fals
 
 const keys = (rows: Row[]) => rows.map((r) => r.key)
 
-test('projects in first-seen order of the pinned/newest ordering, Ungrouped last, headers only when a project exists', () => {
+test('pinned lead above every project; projects in first-seen order of the newest ordering, Ungrouped last, headers only when a project exists', () => {
   const sessions = [
     s('a', null, '2026-01-03T00:00:00Z'),
     s('b', 'beta', '2026-01-02T00:00:00Z'),
@@ -28,8 +28,10 @@ test('projects in first-seen order of the pinned/newest ordering, Ungrouped last
     s('d', 'beta', '2026-01-04T00:00:00Z'),
   ]
   const rows = buildRows(sessions, [])
-  expect(rows.flatMap((r) => ('project' in r ? [r.project] : []))).toEqual(['alpha', 'beta', null])
-  expect(keys(rows).filter((k) => !k.startsWith('h:'))).toEqual(['p:alpha', 'c', 'p:beta', 'd', 'b', 'p:', 'a'])
+  expect(keys(rows).slice(0, 2)).toEqual(['h:pinned', 'c'])
+  expect(rows.flatMap((r) => ('project' in r ? [r.project] : []))).toEqual(['beta', null])
+  expect(keys(rows).filter((k) => !k.startsWith('h:'))).toEqual(['c', 'p:beta', 'd', 'b', 'p:', 'a'])
   expect(keys(buildRows(sessions, [], new Set(['beta'])))).not.toContain('d')
   expect(keys(buildRows([sessions[0]!], [])).some((k) => k.startsWith('p:'))).toBe(false)
+  expect(keys(buildRows([sessions[2]!], []))).toEqual(['h:pinned', 'c'])
 })

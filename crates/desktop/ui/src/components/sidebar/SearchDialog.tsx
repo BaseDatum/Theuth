@@ -1,11 +1,18 @@
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { Command as CommandPrimitive } from 'cmdk'
-import { Check, FileText, History, MessageSquare, RefreshCw, Search, X } from 'lucide-react'
+import { Check, ChevronDown, CircleHelp, FileText, History, MessageSquare, RefreshCw, Search, X } from 'lucide-react'
 import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Command, CommandGroup, CommandItem, CommandList } from '@/components/ui/command'
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { queryKeys, useApi } from '@/lib/rpc'
 import {
@@ -121,6 +128,7 @@ export function SearchDialog({ open, onOpenChange, request }: Props) {
   const [selected, setSelected] = useState('')
   const [refreshing, setRefreshing] = useState<SearchCategory[] | null>(null)
   const [refreshError, setRefreshError] = useState<string | null>(null)
+  const [help, setHelp] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const opener = useRef<HTMLElement | null>(null)
@@ -355,12 +363,35 @@ export function SearchDialog({ open, onOpenChange, request }: Props) {
           'motion-reduce:animate-none motion-reduce:transition-none',
         )}
       >
-        <div className="flex h-11 shrink-0 items-center justify-between border-b pr-1 pl-4">
-          <DialogTitle className="text-sm font-medium">Search</DialogTitle>
+        <div className="flex h-11 shrink-0 items-center gap-1 border-b pr-1 pl-4">
+          <DialogTitle className="mr-auto text-sm font-medium">Search</DialogTitle>
           <DialogDescription className="sr-only">
             Search sessions, artifacts, knowledge and knowledge history on this harness. Arrow keys move
             between results; Enter opens the selected result.
           </DialogDescription>
+          {/* Mobile: the footer is hidden, so Refresh and help live here as icons. */}
+          <Button
+            variant="ghost"
+            size="icon"
+            className="md:hidden"
+            disabled={refreshing !== null || cats.length === 0}
+            aria-busy={refreshing !== null}
+            aria-label={refreshing ? 'Refreshing search sources' : 'Refresh search sources'}
+            onClick={() => void refresh(cats)}
+          >
+            <RefreshCw className={cn('size-[18px]', refreshing && 'motion-safe:animate-spin')} aria-hidden />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="md:hidden"
+            aria-label="Search help"
+            aria-expanded={help}
+            aria-controls="search-help"
+            onClick={() => setHelp((h) => !h)}
+          >
+            <CircleHelp className="size-[18px]" aria-hidden />
+          </Button>
           <DialogClose asChild>
             <Button variant="ghost" size="icon" aria-label="Close search">
               <X className="size-[18px]" />
@@ -419,7 +450,7 @@ export function SearchDialog({ open, onOpenChange, request }: Props) {
               </Button>
             )}
           </div>
-          {/* Source controls: keydown does not reach cmdk's root, so chip Enter/Space/arrows stay chip-local. */}
+          {/* Source controls: keydown does not reach cmdk's root, so chip/menu Enter/Space/arrows stay local. */}
           <div
             className="flex shrink-0 flex-wrap items-center gap-2 border-b px-3 py-2"
             onKeyDown={(e) => e.stopPropagation()}
@@ -427,13 +458,43 @@ export function SearchDialog({ open, onOpenChange, request }: Props) {
             <span id="search-in" className="text-xs text-fg-tertiary">
               Search in
             </span>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm" className="md:hidden">
+                  {allSelected ? 'All' : cats.length === 0 ? 'Nothing' : cats.map((c) => CATEGORY_LABEL[c]).join(', ')}
+                  <ChevronDown aria-hidden />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start">
+                <DropdownMenuCheckboxItem
+                  checked={allSelected}
+                  onSelect={(e) => e.preventDefault()}
+                  onCheckedChange={() => {
+                    if (!allSelected) select([...CATEGORIES])
+                  }}
+                >
+                  All
+                </DropdownMenuCheckboxItem>
+                <DropdownMenuSeparator />
+                {CATEGORIES.map((c) => (
+                  <DropdownMenuCheckboxItem
+                    key={c}
+                    checked={cats.includes(c)}
+                    onSelect={(e) => e.preventDefault()}
+                    onCheckedChange={(on) => select(canonical(on ? [...cats, c] : cats.filter((x) => x !== c)))}
+                  >
+                    {CATEGORY_LABEL[c]}
+                  </DropdownMenuCheckboxItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
             <button
               type="button"
               aria-pressed={allSelected}
               onClick={() => {
                 if (!allSelected) select([...CATEGORIES])
               }}
-              className={chip(allSelected)}
+              className={cn(chip(allSelected), 'hidden md:inline-flex')}
             >
               {allSelected && <Check className="size-3.5" aria-hidden />}
               All
@@ -444,7 +505,7 @@ export function SearchDialog({ open, onOpenChange, request }: Props) {
               value={cats}
               onValueChange={(v) => select(canonical(v as SearchCategory[]))}
               spacing={2}
-              className="flex-wrap"
+              className="hidden flex-wrap md:flex"
             >
               {CATEGORIES.map((c) => {
                 const on = cats.includes(c)
@@ -470,6 +531,28 @@ export function SearchDialog({ open, onOpenChange, request }: Props) {
               </span>
             )}
           </div>
+          {refreshError && (
+            <div role="alert" className="shrink-0 border-b px-3 py-2 text-xs text-destructive">
+              Refresh failed: {refreshError}
+            </div>
+          )}
+          {help && (
+            <div id="search-help" className="shrink-0 space-y-1 border-b px-3 py-2 text-xs text-fg-secondary">
+              <p>
+                Fuzzy by default; space separates terms. <code>'exact</code>, <code>^prefix</code>,{' '}
+                <code>suffix$</code>, <code>!not</code>. Smart case: lowercase matches any case.
+              </p>
+              <p>
+                Each term matches one candidate text at a time: a title, one message, one artifact body, or one
+                side of a knowledge change. <code>!old</code> excludes candidates containing “old”, not every record
+                that mentions it somewhere.
+              </p>
+              <p>
+                Knowledge is synced when search opens; edits made while it stays open need Refresh. Artifacts and
+                history index on first use.
+              </p>
+            </div>
+          )}
           <div id="search-query-hint" className="sr-only">
             Fuzzy match; 'exact, ^prefix, suffix$, !not. Each term applies to one title or one body at a time.
           </div>
@@ -549,11 +632,10 @@ export function SearchDialog({ open, onOpenChange, request }: Props) {
             )}
           </CommandList>
         </Command>
-        <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-t px-3 py-2 text-xs text-fg-tertiary">
+        <div className="hidden shrink-0 items-center gap-x-3 border-t px-3 py-2 text-xs text-fg-tertiary md:flex">
           <Button
             variant="ghost"
             size="sm"
-            className="pointer-coarse:min-h-11"
             disabled={refreshing !== null || cats.length === 0}
             aria-busy={refreshing !== null}
             aria-label={refreshing ? 'Refreshing search sources' : 'Refresh search sources'}
@@ -562,30 +644,10 @@ export function SearchDialog({ open, onOpenChange, request }: Props) {
             <RefreshCw className={cn('size-3.5', refreshing && 'motion-safe:animate-spin')} aria-hidden />
             {refreshing ? 'Refreshing…' : 'Refresh'}
           </Button>
-          {refreshError && (
-            <span role="alert" className="text-destructive">
-              Refresh failed: {refreshError}
-            </span>
-          )}
-          <span className="ml-auto hidden md:inline">Arrow keys · Enter open</span>
-          <details className="w-full md:w-auto">
-            <summary className="cursor-default select-none pointer-coarse:min-h-11 pointer-coarse:py-3">Search help</summary>
-            <div className="mt-1 space-y-1 text-fg-secondary">
-              <p>
-                Fuzzy by default; space separates terms. <code>'exact</code>, <code>^prefix</code>,{' '}
-                <code>suffix$</code>, <code>!not</code>. Smart case: lowercase matches any case.
-              </p>
-              <p>
-                Each term matches one candidate text at a time: a title, one message, one artifact body, or one
-                side of a knowledge change. <code>!old</code> excludes candidates containing “old”, not every record
-                that mentions it somewhere.
-              </p>
-              <p>
-                Knowledge is synced when search opens; edits made while it stays open need Refresh. Artifacts and
-                history index on first use.
-              </p>
-            </div>
-          </details>
+          <span className="ml-auto">Arrow keys · Enter open</span>
+          <Button variant="ghost" size="sm" aria-expanded={help} aria-controls="search-help" onClick={() => setHelp((h) => !h)}>
+            Search help
+          </Button>
         </div>
       </DialogContent>
     </Dialog>
