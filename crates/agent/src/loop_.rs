@@ -286,6 +286,19 @@ pub struct SwitchModel(pub Resolved);
 /// tool-use turn.
 pub struct SetPendingEffort(pub Option<ReasoningEffort>);
 
+/// `tell`: the session's in-memory compaction override ([`crate::SetCompaction`]);
+/// read by the running turn at its next trigger check, so it applies mid-turn.
+pub struct SetCompactionOverride(pub CompactionOverride);
+
+/// Per-session compaction override (`meetings/02-live.md` §0.2); both `None` = configured behaviour.
+#[derive(Clone, Debug, Default)]
+pub struct CompactionOverride {
+    /// Auto-compaction trigger in tokens instead of `compact_at × window`.
+    pub at_tokens: Option<u32>,
+    /// Paragraph appended to [`compact::COMPACT_INSTRUCTION`] for this session.
+    pub hint: Option<String>,
+}
+
 /// `ask` → `Result<u32 /* new epoch */, String>`: compact now, threshold
 /// ignored (07 §8.6). `Err("turn in flight")` while a turn runs;
 /// `Err("nothing to compact")` when nothing can be folded.
@@ -494,6 +507,8 @@ struct Shared {
     cfg: Arc<AgentConfig>,
     /// Live default style; shared with the supervisor so [`crate::SetCompactStyle`] is in-process.
     compact_style: Arc<RwLock<CompactStyle>>,
+    /// [`SetCompactionOverride`]; shared with the running turn.
+    compaction: Arc<parking_lot::RwLock<CompactionOverride>>,
     /// Model for title calls (07 §15); `None` = the session's model. Shared with the supervisor.
     title_model: Arc<RwLock<Option<Resolved>>>,
     /// Vision fallback (52 §3.1); `None` = no fallback. Shared with the
@@ -591,6 +606,7 @@ impl Session {
                 model: Arc::new(Mutex::new(current)),
                 cfg,
                 compact_style,
+                compaction: Arc::default(),
                 title_model,
                 vision_model,
                 store,
@@ -1479,6 +1495,18 @@ impl Message<SetPendingEffort> for Session {
     }
 }
 
+impl Message<SetCompactionOverride> for Session {
+    type Reply = ();
+
+    async fn handle(
+        &mut self,
+        SetCompactionOverride(o): SetCompactionOverride,
+        _: &mut Context<Self, Self::Reply>,
+    ) {
+        *self.shared.compaction.write() = o;
+    }
+}
+
 impl Message<CompactNow> for Session {
     type Reply = kameo::reply::DelegatedReply<Result<u32, String>>;
 
@@ -2116,6 +2144,34 @@ impl Turn {
             tracing::info!(session = %self.shared.id, model = %model.id, "context window unknown; auto-compaction off");
         }
         window
+    }
+
+    /// The session's [`CompactionOverride::at_tokens`], if set.
+    fn override_tokens(&self) -> Option<u32> {
+        self.shared.compaction.read().at_tokens
+    }
+
+    /// Auto-compaction trigger in tokens: the session's [`CompactionOverride`]
+    /// when set, else `compact_at × window`; `None` = off (unknown window or
+    /// `compact_at: 0`). Also the threshold the kept tail and the tool-batch
+    /// budget are sized from.
+    fn threshold(&self, window: u32) -> Option<u32> {
+        if let Some(at) = self.override_tokens() {
+            return Some(at);
+        }
+        let compact_at = self.shared.cfg.compact_at;
+        (window > 0 && compact_at > 0.0).then_some((compact_at * window as f32) as u32)
+    }
+
+    /// The summariser instruction: [`compact::COMPACT_INSTRUCTION`], plus the
+    /// session's hint as a final paragraph. Starts with the constant either way,
+    /// which is how [`Turn::continuation`] tells a summary from a harvest.
+    fn compact_instruction(&self) -> String {
+        let hint = self.shared.compaction.read().hint.clone();
+        match hint {
+            Some(h) => format!("{}\n\n{}", compact::COMPACT_INSTRUCTION, h.trim()),
+            None => compact::COMPACT_INSTRUCTION.to_owned(),
+        }
     }
 
     /// chars/4 over everything the last call sent (tools, system, head, history);
@@ -3086,11 +3142,13 @@ impl Turn {
             .map(|(_, m)| compact::est(m))
             .sum();
         let projected = self.state.used + appended;
-        let compact_at = self.shared.cfg.compact_at;
         tracing::debug!(session = %self.shared.id, round, window, used = self.state.used, appended, projected, "trigger check");
-        if window > 0 && compact_at > 0.0 {
-            let fill = projected as f32 / window as f32;
-            if fill >= compact_at {
+        if let Some(limit) = self.threshold(window) {
+            // Pressure is measured against the window (the configured fraction) or,
+            // under a token override, against the override itself.
+            let span = if self.override_tokens().is_some() { limit } else { window };
+            let margin = span / 10;
+            if projected >= limit {
                 if let Err(e) = self
                     .compact(
                         &current,
@@ -3103,8 +3161,8 @@ impl Turn {
                 {
                     self.error(format!("compaction: {e}")).await;
                 }
-            } else if !self.state.pressure_sent && compact_at > 0.1 && fill >= compact_at - 0.1 {
-                let pct = (fill * 100.0) as u32;
+            } else if !self.state.pressure_sent && limit > margin && projected >= limit - margin {
+                let pct = (u64::from(projected) * 100 / u64::from(span.max(1))) as u32;
                 self.note(
                     "context_pressure",
                     &format!("The context window is {pct}% full; compaction is near. Finish the current step and state results and next steps explicitly in your reply so they survive."),
@@ -3488,12 +3546,7 @@ impl Turn {
         // of the compaction threshold; the floor keeps a marker plus a hint per result.
         let window = self.window(&current.model);
         if window > 0 {
-            let compact_at = self.shared.cfg.compact_at;
-            let limit = if compact_at > 0.0 {
-                (compact_at * window as f32) as u32
-            } else {
-                window
-            };
+            let limit = self.threshold(window).unwrap_or(window);
             let budget = limit / 4;
             let est = |r: &ToolResponse| {
                 (r.content.len() / 4) as u32 + r.images.len() as u32 * compact::IMAGE_TOKENS
@@ -3711,12 +3764,7 @@ impl Turn {
         let window = self.window(&current.model);
         // 07 §8.2: the kept tail is 1/8 of the *threshold* — a tail sized to the
         // raw window would leave a small-threshold session re-compacting every round.
-        let compact_at = self.shared.cfg.compact_at;
-        let limit = if compact_at > 0.0 {
-            (compact_at * window as f32) as u32
-        } else {
-            window
-        };
+        let limit = self.threshold(window).unwrap_or(window);
         let cfg_style = *self
             .shared
             .compact_style
@@ -3808,7 +3856,7 @@ impl Turn {
             CompactStyle::Summary => {
                 // `full` is the text-only projection when the model cannot see
                 // images (52 §4.2); `Frame::request` still strips PDFs.
-                full.push(ChatMessage::user(compact::COMPACT_INSTRUCTION));
+                full.push(ChatMessage::user(self.compact_instruction()));
                 match self
                     .summarise(current, transport, head.as_ref(), &mut full, keep_from)
                     .await
@@ -4009,6 +4057,7 @@ impl Turn {
         full: &mut Vec<ChatMessage>,
         keep_from: usize,
     ) -> Result<String, String> {
+        let instruction = self.compact_instruction();
         let mut trimmed = false;
         loop {
             match self
@@ -4017,7 +4066,7 @@ impl Turn {
                     transport,
                     head,
                     full,
-                    compact::COMPACT_INSTRUCTION,
+                    &instruction,
                     CallKind::Compaction,
                 )
                 .await
@@ -4027,7 +4076,7 @@ impl Turn {
                     trimmed = true;
                     tracing::info!(session = %self.shared.id, "summariser overflowed; retrying without the kept tail");
                     full.truncate(keep_from);
-                    full.push(ChatMessage::user(compact::COMPACT_INSTRUCTION));
+                    full.push(ChatMessage::user(instruction.clone()));
                 }
                 Err(e) => return Err(format!("summariser: {e}")),
             }
@@ -4053,7 +4102,8 @@ impl Turn {
         kind: CallKind,
     ) -> Result<String, String> {
         // 36 §6.1: a short harvest is a valid "nothing new"; only the summary has a floor.
-        let summary = instruction == compact::COMPACT_INSTRUCTION;
+        // Prefix, not equality: a session hint (`SetCompaction`) is appended after the constant.
+        let summary = instruction.starts_with(compact::COMPACT_INSTRUCTION);
         let mut text_only = false;
         loop {
             let frame = Frame {
@@ -4916,6 +4966,29 @@ mod tests {
             .iter()
             .fold(0u32, |acc, (_, m)| acc.saturating_add(compact::est(m)));
         assert_eq!(turn.state.used + appended, frame_est);
+
+        // `SetCompaction` (02-live §0.2): the token override replaces
+        // `compact_at × window` as the threshold (and is live for a turn already
+        // running, through the shared handle); the hint rides behind the constant
+        // so the summary/harvest distinction still holds; `None` clears both.
+        let window = 100_000;
+        let cfg_limit = (AgentConfig::default().compact_at * window as f32) as u32;
+        assert_eq!(turn.threshold(window), Some(cfg_limit));
+        assert_eq!(turn.threshold(0), None);
+        assert_eq!(turn.compact_instruction(), compact::COMPACT_INSTRUCTION);
+        let set = |o: CompactionOverride| *session.shared.compaction.write() = o;
+        set(CompactionOverride {
+            at_tokens: Some(4_000),
+            hint: Some("Keep the live topics.".into()),
+        });
+        assert_eq!(turn.threshold(window), Some(4_000));
+        assert_eq!(turn.threshold(0), Some(4_000));
+        let instruction = turn.compact_instruction();
+        assert!(instruction.starts_with(compact::COMPACT_INSTRUCTION));
+        assert!(instruction.ends_with("\n\nKeep the live topics."), "{instruction}");
+        set(CompactionOverride::default());
+        assert_eq!(turn.threshold(window), Some(cfg_limit));
+        assert_eq!(turn.compact_instruction(), compact::COMPACT_INSTRUCTION);
         drop(turn);
         drop(store);
         std::fs::remove_dir_all(&dir).ok();

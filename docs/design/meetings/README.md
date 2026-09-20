@@ -108,11 +108,9 @@ meeting:
   context_tokens: 24000     # phase 2: per-session compaction trigger
   batch_secs: 25            # phase 2
   batch_utterances: 6       # phase 2
-  stt_max_utterance_ms: 15000  # phase 2: continuous speech is cut into utterances for the batcher at this length
-  live_model_dir: null      # phase 2: defaults to `voice.dictation_model_dir` (54) — one Nemotron streaming directory for dictation and meetings, itself <data_dir>/models/nemotron-streaming-en by default
+  live_model_dir: null      # phase 2: defaults to <data_dir>/models/nemotron-streaming-en — the directory dictation (54) uses; one Nemotron streaming checkpoint for both
   topic_ttl_secs: 600       # phase 2
   max_topics: 6             # phase 2
-  allow_read_only: false    # phase 2: ReadOnly tools run without asking in the meeting session
   models_dir: null          # phase 4: default <data_dir>/models/pyannote
 ```
 

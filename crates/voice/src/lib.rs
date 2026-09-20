@@ -21,6 +21,7 @@ use tools::{CloseAck, CloseTree, RegisterLifecycle};
 
 mod clip;
 mod dictation;
+pub mod live;
 pub mod mic;
 pub mod model;
 mod speak;
@@ -37,6 +38,11 @@ pub use stt::Transcriber;
 
 /// Actor name the RPC layer looks up for live dictation (54 §4.3).
 pub const DICTATION_ACTOR: &str = "dictation";
+
+/// The Nemotron streaming checkpoint under `<data_dir>/models/` (54 §9): the
+/// dictation default, and the meeting plugin's default `live_model_dir` —
+/// one checkpoint for both, without either reading the other's config section.
+pub const STREAMING_MODEL_SUBDIR: &str = "nemotron-streaming-en";
 
 /// One dictation (mic open → mic closed). Time-ordered like [`SpeechId`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
@@ -679,7 +685,7 @@ impl runtime::Plugin for VoicePlugin {
         let dict_dir = cfg
             .dictation_model_dir
             .clone()
-            .unwrap_or_else(|| rt.data_dir.join("models/nemotron-streaming-en"));
+            .unwrap_or_else(|| rt.data_dir.join("models").join(STREAMING_MODEL_SUBDIR));
         let dictation = Dictation::spawn(Dictation::new(
             rt.clone(),
             dict_dir,

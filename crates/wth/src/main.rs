@@ -223,14 +223,12 @@ agent:
 # meeting:                   # record a meeting: the meeting app's audio + the mic as Opus tracks, live briefs from the notch (design doc 53); macOS 15
 #   enabled: true            # false: no actor, `meeting_*` answers \"meetings are disabled\"
 #   max_minutes: 180         # hard stop; warning (NearMaxLength) at max_minutes - 10
-#   context_tokens: 24000    # phase 2: per-session compaction trigger
-#   batch_secs: 25           # phase 2: transcript batch cadence
-#   batch_utterances: 6      # phase 2: transcript batch size
-#   stt_max_utterance_ms: 15000  # phase 2: continuous speech is cut into utterances at this length
-#   live_model_dir: ~        # phase 2: Nemotron streaming dir; default voice.dictation_model_dir
-#   topic_ttl_secs: 600      # phase 2: how long a topic button lives
-#   max_topics: 6            # phase 2: most topic buttons at once
-#   allow_read_only: false   # phase 2: ReadOnly tools run without asking in the meeting session
+#   context_tokens: 24000    # per-session compaction trigger for the meeting session
+#   batch_secs: 25           # transcript batch cadence
+#   batch_utterances: 6      # transcript batch size
+#   live_model_dir: ~        # Nemotron streaming dir; default <data_dir>/models/nemotron-streaming-en (the dictation checkpoint)
+#   topic_ttl_secs: 600      # how long a topic button lives unmentioned
+#   max_topics: 6            # most topic buttons at once
 #   models_dir: ~            # phase 4: pyannote models; default <data_dir>/models/pyannote
 
 # a2a:                       # remote agents over A2A 1.0 (design doc 50 §6); peers/exports live in <data_dir>/a2a/peers.yaml, `/a2a reload` applies edits

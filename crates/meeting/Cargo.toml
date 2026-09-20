@@ -8,6 +8,7 @@ description = "Meeting recorder: the meeting app's audio and the microphone as l
 [dependencies]
 runtime = { workspace = true }
 agent = { workspace = true }
+tools = { workspace = true }
 voice = { workspace = true }
 kameo = { workspace = true }
 tokio = { workspace = true }
@@ -38,7 +39,7 @@ objc2-av-foundation = { workspace = true }
 tempfile = "3"
 
 [features]
-ts = ["dep:ts-rs", "runtime/ts"]
+ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "voice/ts"]
 
 [lints]
 workspace = true

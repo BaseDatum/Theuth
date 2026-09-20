@@ -17,25 +17,18 @@ use std::time::{Duration, Instant};
 use kameo::actor::ActorRef;
 use kameo::message::{Context, Message};
 use kameo::reply::{DelegatedReply, ReplySender};
-use rubato::Resampler as _;
 use runtime::Runtime;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
+use crate::live::Utterer;
 use crate::mic::{Capture, Chunk, RATE};
-use crate::stt::{Stream, WINDOW};
-use crate::vad::{Edge, FRAME, Gate, Vad};
 use crate::{DictationId, FinishReason, ModelState, VoiceEvent};
 
-/// The model's input rate.
-const MODEL_RATE: usize = 16_000;
 /// Chunks per [`VoiceEvent::DictationLevel`] (160 ms).
 const LEVELS: usize = 8;
 /// How long the task waits for an audio chunk before rechecking cancel and deadline.
 const POLL: Duration = Duration::from_millis(50);
-/// 16 kHz samples kept behind the newest VAD frame while no utterance is open:
-/// the pre-roll, the onset run, one frame of slack.
-const HISTORY: usize = (Gate::PREROLL + Gate::ONSET + 1) * FRAME;
 
 /// Load the streaming model and the VAD if not loaded; never opens the mic.
 /// Replies with the current state (`Loading` while in flight).
@@ -98,8 +91,8 @@ pub struct DictationState {
     pub active: Option<DictationId>,
 }
 
-/// Loaded model and VAD; moves into the dictation task and back.
-type Engine = (Stream, Vad);
+/// Loaded model, VAD and gate; moves into the dictation task and back.
+type Engine = Utterer;
 
 /// The dictation in progress.
 struct Running {
@@ -189,14 +182,9 @@ impl Dictation {
         let dir = self.dir.clone();
         tokio::spawn(async move {
             let t = Instant::now();
-            let r = tokio::task::spawn_blocking(move || -> anyhow::Result<Engine> {
-                // `Stream::open` runs the once-per-process `ort` init the VAD session needs (02-live §0.1c).
-                let stream = Stream::open(&dir)?;
-                let vad = Vad::new()?;
-                Ok((stream, vad))
-            })
-            .await
-            .unwrap_or_else(|e| Err(anyhow::anyhow!("dictation model load task panicked: {e}")));
+            let r = tokio::task::spawn_blocking(move || Utterer::open(&dir))
+                .await
+                .unwrap_or_else(|e| Err(anyhow::anyhow!("dictation model load task panicked: {e}")));
             if r.is_ok() {
                 tracing::info!("voice: dictation model loaded in {:?}", t.elapsed());
             }
@@ -210,40 +198,34 @@ impl Dictation {
         if self.active.is_some() {
             return Err("already dictating".into());
         }
-        let Some(engine) = self.engine.take() else {
+        let Some(mut engine) = self.engine.take() else {
             return Err("dictation model not loaded".into());
         };
         let rate = match source {
             AudioSource::Mic => RATE,
             AudioSource::Remote { sample_rate } => sample_rate,
         };
-        let chunk = rate as usize / 50;
-        let resampler = if rate as usize == MODEL_RATE {
-            Ok(None)
-        } else {
-            rubato::FftFixedIn::<f32>::new(rate as usize, MODEL_RATE, chunk, 2, 1)
-                .map(Some)
-                .map_err(|e| format!("resampler: {e}"))
-        };
-        let started = resampler.and_then(|r| match source {
-            AudioSource::Mic => Capture::open()
-                .map(|(cap, rx)| (r, Some(cap), rx, None))
-                .map_err(|e| format!("microphone: {e:#}")),
-            AudioSource::Remote { .. } => {
-                let (tx, rx) = std::sync::mpsc::channel();
-                Ok((
-                    r,
-                    None,
-                    rx,
-                    Some(Remote {
-                        tx,
-                        pending: Vec::new(),
-                        chunk,
-                    }),
-                ))
-            }
-        });
-        let (resampler, cap, rx, remote) = match started {
+        let started = engine
+            .set_rate(rate)
+            .map_err(|e| format!("resampler: {e}"))
+            .and_then(|()| match source {
+                AudioSource::Mic => Capture::open()
+                    .map(|(cap, rx)| (Some(cap), rx, None))
+                    .map_err(|e| format!("microphone: {e:#}")),
+                AudioSource::Remote { .. } => {
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    Ok((
+                        None,
+                        rx,
+                        Some(Remote {
+                            tx,
+                            pending: Vec::new(),
+                            chunk: rate as usize / 50,
+                        }),
+                    ))
+                }
+            });
+        let (cap, rx, remote) = match started {
             Ok(s) => s,
             Err(e) => {
                 self.engine = Some(engine);
@@ -261,16 +243,7 @@ impl Dictation {
         let task = Task {
             me: me.clone(),
             id,
-            stream: engine.0,
-            vad: engine.1,
-            gate: Gate::new(),
-            resampler,
-            buf: Vec::new(),
-            base: 0,
-            total: 0,
-            open: None,
-            utterance: 0,
-            text: String::new(),
+            live: engine,
             levels: Vec::with_capacity(LEVELS),
         };
         tokio::spawn(async move {
@@ -462,23 +435,7 @@ impl Message<Report> for Dictation {
 struct Task {
     me: ActorRef<Dictation>,
     id: DictationId,
-    stream: Stream,
-    vad: Vad,
-    gate: Gate,
-    /// Source rate → 16 kHz; `None` when the source is already 16 kHz. FIR
-    /// state must survive chunk boundaries.
-    resampler: Option<rubato::FftFixedIn<f32>>,
-    /// 16 kHz samples from absolute sample `base` on.
-    buf: Vec<f32>,
-    base: usize,
-    /// 16 kHz samples seen so far.
-    total: usize,
-    /// `Some(fed)` while an utterance is open: samples before `fed` went to the model.
-    open: Option<usize>,
-    /// Index of the open (or next) utterance.
-    utterance: u32,
-    /// Text of the open utterance.
-    text: String,
+    live: Utterer,
     /// RMS per chunk, flushed every [`LEVELS`].
     levels: Vec<f32>,
 }
@@ -536,10 +493,11 @@ impl Task {
         };
         // Device closed before the flush, which may take a second.
         drop(cap);
-        match reason.and_then(|r| self.close().map(|()| r)) {
-            Ok(reason) => {
-                self.stream.reset();
-                (reason, Some((self.stream, self.vad)))
+        match reason.and_then(|r| self.live.close().map(|texts| (r, texts))) {
+            Ok((reason, texts)) => {
+                self.texts(texts);
+                self.live.reset();
+                (reason, Some(self.live))
             }
             Err(e) => {
                 let message = format!("{e:#}");
@@ -549,7 +507,7 @@ impl Task {
         }
     }
 
-    /// One 20 ms source chunk: level, resample, VAD, feed.
+    /// One 20 ms source chunk: level, then the utterer.
     fn chunk(&mut self, pcm: &[f32]) -> anyhow::Result<()> {
         let rms = (pcm.iter().map(|s| s * s).sum::<f32>() / pcm.len().max(1) as f32).sqrt();
         self.levels.push(rms.min(1.0));
@@ -557,101 +515,19 @@ impl Task {
             let levels = std::mem::take(&mut self.levels);
             self.report(Progress::Level(levels));
         }
-        let out;
-        let new: &[f32] = match self.resampler.as_mut() {
-            Some(r) => {
-                out = r.process(&[pcm], None)?;
-                &out[0]
-            }
-            None => pcm,
-        };
-        self.buf.extend_from_slice(new);
-        self.total += new.len();
-        let probs = self.vad.process(new);
-        for (k, &p) in probs.iter().enumerate() {
-            // The last frame ends at (within a frame of) `total`; earlier ones FRAME apart.
-            let end = self.total - (probs.len() - 1 - k) * FRAME;
-            match self.gate.push(p) {
-                Some(Edge::Onset) if self.open.is_none() => {
-                    let start = end.saturating_sub((Gate::ONSET + Gate::PREROLL) * FRAME);
-                    self.open = Some(start.max(self.base));
-                }
-                Some(Edge::Close) => self.close()?,
-                Some(Edge::Turn) => {
-                    self.stream.reset();
-                    self.vad.reset();
-                }
-                _ => {}
-            }
-        }
-        self.feed_full()?;
-        let keep = self
-            .open
-            .unwrap_or_else(|| self.total.saturating_sub(HISTORY))
-            .max(self.base);
-        self.buf.drain(..keep - self.base);
-        self.base = keep;
+        let texts = self.live.chunk(pcm)?;
+        self.texts(texts);
         Ok(())
     }
 
-    /// Feed every full window past `fed`; report new text.
-    fn feed_full(&mut self) -> anyhow::Result<()> {
-        while let Some(fed) = self.open
-            && self.total - fed >= WINDOW
-        {
-            let at = fed - self.base;
-            let window: &[f32; WINDOW] = self.buf[at..at + WINDOW].try_into()?;
-            let t = self.stream.feed(window)?;
-            self.open = Some(fed + WINDOW);
-            if self.append(&t) {
-                self.report(Progress::Text {
-                    utterance: self.utterance,
-                    text: self.text.trim().to_owned(),
-                    is_final: false,
-                });
-            }
+    fn texts(&self, texts: Vec<crate::live::Text>) {
+        for t in texts {
+            self.report(Progress::Text {
+                utterance: t.utterance,
+                text: t.text,
+                is_final: t.is_final,
+            });
         }
-        Ok(())
-    }
-
-    /// Close the open utterance: the partial window zero-padded, then one zero
-    /// window to pull the tail out of the decoder's lookahead; publish `final`.
-    fn close(&mut self) -> anyhow::Result<()> {
-        self.feed_full()?;
-        let Some(fed) = self.open.take() else {
-            return Ok(());
-        };
-        let mut window = [0f32; WINDOW];
-        let rest = &self.buf[fed - self.base..];
-        window[..rest.len()].copy_from_slice(rest);
-        let t = self.stream.feed(&window)?;
-        self.append(&t);
-        window.fill(0.0);
-        let t = self.stream.feed(&window)?;
-        self.append(&t);
-        self.report(Progress::Text {
-            utterance: self.utterance,
-            text: self.text.trim().to_owned(),
-            is_final: true,
-        });
-        self.utterance += 1;
-        self.text.clear();
-        Ok(())
-    }
-
-    /// Append new model text, one space between pieces. `false` when it was blank.
-    fn append(&mut self, t: &str) -> bool {
-        if t.trim().is_empty() {
-            return false;
-        }
-        if !self.text.is_empty()
-            && !self.text.ends_with(char::is_whitespace)
-            && !t.starts_with(char::is_whitespace)
-        {
-            self.text.push(' ');
-        }
-        self.text.push_str(t);
-        true
     }
 }
 

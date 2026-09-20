@@ -53,10 +53,10 @@ use crate::continuation::{
     TurnEntered, TurnReturned, YieldDecision,
 };
 use crate::loop_::{
-    CancelPeerScope, CancelTurn, CompactNow, ContextHistoryNow, ContextItemsNow, HarvestNow,
-    IsRunning, PEER_INTAKE, PeerInput, QueuedInputs, RedoTurn, RemoveContextNow, RestartTurn,
-    Session, SessionState, SetPendingEffort, SuppressPeerInputs, SwitchModel, UndoTurn, UserInput,
-    WithdrawInput, text_of,
+    CancelPeerScope, CancelTurn, CompactNow, CompactionOverride, ContextHistoryNow,
+    ContextItemsNow, HarvestNow, IsRunning, PEER_INTAKE, PeerInput, QueuedInputs, RedoTurn,
+    RemoveContextNow, RestartTurn, Session, SessionState, SetCompactionOverride, SetPendingEffort,
+    SuppressPeerInputs, SwitchModel, UndoTurn, UserInput, WithdrawInput, text_of,
 };
 use crate::peers::{
     DiscoverPeersTool, ListModelsTool, Nodes, PeerMessageTool, SendMessageTool, SpawnSubagentTool,
@@ -79,7 +79,8 @@ use crate::{
     LoadSession, LoadSkill, Loaded, Login, LoginFinished, LoginInfo, Logout, ModelInfo,
     NewRootSession, NewSession, PinSession, ProviderInfo, QueuedInput, Redo, Regenerate, RemoveAcp,
     RemoveContext, RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession, SearchRefresh,
-    SearchSessionPage, SendInput, SessionSummary, SetCompactStyle, SetEffort, SetMaxSalvages,
+    SearchSessionPage, SendInput, SessionSummary, SetCompactStyle, SetCompaction, SetEffort,
+    SetMaxSalvages,
     SetMaxToolRounds, SetModel, SetStreamIdle, SetSubagentTimeout, SetTitleModel, SetVisionModel,
     ShowPrompt, SkillBody, SkillMeta,
     Steer, SyncSkills, Undo, UseSkill, Withdraw, effort_of,
@@ -507,7 +508,10 @@ impl Agents {
                             .or_else(|| sub.effort.clone())
                             .or_else(|| self.default_effort.clone()),
                     ),
-                    None => (self.default_model.as_str(), self.default_effort.clone()),
+                    None => (
+                        pick.0.unwrap_or(self.default_model.as_str()),
+                        self.default_effort.clone(),
+                    ),
                 };
                 let model = self.resolve_model(model);
                 store
@@ -2082,6 +2086,26 @@ impl Message<SetCompactStyle> for Agents {
     }
 }
 
+impl Message<SetCompaction> for Agents {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        m: SetCompaction,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<(), String> {
+        self.actor(m.session)
+            .await?
+            .native()?
+            .tell(SetCompactionOverride(CompactionOverride {
+                at_tokens: m.at_tokens,
+                hint: m.hint,
+            }))
+            .await
+            .map_err(|e| e.to_string())
+    }
+}
+
 impl Message<GetCompactStyle> for Agents {
     type Reply = CompactStyle;
 
@@ -3284,15 +3308,21 @@ impl Message<NewRootSession> for Agents {
         m: NewRootSession,
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        self.new_root(m.cwd.as_deref(), m.scope).await
+        self.new_root(m.cwd.as_deref(), m.scope, None).await
     }
 }
 
 impl Agents {
     /// A durable root: created, `cwd` recorded, scope declared (50 §2.1).
-    async fn new_root(&mut self, cwd: Option<&Path>, scope: PeerScope) -> Result<SessionId, String> {
+    /// `model` is the root's own model (`CreateSessionOptions.model`); `None` = the default.
+    async fn new_root(
+        &mut self,
+        cwd: Option<&Path>,
+        scope: PeerScope,
+        model: Option<&str>,
+    ) -> Result<SessionId, String> {
         let (id, _) = self
-            .session(None, None, None, (None, None))
+            .session(None, None, None, (model, None))
             .await
             .map_err(|e| format!("{e:#}"))?;
         if let Some(cwd) = cwd {
@@ -5730,9 +5760,15 @@ impl Message<CreateSession> for Agents {
 
     async fn handle(&mut self, m: CreateSession, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let project = project::normalize_project(m.options.project.as_deref())?;
+        // Session-only model (`meetings/02-live.md` §0.2): resolved now so a typo
+        // fails the create, not the first turn; the default and config.yaml stay.
+        let model = match &m.options.model {
+            Some(id) => Some(self.catalog.resolve(id, &*self.configured)?.id),
+            None => None,
+        };
         if m.options.retention == Retention::Durable {
             let cwd = m.options.cwd.as_deref().map(Path::new);
-            let id = self.new_root(cwd, PeerScope::Owner).await?;
+            let id = self.new_root(cwd, PeerScope::Owner, model.as_deref()).await?;
             if project.is_some() {
                 self.store
                     .set_project(id, project.as_deref())
@@ -5764,7 +5800,7 @@ impl Message<CreateSession> for Agents {
         }
         let store = Store::open_memory().await.map_err(|e| format!("{e:#}"))?;
         let root = SessionId::new();
-        let model = self.resolve_model(&self.default_model).0.id;
+        let model = model.unwrap_or_else(|| self.resolve_model(&self.default_model).0.id);
         store
             .create_session(root, &model, None, None, project.as_deref())
             .await
@@ -7308,6 +7344,7 @@ pub(crate) mod tests {
                     project: Some("ops".into()),
                     view: Some("v1".into()),
                     cwd: None,
+                    model: None,
                 },
                 peer: Some((peer, closed)),
             })
@@ -7326,6 +7363,7 @@ pub(crate) mod tests {
             project: None,
             view: view.map(str::to_owned),
             cwd: None,
+            model: None,
         };
         let no_peer = agents
             .ask(CreateSession {

@@ -2,10 +2,20 @@
 //! timeline every phase stamps with, 53 §3.2) and the handles a [`Recording`]
 //! owns.
 
+use std::collections::HashSet;
+use std::fs::File;
+use std::io::Write as _;
+use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
+use crate::batch::Batcher;
 use crate::capture::Capture;
 use crate::store::{Gap, Manifest};
+use crate::stt::Piece;
+use crate::topics::{Record, Topics};
+use crate::{BriefId, MeetingConfig, TopicId, Utterance};
 
 /// Wall `Instant` minus accumulated pause time. Also used by the encoder
 /// thread to decide how many frames are due, so file time and manifest time
@@ -80,8 +90,9 @@ impl RecordingClock {
 }
 
 /// The meeting being recorded: its manifest (the live truth, rewritten on
-/// every change), clock, devices and the timers riding along (levels,
-/// max-length, disk). `StopMeeting` aborts the timers when it takes it apart.
+/// every change), clock, devices, the timers riding along (levels,
+/// max-length, disk, the 1 s tick) and the phase-2 live state. `StopMeeting`
+/// aborts the timers and joins the STT tasks when it takes it apart.
 pub struct Recording {
     /// Truth; `gaps` and `degraded` live here, nowhere else.
     pub manifest: Manifest,
@@ -89,18 +100,127 @@ pub struct Recording {
     pub clock: RecordingClock,
     /// The three threads and the rings.
     pub capture: Capture,
-    /// Level, max-length and disk tasks.
+    /// Level, max-length, disk and tick tasks.
     pub tasks: Vec<tokio::task::JoinHandle<()>>,
+    /// Phase 2 (02 §3, §5, §6).
+    pub live: Live,
+}
+
+/// What a steer the actor sent is waiting for (02 §5.2: how a `meeting_brief`
+/// gets its `source`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Prompted {
+    /// `[meeting tapped "X"]` for this topic.
+    Tap(TopicId),
+    /// `[meeting deeper on …]` for this brief.
+    Deeper(BriefId),
+    /// `[meeting request, spoken|typed] …`.
+    Request {
+        /// Push-to-talk (`true`) or typed.
+        spoken: bool,
+    },
+}
+
+/// Outstanding prompts older than this are forgotten (a brief two minutes
+/// after a request is not its answer).
+const PROMPT_TTL: Duration = Duration::from_secs(120);
+
+/// The batcher, the topics, the session's turn/approval state, the PTT flag,
+/// the STT tasks and the two append-only logs.
+pub struct Live {
+    /// Transcript batching (02 §3).
+    pub batcher: Batcher,
+    /// Live/dismissed topics and every brief (02 §5).
+    pub topics: Topics,
+    /// The session has a turn in flight (`AgentEvent::TurnStarted/Finished`).
+    pub turn_running: bool,
+    /// Unanswered `ApprovalRequested`s of the session.
+    pub approvals: HashSet<tools::ApprovalId>,
+    /// Where the island says the user is reading (`SetCursor`); mirrored only.
+    pub cursor: Option<BriefId>,
+    /// Push-to-talk held.
+    pub held: bool,
+    /// Mirror of `held` for the mic STT task: finals closed while held merge into one request.
+    pub held_flag: Arc<AtomicBool>,
+    /// Steers sent that a `meeting_brief` may be answering, newest last.
+    pub outstanding: Vec<(Instant, Prompted)>,
+    /// The two track tasks; resolve to their final flush at stop.
+    pub stt: Vec<tokio::task::JoinHandle<Vec<Piece>>>,
+    /// `live.jsonl`, append-only.
+    live_log: Option<File>,
+    /// `briefs.jsonl`, append-only.
+    briefs_log: Option<File>,
+}
+
+impl Live {
+    fn open_log(dir: &Path, name: &str) -> Option<File> {
+        File::options()
+            .create(true)
+            .append(true)
+            .open(dir.join(name))
+            .map_err(|e| tracing::warn!("meeting: open {name}: {e}"))
+            .ok()
+    }
+
+    /// One `live.jsonl` line.
+    pub fn log_utterance(&mut self, u: &Utterance) {
+        Self::append(self.live_log.as_mut(), u);
+    }
+
+    /// One `briefs.jsonl` line.
+    pub fn log_record(&mut self, r: &Record) {
+        Self::append(self.briefs_log.as_mut(), r);
+    }
+
+    fn append<T: serde::Serialize>(f: Option<&mut File>, v: &T) {
+        if let (Some(f), Ok(mut line)) = (f, serde_json::to_string(v)) {
+            line.push('\n');
+            if let Err(e) = f.write_all(line.as_bytes()) {
+                tracing::warn!("meeting: append log: {e}");
+            }
+        }
+    }
+
+    /// Remember a steer that a brief may answer.
+    pub fn prompted(&mut self, p: Prompted) {
+        let now = Instant::now();
+        self.outstanding
+            .retain(|(t, _)| now.duration_since(*t) < PROMPT_TTL);
+        self.outstanding.push((now, p));
+    }
+
+    /// Take the outstanding prompt `pick` matches, oldest first.
+    pub fn answer(&mut self, pick: impl Fn(Prompted) -> bool) -> Option<Prompted> {
+        let now = Instant::now();
+        self.outstanding
+            .retain(|(t, _)| now.duration_since(*t) < PROMPT_TTL);
+        let i = self.outstanding.iter().position(|(_, p)| pick(*p))?;
+        Some(self.outstanding.remove(i).1)
+    }
 }
 
 impl Recording {
-    /// Start the clock now.
-    pub fn new(manifest: Manifest, capture: Capture) -> Self {
+    /// Start the clock now; open `live.jsonl` and `briefs.jsonl` in `dir`.
+    pub fn new(manifest: Manifest, capture: Capture, cfg: &MeetingConfig, dir: &Path) -> Self {
+        let now = Instant::now();
         Self {
             manifest,
-            clock: RecordingClock::start(),
+            clock: RecordingClock::start_at(now),
             capture,
             tasks: Vec::new(),
+            live: Live {
+                batcher: Batcher::new(cfg.batch_secs, cfg.batch_utterances, now),
+                topics: Topics::new(cfg.topic_ttl_secs, cfg.max_topics),
+                turn_running: false,
+                approvals: HashSet::new(),
+                cursor: None,
+                held: false,
+                held_flag: Arc::new(AtomicBool::new(false)),
+                outstanding: Vec::new(),
+                stt: Vec::new(),
+                live_log: Live::open_log(dir, crate::LIVE_LOG),
+                briefs_log: Live::open_log(dir, crate::BRIEFS_LOG),
+            },
         }
     }
 }

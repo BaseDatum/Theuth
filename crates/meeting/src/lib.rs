@@ -15,27 +15,46 @@
 //! The types below are the shared contract frozen in `meetings/README.md` §3;
 //! phases 2–4 add variants and fields, never rename or retype.
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::Ordering;
+use std::time::{Duration, Instant};
 
+use agent::AgentEvent;
 use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
 use kameo::reply::DelegatedReply;
 use runtime::{Runtime, SessionId};
 use serde::{Deserialize, Serialize};
+use ::tools::{ApprovalRequested, ApprovalResolved};
+use voice::live::Utterer;
 
+pub mod batch;
 pub mod capture;
 pub mod ogg;
+pub mod session;
 pub mod state;
 pub mod store;
+pub mod stt;
+pub mod tools;
+pub mod topics;
 
 pub use state::{Recording, RecordingClock};
 pub use store::{Gap, Manifest, MeetingSummary, Stem, Store, TrackFile};
+use state::Prompted;
+use stt::Piece;
+use topics::{Gone, Record};
 
 /// Registry name of the [`Meeting`] actor.
 pub const MEETING_ACTOR: &str = "meeting";
 /// Directory under `data_dir`: `<data_dir>/meetings/`.
 pub const DIR: &str = "meetings";
+/// Live transcript, one [`Utterance`] per line, inside a meeting's directory (02 §7).
+pub const LIVE_LOG: &str = "live.jsonl";
+/// Topic/brief records, one [`topics::Record`] per line (02 §7).
+pub const BRIEFS_LOG: &str = "briefs.jsonl";
+/// Most `live.jsonl` lines `LiveText` returns.
+const LIVE_TEXT_CAP: usize = 2_000;
 /// Free space under which [`Degradation::DiskLow`] is raised (01 §4.4).
 const DISK_LOW_BYTES: u64 = 500 * 1024 * 1024;
 
@@ -362,9 +381,25 @@ pub enum BriefSource {
     Typed,
 }
 
+/// One closed utterance of the live transcript: a `live.jsonl` line and the
+/// batcher's unit (02 §2, §7). Times are on the recording clock.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct Utterance {
+    /// Which side spoke.
+    pub track: Track,
+    /// Start.
+    pub t0_ms: u64,
+    /// End.
+    pub t1_ms: u64,
+    /// What was said.
+    pub text: String,
+    /// Closed by a push-to-talk release (53 decision 10).
+    pub request: bool,
+}
+
 /// `meeting:` config section (README §3). Phase 1 reads `enabled` and
-/// `max_minutes`; the rest is declared with its defaults so the struct is
-/// written once.
+/// `max_minutes`; phase 2 the batching, model, topic keys; phase 4 `models_dir`.
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct MeetingConfig {
@@ -372,22 +407,19 @@ pub struct MeetingConfig {
     pub enabled: bool,
     /// Hard stop; `NearMaxLength` at `max_minutes - 10`.
     pub max_minutes: u32,
-    /// Phase 2: per-session compaction trigger.
+    /// Per-session compaction trigger (tokens) for the meeting session.
     pub context_tokens: u32,
-    /// Phase 2: batcher cadence.
+    /// Batcher cadence: a batch goes out this long after the last send if anything is pending.
     pub batch_secs: u32,
-    /// Phase 2: batcher size.
+    /// Batcher size: this many pending utterances flush at once.
     pub batch_utterances: u32,
-    /// Phase 2: continuous speech is cut into utterances at this length.
-    pub stt_max_utterance_ms: u64,
-    /// Phase 2: Nemotron streaming directory; `None` → `voice.dictation_model_dir`.
+    /// Nemotron streaming directory; `None` → `<data_dir>/models/nemotron-streaming-en`
+    /// (the checkpoint dictation uses, `voice::STREAMING_MODEL_SUBDIR`).
     pub live_model_dir: Option<std::path::PathBuf>,
-    /// Phase 2: how long a topic button lives.
+    /// How long a topic button lives without its label being spoken again.
     pub topic_ttl_secs: u32,
-    /// Phase 2: most topic buttons at once.
+    /// Most topic buttons at once; the oldest untouched expires first.
     pub max_topics: u32,
-    /// Phase 2: ReadOnly tools run without asking in the meeting session.
-    pub allow_read_only: bool,
     /// Phase 4: pyannote models; `None` → `<data_dir>/models/pyannote`.
     pub models_dir: Option<std::path::PathBuf>,
 }
@@ -400,11 +432,9 @@ impl Default for MeetingConfig {
             context_tokens: 24_000,
             batch_secs: 25,
             batch_utterances: 6,
-            stt_max_utterance_ms: 15_000,
             live_model_dir: None,
             topic_ttl_secs: 600,
             max_topics: 6,
-            allow_read_only: false,
             models_dir: None,
         }
     }
@@ -472,7 +502,8 @@ pub struct MeetingStatus;
 
 /// Reply to [`MeetingStatus`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+// `MeetingStatus` on the wire: `Status.ts` is the todo item state's file.
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, rename = "MeetingStatus"))]
 pub struct Status {
     /// `Idle` when nothing is recording.
     pub state: MeetingState,
@@ -484,6 +515,15 @@ pub struct Status {
     pub elapsed_ms: u64,
     /// Everything degraded so far.
     pub degraded: Vec<Degradation>,
+    /// Where the island says the user is reading (`SetCursor`); phase 2.
+    #[serde(default)]
+    pub cursor: Option<BriefId>,
+    /// Live topic buttons; phase 2.
+    #[serde(default)]
+    pub topics: Vec<Topic>,
+    /// The session is waiting on a tool approval; phase 2.
+    #[serde(default)]
+    pub approval_waiting: bool,
 }
 
 /// `ask` → `Result<Vec<MeetingSummary>, String>`: from the index, newest first.
@@ -539,14 +579,114 @@ pub struct Permissions {
     pub audio_capture: PermissionState,
 }
 
-/// `tell` from the start task: the devices are open (or not).
+// Phase 2 (02 §6). All `ask` → `Result<_, String>` unless noted.
+
+/// The user tapped a topic button: `TopicRemoved{Viewed}`, the precomputed
+/// brief shown as `Brief{source: Tap}`, `[meeting tapped "X"]` steered.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct TapTopic {
+    /// Which.
+    pub topic: TopicId,
+}
+
+/// The user dismissed a topic button: `TopicRemoved{Dismissed}`, the label
+/// barred for the meeting, `[meeting: user dismissed …]` steered.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct DismissTopic {
+    /// Which.
+    pub topic: TopicId,
+}
+
+/// The user asked for more on a brief: `[meeting deeper on …]` steered.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct Deeper {
+    /// Which.
+    pub brief: BriefId,
+}
+
+/// A request typed in the control center: `[meeting request, typed] …` steered.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TypedRequest {
+    /// The question.
+    pub text: String,
+}
+
+/// Push-to-talk pressed or released (53 decision 10): publishes `Listening`;
+/// the release tags the mic utterance that closes as a spoken request.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct PushToTalk {
+    /// Held.
+    pub held: bool,
+}
+
+/// The island's cursor, mirrored to `Status.cursor` for the control center.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct SetCursor {
+    /// The brief in view; `None` = the newest.
+    pub brief: Option<BriefId>,
+}
+
+/// `ask` → `Result<Vec<Brief>, String>`: every brief of `meeting`, in order
+/// (memory while it records, `briefs.jsonl` after).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct ListBriefs {
+    /// Which.
+    pub meeting: MeetingId,
+}
+
+/// `ask` → `Vec<Topic>`: the live topic buttons of the current meeting.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct ListTopics;
+
+/// `ask` → `Result<Vec<Utterance>, String>`: `live.jsonl` of `meeting`, the last 2 000 lines.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct LiveText {
+    /// Which.
+    pub meeting: MeetingId,
+}
+
+/// From `meeting_topic` (02 §5.1): `ask` → `Result<String, String>` — the
+/// text the model reads back.
+#[derive(Clone, Debug)]
+pub struct AddTopic {
+    /// The calling session; must be the meeting's.
+    pub session: SessionId,
+    /// ≤ 4 words.
+    pub label: String,
+    /// Brief title.
+    pub title: String,
+    /// 2–3 bullets.
+    pub bullets: Vec<String>,
+}
+
+/// From `meeting_brief` (02 §5.2): `ask` → `Result<String, String>`.
+#[derive(Clone, Debug)]
+pub struct AddBrief {
+    /// The calling session; must be the meeting's.
+    pub session: SessionId,
+    /// Title.
+    pub title: String,
+    /// 2–3 bullets.
+    pub bullets: Vec<String>,
+    /// The live topic this answers.
+    pub topic: Option<TopicId>,
+    /// The brief this goes deeper on.
+    pub parent: Option<BriefId>,
+}
+
+/// `tell` from the 1 s interval: batcher rule (a), topic expiry.
+struct Tick;
+
+/// `tell` from the start task: the devices are open (or not), and the two
+/// streaming STT sessions if they loaded.
 struct Begun {
     manifest: Manifest,
     result: Result<capture::Capture, String>,
+    engines: Option<(Utterer, Utterer)>,
 }
 
-/// `tell` from the timers and the capture threads: something degraded.
-struct Degrade(Degradation);
+/// `tell` from the timers, the capture threads and the STT tasks: something degraded.
+pub(crate) struct Degrade(pub(crate) Degradation);
 
 // ---------------------------------------------------------------------------
 // Actor
@@ -617,15 +757,145 @@ impl Meeting {
             let _ = actor.ask(StopMeeting).await;
         }));
         let dir = self.rt.data_dir.clone();
+        let actor = me.clone();
         rec.tasks.push(tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(60)).await;
                 if disk_low(&dir) {
-                    let _ = me.tell(Degrade(Degradation::DiskLow)).await;
+                    let _ = actor.tell(Degrade(Degradation::DiskLow)).await;
+                }
+            }
+        }));
+        // 02 §0.3: the batcher's rule (a) and topic expiry, once a second.
+        rec.tasks.push(tokio::spawn(async move {
+            let mut every = tokio::time::interval(Duration::from_secs(1));
+            loop {
+                every.tick().await;
+                if me.tell(Tick).await.is_err() {
+                    return;
                 }
             }
         }));
     }
+
+    /// The recording, if it is `Recording` or `Paused` and is `session`'s.
+    fn recording_for(&mut self, session: SessionId) -> Result<&mut Recording, String> {
+        self.current
+            .as_mut()
+            .filter(|r| r.manifest.session == session)
+            .ok_or_else(|| "no meeting is recording in this session".to_owned())
+    }
+
+    /// `Steer` if the session has a turn running, else `SendInput` (02 §3).
+    async fn deliver(&self, text: String) {
+        let Some(rec) = self.current.as_ref() else { return };
+        let session = rec.manifest.session;
+        if let Err(e) = session::deliver(session, text, rec.live.turn_running).await {
+            tracing::warn!(%session, "meeting: deliver: {e}");
+        }
+    }
+
+    /// One transcript batch, or a deferral when the session's steer queue is deep.
+    async fn send_batch(&mut self, batch: Vec<Utterance>) {
+        let Some(rec) = self.current.as_ref() else { return };
+        let session = rec.manifest.session;
+        if session::queued(session).await > batch::MAX_QUEUED {
+            if let Some(rec) = self.current.as_mut() {
+                rec.live.batcher.defer(batch);
+            }
+            return;
+        }
+        let Some(rec) = self.current.as_ref() else { return };
+        let text = session::batch_line(
+            &batch,
+            &rec.live.topics.live_labels(),
+            rec.live.topics.dismissed_labels(),
+        );
+        self.deliver(text).await;
+    }
+
+    /// A topic left the live set: event + `briefs.jsonl` record.
+    async fn topic_gone(&mut self, topic: TopicId, why: TopicGone) {
+        let Some(rec) = self.current.as_mut() else { return };
+        let meeting = rec.manifest.id;
+        rec.live.log_record(&Record::Removed {
+            topic,
+            why,
+            at_ms: rec.clock.now_ms(),
+        });
+        self.rt
+            .publish(MeetingEvent::TopicRemoved { meeting, topic, why })
+            .await;
+    }
+
+    async fn topics_gone(&mut self, gone: Vec<Gone>) {
+        for g in gone {
+            self.topic_gone(g.topic, g.why).await;
+        }
+    }
+
+    /// A brief to show: event + record.
+    async fn show_brief(&mut self, brief: Brief) {
+        let Some(rec) = self.current.as_mut() else { return };
+        let meeting = rec.manifest.id;
+        rec.live.log_record(&Record::Brief(brief.clone()));
+        self.rt.publish(MeetingEvent::Brief { meeting, brief }).await;
+    }
+
+    /// A closed utterance: `live.jsonl`, the batcher (or the request line).
+    async fn closed(&mut self, u: Utterance) {
+        let Some(rec) = self.current.as_mut() else { return };
+        rec.live.log_utterance(&u);
+        if u.request {
+            rec.live.prompted(Prompted::Request { spoken: true });
+            let line = session::request_line(true, &u.text);
+            self.deliver(line).await;
+            return;
+        }
+        if let Some(batch) = rec.live.batcher.feed(u, Instant::now()) {
+            self.send_batch(batch).await;
+        }
+    }
+
+    /// `ApprovalWaiting` when the pending set flips between empty and not.
+    async fn approval_waiting(&self, meeting: MeetingId, before: bool, after: bool) {
+        if before != after {
+            self.rt
+                .publish(MeetingEvent::ApprovalWaiting {
+                    meeting,
+                    waiting: after,
+                })
+                .await;
+        }
+    }
+}
+
+/// A closed utterance worth keeping: at least one letter or digit (a lone `.`
+/// from a breath or the far end's echo is not a line).
+fn said_something(text: &str) -> bool {
+    text.chars().any(char::is_alphanumeric)
+}
+
+/// `t0`/`t1` of a piece on the recording clock.
+fn times(clock: &RecordingClock, p: &Piece) -> (u64, u64) {
+    let t1 = clock.elapsed_at(p.at);
+    let t0 = t1.saturating_sub(p.behind);
+    (t0.as_millis() as u64, t1.as_millis() as u64)
+}
+
+/// The last `cap` JSON lines of `path`, parsed; a missing file is empty.
+fn read_jsonl<T: serde::de::DeserializeOwned>(path: &Path, cap: usize) -> Result<Vec<T>, String> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    let skip = lines.len().saturating_sub(cap);
+    Ok(lines[skip..]
+        .iter()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect())
 }
 
 /// `statvfs` on `dir`: under [`DISK_LOW_BYTES`] free. Unknown → `false`.
@@ -718,8 +988,18 @@ impl Message<StartMeeting> for Meeting {
         let store = self.store.clone();
         let me = ctx.actor_ref().clone();
         let title = format!("Meeting {}", now.format("%Y-%m-%d %H:%M"));
+        let setup = Setup {
+            title,
+            context_tokens: self.cfg.context_tokens,
+            live_model_dir: self.cfg.live_model_dir.clone().unwrap_or_else(|| {
+                self.rt
+                    .data_dir
+                    .join("models")
+                    .join(voice::STREAMING_MODEL_SUBDIR)
+            }),
+        };
         tokio::spawn(async move {
-            let begun = start_task(&store, manifest, &title).await;
+            let begun = start_task(&store, manifest, &setup).await;
             let result = match &begun.result {
                 Ok(_) => Ok(Started {
                     meeting: begun.manifest.id,
@@ -735,9 +1015,17 @@ impl Message<StartMeeting> for Meeting {
     }
 }
 
-/// Session → directory + manifest → devices (01 §3, off the mailbox). The
-/// session comes first because `Manifest::session` is not optional.
-async fn start_task(store: &Store, mut manifest: Manifest, title: &str) -> Begun {
+/// What `start_task` needs from config.
+struct Setup {
+    title: String,
+    context_tokens: u32,
+    live_model_dir: PathBuf,
+}
+
+/// Session → directory + manifest → devices → STT sessions (01 §3, 02 §4, off
+/// the mailbox). The session comes first because `Manifest::session` is not
+/// optional; the STT sessions last because their failure only degrades.
+async fn start_task(store: &Store, mut manifest: Manifest, setup: &Setup) -> Begun {
     let agents = match ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) {
         Ok(Some(a)) => a,
         _ => return Begun::failed(manifest, "agent is not running".into()),
@@ -746,6 +1034,7 @@ async fn start_task(store: &Store, mut manifest: Manifest, title: &str) -> Begun
         .ask(agent::CreateSession {
             options: agent::CreateSessionOptions {
                 project: Some("meetings".into()),
+                model: manifest.session_model.clone(),
                 ..Default::default()
             },
             peer: None,
@@ -759,36 +1048,73 @@ async fn start_task(store: &Store, mut manifest: Manifest, title: &str) -> Begun
     if let Err(e) = agents
         .ask(agent::RenameSession {
             session,
-            title: title.to_owned(),
+            title: setup.title.clone(),
         })
         .await
     {
         tracing::warn!(%session, "rename meeting session: {e}");
+    }
+    // 02 §4: meeting-sized compaction with the meeting hint; cleared at stop.
+    if let Err(e) = agents
+        .ask(agent::SetCompaction {
+            session,
+            at_tokens: Some(setup.context_tokens),
+            hint: Some(tools::COMPACTION_HINT.to_owned()),
+        })
+        .await
+    {
+        tracing::warn!(%session, "meeting session compaction: {e}");
     }
     let dir = match store.create(&manifest).await {
         Ok(dir) => dir,
         Err(e) => return Begun::failed(manifest, format!("{e:#}")),
     };
     let pid = manifest.process.pid;
-    let file_title = title.to_owned();
+    let file_title = setup.title.clone();
     let opened =
         tokio::task::spawn_blocking(move || capture::Capture::start(pid, &dir, &file_title))
             .await
             .map_err(|e| e.to_string())
             .and_then(|r| r.map_err(|e| format!("{e:#}")));
-    match opened {
+    let capture = match opened {
         Ok((capture, degraded)) => {
             for d in degraded {
                 if !manifest.degraded.contains(&d) {
                     manifest.degraded.push(d);
                 }
             }
-            Begun {
-                manifest,
-                result: Ok(capture),
-            }
+            capture
         }
-        Err(e) => Begun::failed(manifest, e),
+        Err(e) => return Begun::failed(manifest, e),
+    };
+    // Two streaming sessions, one per track (02 §2); ≈ 0.9 GB each, int8.
+    let model_dir = setup.live_model_dir.clone();
+    let t = Instant::now();
+    let engines = tokio::task::spawn_blocking(move || -> anyhow::Result<(Utterer, Utterer)> {
+        Ok((Utterer::open(&model_dir)?, Utterer::open(&model_dir)?))
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("STT load task panicked: {e}"))
+    .and_then(|r| r);
+    let engines = match engines {
+        Ok(e) => {
+            tracing::info!(meeting = %manifest.id, "meeting: two streaming STT sessions loaded in {:?}", t.elapsed());
+            Some(e)
+        }
+        Err(e) => {
+            tracing::warn!(meeting = %manifest.id, "meeting: live STT unavailable: {e:#}");
+            for d in [Degradation::SttDown(Track::Mic), Degradation::SttDown(Track::System)] {
+                if !manifest.degraded.contains(&d) {
+                    manifest.degraded.push(d);
+                }
+            }
+            None
+        }
+    };
+    Begun {
+        manifest,
+        result: Ok(capture),
+        engines,
     }
 }
 
@@ -808,6 +1134,7 @@ impl Begun {
         Begun {
             manifest,
             result: Err(reason),
+            engines: None,
         }
     }
 }
@@ -839,8 +1166,34 @@ impl Message<Begun> for Meeting {
                 self.audio_capture = PermissionState::Granted;
                 manifest.state = MeetingState::Recording;
                 let id = manifest.id;
-                let mut rec = Recording::new(manifest, capture);
-                self.spawn_tasks(id, &mut rec, ctx.actor_ref().clone());
+                let me = ctx.actor_ref().clone();
+                let dir = self.store.meeting_dir(id);
+                let mut rec = Recording::new(manifest, capture, &self.cfg, &dir);
+                self.spawn_tasks(id, &mut rec, me.clone());
+                if let Some((mic, system)) = m.engines
+                    && let Some((mic_ring, system_ring)) = rec.capture.take_stt()
+                {
+                    let flags = |held| stt::Flags {
+                        stop: rec.capture.stop_flag(),
+                        paused: rec.capture.paused_flag(),
+                        held,
+                    };
+                    rec.live.stt.push(stt::spawn(
+                        Track::Mic,
+                        mic_ring,
+                        mic,
+                        flags(Some(rec.live.held_flag.clone())),
+                        me.clone(),
+                    ));
+                    rec.live.stt.push(stt::spawn(
+                        Track::System,
+                        system_ring,
+                        system,
+                        flags(None),
+                        me.clone(),
+                    ));
+                }
+                tools::register(me).await;
                 self.rt
                     .publish(MeetingEvent::Started {
                         meeting: id,
@@ -850,8 +1203,10 @@ impl Message<Begun> for Meeting {
                     })
                     .await;
                 manifest = rec.manifest.clone();
+                let started = session::started_line(rec.manifest.context.as_deref());
                 self.current = Some(rec);
                 self.save(&manifest).await;
+                self.deliver(started).await;
             }
         }
     }
@@ -944,14 +1299,70 @@ impl Message<StopMeeting> for Meeting {
             clock,
             capture,
             tasks,
+            mut live,
         } = rec;
         for t in tasks {
             t.abort();
         }
-        // Joins the three threads; the encoder writes the EOS page.
+        // Joins the three threads; the encoder writes the EOS page. The STT
+        // tasks see the same stop flag and flush their open utterances.
         if let Err(e) = tokio::task::spawn_blocking(move || capture.stop()).await {
             tracing::warn!(meeting = %manifest.id, "capture stop: {e}");
         }
+        let mut finals = Vec::new();
+        let tasks: Vec<_> = live.stt.drain(..).collect();
+        for task in tasks {
+            let Ok(pieces) = task.await else { continue };
+            for p in pieces.into_iter().filter(|p| p.is_final && said_something(&p.text)) {
+                let (t0_ms, t1_ms) = times(&clock, &p);
+                let u = Utterance {
+                    track: p.track,
+                    t0_ms,
+                    t1_ms,
+                    text: p.text,
+                    request: p.request,
+                };
+                live.log_utterance(&u);
+                self.rt
+                    .publish(MeetingEvent::Utterance {
+                        meeting: manifest.id,
+                        track: u.track,
+                        t0_ms,
+                        t1_ms,
+                        text: u.text.clone(),
+                        request: u.request,
+                        r#final: true,
+                    })
+                    .await;
+                finals.push(u);
+            }
+        }
+        // 02 §4: the engines are gone (the tasks owned them); pending lines go
+        // out as one last input, then the session compacts like any other.
+        let mut pending = live.batcher.drain();
+        pending.extend(finals);
+        if !pending.is_empty() {
+            let text = session::batch_line(
+                &pending,
+                &live.topics.live_labels(),
+                live.topics.dismissed_labels(),
+            );
+            if let Err(e) = session::deliver(manifest.session, text, live.turn_running).await {
+                tracing::warn!(meeting = %manifest.id, "meeting: last batch: {e}");
+            }
+        }
+        if let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
+            && let Err(e) = agents
+                .ask(agent::SetCompaction {
+                    session: manifest.session,
+                    at_tokens: None,
+                    hint: None,
+                })
+                .await
+        {
+            tracing::warn!(meeting = %manifest.id, "meeting: clear compaction: {e}");
+        }
+        tools::unregister().await;
         manifest.ended_at = Some(chrono::Local::now().to_rfc3339());
         manifest.duration_ms = Some(clock.now_ms());
         manifest.state = MeetingState::Done;
@@ -973,12 +1384,16 @@ impl Message<MeetingStatus> for Meeting {
             .as_ref()
             .map(|r| (&r.manifest, r.clock.now_ms()))
             .or_else(|| self.starting.as_ref().map(|m| (m, 0)));
+        let live = self.current.as_ref().map(|r| &r.live);
         Status {
             state: self.state(),
             meeting: m.map(|(m, _)| m.id),
             session: m.map(|(m, _)| m.session),
             elapsed_ms: m.map_or(0, |(_, ms)| ms),
             degraded: m.map(|(m, _)| m.degraded.clone()).unwrap_or_default(),
+            cursor: live.and_then(|l| l.cursor),
+            topics: live.map(|l| l.topics.live()).unwrap_or_default(),
+            approval_waiting: live.is_some_and(|l| !l.approvals.is_empty()),
         }
     }
 }
@@ -1058,6 +1473,338 @@ impl Message<CheckPermissions> for Meeting {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 2 handlers (02 §2, §5, §6)
+
+impl Message<Piece> for Meeting {
+    type Reply = ();
+
+    async fn handle(&mut self, p: Piece, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let Some(rec) = self.current.as_mut() else { return };
+        let meeting = rec.manifest.id;
+        let (t0_ms, t1_ms) = times(&rec.clock, &p);
+        rec.live.topics.touch(&p.text, Instant::now());
+        if p.is_final && !said_something(&p.text) {
+            return;
+        }
+        self.rt
+            .publish(MeetingEvent::Utterance {
+                meeting,
+                track: p.track,
+                t0_ms,
+                t1_ms,
+                text: p.text.clone(),
+                request: p.request,
+                r#final: p.is_final,
+            })
+            .await;
+        if p.is_final {
+            self.closed(Utterance {
+                track: p.track,
+                t0_ms,
+                t1_ms,
+                text: p.text,
+                request: p.request,
+            })
+            .await;
+        }
+    }
+}
+
+impl Message<Tick> for Meeting {
+    type Reply = ();
+
+    async fn handle(&mut self, _: Tick, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let Some(rec) = self.current.as_mut() else { return };
+        let now = Instant::now();
+        let batch = rec.live.batcher.tick(now);
+        let gone = rec.live.topics.expire(now);
+        if let Some(batch) = batch {
+            self.send_batch(batch).await;
+        }
+        self.topics_gone(gone).await;
+    }
+}
+
+impl Message<AgentEvent> for Meeting {
+    type Reply = ();
+
+    /// 02 §0.4: turn state and model health of the meeting session.
+    async fn handle(&mut self, ev: AgentEvent, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let Some(rec) = self.current.as_mut() else { return };
+        match ev {
+            AgentEvent::TurnStarted { session, .. } if session == rec.manifest.session => {
+                rec.live.turn_running = true;
+            }
+            AgentEvent::TurnFinished {
+                session,
+                stop_reason,
+                ..
+            } if session == rec.manifest.session => {
+                rec.live.turn_running = false;
+                let down = rec.manifest.degraded.contains(&Degradation::ModelDown);
+                if stop_reason == "error" && !down {
+                    rec.manifest.degraded.push(Degradation::ModelDown);
+                } else if stop_reason != "error" && down {
+                    rec.manifest.degraded.retain(|d| *d != Degradation::ModelDown);
+                } else {
+                    return;
+                }
+                let manifest = rec.manifest.clone();
+                self.save(&manifest).await;
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Message<ApprovalRequested> for Meeting {
+    type Reply = ();
+
+    async fn handle(&mut self, a: ApprovalRequested, _: &mut Context<Self, Self::Reply>) {
+        let Some(rec) = self
+            .current
+            .as_mut()
+            .filter(|r| r.manifest.session == a.session)
+        else {
+            return;
+        };
+        let before = !rec.live.approvals.is_empty();
+        rec.live.approvals.insert(a.id);
+        let meeting = rec.manifest.id;
+        self.approval_waiting(meeting, before, true).await;
+    }
+}
+
+impl Message<ApprovalResolved> for Meeting {
+    type Reply = ();
+
+    async fn handle(&mut self, a: ApprovalResolved, _: &mut Context<Self, Self::Reply>) {
+        let Some(rec) = self.current.as_mut() else { return };
+        if !rec.live.approvals.remove(&a.id) {
+            return;
+        }
+        let after = !rec.live.approvals.is_empty();
+        let meeting = rec.manifest.id;
+        self.approval_waiting(meeting, true, after).await;
+    }
+}
+
+impl Message<TapTopic> for Meeting {
+    type Reply = Result<(), String>;
+
+    async fn handle(&mut self, m: TapTopic, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let rec = self.current.as_mut().ok_or("no meeting is recording")?;
+        let topic = rec
+            .live
+            .topics
+            .view(m.topic)
+            .ok_or("no such live topic")?;
+        // Decision 11: the precomputed brief is shown on the tap itself; a
+        // `meeting_brief` from the model, if any, is a second one.
+        let brief = topic.brief.and_then(|b| rec.live.topics.brief(b).cloned());
+        rec.live.prompted(Prompted::Tap(topic.id));
+        self.topic_gone(topic.id, TopicGone::Viewed).await;
+        if let Some(mut brief) = brief {
+            brief.source = BriefSource::Tap;
+            let Some(rec) = self.current.as_mut() else { return Ok(()) };
+            let meeting = rec.manifest.id;
+            self.rt.publish(MeetingEvent::Brief { meeting, brief }).await;
+        }
+        self.deliver(session::tapped_line(&topic.label)).await;
+        Ok(())
+    }
+}
+
+impl Message<DismissTopic> for Meeting {
+    type Reply = Result<(), String>;
+
+    async fn handle(&mut self, m: DismissTopic, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let rec = self.current.as_mut().ok_or("no meeting is recording")?;
+        let topic = rec
+            .live
+            .topics
+            .dismiss(m.topic)
+            .ok_or("no such live topic")?;
+        self.topic_gone(topic.id, TopicGone::Dismissed).await;
+        self.deliver(session::dismissed_line(&topic.label)).await;
+        Ok(())
+    }
+}
+
+impl Message<Deeper> for Meeting {
+    type Reply = Result<(), String>;
+
+    async fn handle(&mut self, m: Deeper, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let rec = self.current.as_mut().ok_or("no meeting is recording")?;
+        let brief = rec
+            .live
+            .topics
+            .brief(m.brief)
+            .cloned()
+            .ok_or("no such brief")?;
+        rec.live.prompted(Prompted::Deeper(brief.id));
+        self.deliver(session::deeper_line(&brief.title, &brief.bullets))
+            .await;
+        Ok(())
+    }
+}
+
+impl Message<TypedRequest> for Meeting {
+    type Reply = Result<(), String>;
+
+    async fn handle(&mut self, m: TypedRequest, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let rec = self.current.as_mut().ok_or("no meeting is recording")?;
+        if m.text.trim().is_empty() {
+            return Err("empty request".into());
+        }
+        rec.live.prompted(Prompted::Request { spoken: false });
+        self.deliver(session::request_line(false, &m.text)).await;
+        Ok(())
+    }
+}
+
+impl Message<PushToTalk> for Meeting {
+    type Reply = Result<(), String>;
+
+    async fn handle(&mut self, m: PushToTalk, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let rec = self.current.as_mut().ok_or("no meeting is recording")?;
+        if rec.live.held == m.held {
+            return Ok(());
+        }
+        rec.live.held = m.held;
+        // The mic STT task holds its finals while held and, on release, closes the
+        // open utterance and reports the whole span as one request (53 decision 10).
+        rec.live.held_flag.store(m.held, Ordering::SeqCst);
+        let meeting = rec.manifest.id;
+        self.rt
+            .publish(MeetingEvent::Listening {
+                meeting,
+                held: m.held,
+            })
+            .await;
+        Ok(())
+    }
+}
+
+impl Message<SetCursor> for Meeting {
+    type Reply = Result<(), String>;
+
+    async fn handle(&mut self, m: SetCursor, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let rec = self.current.as_mut().ok_or("no meeting is recording")?;
+        rec.live.cursor = m.brief;
+        Ok(())
+    }
+}
+
+impl Message<ListBriefs> for Meeting {
+    type Reply = Result<Vec<Brief>, String>;
+
+    async fn handle(&mut self, m: ListBriefs, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        if let Some(rec) = self.current.as_ref().filter(|r| r.manifest.id == m.meeting) {
+            return Ok(rec.live.topics.briefs().to_vec());
+        }
+        let dir = self.store.meeting_dir(m.meeting);
+        if !dir.is_dir() {
+            return Err(format!("no meeting {}", m.meeting));
+        }
+        let records: Vec<Record> = read_jsonl(&dir.join(BRIEFS_LOG), usize::MAX)?;
+        Ok(records
+            .into_iter()
+            .filter_map(|r| match r {
+                Record::Brief(b) => Some(b),
+                _ => None,
+            })
+            .collect())
+    }
+}
+
+impl Message<ListTopics> for Meeting {
+    type Reply = Vec<Topic>;
+
+    async fn handle(&mut self, _: ListTopics, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.current
+            .as_ref()
+            .map(|r| r.live.topics.live())
+            .unwrap_or_default()
+    }
+}
+
+impl Message<LiveText> for Meeting {
+    type Reply = Result<Vec<Utterance>, String>;
+
+    async fn handle(&mut self, m: LiveText, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let dir = self.store.meeting_dir(m.meeting);
+        if !dir.is_dir() {
+            return Err(format!("no meeting {}", m.meeting));
+        }
+        read_jsonl(&dir.join(LIVE_LOG), LIVE_TEXT_CAP)
+    }
+}
+
+impl Message<AddTopic> for Meeting {
+    type Reply = Result<String, String>;
+
+    async fn handle(&mut self, m: AddTopic, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let rec = self.recording_for(m.session)?;
+        let at_ms = rec.clock.now_ms();
+        let (topic, brief, expired) = rec.live.topics.insert(
+            &m.label,
+            &m.title,
+            m.bullets,
+            Instant::now(),
+            at_ms,
+        )?;
+        rec.live.log_record(&Record::Topic(topic.clone()));
+        rec.live.log_record(&Record::Brief(brief));
+        let meeting = rec.manifest.id;
+        self.topics_gone(expired).await;
+        self.rt
+            .publish(MeetingEvent::TopicAdded { meeting, topic })
+            .await;
+        Ok("topic registered".into())
+    }
+}
+
+impl Message<AddBrief> for Meeting {
+    type Reply = Result<String, String>;
+
+    /// 02 §5.2: `source` from what prompted the turn — the outstanding tap for
+    /// `topic`, deeper for `parent`, else a request line, else `Auto`.
+    async fn handle(&mut self, m: AddBrief, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let rec = self.recording_for(m.session)?;
+        topics::check_bullets(&m.bullets)?;
+        let live = &mut rec.live;
+        let source = if let Some(t) = m.topic
+            && live.answer(|p| p == Prompted::Tap(t)).is_some()
+        {
+            BriefSource::Tap
+        } else if let Some(p) = m.parent
+            && live.answer(|p2| p2 == Prompted::Deeper(p)).is_some()
+        {
+            BriefSource::Deeper
+        } else {
+            match live.answer(|p| matches!(p, Prompted::Request { .. })) {
+                Some(Prompted::Request { spoken: true }) => BriefSource::Request,
+                Some(Prompted::Request { spoken: false }) => BriefSource::Typed,
+                _ => BriefSource::Auto,
+            }
+        };
+        let at_ms = rec.clock.now_ms();
+        let brief = rec
+            .live
+            .topics
+            .add_brief(&m.title, m.bullets, m.topic, m.parent, source, at_ms)?;
+        // The answered topic's button goes away and its precomputed brief is superseded.
+        let viewed = m.topic.and_then(|t| rec.live.topics.view(t));
+        if let Some(t) = viewed {
+            self.topic_gone(t.id, TopicGone::Viewed).await;
+        }
+        self.show_brief(brief).await;
+        Ok("brief shown".into())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Plugin
 
 /// The plugin: opens the store, spawns and registers [`Meeting`].
@@ -1101,6 +1848,25 @@ impl runtime::Plugin for MeetingPlugin {
             runtime::subscriber_mailbox(),
         );
         actor.register(MEETING_ACTOR)?;
+        // 02 §0.4: turn state and approvals of the meeting session.
+        rt.subscribe::<Meeting, AgentEvent>(&actor).await;
+        rt.subscribe::<Meeting, ApprovalRequested>(&actor).await;
+        rt.subscribe::<Meeting, ApprovalResolved>(&actor).await;
+        // 02 §5.3: what `[meeting …]` lines mean; static, registered once.
+        let rt = rt.clone();
+        tokio::spawn(async move {
+            if let Some(reg) = rt
+                .lookup_when::<::tools::ToolRegistry>(::tools::REGISTRY_ACTOR)
+                .await
+            {
+                let _ = reg
+                    .ask(::tools::RegisterPrompt {
+                        plugin: "meeting",
+                        text: tools::PROMPT.to_owned(),
+                    })
+                    .await;
+            }
+        });
         Ok(())
     }
 }

@@ -257,6 +257,23 @@ pub struct SetCompactStyle {
     pub style: CompactStyle,
 }
 
+/// `ask` → `Result<(), String>`: one session's compaction override, in memory
+/// only (`meetings/02-live.md` §0.2): `at_tokens` replaces `compact_at × window`
+/// as the auto-compaction trigger, `hint` is appended as one paragraph to the
+/// summariser instruction. `None` clears each; nothing is persisted, so a
+/// restarted session compacts like any other.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetCompaction {
+    /// Target session.
+    pub session: SessionId,
+    /// Trigger in tokens; `None` = the configured `compact_at` fraction.
+    #[serde(default)]
+    pub at_tokens: Option<u32>,
+    /// Extra summariser paragraph; `None` = the plain instruction.
+    #[serde(default)]
+    pub hint: Option<String>,
+}
+
 /// `ask` → [`CompactStyle`]: the live default style.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct GetCompactStyle;

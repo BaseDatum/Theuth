@@ -838,6 +838,35 @@ pub trait Api {
     /// Microphone and audio-capture TCC state as far as it is known without prompting.
     #[method(name = "meeting_permissions")]
     async fn meeting_permissions(&self) -> RpcResult<meeting::Permissions>;
+    /// Phase 2 (02 §6). The user tapped a topic button: `TopicRemoved{Viewed}`,
+    /// the stored brief as `Brief{source: Tap}`, a `[meeting tapped]` steer.
+    #[method(name = "meeting_tap")]
+    async fn meeting_tap(&self, topic: meeting::TopicId) -> RpcResult<()>;
+    /// The user dismissed a topic button: `TopicRemoved{Dismissed}`, the label barred, a steer.
+    #[method(name = "meeting_dismiss")]
+    async fn meeting_dismiss(&self, topic: meeting::TopicId) -> RpcResult<()>;
+    /// The user wants more on a brief: a `[meeting deeper]` steer; the answer arrives as `Brief{source: Deeper}`.
+    #[method(name = "meeting_deeper")]
+    async fn meeting_deeper(&self, brief: meeting::BriefId) -> RpcResult<()>;
+    /// A typed question: `[meeting request, typed]` steer; the answer arrives as `Brief{source: Typed}`.
+    #[method(name = "meeting_request")]
+    async fn meeting_request(&self, text: String) -> RpcResult<()>;
+    /// Push-to-talk held/released (53 decision 10): `Listening`; the release tags the
+    /// mic utterance as a spoken request and steers it at once.
+    #[method(name = "meeting_ptt")]
+    async fn meeting_ptt(&self, held: bool) -> RpcResult<()>;
+    /// Where the island's cursor is; mirrored to `meeting_status.cursor`.
+    #[method(name = "meeting_cursor")]
+    async fn meeting_cursor(&self, brief: Option<meeting::BriefId>) -> RpcResult<()>;
+    /// Every brief of a meeting, in order (memory while recording, `briefs.jsonl` after).
+    #[method(name = "meeting_briefs")]
+    async fn meeting_briefs(&self, id: meeting::MeetingId) -> RpcResult<Vec<meeting::Brief>>;
+    /// The current meeting's live topic buttons.
+    #[method(name = "meeting_topics")]
+    async fn meeting_topics(&self) -> RpcResult<Vec<meeting::Topic>>;
+    /// A meeting's live transcript (`live.jsonl`, last 2 000 utterances).
+    #[method(name = "meeting_live")]
+    async fn meeting_live(&self, id: meeting::MeetingId) -> RpcResult<Vec<meeting::Utterance>>;
     /// Fire a schedule now, ignoring `next`; returns its session (34 §8).
     /// Refused while a run is in flight (`busy`) or the file does not parse.
     #[method(name = "fire_schedule")]
@@ -2403,6 +2432,42 @@ impl ApiServer for Server {
 
     async fn meeting_permissions(&self) -> RpcResult<meeting::Permissions> {
         send(&meeting()?, meeting::CheckPermissions).await
+    }
+
+    async fn meeting_tap(&self, topic: meeting::TopicId) -> RpcResult<()> {
+        send(&meeting()?, meeting::TapTopic { topic }).await
+    }
+
+    async fn meeting_dismiss(&self, topic: meeting::TopicId) -> RpcResult<()> {
+        send(&meeting()?, meeting::DismissTopic { topic }).await
+    }
+
+    async fn meeting_deeper(&self, brief: meeting::BriefId) -> RpcResult<()> {
+        send(&meeting()?, meeting::Deeper { brief }).await
+    }
+
+    async fn meeting_request(&self, text: String) -> RpcResult<()> {
+        send(&meeting()?, meeting::TypedRequest { text }).await
+    }
+
+    async fn meeting_ptt(&self, held: bool) -> RpcResult<()> {
+        send(&meeting()?, meeting::PushToTalk { held }).await
+    }
+
+    async fn meeting_cursor(&self, brief: Option<meeting::BriefId>) -> RpcResult<()> {
+        send(&meeting()?, meeting::SetCursor { brief }).await
+    }
+
+    async fn meeting_briefs(&self, id: meeting::MeetingId) -> RpcResult<Vec<meeting::Brief>> {
+        send(&meeting()?, meeting::ListBriefs { meeting: id }).await
+    }
+
+    async fn meeting_topics(&self) -> RpcResult<Vec<meeting::Topic>> {
+        send(&meeting()?, meeting::ListTopics).await
+    }
+
+    async fn meeting_live(&self, id: meeting::MeetingId) -> RpcResult<Vec<meeting::Utterance>> {
+        send(&meeting()?, meeting::LiveText { meeting: id }).await
     }
 
     async fn fire_schedule(&self, name: String) -> RpcResult<SessionId> {

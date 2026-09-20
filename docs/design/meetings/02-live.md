@@ -11,7 +11,10 @@ persists and publishes — all observable headless over RPC. No UI.
 
 ## 0. Decisions local to this phase
 
-1. **`voice::stt::Engine` is extracted from `Transcriber`, not duplicated.**
+1. **`voice::stt::Engine` (TDT) is *not* built in this phase.** Deferred to
+   phase 4, the only consumer (reconciled 2026-09-20: the tree has `Stream`
+   but no `Engine`; extracting it here would be code nobody calls until
+   04). The original design, for phase 4 to execute:
    `crates/voice/src/stt.rs` today holds `ParakeetTDT` privately in
    `Transcriber.model` (`Arc<Mutex<Option<ParakeetTDT>>>`). New `pub struct
    Engine(ParakeetTDT)` with `pub fn load(dir: &Path) -> anyhow::Result<Engine>`
@@ -72,23 +75,44 @@ persists and publishes — all observable headless over RPC. No UI.
    (take it only if the build-time download or `ort` ordering bites — it is
    the one-line fallback `features = ["earshot"]`, F1 0.928, no native
    deps); WebRTC (binary output, weakest F1).
-2. **Agent gains three small, general messages; nothing meeting-shaped.**
+2. **Agent gains two small, general messages; nothing meeting-shaped.**
    (a) `agent::SetCompaction { session, at_tokens: Option<u32>, hint:
    Option<String> }` (`ask` → `Result<(), String>`), in-memory on the session
-   actor: `at_tokens` replaces `compact_at × window` as the trigger limit at
-   `loop_.rs:3092-3109` (and the two `limit =` sites at 3494, 3717); `hint`
-   is appended as one paragraph to `COMPACT_INSTRUCTION` (`compact.rs:13`)
-   for that session. `None` clears. Sent at meeting start, cleared at stop
-   — after the meeting the session compacts like any other, so nothing is
-   persisted and no migration exists. (b) `CreateSessionOptions.model:
-   Option<String>` — sets that session's model only. `SetModel` (lib.rs:603-612)
-   also rewrites the *default* in `config.yaml`, which a meeting must not do.
-   (c) `tools::SetApprovals` gains `read_only: bool` (default `false`;
-   `enabled: true, read_only: true` = ReadOnly tools skip the ask, others
-   ask). 53 §4.5 called this `PolicyOverride::ReadOnlyAllow`; there is no
-   `PolicyOverride` in the tree (`crates/tools/src/lib.rs:363-462` has
-   `PolicyAction`/`Policy`/`Gate`), so the flag lands on the message that
-   already carries per-session approval state. Inherited by nothing.
+   actor: `at_tokens` replaces `compact_at × window` as the trigger limit
+   (the two `limit =` sites in `loop_.rs`, ~3492 and ~3715 as of 2026-09-20);
+   `hint` is appended as one paragraph to `COMPACT_INSTRUCTION`
+   (`compact.rs:13`) for that session — note `loop_.rs` compares
+   `instruction == COMPACT_INSTRUCTION` (~4056) to tell a summary from a
+   harvest, so the hint must be carried beside the instruction, not
+   concatenated into the compared string. `None` clears. Sent at meeting
+   start, cleared at stop — after the meeting the session compacts like any
+   other, so nothing is persisted and no migration exists. (b)
+   `CreateSessionOptions.model: Option<String>` (`lifecycle.rs:23-36`) — sets
+   that session's model only. Verified: `SetModel` (`supervisor.rs`
+   `impl Message<SetModel>`) always sets `default_model` and rewrites
+   `agent.model` in `config.yaml` even with `session: Some`, which a meeting
+   must not do.
+   (c) **Dropped** (2026-09-20): 53 §4.5's "ReadOnly tools run without
+   asking" is already the default — `tools::Policy::default()` has
+   `read_only: PolicyAction::Allow` (`crates/tools/src/lib.rs:450-458`). A
+   user who set `tools.policy.read_only: ask` chose that for every session;
+   meetings do not override it. No `SetApprovals.read_only`, no
+   `meeting.allow_read_only` key (removed from README §3).
+7. **The live audio→utterance core is shared with dictation, not
+   duplicated.** `crates/voice/src/dictation.rs` `Task` (`chunk`,
+   `feed_full`, `close`, `append`, with `buf/base/total/open/text`) is
+   exactly the per-track loop §2 describes. Extract it into
+   `voice::live::Utterer` (or `stt::Live`; name by function): owns `Stream +
+   Vad + Gate + FftFixedIn`, `pub fn open(dir) -> Result<Utterer>`
+   (`Stream::open` first, then `Vad::new` — the `ort` order), `pub fn
+   chunk(&mut self, pcm48: &[f32]) -> Result<Vec<Text>>` with `Text {
+   utterance: u32, start: usize /* 16 kHz sample of the utterance start,
+   after pre-roll */, text: String, is_final: bool }`, `pub fn close(&mut
+   self) -> Result<Vec<Text>>`, `pub fn reset(&mut self)`. Dictation's `Task`
+   keeps its mic loop, `Report`, levels and deadline and calls the core;
+   the meeting's two tasks feed it from `ring_stt`. `Gate::MAX_OPEN` is a
+   const (15 s) — `meeting.stt_max_utterance_ms` is removed from README §3
+   rather than plumbed through for the same value.
 3. **The batcher lives in the actor, not a thread.** It is a few fields
    (`pending: Vec<Utterance>`, `last_send: Instant`, `turn_running: bool`) and
    a 1 s tokio interval; the actor already owns topics and the session id.
@@ -108,14 +132,14 @@ persists and publishes — all observable headless over RPC. No UI.
 ## 1. Files
 
 ```
-crates/voice/src/stt.rs        Engine (TDT, new pub; Transcriber uses it) + Stream (Nemotron, new pub)
-crates/meeting/src/stt.rs      Vad + two streaming tasks, Utterance
+crates/voice/src/live.rs       Utterer (extracted from dictation::Task; §0.7) — dictation.rs calls it
+crates/meeting/src/stt.rs      two streaming tasks over ring_stt → Utterance (t0/t1 on the recording clock)
 crates/meeting/src/batch.rs    Batcher (pure: feed(utterance, now) -> Option<Batch>; unit-tested)
 crates/meeting/src/session.rs  line formats (`[meeting hh:mm:ss] …`), SendInput/Steer helpers
 crates/meeting/src/topics.rs   Topics { live, dismissed, briefs }: validate/insert/expire/touch (pure; unit-tested)
 crates/meeting/src/tools.rs    MeetingTopicTool, MeetingBriefTool, PROMPT, register/unregister
 crates/agent/src/{lib.rs,loop_.rs,compact.rs,supervisor.rs,lifecycle.rs}   §0.2 (a), (b)
-crates/tools/src/{lib.rs,registry.rs}                                        §0.2 (c)
+crates/tools/src/lib.rs                                                     nothing (§0.2 c dropped)
 crates/rpc/src/api.rs, export.rs                                            §6
 ```
 
@@ -123,11 +147,13 @@ crates/rpc/src/api.rs, export.rs                                            §6
 (`Nemotron::from_pretrained(dir, None)` after `ort_lib(dir)`), `pub fn feed
 (&mut self, window: &[f32; 8960]) -> anyhow::Result<String>` (new text),
 `pub fn reset(&mut self)`, `pub const WINDOW: usize = 8_960`. `!Sync`
-by nature — one owner task per stream. `meeting/Cargo.toml` adds `voice`
-(for `stt::{Engine, Stream}`), `tools`, `wavekat-vad = { version = "0.1",
-default-features = false, features = ["ten-vad"] }` (1c), `rubato` already
-present. Feature `ts` forwards `tools/ts`, `voice/ts`.
-Config: `meeting.live_model_dir` (default `<data_dir>/models/nemotron-streaming-en`).
+by nature — one owner task per stream. `meeting/Cargo.toml` adds `tools`
+(`voice` is already a dependency since phase 1; `wavekat-vad` stays in
+`voice` only), `rubato` already present. Feature `ts` forwards `tools/ts`,
+`voice/ts`. Config: `meeting.live_model_dir` (default: the same directory
+dictation uses — `<data_dir>/models/nemotron-streaming-en`, `voice/src/lib.rs:680`;
+lift that literal into a `pub const voice::STREAMING_MODEL_SUBDIR` both
+plugins join onto `data_dir`, so neither reads the other's config section).
 
 Since 54 (dictation, 2026-09-20) `voice::stt::Stream` (with the `ort`
 init-once order — `Stream::open` before any `Vad::new`), `voice::vad::{Vad,
@@ -140,10 +166,12 @@ the `Vad` in `meeting/src/stt.rs` reduces to `voice::vad::Gate` over
 ## 2. Live STT (`meeting/src/stt.rs`)
 
 Two tokio tasks started by `StartMeeting` step 4 (after capture), one per
-track, each owning one `voice::stt::Stream` (opened in `spawn_blocking`
-from `cfg.live_model_dir`) and one `wavekat_vad::backends::ten_vad::TenVad`
-behind a `FrameAdapter`. Both sessions load at start (≈ 0.9 GB each, int8)
-and are dropped at stop. Loop:
+track, each owning one `voice::live::Utterer` (§0.7: `Stream` + `Vad` +
+`Gate` + resampler; opened in `spawn_blocking` from `cfg.live_model_dir`).
+Both sessions load at start (≈ 0.9 GB each, int8) and are dropped at stop.
+The loop below is what `Utterer` implements (it is `dictation::Task`'s
+today); the meeting task only drains the ring, maps `Text.start` to the
+recording clock, and handles PTT:
 
 1. drain `ring_stt` (from phase 1) at 48 kHz; resample to 16 kHz with one
    stateful `rubato` instance held for the whole meeting (FIR state must
@@ -161,7 +189,7 @@ and are dropped at stop. Loop:
    `Utterance { …, final: false }` when non-empty. Nemotron never sees raw
    silence except the one flush window below.
 4. **utterance close** (the batcher's unit): probability < 0.5 for ≥ 300 ms
-   (19 frames), or `meeting.stt_max_utterance_ms` (default 15 000) of
+   (19 frames), or `Gate::MAX_OPEN` (15 s) of
    continuous speech, or (mic only) the PTT release flag (`request_pending:
    AtomicBool` set by `PushToTalk { held: false }`) → pad the partial
    window with zeros and feed it, then feed one window of zeros to pull the
@@ -248,8 +276,7 @@ change.
 At `StartMeeting` (extends phase 1's handler): `CreateSessionOptions {
 model: manifest.session_model, .. }` (§0.2 b); `SetCompaction { session,
 at_tokens: Some(cfg.context_tokens), hint: Some(COMPACTION_HINT) }`;
-`SetApprovals { session: Some(id), enabled: true, read_only:
-cfg.allow_read_only }`; `RegisterTool` × 2 (§5); the `started.` line. The
+`RegisterTool` × 2 (§5); the `started.` line. The
 `COMPACTION_HINT` const: *"This session is a live meeting. Keep: who is in
 the meeting, what has been discussed in order, decisions and numbers said
 aloud, the current live topics and every dismissed topic."*
@@ -389,9 +416,9 @@ recorded two-person conversation that mentions both, the mic live:
     session (`/compact`-style `Compacted` event) whose head mentions live
     topics; batches continue as cache-hit prefixes (inspect one request
     log: prompt-cache tokens ≫ new tokens).
-11. `allow_read_only: true` → a `knowledge_search` from the model runs
-    without `ApprovalRequested`; a `Mutating` tool still asks and
-    `ApprovalWaiting{true}` is published; `false` → ReadOnly asks as usual.
+11. With the default `tools.policy`, a `knowledge_search` from the model
+    runs without `ApprovalRequested`; a `Mutating` tool still asks and
+    `ApprovalWaiting{true}` is published.
 12. Kill the model provider (bad key) mid-meeting → `ModelDown` in `State`,
     `live.jsonl` still growing, files still growing.
 13. `meeting_stop` → tools gone from `list_tools`, `SetCompaction`
@@ -400,4 +427,204 @@ recorded two-person conversation that mentions both, the mic live:
 
 ## 10. Status
 
-Not started.
+Implemented 2026-09-20 (`crates/meeting` +≈1 900 lines incl. tests: `batch.rs`,
+`session.rs`, `stt.rs`, `tools.rs`, `topics.rs`, actor/state additions;
+`crates/voice/src/live.rs` +330 extracted from `dictation.rs`; agent +≈120;
+rpc/wth wiring). Verified headless over JSON-RPC on `/tmp/wth-meet`
+(`WTH_RPC__LISTEN=127.0.0.1:7791 ./target/debug/wth --headless --data-dir
+/tmp/wth-meet`, plus `ORT_DYLIB_PATH` pointing at the TDT checkpoint's
+`libonnxruntime.1.27.0.dylib` and `WTH_SECRETS__KEY_STORE=file` — the rebuilt
+binary otherwise blocks on a Keychain dialog; `models/` symlinked to
+`~/.wth/models`), macOS 15, `anthropic/claude-haiku-4-5` as `session_model`,
+a knowledge bundle with `tickets/sre-2386` and `systems/keda`, QuickTime
+Player playing a 114 s two-voice `say` clip (Samantha/Daniel: SRE-2386 spoken
+as digits, KEDA, a `?` question, a 40 s monologue), the external mic live,
+built-in speakers (no headphones). Four meetings were run; the numbers below
+are from runs 1–4.
+
+### Exercised
+
+1. `cargo test -p meeting` 13/13 (+7 new: `Batcher` rules (a)(b)(c) and the
+   defer/merge bound; `Topics` validation, duplicate vs live/dismissed,
+   expire-oldest-untouched at `max`, TTL by touch time, substring touch,
+   `briefs.jsonl` record shape; §3's batch line verbatim, `hh:mm:ss`,
+   `live:`/`dismissed:`/`none`, the other five lines). `cargo test -p voice`
+   12/12 incl. `live::utterer_returns_the_spoken_sentence_punctuated`: a
+   `say` sentence at 48 kHz in 20 ms chunks with a second of silence either
+   side → one utterance, rolling pieces, a cased and punctuated final, the
+   start inside the leading silence (pre-roll); skips with a message when
+   the checkpoint or `libonnxruntime` is absent. `cargo test -p agent`
+   232/232; `context_edit_is_idle_only_and_installs_committed_frame`
+   extended: `SetCompaction` replaces the threshold (also with an unknown
+   window), the hint rides behind `COMPACT_INSTRUCTION` and the prefix test
+   still classes it a summary, `None` clears both. `cargo check --workspace
+   --all-targets` clean; `cargo clippy -p meeting -p voice -p rpc -p wth
+   --all-targets --no-deps -D warnings` clean. **`cargo clippy -p agent` fails
+   on 14 pre-existing sites** (`communication/network.rs`, `store/
+   communication.rs`, `store/accounting.rs`, `supervisor.rs:3130`,
+   `loop_.rs stream_once`, two `MutexGuard`-across-await in tests) that
+   `git stash` reproduces without this phase's changes; not fixed here.
+   `cargo check -p rpc --features ts`; `just ts` emits `Utterance.ts`,
+   `SetCompaction`-free (not wire), `CreateSessionOptions.model`,
+   `MeetingStatus.ts` (see deviation 8).
+2. `meeting_start` → `Started` in 2.6–2.8 s; both Nemotron int8 sessions load
+   in 1.99 s (1.08 + 0.85, logged); RSS 2.54–2.59 GB while recording.
+   `Utterance{final:false}` on `System` for the clip and `Mic` for the
+   user's speech arrive every 560 ms window while the speaker talks (first
+   partial 0.6–1.1 s after speech starts); `final:true` closes 0.8–0.9 s
+   after the speaker stops (≈300 ms VAD + one window + one flush); the
+   user's *"Testing one two three. The Pulumi state migration is on my
+   list."* / 3 s / *"Second sentence …"* came back as those words with
+   `Second` capitalised after the ≥ 2 s turn reset. `live.jsonl` holds only
+   finals (26 / 38 lines), every line non-empty. `list_tools` shows
+   `meeting_topic` and `meeting_brief` as `read_only` only while recording;
+   `get_prompt` contains the block. CPU per track: not measured with `top`
+   (not exercised as a number).
+2b. The 40 s monologue closed at every ≤ 15 s cut with continuous text
+   across the cuts (*"… the moving of T-4 from 200 to about 40,000
+   messages in …"*). Pre-roll: first words intact (*"Okay, let's get
+   started"*, *"Testing"*). A cough/keyboard burst was not staged. The
+   between-sentence CPU drop was not measured.
+3. Batches: `[meeting 00:00:03] live: none · dismissed: none` + `them:`/`me:`
+   lines as `TurnStarted` when idle and as `InputQueued` → `InputInjected`
+   while a turn ran (runs 3–4, many); the `?`-ending system utterance (*"Is
+   it still October 3rd?"*) flushed within a second of its close. Prompt
+   cache: `TurnFinished.usage` on batch turns `prompt 12 936 / cached 12 933`.
+4. The model called `meeting_topic` for `SRE-2386` (label *"SRE-2386 image
+   tags"*, run 4) and for KEDA (*"KEDA scaling too aggressively"*, run 1;
+   *"SQS quota hitting weekly"*, run 3 — after the actor refused *"SQS quota
+   hitting twice weekly"* with `label has 5 words; at most 4` and the model
+   shortened it); `TopicAdded` with a 3-bullet brief, both in `briefs.jsonl`.
+5. `meeting_tap` → `TopicRemoved{Viewed}` + the stored brief as
+   `Brief{source: Tap}` at once; `[meeting tapped "…"]` steered; the model
+   then called `meeting_brief` (without `topic`, so its brief was `Auto`).
+6. `meeting_dismiss` → `TopicRemoved{Dismissed}`, `[meeting: user dismissed
+   "Cutover date confirmation" — not useful]` steered; a later
+   `meeting_topic` with that exact label → `topic already dismissed`; the
+   label never reappeared in three further batches.
+7. PTT (clip paused, so the mic was clean): `meeting_ptt(true)` →
+   `Listening{true}`; partials *"What is the DR cut over date"* while
+   speaking; `meeting_ptt(false)` 35 s later → `Listening{false}`, one
+   `Utterance{request: true, final: true}` spanning the held time, and
+   `[meeting request, spoken] What is the DR cut over date` as `TurnStarted`
+   0.1 s after the release. The model answered with **text**, not
+   `meeting_brief` (see not exercised).
+8. `meeting_request("who owns KEDA")` → `[meeting request, typed]` →
+   `Brief{source: Typed, title: "KEDA ownership"}` (run 1).
+9. Six live topics; the seventh and eighth `meeting_topic` each produced
+   `TopicRemoved{Expired}` for the oldest untouched plus `TopicAdded`.
+   TTL expiry (600 s unmentioned) was not waited for; unit-tested.
+10. `WTH_MEETING__CONTEXT_TOKENS=4000`: `Compacted{style: summary}` on the
+    meeting session every round (`before` 13–16 k — the system prompt and
+    tools alone exceed 4 k — `after` ≈ 1 k); the head lists *"Live topics:
+    "Cutover date confirmation", "SQS quota hitting weekly" — none
+    dismissed"* and the numbers said aloud (the hint's ask; the plain
+    instruction has no such heading). Batches after it: cached ≈ all of the
+    prompt (item 3).
+11. Default `tools.policy`: `knowledge_get`/`knowledge_put`/`meeting_*` ran
+    with no `ApprovalRequested`; a `shell` call → `ApprovalRequested` +
+    `ApprovalWaiting{true}` + `Status.approval_waiting: true`;
+    `resolve_approval(deny)` → `ApprovalResolved`, `ApprovalWaiting{false}`.
+12. `set_model(session, "openai/gpt-4o-mini")` (no key) → the next request
+    turn `TurnFinished{error}` → `State{Recording, degraded: [ModelDown]}`,
+    `live.jsonl` and the three `.opus` still growing; `set_model` back →
+    the next `end_turn` cleared `ModelDown`.
+13. `meeting_stop` 0.44 s: tools gone from `list_tools`, `State{Done}`,
+    RSS 2 537 → 1 117 MB and 2 576 → 1 157 MB (both sessions released),
+    `briefs.jsonl` = `topic`/`brief`/`removed` lines. A `/compact` after
+    stop ran (epoch 23); that it used the plain instruction is covered by
+    the unit test only — the head carries the earlier summary forward, so
+    the wire cannot tell.
+
+### Not exercised
+
+- `Brief{source: Request}` and `Brief{source: Deeper}`: in runs 3–4 the
+  fast model answered `[meeting request, spoken]`, `[meeting request,
+  typed]` and `[meeting deeper …]` with a text reply instead of
+  `meeting_brief` (its compaction head had paraphrased the prompt as
+  "respond immediately to direct questions"). In run 1 the same model did
+  call `meeting_brief` for the typed request and after the tap. The actor's
+  source inference for `Request`/`Deeper` is code-path identical to `Typed`
+  (exercised) and unit-free; not observed on the wire.
+- PTT while the meeting app is playing through speakers: the mic track
+  carries the far end (01 §9 check 5's AEC residual), so the first held
+  span in run 4 was 45 s of mangled far-end text. Headphones, or the island
+  muting the far end, are the real fix; not this phase's.
+- CPU per track and the between-sentence drop (check 2 / 2b) as numbers;
+  a < 160 ms burst not opening an utterance (only the `Gate` unit tests).
+- Topic TTL expiry on the clock; `Pause`/`Resume` with STT running (the
+  flag path is in `stt::run`; only the capture-side pause was exercised in
+  phase 1); the STT panic/`Err` → `SttDown` path; a `live_model_dir` without
+  a checkpoint (the load `Err` → `SttDown(Mic)`, `SttDown(System)` branch).
+- `ListQueued > 3` deferral (`Batcher::defer`): unit-tested; the session
+  never had more than two steers queued.
+- The dictation actor end to end on the shared `Utterer` (`cargo test -p
+  voice` and `cargo check` only; 54's `Gate` tests still pass).
+
+### Deviations from the design above
+
+1. **`Utterer::append` concatenates verbatim (was: one space between
+   pieces).** `dictation::Task::append` inserted a space between two
+   non-whitespace pieces; SentencePiece already marks word starts with a
+   leading space (`▁` → `" "`, `parakeet_rs::Nemotron::decode_single`), so a
+   window boundary inside a word gave `"image t ags"` (the smoke test caught
+   it). Dictation inherits the fix.
+2. **A new utterance drops a leading punctuation run.** The flush window
+   does not always pull the last `.`/`?` out of the decoder; it arrived at
+   the start of the next utterance (`". The Pulumi …"`, `"? What is the …"`).
+   `Utterer::piece` strips `.,?!;:` from the front. Cosmetic; the previous
+   utterance loses its final mark.
+3. **`meeting_topic` arguments are flat: `{label, title, bullets}`**, not
+   `{label, brief: {title, bullets}}` (§5.1). The python runtime renders a
+   nested struct as `brief: Any`; the model guessed a list and spent three
+   retries (run 1). Flat, the signature reads
+   `meeting_topic(label: str, title: str, bullets: list[str])`.
+4. **Both live tools are `DIRECT`** (08 §0.4: their reply is an
+   acknowledgement, not data). Without it the model called them as direct
+   tools, got `not a direct tool here; call it from python` on every try
+   and gave up (runs 1–3: 12 refused calls, 4 registered topics; run 4:
+   4 topics in the first 25 s).
+5. **Push-to-talk tags the whole held span, not the utterance open at
+   release.** Mic finals that close while `held` are deferred; the release
+   force-closes what is open and reports one `Utterance{request: true}` with
+   the joined text (the 1.5 s post-release grace is gone). §2's rule missed
+   the common case — the user stops, the VAD closes 300 ms later, the key
+   lifts 500 ms after that: nothing open, the question already batched
+   (run 2: `"? What is the"` tagged, the full question not). `Flags.held`
+   mirrors `Live.held`; partials still stream while held.
+6. **Punctuation-only finals are dropped** (`.` from a breath or the far
+   end's echo): `said_something` = one alphanumeric char. `live.jsonl` and
+   batches carry no `me: .` lines.
+7. **`t0`/`t1` are computed by the actor from receipt `Instant`s**
+   (`Piece { at, behind }` → `RecordingClock::elapsed_at(at) - behind`), so
+   the STT tasks never hold a clock copy across pauses. `t1` is the close
+   time (the stamp of the chunk that closed it), not the silence start.
+8. **`meeting::Status` exports as `MeetingStatus.ts`**: `Status.ts` was
+   silently overwritten by the todo item state's `Status` (phase 1 emitted it
+   into the same file; unnoticed).
+9. **Start order**: session → `SetCompaction` → directory → devices → STT
+   sessions (both in one `spawn_blocking`, sequential — the `ort` init is
+   process-wide once); a load failure degrades `SttDown(Mic)` and
+   `SttDown(System)` and the recording proceeds. Tools are registered in
+   the `Begun` handler, before `Started` and the `started.` line.
+10. **Stop order**: `capture.stop()` (the STT tasks share its stop flag and
+    flush their open utterance, returning the pieces) → those finals to
+    `live.jsonl` and the event stream → `Batcher::drain()` + finals as one
+    last input → `SetCompaction{None, None}` → `UnregisterTool` × 2 → `Done`.
+    The engines die with the tasks (RSS in check 13).
+11. **Brief `source` inference** keeps outstanding prompts for 120 s and
+    consumes them on match, rather than "the last steer": a `meeting_brief`
+    without `topic`/`parent` after a tap is `Auto` (check 5, as §5.2 says),
+    a `Request`/`Typed` prompt is consumed by the first unmatched brief.
+12. **`AgentEvent::TurnFinished{stop_reason: "error"}` sets `ModelDown`; a
+    later non-error `TurnFinished` removes it from `manifest.degraded`** —
+    the one degradation that clears (02 §0.4), so the manifest's `degraded`
+    is not a strict union for `ModelDown`.
+13. `Batcher::new` counts the `started.` line as the last send; `feed`/`tick`
+    return the batch, `defer(batch)` puts a held-back batch in front of new
+    pending (the `ListQueued > 3` merge lives in the actor's `send_batch`).
+14. Test infrastructure: the smoke sentence is rendered by `say` at test time
+    (the repo has no WAV fixture); `voice::live` tests need
+    `$ORT_DYLIB_PATH` (or the dylib beside the Nemotron checkpoint) and skip
+    otherwise. The agent's pre-existing clippy lints (item 1) are not this
+    phase's.

@@ -9741,6 +9741,7 @@ impl Model {
                 cwd: std::env::current_dir()
                     .ok()
                     .map(|p| p.display().to_string()),
+                model: None,
             }),
         );
     }

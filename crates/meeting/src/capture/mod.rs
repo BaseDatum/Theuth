@@ -77,8 +77,8 @@ struct Devices {
     mic: Option<mic::Mic>,
     /// System thread, then encoder; joined in that order.
     threads: Vec<JoinHandle<()>>,
-    /// Phase 2's consumers; undrained here.
-    _stt: (Consumer<Sample>, Consumer<Sample>),
+    /// Phase 2's consumers (mic, system); taken once by `StartMeeting`.
+    stt: Option<(Consumer<Sample>, Consumer<Sample>)>,
 }
 
 impl Capture {
@@ -110,7 +110,7 @@ impl Capture {
             devices: std::sync::Mutex::new(Devices {
                 mic: None,
                 threads: vec![encoder],
-                _stt: (mic_stt, sys_stt),
+                stt: Some((mic_stt, sys_stt)),
             }),
             level,
         };
@@ -156,6 +156,25 @@ impl Capture {
     /// Resume pushing and draining.
     pub fn resume(&self) {
         self.paused.store(false, Ordering::SeqCst);
+    }
+
+    /// The two STT ring consumers `(mic, system)`, once; `None` after.
+    pub fn take_stt(&self) -> Option<(Consumer<Sample>, Consumer<Sample>)> {
+        self.devices
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .stt
+            .take()
+    }
+
+    /// The flag `stop` sets; the STT tasks exit on it.
+    pub fn stop_flag(&self) -> Arc<AtomicBool> {
+        self.stop.clone()
+    }
+
+    /// The flag `pause`/`resume` flip; the STT tasks stop feeding on it.
+    pub fn paused_flag(&self) -> Arc<AtomicBool> {
+        self.paused.clone()
     }
 
     /// Close the devices and join the threads; the encoder writes the EOS pages.

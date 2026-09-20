@@ -33,6 +33,11 @@ pub struct CreateSessionOptions {
     /// Working directory recorded on the session row.
     #[serde(default)]
     pub cwd: Option<String>,
+    /// Model for this session only (catalog id); `None` = `agent.model`. Unlike
+    /// [`crate::SetModel`] it never rewrites the default or `config.yaml`
+    /// (`meetings/02-live.md` §0.2).
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 /// Reply to `create_session` / `resume_private`: the opened session, its
