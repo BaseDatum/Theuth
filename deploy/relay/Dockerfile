@@ -9,9 +9,13 @@
 
 # ── UI (always native) ────────────────────────────────────────────────────────
 FROM --platform=$BUILDPLATFORM oven/bun:1.4-alpine AS web
-# vite.config.ts reads ../tauri.conf.json for __APP_VERSION__.
-WORKDIR /desktop/ui
-COPY crates/desktop/tauri.conf.json /desktop/tauri.conf.json
+# Layout matches the repo: ui tsconfig/vite resolve `@theuth/apps` and the
+# patched `@openuidev/*` install at ../../../packages/apps (46).
+# vite.config.ts also reads ../tauri.conf.json for __APP_VERSION__.
+WORKDIR /src/crates/desktop/ui
+COPY crates/desktop/tauri.conf.json /src/crates/desktop/tauri.conf.json
+COPY packages/apps /src/packages/apps
+RUN bun install --frozen-lockfile --cwd /src/packages/apps
 COPY crates/desktop/ui/package.json crates/desktop/ui/bun.lock ./
 RUN bun install --frozen-lockfile
 COPY crates/desktop/ui/ ./
@@ -42,7 +46,7 @@ RUN --mount=type=cache,id=theuth-relay-cargo-registry-${TARGETPLATFORM},target=/
 # ── runtime ───────────────────────────────────────────────────────────────────
 FROM scratch
 COPY --from=build /theuth-relay /theuth-relay
-COPY --from=web --chown=65532:65532 /desktop/ui/dist /web
+COPY --from=web --chown=65532:65532 /src/crates/desktop/ui/dist /web
 USER 65532
 EXPOSE 8787
 ENTRYPOINT ["/theuth-relay"]
