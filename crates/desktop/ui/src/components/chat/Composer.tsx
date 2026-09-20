@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { open as pickFiles } from '@tauri-apps/plugin-dialog'
-import { ArrowUp, Mic, MicVocal, Paperclip, Plus, Square, X } from 'lucide-react'
+import { ArrowUp, AudioLines, Mic, Paperclip, Plus, Square, X } from 'lucide-react'
 import {
   type ClipboardEvent,
   type DragEvent,
@@ -602,7 +602,7 @@ export function Composer({
                       <Square className="size-4 fill-current" /> {secs} s
                     </>
                   ) : (
-                    <MicVocal className="size-5" />
+                    <AudioLines className="size-5" />
                   )}
                 </Button>
               </TooltipTrigger>
