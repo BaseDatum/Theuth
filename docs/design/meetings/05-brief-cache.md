@@ -473,3 +473,7 @@ mic track in meeting 2.
     `Put`); `brief_search`/`brief_list` set `RETURNS = "list[dict]"` and fill
     `structured` with the rows, lines formatted as §4 plus a trailing
     ` #tag` list when tags exist.
+14. **Briefs are a tab of `/meetings`, not a sidebar entry** (user call after
+    the first build): route `/meetings/briefs`, `MeetingTabs` in the shared
+    `MeetingHeader` (Meetings | Briefs), the control-center `cached` link
+    points there; §7's `/briefs` and the sidebar item are gone.

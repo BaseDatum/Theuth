@@ -11,7 +11,6 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ArtifactsRouteImport } from './routes/artifacts'
-import { Route as BriefsRouteImport } from './routes/briefs'
 import { Route as IslandRouteImport } from './routes/island'
 import { Route as KnowledgeRouteImport } from './routes/knowledge'
 import { Route as LinkRouteImport } from './routes/link'
@@ -20,6 +19,7 @@ import { Route as CSessionRouteImport } from './routes/c.$session'
 import { Route as KnowledgeSplatRouteImport } from './routes/knowledge.$'
 import { Route as MeetingsIndexRouteImport } from './routes/meetings.index'
 import { Route as MeetingsIdRouteImport } from './routes/meetings.$id'
+import { Route as MeetingsBriefsRouteImport } from './routes/meetings.briefs'
 import { Route as MeetingsNewRouteImport } from './routes/meetings.new'
 import { Route as SettingsTabRouteImport } from './routes/settings.$tab'
 
@@ -31,11 +31,6 @@ const IndexRoute = IndexRouteImport.update({
 const ArtifactsRoute = ArtifactsRouteImport.update({
   id: '/artifacts',
   path: '/artifacts',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const BriefsRoute = BriefsRouteImport.update({
-  id: '/briefs',
-  path: '/briefs',
   getParentRoute: () => rootRouteImport,
 } as any)
 const IslandRoute = IslandRouteImport.update({
@@ -78,6 +73,11 @@ const MeetingsIdRoute = MeetingsIdRouteImport.update({
   path: '/meetings/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
+const MeetingsBriefsRoute = MeetingsBriefsRouteImport.update({
+  id: '/meetings/briefs',
+  path: '/meetings/briefs',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const MeetingsNewRoute = MeetingsNewRouteImport.update({
   id: '/meetings/new',
   path: '/meetings/new',
@@ -92,7 +92,6 @@ const SettingsTabRoute = SettingsTabRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/artifacts': typeof ArtifactsRouteWithChildren
-  '/briefs': typeof BriefsRoute
   '/island': typeof IslandRoute
   '/knowledge': typeof KnowledgeRouteWithChildren
   '/link': typeof LinkRoute
@@ -100,6 +99,7 @@ export interface FileRoutesByFullPath {
   '/c/$session': typeof CSessionRoute
   '/knowledge/$': typeof KnowledgeSplatRoute
   '/meetings/$id': typeof MeetingsIdRoute
+  '/meetings/briefs': typeof MeetingsBriefsRoute
   '/meetings/new': typeof MeetingsNewRoute
   '/settings/$tab': typeof SettingsTabRoute
   '/meetings/': typeof MeetingsIndexRoute
@@ -107,7 +107,6 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/artifacts': typeof ArtifactsRouteWithChildren
-  '/briefs': typeof BriefsRoute
   '/island': typeof IslandRoute
   '/knowledge': typeof KnowledgeRouteWithChildren
   '/link': typeof LinkRoute
@@ -115,6 +114,7 @@ export interface FileRoutesByTo {
   '/c/$session': typeof CSessionRoute
   '/knowledge/$': typeof KnowledgeSplatRoute
   '/meetings/$id': typeof MeetingsIdRoute
+  '/meetings/briefs': typeof MeetingsBriefsRoute
   '/meetings/new': typeof MeetingsNewRoute
   '/settings/$tab': typeof SettingsTabRoute
   '/meetings': typeof MeetingsIndexRoute
@@ -123,7 +123,6 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/artifacts': typeof ArtifactsRouteWithChildren
-  '/briefs': typeof BriefsRoute
   '/island': typeof IslandRoute
   '/knowledge': typeof KnowledgeRouteWithChildren
   '/link': typeof LinkRoute
@@ -131,6 +130,7 @@ export interface FileRoutesById {
   '/c/$session': typeof CSessionRoute
   '/knowledge/$': typeof KnowledgeSplatRoute
   '/meetings/$id': typeof MeetingsIdRoute
+  '/meetings/briefs': typeof MeetingsBriefsRoute
   '/meetings/new': typeof MeetingsNewRoute
   '/settings/$tab': typeof SettingsTabRoute
   '/meetings/': typeof MeetingsIndexRoute
@@ -140,7 +140,6 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/artifacts'
-    | '/briefs'
     | '/island'
     | '/knowledge'
     | '/link'
@@ -148,6 +147,7 @@ export interface FileRouteTypes {
     | '/c/$session'
     | '/knowledge/$'
     | '/meetings/$id'
+    | '/meetings/briefs'
     | '/meetings/new'
     | '/settings/$tab'
     | '/meetings/'
@@ -155,7 +155,6 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/artifacts'
-    | '/briefs'
     | '/island'
     | '/knowledge'
     | '/link'
@@ -163,6 +162,7 @@ export interface FileRouteTypes {
     | '/c/$session'
     | '/knowledge/$'
     | '/meetings/$id'
+    | '/meetings/briefs'
     | '/meetings/new'
     | '/settings/$tab'
     | '/meetings'
@@ -170,7 +170,6 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/artifacts'
-    | '/briefs'
     | '/island'
     | '/knowledge'
     | '/link'
@@ -178,6 +177,7 @@ export interface FileRouteTypes {
     | '/c/$session'
     | '/knowledge/$'
     | '/meetings/$id'
+    | '/meetings/briefs'
     | '/meetings/new'
     | '/settings/$tab'
     | '/meetings/'
@@ -186,12 +186,12 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ArtifactsRoute: typeof ArtifactsRouteWithChildren
-  BriefsRoute: typeof BriefsRoute
   IslandRoute: typeof IslandRoute
   KnowledgeRoute: typeof KnowledgeRouteWithChildren
   LinkRoute: typeof LinkRoute
   CSessionRoute: typeof CSessionRoute
   MeetingsIdRoute: typeof MeetingsIdRoute
+  MeetingsBriefsRoute: typeof MeetingsBriefsRoute
   MeetingsNewRoute: typeof MeetingsNewRoute
   SettingsTabRoute: typeof SettingsTabRoute
   MeetingsIndexRoute: typeof MeetingsIndexRoute
@@ -211,13 +211,6 @@ declare module '@tanstack/react-router' {
       path: '/artifacts'
       fullPath: '/artifacts'
       preLoaderRoute: typeof ArtifactsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/briefs': {
-      id: '/briefs'
-      path: '/briefs'
-      fullPath: '/briefs'
-      preLoaderRoute: typeof BriefsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/island': {
@@ -276,6 +269,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof MeetingsIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/meetings/briefs': {
+      id: '/meetings/briefs'
+      path: '/meetings/briefs'
+      fullPath: '/meetings/briefs'
+      preLoaderRoute: typeof MeetingsBriefsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/meetings/new': {
       id: '/meetings/new'
       path: '/meetings/new'
@@ -320,12 +320,12 @@ const KnowledgeRouteWithChildren = KnowledgeRoute._addFileChildren(
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ArtifactsRoute: ArtifactsRouteWithChildren,
-  BriefsRoute: BriefsRoute,
   IslandRoute: IslandRoute,
   KnowledgeRoute: KnowledgeRouteWithChildren,
   LinkRoute: LinkRoute,
   CSessionRoute: CSessionRoute,
   MeetingsIdRoute: MeetingsIdRoute,
+  MeetingsBriefsRoute: MeetingsBriefsRoute,
   MeetingsNewRoute: MeetingsNewRoute,
   SettingsTabRoute: SettingsTabRoute,
   MeetingsIndexRoute: MeetingsIndexRoute,

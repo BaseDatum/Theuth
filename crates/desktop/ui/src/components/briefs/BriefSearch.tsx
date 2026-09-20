@@ -1,4 +1,4 @@
-// 05 §7: `/briefs` — the knowledge `SearchBox` pattern (200 ms debounce, ≥ 2 chars → `brief_search`);
+// 05 §7: `/meetings/briefs` — the knowledge `SearchBox` pattern (200 ms debounce, ≥ 2 chars → `brief_search`);
 // an empty box shows `brief_list` newest first behind a tag chip row. Edit / delete / New brief.
 // `BriefChanged` invalidates `queryKeys.briefs` (lib/rpc.ts), so the page follows tools and RPC alike.
 
@@ -7,7 +7,7 @@ import { Plus, Search } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { BriefCard } from '@/components/briefs/BriefCard'
 import { BriefEditor } from '@/components/briefs/BriefEditor'
-import { MeetingHeader } from '@/components/meeting/MeetingList'
+import { MeetingHeader, MeetingTabs } from '@/components/meeting/MeetingList'
 import { Empty, errorText, useAction } from '@/components/settings/shared'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -48,7 +48,7 @@ export function BriefSearch({ initial, focus }: { initial: string; focus: string
   const rows = shown.data ?? []
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <MeetingHeader title="Briefs">
+      <MeetingHeader title={<MeetingTabs />}>
         <Button size="sm" onClick={() => setEditing('new')}>
           <Plus className="size-3.5" /> New brief
         </Button>

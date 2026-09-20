@@ -22,8 +22,8 @@ export const duration = (ms: number): string => {
   return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`
 }
 
-/** The 52 px drag band every meetings page starts with: sidebar toggle when the rail is closed, a title, actions. */
-export function MeetingHeader({ title, children }: { title: string; children?: ReactNode }) {
+/** The 52 px drag band every meetings page starts with: sidebar toggle when the rail is closed, a title (or the tab strip), actions. */
+export function MeetingHeader({ title, children }: { title: ReactNode; children?: ReactNode }) {
   const sidebar = useSidebar()
   const mac = isMacDesktop()
   return (
@@ -39,10 +39,26 @@ export function MeetingHeader({ title, children }: { title: string; children?: R
           </Button>
         </div>
       )}
-      <h2 className="flex-1 truncate text-sm font-semibold">{title}</h2>
+      <h2 className="flex flex-1 items-center gap-1 truncate text-sm font-semibold">{title}</h2>
       {children}
       <MeetingPill />
     </header>
+  )
+}
+
+/** 05 §7: briefs are a sub-feature of meetings — a tab beside the list, not a sidebar entry. */
+export function MeetingTabs() {
+  const tab = 'rounded-md px-2 py-1 text-fg-tertiary hover:text-foreground'
+  const active = { className: 'bg-layer-2 text-foreground' }
+  return (
+    <>
+      <Link to="/meetings" activeOptions={{ exact: true }} className={tab} activeProps={active}>
+        Meetings
+      </Link>
+      <Link to="/meetings/briefs" className={tab} activeProps={active}>
+        Briefs
+      </Link>
+    </>
   )
 }
 
@@ -52,7 +68,7 @@ export function MeetingList() {
   const list = useQuery({ queryKey: queryKeys.meetings, queryFn: () => api.meeting_list(null) })
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <MeetingHeader title="Meetings">
+      <MeetingHeader title={<MeetingTabs />}>
         <Button size="sm" asChild>
           <Link to="/meetings/new">Start meeting…</Link>
         </Button>

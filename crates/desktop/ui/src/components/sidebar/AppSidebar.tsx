@@ -1,5 +1,5 @@
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
-import { BookOpen, FolderOpen, Layers, Mic, PanelLeft, Settings, SquarePen } from 'lucide-react'
+import { BookOpen, FolderOpen, Mic, PanelLeft, Settings, SquarePen } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { HarnessSwitcher } from '@/components/link/HarnessSwitcher'
 import { Button } from '@/components/ui/button'
@@ -84,22 +84,13 @@ export function AppSidebar({ session }: { session: string | undefined }) {
             </SidebarMenuButton>
           </SidebarMenuItem>
           {isMacDesktop() && (
-            <>
-              <SidebarMenuItem>
-                <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5">
-                  <Link to="/meetings">
-                    <Mic /> Meetings
-                  </Link>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
-              <SidebarMenuItem>
-                <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5">
-                  <Link to="/briefs">
-                    <Layers /> Briefs
-                  </Link>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
-            </>
+            <SidebarMenuItem>
+              <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5">
+                <Link to="/meetings">
+                  <Mic /> Meetings
+                </Link>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
           )}
         </SidebarMenu>
         <SessionList scrollEl={scrollEl} active={session} />

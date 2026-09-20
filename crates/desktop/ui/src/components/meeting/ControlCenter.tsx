@@ -220,8 +220,8 @@ function BriefLog({ id, cursor }: { id: string; cursor: string | null }) {
             <span className="font-semibold">{b.title}</span>
             <span className="shrink-0 text-[11px] text-fg-tertiary">
               {b.cached !== null ? (
-                // 05 §7: a cached instance links its row on `/briefs` (`?id=` outlines it).
-                <Link to="/briefs" search={{ id: b.cached }} className="hover:underline">
+                // 05 §7: a cached instance links its row on the briefs tab (`?id=` outlines it).
+                <Link to="/meetings/briefs" search={{ id: b.cached }} className="hover:underline">
                   {b.source === 'Cache' ? 'cached' : `${b.source} · cached`}
                 </Link>
               ) : (
