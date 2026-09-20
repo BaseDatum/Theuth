@@ -44,7 +44,7 @@ pub struct SpawnSubagentArgs {
     /// Absolute working directory for an external harness; default: theuth's cwd.
     #[serde(default)]
     pub cwd: Option<PathBuf>,
-    /// Model for a theuth subagent as `provider/model` (see list_models); default: the configured subagent model. Not for external harnesses.
+    /// Model for a theuth subagent as `provider/model` (see list_models); default: the user's preferred subagent model (named in your system prompt when set), else the session model. Not for external harnesses.
     #[serde(default)]
     pub model: Option<String>,
     /// Reasoning effort for a theuth subagent: low|medium|high|off|default or a token budget; default: the configured one.
@@ -130,7 +130,7 @@ impl Tool for SpawnSubagentTool {
             "Delegate a complete, self-contained task to a subagent running in its own session while you continue. \
              Returns immediately with its name and address; its final message arrives later as a <message from=\"session:<id>\"> input (when communication is on), so do not poll. \
              Several calls in one message run concurrently. Message it with send_message. \
-             For a theuth subagent you choose `model` and `effort`; pick a little more capability than the task seems to need.",
+             For a theuth subagent, omit `model` to use the user's preferred subagent model; set `model`/`effort` only when the task clearly needs a different capability.",
         );
         let line = acp::describe(&harnesses(&self.data_dir));
         if !line.is_empty() {

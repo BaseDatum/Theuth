@@ -62,6 +62,10 @@ export function Loop() {
     queryKey: queryKeys.titleModel,
     queryFn: () => api.title_model(),
   })
+  const subagentModel = useQuery({
+    queryKey: queryKeys.subagentModel,
+    queryFn: () => api.subagent_model(),
+  })
   const visionModel = useQuery({
     queryKey: queryKeys.visionModel,
     queryFn: () => api.vision_model(),
@@ -69,6 +73,9 @@ export function Loop() {
 
   const setTitleModel = useAction((id: string) => api.set_title_model(id === 'off' ? null : id), {
     keys: [queryKeys.titleModel],
+  })
+  const setSubagentModel = useAction((id: string) => api.set_subagent_model(id === 'off' ? null : id), {
+    keys: [queryKeys.subagentModel],
   })
   const setVisionModel = useAction((id: string) => api.set_vision_model(id === 'off' ? null : id), {
     keys: [queryKeys.visionModel],
@@ -161,6 +168,28 @@ export function Loop() {
             onValueChange={(v) => setTitleModel.mutate(v)}
           >
             <SelectTrigger className="max-w-64">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="off">Off</SelectItem>
+              {models.data?.map((m) => (
+                <SelectItem key={m.id} value={m.id}>
+                  {m.id}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Row>
+        <Row
+          label="Subagent model"
+          description="What spawn_subagent uses when the agent does not name a model. The agent is told your choice in its system prompt. Off = the session's model."
+        >
+          <Select
+            value={subagentModel.data ? subagentModel.data.id : 'off'}
+            disabled={subagentModel.isPending || setSubagentModel.isPending}
+            onValueChange={(v) => setSubagentModel.mutate(v)}
+          >
+            <SelectTrigger aria-label="Subagent model" className="max-w-64">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>

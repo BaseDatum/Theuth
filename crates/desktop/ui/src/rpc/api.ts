@@ -407,6 +407,8 @@ export interface Api {
   /** Persist `agent.stream_idle_secs`: seconds without a stream event before a model call is abandoned; `0` rejects. New sessions only. */
   set_stream_idle(seconds: number): Promise<null>
   set_subagent_timeout(seconds: number): Promise<null>
+  /** Persist `agent.subagents.model`: the model children get when `spawn_subagent` omits `model`; `null` = the session's model. */
+  set_subagent_model(model: string | null): Promise<ModelInfo | null>
   set_title_model(model: string | null): Promise<ModelInfo | null>
   /** Persist `agent.vision_model` (52 §3.1): `null` turns the fallback off; an unavailable or text-only id rejects and leaves the selection unchanged. */
   set_vision_model(model: string | null): Promise<ModelInfo | null>
@@ -426,6 +428,8 @@ export interface Api {
   steer(session: SessionId, text: string, id: InputId | null, files: string[]): Promise<InputId>
   /** Stop utterance `id`, or whatever is speaking when `null`; idempotent (43 §6). */
   stop_speaking(id: string | null): Promise<null>
+  /** The preferred subagent model, `null` when unset. */
+  subagent_model(): Promise<ModelInfo | null>
   sync_mcp(): Promise<SyncResult[]>
   sync_skills(): Promise<SyncResult[]>
   title_model(): Promise<ModelInfo | null>
@@ -608,6 +612,7 @@ export const METHODS = [
   'set_session_project',
   'set_stream_idle',
   'set_subagent_timeout',
+  'set_subagent_model',
   'set_title_model',
   'set_vision_model',
   'shutdown',
@@ -624,6 +629,7 @@ export const METHODS = [
   'speak',
   'steer',
   'stop_speaking',
+  'subagent_model',
   'sync_mcp',
   'sync_skills',
   'title_model',

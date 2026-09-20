@@ -17,14 +17,14 @@ use agent::{
     Cancel, CommunicationState, Compact, CompactStyle, ContextItems, ContextRemoval,
     ContextSnapshot, ContextTarget, DeleteSession, EditTurn, ForkSession, GetCommunication,
     GetCompactStyle, GetMaxSalvages, GetMaxToolRounds, GetPeerMessage, GetStreamIdle,
-    GetSubagentTimeout, GetTitleModel, GetTodos, GetVisionModel, Harvest, ListAcp, ListAgents,
+    GetSubagentModel, GetSubagentTimeout, GetTitleModel, GetTodos, GetVisionModel, Harvest, ListAcp, ListAgents,
     ListLogins, ListModels, ListPeerMessages, ListPeers, ListProviders, ListQueued, ListRegistry,
     ListSessions, ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginInfo, Logout, ModelInfo,
     NewRootSession, PeerMessagePage, PeerPage, PeerReceipt, PeerRecord, PeerScope, PinSession,
     ProviderInfo, QueuedInput, Redo, Regenerate, RemoveAcp, RemoveContext, RemoveProvider,
     RemoveSkill, RemoveSkillRepo, RenameSession, SendInput, SessionSummary, SetCommunication,
     SetCompactStyle, SetEffort, SetMaxSalvages, SetMaxToolRounds, SetModel, SetPeerScope,
-    SetStreamIdle, SetSubagentTimeout, SetTitleModel, SetVisionModel, ShowPrompt, SkillBody,
+    SetStreamIdle, SetSubagentModel, SetSubagentTimeout, SetTitleModel, SetVisionModel, ShowPrompt, SkillBody,
     SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw,
 };
 use agent::{
@@ -282,6 +282,13 @@ pub trait Api {
     /// provider; a failed config write is an error and changes nothing.
     #[method(name = "set_vision_model")]
     async fn set_vision_model(&self, model: Option<String>) -> RpcResult<Option<ModelInfo>>;
+    /// The live preferred subagent model (`agent.subagents.model`), if set.
+    #[method(name = "subagent_model")]
+    async fn subagent_model(&self) -> RpcResult<Option<ModelInfo>>;
+    /// Persist `agent.subagents.model`; `None` clears it (children use `agent.model`).
+    /// Children spawned without `model` use it and the system prompt names it.
+    #[method(name = "set_subagent_model")]
+    async fn set_subagent_model(&self, model: Option<String>) -> RpcResult<Option<ModelInfo>>;
     /// Every session, newest first.
     #[method(name = "list_sessions")]
     async fn list_sessions(&self) -> RpcResult<Vec<SessionSummary>>;
@@ -1637,6 +1644,14 @@ impl ApiServer for Server {
 
     async fn set_vision_model(&self, model: Option<String>) -> RpcResult<Option<ModelInfo>> {
         ask::<Agents, _>(agent::AGENT_ACTOR, SetVisionModel { model }).await
+    }
+
+    async fn subagent_model(&self) -> RpcResult<Option<ModelInfo>> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, GetSubagentModel).await
+    }
+
+    async fn set_subagent_model(&self, model: Option<String>) -> RpcResult<Option<ModelInfo>> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, SetSubagentModel { model }).await
     }
 
     async fn list_sessions(&self) -> RpcResult<Vec<SessionSummary>> {

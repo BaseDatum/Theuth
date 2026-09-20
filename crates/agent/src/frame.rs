@@ -197,25 +197,33 @@ pub fn strip_images(m: &mut ChatMessage) {
 }
 
 /// The system prompt (design doc 07 §4), rendered once per turn: Claude Code
-/// identity (when `claude_code`), built-in header, `<data_dir>/prompt.md`,
-/// `always` skill bodies, skills index, `peer_line` verbatim, `plugin_blocks`
-/// (registered `RegisterPrompt` texts, already joined), static guidance.
+/// identity (when `claude_code`), built-in header (with the user's preferred
+/// `subagent_model` when set), `<data_dir>/prompt.md`, `always` skill bodies,
+/// skills index, `peer_line` verbatim, `plugin_blocks` (registered
+/// `RegisterPrompt` texts, already joined), static guidance.
 /// Empty parts skipped, one blank line between the rest.
 pub fn baseline(
     data_dir: &Path,
     peer_line: &str,
     plugin_blocks: &str,
     claude_code: bool,
+    subagent_model: Option<&str>,
 ) -> String {
     let cwd = std::env::current_dir()
         .map(|p| p.display().to_string())
         .unwrap_or_default();
-    let header = format!(
+    let mut header = format!(
         "You are theuth, a meta-harness on the user's machine: an orchestrator that gets work done by delegating it \
          to subagents and to other AI harnesses, then checking and reporting the result. Your own tools are for \
          small direct actions and for verifying what others did.\nWorking directory: {cwd}\nDate: {}",
         chrono::Local::now().format("%Y-%m-%d")
     );
+    if let Some(m) = subagent_model {
+        header.push_str(&format!(
+            "\nPreferred subagent model: {m} (the user's choice; spawn_subagent uses it when you omit `model`, so pass \
+             `model` only when a task clearly needs something else)"
+        ));
+    }
     let standing = std::fs::read_to_string(data_dir.join("prompt.md")).unwrap_or_default();
     let skills = skills::index(&skills::dir(data_dir));
     [

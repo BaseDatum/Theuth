@@ -28,6 +28,11 @@ export const COMMANDS: readonly { name: string; hint: string; desc: string }[] =
     desc: 'model that inspects images when the main model cannot (off = images are omitted)',
   },
   {
+    name: '/subagent',
+    hint: '[model|off]',
+    desc: "model for subagents spawned without an explicit one (off = the session's model)",
+  },
+  {
     name: '/effort',
     hint: '[level|clear]',
     desc: 'reasoning effort (picker without arg)',
@@ -265,6 +270,13 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       const m = await api.set_title_model(arg === 'off' || arg === 'clear' ? null : arg)
       active().qc.setQueryData(queryKeys.titleModel, m)
       toast(m ? `title model: ${m.id}` : 'title model: off')
+      return
+    }
+    case '/subagent': {
+      if (!arg) return settings(navigate, 'loop', session)
+      const m = await api.set_subagent_model(arg === 'off' || arg === 'clear' ? null : arg)
+      active().qc.setQueryData(queryKeys.subagentModel, m)
+      toast(m ? `subagent model: ${m.id}` : 'subagent model: off')
       return
     }
     // 52 §3.2: the Agent loop dropdown's RPC and query; the server rejects unavailable/text-only ids.

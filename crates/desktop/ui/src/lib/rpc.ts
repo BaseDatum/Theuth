@@ -57,6 +57,7 @@ export const queryKeys = {
   artifactSearchMatch: (callId: string, q: string) => ['artifacts', 'match', callId, q] as const,
   info: ['info'] as const,
   titleModel: ['title-model'] as const,
+  subagentModel: ['subagent-model'] as const,
   /** `vision_model()` (52 §3.2); slash setters and the General dropdown invalidate this same key. */
   visionModel: ['vision-model'] as const,
   signal: ['signal'] as const,
@@ -112,6 +113,7 @@ export function useInvalidateOn(): void {
     const models = () => {
       void qc.invalidateQueries({ queryKey: queryKeys.models })
       void qc.invalidateQueries({ queryKey: queryKeys.titleModel })
+      void qc.invalidateQueries({ queryKey: queryKeys.subagentModel })
       void qc.invalidateQueries({ queryKey: queryKeys.visionModel })
     }
     window.addEventListener('theuth:reload-session', models)

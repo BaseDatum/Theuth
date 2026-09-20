@@ -127,7 +127,7 @@ agent:
   # max_salvages: 2           # interrupted-reply recoveries per turn (stalled stream or output cap) before the turn errors (36 §2.4); 0 = off
   # aws_profile: work          # Bedrock inference for every session; /aws or Settings → Connections
   # subagents:
-  #   model: null              # default: agent.model
+  #   model: null              # preferred subagent model when spawn_subagent omits `model`, named in the system prompt; default: agent.model. /subagent or Settings → Agent loop
   #   max_depth: 1
   #   max_concurrent: 8
   #   max_runtime_secs: 600

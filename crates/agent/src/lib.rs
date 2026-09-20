@@ -381,6 +381,19 @@ pub struct SetVisionModel {
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct GetVisionModel;
 
+/// `ask` → `Result<Option<ModelInfo>, String>`: persist `agent.subagents.model`
+/// and use it for every child spawned without an explicit `model`; the system
+/// prompt names it. `None` clears it (children fall back to `agent.model`).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetSubagentModel {
+    /// `provider/model`, bare id, or `None`.
+    pub model: Option<String>,
+}
+
+/// `ask` → `Option<ModelInfo>`: the live preferred subagent model, if set.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct GetSubagentModel;
+
 /// `ask` → `Result<knowledge::HarvestResult, String>`: harvest a session's
 /// finished frame now (design doc 10 §5.2). `Err("turn in flight")` while it runs.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]

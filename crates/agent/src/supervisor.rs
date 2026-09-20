@@ -74,7 +74,7 @@ use crate::{
     AGENT_ACTOR, AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentConfig, AgentEvent, AgentInfo,
     AgentState, AncestorInfo, Ancestors, Cancel, Compact, CompactStyle, ContextItems,
     DeleteSession, EditTurn, ForkSession, GetCompactStyle, GetMaxSalvages, GetMaxToolRounds,
-    GetStreamIdle, GetSubagentTimeout, GetTitleModel, GetTodos, GetVisionModel, Harvest,
+    GetStreamIdle, GetSubagentModel, GetSubagentTimeout, GetTitleModel, GetTodos, GetVisionModel, Harvest,
     HistoryEntry, ListAcp, ListAgents,
     ListLogins, ListModels, ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills,
     LoadSession, LoadSkill, Loaded, Login, LoginFinished, LoginInfo, Logout, ModelInfo,
@@ -82,7 +82,7 @@ use crate::{
     RemoveContext, RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession, SearchRefresh,
     SearchSessionPage, SendInput, SessionSummary, SetCompactStyle, SetCompaction, SetEffort,
     SetMaxSalvages,
-    SetMaxToolRounds, SetModel, SetStreamIdle, SetSubagentTimeout, SetTitleModel, SetToolset,
+    SetMaxToolRounds, SetModel, SetStreamIdle, SetSubagentModel, SetSubagentTimeout, SetTitleModel, SetToolset,
     SetVisionModel, ShowPrompt, SkillBody, SkillMeta,
     Steer, SyncSkills, Undo, UseSkill, Withdraw, effort_of,
 };
@@ -112,6 +112,9 @@ pub struct Agents {
     compact_style: Arc<RwLock<CompactStyle>>,
     /// Live title model (07 §15); `None` = each session's own model. Shared with every session.
     title_model: Arc<RwLock<Option<Resolved>>>,
+    /// Live preferred subagent model (`agent.subagents.model`); `None` = `agent.model`.
+    /// Children spawned without `model` use it; the system prompt names it. Shared with every session.
+    subagent_model: Arc<RwLock<Option<Resolved>>>,
     /// Live vision fallback model (52 §3.1); `None` = no fallback. Shared with
     /// every native session once the loop consults it; snapshot, never hold
     /// the lock across an await.
@@ -499,10 +502,16 @@ impl Agents {
             }
             None => {
                 let sub = &self.cfg.subagents;
+                let preferred = self
+                    .subagent_model
+                    .read()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .as_ref()
+                    .map(|r| r.id.clone());
                 let (model, effort) = match parent {
                     Some(_) => (
                         pick.0
-                            .or(sub.model.as_deref())
+                            .or(preferred.as_deref())
                             .unwrap_or(&self.default_model),
                         pick.1
                             .map(str::to_owned)
@@ -546,6 +555,7 @@ impl Agents {
             self.compact_style.clone(),
             self.title_model.clone(),
             self.vision_model.clone(),
+            self.subagent_model.clone(),
             store,
             self.client.clone(),
             self.auth.clone(),
@@ -2292,6 +2302,66 @@ impl Message<GetTitleModel> for Agents {
     }
 }
 
+impl Message<SetSubagentModel> for Agents {
+    type Reply = Result<Option<ModelInfo>, String>;
+
+    async fn handle(
+        &mut self,
+        m: SetSubagentModel,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<Option<ModelInfo>, String> {
+        let resolved = match &m.model {
+            Some(id) => {
+                let r = self.catalog.resolve(id, &*self.configured)?;
+                if let Some(p) = &r.provider
+                    && !(self.configured)(Catalog::adapter(p))
+                {
+                    return Err(format!("provider `{p}` has no credentials"));
+                }
+                Some(r)
+            }
+            None => None,
+        };
+        let info = resolved.as_ref().map(ModelInfo::from);
+        *self.subagent_model.write().unwrap_or_else(|p| p.into_inner()) = resolved;
+        let path = self.rt.data_dir.join("config.yaml");
+        let value = info.as_ref().map(|i| i.id.as_str()).unwrap_or_default();
+        if let Err(e) =
+            runtime::write_nested_config_value(&path, "agent", "subagents", "model", value)
+        {
+            tracing::warn!("config.yaml: {e}");
+        }
+        Ok(info)
+    }
+}
+
+impl Message<GetSubagentModel> for Agents {
+    type Reply = Option<ModelInfo>;
+
+    async fn handle(
+        &mut self,
+        _: GetSubagentModel,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Option<ModelInfo> {
+        self.subagent_model
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .map(ModelInfo::from)
+    }
+}
+
+impl Agents {
+    /// The preferred subagent model's id for the system prompt, if set.
+    fn subagent_model_id(&self) -> Option<String> {
+        self.subagent_model
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .map(|r| r.id.clone())
+    }
+}
+
 impl Agents {
     /// [`SetVisionModel`] (52 §3.1): validate, persist, then swap — a rejected
     /// id or a failed config write leaves the live selection untouched.
@@ -3548,8 +3618,14 @@ impl Message<ShowPrompt> for Agents {
         {
             blocks = prompt_blocks(b, toolset.as_ref());
         }
-        let mut prompt =
-            frame::baseline(&self.rt.data_dir, &peers, &blocks, self.claude_code(&model));
+        let subagent_model = self.subagent_model_id();
+        let mut prompt = frame::baseline(
+            &self.rt.data_dir,
+            &peers,
+            &blocks,
+            self.claude_code(&model),
+            subagent_model.as_deref(),
+        );
         if self.pool.is_some()
             && toolset.as_ref().is_none_or(|t| t.runtime)
             && let Some(reg) = registry
@@ -5228,6 +5304,12 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             .map_err(|e| tracing::warn!("agent.title_model: {e}"))
             .ok()
     });
+    let subagent_model = cfg.subagents.model.as_deref().and_then(|id| {
+        catalog
+            .resolve(id, &*configured)
+            .map_err(|e| tracing::warn!("agent.subagents.model: {e}"))
+            .ok()
+    });
     // 52 §3.1: id/capability are validated like the setter does, but a valid
     // selection whose credentials went away stays selected and fails at use.
     // An invalid one disables only the fallback; the file is left alone and
@@ -5273,6 +5355,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             default_effort: cfg.effort.clone(),
             compact_style: Arc::new(RwLock::new(cfg.compact_style)),
             title_model: Arc::new(RwLock::new(title_model)),
+            subagent_model: Arc::new(RwLock::new(subagent_model)),
             vision_model: Arc::new(RwLock::new(vision_model)),
             vision_error,
             catalog,
@@ -6580,6 +6663,7 @@ pub(crate) mod tests {
             cfg,
             compact_style: Arc::default(),
             title_model: Arc::default(),
+            subagent_model: Arc::default(),
             vision_model: Arc::default(),
             vision_error: None,
             catalog: Arc::new(Catalog::load(&dir)),

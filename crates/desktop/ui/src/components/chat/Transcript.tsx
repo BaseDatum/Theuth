@@ -6,6 +6,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { useNudges } from '@/lib/nudges'
 import { useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
+import type { AgentInfo } from '@/rpc/extra'
 import { type Prompt, useApprovals, useAsks, useSecretRequests } from '@/store/approvals'
 import { useScope } from '@/store/harness-scope'
 import {
@@ -35,10 +36,11 @@ const WORD: Record<Activity, string> = {
   vision: 'inspecting images…',
 }
 
-type Row = { key: string; entry: Entry; prompts: Prompt[] | null } | { key: string; prompt: Prompt }
+type Row = { key: string; entry: Entry; prompts: Prompt[] | null } | { key: string; prompt: Prompt; from?: AgentInfo }
 
-/** Entries, each with the prompts waiting on its (unfinished, same-named) tool call; prompts with no such row come last. */
-function buildRows(entries: Entry[], pending: Prompt[], session: string): Row[] {
+/** Entries, each with the prompts waiting on its (unfinished, same-named) tool call; prompts with no such row come last.
+ * A subagent's prompt (19 §3.4: `children` is the session's subtree) is a loose row too, labelled with the child. */
+function buildRows(entries: Entry[], pending: Prompt[], session: string, children: Record<string, AgentInfo> | undefined): Row[] {
   const rows: Row[] = entries.map((entry) => ({
     key: entry.id,
     entry,
@@ -46,7 +48,11 @@ function buildRows(entries: Entry[], pending: Prompt[], session: string): Row[] 
   }))
   const loose: Row[] = []
   for (const prompt of pending) {
-    if (prompt.session !== session) continue
+    if (prompt.session !== session) {
+      const from = children?.[prompt.session]
+      if (from) loose.push({ key: prompt.id, prompt, from })
+      continue
+    }
     const tool =
       prompt.type === 'ApprovalRequested' ? prompt.tool : prompt.type === 'AskRequested' ? 'ask_user' : 'secret_request'
     let at = entries.length - 1
@@ -142,6 +148,7 @@ export function Transcript({ session }: { session: string }) {
   const running = useSessionField(session, 'running')
   const activity = useSessionField(session, 'activity') ?? 'idle'
   const visionStatus = useSessionField(session, 'visionStatus')
+  const children = useSessionField(session, 'children')
   // This harness's store, read after the await: a page landing after a switch must not touch another harness's slice.
   const { sessions: store } = useScope()
   const ref = useRef<HTMLDivElement>(null)
@@ -152,7 +159,7 @@ export function Transcript({ session }: { session: string }) {
   /** Row at the viewport's midpoint: the ruler's active turn while scrolled up. */
   const [at, setAt] = useState(0)
 
-  const rows = useMemo(() => buildRows(entries, pending, session), [entries, pending, session])
+  const rows = useMemo(() => buildRows(entries, pending, session, children), [entries, pending, session, children])
   const v = useVirtualizer({
     count: rows.length,
     getScrollElement: () => ref.current,
@@ -235,7 +242,7 @@ export function Transcript({ session }: { session: string }) {
                   {'entry' in row ? (
                     <Message entry={row.entry} prompts={row.prompts} session={session} />
                   ) : (
-                    <PromptCard prompt={row.prompt} />
+                    <PromptCard prompt={row.prompt} from={row.from} />
                   )}
                 </div>
               )

@@ -1,7 +1,9 @@
-import { BellRing, ChevronRight, Trash2 } from 'lucide-react'
+import { Link } from '@tanstack/react-router'
+import { BellRing, Bot, ChevronRight, Trash2 } from 'lucide-react'
 import { memo, type ReactNode, useState } from 'react'
 import { HARNESS_NOTICES } from '@/lib/injected'
 import { parseMeetingLine } from '@/lib/meeting-line'
+import type { AgentInfo } from '@/rpc/extra'
 import type { Prompt } from '@/store/approvals'
 import type { Entry } from '@/store/sessions'
 import { ApprovalCard } from './ApprovalCard'
@@ -137,11 +139,32 @@ function Card({ entry, session, children }: { entry: Entry; session: string; chi
   )
 }
 
-/** An approval, an `ask_user` or a `secret_request` card. */
-export function PromptCard({ prompt }: { prompt: Prompt }) {
-  if (prompt.type === 'ApprovalRequested') return <ApprovalCard approval={prompt} />
-  if (prompt.type === 'AskRequested') return <AskCard ask={prompt} />
-  return <SecretRequestCard id={prompt.id} name={prompt.name} note={prompt.note} current={prompt.current} />
+/** An approval, an `ask_user` or a `secret_request` card. `from`: a subagent's prompt shown in an ancestor's transcript,
+ * headed by the child's name and a link to its session; answering here or there resolves the same request. */
+export function PromptCard({ prompt, from }: { prompt: Prompt; from?: AgentInfo }) {
+  const card =
+    prompt.type === 'ApprovalRequested' ? (
+      <ApprovalCard approval={prompt} />
+    ) : prompt.type === 'AskRequested' ? (
+      <AskCard ask={prompt} />
+    ) : (
+      <SecretRequestCard id={prompt.id} name={prompt.name} note={prompt.note} current={prompt.current} />
+    )
+  if (!from) return card
+  return (
+    <div className="mt-2 [&>*:last-child]:mt-0">
+      <div className="flex items-center gap-2 text-xs text-fg-secondary">
+        <Bot className="size-3.5 shrink-0" aria-hidden="true" />
+        <span>
+          subagent <span className="font-medium text-fg">{from.name}</span> is waiting on you
+        </span>
+        <Link to="/c/$session" params={{ session: from.id }} className="text-fg-accent hover:underline">
+          open
+        </Link>
+      </div>
+      {card}
+    </div>
+  )
 }
 
 /** One transcript row: the entry's card plus the prompts waiting on it. Entries are immutable and `session` is stable, so `memo` skips untouched rows.

@@ -525,6 +525,8 @@ struct Shared {
     /// Vision fallback (52 §3.1); `None` = no fallback. Shared with the
     /// supervisor; snapshotted per consultation, never held across an await.
     vision_model: Arc<RwLock<Option<Resolved>>>,
+    /// Preferred subagent model (`agent.subagents.model`); named in the system prompt. Shared with the supervisor.
+    subagent_model: Arc<RwLock<Option<Resolved>>>,
     store: Store,
     client: Client,
     auth: Auth,
@@ -596,6 +598,7 @@ impl Session {
         compact_style: Arc<RwLock<CompactStyle>>,
         title_model: Arc<RwLock<Option<Resolved>>>,
         vision_model: Arc<RwLock<Option<Resolved>>>,
+        subagent_model: Arc<RwLock<Option<Resolved>>>,
         store: Store,
         client: Client,
         auth: Auth,
@@ -621,6 +624,7 @@ impl Session {
                 toolset: Arc::default(),
                 title_model,
                 vision_model,
+                subagent_model,
                 store,
                 client,
                 auth,
@@ -2359,8 +2363,20 @@ impl Turn {
         );
         let genai = self.model().model.genai;
         let claude_code = ns(&genai) == "anthropic" && self.shared.auth.login("anthropic");
-        let mut baseline =
-            frame::baseline(&self.shared.rt.data_dir, &peer_line, &blocks, claude_code);
+        let subagent_model = self
+            .shared
+            .subagent_model
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .map(|r| r.id.clone());
+        let mut baseline = frame::baseline(
+            &self.shared.rt.data_dir,
+            &peer_line,
+            &blocks,
+            claude_code,
+            subagent_model.as_deref(),
+        );
         if self.shared.pool.is_some() && toolset.as_ref().is_none_or(|t| t.runtime) {
             baseline.push_str("\n\n");
             baseline.push_str(&repl::prompt_block(&specs, self.shared.cfg.runtime_only));
@@ -5013,6 +5029,7 @@ mod tests {
             Arc::default(),
             Arc::default(),
             Arc::default(),
+            Arc::default(),
             store.clone(),
             Client::new().unwrap(),
             Auth::stub(&dir),
@@ -5320,7 +5337,7 @@ mod tests {
         let data_dir = std::env::temp_dir().join(format!("theuth-prompt-{}", uuid::Uuid::new_v4()));
         let skills_dir = skills::dir(&data_dir);
         std::fs::create_dir_all(&skills_dir).unwrap();
-        let bare = frame::baseline(&data_dir, "", "", false);
+        let bare = frame::baseline(&data_dir, "", "", false, None);
         assert!(bare.starts_with("You are theuth, a meta-harness"));
         assert!(!bare.contains("## Skills"));
 
@@ -5331,7 +5348,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(skills_dir.join("later.md"), "Listed skill\n").unwrap();
-        let full = frame::baseline(&data_dir, "## Peers\npeer text", "Plugin block.", false);
+        let full = frame::baseline(&data_dir, "## Peers\npeer text", "Plugin block.", false, None);
         std::fs::remove_dir_all(&data_dir).unwrap();
 
         let pos = |needle: &str| {
@@ -5551,6 +5568,7 @@ mod tests {
             Arc::default(),
             Arc::default(),
             Arc::default(),
+            Arc::default(),
             store.clone(),
             Client::new().unwrap(),
             Auth::stub(&dir),
@@ -5674,6 +5692,7 @@ mod tests {
             Arc::default(),
             Arc::default(),
             vision_model.clone(),
+            Arc::default(),
             store.clone(),
             Client::new().unwrap(),
             Auth::stub(&dir),
@@ -6199,6 +6218,7 @@ mod tests {
             None,
             SessionState::resume(0, None, vec![]),
             Arc::new(AgentConfig::default()),
+            Arc::default(),
             Arc::default(),
             Arc::default(),
             Arc::default(),
