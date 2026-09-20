@@ -13,6 +13,9 @@ use runtime::{Runtime, SessionId};
 use crate::store::{Manifest, SUMMARY, Store};
 use crate::{MeetingEvent, MeetingState};
 
+/// The form's marker: the actor matches the summary turn by the `TurnStarted` echo starting with it.
+pub const SUMMARY_HEAD: &str = "[meeting summary]";
+
 /// Sent as one user input after `Reviewed`.
 pub const SUMMARY_FORM: &str = "[meeting summary] The meeting has ended and the transcript was \
 reviewed. Use `meeting_read` (all of it, in pieces) and `meeting_speakers`, then write the summary \
@@ -164,5 +167,6 @@ mod tests {
         assert_eq!(title_of("\n## Weekly sync  \n\n**Topics**"), "Weekly sync");
         assert_eq!(title_of("Just prose.\nMore."), "Just prose.");
         assert_eq!(title_of("   "), "Meeting summary");
+        assert!(SUMMARY_FORM.starts_with(SUMMARY_HEAD));
     }
 }

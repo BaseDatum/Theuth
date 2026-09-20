@@ -24,7 +24,7 @@ use agent::AgentEvent;
 use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
 use kameo::reply::DelegatedReply;
-use runtime::{Runtime, SessionId};
+use runtime::{Runtime, SessionId, TurnId};
 use serde::{Deserialize, Serialize};
 use ::tools::{ApprovalRequested, ApprovalResolved};
 use voice::live::Utterer;
@@ -887,8 +887,11 @@ pub struct Meeting {
     audio_capture: PermissionState,
     /// Post pipelines in flight (phase 4); finished handles are pruned on access.
     post: Vec<post::Job>,
-    /// The meeting whose summary turn is running (phase 4).
-    summarizing: Option<Manifest>,
+    /// The meeting whose summary turn is queued or running (phase 4), and that
+    /// turn's id once its `TurnStarted` echoed the form. A turn already in
+    /// flight at `Summarize` (the stop-flush batch) ends first; matching on the
+    /// session alone took its reply as the summary.
+    summarizing: Option<(Manifest, Option<TurnId>)>,
 }
 
 impl Meeting {
@@ -1940,18 +1943,30 @@ impl Message<AgentEvent> for Meeting {
     /// 02 §0.4: turn state and model health of the meeting session. 04 §6: the
     /// summary turn's end hands the finished meeting to `summary::spawn`.
     async fn handle(&mut self, ev: AgentEvent, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        if let AgentEvent::TurnFinished {
-            session,
-            stop_reason,
-            ..
-        } = &ev
-            && self.summarizing.as_ref().is_some_and(|m| m.session == *session)
-        {
-            let m = self.summarizing.take().expect("checked");
-            let error = (stop_reason == "error" || stop_reason == "cancelled")
-                .then(|| format!("the summary turn ended with {stop_reason}"));
-            summary::spawn(self.rt.clone(), self.store.clone(), m, error);
-            return;
+        if let Some((m, turn)) = self.summarizing.as_mut() {
+            match &ev {
+                AgentEvent::TurnStarted {
+                    session,
+                    turn: id,
+                    text,
+                    ..
+                } if *session == m.session && text.starts_with(summary::SUMMARY_HEAD) => {
+                    *turn = Some(*id);
+                    return;
+                }
+                AgentEvent::TurnFinished {
+                    turn: id,
+                    stop_reason,
+                    ..
+                } if *turn == Some(*id) => {
+                    let (m, _) = self.summarizing.take().expect("checked");
+                    let error = (stop_reason == "error" || stop_reason == "cancelled")
+                        .then(|| format!("the summary turn ended with {stop_reason}"));
+                    summary::spawn(self.rt.clone(), self.store.clone(), m, error);
+                    return;
+                }
+                _ => {}
+            }
         }
         let Some(rec) = self.current.as_mut() else { return };
         match ev {
@@ -2541,7 +2556,7 @@ impl Message<Summarize> for Meeting {
         manifest.state = MeetingState::Summarizing;
         manifest.failure = None;
         self.save(&manifest).await;
-        self.summarizing = Some(manifest);
+        self.summarizing = Some((manifest, None));
         Ok(())
     }
 }
