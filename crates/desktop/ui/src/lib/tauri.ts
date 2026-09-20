@@ -59,6 +59,13 @@ export const onQuitRequested = (cb: () => void) => on<null>('quit-requested', cb
 /** 39 §3.3: the app downloaded and verified a newer bundle; it installs at quit. */
 export const onUpdateReady = (cb: (p: { version: string }) => void) =>
   on<{ version: string }>('update-ready', cb)
+/** `crates/desktop/src/models.rs`: speech model files fetched from the release bucket at start. */
+export type ModelsProgress =
+  | { state: 'downloading'; file: string; done: number; total: number }
+  | { state: 'ready' }
+  | { state: 'failed'; message: string }
+export const onModelsProgress = (cb: (p: ModelsProgress) => void) =>
+  on<ModelsProgress>('models-progress', cb)
 
 // Meetings island (`crates/desktop/src/island.rs`, 03 §1). No-ops outside Tauri.
 /** `set_content_protected` on both windows (decision 9); every webview then hears `capture-hidden`. */

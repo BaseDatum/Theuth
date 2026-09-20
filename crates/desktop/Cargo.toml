@@ -42,6 +42,12 @@ tauri-plugin-updater = { workspace = true }
 tokio = { workspace = true }
 rand = { workspace = true }
 nix = { workspace = true, features = ["fs"] }
+# Speech model files from the release bucket at start (crates/desktop/src/models.rs).
+reqwest = { workspace = true }
+sha2 = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["net"] }
 
 # Mobile only: QR scanning for `/link` and the universal-link handoff (31 §8.2).
 # Direct versions: these have no other consumer, so they are not in the

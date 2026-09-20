@@ -98,6 +98,12 @@ stage-linux:
 release-s3:
     ./scripts/release-s3.sh
 
+# Speech model files (pocket-tts, parakeet-tdt, nemotron-streaming-en, pyannote) from
+# ${THEUTH_DATA_DIR:-~/.theuth}/models → s3://theuth/releases/models/ + models.json; the
+# desktop app downloads what a Mac lacks at start. Needs AWS_* in .env.signing.
+release-models:
+    ./scripts/release-models.sh
+
 # Annotated tag v<ver> pushed to origin. THEUTH_RELEASE_NO_PUSH=1 keeps it local.
 tag-release:
     ./scripts/tag-release.sh

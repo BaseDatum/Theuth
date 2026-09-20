@@ -22,6 +22,7 @@ import {
   connection,
   isIsland,
   onCaptureHidden,
+  onModelsProgress,
   onNavigate,
   onQuitRequested,
   quitAck,
@@ -220,6 +221,14 @@ function useTauri(): void {
     const unlistens = [
       onNavigate((path) => router.history.push(path)),
       onQuitRequested(() => void quit()),
+      // `crates/desktop/src/models.rs`: one toast, updated in place, for the whole batch.
+      onModelsProgress((p) => {
+        const id = 'models'
+        if (p.state === 'downloading')
+          toast.loading(`Downloading speech models… ${Math.round((100 * p.done) / p.total)}%`, { id, description: p.file })
+        else if (p.state === 'ready') toast.success('Speech models ready', { id, description: undefined })
+        else toast.error(`Speech models: ${p.message}`, { id, description: undefined })
+      }),
     ]
     const onQuit = () => void quit()
     window.addEventListener('theuth:quit', onQuit)

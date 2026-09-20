@@ -14,6 +14,8 @@ mod island;
 #[cfg(desktop)]
 mod launch;
 #[cfg(desktop)]
+mod models;
+#[cfg(desktop)]
 mod update;
 
 /// Build and run the app. Desktop and mobile share the opener/notification
@@ -147,7 +149,7 @@ mod desktop {
 
     #[cfg(target_os = "macos")]
     use crate::island;
-    use crate::{commands, launch, update};
+    use crate::{commands, launch, models, update};
 
     /// The webview acknowledges `quit-requested` with `quit_ack` (after RPC
     /// `shutdown` when it owns the daemon); this is the fallback.
@@ -171,7 +173,11 @@ mod desktop {
             ))
             .plugin(tauri_plugin_positioner::init())
             // The island is placed by `island::island_place`, never by saved window state (03 §1).
-            .plugin(tauri_plugin_window_state::Builder::new().with_denylist(&["island"]).build())
+            .plugin(
+                tauri_plugin_window_state::Builder::new()
+                    .with_denylist(&["island"])
+                    .build(),
+            )
             .plugin(tauri_plugin_dialog::init())
             .plugin(update::plugin())
             .manage(launch::Launch::default())
@@ -179,19 +185,20 @@ mod desktop {
             .manage(Flags::default());
         // 53 decision 8: the island panel and its commands exist on macOS only.
         #[cfg(target_os = "macos")]
-        let builder = builder
-            .plugin(tauri_nspanel::init())
-            .invoke_handler(tauri::generate_handler![
-                commands::connection,
-                commands::launch_log,
-                commands::relaunch,
-                commands::quit_ack,
-                island::set_hidden_from_capture,
-                island::island_show,
-                island::island_hide,
-                island::island_place,
-                island::island_resign_key,
-            ]);
+        let builder =
+            builder
+                .plugin(tauri_nspanel::init())
+                .invoke_handler(tauri::generate_handler![
+                    commands::connection,
+                    commands::launch_log,
+                    commands::relaunch,
+                    commands::quit_ack,
+                    island::set_hidden_from_capture,
+                    island::island_show,
+                    island::island_hide,
+                    island::island_place,
+                    island::island_resign_key,
+                ]);
         #[cfg(not(target_os = "macos"))]
         let builder = builder.invoke_handler(tauri::generate_handler![
             commands::connection,
@@ -243,7 +250,13 @@ mod desktop {
         )?;
         // 53 §4.1: the start form; the recorder is macOS only (Core Audio taps).
         if cfg!(target_os = "macos") {
-            menu.append(&MenuItem::with_id(app, "meeting", "Start meeting…", true, None::<&str>)?)?;
+            menu.append(&MenuItem::with_id(
+                app,
+                "meeting",
+                "Start meeting…",
+                true,
+                None::<&str>,
+            )?)?;
         }
         menu.append_items(&[
             &MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?,
@@ -263,6 +276,7 @@ mod desktop {
             }
         });
         update::start(app);
+        models::start(app);
         Ok(())
     }
 

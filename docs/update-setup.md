@@ -215,6 +215,15 @@ its two `SHASUMS256` sums — bump all three together). No host needs Bun.
    ls "$(dirname "$(readlink -f "$(which theuth)")")"/theuth-app-parser-"$(t --app-parser-hash)"   # the helper the formula installed beside it
    brew install --cask basedatum/tap/theuth && ls /Applications/theuth.app/Contents/MacOS/theuth-app-parser-*
    ```
+6. Speech models, once (and again only when a checkpoint changes): with the
+   four checkpoints in `~/.theuth/models/` (pocket-tts, parakeet-tdt,
+   nemotron-streaming-en, pyannote), `just release-models` uploads the files
+   each loader opens to `releases/models/<model>/<file>` and writes
+   `releases/models/models.json` (`{files: [{path, size, sha256}]}`) last.
+   The desktop app reads that manifest at start and fetches whatever is
+   missing under `<data_dir>/models/` (`crates/desktop/src/models.rs`;
+   `THEUTH_MODELS_URL` points at a scratch manifest). Check:
+   `curl -s https://s3.rwx.dev/theuth/releases/models/models.json | jq '.files|length'` → 11.
 
 ## 7. Verification checklist (39 §12)
 
