@@ -16,3 +16,7 @@ spec:
       port: 8787
       targetPort: http
       protocol: TCP
+    - name: site
+      port: 8788
+      targetPort: site
+      protocol: TCP

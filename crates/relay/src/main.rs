@@ -26,10 +26,12 @@ use axum_server::accept::NoDelayAcceptor;
 use axum_server::tls_rustls::{RustlsAcceptor, RustlsConfig};
 use base64::Engine;
 use clap::Parser;
+use tokio::task::JoinSet;
+use tower_http::services::{ServeDir, ServeFile};
 
 use crate::relay::Relay;
 
-/// `theuth-relay --listen 0.0.0.0:8787 [--tls <cert.pem> <key.pem>] [--web <dir>] [--max-conns 64] [--cookie-secret <hex>]`
+/// `theuth-relay --listen 0.0.0.0:8787 [--tls <cert.pem> <key.pem>] [--web <dir>] [--site <dir> --site-listen 0.0.0.0:8788] [--max-conns 64] [--cookie-secret <hex>]`
 #[derive(Parser, Debug)]
 #[command(
     name = "theuth-relay",
@@ -46,6 +48,12 @@ struct Cli {
     /// Serve this directory (the UI bundle) at `/`, `/link` and `/assets/*`.
     #[arg(long)]
     web: Option<PathBuf>,
+    /// Serve this directory (the theuth.io marketing page) on `--site-listen`, plain static files.
+    #[arg(long)]
+    site: Option<PathBuf>,
+    /// Address for `--site`.
+    #[arg(long, default_value = "0.0.0.0:8788")]
+    site_listen: SocketAddr,
     /// Device conns per harness before `CLOSE 3`.
     #[arg(long, default_value_t = 64)]
     max_conns: usize,
@@ -111,28 +119,22 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     if web.is_some() {
         router = router.fallback(web::pages);
     }
-    let svc = router
-        .with_state(app)
-        .into_make_service_with_connect_info::<SocketAddr>();
 
-    // TCP_NODELAY: a relayed frame must not wait for Nagle behind a previous small write.
     let handle = Handle::new();
-    let server = axum_server::bind(cli.listen).handle(handle.clone());
-    let mut server = match tls {
-        Some(cfg) => tokio::spawn(
-            server
-                .acceptor(RustlsAcceptor::new(cfg).acceptor(NoDelayAcceptor))
-                .serve(svc),
-        ),
-        None => tokio::spawn(server.acceptor(NoDelayAcceptor).serve(svc)),
-    };
-    tracing::info!(listen = %cli.listen, tls = cli.tls.is_some(), web = ?cli.web, max_conns = cli.max_conns, "theuth-relay up");
+    let mut servers = JoinSet::new();
+    servers.spawn(serve(cli.listen, tls.clone(), router.with_state(app), handle.clone()));
+    if let Some(dir) = cli.site.as_deref() {
+        let files = ServeDir::new(dir).fallback(ServeFile::new(dir.join("index.html")));
+        let site = Router::new().fallback_service(files);
+        servers.spawn(serve(cli.site_listen, tls.clone(), site, handle.clone()));
+    }
+    tracing::info!(listen = %cli.listen, tls = cli.tls.is_some(), web = ?cli.web, site = ?cli.site, max_conns = cli.max_conns, "theuth-relay up");
 
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {}
         _ = term.recv() => {}
-        r = &mut server => return r?.context("serve"),
+        r = servers.join_next() => return r.expect("one server")?.context("serve"),
     }
     tracing::info!("shutting down");
     handle.graceful_shutdown(Some(Duration::from_secs(5)));
@@ -141,7 +143,30 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     while relay.metrics.sockets.load(Ordering::Relaxed) > 0 && tokio::time::Instant::now() < drain {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    server.await?.context("serve")
+    while let Some(r) = servers.join_next().await {
+        r?.context("serve")?;
+    }
+    Ok(())
+}
+
+/// One listener. TCP_NODELAY: a relayed frame must not wait for Nagle behind a previous small write.
+async fn serve(
+    addr: SocketAddr,
+    tls: Option<RustlsConfig>,
+    router: Router,
+    handle: Handle<SocketAddr>,
+) -> std::io::Result<()> {
+    let svc = router.into_make_service_with_connect_info::<SocketAddr>();
+    let server = axum_server::bind(addr).handle(handle);
+    match tls {
+        Some(cfg) => {
+            server
+                .acceptor(RustlsAcceptor::new(cfg).acceptor(NoDelayAcceptor))
+                .serve(svc)
+                .await
+        }
+        None => server.acceptor(NoDelayAcceptor).serve(svc).await,
+    }
 }
 
 async fn metrics(State(app): State<App>) -> String {

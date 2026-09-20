@@ -13,13 +13,19 @@ Same rustfs endpoint as jarvis (`https://s3.rwx.dev`), new bucket `theuth`.
 Anonymous `GetObject` on `releases/*` only; `staging/*` and every write
 stay authenticated (39 §3.1).
 
-1. Create the bucket and apply the policy (admin credentials, once):
+1. Create the bucket and apply the policy (admin credentials, once). The CORS
+   rule lets theuth.io read `latest.json` in the browser so its "download for
+   macOS" button follows the newest release instead of the site's build-time
+   version:
 
    ```sh
    aws --endpoint-url https://s3.rwx.dev --region us-east-1 s3 mb s3://theuth
    aws --endpoint-url https://s3.rwx.dev --region us-east-1 \
      s3api put-bucket-policy --bucket theuth \
      --policy file://scripts/s3/theuth-bucket-policy.json
+   aws --endpoint-url https://s3.rwx.dev --region us-east-1 \
+     s3api put-bucket-cors --bucket theuth \
+     --cors-configuration file://scripts/s3/theuth-bucket-cors.json
    ```
 
 2. Create an access key for the release Mac (rustfs console or

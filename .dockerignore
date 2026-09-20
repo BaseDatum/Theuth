@@ -15,6 +15,7 @@ target
 **/.bun
 **/.vite
 crates/desktop/ui/dist
+site/dist
 
 # Desktop packaging — never in the relay image
 crates/desktop/binaries

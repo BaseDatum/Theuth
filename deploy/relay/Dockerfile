@@ -1,7 +1,8 @@
 # syntax=docker/dockerfile:1
-# theuth-relay + browser UI (design doc 31 §5.4 / §7.6). Build from the repo root:
+# theuth-relay + browser UI (design doc 31 §5.4 / §7.6) + theuth.io page. Build from the repo root:
 #   docker build -f deploy/relay/Dockerfile -t theuth-relay .
-# Static musl binary, rustls (no OpenSSL), `FROM scratch`. UI is Vite `dist/` at `/web`.
+# Static musl binary, rustls (no OpenSSL), `FROM scratch`. UI is Vite `dist/` at `/web` (port 8787);
+# the marketing page is Vite `dist/` at `/site` (port 8788, `--site`).
 #
 # Why BUILDPLATFORM on the UI stage?
 #   Bun SIGILL/segfaults under QEMU (classic arm64 host → linux/amd64). The Vite
@@ -19,6 +20,16 @@ RUN bun install --frozen-lockfile --cwd /src/packages/apps
 COPY crates/desktop/ui/package.json crates/desktop/ui/bun.lock ./
 RUN bun install --frozen-lockfile
 COPY crates/desktop/ui/ ./
+RUN bun run build
+
+# ── theuth.io page (always native) ────────────────────────────────────────────
+# vite.config.ts reads ../crates/desktop/tauri.conf.json for __APP_VERSION__ (copied above).
+FROM --platform=$BUILDPLATFORM oven/bun:1.4-alpine AS site
+WORKDIR /src/site
+COPY crates/desktop/tauri.conf.json /src/crates/desktop/tauri.conf.json
+COPY site/package.json site/bun.lock ./
+RUN bun install --frozen-lockfile
+COPY site/ ./
 RUN bun run build
 
 # ── relay ─────────────────────────────────────────────────────────────────────
@@ -47,7 +58,8 @@ RUN --mount=type=cache,id=theuth-relay-cargo-registry-${TARGETPLATFORM},target=/
 FROM scratch
 COPY --from=build /theuth-relay /theuth-relay
 COPY --from=web --chown=65532:65532 /src/crates/desktop/ui/dist /web
+COPY --from=site --chown=65532:65532 /src/site/dist /site
 USER 65532
-EXPOSE 8787
+EXPOSE 8787 8788
 ENTRYPOINT ["/theuth-relay"]
-CMD ["--listen", "0.0.0.0:8787", "--web", "/web"]
+CMD ["--listen", "0.0.0.0:8787", "--web", "/web", "--site", "/site", "--site-listen", "0.0.0.0:8788"]

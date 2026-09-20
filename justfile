@@ -171,6 +171,11 @@ web-build:
     cd crates/desktop/ui && bun install && bun run build
     @echo "serve it: theuth-relay --listen 0.0.0.0:8787 --web crates/desktop/ui/dist"
 
+# Static theuth.io page, served by the relay's `--site` listener (port 8788).
+site-build:
+    cd site && bun install && bun run build
+    @echo "serve it: theuth-relay --listen 0.0.0.0:8787 --site site/dist"
+
 # Multi-arch (amd64+arm64) build+push. Needs buildx + ghcr login.
 # SPA compiles once on the host arch (Dockerfile FROM --platform=$BUILDPLATFORM).
 # Usage: just relay-docker-push
