@@ -764,7 +764,7 @@ async fn execute(
         Command::DictationPrewarm => UiEvent::Voice(voice::VoiceEvent::DictationModel {
             state: msg(api.dictation_prewarm(ext).await)?,
         }),
-        Command::DictationStart => match api.dictation_start(ext).await {
+        Command::DictationStart => match api.dictation_start(ext, None).await {
             Ok(id) => UiEvent::DictationStarting(id),
             Err(e) => UiEvent::DictationFailed(e.message().to_owned()),
         },

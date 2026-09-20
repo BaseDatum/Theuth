@@ -3,8 +3,9 @@
 //! 80 ms Mimi frame, base64 in JSON — over the bus. Voice notes (design doc
 //! 45): [`Transcriber`] turns a recorded file into text for the channels, and
 //! [`Synthesize`] renders one prose block into an MP3 [`Clip`] they can send back.
-//! Dictation (design doc 54): [`Dictation`] owns the microphone and a streaming
-//! Nemotron session; text lands at the frontend's caret as [`VoiceEvent::DictationText`].
+//! Dictation (design doc 54): [`Dictation`] owns a streaming Nemotron session fed
+//! by the microphone or by PCM a remote client pushes ([`PushAudio`]); text lands
+//! at the frontend's caret as [`VoiceEvent::DictationText`].
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -27,7 +28,8 @@ mod stt;
 pub mod vad;
 
 pub use dictation::{
-    Dictation, DictationState, DictationStatus, Prewarm, StartDictation, StopDictation,
+    AudioSource, Dictation, DictationState, DictationStatus, Prewarm, PushAudio, StartDictation,
+    StopDictation,
 };
 use kameo::reply::ReplySender;
 use speak::{Progress, Report};

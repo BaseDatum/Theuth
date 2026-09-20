@@ -157,7 +157,8 @@ export function Composer({
     return () => window.removeEventListener('wth:focus-composer', focus)
   }, [focused])
 
-  // Dictation (54 §7): Ctrl+D / the Mic button toggles; the daemon owns the mic, we own the caret.
+  // Dictation (54 §7): Ctrl+D / the Mic button toggles; we own the caret. The local daemon owns the mic; on a
+  // relay-linked harness this browser's mic streams to it instead (§4.5).
   const canDictate = voice && !priv && !(running && session)
   const dictate = () => {
     if (!canDictate) return
@@ -174,7 +175,7 @@ export function Composer({
     const ta = ref.current
     const at = ta?.selectionStart ?? text.length
     setOwner(true)
-    void dictation.start(api, text.slice(0, at), text.slice(at))
+    void dictation.start(api, text.slice(0, at), text.slice(at), useHarnesses.getState().active !== LOCAL)
   }
   const dictateRef = useRef(dictate)
   dictateRef.current = dictate

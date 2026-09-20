@@ -476,10 +476,12 @@ enqueue`). The live, interruptible agent is still phase 3.
 - **The wire format is an Opus packet stream.** The microphone seam is
   split (54, 2026-09-20): local frontends — the TUI and the desktop on the
   harness host — use the daemon's own mic (`voice::mic`, 54 §4.5), no audio
-  crosses the wire; `AudioIn` remains the remote-client seam, in the other
-  direction with the same shape and the same codec (`MediaRecorder` or a
-  wasm encoder in the webview, libopus decode in the harness); nothing is
-  chosen twice.
+  crosses the wire; the remote-client seam is now built (54 §8,
+  `dictation_audio`) and carries PCM in, not Opus — mono i16 base64, ~100 ms
+  a call, `AudioSource::Remote { sample_rate }` on the actor. Opus encode
+  in the webview (WebCodecs `AudioEncoder`, libopus decode in the harness,
+  the same codec as the output leg) is the upgrade once the WKWebView floor
+  includes it (iOS 26); nothing is chosen twice.
 
 ## 10. Phases and checks
 

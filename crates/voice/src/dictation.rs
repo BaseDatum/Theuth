@@ -1,6 +1,7 @@
 //! Live dictation (54 §4.3–4.5): the [`Dictation`] actor owns the streaming
 //! Nemotron session ([`Stream`]) and the VAD, loads both on [`Prewarm`], and per
-//! dictation runs one blocking task that reads the daemon's microphone, gates
+//! dictation runs one blocking task that reads the audio source — the daemon's
+//! microphone, or PCM a remote client streams in with [`PushAudio`] — gates
 //! it with the VAD and feeds the model only between onset and close (02-live
 //! §2). Text reaches the frontends as [`VoiceEvent::DictationText`]; where it
 //! lands is theirs. Nothing is written to disk.
@@ -10,7 +11,7 @@
 //! `Prewarm` reloads. Add `voice.dictation_idle_secs` if RSS complaints arrive.
 
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
 use kameo::actor::ActorRef;
@@ -28,11 +29,9 @@ use crate::{DictationId, FinishReason, ModelState, VoiceEvent};
 
 /// The model's input rate.
 const MODEL_RATE: usize = 16_000;
-/// One mic chunk: 20 ms at [`RATE`].
-const CHUNK: usize = RATE as usize / 50;
 /// Chunks per [`VoiceEvent::DictationLevel`] (160 ms).
 const LEVELS: usize = 8;
-/// How long the task waits for a mic chunk before rechecking cancel and deadline.
+/// How long the task waits for an audio chunk before rechecking cancel and deadline.
 const POLL: Duration = Duration::from_millis(50);
 /// 16 kHz samples kept behind the newest VAD frame while no utterance is open:
 /// the pre-roll, the onset run, one frame of slack.
@@ -43,10 +42,39 @@ const HISTORY: usize = (Gate::PREROLL + Gate::ONSET + 1) * FRAME;
 #[derive(Clone, Copy, Debug)]
 pub struct Prewarm;
 
-/// Open the mic and start. Errors: "already dictating", a model load failure,
-/// a mic open failure. Waits for a load in flight (or starts one) rather than failing.
+/// Where a dictation's audio comes from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(tag = "source", rename_all = "snake_case")]
+pub enum AudioSource {
+    /// The daemon's own microphone (54 §0.2).
+    Mic,
+    /// The client streams PCM with [`PushAudio`]; mono i16 at `sample_rate` Hz.
+    Remote {
+        /// Sample rate of the pushed PCM; a multiple of 50 (20 ms chunks), 8–192 kHz.
+        sample_rate: u32,
+    },
+}
+
+/// Start dictating from `source`. Errors: "already dictating", a bad remote
+/// `sample_rate`, a model load failure, a mic open failure. Waits for a load in
+/// flight (or starts one) rather than failing.
 #[derive(Clone, Copy, Debug)]
-pub struct StartDictation;
+pub struct StartDictation {
+    /// Where the audio comes from.
+    pub source: AudioSource,
+}
+
+/// Mono i16 PCM for a [`AudioSource::Remote`] dictation, at the `sample_rate`
+/// given at start. Any length; the actor rechunks. Errors: "not dictating"
+/// (unknown or finished id), "not a remote dictation".
+#[derive(Clone, Debug)]
+pub struct PushAudio {
+    /// The dictation the audio belongs to.
+    pub id: DictationId,
+    /// The samples.
+    pub pcm: Vec<i16>,
+}
 
 /// Stop `id` (idempotent; unknown id → `Ok`). The open utterance is flushed
 /// first; [`VoiceEvent::DictationFinished`] follows the reply.
@@ -77,6 +105,17 @@ type Engine = (Stream, Vad);
 struct Running {
     id: DictationId,
     cancel: CancellationToken,
+    /// The feed for a remote source; `None` when the task reads the mic.
+    remote: Option<Remote>,
+}
+
+/// The actor's end of a remote dictation's audio: pushed PCM is rechunked into
+/// 20 ms chunks for the task, a partial tail waiting for the next push.
+struct Remote {
+    tx: Sender<Chunk>,
+    pending: Vec<f32>,
+    /// Samples per chunk: `sample_rate / 50`.
+    chunk: usize,
 }
 
 /// `tell` from the load task.
@@ -84,7 +123,7 @@ struct Loaded(Result<Engine, String>);
 
 /// What the task tells the actor; each becomes a [`VoiceEvent`].
 enum Progress {
-    /// The mic is open.
+    /// The audio source is open.
     Started,
     /// RMS per 20 ms chunk, oldest first.
     Level(Vec<f32>),
@@ -118,8 +157,8 @@ pub struct Dictation {
     model: ModelState,
     /// `None` while loading or while a dictation task owns it.
     engine: Option<Engine>,
-    /// `StartDictation` askers parked until the load finishes.
-    waiters: Vec<ReplySender<Result<DictationId, String>>>,
+    /// `StartDictation` askers parked until the load finishes, each with its source.
+    waiters: Vec<(AudioSource, ReplySender<Result<DictationId, String>>)>,
     active: Option<Running>,
 }
 
@@ -165,22 +204,46 @@ impl Dictation {
         });
     }
 
-    /// Open the mic and start the task on the loaded engine.
-    fn begin(&mut self, me: ActorRef<Self>) -> Result<DictationId, String> {
+    /// Open the audio source and start the task on the loaded engine.
+    /// `source` was validated by the `StartDictation` handler.
+    fn begin(&mut self, me: ActorRef<Self>, source: AudioSource) -> Result<DictationId, String> {
         if self.active.is_some() {
             return Err("already dictating".into());
         }
         let Some(engine) = self.engine.take() else {
             return Err("dictation model not loaded".into());
         };
-        let started = rubato::FftFixedIn::<f32>::new(RATE as usize, MODEL_RATE, CHUNK, 2, 1)
-            .map_err(|e| format!("resampler: {e}"))
-            .and_then(|r| {
-                Capture::open()
-                    .map(|c| (r, c))
-                    .map_err(|e| format!("microphone: {e:#}"))
-            });
-        let (resampler, (cap, rx)) = match started {
+        let rate = match source {
+            AudioSource::Mic => RATE,
+            AudioSource::Remote { sample_rate } => sample_rate,
+        };
+        let chunk = rate as usize / 50;
+        let resampler = if rate as usize == MODEL_RATE {
+            Ok(None)
+        } else {
+            rubato::FftFixedIn::<f32>::new(rate as usize, MODEL_RATE, chunk, 2, 1)
+                .map(Some)
+                .map_err(|e| format!("resampler: {e}"))
+        };
+        let started = resampler.and_then(|r| match source {
+            AudioSource::Mic => Capture::open()
+                .map(|(cap, rx)| (r, Some(cap), rx, None))
+                .map_err(|e| format!("microphone: {e:#}")),
+            AudioSource::Remote { .. } => {
+                let (tx, rx) = std::sync::mpsc::channel();
+                Ok((
+                    r,
+                    None,
+                    rx,
+                    Some(Remote {
+                        tx,
+                        pending: Vec::new(),
+                        chunk,
+                    }),
+                ))
+            }
+        });
+        let (resampler, cap, rx, remote) = match started {
             Ok(s) => s,
             Err(e) => {
                 self.engine = Some(engine);
@@ -192,6 +255,7 @@ impl Dictation {
         self.active = Some(Running {
             id,
             cancel: cancel.clone(),
+            remote,
         });
         let max = self.max;
         let task = Task {
@@ -247,21 +311,60 @@ impl Message<StartDictation> for Dictation {
     type Reply = DelegatedReply<Result<DictationId, String>>;
     async fn handle(
         &mut self,
-        _: StartDictation,
+        m: StartDictation,
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
         let me = ctx.actor_ref().clone();
-        if self.active.is_some() {
+        if let AudioSource::Remote { sample_rate } = m.source
+            && let Err(e) = check_rate(sample_rate)
+        {
+            tx.send(Err(e));
+        } else if self.active.is_some() {
             tx.send(Err("already dictating".into()));
         } else if self.model == ModelState::Ready {
-            tx.send(self.begin(me));
+            tx.send(self.begin(me, m.source));
         } else {
             self.load(me).await;
-            self.waiters.push(tx);
+            self.waiters.push((m.source, tx));
         }
         reply
+    }
+}
+
+/// A remote `sample_rate` the task can chunk (20 ms = `rate / 50` whole samples) and resample.
+fn check_rate(rate: u32) -> Result<(), String> {
+    if !rate.is_multiple_of(50) {
+        Err("sample_rate must be a multiple of 50".into())
+    } else if !(8_000..=192_000).contains(&rate) {
+        Err("sample_rate must be between 8000 and 192000".into())
+    } else {
+        Ok(())
+    }
+}
+
+impl Message<PushAudio> for Dictation {
+    type Reply = Result<(), String>;
+    async fn handle(&mut self, m: PushAudio, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let Some(r) = self.active.as_mut().filter(|r| r.id == m.id) else {
+            return Err("not dictating".into());
+        };
+        let Some(remote) = r.remote.as_mut() else {
+            return Err("not a remote dictation".into());
+        };
+        remote
+            .pending
+            .extend(m.pcm.iter().map(|&s| f32::from(s) / 32768.0));
+        while remote.pending.len() >= remote.chunk {
+            let chunk: Vec<f32> = remote.pending.drain(..remote.chunk).collect();
+            // Receiver gone: the task ended and its `Finished` is in flight.
+            remote
+                .tx
+                .send(Ok(chunk))
+                .map_err(|_| String::from("not dictating"))?;
+        }
+        Ok(())
     }
 }
 
@@ -301,14 +404,14 @@ impl Message<Loaded> for Dictation {
                 self.engine = Some(engine);
                 self.set_model(ModelState::Ready).await;
                 let me = ctx.actor_ref().clone();
-                // The first waiter gets the mic; the rest hear "already dictating".
-                for tx in std::mem::take(&mut self.waiters) {
-                    tx.send(self.begin(me.clone()));
+                // The first waiter gets the slot; the rest hear "already dictating".
+                for (source, tx) in std::mem::take(&mut self.waiters) {
+                    tx.send(self.begin(me.clone(), source));
                 }
             }
             Err(message) => {
                 tracing::warn!("voice: dictation model: {message}");
-                for tx in self.waiters.drain(..) {
+                for (_, tx) in self.waiters.drain(..) {
                     tx.send(Err(message.clone()));
                 }
                 let state = if self.dir.is_dir() {
@@ -362,8 +465,9 @@ struct Task {
     stream: Stream,
     vad: Vad,
     gate: Gate,
-    /// 48 → 16 kHz; FIR state must survive chunk boundaries.
-    resampler: rubato::FftFixedIn<f32>,
+    /// Source rate → 16 kHz; `None` when the source is already 16 kHz. FIR
+    /// state must survive chunk boundaries.
+    resampler: Option<rubato::FftFixedIn<f32>>,
     /// 16 kHz samples from absolute sample `base` on.
     buf: Vec<f32>,
     base: usize,
@@ -390,10 +494,11 @@ impl Task {
             .is_ok()
     }
 
-    /// Read the mic until cancel, deadline or failure; flush; hand the engine back.
+    /// Read the source until cancel, deadline or failure; flush; hand the engine back.
+    /// `cap` is `Some` for the mic; a remote source's chunks arrive via `rx` alone.
     fn run(
         mut self,
-        cap: Capture,
+        cap: Option<Capture>,
         rx: Receiver<Chunk>,
         cancel: CancellationToken,
         max: Duration,
@@ -408,6 +513,9 @@ impl Task {
             if Instant::now() >= deadline {
                 break Ok(FinishReason::Stopped);
             }
+            // `Disconnected`: the mic thread died. A remote feed cannot disconnect
+            // while the actor lives — it holds the `Sender` in `Running` until this
+            // task's `Finished` lands — and an actor gone is caught by `is_alive` above.
             let chunk = match rx.recv_timeout(POLL) {
                 Ok(Ok(c)) => c,
                 Ok(Err(m)) => {
@@ -418,7 +526,7 @@ impl Task {
                 Err(RecvTimeoutError::Timeout) => continue,
                 Err(RecvTimeoutError::Disconnected) => {
                     break Ok(FinishReason::Error {
-                        message: "microphone closed".into(),
+                        message: "audio source closed".into(),
                     });
                 }
             };
@@ -441,16 +549,22 @@ impl Task {
         }
     }
 
-    /// One 20 ms mic chunk: level, resample, VAD, feed.
-    fn chunk(&mut self, pcm48: &[f32]) -> anyhow::Result<()> {
-        let rms = (pcm48.iter().map(|s| s * s).sum::<f32>() / pcm48.len().max(1) as f32).sqrt();
+    /// One 20 ms source chunk: level, resample, VAD, feed.
+    fn chunk(&mut self, pcm: &[f32]) -> anyhow::Result<()> {
+        let rms = (pcm.iter().map(|s| s * s).sum::<f32>() / pcm.len().max(1) as f32).sqrt();
         self.levels.push(rms.min(1.0));
         if self.levels.len() == LEVELS {
             let levels = std::mem::take(&mut self.levels);
             self.report(Progress::Level(levels));
         }
-        let out = self.resampler.process(&[pcm48], None)?;
-        let new = &out[0];
+        let out;
+        let new: &[f32] = match self.resampler.as_mut() {
+            Some(r) => {
+                out = r.process(&[pcm], None)?;
+                &out[0]
+            }
+            None => pcm,
+        };
         self.buf.extend_from_slice(new);
         self.total += new.len();
         let probs = self.vad.process(new);
@@ -557,7 +671,12 @@ mod tests {
         let actor = Dictation::spawn(Dictation::new(rt, dir.clone(), Duration::from_secs(1)));
 
         assert_eq!(actor.ask(Prewarm).await.expect("ask"), ModelState::Loading);
-        let err = match actor.ask(StartDictation).await {
+        let err = match actor
+            .ask(StartDictation {
+                source: AudioSource::Mic,
+            })
+            .await
+        {
             Err(kameo::error::SendError::HandlerError(e)) => e,
             other => panic!("expected a handler error, got {other:?}"),
         };
@@ -571,5 +690,44 @@ mod tests {
             })
             .await
             .expect("unknown id is Ok");
+    }
+
+    /// Without a dictation, pushed audio is refused; a remote rate that does not
+    /// split into 20 ms chunks is refused before any load starts.
+    #[tokio::test]
+    async fn remote_guards() {
+        let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
+        let actor = Dictation::spawn(Dictation::new(
+            rt,
+            std::env::temp_dir().join("wth-no-such-dictation-model"),
+            Duration::from_secs(1),
+        ));
+        let err = match actor
+            .ask(PushAudio {
+                id: DictationId::new(),
+                pcm: vec![0; 320],
+            })
+            .await
+        {
+            Err(kameo::error::SendError::HandlerError(e)) => e,
+            other => panic!("expected a handler error, got {other:?}"),
+        };
+        assert_eq!(err, "not dictating");
+        let err = match actor
+            .ask(StartDictation {
+                source: AudioSource::Remote {
+                    sample_rate: 22_051,
+                },
+            })
+            .await
+        {
+            Err(kameo::error::SendError::HandlerError(e)) => e,
+            other => panic!("expected a handler error, got {other:?}"),
+        };
+        assert!(err.contains("multiple of 50"), "{err}");
+        assert_eq!(
+            actor.ask(DictationStatus).await.expect("ask").model,
+            ModelState::Missing
+        );
     }
 }

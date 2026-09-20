@@ -176,6 +176,7 @@ async fn export_bindings() {
         voice::Transcript,
         voice::DictationId,
         voice::DictationState,
+        voice::AudioSource,
         surface::Spec,
         surface::Element,
         surface::Component,
