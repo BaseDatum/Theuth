@@ -174,6 +174,8 @@ async fn export_bindings() {
         voice::FinishReason,
         voice::SpeechId,
         voice::Transcript,
+        voice::DictationId,
+        voice::DictationState,
         surface::Spec,
         surface::Element,
         surface::Component,

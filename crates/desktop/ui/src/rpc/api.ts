@@ -11,6 +11,8 @@ import type { Concept } from '@/rpc/bindings/Concept'
 import type { ContextRemoval } from '@/rpc/bindings/ContextRemoval'
 import type { ContextSnapshot } from '@/rpc/bindings/ContextSnapshot'
 import type { ContextTarget } from '@/rpc/bindings/ContextTarget'
+import type { DictationId } from '@/rpc/bindings/DictationId'
+import type { DictationState } from '@/rpc/bindings/DictationState'
 import type { Decision } from '@/rpc/bindings/Decision'
 import type { Gate } from '@/rpc/bindings/Gate'
 import type { HarvestResult } from '@/rpc/bindings/HarvestResult'
@@ -23,6 +25,7 @@ import type { JobView } from '@/rpc/bindings/JobView'
 import type { McpProgress } from '@/rpc/bindings/McpProgress'
 import type { McpServer } from '@/rpc/bindings/McpServer'
 import type { Meta } from '@/rpc/bindings/Meta'
+import type { ModelState } from '@/rpc/bindings/ModelState'
 import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
 import type { Node } from '@/rpc/bindings/Node'
 import type { Pairing } from '@/rpc/bindings/Pairing'
@@ -139,6 +142,14 @@ export interface Api {
   context_items(session: SessionId): Promise<ContextSnapshot>
   /** Replace the turn opened at `turn` with `text` (29 §3); refused mid-turn. */
   edit_turn(session: SessionId, turn: number, text: string, files: string[]): Promise<null>
+  /** Load the dictation model if not loaded (54 §4.3); never opens the mic. Answers the current state; `-32001` when voice is disabled. */
+  dictation_prewarm(): Promise<ModelState>
+  /** Open the harness mic and dictate (54 §4.3); `DictationStarted`/`DictationText`/`DictationFinished` events carry the id. Rejects with `already dictating`, model missing, or `microphone is on the harness host` (relay). */
+  dictation_start(): Promise<DictationId>
+  /** Stop dictation `id`, flushing the open utterance; idempotent. */
+  dictation_stop(id: DictationId): Promise<null>
+  /** What is loaded and which dictation (if any) is running (54 §4.3). */
+  dictation_status(): Promise<DictationState>
   /** Rewrite a schedule's `enabled:` line (33 §3.5; the toggle); rejects with `no such schedule`. */
   enable_schedule(name: string, enabled: boolean): Promise<ScheduleInfo>
   /** Copy artifact `id`'s blob to `dest` (parent created; refuses to overwrite); returns `dest` (35 §3.5). */
@@ -382,6 +393,10 @@ export const METHODS = [
   'create_session',
   'delete_secret',
   'delete_session',
+  'dictation_prewarm',
+  'dictation_start',
+  'dictation_status',
+  'dictation_stop',
   'edit_turn',
   'enable_schedule',
   'export_artifact',

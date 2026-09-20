@@ -10,6 +10,7 @@ export type Hotkey =
   | 'wth:copy-last-response'
   | 'wth:copy-last-code'
   | 'wth:shortcuts'
+  | 'wth:dictate'
 
 type Binding = {
   code: string
@@ -17,9 +18,11 @@ type Binding = {
   shift: boolean
   event: Hotkey
   inEditable: boolean
+  /** Literal Ctrl on every OS, bypassing the `mod` mapping (54 §0.9); `mod` is ignored. */
+  ctrl?: boolean
 }
 
-/** ChatGPT's bindings (25 §3): ⇧⌘O, ⌘K, ⇧⌘S, ⇧Esc, ⇧⌘C, ⇧⌘;, ⌘/. Physical codes: ⇧; types `:`. `mod` is ⌘ on macOS, Ctrl elsewhere. */
+/** ChatGPT's bindings (25 §3): ⇧⌘O, ⌘K, ⇧⌘S, ⇧Esc, ⇧⌘C, ⇧⌘;, ⌘/, plus Ctrl+D dictation (54). Physical codes: ⇧; types `:`. `mod` is ⌘ on macOS, Ctrl elsewhere. */
 const BINDINGS: Binding[] = [
   {
     code: 'KeyO',
@@ -70,6 +73,14 @@ const BINDINGS: Binding[] = [
     event: 'wth:shortcuts',
     inEditable: false,
   },
+  {
+    code: 'KeyD',
+    mod: false,
+    ctrl: true,
+    shift: false,
+    event: 'wth:dictate',
+    inEditable: true,
+  },
 ]
 
 const isApple = () =>
@@ -94,7 +105,8 @@ export function useHotkeys(): void {
     const bindings = touch() ? BINDINGS.filter((b) => b.event === 'wth:search') : BINDINGS
     const apple = isApple()
     const onKey = (e: KeyboardEvent) => {
-      if (e.altKey || (apple ? e.ctrlKey : e.metaKey)) return
+      // A `ctrl` binding matches literal Ctrl alone; the rest bail when the other modifier is held.
+      const other = e.altKey || (apple ? e.ctrlKey : e.metaKey)
       const mod = apple ? e.metaKey : e.ctrlKey
       const target = e.target
       const editable =
@@ -104,10 +116,10 @@ export function useHotkeys(): void {
           target instanceof HTMLTextAreaElement)
       const hit = bindings.find(
         (b) =>
-          b.mod === mod &&
-          b.shift === e.shiftKey &&
           b.code === e.code &&
-          (b.inEditable || !editable),
+          b.shift === e.shiftKey &&
+          (b.inEditable || !editable) &&
+          (b.ctrl ? e.ctrlKey && !e.metaKey && !e.altKey : b.mod === mod && !other),
       )
       if (!hit) return
       e.preventDefault()

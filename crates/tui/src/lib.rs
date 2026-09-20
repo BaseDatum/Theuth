@@ -28,6 +28,7 @@ use tools::{
 };
 
 mod clip;
+pub mod dictation;
 pub mod model;
 pub mod search;
 mod ui;
@@ -81,6 +82,7 @@ impl runtime::Plugin for TuiPlugin {
             .await;
         rt.subscribe::<Bridge, agent::PeerDelivered>(&bridge).await;
         rt.subscribe::<Bridge, a2a::A2aChanged>(&bridge).await;
+        rt.subscribe::<Bridge, voice::VoiceEvent>(&bridge).await;
         let api = Arc::new(Server::new(rt.clone()));
         // The TUI is the one in-process caller; one peer for its lifetime so
         // `with_extensions` methods see a stable, authenticated connection.
@@ -179,6 +181,7 @@ forward!(
     agent::PeerMessageChanged => PeerMessageChanged,
     agent::PeerDelivered => PeerDelivered,
     a2a::A2aChanged => A2aChanged,
+    voice::VoiceEvent => Voice,
 );
 
 /// The one place commands become `rpc::Api` calls. Each command runs in its
@@ -531,7 +534,9 @@ async fn execute(
         Command::KnowledgeRestore { id, commit } => {
             UiEvent::KnowledgeRestored(msg(api.knowledge_restore(id, commit).await)?)
         }
-        Command::Harvest(session) => UiEvent::Harvested(msg(api.knowledge_harvest(ext, session).await)?),
+        Command::Harvest(session) => {
+            UiEvent::Harvested(msg(api.knowledge_harvest(ext, session).await)?)
+        }
         Command::AddMcp { name, entry } => {
             UiEvent::McpAdded(msg(api.add_mcp_server(name, entry).await)?)
         }
@@ -750,9 +755,23 @@ async fn execute(
             session,
             reply_to,
             text,
-        } => UiEvent::PeerAnswered(msg(api.answer_peer_request(ext, session, reply_to, text).await)?),
+        } => UiEvent::PeerAnswered(msg(api
+            .answer_peer_request(ext, session, reply_to, text)
+            .await)?),
         Command::A2aStatus => UiEvent::A2a(msg(api.a2a_status().await)?),
         Command::ReloadA2a => UiEvent::A2a(msg(api.reload_a2a().await)?),
+        // The reply carries the state even when `DictationModel` was published before this bridge subscribed.
+        Command::DictationPrewarm => UiEvent::Voice(voice::VoiceEvent::DictationModel {
+            state: msg(api.dictation_prewarm(ext).await)?,
+        }),
+        Command::DictationStart => match api.dictation_start(ext).await {
+            Ok(id) => UiEvent::DictationStarting(id),
+            Err(e) => UiEvent::DictationFailed(e.message().to_owned()),
+        },
+        Command::DictationStop(id) => {
+            msg(api.dictation_stop(ext, id).await)?;
+            return Ok(());
+        }
     };
     let _ = tx.send(reply);
     Ok(())
@@ -1444,21 +1463,28 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             .iter()
             .try_for_each(|t| writeln!(out, "{}", model::terminal_row(t))),
         // The observer needs a TTY; a page that lands here prints its text rows.
-        UiEvent::PtyScreen { reply: Ok(tools::PtyScreenReply::Updated(p)), .. } => {
-            p.lines.iter().try_for_each(|row| {
-                let text: String = row
-                    .iter()
-                    .flat_map(|r| r.cells.iter())
-                    .filter(|c| !c.continuation)
-                    .map(|c| c.text.as_str())
-                    .collect();
-                writeln!(out, "{}", text.trim_end())
-            })
-        }
-        UiEvent::PtyScreen { reply: Ok(tools::PtyScreenReply::Unavailable), .. } => {
+        UiEvent::PtyScreen {
+            reply: Ok(tools::PtyScreenReply::Updated(p)),
+            ..
+        } => p.lines.iter().try_for_each(|row| {
+            let text: String = row
+                .iter()
+                .flat_map(|r| r.cells.iter())
+                .filter(|c| !c.continuation)
+                .map(|c| c.text.as_str())
+                .collect();
+            writeln!(out, "{}", text.trim_end())
+        }),
+        UiEvent::PtyScreen {
+            reply: Ok(tools::PtyScreenReply::Unavailable),
+            ..
+        } => {
             writeln!(out, "No longer available.")
         }
-        UiEvent::PtyScreen { reply: Ok(tools::PtyScreenReply::Unchanged { .. }), .. } => Ok(()),
+        UiEvent::PtyScreen {
+            reply: Ok(tools::PtyScreenReply::Unchanged { .. }),
+            ..
+        } => Ok(()),
         UiEvent::PtyScreen { reply: Err(e), .. } => writeln!(out, "terminal: {e}"),
         UiEvent::SessionOpened(o) => writeln!(
             out,
@@ -1479,5 +1505,8 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
                 agent::CleanupStatus::Incomplete => " (cleanup incomplete)",
             }
         ),
+        // No editor in print mode: nothing to dictate into.
+        UiEvent::Voice(_) | UiEvent::DictationStarting(_) => Ok(()),
+        UiEvent::DictationFailed(m) => writeln!(out, "dictation: {m}"),
     };
 }

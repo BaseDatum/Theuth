@@ -337,7 +337,7 @@ async fn run_api(
     deadline: Instant,
 ) -> bool {
     let mut session = pending.is_none();
-    let (peer, _peer_guard) = RpcPeer::open();
+    let (peer, _peer_guard) = RpcPeer::open_remote();
     let methods = tokio::select! {
         _ = c.cancel.cancelled() => { c.close(CLOSE_NORMAL).await; return session }
         d = tokio::time::timeout_at(deadline, c.ctx.dispatch()) => match d {

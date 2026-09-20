@@ -11,6 +11,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tools::{Decision, Risk};
 
 use crate::clip;
+use crate::dictation::{self, Dictating, Phase};
 use crate::model::{
     APP_WHERE, AcpRow, CardKind, Command, Entry, Level, Menu, MenuKey, Model, Prompt, Row, Switch,
     TodoCard, TurnAction, UiEvent, action_name, agent_row, artifact_row, artifact_size, describe,
@@ -98,7 +99,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
         }
     });
     let mut input = hooks.use_state(String::new);
-    let handle = hooks.use_ref_default::<TextInputHandle>();
+    let mut handle = hooks.use_ref_default::<TextInputHandle>();
     // The `/search` query has its own editor and handle (49 §6.1): the chat
     // draft, its cursor and paste tokens are never touched by a search.
     let search_handle = hooks.use_ref_default::<TextInputHandle>();
@@ -141,6 +142,8 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             // The harness-wide vision fallback, so attaching an image to a
             // text-only model can say who will look at it (52 §3.2).
             let _ = commands.send(Command::GetVisionModel);
+            // The streaming STT model: loaded now so Ctrl+D is instant (54 §0.5).
+            let _ = commands.send(Command::DictationPrewarm);
             let mut frames = tokio::time::interval(std::time::Duration::from_millis(16));
             frames.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             let mut pending = Vec::new();
@@ -175,6 +178,12 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 // A withdrawn steer comes back into the (empty) editor.
                 if let Some(text) = m.recall.take() {
                     input.set(text);
+                }
+                // A dictation ended: the spliced value, then the caret in the
+                // same tick (an external value change alone sends it to the end).
+                if let Some((value, caret)) = m.pending_input.take() {
+                    input.set(value);
+                    handle.write().set_cursor_offset(caret);
                 }
                 if std::mem::take(&mut m.refresh_mcp) {
                     let _ = commands.send(Command::ListMcp(m.session));
@@ -294,6 +303,30 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             }
             if code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL) {
                 m.quit = true;
+                return;
+            }
+            // Dictation (54 §6): the box is busy; Ctrl+D keeps, Esc discards,
+            // every other key is swallowed.
+            let ctrl_d = code == KeyCode::Char('d') && modifiers.contains(KeyModifiers::CONTROL);
+            if m.dictation.is_some() {
+                let cmd = match code {
+                    _ if ctrl_d => m.toggle_dictation(String::new(), String::new()),
+                    KeyCode::Esc => m.discard_dictation(),
+                    _ => None,
+                };
+                if let Some(cmd) = cmd {
+                    let _ = commands.send(cmd);
+                }
+                return;
+            }
+            // Idle: anchor the caret (a byte offset, on a char boundary) and start.
+            if ctrl_d && m.input_focused() && m.menu.is_none() && m.secret_request().is_none() {
+                let v = input.read();
+                let at = handle.read().cursor_offset();
+                let at = if v.is_char_boundary(at) { at } else { v.len() };
+                if let Some(cmd) = m.toggle_dictation(v[..at].to_owned(), v[at..].to_owned()) {
+                    let _ = commands.send(cmd);
+                }
                 return;
             }
             // Chat-only: a search menu on top must not toggle transcript cards.
@@ -583,24 +616,33 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 })
             }))
             View(height: 1, padding_left: 1) {
-                Text(content: header, color: header_color)
+                #(match &m.dictation {
+                    Some(d) => element!(MixedText(contents: dictation_header(d, m.frame), wrap: TextWrap::NoWrap)).into_any(),
+                    None => element!(Text(content: header, color: header_color)).into_any(),
+                })
             }
             // `flex_shrink: 0`: once the transcript fills the screen the box
             // would otherwise be squeezed back to `min_height` as it grows.
-            View(border_style: BorderStyle::Round, border_color: Color::Blue, min_height: 3, flex_shrink: 0.0) {
-                TextInput(
-                    handle,
-                    has_focus,
-                    value: input.to_string(),
-                    multiline: true,
-                    auto_grow: true,
-                    newline_modifiers: KeyModifiers::SHIFT,
-                    mask,
-                    on_change: move |v: String| {
-                        model.write().sync_slash(&v);
-                        input.set(v);
-                    },
-                )
+            // While dictating the box turns cyan and shows the region (54 §6)
+            // over a hidden, still-mounted editor: unmounting it would lose
+            // its cursor state and the handle the stop restores through.
+            View(border_style: BorderStyle::Round, border_color: if m.dictation.is_some() { Color::Cyan } else { Color::Blue }, min_height: 3, flex_shrink: 0.0, flex_direction: FlexDirection::Column) {
+                View(width: 100pct, display: if m.dictation.is_some() { Display::None } else { Display::Flex }) {
+                    TextInput(
+                        handle,
+                        has_focus,
+                        value: input.to_string(),
+                        multiline: true,
+                        auto_grow: true,
+                        newline_modifiers: KeyModifiers::SHIFT,
+                        mask,
+                        on_change: move |v: String| {
+                            model.write().sync_slash(&v);
+                            input.set(v);
+                        },
+                    )
+                }
+                #(m.dictation.as_ref().map(|d| element!(MixedText(contents: dictation_region(d), wrap: TextWrap::Wrap))))
             }
             View(height: 1, padding_left: 1, padding_right: 1, justify_content: JustifyContent::SpaceBetween) {
                 Text(content: m.status(), color: Color::DarkGrey)
@@ -608,6 +650,54 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             }
         }
     }
+}
+
+/// Header row while dictating (54 §6): a blinking `●`, the level meter in
+/// cyan, the elapsed clock and the keys in grey.
+fn dictation_header(d: &Dictating, frame: usize) -> Vec<MixedTextContent> {
+    let dot = if (frame / 30).is_multiple_of(2) {
+        "● "
+    } else {
+        "  "
+    };
+    let state = match d.phase {
+        Phase::Starting => "starting",
+        Phase::Dictating => "dictating",
+        Phase::Stopping => "stopping",
+    };
+    vec![
+        MixedTextContent::new(format!("{dot}{state}  ")).color(Color::Cyan),
+        MixedTextContent::new(dictation::meter(&d.levels, dictation::METER_CELLS))
+            .color(Color::Cyan),
+        MixedTextContent::new(format!("  {}", d.clock())),
+        MixedTextContent::new(" (Ctrl+D stop · Esc discard)").color(Color::DarkGrey),
+    ]
+}
+
+/// The composer while dictating (54 §5.1): `before`, `lead`, each utterance
+/// (grey until the VAD closes it), `trail`, `after`. Empty utterances are
+/// skipped, so the joins mirror `splice`.
+fn dictation_region(d: &Dictating) -> Vec<MixedTextContent> {
+    let mut out = vec![MixedTextContent::new(&d.before)];
+    let mut first = true;
+    for u in d.utts.iter().filter(|u| !u.text.is_empty()) {
+        out.push(MixedTextContent::new(if first { d.lead() } else { " " }));
+        first = false;
+        let mut c = MixedTextContent::new(&u.text);
+        if !u.is_final {
+            c = c.color(Color::DarkGrey);
+        }
+        out.push(c);
+    }
+    if !first {
+        out.push(MixedTextContent::new(d.trail()));
+    }
+    out.push(MixedTextContent::new(&d.after));
+    if d.before.is_empty() && d.after.is_empty() && first {
+        // An empty box still needs a row for the border to wrap.
+        out.push(MixedTextContent::new(" "));
+    }
+    out
 }
 
 /// The shown `secret_request` (37 §5): name and note, what version the
@@ -1115,9 +1205,16 @@ fn terminal_line(
             }
             if cursor == Some(here) {
                 if !text.is_empty() {
-                    contents.push(styled(&run.style, MixedTextContent::new(std::mem::take(&mut text))));
+                    contents.push(styled(
+                        &run.style,
+                        MixedTextContent::new(std::mem::take(&mut text)),
+                    ));
                 }
-                let glyph = if cell.text.is_empty() { " " } else { cell.text.as_str() };
+                let glyph = if cell.text.is_empty() {
+                    " "
+                } else {
+                    cell.text.as_str()
+                };
                 contents.push(styled(&run.style, MixedTextContent::new(glyph)).invert());
                 continue;
             }

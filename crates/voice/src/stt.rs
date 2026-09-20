@@ -1,13 +1,15 @@
 //! Speech-to-text (45 §4.2): any container symphonia demuxes → mono 16 kHz →
 //! Parakeet TDT via `parakeet-rs`. The model is loaded on first use and dropped
-//! after `stt_idle_secs` unused. No `parakeet_rs`/`symphonia` type leaves here.
+//! after `stt_idle_secs` unused. [`Stream`] is the live half (54 §0.3): the
+//! cache-aware Nemotron transducer fed fixed windows by the dictation task.
+//! No `parakeet_rs`/`symphonia` type leaves here.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use kameo::message::{Context, Message};
-use parakeet_rs::{ParakeetTDT, TimestampMode, Transcriber as _};
+use parakeet_rs::{Nemotron, ParakeetTDT, TimestampMode, Transcriber as _};
 use parking_lot::Mutex;
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::{CODEC_TYPE_NULL, CODEC_TYPE_OPUS, DecoderOptions};
@@ -24,6 +26,9 @@ const MODEL_RATE: u32 = 16_000;
 const PIECE: usize = 180 * MODEL_RATE as usize;
 /// How often the idle watchdog looks.
 const WATCH: Duration = Duration::from_secs(60);
+/// Samples per streaming window: 560 ms at 16 kHz, the Nemotron encoder's chunk
+/// (56 mel frames × 160 hop). 35 VAD frames of 256, so window edges are frame edges.
+pub const WINDOW: usize = 8_960;
 
 /// ONNX Runtime is loaded at run time, from the first of: the bundle (`Contents/Frameworks/`
 /// beside the `.app`'s `MacOS/wth`, or the binary's own directory — `package-macos.sh` ships
@@ -31,7 +36,24 @@ const WATCH: Duration = Duration::from_secs(60);
 /// (`brew install onnxruntime`). Linked statically it brings protobuf 3.21, which cannot share
 /// a process with the protobuf-lite 3.14 inside `sentencepiece` (ptts): the TTS load aborts. As
 /// a dylib its symbols stay private to it.
-fn ort_lib(dir: &Path) -> anyhow::Result<PathBuf> {
+///
+/// `ort::init_from` runs once per process, on the first call — the TDT model, the streaming
+/// model and the VAD (`wavekat-vad`'s own `ort` sessions) all share it, so the first caller's
+/// `dir` decides which checkpoint directory is searched; the other locations are dir-independent.
+pub(crate) fn ort_lib(dir: &Path) -> anyhow::Result<PathBuf> {
+    static ORT: OnceLock<Result<PathBuf, String>> = OnceLock::new();
+    ORT.get_or_init(|| {
+        let lib = find_ort_lib(dir).map_err(|e| e.to_string())?;
+        ort::init_from(&lib)
+            .map_err(|e| format!("load {}: {e}", lib.display()))?
+            .commit();
+        Ok(lib)
+    })
+    .clone()
+    .map_err(anyhow::Error::msg)
+}
+
+fn find_ort_lib(dir: &Path) -> anyhow::Result<PathBuf> {
     let ext = if cfg!(target_os = "macos") {
         ".dylib"
     } else {
@@ -159,6 +181,42 @@ pub(crate) fn resample(pcm: Vec<f32>, from: u32, to: u32) -> anyhow::Result<Vec<
     Ok(out)
 }
 
+/// One live streaming-STT session (54 §0.3, `meetings/02-live.md` §0.1b): the
+/// cache-aware Nemotron transducer. Feed 16 kHz mono in fixed [`WINDOW`]s; each
+/// call returns only the *new* punctuated text — encoder cache and decoder state
+/// persist across windows, so the output is append-only. `reset` at a real turn
+/// boundary, never per window. `Send` but not `Sync`: one owner task per stream.
+pub struct Stream(Nemotron);
+
+impl Stream {
+    /// Load the session from `dir` (`encoder.onnx`, `decoder_joint.onnx`,
+    /// `tokenizer.model`) after the process-wide ONNX Runtime init. A missing
+    /// directory is a distinct, path-bearing error so the caller can report `Missing`.
+    pub fn open(dir: &Path) -> anyhow::Result<Stream> {
+        if !dir.is_dir() {
+            anyhow::bail!("dictation model not found at {}", dir.display());
+        }
+        ort_lib(dir)?;
+        let t = Instant::now();
+        let m = Nemotron::from_pretrained(dir, None)
+            .map_err(|e| anyhow::anyhow!("no streaming STT model in {}: {e}", dir.display()))?;
+        tracing::info!("voice: streaming STT model loaded in {:?}", t.elapsed());
+        Ok(Stream(m))
+    }
+
+    /// One encoder step over `window`; the text emitted by it (often empty).
+    pub fn feed(&mut self, window: &[f32; WINDOW]) -> anyhow::Result<String> {
+        self.0
+            .transcribe_chunk(window)
+            .map_err(|e| anyhow::anyhow!("transcribe_chunk: {e}"))
+    }
+
+    /// Drop encoder cache, decoder state and the audio buffer: next `feed` starts a new turn.
+    pub fn reset(&mut self) {
+        self.0.reset();
+    }
+}
+
 /// The [`crate::TRANSCRIBER_ACTOR`] actor (45 §4.2). Inference runs in
 /// `spawn_blocking`; the actor itself never waits on it.
 #[derive(kameo::Actor)]
@@ -212,10 +270,7 @@ impl Transcriber {
             Some(m) => m,
             None => {
                 let t = Instant::now();
-                let lib = ort_lib(&self.dir)?;
-                ort::init_from(&lib)
-                    .map_err(|e| anyhow::anyhow!("load {}: {e}", lib.display()))?
-                    .commit();
+                ort_lib(&self.dir)?;
                 let m = ParakeetTDT::from_pretrained(&self.dir, None)
                     .map_err(|e| anyhow::anyhow!("no STT model in {}: {e}", self.dir.display()))?;
                 tracing::info!("voice: STT model loaded in {:?}", t.elapsed());

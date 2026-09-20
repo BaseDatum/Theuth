@@ -18,6 +18,10 @@ use agent::{
     ProviderInfo, QueuedInput, SessionSummary, SkillBody, SkillMeta, Usage, VisionNote,
     VisionStage, VisionStatus,
 };
+use agent::{
+    CleanupStatus, CloseResult, CostBucket, CostScope, Coverage, CreateSessionOptions, Money,
+    Retention, SessionCost, SessionOpen,
+};
 use iocraft::KeyCode;
 use knowledge::{Change, ChangeStatus, HarvestResult, History, Meta, Revision};
 use models::Catalog;
@@ -29,14 +33,11 @@ use tools::{
     AskResolved, Decision, Gate, JobEvent, JobView, McpAuth, McpProgress, McpServer, McpToolInfo,
     PolicyAction, RepoInfo,
 };
-use agent::{
-    CleanupStatus, CloseResult, CostBucket, CostScope, Coverage, CreateSessionOptions, Money,
-    Retention, SessionCost, SessionOpen,
-};
 use tools::{JobId, PtyPage, PtyScreenReply, PtyViewport, TerminalSummary};
 use uuid::Uuid;
 
 use crate::clip::Image;
+use crate::dictation::{Dictating, Phase};
 use crate::search;
 
 /// Everything the UI can receive: bus events plus replies to its own commands.
@@ -275,6 +276,12 @@ pub enum UiEvent {
     SessionOpened(SessionOpen),
     /// Reply to [`Command::LeaveSession`]: the root left and how far its cleanup got.
     SessionLeft(SessionId, CloseResult),
+    /// Voice plugin bus event; only the `Dictation*` variants matter here (54 §6).
+    Voice(voice::VoiceEvent),
+    /// Reply to [`Command::DictationStart`]: the daemon opened a dictation for us.
+    DictationStarting(voice::DictationId),
+    /// [`Command::DictationStart`] was refused (already dictating, voice disabled, model missing).
+    DictationFailed(String),
 }
 
 /// Everything the UI can ask of the rest of the process. One task turns
@@ -712,6 +719,12 @@ pub enum Command {
         /// Its lease secret.
         secret: String,
     },
+    /// `dictation_prewarm`: load the streaming STT model once at startup (54 §0.5).
+    DictationPrewarm,
+    /// `dictation_start`: open the mic; the reply is [`UiEvent::DictationStarting`] or [`UiEvent::DictationFailed`].
+    DictationStart,
+    /// `dictation_stop(id)`: close the mic; `DictationFinished` follows on the bus.
+    DictationStop(voice::DictationId),
 }
 
 /// One row of the `/login` picker.
@@ -1199,6 +1212,7 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "subagents of this session (picker: ⏎ opens one)",
     ),
     ("/todos", "", "show or hide the plan card (F2)"),
+    ("/dictate", "", "toggle dictation (Ctrl+D)"),
     (
         "/jobs",
         "[kill <id>]",
@@ -1696,7 +1710,9 @@ pub fn session_rows(list: Vec<SessionSummary>) -> Vec<Grouped<(SessionSummary, u
             children.entry(p).or_default().push(i);
         }
     }
-    let roots: Vec<usize> = (0..list.len()).filter(|&i| list[i].parent.is_none()).collect();
+    let roots: Vec<usize> = (0..list.len())
+        .filter(|&i| list[i].parent.is_none())
+        .collect();
     let order = project_order(roots.iter().map(|&i| list[i].project.as_deref()));
     fn walk(
         list: &[SessionSummary],
@@ -1713,7 +1729,10 @@ pub fn session_rows(list: Vec<SessionSummary>) -> Vec<Grouped<(SessionSummary, u
     let mut rows = Vec::with_capacity(list.len() + order.len());
     for project in order {
         rows.push(Grouped::Heading(project_heading(project)));
-        for &r in roots.iter().filter(|&&r| list[r].project.as_deref() == project) {
+        for &r in roots
+            .iter()
+            .filter(|&&r| list[r].project.as_deref() == project)
+        {
             walk(&list, &children, r, 0, &mut rows);
         }
     }
@@ -1900,7 +1919,10 @@ impl TerminalView {
                 self.unavailable = true;
                 true
             }
-            Ok(PtyScreenReply::Unchanged { viewport: v, revision }) => {
+            Ok(PtyScreenReply::Unchanged {
+                viewport: v,
+                revision,
+            }) => {
                 self.error = None;
                 if v != self.viewport {
                     self.revision = None;
@@ -3061,6 +3083,14 @@ pub struct Model {
     /// Bumped whenever a terminal observer opens: replies carry the epoch
     /// they were asked under and older ones are dropped.
     terminal_epoch: u64,
+    /// The dictation in progress (54 §6); the editor is read-only while `Some`.
+    pub dictation: Option<Dictating>,
+    /// `before`/`after` snapshot taken at Ctrl+D, waiting for `dictation_start`'s reply.
+    dictation_pending: Option<(String, String)>,
+    /// Streaming STT model state (`DictationModel` events); Ctrl+D needs `Ready`.
+    pub dictation_model: voice::ModelState,
+    /// `(value, caret)` the editor must take this frame: a dictation stopped or was discarded.
+    pub pending_input: Option<(String, usize)>,
 }
 
 impl Model {
@@ -3094,6 +3124,9 @@ impl Model {
             private: self.private.take(),
             private_warned: self.private_warned,
             terminal_epoch: self.terminal_epoch,
+            dictation: self.dictation.take(),
+            dictation_pending: self.dictation_pending.take(),
+            dictation_model: self.dictation_model.clone(),
             ..Self::new(std::mem::take(&mut self.model_id), self.approvals_global)
         };
     }
@@ -3259,7 +3292,7 @@ impl Model {
     /// slash popup rides on the box) and the todo card not focused (F2). A
     /// shown `secret_request` types into the box (masked).
     pub fn input_focused(&self) -> bool {
-        if self.approval().is_some() {
+        if self.approval().is_some() || self.dictation.is_some() {
             return false;
         }
         if self.secret_request().is_some() {
@@ -3827,6 +3860,7 @@ impl Model {
             || self.agents.values().any(AgentRow::live)
             || self.pairing.is_some()
             || self.invite.is_some()
+            || self.dictation.is_some()
     }
 
     /// The board (design doc 19 §3.3): the subtree's live rows plus errors
@@ -4716,7 +4750,108 @@ impl Model {
                     .into(),
                 ));
             }
+            UiEvent::Voice(ev) => self.apply_voice(ev),
+            UiEvent::DictationStarting(id) => {
+                // `/new` or a menu may have run between the key and the reply; an
+                // empty anchor still tracks the dictation the daemon opened for us.
+                let (before, after) = self.dictation_pending.take().unwrap_or_default();
+                self.dictation = Some(Dictating::new(id, before, after));
+            }
+            UiEvent::DictationFailed(m) => {
+                self.dictation_pending = None;
+                self.dictation = None;
+                self.entries.push(Entry::Error(format!("dictation: {m}")));
+            }
         }
+    }
+
+    /// Fold a voice bus event in (54 §4.4): the model state, and the five
+    /// dictation events for the dictation this view started. Other ids
+    /// (another frontend's dictation) and TTS events are ignored.
+    fn apply_voice(&mut self, ev: voice::VoiceEvent) {
+        use voice::VoiceEvent::*;
+        match ev {
+            DictationModel { state } => self.dictation_model = state,
+            DictationStarted { id } => {
+                if let Some(d) = self.dictation.as_mut().filter(|d| d.id == id)
+                    && d.phase == Phase::Starting
+                {
+                    d.phase = Phase::Dictating;
+                }
+            }
+            DictationLevel { id, levels } => {
+                if let Some(d) = self.dictation.as_mut().filter(|d| d.id == id) {
+                    d.push_levels(&levels);
+                }
+            }
+            DictationText {
+                id,
+                utterance,
+                text,
+                is_final,
+            } => {
+                if let Some(d) = self.dictation.as_mut().filter(|d| d.id == id) {
+                    d.set_utt(utterance as usize, text, is_final);
+                }
+            }
+            DictationFinished { id, reason } => {
+                let Some(d) = self.dictation.take_if(|d| d.id == id) else {
+                    return;
+                };
+                // Esc already restored `before + after`.
+                if !d.discard {
+                    self.pending_input = Some(d.splice());
+                }
+                if let voice::FinishReason::Error { message } = reason {
+                    self.entries
+                        .push(Entry::Error(format!("dictation: {message}")));
+                }
+            }
+            VoiceModel { .. }
+            | SpeechStarted { .. }
+            | SpeechAudio { .. }
+            | SpeechFinished { .. } => {}
+        }
+    }
+
+    /// Ctrl+D / `/dictate` (54 §5.2). Idle with the model `Ready`: anchor the
+    /// caret at `before | after` and start. Idle otherwise: say why, do
+    /// nothing. Dictating: stop (keep the text). Starting or stopping: no-op.
+    pub fn toggle_dictation(&mut self, before: String, after: String) -> Option<Command> {
+        if let Some(d) = &mut self.dictation {
+            if d.phase != Phase::Dictating {
+                return None;
+            }
+            d.phase = Phase::Stopping;
+            return Some(Command::DictationStop(d.id));
+        }
+        if self.dictation_pending.is_some() {
+            return None;
+        }
+        let reason = match &self.dictation_model {
+            voice::ModelState::Ready => {
+                self.dictation_pending = Some((before, after));
+                return Some(Command::DictationStart);
+            }
+            voice::ModelState::Loading => "dictation: model loading…".to_owned(),
+            voice::ModelState::Missing => {
+                "dictation: model missing (~/.wth/models/nemotron-streaming-en or voice.dictation_model_dir)"
+                    .to_owned()
+            }
+            voice::ModelState::Failed { message } => format!("dictation: {message}"),
+        };
+        self.entries.push(Entry::Info(reason));
+        None
+    }
+
+    /// Esc while dictating: the editor takes `before + after` back now, the
+    /// daemon is told to stop, and the later `Finished` splices nothing.
+    pub fn discard_dictation(&mut self) -> Option<Command> {
+        let d = self.dictation.as_mut()?;
+        d.discard = true;
+        d.phase = Phase::Stopping;
+        self.pending_input = Some((format!("{}{}", d.before, d.after), d.before.len()));
+        Some(Command::DictationStop(d.id))
     }
 
     /// Fold a secrets bus event in: a change re-lists a held list, a request
@@ -4991,9 +5126,9 @@ impl Model {
             // everything it held.
             AgentEvent::SessionClosing { session, .. } => {
                 if self.private.as_ref().is_some_and(|p| p.root == *session) {
-                    let shown = self.session.is_some_and(|s| {
-                        self.private.as_ref().is_some_and(|p| p.member(s))
-                    });
+                    let shown = self
+                        .session
+                        .is_some_and(|s| self.private.as_ref().is_some_and(|p| p.member(s)));
                     self.private = None;
                     if shown {
                         self.reset();
@@ -5471,6 +5606,12 @@ impl Model {
                 .push(Entry::Error("usage: /logout <name>".into())),
             "/logout" => send(tx, Command::Logout(arg.to_owned())),
             "/todos" => self.toggle_todos(tx),
+            // The line was taken out of the editor to get here: the region lands in an empty box.
+            "/dictate" => {
+                if let Some(cmd) = self.toggle_dictation(String::new(), String::new()) {
+                    send(tx, cmd);
+                }
+            }
             "/agents" => match self.session {
                 Some(session) => {
                     self.agents_picker_pending = true;
@@ -9707,7 +9848,8 @@ impl Model {
             "history",
             match c.history_coverage {
                 Coverage::Complete => "complete",
-                Coverage::Unknown => "historical cost unknown (ledger starts after this session did)",
+                Coverage::Unknown =>
+                    "historical cost unknown (ledger starts after this session did)",
                 Coverage::Ambiguous => "ambiguous",
             }
         ));
@@ -9865,6 +10007,112 @@ mod tests {
         assert_eq!(slash_matches("/", true).len(), COMMANDS.len());
         assert_eq!(slash_matches("/", false).len(), COMMANDS.len() - 1);
         assert!(slash_matches("/zzz", true).is_empty());
+    }
+
+    /// 54 §5.2: Ctrl+D needs `Ready`, anchors the caret, tracks only our
+    /// id, stops on the second press and splices on `Finished`; Esc restores
+    /// `before + after` and the later `Finished` splices nothing.
+    #[test]
+    fn dictation_lifecycle() {
+        use voice::{DictationId, FinishReason, ModelState, VoiceEvent};
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        // Not ready: a reason, no command.
+        assert!(m.toggle_dictation("a".into(), "b".into()).is_none());
+        assert!(matches!(m.entries.last(), Some(Entry::Info(s)) if s.contains("missing")));
+        m.apply(UiEvent::Voice(VoiceEvent::DictationModel {
+            state: ModelState::Ready,
+        }));
+        assert!(matches!(
+            m.toggle_dictation("hello".into(), "world".into()),
+            Some(Command::DictationStart)
+        ));
+        // A second press while the reply is pending does nothing.
+        assert!(m.toggle_dictation(String::new(), String::new()).is_none());
+        let id = DictationId(Uuid::now_v7());
+        let other = DictationId(Uuid::now_v7());
+        m.apply(UiEvent::DictationStarting(id));
+        assert!(!m.input_focused() && m.animating());
+        assert_eq!(m.dictation.as_ref().map(|d| d.phase), Some(Phase::Starting));
+        m.apply(UiEvent::Voice(VoiceEvent::DictationStarted { id: other }));
+        assert_eq!(m.dictation.as_ref().map(|d| d.phase), Some(Phase::Starting));
+        m.apply(UiEvent::Voice(VoiceEvent::DictationStarted { id }));
+        assert_eq!(
+            m.dictation.as_ref().map(|d| d.phase),
+            Some(Phase::Dictating)
+        );
+        m.apply(UiEvent::Voice(VoiceEvent::DictationText {
+            id: other,
+            utterance: 0,
+            text: "not ours".into(),
+            is_final: true,
+        }));
+        m.apply(UiEvent::Voice(VoiceEvent::DictationText {
+            id,
+            utterance: 0,
+            text: "this is".into(),
+            is_final: false,
+        }));
+        m.apply(UiEvent::Voice(VoiceEvent::DictationText {
+            id,
+            utterance: 0,
+            text: "this is a test.".into(),
+            is_final: true,
+        }));
+        m.apply(UiEvent::Voice(VoiceEvent::DictationLevel {
+            id,
+            levels: vec![0.5; 8],
+        }));
+        assert_eq!(m.dictation.as_ref().unwrap().levels.len(), 8);
+        assert!(matches!(
+            m.toggle_dictation(String::new(), String::new()),
+            Some(Command::DictationStop(i)) if i == id
+        ));
+        assert_eq!(m.dictation.as_ref().map(|d| d.phase), Some(Phase::Stopping));
+        m.apply(UiEvent::Voice(VoiceEvent::DictationFinished {
+            id: other,
+            reason: FinishReason::Done,
+        }));
+        assert!(m.dictation.is_some() && m.pending_input.is_none());
+        m.apply(UiEvent::Voice(VoiceEvent::DictationFinished {
+            id,
+            reason: FinishReason::Done,
+        }));
+        assert!(m.dictation.is_none() && m.input_focused());
+        assert_eq!(
+            m.pending_input.take(),
+            Some((
+                "hello this is a test. world".into(),
+                "hello this is a test.".len()
+            ))
+        );
+
+        // Esc: restored at once; `Finished` afterwards changes nothing.
+        m.toggle_dictation("hel".into(), "lo".into());
+        m.apply(UiEvent::DictationStarting(id));
+        m.apply(UiEvent::Voice(VoiceEvent::DictationText {
+            id,
+            utterance: 0,
+            text: "there".into(),
+            is_final: false,
+        }));
+        assert!(matches!(m.discard_dictation(), Some(Command::DictationStop(i)) if i == id));
+        assert_eq!(m.pending_input.take(), Some(("hello".into(), 3)));
+        m.apply(UiEvent::Voice(VoiceEvent::DictationFinished {
+            id,
+            reason: FinishReason::Error {
+                message: "mic".into(),
+            },
+        }));
+        assert!(m.dictation.is_none() && m.pending_input.is_none());
+        assert!(matches!(m.entries.last(), Some(Entry::Error(s)) if s == "dictation: mic"));
+
+        // A refused start clears the anchor; `/dictate` routes to the same toggle.
+        m.toggle_dictation("x".into(), String::new());
+        m.apply(UiEvent::DictationFailed("already dictating".into()));
+        assert!(m.dictation_pending.is_none());
+        m.submit("/dictate", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::DictationStart)));
     }
 
     /// An inventory: a user message with two images, an assistant call
@@ -12595,9 +12843,21 @@ mod tests {
         m.session = Some(s);
         m.streaming = true;
         m.submit_now("stop, do Y instead", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::Steer { interject: true, .. })));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::Steer {
+                interject: true,
+                ..
+            })
+        ));
         m.submit("also do X", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::Steer { interject: false, .. })));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::Steer {
+                interject: false,
+                ..
+            })
+        ));
         // Idle: a plain send.
         m.streaming = false;
         m.submit_now("hello", &tx);
@@ -13926,12 +14186,23 @@ mod tests {
             .iter()
             .map(|r| match r {
                 Grouped::Heading(h) => format!("# {h}"),
-                Grouped::Item((s, d)) => format!("{d}:{}", ids.iter().position(|i| *i == s.id).unwrap()),
+                Grouped::Item((s, d)) => {
+                    format!("{d}:{}", ids.iter().position(|i| *i == s.id).unwrap())
+                }
             })
             .collect();
         assert_eq!(
             shape,
-            ["# B", "0:0", "0:3", "# A", "0:1", "1:4", "# Ungrouped", "0:2"]
+            [
+                "# B",
+                "0:0",
+                "0:3",
+                "# A",
+                "0:1",
+                "1:4",
+                "# Ungrouped",
+                "0:2"
+            ]
         );
         assert_eq!(grouped_first(&rows), 1);
         assert_eq!(grouped_step(&rows, 2, 1), 4, "down skips the A heading");
@@ -14016,14 +14287,33 @@ mod tests {
             epoch: None,
         };
         let mut v = TerminalView::new(&t, 7);
-        assert!(matches!(v.poll(1000), Some(Command::PtyScreen { epoch: 7, if_revision: None, .. })));
+        assert!(matches!(
+            v.poll(1000),
+            Some(Command::PtyScreen {
+                epoch: 7,
+                if_revision: None,
+                ..
+            })
+        ));
         assert!(v.poll(1000).is_none(), "one ask in flight");
         // A reply asked under the previous selection is dropped, and does not free the slot.
         let live = PtyViewport::Live;
-        assert!(!v.reply(s, &JobId("j1".into()), live, 6, Ok(PtyScreenReply::Updated(page(s, "j1", 9, live)))));
+        assert!(!v.reply(
+            s,
+            &JobId("j1".into()),
+            live,
+            6,
+            Ok(PtyScreenReply::Updated(page(s, "j1", 9, live)))
+        ));
         assert!(v.page.is_none() && v.inflight);
         // The current one paints.
-        assert!(v.reply(s, &JobId("j1".into()), live, 7, Ok(PtyScreenReply::Updated(page(s, "j1", 4, live)))));
+        assert!(v.reply(
+            s,
+            &JobId("j1".into()),
+            live,
+            7,
+            Ok(PtyScreenReply::Updated(page(s, "j1", 4, live)))
+        ));
         assert_eq!(v.revision, Some(4));
         assert!(!v.inflight);
         // Scrolling into history: the next ask carries no `if_revision` and goes out at once.
@@ -14033,9 +14323,20 @@ mod tests {
             height: TERMINAL_PAGE,
         };
         assert_eq!(v.viewport, hist);
-        assert!(matches!(v.poll(1100), Some(Command::PtyScreen { viewport, if_revision: None, .. }) if viewport == hist));
+        assert!(
+            matches!(v.poll(1100), Some(Command::PtyScreen { viewport, if_revision: None, .. }) if viewport == hist)
+        );
         // `Unchanged` echoing the old viewport is not an answer: re-ask.
-        assert!(!v.reply(s, &JobId("j1".into()), hist, 7, Ok(PtyScreenReply::Unchanged { viewport: live, revision: 4 })));
+        assert!(!v.reply(
+            s,
+            &JobId("j1".into()),
+            hist,
+            7,
+            Ok(PtyScreenReply::Unchanged {
+                viewport: live,
+                revision: 4
+            })
+        ));
         assert!(v.dirty && v.revision.is_none());
         assert_eq!(v.wake(), Some(0));
         assert!(v.poll(1200).is_some());
@@ -14048,12 +14349,36 @@ mod tests {
             8,
         );
         next.poll(2000);
-        assert!(!next.reply(s, &JobId("j1".into()), live, 8, Ok(PtyScreenReply::Updated(page(s, "j1", 99, live)))));
+        assert!(!next.reply(
+            s,
+            &JobId("j1".into()),
+            live,
+            8,
+            Ok(PtyScreenReply::Updated(page(s, "j1", 99, live)))
+        ));
         assert!(next.page.is_none());
-        assert!(next.reply(s, &JobId("j2".into()), live, 8, Ok(PtyScreenReply::Updated(page(s, "j2", 1, live)))));
+        assert!(next.reply(
+            s,
+            &JobId("j2".into()),
+            live,
+            8,
+            Ok(PtyScreenReply::Updated(page(s, "j2", 1, live)))
+        ));
         // An older page than the one shown is dropped; gone is gone.
-        assert!(!next.reply(s, &JobId("j2".into()), live, 8, Ok(PtyScreenReply::Updated(page(s, "j2", 0, live)))));
-        assert!(next.reply(s, &JobId("j2".into()), live, 8, Ok(PtyScreenReply::Unavailable)));
+        assert!(!next.reply(
+            s,
+            &JobId("j2".into()),
+            live,
+            8,
+            Ok(PtyScreenReply::Updated(page(s, "j2", 0, live)))
+        ));
+        assert!(next.reply(
+            s,
+            &JobId("j2".into()),
+            live,
+            8,
+            Ok(PtyScreenReply::Unavailable)
+        ));
         assert_eq!(next.status().as_deref(), Some("No longer available."));
         assert!(next.wake().is_none(), "no more polls for a gone terminal");
     }
@@ -14078,7 +14403,11 @@ mod tests {
             lease_secret: Some("s3cret".into()),
         }));
         assert_eq!(m.session, Some(root));
-        assert!(m.entries.iter().any(|e| matches!(e, Entry::Info(t) if t == PRIVATE_WARNING)));
+        assert!(
+            m.entries
+                .iter()
+                .any(|e| matches!(e, Entry::Info(t) if t == PRIVATE_WARNING))
+        );
         let child = SessionId::new();
         m.apply(UiEvent::Agent(AgentEvent::SubagentSpawned {
             parent: root,
@@ -14120,6 +14449,10 @@ mod tests {
             lease_secret: Some("next".into()),
         }));
         assert!(m.private.is_some());
-        assert!(!m.entries.iter().any(|e| matches!(e, Entry::Info(t) if t == PRIVATE_WARNING)));
+        assert!(
+            !m.entries
+                .iter()
+                .any(|e| matches!(e, Entry::Info(t) if t == PRIVATE_WARNING))
+        );
     }
 }

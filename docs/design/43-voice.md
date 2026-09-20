@@ -473,10 +473,13 @@ enqueue`). The live, interruptible agent is still phase 3.
 - **Ids and events are already per utterance.** `SpeechId` on every event
   lets a client discard late audio and lets phase 2 report "spoke up to
   sentence n" for the transcript.
-- **The wire format is an Opus packet stream.** A microphone path adds
-  `AudioIn` in the other direction with the same shape and the same codec
-  (`MediaRecorder` or a wasm encoder in the webview, libopus decode in the
-  harness); nothing is chosen twice.
+- **The wire format is an Opus packet stream.** The microphone seam is
+  split (54, 2026-09-20): local frontends — the TUI and the desktop on the
+  harness host — use the daemon's own mic (`voice::mic`, 54 §4.5), no audio
+  crosses the wire; `AudioIn` remains the remote-client seam, in the other
+  direction with the same shape and the same codec (`MediaRecorder` or a
+  wasm encoder in the webview, libopus decode in the harness); nothing is
+  chosen twice.
 
 ## 10. Phases and checks
 

@@ -190,11 +190,14 @@ pub struct SetDispatch {
 /// every other connection. Methods read it from their jsonrpsee
 /// [`Extensions`](jsonrpsee::types::Extensions) (`#[method(with_extensions)]`,
 /// `ext.get::<RpcPeer>()`); `None` there means no connection authenticated
-/// the call — treat it as unauthenticated, never as local.
+/// the call — treat it as unauthenticated, never as local. [`remote`](Self::remote)
+/// tells a relay conn (the caller's host is not this machine, 54 §8) from
+/// a local socket or in-process caller.
 #[derive(Clone, Debug)]
 pub struct RpcPeer {
     id: u64,
     closed: CancellationToken,
+    remote: bool,
 }
 
 /// Held by the connection for as long as it is open; dropping it closes the
@@ -205,9 +208,20 @@ pub struct RpcPeerGuard {
 }
 
 impl RpcPeer {
-    /// A fresh peer with a random id. The connection keeps the guard until it
-    /// is gone (disconnect, revocation, server stop).
+    /// A fresh local peer with a random id. The connection keeps the guard
+    /// until it is gone (disconnect, revocation, server stop).
     pub fn open() -> (Self, RpcPeerGuard) {
+        Self::open_with(false)
+    }
+
+    /// A fresh peer for a connection that reached us through the relay: its
+    /// host is elsewhere, so the microphone is not on it (54 §8). Guard as
+    /// [`open`](Self::open).
+    pub fn open_remote() -> (Self, RpcPeerGuard) {
+        Self::open_with(true)
+    }
+
+    fn open_with(remote: bool) -> (Self, RpcPeerGuard) {
         let closed = CancellationToken::new();
         let guard = RpcPeerGuard {
             _cancel_on_drop: closed.clone().drop_guard(),
@@ -216,19 +230,27 @@ impl RpcPeer {
             Self {
                 id: rand::random(),
                 closed,
+                remote,
             },
             guard,
         )
     }
 
     /// A peer for a trusted in-process caller (the TUI, tests): authenticated
-    /// by construction, never closes. Construct once and reuse it, or the
-    /// caller looks like a new connection every time.
+    /// by construction, local, never closes. Construct once and reuse it, or
+    /// the caller looks like a new connection every time.
     pub fn internal() -> Self {
         Self {
             id: rand::random(),
             closed: CancellationToken::new(),
+            remote: false,
         }
+    }
+
+    /// Whether the connection came through the relay, i.e. the caller is not
+    /// on this host (54 §8).
+    pub fn remote(&self) -> bool {
+        self.remote
     }
 
     /// Random per connection; collision-resistant across the Noise and local

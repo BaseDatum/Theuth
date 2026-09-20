@@ -230,7 +230,8 @@ ChatGPT affordances with no TUI counterpart:
 | rename chat | **add** `rename_session` (§7, 5 lines over `store.set_title`) - the sidebar item menu without it looks broken |
 | delete / archive chat | delete: yes (2026-09-15) — item menu › Delete with a confirm; `delete_session` removes the subtree (rows, messages, epochs, actors) and emits `SessionDeleted` per id; refused while a turn runs. Archive: no. |
 | share, temporary chat, projects, GPTs, plans | not shown |
-| voice | read aloud: yes (43) — a speaker button first in every reply's action bar; Pocket TTS in the harness, Opus over the event subscription, `lib/speech.ts` plays it. Voice notes: yes (45) — a microphone in the composer, `MediaRecorder` → `put_attachment` → `transcribe`, the session then speaks every prose block until the user types. Dictation to text: no. |
+| voice | read aloud: yes (43) — a speaker button first in every reply's action bar; Pocket TTS in the harness, Opus over the event subscription, `lib/speech.ts` plays it. Voice notes: yes (45) — a `MicVocal` button in the composer, `MediaRecorder` → `put_attachment` → `transcribe`, the session then speaks every prose block until the user types. Dictation to text: yes (54) — the round `Mic` button / Ctrl+D, the daemon's own microphone into the caret, `lib/dictation.ts`. |
+| dictation on the phone (relay-linked client) | not shown — the microphone is on the harness host (54 §8); the four `dictation_*` methods refuse a remote peer |
 | search chat contents | yes since 26, all four categories since 49: ⌘K (hardware keyboard on any pointer), `/search [query]`, or the lucide magnifier immediately left of the sidebar toggle — in the expanded sidebar header, the collapsed/mobile chat and explorer headers, and the trailing edge of mobile knowledge/artifact detail headers; the full-width Search chats row is gone. One dialog mounted in the root shell outside the mobile Sheet; `search(query, categories?, limit?)` (nucleo, fzf syntax) with multi-select chips All · Sessions · Artifacts · Knowledge · Knowledge history remembered per harness; grouped results, 10 per category then Show more 30/50, `ready/indexing/unavailable/error` per group, partial coverage shown, Refresh → `search_refresh`. Hits open read-only: `/c/$session`, `/artifacts/$callId` (exact occurrence; **Matched text** via `artifact_search_match`), `/knowledge/$id`, or `/knowledge/$id?change=&snapshot=` (**Historical version**, `knowledge_read_revision`, no restore). Back to results restores the last view. `search_sessions` is removed; an older client gets Method not found and needs the matching harness/UI build. |
 | light / dark / system theme | Settings › General, default system (`prefers-color-scheme`), tokens from §2.4 |
 | loop policy: stream idle timeout, reply recoveries per turn, tool rounds per turn, subagent timeout, default compact style, show harness nudges, title and vision fallback models (36, 2026-09-19) | Settings › Agent loop, split out of General once General outgrew a single pane: `Info.stream_idle_secs`/`max_salvages`/`max_tool_rounds`/`subagent_timeout_secs`/`compact_style` with `set_stream_idle`/`set_max_salvages`/`set_max_tool_rounds`/`set_subagent_timeout`/`set_compact_style`; harness nudges stay client-only. General keeps theme, the macOS shell rows and the harness card |
@@ -535,6 +536,13 @@ rides the existing bridge, so Link (31) carries it unchanged. Revisions are
 decimal strings on the wire (JS integer precision). `api.ts`/`METHODS` and
 the regenerated bindings include both methods; the vitest drift check is
 unchanged in shape.
+
+Added 2026-09-20 by [54](54-dictation.md) (54 §8 is the contract):
+`dictation_prewarm() → ModelState`, `dictation_start() → DictationId`,
+`dictation_stop(id) → ()`, `dictation_status() → DictationState` — asks on
+the `voice` plugin's `dictation` actor; a relay/link peer gets
+`failed("microphone is on the harness host")` on all four. Text and levels
+arrive as `VoiceEvent::Dictation*` variants on the existing subscription.
 
 ## 8. Knowledge explorer
 

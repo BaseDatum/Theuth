@@ -9,6 +9,7 @@ import { StartupScreen } from '@/components/launch/StartupScreen'
 import { PairScreen } from '@/components/link/PairScreen'
 import { Toaster } from '@/components/ui/sonner'
 import { describe } from '@/lib/describe'
+import { installDictationListeners, refreshStatus, setModel } from '@/lib/dictation'
 import { notifyIfHidden, primeNotifications } from '@/lib/notify'
 import { leaves, usePanes } from '@/lib/panes'
 import { container } from '@/lib/platform'
@@ -52,11 +53,13 @@ async function quit(): Promise<void> {
   await quitAck()
 }
 
-/** `info` into the connection store, then the harness's nodes (32 §8.2). */
+/** `info` into the connection store, then the harness's nodes (32 §8.2) and the dictation model (54 §0.5; errors — voice disabled, relay peer — are silent). */
 function loadInfo(st: Stores, api: Api): Promise<void> {
   return api.info().then((info) => {
     st.connection.getState().setInfo(info)
     void autoPair(st.id, api)
+    void api.dictation_prewarm().then(setModel).catch(() => undefined)
+    void refreshStatus(api).catch(() => undefined)
   })
 }
 
@@ -308,6 +311,7 @@ export function App() {
   useEffect(() => void hydrateHarnesses(), [])
   useEffect(watchNodes, [])
   useEffect(installSpeechListeners, [])
+  useEffect(installDictationListeners, [])
 
   // The desktop's own daemon (25's launch path), relaunched on demand from the startup screen.
   useEffect(() => {

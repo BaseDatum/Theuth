@@ -550,6 +550,10 @@ The RPC layer is generic glue, not a second protocol:
   effective state and blocked reasons come from `Agents`, never a frontend
   guess. No per-session peer ACL rides on the console token: a remote agent
   never receives it.
+- Dictation (54 §8): `dictation_prewarm`/`dictation_start`/`dictation_stop`/
+  `dictation_status` — asks on the `voice` plugin's `dictation` actor;
+  local frontends only (a relay peer gets "microphone is on the harness
+  host"); text arrives as `VoiceEvent::DictationText` on the subscription.
 
 Rejected: raw bus envelope over the wire (couples internal type layout to the
 wire, no request semantics without reinventing JSON-RPC); `tonic` (no
@@ -709,6 +713,8 @@ next start — 35 §3.4), `models/pocket-tts/` (the Pocket TTS checkpoint and
 `voices/*.safetensors` the `voice` plugin reads; `voice.model_dir` points
 elsewhere — 43 §4.2), `models/parakeet-tdt/` (the Parakeet TDT ONNX
 checkpoint plus `libonnxruntime.{dylib,so}`; `voice.stt_model_dir` — 45 §4.6)
+and `models/nemotron-streaming-en/` (the Nemotron streaming STT ONNX
+checkpoint for live dictation; `voice.dictation_model_dir` — 54 §4.1)
 beside it — `10-knowledge.md`. No shared `Config` struct: each plugin
 extracts its own section
 (`rt.config.extract_inner::<AgentConfig>("agent")`), so `runtime` never knows
@@ -761,7 +767,7 @@ crates/
   app/                plugin: `app` tool (OpenUI Lang source → `Kind::App` artifact via the helper subprocess), `Apps` actor (`get_app`/`app_call_tool`/`app_call_status`/`app_close`, one-press consent, admission, durable pressed invocations), `AppCallChanged`, bundled `apps` skill (46)
   packages/apps/      TS: curated OpenUI library + compatibility hash, `check`, helper (`bun build --compile`), patched renderer adapter shared with desktop (46 §4, §6.2, §7)
   update/             plugin: silent self-update of the `wth` binary — manifest GET, minisign verify, atomic rename; `--update` (added in 39)
-  voice/              plugin: read replies aloud — Pocket TTS via `ptts`, `markdown::spoken`, Opus packets as `SpeechAudio` events (43)
+  voice/              plugin: read replies aloud — Pocket TTS via `ptts`, `markdown::spoken`, Opus packets as `SpeechAudio` events (43); live dictation (Nemotron streaming) into the composer (54)
   relay/              bin: wth-relay, stateless encrypted-frame relay (31)
   tui/                plugin: iocraft frontend (§8)
   a2a/                plugin: A2A network boundary — official Rust SDK client/server, loopback listener gated by `a2a.enabled` and the global communication switch, `peers.yaml` bindings, `/a2a` status/reload (50 §6; implemented 2026-09-18, verification pending)

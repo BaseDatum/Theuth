@@ -2,12 +2,12 @@
 //! `ask`; the subscription drains a `broadcast::Receiver` fed by
 //! [`crate::bridge`].
 
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
-use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::LazyLock;
 
 use ::search::SearchCategory;
 use a2a::{A2A_ACTOR, A2aActor, A2aStatus};
@@ -18,21 +18,20 @@ use agent::{
     ContextSnapshot, ContextTarget, DeleteSession, EditTurn, ForkSession, GetCommunication,
     GetCompactStyle, GetMaxSalvages, GetMaxToolRounds, GetPeerMessage, GetStreamIdle,
     GetSubagentTimeout, GetTitleModel, GetTodos, GetVisionModel, Harvest, ListAcp, ListAgents,
-    ListLogins, ListModels, ListPeerMessages,
-    ListPeers, ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills, LoadSession,
-    LoadSkill, Loaded, Login, LoginInfo, Logout, ModelInfo, NewRootSession, PeerMessagePage,
-    PeerPage, PeerReceipt, PeerRecord, PeerScope, PinSession, ProviderInfo, QueuedInput, Redo,
-    Regenerate, RemoveAcp, RemoveContext, RemoveProvider, RemoveSkill, RemoveSkillRepo,
-    RenameSession, SendInput, SessionSummary, SetCommunication, SetCompactStyle, SetEffort,
-    SetMaxSalvages, SetMaxToolRounds, SetModel, SetPeerScope, SetStreamIdle, SetSubagentTimeout,
-    SetTitleModel, SetVisionModel, ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo,
-    UseSkill, Withdraw,
+    ListLogins, ListModels, ListPeerMessages, ListPeers, ListProviders, ListQueued, ListRegistry,
+    ListSessions, ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginInfo, Logout, ModelInfo,
+    NewRootSession, PeerMessagePage, PeerPage, PeerReceipt, PeerRecord, PeerScope, PinSession,
+    ProviderInfo, QueuedInput, Redo, Regenerate, RemoveAcp, RemoveContext, RemoveProvider,
+    RemoveSkill, RemoveSkillRepo, RenameSession, SendInput, SessionSummary, SetCommunication,
+    SetCompactStyle, SetEffort, SetMaxSalvages, SetMaxToolRounds, SetModel, SetPeerScope,
+    SetStreamIdle, SetSubagentTimeout, SetTitleModel, SetVisionModel, ShowPrompt, SkillBody,
+    SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw,
 };
-use agent::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 use agent::{
     Authorize, Authorized, CloseResult, CreateSession, CreateSessionOptions, LeaveSession,
     PrivateTrees, ResumePrivate, SessionCost, SessionCostQuery, SessionOpen, SetSessionProject,
 };
+use agent::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 use app::{AppDoc, AppToolResult, Apps, CallArgs, CallStatusOf, CallTool, CloseApp, GetApp};
 use artifact::search::ArtifactMatchContext;
 use base64::Engine as _;
@@ -48,7 +47,6 @@ use kameo::actor::ActorRef;
 use kameo::error::SendError;
 use kameo::message::Message;
 use kameo::reply::Reply;
-use parking_lot::RwLock;
 use knowledge::search::HistoricalConcept;
 use knowledge::{
     Change, Concept, Delete, Get, HarvestResult, History, HistoryOf, Hit, KNOWLEDGE_ACTOR,
@@ -59,6 +57,7 @@ use link::{
     CancelPair, Enable, LINK_ACTOR, LinkActor, LinkConfig, LinkStatus, Pair, Pairing, Rename,
     RenameDevice, Revoke,
 };
+use parking_lot::RwLock;
 use runtime::{InputId, Runtime, SessionId};
 use serde::{Deserialize, Serialize};
 use signal::{Allow, Link, RemoveAllowed, SIGNAL_ACTOR, Signal, SignalStatus, Status, Unlink};
@@ -772,6 +771,29 @@ pub trait Api {
     /// plugin is off; a missing STT checkpoint is an error string.
     #[method(name = "transcribe")]
     async fn transcribe(&self, path: PathBuf) -> RpcResult<voice::Transcript>;
+    /// Load the streaming dictation model (and the VAD) so Ctrl+D is instant;
+    /// never opens the microphone; idempotent — replies with the current
+    /// `ModelState`, `Loading` while the load is in flight (54 §0.5, §8).
+    /// Frontends call it once after connect. A relay peer is refused:
+    /// "microphone is on the harness host".
+    #[method(name = "dictation_prewarm", with_extensions)]
+    async fn dictation_prewarm(&self) -> RpcResult<voice::ModelState>;
+    /// Open the daemon's microphone and start streaming text (54 §8); text
+    /// arrives as `DictationText` events on `subscribe_events`. Error strings:
+    /// `already dictating`, `voice is disabled`, a missing/failed model (with
+    /// the expected path), a mic open failure, "microphone is on the harness
+    /// host" for a relay peer.
+    #[method(name = "dictation_start", with_extensions)]
+    async fn dictation_start(&self) -> RpcResult<voice::DictationId>;
+    /// Stop dictation `id`, flushing the open utterance first; `Finished`
+    /// follows as an event. Idempotent: an unknown or finished id is `Ok`
+    /// (54 §8).
+    #[method(name = "dictation_stop", with_extensions)]
+    async fn dictation_stop(&self, id: voice::DictationId) -> RpcResult<()>;
+    /// The dictation model's state and the running dictation, if any (54 §8):
+    /// how a second frontend learns it is "dictating elsewhere".
+    #[method(name = "dictation_status", with_extensions)]
+    async fn dictation_status(&self) -> RpcResult<voice::DictationState>;
     /// Fire a schedule now, ignoring `next`; returns its session (34 §8).
     /// Refused while a run is in flight (`busy`) or the file does not parse.
     #[method(name = "fire_schedule")]
@@ -1020,6 +1042,14 @@ fn transcriber() -> RpcResult<ActorRef<voice::Transcriber>> {
     })
 }
 
+/// The dictation actor; absent when `voice.enabled: false` or the plugin is not loaded.
+fn dictation() -> RpcResult<ActorRef<voice::Dictation>> {
+    lookup::<voice::Dictation>(voice::DICTATION_ACTOR).map_err(|e| match e.code() {
+        NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "voice is disabled", None::<()>),
+        _ => e,
+    })
+}
+
 /// The artifact actor; absent when `artifact.enabled: false` or the plugin is not loaded.
 fn artifact() -> RpcResult<ActorRef<artifact::ArtifactActor>> {
     lookup::<artifact::ArtifactActor>(artifact::ARTIFACT_ACTOR).map_err(|e| match e.code() {
@@ -1043,6 +1073,15 @@ fn peer(ext: &Extensions) -> RpcResult<link::RpcPeer> {
     ext.get::<link::RpcPeer>().cloned().ok_or_else(|| {
         ErrorObjectOwned::owned(UNAUTHORIZED, "no authenticated connection", None::<()>)
     })
+}
+
+/// Dictation uses the daemon's own microphone: a peer that reached us through
+/// the relay is not on this host, so its mic is out of reach (54 §0.2, §8).
+fn local_mic(ext: &Extensions) -> RpcResult<()> {
+    if peer(ext)?.remote() {
+        return Err(failed("microphone is on the harness host"));
+    }
+    Ok(())
 }
 
 /// The secrets actor; absent when the plugin is not loaded or the vault failed to open.
@@ -1252,12 +1291,21 @@ impl ApiServer for Server {
         Ok(id)
     }
 
-    async fn withdraw(&self, ext: &Extensions, session: SessionId, id: InputId) -> RpcResult<String> {
+    async fn withdraw(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        id: InputId,
+    ) -> RpcResult<String> {
         self.authorize(ext, session).await?;
         ask::<Agents, _>(agent::AGENT_ACTOR, Withdraw { session, id }).await
     }
 
-    async fn list_queued(&self, ext: &Extensions, session: SessionId) -> RpcResult<Vec<QueuedInput>> {
+    async fn list_queued(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+    ) -> RpcResult<Vec<QueuedInput>> {
         self.authorize(ext, session).await?;
         ask::<Agents, _>(agent::AGENT_ACTOR, ListQueued { session }).await
     }
@@ -1315,7 +1363,11 @@ impl ApiServer for Server {
             })
     }
 
-    async fn browser_screenshot(&self, ext: &Extensions, session: SessionId) -> RpcResult<Option<String>> {
+    async fn browser_screenshot(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+    ) -> RpcResult<Option<String>> {
         self.authorize(ext, session).await?;
         ask::<Browsers, _>(BROWSER_ACTOR, Screenshot { session }).await
     }
@@ -1324,7 +1376,12 @@ impl ApiServer for Server {
         ask::<Computer, _>(COMPUTER_ACTOR, Permissions).await
     }
 
-    async fn compact(&self, ext: &Extensions, session: SessionId, style: Option<CompactStyle>) -> RpcResult<u32> {
+    async fn compact(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        style: Option<CompactStyle>,
+    ) -> RpcResult<u32> {
         self.authorize(ext, session).await?;
         ask::<Agents, _>(agent::AGENT_ACTOR, Compact { session, style }).await
     }
@@ -1339,7 +1396,11 @@ impl ApiServer for Server {
         ask::<Agents, _>(agent::AGENT_ACTOR, Redo { session }).await
     }
 
-    async fn context_items(&self, ext: &Extensions, session: SessionId) -> RpcResult<ContextSnapshot> {
+    async fn context_items(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+    ) -> RpcResult<ContextSnapshot> {
         self.authorize(ext, session).await?;
         ask::<Agents, _>(agent::AGENT_ACTOR, ContextItems { session }).await
     }
@@ -1497,12 +1558,22 @@ impl ApiServer for Server {
             .ok_or_else(|| failed(format!("{session}: no accounting owner")))
     }
 
-    async fn rename_session(&self, ext: &Extensions, session: SessionId, title: String) -> RpcResult<()> {
+    async fn rename_session(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        title: String,
+    ) -> RpcResult<()> {
         self.authorize(ext, session).await?;
         ask::<Agents, _>(agent::AGENT_ACTOR, RenameSession { session, title }).await
     }
 
-    async fn pin_session(&self, ext: &Extensions, session: SessionId, pinned: bool) -> RpcResult<()> {
+    async fn pin_session(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        pinned: bool,
+    ) -> RpcResult<()> {
         self.authorize(ext, session).await?;
         ask::<Agents, _>(agent::AGENT_ACTOR, PinSession { session, pinned }).await
     }
@@ -1639,7 +1710,12 @@ impl ApiServer for Server {
         ask::<Agents, _>(agent::AGENT_ACTOR, SetAwsProfile { profile }).await
     }
 
-    async fn set_model(&self, ext: &Extensions, session: Option<SessionId>, model: String) -> RpcResult<ModelInfo> {
+    async fn set_model(
+        &self,
+        ext: &Extensions,
+        session: Option<SessionId>,
+        model: String,
+    ) -> RpcResult<ModelInfo> {
         self.authorize_opt(ext, session).await?;
         ask::<Agents, _>(agent::AGENT_ACTOR, SetModel { session, model }).await
     }
@@ -1654,7 +1730,11 @@ impl ApiServer for Server {
         ask::<Agents, _>(agent::AGENT_ACTOR, SetEffort { session, effort }).await
     }
 
-    async fn list_mcp(&self, ext: &Extensions, session: Option<SessionId>) -> RpcResult<Vec<McpServer>> {
+    async fn list_mcp(
+        &self,
+        ext: &Extensions,
+        session: Option<SessionId>,
+    ) -> RpcResult<Vec<McpServer>> {
         self.authorize_opt(ext, session).await?;
         ask::<Mcp, _>(tools::MCP_ACTOR, ListServers { session }).await
     }
@@ -1701,7 +1781,11 @@ impl ApiServer for Server {
         ask::<ToolRegistry, _>(tools::REGISTRY_ACTOR, SetApprovals { session, enabled }).await
     }
 
-    async fn get_communication(&self, ext: &Extensions, session: Option<SessionId>) -> RpcResult<CommunicationState> {
+    async fn get_communication(
+        &self,
+        ext: &Extensions,
+        session: Option<SessionId>,
+    ) -> RpcResult<CommunicationState> {
         self.authorize_opt(ext, session).await?;
         ask::<Agents, _>(agent::AGENT_ACTOR, GetCommunication { session }).await
     }
@@ -1748,7 +1832,12 @@ impl ApiServer for Server {
         .await
     }
 
-    async fn peer_message(&self, ext: &Extensions, session: SessionId, id: Uuid) -> RpcResult<PeerRecord> {
+    async fn peer_message(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        id: Uuid,
+    ) -> RpcResult<PeerRecord> {
         self.authorize(ext, session).await?;
         ask::<Agents, _>(agent::AGENT_ACTOR, GetPeerMessage { session, id }).await
     }
@@ -1942,7 +2031,11 @@ impl ApiServer for Server {
         send(&knowledge()?, Restore { id, commit }).await
     }
 
-    async fn knowledge_harvest(&self, ext: &Extensions, session: SessionId) -> RpcResult<HarvestResult> {
+    async fn knowledge_harvest(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+    ) -> RpcResult<HarvestResult> {
         self.authorize(ext, session).await?;
         ask::<Agents, _>(agent::AGENT_ACTOR, Harvest { session }).await
     }
@@ -2139,7 +2232,12 @@ impl ApiServer for Server {
         send(&update_actor()?, update::Status).await
     }
 
-    async fn speak(&self, ext: &Extensions, session: SessionId, text: String) -> RpcResult<SpeechId> {
+    async fn speak(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        text: String,
+    ) -> RpcResult<SpeechId> {
         self.authorize(ext, session).await?;
         send(&voice()?, voice::Speak { session, text }).await
     }
@@ -2160,6 +2258,26 @@ impl ApiServer for Server {
             return Err(failed(format!("{}: not an attachment", path.display())));
         }
         send(&transcriber()?, voice::Transcribe { path: real }).await
+    }
+
+    async fn dictation_prewarm(&self, ext: &Extensions) -> RpcResult<voice::ModelState> {
+        local_mic(ext)?;
+        send(&dictation()?, voice::Prewarm).await
+    }
+
+    async fn dictation_start(&self, ext: &Extensions) -> RpcResult<voice::DictationId> {
+        local_mic(ext)?;
+        send(&dictation()?, voice::StartDictation).await
+    }
+
+    async fn dictation_stop(&self, ext: &Extensions, id: voice::DictationId) -> RpcResult<()> {
+        local_mic(ext)?;
+        send(&dictation()?, voice::StopDictation { id }).await
+    }
+
+    async fn dictation_status(&self, ext: &Extensions) -> RpcResult<voice::DictationState> {
+        local_mic(ext)?;
+        send(&dictation()?, voice::DictationStatus).await
     }
 
     async fn fire_schedule(&self, name: String) -> RpcResult<SessionId> {
@@ -2299,10 +2417,7 @@ impl ApiServer for Server {
             std::fs::canonicalize(&path).map_err(|e| failed(format!("{}: {e}", path.display())))?;
         let allowed = ["attachments", "browser", "computer", "artifacts"]
             .iter()
-            .any(|d| {
-                std::fs::canonicalize(root.join(d))
-                    .is_ok_and(|dir| real.starts_with(dir))
-            });
+            .any(|d| std::fs::canonicalize(root.join(d)).is_ok_and(|dir| real.starts_with(dir)));
         if !allowed {
             return Err(failed(format!("{}: not an attachment", path.display())));
         }
@@ -2331,9 +2446,11 @@ impl ApiServer for Server {
             // this map existed) become known here; the filter fails closed on
             // every member for everyone but its owner (51 §4.2).
             if let Ok(trees) = ask::<Agents, _>(agent::AGENT_ACTOR, PrivateTrees).await {
-                self.private
-                    .write()
-                    .extend(trees.into_iter().map(|(member, root, owner)| (member, (root, owner))));
+                self.private.write().extend(
+                    trees
+                        .into_iter()
+                        .map(|(member, root, owner)| (member, (root, owner))),
+                );
             }
             let tree: Option<HashSet<String>> = match (session, descendants) {
                 (Some(root), Some(true)) => {
@@ -2426,14 +2543,9 @@ fn admitted(ev: &serde_json::Value, peer: u64, private: &PrivateMap) -> bool {
     if ev.get("type").and_then(|t| t.as_str()) == Some("SubagentSpawned")
         && let (Some(parent), Some(child)) = (id("parent"), id("child"))
     {
-        let known = private
-            .read()
-            .get(&parent)
-            .copied();
+        let known = private.read().get(&parent).copied();
         if let Some((root, owner)) = known {
-            private
-                .write()
-                .insert(child, (root, owner));
+            private.write().insert(child, (root, owner));
             return owner == peer;
         }
     }
@@ -2542,11 +2654,16 @@ mod tests {
                 r#"{{"jsonrpc":"2.0","method":"put_session_attachment","params":["{id}","AA==","png"],"id":1}}"#
             ),
             r#"{"jsonrpc":"2.0","method":"create_session","params":[{}],"id":1}"#.to_owned(),
-            r#"{"jsonrpc":"2.0","method":"subscribe_events","params":[null,null],"id":1}"#.to_owned(),
+            r#"{"jsonrpc":"2.0","method":"subscribe_events","params":[null,null],"id":1}"#
+                .to_owned(),
         ] {
             let (resp, _) = methods.raw_json_request(&req, 1).await.unwrap();
             let v: serde_json::Value = serde_json::from_str(resp.get()).unwrap();
-            assert_eq!(v["error"]["code"].as_i64(), Some(i64::from(UNAUTHORIZED)), "{req}");
+            assert_eq!(
+                v["error"]["code"].as_i64(),
+                Some(i64::from(UNAUTHORIZED)),
+                "{req}"
+            );
         }
     }
 
@@ -2577,5 +2694,28 @@ mod tests {
         with_peer.extensions_mut().insert(peer);
         // No app actor in this process: past the peer gate, the lookup fails.
         assert_eq!(app_close_code(&with_peer).await, i64::from(NOT_RUNNING));
+    }
+
+    /// Dictation needs the daemon's microphone: a peer that reached us through
+    /// the relay is refused with the reason, before any actor lookup (54 §8).
+    #[tokio::test]
+    async fn dictation_refuses_relay_peers() {
+        let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
+        let mut methods: jsonrpsee::Methods = Server::new(rt).into_rpc().into();
+        let (peer, _guard) = link::RpcPeer::open_remote();
+        methods.extensions_mut().insert(peer);
+        let (resp, _) = methods
+            .raw_json_request(
+                r#"{"jsonrpc":"2.0","method":"dictation_start","params":[],"id":1}"#,
+                1,
+            )
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(resp.get()).unwrap();
+        assert_eq!(v["error"]["code"].as_i64(), Some(i64::from(ASK_FAILED)));
+        assert_eq!(
+            v["error"]["message"].as_str(),
+            Some("microphone is on the harness host")
+        );
     }
 }
