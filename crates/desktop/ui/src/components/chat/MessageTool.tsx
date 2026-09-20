@@ -7,6 +7,7 @@ import { rows } from '@/lib/jobTail'
 import { cn } from '@/lib/utils'
 import { type Entry, type JobTail, useSessions } from '@/store/sessions'
 import { ArtifactCard, Progress } from './ArtifactCard'
+import { AnsweredAskCard, askQuestions } from './AskCard'
 import { ScrapeCard } from './ScrapeCard'
 import { Attachments } from './Attachments'
 import { fenced, plugins, shikiTheme } from './MessageAssistant'
@@ -80,6 +81,9 @@ function Diff({ old, new: next }: { old: string; new: string }) {
  * Specialized cards draw their own previews; the stored, model-visible occurrences (48 §2.3) render beneath them with their removal controls, since an artifact on screen is not necessarily in the frame and removing an occurrence never deletes the artifact.
  * `readOnly` (an inspection page) shows the occurrences without removal controls. */
 export const MessageTool = memo(function MessageTool({ tool, session, readOnly }: { tool: Tool; session: string; readOnly?: boolean }) {
+  // An answered `ask_user` keeps its questions and the sent answers on screen (`AskCard` while it is pending).
+  const asked = tool.name === 'ask_user' && tool.result && !tool.result.isError ? askQuestions(tool.args) : null
+  if (asked && tool.result) return <AnsweredAskCard questions={asked} output={tool.result.output} session={session} callId={tool.callId} />
   const card =
     tool.name === 'show' || tool.name === 'app' ? (
       <ArtifactCard tool={tool} session={session} />

@@ -4,7 +4,7 @@
 // and hands the composer the spliced value when a dictation ends. Insert-only: `before` and `after`
 // are never touched.
 
-import { useSyncExternalStore } from 'react'
+import { type RefObject, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { toast } from 'sonner'
 import { Batcher } from '@/lib/pcm'
 import * as speech from '@/lib/speech'
@@ -200,6 +200,52 @@ export function reason(s: State): string | null {
   }
   if (s.elsewhere) return 'Dictating elsewhere'
   return null
+}
+
+/**
+ * One text box with a mic button (StartForm's context, AskCard's answer): the store is global with one
+ * `active`, so the box takes an `owner` flag exactly as `Composer.tsx` does and splices the finished text
+ * at its caret. `shown` is the live spliced value while dictating; render it read-only then.
+ */
+export function useBox(
+  api: Api,
+  value: string,
+  onChange: (v: string) => void,
+  ref: RefObject<HTMLInputElement | HTMLTextAreaElement | null>,
+  mic: boolean,
+): { dict: State; dictating: boolean; reason: string | null; toggle: () => void; shown: string } {
+  const dict = useDictation()
+  const [owner, setOwner] = useState(false)
+  const ownerRef = useRef(owner)
+  ownerRef.current = owner
+  const dictating = owner && dict.active !== null
+  const why = reason(dict) ?? (dict.active !== null && !owner ? 'Dictating in another box' : null)
+  useEffect(
+    () =>
+      onFinish(({ value }) => {
+        if (ownerRef.current) onChange(value)
+      }),
+    [onChange],
+  )
+  useEffect(() => {
+    if (dict.phase === 'idle') setOwner(false)
+  }, [dict.phase])
+  const toggle = () => {
+    if (dictating) {
+      if (dict.phase === 'dictating') void stop(api)
+      return
+    }
+    if (why) {
+      toast(why)
+      return
+    }
+    if (dict.phase !== 'idle') return
+    const at = ref.current?.selectionStart ?? value.length
+    setOwner(true)
+    void start(api, value.slice(0, at), value.slice(at), mic)
+  }
+  const shown = dictating && dict.active ? splice(dict.active.before, dict.active.after, dict.active.utts).value : value
+  return { dict, dictating, reason: why, toggle, shown }
 }
 
 function handle(e: VoiceEvent): void {

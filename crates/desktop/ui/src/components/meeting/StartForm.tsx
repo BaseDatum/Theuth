@@ -165,44 +165,11 @@ function Permission({ label, state, pane }: { label: string; state: PermissionSt
   )
 }
 
-/**
- * Context textarea with dictation (54): the store is global with one `active`, so this box takes the
- * `owner` flag exactly as `Composer.tsx` does and splices the finished text at its caret.
- */
+/** Context textarea with dictation (54); see `dictation.useBox`. */
 function ContextBox({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   const api = useApi()
   const ref = useRef<HTMLTextAreaElement>(null)
-  const dict = dictation.useDictation()
-  const [owner, setOwner] = useState(false)
-  const ownerRef = useRef(owner)
-  ownerRef.current = owner
-  const dictating = owner && dict.active !== null
-  const reason = dictation.reason(dict) ?? (dict.active !== null && !owner ? 'Dictating in another box' : null)
-  useEffect(
-    () =>
-      dictation.onFinish(({ value }) => {
-        if (ownerRef.current) onChange(value)
-      }),
-    [onChange],
-  )
-  useEffect(() => {
-    if (dict.phase === 'idle') setOwner(false)
-  }, [dict.phase])
-  const toggle = () => {
-    if (dictating) {
-      if (dict.phase === 'dictating') void dictation.stop(api)
-      return
-    }
-    if (reason) {
-      toast(reason)
-      return
-    }
-    if (dict.phase !== 'idle') return
-    const at = ref.current?.selectionStart ?? value.length
-    setOwner(true)
-    void dictation.start(api, value.slice(0, at), value.slice(at), false)
-  }
-  const shown = dictating && dict.active ? dictation.splice(dict.active.before, dict.active.after, dict.active.utts).value : value
+  const { dict, dictating, reason, toggle, shown } = dictation.useBox(api, value, onChange, ref, false)
   return (
     <div className="relative mt-2">
       <Textarea

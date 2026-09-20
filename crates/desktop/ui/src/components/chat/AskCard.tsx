@@ -1,13 +1,19 @@
-import { memo, useState } from 'react'
+import { Mic, Square, Volume2 } from 'lucide-react'
+import { memo, useCallback, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn } from 'cn'
+import * as dictation from '@/lib/dictation'
 import { useApi } from '@/lib/rpc'
+import * as speech from '@/lib/speech'
+import { LOCAL, useHarnesses } from '@/link/harnesses'
 import type { Answer } from '@/rpc/bindings/Answer'
 import type { AskRequested } from '@/rpc/bindings/AskRequested'
 import type { Question } from '@/rpc/bindings/Question'
+import { LevelMeter } from './LevelMeter'
+import { ActionButton } from './MessageAssistant'
 
 /** Draft answer per question: an option, typed text, an explicit skip, or nothing yet. */
 type Draft = Answer | null
@@ -19,19 +25,99 @@ function toAnswer(d: Draft): Answer {
   return d
 }
 
-function QuestionBlock({ q, draft, onChange }: { q: Question; draft: Draft; onChange(d: Draft): void }) {
+/** The question and its options, as one utterance for read-aloud. */
+function spoken(q: Question): string {
+  const opts = q.options.map((c) => c.label).join('. ')
+  return opts ? `${q.question} Options: ${opts}.` : q.question
+}
+
+/** Read-aloud toggle for one question; `key` identifies it in the speaking store like an assistant entry id. */
+function ReadAloud({ session, entryKey, text }: { session: string; entryKey: string; text: string }) {
+  const api = useApi()
+  const speaking = speech.useSpeaking()
+  const mine = speaking?.entry === entryKey
+  const toggle = () => {
+    if (speaking && mine) {
+      speech.stop()
+      speech.setSpeaking(null)
+      void api.stop_speaking(speaking.id)
+    } else {
+      speech.prime()
+      speech.speak(api, session, entryKey, text).catch((e: unknown) => toast.error(e instanceof Error ? e.message : String(e)))
+    }
+  }
+  return <ActionButton icon={mine ? Square : Volume2} label={mine ? 'Stop' : 'Read aloud'} onClick={toggle} className="size-8 shrink-0 [&_svg]:size-4" />
+}
+
+/** The `Type your own…` box with a mic (54; `dictation.useBox`). */
+function OwnAnswer({ value, active, onChange, voice }: { value: string; active: boolean; onChange: (v: string) => void; voice: boolean }) {
+  const api = useApi()
+  const ref = useRef<HTMLInputElement>(null)
+  const mic = useHarnesses((s) => s.active) !== LOCAL
+  const { dict, dictating, reason, toggle, shown } = dictation.useBox(api, value, onChange, ref, mic)
+  return (
+    <div className="relative min-w-0 flex-1">
+      <Input
+        ref={ref}
+        placeholder="Type your own…"
+        value={shown}
+        readOnly={dictating}
+        onChange={(e) => onChange(e.target.value)}
+        className={cn('h-8 text-sm', voice && 'pr-9', active && 'border-fg-accent')}
+      />
+      {voice && (
+        <Button
+          type="button"
+          variant="ghost"
+          className={cn('absolute top-0 right-0 rounded-full', dictating ? 'h-8 w-20 bg-fg-accent/10 p-0' : 'size-8', reason && !dictating && 'opacity-50')}
+          aria-label={dictating ? 'Stop dictation' : 'Dictate'}
+          aria-disabled={reason !== null && !dictating}
+          title={reason ?? undefined}
+          onClick={toggle}
+        >
+          {dictating && dict.active ? <LevelMeter levels={dict.active.levels} active /> : <Mic className="size-4" />}
+        </Button>
+      )}
+    </div>
+  )
+}
+
+/** One question. `locked`: the answer was sent; everything renders but nothing changes. */
+function QuestionBlock({
+  q,
+  draft,
+  onChange,
+  session,
+  entryKey,
+  voice,
+  locked,
+}: {
+  q: Question
+  draft: Draft
+  onChange(d: Draft): void
+  session: string
+  entryKey: string
+  voice: boolean
+  locked?: boolean
+}) {
   const typing = draft?.kind === 'text'
   const skipped = draft?.kind === 'skipped'
+  const setText = useCallback((text: string) => onChange({ kind: 'text', text }), [onChange])
   return (
     <div className="flex flex-col gap-2">
-      <div className="font-medium">{q.question}</div>
+      <div className="flex items-start gap-1">
+        <div className="min-w-0 flex-1 font-medium">{q.question}</div>
+        {voice && <ReadAloud session={session} entryKey={entryKey} text={spoken(q)} />}
+      </div>
       <div className="flex flex-col gap-1">
         {q.options.map((c, i) => {
           const on = draft?.kind === 'choice' && draft.index === i
+          if (locked && !on) return null
           return (
             <button
               key={c.label}
               type="button"
+              disabled={locked}
               onClick={() => onChange({ kind: 'choice', index: i })}
               aria-pressed={on}
               className={cn(
@@ -54,32 +140,38 @@ function QuestionBlock({ q, draft, onChange }: { q: Question; draft: Draft; onCh
             </button>
           )
         })}
-        <div className="flex items-center gap-2">
-          <Input
-            placeholder="Type your own…"
-            value={typing ? draft.text : ''}
-            onChange={(e) => onChange({ kind: 'text', text: e.target.value })}
-            className={cn('h-8 text-sm', typing && 'border-fg-accent')}
-          />
-          <Button
-            type="button"
-            size="sm"
-            variant={skipped ? 'secondary' : 'ghost'}
-            aria-pressed={skipped}
-            onClick={() => onChange(skipped ? null : { kind: 'skipped' })}
-          >
-            {skipped ? 'Skipped' : 'Skip'}
-          </Button>
-        </div>
+        {locked ? (
+          (typing || skipped) && (
+            <Input readOnly value={typing ? draft.text : ''} placeholder="Skipped" className={cn('h-8 text-sm', typing && 'border-fg-accent')} />
+          )
+        ) : (
+          <div className="flex items-center gap-2">
+            <OwnAnswer value={typing ? draft.text : ''} active={typing} onChange={setText} voice={voice} />
+            <Button
+              type="button"
+              size="sm"
+              variant={skipped ? 'secondary' : 'ghost'}
+              aria-pressed={skipped}
+              onClick={() => onChange(skipped ? null : { kind: 'skipped' })}
+            >
+              {skipped ? 'Skipped' : 'Skip'}
+            </Button>
+          </div>
+        )}
       </div>
     </div>
   )
 }
 
-/** The model's questions, all at once: pick, type, or skip each; Send answers or Dismiss (ends the turn). */
+const FRAME = 'my-2 flex flex-col gap-4 rounded-xl border border-info-border bg-info-bg px-4 py-3 text-sm'
+
+/** The model's questions, all at once: pick, type, or skip each; Send answers or Dismiss (ends the turn).
+ * After Send the card stays with the choices locked until the tool row's result replaces it (`AnsweredAskCard`). */
 export const AskCard = memo(function AskCard({ ask }: { ask: AskRequested }) {
   const api = useApi()
+  const voice = speech.useVoice()
   const [busy, setBusy] = useState(false)
+  const [sent, setSent] = useState(false)
   const [drafts, setDrafts] = useState<Draft[]>(() =>
     ask.questions.map((q) => (q.recommended === undefined ? null : { kind: 'choice', index: q.recommended })),
   )
@@ -88,6 +180,7 @@ export const AskCard = memo(function AskCard({ ask }: { ask: AskRequested }) {
     setBusy(true)
     try {
       if (!(await api.answer_ask(ask.id, answers))) toast.error('the question was no longer pending')
+      else if (answers) setSent(true)
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e))
     } finally {
@@ -95,7 +188,7 @@ export const AskCard = memo(function AskCard({ ask }: { ask: AskRequested }) {
     }
   }
   return (
-    <div className="my-2 flex flex-col gap-4 rounded-xl border border-info-border bg-info-bg px-4 py-3 text-sm">
+    <div className={FRAME}>
       <div className="font-medium text-info">
         {ask.questions.length === 1 ? 'The agent has a question' : `The agent has ${ask.questions.length} questions`}
       </div>
@@ -103,19 +196,61 @@ export const AskCard = memo(function AskCard({ ask }: { ask: AskRequested }) {
         <QuestionBlock
           key={q.id}
           q={q}
-          draft={drafts[i] ?? null}
+          draft={sent ? toAnswer(drafts[i] ?? null) : (drafts[i] ?? null)}
           onChange={(d) => setDrafts((ds) => ds.map((x, j) => (j === i ? d : x)))}
+          session={ask.session}
+          entryKey={`${ask.id}/${q.id}`}
+          voice={voice}
+          locked={sent}
         />
       ))}
-      <div className="flex gap-2">
-        <Button size="sm" disabled={busy || !answered} onClick={() => send(drafts.map(toAnswer))}>
-          Send answers
-        </Button>
-        <Button size="sm" variant="outline" disabled={busy} onClick={() => send(null)}>
-          Dismiss
-        </Button>
-        {!answered && <span className="self-center text-xs text-fg-tertiary">answer or skip every question</span>}
-      </div>
+      {sent ? (
+        <span className="text-xs text-fg-tertiary">answered</span>
+      ) : (
+        <div className="flex gap-2">
+          <Button size="sm" disabled={busy || !answered} onClick={() => send(drafts.map(toAnswer))}>
+            Send answers
+          </Button>
+          <Button size="sm" variant="outline" disabled={busy} onClick={() => send(null)}>
+            Dismiss
+          </Button>
+          {!answered && <span className="self-center text-xs text-fg-tertiary">answer or skip every question</span>}
+        </div>
+      )}
+    </div>
+  )
+})
+
+/** `ask_user`'s `{questions}` arguments, or `null` when the row is not that shape. */
+export function askQuestions(args: unknown): Question[] | null {
+  if (typeof args !== 'object' || args === null) return null
+  const qs = (args as { questions?: unknown }).questions
+  return Array.isArray(qs) && qs.every((q) => typeof q?.id === 'string' && typeof q?.question === 'string') ? (qs as Question[]) : null
+}
+
+/** The answers back out of the tool's `id: value` / `id: (skipped)` lines (`tools/src/ask.rs` `render`). */
+function parseAnswers(questions: Question[], output: string): Draft[] {
+  const lines = output.split('\n')
+  return questions.map((q) => {
+    const line = lines.find((l) => l.startsWith(`${q.id}: `))
+    if (!line) return { kind: 'skipped' }
+    const value = line.slice(q.id.length + 2)
+    if (value === '(skipped)') return { kind: 'skipped' }
+    const index = q.options.findIndex((c) => c.label === value)
+    return index >= 0 ? { kind: 'choice', index } : { kind: 'text', text: value }
+  })
+}
+
+/** The finished `ask_user` tool row: the questions with the sent answers locked in. */
+export const AnsweredAskCard = memo(function AnsweredAskCard({ questions, output, session, callId }: { questions: Question[]; output: string; session: string; callId: string }) {
+  const voice = speech.useVoice()
+  const answers = parseAnswers(questions, output)
+  return (
+    <div className={FRAME}>
+      <div className="font-medium text-info">{questions.length === 1 ? 'The agent asked' : `The agent asked ${questions.length} questions`}</div>
+      {questions.map((q, i) => (
+        <QuestionBlock key={q.id} q={q} draft={answers[i] ?? null} onChange={() => {}} session={session} entryKey={`${callId}/${q.id}`} voice={voice} locked />
+      ))}
     </div>
   )
 })
