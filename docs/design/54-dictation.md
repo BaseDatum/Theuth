@@ -38,12 +38,18 @@ places the files).
    hands `f32` chunks to the actor. The TUI has no other way to a mic; the
    desktop gets the same path for free; 53 phase 1 already commits the
    daemon to the mic. This **deviates from 43 §9** ("a microphone path adds
-   `AudioIn` from the webview, Opus in the other direction"): that seam is
-   kept for *remote* clients — a phone through the relay — where the mic is
-   not on the harness host; `dictation_start` from such a client answers
-   "microphone is on the harness host" until an `AudioIn` doc adds it.
-   Rejected: webview capture streamed over RPC (nothing for the TUI, a
-   second codec path, 5 KB/s of base64 that loopback does not need).
+   `AudioIn` from the webview, Opus in the other direction"): *remote*
+   (relay-linked) clients — a phone through the relay — capture in the
+   webview and stream mono i16 PCM (base64, ~100 ms per `dictation_audio`
+   call, at the device rate — the tap rides `speech.ts`'s single
+   `AudioContext`, since WKWebView runs a second, rate-forced context
+   silent — resampled to 16 kHz in the daemon) into the same pipeline;
+   `dictation_start(sample_rate)` selects `AudioSource::Remote`, `null`
+   keeps the daemon mic for local peers. The `AudioWorklet` module is a
+   `blob:` URL, so the Tauri CSP carries `script-src … blob:`. Raw PCM is
+   ≈1 Mbit/s at 48 kHz; ponytail: decimate in the worklet, or Opus via
+   WebCodecs `AudioEncoder` once the WKWebView floor reaches iOS 26.
+   Nothing for the TUI over the wire — it is in-process.
    Permission: macOS attributes the TCC prompt to the responsible process —
    the `.app` when it spawned the daemon (`Info.plist` already carries
    `NSMicrophoneUsageDescription`, 45 §7.5), the terminal app for a `wth`
@@ -217,8 +223,13 @@ pub struct DictationId(pub uuid::Uuid);                      // v7
 
 /// Load the streaming model and the VAD if not loaded; never opens the mic.
 pub struct Prewarm;                                          // ask → ModelState (current; Loading if in flight)
-/// Open the mic and start. Errors: "already dictating", "voice is disabled", model Missing/Failed, mic open failure.
-pub struct StartDictation;                                   // ask → Result<DictationId, String>
+/// Where a dictation's audio comes from.
+#[serde(tag = "source", rename_all = "snake_case")]
+pub enum AudioSource { Mic, Remote { sample_rate: u32 } }    // Mic = the daemon's own (§0.2); Remote = the client streams PCM with `PushAudio`, mono i16 at `sample_rate` Hz
+/// Start. Errors: "already dictating", "voice is disabled", model Missing/Failed, mic open failure (Mic), "sample_rate must be a multiple of 50" (Remote).
+pub struct StartDictation { pub source: AudioSource }        // ask → Result<DictationId, String>
+/// Mono i16 PCM at the `sample_rate` given at start. Errors: "not dictating" (unknown/finished id), "not a remote dictation".
+pub struct PushAudio { pub id: DictationId, pub pcm: Vec<i16> } // ask → Result<(), String>
 /// Stop `id` (idempotent; unknown id → Ok). Flushes the open utterance first.
 pub struct StopDictation { pub id: DictationId }             // ask → Result<(), String>
 /// What is loaded and what is running.
@@ -229,7 +240,11 @@ pub struct DictationStatus;                                  // ask → Dictatio
 `Prewarm` from two frontends at once loads once (the actor holds a
 `Loading` flag and a waiter list). `StartDictation` while `Loading` waits
 for the load rather than failing — the user pressed the key one second
-after launch; the reply comes when the mic is open.
+after launch; the reply comes when the mic is open. For `Remote` no
+`Capture` is opened: the actor rechunks pushed PCM into 20 ms
+(`sample_rate / 50`-sample) `f32` chunks — a partial tail waits for the
+next push — and the task's resampler is built for `sample_rate` → 16 kHz
+(none at 16 000); everything downstream is the `Mic` path unchanged.
 
 ### 4.4 Events (added to `VoiceEvent`)
 
@@ -375,7 +390,7 @@ the TUI in its status line, the desktop as a toast.
 ## 7. Desktop
 
 - `rpc/api.ts` `Api` + `METHODS`: `dictation_prewarm`, `dictation_start`,
-  `dictation_stop`, `dictation_status`. `rpc/events.ts` switches `VoiceEvent`
+  `dictation_audio`, `dictation_stop`, `dictation_status`. `rpc/events.ts` switches `VoiceEvent`
   to `@/rpc/bindings/VoiceEvent` (the hand-written duplicate in `extra.ts`
   is deleted — its header asks for exactly that) after `just ts-desktop`.
 - `lib/dictation.ts`: a module store (`useSyncExternalStore`, as
@@ -411,26 +426,35 @@ the TUI in its status line, the desktop as a toast.
     - **Voice note**: `<Button variant="ghost" …><AudioLines/></Button>` with tooltip "Voice note", shown when `voice && !priv && !text.trim() && !active`; the existing `record()`/`stopRecording()`/`sendNote()` move behind it unchanged (red `Square` + seconds while recording, as today).
     - Send / Stop as today. While `active`, Send is disabled.
 - Touch (`touch()`): the hotkey is desktop-only; the buttons work as-is.
-  iOS: `flexaudio` is macOS/Windows/Linux; the daemon on a phone does not
-  exist — the button is hidden when `dictation_status` errors with
-  "microphone is on the harness host" (relay clients) — 25 §3 parity table
-  gains `dictation | not shown` for the phone.
+  Relay clients (the phone): the button works — `lib/dictation.ts`
+  `start(api, before, after, capture)` with `capture = true` opens the
+  phone's mic with `getUserMedia` + an `AudioWorklet` and streams ~100 ms
+  batches of i16 LE base64 with `dictation_audio`; `Composer` passes
+  `capture = useHarnesses.getState().active !== LOCAL`, so the harness-host
+  desktop keeps `dictation_start(null)` and the daemon mic. A dropped
+  connection stops the dictation server-side (§8). 25 §3 parity table row
+  `dictation on the phone` reads yes.
 
 ## 8. RPC (`crates/rpc/src/api.rs`)
 
 | method | params | returns |
 |---|---|---|
 | `dictation_prewarm` | — | `ModelState` |
-| `dictation_start` | — | `DictationId` |
+| `dictation_start` | `sample_rate: Option<u32>` | `DictationId` — `null` = harness mic (local peers only); `Some(r)` = `AudioSource::Remote { sample_rate: r }` (any peer) |
+| `dictation_audio` | `DictationId`, `pcm: String` (base64 LE i16 mono) | `()` |
 | `dictation_stop` | `DictationId` | `()` |
 | `dictation_status` | — | `DictationState` |
 
 Through `fn dictation() -> RpcResult<ActorRef<voice::Dictation>>` beside
-`voice()` (`NOT_RUNNING` → "voice is disabled"). Methods declared
-`with_extensions`; a request whose peer is a relay/link connection (the
-`link::RpcPeer` the listener puts into the request, `docs/plugins.md` §4.2)
-answers `failed("microphone is on the harness host")`. `VoiceEvent` is
-already forwarded; `export.rs` gains `DictationId`, `DictationState`.
+`voice()` (`NOT_RUNNING` → "voice is disabled"). `dictation_start` is
+declared `with_extensions`; only `dictation_start(null)` from a relay/link
+peer (the `link::RpcPeer` the listener puts into the request,
+`docs/plugins.md` §4.2) answers `failed("microphone is on the harness host;
+pass sample_rate to stream audio")` — prewarm, audio, stop and status are
+open to any peer. A remote-source dictation is stopped when its connection
+closes (`RpcPeer::closed()`), so a dropped phone never holds the
+one-dictation slot. `VoiceEvent` is already forwarded; `export.rs` gains
+`DictationId`, `DictationState`.
 
 ## 9. Data on disk
 
@@ -494,6 +518,14 @@ Each step ends with a runnable check (00 §12).
    `Finished{Error}` + toast, second attempt shows the settings hint (the
    Computer pane's opener, 27); from a terminal-launched `wth` the prompt
    is attributed to the terminal (record which).
+7. **Phone over the relay.** check: link a phone (31) and open a chat →
+   the dictation button is shown and enabled once the harness reports
+   `Ready`; tap → the webview's mic prompt; speak → muted then saturated
+   text lands in the phone's composer exactly as on the desktop, the meter
+   moves; tap again → `Finished{Done}`. Kill the phone's connection mid-
+   dictation (airplane mode) → the daemon ends it (`Finished{Done}`,
+   `dictation_status.active` clears) and a desktop on the same daemon can
+   start its own.
 
 ## 11. Amendments (same commit series)
 
@@ -501,12 +533,12 @@ Each step ends with a runnable check (00 §12).
   description gains "live dictation (Nemotron streaming)"; §7 four RPC
   methods.
 - `43-voice.md` §9: the microphone seam is split — local frontends use the
-  daemon's mic (this doc); `AudioIn` remains the remote-client seam.
+  daemon's mic (this doc); remote clients stream PCM with `dictation_audio`.
 - `45-voice-notes.md` §7.2: the round `Mic` button is dictation; voice
   notes are the `AudioLines` button; §9 (phase-3 inherits) points here for
   `Stream`.
-- `25-desktop.md` §3 parity table: `dictation | not shown` on the phone;
-  §7 RPC list.
+- `25-desktop.md` §3 parity table: `dictation on the phone | yes`; §7 RPC
+  list.
 - `meetings/README.md` §3 config: `live_model_dir` becomes "defaults to
   `voice.dictation_model_dir`" (one model directory for both);
   `meetings/02-live.md` §1: `Stream`, `vad::Gate` and the `ort` init order
@@ -546,3 +578,6 @@ fails with it, `Stop` of an unknown id is `Ok`; relay peer refused. §10.3
 `/dictate` on a real pty → `dictation: model missing (…)` line; the rest of
 §10.3–10.6 (real model, mic, both frontends, TCC) still needs a machine
 with `libonnxruntime` and the Nemotron int8 export placed.
+
+Remote clients added 2026-09-20: `AudioSource::Remote`, `dictation_audio`,
+webview capture (branch `remote-dictation`).

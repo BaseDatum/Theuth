@@ -16,12 +16,17 @@ import { on, useSessions } from '@/store/sessions'
 /** PCM rate `ptts` produces and the packets decode to (43 §0.5). */
 const SAMPLE_RATE = 24_000
 
+/**
+ * The module's one context, at the hardware rate, made and resumed inside a user gesture and never closed:
+ * iOS WKWebView will not start one made outside a gesture, and one built at a forced `sampleRate` ran
+ * silent there while reporting `running`. Packets go in as 24 kHz buffers and the graph resamples.
+ */
 let ctx: AudioContext | null = null
-/** The module's one reusable context, made inside a user gesture (45 §7.3): iOS WKWebView will not start one made outside. */
-let audioCtx: AudioContext | null = null
 /** Master tap so a new utterance can mute in-flight BufferSources without closing `ctx`. */
 let out: GainNode | null = null
 let dec: OpusDecoder<OpusDecoderSampleRate> | null = null
+/** Rate of the utterance's packets. */
+let rate = SAMPLE_RATE
 /** `ctx` time the next packet starts at. */
 let next = 0
 /** Utterance being played; packets for any other id are late and dropped. */
@@ -37,22 +42,21 @@ function session(type: 'playback' | 'play-and-record'): void {
   if (nav.audioSession) nav.audioSession.type = type
 }
 
-/** Create (once) and resume the shared context; call from the record tap, before `getUserMedia`. The wire is 24 kHz (43 §0.5). */
-export function unlock(): void {
-  session('play-and-record')
-  audioCtx ??= new AudioContext({ sampleRate: SAMPLE_RATE })
-  void audioCtx.resume()
+function graph(): AudioContext {
+  if (!ctx) {
+    ctx = new AudioContext()
+    out = ctx.createGain()
+    out.connect(ctx.destination)
+  }
+  void ctx.resume()
+  return ctx
 }
 
-// ponytail: `start` during an in-progress recording flips the mic to `playback`; a record button while speaking is not a flow yet.
-function graph(sampleRate: number): AudioContext {
-  session('playback')
-  if (ctx && ctx.state !== 'closed' && ctx.sampleRate === sampleRate && out) return ctx
-  if (ctx && ctx !== audioCtx) void ctx.close()
-  ctx = audioCtx?.sampleRate === sampleRate ? audioCtx : new AudioContext({ sampleRate })
-  out = ctx.createGain()
-  out.connect(ctx.destination)
-  return ctx
+/** Create (once) and resume the context; call from the record tap, before `getUserMedia`. Returns it so
+ * dictation's mic tap shares the one device-rate context instead of opening a second one (WKWebView). */
+export function unlock(): AudioContext {
+  session('play-and-record')
+  return graph()
 }
 
 function cut(): void {
@@ -66,22 +70,21 @@ function cut(): void {
   next = 0
 }
 
-/**
- * Unlock Web Audio on the click that starts speak (43 §2.3). WKWebView starts a
- * context created later on `SpeechStarted` as `suspended`; `BufferSource.start` is then a no-op.
- */
+/** Unlock Web Audio on the click that starts speak (43 §2.3) and warm the decoder during the RPC round-trip. */
 export function prime(sampleRate = SAMPLE_RATE): void {
-  void graph(sampleRate).resume()
-  // Warm the wasm compile during the RPC round-trip; `start` replaces this instance.
+  session('playback')
+  graph()
   if (!dec) dec = new OpusDecoder({ channels: 1, sampleRate: sampleRate as OpusDecoderSampleRate })
 }
 
-/** Begin utterance `speech`: cut previous audio, keep the primed context, open a decoder. */
+/** Begin utterance `speech`: cut previous audio, keep the unlocked context, open a decoder. */
+// ponytail: `start` during an in-progress recording flips the mic to `playback`; a record button while speaking is not a flow yet.
 export function start(speech: string, sampleRate: number): void {
-  graph(sampleRate)
+  session('playback')
+  graph()
   cut()
-  void ctx!.resume()
   id = speech
+  rate = sampleRate
   dec?.free()
   dec = new OpusDecoder({ channels: 1, sampleRate: sampleRate as OpusDecoderSampleRate })
 }
@@ -97,7 +100,7 @@ export function push(speech: string, b64: string): void {
     const { channelData } = d.decodeFrame(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)))
     const pcm = channelData[0]
     if (!pcm?.length) return
-    const buf = ctx.createBuffer(1, pcm.length, ctx.sampleRate)
+    const buf = ctx.createBuffer(1, pcm.length, rate)
     // The decoder copies out of wasm memory into a plain `Float32Array`; the lib types leave the buffer kind open.
     buf.copyToChannel(pcm as Float32Array<ArrayBuffer>, 0)
     const src = ctx.createBufferSource()
@@ -114,12 +117,15 @@ export function remaining(): number {
   return ctx ? Math.max(0, next - ctx.currentTime) : 0
 }
 
-/** Halt playback now and release the decoder and the context (the shared one stays open). */
+/**
+ * Halt playback now and release the decoder. The context is suspended, not closed: a `playback`-type
+ * context left running keeps iOS's Now Playing ("localhost") up; `start` resumes it without a gesture.
+ */
 export function stop(): void {
   cut()
-  if (ctx !== audioCtx) void ctx?.close()
+  void ctx?.suspend()
   dec?.free()
-  ctx = out = dec = null
+  dec = null
   id = null
 }
 

@@ -200,6 +200,7 @@ async fn export_bindings() {
         meeting::TopicGone,
         meeting::Brief,
         meeting::BriefSource,
+        voice::AudioSource,
         surface::Spec,
         surface::Element,
         surface::Component,

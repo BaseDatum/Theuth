@@ -144,8 +144,10 @@ export interface Api {
   edit_turn(session: SessionId, turn: number, text: string, files: string[]): Promise<null>
   /** Load the dictation model if not loaded (54 §4.3); never opens the mic. Answers the current state; `-32001` when voice is disabled. */
   dictation_prewarm(): Promise<ModelState>
-  /** Open the harness mic and dictate (54 §4.3); `DictationStarted`/`DictationText`/`DictationFinished` events carry the id. Rejects with `already dictating`, model missing, or `microphone is on the harness host` (relay). */
-  dictation_start(): Promise<DictationId>
+  /** Start dictating (54 §4.3); `DictationStarted`/`DictationText`/`DictationFinished` events carry the id. `sample_rate === null` opens the harness mic (local peers only; a relay peer gets `microphone is on the harness host`); a rate streams this client's mic as mono i16 PCM via `dictation_audio`. Rejects with `already dictating` or model missing. */
+  dictation_start(sample_rate: number | null): Promise<DictationId>
+  /** Push mono little-endian i16 PCM (base64) at the rate given to `dictation_start`; rejects with `not dictating` or `not a remote dictation`. */
+  dictation_audio(id: DictationId, pcm: string): Promise<null>
   /** Stop dictation `id`, flushing the open utterance; idempotent. */
   dictation_stop(id: DictationId): Promise<null>
   /** What is loaded and which dictation (if any) is running (54 §4.3). */
@@ -393,6 +395,7 @@ export const METHODS = [
   'create_session',
   'delete_secret',
   'delete_session',
+  'dictation_audio',
   'dictation_prewarm',
   'dictation_start',
   'dictation_status',

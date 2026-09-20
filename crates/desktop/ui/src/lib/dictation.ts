@@ -1,10 +1,13 @@
-// 54 §5: live dictation into the composer. The daemon owns the mic and the model; this module
-// keeps the caret anchor (`before`/`after`), the utterances the daemon sends, and the lifecycle,
-// and hands the composer the spliced value when a dictation ends. Insert-only: `before` and
-// `after` are never touched.
+// 54 §5: live dictation into the composer. The daemon owns the model and, for the desktop, the mic;
+// a relay-linked client streams its own mic instead (§4.5). This module keeps the caret anchor
+// (`before`/`after`), the utterances the daemon sends, the lifecycle, and the browser capture graph,
+// and hands the composer the spliced value when a dictation ends. Insert-only: `before` and `after`
+// are never touched.
 
 import { useSyncExternalStore } from 'react'
 import { toast } from 'sonner'
+import { Batcher } from '@/lib/pcm'
+import * as speech from '@/lib/speech'
 import type { Api } from '@/rpc/api'
 import type { ModelState } from '@/rpc/bindings/ModelState'
 import type { VoiceEvent } from '@/rpc/bindings/VoiceEvent'
@@ -86,6 +89,78 @@ let discarding = false
 const subs = new Set<() => void>()
 const finishers = new Set<(r: Splice) => void>()
 
+/** The browser-side mic graph of a remote-source dictation (54 §4.5); `null` while the daemon owns the mic. */
+type Capture = { stream: MediaStream; ctx: AudioContext; nodes: AudioNode[]; batcher: Batcher | null }
+let capture: Capture | null = null
+/** Contexts whose worklet already has `wth-tap`; a second `registerProcessor` of the same name rejects. */
+const tapped = new WeakSet<AudioContext>()
+
+/** One `AudioWorkletProcessor` that posts each 128-frame render quantum of its mono input to the main thread. */
+const WORKLET_SRC = `registerProcessor('wth-tap', class extends AudioWorkletProcessor {
+  process(inputs) { const ch = inputs[0][0]; if (ch) this.port.postMessage(ch.slice()); return true }
+})`
+
+/** Release the mic and the tap nodes; idempotent. The context is speech's and stays open. */
+function teardownCapture(): void {
+  const c = capture
+  if (!c) return
+  capture = null
+  for (const t of c.stream.getTracks()) t.stop()
+  for (const n of c.nodes) n.disconnect()
+}
+
+/**
+ * Open the mic inside the click gesture (the permission prompt needs it) on speech's one device-rate
+ * context; the daemon resamples (ponytail: ~1 Mbit/s of PCM at 48 kHz — decimate here if the relay minds).
+ */
+async function openCapture(): Promise<Capture> {
+  const ctx = speech.unlock()
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+  })
+  const c: Capture = { stream, ctx, nodes: [], batcher: null }
+  capture = c
+  if (ctx.sampleRate % 50 !== 0) throw new Error('unsupported microphone rate')
+  return c
+}
+
+/** Mic → tap → 100 ms i16 batches → `dictation_audio`; never awaits inside the audio path, a failed push is dropped. */
+async function wire(api: Api, id: string, c: Capture): Promise<void> {
+  const { ctx } = c
+  const batcher = new Batcher(ctx.sampleRate / 10, (b64) => void api.dictation_audio(id, b64).catch(() => undefined))
+  // A tap has to sit on a path to `destination` or the graph never renders it; zero gain keeps it silent.
+  const mute = ctx.createGain()
+  mute.gain.value = 0
+  mute.connect(ctx.destination)
+  let tap: AudioNode
+  if (ctx.audioWorklet) {
+    if (!tapped.has(ctx)) {
+      // `blob:` needs `script-src blob:` in the Tauri CSP (tauri.conf.json).
+      const url = URL.createObjectURL(new Blob([WORKLET_SRC], { type: 'text/javascript' }))
+      try {
+        await ctx.audioWorklet.addModule(url)
+      } finally {
+        URL.revokeObjectURL(url)
+      }
+      tapped.add(ctx)
+    }
+    // Torn down while the module loaded (Esc, a fast `DictationFinished`).
+    if (capture !== c) return
+    const node = new AudioWorkletNode(ctx, 'wth-tap')
+    node.port.onmessage = (e: MessageEvent<Float32Array>) => batcher.push(e.data)
+    tap = node
+  } else {
+    // ponytail: `createScriptProcessor` is deprecated but the only tap where `audioWorklet` is missing.
+    const node = ctx.createScriptProcessor(2048, 1, 1)
+    node.onaudioprocess = (e) => batcher.push(e.inputBuffer.getChannelData(0))
+    tap = node
+  }
+  const src = ctx.createMediaStreamSource(c.stream)
+  src.connect(tap).connect(mute)
+  c.nodes = [src, tap, mute]
+  c.batcher = batcher
+}
+
 function set(next: State): void {
   if (next === state) return
   state = next
@@ -132,6 +207,7 @@ function handle(e: VoiceEvent): void {
   const next = applyEvent(prev, e)
   set(next)
   if (e.type !== 'DictationFinished' || !prev.active || next.active) return
+  teardownCapture()
   const a = prev.active
   const r = discarding ? { value: a.before + a.after, caret: a.before.length } : splice(a.before, a.after, a.utts)
   discarding = false
@@ -161,20 +237,29 @@ export function onFinish(cb: (r: Splice) => void): () => void {
   }
 }
 
-/** Anchor the caret (`before`/`after`) and ask the daemon for the mic; a refusal toasts and returns to idle. */
-export async function start(api: Api, before: string, after: string): Promise<void> {
+/**
+ * Anchor the caret (`before`/`after`) and start dictating; a refusal toasts and returns to idle. `mic`:
+ * stream this browser's microphone to the daemon (a relay peer; 54 §4.5) instead of using the harness mic.
+ */
+export async function start(api: Api, before: string, after: string, mic: boolean): Promise<void> {
   if (state.active) return
   set({
     ...state,
     phase: 'starting',
     active: { id: '', before, after, utts: [], levels: [], startedAt: Date.now() },
   })
+  let id: string | null = null
   try {
-    const id = await api.dictation_start()
+    const c = mic ? await openCapture() : null
+    id = await api.dictation_start(c ? c.ctx.sampleRate : null)
     // `state` was narrowed to `active: null` above and TS keeps that across calls; read it fresh.
     const a = snapshot().active
     if (a?.id === '') set({ ...state, active: { ...a, id } })
+    if (c) await wire(api, id, c)
   } catch (e) {
+    teardownCapture()
+    // The daemon already holds the slot: hand it back; its `Finished` finds nothing active here and is ignored.
+    if (id !== null) void api.dictation_stop(id).catch(() => undefined)
     discarding = false
     set({ ...state, phase: 'idle', active: null })
     toast.error(e instanceof Error ? e.message : String(e))
@@ -182,19 +267,23 @@ export async function start(api: Api, before: string, after: string): Promise<vo
   }
 }
 
-/** Stop and keep the region; the `DictationFinished` event completes the transition. */
+/** Stop and keep the region; the `DictationFinished` event completes the transition (and releases the mic). */
 export async function stop(api: Api): Promise<void> {
   const a = state.active
   if (!a?.id || state.phase === 'stopping') return
   set({ ...state, phase: 'stopping' })
+  // The last partial batch carries the tail of the final word.
+  capture?.batcher?.flush()
   await api.dictation_stop(a.id).catch((e: unknown) => {
+    teardownCapture()
     toast.error(e instanceof Error ? e.message : String(e))
   })
 }
 
-/** Esc: stop and restore `before + after` exactly. */
+/** Esc: stop and restore `before + after` exactly; the mic closes at once, nothing more is sent. */
 export function discard(api: Api): Promise<void> {
   if (state.active?.id) discarding = true
+  teardownCapture()
   return stop(api)
 }
 

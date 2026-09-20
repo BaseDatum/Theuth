@@ -774,24 +774,33 @@ pub trait Api {
     /// Load the streaming dictation model (and the VAD) so Ctrl+D is instant;
     /// never opens the microphone; idempotent — replies with the current
     /// `ModelState`, `Loading` while the load is in flight (54 §0.5, §8).
-    /// Frontends call it once after connect. A relay peer is refused:
-    /// "microphone is on the harness host".
+    /// Frontends call it once after connect.
     #[method(name = "dictation_prewarm", with_extensions)]
     async fn dictation_prewarm(&self) -> RpcResult<voice::ModelState>;
-    /// Open the daemon's microphone and start streaming text (54 §8); text
-    /// arrives as `DictationText` events on `subscribe_events`. Error strings:
-    /// `already dictating`, `voice is disabled`, a missing/failed model (with
-    /// the expected path), a mic open failure, "microphone is on the harness
-    /// host" for a relay peer.
+    /// Start streaming text (54 §8); text arrives as `DictationText` events on
+    /// `subscribe_events`. `sample_rate: None` opens the daemon's microphone —
+    /// local peers only; a relay peer gets "microphone is on the harness host;
+    /// pass sample_rate to stream audio". `Some(rate)` (a multiple of 50)
+    /// means the caller streams its own mono i16 PCM at `rate` Hz with
+    /// `dictation_audio`; the dictation stops when that connection closes.
+    /// Other error strings: `already dictating`, `voice is disabled`, a
+    /// missing/failed model (with the expected path), a mic open failure.
     #[method(name = "dictation_start", with_extensions)]
-    async fn dictation_start(&self) -> RpcResult<voice::DictationId>;
+    async fn dictation_start(&self, sample_rate: Option<u32>) -> RpcResult<voice::DictationId>;
+    /// Feed remote dictation `id`: `pcm` is base64 of little-endian mono i16
+    /// samples at the rate given to `dictation_start`, ~100 ms per call.
+    /// `Err` when `id` is not a running remote dictation or `pcm` is not
+    /// whole i16s.
+    #[method(name = "dictation_audio", with_extensions)]
+    async fn dictation_audio(&self, id: voice::DictationId, pcm: String) -> RpcResult<()>;
     /// Stop dictation `id`, flushing the open utterance first; `Finished`
     /// follows as an event. Idempotent: an unknown or finished id is `Ok`
-    /// (54 §8).
+    /// (54 §8). Any authenticated peer may stop, including a relay peer.
     #[method(name = "dictation_stop", with_extensions)]
     async fn dictation_stop(&self, id: voice::DictationId) -> RpcResult<()>;
     /// The dictation model's state and the running dictation, if any (54 §8):
-    /// how a second frontend learns it is "dictating elsewhere".
+    /// how a second frontend learns it is "dictating elsewhere". Open to
+    /// relay peers.
     #[method(name = "dictation_status", with_extensions)]
     async fn dictation_status(&self) -> RpcResult<voice::DictationState>;
     /// Processes Core Audio knows about, the ones playing audio first (53, 01 §4.1):
@@ -1116,15 +1125,6 @@ fn peer(ext: &Extensions) -> RpcResult<link::RpcPeer> {
     ext.get::<link::RpcPeer>().cloned().ok_or_else(|| {
         ErrorObjectOwned::owned(UNAUTHORIZED, "no authenticated connection", None::<()>)
     })
-}
-
-/// Dictation uses the daemon's own microphone: a peer that reached us through
-/// the relay is not on this host, so its mic is out of reach (54 §0.2, §8).
-fn local_mic(ext: &Extensions) -> RpcResult<()> {
-    if peer(ext)?.remote() {
-        return Err(failed("microphone is on the harness host"));
-    }
-    Ok(())
 }
 
 /// The secrets actor; absent when the plugin is not loaded or the vault failed to open.
@@ -2304,22 +2304,64 @@ impl ApiServer for Server {
     }
 
     async fn dictation_prewarm(&self, ext: &Extensions) -> RpcResult<voice::ModelState> {
-        local_mic(ext)?;
+        peer(ext)?;
         send(&dictation()?, voice::Prewarm).await
     }
 
-    async fn dictation_start(&self, ext: &Extensions) -> RpcResult<voice::DictationId> {
-        local_mic(ext)?;
-        send(&dictation()?, voice::StartDictation).await
+    async fn dictation_start(
+        &self,
+        ext: &Extensions,
+        sample_rate: Option<u32>,
+    ) -> RpcResult<voice::DictationId> {
+        let peer = peer(ext)?;
+        let source = match sample_rate {
+            None if peer.remote() => {
+                return Err(failed(
+                    "microphone is on the harness host; pass sample_rate to stream audio",
+                ));
+            }
+            None => voice::AudioSource::Mic,
+            Some(sample_rate) => voice::AudioSource::Remote { sample_rate },
+        };
+        let actor = dictation()?;
+        let id = send(&actor, voice::StartDictation { source }).await?;
+        if source != voice::AudioSource::Mic {
+            // A dropped connection must not hold the one-dictation slot.
+            tokio::spawn(async move {
+                peer.closed().await;
+                let _ = send(&actor, voice::StopDictation { id }).await;
+            });
+        }
+        Ok(id)
+    }
+
+    async fn dictation_audio(
+        &self,
+        ext: &Extensions,
+        id: voice::DictationId,
+        pcm: String,
+    ) -> RpcResult<()> {
+        peer(ext)?;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(pcm)
+            .map_err(|e| failed(format!("bad base64: {e}")))?;
+        if bytes.len() % 2 != 0 {
+            return Err(failed("pcm must be little-endian i16"));
+        }
+        let pcm = bytes
+            .chunks_exact(2)
+            .map(|b| i16::from_le_bytes([b[0], b[1]]))
+            .collect();
+        send(&dictation()?, voice::PushAudio { id, pcm }).await
     }
 
     async fn dictation_stop(&self, ext: &Extensions, id: voice::DictationId) -> RpcResult<()> {
-        local_mic(ext)?;
+        peer(ext)?;
         send(&dictation()?, voice::StopDictation { id }).await
     }
 
     async fn dictation_status(&self, ext: &Extensions) -> RpcResult<voice::DictationState> {
-        local_mic(ext)?;
+        peer(ext)?;
         send(&dictation()?, voice::DictationStatus).await
     }
 
@@ -2779,26 +2821,35 @@ mod tests {
         assert_eq!(app_close_code(&with_peer).await, i64::from(NOT_RUNNING));
     }
 
-    /// Dictation needs the daemon's microphone: a peer that reached us through
-    /// the relay is refused with the reason, before any actor lookup (54 §8).
-    #[tokio::test]
-    async fn dictation_refuses_relay_peers() {
+    /// Dispatch a raw dictation request as a remote (relay) peer on a fresh server.
+    async fn remote_dictation_call(method: &str, params: &str) -> serde_json::Value {
         let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
         let mut methods: jsonrpsee::Methods = Server::new(rt).into_rpc().into();
         let (peer, _guard) = link::RpcPeer::open_remote();
         methods.extensions_mut().insert(peer);
-        let (resp, _) = methods
-            .raw_json_request(
-                r#"{"jsonrpc":"2.0","method":"dictation_start","params":[],"id":1}"#,
-                1,
-            )
-            .await
-            .unwrap();
-        let v: serde_json::Value = serde_json::from_str(resp.get()).unwrap();
+        let req = format!(r#"{{"jsonrpc":"2.0","method":"{method}","params":{params},"id":1}}"#);
+        let (resp, _) = methods.raw_json_request(&req, 1).await.unwrap();
+        serde_json::from_str(resp.get()).unwrap()
+    }
+
+    /// The daemon's microphone is out of a relay peer's reach: `dictation_start`
+    /// without a `sample_rate` is refused with the reason, before any actor
+    /// lookup (54 §8).
+    #[tokio::test]
+    async fn dictation_mic_refuses_relay_peers() {
+        let v = remote_dictation_call("dictation_start", "[null]").await;
         assert_eq!(v["error"]["code"].as_i64(), Some(i64::from(ASK_FAILED)));
         assert_eq!(
             v["error"]["message"].as_str(),
-            Some("microphone is on the harness host")
+            Some("microphone is on the harness host; pass sample_rate to stream audio")
         );
+    }
+
+    /// Everything but the daemon mic is open to a relay peer: `dictation_status`
+    /// reaches the actor lookup (no voice actor here, so `NOT_RUNNING`).
+    #[tokio::test]
+    async fn dictation_status_reaches_relay_peers() {
+        let v = remote_dictation_call("dictation_status", "[]").await;
+        assert_eq!(v["error"]["code"].as_i64(), Some(i64::from(NOT_RUNNING)));
     }
 }
