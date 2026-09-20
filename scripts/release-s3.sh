@@ -135,9 +135,17 @@ if [[ "$PRERELEASE" == "1" ]]; then
   echo "==> gates 2-3 skipped (THEUTH_RELEASE_PRERELEASE=1)"
 else
   gate 2 "codesign shows a Developer ID (app and $HELPER)"
-  codesign -dvv "$APP" 2>&1 | grep -q 'Authority=Developer ID' || fail 2 "ad-hoc build (set THEUTH_SIGN_IDENTITY, rerun just package-macos)"
-  codesign -dvv "$APP/Contents/MacOS/$HELPER" 2>&1 | grep -q 'Authority=Developer ID' || fail 2 "$HELPER not signed with a Developer ID (rerun just package-macos)"
-  codesign -d --entitlements - --xml "$APP/Contents/MacOS/$HELPER" 2>/dev/null | grep -q 'com.apple.security.cs.allow-jit' || fail 2 "$HELPER lacks the JIT entitlement (scripts/entitlements-app-parser.plist)"
+  # Capture, don't `grep -q` in a pipe: with pipefail, grep -q closes early,
+  # codesign gets SIGPIPE (141), the gate fails even when Authority is present.
+  signed_developer_id() {
+    local out
+    out="$(codesign -d --verbose=2 "$1" 2>&1)" || true
+    [[ "$out" == *"Authority=Developer ID"* ]]
+  }
+  signed_developer_id "$APP" || fail 2 "ad-hoc build (set THEUTH_SIGN_IDENTITY, rerun just package-macos)"
+  signed_developer_id "$APP/Contents/MacOS/$HELPER" || fail 2 "$HELPER not signed with a Developer ID (rerun just package-macos)"
+  ents="$(codesign -d --entitlements - --xml "$APP/Contents/MacOS/$HELPER" 2>/dev/null)" || true
+  [[ "$ents" == *"com.apple.security.cs.allow-jit"* ]] || fail 2 "$HELPER lacks the JIT entitlement (scripts/entitlements-app-parser.plist)"
   gate 3 "spctl --assess (notarized)"
   spctl --assess --type execute "$APP" 2>/dev/null || fail 3 "not notarized (just notarize-macos)"
 fi
