@@ -30,6 +30,7 @@ update = { workspace = true }
 artifact = { workspace = true }
 app = { workspace = true }
 voice = { workspace = true }
+meeting = { workspace = true }
 secrets = { workspace = true }
 rpassword = { workspace = true }
 jsonrpsee = { workspace = true, features = ["ws-client"] }

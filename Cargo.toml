@@ -43,6 +43,20 @@ app = { path = "crates/app" }  # interactive OpenUI apps: publish, app RPC, one-
 secrets = { path = "crates/secrets" }  # secrets vault (37)
 update = { path = "crates/update" }  # self-update from the release bucket (39)
 voice = { path = "crates/voice" }  # read replies aloud: Pocket TTS in-process (43)
+meeting = { path = "crates/meeting" }  # meeting recorder: process tap + VPIO mic, three Opus tracks (53)
+# Meetings (design doc 53): `rtrb` = lock-free rings between the capture threads and the encoder;
+# `ogg` = RFC 7845 Opus-in-Ogg pages; `coreaudio-rs` = the VoiceProcessingIO mic unit (0.13 is
+# what `cpal` already pins — 0.12 would duplicate `objc2-audio-toolbox`); `objc2-core-audio` =
+# the process list (`kAudioHardwarePropertyProcessObjectList`; flexaudio has no enumeration);
+# `objc2-core-foundation` = its bundle-id CFStrings; `objc2-av-foundation` = the non-prompting mic
+# TCC probe; `libc` = `proc_name` and `statvfs`.
+rtrb = "0.3"  # 53
+ogg = "0.9"  # 53
+coreaudio-rs = "0.13"  # 53
+objc2-core-audio = { version = "0.3", default-features = false, features = ["std", "AudioHardware", "objc2-core-audio-types"] }  # 53
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFString"] }  # 53
+objc2-av-foundation = { version = "0.3", default-features = false, features = ["std", "AVCaptureDevice", "AVMediaFormat"] }  # 53
+libc = "0.2"  # 53
 # Voice (design doc 43): `ptts` = pure-Rust Pocket TTS (`sp` = SentencePiece `tokenizer.model`,
 # the file the checkpoint ships; needs cmake); `opus` = libopus for 80 ms packets on the wire.
 # crates.io 0.2.3 predates `ptts::synth::Synth` (the streaming API 43 §2.1 relies on); the rev is

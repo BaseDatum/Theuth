@@ -27,6 +27,7 @@ secrets = { workspace = true }
 web = { workspace = true }
 update = { workspace = true }
 voice = { workspace = true }
+meeting = { workspace = true }
 agent-client-protocol = { workspace = true }
 tokio = { workspace = true }
 futures = { workspace = true }
@@ -51,7 +52,7 @@ figment = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 
 [features]
-ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "knowledge/ts", "search/ts", "agent/ts", "signal/ts", "slack/ts", "acp/ts", "browser/ts", "computer/ts", "surface/ts", "link/ts", "nodes/ts", "a2a/ts", "schedule/ts", "artifact/ts", "app/ts", "secrets/ts", "web/ts", "update/ts", "voice/ts"]
+ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "knowledge/ts", "search/ts", "agent/ts", "signal/ts", "slack/ts", "acp/ts", "browser/ts", "computer/ts", "surface/ts", "link/ts", "nodes/ts", "a2a/ts", "schedule/ts", "artifact/ts", "app/ts", "secrets/ts", "web/ts", "update/ts", "voice/ts", "meeting/ts"]
 
 [lints]
 workspace = true

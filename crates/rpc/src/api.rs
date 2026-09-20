@@ -794,6 +794,41 @@ pub trait Api {
     /// how a second frontend learns it is "dictating elsewhere".
     #[method(name = "dictation_status", with_extensions)]
     async fn dictation_status(&self) -> RpcResult<voice::DictationState>;
+    /// Processes Core Audio knows about, the ones playing audio first (53, 01 §4.1):
+    /// the picker for `meeting_start`. "meetings are disabled" when the plugin is off.
+    #[method(name = "meeting_processes")]
+    async fn meeting_processes(&self) -> RpcResult<Vec<meeting::ProcessInfo>>;
+    /// Start recording `process` (a pid from `meeting_processes`); `consent`
+    /// must be `true`. Replies once the devices are open, after `Started` and
+    /// `State{Recording}` went out on `subscribe_events`. Error strings: consent
+    /// missing, no process, "a meeting is already recording", a device or
+    /// permission failure (the meeting is then `Failed` in `meeting_list`).
+    #[method(name = "meeting_start")]
+    async fn meeting_start(&self, start: meeting::StartMeeting) -> RpcResult<meeting::Started>;
+    /// Pause the recording: devices stay open, the clock stops, a gap is recorded.
+    #[method(name = "meeting_pause")]
+    async fn meeting_pause(&self) -> RpcResult<()>;
+    /// Resume after `meeting_pause`.
+    #[method(name = "meeting_resume")]
+    async fn meeting_resume(&self) -> RpcResult<()>;
+    /// Stop; replies once the last Ogg pages are written and the manifest says `Done`.
+    #[method(name = "meeting_stop")]
+    async fn meeting_stop(&self) -> RpcResult<()>;
+    /// The current meeting's state, ids, elapsed recording time and degradations.
+    #[method(name = "meeting_status")]
+    async fn meeting_status(&self) -> RpcResult<meeting::Status>;
+    /// Recorded meetings, newest first (`limit` default 100).
+    #[method(name = "meeting_list")]
+    async fn meeting_list(&self, limit: Option<u32>) -> RpcResult<Vec<meeting::MeetingSummary>>;
+    /// One meeting's manifest.
+    #[method(name = "meeting_get")]
+    async fn meeting_get(&self, id: meeting::MeetingId) -> RpcResult<meeting::Manifest>;
+    /// Delete a meeting: directory, index row, session. Refused while it records.
+    #[method(name = "meeting_delete")]
+    async fn meeting_delete(&self, id: meeting::MeetingId) -> RpcResult<()>;
+    /// Microphone and audio-capture TCC state as far as it is known without prompting.
+    #[method(name = "meeting_permissions")]
+    async fn meeting_permissions(&self) -> RpcResult<meeting::Permissions>;
     /// Fire a schedule now, ignoring `next`; returns its session (34 §8).
     /// Refused while a run is in flight (`busy`) or the file does not parse.
     #[method(name = "fire_schedule")]
@@ -1046,6 +1081,14 @@ fn transcriber() -> RpcResult<ActorRef<voice::Transcriber>> {
 fn dictation() -> RpcResult<ActorRef<voice::Dictation>> {
     lookup::<voice::Dictation>(voice::DICTATION_ACTOR).map_err(|e| match e.code() {
         NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "voice is disabled", None::<()>),
+        _ => e,
+    })
+}
+
+/// The meeting actor; absent when `meeting.enabled: false`, off macOS, or the plugin is not loaded.
+fn meeting() -> RpcResult<ActorRef<meeting::Meeting>> {
+    lookup::<meeting::Meeting>(meeting::MEETING_ACTOR).map_err(|e| match e.code() {
+        NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "meetings are disabled", None::<()>),
         _ => e,
     })
 }
@@ -2278,6 +2321,46 @@ impl ApiServer for Server {
     async fn dictation_status(&self, ext: &Extensions) -> RpcResult<voice::DictationState> {
         local_mic(ext)?;
         send(&dictation()?, voice::DictationStatus).await
+    }
+
+    async fn meeting_processes(&self) -> RpcResult<Vec<meeting::ProcessInfo>> {
+        send(&meeting()?, meeting::ListProcesses).await
+    }
+
+    async fn meeting_start(&self, start: meeting::StartMeeting) -> RpcResult<meeting::Started> {
+        send(&meeting()?, start).await
+    }
+
+    async fn meeting_pause(&self) -> RpcResult<()> {
+        send(&meeting()?, meeting::PauseMeeting).await
+    }
+
+    async fn meeting_resume(&self) -> RpcResult<()> {
+        send(&meeting()?, meeting::ResumeMeeting).await
+    }
+
+    async fn meeting_stop(&self) -> RpcResult<()> {
+        send(&meeting()?, meeting::StopMeeting).await
+    }
+
+    async fn meeting_status(&self) -> RpcResult<meeting::Status> {
+        send(&meeting()?, meeting::MeetingStatus).await
+    }
+
+    async fn meeting_list(&self, limit: Option<u32>) -> RpcResult<Vec<meeting::MeetingSummary>> {
+        send(&meeting()?, meeting::ListMeetings { limit }).await
+    }
+
+    async fn meeting_get(&self, id: meeting::MeetingId) -> RpcResult<meeting::Manifest> {
+        send(&meeting()?, meeting::GetMeeting { meeting: id }).await
+    }
+
+    async fn meeting_delete(&self, id: meeting::MeetingId) -> RpcResult<()> {
+        send(&meeting()?, meeting::DeleteMeeting { meeting: id }).await
+    }
+
+    async fn meeting_permissions(&self) -> RpcResult<meeting::Permissions> {
+        send(&meeting()?, meeting::CheckPermissions).await
     }
 
     async fn fire_schedule(&self, name: String) -> RpcResult<SessionId> {

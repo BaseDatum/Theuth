@@ -1,0 +1,44 @@
+[package]
+name = "meeting"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Meeting recorder: the meeting app's audio and the microphone as live Opus tracks, a manifest and index, the meeting's own session (design doc 53)"
+
+[dependencies]
+runtime = { workspace = true }
+agent = { workspace = true }
+voice = { workspace = true }
+kameo = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+sqlx = { workspace = true }
+rtrb = { workspace = true }
+opus = { workspace = true }
+rubato = { workspace = true }
+ogg = { workspace = true }
+flexaudio = { workspace = true }
+libc = { workspace = true }
+ts-rs = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+coreaudio-rs = { workspace = true }
+objc2-core-audio = { workspace = true }
+objc2-core-foundation = { workspace = true }
+objc2-av-foundation = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[features]
+ts = ["dep:ts-rs", "runtime/ts"]
+
+[lints]
+workspace = true

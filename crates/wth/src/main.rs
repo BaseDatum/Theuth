@@ -220,6 +220,19 @@ agent:
 #   dictation_model_dir: ~   # nemotron-speech-streaming-en ONNX dir (encoder.onnx, decoder_joint.onnx, tokenizer.model); default <data_dir>/models/nemotron-streaming-en
 #   dictation_max_secs: 300  # a running dictation stops itself here (design doc 54)
 
+# meeting:                   # record a meeting: the meeting app's audio + the mic as Opus tracks, live briefs from the notch (design doc 53); macOS 15
+#   enabled: true            # false: no actor, `meeting_*` answers \"meetings are disabled\"
+#   max_minutes: 180         # hard stop; warning (NearMaxLength) at max_minutes - 10
+#   context_tokens: 24000    # phase 2: per-session compaction trigger
+#   batch_secs: 25           # phase 2: transcript batch cadence
+#   batch_utterances: 6      # phase 2: transcript batch size
+#   stt_max_utterance_ms: 15000  # phase 2: continuous speech is cut into utterances at this length
+#   live_model_dir: ~        # phase 2: Nemotron streaming dir; default voice.dictation_model_dir
+#   topic_ttl_secs: 600      # phase 2: how long a topic button lives
+#   max_topics: 6            # phase 2: most topic buttons at once
+#   allow_read_only: false   # phase 2: ReadOnly tools run without asking in the meeting session
+#   models_dir: ~            # phase 4: pyannote models; default <data_dir>/models/pyannote
+
 # a2a:                       # remote agents over A2A 1.0 (design doc 50 §6); peers/exports live in <data_dir>/a2a/peers.yaml, `/a2a reload` applies edits
 #   enabled: false           # false: no actor, listener, card fetch or credential load. Needs agent.communication too.
 #   listen: 127.0.0.1:7780   # SDK HTTP listener; loopback only, restart to change
@@ -484,6 +497,7 @@ async fn run() -> anyhow::Result<()> {
         plugins.push(Box::new(a2a::A2aPlugin));
         plugins.push(Box::new(update::UpdatePlugin));
         plugins.push(Box::new(voice::VoicePlugin));
+        plugins.push(Box::new(meeting::MeetingPlugin));
         if cli.serve || cli.headless {
             plugins.push(Box::new(rpc::RpcPlugin));
         }
