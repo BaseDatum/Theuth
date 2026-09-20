@@ -63,6 +63,47 @@ impl AwsProfiles {
     }
 }
 
+/// Whether the SDK's ambient profile (`AWS_PROFILE`, else `default`) has a section in
+/// `AWS_SHARED_CREDENTIALS_FILE` (`~/.aws/credentials`) or `AWS_CONFIG_FILE` (`~/.aws/config`).
+/// Sync and SDK-free so the model catalog's `configured` predicate can call it; a plain
+/// header scan, since the SDK will do the real parse when a call is made.
+pub(crate) fn ambient_profile_exists() -> bool {
+    let name = std::env::var("AWS_PROFILE")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "default".into());
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let file = |env: &str, default: &str| {
+        std::env::var_os(env)
+            .filter(|v| !v.is_empty())
+            .map(std::path::PathBuf::from)
+            .or_else(|| home.as_ref().map(|h| h.join(".aws").join(default)))
+    };
+    has_profile(
+        file("AWS_SHARED_CREDENTIALS_FILE", "credentials"),
+        file("AWS_CONFIG_FILE", "config"),
+        &name,
+    )
+}
+
+/// `[name]` in the credentials file, or `[name]` / `[profile name]` in the config file.
+fn has_profile(
+    credentials: Option<std::path::PathBuf>,
+    config: Option<std::path::PathBuf>,
+    name: &str,
+) -> bool {
+    let section = |path: Option<std::path::PathBuf>, headers: &[String]| {
+        path.and_then(|p| std::fs::read_to_string(p).ok())
+            .is_some_and(|text| {
+                text.lines()
+                    .map(str::trim)
+                    .any(|line| headers.iter().any(|h| h == line))
+            })
+    };
+    section(credentials, &[format!("[{name}]")])
+        || section(config, &[format!("[{name}]"), format!("[profile {name}]")])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,5 +135,23 @@ mod tests {
         assert_eq!(profiles.selected.as_deref(), Some("personal"));
         profiles.select(None).unwrap();
         assert!(profiles.selected.is_none());
+    }
+
+    #[test]
+    fn ambient_profile_is_a_section_header_in_either_file() {
+        let dir = std::env::temp_dir().join(format!("theuth-aws-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let creds = dir.join("credentials");
+        let config = dir.join("config");
+        std::fs::write(&creds, "[work]\naws_access_key_id = x\n").unwrap();
+        std::fs::write(&config, "[profile personal]\nregion = us-west-2\n[default]\nregion = eu-west-1\n").unwrap();
+        let both = || (Some(creds.clone()), Some(config.clone()));
+        assert!(has_profile(both().0, both().1, "work"));
+        assert!(has_profile(both().0, both().1, "personal"));
+        assert!(has_profile(both().0, both().1, "default"));
+        assert!(!has_profile(both().0, both().1, "missing"));
+        // No files at all (a machine without ~/.aws): nothing is configured.
+        assert!(!has_profile(Some(dir.join("nope")), None, "default"));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

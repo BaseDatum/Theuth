@@ -5195,9 +5195,13 @@ const CLAUDE_CODE_UA: &str = "claude-cli/2.1.257 (external, cli)";
 /// The auth-resolver rule as a predicate over genai namespaces: a key in
 /// the vault, a login on disk, the adapter's default env var set, or an
 /// adapter needing no key (`ollama`). `cursor` is not a genai adapter: only
-/// a login configures it.
+/// a login configures it. Bedrock has no key env, so SigV4 counts as
+/// configured only when [`bedrock_configured`] finds credentials to use.
 fn configured(auth: Auth) -> Arc<dyn Fn(&str) -> bool + Send + Sync> {
     Arc::new(move |ns: &str| {
+        if ns == "bedrock_sigv4" {
+            return bedrock_configured(&auth);
+        }
         auth.key(ns).is_some()
             || auth.gateway(ns).is_some()
             || auth.login(ns)
@@ -5206,6 +5210,24 @@ fn configured(auth: Auth) -> Arc<dyn Fn(&str) -> bool + Send + Sync> {
                     .is_none_or(|env| std::env::var_os(env).is_some_and(|v| !v.is_empty()))
             })
     })
+}
+
+/// What the Bedrock resolver ([`start`]'s `auth_resolver_fn`) can actually use:
+/// a bearer token (vault `bedrock_api`, `BEDROCK_API_KEY`, `AWS_BEARER_TOKEN_BEDROCK`),
+/// the `/aws` profile, static or role credentials in the environment, or the
+/// SDK's ambient profile present in its files. Never resolves credentials (02 §2.2).
+// ponytail: IMDS/ECS metadata without env hints is not detected; add a cached async probe if EC2 users ask.
+fn bedrock_configured(auth: &Auth) -> bool {
+    let env = |name: &str| std::env::var_os(name).is_some_and(|v| !v.is_empty());
+    auth.key("bedrock_api").is_some()
+        || env("BEDROCK_API_KEY")
+        || env("AWS_BEARER_TOKEN_BEDROCK")
+        || auth.aws_profile().is_some()
+        || (env("AWS_ACCESS_KEY_ID") && env("AWS_SECRET_ACCESS_KEY"))
+        || env("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI")
+        || env("AWS_CONTAINER_CREDENTIALS_FULL_URI")
+        || env("AWS_WEB_IDENTITY_TOKEN_FILE")
+        || crate::aws::ambient_profile_exists()
 }
 
 /// The vision fallback's id/capability rule (52 §3.1), shared by
