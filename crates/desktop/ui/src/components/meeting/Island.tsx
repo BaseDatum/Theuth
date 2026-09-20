@@ -207,6 +207,9 @@ export function Island() {
                   }}
                 >
                   <span className="truncate">{t.label}</span>
+                  {t.cached !== null && (
+                    <span className="size-1.5 shrink-0 rounded-full bg-fg-accent" aria-label="cached brief" title="cached — the brief is ready" />
+                  )}
                   <X
                     className="hidden size-3 shrink-0 text-fg-tertiary group-hover:block"
                     aria-label="Dismiss"

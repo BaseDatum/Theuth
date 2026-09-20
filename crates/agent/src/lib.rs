@@ -280,6 +280,32 @@ pub struct SetCompaction {
     pub hint: Option<String>,
 }
 
+/// A session's allowlisted toolset (`meetings/06-live-toolset.md`): only the
+/// named registry tools (plus `todo` when listed) are in the direct array,
+/// whatever their `DIRECT` flag; only the named plugins' prompt blocks are in
+/// the system prompt; `runtime: false` drops `python` and its prompt block
+/// even when the session has a pool.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Toolset {
+    /// Registry tool names (and `todo`) the model may call directly.
+    pub tools: Vec<String>,
+    /// `Plugin::name`s whose prompt blocks stay in the system prompt.
+    pub prompts: Vec<String>,
+    /// Whether `python` is offered at all.
+    pub runtime: bool,
+}
+
+/// `ask` → `Result<(), String>`: one session's toolset override, in memory
+/// only, live for a running turn from its next rebase. `None` = the ordinary
+/// session: every tool, every block, python per `agent.runtime_only`.
+#[derive(Clone, Debug)]
+pub struct SetToolset {
+    /// Target session.
+    pub session: SessionId,
+    /// The allowlist; `None` clears it.
+    pub toolset: Option<Toolset>,
+}
+
 /// `ask` → [`CompactStyle`]: the live default style.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct GetCompactStyle;

@@ -27,6 +27,8 @@ import type { McpServer } from '@/rpc/bindings/McpServer'
 import type { Brief } from '@/rpc/bindings/Brief'
 import type { BriefId } from '@/rpc/bindings/BriefId'
 import type { EditOp } from '@/rpc/bindings/EditOp'
+import type { CachedBrief } from '@/rpc/bindings/CachedBrief'
+import type { CachedBriefPut } from '@/rpc/bindings/CachedBriefPut'
 import type { Manifest } from '@/rpc/bindings/Manifest'
 import type { MeetingId } from '@/rpc/bindings/MeetingId'
 import type { MeetingStatus } from '@/rpc/bindings/MeetingStatus'
@@ -269,6 +271,17 @@ export interface Api {
   mcp_login(server: string): Promise<string>
   mcp_logout(server: string): Promise<null>
   mcp_status(): Promise<McpProgress>
+  // Brief cache (53; 05 §8). Same disabled error as `meeting_*`.
+  brief_delete(id: BriefId): Promise<null>
+  brief_get(id: BriefId): Promise<CachedBrief>
+  /** Newest `updated_at` first; `tag` narrows; `limit` ≤ 50. */
+  brief_list(tag: string | null, limit: number | null): Promise<CachedBrief[]>
+  /** Create (`id: null`) or update; the row as stored. */
+  brief_put(put: CachedBriefPut): Promise<CachedBrief>
+  /** FTS over aliases/title/tags/bullets; `limit` ≤ 50, default 8. */
+  brief_search(query: string, limit: number | null): Promise<CachedBrief[]>
+  /** Every tag, most-used first. */
+  brief_tags(): Promise<string[]>
   // Meetings (53; 01 §6, 02 §6). Every call answers `-32001 "meetings are disabled"` when the plugin is off.
   meeting_briefs(id: MeetingId): Promise<Brief[]>
   /** Where the island's cursor is; mirrored to `meeting_status.cursor`. */
@@ -446,6 +459,12 @@ export const METHODS = [
   'app_call_tool',
   'app_close',
   'artifact_search_match',
+  'brief_delete',
+  'brief_get',
+  'brief_list',
+  'brief_put',
+  'brief_search',
+  'brief_tags',
   'browser_screenshot',
   'cancel',
   'cancel_job',

@@ -30,6 +30,7 @@ use ::tools::{ApprovalRequested, ApprovalResolved};
 use voice::live::Utterer;
 
 pub mod batch;
+pub mod cache;
 pub mod capture;
 pub mod ogg;
 pub mod post;
@@ -43,6 +44,7 @@ pub mod tools;
 pub mod topics;
 pub mod transcript;
 
+pub use cache::{Cache, CachedBrief, CachedBriefPut};
 pub use speakers::{Profile, Profiles};
 pub use state::{Recording, RecordingClock};
 pub use store::{Gap, Manifest, MeetingSummary, SearchHit, Stem, Store, TrackFile};
@@ -353,6 +355,9 @@ pub struct Topic {
     pub at_ms: u64,
     /// Precomputed brief, if any.
     pub brief: Option<BriefId>,
+    /// Phase 5: the cache row behind the precomputed brief (the island marks these).
+    #[serde(default)]
+    pub cached: Option<BriefId>,
 }
 
 /// A brief: 2–3 bullets of facts (phase 2).
@@ -373,6 +378,9 @@ pub struct Brief {
     pub at_ms: u64,
     /// The brief this one goes deeper on.
     pub parent: Option<BriefId>,
+    /// Phase 5: the cache row this instance came from (or was written to).
+    #[serde(default)]
+    pub cached: Option<BriefId>,
 }
 
 /// What produced a brief (phase 2).
@@ -389,6 +397,26 @@ pub enum BriefSource {
     Deeper,
     /// Typed in the control center.
     Typed,
+    /// Phase 5: the actor's alias scan found it in the cache, no model involved.
+    Cache,
+}
+
+/// The brief cache changed (phase 5, 05 §0.8). The one meeting stream without
+/// a `meeting`: the cache has none. `removed` = the row is gone. On the wire the
+/// variant is `BriefChanged`: `ScheduleEvent` already owns `type: "Changed"` and
+/// the desktop dispatches every event by that field alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(tag = "type")]
+pub enum BriefEvent {
+    /// A row was put or deleted.
+    #[serde(rename = "BriefChanged")]
+    Changed {
+        /// The row.
+        id: BriefId,
+        /// Deleted.
+        removed: bool,
+    },
 }
 
 /// One closed utterance of the live transcript: a `live.jsonl` line and the
@@ -432,6 +460,11 @@ pub struct MeetingConfig {
     pub max_topics: u32,
     /// Phase 4: pyannote models; `None` → `<data_dir>/models/pyannote`.
     pub models_dir: Option<std::path::PathBuf>,
+    /// 06 §1.5: the registry tools the meeting session may call directly while
+    /// recording; every other tool is hidden from it until stop.
+    pub live_tools: Vec<String>,
+    /// 06 §1.5: the plugins whose prompt blocks the meeting session sees while recording.
+    pub live_prompts: Vec<String>,
 }
 
 impl Default for MeetingConfig {
@@ -446,6 +479,21 @@ impl Default for MeetingConfig {
             topic_ttl_secs: 600,
             max_topics: 6,
             models_dir: None,
+            live_tools: [
+                "meeting_topic",
+                "meeting_brief",
+                "brief_search",
+                "brief_put",
+                "knowledge_search",
+                "knowledge_get",
+                "meeting_read",
+                "meeting_search",
+                "search_web",
+                "read_url",
+            ]
+            .map(String::from)
+            .to_vec(),
+            live_prompts: ["meeting", "knowledge", "web"].map(String::from).to_vec(),
         }
     }
 }
@@ -656,8 +704,10 @@ pub struct LiveText {
     pub meeting: MeetingId,
 }
 
-/// From `meeting_topic` (02 §5.1): `ask` → `Result<String, String>` — the
-/// text the model reads back.
+/// From `meeting_topic` (02 §5.1, 05 §4): `ask` → `Result<String, String>` — the
+/// text the model reads back. Either `title` + `bullets` (a new brief, also
+/// written to the cache) or `brief` (a cache row, registered by reference; the
+/// label becomes one of its aliases).
 #[derive(Clone, Debug)]
 pub struct AddTopic {
     /// The calling session; must be the meeting's.
@@ -665,9 +715,11 @@ pub struct AddTopic {
     /// ≤ 4 words.
     pub label: String,
     /// Brief title.
-    pub title: String,
+    pub title: Option<String>,
     /// 2–3 bullets.
-    pub bullets: Vec<String>,
+    pub bullets: Option<Vec<String>>,
+    /// A cached brief to reuse.
+    pub brief: Option<BriefId>,
 }
 
 /// From `meeting_brief` (02 §5.2): `ask` → `Result<String, String>`.
@@ -683,6 +735,57 @@ pub struct AddBrief {
     pub topic: Option<TopicId>,
     /// The brief this goes deeper on.
     pub parent: Option<BriefId>,
+    /// Phase 5: `Some` → also cached under these aliases.
+    pub aliases: Option<Vec<String>>,
+}
+
+// Phase 5 (05 §8): the brief cache. Tools and RPC both go through the actor so
+// the alias list and the live meeting's bookkeeping stay consistent.
+
+/// `ask` → `Result<Vec<CachedBrief>, String>`: FTS, best rank first (05 §4).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BriefSearch {
+    /// Words; OR-joined.
+    pub query: String,
+    /// ≤ 50; default 8.
+    pub limit: Option<u32>,
+}
+
+/// `ask` → `Result<Vec<CachedBrief>, String>`: newest `updated_at` first, optionally one tag.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct BriefList {
+    /// Only rows tagged this.
+    pub tag: Option<String>,
+    /// ≤ 50; default 50.
+    pub limit: Option<u32>,
+}
+
+/// `ask` → `Result<Vec<String>, String>`: every tag, most-used first (the `/briefs` chip row).
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct BriefTags;
+
+/// `ask` → `Result<CachedBrief, String>`.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct BriefGet {
+    /// Which.
+    pub id: BriefId,
+}
+
+/// `ask` → `Result<(CachedBrief, bool /* created */), String>`: upsert; publishes
+/// `BriefEvent::Changed`; with a meeting live, re-publishes the brief if its topic is on the island.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BriefPut {
+    /// The row.
+    pub put: CachedBriefPut,
+    /// `session:<id>` from a tool, `user` from the UI; kept when the row exists.
+    pub source: String,
+}
+
+/// `ask` → `Result<(), String>`: delete a row; publishes `BriefEvent::Changed { removed: true }`.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct BriefDelete {
+    /// Which.
+    pub id: BriefId,
 }
 
 // Phase 4 (04 §5). All `ask` → `Result<_, String>`.
@@ -774,6 +877,9 @@ pub struct Meeting {
     rt: Runtime,
     cfg: MeetingConfig,
     store: Arc<Store>,
+    /// The brief cache (phase 5); `None` when `briefs.sqlite` would not open — the
+    /// meeting then runs on the model path only.
+    cache: Option<Arc<Cache>>,
     /// The live meeting, from `Begun(Ok)` to `StopMeeting`.
     current: Option<Recording>,
     /// Set between `StartMeeting` and `Begun`; the manifest of the meeting being set up.
@@ -783,6 +889,114 @@ pub struct Meeting {
     post: Vec<post::Job>,
     /// The meeting whose summary turn is running (phase 4).
     summarizing: Option<Manifest>,
+}
+
+impl Meeting {
+    fn cache(&self) -> Result<Arc<Cache>, String> {
+        self.cache
+            .clone()
+            .ok_or_else(|| "the brief cache is unavailable".to_owned())
+    }
+
+    /// 05 §3: aliases spoken in `text`, as `(row, label as spoken)`; empty without a cache.
+    fn scan(&self, text: &str) -> Vec<(BriefId, String)> {
+        match &self.cache {
+            Some(c) => cache::scan(text, &c.aliases()),
+            None => Vec::new(),
+        }
+    }
+
+    /// Write a row and tell the world (05 §0.8). Both the tools and the RPC land here.
+    async fn cache_put(&self, put: CachedBriefPut, source: &str) -> Result<(CachedBrief, bool), String> {
+        let (row, created) = self.cache()?.put(put, source).await?;
+        self.rt
+            .publish(BriefEvent::Changed {
+                id: row.id,
+                removed: false,
+            })
+            .await;
+        Ok((row, created))
+    }
+
+    /// `uses += 1` off the hot path.
+    fn touch_use(&self, id: BriefId) {
+        if let Some(c) = self.cache.clone() {
+            tokio::spawn(async move {
+                if let Err(e) = c.touch_use(id).await {
+                    tracing::debug!("brief cache: touch: {e:#}");
+                }
+            });
+        }
+    }
+
+    /// The hot path (05 §3): every alias hit whose row was not shown or dismissed
+    /// this meeting becomes a topic with the cached brief, published before any
+    /// model turn. `since` is the utterance close (`Piece.at`, so it includes the
+    /// STT flush and the mailbox hop) for the latency log; the actor's own share is
+    /// measured from entry.
+    async fn cached_topics(&mut self, hits: Vec<(BriefId, String)>, at_ms: u64, since: Instant) {
+        let entered = Instant::now();
+        let Some(cache) = self.cache.clone() else { return };
+        for (row, label) in hits {
+            let Some(rec) = self.current.as_mut() else { return };
+            if rec.live.topics.cached_blocked(row) {
+                continue;
+            }
+            let row = match cache.get(row).await {
+                Ok(r) => r,
+                Err(_) => continue, // deleted between the scan and now
+            };
+            let Some(rec) = self.current.as_mut() else { return };
+            let (topic, brief, expired) =
+                match rec.live.topics.insert_cached(&label, &row, Instant::now(), at_ms) {
+                    Ok(x) => x,
+                    Err(e) => {
+                        tracing::debug!(label, "meeting: cached topic skipped: {e}");
+                        continue;
+                    }
+                };
+            rec.live.log_record(&Record::Topic(topic.clone()));
+            rec.live.log_record(&Record::Brief(brief));
+            let meeting = rec.manifest.id;
+            self.topics_gone(expired).await;
+            self.rt
+                .publish(MeetingEvent::TopicAdded { meeting, topic })
+                .await;
+            tracing::debug!(
+                label,
+                since_t1_us = since.elapsed().as_micros(),
+                actor_us = entered.elapsed().as_micros(),
+                "meeting: cached topic published"
+            );
+            self.touch_use(row.id);
+        }
+    }
+
+    /// A request named a cached subject: show the row's brief at once as
+    /// `Request` (05 §3); the title goes into the request line's suffix.
+    async fn cached_request(&mut self, hits: &[(BriefId, String)]) -> Option<String> {
+        let cache = self.cache.clone()?;
+        for (id, _) in hits {
+            let Ok(row) = cache.get(*id).await else { continue };
+            let rec = self.current.as_mut()?;
+            let at_ms = rec.clock.now_ms();
+            let Ok(brief) = rec.live.topics.add_brief(
+                &row.title,
+                row.bullets.clone(),
+                None,
+                None,
+                BriefSource::Request,
+                Some(row.id),
+                at_ms,
+            ) else {
+                continue;
+            };
+            self.show_brief(brief).await;
+            self.touch_use(row.id);
+            return Some(row.title);
+        }
+        None
+    }
 }
 
 impl Meeting {
@@ -931,7 +1145,7 @@ impl Meeting {
         let Some(rec) = self.current.as_ref() else { return };
         let text = session::batch_line(
             &batch,
-            &rec.live.topics.live_labels(),
+            &rec.live.topics.batch_labels(chrono::Utc::now()),
             rec.live.topics.dismissed_labels(),
         );
         self.deliver(text).await;
@@ -965,17 +1179,23 @@ impl Meeting {
         self.rt.publish(MeetingEvent::Brief { meeting, brief }).await;
     }
 
-    /// A closed utterance: `live.jsonl`, the batcher (or the request line).
-    async fn closed(&mut self, u: Utterance) {
+    /// A closed utterance: `live.jsonl`, the alias scan (05 §3), then the batcher
+    /// (or the request line). `at` is the close stamp, for the latency log.
+    async fn closed(&mut self, u: Utterance, at: Instant) {
         let Some(rec) = self.current.as_mut() else { return };
         rec.live.log_utterance(&u);
+        let hits = self.scan(&u.text);
         if u.request {
+            let cached = self.cached_request(&hits).await;
+            let Some(rec) = self.current.as_mut() else { return };
             rec.live
                 .prompted(Prompted::Request { spoken: true }, u.text.clone());
-            let line = session::request_line(true, &u.text);
+            let line = session::request_line(true, &u.text, cached.as_deref());
             self.deliver(line).await;
             return;
         }
+        self.cached_topics(hits, u.t1_ms, at).await;
+        let Some(rec) = self.current.as_mut() else { return };
         if let Some(batch) = rec.live.batcher.feed(u, Instant::now()) {
             self.send_batch(batch).await;
         }
@@ -1118,6 +1338,11 @@ impl Message<StartMeeting> for Meeting {
         let setup = Setup {
             title,
             context_tokens: self.cfg.context_tokens,
+            toolset: agent::Toolset {
+                tools: self.cfg.live_tools.clone(),
+                prompts: self.cfg.live_prompts.clone(),
+                runtime: false,
+            },
             live_model_dir: self.cfg.live_model_dir.clone().unwrap_or_else(|| {
                 self.rt
                     .data_dir
@@ -1146,6 +1371,7 @@ impl Message<StartMeeting> for Meeting {
 struct Setup {
     title: String,
     context_tokens: u32,
+    toolset: agent::Toolset,
     live_model_dir: PathBuf,
 }
 
@@ -1191,6 +1417,16 @@ async fn start_task(store: &Store, mut manifest: Manifest, setup: &Setup) -> Beg
         .await
     {
         tracing::warn!(%session, "meeting session compaction: {e}");
+    }
+    // 06 §1.6: the lean, direct-call toolset while recording; cleared at stop.
+    if let Err(e) = agents
+        .ask(agent::SetToolset {
+            session,
+            toolset: Some(setup.toolset.clone()),
+        })
+        .await
+    {
+        tracing::warn!(%session, "meeting session toolset: {e}");
     }
     let dir = match store.create(&manifest).await {
         Ok(dir) => dir,
@@ -1281,6 +1517,18 @@ impl Message<Begun> for Meeting {
                 {
                     self.audio_capture = PermissionState::Denied;
                 }
+                // 06 §1.6: a session created before the failure goes on as an ordinary one.
+                if !manifest.session.0.is_nil()
+                    && let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
+                    && let Err(e) = agents
+                        .ask(agent::SetToolset {
+                            session: manifest.session,
+                            toolset: None,
+                        })
+                        .await
+                {
+                    tracing::warn!(meeting = %manifest.id, "meeting: clear toolset: {e}");
+                }
                 // The directory exists only if the session did; `save` creates
                 // the row either way so the failure is listed.
                 if self.store.meeting_dir(manifest.id).exists() {
@@ -1331,8 +1579,17 @@ impl Message<Begun> for Meeting {
                     .await;
                 manifest = rec.manifest.clone();
                 let started = session::started_line(rec.manifest.context.as_deref());
+                // 05 §3: the start form's title + context are scanned before the
+                // `started.` line reaches the model.
+                let seed = format!(
+                    "{} {}",
+                    rec.manifest.title.as_deref().unwrap_or(""),
+                    rec.manifest.context.as_deref().unwrap_or("")
+                );
                 self.current = Some(rec);
                 self.save(&manifest).await;
+                let hits = self.scan(&seed);
+                self.cached_topics(hits, 0, Instant::now()).await;
                 self.deliver(started).await;
             }
         }
@@ -1471,7 +1728,7 @@ impl Message<StopMeeting> for Meeting {
         if !pending.is_empty() {
             let text = session::batch_line(
                 &pending,
-                &live.topics.live_labels(),
+                &live.topics.batch_labels(chrono::Utc::now()),
                 live.topics.dismissed_labels(),
             );
             if let Err(e) = session::deliver(manifest.session, text, live.turn_running).await {
@@ -1488,6 +1745,17 @@ impl Message<StopMeeting> for Meeting {
                 .await
         {
             tracing::warn!(meeting = %manifest.id, "meeting: clear compaction: {e}");
+        }
+        // 06 §1.6: the session is an ordinary one from here.
+        if let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
+            && let Err(e) = agents
+                .ask(agent::SetToolset {
+                    session: manifest.session,
+                    toolset: None,
+                })
+                .await
+        {
+            tracing::warn!(meeting = %manifest.id, "meeting: clear toolset: {e}");
         }
         tools::unregister().await;
         manifest.ended_at = Some(chrono::Local::now().to_rfc3339());
@@ -1636,13 +1904,16 @@ impl Message<Piece> for Meeting {
             })
             .await;
         if p.is_final {
-            self.closed(Utterance {
-                track: p.track,
-                t0_ms,
-                t1_ms,
-                text: p.text,
-                request: p.request,
-            })
+            self.closed(
+                Utterance {
+                    track: p.track,
+                    t0_ms,
+                    t1_ms,
+                    text: p.text,
+                    request: p.request,
+                },
+                p.at,
+            )
             .await;
         }
     }
@@ -1815,13 +2086,17 @@ impl Message<TypedRequest> for Meeting {
     type Reply = Result<(), String>;
 
     async fn handle(&mut self, m: TypedRequest, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        let rec = self.current.as_mut().ok_or("no meeting is recording")?;
+        self.current.as_ref().ok_or("no meeting is recording")?;
         if m.text.trim().is_empty() {
             return Err("empty request".into());
         }
+        let hits = self.scan(&m.text);
+        let cached = self.cached_request(&hits).await;
+        let Some(rec) = self.current.as_mut() else { return Ok(()) };
         rec.live
             .prompted(Prompted::Request { spoken: false }, m.text.clone());
-        self.deliver(session::request_line(false, &m.text)).await;
+        self.deliver(session::request_line(false, &m.text, cached.as_deref()))
+            .await;
         Ok(())
     }
 }
@@ -1907,23 +2182,73 @@ impl Message<LiveText> for Meeting {
 impl Message<AddTopic> for Meeting {
     type Reply = Result<String, String>;
 
+    /// 05 §4: by reference (`brief`) → the row's brief, the label learnt as an
+    /// alias; else the model's brief, written to the cache first so the row id
+    /// rides on the topic and the alias scan will not re-add it this meeting.
     async fn handle(&mut self, m: AddTopic, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let rec = self.recording_for(m.session)?;
+        let meeting = rec.manifest.id;
         let at_ms = rec.clock.now_ms();
-        let (topic, brief, expired) = rec.live.topics.insert(
-            &m.label,
-            &m.title,
-            m.bullets,
-            Instant::now(),
-            at_ms,
-        )?;
+        rec.live.topics.admit(&m.label)?;
+        let (topic, brief, expired, learnt) = if let Some(id) = m.brief {
+            let row = self.cache()?.get(id).await?;
+            let rec = self.recording_for(m.session)?;
+            let (t, b, e) = rec
+                .live
+                .topics
+                .insert_cached(&m.label, &row, Instant::now(), at_ms)?;
+            (t, b, e, Some(id))
+        } else {
+            let (Some(title), Some(bullets)) = (m.title, m.bullets) else {
+                return Err("give `title` and `bullets`, or `brief` (a cached brief id)".into());
+            };
+            topics::check_bullets(&bullets)?;
+            // 05 §0.3: cached the moment it is shown. A cache failure is not the model's problem.
+            let cached = match self
+                .cache_put(
+                    CachedBriefPut {
+                        id: None,
+                        title: title.clone(),
+                        bullets: bullets.clone(),
+                        aliases: vec![m.label.clone()],
+                        tags: Vec::new(),
+                    },
+                    &format!("meeting:{meeting}"),
+                )
+                .await
+            {
+                Ok((row, _)) => Some(row.id),
+                Err(e) => {
+                    tracing::debug!("meeting: brief not cached: {e}");
+                    None
+                }
+            };
+            let rec = self.recording_for(m.session)?;
+            let (t, b, e) = rec
+                .live
+                .topics
+                .insert(&m.label, &title, bullets, cached, Instant::now(), at_ms)?;
+            (t, b, e, None)
+        };
+        let rec = self.recording_for(m.session)?;
         rec.live.log_record(&Record::Topic(topic.clone()));
         rec.live.log_record(&Record::Brief(brief));
-        let meeting = rec.manifest.id;
         self.topics_gone(expired).await;
         self.rt
             .publish(MeetingEvent::TopicAdded { meeting, topic })
             .await;
+        if let Some(id) = learnt {
+            self.touch_use(id);
+            if let Some(c) = self.cache.clone() {
+                let label = m.label.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = c.add_alias(id, &label).await {
+                        tracing::debug!("brief cache: alias: {e}");
+                    }
+                });
+            }
+            return Ok("topic registered with the cached brief".into());
+        }
         Ok("topic registered".into())
     }
 }
@@ -1933,8 +2258,10 @@ impl Message<AddBrief> for Meeting {
 
     /// 02 §5.2: `source` from what prompted the turn — the outstanding tap for
     /// `topic`, deeper for `parent`, else a request line, else `Auto`.
+    /// 05 §4: `aliases: Some` → also cached.
     async fn handle(&mut self, m: AddBrief, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let rec = self.recording_for(m.session)?;
+        let meeting = rec.manifest.id;
         topics::check_bullets(&m.bullets)?;
         let live = &mut rec.live;
         let source = if let Some(t) = m.topic
@@ -1952,18 +2279,125 @@ impl Message<AddBrief> for Meeting {
                 _ => BriefSource::Auto,
             }
         };
+        let mut cached = None;
+        if let Some(aliases) = m.aliases.filter(|a| !a.is_empty()) {
+            cached = self
+                .cache_put(
+                    CachedBriefPut {
+                        id: None,
+                        title: m.title.clone(),
+                        bullets: m.bullets.clone(),
+                        aliases,
+                        tags: Vec::new(),
+                    },
+                    &format!("meeting:{meeting}"),
+                )
+                .await
+                .map_err(|e| format!("brief shown but not cached: {e}"))?
+                .0
+                .id
+                .into();
+        }
+        let rec = self.recording_for(m.session)?;
         let at_ms = rec.clock.now_ms();
         let brief = rec
             .live
             .topics
-            .add_brief(&m.title, m.bullets, m.topic, m.parent, source, at_ms)?;
+            .add_brief(&m.title, m.bullets, m.topic, m.parent, source, cached, at_ms)?;
         // The answered topic's button goes away and its precomputed brief is superseded.
         let viewed = m.topic.and_then(|t| rec.live.topics.view(t));
         if let Some(t) = viewed {
             self.topic_gone(t.id, TopicGone::Viewed).await;
         }
         self.show_brief(brief).await;
-        Ok("brief shown".into())
+        Ok(if cached.is_some() {
+            "brief shown and cached".into()
+        } else {
+            "brief shown".into()
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5 handlers (05 §8): the brief cache
+
+impl Message<BriefSearch> for Meeting {
+    type Reply = Result<Vec<CachedBrief>, String>;
+
+    async fn handle(&mut self, m: BriefSearch, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.cache()?
+            .search(&m.query, m.limit.unwrap_or(8))
+            .await
+            .map_err(|e| format!("{e:#}"))
+    }
+}
+
+impl Message<BriefList> for Meeting {
+    type Reply = Result<Vec<CachedBrief>, String>;
+
+    async fn handle(&mut self, m: BriefList, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.cache()?
+            .list(m.tag.as_deref(), m.limit.unwrap_or(cache::LIST_CAP))
+            .await
+            .map_err(|e| format!("{e:#}"))
+    }
+}
+
+impl Message<BriefTags> for Meeting {
+    type Reply = Result<Vec<String>, String>;
+
+    async fn handle(&mut self, _: BriefTags, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.cache()?.tags().await.map_err(|e| format!("{e:#}"))
+    }
+}
+
+impl Message<BriefGet> for Meeting {
+    type Reply = Result<CachedBrief, String>;
+
+    async fn handle(&mut self, m: BriefGet, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.cache()?.get(m.id).await
+    }
+}
+
+impl Message<BriefPut> for Meeting {
+    type Reply = Result<(CachedBrief, bool), String>;
+
+    /// 05 §7 check 8: with a meeting live, an edit of a row that is on the island
+    /// re-publishes it as `Brief{source: Cache}` with the new content.
+    async fn handle(&mut self, m: BriefPut, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (row, created) = self.cache_put(m.put, &m.source).await?;
+        if let Some(rec) = self.current.as_mut()
+            && let Some(topic) = rec.live.topics.refresh_cached(&row)
+        {
+            let at_ms = rec.clock.now_ms();
+            if let Ok(brief) = rec.live.topics.add_brief(
+                &row.title,
+                row.bullets.clone(),
+                topic,
+                None,
+                BriefSource::Cache,
+                Some(row.id),
+                at_ms,
+            ) {
+                self.show_brief(brief).await;
+            }
+        }
+        Ok((row, created))
+    }
+}
+
+impl Message<BriefDelete> for Meeting {
+    type Reply = Result<(), String>;
+
+    async fn handle(&mut self, m: BriefDelete, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.cache()?.delete(m.id).await?;
+        self.rt
+            .publish(BriefEvent::Changed {
+                id: m.id,
+                removed: true,
+            })
+            .await;
+        Ok(())
     }
 }
 
@@ -2181,10 +2615,19 @@ impl runtime::Plugin for MeetingPlugin {
                 tracing::warn!(meeting = %m.id, "manifest: {e:#}");
             }
         }
+        // 05 §0.1: the brief cache is its own file; a broken one costs the hot path, not the meeting.
+        let cache = match Cache::open(&rt.data_dir).await {
+            Ok(c) => Some(Arc::new(c)),
+            Err(e) => {
+                tracing::warn!("brief cache unavailable: {e:#}");
+                None
+            }
+        };
         let mut meeting = Meeting {
             rt: rt.clone(),
             cfg,
             store: store.clone(),
+            cache: cache.clone(),
             current: None,
             starting: None,
             audio_capture: PermissionState::NotDetermined,
@@ -2202,8 +2645,10 @@ impl runtime::Plugin for MeetingPlugin {
         rt.subscribe::<Meeting, ApprovalRequested>(&actor).await;
         rt.subscribe::<Meeting, ApprovalResolved>(&actor).await;
         // 02 §5.3: what `[meeting …]` lines mean; static, registered once. 04 §5:
-        // the four post tools read the store and live for the whole process.
+        // the four post tools read the store and live for the whole process. 05 §4:
+        // the four brief tools go through the actor, same block.
         let rt = rt.clone();
+        let me = actor.clone();
         tokio::spawn(async move {
             if let Some(reg) = rt
                 .lookup_when::<::tools::ToolRegistry>(::tools::REGISTRY_ACTOR)
@@ -2216,6 +2661,9 @@ impl runtime::Plugin for MeetingPlugin {
                     })
                     .await;
                 tools::register_post(&reg, store).await;
+                if cache.is_some() {
+                    tools::register_cache(&reg, me).await;
+                }
             }
         });
         Ok(())

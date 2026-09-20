@@ -10,13 +10,13 @@ const M = 'fixture-meeting'
 const topic = (id: string, label: string, at_ms: number): MeetingEvent => ({
   type: 'TopicAdded',
   meeting: M,
-  topic: { id, label, at_ms: BigInt(at_ms), brief: `b-${id}` },
+  topic: { id, label, at_ms: BigInt(at_ms), brief: `b-${id}`, cached: id === 't2' ? 'row-keda' : null },
 })
 
 const brief = (id: string, source: 'Auto' | 'Tap', title: string, bullets: string[], topic: string | null = null): MeetingEvent => ({
   type: 'Brief',
   meeting: M,
-  brief: { id, topic, title, bullets, source, at_ms: 0n, parent: null },
+  brief: { id, topic, title, bullets, source, at_ms: 0n, parent: null, cached: null },
 })
 
 /** `[at ms, event]`, in order. */

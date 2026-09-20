@@ -5,6 +5,7 @@ import type { ApprovalResolved } from '@/rpc/bindings/ApprovalResolved'
 import type { AskRequested } from '@/rpc/bindings/AskRequested'
 import type { AskResolved } from '@/rpc/bindings/AskResolved'
 import type { BrowserEvent } from '@/rpc/bindings/BrowserEvent'
+import type { BriefEvent } from '@/rpc/bindings/BriefEvent'
 import type { CommunicationChanged } from '@/rpc/bindings/CommunicationChanged'
 import type { JobEvent } from '@/rpc/bindings/JobEvent'
 import type { KnowledgeChanged } from '@/rpc/bindings/KnowledgeChanged'
@@ -69,6 +70,8 @@ export type WireEvent =
   | VoiceEvent
   /** 53: one stream for the island and the control center; every variant carries `meeting`. */
   | MeetingEvent
+  /** 05 §0.8: the brief cache changed; the one meeting stream without a `meeting`. */
+  | BriefEvent
   /** 50 §10: settings (global or a subtree's opt-out/scope), a receipt's state, a consumed peer exchange, the A2A network. */
   | CommunicationChanged
   | PeerMessageChanged

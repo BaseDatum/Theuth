@@ -14,11 +14,12 @@ silent (see §2 below), the phase doc is the design.
 | 3 | `03-island.md` | desktop: island `NSPanel` window, capture exclusion + eye toggle, PTT + eye hotkeys, notch placement, brief stack UI, start form + tray entry, control center route, settings tab, bundle (`LSMinimumSystemVersion` 15, `NSAudioCaptureUsageDescription`) | a brief appears over full-screen Zoom while the meeting app keeps focus; Zoom's share does not show it |
 | 4 | `04-post.md` | post pipeline: re-transcribe with word times, `pyannote-rs` diarization, speaker profiles, review RPC + UI, guided summary, title, harvest, compaction with summary head, `meeting_read/search/speakers/list` tools, FTS | stop → review → summarize → "what did John say about X?" answered from the follow-up chat via `meeting_search` |
 | 5 | `05-brief-cache.md` | brief cache: `briefs.sqlite` (truth + FTS5), actor-side alias scan that shows cached briefs before any model turn (utterances, requests, start context), `meeting_topic` by cached id + alias learning, `brief_search/put/delete/list` tools in every session, prompt block for prefill/pruning, `/briefs` page, `BriefEvent` | a subject cached in meeting 1 is on the island < 1 s after it is spoken in meeting 2, before the model's turn starts; a chat session prefills briefs for tomorrow's meeting |
-| 6 | §4 below | integration pass | 53 §12-equivalent end-to-end dogfood on a live meeting |
+| 6 | `06-live-toolset.md` | while recording only: the meeting session runs with an allowlisted, direct-call toolset (web search included) and no python runtime (`agent::SetToolset`, cleared at stop); config `meeting.live_tools/live_prompts`; reviewed tool table | the first batch turn calls `brief_search`/`knowledge_search`/`search_web` directly with no fumble; after stop the same session is an ordinary one (python back, every tool) |
+| 7 | §4 below | integration pass | 53 §12-equivalent end-to-end dogfood on a live meeting |
 
-Dependency order: 1 → 2 → 4 → 5; 3 depends on 1's RPC and 2's events but can be
+Dependency order: 1 → 2 → 4 → 5 → 6; 3 depends on 1's RPC and 2's events but can be
 built against a fake `MeetingEvent` feed (`03-island.md` §7) once the contract
-in §3 is frozen. Run 1, 2, 4, 5 in sequence; 3 may overlap 2.
+in §3 is frozen. Run 1, 2, 4, 5, 6 in sequence; 3 may overlap 2.
 
 ## 2. What 53 does not contain (as of 2026-09-19)
 
@@ -120,9 +121,9 @@ meeting:
   models_dir: null          # phase 4: default <data_dir>/models/pyannote
 ```
 
-## 4. Integration pass (phase 6, done together)
+## 4. Integration pass (phase 7, done together)
 
-Preconditions: phases 1–5 each have their Status section written with
+Preconditions: phases 1–6 each have their Status section written with
 "exercised / not exercised".
 
 1. `cargo check --workspace --all-targets`, `cargo clippy --workspace

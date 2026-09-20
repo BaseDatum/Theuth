@@ -80,8 +80,8 @@ use crate::supervisor::{Auth, PeerContext, Roster};
 use crate::title;
 use crate::vision::{self, VisionImage, VisionSource, VisionStatus};
 use crate::{
-    AGENT_ACTOR, AgentConfig, AgentEvent, Agents, CompactStyle, QueuedInput, SurfaceConfig, Usage,
-    VisionStage, compact, skills, spill, todo,
+    AGENT_ACTOR, AgentConfig, AgentEvent, Agents, CompactStyle, QueuedInput, SurfaceConfig,
+    Toolset, Usage, VisionStage, compact, skills, spill, todo,
 };
 
 /// Characters of tool output shown in [`AgentEvent::ToolCallFinished`].
@@ -299,6 +299,13 @@ pub struct CompactionOverride {
     pub hint: Option<String>,
 }
 
+/// `tell`: the session's in-memory toolset override ([`crate::SetToolset`]);
+/// read by the running turn at its next rebase, so it applies mid-turn.
+pub struct SetToolsetOverride(pub Option<Toolset>);
+
+/// `ask` → the session's current toolset override ([`crate::ShowPrompt`] mirrors it).
+pub struct GetToolset;
+
 /// `ask` → `Result<u32 /* new epoch */, String>`: compact now, threshold
 /// ignored (07 §8.6). `Err("turn in flight")` while a turn runs;
 /// `Err("nothing to compact")` when nothing can be folded.
@@ -511,6 +518,8 @@ struct Shared {
     compact_style: Arc<RwLock<CompactStyle>>,
     /// [`SetCompactionOverride`]; shared with the running turn.
     compaction: Arc<parking_lot::RwLock<CompactionOverride>>,
+    /// [`SetToolsetOverride`] (`meetings/06-live-toolset.md`); shared with the running turn.
+    toolset: Arc<parking_lot::RwLock<Option<Toolset>>>,
     /// Model for title calls (07 §15); `None` = the session's model. Shared with the supervisor.
     title_model: Arc<RwLock<Option<Resolved>>>,
     /// Vision fallback (52 §3.1); `None` = no fallback. Shared with the
@@ -609,6 +618,7 @@ impl Session {
                 cfg,
                 compact_style,
                 compaction: Arc::default(),
+                toolset: Arc::default(),
                 title_model,
                 vision_model,
                 store,
@@ -1509,6 +1519,26 @@ impl Message<SetCompactionOverride> for Session {
     }
 }
 
+impl Message<SetToolsetOverride> for Session {
+    type Reply = ();
+
+    async fn handle(
+        &mut self,
+        SetToolsetOverride(t): SetToolsetOverride,
+        _: &mut Context<Self, Self::Reply>,
+    ) {
+        *self.shared.toolset.write() = t;
+    }
+}
+
+impl Message<GetToolset> for Session {
+    type Reply = Option<Toolset>;
+
+    async fn handle(&mut self, _: GetToolset, _: &mut Context<Self, Self::Reply>) -> Option<Toolset> {
+        self.shared.toolset.read().clone()
+    }
+}
+
 impl Message<CompactNow> for Session {
     type Reply = kameo::reply::DelegatedReply<Result<u32, String>>;
 
@@ -2048,6 +2078,52 @@ fn direct_tool(s: ToolSpec) -> Tool {
     }
 }
 
+/// This turn's direct tools (07 §5, 08 §0.4, 12 §4), from one `ListTools`
+/// per turn: registry tools (only `direct` ones when the runtime is on and
+/// `agent.runtime_only`, `spawn_subagent` only with `subagents`) plus the
+/// loop-local `todo` and `python`. A `toolset` (`meetings/06-live-toolset.md`)
+/// is an explicit allowlist instead: exactly the listed names (`todo`
+/// included only when listed) whatever their `direct` flag, and `python` only
+/// with `toolset.runtime`. A tool registered mid-turn is visible on the next turn.
+pub(crate) fn direct_specs(
+    specs: Vec<ToolSpec>,
+    runtime: bool,
+    runtime_only: bool,
+    subagents: bool,
+    toolset: Option<&Toolset>,
+) -> Vec<ToolSpec> {
+    let runtime = runtime && toolset.is_none_or(|t| t.runtime);
+    let floor = runtime && runtime_only && toolset.is_none();
+    let listed = |name: &str| toolset.is_none_or(|t| t.tools.iter().any(|n| n == name));
+    let mut specs: Vec<ToolSpec> = specs
+        .into_iter()
+        .filter(|s| {
+            listed(&s.name)
+                && (!floor || s.direct)
+                && (s.name != <SpawnSubagentTool as tools::Tool>::NAME || subagents)
+        })
+        .collect();
+    if listed(todo::NAME) {
+        specs.push(todo::spec());
+    }
+    if runtime {
+        specs.push(repl::spec());
+    }
+    specs.sort_by(|a, b| a.name.cmp(&b.name));
+    specs
+}
+
+/// The plugins' prompt blocks for [`frame::baseline`]; a `toolset` keeps only
+/// its `prompts` plugins (`meetings/06-live-toolset.md` §1.4).
+pub(crate) fn prompt_blocks(blocks: Vec<(&'static str, String)>, toolset: Option<&Toolset>) -> String {
+    blocks
+        .into_iter()
+        .filter(|(plugin, _)| toolset.is_none_or(|t| t.prompts.iter().any(|p| p == plugin)))
+        .map(|(_, block)| block)
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
 impl Turn {
     fn new(
         shared: Shared,
@@ -2276,16 +2352,16 @@ impl Turn {
                 Vec::new()
             }
         };
-        let blocks = registry
-            .ask(ListPrompts)
-            .await
-            .unwrap_or_default()
-            .join("\n\n");
+        let toolset = self.shared.toolset.read().clone();
+        let blocks = prompt_blocks(
+            registry.ask(ListPrompts).await.unwrap_or_default(),
+            toolset.as_ref(),
+        );
         let genai = self.model().model.genai;
         let claude_code = ns(&genai) == "anthropic" && self.shared.auth.login("anthropic");
         let mut baseline =
             frame::baseline(&self.shared.rt.data_dir, &peer_line, &blocks, claude_code);
-        if self.shared.pool.is_some() {
+        if self.shared.pool.is_some() && toolset.as_ref().is_none_or(|t| t.runtime) {
             baseline.push_str("\n\n");
             baseline.push_str(&repl::prompt_block(&specs, self.shared.cfg.runtime_only));
         }
@@ -2301,7 +2377,16 @@ impl Turn {
             }
             self.state.baseline = baseline;
         }
-        self.tools = self.direct_tools(specs);
+        self.tools = direct_specs(
+            specs,
+            self.shared.pool.is_some(),
+            self.shared.cfg.runtime_only,
+            self.shared.depth < self.shared.cfg.subagents.max_depth,
+            toolset.as_ref(),
+        )
+        .into_iter()
+        .map(direct_tool)
+        .collect();
     }
 
     /// Cache marks for `current`'s provider; resolved once per model per turn (07 §3).
@@ -2314,30 +2399,6 @@ impl Turn {
         let t = current.backend.transport(&current.model).await?;
         self.transport = Some((current.model.genai.clone(), t));
         Ok(t)
-    }
-
-    /// This turn's direct tools (07 §5, 08 §0.4, 12 §4), from one `ListTools`
-    /// per turn: registry tools (only `direct` ones when the runtime is on and
-    /// `agent.runtime_only`, `spawn_subagent` gated by depth) plus the
-    /// loop-local `todo` and `python`. A tool registered mid-turn is visible
-    /// on the next turn.
-    fn direct_tools(&self, specs: Vec<ToolSpec>) -> Vec<Tool> {
-        let runtime = self.shared.pool.is_some();
-        let floor = runtime && self.shared.cfg.runtime_only;
-        let mut specs: Vec<ToolSpec> = specs
-            .into_iter()
-            .filter(|s| {
-                (!floor || s.direct)
-                    && (s.name != <SpawnSubagentTool as tools::Tool>::NAME
-                        || self.shared.depth < self.shared.cfg.subagents.max_depth)
-            })
-            .collect();
-        specs.push(todo::spec());
-        if runtime {
-            specs.push(repl::spec());
-        }
-        specs.sort_by(|a, b| a.name.cmp(&b.name));
-        specs.into_iter().map(direct_tool).collect()
     }
 
     /// Open the stream for `frame` and drain it to its `End`. With `live`,
@@ -4782,6 +4843,85 @@ mod tests {
         );
         assert_eq!(direct_tool(spec("shell")).eager_input_streaming, None);
         assert_eq!(direct_tool(todo::spec()).eager_input_streaming, None);
+    }
+
+    /// `meetings/06-live-toolset.md` §1.2–4: a toolset is an allowlist that
+    /// bypasses the runtime floor (`brief_search` is not `direct`, yet listed
+    /// → present with `runtime_only`); `python`/`todo` only when
+    /// listed/`runtime`; prompt blocks filtered by plugin; `None` is today's
+    /// behaviour (floor on, `todo` + `python` always, every block).
+    #[test]
+    fn toolset_allowlists_tools_and_prompt_blocks() {
+        let spec = |name: &str, direct: bool| ToolSpec {
+            name: name.into(),
+            description: String::new(),
+            schema: serde_json::json!({"type": "object"}),
+            risk: tools::Risk::ReadOnly,
+            direct,
+            returns: "str".into(),
+        };
+        let registry = || {
+            vec![
+                spec("shell", false),
+                spec("brief_search", false),
+                spec("meeting_topic", true),
+                spec("ask_user", true),
+                spec(<SpawnSubagentTool as tools::Tool>::NAME, true),
+            ]
+        };
+        let names = |specs: Vec<ToolSpec>| -> Vec<String> {
+            specs.into_iter().map(|s| s.name).collect()
+        };
+        let live = Toolset {
+            tools: vec!["brief_search".into(), "meeting_topic".into()],
+            prompts: vec!["meeting".into(), "web".into()],
+            runtime: false,
+        };
+        assert_eq!(
+            names(direct_specs(registry(), true, true, true, Some(&live))),
+            ["brief_search", "meeting_topic"]
+        );
+        // Listed `todo`, `runtime: true` with a pool → both loop-local tools back.
+        let with_locals = Toolset {
+            tools: vec!["todo".into(), "ask_user".into()],
+            prompts: vec![],
+            runtime: true,
+        };
+        assert_eq!(
+            names(direct_specs(registry(), true, true, true, Some(&with_locals))),
+            ["ask_user", "python", "todo"]
+        );
+        // `runtime: true` without a pool is still no python.
+        assert_eq!(
+            names(direct_specs(registry(), false, true, true, Some(&with_locals))),
+            ["ask_user", "todo"]
+        );
+        // The depth gate still applies to a listed `spawn_subagent`.
+        let spawn = Toolset {
+            tools: vec![<SpawnSubagentTool as tools::Tool>::NAME.into()],
+            prompts: vec![],
+            runtime: false,
+        };
+        assert!(names(direct_specs(registry(), true, true, false, Some(&spawn))).is_empty());
+        // `None`: the floor with the runtime on, everything plus `todo` without.
+        assert_eq!(
+            names(direct_specs(registry(), true, true, true, None)),
+            ["ask_user", "meeting_topic", "python", "spawn_subagent", "todo"]
+        );
+        assert_eq!(
+            names(direct_specs(registry(), false, true, true, None)),
+            ["ask_user", "brief_search", "meeting_topic", "shell", "spawn_subagent", "todo"]
+        );
+
+        let blocks = || {
+            vec![
+                ("agent", "A".to_owned()),
+                ("meeting", "M".to_owned()),
+                ("web", "W".to_owned()),
+            ]
+        };
+        assert_eq!(prompt_blocks(blocks(), Some(&live)), "M\n\nW");
+        assert_eq!(prompt_blocks(blocks(), None), "A\n\nM\n\nW");
     }
 
     /// 48 §4.3: a context edit swaps the frame but not the run-local state,

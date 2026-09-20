@@ -13,6 +13,7 @@ const brief = (id: string, source: BriefSource, topic: string | null = null): Br
   source,
   at_ms: 0n,
   parent: null,
+  cached: null,
 })
 const ev = (e: Omit<Extract<MeetingEvent, { type: 'Brief' }>, 'meeting'>): MeetingEvent => ({ meeting: M, ...e })
 
@@ -49,7 +50,7 @@ test('Auto briefs at the top replace the view; stepped back they queue behind th
 
 test('a brief the user asked for jumps into view and clears the badge; its topic button goes on TopicRemoved{Viewed}', () => {
   let s = fresh()
-  s = reduce(s, { type: 'TopicAdded', meeting: M, topic: { id: 't1', label: 'KEDA', at_ms: 0n, brief: null } })
+  s = reduce(s, { type: 'TopicAdded', meeting: M, topic: { id: 't1', label: 'KEDA', at_ms: 0n, brief: null, cached: null } })
   for (const id of ['a', 'b']) s = reduce(s, ev({ type: 'Brief', brief: brief(id, 'Auto') }))
   useMeeting.setState(s)
   useMeeting.getState().move(-1)

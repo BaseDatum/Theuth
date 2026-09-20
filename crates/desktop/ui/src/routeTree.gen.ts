@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ArtifactsRouteImport } from './routes/artifacts'
+import { Route as BriefsRouteImport } from './routes/briefs'
 import { Route as IslandRouteImport } from './routes/island'
 import { Route as KnowledgeRouteImport } from './routes/knowledge'
 import { Route as LinkRouteImport } from './routes/link'
@@ -30,6 +31,11 @@ const IndexRoute = IndexRouteImport.update({
 const ArtifactsRoute = ArtifactsRouteImport.update({
   id: '/artifacts',
   path: '/artifacts',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const BriefsRoute = BriefsRouteImport.update({
+  id: '/briefs',
+  path: '/briefs',
   getParentRoute: () => rootRouteImport,
 } as any)
 const IslandRoute = IslandRouteImport.update({
@@ -86,6 +92,7 @@ const SettingsTabRoute = SettingsTabRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/artifacts': typeof ArtifactsRouteWithChildren
+  '/briefs': typeof BriefsRoute
   '/island': typeof IslandRoute
   '/knowledge': typeof KnowledgeRouteWithChildren
   '/link': typeof LinkRoute
@@ -100,6 +107,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/artifacts': typeof ArtifactsRouteWithChildren
+  '/briefs': typeof BriefsRoute
   '/island': typeof IslandRoute
   '/knowledge': typeof KnowledgeRouteWithChildren
   '/link': typeof LinkRoute
@@ -115,6 +123,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/artifacts': typeof ArtifactsRouteWithChildren
+  '/briefs': typeof BriefsRoute
   '/island': typeof IslandRoute
   '/knowledge': typeof KnowledgeRouteWithChildren
   '/link': typeof LinkRoute
@@ -131,6 +140,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/artifacts'
+    | '/briefs'
     | '/island'
     | '/knowledge'
     | '/link'
@@ -145,6 +155,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/artifacts'
+    | '/briefs'
     | '/island'
     | '/knowledge'
     | '/link'
@@ -159,6 +170,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/artifacts'
+    | '/briefs'
     | '/island'
     | '/knowledge'
     | '/link'
@@ -174,6 +186,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ArtifactsRoute: typeof ArtifactsRouteWithChildren
+  BriefsRoute: typeof BriefsRoute
   IslandRoute: typeof IslandRoute
   KnowledgeRoute: typeof KnowledgeRouteWithChildren
   LinkRoute: typeof LinkRoute
@@ -198,6 +211,13 @@ declare module '@tanstack/react-router' {
       path: '/artifacts'
       fullPath: '/artifacts'
       preLoaderRoute: typeof ArtifactsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/briefs': {
+      id: '/briefs'
+      path: '/briefs'
+      fullPath: '/briefs'
+      preLoaderRoute: typeof BriefsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/island': {
@@ -300,6 +320,7 @@ const KnowledgeRouteWithChildren = KnowledgeRoute._addFileChildren(
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ArtifactsRoute: ArtifactsRouteWithChildren,
+  BriefsRoute: BriefsRoute,
   IslandRoute: IslandRoute,
   KnowledgeRoute: KnowledgeRouteWithChildren,
   LinkRoute: LinkRoute,

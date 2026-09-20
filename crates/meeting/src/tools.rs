@@ -1,23 +1,29 @@
-//! The two live tools (02 §5, 53 §3.3), the four post tools (04 §5), the prompt
-//! block (53 §3.4) and the compaction hint (53 §4.7). All `ReadOnly`
-//! (`docs/plugins.md` §3.5): the live pair's only effect is a row in the
-//! meeting's own store and a redraw, the post four return data. The live pair is
-//! registered while a meeting records; the post four at plugin start, for good.
+//! The two live tools (02 §5, 53 §3.3), the four post tools (04 §5), the four
+//! brief-cache tools (05 §4), the prompt block (53 §3.4 + 05 §6) and the
+//! compaction hint (53 §4.7). All `ReadOnly` (`docs/plugins.md` §3.5): the live
+//! pair's only effect is a row in the meeting's own store and a redraw, the post
+//! four return data, the cache four touch a store that is not world state
+//! (05 §0.5). The live pair is registered while a meeting records; the other
+//! eight at plugin start, for good.
 
 use std::sync::Arc;
 
 use kameo::actor::ActorRef;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tools::{RegisterTool, Risk, Tool, ToolCx, ToolOutput, ToolRegistry, UnregisterTool};
 
+use crate::cache::{CachedBrief, CachedBriefPut};
 use crate::store::Store;
 use crate::transcript::mmss;
-use crate::{AddBrief, AddTopic, BriefId, LIVE_LOG, Meeting, MeetingId, MeetingState, TopicId, Track, Utterance};
+use crate::{
+    AddBrief, AddTopic, BriefDelete, BriefId, BriefList, BriefPut, BriefSearch, LIVE_LOG, Meeting, MeetingId,
+    MeetingState, TopicId, Track, Utterance, session,
+};
 
 /// Most lines one `meeting_read` returns (53 §3.3).
 pub const READ_CAP: usize = 400;
 
-/// 53 §3.4, verbatim: one static paragraph.
+/// 53 §3.4 verbatim plus 05 §6's cache paragraph: one static block.
 pub const PROMPT: &str = "**Meetings.** \
 A user line beginning `[meeting hh:mm:ss]` is a live transcript batch from a meeting the user is \
 in (`them:` other participants, `me:` the user). You are not a participant. Your job: notice \
@@ -33,7 +39,17 @@ now — if you already gave one with the topic, do nothing; otherwise `meeting_b
 specific; pass that id as `parent`). A `[meeting: no brief was produced …]` line means your last turn \
 answered a request in text nobody saw — call `meeting_brief` then. After \
 the meeting, the first line of the conversation is its summary; `meeting_read`, `meeting_search` \
-and `meeting_speakers` reach the full record — use them instead of guessing.";
+and `meeting_speakers` reach the full record — use them instead of guessing.\n\n\
+Briefs are cached: a `live:` topic marked `(cached …)` already has a brief on the user's screen — \
+do not research or re-register it; if you know it is wrong or out of date, `brief_put` over the \
+same id. For a new subject, call `brief_search` first; a hit → `meeting_topic` with its `brief` id \
+and the label as spoken. Only when nothing is cached, look it up (knowledge first) and \
+`meeting_topic` with title and bullets — it is cached for next time. Outside a meeting: when the \
+user says a meeting is coming up, research each subject and `brief_put` one brief per subject with \
+`aliases` as people will say them (ticket ids, product names, first names) and a `tag` for the \
+meeting; when the user says a brief is stale or wrong, `brief_put` the fix or `brief_delete` it. \
+In a live meeting every tool you see is called directly; there is no python. Order of lookup: \
+`brief_search`, then knowledge, then one web search and one read, then brief.";
 
 /// 02 §4: appended to the compaction instruction for the meeting session.
 pub const COMPACTION_HINT: &str = "This session is a live meeting. Keep: who is in the meeting, \
@@ -41,16 +57,22 @@ what has been discussed in order, decisions and numbers said aloud, the current 
 every dismissed topic.";
 
 /// `meeting_topic` arguments. Flat (02 §10 deviation): the python runtime
-/// shows the model `meeting_topic(label: str, title: str, bullets: list[str])`;
-/// a nested `brief` object rendered as `brief: Any` and cost three retries.
+/// shows the model `meeting_topic(label, title, bullets, brief)`; a nested
+/// `brief` object rendered as `brief: Any` and cost three retries. Either
+/// `title` + `bullets`, or `brief` (05 §4).
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct TopicArgs {
     /// At most four words, as spoken.
     pub label: String,
-    /// Title of the precomputed brief shown when the user taps the topic.
-    pub title: String,
-    /// Two or three short factual bullets of that brief.
-    pub bullets: Vec<String>,
+    /// Title of the precomputed brief shown when the user taps the topic. Omit when passing `brief`.
+    #[serde(default)]
+    pub title: Option<String>,
+    /// Two or three short factual bullets of that brief. Omit when passing `brief`.
+    #[serde(default)]
+    pub bullets: Option<Vec<String>>,
+    /// Instead of `title`/`bullets`: the UUID `id` of a cached brief as returned by `brief_search` (not a knowledge id) to show for this label.
+    #[serde(default)]
+    pub brief: Option<BriefId>,
 }
 
 /// `meeting_brief` arguments.
@@ -66,6 +88,9 @@ pub struct BriefArgs {
     /// The brief this goes deeper on (a `[meeting deeper]` line), if any.
     #[serde(default)]
     pub parent: Option<BriefId>,
+    /// Also cache it under these spoken aliases (each ≤ 4 words) for future meetings; omit for a one-off answer.
+    #[serde(default)]
+    pub aliases: Option<Vec<String>>,
 }
 
 /// Registers a topic button with its precomputed brief.
@@ -82,8 +107,9 @@ impl Tool for MeetingTopicTool {
     fn description(&self) -> String {
         "During a live meeting: register a topic button for something the user may need to ask \
          about, with the brief that appears when they tap it. Label of at most four words as it \
-         was spoken; two or three short factual bullets. Refused when the label is already live \
-         or was dismissed."
+         was spoken. Either `title` + `bullets` (two or three short factual bullets; the brief is \
+         cached for next time) or `brief` (a cached brief id from `brief_search`; the label is \
+         learnt as its alias). Refused when the label is already live or was dismissed."
             .into()
     }
 
@@ -95,6 +121,7 @@ impl Tool for MeetingTopicTool {
                 label: a.label,
                 title: a.title,
                 bullets: a.bullets,
+                brief: a.brief,
             })
             .await
             .map_err(|e| e.to_string());
@@ -118,7 +145,8 @@ impl Tool for MeetingBriefTool {
     fn description(&self) -> String {
         "During a live meeting: show the user a brief right now — the answer to a `[meeting \
          request …]`, to a `[meeting tapped \"X\"]` (set `topic`), or to a `[meeting deeper …]` \
-         (set `parent`). Two or three short factual bullets."
+         (set `parent`). Two or three short factual bullets. Pass `aliases` to also cache it for \
+         future meetings."
             .into()
     }
 
@@ -131,6 +159,7 @@ impl Tool for MeetingBriefTool {
                 bullets: a.bullets,
                 topic: a.topic,
                 parent: a.parent,
+                aliases: a.aliases,
             })
             .await
             .map_err(|e| e.to_string());
@@ -464,4 +493,219 @@ pub async fn register_post(reg: &ActorRef<ToolRegistry>, store: Arc<Store>) {
         })))
         .await;
     let _ = reg.ask(RegisterTool(Arc::new(MeetingListTool(store)))).await;
+}
+
+// ---------------------------------------------------------------------------
+// Brief cache tools (05 §4): every session, through the actor.
+
+/// Text for the transcript, the same rows as a Python value for the runtime.
+fn structured<T: Serialize>(text: String, data: T) -> ToolOutput {
+    ToolOutput {
+        structured: serde_json::to_value(data).ok(),
+        ..ToolOutput::ok(text)
+    }
+}
+
+/// One row as the tools print it:
+/// `` `<id>` — <title> [<aliases>] (<age>, used N×): <bullets · > ``.
+pub fn brief_line(b: &CachedBrief, now: chrono::DateTime<chrono::Utc>) -> String {
+    let mut s = format!(
+        "`{}` — {} [{}] ({}, used {}×): {}",
+        b.id,
+        b.title,
+        b.aliases.join(", "),
+        session::age_of(&b.updated_at, now),
+        b.uses,
+        b.bullets.join(" · ")
+    );
+    if !b.tags.is_empty() {
+        s.push_str(&format!(" #{}", b.tags.join(" #")));
+    }
+    s
+}
+
+fn brief_lines(rows: &[CachedBrief], empty: &str) -> String {
+    if rows.is_empty() {
+        return empty.to_owned();
+    }
+    let now = chrono::Utc::now();
+    rows.iter().map(|b| brief_line(b, now)).collect::<Vec<_>>().join("\n")
+}
+
+/// `brief_search` arguments.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct BriefSearchArgs {
+    /// Words to find (any may match; aliases weigh most, then title, tags, bullets).
+    pub query: String,
+    /// Most rows (default 8, max 50).
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+/// Full-text search over cached briefs.
+pub struct BriefSearchTool(pub ActorRef<Meeting>);
+
+#[async_trait::async_trait]
+impl Tool for BriefSearchTool {
+    const NAME: &'static str = "brief_search";
+    const RISK: Risk = Risk::ReadOnly;
+    const RETURNS: &'static str = "list[dict]";
+    type Args = BriefSearchArgs;
+
+    fn description(&self) -> String {
+        "Search the cached meeting briefs (title, bullets, spoken aliases, tags) by keywords. Each \
+         hit is `id` — title [aliases] (age, uses): bullets. During a meeting, check here before \
+         researching a subject; a hit goes to `meeting_topic` as `brief`."
+            .into()
+    }
+
+    async fn call(&self, a: BriefSearchArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
+        let r = self
+            .0
+            .ask(BriefSearch {
+                query: a.query,
+                limit: a.limit,
+            })
+            .await
+            .map_err(|e| e.to_string());
+        Ok(match r {
+            Ok(rows) => structured(brief_lines(&rows, "no matches"), &rows),
+            Err(e) => ToolOutput::err(e),
+        })
+    }
+}
+
+/// `brief_list` arguments.
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+pub struct BriefListArgs {
+    /// Only briefs carrying this tag.
+    #[serde(default)]
+    pub tag: Option<String>,
+    /// Most rows (default 50, max 50).
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+/// Cached briefs, newest first.
+pub struct BriefListTool(pub ActorRef<Meeting>);
+
+#[async_trait::async_trait]
+impl Tool for BriefListTool {
+    const NAME: &'static str = "brief_list";
+    const RISK: Risk = Risk::ReadOnly;
+    const RETURNS: &'static str = "list[dict]";
+    type Args = BriefListArgs;
+
+    fn description(&self) -> String {
+        "Cached meeting briefs, most recently updated first, optionally only those with a `tag` \
+         (e.g. the meeting they were prepared for). Same line format as `brief_search`."
+            .into()
+    }
+
+    async fn call(&self, a: BriefListArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
+        let r = self
+            .0
+            .ask(BriefList {
+                tag: a.tag,
+                limit: a.limit,
+            })
+            .await
+            .map_err(|e| e.to_string());
+        Ok(match r {
+            Ok(rows) => structured(brief_lines(&rows, "no cached briefs"), &rows),
+            Err(e) => ToolOutput::err(e),
+        })
+    }
+}
+
+/// `brief_put`: create or update a cached brief.
+pub struct BriefPutTool(pub ActorRef<Meeting>);
+
+#[async_trait::async_trait]
+impl Tool for BriefPutTool {
+    const NAME: &'static str = "brief_put";
+    // ReadOnly on purpose (05 §0.5, after `knowledge_put`): asking on every brief would stop
+    // the prefill conversation and the meeting's own turns. And a cache row is not world
+    // state — the meeting's `briefs.jsonl` keeps the record of what was shown, knowledge
+    // keeps the facts, and a lost row costs one research turn to recreate.
+    const RISK: Risk = Risk::ReadOnly;
+    type Args = CachedBriefPut;
+
+    fn description(&self) -> String {
+        "Cache a brief for meetings: a short title, two or three factual bullets, `aliases` as \
+         people will say the subject aloud (ticket ids, product names, first names; each at most \
+         four words) and optional `tags` (one for the meeting it is for). Put with an existing \
+         `id` updates that brief — use it when a cached brief is wrong or stale. The cached brief \
+         appears on the user's screen the moment an alias is spoken in a meeting."
+            .into()
+    }
+
+    async fn call(&self, p: CachedBriefPut, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        let r = self
+            .0
+            .ask(BriefPut {
+                put: p,
+                source: format!("session:{}", cx.session),
+            })
+            .await
+            .map_err(|e| e.to_string());
+        Ok(match r {
+            Ok((row, created)) => {
+                let how = if created { "new" } else { "updated" };
+                ToolOutput::ok(format!("put {} ({how})", row.id))
+            }
+            Err(e) => ToolOutput::err(e),
+        })
+    }
+}
+
+/// `brief_delete` arguments.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct BriefDeleteArgs {
+    /// The cached brief.
+    pub id: BriefId,
+}
+
+/// `brief_delete`: remove a cached brief.
+pub struct BriefDeleteTool(pub ActorRef<Meeting>);
+
+#[async_trait::async_trait]
+impl Tool for BriefDeleteTool {
+    const NAME: &'static str = "brief_delete";
+    // ReadOnly as `brief_put` (05 §0.5): a stale brief must be evictable mid-meeting without
+    // an approval card; the row is expendable, not world state.
+    const RISK: Risk = Risk::ReadOnly;
+    type Args = BriefDeleteArgs;
+
+    fn description(&self) -> String {
+        "Delete a cached meeting brief by id (from `brief_search`/`brief_list`) — when the user \
+         says it is wrong, stale, or no longer wanted."
+            .into()
+    }
+
+    async fn call(&self, a: BriefDeleteArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
+        let r = self
+            .0
+            .ask(BriefDelete { id: a.id })
+            .await
+            .map_err(|e| e.to_string());
+        Ok(match r {
+            Ok(()) => ToolOutput::ok(format!("deleted {}", a.id)),
+            Err(e) => ToolOutput::err(e),
+        })
+    }
+}
+
+/// Register the four brief-cache tools (plugin start, beside the post tools).
+pub async fn register_cache(reg: &ActorRef<ToolRegistry>, me: ActorRef<Meeting>) {
+    let _ = reg
+        .ask(RegisterTool(Arc::new(BriefSearchTool(me.clone()))))
+        .await;
+    let _ = reg
+        .ask(RegisterTool(Arc::new(BriefListTool(me.clone()))))
+        .await;
+    let _ = reg
+        .ask(RegisterTool(Arc::new(BriefPutTool(me.clone()))))
+        .await;
+    let _ = reg.ask(RegisterTool(Arc::new(BriefDeleteTool(me)))).await;
 }

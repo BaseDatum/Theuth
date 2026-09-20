@@ -15,7 +15,7 @@ use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
 use knowledge::KnowledgeChanged;
 use link::LinkEvent;
-use meeting::MeetingEvent;
+use meeting::{BriefEvent, MeetingEvent};
 use nodes::NodeEvent;
 use runtime::Runtime;
 use schedule::ScheduleEvent;
@@ -111,6 +111,7 @@ forward!(
     UpdateReady,
     VoiceEvent,
     MeetingEvent,
+    BriefEvent,
     AppCallChanged
 );
 
@@ -154,6 +155,7 @@ pub async fn start(rt: &Runtime) -> broadcast::Sender<Event> {
     rt.subscribe::<Bridge, UpdateReady>(&actor).await;
     rt.subscribe::<Bridge, VoiceEvent>(&actor).await;
     rt.subscribe::<Bridge, MeetingEvent>(&actor).await;
+    rt.subscribe::<Bridge, BriefEvent>(&actor).await;
     rt.subscribe::<Bridge, AppCallChanged>(&actor).await;
     tx
 }

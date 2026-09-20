@@ -85,6 +85,11 @@ export const queryKeys = {
   meetingTranscript: (id: string) => ['meeting-transcript', id] as const,
   meetingSummary: (id: string) => ['meeting-summary', id] as const,
   meetingSpeakers: ['meeting-speakers'] as const,
+  // 53 (05 §7): the brief cache — `briefs` prefixes every list/search page; a `BriefChanged` invalidates all of it.
+  briefs: ['briefs'] as const,
+  briefsList: (tag: string | null) => ['briefs', 'list', tag] as const,
+  briefsSearch: (q: string) => ['briefs', 'search', q] as const,
+  briefTags: ['briefs', 'tags'] as const,
 }
 
 const SESSIONS_DEBOUNCE_MS = 500
@@ -192,6 +197,7 @@ export function useInvalidateOn(): void {
         void qc.invalidateQueries({ queryKey: queryKeys.meetingSummary(e.meeting) })
         void qc.invalidateQueries({ queryKey: queryKeys.meetingTranscript(e.meeting) })
       }),
+      on('BriefChanged', () => void qc.invalidateQueries({ queryKey: queryKeys.briefs })),
     ]
     return () => {
       clearTimeout(timer)

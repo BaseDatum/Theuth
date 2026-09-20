@@ -54,9 +54,10 @@ use crate::continuation::{
 };
 use crate::loop_::{
     CancelPeerScope, CancelTurn, CompactNow, CompactionOverride, ContextHistoryNow,
-    ContextItemsNow, HarvestNow, IsRunning, PEER_INTAKE, PeerInput, QueuedInputs, RedoTurn,
-    RemoveContextNow, RestartTurn, Session, SessionState, SetCompactionOverride, SetPendingEffort,
-    SuppressPeerInputs, SwitchModel, UndoTurn, UserInput, WithdrawInput, text_of,
+    ContextItemsNow, GetToolset, HarvestNow, IsRunning, PEER_INTAKE, PeerInput, QueuedInputs,
+    RedoTurn, RemoveContextNow, RestartTurn, Session, SessionState, SetCompactionOverride,
+    SetPendingEffort, SetToolsetOverride, SuppressPeerInputs, SwitchModel, UndoTurn, UserInput,
+    WithdrawInput, prompt_blocks, text_of,
 };
 use crate::peers::{
     DiscoverPeersTool, ListModelsTool, Nodes, PeerMessageTool, SendMessageTool, SpawnSubagentTool,
@@ -81,8 +82,8 @@ use crate::{
     RemoveContext, RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession, SearchRefresh,
     SearchSessionPage, SendInput, SessionSummary, SetCompactStyle, SetCompaction, SetEffort,
     SetMaxSalvages,
-    SetMaxToolRounds, SetModel, SetStreamIdle, SetSubagentTimeout, SetTitleModel, SetVisionModel,
-    ShowPrompt, SkillBody, SkillMeta,
+    SetMaxToolRounds, SetModel, SetStreamIdle, SetSubagentTimeout, SetTitleModel, SetToolset,
+    SetVisionModel, ShowPrompt, SkillBody, SkillMeta,
     Steer, SyncSkills, Undo, UseSkill, Withdraw, effort_of,
 };
 use crate::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
@@ -2109,6 +2110,19 @@ impl Message<SetCompaction> for Agents {
     }
 }
 
+impl Message<SetToolset> for Agents {
+    type Reply = Result<(), String>;
+
+    async fn handle(&mut self, m: SetToolset, _: &mut Context<Self, Self::Reply>) -> Result<(), String> {
+        self.actor(m.session)
+            .await?
+            .native()?
+            .tell(SetToolsetOverride(m.toolset))
+            .await
+            .map_err(|e| e.to_string())
+    }
+}
+
 impl Message<GetCompactStyle> for Agents {
     type Reply = CompactStyle;
 
@@ -3523,15 +3537,21 @@ impl Message<ShowPrompt> for Agents {
         let registry = ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR)
             .ok()
             .flatten();
+        // A live session's toolset override (06); a session without an actor has none.
+        let toolset = match m.session.and_then(|s| self.live(s)?.native().ok()) {
+            Some(a) => a.ask(GetToolset).await.unwrap_or_default(),
+            None => None,
+        };
         let mut blocks = String::new();
         if let Some(reg) = &registry
             && let Ok(b) = reg.ask(ListPrompts).await
         {
-            blocks = b.join("\n\n");
+            blocks = prompt_blocks(b, toolset.as_ref());
         }
         let mut prompt =
             frame::baseline(&self.rt.data_dir, &peers, &blocks, self.claude_code(&model));
         if self.pool.is_some()
+            && toolset.as_ref().is_none_or(|t| t.runtime)
             && let Some(reg) = registry
             && let Ok(specs) = reg.ask(ListTools(m.session)).await
         {

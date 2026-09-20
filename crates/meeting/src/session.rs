@@ -2,6 +2,7 @@
 //! is told about in the prompt block, and delivery — `Steer` while a turn
 //! runs, `SendInput` otherwise. Every line starts with `[meeting`.
 
+use chrono::{DateTime, Utc};
 use kameo::actor::ActorRef;
 use runtime::{InputId, SessionId};
 
@@ -21,6 +22,28 @@ fn labels(labels: &[String]) -> String {
     } else {
         labels.join(", ")
     }
+}
+
+/// How long ago `at` was, as `Nd` / `Nh` / `Nm` (05 §0.7: staleness is visible, not automatic).
+pub fn age(at: DateTime<Utc>, now: DateTime<Utc>) -> String {
+    let mins = now.signed_duration_since(at).num_minutes().max(0);
+    match mins {
+        m if m >= 24 * 60 => format!("{}d", m / (24 * 60)),
+        m if m >= 60 => format!("{}h", m / 60),
+        m => format!("{m}m"),
+    }
+}
+
+/// `age` of an RFC 3339 stamp; unparseable → `?`.
+pub fn age_of(stamp: &str, now: DateTime<Utc>) -> String {
+    DateTime::parse_from_rfc3339(stamp)
+        .map(|d| age(d.with_timezone(&Utc), now))
+        .unwrap_or_else(|_| "?".into())
+}
+
+/// A cached live label in the batch header: `<label> (cached <age>)`.
+pub fn cached_label(label: &str, age: &str) -> String {
+    format!("{label} (cached {age})")
 }
 
 /// One transcript batch: the header with the live and dismissed label sets,
@@ -54,10 +77,17 @@ pub fn started_line(context: Option<&str>) -> String {
     )
 }
 
-/// A push-to-talk (`spoken`) or control-center (`typed`) request.
-pub fn request_line(spoken: bool, text: &str) -> String {
+/// A push-to-talk (`spoken`) or control-center (`typed`) request. `cached` is the title of
+/// the cached brief the actor already showed for it (05 §3): the model adds only what it lacks.
+pub fn request_line(spoken: bool, text: &str, cached: Option<&str>) -> String {
     let how = if spoken { "spoken" } else { "typed" };
-    format!("[meeting request, {how}] {}", text.trim())
+    let mut s = format!("[meeting request, {how}] {}", text.trim());
+    if let Some(title) = cached {
+        s.push_str(&format!(
+            " (cached brief \"{title}\" already shown — add only what it lacks)"
+        ));
+    }
+    s
 }
 
 /// The user tapped a topic button.
@@ -175,6 +205,15 @@ mod tests {
             "[meeting 00:14:35] live: none · dismissed: none\nme: right, I think the app patches those"
         );
         assert_eq!(hms(3_600_000 * 2 + 59_999), "02:00:59");
+        // 05 §3: a cached live label carries its age.
+        let now: DateTime<Utc> = "2026-09-20T12:00:00Z".parse().unwrap();
+        assert_eq!(age_of("2026-09-17T11:59:00Z", now), "3d");
+        assert_eq!(age_of("2026-09-20T09:01:00Z", now), "2h");
+        assert_eq!(age_of("2026-09-20T11:48:30Z", now), "11m");
+        assert_eq!(age_of("2026-09-21T00:00:00Z", now), "0m", "a future stamp is not negative");
+        assert_eq!(age_of("garbage", now), "?");
+        let live = [cached_label("SRE-2386", "3d"), "DR cutover".to_owned()];
+        assert!(batch_line(&batch, &live, &[]).starts_with("[meeting 00:14:32] live: SRE-2386 (cached 3d), DR cutover · dismissed: none\n"));
     }
 
     #[test]
@@ -185,10 +224,14 @@ mod tests {
         );
         assert_eq!(started_line(Some("  ")), "[meeting 00:00:00] started. context: none");
         assert_eq!(
-            request_line(true, "what is the DR cutover date"),
+            request_line(true, "what is the DR cutover date", None),
             "[meeting request, spoken] what is the DR cutover date"
         );
-        assert_eq!(request_line(false, "who owns KEDA"), "[meeting request, typed] who owns KEDA");
+        assert_eq!(request_line(false, "who owns KEDA", None), "[meeting request, typed] who owns KEDA");
+        assert_eq!(
+            request_line(false, "what's the KEDA limit", Some("KEDA scaling")),
+            "[meeting request, typed] what's the KEDA limit (cached brief \"KEDA scaling\" already shown — add only what it lacks)"
+        );
         assert_eq!(tapped_line("SRE-2386"), "[meeting tapped \"SRE-2386\"]");
         assert_eq!(
             dismissed_line("KEDA"),

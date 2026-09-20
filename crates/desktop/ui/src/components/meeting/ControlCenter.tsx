@@ -219,7 +219,15 @@ function BriefLog({ id, cursor }: { id: string; cursor: string | null }) {
           <div className="flex items-baseline justify-between gap-2">
             <span className="font-semibold">{b.title}</span>
             <span className="shrink-0 text-[11px] text-fg-tertiary">
-              {b.source} · {hhmmss(Number(b.at_ms))}
+              {b.cached !== null ? (
+                // 05 §7: a cached instance links its row on `/briefs` (`?id=` outlines it).
+                <Link to="/briefs" search={{ id: b.cached }} className="hover:underline">
+                  {b.source === 'Cache' ? 'cached' : `${b.source} · cached`}
+                </Link>
+              ) : (
+                b.source
+              )}{' '}
+              · {hhmmss(Number(b.at_ms))}
             </span>
           </div>
           <ul className="mt-1 list-disc space-y-0.5 pl-4 text-fg-secondary">

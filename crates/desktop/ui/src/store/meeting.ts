@@ -104,7 +104,9 @@ export function reduce(s: MeetingSlice, e: MeetingEvent): MeetingSlice {
       const briefs = [...s.briefs, e.brief]
       const top = briefs.length - 1
       // 53 §4.6: Auto at the top → show; Auto stepped back → queue and badge; anything the user asked for jumps.
-      if (e.brief.source === 'Auto' && s.briefs.length > 0 && s.cursor < s.briefs.length - 1)
+      // 05 §7: a Cache brief (the actor's alias scan) is an Auto for the stack.
+      const auto = e.brief.source === 'Auto' || e.brief.source === 'Cache'
+      if (auto && s.briefs.length > 0 && s.cursor < s.briefs.length - 1)
         return { ...s, briefs, unseen: s.unseen + 1 }
       return { ...s, briefs, cursor: top, unseen: 0, tapped: e.brief.topic ? s.tapped.filter((t) => t !== e.brief.topic) : s.tapped }
     }

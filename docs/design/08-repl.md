@@ -47,7 +47,9 @@ the user's earlier `../codemcp`, and pydantic `monty` 0.0.23 (Rust crates
    rule ("one tool, `ipython`"), kept alongside our per-tool signatures.
    `agent.runtime_only: false` restores every registered tool as a direct
    definition for models weak at code (MCP churn then rebases the prefix).
-   No gateway, no per-server flag, no code-mode switch.
+   No gateway, no per-server flag, no code-mode switch. Amended 2026-09-20:
+   a session may run with an allowlisted, direct-only toolset while a
+   meeting records (`agent::SetToolset`, cleared at stop — 53 / meetings 06).
 5. **Output is capped small and nothing is lost.** `python`'s result is
    stdout + the last expression's repr, each capped at 8 000 chars. Oversize
    stdout is bound to a runtime variable (`out3`) and the cap marker names

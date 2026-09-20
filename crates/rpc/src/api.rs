@@ -892,6 +892,24 @@ pub trait Api {
     /// `summary.md`.
     #[method(name = "meeting_summary")]
     async fn meeting_summary(&self, id: meeting::MeetingId) -> RpcResult<String>;
+    /// Phase 5 (05 §8): the brief cache. Full-text search, best rank first (`limit` ≤ 50, default 8).
+    #[method(name = "brief_search")]
+    async fn brief_search(&self, query: String, limit: Option<u32>) -> RpcResult<Vec<meeting::CachedBrief>>;
+    /// Cached briefs, newest `updated_at` first, optionally only those tagged `tag` (`limit` ≤ 50).
+    #[method(name = "brief_list")]
+    async fn brief_list(&self, tag: Option<String>, limit: Option<u32>) -> RpcResult<Vec<meeting::CachedBrief>>;
+    /// Every tag in the cache, most-used first.
+    #[method(name = "brief_tags")]
+    async fn brief_tags(&self) -> RpcResult<Vec<String>>;
+    /// One cached brief.
+    #[method(name = "brief_get")]
+    async fn brief_get(&self, id: meeting::BriefId) -> RpcResult<meeting::CachedBrief>;
+    /// Create (`id` omitted) or update a cached brief; `BriefEvent::Changed` follows. Source `user`.
+    #[method(name = "brief_put")]
+    async fn brief_put(&self, put: meeting::CachedBriefPut) -> RpcResult<meeting::CachedBrief>;
+    /// Delete a cached brief; `BriefEvent::Changed { removed: true }` follows.
+    #[method(name = "brief_delete")]
+    async fn brief_delete(&self, id: meeting::BriefId) -> RpcResult<()>;
     /// Fire a schedule now, ignoring `next`; returns its session (34 §8).
     /// Refused while a run is in flight (`busy`) or the file does not parse.
     #[method(name = "fire_schedule")]
@@ -2552,6 +2570,38 @@ impl ApiServer for Server {
 
     async fn meeting_summary(&self, id: meeting::MeetingId) -> RpcResult<String> {
         send(&meeting()?, meeting::GetSummary { meeting: id }).await
+    }
+
+    async fn brief_search(&self, query: String, limit: Option<u32>) -> RpcResult<Vec<meeting::CachedBrief>> {
+        send(&meeting()?, meeting::BriefSearch { query, limit }).await
+    }
+
+    async fn brief_list(&self, tag: Option<String>, limit: Option<u32>) -> RpcResult<Vec<meeting::CachedBrief>> {
+        send(&meeting()?, meeting::BriefList { tag, limit }).await
+    }
+
+    async fn brief_tags(&self) -> RpcResult<Vec<String>> {
+        send(&meeting()?, meeting::BriefTags).await
+    }
+
+    async fn brief_get(&self, id: meeting::BriefId) -> RpcResult<meeting::CachedBrief> {
+        send(&meeting()?, meeting::BriefGet { id }).await
+    }
+
+    async fn brief_put(&self, put: meeting::CachedBriefPut) -> RpcResult<meeting::CachedBrief> {
+        send(
+            &meeting()?,
+            meeting::BriefPut {
+                put,
+                source: "user".into(),
+            },
+        )
+        .await
+        .map(|(row, _)| row)
+    }
+
+    async fn brief_delete(&self, id: meeting::BriefId) -> RpcResult<()> {
+        send(&meeting()?, meeting::BriefDelete { id }).await
     }
 
     async fn fire_schedule(&self, name: String) -> RpcResult<SessionId> {

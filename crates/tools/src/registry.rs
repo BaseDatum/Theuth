@@ -342,7 +342,7 @@ pub struct RegisterPrompt {
 /// `ask` → `()`. Removes a plugin's prompt block; unknown plugin is a no-op.
 pub struct UnregisterPrompt(pub &'static str);
 
-/// `ask` → every registered block, sorted by plugin name.
+/// `ask` → every registered `(plugin, block)`, sorted by plugin name.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ListPrompts;
 
@@ -1156,10 +1156,14 @@ impl Message<UnregisterPrompt> for ToolRegistry {
 }
 
 impl Message<ListPrompts> for ToolRegistry {
-    type Reply = Vec<String>;
+    type Reply = Vec<(&'static str, String)>;
 
-    async fn handle(&mut self, _: ListPrompts, _: &mut Context<Self, Self::Reply>) -> Vec<String> {
-        self.prompts.values().cloned().collect()
+    async fn handle(
+        &mut self,
+        _: ListPrompts,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Vec<(&'static str, String)> {
+        self.prompts.iter().map(|(p, b)| (*p, b.clone())).collect()
     }
 }
 

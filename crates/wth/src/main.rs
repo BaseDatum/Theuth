@@ -230,6 +230,8 @@ agent:
 #   topic_ttl_secs: 600      # how long a topic button lives unmentioned
 #   max_topics: 6            # most topic buttons at once
 #   models_dir: ~            # phase 4: pyannote models; default <data_dir>/models/pyannote
+#   live_tools: [meeting_topic, meeting_brief, brief_search, brief_put, knowledge_search, knowledge_get, meeting_read, meeting_search, search_web, read_url]  # 06: the only tools the meeting session sees while recording, all called directly
+#   live_prompts: [meeting, knowledge, web]  # 06: the only prompt blocks it sees while recording
 
 # a2a:                       # remote agents over A2A 1.0 (design doc 50 §6); peers/exports live in <data_dir>/a2a/peers.yaml, `/a2a reload` applies edits
 #   enabled: false           # false: no actor, listener, card fetch or credential load. Needs agent.communication too.
