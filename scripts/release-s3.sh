@@ -155,8 +155,15 @@ CONF_PUBKEY="$(jq -r '.plugins.updater.pubkey // empty' crates/desktop/tauri.con
 [[ "$CONF_PUBKEY" == "$PUBKEY" ]] || fail 4 "the two pubkey copies diverged"
 
 gate 5 "$S3_VER/ does not exist"
+RESUME=0
 if "${AWS[@]}" s3 ls "$S3_VER/" >/dev/null 2>&1; then
-  fail 5 "$S3_VER/ already published; objects under <ver>/ are immutable — bump the version"
+  LIVE="$(curl -fsSL --max-time 15 "$PUBLIC_BASE/$MANIFEST_NAME" 2>/dev/null | jq -r '.version // empty' || true)"
+  if [[ "$LIVE" == "$VERSION" ]]; then
+    fail 5 "$S3_VER/ already published and $MANIFEST_NAME is $VERSION — bump the version"
+  fi
+  # Partial previous run (objects uploaded, manifest not). Skip sign/upload; verify + write manifest.
+  echo "    $S3_VER/ already has objects; $MANIFEST_NAME is not $VERSION — resuming at verify"
+  RESUME=1
 fi
 
 gate 6 "staging/$VERSION/ holds every Linux tarball"
@@ -202,19 +209,6 @@ check_helper "$WORK/cli/$HELPER"
 
 # ── sign + sums ──────────────────────────────────────────────────────────────
 TARBALLS=("$APP_TGZ" "$CLI_TGZ" ${LINUX_TGZ[@]+"${LINUX_TGZ[@]}"})
-echo "==> signing ${#TARBALLS[@]} tarballs (cargo tauri signer sign)"
-for f in "${TARBALLS[@]}"; do
-  rm -f "$DIST/$f.sig"
-  cargo tauri signer sign "$DIST/$f" >/dev/null
-  [[ -s "$DIST/$f.sig" ]] || { echo "error: $DIST/$f.sig not produced" >&2; exit 1; }
-  echo "    $f.sig"
-done
-
-echo "==> SHA256SUMS"
-(cd "$DIST" && shasum -a 256 "${TARBALLS[@]}" "$DMG" >SHA256SUMS && cat SHA256SUMS)
-sha_of() { awk -v f="$1" '$2 == f {print $1}' "$DIST/SHA256SUMS"; }
-
-# ── upload ───────────────────────────────────────────────────────────────────
 s3_cp() { # src dest — content type from the destination key; DRY_RUN prints
   local ct
   case "$2" in
@@ -226,10 +220,30 @@ s3_cp() { # src dest — content type from the destination key; DRY_RUN prints
   echo "    $2"
 }
 
-echo "==> upload → $S3_VER/"
-UPLOADS=("${TARBALLS[@]}" "$DMG" SHA256SUMS)
-for f in "${TARBALLS[@]}"; do UPLOADS+=("$f.sig"); done
-for f in "${UPLOADS[@]}"; do s3_cp "$DIST/$f" "$S3_VER/$f"; done
+if [[ "$RESUME" == "1" ]]; then
+  echo "==> resume: skip sign/upload (leave $S3_VER/ immutable)"
+  for f in "${TARBALLS[@]}"; do
+    [[ -s "$DIST/$f.sig" ]] || { echo "error: $DIST/$f.sig missing — cannot resume" >&2; exit 1; }
+  done
+  [[ -s "$DIST/SHA256SUMS" ]] || { echo "error: $DIST/SHA256SUMS missing — cannot resume" >&2; exit 1; }
+else
+  echo "==> signing ${#TARBALLS[@]} tarballs (cargo tauri signer sign)"
+  for f in "${TARBALLS[@]}"; do
+    rm -f "$DIST/$f.sig"
+    cargo tauri signer sign "$DIST/$f" >/dev/null
+    [[ -s "$DIST/$f.sig" ]] || { echo "error: $DIST/$f.sig not produced" >&2; exit 1; }
+    echo "    $f.sig"
+  done
+
+  echo "==> SHA256SUMS"
+  (cd "$DIST" && shasum -a 256 "${TARBALLS[@]}" "$DMG" >SHA256SUMS && cat SHA256SUMS)
+
+  echo "==> upload → $S3_VER/"
+  UPLOADS=("${TARBALLS[@]}" "$DMG" SHA256SUMS)
+  for f in "${TARBALLS[@]}"; do UPLOADS+=("$f.sig"); done
+  for f in "${UPLOADS[@]}"; do s3_cp "$DIST/$f" "$S3_VER/$f"; done
+fi
+sha_of() { awk -v f="$1" '$2 == f {print $1}' "$DIST/SHA256SUMS"; }
 
 TMP="$WORK/dl"; mkdir -p "$TMP"
 
@@ -240,7 +254,8 @@ if [[ "$DRY_RUN" == "1" ]]; then
 else
   if command -v minisign >/dev/null 2>&1; then
     # pubkey.txt / .sig are Tauri's base64-of-the-minisign-file; minisign wants the raw key line.
-    RAW_PUB="$(base64 -d "$PUBKEY_FILE" | sed -n 2p)"
+    # macOS base64 takes stdin (`-i`), not a file operand; GNU accepts stdin too.
+    RAW_PUB="$(base64 -d < "$PUBKEY_FILE" | sed -n 2p)"
   else
     echo "    minisign not installed (brew install minisign): comparing sha256 with SHA256SUMS and .sig bytes with dist/ instead"
   fi
@@ -248,7 +263,7 @@ else
     curl -fsSL --retry 3 -o "$TMP/$f" "$PUB_VER/$f"
     curl -fsSL --retry 3 -o "$TMP/$f.sig" "$PUB_VER/$f.sig"
     if [[ -n "${RAW_PUB:-}" ]]; then
-      base64 -d "$TMP/$f.sig" >"$TMP/$f.minisig"
+      base64 -d < "$TMP/$f.sig" >"$TMP/$f.minisig"
       minisign -Vq -P "$RAW_PUB" -m "$TMP/$f" -x "$TMP/$f.minisig" || { echo "error: $f: signature does not verify against $PUBKEY_FILE" >&2; exit 1; }
     else
       [[ "$(shasum -a 256 "$TMP/$f" | awk '{print $1}')" == "$(sha_of "$f")" ]] || { echo "error: $f: sha256 differs from SHA256SUMS after upload" >&2; exit 1; }
