@@ -2,7 +2,9 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { getVersion } from '@tauri-apps/api/app'
 import { disable, enable, isEnabled } from '@tauri-apps/plugin-autostart'
 import { useState } from 'react'
+import { toast } from 'sonner'
 import { Row, Section, useAction } from '@/components/settings/shared'
+import { Button } from '@/components/ui/button'
 import {
   Select,
   SelectContent,
@@ -13,7 +15,7 @@ import {
 import { Switch } from '@/components/ui/switch'
 import { container } from '@/lib/platform'
 import { queryKeys, useApi } from '@/lib/rpc'
-import { isTauri } from '@/lib/tauri'
+import { checkUpdate, installUpdate, isTauri } from '@/lib/tauri'
 import { useUpdate } from '@/lib/update'
 import { LOCAL, useHarnesses } from '@/link/harnesses'
 import { type Theme, currentTheme, setTheme } from '@/lib/theme'
@@ -57,6 +59,13 @@ export function General() {
   const setAutostart = useAction((on: boolean) => (on ? enable() : disable()), {
     onSuccess: (_, on) => qc.setQueryData(AUTOSTART, on),
   })
+  const check = useAction(checkUpdate, {
+    onSuccess: (version) => {
+      useUpdate.setState({ pending: version })
+      if (!version) toast.message('Up to date')
+    },
+  })
+  const install = useAction(installUpdate)
 
   return (
     <>
@@ -103,7 +112,17 @@ export function General() {
                   ? `theuth ${appVersion.data ?? ''} · ${pending} installs when you quit`
                   : `theuth ${appVersion.data ?? ''}`
               }
-            />
+            >
+              {pending ? (
+                <Button variant="outline" size="sm" disabled={install.isPending} onClick={() => install.mutate(undefined)}>
+                  Install and restart
+                </Button>
+              ) : (
+                <Button variant="outline" size="sm" disabled={check.isPending} onClick={() => check.mutate(undefined)}>
+                  {check.isPending ? 'Checking…' : 'Check for updates'}
+                </Button>
+              )}
+            </Row>
           </>
         )}
       </Section>

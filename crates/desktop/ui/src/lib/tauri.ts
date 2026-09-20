@@ -59,6 +59,12 @@ export const onQuitRequested = (cb: () => void) => on<null>('quit-requested', cb
 /** 39 §3.3: the app downloaded and verified a newer bundle; it installs at quit. */
 export const onUpdateReady = (cb: (p: { version: string }) => void) =>
   on<{ version: string }>('update-ready', cb)
+/** Settings › General: check now; the parked version, or `null` when current. */
+export const checkUpdate = (): Promise<string | null> =>
+  isTauri() ? invoke<string | null>('check_update') : Promise.resolve(null)
+/** Settings › General: run the quit handshake and relaunch into the parked bundle. */
+export const installUpdate = (): Promise<void> =>
+  isTauri() ? invoke<void>('install_update') : Promise.resolve()
 /** `crates/desktop/src/models.rs`: speech model files fetched from the release bucket at start. */
 export type ModelsProgress =
   | { state: 'downloading'; file: string; done: number; total: number }

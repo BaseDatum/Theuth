@@ -41,11 +41,11 @@ pub async fn relaunch(app: AppHandle) -> Result<Connection, String> {
 }
 
 /// The webview finished its part of the quit sequence (RPC `shutdown` when it
-/// owned the daemon); exit now instead of at the 3 s fallback.
+/// owned the daemon); exit (or relaunch for an update install) now instead of at the 3 s fallback.
 #[cfg(desktop)]
 #[tauri::command]
 pub fn quit_ack(app: AppHandle) {
-    app.exit(0);
+    crate::update::exit(&app);
 }
 
 #[cfg(desktop)]

@@ -193,6 +193,8 @@ mod desktop {
                     commands::launch_log,
                     commands::relaunch,
                     commands::quit_ack,
+                    update::check_update,
+                    update::install_update,
                     island::set_hidden_from_capture,
                     island::island_show,
                     island::island_hide,
@@ -205,6 +207,8 @@ mod desktop {
             commands::launch_log,
             commands::relaunch,
             commands::quit_ack,
+            update::check_update,
+            update::install_update,
         ]);
         builder
             .menu(app_menu)
@@ -378,18 +382,18 @@ mod desktop {
     /// 25 §3 `/quit`: ask the webview to run RPC `shutdown` (if it owns the daemon)
     /// and `quit_ack`; exit anyway after [`QUIT_ACK_TIMEOUT`]. The pty hang-up runs
     /// in `RunEvent::Exit` ([`crate::run`]).
-    fn request_quit(app: &AppHandle) {
+    pub(crate) fn request_quit(app: &AppHandle) {
         if app.state::<Flags>().quitting.swap(true, SeqCst) {
             return;
         }
         if app.emit("quit-requested", ()).is_err() {
-            app.exit(0);
+            update::exit(app);
             return;
         }
         let app = app.clone();
         std::thread::spawn(move || {
             std::thread::sleep(QUIT_ACK_TIMEOUT);
-            app.exit(0);
+            update::exit(&app);
         });
     }
 

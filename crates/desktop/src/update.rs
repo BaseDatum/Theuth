@@ -4,6 +4,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
 use std::time::Duration;
 
 use tauri::plugin::TauriPlugin;
@@ -11,8 +12,12 @@ use tauri::{AppHandle, Emitter, Manager, Url, Wry};
 use tauri_plugin_updater::{Config, Update, UpdaterExt};
 
 /// A verified update waiting for `RunEvent::Exit` (39 §3.3: bytes stay in memory).
+/// `restart`: Settings › General asked to install now; the quit handshake relaunches instead of exiting.
 #[derive(Default)]
-pub struct Pending(pub Mutex<Option<(Update, Vec<u8>)>>);
+pub struct Pending {
+    pub update: Mutex<Option<(Update, Vec<u8>)>>,
+    pub restart: AtomicBool,
+}
 
 /// 39 §9: same schedule as the harness.
 const FIRST_CHECK: Duration = Duration::from_secs(60);
@@ -38,7 +43,7 @@ pub fn start(app: &AppHandle) {
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(FIRST_CHECK).await;
         loop {
-            if let Err(e) = tick(&app).await {
+            if let Err(e) = check(&app).await {
                 tracing::debug!("update: {e}");
             }
             let jitter = Duration::from_secs(rand::random_range(0..=JITTER_MAX_SECS));
@@ -48,7 +53,8 @@ pub fn start(app: &AppHandle) {
 }
 
 /// One check: manifest → compare → download (minisign-verified) → park in [`Pending`].
-async fn tick(app: &AppHandle) -> anyhow::Result<()> {
+/// `Some(version)` when an update is parked (now or from an earlier check), `None` when current.
+async fn check(app: &AppHandle) -> anyhow::Result<Option<String>> {
     // 39 §7: `THEUTH_UPDATE_URL` points a scratch bucket; default is tauri.conf.json.
     let builder = match std::env::var("THEUTH_UPDATE_URL")
         .ok()
@@ -58,15 +64,16 @@ async fn tick(app: &AppHandle) -> anyhow::Result<()> {
         None => app.updater_builder(),
     };
     let Some(update) = builder.build()?.check().await? else {
-        return Ok(());
+        return Ok(None);
     };
+    let version = update.version.clone();
     let held = app
         .state::<Pending>()
-        .0
+        .update
         .lock()
         .is_ok_and(|p| p.as_ref().is_some_and(|(u, _)| u.version == update.version));
     if held {
-        return Ok(());
+        return Ok(Some(version));
     }
     // The plugin escalates with an AppleScript password prompt when the bundle
     // is not ours to rename (39 §1.1: no dialogs); a root-owned .app is skipped.
@@ -84,16 +91,44 @@ async fn tick(app: &AppHandle) -> anyhow::Result<()> {
         "update-ready",
         serde_json::json!({ "version": update.version }),
     )?;
-    if let Ok(mut p) = app.state::<Pending>().0.lock() {
+    if let Ok(mut p) = app.state::<Pending>().update.lock() {
         *p = Some((update, bytes));
     }
+    Ok(Some(version))
+}
+
+/// Settings › General › Check for updates: the same check as the loop, on demand.
+#[tauri::command]
+pub async fn check_update(app: AppHandle) -> Result<Option<String>, String> {
+    check(&app).await.map_err(|e| format!("{e:#}"))
+}
+
+/// Settings › General › Install and restart: run the quit handshake (RPC `shutdown`,
+/// `quit_ack`), swap the bundle in `RunEvent::Exit`, then relaunch.
+#[tauri::command]
+pub fn install_update(app: AppHandle) -> Result<(), String> {
+    let pending = app.state::<Pending>();
+    if pending.update.lock().is_ok_and(|p| p.is_none()) {
+        return Err("no update downloaded".into());
+    }
+    pending.restart.store(true, SeqCst);
+    crate::desktop::request_quit(&app);
     Ok(())
+}
+
+/// `app.exit(0)`, or a relaunch when [`install_update`] asked for one.
+pub fn exit(app: &AppHandle) {
+    if app.state::<Pending>().restart.load(SeqCst) {
+        app.request_restart();
+    } else {
+        app.exit(0);
+    }
 }
 
 /// `RunEvent::Exit`, after `Launch::shutdown()`: swap the bundle (39 §3.3).
 pub fn install_pending(app: &AppHandle) {
     let pending = app.state::<Pending>();
-    let Some((update, bytes)) = pending.0.lock().ok().and_then(|mut p| p.take()) else {
+    let Some((update, bytes)) = pending.update.lock().ok().and_then(|mut p| p.take()) else {
         return;
     };
     match update.install(&bytes) {

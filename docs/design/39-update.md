@@ -473,7 +473,14 @@ asks for a decision.
   is pending. That is the "subtle indicator".
 - Settings › General, the existing `Harness` row (`General.tsx:171`) gets
   a sibling `Row`: label `App`, value `theuth 0.1.0 · 0.2.0 installs when you
-  quit`. No button. Quit is one tray click away and already exists.
+  quit`. Amended 2026-09-20: the row carries one button. `Check for updates`
+  runs `check_update` (the loop's `check`, on demand; toast `Up to date` on
+  `null`, error toast when the bundle is not writable). Once a version is
+  parked it becomes `Install and restart`: `install_update` sets
+  `Pending.restart` and runs the same `request_quit` handshake (RPC
+  `shutdown` → `quit_ack`); `update::exit` then calls `app.request_restart()`
+  instead of `exit(0)`, so `RunEvent::Exit` swaps the bundle and Tauri relaunches
+  the new one. Both are user-driven; nothing here pops on its own.
 - Tray menu: unchanged. Rejected: jarvis's `Update to vX…` item and the
   post-relaunch success toast.
 - `notifyIfHidden` (`notify.ts`) is **not** called. A system notification
