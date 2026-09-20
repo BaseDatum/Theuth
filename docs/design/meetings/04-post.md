@@ -516,17 +516,27 @@ carries the far end, 01 §9 check 5).
     while the meeting is live; once `Done` the summary pane's *Open chat* is
     the link (user's call after the first `.app` run — two buttons to the
     same place).
-13. **Mic residual** (user's first real run: speak, play a video, speak —
-    the two `me` statements came out as one row with the video's rows after
-    it). The AEC leaves a far-end residual the TDT transcribes, so the mic
-    words never gap and §0.2's ">1 s silence" rule never fired. Two fixes:
-    `transcribe::speech` runs the live path's TEN-VAD + `Gate` over the mic
-    PCM (onset backdated as `voice::live` does) and `transcribe::mask` drops
-    mic words outside those spans — the post `me` rows now contain exactly
-    what the live view showed; and `align::group` closes a mic row where a
-    system row starts (`cuts`), so the reading order interleaves even when
-    residual survives the VAD (it does on the local speaker-played clip:
-    re-run on `01a0bea5` gives me/s1/me/s2… pairs instead of one 93 s `me`
-    row). ponytail: residual rows that pass the VAD are not deduplicated
-    against the system row they echo; a text-overlap check (≥ 50 % shared
-    tokens, starts within 500 ms) is the upgrade if they show up in practice.
+13. **Per-utterance transcription, not 180 s pieces** (§2 stage 1). The
+    user's first real runs (speak, play a video, speak) fused the two `me`
+    statements into one row and then lost system utterances. Measured on the
+    34 s recording: the TDT given the whole 52 s system file (long −114 dBFS
+    silences between utterances) returned 18 words — the second utterance
+    replaced by a hallucinated tail — and stretched a word's end across the
+    silence (`because[19.9–29.5]`), so §0.2's ">1 s silence" split never saw
+    a gap. `transcribe::speech` now runs the live path's TEN-VAD + `Gate`
+    over the track (onset backdated as `voice::live` does), `disjoint` trims
+    the pre-roll overlaps, and each utterance (≤ 15 s by the gate's cap) is
+    transcribed alone with 200 ms of context, word times clamped to it. On
+    that recording both system utterances and the full mic sentences come
+    back. Also, `align::group` closes a mic row where a system row starts
+    (`cuts`), so the far-end residual the AEC leaves on the mic (transcribed
+    as short `me` rows: "Principle.", "Okay.") cannot glue the user's own
+    statements together. ponytail: those residual rows are not yet dropped;
+    revisit after a run with deviation 14 — less ducking changes what the
+    AEC leaves.
+14. **VPIO ducking set to the minimum** (`capture/mic.rs`,
+    `kAUVoiceIOProperty_OtherAudioDuckingConfiguration`, macOS 14+). The unit's
+    default ducking made the call inaudible to the user, and the process tap
+    records the ducked signal: `system.opus` speech sat at −55…−60 dBFS, at
+    which the TDT hears nothing (the first system sentence of the 34 s
+    recording is missing for that reason alone). Not verified by ear yet.

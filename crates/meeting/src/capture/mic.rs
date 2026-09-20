@@ -130,6 +130,18 @@ mod vpio {
 
     /// `kAUVoiceIOProperty_BypassVoiceProcessing` (AudioUnitProperties.h); 0 = AEC + AGC + NS on.
     const BYPASS_VOICE_PROCESSING: u32 = 2100;
+    /// `kAUVoiceIOProperty_OtherAudioDuckingConfiguration` (macOS 14+): how much
+    /// the unit turns down everything else the device plays while it runs.
+    const OTHER_AUDIO_DUCKING: u32 = 2108;
+    /// `kAUVoiceIOOtherAudioDuckingLevelMin`.
+    const DUCKING_MIN: u32 = 10;
+
+    /// `AUVoiceIOOtherAudioDuckingConfiguration`: `Boolean` (u8) + level.
+    #[repr(C)]
+    struct Ducking {
+        enable_advanced: u8,
+        level: u32,
+    }
 
     /// Open, configure and start the unit; chunks arrive on the receiver.
     pub fn open() -> anyhow::Result<(AudioUnit, Receiver<voice::mic::Chunk>)> {
@@ -157,6 +169,19 @@ mod vpio {
         ) {
             // The default is already "not bypassed".
             tracing::debug!("BypassVoiceProcessing=0: {e}");
+        }
+        // The default ducking makes the call itself hard to hear (the user's
+        // report on the first real run): least ducking, no voice-activity ducking.
+        if let Err(e) = au.set_property(
+            OTHER_AUDIO_DUCKING,
+            Scope::Global,
+            Element::Output,
+            Some(&Ducking {
+                enable_advanced: 0,
+                level: DUCKING_MIN,
+            }),
+        ) {
+            tracing::warn!("OtherAudioDuckingConfiguration=min: {e}");
         }
         au.set_render_callback(|mut args: render_callback::Args<data::Interleaved<f32>>| {
             args.data.buffer.fill(0.0);
