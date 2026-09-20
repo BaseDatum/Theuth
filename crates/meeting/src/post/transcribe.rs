@@ -2,9 +2,13 @@
 //! `voice::decode` (48 kHz) → `voice::resample` (16 kHz) → [`voice::PIECE`]-long
 //! pieces with [`OVERLAP`] of context on each side → `Engine::transcribe(words)`,
 //! word times shifted by the piece offset, words in the overlap deduplicated by time.
+//! The mic track is additionally masked by the live path's VAD ([`speech`]): the
+//! TDT hears the far-end residual the AEC leaves and transcribes it as `me`,
+//! which bridged the user's own utterances into one row (04 §10 deviation 13).
 
 use std::path::Path;
 
+use voice::vad::{Edge, FRAME, Gate, Vad};
 use voice::{Engine, PIECE};
 
 use crate::transcript::Word;
@@ -21,6 +25,46 @@ pub fn pcm16k(path: &Path) -> anyhow::Result<Vec<f32>> {
     // ponytail: whole-file decode; a 3 h track is ~2 s. Page seeking if that registers.
     let (pcm, rate) = voice::decode(bytes, ext)?;
     voice::resample(pcm, rate, RATE)
+}
+
+/// Utterance spans `(t0_ms, t1_ms)` of `pcm` (16 kHz) per the live gate
+/// (`voice::live`): TEN-VAD frames → [`Gate`] edges, onset backdated by the
+/// gate's onset run and pre-roll. Needs `ort` loaded ([`Engine::load`] first).
+pub fn speech(pcm: &[f32]) -> anyhow::Result<Vec<(u64, u64)>> {
+    let ms = |samples: usize| samples as u64 * 1000 / u64::from(RATE);
+    let mut vad = Vad::new()?;
+    let mut gate = Gate::new();
+    let mut out = Vec::new();
+    let mut open: Option<usize> = None;
+    // Frame by frame so a `Turn` resets the VAD's hidden state exactly where the live path does.
+    for (i, frame) in pcm.chunks_exact(FRAME).enumerate() {
+        let end = (i + 1) * FRAME;
+        let Some(&p) = vad.process(frame).first() else { continue };
+        match gate.push(p) {
+            Some(Edge::Onset) => {
+                open = Some(end.saturating_sub((Gate::ONSET + Gate::PREROLL) * FRAME));
+            }
+            Some(Edge::Close) => {
+                if let Some(s) = open.take() {
+                    out.push((ms(s), ms(end)));
+                }
+            }
+            Some(Edge::Turn) => vad.reset(),
+            None => {}
+        }
+    }
+    if let Some(s) = open {
+        out.push((ms(s), ms(pcm.len())));
+    }
+    Ok(out)
+}
+
+/// Drop words whose midpoint lies outside every span of `spans` (sorted, disjoint).
+pub fn mask(words: &mut Vec<Word>, spans: &[(u64, u64)]) {
+    words.retain(|w| {
+        let mid = w.t0_ms.midpoint(w.t1_ms);
+        spans.iter().any(|&(a, b)| a <= mid && mid < b)
+    });
 }
 
 /// Piece starts: `0`, then `PIECE - OVERLAP` further while the previous piece

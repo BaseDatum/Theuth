@@ -506,9 +506,27 @@ carries the far end, 01 §9 check 5).
     hits are `meeting "title" [mm:ss] Name: snippet`. `voice` gains
     `TDT_MODEL_SUBDIR` (the transcriber default and the pipeline's `tdt`
     path share it); `Transcriber.model` is `Arc<Mutex<Option<Engine>>>`.
-11. **UI** (03's files, by the UI pass): `Review({ id, failure })` — the
-    Session link is in the header; `meeting_segment_audio` params are
-    `number` (JSON has no bigint); the edit action replaces the cached
-    transcript from the reply instead of refetching; *Re-run*/*Delete* on
-    the Done pane confirm first; native checkboxes for multi-select; the
-    entity on *Enroll…* is a text field (no knowledge picker component).
+11. **UI** (03's files, by the UI pass): `Review({ id, failure })`;
+    `meeting_segment_audio` params are `number` (JSON has no bigint); the edit
+    action replaces the cached transcript from the reply instead of
+    refetching; *Re-run*/*Delete* on the Done pane confirm first; native
+    checkboxes for multi-select; the entity on *Enroll…* is a text field (no
+    knowledge picker component).
+12. **One session link per state**: the header's *Session* button shows only
+    while the meeting is live; once `Done` the summary pane's *Open chat* is
+    the link (user's call after the first `.app` run — two buttons to the
+    same place).
+13. **Mic residual** (user's first real run: speak, play a video, speak —
+    the two `me` statements came out as one row with the video's rows after
+    it). The AEC leaves a far-end residual the TDT transcribes, so the mic
+    words never gap and §0.2's ">1 s silence" rule never fired. Two fixes:
+    `transcribe::speech` runs the live path's TEN-VAD + `Gate` over the mic
+    PCM (onset backdated as `voice::live` does) and `transcribe::mask` drops
+    mic words outside those spans — the post `me` rows now contain exactly
+    what the live view showed; and `align::group` closes a mic row where a
+    system row starts (`cuts`), so the reading order interleaves even when
+    residual survives the VAD (it does on the local speaker-played clip:
+    re-run on `01a0bea5` gives me/s1/me/s2… pairs instead of one 93 s `me`
+    row). ponytail: residual rows that pass the VAD are not deduplicated
+    against the system row they echo; a text-overlap check (≥ 50 % shared
+    tokens, starts within 500 ms) is the upgrade if they show up in practice.

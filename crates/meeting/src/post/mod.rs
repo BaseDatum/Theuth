@@ -148,9 +148,14 @@ async fn run(cx: &Ctx, m: &mut Manifest) -> Result<(), (PostStage, anyhow::Error
                 (done_samples * 60 / total).min(60) as u8,
             ));
         };
-        let mic = transcribe::words(&engine, &mic_pcm, |d, n| {
+        let mut mic = transcribe::words(&engine, &mic_pcm, |d, n| {
             report(mic_pcm.len() * d / n.max(1));
         })?;
+        // Far-end residual on the mic track is quiet enough that the live VAD never
+        // opened on it; keep the same words here so `me` rows match what the user saw live.
+        let before = mic.len();
+        transcribe::mask(&mut mic, &transcribe::speech(&mic_pcm)?);
+        tracing::debug!(kept = mic.len(), dropped = before - mic.len(), "mic words after VAD mask");
         let system = transcribe::words(&engine, &system_pcm, |d, n| {
             report(mic_pcm.len() + system_pcm.len() * d / n.max(1));
         })?;

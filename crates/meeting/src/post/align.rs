@@ -4,7 +4,10 @@
 //! within [`NEAR_MS`], else the previous word's span (the first span when there
 //! is none). Mic words are all `me`. Consecutive words of one speaker form a
 //! segment; a silence longer than [`GAP_MS`] also closes one, on both tracks,
-//! so a monologue is not one row.
+//! so a monologue is not one row; and a mic row closes where a system row
+//! starts, so what the user said before and after the other side spoke stays
+//! two rows in reading order even when residual far-end audio on the mic keeps
+//! its words gap-free (04 §10 deviation 13).
 
 use crate::Track;
 use crate::transcript::{ME, Segment, Word};
@@ -50,19 +53,25 @@ fn speaker_of<'a>(w: &Word, spans: &'a [Span], prev: Option<&'a str>) -> &'a str
     }
 }
 
-/// Group `words` (one track) into segments by `speaker(word, prev)` and gaps.
+/// Group `words` (one track) into segments by `speaker(word, prev)` and gaps;
+/// a segment also closes when a `cuts` time falls after its last word's start
+/// and at or before the next word's.
 fn group<'a>(
     track: Track,
     words: &[Word],
+    cuts: &[u64],
     mut speaker: impl FnMut(&Word, Option<&'a str>) -> &'a str,
 ) -> Vec<Segment> {
     let mut out: Vec<Segment> = Vec::new();
     let mut prev: Option<&'a str> = None;
+    let mut prev_t0 = 0;
     for w in words {
         let sp = speaker(w, prev);
         prev = Some(sp);
+        let cut = cuts.iter().any(|&c| prev_t0 < c && c <= w.t0_ms);
+        prev_t0 = w.t0_ms;
         let open = out.last_mut().filter(|s| {
-            s.speaker == sp && w.t0_ms.saturating_sub(s.t1_ms) <= GAP_MS
+            s.speaker == sp && !cut && w.t0_ms.saturating_sub(s.t1_ms) <= GAP_MS
         });
         match open {
             Some(s) => {
@@ -87,10 +96,11 @@ fn group<'a>(
 
 /// Segments of both tracks, sorted by `t0_ms`, ids `0..n`.
 pub fn segments(mic: &[Word], system: &[Word], spans: &[Span]) -> Vec<Segment> {
-    let mut all = group(Track::Mic, mic, |_, _| ME);
-    all.extend(group(Track::System, system, |w, prev| {
+    let mut all = group(Track::System, system, &[], |w, prev| {
         speaker_of(w, spans, prev)
-    }));
+    });
+    let cuts: Vec<u64> = all.iter().map(|s| s.t0_ms).collect();
+    all.extend(group(Track::Mic, mic, &cuts, |_, _| ME));
     all.sort_by_key(|s| (s.t0_ms, s.track == Track::System));
     for (i, s) in all.iter_mut().enumerate() {
         s.id = i as u32;
@@ -193,5 +203,22 @@ mod tests {
             ]
         );
         assert_eq!(segs.iter().map(|s| s.id).collect::<Vec<_>>(), [0, 1, 2]);
+    }
+
+    #[test]
+    fn mic_row_closes_where_a_system_row_starts() {
+        let spans = [span(0, 10_000, "s1")];
+        // Gap-free mic words (far-end residual) across a system row at 2 000.
+        let mic = [w("first", 0, 900), w("thing", 1_000, 1_900), w("second", 2_100, 2_900), w("thing", 3_000, 3_900)];
+        let sys = [w("theirs", 2_000, 2_800)];
+        let segs = segments(&mic, &sys, &spans);
+        assert_eq!(
+            texts(&segs),
+            [
+                (ME.into(), "first thing".into()),
+                ("s1".into(), "theirs".into()),
+                (ME.into(), "second thing".into())
+            ]
+        );
     }
 }
