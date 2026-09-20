@@ -1,6 +1,7 @@
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
 import { BookOpen, FolderOpen, Mic, PanelLeft, Settings, SquarePen } from 'lucide-react'
 import { useEffect, useState } from 'react'
+import { Mark } from '@/components/Mark'
 import { HarnessSwitcher } from '@/components/link/HarnessSwitcher'
 import { Button } from '@/components/ui/button'
 import {
@@ -45,6 +46,9 @@ export function AppSidebar({ session }: { session: string | undefined }) {
         data-tauri-drag-region={isMacDesktop() || undefined}
         className={cn('h-[52px] flex-row items-center', isMacDesktop() && 'pl-20')}
       >
+        <Link to="/" aria-label="theuth" className="shrink-0 text-foreground">
+          <Mark className="size-6" />
+        </Link>
         <HarnessSwitcher className="min-w-0 flex-1 justify-start" />
         <div className="ml-auto flex shrink-0 items-center">
           <SearchTrigger />

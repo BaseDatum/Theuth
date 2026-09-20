@@ -7,15 +7,15 @@
 <title>theuth · login</title>
 <style>
   :root {
-    --bg: #f6f7f9; --card: #ffffff; --fg: #111318; --muted: #6b7280;
-    --line: rgba(17, 19, 24, .08); --ok: #16a34a; --err: #dc2626;
-    --glow-ok: rgba(22, 163, 74, .18); --glow-err: rgba(220, 38, 38, .18);
+    --bg: #e8dcc8; --card: #f3eadf; --fg: #1a1612; --muted: #6b5e4f;
+    --line: #d4c4a8; --ok: #2f5d4a; --err: #9b2d1f;
+    --glow-ok: rgba(47, 93, 74, .18); --glow-err: rgba(155, 45, 31, .18);
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #0b0d12; --card: #12151c; --fg: #e6e8ee; --muted: #8b93a5;
-      --line: rgba(230, 232, 238, .08); --ok: #22c55e; --err: #f87171;
-      --glow-ok: rgba(34, 197, 94, .22); --glow-err: rgba(248, 113, 113, .22);
+      --bg: #12100e; --card: #1c1915; --fg: #e8dcc8; --muted: #c9b89a;
+      --line: #2a241c; --ok: #4a8a6e; --err: #c45a48;
+      --glow-ok: rgba(74, 138, 110, .22); --glow-err: rgba(196, 90, 72, .22);
     }
   }
   * { box-sizing: border-box; }
@@ -37,7 +37,7 @@
   .card {
     width: min(100%, 400px); padding: 44px 36px 36px; text-align: center;
     background: var(--card); border: 1px solid var(--line); border-radius: 20px;
-    box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 24px 64px -24px rgba(0,0,0,.25);
+    box-shadow: 0 1px 2px rgba(26, 22, 18, .06), 0 24px 64px -24px rgba(26, 22, 18, .3);
     animation: rise .5s cubic-bezier(.2,.8,.2,1) both;
   }
   .mark { width: 72px; height: 72px; margin: 0 auto 24px; display: block; }

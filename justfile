@@ -149,9 +149,8 @@ icons:
       && cp /tmp/theuth-icons/{32x32,64x64,128x128,128x128@2x,icon}.png /tmp/theuth-icons/icon.icns icons/ \
       && cp /tmp/theuth-icons/ios/*.png gen/apple/Assets.xcassets/AppIcon.appiconset/ \
       && swift ../../scripts/flatten-png.swift gen/apple/Assets.xcassets/AppIcon.appiconset/*.png \
-      && for s in 22 44; do rm -rf /tmp/theuth-tray && mkdir /tmp/theuth-tray \
-           && qlmanage -t -s $s -o /tmp/theuth-tray icons/tray.svg >/dev/null 2>&1 \
-           && cp /tmp/theuth-tray/tray.svg.png icons/tray$([ $s = 44 ] && echo @2x).png; done
+      && swift ../../scripts/svg2png.swift icons/tray.svg 22 icons/tray.png \
+      && swift ../../scripts/svg2png.swift icons/tray.svg 44 icons/tray@2x.png
 
 # iOS app in dev mode on a simulator/device. tauri.ios.conf.json overlays the bundle
 # id, iOS 17 floor and the universal-link host: `plugins.deep-link.mobile[].host`
