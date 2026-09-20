@@ -5,6 +5,7 @@
 
 import { invoke } from '@tauri-apps/api/core'
 import { type UnlistenFn, listen } from '@tauri-apps/api/event'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 
 /** `launch::Connection`: what the webview needs to open the WebSocket. */
 export type Connection = {
@@ -15,6 +16,10 @@ export type Connection = {
 }
 
 export const isTauri = () => '__TAURI_INTERNALS__' in window
+
+/** The island webview (53 decision 8, 03 §0.1): the same bundle routed by window label; `/island` in a plain browser (the fixture). */
+export const isIsland = (): boolean =>
+  isTauri() ? getCurrentWindow().label === 'island' : location.pathname === '/island'
 
 const devConnection = (): Connection => {
   const url = import.meta.env.VITE_WTH_URL
@@ -54,3 +59,21 @@ export const onQuitRequested = (cb: () => void) => on<null>('quit-requested', cb
 /** 39 §3.3: the app downloaded and verified a newer bundle; it installs at quit. */
 export const onUpdateReady = (cb: (p: { version: string }) => void) =>
   on<{ version: string }>('update-ready', cb)
+
+// Meetings island (`crates/desktop/src/island.rs`, 03 §1). No-ops outside Tauri.
+/** `set_content_protected` on both windows (decision 9); every webview then hears `capture-hidden`. */
+export const setHiddenFromCapture = (hidden: boolean): Promise<void> =>
+  isTauri() ? invoke<void>('set_hidden_from_capture', { hidden }) : Promise.resolve()
+/** Order the island front without focusing anything, sized `width × height` logical px (44 high = strip only; the shell clamps). */
+export const islandShow = (width: number, height: number): Promise<void> =>
+  isTauri() ? invoke<void>('island_show', { width, height }) : Promise.resolve()
+export const islandHide = (): Promise<void> => (isTauri() ? invoke<void>('island_hide') : Promise.resolve())
+/** The request box was left: the panel resigns key so keystrokes return to the meeting app. */
+export const islandResignKey = (): Promise<void> =>
+  isTauri() ? invoke<void>('island_resign_key') : Promise.resolve()
+/** Place the island: `positions[key]` for the current screen configuration wins, else the notch default. Answers `[x, y, key]`. */
+export const islandPlace = (positions: Record<string, [number, number]>): Promise<[number, number, string]> =>
+  isTauri() ? invoke<[number, number, string]>('island_place', { positions }) : Promise.resolve([0, 0, 'browser'])
+export const onCaptureHidden = (cb: (hidden: boolean) => void) => on<boolean>('capture-hidden', cb)
+/** `NSApplicationDidChangeScreenParametersNotification`: re-place the island. */
+export const onScreensChanged = (cb: () => void) => on<null>('screens-changed', cb)

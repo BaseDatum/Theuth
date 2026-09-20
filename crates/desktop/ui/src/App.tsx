@@ -1,5 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { RouterProvider, createRouter } from '@tanstack/react-router'
+import { RouterProvider, createMemoryHistory, createRouter } from '@tanstack/react-router'
 import { TrayIcon } from '@tauri-apps/api/tray'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { register, unregister } from '@tauri-apps/plugin-global-shortcut'
@@ -10,13 +10,24 @@ import { PairScreen } from '@/components/link/PairScreen'
 import { Toaster } from '@/components/ui/sonner'
 import { describe } from '@/lib/describe'
 import { installDictationListeners, refreshStatus, setModel } from '@/lib/dictation'
+import { useMeetingHotkeys } from '@/lib/meeting-hotkeys'
+import { useMeetingSettings } from '@/lib/meeting-settings'
 import { notifyIfHidden, primeNotifications } from '@/lib/notify'
 import { leaves, usePanes } from '@/lib/panes'
 import { container } from '@/lib/platform'
 import { usePrivateOwner } from '@/lib/private'
 import { queryKeys, useInvalidateOn } from '@/lib/rpc'
 import { installSpeechListeners } from '@/lib/speech'
-import { connection, onNavigate, onQuitRequested, quitAck, relaunch } from '@/lib/tauri'
+import {
+  connection,
+  isIsland,
+  onCaptureHidden,
+  onNavigate,
+  onQuitRequested,
+  quitAck,
+  relaunch,
+  setHiddenFromCapture,
+} from '@/lib/tauri'
 import { startUpdateListener } from '@/lib/update'
 import { LOCAL, hasLocal, hydrateHarnesses, useHarnesses, useNeedsPairing } from '@/link/harnesses'
 import { autoPair, watchNodes } from '@/link/nodes'
@@ -28,9 +39,16 @@ import type { WireEvent } from '@/rpc/events'
 import { routeTree } from '@/routeTree.gen'
 import { useConnection } from '@/store/connection'
 import { HarnessProvider, type Stores, dropScope, scope } from '@/store/harness-scope'
+import { hydrateMeeting, installMeetingListeners } from '@/store/meeting'
 import { dispatch, on, useSessions } from '@/store/sessions'
 
-const router = createRouter({ routeTree })
+/** 03 §0.1: the island webview loads the same bundle and lives at `/island`; the browser history cannot read a window label. */
+const ISLAND = isIsland()
+
+const router = createRouter({
+  routeTree,
+  history: ISLAND ? createMemoryHistory({ initialEntries: ['/island'] }) : undefined,
+})
 
 declare module '@tanstack/react-router' {
   interface Register {
@@ -60,6 +78,8 @@ function loadInfo(st: Stores, api: Api): Promise<void> {
     void autoPair(st.id, api)
     void api.dictation_prewarm().then(setModel).catch(() => undefined)
     void refreshStatus(api).catch(() => undefined)
+    // 03 §0.4: the meeting's state, topics and brief stack; disabled meetings leave it empty.
+    void hydrateMeeting(api).catch(() => undefined)
   })
 }
 
@@ -190,9 +210,13 @@ async function cancelAll(): Promise<void> {
   if (running.length) toast(`cancelled ${running.length} sessions`)
 }
 
-/** Tray / menu navigation, the quit handshake, ⌥Space and ⌥Esc (macOS); notification permission (iOS); mounted once. */
+/**
+ * Tray / menu navigation, the quit handshake, ⌥Space and ⌥Esc (macOS); notification permission (iOS); mounted once.
+ * The island webview registers nothing: a second registration of a global shortcut throws, and the quit handshake is the main window's.
+ */
 function useTauri(): void {
   useEffect(() => {
+    if (ISLAND) return
     const unlistens = [
       onNavigate((path) => router.history.push(path)),
       onQuitRequested(() => void quit()),
@@ -203,6 +227,8 @@ function useTauri(): void {
     void primeNotifications()
     if (desktop) {
       startUpdateListener()
+      // 53 decision 9: the eye applies to both windows from startup, not only on toggle.
+      void setHiddenFromCapture(useMeetingSettings.getState().hidden)
       void register(TOGGLE_SHORTCUT, async (e) => {
         if (e.state !== 'Pressed') return
         const win = getCurrentWindow()
@@ -231,10 +257,11 @@ function visible(session: string): boolean {
   return root !== null && leaves(root).includes(session)
 }
 
-/** 25 §4.5 notifications, the `Lagged` reload and the tray badge; per active harness. */
+/** 25 §4.5 notifications, the `Lagged` reload and the tray badge; per active harness. The island only reloads. */
 function useEventSideEffects(st: Stores): void {
   const qc = useQueryClient()
   useEffect(() => {
+    if (ISLAND) return on('Lagged', () => reload(st))
     const offs = [
       on('Lagged', () => {
         reload(st)
@@ -311,7 +338,13 @@ export function App() {
   useEffect(() => void hydrateHarnesses(), [])
   useEffect(watchNodes, [])
   useEffect(installSpeechListeners, [])
-  useEffect(installDictationListeners, [])
+  useEffect(() => (ISLAND ? undefined : installDictationListeners()), [])
+  useEffect(installMeetingListeners, [])
+  // The shell flips both windows; each webview mirrors the value into its own settings copy.
+  useEffect(() => {
+    const off = onCaptureHidden((h) => useMeetingSettings.getState().setHidden(h))
+    return () => void off.then((f) => f())
+  }, [])
 
   // The desktop's own daemon (25's launch path), relaunched on demand from the startup screen.
   useEffect(() => {
@@ -376,6 +409,7 @@ export function App() {
   }, [hydrated, active])
 
   useTauri()
+  useMeetingHotkeys()
   // 51 §8.3: one router-level owner; `reload()`'s `unload()` marks slices only, the private record (memory-only) survives a reconnect.
   usePrivateOwner(router)
 

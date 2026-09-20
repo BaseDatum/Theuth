@@ -1,6 +1,7 @@
 import { createFileRoute, redirect, useNavigate, useRouter } from '@tanstack/react-router'
 import { SettingsDialog, type Tab, isTab } from '@/components/settings/SettingsDialog'
 import { isMacDesktop } from '@/lib/hotkeys'
+import { MeetingPill } from '@/components/meeting/MeetingPill'
 
 /** `?session=<id>`: the chat the dialog was opened from, for per-session rows; `?peer=<message id>` focuses one pending peer request on the communication tab. */
 type Search = { session?: string; peer?: string }
@@ -29,7 +30,9 @@ function Settings() {
   // The inset behind the modal is otherwise empty; keep the header band draggable.
   return (
     <>
-      <div data-tauri-drag-region={isMacDesktop() || undefined} className="h-[52px]" />
+      <div data-tauri-drag-region={isMacDesktop() || undefined} className="flex h-[52px] items-center justify-end px-3">
+        <MeetingPill />
+      </div>
       <SettingsDialog
         tab={tab}
         session={session ?? null}

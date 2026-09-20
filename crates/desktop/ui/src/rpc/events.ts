@@ -10,6 +10,7 @@ import type { JobEvent } from '@/rpc/bindings/JobEvent'
 import type { KnowledgeChanged } from '@/rpc/bindings/KnowledgeChanged'
 import type { LinkEvent } from '@/rpc/bindings/LinkEvent'
 import type { McpProgress } from '@/rpc/bindings/McpProgress'
+import type { MeetingEvent } from '@/rpc/bindings/MeetingEvent'
 import type { NodeEvent } from '@/rpc/bindings/NodeEvent'
 import type { PeerDelivered } from '@/rpc/bindings/PeerDelivered'
 import type { PeerMessageChanged } from '@/rpc/bindings/PeerMessageChanged'
@@ -66,6 +67,8 @@ export type WireEvent =
   | ArtifactShown
   | ScrapeProgress
   | VoiceEvent
+  /** 53: one stream for the island and the control center; every variant carries `meeting`. */
+  | MeetingEvent
   /** 50 §10: settings (global or a subtree's opt-out/scope), a receipt's state, a consumed peer exchange, the A2A network. */
   | CommunicationChanged
   | PeerMessageChanged

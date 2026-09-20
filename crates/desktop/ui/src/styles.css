@@ -233,6 +233,12 @@
     @apply bg-background text-foreground;
   }
 
+  /* 03 §2: the island window is transparent; only the strip paints (`components/meeting/Island.tsx`). */
+  html[data-island],
+  html[data-island] body {
+    background: transparent;
+  }
+
   /* Chrome shows the arrow; editable areas keep the native cursor. Touch has no cursor to set. */
   @media (pointer: fine) {
     body {

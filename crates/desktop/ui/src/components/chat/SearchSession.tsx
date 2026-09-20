@@ -14,6 +14,7 @@ import { type Entry, useSessionField } from '@/store/sessions'
 import { ArtifactPanel } from './ArtifactPanel'
 import { SidebarToggle } from './Header'
 import { Message } from './Message'
+import { MeetingPill } from '@/components/meeting/MeetingPill'
 
 const PAGE = 60
 
@@ -104,6 +105,7 @@ export function SearchSession({ session, seq }: { session: string; seq: number }
           Jump to latest
         </Button>
         <ArtifactPanel session={session} />
+        <MeetingPill />
       </header>
       <div ref={scroller} className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto wrap-anywhere">
         <div className="mx-auto w-full md:max-w-[768px] px-4 pb-8">

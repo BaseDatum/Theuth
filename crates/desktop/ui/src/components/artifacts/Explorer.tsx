@@ -14,6 +14,7 @@ import { queryKeys, useApi } from '@/lib/rpc'
 import { isSearchDestination, useSearchOrigin } from '@/lib/search'
 import { cn } from '@/lib/utils'
 import type { Kind } from '@/rpc/extra'
+import { MeetingPill } from '@/components/meeting/MeetingPill'
 
 const route = getRouteApi('/artifacts')
 
@@ -89,6 +90,7 @@ export function Explorer() {
             </TooltipTrigger>
             <TooltipContent>Refresh</TooltipContent>
           </Tooltip>
+          {!active && <MeetingPill />}
         </header>
         <div className="relative shrink-0 px-3 pb-2">
           <Search className="pointer-events-none absolute top-1/2 left-5 size-4 -translate-y-1/2 text-fg-tertiary" />

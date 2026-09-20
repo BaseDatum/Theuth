@@ -7,8 +7,10 @@ import { SearchDialog } from '@/components/sidebar/SearchDialog'
 import { SidebarInset, SidebarProvider, useSidebar } from '@/components/ui/sidebar'
 import { useHotkeys } from '@/lib/hotkeys'
 import type { SearchRequest } from '@/lib/search'
+import { isIsland } from '@/lib/tauri'
 
-export const Route = createRootRoute({ component: Root })
+/** 03 §0.1: the island webview gets no sidebar, search or hotkeys — just its route. */
+export const Route = createRootRoute({ component: isIsland() ? Outlet : Root })
 
 const WIDTH = { '--sidebar-width': '260px' } as CSSProperties
 

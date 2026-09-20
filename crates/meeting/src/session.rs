@@ -5,7 +5,8 @@
 use kameo::actor::ActorRef;
 use runtime::{InputId, SessionId};
 
-use crate::{Track, Utterance};
+use crate::state::Prompted;
+use crate::{BriefId, Track, Utterance};
 
 /// `hh:mm:ss` on the recording clock.
 pub fn hms(ms: u64) -> String {
@@ -69,10 +70,28 @@ pub fn dismissed_line(label: &str) -> String {
     format!("[meeting: user dismissed \"{label}\" — not useful]")
 }
 
-/// The user asked for more on a brief.
-pub fn deeper_line(title: &str, bullets: &[String]) -> String {
+/// The user asked for more on a brief. The id rides along so the model can set
+/// `meeting_brief.parent` (a `BriefId`; the title alone parsed as a UUID and failed — 03 §9).
+pub fn deeper_line(id: BriefId, title: &str, bullets: &[String]) -> String {
     let bullets: Vec<&str> = bullets.iter().map(|b| b.trim()).collect();
-    format!("[meeting deeper on \"{title}\"] - {}", bullets.join("\n- "))
+    format!(
+        "[meeting deeper on \"{title}\" — parent: {}] - {}",
+        id.0,
+        bullets.join("\n- ")
+    )
+}
+
+/// 03 §9: a turn ended without a `meeting_brief` for a request or deeper the user made; the text
+/// reply, if any, was never shown. Sent once per prompt.
+pub fn nudge_line(prompt: Prompted, text: &str) -> String {
+    let what = match prompt {
+        Prompted::Deeper(id) => format!("deeper on \"{text}\" (parent: {})", id.0),
+        _ => format!("the request \"{text}\""),
+    };
+    format!(
+        "[meeting: no brief was produced for {what} — the user sees only briefs, never text. Call \
+         `meeting_brief` now with two or three short factual bullets answering it.]"
+    )
 }
 
 /// Deliver `text` to `session`: `Steer` when a turn runs (it lands after the
@@ -175,9 +194,13 @@ mod tests {
             dismissed_line("KEDA"),
             "[meeting: user dismissed \"KEDA\" — not useful]"
         );
+        let id = BriefId(uuid::Uuid::nil());
         assert_eq!(
-            deeper_line("DR cutover", &["b1".into(), "b2 ".into()]),
-            "[meeting deeper on \"DR cutover\"] - b1\n- b2"
+            deeper_line(id, "DR cutover", &["b1".into(), "b2 ".into()]),
+            format!("[meeting deeper on \"DR cutover\" — parent: {}] - b1\n- b2", id.0)
         );
+        assert!(nudge_line(Prompted::Request { spoken: true }, "cutover date")
+            .starts_with("[meeting: no brief was produced for the request \"cutover date\""));
+        assert!(nudge_line(Prompted::Deeper(id), "DR cutover").contains(&format!("parent: {}", id.0)));
     }
 }

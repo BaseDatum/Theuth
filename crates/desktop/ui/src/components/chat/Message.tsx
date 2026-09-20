@@ -1,6 +1,7 @@
 import { BellRing, ChevronRight, Trash2 } from 'lucide-react'
 import { memo, type ReactNode, useState } from 'react'
 import { HARNESS_NOTICES } from '@/lib/injected'
+import { parseMeetingLine } from '@/lib/meeting-line'
 import type { Prompt } from '@/store/approvals'
 import type { Entry } from '@/store/sessions'
 import { ApprovalCard } from './ApprovalCard'
@@ -11,6 +12,7 @@ import { MessageError, MessageInfo } from './MessageInfo'
 import { MessagePeer } from './MessagePeer'
 import { MessageReasoning } from './MessageReasoning'
 import { MessageTool } from './MessageTool'
+import { MeetingCard } from './MeetingCard'
 import { MessageUser } from './MessageUser'
 import { MessageVision } from './MessageVision'
 import { SecretRequestCard } from './SecretRequestCard'
@@ -18,8 +20,12 @@ import { SecretRequestCard } from './SecretRequestCard'
 /** `readOnly`: an archive/inspection rendering (search's Earlier messages page): no turn, fork or context-removal controls. */
 function body(entry: Entry, session: string, readOnly?: boolean) {
   switch (entry.kind) {
-    case 'user':
+    case 'user': {
+      // 53 §4.4: the daemon's `[meeting …]` inputs are notices, not the user's words.
+      const meeting = parseMeetingLine(entry.text)
+      if (meeting) return <MeetingCard line={meeting} />
       return <MessageUser text={entry.text} skill={entry.skill} files={entry.files} session={session} turn={entry.turn} context={entry.context} readOnly={readOnly} />
+    }
     case 'assistant':
       return <MessageAssistant id={entry.id} text={entry.text} open={entry.open} session={session} turn={entry.turn} context={entry.context} readOnly={readOnly} />
     case 'reasoning':

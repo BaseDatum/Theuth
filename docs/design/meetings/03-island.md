@@ -18,10 +18,15 @@ for both windows, and watch the live log in the main window.
    loads the same `index.html` at `/island` (`WebviewUrl::App("index.html#/island")`
    or the router's `initialEntries` from `getCurrentWindow().label`). The
    island route renders only `<Island/>` — no sidebar, no `SearchHost`, no
-   `useTauri()` shortcut registration (`ui/src/App.tsx:225-253` registers
-   ⌥Space/⌥Esc from the webview; gate it on `label === "main"` or a second
-   webview double-registers). Rejected: a second Vite entry (a second build,
-   a second RPC client init path).
+   `useHotkeys()`: `routes/__root.tsx:16-46` `Root` mounts `AppSidebar`,
+   `SearchHost`, `DragOverlay` unconditionally, so `Root` branches on the
+   window label (or the `/island` path) and renders a bare `<Outlet/>` for
+   the island. `useTauri()` (`ui/src/App.tsx:194-225`) registers ⌥Space/⌥Esc
+   gated on `container() === 'macos'` only — add `getCurrentWindow().label
+   === "main"` or a second webview double-registers; same for
+   `installDictationListeners()` (`App.tsx:314`) and `useInvalidateOn`'s
+   session polling if they are per-window. Rejected: a second Vite entry (a
+   second build, a second RPC client init path).
 2. **Panel conversion, capture exclusion and placement are Rust, in one new
    module `crates/desktop/src/island.rs`, exposed as three Tauri commands.**
    `tauri-nspanel` (git, ahkohd) turns the `island` `WebviewWindow` into an
@@ -33,13 +38,12 @@ for both windows, and watch the live log in the main window.
    "OS integration only" (`lib.rs` header) is exactly this. Rejected: doing
    placement in JS via `@tauri-apps/api/window` (no notch geometry there).
 3. **Settings that are the desktop's live in `localStorage` + zustand
-   (`ui/src/lib/nudges.ts` pattern); one daemon setting gets a setter RPC.**
+   (`ui/src/lib/nudges.ts:14-20` pattern: plain `create` + manual
+   `localStorage`, no `persist` middleware); no daemon setting.**
    `hidden_from_capture` (default `true`), PTT key (default ``Alt+` ``), eye
    key (default `Alt+Shift+E`), island position per screen configuration —
-   all desktop. `meeting.allow_read_only` is daemon config →
-   `meeting_set_allow_read_only(bool)` RPC (`write_config_value("meeting",
-   "allow_read_only")` + in-memory update on the actor), the `set_compact_style`
-   pattern (`General.tsx:85`). 53 §2.2 named `tauri-plugin-store` for
+   all desktop. (`meeting.allow_read_only` and its setter RPC were dropped
+   with 02 §0.2 c on 2026-09-20.) 53 §2.2 named `tauri-plugin-store` for
    positions; the tree already persists per-app settings in `localStorage`
    and a second store is a second convention. Both webviews are the same
    origin in one app → one `localStorage` [INFERENCE: WKWebView shares the
@@ -49,24 +53,33 @@ for both windows, and watch the live log in the main window.
    Per 53 §4.6: `source == Auto` and cursor at top → show; `Auto` and
    stepped back → queue + `↑ N new`; any other source → show and jump.
    Every cursor move calls `meeting_cursor`. Reconnect: `meeting_briefs` +
-   `meeting_topics` rebuild the stack (`Status.cursor` restores position).
+   `meeting_topics` rebuild the stack (`Status.cursor` restores position;
+   the ts binding is `MeetingStatus.ts` — 02 §10 deviation 8).
 5. **Hotkeys are registered from the main webview only, via
    `@tauri-apps/plugin-global-shortcut` with `event.state`
    (`Pressed`/`Released`).** PTT: `Pressed` → `meeting_ptt(true)`,
    `Released` → `meeting_ptt(false)`. Eye: `Pressed` → toggle. Registered
    only while `Status.state` is `Recording|Paused` (a global ⌥` outside a
    meeting is a stolen key). Rebinding: a text field on the Meetings tab
-   that captures a chord (`Shortcuts` tab's capture component if one exists;
-   else a `keydown` reader). Conflicts (`register` throws) → toast, keep the
-   old binding.
+   that captures a chord with a `keydown` reader (`settings/Shortcuts.tsx`
+   is a static table; no capture component exists). Conflicts (`register`
+   throws) → toast, keep the old binding.
 
 ## 1. Rust shell (`crates/desktop`)
 
-- `Cargo.toml` `[target.'cfg(target_os = "macos")'.dependencies]`:
-  `tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2" }`,
-  `objc2 = "0.6"` (already a workspace-known version, iOS side), `objc2-app-kit
-  = { version = "0.3", features = ["NSScreen", "NSWindow", "NSApplication"] }`,
-  `objc2-foundation`. Root `[workspace.dependencies]` entries with `# 53`.
+- `Cargo.toml`: a new `[target.'cfg(target_os = "macos")'.dependencies]`
+  table (none exists today; the iOS-only table at `:55-58` has `objc2 = "0.6"`,
+  `block2`, `objc2-ui-kit`):
+  `tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2" }`
+  (2.0.1; depends on `cocoa 0.26`/`objc 0.2`/`objc_id` — the old objc
+  crates, which coexist with `objc2` in one process; its `to_panel()`,
+  `get_webview_panel`, `set_style_mask`, `set_level`,
+  `set_collection_behaviour`, `order_front_regardless` are the surface used;
+  register `tauri_nspanel::init()` in `configure`), `objc2 = "0.6"`,
+  `objc2-app-kit = { version = "0.3", features = ["NSScreen", "NSWindow",
+  "NSApplication"] }` (0.3.2 already transitive in the lock),
+  `objc2-foundation = "0.3"`. Root `[workspace.dependencies]` entries with `# 53`.
+  The `.app` bundles `Frameworks/`; nothing new to ship.
 - `tauri.conf.json` `app.windows` gains
   `{ "label": "island", "url": "index.html#/island", "visible": false,
   "decorations": false, "transparent": true, "alwaysOnTop": true,
@@ -153,23 +166,28 @@ today).
 
 ## 3. UI: main window
 
-- `ui/src/rpc/api.ts` `Api` + `METHODS`: every `meeting_*` from phases 1–2
-  and `meeting_set_allow_read_only`. `ui/src/lib/rpc.ts` `queryKeys`:
+- `ui/src/rpc/api.ts` `Api` + `METHODS` (sorted array at `:372`; `api.test.ts`
+  checks it against `bindings/methods.json`): every `meeting_*` from phases
+  1–2. `ui/src/lib/rpc.ts` `queryKeys` (`:15`):
   `meetings`, `meeting(id)`, `meetingStatus`, `meetingBriefs(id)`,
   `meetingLive(id)`, `meetingProcesses`, `meetingPermissions`;
   `useInvalidateOn`: `Started/State/Deleted → meetings, meetingStatus`;
   `Summarized → meeting(id), meetings`.
 - Routes: `/meetings` (list: date, title, duration, state, process; click →
   `/meetings/$id`; a *Start meeting…* button), `/meetings/new` (start form),
-  `/meetings/$id` (control center). Sidebar (`AppSidebar.tsx:69-85`) gains a
+  `/meetings/$id` (control center). Sidebar (`components/sidebar/AppSidebar.tsx:64-85`) gains a
   `Meetings` link under Artifacts; the session list shows a small meeting
   glyph for sessions with `project === "meetings"`.
 - Start form (53 §4.1): process picker (`meeting_processes`, active first,
   last choice by `bundle_id` remembered in `localStorage`), title, context
-  textarea with the existing composer mic button (`transcribe` RPC via
-  `putAttachment` — 45 §7.2's component, reused), consent checkbox (required;
-  text from decision 14), model picker (existing model `Select` from
-  `General.tsx`, pre-filtered to the catalog's fast tier if the catalog
+  textarea dictated with `lib/dictation.ts` (54: `start(api, before, after,
+  mic)` / `stop` / `discard` / `onFinish` / `useDictation`; the store is
+  global with one `active`, so the form takes an `owner` flag exactly as
+  `Composer.tsx:130-137,162-203` does — the 45 voice-note path is inline
+  `MediaRecorder` code in `Composer.tsx:392-430`, not a component, and is
+  not reused), consent checkbox (required;
+  text from decision 14), model picker (existing model `Select` +
+  `queryKeys.models` from `settings/Loop.tsx:57-60`, pre-filtered to the catalog's fast tier if the catalog
   exposes a tier; else unfiltered with a one-line hint), a permissions row
   (`meeting_permissions`, with the same "open System Settings" opener the
   Computer pane uses). *Start* → `meeting_start` → navigate to
@@ -185,9 +203,8 @@ today).
   the session transcript (`/c/$session`) — approvals surface there as
   everywhere. After the meeting the same route shows the manifest and, in
   phase 4, review/summary.
-- Settings tab `Meetings` (`SettingsDialog.tsx:42-58` `TABS` + `Pane`):
+- Settings tab `Meetings` (`SettingsDialog.tsx:46-62` `TABS` + `Pane` `:81-103`):
   hidden from capture (switch + the eye hotkey field), PTT hotkey field,
-  `allow read-only tools without asking` (→ `meeting_set_allow_read_only`),
   a note that screenshots of hidden windows come out black (53 §2.3).
 
 ## 4. Hotkeys (main webview, `ui/src/lib/meeting-hotkeys.ts`)
@@ -201,10 +218,11 @@ fires if the key was held across a state change (unregister → send
 
 ## 5. RPC additions (`crates/rpc/src/api.rs`, `crates/meeting`)
 
-`meeting_set_allow_read_only(bool)` → actor `SetAllowReadOnly { value }`:
-`write_config_value(&data_dir/config.yaml, "meeting", "allow_read_only",
-value)` + `cfg.allow_read_only = value` (+ if a meeting records,
-`SetApprovals` re-sent for its session). Nothing else new on the daemon.
+None. Every method the island and control center call exists after phase 2
+(`meeting_processes/start/pause/resume/stop/status/list/get/delete/
+permissions/tap/dismiss/deeper/request/ptt/cursor/briefs/topics/live`).
+The only desktop↔daemon addition is the ts side: `MeetingEvent` into
+`WireEvent`, the methods into `METHODS`.
 
 ## 6. Not in this phase
 
@@ -253,12 +271,155 @@ integration; it is a scaffold, not a test.
    live log shows `me:`/`them:` rows within seconds; typed request →
    brief; approval card in `/c/$session`; `ApprovalWaiting` badge on the
    island.
-9. Meetings tab: flip allow-read-only → `config.yaml` updated; rebind PTT
-   to a conflicting chord → toast, old binding kept.
+9. Meetings tab: rebind PTT to a conflicting chord → toast, old binding
+   kept; flip *hidden from capture* → both windows flip (`capture-hidden`
+   event) and the island's eye icon agrees.
 10. `meeting.enabled: false` → tray entry present but the form shows
     "meetings are disabled" from the RPC error; island never created
     visible.
 
 ## 9. Status
 
-Not started.
+Implemented 2026-09-20. Rust: `crates/desktop/src/island.rs` (+≈170), `lib.rs`
+(plugin, commands, tray entry, window-state denylist), `tauri.conf.json`
+(island window, `macOSPrivateApi`, minimum 15.0), `Info.plist`,
+`capabilities/default.json`, workspace deps (`tauri-nspanel` v2 git,
+`objc2-app-kit`, `objc2-foundation`, `block2`; `tauri` gains
+`macos-private-api`). UI: `store/meeting.ts` (+test), `lib/meeting-settings.ts`,
+`lib/meeting-hotkeys.ts`, `lib/meeting-line.ts` (+test),
+`components/meeting/{Island,StartForm,ControlCenter,MeetingList,MeetingPill}.tsx`,
+`components/chat/MeetingCard.tsx`, `components/settings/Meetings.tsx`, routes
+`/island`, `/meetings`, `/meetings/new`, `/meetings/$id`, `dev/meeting-fixture.ts`;
+`api.ts`/`events.ts`/`rpc.ts` wiring; sidebar link + glyph. Verified with
+`bun run tauri dev` (`WTH_DATA_DIR=/tmp/wth-meet`, the phase-2 scratch dir,
+`target/debug/wth`, haiku as `session_model`) on macOS 15, one external LG
+2560×1440 (lid closed — no notch present during the shell-side checks),
+QuickTime Player playing the phase-2 two-voice clip as the meeting app.
+
+### Exercised
+
+1. `bun run check` clean; vitest 34 files / 184 tests incl. `store/meeting.test.ts`
+   (Auto at top replaces, Auto stepped back queues + `↑ N new` counts down on
+   ↑, Tap jumps and clears, viewed topic removed, cues end with the
+   recording) and `lib/meeting-line.test.ts` (every `session.rs` line shape);
+   `cargo check -p desktop`, `cargo clippy -p desktop -p meeting --all-targets
+   --no-deps -D warnings` clean; `cargo test -p meeting` 14/14 (+1).
+   `api.test.ts` passes against `bindings/methods.json` (19 `meeting_*`).
+2. (shell side) Island window created hidden, `to_panel` applied: CG reports
+   layer 25 (`NSStatusWindowLevel`), `sharing 0` on both windows from boot
+   (decision 9's default, before any JS), 440 × 44. On `Started` →
+   `island_place` → centred under the LG's menu bar at (1060, 30) =
+   `((2560−440)/2, visibleFrame top)`; `island_show`; on `Done` → hidden.
+   Drag → `Moved` → saved under key `0,0,2560,1440`; the next show re-applied
+   the saved point; the user's drags during dogfood were remembered across
+   stop/start. Both webviews share one `localStorage` (one
+   `localstorage.sqlite3` under `~/Library/WebKit/wth-desktop`, the origin is
+   the same) — decision 3's inference holds; each webview nonetheless
+   persists what it reads and the `capture-hidden` event syncs the eye, so
+   nothing depends on it. Notch placement and the external-display
+   reposition were **not exercised** (no built-in display in the run) — the
+   arithmetic is `island_place`'s `safeAreaInsets.top > 0` branch.
+5. (shell side) `screencapture -R` of the island region with the eye hidden
+   → the island is *absent* (the window behind shows through), not black;
+   with the eye visible the strip renders (meters, `rec 00:33`, eye, ⋮),
+   transparent corners. ⌥⇧E while recording flipped both windows'
+   `kCGWindowSharingState` 0 ↔ 1 (sent through System Events; the
+   `capture-hidden` event updated the settings store — the toggle persisted).
+   Zoom/Meet/Teams share results: pending the user's call (below).
+7. Live: the clip produced `meeting_topic` (*SRE-2386 image tags*) → button
+   in the strip; tap → `Brief{Tap}` → the pane expanded with title, three
+   bullets, arrows. The stack rules themselves are unit-tested; the fixture
+   replays the §7 sequence (`/island?fixture=meeting` in a browser, or
+   `VITE_MEETING_FIXTURE=1` for the Tauri island).
+8. Over RPC on the running app: `meeting_start` → island shown; typed
+   request → `[meeting request, typed]`; `meeting_deeper` →
+   `Brief{Deeper, parent}` in ≈5 s (after deviation 8); `meeting_stop` →
+   island hidden. The user drove tray → form → control center, the request
+   box, taps and drags during dogfood (this session).
+
+### Not exercised (as of this writing; the user's Zoom run fills these in)
+
+- Check 2 notch/external-display reposition and position memory across
+  unplug/replug; check 3 (full-screen Zoom, every Space); check 4 (focus stays
+  with Zoom on a click — `NSPanel` non-activating + `becomesKeyOnlyIfNeeded`,
+  and the request box's `resignKeyWindow` on blur); check 5's share results
+  per app; check 6 PTT end to end (the hotkey registers/unregisters on
+  `Recording|Paused` — exercised only as ⌥⇧E); check 9 conflicting-chord toast;
+  check 10 disabled mode (needs a daemon relaunch with
+  `WTH_MEETING__ENABLED=false`); the `.app` bundle (TCC prompts are the
+  real ones only there).
+
+### Deviations from the design above
+
+1. **`island_show(width, height)`, not `expanded: bool`; the island is
+   user-resizable.** Fixed 44/168 px truncated real briefs (bullets wrap to
+   2–3 lines at 440 px). The webview measures its blocks (`ResizeObserver`
+   on the strip, the pane's content and the request box) and asks for that
+   height; the panel's style mask includes `Resizable`, an edge drag saves
+   `sizes[key]` and from then on the pane scrolls inside the user's size.
+   Clamp 300–1200 × 44–800.
+2. **A request box on the island** (bottom row → `meeting_request`): the
+   user asked for a way to steer without leaving the call. Typing makes the
+   non-activating panel key (`becomesKeyOnlyIfNeeded`); blur/Enter/Escape
+   → `island_resign_key` hands key back to the meeting app. 53 §4.3's "no
+   live transcript on the island" still holds.
+3. **`island_place(positions)` takes the whole map** and answers the key it
+   used; §1's `saved: Option<(x, y)>` needed the key before the call.
+4. **The island window is never ordered out.** A `WKWebView` whose window is
+   off screen is throttled by WebKit to the point that its RPC client took
+   30–45 s to connect and, in one run, never did (one client on the daemon
+   instead of two; the user saw no island for a whole meeting). `init` shows
+   the window once (tao's `show()`) and *conceals* it — `alphaValue 0` +
+   `ignoresMouseEvents`, still ordered in at status level; `island_show`
+   raises alpha and takes mouse events again, `island_hide` conceals.
+   Measured after the change: both webviews connected 3 s after the port
+   came up; the island appeared ≤ 3 s after `meeting_start`. (Earlier "it
+   worked" runs were the ones where `tauri-plugin-window-state` had shown
+   the island at boot before it was denylisted there.) The app stays
+   inactive (non-activating panel); check 4 is the user's confirmation.
+5. **`tauri-plugin-window-state` denylists `island`**: it restored and
+   *showed* the island at boot (default state → `visible`), fighting
+   `island_place`.
+6. **`app.macOSPrivateApi: true` + `tauri/macos-private-api`**: a transparent
+   window needs it; without, Tauri warns and paints opaque.
+7. **`useMeetingHotkeys` gates on `live(state)`**; the eye hotkey is a
+   `setHiddenFromCapture(!hidden)` from the settings store, the PTT handler
+   tracks `held` and closes the span on unregister. Rebinding: the field
+   probes `register`+`unregister` before saving; a conflict toasts.
+8. **Daemon changes, against §5's "none"** (the user asked during dogfood):
+   (a) `session::nudge_line` — when a `TurnFinished` (non-error) leaves a
+   `Request`/`Deeper` prompt unanswered by `meeting_brief`, the actor steers
+   one reminder (`Outstanding.nudged`; taps exempt); observed: text answer →
+   nudge → `Brief{Typed}` in ≈5 s. (b) `deeper_line` carries `— parent:
+   <BriefId>` and the prompt block says to pass it: the model had only the
+   title and `meeting_brief.parent` failed to parse as a UUID. (c) the
+   prompt block names the reminder line. `crates/rpc` untouched; bindings
+   unchanged.
+9. **Meeting cards in the session transcript** (`MeetingCard`, by parsing
+   the `[meeting …]` marker as 45 §7.4 does for voice notes): batches as
+   `me`/`them` rows, requests/taps/dismissals/deeper/reminders as chips.
+   **A meeting pill** (`MeetingPill`) with clock, pause/resume, stop and a
+   jump to the control center, inline at the right end of every header band
+   (chat, search, knowledge, artifacts, meetings, settings) while a meeting
+   is live — inline so it pushes the header's own controls left rather than
+   covering them; the control center's own pause/stop moved into it. **Session activity** (`TurnStarted`/`ToolCall*`/
+   `TurnFinished` of the meeting session) shows as a spinner + `thinking…`
+   / tool name in the strip. All user requests from dogfood.
+10. `useTauri`/`useEventSideEffects`/`installDictationListeners` are skipped
+    in the island webview (`isIsland()`; `Root` renders `Outlet` there);
+    `hydrateMeeting` runs in `loadInfo` so a reconnect or a late webview
+    rebuilds the store from `meeting_status` + `meeting_briefs`.
+11. Island window `url` omitted (memory history keyed on the label);
+    `Info.plist` mic text covers dictation and meetings. The start form's
+    model `Select` is unfiltered with a one-line hint (`ModelInfo` has no
+    tier). Permissions row shows *Open System Settings* only for `Denied`;
+    `NotDetermined` reads "asked on first start" (01 §0.6).
+12. Not this phase (unchanged, noted for 53): a topic's precomputed brief is
+    shown only on tap (53 §4.6 "stored unshown"); the user expected it on
+    arrival. One line in the daemon's `AddTopic` if 53 changes its mind.
+
+### Capture exclusion per app (decision 8's honesty note)
+
+`screencapture` (CGWindowList): honoured — the island is absent from the
+image. Zoom / Meet / Teams shares: pending the user's run; to be recorded
+here and in 53 at integration.

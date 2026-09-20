@@ -366,6 +366,7 @@ export function Composer({
             project: draftCreate.project,
             view: draftCreate.private ? VIEW : null,
             cwd: null,
+            model: null,
           })
           if (open.retention === 'private') usePrivate.getState().open(open)
           id = open.session

@@ -29,6 +29,7 @@ import { useHarnesses } from '@/link/harnesses'
 import type { MatchRange } from '@/rpc/bindings/MatchRange'
 import type { Artifact } from '@/rpc/extra'
 import type { PDFDocumentLoadingTask, PDFPageProxy, RenderTask } from 'pdfjs-dist'
+import { MeetingPill } from '@/components/meeting/MeetingPill'
 
 /** HTML artifacts allow web images; CSP blocks scripts/fetch/fonts/frames, and the iframe sandbox blocks forms and same-origin access (35 §9). */
 const CSP = '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; img-src data: https: http:">'
@@ -464,6 +465,7 @@ function Frame({ title, actions, children }: { title?: ReactNode; actions?: Reac
         {title ?? <span className="flex-1" />}
         {actions}
         <SearchTrigger className="md:hidden" />
+        <MeetingPill />
       </header>
       {children}
     </article>

@@ -23,7 +23,9 @@ short factual bullets. Never write what the user should say. Do not repeat a top
 text replies are not shown. `[meeting request …]` is the user asking you directly: answer with \
 `meeting_brief` at once, tools if needed. `[meeting tapped \"X\"]`: the user wants the brief for X \
 now — if you already gave one with the topic, do nothing; otherwise `meeting_brief` with `topic`. \
-`[meeting deeper …]`: a longer follow-up on that brief (up to three bullets, more specific). After \
+`[meeting deeper … — parent: <id>]`: a longer follow-up on that brief (up to three bullets, more \
+specific; pass that id as `parent`). A `[meeting: no brief was produced …]` line means your last turn \
+answered a request in text nobody saw — call `meeting_brief` then. After \
 the meeting, the first line of the conversation is its summary; `meeting_read`, `meeting_search` \
 and `meeting_speakers` reach the full record — use them instead of guessing.";
 

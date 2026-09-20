@@ -38,6 +38,7 @@ import type { HistorySearchHit } from '@/rpc/bindings/HistorySearchHit'
 import type { MatchRange } from '@/rpc/bindings/MatchRange'
 import type { Meta } from '@/rpc/bindings/Meta'
 import { cn } from 'cn'
+import { MeetingPill } from '@/components/meeting/MeetingPill'
 
 const route = getRouteApi('/knowledge/$')
 const plugins = { code }
@@ -265,6 +266,7 @@ function Frame({
         <code className="min-w-0 flex-1 truncate font-mono text-xs text-fg-tertiary">{id}</code>
         {actions}
         <SearchTrigger className="md:hidden" />
+        <MeetingPill />
       </header>
       {children}
     </article>

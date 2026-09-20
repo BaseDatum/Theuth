@@ -9,6 +9,8 @@
 //! and the generated iOS bridge both enter at [`run`].
 
 mod commands;
+#[cfg(target_os = "macos")]
+mod island;
 #[cfg(desktop)]
 mod launch;
 #[cfg(desktop)]
@@ -143,6 +145,8 @@ mod desktop {
     use tauri::{AppHandle, Builder, Emitter, Manager, WebviewWindow, WindowEvent, Wry};
     use tauri_plugin_positioner::{Position, WindowExt};
 
+    #[cfg(target_os = "macos")]
+    use crate::island;
     use crate::{commands, launch, update};
 
     /// The webview acknowledges `quit-requested` with `quit_ack` (after RPC
@@ -159,25 +163,43 @@ mod desktop {
 
     /// Desktop plugins, managed state, commands, menu and window hooks.
     pub(super) fn configure(builder: Builder<Wry>) -> Builder<Wry> {
-        builder
+        let builder = builder
             .plugin(tauri_plugin_global_shortcut::Builder::new().build())
             .plugin(tauri_plugin_autostart::init(
                 tauri_plugin_autostart::MacosLauncher::LaunchAgent,
                 None,
             ))
             .plugin(tauri_plugin_positioner::init())
-            .plugin(tauri_plugin_window_state::Builder::new().build())
+            // The island is placed by `island::island_place`, never by saved window state (03 §1).
+            .plugin(tauri_plugin_window_state::Builder::new().with_denylist(&["island"]).build())
             .plugin(tauri_plugin_dialog::init())
             .plugin(update::plugin())
             .manage(launch::Launch::default())
             .manage(update::Pending::default())
-            .manage(Flags::default())
+            .manage(Flags::default());
+        // 53 decision 8: the island panel and its commands exist on macOS only.
+        #[cfg(target_os = "macos")]
+        let builder = builder
+            .plugin(tauri_nspanel::init())
             .invoke_handler(tauri::generate_handler![
                 commands::connection,
                 commands::launch_log,
                 commands::relaunch,
                 commands::quit_ack,
-            ])
+                island::set_hidden_from_capture,
+                island::island_show,
+                island::island_hide,
+                island::island_place,
+                island::island_resign_key,
+            ]);
+        #[cfg(not(target_os = "macos"))]
+        let builder = builder.invoke_handler(tauri::generate_handler![
+            commands::connection,
+            commands::launch_log,
+            commands::relaunch,
+            commands::quit_ack,
+        ]);
+        builder
             .menu(app_menu)
             .on_menu_event(|app, event| on_menu(app, event.id().as_ref()))
             .on_window_event(|window, event| {
@@ -190,6 +212,8 @@ mod desktop {
                 #[cfg(target_os = "macos")]
                 app.set_activation_policy(tauri::ActivationPolicy::Accessory);
                 setup(app.handle())?;
+                #[cfg(target_os = "macos")]
+                island::init(app.handle())?;
                 Ok(())
             })
     }
@@ -209,17 +233,24 @@ mod desktop {
             .store(!state_file.exists(), SeqCst);
 
         let tray = app.tray_by_id("main").context("tray icon `main`")?;
-        tray.set_menu(Some(Menu::with_items(
+        let menu = Menu::with_items(
             app,
             &[
                 &MenuItem::with_id(app, "open", "Open", true, None::<&str>)?,
                 &MenuItem::with_id(app, "new", "New chat", true, None::<&str>)?,
                 &MenuItem::with_id(app, "knowledge", "Knowledge", true, None::<&str>)?,
-                &MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?,
-                &PredefinedMenuItem::separator(app)?,
-                &MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?,
             ],
-        )?))?;
+        )?;
+        // 53 §4.1: the start form; the recorder is macOS only (Core Audio taps).
+        if cfg!(target_os = "macos") {
+            menu.append(&MenuItem::with_id(app, "meeting", "Start meeting…", true, None::<&str>)?)?;
+        }
+        menu.append_items(&[
+            &MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?,
+            &PredefinedMenuItem::separator(app)?,
+            &MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?,
+        ])?;
+        tray.set_menu(Some(menu))?;
         tray.on_tray_icon_event(|tray, event| {
             tauri_plugin_positioner::on_tray_event(tray.app_handle(), &event);
             if let TrayIconEvent::Click {
@@ -295,6 +326,7 @@ mod desktop {
             "open" => show(app),
             "new" => navigate(app, "/"),
             "knowledge" => navigate(app, "/knowledge"),
+            "meeting" => navigate(app, "/meetings/new"),
             "settings" => navigate(app, "/settings/general"),
             "quit" => request_quit(app),
             _ => {}

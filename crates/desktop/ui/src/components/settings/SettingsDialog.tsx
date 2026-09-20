@@ -11,6 +11,7 @@ import {
   Network,
   type LucideIcon,
   MessageSquare,
+  Mic,
   Monitor,
   Radio,
   RefreshCw,
@@ -32,6 +33,7 @@ import { Connections } from '@/components/settings/Connections'
 import { General } from '@/components/settings/General'
 import { Link } from '@/components/settings/Link'
 import { Loop } from '@/components/settings/Loop'
+import { Meetings } from '@/components/settings/Meetings'
 import { Nodes } from '@/components/settings/Nodes'
 import { Schedules } from '@/components/settings/Schedules'
 import { Secrets } from '@/components/settings/Secrets'
@@ -51,6 +53,7 @@ const TABS = [
   ['tools', 'Tools', Wrench],
   ['schedules', 'Schedules', CalendarClock],
   ['computer', 'Computer', Monitor],
+  ['meetings', 'Meetings', Mic],
   ['skills', 'Skills', Sparkles],
   ['agents', 'Agents', Bot],
   ['harnesses', 'Harnesses', Server],
@@ -88,6 +91,7 @@ function Pane({ tab, session, peer, onClose }: Omit<Props, 'onTab'>) {
       {tab === 'tools' && <Tools session={session} />}
       {tab === 'schedules' && <Schedules />}
       {tab === 'computer' && <Computer />}
+      {tab === 'meetings' && <Meetings />}
       {tab === 'skills' && <Skills session={session} />}
       {tab === 'agents' && <Agents />}
       {tab === 'harnesses' && <Harnesses />}

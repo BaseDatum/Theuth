@@ -847,7 +847,8 @@ impl Meeting {
         let Some(rec) = self.current.as_mut() else { return };
         rec.live.log_utterance(&u);
         if u.request {
-            rec.live.prompted(Prompted::Request { spoken: true });
+            rec.live
+                .prompted(Prompted::Request { spoken: true }, u.text.clone());
             let line = session::request_line(true, &u.text);
             self.deliver(line).await;
             return;
@@ -1542,15 +1543,24 @@ impl Message<AgentEvent> for Meeting {
             } if session == rec.manifest.session => {
                 rec.live.turn_running = false;
                 let down = rec.manifest.degraded.contains(&Degradation::ModelDown);
-                if stop_reason == "error" && !down {
+                let errored = stop_reason == "error";
+                // 03 §9: a request or deeper the turn did not answer with a brief gets one reminder.
+                let nudge = (!errored).then(|| rec.live.unanswered()).flatten();
+                if errored && !down {
                     rec.manifest.degraded.push(Degradation::ModelDown);
-                } else if stop_reason != "error" && down {
+                } else if !errored && down {
                     rec.manifest.degraded.retain(|d| *d != Degradation::ModelDown);
                 } else {
+                    if let Some((p, text)) = nudge {
+                        self.deliver(session::nudge_line(p, &text)).await;
+                    }
                     return;
                 }
                 let manifest = rec.manifest.clone();
                 self.save(&manifest).await;
+                if let Some((p, text)) = nudge {
+                    self.deliver(session::nudge_line(p, &text)).await;
+                }
             }
             _ => {}
         }
@@ -1602,7 +1612,7 @@ impl Message<TapTopic> for Meeting {
         // Decision 11: the precomputed brief is shown on the tap itself; a
         // `meeting_brief` from the model, if any, is a second one.
         let brief = topic.brief.and_then(|b| rec.live.topics.brief(b).cloned());
-        rec.live.prompted(Prompted::Tap(topic.id));
+        rec.live.prompted(Prompted::Tap(topic.id), topic.label.clone());
         self.topic_gone(topic.id, TopicGone::Viewed).await;
         if let Some(mut brief) = brief {
             brief.source = BriefSource::Tap;
@@ -1642,8 +1652,9 @@ impl Message<Deeper> for Meeting {
             .brief(m.brief)
             .cloned()
             .ok_or("no such brief")?;
-        rec.live.prompted(Prompted::Deeper(brief.id));
-        self.deliver(session::deeper_line(&brief.title, &brief.bullets))
+        rec.live
+            .prompted(Prompted::Deeper(brief.id), brief.title.clone());
+        self.deliver(session::deeper_line(brief.id, &brief.title, &brief.bullets))
             .await;
         Ok(())
     }
@@ -1657,7 +1668,8 @@ impl Message<TypedRequest> for Meeting {
         if m.text.trim().is_empty() {
             return Err("empty request".into());
         }
-        rec.live.prompted(Prompted::Request { spoken: false });
+        rec.live
+            .prompted(Prompted::Request { spoken: false }, m.text.clone());
         self.deliver(session::request_line(false, &m.text)).await;
         Ok(())
     }

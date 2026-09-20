@@ -50,6 +50,15 @@ nix = { workspace = true, features = ["fs"] }
 tauri-plugin-barcode-scanner = "2"
 tauri-plugin-deep-link = "2"
 
+# macOS only: the meetings island (53 decision 8, 03 §1) — `NSPanel` swizzle, notch geometry,
+# screen-change notification. `objc2`/`block2` are the same line the iOS table pins.
+[target.'cfg(target_os = "macos")'.dependencies]
+tauri-nspanel = { workspace = true }
+objc2 = "0.6"
+block2 = "0.6"
+objc2-app-kit = { workspace = true }
+objc2-foundation = { workspace = true }
+
 # iOS only: `UIApplication.beginBackgroundTask` so the relay socket outlives
 # backgrounding for the grace period iOS grants (31 §8). Same objc2 line tauri uses.
 [target.'cfg(target_os = "ios")'.dependencies]

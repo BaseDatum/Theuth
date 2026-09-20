@@ -125,6 +125,19 @@ pub enum Prompted {
 /// after a request is not its answer).
 const PROMPT_TTL: Duration = Duration::from_secs(120);
 
+/// A steer the actor sent that a `meeting_brief` may answer.
+#[derive(Clone, Debug)]
+pub struct Outstanding {
+    /// When the steer went out; forgotten after [`PROMPT_TTL`].
+    pub at: Instant,
+    /// Which steer.
+    pub prompt: Prompted,
+    /// What was asked (the request text, the tapped label, the deeper'd title) — for the nudge.
+    pub text: String,
+    /// The model already finished one turn without answering and was reminded once (03 §9).
+    pub nudged: bool,
+}
+
 /// The batcher, the topics, the session's turn/approval state, the PTT flag,
 /// the STT tasks and the two append-only logs.
 pub struct Live {
@@ -143,7 +156,7 @@ pub struct Live {
     /// Mirror of `held` for the mic STT task: finals closed while held merge into one request.
     pub held_flag: Arc<AtomicBool>,
     /// Steers sent that a `meeting_brief` may be answering, newest last.
-    pub outstanding: Vec<(Instant, Prompted)>,
+    pub outstanding: Vec<Outstanding>,
     /// The two track tasks; resolve to their final flush at stop.
     pub stt: Vec<tokio::task::JoinHandle<Vec<Piece>>>,
     /// `live.jsonl`, append-only.
@@ -182,20 +195,40 @@ impl Live {
     }
 
     /// Remember a steer that a brief may answer.
-    pub fn prompted(&mut self, p: Prompted) {
-        let now = Instant::now();
-        self.outstanding
-            .retain(|(t, _)| now.duration_since(*t) < PROMPT_TTL);
-        self.outstanding.push((now, p));
+    pub fn prompted(&mut self, prompt: Prompted, text: impl Into<String>) {
+        self.expire_prompts();
+        self.outstanding.push(Outstanding {
+            at: Instant::now(),
+            prompt,
+            text: text.into(),
+            nudged: false,
+        });
     }
 
     /// Take the outstanding prompt `pick` matches, oldest first.
     pub fn answer(&mut self, pick: impl Fn(Prompted) -> bool) -> Option<Prompted> {
+        self.expire_prompts();
+        let i = self.outstanding.iter().position(|o| pick(o.prompt))?;
+        Some(self.outstanding.remove(i).prompt)
+    }
+
+    /// A turn ended: the oldest request or deeper the model neither answered with a brief nor was
+    /// reminded of, marked reminded. Taps are exempt (the precomputed brief already showed; the
+    /// prompt block lets the model stay silent). At most one nudge per prompt — no loop.
+    pub fn unanswered(&mut self) -> Option<(Prompted, String)> {
+        self.expire_prompts();
+        let o = self
+            .outstanding
+            .iter_mut()
+            .find(|o| !o.nudged && !matches!(o.prompt, Prompted::Tap(_)))?;
+        o.nudged = true;
+        Some((o.prompt, o.text.clone()))
+    }
+
+    fn expire_prompts(&mut self) {
         let now = Instant::now();
         self.outstanding
-            .retain(|(t, _)| now.duration_since(*t) < PROMPT_TTL);
-        let i = self.outstanding.iter().position(|(_, p)| pick(*p))?;
-        Some(self.outstanding.remove(i).1)
+            .retain(|o| now.duration_since(o.at) < PROMPT_TTL);
     }
 }
 
@@ -228,6 +261,43 @@ impl Recording {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn live() -> Live {
+        Live {
+            batcher: Batcher::new(25, 6, Instant::now()),
+            topics: Topics::new(600, 6),
+            turn_running: false,
+            approvals: HashSet::new(),
+            cursor: None,
+            held: false,
+            held_flag: Arc::new(AtomicBool::new(false)),
+            outstanding: Vec::new(),
+            stt: Vec::new(),
+            live_log: None,
+            briefs_log: None,
+        }
+    }
+
+    #[test]
+    fn an_unanswered_request_is_nudged_once_and_a_brief_settles_it() {
+        let mut l = live();
+        let t = TopicId(uuid::Uuid::now_v7());
+        l.prompted(Prompted::Tap(t), "KEDA");
+        l.prompted(Prompted::Request { spoken: false }, "who owns KEDA");
+        // Taps never nudge; the request does, once.
+        assert_eq!(
+            l.unanswered(),
+            Some((Prompted::Request { spoken: false }, "who owns KEDA".into()))
+        );
+        assert_eq!(l.unanswered(), None, "one reminder per prompt");
+        // The brief that finally comes still consumes it (source inference unchanged).
+        assert_eq!(
+            l.answer(|p| matches!(p, Prompted::Request { .. })),
+            Some(Prompted::Request { spoken: false })
+        );
+        assert_eq!(l.answer(|p| p == Prompted::Tap(t)), Some(Prompted::Tap(t)));
+        assert!(l.outstanding.is_empty());
+    }
 
     #[test]
     fn pauses_are_gaps_and_do_not_advance_the_clock() {

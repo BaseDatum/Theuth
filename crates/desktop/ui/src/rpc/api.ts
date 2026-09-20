@@ -24,6 +24,19 @@ import type { JobId } from '@/rpc/bindings/JobId'
 import type { JobView } from '@/rpc/bindings/JobView'
 import type { McpProgress } from '@/rpc/bindings/McpProgress'
 import type { McpServer } from '@/rpc/bindings/McpServer'
+import type { Brief } from '@/rpc/bindings/Brief'
+import type { BriefId } from '@/rpc/bindings/BriefId'
+import type { Manifest } from '@/rpc/bindings/Manifest'
+import type { MeetingId } from '@/rpc/bindings/MeetingId'
+import type { MeetingStatus } from '@/rpc/bindings/MeetingStatus'
+import type { MeetingSummary } from '@/rpc/bindings/MeetingSummary'
+import type { Permissions } from '@/rpc/bindings/Permissions'
+import type { ProcessInfo } from '@/rpc/bindings/ProcessInfo'
+import type { StartMeeting } from '@/rpc/bindings/StartMeeting'
+import type { Started } from '@/rpc/bindings/Started'
+import type { Topic } from '@/rpc/bindings/Topic'
+import type { TopicId } from '@/rpc/bindings/TopicId'
+import type { Utterance } from '@/rpc/bindings/Utterance'
 import type { Meta } from '@/rpc/bindings/Meta'
 import type { ModelState } from '@/rpc/bindings/ModelState'
 import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
@@ -251,6 +264,33 @@ export interface Api {
   mcp_login(server: string): Promise<string>
   mcp_logout(server: string): Promise<null>
   mcp_status(): Promise<McpProgress>
+  // Meetings (53; 01 §6, 02 §6). Every call answers `-32001 "meetings are disabled"` when the plugin is off.
+  meeting_briefs(id: MeetingId): Promise<Brief[]>
+  /** Where the island's cursor is; mirrored to `meeting_status.cursor`. */
+  meeting_cursor(brief: BriefId | null): Promise<null>
+  meeting_deeper(brief: BriefId): Promise<null>
+  /** Directory, index row, session; refused while it records. */
+  meeting_delete(id: MeetingId): Promise<null>
+  meeting_dismiss(topic: TopicId): Promise<null>
+  meeting_get(id: MeetingId): Promise<Manifest>
+  meeting_list(limit: number | null): Promise<MeetingSummary[]>
+  /** `live.jsonl`, last 2 000 utterances. */
+  meeting_live(id: MeetingId): Promise<Utterance[]>
+  meeting_pause(): Promise<null>
+  meeting_permissions(): Promise<Permissions>
+  /** Processes Core Audio can tap, active first. */
+  meeting_processes(): Promise<ProcessInfo[]>
+  /** Push-to-talk held/released (53 decision 10). */
+  meeting_ptt(held: boolean): Promise<null>
+  /** A typed question; the answer arrives as `Brief{source: Typed}`. */
+  meeting_request(text: string): Promise<null>
+  meeting_resume(): Promise<null>
+  /** Replies once the devices are open; `consent` must be `true`. */
+  meeting_start(start: StartMeeting): Promise<Started>
+  meeting_status(): Promise<MeetingStatus>
+  meeting_stop(): Promise<null>
+  meeting_tap(topic: TopicId): Promise<null>
+  meeting_topics(): Promise<Topic[]>
   new_session(): Promise<SessionId>
   /** One exchange as `session` recorded it (50 §5.2); never another session's history. */
   peer_message(session: SessionId, id: string): Promise<PeerRecord>
@@ -460,6 +500,25 @@ export const METHODS = [
   'mcp_login',
   'mcp_logout',
   'mcp_status',
+  'meeting_briefs',
+  'meeting_cursor',
+  'meeting_deeper',
+  'meeting_delete',
+  'meeting_dismiss',
+  'meeting_get',
+  'meeting_list',
+  'meeting_live',
+  'meeting_pause',
+  'meeting_permissions',
+  'meeting_processes',
+  'meeting_ptt',
+  'meeting_request',
+  'meeting_resume',
+  'meeting_start',
+  'meeting_status',
+  'meeting_stop',
+  'meeting_tap',
+  'meeting_topics',
   'new_session',
   'peer_message',
   'pin_session',

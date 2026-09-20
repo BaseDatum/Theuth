@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { Archive, Brain, Check, Eye, LoaderCircle, type LucideIcon, MoreHorizontal, PencilLine, Shrink, Wrench } from 'lucide-react'
+import { Archive, Brain, Check, Eye, LoaderCircle, type LucideIcon, Mic, MoreHorizontal, PencilLine, Shrink, Wrench } from 'lucide-react'
 import { memo, useState } from 'react'
 import { toast } from 'sonner'
 import {
@@ -201,10 +201,15 @@ export const SessionItem = memo(function SessionItem({
               )}
               <SessionActivity id={id} />
               <span className="truncate">{shown}</span>
-              {project && (
-                <span className="ml-auto shrink-0 rounded-full border border-border-subtle px-1.5 text-[10px] leading-4 text-fg-tertiary">
-                  {project}
-                </span>
+              {project === 'meetings' ? (
+                // 53 / 01 §0.1: a meeting's session; the sidebar filters on `project`.
+                <Mic className="ml-auto size-3.5 shrink-0 text-fg-tertiary" aria-label="Meeting" />
+              ) : (
+                project && (
+                  <span className="ml-auto shrink-0 rounded-full border border-border-subtle px-1.5 text-[10px] leading-4 text-fg-tertiary">
+                    {project}
+                  </span>
+                )
               )}
             </Link>
           </SidebarMenuButton>

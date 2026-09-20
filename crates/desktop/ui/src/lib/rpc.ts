@@ -73,6 +73,14 @@ export const queryKeys = {
     ['peer-messages', session, pendingOnly, mode] as const,
   peerMessage: (session: string, id: string) => ['peer-message', session, id] as const,
   a2a: ['a2a'] as const,
+  // 53 (03 §3): `meetings` is the prefix of the list and every `meeting(id)`; status/topics are the current recording.
+  meetings: ['meetings'] as const,
+  meeting: (id: string) => ['meetings', id] as const,
+  meetingStatus: ['meeting-status'] as const,
+  meetingBriefs: (id: string) => ['meeting-briefs', id] as const,
+  meetingLive: (id: string) => ['meeting-live', id] as const,
+  meetingProcesses: ['meeting-processes'] as const,
+  meetingPermissions: ['meeting-permissions'] as const,
 }
 
 const SESSIONS_DEBOUNCE_MS = 500
@@ -153,6 +161,26 @@ export function useInvalidateOn(): void {
         void qc.invalidateQueries({ queryKey: queryKeys.a2a })
         void qc.invalidateQueries({ queryKey: ['communication'] })
         void qc.invalidateQueries({ queryKey: ['peers'] })
+      }),
+      // 53 (03 §3): the list and the current status follow the state machine; a title lands at `Summarized`.
+      on('Started', (e) => {
+        void qc.invalidateQueries({ queryKey: queryKeys.meetings })
+        void qc.invalidateQueries({ queryKey: queryKeys.meetingStatus })
+        void qc.invalidateQueries({ queryKey: queryKeys.meetingPermissions })
+        void qc.invalidateQueries({ queryKey: queryKeys.meeting(e.meeting) })
+      }),
+      on('State', (e) => {
+        void qc.invalidateQueries({ queryKey: queryKeys.meetings })
+        void qc.invalidateQueries({ queryKey: queryKeys.meetingStatus })
+        void qc.invalidateQueries({ queryKey: queryKeys.meeting(e.meeting) })
+      }),
+      on('Deleted', () => {
+        void qc.invalidateQueries({ queryKey: queryKeys.meetings })
+        void qc.invalidateQueries({ queryKey: queryKeys.meetingStatus })
+      }),
+      on('Summarized', (e) => {
+        void qc.invalidateQueries({ queryKey: queryKeys.meetings })
+        void qc.invalidateQueries({ queryKey: queryKeys.meeting(e.meeting) })
       }),
     ]
     return () => {

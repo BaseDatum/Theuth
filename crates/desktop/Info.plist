@@ -4,6 +4,9 @@
 <dict>
   <!-- Merged into the .app bundle by the Tauri bundler (45 §7.5); without it macOS denies getUserMedia. -->
   <key>NSMicrophoneUsageDescription</key>
-  <string>wth records voice notes you send to your harness.</string>
+  <string>wth records voice notes and dictation you send to your harness, and your side of a meeting while it is recording.</string>
+  <!-- 53 §0.4 / 03 §1: the Core Audio process tap on the meeting app (System Audio Recording Only). -->
+  <key>NSAudioCaptureUsageDescription</key>
+  <string>wth records the audio of the meeting app you choose while a meeting is recording.</string>
 </dict>
 </plist>
