@@ -15,7 +15,12 @@ source "$ROOT/scripts/load-signing-env.sh"
 BUNDLE_DIR="$ROOT/target/release/bundle/macos"
 DMG="${1:-}"
 if [[ -z "$DMG" ]]; then
-  DMG="$(ls -t "$BUNDLE_DIR"/t_*.dmg 2>/dev/null | head -1 || true)"
+  VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$BUNDLE_DIR/theuth.app/Contents/Info.plist" 2>/dev/null || true)"
+  if [[ -n "$VERSION" && -f "$BUNDLE_DIR/theuth_${VERSION}_$(uname -m).dmg" ]]; then
+    DMG="$BUNDLE_DIR/theuth_${VERSION}_$(uname -m).dmg"
+  else
+    DMG="$(ls -t "$BUNDLE_DIR"/theuth_*.dmg 2>/dev/null | head -1 || true)"
+  fi
 fi
 [[ -n "$DMG" && -f "$DMG" ]] || { echo "error: no DMG found (run 'just package-macos' first or pass a path)" >&2; exit 1; }
 DMG="$(cd "$(dirname "$DMG")" && pwd)/$(basename "$DMG")"
