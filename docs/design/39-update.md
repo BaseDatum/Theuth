@@ -169,8 +169,8 @@ unpack), the rustfs `aws` CLI env (`release-s3.sh:164-174`), the ops probe
   true` is skipped by `brew upgrade` unless `--greedy`. A formula may
   carry `on_macos` / `on_linux` blocks with separate `url`/`sha256`, and
   `on_arm` / `on_intel` inside them. A tap is a git repository named
-  `homebrew-<tap>`; `brew tap skymoore/tap` clones
-  `github.com/skymoore/homebrew-tap`.
+  `homebrew-<tap>`; `brew tap basedatum/tap` clones
+  `github.com/basedatum/homebrew-tap`.
 
 ## 3. Shape
 
@@ -364,9 +364,9 @@ documented ceiling.
 A desktop-spawned daemon never meets (a) (its parent is `theuth-desktop`),
 so 18 §3 holds: it is never restarted from inside.
 
-### 3.5 Homebrew: `skymoore/tap`
+### 3.5 Homebrew: `basedatum/tap`
 
-Repository `github.com/skymoore/homebrew-tap`, two files, both written by
+Repository `github.com/basedatum/homebrew-tap`, two files, both written by
 `release-s3.sh` (§5.3) — nobody edits them by hand.
 
 `Formula/theuth.rb` — a binary formula, no build step, both OSes:
@@ -423,7 +423,7 @@ cask "theuth" do
 end
 ```
 
-`brew install skymoore/tap/theuth` and `brew install --cask skymoore/tap/theuth`.
+`brew install basedatum/tap/theuth` and `brew install --cask basedatum/tap/theuth`.
 The formula and cask share the name deliberately (the product has one
 name, 00 §1.1); brew disambiguates on `--cask` / `--formula`. `zap` names
 only the window-state dir (25 §5): `~/.theuth` is the user's and survives an
@@ -588,7 +588,7 @@ and checked once, by the publisher.
 
 Last step, after `latest.json` is live (so a formula never points at an
 object that is not yet readable): `git clone --depth 1
-git@github.com:skymoore/homebrew-tap`, write `Formula/theuth.rb` and
+git@github.com:basedatum/homebrew-tap`, write `Formula/theuth.rb` and
 `Casks/theuth.rb` from the two templates in §3.5 with `VERSION` and the
 `SHA256SUMS` lines filled in, `brew audit --strict --formula Formula/theuth.rb`
 and `brew audit --cask Casks/theuth.rb` (syntax, url reachability, sha —
@@ -602,7 +602,7 @@ complete: Homebrew installs simply see the new version one run later.
 (`https://s3.rwx.dev`), `THEUTH_S3_BUCKET` (`theuth`), `THEUTH_S3_PREFIX`
 (`releases`), `THEUTH_S3_PUBLIC_BASE_URL` (derived), `THEUTH_UPDATE_KEY[_PASSWORD]`,
 `THEUTH_RELEASE_PRERELEASE`, `THEUTH_RELEASE_LINUX` (`require` | `skip`),
-`THEUTH_TAP_REPO` (`git@github.com:skymoore/homebrew-tap`), `THEUTH_S3_DRY_RUN`.
+`THEUTH_TAP_REPO` (`git@github.com:basedatum/homebrew-tap`), `THEUTH_S3_DRY_RUN`.
 Same rustfs compatibility flags as jarvis (`AWS_S3_FORCE_PATH_STYLE=true`,
 checksums `when_required`, `AWS_EC2_METADATA_DISABLED=true`). All from
 `.env.signing` (`.env.signing.example` documents them).
@@ -647,7 +647,7 @@ prerelease.json` the day someone wants it; the script already writes it.
 | `<exe>.new` | harness | extracted binary, exists for milliseconds | nothing |
 | `crates/update/pubkey.txt` | repo | minisign public key, base64 | builds fail to verify anything |
 | `~/.tauri/theuth.key` | release machine | private key | no more releases |
-| `github.com/skymoore/homebrew-tap` `Formula/theuth.rb`, `Casks/theuth.rb` | release script | generated per release (§5.3) | `brew install` breaks until the next release regenerates them |
+| `github.com/basedatum/homebrew-tap` `Formula/theuth.rb`, `Casks/theuth.rb` | release script | generated per release (§5.3) | `brew install` breaks until the next release regenerates them |
 | `deploy/update/Dockerfile` | repo | Linux build recipe (§5.1) | no Linux tarballs |
 
 No state file, no phase file, no `localStorage`.
@@ -729,13 +729,13 @@ config (36 §1). Jarvis's 12 h was chosen for a check that ended in a toast;
    the uploaded tarball: `t --update` prints the verify error, the binary
    is unchanged. Publish `0.0.9`: `up to date`. Publish `1.0.0`: `up to
    date` (§1.7).
-5. **Homebrew.** `brew install skymoore/tap/theuth` at `0.1.0` on macOS and
+5. **Homebrew.** `brew install basedatum/tap/theuth` at `0.1.0` on macOS and
    on Linux; publish `0.1.1` (tap bumped by §5.3): `t --update` prints
    brew's `theuth 0.1.0 -> 0.1.1`, `brew list --versions theuth` → `0.1.1`,
    `readlink -f $(which theuth)` is under `Cellar/theuth/0.1.1/`, and `~/.cargo/
    bin` was not touched. With an interactive `brew install something`
    holding the lock: `t --update` reports brew's lock error, nothing
-   changes, the next tick succeeds. `brew install --cask skymoore/tap/theuth`
+   changes, the next tick succeeds. `brew install --cask basedatum/tap/theuth`
    installs `/Applications/theuth.app`; after step 7 below `brew upgrade`
    prints nothing for it and `brew upgrade --greedy` finds it current.
 6. **TUI.** Run `theuth` `0.1.0` with the scratch URL and `FIRST_CHECK`
@@ -780,8 +780,8 @@ config (36 §1). Jarvis's 12 h was chosen for a check that ended in a toast;
 - 32 §5.1 (`--install-service`): add "the unit's non-zero-exit restart
   policy is what 39 §3.4 relies on; do not change it to restart on any
   exit."
-- README install section: `brew install skymoore/tap/theuth`, `brew install
-  --cask skymoore/tap/theuth`, and the tarball URL pattern, replacing `just
+- README install section: `brew install basedatum/tap/theuth`, `brew install
+  --cask basedatum/tap/theuth`, and the tarball URL pattern, replacing `just
   install` as the first instruction for users who are not building.
 
 ## 14. Status

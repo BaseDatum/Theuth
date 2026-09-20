@@ -123,34 +123,26 @@ Already in place from 25 §5; listed because release gates 2–3 depend on it.
 
 ## 4. Homebrew tap
 
-1. Create the empty GitHub repository `skymoore/homebrew-tap` (public;
-   the name must start with `homebrew-`). Add the two directories with a
-   placeholder so git keeps them:
+Public repo `basedatum/homebrew-tap` (`brew tap basedatum/tap`). `Formula/`
+and `Casks/` stay empty until `release-s3.sh` writes `theuth.rb` (39 §5.3).
+Nobody edits those files by hand.
 
-   ```sh
-   git clone git@github.com:skymoore/homebrew-tap && cd homebrew-tap
-   mkdir -p Formula Casks && touch Formula/.keep Casks/.keep
-   git add -A && git commit -m "init" && git push -u origin main
-   ```
-
-2. The release Mac must push over ssh without a prompt:
+1. The release Mac must push over ssh without a prompt:
 
    ```sh
    ssh -T git@github.com          # "Hi skymoore! You've successfully authenticated"
    ```
 
-   `THEUTH_TAP_REPO` defaults to `git@github.com:skymoore/homebrew-tap`;
+   `THEUTH_TAP_REPO` defaults to `git@github.com:basedatum/homebrew-tap`;
    set it in `.env.signing` only for a different remote.
 
-3. Test the tap resolves (empty until the first release):
+2. Confirm the tap resolves (empty until the first release):
 
    ```sh
-   brew tap skymoore/tap
-   brew tap-info skymoore/tap
+   brew tap basedatum/tap
+   brew tap-info basedatum/tap
    ```
 
-`Formula/theuth.rb` and `Casks/theuth.rb` are written by `release-s3.sh` on the
-first release (39 §5.3). Nobody edits them by hand.
 
 ## 5. Linux build hosts
 
@@ -213,9 +205,9 @@ its two `SHASUMS256` sums — bump all three together). No host needs Bun.
    curl -s https://s3.rwx.dev/theuth/releases/latest.json | jq .
    #  .version == the new version; .platforms has darwin-aarch64, cli-macos-aarch64,
    #  cli-linux-x86_64, cli-linux-aarch64 (the last two absent with THEUTH_RELEASE_LINUX=skip)
-   brew install skymoore/tap/theuth && t --version
+   brew install basedatum/tap/theuth && t --version
    ls "$(dirname "$(readlink -f "$(which theuth)")")"/theuth-app-parser-"$(t --app-parser-hash)"   # the helper the formula installed beside it
-   brew install --cask skymoore/tap/theuth && ls /Applications/theuth.app/Contents/MacOS/theuth-app-parser-*
+   brew install --cask basedatum/tap/theuth && ls /Applications/theuth.app/Contents/MacOS/theuth-app-parser-*
    ```
 
 ## 7. Verification checklist (39 §12)

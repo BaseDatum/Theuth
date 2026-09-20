@@ -5,8 +5,8 @@ crates talking over a typed message bus; any frontend attaches over JSON-RPC.
 Design: [`docs/design/00-architecture.md`](docs/design/00-architecture.md).
 Adding a plugin: [`docs/plugins.md`](docs/plugins.md).
 
-Install without building: `brew install skymoore/tap/theuth` (the CLI, macOS
-arm64 and Linux) or `brew install --cask skymoore/tap/theuth` (the macOS app).
+Install without building: `brew install basedatum/tap/theuth` (the CLI, macOS
+arm64 and Linux) or `brew install --cask basedatum/tap/theuth` (the macOS app).
 Both keep themselves current ([`docs/design/39-update.md`](docs/design/39-update.md));
 `t --update` forces a check. Building from source:
 
@@ -597,7 +597,7 @@ Give the model, and your phone, another machine. Four lines on the box:
 
 ```sh
 ssh box
-brew install skymoore/tap/theuth         # or `just install` (release `theuth` + its `theuth-app-parser-<hash>` into ~/.cargo/bin), or copy both binaries over
+brew install basedatum/tap/theuth         # or `just install` (release `theuth` + its `theuth-app-parser-<hash>` into ~/.cargo/bin), or copy both binaries over
 t --secret-set anthropic            # a model key, typed without echo (or piped: `printf %s "$KEY" | t --secret-set anthropic`)
 t --install-service --relay wss://relay.example.com   # writes a launchd LaunchAgent / systemd user unit running `$SHELL -l -i -c 'exec t --headless'`, sets link.enabled, starts it, prints a QR + key
 ```

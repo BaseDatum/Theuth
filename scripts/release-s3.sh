@@ -36,7 +36,7 @@
 #                            cli-linux-* keys, formula without on_linux (macOS-only hotfix)
 #   THEUTH_RELEASE_PRERELEASE=1 ad-hoc/unnotarized allowed; writes latest-prerelease.json only,
 #                            never latest.json, never bumps the tap
-#   THEUTH_TAP_REPO             tap git url (default: git@github.com:skymoore/homebrew-tap)
+#   THEUTH_TAP_REPO             tap git url (default: git@github.com:basedatum/homebrew-tap)
 #   THEUTH_S3_DRY_RUN=1         no writes: uploads, staging delete and tap push are printed
 set -euo pipefail
 
@@ -68,7 +68,7 @@ PREFIX="${THEUTH_S3_PREFIX:-releases}"; PREFIX="${PREFIX#/}"; PREFIX="${PREFIX%/
 PUBLIC_BASE="${THEUTH_S3_PUBLIC_BASE_URL:-${ENDPOINT}/${BUCKET}/${PREFIX}}"; PUBLIC_BASE="${PUBLIC_BASE%/}"
 LINUX="${THEUTH_RELEASE_LINUX:-require}"
 PRERELEASE="${THEUTH_RELEASE_PRERELEASE:-0}"
-TAP_REPO="${THEUTH_TAP_REPO:-git@github.com:skymoore/homebrew-tap}"
+TAP_REPO="${THEUTH_TAP_REPO:-git@github.com:basedatum/homebrew-tap}"
 DRY_RUN="${THEUTH_S3_DRY_RUN:-0}"
 case "$LINUX" in require | skip) ;; *) echo "error: THEUTH_RELEASE_LINUX must be require|skip" >&2; exit 1 ;; esac
 
