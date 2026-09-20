@@ -110,8 +110,8 @@ Already in place from 25 §5; listed because release gates 2–3 depend on it.
 3. `just package-macos && just notarize-macos` produces a `.app` for which
 
    ```sh
-   codesign -dv target/release/bundle/macos/theuth.app 2>&1 | grep 'Authority=Developer ID'
-   codesign -dv target/release/bundle/macos/theuth.app/Contents/MacOS/theuth-app-parser-* 2>&1 | grep 'Authority=Developer ID'
+   codesign -dvv target/release/bundle/macos/theuth.app 2>&1 | grep 'Authority=Developer ID'
+   codesign -dvv target/release/bundle/macos/theuth.app/Contents/MacOS/theuth-app-parser-* 2>&1 | grep 'Authority=Developer ID'
    spctl --assess --type execute target/release/bundle/macos/theuth.app
    ```
 

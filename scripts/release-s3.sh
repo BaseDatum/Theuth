@@ -135,8 +135,8 @@ if [[ "$PRERELEASE" == "1" ]]; then
   echo "==> gates 2-3 skipped (THEUTH_RELEASE_PRERELEASE=1)"
 else
   gate 2 "codesign shows a Developer ID (app and $HELPER)"
-  codesign -dv "$APP" 2>&1 | grep -q 'Authority=Developer ID' || fail 2 "ad-hoc build (set THEUTH_SIGN_IDENTITY, rerun just package-macos)"
-  codesign -dv "$APP/Contents/MacOS/$HELPER" 2>&1 | grep -q 'Authority=Developer ID' || fail 2 "$HELPER not signed with a Developer ID (rerun just package-macos)"
+  codesign -dvv "$APP" 2>&1 | grep -q 'Authority=Developer ID' || fail 2 "ad-hoc build (set THEUTH_SIGN_IDENTITY, rerun just package-macos)"
+  codesign -dvv "$APP/Contents/MacOS/$HELPER" 2>&1 | grep -q 'Authority=Developer ID' || fail 2 "$HELPER not signed with a Developer ID (rerun just package-macos)"
   codesign -d --entitlements - --xml "$APP/Contents/MacOS/$HELPER" 2>/dev/null | grep -q 'com.apple.security.cs.allow-jit' || fail 2 "$HELPER lacks the JIT entitlement (scripts/entitlements-app-parser.plist)"
   gate 3 "spctl --assess (notarized)"
   spctl --assess --type execute "$APP" 2>/dev/null || fail 3 "not notarized (just notarize-macos)"
