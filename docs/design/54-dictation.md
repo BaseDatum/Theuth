@@ -98,7 +98,7 @@ places the files).
 8. **The two buttons are visually and verbally distinct.** The existing
    round microphone button (`Mic`) *becomes* dictation — tooltip
    **Dictation (Ctrl+D)** — and is shown whenever the composer is editable,
-   text or no text, because dictation inserts. A new button (`MicVocal`)
+   text or no text, because dictation inserts. A new button (`AudioLines`)
    with tooltip **Voice note** keeps 45's behaviour (record → transcribe →
    send as `[voice note, N s]`) and is shown only when the composer is
    empty, as the mic was. Both render as a real `Tooltip`, not an
@@ -408,7 +408,7 @@ the TUI in its status line, the desktop as a toast.
   - Buttons (`:510-543`): the right-hand slot becomes `[voice note?] [dictation | meter] [send | stop]`:
     - **Dictation**: `<Tooltip><TooltipTrigger asChild><Button variant="ghost" className="size-9 rounded-full" aria-label="Dictation"><Mic/></Button></TooltipTrigger><TooltipContent>Dictation (Ctrl+D)</TooltipContent></Tooltip>`; shown when `voice && !priv && !running`; disabled with the `ModelState` reason in the tooltip while not `Ready`.
     - **Meter** (replaces the dictation button while `active`): `<canvas>` 96 × 36 px inside the same round-ended button shape (`rounded-full bg-fg-accent/10`), click = stop, tooltip "Stop dictation (Ctrl+D)". Drawing (`components/chat/LevelMeter.tsx`): a ring of the last 24 `levels` values (24 × 20 ms = 480 ms of audio scrolling right-to-left, newest at the right), one bar per 3 px with 1 px gap, height = `4 + 28 · clamp(log10(1 + 9·level), 0, 1)`, mirrored around the vertical centre with `roundRect` caps, accent colour, alpha fading toward the left; a `requestAnimationFrame` loop interpolates between packets (levels arrive 6×/s in bursts of 8, the meter renders 60×/s) and idles to a flat 4 px line after 400 ms without a packet; `devicePixelRatio`-scaled. Colour tokens from CSS variables via `getComputedStyle` so themes apply.
-    - **Voice note**: `<Button variant="ghost" …><MicVocal/></Button>` with tooltip "Voice note", shown when `voice && !priv && !text.trim() && !active`; the existing `record()`/`stopRecording()`/`sendNote()` move behind it unchanged (red `Square` + seconds while recording, as today).
+    - **Voice note**: `<Button variant="ghost" …><AudioLines/></Button>` with tooltip "Voice note", shown when `voice && !priv && !text.trim() && !active`; the existing `record()`/`stopRecording()`/`sendNote()` move behind it unchanged (red `Square` + seconds while recording, as today).
     - Send / Stop as today. While `active`, Send is disabled.
 - Touch (`touch()`): the hotkey is desktop-only; the buttons work as-is.
   iOS: `flexaudio` is macOS/Windows/Linux; the daemon on a phone does not
@@ -503,7 +503,7 @@ Each step ends with a runnable check (00 §12).
 - `43-voice.md` §9: the microphone seam is split — local frontends use the
   daemon's mic (this doc); `AudioIn` remains the remote-client seam.
 - `45-voice-notes.md` §7.2: the round `Mic` button is dictation; voice
-  notes are the `MicVocal` button; §9 (phase-3 inherits) points here for
+  notes are the `AudioLines` button; §9 (phase-3 inherits) points here for
   `Stream`.
 - `25-desktop.md` §3 parity table: `dictation | not shown` on the phone;
   §7 RPC list.

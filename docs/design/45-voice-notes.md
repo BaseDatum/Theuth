@@ -457,7 +457,7 @@ it. The mirror (43 §4.6) adds `models/parakeet-tdt/<rev>/` when it is built;
 - Session voice mode: `voiceMode: Set<SessionId>` in the sessions store;
   set by a voice send, cleared by a typed `submit`. Not persisted — a fresh
   window starts silent until the next voice note.
-- Since 54 (2026-09-20) this is the `MicVocal` button; the round `Mic`
+- Since 54 (2026-09-20) this is the `AudioLines` button; the round `Mic`
   button beside it is dictation into the textarea (54 §7), not a voice note.
 
 ### 7.3 Speaking blocks (`lib/speech.ts`)
