@@ -1,4 +1,7 @@
 @import "tailwindcss";
+@import "@fontsource/instrument-serif/400.css";
+@import "@fontsource-variable/geist/wght.css";
+@import "@fontsource-variable/geist-mono/wght.css";
 
 /* theuth palette (docs/design/25-desktop.md §2.4). Dark is the default: bone on soot. Light is the alternate.
    No #000, no #FFF, no blue. Accent only on focus rings, the active install tab, the primary button, the ibis eye. */
@@ -14,10 +17,10 @@
   --accent: #c47a2c;
   --accent-hover: #a36220;
   --accent-fg: #12100e;
-  /* pyramid: limestone faces lit by an ochre key and a faint faience fill */
+  /* pyramid: limestone faces lit by an ochre key and a faint faience fill; soot in the joints */
   --stone: 232 220 200;
-  --stone-dim: 201 180 138;
-  --grout: rgb(18 16 14 / 0.55);
+  --stone-dim: 176 156 118;
+  --grout-rgb: 18 16 14;
 }
 
 @media (prefers-color-scheme: light) {
@@ -34,8 +37,8 @@
     --accent-hover: #8a3e16;
     --accent-fg: #f3eadf;
     --stone: 201 180 138;
-    --stone-dim: 143 127 106;
-    --grout: rgb(26 22 18 / 0.45);
+    --stone-dim: 138 120 94;
+    --grout-rgb: 44 38 32;
   }
 }
 
@@ -51,8 +54,8 @@
   --color-accent-hover: var(--accent-hover);
   --color-accent-fg: var(--accent-fg);
   --font-display: "Instrument Serif", "Newsreader", Georgia, serif;
-  --font-sans: "Geist", "Inter Tight", system-ui, sans-serif;
-  --font-mono: "Geist Mono", "IBM Plex Mono", ui-monospace, monospace;
+  --font-sans: "Geist Variable", "Inter Tight", system-ui, sans-serif;
+  --font-mono: "Geist Mono Variable", "IBM Plex Mono", ui-monospace, monospace;
 }
 
 html {
@@ -72,24 +75,27 @@ html {
   outline-offset: 2px;
 }
 
-/* Faint limestone grain; almost invisible. */
-body::before {
+/* Faint limestone grain over everything; almost invisible. Fixed and inert, so it never repaints on scroll. */
+body::after {
   content: "";
   position: fixed;
   inset: 0;
-  z-index: -2;
+  z-index: 40;
   pointer-events: none;
-  opacity: 0.035;
+  opacity: 0.04;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 
+/* Hero and statement type: Instrument Serif per the brand brief, all caps, tight. */
 .display {
   font-family: var(--font-display);
+  font-weight: 400;
   line-height: 0.96;
   letter-spacing: -0.03em;
   text-transform: uppercase;
 }
 
+/* Feature index: Geist, tabular, wide-tracked, tertiary. */
 .index {
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.12em;
@@ -97,22 +103,27 @@ body::before {
   color: var(--fg-3);
 }
 
+/* Buttons: 1px basalt border, no radius, ochre fill on the primary. Shape lock: everything on the page is square. */
 .btn {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 0.5rem;
   height: 44px;
   padding: 0 1.25rem;
   border: 1px solid var(--char);
-  border-radius: 2px;
   font-size: 14px;
   font-weight: 500;
   color: var(--fg);
-  transition: background-color 120ms, border-color 120ms, color 120ms;
+  white-space: nowrap;
+  transition: background-color 120ms, border-color 120ms, color 120ms, transform 120ms;
 }
 .btn:hover {
   background: var(--raised);
   border-color: var(--fg-3);
+}
+.btn:active {
+  transform: translateY(1px);
 }
 .btn-primary {
   background: var(--accent);
@@ -126,40 +137,18 @@ body::before {
 .btn:disabled {
   cursor: default;
   color: var(--fg-3);
+  transform: none;
 }
 .btn:disabled:hover {
   background: transparent;
   border-color: var(--char);
 }
 
-/* ── pyramid: four CSS 3D faces; shading is set per face from JS ─────────────────────────────── */
+/* The pyramid's stage: fixed behind the document. */
 .stage {
   position: fixed;
   inset: 0;
   z-index: -1;
   pointer-events: none;
-  perspective: 1600px;
-  perspective-origin: 50% 40%;
   overflow: hidden;
-}
-.pyr {
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  width: 0;
-  height: 0;
-  transform-style: preserve-3d;
-}
-.face {
-  position: absolute;
-  transform-origin: 50% 100%;
-  backface-visibility: hidden;
-  clip-path: polygon(50% 0, 100% 100%, 0 100%);
-  background-color: rgb(var(--stone));
-  /* courses of blocks: soot grout every 22px, a faint stagger line between, weathering noise over all */
-  background-image:
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.6' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .07 0 0 0 0 .06 0 0 0 0 .05 0 0 0 .5 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"),
-    repeating-linear-gradient(90deg, transparent 0 46px, var(--grout) 46px 47px, transparent 47px 95px),
-    repeating-linear-gradient(0deg, var(--grout) 0 1.5px, transparent 1.5px 22px);
-  background-blend-mode: multiply, normal, normal;
 }
