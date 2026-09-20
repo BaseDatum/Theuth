@@ -431,8 +431,13 @@ impl Harness {
     /// host over the stored frame. Returns the new epoch and the bus events
     /// through `Compacted`.
     async fn compact(&mut self, style: CompactStyle) -> (u32, Vec<AgentEvent>) {
+        self.compact_with(style, None).await
+    }
+
+    /// [`Harness::compact`] with a ready-made head (`Compact::head`, 53 §0.7).
+    async fn compact_with(&mut self, style: CompactStyle, head: Option<String>) -> (u32, Vec<AgentEvent>) {
         let (mut turn, _) = self.turn("openai/textonly", CancellationToken::new()).await;
-        let epoch = turn.compact_now(Some(style)).await.unwrap();
+        let epoch = turn.compact_now(Some(style), head).await.unwrap();
         let events = self
             .drain_until(|e| matches!(e, AgentEvent::Compacted { .. }))
             .await;
@@ -1063,6 +1068,21 @@ async fn manual_summary_compaction_inspects_pending_images_first() {
     assert!(vf.images.is_empty(), "a folded image is not active");
     assert_eq!(vf.notes.len(), 1, "its note is still in the tail");
     assert_eq!(vision::pending(&vf.images, &vf.notes).len(), 0);
+
+    // 53 §0.7 / meetings 04 §0.6: a given head is installed verbatim as the
+    // epoch's summary body — no summariser, no harvest, no vision call.
+    let events = h.run("openai/textonly", "One more turn.", false).await;
+    assert_eq!(errors(&events), Vec::<String>::new());
+    let before = h.requests().await.len();
+    let given = "# Weekly sync\n\n**Decisions**\n- Ship the MEETING-HEAD-MARKER fix".to_owned();
+    let (epoch, _) = h.compact_with(CompactStyle::Summary, Some(given.clone())).await;
+    assert_eq!(epoch, 4);
+    assert_eq!(h.requests().await.len(), before, "no model call for a given head");
+    let (n, head, _) = h.store.frame(h.id).await.unwrap();
+    assert_eq!(n, 4);
+    let head = text_of(&head.expect("epoch head").content);
+    assert!(head.contains("MEETING-HEAD-MARKER") && head.contains("Weekly sync"), "{head}");
+    assert!(!head.contains("SUMMARY-EPOCH-HEAD"), "{head}");
 }
 
 /// 52 §5.3: a known secret the main quotes in its question is a placeholder

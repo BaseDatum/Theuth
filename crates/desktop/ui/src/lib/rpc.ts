@@ -81,6 +81,10 @@ export const queryKeys = {
   meetingLive: (id: string) => ['meeting-live', id] as const,
   meetingProcesses: ['meeting-processes'] as const,
   meetingPermissions: ['meeting-permissions'] as const,
+  // 53 (04 §7): the transcript of record and the summary of one meeting; the enrolled speaker profiles.
+  meetingTranscript: (id: string) => ['meeting-transcript', id] as const,
+  meetingSummary: (id: string) => ['meeting-summary', id] as const,
+  meetingSpeakers: ['meeting-speakers'] as const,
 }
 
 const SESSIONS_DEBOUNCE_MS = 500
@@ -178,9 +182,15 @@ export function useInvalidateOn(): void {
         void qc.invalidateQueries({ queryKey: queryKeys.meetings })
         void qc.invalidateQueries({ queryKey: queryKeys.meetingStatus })
       }),
+      on('ReviewReady', (e) => {
+        void qc.invalidateQueries({ queryKey: queryKeys.meeting(e.meeting) })
+        void qc.invalidateQueries({ queryKey: queryKeys.meetingTranscript(e.meeting) })
+      }),
       on('Summarized', (e) => {
         void qc.invalidateQueries({ queryKey: queryKeys.meetings })
         void qc.invalidateQueries({ queryKey: queryKeys.meeting(e.meeting) })
+        void qc.invalidateQueries({ queryKey: queryKeys.meetingSummary(e.meeting) })
+        void qc.invalidateQueries({ queryKey: queryKeys.meetingTranscript(e.meeting) })
       }),
     ]
     return () => {

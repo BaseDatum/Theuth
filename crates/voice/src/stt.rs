@@ -1,7 +1,9 @@
 //! Speech-to-text (45 §4.2): any container symphonia demuxes → mono 16 kHz →
-//! Parakeet TDT via `parakeet-rs`. The model is loaded on first use and dropped
-//! after `stt_idle_secs` unused. [`Stream`] is the live half (54 §0.3): the
-//! cache-aware Nemotron transducer fed fixed windows by the dictation task.
+//! Parakeet TDT via `parakeet-rs`. [`Engine`] is the TDT handle (`meetings/02-live.md`
+//! §0.1): the [`Transcriber`] actor loads one on first use and drops it after
+//! `stt_idle_secs` unused; the meeting plugin loads its own for the transcript of
+//! record, with word times. [`Stream`] is the live half (54 §0.3): the cache-aware
+//! Nemotron transducer fed fixed windows by the dictation task.
 //! No `parakeet_rs`/`symphonia` type leaves here.
 
 use std::path::{Path, PathBuf};
@@ -22,8 +24,9 @@ use crate::{Transcribe, Transcript};
 
 /// The model's input rate; anything else is refused by `parakeet-rs`.
 const MODEL_RATE: u32 = 16_000;
-/// TDT's sequence limit is ~4–5 min; longer notes go in pieces (45 §0.8).
-const PIECE: usize = 180 * MODEL_RATE as usize;
+/// TDT's sequence limit is ~4–5 min; longer audio goes in pieces of this many
+/// 16 kHz samples (180 s, 45 §0.8).
+pub const PIECE: usize = 180 * MODEL_RATE as usize;
 /// How often the idle watchdog looks.
 const WATCH: Duration = Duration::from_secs(60);
 /// Samples per streaming window: 560 ms at 16 kHz, the Nemotron encoder's chunk
@@ -95,8 +98,9 @@ fn find_ort_lib(dir: &Path) -> anyhow::Result<PathBuf> {
 }
 
 /// Any container symphonia demuxes → mono f32 at the source rate. Opus packets
-/// (webm/ogg from Chromium) go to libopus, which symphonia does not decode.
-pub(crate) fn decode(bytes: Vec<u8>, ext: &str) -> anyhow::Result<(Vec<f32>, u32)> {
+/// (webm/ogg from Chromium, the meeting tracks) go to libopus, which symphonia
+/// does not decode; that branch always returns 48 kHz.
+pub fn decode(bytes: Vec<u8>, ext: &str) -> anyhow::Result<(Vec<f32>, u32)> {
     let mss = MediaSourceStream::new(Box::new(std::io::Cursor::new(bytes)), Default::default());
     let mut hint = Hint::new();
     hint.with_extension(ext);
@@ -160,7 +164,7 @@ pub(crate) fn decode(bytes: Vec<u8>, ext: &str) -> anyhow::Result<(Vec<f32>, u32
 }
 
 /// `from` Hz → `to` Hz, mono.
-pub(crate) fn resample(pcm: Vec<f32>, from: u32, to: u32) -> anyhow::Result<Vec<f32>> {
+pub fn resample(pcm: Vec<f32>, from: u32, to: u32) -> anyhow::Result<Vec<f32>> {
     use rubato::Resampler as _;
     if from == to {
         return Ok(pcm);
@@ -179,6 +183,90 @@ pub(crate) fn resample(pcm: Vec<f32>, from: u32, to: u32) -> anyhow::Result<Vec<
         out.extend_from_slice(&o[0]);
     }
     Ok(out)
+}
+
+/// One word with its times, from [`Engine::transcribe`] with `words: true`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Word {
+    /// The word (standalone punctuation is attached to the word before it).
+    pub text: String,
+    /// Start, ms from the start of the piece.
+    pub t0_ms: u64,
+    /// End, ms from the start of the piece.
+    pub t1_ms: u64,
+}
+
+/// What [`Engine::transcribe`] returns for one piece of audio.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Piece {
+    /// Punctuated, cased text.
+    pub text: String,
+    /// Word times; empty unless asked for.
+    pub words: Vec<Word>,
+}
+
+/// The offline TDT model (`meetings/02-live.md` §0.1): loaded once from a
+/// checkpoint directory, transcribes 16 kHz mono pieces. Inference takes the
+/// inner lock, so one `Engine` serialises its callers; `Send + Sync`.
+pub struct Engine(Mutex<ParakeetTDT>);
+
+impl Engine {
+    /// Load the TDT checkpoint in `dir` (`encoder-model.onnx`, `decoder_joint-model.onnx`,
+    /// `vocab.txt`) after the process-wide ONNX Runtime init.
+    pub fn load(dir: &Path) -> anyhow::Result<Engine> {
+        let t = Instant::now();
+        ort_lib(dir)?;
+        let m = ParakeetTDT::from_pretrained(dir, None)
+            .map_err(|e| anyhow::anyhow!("no STT model in {}: {e}", dir.display()))?;
+        tracing::info!("voice: STT model loaded in {:?}", t.elapsed());
+        Ok(Engine(Mutex::new(m)))
+    }
+
+    /// Transcribe one piece (16 kHz mono, at most [`PIECE`] samples — TDT's
+    /// sequence limit is a few minutes). `words: true` returns word times.
+    pub fn transcribe(&self, pcm16k: &[f32], words: bool) -> anyhow::Result<Piece> {
+        let mode = if words {
+            TimestampMode::Words
+        } else {
+            TimestampMode::Sentences
+        };
+        let r = self
+            .0
+            .lock()
+            .transcribe_samples(pcm16k.to_vec(), MODEL_RATE, 1, Some(mode))
+            .map_err(|e| anyhow::anyhow!("transcribe: {e}"))?;
+        let mut out: Vec<Word> = Vec::new();
+        if words {
+            out.reserve(r.tokens.len());
+            for t in r.tokens {
+                let text = t.text.trim();
+                if text.is_empty() {
+                    continue;
+                }
+                let ms = |s: f32| (f64::from(s.max(0.0)) * 1000.0).round() as u64;
+                // `Words` mode leaves `.`/`,` as their own tokens; the text glues them on.
+                let punct = text.len() == 1
+                    && text
+                        .chars()
+                        .all(|c| matches!(c, '.' | ',' | '!' | '?' | ';' | ':' | ')'));
+                match out.last_mut() {
+                    Some(prev) if punct => {
+                        prev.text.push_str(text);
+                        prev.t1_ms = prev.t1_ms.max(ms(t.end));
+                    }
+                    _ => out.push(Word {
+                        text: text.to_owned(),
+                        t0_ms: ms(t.start),
+                        t1_ms: ms(t.end).max(ms(t.start)),
+                    }),
+                }
+            }
+        }
+        Ok(Piece {
+            text: r.text.trim().to_owned(),
+            words: out,
+        })
+    }
 }
 
 /// One live streaming-STT session (54 §0.3, `meetings/02-live.md` §0.1b): the
@@ -222,7 +310,7 @@ impl Stream {
 #[derive(kameo::Actor)]
 pub struct Transcriber {
     /// Held only inside the blocking task; `None` until first use or after idle.
-    model: Arc<Mutex<Option<ParakeetTDT>>>,
+    model: Arc<Mutex<Option<Engine>>>,
     last_used: Arc<Mutex<Instant>>,
     dir: PathBuf,
     /// Zero: never unload.
@@ -266,28 +354,13 @@ impl Transcriber {
         let pcm = resample(pcm, rate, MODEL_RATE)?;
         let duration_ms = pcm.len() as u64 * 1000 / MODEL_RATE as u64;
         let mut guard = self.model.lock();
-        let model = match guard.as_mut() {
+        let model = match guard.as_ref() {
             Some(m) => m,
-            None => {
-                let t = Instant::now();
-                ort_lib(&self.dir)?;
-                let m = ParakeetTDT::from_pretrained(&self.dir, None)
-                    .map_err(|e| anyhow::anyhow!("no STT model in {}: {e}", self.dir.display()))?;
-                tracing::info!("voice: STT model loaded in {:?}", t.elapsed());
-                guard.insert(m)
-            }
+            None => guard.insert(Engine::load(&self.dir)?),
         };
         let mut parts = Vec::new();
         for piece in pcm.chunks(PIECE) {
-            let r = model
-                .transcribe_samples(
-                    piece.to_vec(),
-                    MODEL_RATE,
-                    1,
-                    Some(TimestampMode::Sentences),
-                )
-                .map_err(|e| anyhow::anyhow!("transcribe: {e}"))?;
-            parts.push(r.text);
+            parts.push(model.transcribe(piece, false)?.text);
         }
         *self.last_used.lock() = Instant::now();
         Ok(Transcript {
@@ -378,5 +451,64 @@ mod tests {
     #[test]
     fn rejects_garbage() {
         assert!(decode(vec![0; 64], "m4a").is_err());
+    }
+
+    /// The smoke sentence spoken by `say`, through the TDT `Engine` with word
+    /// times: the words come back in order with monotonic, non-overlapping
+    /// times inside the clip. Skips without the checkpoint, `say` or the dylib.
+    #[test]
+    fn engine_returns_words_with_monotonic_times() {
+        let dir = match std::env::var_os("HOME") {
+            Some(h) => PathBuf::from(h).join(".wth/models").join(crate::TDT_MODEL_SUBDIR),
+            None => return,
+        };
+        if !dir.is_dir() {
+            eprintln!("skipped: no TDT model at {}", dir.display());
+            return;
+        }
+        let path = std::env::temp_dir().join(format!("wth-stt-{}.wav", uuid::Uuid::now_v7()));
+        let ok = std::process::Command::new("say")
+            .args(["-o"])
+            .arg(&path)
+            .args(["--data-format=LEI16@48000", "The deploy is blocked on the image tags."])
+            .status()
+            .is_ok_and(|s| s.success());
+        if !ok {
+            eprintln!("skipped: no `say`");
+            return;
+        }
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).ok();
+        let (pcm, rate) = decode(bytes, "wav").unwrap();
+        let pcm = resample(pcm, rate, MODEL_RATE).unwrap();
+        let engine = match Engine::load(&dir) {
+            Ok(e) => e,
+            Err(e) if format!("{e:#}").contains("libonnxruntime") => {
+                eprintln!("skipped: {e:#}");
+                return;
+            }
+            Err(e) => panic!("{e:#}"),
+        };
+        let p = engine.transcribe(&pcm, true).unwrap();
+        let said: String = p
+            .words
+            .iter()
+            .map(|w| w.text.to_lowercase())
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .filter(|c| c.is_alphanumeric() || c.is_whitespace())
+            .collect();
+        assert_eq!(said, "the deploy is blocked on the image tags", "{p:?}");
+        assert_eq!(p.words.len(), 8, "{p:?}");
+        let clip_ms = pcm.len() as u64 * 1000 / u64::from(MODEL_RATE);
+        for (a, b) in p.words.iter().zip(p.words.iter().skip(1)) {
+            assert!(a.t0_ms <= a.t1_ms && a.t1_ms <= b.t0_ms, "{p:?}");
+        }
+        assert!(p.words.last().unwrap().t1_ms <= clip_ms + 200, "{p:?}");
+        // Without word times the text is the same sentence and `words` is empty.
+        let s = engine.transcribe(&pcm, false).unwrap();
+        assert!(s.words.is_empty());
+        assert!(s.text.to_lowercase().contains("image tags"), "{s:?}");
     }
 }

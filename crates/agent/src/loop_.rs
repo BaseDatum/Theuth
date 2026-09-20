@@ -305,6 +305,8 @@ pub struct CompactionOverride {
 pub struct CompactNow {
     /// One-shot style; `None` = configured default.
     pub style: Option<CompactStyle>,
+    /// A ready-made summary body (`agent::Compact::head`).
+    pub head: Option<String>,
 }
 
 /// `ask` → `Result<HarvestResult, String>`: harvest the finished frame now
@@ -1525,9 +1527,9 @@ impl Message<CompactNow> for Session {
         self.enter(cancel.clone(), None).await;
         let mut turn = Turn::new(self.shared.clone(), None, cancel, state);
         let me = ctx.actor_ref().clone();
-        let style = m.style;
+        let CompactNow { style, head } = m;
         tokio::spawn(async move {
-            let result = turn.compact_now(style).await;
+            let result = turn.compact_now(style, head).await;
             let _ = me.tell(TurnDone(turn.state)).await;
             tx.send(result);
         });
@@ -3155,6 +3157,7 @@ impl Turn {
                         transport,
                         projected,
                         None,
+                        None,
                         compact::CompactReason::Auto,
                     )
                     .await
@@ -3255,6 +3258,7 @@ impl Turn {
                             &current,
                             transport,
                             projected,
+                            None,
                             None,
                             compact::CompactReason::Overflow,
                         )
@@ -3703,7 +3707,11 @@ impl Turn {
     }
 
     /// `/compact` between turns: same baseline/tools/transport as a turn, then [`Turn::compact`].
-    async fn compact_now(&mut self, style: Option<CompactStyle>) -> Result<u32, String> {
+    async fn compact_now(
+        &mut self,
+        style: Option<CompactStyle>,
+        head: Option<String>,
+    ) -> Result<u32, String> {
         self.between_turns().await?;
         let (current, transport) = self.resolve().await?;
         let projected = self.state.used;
@@ -3712,6 +3720,7 @@ impl Turn {
             transport,
             projected,
             style,
+            head,
             compact::CompactReason::Manual,
         )
         .await
@@ -3753,12 +3762,15 @@ impl Turn {
 
     /// Compaction (07 §8.2–§8.4, 11): cut, build the head, open a new epoch.
     /// `projected` is reported in `Compacted.before`. Styles only change the head.
+    /// `given` is a ready-made summary body (`Compact::head`): it stands in for
+    /// the summariser and the pre-compaction harvest — no model call at all.
     async fn compact(
         &mut self,
         current: &Current,
         transport: Transport,
         projected: u32,
         r#override: Option<CompactStyle>,
+        given: Option<String>,
         reason: compact::CompactReason,
     ) -> Result<u32, String> {
         let window = self.window(&current.model);
@@ -3775,7 +3787,7 @@ impl Turn {
         // 52 §7.2: a summary reads the images, so pending ones are inspected
         // first (and the notes counted below); cut/clear/snap discard or keep
         // them as they are and make no vision call.
-        let images = if style == CompactStyle::Summary {
+        let images = if style == CompactStyle::Summary && given.is_none() {
             self.prepare_images(current).await?
         } else {
             Vec::new()
@@ -3806,7 +3818,8 @@ impl Turn {
         // Counts this turn's own tool calls too: a session's first long turn compacts
         // with `turns_since_harvest == 0`. `calls` restarts so the turn end only
         // recounts work done after the cut.
-        if self.shared.cfg.knowledge.harvest_every > 0
+        if given.is_none()
+            && self.shared.cfg.knowledge.harvest_every > 0
             && self.shared.depth == 0
             && (self.state.turns_since_harvest > 0 || self.calls > 0)
             && self.knowledge().is_some()
@@ -3852,6 +3865,9 @@ impl Turn {
             CompactStyle::Cut => cut_body(),
             CompactStyle::Clear => {
                 "Context cleared by the user. Nothing of the earlier conversation is carried over; the session and its settings continue.".to_owned()
+            }
+            CompactStyle::Summary if given.is_some() => {
+                compact::neutralise(given.as_deref().unwrap_or_default())
             }
             CompactStyle::Summary => {
                 // `full` is the text-only projection when the model cannot see

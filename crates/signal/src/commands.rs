@@ -638,6 +638,7 @@ async fn compact_cmd(cx: &Cx<'_>, arg: &str) -> anyhow::Result<Reply> {
                 .ask(agent::Compact {
                     session,
                     style: None,
+                    head: None,
                 })
                 .await
                 .map_err(err)?;
@@ -650,6 +651,7 @@ async fn compact_cmd(cx: &Cx<'_>, arg: &str) -> anyhow::Result<Reply> {
                 .ask(agent::Compact {
                     session,
                     style: Some(style),
+                    head: None,
                 })
                 .await
                 .map_err(err)?;

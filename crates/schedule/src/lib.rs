@@ -452,6 +452,7 @@ impl Schedule {
                     .ask(agent::Compact {
                         session: s,
                         style: Some(agent::CompactStyle::Clear),
+                        head: None,
                     })
                     .await
                 {

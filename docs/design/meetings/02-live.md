@@ -14,7 +14,10 @@ persists and publishes — all observable headless over RPC. No UI.
 1. **`voice::stt::Engine` (TDT) is *not* built in this phase.** Deferred to
    phase 4, the only consumer (reconciled 2026-09-20: the tree has `Stream`
    but no `Engine`; extracting it here would be code nobody calls until
-   04). The original design, for phase 4 to execute:
+   04). **Built in phase 4** (2026-09-20, `04-post.md` §10): `Engine`,
+   `Piece`, `Word` as below, `Transcriber.model` is `Arc<Mutex<Option<Engine>>>`,
+   `voice::TDT_MODEL_SUBDIR` names the checkpoint directory. The original
+   design, as executed:
    `crates/voice/src/stt.rs` today holds `ParakeetTDT` privately in
    `Transcriber.model` (`Arc<Mutex<Option<ParakeetTDT>>>`). New `pub struct
    Engine(ParakeetTDT)` with `pub fn load(dir: &Path) -> anyhow::Result<Engine>`

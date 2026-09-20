@@ -10,7 +10,13 @@ use runtime::SessionId;
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
 
+use crate::transcript::{self, Transcript};
 use crate::{DIR, Degradation, MeetingId, MeetingState, ProcessInfo};
+
+/// Summary markdown, inside a meeting's directory (04 §6).
+pub const SUMMARY: &str = "summary.md";
+/// Most hits `search` returns.
+pub const SEARCH_CAP: u32 = 40;
 
 /// Index file name, inside [`DIR`].
 pub const DB: &str = "meetings.sqlite";
@@ -171,6 +177,26 @@ pub struct MeetingSummary {
     pub state: MeetingState,
 }
 
+/// One `meeting_search` hit (04 §5).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct SearchHit {
+    /// The meeting.
+    pub meeting: MeetingId,
+    /// Its title (or the meeting app's name).
+    pub title: String,
+    /// Segment id.
+    pub seg: u32,
+    /// Segment start.
+    pub t0_ms: u64,
+    /// Segment end.
+    pub t1_ms: u64,
+    /// Speaker display name at index time.
+    pub speaker: String,
+    /// FTS snippet; matches in `[…]`.
+    pub snippet: String,
+}
+
 type Row = (
     String,
     String,
@@ -235,6 +261,11 @@ impl Store {
         self.dir.join(id.to_string())
     }
 
+    /// `<data_dir>/meetings/speakers/`.
+    pub fn speakers_dir(&self) -> PathBuf {
+        self.dir.join(crate::speakers::DIR)
+    }
+
     /// Directory + first manifest + index row. Returns the directory.
     pub async fn create(&self, m: &Manifest) -> anyhow::Result<PathBuf> {
         let dir = self.meeting_dir(m.id);
@@ -294,12 +325,27 @@ impl Store {
         rows.into_iter().map(row_to_summary).collect()
     }
 
-    /// Directory, then row.
+    /// The meeting whose session is `session`, if any.
+    pub async fn by_session(&self, session: SessionId) -> anyhow::Result<Option<MeetingId>> {
+        let row: Option<(String,)> = sqlx::query_as("SELECT id FROM meetings WHERE session = ?")
+            .bind(session.to_string())
+            .fetch_optional(&self.pool)
+            .await
+            .context("meeting by session")?;
+        Ok(row.and_then(|(id,)| id.parse().ok()))
+    }
+
+    /// Directory, then its rows (index and segments).
     pub async fn delete(&self, id: MeetingId) -> anyhow::Result<()> {
         let dir = self.meeting_dir(id);
         if dir.exists() {
             std::fs::remove_dir_all(&dir).with_context(|| format!("remove {}", dir.display()))?;
         }
+        sqlx::query("DELETE FROM segments WHERE meeting = ?")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await
+            .context("delete segments")?;
         sqlx::query("DELETE FROM meetings WHERE id = ?")
             .bind(id.to_string())
             .execute(&self.pool)
@@ -308,21 +354,123 @@ impl Store {
         Ok(())
     }
 
-    /// Scan `<dir>/*/manifest.json` into the index (01 §0.4).
+    /// `transcript.json`, if the post pipeline has written one.
+    pub fn transcript(&self, id: MeetingId) -> anyhow::Result<Transcript> {
+        let path = self.meeting_dir(id).join(transcript::FILE);
+        let bytes = std::fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+        serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))
+    }
+
+    /// Rewrite `transcript.json` (`.tmp` + rename) and re-index its segments.
+    pub async fn save_transcript(&self, t: &Transcript) -> anyhow::Result<()> {
+        let dir = self.meeting_dir(t.meeting);
+        let tmp = dir.join(".transcript.json.tmp");
+        std::fs::write(&tmp, serde_json::to_vec(t)?)
+            .with_context(|| format!("write {}", tmp.display()))?;
+        std::fs::rename(&tmp, dir.join(transcript::FILE)).context("rename transcript")?;
+        self.index_transcript(t).await
+    }
+
+    /// `summary.md`.
+    pub fn summary(&self, id: MeetingId) -> anyhow::Result<String> {
+        let path = self.meeting_dir(id).join(SUMMARY);
+        std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))
+    }
+
+    /// Delete the meeting's `segments` rows and insert the transcript's (04 §5).
+    pub async fn index_transcript(&self, t: &Transcript) -> anyhow::Result<()> {
+        let mut tx = self.pool.begin().await.context("begin")?;
+        sqlx::query("DELETE FROM segments WHERE meeting = ?")
+            .bind(t.meeting.to_string())
+            .execute(&mut *tx)
+            .await
+            .context("clear segments")?;
+        for s in &t.segments {
+            sqlx::query(
+                "INSERT INTO segments (meeting, seg, t0, t1, speaker, text) VALUES (?, ?, ?, ?, ?, ?)",
+            )
+            .bind(t.meeting.to_string())
+            .bind(i64::from(s.id))
+            .bind(s.t0_ms as i64)
+            .bind(s.t1_ms as i64)
+            .bind(t.name(&s.speaker))
+            .bind(&s.text)
+            .execute(&mut *tx)
+            .await
+            .context("insert segment")?;
+        }
+        tx.commit().await.context("commit")
+    }
+
+    /// FTS5 over `speaker` and `text`, one meeting or all, best rank first, ≤ [`SEARCH_CAP`].
+    pub async fn search(&self, query: &str, meeting: Option<MeetingId>) -> anyhow::Result<Vec<SearchHit>> {
+        type Hit = (String, Option<String>, String, i64, i64, i64, String, String);
+        let scope = meeting.map(|m| m.to_string());
+        let rows: Vec<Hit> = sqlx::query_as(
+            "SELECT s.meeting, m.title, m.process_name, s.seg, s.t0, s.t1, s.speaker, \
+             snippet(segments, 5, '[', ']', '…', 16) \
+             FROM segments s JOIN meetings m ON m.id = s.meeting \
+             WHERE segments MATCH ? AND (? IS NULL OR s.meeting = ?) ORDER BY rank LIMIT ?",
+        )
+        .bind(fts_query(query))
+        .bind(&scope)
+        .bind(&scope)
+        .bind(i64::from(SEARCH_CAP))
+        .fetch_all(&self.pool)
+        .await
+        .context("search segments")?;
+        rows.into_iter()
+            .map(|(id, title, process, seg, t0, t1, speaker, snippet)| {
+                Ok(SearchHit {
+                    meeting: id.parse().context("meeting id")?,
+                    title: title.unwrap_or(process),
+                    seg: seg as u32,
+                    t0_ms: t0 as u64,
+                    t1_ms: t1 as u64,
+                    speaker,
+                    snippet,
+                })
+            })
+            .collect()
+    }
+
+    /// Every manifest on disk (the directory is truth), unsorted.
+    pub fn manifests(&self) -> Vec<Manifest> {
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return Vec::new();
+        };
+        entries
+            .flatten()
+            .filter_map(|e| e.file_name().to_string_lossy().parse::<MeetingId>().ok())
+            .filter_map(|id| match self.manifest(id) {
+                Ok(m) => Some(m),
+                Err(e) => {
+                    tracing::warn!(meeting = %id, "skipping: {e:#}");
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Scan `<dir>/*/manifest.json` (and `transcript.json`) into the index (01 §0.4, 04 §5).
     async fn rebuild(&self) -> anyhow::Result<()> {
-        let entries =
-            std::fs::read_dir(&self.dir).with_context(|| format!("scan {}", self.dir.display()))?;
-        for entry in entries.flatten() {
-            let Ok(id) = entry.file_name().to_string_lossy().parse::<MeetingId>() else {
-                continue;
-            };
-            match self.manifest(id) {
-                Ok(m) => self.upsert(&m.summary()).await?,
-                Err(e) => tracing::warn!(meeting = %id, "skipping: {e:#}"),
+        for m in self.manifests() {
+            self.upsert(&m.summary()).await?;
+            if let Ok(t) = self.transcript(m.id) {
+                self.index_transcript(&t).await?;
             }
         }
         Ok(())
     }
+}
+
+/// A user query as an FTS5 MATCH expression: every word quoted, so `-`, `:`
+/// and the like are text, not operators; words are ANDed.
+fn fts_query(q: &str) -> String {
+    q.split_whitespace()
+        .map(|w| format!("\"{}\"", w.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[cfg(test)]
@@ -389,5 +537,104 @@ mod tests {
         store.delete(m.id).await.unwrap();
         assert!(!store.meeting_dir(m.id).exists());
         assert_eq!(store.list(10).await.unwrap().len(), 1);
+    }
+
+    fn transcript(meeting: MeetingId, text: &str) -> Transcript {
+        let word = |t: &str, t0: u64| crate::transcript::Word {
+            text: t.into(),
+            t0_ms: t0,
+            t1_ms: t0 + 300,
+        };
+        Transcript {
+            meeting,
+            speakers: vec![
+                crate::transcript::SpeakerLabel {
+                    id: "s1".into(),
+                    name: "Dana".into(),
+                    profile: None,
+                    proposed: None,
+                },
+                crate::transcript::SpeakerLabel {
+                    id: "me".into(),
+                    name: "Me".into(),
+                    profile: None,
+                    proposed: None,
+                },
+            ],
+            segments: vec![
+                crate::transcript::Segment {
+                    id: 0,
+                    track: crate::Track::System,
+                    speaker: "s1".into(),
+                    t0_ms: 5_000,
+                    t1_ms: 8_000,
+                    text: text.into(),
+                    words: vec![word("x", 5_000)],
+                },
+                crate::transcript::Segment {
+                    id: 1,
+                    track: crate::Track::Mic,
+                    speaker: "me".into(),
+                    t0_ms: 9_000,
+                    t1_ms: 9_500,
+                    text: "Right.".into(),
+                    words: vec![word("Right.", 9_000)],
+                },
+            ],
+            reviewed_at: None,
+            summarized_at: None,
+            diarized: true,
+            note: None,
+        }
+    }
+
+    /// Index → search (speaker and text, one meeting or all, hyphenated ticket
+    /// as text) → re-index after an edit finds the new text and not the old →
+    /// delete removes the rows → a rebuilt index picks the file back up.
+    #[tokio::test]
+    async fn fts_round_trip_follows_edits_delete_and_rebuild() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).await.unwrap();
+        let m = manifest();
+        store.create(&m).await.unwrap();
+        let other = manifest();
+        store.create(&other).await.unwrap();
+        store
+            .save_transcript(&transcript(m.id, "The DR sync for SRE-2386 is blocked on the image tags."))
+            .await
+            .unwrap();
+        store
+            .save_transcript(&transcript(other.id, "KEDA scaled the workers again."))
+            .await
+            .unwrap();
+        assert_eq!(store.transcript(m.id).unwrap().segments.len(), 2, "file round trip");
+
+        let hits = store.search("image tags", None).await.unwrap();
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert_eq!((hits[0].meeting, hits[0].seg, hits[0].t0_ms), (m.id, 0, 5_000));
+        assert_eq!(hits[0].speaker, "Dana");
+        assert_eq!(hits[0].title, "Music", "process name when untitled");
+        assert!(hits[0].snippet.contains("[image] [tags]"), "{}", hits[0].snippet);
+        assert_eq!(store.search("SRE-2386", None).await.unwrap().len(), 1, "hyphen is text");
+        assert_eq!(store.search("dana", None).await.unwrap().len(), 2, "speaker is indexed (both meetings)");
+        assert_eq!(store.search("keda", Some(m.id)).await.unwrap().len(), 0, "scoped");
+        assert_eq!(store.search("keda", Some(other.id)).await.unwrap().len(), 1);
+        assert!(store.search("", None).await.is_err() || store.search("", None).await.unwrap().is_empty());
+
+        store
+            .save_transcript(&transcript(m.id, "The DR sync for SRE-2386 is blocked on the container tags."))
+            .await
+            .unwrap();
+        assert!(store.search("image", None).await.unwrap().is_empty(), "old text gone");
+        assert_eq!(store.search("container", None).await.unwrap().len(), 1);
+
+        store.delete(other.id).await.unwrap();
+        assert!(store.search("keda", None).await.unwrap().is_empty(), "rows go with the meeting");
+        drop(store);
+        for f in [DB, "meetings.sqlite-wal", "meetings.sqlite-shm"] {
+            let _ = std::fs::remove_file(tmp.path().join(DIR).join(f));
+        }
+        let store = Store::open(tmp.path()).await.unwrap();
+        assert_eq!(store.search("container", None).await.unwrap().len(), 1, "rebuilt from transcript.json");
     }
 }

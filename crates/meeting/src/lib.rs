@@ -32,15 +32,21 @@ use voice::live::Utterer;
 pub mod batch;
 pub mod capture;
 pub mod ogg;
+pub mod post;
 pub mod session;
+pub mod speakers;
 pub mod state;
 pub mod store;
 pub mod stt;
+pub mod summary;
 pub mod tools;
 pub mod topics;
+pub mod transcript;
 
+pub use speakers::{Profile, Profiles};
 pub use state::{Recording, RecordingClock};
-pub use store::{Gap, Manifest, MeetingSummary, Stem, Store, TrackFile};
+pub use store::{Gap, Manifest, MeetingSummary, SearchHit, Stem, Store, TrackFile};
+pub use transcript::{EditOp, Proposed, Segment, SpeakerLabel, Transcript, Word};
 use state::Prompted;
 use stt::Piece;
 use topics::{Gone, Record};
@@ -54,7 +60,7 @@ pub const LIVE_LOG: &str = "live.jsonl";
 /// Topic/brief records, one [`topics::Record`] per line (02 §7).
 pub const BRIEFS_LOG: &str = "briefs.jsonl";
 /// Most `live.jsonl` lines `LiveText` returns.
-const LIVE_TEXT_CAP: usize = 2_000;
+pub(crate) const LIVE_TEXT_CAP: usize = 2_000;
 /// Free space under which [`Degradation::DiskLow`] is raised (01 §4.4).
 const DISK_LOW_BYTES: u64 = 500 * 1024 * 1024;
 
@@ -105,6 +111,10 @@ id_type!(
 id_type!(
     /// A brief (phase 2).
     BriefId
+);
+id_type!(
+    /// An enrolled speaker profile (phase 4): its file name under `speakers/`.
+    ProfileId
 );
 
 /// Which side of the call a signal came from.
@@ -491,8 +501,9 @@ pub struct PauseMeeting;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ResumeMeeting;
 
-/// `ask` → `Result<(), String>`: `Recording | Paused` → `Stopping` → `Done`.
-/// Replies once the last Ogg pages are on disk.
+/// `ask` → `Result<(), String>`: `Recording | Paused` → `Stopping`, then the post
+/// pipeline (`Post(_)` → `Review`, phase 4) runs in the background. Replies once
+/// the last Ogg pages are on disk.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct StopMeeting;
 
@@ -674,6 +685,72 @@ pub struct AddBrief {
     pub parent: Option<BriefId>,
 }
 
+// Phase 4 (04 §5). All `ask` → `Result<_, String>`.
+
+/// `ask` → `Result<Transcript, String>`: `transcript.json` as on disk.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct GetTranscript {
+    /// Which.
+    pub meeting: MeetingId,
+}
+
+/// `ask` → `Result<Transcript, String>`: apply review edits (all or none),
+/// rewrite `transcript.json`, re-index; the result is the new transcript.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EditTranscript {
+    /// Which.
+    pub meeting: MeetingId,
+    /// In order.
+    pub ops: Vec<EditOp>,
+}
+
+/// `ask` → `Result<String, String>`: `[t0, t1)` of one track as a base64 16-bit
+/// mono WAV (04 §0.5), for the review pane's player.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct SegmentAudio {
+    /// Which.
+    pub meeting: MeetingId,
+    /// Which file.
+    pub track: Track,
+    /// Start.
+    pub t0_ms: u64,
+    /// End.
+    pub t1_ms: u64,
+}
+
+/// `ask` → `Result<Vec<Profile>, String>`: the enrolled speakers, by name.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct ListSpeakers;
+
+/// `ask` → `Result<(), String>`: remove a profile file. Transcripts keep their labels.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct DeleteSpeaker {
+    /// Which.
+    pub profile: ProfileId,
+}
+
+/// `ask` → `Result<(), String>`: `Review` → `Summarizing`; the guided form goes
+/// to the session; `Summarized{title}` (and `Done`) follow when the turn ends.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct Summarize {
+    /// Which.
+    pub meeting: MeetingId,
+}
+
+/// `ask` → `Result<(), String>`: re-run the post pipeline from stage 1.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct PostRetry {
+    /// Which.
+    pub meeting: MeetingId,
+}
+
+/// `ask` → `Result<String, String>`: `summary.md`.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct GetSummary {
+    /// Which.
+    pub meeting: MeetingId,
+}
+
 /// `tell` from the 1 s interval: batcher rule (a), topic expiry.
 struct Tick;
 
@@ -702,6 +779,10 @@ pub struct Meeting {
     /// Set between `StartMeeting` and `Begun`; the manifest of the meeting being set up.
     starting: Option<Manifest>,
     audio_capture: PermissionState,
+    /// Post pipelines in flight (phase 4); finished handles are pruned on access.
+    post: Vec<post::Job>,
+    /// The meeting whose summary turn is running (phase 4).
+    summarizing: Option<Manifest>,
 }
 
 impl Meeting {
@@ -721,6 +802,48 @@ impl Meeting {
             tracing::warn!(meeting = %m.id, "manifest: {e:#}");
         }
         self.publish_state(m).await;
+    }
+
+    /// Model and profile directories for the post pipeline (04 §0.1).
+    fn paths(&self) -> post::Paths {
+        let models = self.rt.data_dir.join("models");
+        post::Paths {
+            tdt: models.join(voice::TDT_MODEL_SUBDIR),
+            models: self
+                .cfg
+                .models_dir
+                .clone()
+                .unwrap_or_else(|| models.join("pyannote")),
+            speakers: self.rt.data_dir.join(DIR).join(speakers::DIR),
+        }
+    }
+
+    /// Start (or refuse to duplicate) the post pipeline for `manifest`.
+    fn start_post(&mut self, manifest: Manifest) -> Result<(), String> {
+        self.post.retain(|j| !j.handle.is_finished());
+        if self.post.iter().any(|j| j.meeting == manifest.id) {
+            return Err("the post pipeline is already running for that meeting".into());
+        }
+        self.post.push(post::spawn(
+            self.rt.clone(),
+            self.store.clone(),
+            manifest,
+            self.paths(),
+        ));
+        Ok(())
+    }
+
+    /// The manifest of a meeting that is not the live one.
+    fn stored(&self, id: MeetingId) -> Result<Manifest, String> {
+        let live = self
+            .current
+            .as_ref()
+            .map(|r| r.manifest.id)
+            .or_else(|| self.starting.as_ref().map(|m| m.id));
+        if live == Some(id) {
+            return Err("that meeting is recording; stop it first".into());
+        }
+        self.store.manifest(id).map_err(|e| format!("{e:#}"))
     }
 
     fn state(&self) -> MeetingState {
@@ -885,7 +1008,10 @@ fn times(clock: &RecordingClock, p: &Piece) -> (u64, u64) {
 }
 
 /// The last `cap` JSON lines of `path`, parsed; a missing file is empty.
-fn read_jsonl<T: serde::de::DeserializeOwned>(path: &Path, cap: usize) -> Result<Vec<T>, String> {
+pub(crate) fn read_jsonl<T: serde::de::DeserializeOwned>(
+    path: &Path,
+    cap: usize,
+) -> Result<Vec<T>, String> {
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -1366,8 +1492,12 @@ impl Message<StopMeeting> for Meeting {
         tools::unregister().await;
         manifest.ended_at = Some(chrono::Local::now().to_rfc3339());
         manifest.duration_ms = Some(clock.now_ms());
-        manifest.state = MeetingState::Done;
+        // 04 §2: the post pipeline takes it from here (its task saves `Post(_)`,
+        // `Review` or `Failed` and publishes them); `Stopping` is what we leave on disk.
         self.save(&manifest).await;
+        if let Err(e) = self.start_post(manifest) {
+            tracing::warn!("meeting: post: {e}");
+        }
         Ok(())
     }
 }
@@ -1438,6 +1568,13 @@ impl Message<DeleteMeeting> for Meeting {
             return reply;
         }
         let session = self.store.manifest(m.meeting).ok().map(|m| m.session);
+        // A pipeline still working on it would only fail on the missing directory.
+        self.post.retain(|j| {
+            if j.meeting == m.meeting {
+                j.handle.abort();
+            }
+            j.meeting != m.meeting
+        });
         if let Err(e) = self.store.delete(m.meeting).await {
             tx.send(Err(format!("{e:#}")));
             return reply;
@@ -1529,8 +1666,22 @@ impl Message<Tick> for Meeting {
 impl Message<AgentEvent> for Meeting {
     type Reply = ();
 
-    /// 02 §0.4: turn state and model health of the meeting session.
+    /// 02 §0.4: turn state and model health of the meeting session. 04 §6: the
+    /// summary turn's end hands the finished meeting to `summary::spawn`.
     async fn handle(&mut self, ev: AgentEvent, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        if let AgentEvent::TurnFinished {
+            session,
+            stop_reason,
+            ..
+        } = &ev
+            && self.summarizing.as_ref().is_some_and(|m| m.session == *session)
+        {
+            let m = self.summarizing.take().expect("checked");
+            let error = (stop_reason == "error" || stop_reason == "cancelled")
+                .then(|| format!("the summary turn ended with {stop_reason}"));
+            summary::spawn(self.rt.clone(), self.store.clone(), m, error);
+            return;
+        }
         let Some(rec) = self.current.as_mut() else { return };
         match ev {
             AgentEvent::TurnStarted { session, .. } if session == rec.manifest.session => {
@@ -1817,6 +1968,171 @@ impl Message<AddBrief> for Meeting {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 4 handlers (04 §5)
+
+impl Message<GetTranscript> for Meeting {
+    type Reply = Result<Transcript, String>;
+
+    async fn handle(&mut self, m: GetTranscript, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.store.transcript(m.meeting).map_err(|e| format!("{e:#}"))
+    }
+}
+
+impl Message<EditTranscript> for Meeting {
+    type Reply = Result<Transcript, String>;
+
+    /// All ops or none: applied to a copy, saved (and re-indexed) only on `Ok`.
+    async fn handle(&mut self, m: EditTranscript, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let manifest = self.stored(m.meeting)?;
+        if matches!(
+            manifest.state,
+            MeetingState::Post(_) | MeetingState::Summarizing
+        ) {
+            return Err(format!("{:?}: wait for it to finish", manifest.state));
+        }
+        let mut t = self.store.transcript(m.meeting).map_err(|e| format!("{e:#}"))?;
+        let dir = self.store.meeting_dir(m.meeting);
+        let embeddings: std::collections::HashMap<String, Vec<f32>> =
+            std::fs::read(dir.join(transcript::EMBEDDINGS))
+                .ok()
+                .and_then(|b| serde_json::from_slice(&b).ok())
+                .unwrap_or_default();
+        let mut profiles = Profiles::load(&self.paths().speakers).map_err(|e| format!("{e:#}"))?;
+        transcript::apply(&mut t, &m.ops, &embeddings, &mut profiles)?;
+        self.store
+            .save_transcript(&t)
+            .await
+            .map_err(|e| format!("{e:#}"))?;
+        Ok(t)
+    }
+}
+
+impl Message<SegmentAudio> for Meeting {
+    type Reply = DelegatedReply<Result<String, String>>;
+
+    /// Off the mailbox: a whole-file decode (04 §0.5) is seconds for a long track.
+    async fn handle(&mut self, m: SegmentAudio, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let manifest = match self.store.manifest(m.meeting) {
+            Ok(x) => x,
+            Err(e) => {
+                tx.send(Err(format!("{e:#}")));
+                return reply;
+            }
+        };
+        let stem = match m.track {
+            Track::Mic => Stem::Mic,
+            Track::System => Stem::System,
+        };
+        let path = self.store.meeting_dir(m.meeting).join(
+            manifest
+                .tracks
+                .iter()
+                .find(|t| t.track == stem)
+                .map_or(stem.file(), |t| t.file.as_str()),
+        );
+        tokio::spawn(async move {
+            let r = tokio::task::spawn_blocking(move || segment_wav(&path, m.t0_ms, m.t1_ms))
+                .await
+                .map_err(|e| e.to_string())
+                .and_then(|r| r.map_err(|e| format!("{e:#}")));
+            tx.send(r);
+        });
+        reply
+    }
+}
+
+/// `[t0, t1)` of the Opus file at `path` as a base64 16-bit mono WAV at the decoder's rate.
+fn segment_wav(path: &Path, t0_ms: u64, t1_ms: u64) -> anyhow::Result<String> {
+    use base64::Engine as _;
+    if t1_ms <= t0_ms {
+        anyhow::bail!("empty span");
+    }
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("opus");
+    // ponytail: whole-file decode (~2 s for 3 h); page seeking if a click ever feels slow.
+    let (pcm, rate) = voice::decode(std::fs::read(path)?, ext)?;
+    let at = |ms: u64| ((ms * u64::from(rate) / 1000) as usize).min(pcm.len());
+    let slice = &pcm[at(t0_ms)..at(t1_ms)];
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: rate,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut out = std::io::Cursor::new(Vec::with_capacity(44 + slice.len() * 2));
+    {
+        let mut w = hound::WavWriter::new(&mut out, spec)?;
+        for s in slice {
+            w.write_sample((s.clamp(-1.0, 1.0) * f32::from(i16::MAX)) as i16)?;
+        }
+        w.finalize()?;
+    }
+    Ok(base64::engine::general_purpose::STANDARD.encode(out.into_inner()))
+}
+
+impl Message<ListSpeakers> for Meeting {
+    type Reply = Result<Vec<Profile>, String>;
+
+    async fn handle(&mut self, _: ListSpeakers, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        Profiles::load(&self.paths().speakers)
+            .map(|p| p.list())
+            .map_err(|e| format!("{e:#}"))
+    }
+}
+
+impl Message<DeleteSpeaker> for Meeting {
+    type Reply = Result<(), String>;
+
+    async fn handle(&mut self, m: DeleteSpeaker, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        Profiles::load(&self.paths().speakers)
+            .map_err(|e| format!("{e:#}"))?
+            .delete(m.profile)
+    }
+}
+
+impl Message<Summarize> for Meeting {
+    type Reply = Result<(), String>;
+
+    /// 04 §6: `Review` → `Summarizing`; the form is the turn; `AgentEvent::TurnFinished` finishes it.
+    async fn handle(&mut self, m: Summarize, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let mut manifest = self.stored(m.meeting)?;
+        if manifest.state != MeetingState::Review {
+            return Err(format!("{:?}: review it first", manifest.state));
+        }
+        if self.summarizing.is_some() {
+            return Err("another meeting is being summarized".into());
+        }
+        session::deliver(manifest.session, summary::SUMMARY_FORM.to_owned(), false).await?;
+        manifest.state = MeetingState::Summarizing;
+        manifest.failure = None;
+        self.save(&manifest).await;
+        self.summarizing = Some(manifest);
+        Ok(())
+    }
+}
+
+impl Message<PostRetry> for Meeting {
+    type Reply = Result<(), String>;
+
+    async fn handle(&mut self, m: PostRetry, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let manifest = self.stored(m.meeting)?;
+        if manifest.ended_at.is_none() || manifest.state == MeetingState::Summarizing {
+            return Err(format!("{:?}: not a finished meeting", manifest.state));
+        }
+        self.start_post(manifest)
+    }
+}
+
+impl Message<GetSummary> for Meeting {
+    type Reply = Result<String, String>;
+
+    async fn handle(&mut self, m: GetSummary, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.store.summary(m.meeting).map_err(|e| format!("{e:#}"))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Plugin
 
 /// The plugin: opens the store, spawns and registers [`Meeting`].
@@ -1848,23 +2164,45 @@ impl runtime::Plugin for MeetingPlugin {
                 return Ok(());
             }
         };
-        let actor = Meeting::spawn_with_mailbox(
-            Meeting {
-                rt: rt.clone(),
-                cfg,
-                store,
-                current: None,
-                starting: None,
-                audio_capture: PermissionState::NotDetermined,
-            },
-            runtime::subscriber_mailbox(),
-        );
+        // 04 §2: a restart mid-pipeline resumes it; a `Summarizing` manifest cannot
+        // know whether its turn finished, so it goes back to `Review` for a retry.
+        let (resume, mut settle): (Vec<Manifest>, Vec<Manifest>) = store
+            .manifests()
+            .into_iter()
+            .filter(|m| {
+                matches!(m.state, MeetingState::Post(_) | MeetingState::Summarizing)
+                    || (m.state == MeetingState::Stopping && m.ended_at.is_some())
+            })
+            .partition(|m| m.state != MeetingState::Summarizing);
+        for m in &mut settle {
+            m.state = MeetingState::Review;
+            m.failure = Some("summary: the daemon restarted during the summary turn".into());
+            if let Err(e) = store.save(m).await {
+                tracing::warn!(meeting = %m.id, "manifest: {e:#}");
+            }
+        }
+        let mut meeting = Meeting {
+            rt: rt.clone(),
+            cfg,
+            store: store.clone(),
+            current: None,
+            starting: None,
+            audio_capture: PermissionState::NotDetermined,
+            post: Vec::new(),
+            summarizing: None,
+        };
+        for m in resume {
+            tracing::info!(meeting = %m.id, "meeting: resuming the post pipeline");
+            let _ = meeting.start_post(m);
+        }
+        let actor = Meeting::spawn_with_mailbox(meeting, runtime::subscriber_mailbox());
         actor.register(MEETING_ACTOR)?;
         // 02 §0.4: turn state and approvals of the meeting session.
         rt.subscribe::<Meeting, AgentEvent>(&actor).await;
         rt.subscribe::<Meeting, ApprovalRequested>(&actor).await;
         rt.subscribe::<Meeting, ApprovalResolved>(&actor).await;
-        // 02 §5.3: what `[meeting …]` lines mean; static, registered once.
+        // 02 §5.3: what `[meeting …]` lines mean; static, registered once. 04 §5:
+        // the four post tools read the store and live for the whole process.
         let rt = rt.clone();
         tokio::spawn(async move {
             if let Some(reg) = rt
@@ -1877,6 +2215,7 @@ impl runtime::Plugin for MeetingPlugin {
                         text: tools::PROMPT.to_owned(),
                     })
                     .await;
+                tools::register_post(&reg, store).await;
             }
         });
         Ok(())

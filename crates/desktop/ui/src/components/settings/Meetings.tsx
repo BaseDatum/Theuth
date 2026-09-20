@@ -1,21 +1,28 @@
 // 53 decisions 9–10 / 03 §3: Settings › Meetings — the eye (hidden from capture) with its hotkey, the
-// push-to-talk hotkey, and the black-screenshot note. All desktop-local (`lib/meeting-settings.ts`).
+// push-to-talk hotkey, and the black-screenshot note. All desktop-local (`lib/meeting-settings.ts`) — except
+// the enrolled speaker profiles (04 §7), which are the daemon's.
 
+import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 import { toast } from 'sonner'
-import { Row, Section } from '@/components/settings/shared'
+import { Empty, Row, Section, errorText, useAction } from '@/components/settings/shared'
+import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { chordOf, probeShortcut } from '@/lib/meeting-hotkeys'
 import { DEFAULT_EYE, DEFAULT_PTT, useMeetingSettings } from '@/lib/meeting-settings'
 import { isMacDesktop } from '@/lib/hotkeys'
+import { queryKeys, useApi } from '@/lib/rpc'
 import { setHiddenFromCapture } from '@/lib/tauri'
 
 export function Meetings() {
+  const api = useApi()
   const hidden = useMeetingSettings((s) => s.hidden)
   const ptt = useMeetingSettings((s) => s.ptt)
   const eye = useMeetingSettings((s) => s.eye)
   const local = isMacDesktop()
+  const speakers = useQuery({ queryKey: queryKeys.meetingSpeakers, queryFn: () => api.meeting_speakers() })
+  const del = useAction((profile: string) => api.meeting_speaker_delete(profile), { keys: [queryKeys.meetingSpeakers] })
   return (
     <>
       <Section title="Screen capture">
@@ -36,6 +43,17 @@ export function Meetings() {
         >
           <Hotkey kind="ptt" value={ptt} fallback={DEFAULT_PTT} />
         </Row>
+      </Section>
+      <Section title="Enrolled speakers">
+        {speakers.isError && <Empty>{errorText(speakers.error)}</Empty>}
+        {speakers.data?.length === 0 && <Empty>No enrolled speakers yet. Enroll one from a meeting's review pane.</Empty>}
+        {speakers.data?.map((p) => (
+          <Row key={p.id} label={p.name} description={`${p.entity ?? '—'} · ${p.samples} sample${p.samples === 1 ? '' : 's'}`}>
+            <Button variant="outline" size="sm" disabled={del.isPending} onClick={() => del.mutate(p.id)}>
+              Delete
+            </Button>
+          </Row>
+        ))}
       </Section>
     </>
   )

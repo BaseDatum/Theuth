@@ -2052,7 +2052,10 @@ impl Message<Compact> for Agents {
         tokio::spawn(async move {
             tx.send(
                 actor
-                    .ask(CompactNow { style: m.style })
+                    .ask(CompactNow {
+                        style: m.style,
+                        head: m.head,
+                    })
                     .await
                     .map_err(|e| e.to_string()),
             );

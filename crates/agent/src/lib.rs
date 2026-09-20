@@ -240,14 +240,20 @@ pub async fn answer_ask(
 
 /// `ask` → `Result<u32 /* epoch */, String>`: compact `session` now,
 /// threshold ignored (design doc 07 §8.6). Refused while a turn is running.
-/// `style: None` uses the configured default (design doc 11).
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+/// `style: None` uses the configured default (design doc 11). `head: Some`
+/// (meetings, 53 §0.7) is the summary body: no summariser and no pre-compaction
+/// harvest call is made — the caller has done both — and the harness parts
+/// (roster, todos, files, …) are assembled around it as usual.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Compact {
     /// Session to compact.
     pub session: SessionId,
     /// One-shot style; `None` = configured default.
     #[serde(default)]
     pub style: Option<CompactStyle>,
+    /// A ready-made summary body instead of the summariser's.
+    #[serde(default)]
+    pub head: Option<String>,
 }
 
 /// `ask` → `Result<(), String>`: persist `agent.compact_style` and update live sessions.

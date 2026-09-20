@@ -396,6 +396,7 @@ async fn run(cmd: Cmd, cx: &CommandCx<'_>) -> anyhow::Result<Outcome> {
                 .ask(agent::Compact {
                     session,
                     style: None,
+                    head: None,
                 })
                 .await
                 .map_err(err)?;

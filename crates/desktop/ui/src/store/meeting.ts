@@ -13,6 +13,7 @@ import type { MeetingState } from '@/rpc/bindings/MeetingState'
 import type { MeetingStatus } from '@/rpc/bindings/MeetingStatus'
 import type { Topic } from '@/rpc/bindings/Topic'
 import type { TopicId } from '@/rpc/bindings/TopicId'
+import type { PostStage } from '@/rpc/bindings/PostStage'
 import { on } from '@/store/sessions'
 
 export type MeetingSlice = {
@@ -35,6 +36,8 @@ export type MeetingSlice = {
   approvalWaiting: boolean
   /** What the meeting's session is doing right now: `thinking…`, a tool name, or nothing between turns. */
   activity: string | null
+  /** Post pipeline (04 §7): the stage `state` is in and its 0–100 progress; `null` outside `Post`. */
+  progress: { stage: PostStage; pct: number } | null
 }
 
 type MeetingStore = MeetingSlice & {
@@ -60,6 +63,7 @@ const EMPTY: MeetingSlice = {
   listening: false,
   approvalWaiting: false,
   activity: null,
+  progress: null,
 }
 
 /** The recording clock is on while recording (pauses are gaps, 01 §3). */
@@ -89,6 +93,7 @@ export function reduce(s: MeetingSlice, e: MeetingEvent): MeetingSlice {
         listening: live(e.state) && s.listening,
         approvalWaiting: live(e.state) && s.approvalWaiting,
         activity: live(e.state) ? s.activity : null,
+        progress: typeof e.state === 'object' ? s.progress : null,
       }
     }
     case 'TopicAdded':
@@ -107,6 +112,11 @@ export function reduce(s: MeetingSlice, e: MeetingEvent): MeetingSlice {
       return { ...s, listening: e.held }
     case 'ApprovalWaiting':
       return { ...s, approvalWaiting: e.waiting }
+    case 'PostProgress':
+      if (s.meeting !== null && s.meeting !== e.meeting) return s
+      return { ...s, meeting: e.meeting, state: { Post: e.stage }, progress: { stage: e.stage, pct: e.pct } }
+    case 'ReviewReady':
+      return s.meeting === e.meeting ? { ...s, state: 'Review', progress: null } : s
     case 'Deleted':
       return s.meeting === e.meeting ? EMPTY : s
     default:
@@ -160,7 +170,20 @@ export function installMeetingListeners(): () => void {
     if (useMeeting.getState().session === session) useMeeting.setState({ activity })
   }
   const offs = [
-    ...(['Started', 'State', 'TopicAdded', 'TopicRemoved', 'Brief', 'Listening', 'ApprovalWaiting', 'Deleted'] as const).map((t) =>
+    ...(
+      [
+        'Started',
+        'State',
+        'TopicAdded',
+        'TopicRemoved',
+        'Brief',
+        'Listening',
+        'ApprovalWaiting',
+        'PostProgress',
+        'ReviewReady',
+        'Deleted',
+      ] as const
+    ).map((t) =>
       on(t, apply),
     ),
     on('TurnStarted', (e) => activity(e.session, 'thinking…')),

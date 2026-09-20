@@ -820,7 +820,8 @@ pub trait Api {
     /// Resume after `meeting_pause`.
     #[method(name = "meeting_resume")]
     async fn meeting_resume(&self) -> RpcResult<()>;
-    /// Stop; replies once the last Ogg pages are written and the manifest says `Done`.
+    /// Stop; replies once the last Ogg pages are written. The post pipeline then
+    /// runs in the background (`PostProgress` → `ReviewReady`, 04 §2).
     #[method(name = "meeting_stop")]
     async fn meeting_stop(&self) -> RpcResult<()>;
     /// The current meeting's state, ids, elapsed recording time and degradations.
@@ -867,6 +868,30 @@ pub trait Api {
     /// A meeting's live transcript (`live.jsonl`, last 2 000 utterances).
     #[method(name = "meeting_live")]
     async fn meeting_live(&self, id: meeting::MeetingId) -> RpcResult<Vec<meeting::Utterance>>;
+    /// Phase 4 (04 §5). The transcript of record (`transcript.json`), once the post pipeline is done.
+    #[method(name = "meeting_transcript")]
+    async fn meeting_transcript(&self, id: meeting::MeetingId) -> RpcResult<meeting::Transcript>;
+    /// Apply review edits in order — all or none — and return the new transcript.
+    #[method(name = "meeting_edit")]
+    async fn meeting_edit(&self, id: meeting::MeetingId, ops: Vec<meeting::EditOp>) -> RpcResult<meeting::Transcript>;
+    /// `[t0, t1)` of one track as a base64 16-bit mono WAV (48 kHz), for the review pane's player.
+    #[method(name = "meeting_segment_audio")]
+    async fn meeting_segment_audio(&self, id: meeting::MeetingId, track: meeting::Track, t0_ms: u64, t1_ms: u64) -> RpcResult<String>;
+    /// Enrolled speaker profiles (embedding omitted).
+    #[method(name = "meeting_speakers")]
+    async fn meeting_speakers(&self) -> RpcResult<Vec<meeting::Profile>>;
+    /// Delete a speaker profile file. Transcripts keep their labels.
+    #[method(name = "meeting_speaker_delete")]
+    async fn meeting_speaker_delete(&self, profile: meeting::ProfileId) -> RpcResult<()>;
+    /// `Review` → `Summarizing`: the guided summary turn; `Summarized{title}` and `State{Done}` follow.
+    #[method(name = "meeting_summarize")]
+    async fn meeting_summarize(&self, id: meeting::MeetingId) -> RpcResult<()>;
+    /// Re-run the post pipeline from the Opus files.
+    #[method(name = "meeting_post_retry")]
+    async fn meeting_post_retry(&self, id: meeting::MeetingId) -> RpcResult<()>;
+    /// `summary.md`.
+    #[method(name = "meeting_summary")]
+    async fn meeting_summary(&self, id: meeting::MeetingId) -> RpcResult<String>;
     /// Fire a schedule now, ignoring `next`; returns its session (34 §8).
     /// Refused while a run is in flight (`busy`) or the file does not parse.
     #[method(name = "fire_schedule")]
@@ -1455,7 +1480,15 @@ impl ApiServer for Server {
         style: Option<CompactStyle>,
     ) -> RpcResult<u32> {
         self.authorize(ext, session).await?;
-        ask::<Agents, _>(agent::AGENT_ACTOR, Compact { session, style }).await
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            Compact {
+                session,
+                style,
+                head: None,
+            },
+        )
+        .await
     }
 
     async fn undo(&self, ext: &Extensions, session: SessionId) -> RpcResult<String> {
@@ -2468,6 +2501,57 @@ impl ApiServer for Server {
 
     async fn meeting_live(&self, id: meeting::MeetingId) -> RpcResult<Vec<meeting::Utterance>> {
         send(&meeting()?, meeting::LiveText { meeting: id }).await
+    }
+
+    async fn meeting_transcript(&self, id: meeting::MeetingId) -> RpcResult<meeting::Transcript> {
+        send(&meeting()?, meeting::GetTranscript { meeting: id }).await
+    }
+
+    async fn meeting_edit(
+        &self,
+        id: meeting::MeetingId,
+        ops: Vec<meeting::EditOp>,
+    ) -> RpcResult<meeting::Transcript> {
+        send(&meeting()?, meeting::EditTranscript { meeting: id, ops }).await
+    }
+
+    async fn meeting_segment_audio(
+        &self,
+        id: meeting::MeetingId,
+        track: meeting::Track,
+        t0_ms: u64,
+        t1_ms: u64,
+    ) -> RpcResult<String> {
+        send(
+            &meeting()?,
+            meeting::SegmentAudio {
+                meeting: id,
+                track,
+                t0_ms,
+                t1_ms,
+            },
+        )
+        .await
+    }
+
+    async fn meeting_speakers(&self) -> RpcResult<Vec<meeting::Profile>> {
+        send(&meeting()?, meeting::ListSpeakers).await
+    }
+
+    async fn meeting_speaker_delete(&self, profile: meeting::ProfileId) -> RpcResult<()> {
+        send(&meeting()?, meeting::DeleteSpeaker { profile }).await
+    }
+
+    async fn meeting_summarize(&self, id: meeting::MeetingId) -> RpcResult<()> {
+        send(&meeting()?, meeting::Summarize { meeting: id }).await
+    }
+
+    async fn meeting_post_retry(&self, id: meeting::MeetingId) -> RpcResult<()> {
+        send(&meeting()?, meeting::PostRetry { meeting: id }).await
+    }
+
+    async fn meeting_summary(&self, id: meeting::MeetingId) -> RpcResult<String> {
+        send(&meeting()?, meeting::GetSummary { meeting: id }).await
     }
 
     async fn fire_schedule(&self, name: String) -> RpcResult<SessionId> {

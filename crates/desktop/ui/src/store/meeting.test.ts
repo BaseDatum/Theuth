@@ -75,3 +75,19 @@ test('the cues end with the recording and Deleted empties the slice', () => {
   s = reduce(s, { type: 'Deleted', meeting: M })
   expect(s.meeting).toBeNull()
 })
+
+test('PostProgress moves the state into Post with its pct; ReviewReady lands on Review and drops the bar', () => {
+  let s = fresh()
+  s = reduce(s, { type: 'State', meeting: M, state: { Post: 'Transcribing' }, degraded: [] })
+  s = reduce(s, { type: 'PostProgress', meeting: M, stage: 'Transcribing', pct: 30 })
+  expect([s.state, s.progress]).toEqual([{ Post: 'Transcribing' }, { stage: 'Transcribing', pct: 30 }])
+  s = reduce(s, { type: 'PostProgress', meeting: M, stage: 'Diarizing', pct: 70 })
+  expect(s.state).toEqual({ Post: 'Diarizing' })
+  // A State event for the same Post stage keeps the bar; ReviewReady clears it.
+  s = reduce(s, { type: 'State', meeting: M, state: { Post: 'Diarizing' }, degraded: [] })
+  expect(s.progress?.pct).toBe(70)
+  s = reduce(s, { type: 'PostProgress', meeting: 'other', stage: 'Aligning', pct: 95 })
+  expect(s.progress?.pct).toBe(70)
+  s = reduce(s, { type: 'ReviewReady', meeting: M })
+  expect([s.state, s.progress]).toEqual(['Review', null])
+})

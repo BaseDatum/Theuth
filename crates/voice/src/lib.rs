@@ -34,7 +34,7 @@ pub use dictation::{
 };
 use kameo::reply::ReplySender;
 use speak::{Progress, Report};
-pub use stt::Transcriber;
+pub use stt::{Engine, PIECE, Piece, Transcriber, Word, decode, resample};
 
 /// Actor name the RPC layer looks up for live dictation (54 §4.3).
 pub const DICTATION_ACTOR: &str = "dictation";
@@ -43,6 +43,10 @@ pub const DICTATION_ACTOR: &str = "dictation";
 /// dictation default, and the meeting plugin's default `live_model_dir` —
 /// one checkpoint for both, without either reading the other's config section.
 pub const STREAMING_MODEL_SUBDIR: &str = "nemotron-streaming-en";
+
+/// The Parakeet TDT checkpoint under `<data_dir>/models/` (45 §4.6): the
+/// `Transcriber` default and the meeting plugin's transcript-of-record engine.
+pub const TDT_MODEL_SUBDIR: &str = "parakeet-tdt";
 
 /// One dictation (mic open → mic closed). Time-ordered like [`SpeechId`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
@@ -676,7 +680,7 @@ impl runtime::Plugin for VoicePlugin {
         let stt_dir = cfg
             .stt_model_dir
             .clone()
-            .unwrap_or_else(|| rt.data_dir.join("models/parakeet-tdt"));
+            .unwrap_or_else(|| rt.data_dir.join("models").join(TDT_MODEL_SUBDIR));
         let stt = Transcriber::spawn(Transcriber::new(
             stt_dir,
             Duration::from_secs(cfg.stt_idle_secs),

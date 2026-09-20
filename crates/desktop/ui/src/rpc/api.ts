@@ -26,16 +26,21 @@ import type { McpProgress } from '@/rpc/bindings/McpProgress'
 import type { McpServer } from '@/rpc/bindings/McpServer'
 import type { Brief } from '@/rpc/bindings/Brief'
 import type { BriefId } from '@/rpc/bindings/BriefId'
+import type { EditOp } from '@/rpc/bindings/EditOp'
 import type { Manifest } from '@/rpc/bindings/Manifest'
 import type { MeetingId } from '@/rpc/bindings/MeetingId'
 import type { MeetingStatus } from '@/rpc/bindings/MeetingStatus'
 import type { MeetingSummary } from '@/rpc/bindings/MeetingSummary'
+import type { MeetingTranscript } from '@/rpc/bindings/MeetingTranscript'
 import type { Permissions } from '@/rpc/bindings/Permissions'
 import type { ProcessInfo } from '@/rpc/bindings/ProcessInfo'
+import type { Profile } from '@/rpc/bindings/Profile'
+import type { ProfileId } from '@/rpc/bindings/ProfileId'
 import type { StartMeeting } from '@/rpc/bindings/StartMeeting'
 import type { Started } from '@/rpc/bindings/Started'
 import type { Topic } from '@/rpc/bindings/Topic'
 import type { TopicId } from '@/rpc/bindings/TopicId'
+import type { Track } from '@/rpc/bindings/Track'
 import type { Utterance } from '@/rpc/bindings/Utterance'
 import type { Meta } from '@/rpc/bindings/Meta'
 import type { ModelState } from '@/rpc/bindings/ModelState'
@@ -272,12 +277,16 @@ export interface Api {
   /** Directory, index row, session; refused while it records. */
   meeting_delete(id: MeetingId): Promise<null>
   meeting_dismiss(topic: TopicId): Promise<null>
+  /** Review edits (04 §0.4): all `ops` applied and saved, or none; the message names the refused op. */
+  meeting_edit(id: MeetingId, ops: EditOp[]): Promise<MeetingTranscript>
   meeting_get(id: MeetingId): Promise<Manifest>
   meeting_list(limit: number | null): Promise<MeetingSummary[]>
   /** `live.jsonl`, last 2 000 utterances. */
   meeting_live(id: MeetingId): Promise<Utterance[]>
   meeting_pause(): Promise<null>
   meeting_permissions(): Promise<Permissions>
+  /** Re-run the post pipeline from `Transcribing` after `Failed` (or over a finished meeting). */
+  meeting_post_retry(id: MeetingId): Promise<null>
   /** Processes Core Audio can tap, active first. */
   meeting_processes(): Promise<ProcessInfo[]>
   /** Push-to-talk held/released (53 decision 10). */
@@ -285,12 +294,24 @@ export interface Api {
   /** A typed question; the answer arrives as `Brief{source: Typed}`. */
   meeting_request(text: string): Promise<null>
   meeting_resume(): Promise<null>
+  /** Base64 of a 16-bit mono WAV of `[t0_ms, t1_ms)` on `track` (04 §0.5). */
+  meeting_segment_audio(id: MeetingId, track: Track, t0_ms: number, t1_ms: number): Promise<string>
+  /** Remove an enrolled profile; transcripts keep the name. */
+  meeting_speaker_delete(profile: ProfileId): Promise<null>
+  /** Enrolled speaker profiles, embedding omitted. */
+  meeting_speakers(): Promise<Profile[]>
   /** Replies once the devices are open; `consent` must be `true`. */
   meeting_start(start: StartMeeting): Promise<Started>
   meeting_status(): Promise<MeetingStatus>
   meeting_stop(): Promise<null>
+  /** `Review` → `Summarizing`; `Summarized{title}` then `State{Done}` follow (04 §6). */
+  meeting_summarize(id: MeetingId): Promise<null>
+  /** `summary.md`. */
+  meeting_summary(id: MeetingId): Promise<string>
   meeting_tap(topic: TopicId): Promise<null>
   meeting_topics(): Promise<Topic[]>
+  /** `transcript.json` (04 §3). */
+  meeting_transcript(id: MeetingId): Promise<MeetingTranscript>
   new_session(): Promise<SessionId>
   /** One exchange as `session` recorded it (50 §5.2); never another session's history. */
   peer_message(session: SessionId, id: string): Promise<PeerRecord>
@@ -505,20 +526,28 @@ export const METHODS = [
   'meeting_deeper',
   'meeting_delete',
   'meeting_dismiss',
+  'meeting_edit',
   'meeting_get',
   'meeting_list',
   'meeting_live',
   'meeting_pause',
   'meeting_permissions',
+  'meeting_post_retry',
   'meeting_processes',
   'meeting_ptt',
   'meeting_request',
   'meeting_resume',
+  'meeting_segment_audio',
+  'meeting_speaker_delete',
+  'meeting_speakers',
   'meeting_start',
   'meeting_status',
   'meeting_stop',
+  'meeting_summarize',
+  'meeting_summary',
   'meeting_tap',
   'meeting_topics',
+  'meeting_transcript',
   'new_session',
   'peer_message',
   'pin_session',

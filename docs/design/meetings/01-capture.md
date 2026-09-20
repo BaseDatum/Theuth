@@ -141,8 +141,10 @@ rewritten with the reason, directory kept (the user can delete it).
 
 `StopMeeting`: `Stopping` → `capture.stop()` joins the three threads (the
 encoder flushes and writes the final Ogg pages with the EOS flag) → manifest
-`ended_at`, `duration_ms` → index `upsert` → `Done` (phase 4 replaces the
-last arrow with `Post`).
+`ended_at`, `duration_ms` → index `upsert` → `Done`. Since phase 4 the last
+arrow is `Post(Transcribing)`: `Stopping` is saved with `ended_at` and the
+post pipeline task takes the manifest from there (`04-post.md` §2, §10
+deviation 7) — `Done` is reached only through `Review` → `Summarizing`.
 
 ## 4. Capture
 
