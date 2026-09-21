@@ -1,10 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, getRouteApi, useNavigate } from '@tanstack/react-router'
-import { ChevronLeft, Copy, FileCode, History as HistoryIcon, PanelRight, Trash2 } from 'lucide-react'
-import { type ComponentType, type ReactNode, useMemo, useRef, useState } from 'react'
+import { ChevronLeft, Copy, FileCode, History as HistoryIcon, PanelRight, Sparkles, Trash2, Undo2 } from 'lucide-react'
+import { type ComponentType, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
+import { prefillDraft } from '@/components/chat/Composer'
 import { Editor as BlockEditor } from '@/components/editor/Editor'
-import { useDocument } from '@/components/editor/useDocument'
+import { type LiveDocument, useDocument } from '@/components/editor/useDocument'
 import { Backlinks, Links } from '@/components/knowledge/Backlinks'
 import { Editor, type EditorHandle } from '@/components/knowledge/Editor'
 import { History } from '@/components/knowledge/History'
@@ -29,6 +30,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { useSearchFocus } from '@/hooks/use-search-focus'
+import type { HarnessProvider } from '@/lib/doc/provider'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { isSearchDestination, useSearchOrigin, useSearchState } from '@/lib/search'
@@ -77,6 +79,15 @@ function Doc({
   const mobile = useIsMobile()
   const origin = useSearchOrigin()
   const historical = draft === undefined && change !== undefined && snapshot !== undefined
+  const binding = useMemo(() => ({ knowledge: id }), [id])
+  const live = useDocument(binding)
+  const rootNavigate = useNavigate()
+  // 59 §5.4: "Ask theuth…" opens a new chat whose first line attaches this document (and names a block).
+  const ask = (block?: string) => {
+    const title = live.provider?.meta?.title ?? id
+    prefillDraft(null, `[doc knowledge:${id} "${title.replace(/"/g, '\\"')}"]\n${block ? `about block ${block}: ` : ''}`)
+    void rootNavigate({ to: '/' })
+  }
   const doc = useQuery({
     queryKey: queryKeys.knowledgeDoc(id),
     queryFn: () => api.knowledge_get(id),
@@ -188,17 +199,19 @@ function Doc({
       actions={
         <Actions
           concept={concept}
+          provider={live.provider}
           railOpen={railOpen}
           onRaw={() => setEditing(true)}
           onHistory={() => setSheetOpen(true)}
           onToggleRail={() => setRailOpen((v) => !v)}
+          onAsk={() => ask()}
         />
       }
     >
       <div className="flex min-h-0 flex-1">
         <div ref={column} tabIndex={-1} className="flex min-w-0 flex-1 flex-col outline-none">
           <SearchReturn className="mx-auto mt-2 w-full max-w-[768px] px-4" />
-          <Live id={id} />
+          <Live {...live} onAsk={ask} />
           {/* Under `md` the links rail has no room beside the body; it follows the body instead, still toggled by the same action. */}
           {mobile && railOpen && (
             <section className="max-h-[40%] shrink-0 overflow-y-auto border-t border-border-subtle">{rail}</section>
@@ -247,9 +260,12 @@ function Doc({
 }
 
 /** The current revision in BlockNote over its live document (59 §7.1: created from the file on first open). */
-function Live({ id }: { id: string }) {
-  const binding = useMemo(() => ({ knowledge: id }), [id])
-  const { provider, status, error } = useDocument(binding)
+function Live({
+  provider,
+  status,
+  error,
+  onAsk,
+}: LiveDocument & { onAsk: (block: string) => void }) {
   if (error) {
     return <p className="m-auto max-w-full px-6 text-center text-sm text-danger wrap-anywhere">{error.message}</p>
   }
@@ -262,7 +278,7 @@ function Live({ id }: { id: string }) {
       </div>
     )
   }
-  return <BlockEditor provider={provider} status={status} />
+  return <BlockEditor provider={provider} status={status} onAsk={onAsk} />
 }
 
 /** 52 px bar (id left, actions right) over the pane body. Under `md` a back chevron returns to the tree and a search trigger trails the actions (49 §5.1). */
@@ -304,16 +320,20 @@ function Frame({
 
 function Actions({
   concept,
+  provider,
   railOpen,
   onRaw,
   onHistory,
   onToggleRail,
+  onAsk,
 }: {
   concept: Concept
+  provider: HarnessProvider | null
   railOpen: boolean
   onRaw: () => void
   onHistory: () => void
   onToggleRail: () => void
+  onAsk: () => void
 }) {
   const api = useApi()
   const qc = useQueryClient()
@@ -330,9 +350,31 @@ function Actions({
     },
     onError: (e) => toast.error(e.message),
   })
+  // 59 §5.5: enabled once the agent has edited this document while it was open.
+  const [agentEdits, setAgentEdits] = useState(provider?.agentEdits ?? 0)
+  useEffect(() => {
+    if (!provider) return
+    setAgentEdits(provider.agentEdits)
+    return provider.onAuthored((a) => a.by.who === 'agent' && setAgentEdits(provider.agentEdits))
+  }, [provider])
+  const undo = useMutation({
+    mutationFn: () => api.doc_undo_agent(provider!.id),
+    onSuccess: () => {
+      toast('Undid the last agent edit')
+      setAgentEdits(0)
+    },
+    onError: (e) => toast.error(e.message),
+  })
   const cited = concept.cited_by.length
   return (
     <>
+      <Action label="Ask theuth…" icon={Sparkles} onClick={onAsk} />
+      <Action
+        label="Undo last agent edit"
+        icon={Undo2}
+        onClick={() => undo.mutate()}
+        disabled={!provider || agentEdits === 0 || undo.isPending}
+      />
       <Action label="Open raw" icon={FileCode} onClick={onRaw} />
       <Action label="History" icon={HistoryIcon} onClick={onHistory} />
       <Action
@@ -384,11 +426,13 @@ function Action({
   icon: Icon,
   onClick,
   pressed,
+  disabled,
 }: {
   label: string
   icon: ComponentType<{ className?: string }>
   onClick: () => void
   pressed?: boolean
+  disabled?: boolean
 }) {
   return (
     <Tooltip>
@@ -398,9 +442,10 @@ function Action({
           className="size-11 rounded-xl"
           aria-label={label}
           aria-pressed={pressed}
+          disabled={disabled}
           onClick={onClick}
         >
-          <Icon className={cn('size-[18px]', pressed === false && 'text-fg-tertiary')} />
+          <Icon className={cn('size-[18px]', (pressed === false || disabled) && 'text-fg-tertiary')} />
         </Button>
       </TooltipTrigger>
       <TooltipContent>{label}</TooltipContent>

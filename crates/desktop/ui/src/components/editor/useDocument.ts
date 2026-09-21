@@ -12,11 +12,13 @@ const noop = () => () => {}
  * Resolve `binding` to its document (created on demand for knowledge, 59 §7.1) and hold one shared
  * provider for it while mounted (§6.5). `provider` is `null` until resolved; `error` when the harness refused.
  */
-export function useDocument(binding: Binding): {
+export type LiveDocument = {
   provider: HarnessProvider | null
   status: DocStatus
   error: Error | null
-} {
+}
+
+export function useDocument(binding: Binding): LiveDocument {
   const api = useApi()
   const client = useConnection((s) => s.client)
   const resolved = useQuery({

@@ -199,6 +199,8 @@ export interface Api {
   doc_snapshots(doc: DocId): Promise<SnapshotInfo[]>
   /** Import a snapshot's markdown as one diff transaction (59 §4.6). */
   doc_restore(doc: DocId, snapshot: string): Promise<null>
+  /** Revert the last agent edit of `doc` as the owner (59 §5.5 page menu); rejects when there is none. */
+  doc_undo_agent(doc: DocId): Promise<null>
   /** Rewrite a schedule's `enabled:` line (33 §3.5; the toggle); rejects with `no such schedule`. */
   enable_schedule(name: string, enabled: boolean): Promise<ScheduleInfo>
   /** Copy artifact `id`'s blob to `dest` (parent created; refuses to overwrite); returns `dest` (35 §3.5). */
@@ -528,6 +530,7 @@ export const METHODS = [
   'doc_resolve',
   'doc_restore',
   'doc_snapshots',
+  'doc_undo_agent',
   'doc_update',
   'edit_turn',
   'enable_schedule',

@@ -12,9 +12,11 @@ import {
 import { BlockNoteView } from '@blocknote/shadcn'
 import '@blocknote/shadcn/style.css'
 import { FRAGMENT, createDocumentSchema } from '@theuth/documents/schema'
-import { useEffect, useState, useSyncExternalStore } from 'react'
+import { Sparkles } from 'lucide-react'
+import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import { frontmatterBlock } from '@/components/editor/FrontmatterBlock'
-import type { DocStatus, HarnessProvider } from '@/lib/doc/provider'
+import { revealExtension } from '@/components/editor/reveal'
+import type { AgentPresence, DocStatus, HarnessProvider } from '@/lib/doc/provider'
 import { subscribeDark } from '@/lib/theme'
 import { cn } from 'cn'
 
@@ -45,9 +47,23 @@ function DocSideMenu(props: SideMenuProps) {
   return type === 'frontmatter' ? null : <SideMenu {...props} />
 }
 
-/** BlockNote over a live `HarnessProvider` (59 §3.3); the status line of §9.4 sits under it. */
-export function Editor({ provider, status, className }: { provider: HarnessProvider; status: DocStatus; className?: string }) {
+/**
+ * BlockNote over a live `HarnessProvider` (59 §3.3); the status line of §9.4 sits under it.
+ * `onAsk(block)` is the "Ask theuth…" slash item (§9.3): the host opens a chat about this document and block.
+ */
+export function Editor({
+  provider,
+  status,
+  className,
+  onAsk,
+}: {
+  provider: HarnessProvider
+  status: DocStatus
+  className?: string
+  onAsk?: (block: string) => void
+}) {
   const dark = useSyncExternalStore(subscribeDark, () => document.documentElement.classList.contains('dark'))
+  const agentColor = provider.meta?.agent.color ?? '#7c3aed'
   const editor = useCreateBlockNote(
     withCollaboration({
       schema,
@@ -56,8 +72,9 @@ export function Editor({ provider, status, className }: { provider: HarnessProvi
         fragment: provider.doc.getXmlFragment(FRAGMENT),
         user: { name: 'you', color: '#b4531e' },
       },
+      extensions: [revealExtension(provider, agentColor)],
     }),
-    [provider],
+    [provider, agentColor],
   )
   const [exported, setExported] = useState<Date | null>(null)
   const [fromFile, setFromFile] = useState<Date | null>(null)
@@ -70,6 +87,24 @@ export function Editor({ provider, status, className }: { provider: HarnessProvi
         } else if (e.type === 'Update') setFromFile(new Date())
       }),
     [provider],
+  )
+  const agent = useAgentPresence(provider)
+  const askItem = useMemo(
+    () =>
+      onAsk
+        ? [
+            {
+              key: 'ask_theuth',
+              title: 'Ask theuth…',
+              subtext: 'Chat about this block',
+              group: 'theuth',
+              aliases: ['ask', 'theuth', 'ai'],
+              icon: <Sparkles className="size-4" />,
+              onItemClick: () => onAsk(editor.getTextCursorPosition().block.id),
+            },
+          ]
+        : [],
+    [onAsk, editor],
   )
   return (
     <div className={cn('flex min-h-0 flex-1 flex-col', className)}>
@@ -85,7 +120,7 @@ export function Editor({ provider, status, className }: { provider: HarnessProvi
           triggerCharacter="/"
           getItems={async (query) =>
             filterSuggestionItems(
-              getDefaultReactSlashMenuItems(editor).filter((item) => SLASH_KEYS[(item as { key?: string }).key ?? '']),
+              [...getDefaultReactSlashMenuItems(editor).filter((item) => SLASH_KEYS[(item as { key?: string }).key ?? '']), ...askItem],
               query,
             )
           }
@@ -98,7 +133,28 @@ export function Editor({ provider, status, className }: { provider: HarnessProvi
         </span>
         {fromFile && <span>updated from file {hhmm(fromFile)}</span>}
         {exported && !fromFile && <span>exported {hhmm(exported)}</span>}
+        {agent && (
+          <span
+            className="ml-auto rounded px-1.5 text-white"
+            style={{ background: agent.color }}
+            title={agent.blocks.length > 0 ? `editing ${agent.blocks.length} block${agent.blocks.length === 1 ? '' : 's'}` : 'editing'}
+          >
+            {agent.name}
+          </span>
+        )}
       </footer>
     </div>
   )
+}
+
+/** The agent's awareness state (59 §6.4, §9.4), re-read on every awareness change. */
+function useAgentPresence(provider: HarnessProvider): AgentPresence | null {
+  const [agent, setAgent] = useState<AgentPresence | null>(() => provider.agentPresence())
+  useEffect(() => {
+    const read = () => setAgent(provider.agentPresence())
+    read()
+    provider.awareness.on('change', read)
+    return () => provider.awareness.off('change', read)
+  }, [provider])
+  return agent
 }

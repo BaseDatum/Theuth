@@ -4,6 +4,7 @@ import type { Api } from '@/rpc/api'
 import type { DocEvent } from '@/rpc/bindings/DocEvent'
 import type { DocId } from '@/rpc/bindings/DocId'
 import type { DocMeta } from '@/rpc/bindings/DocMeta'
+import type { Who } from '@/rpc/bindings/Who'
 import type { RpcClient } from '@/rpc/client'
 
 /** Origin tag of every change the harness sent us; never echoed back. */
@@ -15,6 +16,29 @@ export type DocStatus =
   | { kind: 'offline'; queued: number }
   | { kind: 'readonly' }
   | { kind: 'closed'; reason: string }
+
+/** Who wrote a set of blocks, from a `DocEvent::Authored` (59 §5.5). */
+export type Authored = { blocks: string[]; by: Who; at: number }
+
+/** The agent's awareness state while it edits (59 §6.4, §8.5): `{ agent: { doc, blocks, at } }` plus `name`/`color`. */
+export type AgentPresence = { name: string; color: string; blocks: string[]; at: number }
+
+type AgentState = { name?: unknown; color?: unknown; agent: { doc: string; blocks: string[]; at: number } }
+
+function isAgentState(state: unknown): state is AgentState {
+  if (!state || typeof state !== 'object' || !('agent' in state)) return false
+  const agent = state.agent
+  return (
+    !!agent &&
+    typeof agent === 'object' &&
+    'doc' in agent &&
+    typeof agent.doc === 'string' &&
+    'blocks' in agent &&
+    Array.isArray(agent.blocks) &&
+    'at' in agent &&
+    typeof agent.at === 'number'
+  )
+}
 
 function b64(bytes: Uint8Array): string {
   // Spreading a multi-MiB state into `fromCharCode` overflows the argument limit.
@@ -44,7 +68,10 @@ export class HarnessProvider {
   #offState: () => void
   #status = new Set<(s: DocStatus) => void>()
   #events = new Set<(e: DocEvent) => void>()
+  #authored = new Set<(a: Authored) => void>()
   #destroyed = false
+  /** Agent edits announced since this provider opened (59 §5.5: the page menu's undo is enabled by them). */
+  agentEdits = 0
 
   constructor(client: RpcClient, api: Api, id: DocId) {
     this.#client = client
@@ -67,6 +94,23 @@ export class HarnessProvider {
   onEvent(cb: (e: DocEvent) => void): () => void {
     this.#events.add(cb)
     return () => this.#events.delete(cb)
+  }
+
+  /** `Authored` events (agent-written blocks), delivered before the update that carries them. */
+  onAuthored(cb: (a: Authored) => void): () => void {
+    this.#authored.add(cb)
+    return () => this.#authored.delete(cb)
+  }
+
+  /** The agent's presence, if some awareness state carries an `agent` field for this document. */
+  agentPresence(): AgentPresence | null {
+    for (const state of this.awareness.getStates().values()) {
+      const agent = isAgentState(state) ? state.agent : null
+      if (agent && agent.doc === this.id) {
+        return { name: typeof state.name === 'string' ? state.name : 'theuth', color: typeof state.color === 'string' ? state.color : '#7c3aed', blocks: agent.blocks, at: agent.at }
+      }
+    }
+    return null
   }
 
   destroy(): void {
@@ -115,6 +159,12 @@ export class HarnessProvider {
         Y.applyUpdate(this.doc, unb64(e.update), HARNESS)
         if (e.by.who === 'file') for (const cb of this.#events) cb(e)
         return
+      case 'Authored': {
+        if (e.by.who === 'agent') this.agentEdits++
+        const a: Authored = { blocks: e.blocks, by: e.by, at: Date.now() }
+        for (const cb of this.#authored) cb(a)
+        return
+      }
       case 'Awareness':
         applyAwarenessUpdate(this.awareness, unb64(e.state), HARNESS)
         return

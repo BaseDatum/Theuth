@@ -47,6 +47,10 @@ const IMAGE = /\.(png|jpe?g|gif|webp|bmp)$/i
 /** Typed-but-unsent text by session (`''` = new chat): a screen switch unmounts the composer, the draft stays.
  * ponytail: in-memory; move to localStorage if drafts should survive a relaunch. */
 const drafts = new Map<string, string>()
+/** Seed the next mount of `session`'s composer (`null` = the new chat at `/`) with `text` (59 §5.4 "Ask theuth…"). */
+export function prefillDraft(session: string | null, text: string): void {
+  drafts.set(session ?? '', text)
+}
 /** Recorder containers in preference order (45 §7.2): WebKit gives AAC in MP4, Chromium Opus in WebM; the harness decodes all. */
 const AUDIO_MIMES = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/webm']
 /** The edit box, textarea and its read-only stand-in while dictating (54 §7). */
