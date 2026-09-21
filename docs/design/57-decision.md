@@ -836,3 +836,77 @@ Brief: `/tmp/laya-design/omp-step4.md`. Commits on main: `48e5cbe` (side-call ty
 - `Ask` batching: the two questions are two mailbox round trips. An `AskMany` on the engine (one `collate` + one forward) halves the tier-1 latency; do it when the log shows the second ask timing out.
 - The session's ⚡ rows live in the desktop store only; if Sky wants them on a past meeting's session, the verdicts need a `briefs.jsonl` record (the `Record` enum is the place).
 - TUI `/decision` was not added (out of the brief's crates); `decision_stats` is the RPC it would read.
+
+## As built — step 4b (2026-09-21): phrasing bench, mentions, `meeting.kind` Bool, asymmetric gate, tier-2 subject extraction, warm-up, staged ⚡ rows
+
+Brief: `~/.theuth/omp-step4b.md` (§3.5 as the build order). Commits on main: `3217e3f` (phrasing bench + fixture), `09ee2d7` (mentions, `meeting.kind`, asymmetric gate, ≤ 4 candidates, warm-up), `9b07272` (tier-2 subject extraction, subject-led evidence, shadow runs the full pipeline), `55437f2` (wip checkpoint: `meeting-line.ts`/test + `store/meeting.ts` — the desktop half, finished by) `5e45674` (`store/meeting.test.ts`, tier-2 counter), this note. Toolchain: `export PATH="$(just toolchain):$PATH"`.
+
+### Phrasing bench (`3217e3f`) — `crates/decision/examples/phrasing.rs`
+
+Fixture `crates/decision/tests/fixtures/meeting-batches.json`: **112 batches** — today's recorded meetings ("Sre-standup-9-21-26" 15:00, "icdportal.com migration" 16:04) re-split offline with `batch.rs`'s flush rule as `them:`/`me:` lines, labelled from `briefs.jsonl`/outcomes, plus hand-written batches (small talk / scheduling, the Kuiper-belt narrative, technical talk without ticket vocabulary). Labels: 20 `small_talk`, 67 `named_subject`, 25 `general`; 19 carry a `published` brief, 11 of those have the brief among the FTS candidates. Three `published` labels on icd scheduling batches (Tony/Sky/cutover) are model noise and were left as labelled. Run: `cargo run --release -p decision --example phrasing` (model-gated on `~/.theuth/models/decision`), M3 Max, Metal f16, load average ~20–34 throughout (another agent's builds).
+
+**1a — conversation kind.** `skips@τ` = small talk skipped / other batches skipped / skips that hid a published brief.
+
+| # | variant | acc | mean P(correct) | confusion | skips@0.6 | skips@0.8 | p50/p95 ms |
+|---|---|---|---|---|---|---|---|
+| 1–4 | 3-way `Choice`, label set A (§3.5 text), 4 instructions | 25–27/112 | 0.265–0.285 | everything → general | 0–1 / 0 / 0 | 0 | ~50/70 |
+| 5–8 | 3-way, label set B (short) | 24–27/112 | 0.265–0.268 | mostly general | 2–3 / 4–7 / 1–2 | 0 | ~55/75 |
+| 9–12 | 3-way, label set C (concrete) | 28–33/112 | 0.296–0.311 | mostly general | 2 / 0 / 0 | 0 | ~53/66 |
+| 13 | 2-way `Is this small talk or a conversation about something?` | 82/112 | 0.578 | `[[18,2],[28,64]]` | 13 / 7 / 2 | 0 | 53/64 |
+| 14 | 2-way `Which describes the transcript?` | 48/112 | 0.500 | `[[20,0],[64,28]]` | 18 / 38 / 5 | 3 / 1 / 1 | 43/58 |
+| 15 | 2-way `What kind of conversation is this?` | 44/112 | 0.481 | `[[20,0],[68,24]]` | 19 / 45 / 7 | 10 / 3 / 2 | 41/54 |
+| **16** | **Bool `The speakers are only greeting, scheduling or saying goodbye`** | **101/112** | **0.799** | `[[90,2],[9,11]]` | **8 / 0 / 0** | 1 / 0 / 0 | 43/60 |
+| 17 | Bool `This is small talk with nothing to look up` | 92/112 | 0.741 | `[[91,1],[19,1]]` | 0 / 0 / 0 | 0 | 44/60 |
+| 18 | Bool `Nothing of substance is discussed: only greetings, thanks, scheduling or goodbyes` | 100/112 | 0.741 | `[[89,3],[9,11]]` | 8 / 1 / 0 | 2 / 0 / 0 | 48/63 |
+| 19 | Bool `The speakers only exchange pleasantries, thanks, scheduling or goodbyes; no subject is discussed` | 100/112 | 0.756 | `[[92,0],[12,8]]` | 6 / 0 / 0 | 1 / 0 / 0 | 50/63 |
+| 20 | Bool `The speakers discuss a specific named subject: …` (true = subject) | 21/112 | 0.281 | `[[20,0],[91,1]]` | 20 / 89 / 18 | 18 / 70 / 12 | 50/73 |
+| 21 | Bool `The conversation has a subject someone could look up` | 22/112 | 0.293 | `[[20,0],[90,2]]` | 20 / 87 / 17 | 19 / 73 / 14 | 43/58 |
+
+Reading: every 3-way `Choice` is near-uniform (mean P(correct) 0.27–0.31; everything lands on `general`) — the classifier cannot *name* the kind. The `Bool` head is biased to `false`, which makes it a usable **small-talk detector** (variant 16: 101/112, 8 of 20 small-talk batches skipped at τ 0.6, 0 false skips, 0 hidden briefs) and a useless **subject detector** (variants 20–21: P(true) low on everything, 18 hidden briefs at 0.6). τ_kind = **0.6** (the §3.5 default 0.8 skips 1 batch). Full per-variant rows (all 4 × 3 3-way variants) come out of the bench run.
+
+**1b — cached brief.** Query = mentions ∪ batch text; K candidates by FTS rank + `none`.
+
+| K | ids | acc | mean P(correct) | mean P(correct \| brief truth) | publish@0.6/0.3 right / wrong | none-accepted right / wrong | p50/p95 ms |
+|---|---|---|---|---|---|---|---|
+| 4 | uuid | 100/111 | 0.458 | 0.237 (n=11) | 0 / 0 | 15 / 0 | 89/107 |
+| **4** | **b1..b4** | 76/111 | 0.421 | **0.481** | 3 / 6 | 24 / 0 | 59/76 |
+| 8 | uuid | 80/111 | 0.243 | 0.130 | 0 / 0 | 1 / 0 | 102/121 |
+| 8 | b1..b8 | 61/111 | 0.330 | 0.493 | 4 / 18 | 15 / 0 | 80/97 |
+
+Reading: UUID ids never pick a brief (the 192-token head budget goes to the ids); short ids `b1..b4` double P(correct | a brief is the truth) and keep `none` clean; K8 publishes 18 wrong briefs. Most of the K4 "wrong" publishes are label leakage — the icd meeting's briefs were created *in* that meeting after the batch (icd-00:12:53 → SSL cert timeline 0.73, icd-00:09:32 → Domain redirect 0.75, icd-00:19:13 → Certificate & TLS 0.71 are right in substance); genuinely wrong at 0.6/0.3: sre-00:09:18 → Certificate & TLS 0.63 (Outlook/2FA talk), icd-00:18:54 → DR cutover 0.61 (ICD cutover window).
+
+### Chosen phrasings and constants (`crates/meeting/src/oracle.rs`, `crates/decision/src/lib.rs::default_families`)
+
+- `meeting.kind` = **`Bool("The speakers are only greeting, scheduling or saying goodbye")`** (`KIND_STATEMENT`), `true` = small talk; gate **`FamilyGate::shadow(0.60, 0.20)`**. Skip ⇔ P(true) ≥ 0.6 accepted **and** `mentions` empty.
+- `meeting.brief` = **`Choice("which cached brief is the subject being discussed")`** (`BRIEF_INSTRUCTIONS`, unchanged) over the top-**4** FTS rows (`CANDIDATES`; query = `mentions.join(" ") + text`, `Cache::search(query, 12)` minus the rows shown/dismissed this meeting), candidate ids **`b1..b4`** (`candidate_id`), text = **title only**, + `none`; gate **`shadow(0.60, 0.30)`**. Publish ⇔ a brief accepted (P ≥ 0.6, margin ≥ 0.3).
+- `meeting.subject` = the tier-2 family (`decision::subject::FAMILY`; rows only, never asked of the oracle), gate row `shadow(0.50, 0.0)` so `decision_stats` and the `meeting` prefix switch cover it.
+- `meeting.topic` is **removed** from the default table (not disabled): the bench showed it confidently wrong, not uncertain. Sky's `config.yaml` `meeting: { mode: shadow }` prefix patch applies to the three new families unchanged (tested in `lib.rs`).
+- `mentions(text)`: capitalised n-grams not at sentence start, ticket ids `[A-Z]{2,}-\d+`, acronyms (≥ 2 capitals), numbers with units, quoted terms; de-duplicated, occurrence order, ≤ 12 (`MAX_MENTIONS`). Kuiper batch → `["Mike", "Kuiper", "Neptune", "Earth", "Planet Nine"]`; small talk → empty.
+- Tier 2 = `decision::subject` (`SYSTEM` prompt, `render`, `parse`, `extract`): the request is `Mentions:`, `Cached briefs:` as `- b1 — title (aliases)`, tier 1's numbers as one data line, then the transcript; the answer is `{ "subject": string|null, "cached": <offered id>|null, "lookup": bool }`, parsed strictly (`cached` must be an offered id or `none`/`null`; `lookup` missing = `subject` is set; subject cut at 80 chars). Dispositions in `oracle::run`: `cached` → Publish (same dedupe; tier2 text `cached: <title>`); `subject` + `lookup` → tier 3 with evidence **`oracle: subject "Planet Nine" — no cached brief; kind subject 1.00`** first in the batch delivery (`subject_evidence`); `subject` + `!lookup` or `subject: null` → Skip (`"…" → nothing to look up` / `nothing to look up`); invalid / timeout / provider error → tier 3 with today's evidence line and reason `<reason>; tier 2: <error>`. Budget = the family's `escalate_budget` (3 s).
+- Warm-up: `MeetingState::Recording` (`lib.rs` at `Started`) spawns `oracle::warm_up()` → engine message `decision::Warm { budget: 30 s }`: load + one unlogged forward on a fixed `Bool("warm-up")`, logs `decision: warm-up done in N ms`.
+
+### Deviations from §3.5 / the brief
+
+- **`meeting.kind` is a `Bool`, not a 3-way `Choice`.** Every 3-way variant is near-uniform (table above); the Bool small-talk statement is the only phrasing with a usable skip side. Consequence: the oracle never says "named subject" — the ⚡ row's first stage reads `kind: small talk P` or `kind: subject P` (P of the winner), and "subject" there means "not only small talk".
+- **τ_kind = 0.6**, not the brief's default 0.8 (0.8 skips one batch in 112).
+- **Warm-up is an engine `Warm` message** (load + one unlogged forward), not a logged `Ask` on `meeting.kind` — a throwaway ask would land in the decision log and `decision_stats` as a real question.
+- **Tier-2 rows carry the subject in `AskRow.note`** (new field, serde-default) under family `meeting.subject`, `choice` = the cached id / `lookup` / `skip`; `outcome` compares `SUBJECT` rows against the model's publication (cached row id, else `lookup` iff anything was published).
+- **The evidence line moved to right after the batch header for every case**, not only the subject-led one (`session::batch_line_with`), so the research turn always reads the oracle's verdict before the transcript.
+- **Shadow spends tier 2** (revert of step 4's "shadow never spends a tier-2 call"): Sky wants the whole pipeline evaluated; the shadow outcome is still the model's independent answer, judged per family at `TurnFinished`.
+- `OracleDecision` on the wire: `stages: Vec<(String, f32)>` (`kind: small talk 0.79`, `brief: none 0.57`), `mentions`, `subject: Option<String>`, `tier2: Option<String>` (`"Planet Nine" → no cached brief` / `nothing to look up` / `timed out`), `top` = the brief candidates (titles) + `none` only (the topic entry is gone); `latency_ms` includes tier 2. `OracleDisposition::Brief.brief` is the cache row id, not `b1`; `Expected` rows likewise carry the row id so `outcome` compares against what the model publishes.
+- Cached briefs on this machine are the SRE/ICD sets; the HV/MV cache from the first shadow session is gone (`01a0bfb*` ids are not in `briefs.sqlite`), so the fixture's brief candidates are the SRE/ICD titles.
+- Desktop: the brief's `feat(desktop)` commit is split across `55437f2` (wip: `lib/meeting-line.ts::oracleRow` + test, `store/meeting.ts` counters) and `5e45674` (`store/meeting.test.ts`). Row text: `⚡ kind: subject 0.91 · mentions: Kuiper belt, Constantin · brief: none 0.57 · tier 2: "Planet Nine" → no cached brief → model · 1442 ms`, `⚡ kind: small talk 0.79 → skip · 78 ms`, `⚡ kind: subject 0.88 · brief: SRE-2386 0.91 → published SRE-2386 · 81 ms`; empty stages omitted; shadow appends `✓ agreed` / `✗ model published HR-12`. Counters/summary: `⚡ 1 skipped · 1 brief · 1 escalated · 0 tier 2 calls · agreed 50 %` (`tier2` = rows with `tier2 !== null`). Island chip text unchanged.
+
+### Checks
+
+- `cargo test -p decision -p meeting` (this note's run): `decision` **52 unit** (49 → 52: subject render/parse incl. cached-id validation and `subject: null`, `extract` contract with a fake `SideCaller`, default table without `meeting.topic`) + `tests/model.rs` 2 model-gated; `meeting` **38 unit** (37 → 38: `mentions` on the Kuiper batch and on small talk, the asymmetric `settle` table — small talk with mentions → tier 2, brief 0.65 / margin 0.2 → tier 2, kind timeout → tier 2, brief accepted wins; `stages`/`evidence`/`top`; `outcome` per family) + **`tests/oracle.rs` 1** model-gated, passing. `cargo clippy -p decision -p meeting --no-deps --all-targets` clean and `cargo check --workspace --all-targets` clean at `9b07272`; nothing in Rust changed since.
+- Model-gated `tests/oracle.rs` (fake side caller answers `{"subject": "Planet Nine", "cached": null, "lookup": true}` for the Kuiper batch, `{"subject": null, "lookup": false}` for small talk), as printed this run (load average high, another build running): shadow Kuiper → **`Model { reason: "subject \"Planet Nine\", no cached brief" } tier 3 in 3259 ms, stages [("kind: subject", 0.99996185)], mentions ["Mike", "Kuiper", "Neptune", "Earth", "Planet Nine"], tier2 Some("\"Planet Nine\" → no cached brief")`** — not skipped at tier 1 (mentions non-empty and P(small talk) ≈ 0), reached tier 2 in shadow; active Kuiper evidence line **`oracle: subject "Planet Nine" — no cached brief; kind subject 1.00`** first in the delivery; active small talk (`yeah, sounds good / ok, thanks, talk later`) → **`Skip tier 2 in 159 ms, stages [("kind: subject", 0.64434844)], tier2 Some("nothing to look up")`**. A quieter earlier run of the same test: 1442 ms / 54 ms.
+- Desktop: `just ts-desktop` regenerated `OracleDecision` (`stages`, `mentions`, `subject`, `tier2`); `cd crates/desktop/ui && bun run check` green (the pre-existing `packages/apps/src/renderer.tsx` error was a stale `packages/apps/node_modules` — the `@openuidev/react-lang` patch had not been re-applied since the rename; `bun install` there fixed it), `bun run test` **187 passed / 34 files** (`meeting-line.test.ts` covers the staged row incl. omitted stages, `store/meeting.test.ts` the tier-2 counter and summary).
+- Not run: the headless smoke (plugin start logging the kind family; one `decision: warm-up done` at `Recording`) — the plugin-start line is unchanged code from step 4 and `warm_up` is exercised only by construction; the desktop app itself (`cargo tauri dev` unavailable here).
+
+### Open
+
+- **The small-talk sample is not skipped at tier 1.** `yeah, sounds good / ok, thanks, talk later` scores P(small talk) **0.36** (< τ 0.6) — the bench's 8/20 at 0.6 says the Bool head catches only the most obvious greeting/scheduling batches; the rest ride a 3 s tier-2 call to a Skip. Shadow data will show the actual skip rate; if it stays under ~40 %, variant 18/19 (`Nothing of substance…`, 100/112) with τ 0.5 is the next thing to bench, not another rewrite.
+- The `b1..b4` publishes at 0.6/0.3 include two genuinely wrong ones in 112 (table above). The asymmetric gate accepts that cost by design; if shadow shows more, raise `tau_margin` on `meeting.brief` before touching the phrasing.
+- `stages` names the Bool's winner `subject` when it means "not only small talk"; a reader of the ⚡ row may read it as a positive subject detection. Rename to `kind: talk` / `kind: small talk` if it confuses.
+- Fixture labels: three icd scheduling batches carry model-noise `published` titles and the icd briefs leak forward (created in-meeting after the batch); a `created_at` on the fixture's briefs would let the bench exclude them instead of the hand note above.
