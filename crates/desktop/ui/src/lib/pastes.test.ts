@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { attach, expand, prune, tokenize, type Pastes } from './pastes'
+import { attach, attachDoc, expand, prune, tokenize, type Pastes } from './pastes'
 
 const none: Pastes = new Map()
 
@@ -37,4 +37,19 @@ test('prune drops pastes whose token is gone and keeps numbering', () => {
   const kept = prune(f.token, f.pastes)
   expect([...kept.keys()]).toEqual([1])
   expect(attach('/d/c.png', 1, 1, kept).token).toBe('[⎘ image 3: 1×1]')
+})
+
+test('doc tokens expand to marker lines ahead of the text; the same ref attaches once', () => {
+  const a = attachDoc({ ref: 'abc', title: 'Plan "B"' }, none)
+  expect(a.token).toBe('[⎘ doc 1: Plan "B"]')
+  const again = attachDoc({ ref: 'abc', title: 'Plan "B"' }, a.pastes)
+  expect(again).toEqual(a)
+  const k = attachDoc({ ref: 'knowledge:facts/x', title: 'Facts' }, a.pastes)
+  expect(k.token).toBe('[⎘ doc 2: Facts]')
+  expect(expand(`${a.token} ${k.token} add a bullet`, k.pastes)).toEqual({
+    text: '[doc abc "Plan \\"B\\""]\n[doc knowledge:facts/x "Facts"]\nadd a bullet',
+    files: [],
+  })
+  // A deleted token drops its marker.
+  expect(expand(`${k.token} hi`, k.pastes).text).toBe('[doc knowledge:facts/x "Facts"]\nhi')
 })

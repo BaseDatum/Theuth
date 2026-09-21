@@ -55,6 +55,8 @@ export const queryKeys = {
   artifacts: ['artifacts'] as const,
   artifact: (callId: string) => ['artifacts', 'get', callId] as const,
   artifactSearchMatch: (callId: string, q: string) => ['artifacts', 'match', callId, q] as const,
+  /** `doc_list(note)` (59 §7.3); invalidated by `DocumentChanged`. */
+  notes: ['notes'] as const,
   info: ['info'] as const,
   titleModel: ['title-model'] as const,
   subagentModel: ['subagent-model'] as const,
@@ -162,6 +164,7 @@ export function useInvalidateOn(): void {
         void qc.invalidateQueries({ queryKey: queryKeys.artifacts })
         search()
       }),
+      on('DocumentChanged', () => void qc.invalidateQueries({ queryKey: queryKeys.notes })),
       on('SecretsChanged', () => void qc.invalidateQueries({ queryKey: queryKeys.secrets })),
       on('SecretResolved', () => void qc.invalidateQueries({ queryKey: queryKeys.secrets })),
       on('CommunicationChanged', () => {

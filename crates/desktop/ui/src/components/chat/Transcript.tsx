@@ -132,8 +132,9 @@ function Ruler({ ticks, at, onJump }: { ticks: Tick[]; at: number; onJump(index:
   )
 }
 
-/** The session's transcript: virtualized, pinned to the bottom until the user scrolls up, paged backwards from the top. */
-export function Transcript({ session }: { session: string }) {
+/** The session's transcript: virtualized, pinned to the bottom until the user scrolls up, paged backwards from the top.
+ * `compact` (59 §7.3, the panel under a note): no ruler, no centred column, tighter padding. */
+export function Transcript({ session, compact = false }: { session: string; compact?: boolean }) {
   const api = useApi()
   const all = useEntries(session)
   const showNudges = useNudges((s) => s.show)
@@ -224,7 +225,7 @@ export function Transcript({ session }: { session: string }) {
       {/* Never a page-wide horizontal scroll: long words wrap (inherited; `pre` and `nowrap` cells keep scrolling inside their own boxes). */}
       <div ref={ref} onScroll={onScroll} className="h-full overflow-x-hidden overflow-y-auto wrap-anywhere">
         <div
-          className="relative mx-auto w-full md:max-w-[768px] px-4"
+          className={cn('relative w-full', compact ? 'px-2' : 'mx-auto md:max-w-[768px] px-4')}
           style={{ height: v.getTotalSize() }}
         >
           <div className="relative h-full w-full">
@@ -250,13 +251,13 @@ export function Transcript({ session }: { session: string }) {
           </div>
         </div>
         {(running || activity !== 'idle') && (
-          <div className="mx-auto flex w-full md:max-w-[768px] items-center gap-2 px-8 py-3 text-sm text-fg-secondary">
+          <div className={cn('flex w-full items-center gap-2 py-3 text-sm text-fg-secondary', compact ? 'px-4' : 'mx-auto md:max-w-[768px] px-8')}>
             <Pulse />
             {(activity === 'vision' && visionStatus) || WORD[activity]}
           </div>
         )}
       </div>
-      <Ruler ticks={ticks} at={pinned ? Number.POSITIVE_INFINITY : at} onJump={jump} />
+      {!compact && <Ruler ticks={ticks} at={pinned ? Number.POSITIVE_INFINITY : at} onJump={jump} />}
       {unstuck && (
         <Button
           variant="outline"

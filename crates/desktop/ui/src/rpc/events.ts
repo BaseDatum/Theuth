@@ -8,6 +8,7 @@ import type { BrowserEvent } from '@/rpc/bindings/BrowserEvent'
 import type { BriefEvent } from '@/rpc/bindings/BriefEvent'
 import type { CommunicationChanged } from '@/rpc/bindings/CommunicationChanged'
 import type { JobEvent } from '@/rpc/bindings/JobEvent'
+import type { DocumentChanged } from '@/rpc/bindings/DocumentChanged'
 import type { KnowledgeChanged } from '@/rpc/bindings/KnowledgeChanged'
 import type { LinkEvent } from '@/rpc/bindings/LinkEvent'
 import type { McpProgress } from '@/rpc/bindings/McpProgress'
@@ -61,6 +62,8 @@ export type WireEvent =
   | SignalEvent
   | SlackEvent
   | KnowledgeChanged
+  /** 59 §7.3: a document was created, exported, renamed or trashed; the notes list follows it. */
+  | DocumentChanged
   | LinkEvent
   | NodeEvent
   | ScheduleEvent
