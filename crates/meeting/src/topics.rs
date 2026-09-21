@@ -126,6 +126,15 @@ impl Topics {
         self.cached_shown.contains(&row) || self.cached_dismissed.contains(&row)
     }
 
+    /// Every row the alias scan and the oracle must skip this meeting (shown or dismissed).
+    pub fn cached_blocked_rows(&self) -> Vec<BriefId> {
+        self.cached_shown
+            .iter()
+            .chain(&self.cached_dismissed)
+            .copied()
+            .collect()
+    }
+
     /// A cache row changed (`brief_put`): every instance of it this meeting takes the new
     /// title and bullets; the live topic showing it, if any, is returned so the actor can
     /// re-publish (05 §7 check 8). `None` when nothing here came from `row`.
@@ -208,14 +217,15 @@ impl Topics {
         Ok(self.place(label, title, bullets, BriefSource::Auto, cached, None, now, at_ms))
     }
 
-    /// The alias scan hit `row`, or the model registered it by reference
-    /// (05 §3–§4): same rules as [`Self::insert`], plus the row must not have
-    /// been shown or dismissed this meeting; the brief is the row's, `source:
-    /// Cache`. `label` is the alias as spoken.
+    /// The alias scan hit `row`, the model registered it by reference (05 §3–§4), or the
+    /// oracle picked it (57 §3.2, `source: Oracle`): same rules as [`Self::insert`], plus the
+    /// row must not have been shown or dismissed this meeting; the brief is the row's.
+    /// `label` is the alias as spoken.
     pub fn insert_cached(
         &mut self,
         label: &str,
         row: &CachedBrief,
+        source: BriefSource,
         now: Instant,
         at_ms: u64,
     ) -> Result<(Topic, Brief, Vec<Gone>), String> {
@@ -228,7 +238,7 @@ impl Topics {
             label,
             &row.title,
             row.bullets.clone(),
-            BriefSource::Cache,
+            source,
             Some(row.id),
             at,
             now,
@@ -269,6 +279,7 @@ impl Topics {
             at_ms,
             brief: Some(BriefId::new()),
             cached,
+            source: Some(source),
         };
         let brief = Brief {
             id: topic.brief.expect("set"),
@@ -484,12 +495,12 @@ mod tests {
         let now: DateTime<Utc> = "2026-09-20T12:00:00Z".parse().unwrap();
         let sre = row("SRE-2386", "2026-09-17T11:30:00Z");
         let keda = row("KEDA", "2026-09-20T09:00:00Z");
-        let (topic, brief, _) = t.insert_cached("sre-2386", &sre, t0, 1).unwrap();
+        let (topic, brief, _) = t.insert_cached("sre-2386", &sre, BriefSource::Cache, t0, 1).unwrap();
         assert_eq!((topic.label.as_str(), topic.cached, brief.cached), ("sre-2386", Some(sre.id), Some(sre.id)));
         assert_eq!((brief.source, brief.topic), (BriefSource::Cache, Some(topic.id)));
         assert!(t.cached_blocked(sre.id));
-        assert!(t.insert_cached("two three eight six", &sre, t0, 2).is_err(), "already shown");
-        let (_, _, _) = t.insert_cached("KEDA", &keda, t0 + Duration::from_secs(1), 3).unwrap();
+        assert!(t.insert_cached("two three eight six", &sre, BriefSource::Cache, t0, 2).is_err(), "already shown");
+        let (_, _, _) = t.insert_cached("KEDA", &keda, BriefSource::Cache, t0 + Duration::from_secs(1), 3).unwrap();
         assert_eq!(t.batch_labels(now), ["sre-2386 (cached 3d)", "KEDA (cached 3h)"]);
         // `max` = 2: an Auto topic expires the oldest untouched cached one.
         let (_, _, expired) = t.insert("Gamma", "x", two(), None, t0 + Duration::from_secs(2), 4).unwrap();
@@ -499,12 +510,12 @@ mod tests {
         let keda_topic = t.live().into_iter().find(|x| x.label == "KEDA").unwrap();
         assert!(t.dismiss(keda_topic.id).is_some());
         assert!(t.cached_blocked(keda.id));
-        assert!(t.insert_cached("keda scaling", &keda, t0, 5).is_err());
+        assert!(t.insert_cached("keda scaling", &keda, BriefSource::Cache, t0, 5).is_err());
         // A new `Topics` (next meeting) admits it again.
-        assert!(Topics::new(600, 6).insert_cached("KEDA", &keda, t0, 0).is_ok());
+        assert!(Topics::new(600, 6).insert_cached("KEDA", &keda, BriefSource::Cache, t0, 0).is_ok());
         // refresh: a live topic's brief takes the new bullets; the topic id comes back.
         let dana = row("Dana", "2026-09-20T11:00:00Z");
-        let (dt, _, _) = t.insert_cached("Dana", &dana, t0 + Duration::from_secs(3), 6).unwrap();
+        let (dt, _, _) = t.insert_cached("Dana", &dana, BriefSource::Cache, t0 + Duration::from_secs(3), 6).unwrap();
         let mut dana2 = dana.clone();
         dana2.bullets = vec!["new".into(), "bullets".into()];
         assert_eq!(t.refresh_cached(&dana2), Some(Some(dt.id)));
@@ -535,6 +546,7 @@ mod tests {
             at_ms: 0,
             brief: None,
             cached: None,
+            source: None,
         }))
         .unwrap()
         .starts_with(r#"{"topic":{"#));

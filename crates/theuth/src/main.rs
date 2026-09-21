@@ -247,8 +247,11 @@ agent:
 #                            # scripts/release-models.sh); the daemon re-checks on every ask, so no restart once it lands.
 #   idle_unload: 10m         # drop the model after this long unused (~1 GiB back)
 #   log_text: false          # true: store the question text in <data_dir>/decisions/*.jsonl, not only its hash
-#   families:                # gate per decision family: mode shadow | active | off; accept iff top1 ≥ tau_top and top1 − top2 ≥ tau_margin.
-#                            # Flip a family to active only after its shadow log shows acceptable agreement (57 §2); listing any family replaces this table.
+#   families:                # gate per decision family: mode shadow | active | off; accept iff top1 ≥ tau_top and top1 − top2 ≥ tau_margin;
+#                            # budget (tier 1, default 400ms) and escalate_budget (tier 2 cheap-model call, default 3s) per family.
+#                            # Entries patch this table (any subset of fields); a prefix key sets every family under it:
+#                            # `meeting: { mode: active }` is what Settings → Meetings → Local decision oracle writes (57 §3.4).
+#                            # Flip a family to active only after its shadow log shows acceptable agreement (57 §2; `decision_stats`).
 #     meeting.topic:  { mode: shadow, tau_top: 0.85, tau_margin: 0.40 }
 #     meeting.brief:  { mode: shadow, tau_top: 0.80, tau_margin: 0.35 }
 #     browser.target: { mode: shadow, tau_top: 0.90, tau_margin: 0.50 }

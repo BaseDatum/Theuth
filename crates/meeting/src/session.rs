@@ -49,13 +49,37 @@ pub fn cached_label(label: &str, age: &str) -> String {
 /// One transcript batch: the header with the live and dismissed label sets,
 /// then one `them:`/`me:` line per utterance. `batch` is non-empty.
 pub fn batch_line(batch: &[Utterance], live: &[String], dismissed: &[String]) -> String {
+    batch_line_with(batch, live, dismissed, &[], None)
+}
+
+/// [`batch_line`] plus the oracle's additions (57 §3.2): `carried` are earlier batches the
+/// oracle kept from the model (`(stamp, utterances)`), listed in the header as
+/// `earlier (oracle skipped): 00:13:10, 00:13:40` and written before this batch's rows so the
+/// turn still has them as context; `evidence` is the `oracle: …` line appended last.
+pub fn batch_line_with(
+    batch: &[Utterance],
+    live: &[String],
+    dismissed: &[String],
+    carried: &[(String, Vec<Utterance>)],
+    evidence: Option<&str>,
+) -> String {
     let mut s = format!(
         "[meeting {}] live: {} · dismissed: {}",
         hms(batch.first().map_or(0, |u| u.t0_ms)),
         labels(live),
         labels(dismissed)
     );
-    for u in batch {
+    if !carried.is_empty() {
+        s.push_str(" · earlier (oracle skipped): ");
+        s.push_str(
+            &carried
+                .iter()
+                .map(|(id, _)| id.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+    }
+    for u in carried.iter().flat_map(|(_, b)| b.iter()).chain(batch) {
         let who = match u.track {
             Track::Mic => "me",
             Track::System => "them",
@@ -64,6 +88,10 @@ pub fn batch_line(batch: &[Utterance], live: &[String], dismissed: &[String]) ->
         s.push_str(who);
         s.push_str(": ");
         s.push_str(u.text.trim());
+    }
+    if let Some(e) = evidence {
+        s.push('\n');
+        s.push_str(e);
     }
     s
 }

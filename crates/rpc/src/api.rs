@@ -925,6 +925,19 @@ pub trait Api {
     /// `summary.md`.
     #[method(name = "meeting_summary")]
     async fn meeting_summary(&self, id: meeting::MeetingId) -> RpcResult<String>;
+    /// 57 §3.4: the meeting families' decision-oracle switch — `mode` as configured,
+    /// `effective` (`off` with `reason` when the plugin is disabled or the checkpoint is
+    /// missing), and the tier budgets.
+    #[method(name = "meeting_oracle_mode")]
+    async fn meeting_oracle_mode(&self) -> RpcResult<decision::ModeInfo>;
+    /// Persist `decision.families.meeting: { mode }` (`off` | `shadow` | `active`) and apply
+    /// it live; effective from the next batch. A failed config write changes nothing.
+    #[method(name = "set_meeting_oracle_mode")]
+    async fn set_meeting_oracle_mode(&self, mode: decision::Mode) -> RpcResult<decision::ModeInfo>;
+    /// 57 §7: today's decision log folded per family — mode, asks, accepts, escalations by
+    /// reason, tier-2 rows, p50/p95, shadow agreement.
+    #[method(name = "decision_stats")]
+    async fn decision_stats(&self) -> RpcResult<Vec<decision::FamilyStats>>;
     /// Phase 5 (05 §8): the brief cache. Full-text search, best rank first (`limit` ≤ 50, default 8).
     #[method(name = "brief_search")]
     async fn brief_search(&self, query: String, limit: Option<u32>) -> RpcResult<Vec<meeting::CachedBrief>>;
@@ -2626,6 +2639,31 @@ impl ApiServer for Server {
 
     async fn meeting_speakers(&self) -> RpcResult<Vec<meeting::Profile>> {
         send(&meeting()?, meeting::ListSpeakers).await
+    }
+
+    async fn meeting_oracle_mode(&self) -> RpcResult<decision::ModeInfo> {
+        ask::<decision::Engine, _>(
+            decision::DECISION_ACTOR,
+            decision::GetMode {
+                prefix: meeting::oracle::PREFIX.to_owned(),
+            },
+        )
+        .await
+    }
+
+    async fn set_meeting_oracle_mode(&self, mode: decision::Mode) -> RpcResult<decision::ModeInfo> {
+        ask::<decision::Engine, _>(
+            decision::DECISION_ACTOR,
+            decision::SetMode {
+                prefix: meeting::oracle::PREFIX.to_owned(),
+                mode,
+            },
+        )
+        .await
+    }
+
+    async fn decision_stats(&self) -> RpcResult<Vec<decision::FamilyStats>> {
+        ask::<decision::Engine, _>(decision::DECISION_ACTOR, decision::AllStats).await
     }
 
     async fn meeting_speaker_delete(&self, profile: meeting::ProfileId) -> RpcResult<()> {

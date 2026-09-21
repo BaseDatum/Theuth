@@ -159,6 +159,14 @@ pub struct Live {
     pub outstanding: Vec<Outstanding>,
     /// The two track tasks; resolve to their final flush at stop.
     pub stt: Vec<tokio::task::JoinHandle<Vec<Piece>>>,
+    /// 57 §3.2: batches the oracle kept from the model (`(stamp, utterances)`), written as
+    /// context into the next delivered batch line, then cleared. Oldest first.
+    pub carry: Vec<(String, Vec<Utterance>)>,
+    /// 57 §3.4: oracle verdicts whose model turn has not finished — the event to update with
+    /// the outcome and what the oracle expected.
+    pub pending: Vec<(crate::OracleDecision, crate::oracle::Expected)>,
+    /// Cached rows (and titles) `meeting_topic` registered since the last turn ended.
+    pub published: Vec<(Option<BriefId>, String)>,
     /// `live.jsonl`, append-only.
     live_log: Option<File>,
     /// `briefs.jsonl`, append-only.
@@ -251,6 +259,9 @@ impl Recording {
                 held_flag: Arc::new(AtomicBool::new(false)),
                 outstanding: Vec::new(),
                 stt: Vec::new(),
+                carry: Vec::new(),
+                pending: Vec::new(),
+                published: Vec::new(),
                 live_log: Live::open_log(dir, crate::LIVE_LOG),
                 briefs_log: Live::open_log(dir, crate::BRIEFS_LOG),
             },
@@ -273,6 +284,9 @@ mod tests {
             held_flag: Arc::new(AtomicBool::new(false)),
             outstanding: Vec::new(),
             stt: Vec::new(),
+            carry: Vec::new(),
+            pending: Vec::new(),
+            published: Vec::new(),
             live_log: None,
             briefs_log: None,
         }

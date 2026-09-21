@@ -33,6 +33,7 @@ pub mod batch;
 pub mod cache;
 pub mod capture;
 pub mod ogg;
+pub mod oracle;
 pub mod post;
 pub mod session;
 pub mod speakers;
@@ -45,6 +46,7 @@ pub mod topics;
 pub mod transcript;
 
 pub use cache::{Cache, CachedBrief, CachedBriefPut};
+pub use oracle::{OracleDecision, OracleDisposition, OracleOutcome};
 pub use speakers::{Profile, Profiles};
 pub use state::{Recording, RecordingClock};
 pub use store::{Gap, Manifest, MeetingSummary, SearchHit, Stem, Store, TrackFile};
@@ -343,6 +345,20 @@ pub enum MeetingEvent {
         /// The meeting.
         meeting: MeetingId,
     },
+    /// 57 §3.4: the decision oracle is deciding a batch (the island's `⚡ deciding` flash).
+    OracleDeciding {
+        /// The meeting.
+        meeting: MeetingId,
+        /// The batch's `hh:mm:ss` stamp.
+        batch_id: String,
+    },
+    /// 57 §3.4: the oracle's verdict on a batch; re-sent with `outcome` after the model turn.
+    OracleDecision {
+        /// The meeting.
+        meeting: MeetingId,
+        /// The verdict.
+        decision: OracleDecision,
+    },
 }
 
 /// Why a topic button disappeared (phase 2).
@@ -372,6 +388,10 @@ pub struct Topic {
     /// Phase 5: the cache row behind the precomputed brief (the island marks these).
     #[serde(default)]
     pub cached: Option<BriefId>,
+    /// 57 §7: what put it on the island — `Auto` (the model), `Cache` (the alias scan),
+    /// `Oracle` (the decision oracle, marked `⚡`). Absent on rows written before step 4.
+    #[serde(default)]
+    pub source: Option<BriefSource>,
 }
 
 /// A brief: 2–3 bullets of facts (phase 2).
@@ -413,6 +433,8 @@ pub enum BriefSource {
     Typed,
     /// Phase 5: the actor's alias scan found it in the cache, no model involved.
     Cache,
+    /// 57 §3.2: the decision oracle picked it from the cache, no model involved.
+    Oracle,
 }
 
 /// The brief cache changed (phase 5, 05 §0.8). The one meeting stream without
@@ -965,7 +987,7 @@ impl Meeting {
             };
             let Some(rec) = self.current.as_mut() else { return };
             let (topic, brief, expired) =
-                match rec.live.topics.insert_cached(&label, &row, Instant::now(), at_ms) {
+                match rec.live.topics.insert_cached(&label, &row, BriefSource::Cache, Instant::now(), at_ms) {
                     Ok(x) => x,
                     Err(e) => {
                         tracing::debug!(label, "meeting: cached topic skipped: {e}");
@@ -1150,8 +1172,10 @@ impl Meeting {
         }
     }
 
-    /// One transcript batch, or a deferral when the session's steer queue is deep.
-    async fn send_batch(&mut self, batch: Vec<Utterance>) {
+    /// One transcript batch, or a deferral when the session's steer queue is deep. The batch
+    /// goes through the decision oracle off the mailbox (57 §3; [`oracle::run`]) and comes
+    /// back as a [`oracle::Verdict`]; with the oracle off that is today's delivery, one hop later.
+    async fn send_batch(&mut self, batch: Vec<Utterance>, me: &ActorRef<Self>) {
         let Some(rec) = self.current.as_ref() else { return };
         let session = rec.manifest.session;
         if session::queued(session).await > batch::MAX_QUEUED {
@@ -1161,12 +1185,79 @@ impl Meeting {
             return;
         }
         let Some(rec) = self.current.as_ref() else { return };
-        let text = session::batch_line(
+        let meeting = rec.manifest.id;
+        let blocked = rec.live.topics.cached_blocked_rows();
+        let (rt, cache, me) = (self.rt.clone(), self.cache.clone(), me.clone());
+        tokio::spawn(async move {
+            let verdict = oracle::run(rt, cache, blocked, batch, meeting, session).await;
+            let _ = me.tell(verdict).await;
+        });
+    }
+
+    /// Deliver a batch to the model as today (57 §3.2 tier 3): the carried batches ride along
+    /// as context, the evidence line last; what the oracle expected waits for the turn's end.
+    async fn deliver_batch(
+        &mut self,
+        batch: Vec<Utterance>,
+        evidence: Option<String>,
+        pending: Option<(OracleDecision, oracle::Expected)>,
+    ) {
+        let Some(rec) = self.current.as_mut() else { return };
+        let carried = std::mem::take(&mut rec.live.carry);
+        let text = session::batch_line_with(
             &batch,
             &rec.live.topics.batch_labels(chrono::Utc::now()),
             rec.live.topics.dismissed_labels(),
+            &carried,
+            evidence.as_deref(),
         );
+        if let Some(p) = pending {
+            rec.live.pending.push(p);
+        }
         self.deliver(text).await;
+    }
+
+    /// The oracle kept `batch` from the model: it becomes context for the next delivered one.
+    fn carry(&mut self, batch: Vec<Utterance>) {
+        let Some(rec) = self.current.as_mut() else { return };
+        rec.live.carry.push((oracle::batch_id(&batch), batch));
+        // ponytail: a long quiet stretch would otherwise grow the next line without bound;
+        // the transcript is on disk anyway (`meeting_read`).
+        const MAX_CARRY: usize = 6;
+        if rec.live.carry.len() > MAX_CARRY {
+            rec.live.carry.drain(..rec.live.carry.len() - MAX_CARRY);
+        }
+    }
+
+    /// 57 §3.4: the model turn ended — settle every pending oracle verdict against what the
+    /// turn published, report the outcomes to the decision log and update the events.
+    async fn settle_pending(&mut self) {
+        let Some(rec) = self.current.as_mut() else { return };
+        if rec.live.pending.is_empty() {
+            rec.live.published.clear();
+            return;
+        }
+        let meeting = rec.manifest.id;
+        let published = std::mem::take(&mut rec.live.published);
+        let pending = std::mem::take(&mut rec.live.pending);
+        let engine = ActorRef::<decision::Engine>::lookup(decision::DECISION_ACTOR)
+            .ok()
+            .flatten();
+        for (mut event, expected) in pending {
+            let (outcome, reports) = oracle::outcome(&expected, &published);
+            if let Some(engine) = &engine {
+                for (log_id, outcome) in reports {
+                    let _ = engine.tell(decision::Report { log_id, outcome }).await;
+                }
+            }
+            event.outcome = Some(outcome);
+            self.rt
+                .publish(MeetingEvent::OracleDecision {
+                    meeting,
+                    decision: event,
+                })
+                .await;
+        }
     }
 
     /// A topic left the live set: event + `briefs.jsonl` record.
@@ -1199,7 +1290,7 @@ impl Meeting {
 
     /// A closed utterance: `live.jsonl`, the alias scan (05 §3), then the batcher
     /// (or the request line). `at` is the close stamp, for the latency log.
-    async fn closed(&mut self, u: Utterance, at: Instant) {
+    async fn closed(&mut self, u: Utterance, at: Instant, me: &ActorRef<Self>) {
         let Some(rec) = self.current.as_mut() else { return };
         rec.live.log_utterance(&u);
         let hits = self.scan(&u.text);
@@ -1215,7 +1306,7 @@ impl Meeting {
         self.cached_topics(hits, u.t1_ms, at).await;
         let Some(rec) = self.current.as_mut() else { return };
         if let Some(batch) = rec.live.batcher.feed(u, Instant::now()) {
-            self.send_batch(batch).await;
+            self.send_batch(batch, me).await;
         }
     }
 
@@ -1742,14 +1833,25 @@ impl Message<StopMeeting> for Meeting {
             }
         }
         // 02 §4: the engines are gone (the tasks owned them); pending lines go
-        // out as one last input, then the session compacts like any other.
+        // out as one last input, then the session compacts like any other. 57 §3.2:
+        // batches the oracle kept back ride along as context, unfiltered at stop.
         let mut pending = live.batcher.drain();
         pending.extend(finals);
-        if !pending.is_empty() {
-            let text = session::batch_line(
+        if !pending.is_empty() || !live.carry.is_empty() {
+            let carried = std::mem::take(&mut live.carry);
+            let (pending, carried) = if pending.is_empty() {
+                let mut c = carried;
+                let last = c.pop().map(|(_, b)| b).unwrap_or_default();
+                (last, c)
+            } else {
+                (pending, carried)
+            };
+            let text = session::batch_line_with(
                 &pending,
                 &live.topics.batch_labels(chrono::Utc::now()),
                 live.topics.dismissed_labels(),
+                &carried,
+                None,
             );
             if let Err(e) = session::deliver(manifest.session, text, live.turn_running).await {
                 tracing::warn!(meeting = %manifest.id, "meeting: last batch: {e}");
@@ -1904,7 +2006,7 @@ impl Message<CheckPermissions> for Meeting {
 impl Message<Piece> for Meeting {
     type Reply = ();
 
-    async fn handle(&mut self, p: Piece, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(&mut self, p: Piece, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let Some(rec) = self.current.as_mut() else { return };
         let meeting = rec.manifest.id;
         let (t0_ms, t1_ms) = times(&rec.clock, &p);
@@ -1933,6 +2035,7 @@ impl Message<Piece> for Meeting {
                     request: p.request,
                 },
                 p.at,
+                ctx.actor_ref(),
             )
             .await;
         }
@@ -1942,15 +2045,51 @@ impl Message<Piece> for Meeting {
 impl Message<Tick> for Meeting {
     type Reply = ();
 
-    async fn handle(&mut self, _: Tick, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(&mut self, _: Tick, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let Some(rec) = self.current.as_mut() else { return };
         let now = Instant::now();
         let batch = rec.live.batcher.tick(now);
         let gone = rec.live.topics.expire(now);
         if let Some(batch) = batch {
-            self.send_batch(batch).await;
+            self.send_batch(batch, ctx.actor_ref()).await;
         }
         self.topics_gone(gone).await;
+    }
+}
+
+impl Message<oracle::Verdict> for Meeting {
+    type Reply = ();
+
+    /// 57 §3.2: act on the oracle's verdict — skip (carry), publish the cached brief as an
+    /// `Oracle` topic (carry), or deliver today's batch line with the evidence.
+    async fn handle(&mut self, v: oracle::Verdict, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let Some(rec) = self.current.as_mut() else { return };
+        let pending = match (v.event, v.expected) {
+            (Some(e), Some(x)) => Some((e, x)),
+            _ => None,
+        };
+        match v.action {
+            oracle::Action::Skip => self.carry(v.batch),
+            oracle::Action::Publish { row, label } => {
+                let at_ms = rec.clock.now_ms();
+                let meeting = rec.manifest.id;
+                match rec.live.topics.insert_cached(&label, &row, BriefSource::Oracle, Instant::now(), at_ms) {
+                    Ok((topic, brief, expired)) => {
+                        rec.live.log_record(&Record::Topic(topic.clone()));
+                        rec.live.log_record(&Record::Brief(brief));
+                        self.topics_gone(expired).await;
+                        self.rt
+                            .publish(MeetingEvent::TopicAdded { meeting, topic })
+                            .await;
+                        self.touch_use(row.id);
+                    }
+                    // A live/dismissed label or a row shown meanwhile: no turn spent either way.
+                    Err(e) => tracing::debug!(label, "meeting: oracle topic skipped: {e}"),
+                }
+                self.carry(v.batch);
+            }
+            oracle::Action::Model { evidence } => self.deliver_batch(v.batch, evidence, pending).await,
+        }
     }
 }
 
@@ -2000,6 +2139,12 @@ impl Message<AgentEvent> for Meeting {
                 let errored = stop_reason == "error";
                 // 03 §9: a request or deeper the turn did not answer with a brief gets one reminder.
                 let nudge = (!errored).then(|| rec.live.unanswered()).flatten();
+                // 57 §3.4: what the turn did versus what the oracle said (an errored turn is
+                // no label: keep the verdicts pending for the retry).
+                if !errored {
+                    self.settle_pending().await;
+                }
+                let Some(rec) = self.current.as_mut() else { return };
                 if errored && !down {
                     rec.manifest.degraded.push(Degradation::ModelDown);
                 } else if !errored && down {
@@ -2228,7 +2373,7 @@ impl Message<AddTopic> for Meeting {
             let (t, b, e) = rec
                 .live
                 .topics
-                .insert_cached(&m.label, &row, Instant::now(), at_ms)?;
+                .insert_cached(&m.label, &row, BriefSource::Cache, Instant::now(), at_ms)?;
             (t, b, e, Some(id))
         } else {
             let (Some(title), Some(bullets)) = (m.title, m.bullets) else {
@@ -2264,6 +2409,9 @@ impl Message<AddTopic> for Meeting {
         };
         let rec = self.recording_for(m.session)?;
         rec.live.log_record(&Record::Topic(topic.clone()));
+        // 57 §3.4: the shadow outcome compares this with what the oracle said. `learnt` is the
+        // row the model named; a new brief's own cache row is not a cached pick.
+        rec.live.published.push((learnt, brief.title.clone()));
         rec.live.log_record(&Record::Brief(brief));
         self.topics_gone(expired).await;
         self.rt
@@ -2676,6 +2824,18 @@ impl runtime::Plugin for MeetingPlugin {
         rt.subscribe::<Meeting, AgentEvent>(&actor).await;
         rt.subscribe::<Meeting, ApprovalRequested>(&actor).await;
         rt.subscribe::<Meeting, ApprovalResolved>(&actor).await;
+        // 57 §3.4: the oracle switch position, resolved the way the decision plugin will
+        // (it starts after us, so this reads the config, not the actor).
+        let dcfg: decision::DecisionConfig = rt.section("decision").unwrap_or_default();
+        let mode = decision::mode_for(&dcfg, &dcfg.model_dir_in(&rt.data_dir), oracle::PREFIX);
+        match &mode.reason {
+            Some(r) => tracing::info!(
+                "meeting: decision oracle {} (configured {}: {r})",
+                mode.effective,
+                mode.mode
+            ),
+            None => tracing::info!("meeting: decision oracle {}", mode.effective),
+        }
         // 02 §5.3: what `[meeting …]` lines mean; static, registered once. 04 §5:
         // the four post tools read the store and live for the whole process. 05 §4:
         // the four brief tools go through the actor, same block.

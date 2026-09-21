@@ -97,6 +97,15 @@ impl Default for DecisionConfig {
     }
 }
 
+impl DecisionConfig {
+    /// `model_dir`, or `<data_dir>/models/decision`.
+    pub fn model_dir_in(&self, data_dir: &Path) -> PathBuf {
+        self.model_dir
+            .clone()
+            .unwrap_or_else(|| data_dir.join("models").join(MODEL_SUBDIR))
+    }
+}
+
 fn default_families() -> BTreeMap<String, FamilyGate> {
     [
         ("meeting.topic", FamilyGate::shadow(0.85, 0.40)),
@@ -274,10 +283,7 @@ impl runtime::Plugin for DecisionPlugin {
         if !cfg.enabled {
             tracing::debug!("decision disabled by config");
         }
-        let model_dir = cfg
-            .model_dir
-            .clone()
-            .unwrap_or_else(|| rt.data_dir.join("models").join(MODEL_SUBDIR));
+        let model_dir = cfg.model_dir_in(&rt.data_dir);
         let log = log::Log::new(rt.data_dir.join("decisions"));
         let engine =
             Engine::new(cfg, model_dir, log).with_config_path(rt.data_dir.join("config.yaml"));

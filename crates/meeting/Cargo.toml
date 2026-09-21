@@ -9,6 +9,7 @@ description = "Meeting recorder: the meeting app's audio and the microphone as l
 runtime = { workspace = true }
 agent = { workspace = true }
 tools = { workspace = true }
+decision = { workspace = true }  # the oracle pre-filter on transcript batches (57 §3)
 voice = { workspace = true }
 models = { workspace = true }  # `models::onnx::ort_lib` before the diarisation sessions (57 §6 step 1)
 kameo = { workspace = true }
@@ -42,9 +43,11 @@ objc2-av-foundation = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+figment = { workspace = true }
+parking_lot = { workspace = true }
 
 [features]
-ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "voice/ts"]
+ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "voice/ts", "decision/ts"]
 
 [lints]
 workspace = true
