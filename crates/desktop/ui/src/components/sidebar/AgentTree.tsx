@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { memo, useEffect, useState } from 'react'
 import { useSessionDrag } from '@/components/chat/Panes'
-import { costLines, formatMoney } from '@/lib/money'
+import { costLines, costShort } from '@/lib/money'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import type { CostBucket } from '@/rpc/bindings/CostBucket'
@@ -63,9 +63,9 @@ const Row = memo(function Row({
         {GLYPH[row.state.state]}
       </span>
       <span className="flex-1 truncate">{row.name}</span>
-      {cost && cost.returned.length > 0 && (
-        <span className="tabular-nums text-fg-tertiary" title={costLines(cost).primary}>
-          {cost.returned.map(formatMoney).join(' + ')}
+      {cost && (cost.returned.length > 0 || cost.estimated_for_unavailable.length > 0) && (
+        <span className="tabular-nums text-fg-tertiary" title={costLines(cost).secondary ?? costLines(cost).primary}>
+          {costShort(cost)}
         </span>
       )}
       <span className="tabular-nums text-fg-tertiary">{ago(row.started_at ?? row.finished_at, now)}</span>

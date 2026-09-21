@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
 import type { CostBucket } from '@/rpc/bindings/CostBucket'
-import { costLines, formatMoney } from './money'
+import { costLines, costShort, formatMoney } from './money'
 
 const usd = (nanos: string) => ({ currency: 'USD', nanos })
 const bucket = (o: Partial<CostBucket>): CostBucket => ({
@@ -37,10 +37,17 @@ test('costLines follows 51 §6.2 and never merges returned with estimate', () =>
     ),
   ).toEqual({
     primary: 'Returned cost USD 0.100 · 2 unavailable',
-    secondary: 'Estimate for unavailable calls ~USD 0.023',
+    secondary: 'Estimated ~USD 0.023',
   })
   expect(costLines(bucket({ dispatched: 2, unavailable: 2 }))).toEqual({ primary: 'Returned cost — · 2 unavailable' })
   expect(costLines(bucket({ dispatched: 2, returned: [usd('1000000000'), { currency: 'EUR', nanos: '500000000' }] })).primary).toBe(
     'Returned cost USD 1.000 + EUR 0.500',
   )
+})
+
+test('costShort prefers returned, then a tilde-marked estimate, then a dash', () => {
+  const est = [usd('23000000')]
+  expect(costShort(bucket({ dispatched: 2, returned: [usd('100000000')], estimated_for_unavailable: est }))).toBe('USD 0.100')
+  expect(costShort(bucket({ dispatched: 2, estimated_for_unavailable: est }))).toBe('~USD 0.023')
+  expect(costShort(bucket({ dispatched: 2, unavailable: 2 }))).toBe('—')
 })

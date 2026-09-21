@@ -358,10 +358,20 @@ session's accounting owner and generation.
 ### 6.2 Tokens, provenance, money, and coverage
 
 Keep input, output, cache-read, cache-write, and current-context tokens optional.
-An existing adapter's normalized estimate may be retained as diagnostic data;
-do not build a local pricing engine. Raw provider usage is bounded structured
-billing metadata, never prompt text. `chars/4` is context-only. Context is a
-latest observation, not a descendant sum.
+Raw provider usage is bounded structured billing metadata, never prompt text.
+`chars/4` is context-only. Context is a latest observation, not a descendant sum.
+
+Amended 2026-09-21 (reverses the v1 "no local pricing engine" rule): Anthropic,
+OpenAI and Bedrock never return a price, so a ledger of returned money alone
+stays `—` for every direct provider. When the adapter returns usage with no
+cost and the catalog (`models::Cost`, USD per million from models.dev) prices
+the resolved model, `observe()` computes `estimated_nanos` as
+`uncached×input + cache_read×cache_read_rate + cache_write×cache_write_rate +
+output×output_rate`, where `uncached = prompt − cache_read − cache_write`
+(genai sums the cache buckets into `prompt_tokens`) and a missing cache rate
+falls back to the input rate. The result is `adapter_estimated`; nothing here
+touches `returned_nanos`. Skipped until a used model needs them: long-context
+tiers, time-of-day multipliers, the 1h cache-write premium.
 
 At adapter ingestion, preserve the normalized monetary observation and origin.
 `provider_reported` means an explicit provider/upstream value;
@@ -389,15 +399,18 @@ report overflow as unavailable rather than wrap. Group totals by currency;
 never silently convert; standard ACP non-USD currency remains grouped as received.
 
 Summaries contain per-currency returned subtotals and coverage, plus a separate
-estimate-for-unavailable subtotal, known/unknown token coverage, unresolved
-attempts, history completeness, and remote-meter gaps. No dispatched calls
-displays `Returned cost —`. All returned displays `Returned cost USD 0.123`.
-Partial coverage displays `Returned cost USD 0.100 · 2 unavailable` and, on a
-second line, `Estimate for unavailable calls ~USD 0.023`. Never render
-`USD 0.100 + ~USD 0.023` as one apparent total. Imported/old sessions with no
-ledger remain historical-cost-unknown, not complete zero. A newly created
-session with no calls is distinguished from missing old history. Estimated zero
-remains labeled estimated. A remote meter is not mislabeled one provider request.
+estimate subtotal, known/unknown token coverage, unresolved attempts, history
+completeness, and remote-meter gaps. No dispatched calls displays
+`Returned cost —`. All returned displays `Returned cost USD 0.123`. Partial
+coverage displays `Returned cost USD 0.100 · 2 unavailable` and, when an
+estimate exists, a second line `Estimated ~USD 0.023`. Never render
+`USD 0.100 + ~USD 0.023` as one apparent total. Compact surfaces (header pill,
+TUI header tag, agent rows) show the returned total, else the estimate with its
+tilde (`~USD 0.023`), else `—`; the tilde is the provenance label. Imported/old
+sessions with no ledger remain historical-cost-unknown, not complete zero. A
+newly created session with no calls is distinguished from missing old history.
+Estimated zero remains labeled estimated. A remote meter is not mislabeled one
+provider request.
 
 ### 6.3 Standard ACP and remote cumulative meters
 
@@ -591,9 +604,10 @@ drops it. Extend the adjacent stream/usage result narrowly; if rust-genai itself
 discards the provider value/source, patch the existing rust-genai fork already
 selected in `Cargo.toml`. Do not add another HTTP client/interceptor or reprice
 in a UI. Adapters label a normalized amount provider-reported or estimated;
-unsupported providers remain unknown unless their adapter already supplies an
-explicit estimate. V1 adds no local pricing engine. Acceptance follows real
-transport → observation → ledger → owner summary, never a frontend-injected value.
+a provider that sends usage without a price is estimated from the catalog in
+`observe()` (§6.2 amendment, 2026-09-21); a model the catalog does not price
+remains unknown. Acceptance follows real transport → observation → ledger →
+owner summary, never a frontend-injected value.
 
 ## 7. Authoritative PTY observation
 

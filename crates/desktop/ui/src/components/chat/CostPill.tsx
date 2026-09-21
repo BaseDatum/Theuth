@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
-import { costLines, formatMoney } from '@/lib/money'
+import { costLines, costShort } from '@/lib/money'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { CostBucket } from '@/rpc/bindings/CostBucket'
 import type { SessionCost } from '@/rpc/bindings/SessionCost'
@@ -59,7 +59,7 @@ function Breakdown({ cost }: { cost: SessionCost }) {
   )
 }
 
-/** Header pill with the session's returned total (51 §6.2); click or `/cost` opens the breakdown. */
+/** Header pill with the session's returned total, else its estimate (51 §6.2); click or `/cost` opens the breakdown. */
 export function CostPill({ session }: { session: string }) {
   const api = useApi()
   const [open, setOpen] = useState(false)
@@ -72,13 +72,14 @@ export function CostPill({ session }: { session: string }) {
     return () => window.removeEventListener('theuth:open-cost', h)
   }, [session])
   if (!data) return null
-  const amount = data.total.returned.length ? data.total.returned.map(formatMoney).join(' + ') : '—'
+  const amount = costShort(data.total)
+  const lines = costLines(data.total)
   return (
     <>
       <button
         type="button"
         className="rounded-full border border-border-subtle px-2.5 py-0.5 text-xs whitespace-nowrap text-fg-secondary tabular-nums"
-        title={costLines(data.total).primary}
+        title={lines.secondary ? `${lines.primary}\n${lines.secondary}` : lines.primary}
         aria-label="Cost"
         onClick={() => setOpen(true)}
       >

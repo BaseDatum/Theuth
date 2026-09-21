@@ -1963,9 +1963,10 @@ async fn settle(store: &Store, rt: &Runtime, call: &CallId, status: CallStatus, 
 }
 
 /// 51 §6.2: what one attempt's usage says about tokens and money for `model`.
-/// Only a provider-reported amount is `returned`; an adapter estimate is
-/// `estimated`; an invalid amount or no cost is unknown with a content-free
-/// reason. Context is the prompt plus the completion of this call.
+/// Only a provider-reported amount is `returned`; an adapter estimate, or ours
+/// from the catalog's rates when the provider sent none, is `estimated`; an
+/// invalid amount or no usage is unknown with a content-free reason. Context is
+/// the prompt plus the completion of this call.
 fn observe(usage: Option<&genai::chat::Usage>, model: &Resolved) -> CostObservation {
     let tokens = |n: Option<i32>| n.and_then(|n| u32::try_from(n).ok());
     let mut obs = CostObservation {
@@ -1987,7 +1988,10 @@ fn observe(usage: Option<&genai::chat::Usage>, model: &Resolved) -> CostObservat
         (i, o) => Some(i.unwrap_or(0).saturating_add(o.unwrap_or(0))),
     };
     match &u.cost {
-        None => obs.unknown_reason = Some("no cost returned".into()),
+        None => match model.model.as_ref().and_then(|m| m.cost) {
+            Some(rates) => obs.estimated = Some(estimate(&obs, &rates)),
+            None => obs.unknown_reason = Some("no cost returned".into()),
+        },
         Some(c) => match Money::from_f64(c.amount, &c.currency) {
             Ok(m) if c.source == UsageCostSource::ProviderReported => obs.returned = Some(m),
             Ok(m) => obs.estimated = Some(m),
@@ -1995,6 +1999,25 @@ fn observe(usage: Option<&genai::chat::Usage>, model: &Resolved) -> CostObservat
         },
     }
     obs
+}
+
+/// Catalog rates (USD per million) × this call's tokens. `input_tokens` is the
+/// whole prompt (genai sums cache reads and writes into it), so the uncached
+/// part is what remains after both cache buckets; a cache rate the catalog
+/// lacks falls back to the input rate.
+fn estimate(obs: &CostObservation, rates: &models::Cost) -> Money {
+    let read = obs.cache_read_tokens.unwrap_or(0);
+    let write = obs.cache_write_tokens.unwrap_or(0);
+    let uncached = obs
+        .input_tokens
+        .unwrap_or(0)
+        .saturating_sub(read)
+        .saturating_sub(write);
+    let usd = f64::from(uncached) * rates.input
+        + f64::from(read) * rates.cache_read.unwrap_or(rates.input)
+        + f64::from(write) * rates.cache_write.unwrap_or(rates.input)
+        + f64::from(obs.output_tokens.unwrap_or(0)) * rates.output;
+    Money::from_f64(usd / 1e6, "USD").unwrap_or_else(|_| Money::from_f64(0.0, "USD").expect("zero USD"))
 }
 
 /// Text of `history` worth matching against the bundle (10 §4.2): user
@@ -6093,6 +6116,34 @@ mod tests {
         let none = observe(None, &model);
         assert_eq!(none.unknown_reason.as_deref(), Some("no usage returned"));
         assert!(none.input_tokens.is_none() && none.context_tokens.is_none());
+
+        // No cost in the response and no catalog rates: unknown.
+        let unpriced = observe(Some(&usage(None)), &model);
+        assert!(unpriced.returned.is_none() && unpriced.estimated.is_none());
+        assert_eq!(unpriced.unknown_reason.as_deref(), Some("no cost returned"));
+
+        // No cost in the response but catalog rates: estimated from the token split.
+        // prompt 100 = 35 uncached + 60 cache read + 5 cache write; output 20.
+        // 35×3 + 60×0.3 + 5×3.75 + 20×15 = 441.75 USD per million → 0.00044175 USD.
+        let priced = Resolved {
+            model: Some(models::Model {
+                id: "x".into(),
+                name: "x".into(),
+                limit: models::Limit { context: 1, output: 1 },
+                cost: Some(models::Cost { input: 3.0, output: 15.0, cache_read: Some(0.3), cache_write: Some(3.75) }),
+                reasoning: false,
+                tool_call: false,
+                image: false,
+                reasoning_options: vec![],
+            }),
+            ..model.clone()
+        };
+        let est = observe(Some(&usage(None)), &priced);
+        assert!(est.returned.is_none() && est.unknown_reason.is_none());
+        assert_eq!(est.estimated.as_ref().map(|m| (m.currency.as_str(), m.nanos)), Some(("USD", 441_750)));
+        // A provider-reported amount still wins over the catalog.
+        let reported = observe(Some(&usage(cost(0.25, "USD", UsageCostSource::ProviderReported))), &priced);
+        assert!(reported.estimated.is_none() && reported.returned.is_some());
     }
 
     /// Every `AgentEvent` published on a runtime, in order.

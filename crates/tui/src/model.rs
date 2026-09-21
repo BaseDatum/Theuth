@@ -9709,8 +9709,9 @@ fn money_list(list: &[Money], prefix: &str) -> String {
 
 /// The display rules of 51 §6.2 over one bucket: `Returned cost —` when
 /// nothing was dispatched; `Returned cost USD 0.123`; partial coverage adds
-/// `· N unavailable` and a second line `Estimate for unavailable calls
-/// ~USD 0.023`. Returned and estimated never share a line.
+/// `· N unavailable`; calls the provider did not price but the catalog or
+/// adapter could add a second line `Estimated ~USD 0.023`. Returned and
+/// estimated never share a line.
 pub fn cost_lines(b: &CostBucket) -> Vec<String> {
     let mut first = String::from("Returned cost ");
     if b.dispatched == 0 || b.returned.is_empty() {
@@ -9724,11 +9725,23 @@ pub fn cost_lines(b: &CostBucket) -> Vec<String> {
     let mut lines = vec![first];
     if !b.estimated_for_unavailable.is_empty() {
         lines.push(format!(
-            "Estimate for unavailable calls {}",
+            "Estimated {}",
             money_list(&b.estimated_for_unavailable, "~")
         ));
     }
     lines
+}
+
+/// One bucket for a header tag or child row: returned money, else the
+/// estimate as `~USD 0.123` (the tilde keeps its provenance visible), else `—`.
+pub fn cost_short(b: &CostBucket) -> String {
+    if !b.returned.is_empty() {
+        money_list(&b.returned, "")
+    } else if !b.estimated_for_unavailable.is_empty() {
+        money_list(&b.estimated_for_unavailable, "~")
+    } else {
+        "—".into()
+    }
 }
 
 /// One `/terminals` row: `● abcd1234  j3  name · command  running  rev 12`.
@@ -9818,17 +9831,17 @@ impl Model {
         })
     }
 
-    /// `  ·  Returned cost USD 0.123 · 2 unavailable` for the shown session's
-    /// inclusive total; empty until the owner summary arrived (51 §8.3).
+    /// `  ·  cost USD 0.123` (or `~USD 0.123` when only an estimate exists) for
+    /// the shown session's inclusive total; empty until the owner summary arrived (51 §8.3).
     fn cost_tag(&self) -> String {
         match &self.cost {
-            Some(c) => format!("  ·  {}", cost_lines(&c.total)[0]),
+            Some(c) => format!("  ·  cost {}", cost_short(&c.total)),
             None => String::new(),
         }
     }
 
     /// A direct child's inclusive total for its `/agents` row: `  ·  USD 0.123`
-    /// (`—` when nothing was dispatched); empty for deeper rows and before the summary arrived.
+    /// (`~USD` for an estimate, `—` when nothing was priced); empty for deeper rows and before the summary arrived.
     pub fn child_cost_tag(&self, id: SessionId) -> String {
         let Some(child) = self
             .cost
@@ -9837,8 +9850,7 @@ impl Model {
         else {
             return String::new();
         };
-        let line = cost_lines(&child.total).swap_remove(0);
-        format!("  ·  {}", line.trim_start_matches("Returned cost "))
+        format!("  ·  {}", cost_short(&child.total))
     }
 
     /// `/cost` rows (51 §8.3): direct, descendants and total buckets, the
@@ -9900,11 +9912,10 @@ impl Model {
             }
         ));
         for ch in &c.children {
-            let total = cost_lines(&ch.total).swap_remove(0);
             rows.push(format!(
                 "  ↳ {} · {}{}{}",
                 ch.name.as_deref().unwrap_or("(unnamed)"),
-                total.trim_start_matches("Returned cost "),
+                cost_short(&ch.total),
                 if ch.deleted { " · deleted" } else { "" },
                 match ch.scope {
                     CostScope::Native => "",
@@ -14354,11 +14365,17 @@ mod tests {
             cost_lines(&b),
             [
                 "Returned cost USD 0.100 · 2 unavailable",
-                "Estimate for unavailable calls ~USD 0.023"
+                "Estimated ~USD 0.023"
             ]
         );
-        b.unavailable = 0;
+        // Header tag and child rows: returned wins, then the estimate keeps its tilde, then a dash.
+        assert_eq!(cost_short(&b), "USD 0.100");
+        b.returned.clear();
+        assert_eq!(cost_short(&b), "~USD 0.023");
+        assert_eq!(cost_lines(&b), ["Returned cost — · 2 unavailable", "Estimated ~USD 0.023"]);
         b.estimated_for_unavailable.clear();
+        assert_eq!(cost_short(&b), "—");
+        b.unavailable = 0;
         b.returned = vec![
             Money {
                 currency: "EUR".into(),

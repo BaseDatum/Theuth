@@ -14,12 +14,20 @@ export function formatMoney(m: Money): string {
 /**
  * 51 §6.2 display strings. Returned money and estimates never appear in one string:
  * `primary` is the returned part (`—` when nothing was dispatched) plus the unavailable
- * count; `secondary` is the estimate line, present only when an estimate exists.
+ * count; `secondary` is the estimate line (catalog or adapter rates over calls the
+ * provider did not price), present only when an estimate exists.
  */
 export function costLines(b: CostBucket): { primary: string; secondary?: string } {
   if (b.dispatched === 0) return { primary: 'Returned cost —' }
   const returned = b.returned.length ? b.returned.map(formatMoney).join(' + ') : '—'
   const primary = b.unavailable > 0 ? `Returned cost ${returned} · ${b.unavailable} unavailable` : `Returned cost ${returned}`
   if (!b.estimated_for_unavailable.length) return { primary }
-  return { primary, secondary: `Estimate for unavailable calls ~${b.estimated_for_unavailable.map(formatMoney).join(' + ')}` }
+  return { primary, secondary: `Estimated ${b.estimated_for_unavailable.map((m) => `~${formatMoney(m)}`).join(' + ')}` }
+}
+
+/** One bucket for a pill or agent row: returned money, else the estimate as `~USD 0.123`, else `—`. */
+export function costShort(b: CostBucket): string {
+  if (b.returned.length) return b.returned.map(formatMoney).join(' + ')
+  if (b.estimated_for_unavailable.length) return b.estimated_for_unavailable.map((m) => `~${formatMoney(m)}`).join(' + ')
+  return '—'
 }
