@@ -1,8 +1,7 @@
-//! The candle backend (57 §12.8): laya-rs 0.1.0's `DecisionModel` — ModernBERT + decision head,
+//! The decision engine (57 §12.8): laya-rs 0.1.0's `DecisionModel` — ModernBERT + decision head,
 //! vendored in [`model`], [`weights`], [`config`] — over the `safetensors` checkpoint, on Metal
 //! (f16) or CPU (f32). Only the forward pass is theirs: rendering ([`build_sequence`]), padding
-//! ([`collate`]), calibration and confidence ([`postprocess`]), the gate and the log are the ORT
-//! path's, so the two engines are interchangeable behind [`Oracle`].
+//! ([`collate`]), calibration and confidence ([`postprocess`]), the gate and the log are ours.
 
 pub mod config;
 pub mod model;
@@ -18,11 +17,71 @@ use tokenizers::Tokenizer;
 
 use self::config::{AgentConfig, EncoderConfig};
 use self::model::DecisionModel;
-use self::weights::SanitizedBackend;
+use self::weights::{SanitizedBackend, sanitize_name};
 
-use crate::engine::{CANDLE_FILES, Oracle};
+use crate::engine::Oracle;
 use crate::laya::{Batch, LayaConfig, RowOut, Sequence, build_sequence, collate, postprocess};
 use crate::question::Question;
+
+/// One entry of the safetensors header: `(name, dtype, shape)`.
+pub type HeaderEntry = (String, DType, Vec<usize>);
+
+/// The checkpoint the configs describe, checked against the file's header before any weight is
+/// read: the embedding table has the encoder's `vocab_size × hidden_size`, the last encoder
+/// layer, the last head layer, the scorer, the act head and the type embedding are present
+/// (names as [`sanitize_name`] maps them — both the PyTorch and the MLX layout load), and every
+/// tensor is a float dtype candle can cast (f16 / bf16 / f32). Anything else is refused and named.
+pub fn verify_header(
+    header: &[HeaderEntry],
+    enc: &EncoderConfig,
+    agent: &AgentConfig,
+) -> Result<(), String> {
+    let mut missing = Vec::new();
+    let find = |want: &str| {
+        header
+            .iter()
+            .find(|(name, _, _)| sanitize_name(name) == want)
+    };
+    let last_layer = enc.num_hidden_layers.checked_sub(1).ok_or("encoder has no layers")?;
+    let last_head = agent.head_layers.checked_sub(1).ok_or("head has no layers")?;
+    for name in [
+        "encoder.embeddings.tok_embeddings.weight".to_owned(),
+        "encoder.final_norm.weight".to_owned(),
+        format!("encoder.layers.{last_layer}.attn.Wqkv.weight"),
+        format!("head.layers.{last_head}.self_attn.in_proj.weight"),
+        "scorer.layers.3.weight".to_owned(),
+        "act_head.layers.2.weight".to_owned(),
+        "type_emb.weight".to_owned(),
+    ] {
+        if find(&name).is_none() {
+            missing.push(name);
+        }
+    }
+    if !missing.is_empty() {
+        return Err(format!(
+            "model.safetensors: missing tensors {} ({} in file)",
+            missing.join(", "),
+            header.len()
+        ));
+    }
+    if let Some((_, _, shape)) = find("encoder.embeddings.tok_embeddings.weight")
+        && shape != &[enc.vocab_size, enc.hidden_size]
+    {
+        return Err(format!(
+            "model.safetensors: tok_embeddings is {shape:?}, encoder/config.json says [{}, {}]",
+            enc.vocab_size, enc.hidden_size
+        ));
+    }
+    if let Some((name, dtype, _)) = header
+        .iter()
+        .find(|(_, d, _)| !matches!(d, DType::F16 | DType::BF16 | DType::F32))
+    {
+        return Err(format!(
+            "model.safetensors: `{name}` is {dtype:?}, expected f16, bf16 or f32"
+        ));
+    }
+    Ok(())
+}
 
 /// The five model inputs, in `DecisionModel::forward` order and the dtypes laya-rs's own
 /// `Agent::collate` feeds it: `input_ids u32[B,S]`, `attention_mask u8[B,S]`,
@@ -44,7 +103,7 @@ pub fn inputs(batch: &Batch, device: &Device) -> candle_core::Result<[Tensor; 5]
 
 /// The checkpoint on one device: the model, the tokenizer, the temperatures and the weights'
 /// sha256.
-pub struct CandleLoaded {
+pub struct Loaded {
     model: DecisionModel,
     /// Where the weights live.
     pub device: Device,
@@ -62,18 +121,20 @@ pub struct CandleLoaded {
     pub hash_time: Duration,
 }
 
-impl CandleLoaded {
-    /// Open a laya checkpoint dir ([`CANDLE_FILES`], Hugging Face layout) on Metal (`metal`) or
-    /// CPU at `dtype`. A Metal device that cannot be created falls back to CPU f32 with a warning.
-    pub fn open(dir: &Path, metal: bool, dtype: DType) -> anyhow::Result<CandleLoaded> {
-        debug_assert!(CANDLE_FILES.iter().all(|f| dir.join(f).is_file()));
+impl Loaded {
+    /// Open a laya checkpoint dir (`crate::engine::MODEL_FILES`, the Hugging Face layout) on
+    /// Metal (`metal`) or CPU at `dtype`. A Metal device that cannot be created falls back to
+    /// CPU f32 with a warning.
+    pub fn open(dir: &Path, metal: bool, dtype: DType) -> anyhow::Result<Loaded> {
         let t = Instant::now();
         let (device, dtype) = match metal {
             false => (Device::Cpu, dtype),
             true => match Device::new_metal(0) {
                 Ok(d) => (d, dtype),
                 Err(e) => {
-                    tracing::warn!("decision: Metal unavailable ({e}); candle runs on the CPU in f32");
+                    tracing::warn!(
+                        "decision: Metal unavailable ({e}); candle runs on the CPU in f32"
+                    );
                     (Device::Cpu, DType::F32)
                 }
             },
@@ -101,12 +162,22 @@ impl CandleLoaded {
         // SAFETY: the file is read-only for the process lifetime; the mmap is what laya-rs's
         // own loader does (`Agent::load`).
         let mmaped = unsafe { candle_core::safetensors::MmapedSafetensors::new(&weights)? };
-        let names: Vec<String> = mmaped.tensors().into_iter().map(|(n, _)| n).collect();
+        let header: Vec<HeaderEntry> = mmaped
+            .tensors()
+            .into_iter()
+            .map(|(name, view)| {
+                let dtype = DType::try_from(view.dtype())
+                    .map_err(|e| anyhow::anyhow!("model.safetensors: `{name}`: {e}"))?;
+                Ok((name, dtype, view.shape().to_vec()))
+            })
+            .collect::<anyhow::Result<_>>()?;
+        verify_header(&header, &encoder_cfg, &agent_cfg).map_err(anyhow::Error::msg)?;
+        let names = header.into_iter().map(|(n, _, _)| n).collect::<Vec<_>>();
         let backend = SanitizedBackend::new(Box::new(mmaped), names);
         let vb = VarBuilder::from_backend(Box::new(backend), dtype, device.clone());
         let model = DecisionModel::load(vb, &encoder_cfg, &agent_cfg, dtype, &device)
             .map_err(|e| anyhow::anyhow!("load {}: {e}", weights.display()))?;
-        Ok(CandleLoaded {
+        Ok(Loaded {
             model,
             device,
             dtype,
@@ -160,15 +231,15 @@ impl CandleLoaded {
     }
 }
 
-impl Oracle for CandleLoaded {
+impl Oracle for Loaded {
     fn model_sha(&self) -> &str {
         &self.model_sha
     }
     fn build(&self, q: &Question) -> Result<Sequence, String> {
-        CandleLoaded::build(self, q)
+        Loaded::build(self, q)
     }
     fn run(&mut self, rows: &[Sequence]) -> anyhow::Result<Vec<RowOut>> {
-        CandleLoaded::run(self, rows)
+        Loaded::run(self, rows)
     }
     fn load_time(&self) -> Duration {
         self.load_time
@@ -182,7 +253,9 @@ mod tests {
 
     fn row(len: usize, markers: &[i64], qtype: i64) -> Sequence {
         let mut input_ids = vec![CLS];
-        input_ids.extend((1..len as i64 - 1).map(|i| if markers.contains(&i) { MASK } else { 1000 + i }));
+        input_ids.extend(
+            (1..len as i64 - 1).map(|i| if markers.contains(&i) { MASK } else { 1000 + i }),
+        );
         input_ids.push(SEP);
         Sequence {
             attention_mask: vec![1; input_ids.len()],
@@ -207,10 +280,19 @@ mod tests {
         assert_eq!(mask.dims(), &[2, 3]);
         assert_eq!(qtype.dims(), &[2]);
         assert_eq!(
-            [ids.dtype(), attn.dtype(), pos.dtype(), mask.dtype(), qtype.dtype()],
+            [
+                ids.dtype(),
+                attn.dtype(),
+                pos.dtype(),
+                mask.dtype(),
+                qtype.dtype()
+            ],
             [DType::U32, DType::U8, DType::I64, DType::U8, DType::U32]
         );
-        assert_eq!(attn.to_vec2::<u8>().unwrap()[0][11..], [1, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            attn.to_vec2::<u8>().unwrap()[0][11..],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0]
+        );
         assert_eq!(mask.to_vec2::<u8>().unwrap(), [[1, 0, 0], [1, 1, 1]]);
         assert_eq!(qtype.to_vec1::<u32>().unwrap(), [1, 0]);
 
@@ -218,5 +300,68 @@ mod tests {
         let [_, _, pos, mask, _] = inputs(&one, &Device::Cpu).unwrap();
         assert_eq!(pos.dims(), &[1, 2]);
         assert_eq!(mask.to_vec2::<u8>().unwrap(), [[1, 0]]);
+    }
+
+    fn configs() -> (EncoderConfig, AgentConfig) {
+        let enc = EncoderConfig::from_value(&serde_json::json!({
+            "model_type": "modernbert", "vocab_size": 100, "hidden_size": 16,
+            "intermediate_size": 24, "num_hidden_layers": 2, "num_attention_heads": 2,
+            "max_position_embeddings": 64
+        }))
+        .unwrap();
+        let agent = AgentConfig::from_value(
+            &serde_json::json!({"encoder": "x", "head_layers": 1, "max_len": 64, "head_max_len": 16}),
+            64,
+        )
+        .unwrap();
+        (enc, agent)
+    }
+
+    /// The PyTorch layout (`in_proj_weight`, `scorer.3`) and the MLX layout (`in_proj.weight`,
+    /// `scorer.layers.3`) both verify.
+    fn header(pytorch: bool, dtype: DType) -> Vec<HeaderEntry> {
+        let (in_proj, scorer, act) = if pytorch {
+            ("head.layers.0.self_attn.in_proj_weight", "scorer.3.weight", "act_head.2.weight")
+        } else {
+            (
+                "head.layers.0.self_attn.in_proj.weight",
+                "scorer.layers.3.weight",
+                "act_head.layers.2.weight",
+            )
+        };
+        [
+            ("encoder.embeddings.tok_embeddings.weight", vec![100, 16]),
+            ("encoder.final_norm.weight", vec![16]),
+            ("encoder.layers.1.attn.Wqkv.weight", vec![48, 16]),
+            (in_proj, vec![48, 16]),
+            (scorer, vec![1, 16]),
+            (act, vec![2, 256]),
+            ("type_emb.weight", vec![3, 16]),
+        ]
+        .into_iter()
+        .map(|(n, s)| (n.to_owned(), dtype, s))
+        .collect()
+    }
+
+    #[test]
+    fn header_verification() {
+        let (enc, agent) = configs();
+        assert_eq!(verify_header(&header(true, DType::F16), &enc, &agent), Ok(()));
+        assert_eq!(verify_header(&header(false, DType::BF16), &enc, &agent), Ok(()));
+        // A layer short (the file is a smaller model than the config says).
+        let mut h = header(true, DType::F16);
+        h.retain(|(n, _, _)| n != "encoder.layers.1.attn.Wqkv.weight");
+        let e = verify_header(&h, &enc, &agent).unwrap_err();
+        assert!(e.contains("missing tensors encoder.layers.1.attn.Wqkv.weight"), "{e}");
+        assert!(e.contains("6 in file"));
+        // Another vocabulary.
+        let mut h = header(true, DType::F16);
+        h[0].2 = vec![50368, 16];
+        assert!(verify_header(&h, &enc, &agent).unwrap_err().contains("[100, 16]"));
+        // A quantised export.
+        let mut h = header(true, DType::F32);
+        h[3].1 = DType::U8;
+        let e = verify_header(&h, &enc, &agent).unwrap_err();
+        assert!(e.contains("in_proj_weight` is U8"), "{e}");
     }
 }

@@ -1,134 +1,129 @@
 //! End-to-end against the real checkpoint in `~/.theuth/models/decision/` (or
-//! `$DECISION_MODEL_DIR`). Skips with a printed reason when it is not there.
+//! `$DECISION_MODEL_DIR`; `$THEUTH_DATA_DIR` moves the data dir). Skips with a printed reason
+//! when it is not there.
 
 use std::path::PathBuf;
 use std::time::Duration;
 
+use candle_core::DType;
+use decision::candle::Loaded;
 use decision::engine::MODEL_FILES;
-use decision::laya::{BUCKET, Loaded, Provider, Units};
 use decision::log::Log;
 use decision::{
-    Ask, Candidate, DecisionConfig, Disposition, Engine, FamilyGate, Mode, Outcome, Question,
-    Reason, Report, Stats,
+    Ask, Candidate, DecisionConfig, Device, Disposition, Engine, FamilyGate, Mode, Outcome,
+    Question, Reason, Report, Stats,
 };
 use kameo::actor::Spawn;
 
-/// `$THEUTH_DATA_DIR` or `~/.theuth`: the runtime lives under it (`models/onnxruntime/`).
-fn data_dir() -> Option<PathBuf> {
-    std::env::var_os("THEUTH_DATA_DIR")
+/// The model dir, or `None` with a printed reason.
+fn model_dir() -> Option<PathBuf> {
+    let data = std::env::var_os("THEUTH_DATA_DIR")
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".theuth")))
-}
-
-/// `(data_dir, model_dir)`, or `None` with a printed reason.
-fn model_dir() -> Option<(PathBuf, PathBuf)> {
-    let data = data_dir()?;
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".theuth")))?;
     let dir = std::env::var_os("DECISION_MODEL_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| data.join("models/decision"));
     if MODEL_FILES.iter().all(|f| dir.join(f).is_file()) {
-        Some((data, dir))
+        Some(dir)
     } else {
         eprintln!("skipped: no laya checkpoint in {}", dir.display());
         None
     }
 }
 
-fn billing_state() -> String {
-    r#"{"from": "user@acme.com", "subject": "Duplicate charge on invoice #4411", "body": "Hi, we were billed twice for March. Please refund the duplicate today or we will cancel our plan."}"#.to_owned()
+/// The README example (bench (c)): one state, four questions, in the reference's order.
+fn readme() -> Vec<Question> {
+    let state = r#"{"from": "user@acme.com", "subject": "Duplicate charge on invoice #4411", "body": "Hi, we were billed twice for March. Please refund the duplicate today or we will cancel our plan."}"#.to_owned();
+    vec![
+        Question::Choice {
+            instructions: "Which department should handle this request?".into(),
+            candidates: [
+                ("billing", "invoices, payments, refunds"),
+                ("technical", "bugs, outages, system errors"),
+                ("sales", "pricing, new contracts"),
+                ("other", "everything else"),
+            ]
+            .into_iter()
+            .map(|(id, text)| Candidate {
+                id: id.into(),
+                text: text.into(),
+            })
+            .collect(),
+            state: state.clone(),
+        },
+        Question::Score {
+            instructions: "How urgent is this request?".into(),
+            levels: vec![
+                "not urgent".into(),
+                "soon".into(),
+                "critical deadline or blocking issue".into(),
+            ],
+            state: state.clone(),
+        },
+        Question::Bool {
+            statement: "Does the user threaten to cancel or leave?".into(),
+            state: state.clone(),
+        },
+        Question::Bool {
+            statement: "Does the user explicitly request a refund?".into(),
+            state,
+        },
+    ]
 }
 
-#[test]
-fn open_verifies_graph_and_answers_on_cpu() {
-    answers(Provider::Cpu);
-}
-
-/// Asking for the CoreML EP must always yield a working session: on macOS it either
-/// registers (bucketed, partition report present) or falls back to CPU with a warning (57
-/// §12.6 — both root ONNX exports fall back today); elsewhere it is the CPU test twice.
-#[test]
-fn open_verifies_graph_and_answers_on_coreml() {
-    answers(Provider::CoreMl(Units::All));
-}
-
-fn answers(provider: Provider) {
-    let Some((data, dir)) = model_dir() else {
-        return;
-    };
-    let mut m = Loaded::open(&dir, &data, 4, provider).expect("open");
-    eprintln!(
-        "asked {provider:?} → {:?}, partitions {:?}",
-        m.provider, m.partitions
-    );
-    assert_eq!(m.model_sha.len(), 64);
-    assert!(m.load_time > Duration::ZERO);
-    assert_eq!((m.laya.max_len, m.laya.head_max_len), (512, 192));
-    let coreml = matches!(m.provider, Provider::CoreMl(_));
-    assert!(!coreml || cfg!(target_os = "macos"));
-    assert!(!coreml || provider == m.provider);
-    assert_eq!(m.bucket, if coreml { BUCKET } else { (512, 0) });
-    assert_eq!(m.partitions.is_some(), coreml);
-    let q = Question::Bool {
-        statement: "Does the user threaten to cancel or leave?".into(),
-        state: billing_state(),
-    };
-    let seq = m.build(&q).unwrap();
-    assert!(!seq.truncated);
-    let out = m.run(&[seq]).unwrap().remove(0);
-    assert_eq!(out.probs.len(), 2);
-    assert!((out.probs.iter().sum::<f32>() - 1.0).abs() < 1e-4);
-    assert!(out.probs[1] > 0.5, "churn risk should read true: {out:?}");
-    // The act head's logits are in the thousands; its softmax saturates to exactly 0/1 (the
-    // ONNX README's "max action-prob diff 0.0" says the same).
-    assert!((0.0..=1.0).contains(&out.act_p));
-    // A batch of mixed K and qtype comes back row-aligned.
-    let choice = Question::Choice {
-        instructions: "Which department should handle this request?".into(),
-        candidates: vec![
-            Candidate {
-                id: "billing".into(),
-                text: "invoices, payments, refunds".into(),
-            },
-            Candidate {
-                id: "technical".into(),
-                text: "bugs, outages, system errors".into(),
-            },
-            Candidate {
-                id: "sales".into(),
-                text: "pricing, new contracts".into(),
-            },
-            Candidate {
-                id: "other".into(),
-                text: "everything else".into(),
-            },
-        ],
-        state: billing_state(),
-    };
-    let rows = [m.build(&choice).unwrap(), m.build(&q).unwrap()];
-    let outs = m.run(&rows).unwrap();
-    assert_eq!(outs.len(), 2);
-    assert_eq!(outs[0].probs.len(), 4);
-    assert_eq!(outs[1].probs.len(), 2);
-    let top = outs[0]
-        .probs
-        .iter()
+fn argmax(p: &[f32]) -> usize {
+    p.iter()
         .enumerate()
         .max_by(|a, b| a.1.total_cmp(b.1))
-        .unwrap()
-        .0;
-    assert_eq!(top, 0, "billing should win: {:?}", outs[0].probs);
-    // Batched and single answers agree (padding does not leak).
-    assert!(
-        (outs[1].probs[1] - out.probs[1]).abs() < 0.02,
-        "{} vs {}",
-        outs[1].probs[1],
-        out.probs[1]
+        .map_or(0, |(i, _)| i)
+}
+
+/// The README's four questions on the default device (`Device::Auto`: Metal f16 on an
+/// Apple-silicon Mac, CPU f32 elsewhere) against the step-2d ORT fp32 CPU probabilities —
+/// argmax equal and max |Δp| ≤ 0.01 (57 §12.8). ORT is gone from the crate; the fixture stays
+/// the reference because it was produced by an independent runtime from an independent export.
+#[test]
+fn readme_questions_match_the_reference() {
+    let Some(dir) = model_dir() else {
+        return;
+    };
+    let reference: Vec<Vec<f32>> =
+        serde_json::from_str(include_str!("fixtures/probs-cpu-fp32.json")).unwrap();
+    let metal = Device::Auto.metal();
+    let dtype = if metal { DType::F16 } else { DType::F32 };
+    let m = Loaded::open(&dir, metal, dtype).expect("open");
+    eprintln!(
+        "{:?} {:?}: load {:?} (hash {:?})",
+        m.device.location(),
+        m.dtype,
+        m.load_time,
+        m.hash_time
     );
+    assert_eq!((m.laya.max_len, m.laya.head_max_len), (512, 192));
+    let rows: Vec<_> = readme().iter().map(|q| m.build(q).unwrap()).collect();
+    assert!(rows.iter().all(|r| !r.truncated));
+    let outs = m.run(&rows).unwrap();
+    assert_eq!(outs.len(), 4);
+    let mut worst = 0.0f32;
+    for (out, want) in outs.iter().zip(&reference) {
+        assert_eq!(out.probs.len(), want.len());
+        assert!((out.probs.iter().sum::<f32>() - 1.0).abs() < 1e-4);
+        assert_eq!(argmax(&out.probs), argmax(want), "{:?} vs {want:?}", out.probs);
+        for (p, q) in out.probs.iter().zip(want) {
+            worst = worst.max((p - q).abs());
+        }
+        assert!((0.0..=1.0).contains(&out.act_p));
+    }
+    eprintln!("max |Δp| vs the fp32 reference: {worst:.4}");
+    assert!(worst <= 0.01, "max |Δp| {worst} > 0.01");
+    // One row alone equals its batched answer (padding to the batch's S/K does not leak).
+    let alone = m.run(&rows[2..3]).unwrap().remove(0);
+    assert!((alone.probs[1] - outs[2].probs[1]).abs() < 0.005);
 }
 
 #[tokio::test]
 async fn actor_end_to_end_with_report() {
-    let Some((data, dir)) = model_dir() else {
+    let Some(dir) = model_dir() else {
         return;
     };
     // `--nocapture` shows the engine's "model loaded" / "unloaded" info lines.
@@ -153,8 +148,7 @@ async fn actor_end_to_end_with_report() {
         .into(),
         ..DecisionConfig::default()
     };
-    let engine = Engine::spawn(Engine::new(cfg, dir, data, log));
-    // First ask: the cold load outruns a 400 ms budget → Timeout, then loaded.
+    let engine = Engine::spawn(Engine::new(cfg, dir, log));
     let mut ask = Ask::new(
         "meeting.topic",
         Question::Bool {

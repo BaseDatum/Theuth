@@ -3,19 +3,15 @@ name = "decision"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
-description = "Local typed-probability oracle (laya via ONNX Runtime or candle) with a selective gate in front of the reasoning model (design doc 57)"
+description = "Local typed-probability oracle (laya in candle) with a selective gate in front of the reasoning model (design doc 57)"
 
 [features]
-# Third backend (57 §12.8): laya-rs 0.1.0's `DecisionModel` (vendored under `src/candle/`) on
-# candle; Metal + Accelerate come in through the macOS target table below.
-candle = ["dep:candle-core", "dep:candle-nn"]
 # NVIDIA (58): off by default, forwarded for the Linux/Windows build.
-cuda = ["candle", "candle-core/cuda", "candle-nn/cuda"]
+cuda = ["candle-core/cuda", "candle-nn/cuda"]
 
 [dependencies]
 runtime = { workspace = true }
 tools = { workspace = true }
-models = { workspace = true }
 kameo = { workspace = true }
 tokio = { workspace = true }
 parking_lot = { workspace = true }  # the session slot: locked only inside `spawn_blocking`
@@ -29,18 +25,17 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 sha2 = { workspace = true }
 humantime = { workspace = true }
-ort = { workspace = true }
-half = { workspace = true }
 # laya's fast BPE `tokenizer.json`; the same build parakeet-rs pulls (57 §1).
 tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
-candle-core = { workspace = true, optional = true }
-candle-nn = { workspace = true, optional = true }
+# The engine (57 §12.8): laya-rs 0.1.0's model code vendored under `src/candle/`, candle 0.11 is its pin.
+candle-core = { workspace = true }
+candle-nn = { workspace = true }
 
-# On a Mac the same feature is Metal for the GPU path and Accelerate for the CPU fallback; the
-# Linux/Windows build of `candle` is plain CPU unless `cuda` is on.
+# On a Mac: Metal for the GPU path and Accelerate for the CPU fallback; the Linux/Windows build is
+# plain CPU unless `cuda` is on.
 [target.'cfg(target_os = "macos")'.dependencies]
-candle-core = { workspace = true, optional = true, features = ["metal", "accelerate"] }
-candle-nn = { workspace = true, optional = true, features = ["metal", "accelerate"] }
+candle-core = { workspace = true, features = ["metal", "accelerate"] }
+candle-nn = { workspace = true, features = ["metal", "accelerate"] }
 
 [dev-dependencies]
 tempfile = "3"

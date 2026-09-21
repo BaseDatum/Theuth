@@ -234,22 +234,16 @@ agent:
 #   live_tools: [meeting_topic, meeting_brief, brief_search, brief_put, knowledge_search, knowledge_get, meeting_read, meeting_search, search_web, read_url]  # 06: the only tools the meeting session sees while recording, all called directly
 #   live_prompts: [meeting, knowledge, web]  # 06: the only prompt blocks it sees while recording
 
-# decision:                  # local typed-probability oracle in front of the reasoning model (design doc 57): laya via ONNX Runtime or candle
+# decision:                  # local typed-probability oracle in front of the reasoning model (design doc 57): laya in candle
 #                            # answers typed questions (choice / bool / score) with a probability per option; a per-family gate
 #                            # accepts or escalates to today's model turn. Every family starts in shadow (runs, logs, changes nothing).
 #   enabled: true            # false: the actor answers every ask with escalate(disabled); nothing loads
-#   engine: ort              # ort: model.onnx through ONNX Runtime (CPU). candle: laya's safetensors natively (57 §12.8 step 2e;
-#                            # needs a build with the decision `candle` feature — Metal on Apple silicon, else CPU f32).
-#   device: auto             # candle only: auto (Metal on an Apple-silicon Mac, else CPU) | cpu | metal (warns and falls back to CPU)
-#   model_dir: ~             # checkpoint dir; default <data_dir>/models/decision (ort: model.onnx, tokenizer.json, rl_agent_config.json)
-#                            # or <data_dir>/models/decision-candle (candle: model.safetensors, encoder/config.json, tokenizer/tokenizer.json,
-#                            # rl_agent_config.json — the Hugging Face convaiinnovations/laya layout).
+#   device: auto             # auto (Metal f16 on an Apple-silicon Mac, else CPU f32) | cpu | metal (warns and falls back to CPU)
+#   model_dir: ~             # checkpoint dir; default <data_dir>/models/decision: model.safetensors, encoder/config.json,
+#                            # tokenizer/tokenizer.json, rl_agent_config.json — the Hugging Face convaiinnovations/laya layout.
 #                            # The desktop app fetches it from the release bucket at start like the speech models (54 §9,
 #                            # scripts/release-models.sh); the daemon re-checks on every ask, so no restart once it lands.
-#   threads: 4               # ONNX Runtime intra-op threads (ort engine)
-#   idle_unload: 10m         # drop the session after this long unused (~1 GiB back)
-#   coreml: false            # register the CoreML execution provider ahead of CPU (macOS; falls back to CPU with a warning).
-#                            # Off: neither root ONNX export compiles under it today (57 §12 step 2d as-built).
+#   idle_unload: 10m         # drop the model after this long unused (~1 GiB back)
 #   log_text: false          # true: store the question text in <data_dir>/decisions/*.jsonl, not only its hash
 #   families:                # gate per decision family: mode shadow | active | off; accept iff top1 ≥ tau_top and top1 − top2 ≥ tau_margin.
 #                            # Flip a family to active only after its shadow log shows acceptable agreement (57 §2); listing any family replaces this table.
