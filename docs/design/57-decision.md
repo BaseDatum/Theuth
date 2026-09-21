@@ -217,3 +217,68 @@ Deviations from §2, and why:
 
 - Step 2 (Session, `spawn_blocking`, batching, idle unload, RSS/latency bench) and 2b (publish the checkpoint via `just release-models` once the files are in `~/.theuth/models/decision/`).
 - Whether instruction truncation (head budget) should also set `truncated` — today only the state cut and lost markers do, per §0.5.
+
+## As built — step 2 (2026-09-21)
+
+Brief: `/tmp/laya-design/omp-step2.md`; Sky's decision: **fp16 only, no quantisation**. Commits `198eb38` (session + engine), `eb54942` (bench + model-gated tests), this note. Checkpoint under test: `~/.theuth/models/decision/` — `model.onnx` 846,269,825 B (sha256 `1e0031fd826e…`), `tokenizer.json` 3,583,228 B, `rl_agent_config.json` (`max_len` 512, `head_max_len` 192, temperatures `[1.637, 1.251, 1.983]`, six option buckets). ONNX Runtime 1.27.0 dylib from `~/.theuth/models/parakeet-tdt/`, CPU execution provider, Apple M3 Max.
+
+### What landed
+
+- `laya::Loaded::open(dir, threads, coreml)`: `models::onnx::ort_lib(&[dir, dir/../parakeet-tdt])` (the dylib ships beside the TDT checkpoint, 54 §9 — without the sibling hint a daemon whose first `ort` user is `decision` found no runtime), `Session::builder` Level3 + `with_intra_threads`, `tokenizer.json`, `rl_agent_config.json` → `LayaConfig`, streamed sha256 (`io::copy` into `Sha256`), `verify_graph` over `session.inputs()/outputs()` — exactly `input_ids i64[B,S]`, `attention_mask i64[B,S]`, `marker_pos i64[B,K]`, `marker_mask bool[B,K]`, `qtype i64[B]` in, `logits`/`act_logits` Float16 out; names, element types and ranks; extra/missing/renamed/fp32 refused with a message naming the outlet (unit-tested with `Outlet::new`). `coreml: true` logs one warning and runs on the CPU.
+- `laya::collate` = `collate_items` (PAD 50283 / attention 0 / marker 0 + mask false); `Loaded::run(&mut self, &[Sequence]) -> Vec<RowOut>`: five tensors via `ort::inputs!`, `try_extract_tensor::<half::f16>()`, `f16_to_f32`, then `postprocess` per row: `temp_bucket` temperature else per-qtype, softmax over the row's own K, `act_p = softmax(act_logits)[0]`, confidence entropy-derived (choice/score) or `max(p, 1−p)` (noul). Raw logits returned for the log.
+- `engine.rs`: `Oracle` trait (`Loaded` in production, a `Fake` with a sleeping `run` in the timeout test) behind `Arc<parking_lot::Mutex<Box<dyn Oracle>>>`; `Loader` closure so tests inject. First `Ask` with files present: `Loaded::open` in `spawn_blocking` **within `Ask.budget`** — a load that outruns the budget answers `Escalate(Timeout)` and the `JoinHandle` is polled by the next `Ask` (the 2.2 s cold load never blocks a caller past its budget). Per `Ask`: `with_none` (appends `{none, "none of these"}` once to a `Choice`) → `build` + `run` in one `spawn_blocking` closure → `decide` (labels zipped with probs, argmax, `gate.decide` with `Truncated` as the hard error, `gate.finish`) → log row with `question_hash`, logits, temperature, `load_ms` on the first row after a load → `Decision`. Over budget: `Escalate(Timeout)` now; a spawned task awaits the blocking run and appends its row (real probabilities, reason `timeout`, or the hard error) when it lands. Idle unload: after each run a self-`tell(Unload)` watchdog sleeps `idle_unload`, re-arms if something asked since, else drops the `Arc` (the arena is freed when the last in-flight run finishes). `model_sha` is cached on the engine so no `Ask` path takes the session lock on the actor thread (the first draft did, and a 300 ms run made a 50 ms budget take 312 ms).
+- `examples/bench.rs`, `tests/model.rs` as briefed; `tracing-subscriber` and `libc` as dev-deps only.
+
+### Measurements (`cargo run --release -p decision --example bench -- ~/.theuth/models/decision <threads>`)
+
+Cold load (open + verify + sha256): **2.2 s** (2,203 / 2,234 / 2,187 ms at 4 / 8 / 12 threads; sha256 alone ≈ 2.1 s of it in release — in a debug build the same sha2 takes ~28 s, which is why the first test runs looked like a 30 s load). RSS (`ru_maxrss`): **6 MiB before, 1,160 MiB after load, 3,978 MiB after the first inference** and flat from there. **RSS did not stay under 1 GiB: ~1.16 GiB loaded, ~3.9 GiB peak once running.** S is the real sequence length after `build_sequence` (the "512" rows have the state right-truncated to fit `max_len`); K excludes `none` here (bench calls `Loaded` directly).
+
+| K | S | p50 / p95 ms, 4 thr | p50 / p95 ms, 8 thr | p50 / p95 ms, 12 thr |
+|---|---|---|---|---|
+| 2 | 339 | 763 / 787 | 736 / 908 | 513 / 603 |
+| 2 | 512 | 1153 / 1164 | 984 / 1014 | 817 / 1037 |
+| 5 | 393 | 865 / 874 | 701 / 726 | 591 / 758 |
+| 5 | 512 | 1194 / 1250 | 904 / 1035 | 772 / 820 |
+| 10 | 473 | 1146 / 1175 | 1038 / 1171 | 698 / 790 |
+| 10 | 512 | 1332 / 1384 | 1046 / 1234 | 760 / 777 |
+| README example, B = 4 rows in one pass | ≤ 512 | 934 | 593 | 507 |
+
+So on this machine the fp16 CPU path is **0.5–1.3 s per question, not the <300 ms §0.8 assumed**, and the process holds ~4 GiB while warm. [INFERENCE] The ~3.9 GiB and the latency are consistent with the CPU EP having no fp16 kernels for the encoder's MatMuls and inserting casts (fp16 weights + fp32 copies + fp32 activations); a plain fp32 export would likely use *less* memory and run at the same speed, and INT8 less still — both out of scope by Sky's decision, recorded for the cross-platform doc (58). Threads scale sub-linearly (4 → 12 threads ≈ 1.5× at S ≈ 340); `threads: 4` stays the default per §2's "benchmark, don't default to all cores".
+
+### Agreement with the published example
+
+Only one worked example anywhere gives numbers: the billing e-mail in the GitHub README "Quickstart" and the model card "Single-Model Mode" (identical): department → `billing (confidence: 0.94)`, urgency → `1.84 / 2.0`, churn_risk → `0.892`; refund_requested has no number; the Hindi row uses `laya-multilingual` (not our checkpoint). The ONNX repo README publishes no probabilities, only its own PyTorch↔ONNX deltas (max logits 0.00416, action-prob 0.0).
+
+| question | ours, fitted T | ours, T = 1 | published | within 0.01 |
+|---|---|---|---|---|
+| department | billing 0.965, technical 0.014, sales 0.010, other 0.011; confidence 0.86 (T 1.76) | billing 0.999 …; confidence 0.99 | billing (confidence 0.94) | argmax yes, number no |
+| urgency | 0 0.116, 1 0.327, 2 0.557; score 1.44 (T 1.25) | score 1.52 | score 1.84 | no |
+| churn_risk | 0.825 (T 1.98) | 0.956 | 0.892 | argmax yes, number no |
+| refund_requested | 0.843 (T 1.98) | 0.965 | — | — |
+
+Every argmax agrees; no probability is within 0.01 at either temperature, and the published numbers sit *between* our fitted-T and T = 1 values on all three — consistent with the README figures coming from a different checkpoint revision or temperature file than the one on the hub today, not with a rendering bug (the sequence is the byte-for-byte port, and the act head reproduces the ONNX README's saturated action-prob exactly). The 0.01 target is therefore **not met against the README**; it can only be met against a Python run of the same artifacts, which nobody has produced — open question below. Our own consistency checks pass: single-row vs batched answers agree to < 0.02, probabilities sum to 1, the two Bool questions read true as the README implies.
+
+### Deviations from §2, and why
+
+- **`act_probability` saturates to exactly 0.0 / 1.0**: the act head's logits are in the thousands (`[4808, −3942]` on the churn question), so `softmax(act_logits)[0]` is 1.0 in f32. Logged as a feature per §0.5; useless as a signal on this checkpoint.
+- **Cold load counted against the first `Ask.budget`.** §2 says "lazy load on first `Ask`" without saying who waits; the engine answers `Escalate(Timeout)` and installs the session when the load lands, so a 400 ms caller waits 400 ms, not 2.2 s. The integration test uses a 60 s budget to see the loaded answer in one call.
+- **Both pieces of an `Ask` run in one blocking closure** (build + run under the session lock) so the tokenizer never runs on the actor thread.
+- **`RowOut.confidence` for Bool** uses `max(p₁, 1−p₁)` as `agent.py`; Choice/Score use `confidence_from_probs` (1 − normalised entropy). `Decision.confidence` is that value.
+- No batching across callers yet (§2 "requests serialised … batching rows for callers that ask several questions"): `Ask` is one question; `Loaded::run` already takes `&[Sequence]`, the meeting pre-filter (step 4) decides the message shape.
+- Unit-test count for `laya` grew by four pure tests (collate mixed S/K, f16→f32, postprocess bucket/K, graph verification), the engine by three (none appended once + active accept, over-budget timeout with late log, idle unload + reload).
+
+### Commands and results
+
+- Baseline before the step: `cargo check --workspace` green; `cargo test -p decision` 23 passed.
+- `cargo check --workspace` — green (`Finished dev`, 47 s incremental).
+- `cargo test -p decision` — lib **30 passed**, `tests/model.rs` **2 passed** (with the checkpoint present; `--release` because the debug sha256 of 846 MB takes ~28 s per open), 0 failed; the actor test prints `decision: model loaded in 2.216735959s from … (sha256 1e0031fd826e)` at info under `--nocapture`, then `bool: [("false", 0.226), ("true", 0.774)]`, `choice: [("SRE-2386", 0.901), ("HR-12", 0.020), ("none", 0.079)]`.
+- `cargo clippy -p decision --no-deps --all-targets` — 0 warnings (`crates/tools` still fails workspace-wide clippy; pre-existing, untouched).
+- Bench: three full runs (4 / 8 / 12 threads), output above and in `/tmp/laya-design/bench-{1,8,12}.txt`.
+- Daemon smoke: `t --help` OK; `t --data-dir <tmp> --headless` with `decision: {enabled: true, model_dir: ~/.theuth/models/decision}` logs `started plugin="decision"` and nothing else from the crate (lazy: no load, no `decisions/` dir until the first `Ask`); the boot then died on `plugin rpc failed to start: Address already in use` because the resident daemon on this machine owns the RPC port (also with `rpc.listen` overridden — the smoke did not get past that, so the first-Ask info line was observed through the integration test instead, as the brief allows). No consumer exists yet by design.
+- `scripts/release-models.sh` not run; 58 and `cross-platform/` untouched. Sky's own edits to this doc (§0.9 tiers, §11 training capture) were in the working tree during this step and are **not** part of the step-2 commits.
+
+### Open
+
+1. **Memory and latency miss the design's numbers by 4× / 3×** on the fp16 CPU path. Options for Sky: accept for shadow-mode data collection (400 ms default budget → almost every `Ask` times out today; the late rows still land in the log, so fitting data still accumulates), raise the default budget to ~1.5 s, or revisit the artifact (fp32 or INT8 export — 58's question, per the resolved §9.3). CoreML EP is the other lever and is still the step-2 experiment behind `decision.coreml`, not tried.
+2. Agreement to 0.01 needs a PyTorch reference run of *these* artifacts (README numbers are not reproducible from the hub checkpoint); one Python session with the fine-tune notebook's environment would settle it.
+3. `idle_unload` 10 m releases ~4 GiB on a quiet desktop but re-pays 2.2 s (plus a `Timeout` on the first `Ask`) each time the meeting picks up again.
