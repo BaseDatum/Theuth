@@ -2,7 +2,7 @@ import '@xterm/xterm/css/xterm.css'
 import { FitAddon } from '@xterm/addon-fit'
 import { Terminal } from '@xterm/xterm'
 import { useQuery } from '@tanstack/react-query'
-import { SquareTerminal } from 'lucide-react'
+import { Keyboard, SquareTerminal } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
@@ -45,9 +45,12 @@ function Body({ session }: { session: string }) {
   const client = useConnection((s) => s.client)
   const mobile = useIsMobile()
   const host = useRef<HTMLDivElement>(null)
+  const termRef = useRef<Terminal>(null)
   const [job, setJob] = useState<JobRef | null>(null)
   const [exit, setExit] = useState<JobExit | null>(null)
   const [size, setSize] = useState('')
+  // The soft keyboard is up while xterm's textarea has focus (mobile toggle).
+  const [keyboard, setKeyboard] = useState(false)
   const { data: terminals = [] } = useQuery({
     queryKey: queryKeys.terminals(session),
     queryFn: () => api.list_terminals(session, true),
@@ -76,8 +79,34 @@ function Body({ session }: { session: string }) {
     const fit = new FitAddon()
     term.loadAddon(fit)
     term.open(el)
+    termRef.current = term
     fit.fit()
-    term.focus()
+    // A phone's keyboard covers half the terminal: tap (or the ⌨ button) asks for it.
+    if (!mobile) term.focus()
+    const ta = term.textarea!
+    const focused = () => setKeyboard(true)
+    const blurred = () => setKeyboard(false)
+    ta.addEventListener('focus', focused)
+    ta.addEventListener('blur', blurred)
+    // ponytail: xterm 6.0 lost touch scrolling (xtermjs/xterm.js#5489, fixed in 7); drag → scrollLines until then.
+    let touchY: number | null = null
+    const touch = (e: TouchEvent) => {
+      const t = e.touches[0]
+      if (!t || e.touches.length !== 1) return
+      const y = t.clientY
+      if (e.type === 'touchstart' || touchY === null) {
+        touchY = y
+        return
+      }
+      const lines = Math.trunc((touchY - y) / (el.clientHeight / term.rows))
+      if (lines !== 0) {
+        term.scrollLines(lines)
+        touchY = y
+        e.preventDefault()
+      }
+    }
+    el.addEventListener('touchstart', touch, { passive: true })
+    el.addEventListener('touchmove', touch, { passive: false })
     let ended = false
     // One call in flight at a time: keystrokes reach the process in typing order.
     let lane: Promise<unknown> = Promise.resolve()
@@ -114,10 +143,16 @@ function Body({ session }: { session: string }) {
       ro.disconnect()
       input.dispose()
       resized.dispose()
+      ta.removeEventListener('focus', focused)
+      ta.removeEventListener('blur', blurred)
+      el.removeEventListener('touchstart', touch)
+      el.removeEventListener('touchmove', touch)
       if (!ended) void api.pty_resize(job.session, job.job, DEFAULT_ROWS, DEFAULT_COLS).catch(() => undefined)
+      termRef.current = null
       term.dispose()
+      setKeyboard(false)
     }
-  }, [job, client, api])
+  }, [job, client, api, mobile])
 
   const current = terminals.find((t) => t.id === job?.job && t.session === job?.session)
   const status = [
@@ -157,6 +192,17 @@ function Body({ session }: { session: string }) {
       </div>
       {mobile && job && !exit && (
         <div className="flex gap-1 overflow-x-auto" role="group" aria-label="Terminal keys">
+          <Button
+            variant={keyboard ? 'secondary' : 'outline'}
+            size="sm"
+            className="h-11 min-w-11"
+            aria-pressed={keyboard}
+            aria-label={keyboard ? 'Hide keyboard' : 'Show keyboard'}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => (keyboard ? termRef.current?.blur() : termRef.current?.focus())}
+          >
+            <Keyboard />
+          </Button>
           {TOOLBAR.map(([label, k]) => (
             <Button
               key={label}
