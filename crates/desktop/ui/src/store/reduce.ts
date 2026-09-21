@@ -254,6 +254,15 @@ function userEntries(
           text: c.text,
           context,
         };
+      // 61 §2.3: `j4 idle 63s · omp1`, the screen as the body.
+      case "job_idle":
+        return {
+          id: nextId(),
+          kind: "peer",
+          from: `${c.id} idle ${c.quiet}s${c.name === undefined ? "" : ` · ${c.name}`}`,
+          text: c.text,
+          context,
+        };
       case "schedule":
         return {
           id: nextId(),

@@ -98,9 +98,10 @@ impl std::fmt::Display for JobExit {
 
 /// Bus events. `Output` is coalesced to one per [`OUTPUT_EVERY`] per job and
 /// lossy under a flood; the log file is the truth. PTY jobs (22 §4.8) publish
-/// `Screen` (coalesced the same way) instead of `Output`. Wire tags are
-/// `JobStarted` | `JobOutput` | `JobScreen` | `JobFinished` so they read
-/// unambiguously on the shared RPC event stream.
+/// `Screen` (coalesced the same way) instead of `Output`, and `Idle` when the
+/// screen has stopped changing (61). Wire tags are `JobStarted` | `JobOutput`
+/// | `JobScreen` | `JobIdle` | `JobFinished` so they read unambiguously on
+/// the shared RPC event stream.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(tag = "type")]
@@ -147,6 +148,30 @@ pub enum JobEvent {
         rows: Vec<String>,
         /// `(row, col)`, zero-based.
         cursor: (u16, u16),
+    },
+    /// A running PTY job's screen has not changed for `quiet_secs` (61 §1).
+    /// Observation only on the bus: the model is woken through the activity
+    /// guard (`Notice::JobIdle`), never from here.
+    #[serde(rename = "JobIdle")]
+    Idle {
+        /// Owning session.
+        session: SessionId,
+        /// Job.
+        id: JobId,
+        /// Command line.
+        command: String,
+        /// `start`'s label.
+        name: Option<String>,
+        /// Seconds since the screen last changed.
+        quiet_secs: u64,
+        /// Job age in seconds.
+        secs: u64,
+        /// 1 for the first nudge of a backoff run, then 2, 3… (61 §1.4).
+        nudge: u32,
+        /// Seconds since a human typed into the job, within the 55 §2.3 window.
+        user_typed_secs: Option<u64>,
+        /// The screen text with its `cursor:` line: the `<job_idle>` body.
+        output: String,
     },
     /// The job ended; the agent injects this as `<job_result>` unless `inline`.
     #[serde(rename = "JobFinished")]
@@ -1907,13 +1932,20 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn close_sessions_kills_reaps_and_removes_logs() {
         let fx = fixture(Duration::from_millis(200), Duration::from_secs(60)).await;
-        let StartReply::Running { log, .. } = spawn_job(&fx, "sh -c 'echo $$; exec sleep 30'").await
+        let StartReply::Running { log, .. } =
+            spawn_job(&fx, "sh -c 'echo $$; exec sleep 30'").await
         else {
             panic!("expected Running");
         };
         let pid: i32 = list(&fx).await[0].tail.trim().parse().unwrap();
         assert!(nix::sys::signal::kill(Pid::from_raw(pid), None).is_ok());
-        assert_eq!(log, fx.dir.join("jobs").join(fx.session.to_string()).join("j1.log"));
+        assert_eq!(
+            log,
+            fx.dir
+                .join("jobs")
+                .join(fx.session.to_string())
+                .join("j1.log")
+        );
         assert!(log.is_file());
 
         let ack = fx

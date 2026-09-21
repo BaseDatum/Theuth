@@ -38,6 +38,7 @@ import type { ModeInfo } from '@/rpc/bindings/ModeInfo'
 import type { Mode } from '@/rpc/bindings/Mode'
 import type { FamilyStats } from '@/rpc/bindings/FamilyStats'
 import type { LoadedInfo } from '@/rpc/bindings/LoadedInfo'
+import type { TrainingInfo } from '@/rpc/bindings/TrainingInfo'
 import type { MeetingTranscript } from '@/rpc/bindings/MeetingTranscript'
 import type { Permissions } from '@/rpc/bindings/Permissions'
 import type { ProcessInfo } from '@/rpc/bindings/ProcessInfo'
@@ -308,7 +309,7 @@ export interface Api {
   meeting_list(limit: number | null): Promise<MeetingSummary[]>
   /** `live.jsonl`, last 2 000 utterances. */
   meeting_live(id: MeetingId): Promise<Utterance[]>
-  /** 57 §3.4: the meeting families' decision-oracle switch (`mode` as configured, `effective` with a `reason` when forced off). */
+  /** `decision_mode('meeting')` (57 §3.4). */
   meeting_oracle_mode(): Promise<ModeInfo>
   meeting_pause(): Promise<null>
   meeting_permissions(): Promise<Permissions>
@@ -335,12 +336,24 @@ export interface Api {
   meeting_summarize(id: MeetingId): Promise<null>
   /** `summary.md`. */
   meeting_summary(id: MeetingId): Promise<string>
-  /** Persist `decision.families.meeting: { mode }` and apply it live; effective from the next batch (57 §3.4). */
+  /** `set_decision_mode('meeting', mode)` (57 §3.4). */
   set_meeting_oracle_mode(mode: Mode): Promise<ModeInfo>
+  /** 57 §3.4 / §7.1: the decision-oracle switch of the families under `prefix` (`meeting`, `browser`): `mode` as configured, `effective` with a `reason` when forced off, `enabled` (the plugin), `installed` (the checkpoint). */
+  decision_mode(prefix: string): Promise<ModeInfo>
+  /** Persist `decision.families.<prefix>: { mode, train, share }` and apply it live; effective from the next ask. `browser` off ↔ on also changes whether `browser_run` is registered — that part takes a restart. */
+  set_decision_mode(prefix: string, mode: Mode): Promise<ModeInfo>
   /** 57 §7: today's decision log folded per family (mode, asks, accepts, escalations, tier-2 rows, p50/p95, shadow agreement). */
   decision_stats(): Promise<FamilyStats[]>
   /** 57 §2.1 item 4: the decision checkpoints resident right now (`[]` at idle); `rss_mb` is the whole daemon's. */
   decision_loaded(): Promise<LoadedInfo[]>
+  /** 57 §11.4 / §7.1: whether the families under `prefix` capture training examples locally (`enabled`), consent to upload (`share`), and how much is on disk. */
+  decision_training(prefix: string): Promise<TrainingInfo>
+  /** Persist `train` for the prefix and apply it live; off also clears `share`. */
+  set_decision_training(prefix: string, on: boolean): Promise<TrainingInfo>
+  /** 57 §7.1: consent to upload the prefix's captured rows; refused while capture is off. No uploader reads it in this version. */
+  set_decision_share(prefix: string, on: boolean): Promise<TrainingInfo>
+  /** 57 §7.1: remove `decisions/training/<prefix>/`; the switches stay. Answers the new counts. */
+  delete_decision_training(prefix: string): Promise<TrainingInfo>
   meeting_tap(topic: TopicId): Promise<null>
   meeting_topics(): Promise<Topic[]>
   /** `transcript.json` (04 §3). */
@@ -426,6 +439,8 @@ export interface Api {
   set_model(session: SessionId | null, model: string): Promise<ModelInfo>
   /** Set a root's scope and owner alias (50 §2.3); roots only, `alias: null` clears it. */
   set_peer_scope(root: SessionId, scope: PeerScope, alias: string | null): Promise<CommunicationState>
+  /** Persist `tools.pty_idle_secs` (61): quiet-screen seconds before a PTY job wakes the model with `<job_idle>`; `0` = never. Later `start` calls use it. */
+  set_pty_idle(seconds: number): Promise<null>
   /** Persist `agent.stream_idle_secs`: seconds without a stream event before a model call is abandoned; `0` rejects. New sessions only. */
   set_stream_idle(seconds: number): Promise<null>
   set_subagent_timeout(seconds: number): Promise<null>
@@ -500,7 +515,10 @@ export const METHODS = [
   'context_items',
   'create_session',
   'decision_loaded',
+  'decision_mode',
   'decision_stats',
+  'decision_training',
+  'delete_decision_training',
   'delete_secret',
   'delete_session',
   'dictation_audio',
@@ -629,6 +647,9 @@ export const METHODS = [
   'set_aws_profile',
   'set_communication',
   'set_compact_style',
+  'set_decision_mode',
+  'set_decision_share',
+  'set_decision_training',
   'set_effort',
   'set_escalate_model',
   'set_max_salvages',
@@ -638,6 +659,7 @@ export const METHODS = [
   'set_meeting_oracle_mode',
   'set_model',
   'set_peer_scope',
+  'set_pty_idle',
   'set_secret',
   'set_session_project',
   'set_stream_idle',

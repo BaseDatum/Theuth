@@ -116,6 +116,7 @@ Unknown `ctrl` chars or `f > 12` are schema/`Err`, never silently dropped.
 `reply()` (`pty.rs`, the screen block shared by `send`/`screen`/`wait`) adds
 one final line when `now - user_input < 30_000`: `user attached · typed 3s
 ago`. `structured` gains `"user_attached_ms": Option<u64>`. Tested in §6.
+The same window appears as `user_typed="3"` on `<job_idle>` (61 §2.2).
 
 ### 2.4 RPC
 

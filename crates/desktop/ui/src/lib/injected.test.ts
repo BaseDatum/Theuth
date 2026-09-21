@@ -61,6 +61,17 @@ test('job result carries id, unescaped command, exit, secs, pty', () => {
   ).toEqual([{ kind: 'job', id: 'j3', command: 'echo "a" && ls', exit: '0', secs: '4', pty: true, text: 'out' }])
 })
 
+test('job idle carries id, command, optional name, quiet, secs, nudge, user_typed and the screen', () => {
+  expect(
+    classify('<job_idle id="j4" command="omp" name="omp&lt;1&gt;" quiet="63" secs="912" nudge="1" user_typed="12">\n>>> \ncursor: row 1 col 5\n</job_idle>'),
+  ).toEqual([
+    { kind: 'job_idle', id: 'j4', command: 'omp', name: 'omp<1>', quiet: '63', secs: '912', nudge: '1', userTyped: '12', text: '>>> \ncursor: row 1 col 5' },
+  ])
+  expect(classify('<job_idle id="j1" command="python3 -q" quiet="120" secs="200" nudge="2">\n</job_idle>')).toEqual([
+    { kind: 'job_idle', id: 'j1', command: 'python3 -q', quiet: '120', secs: '200', nudge: '2', text: '' },
+  ])
+})
+
 test('schedule fire carries name, at, quiet and the prompt body', () => {
   expect(classify('<schedule name="morning-brief" at="2026-09-16T09:00:00-07:00" quiet="false">\nbrief me\n</schedule>')).toEqual([
     { kind: 'schedule', name: 'morning-brief', at: '2026-09-16T09:00:00-07:00', quiet: false, text: 'brief me' },

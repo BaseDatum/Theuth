@@ -28,8 +28,8 @@ use kameo::actor::Spawn;
 use serde::{Deserialize, Serialize};
 
 pub use engine::{
-    AllStats, AskMany, Capture, Engine, GetMode, GetTrain, LoadedInfo, LoadedNow, Loader,
-    Oracle, Record, Release, Report, SetMode, SetTrain, Stats, Warm,
+    AllStats, AskMany, Capture, DeleteTraining, Engine, GetMode, GetTrain, LoadedInfo, LoadedNow,
+    Loader, Oracle, Record, Release, Report, SetMode, SetShare, SetTrain, Stats, Warm,
 };
 pub use escalate::{EscalateError, SideCaller, escalate};
 pub use gate::{FamilyGate, Mode};
@@ -352,6 +352,7 @@ struct FamilyPatch {
     #[serde(default, deserialize_with = "opt_duration")]
     escalate_budget: Option<Duration>,
     train: Option<bool>,
+    share: Option<bool>,
     checkpoint: Option<String>,
     none: Option<bool>,
     cut_ok: Option<bool>,
@@ -376,6 +377,13 @@ impl FamilyPatch {
         }
         if let Some(t) = self.train {
             g.train = t;
+        }
+        if let Some(s) = self.share {
+            g.share = s;
+        }
+        // 57 §7.1: Share is consent to upload what Capture writes; nothing captured, nothing shared.
+        if !g.train {
+            g.share = false;
         }
         if let Some(c) = &self.checkpoint {
             g.checkpoint = (c != DEFAULT_CHECKPOINT).then(|| c.clone());
@@ -444,6 +452,10 @@ pub struct ModeInfo {
     pub effective: Mode,
     /// Why `effective` is `off` while `mode` is not.
     pub reason: Option<String>,
+    /// `decision.enabled` — `false` hides Settings → Labs (57 §7.1).
+    pub enabled: bool,
+    /// The prefix's checkpoint files are on disk.
+    pub installed: bool,
     /// Tier-1 budget of the first family under the prefix, ms.
     pub budget_ms: u64,
     /// Tier-2 budget, ms.
@@ -475,9 +487,10 @@ pub fn mode_for(cfg: &DecisionConfig, model_dir: &Path, prefix: &str) -> ModeInf
         (Duration::from_millis(400), Duration::from_secs(3)),
         |g| (g.budget, g.escalate_budget),
     );
-    let model_dir = gates
-        .first()
-        .map_or_else(|| model_dir.to_path_buf(), |g| cfg.checkpoint_dir(model_dir, g.checkpoint()));
+    let (checkpoint, model_dir) = gates.first().map_or_else(
+        || (DEFAULT_CHECKPOINT, model_dir.to_path_buf()),
+        |g| (g.checkpoint(), cfg.checkpoint_dir(model_dir, g.checkpoint())),
+    );
     let missing: Vec<&str> = engine::MODEL_FILES
         .into_iter()
         .filter(|f| !model_dir.join(f).is_file())
@@ -487,13 +500,14 @@ pub fn mode_for(cfg: &DecisionConfig, model_dir: &Path, prefix: &str) -> ModeInf
     } else if !cfg.enabled {
         (Mode::Off, Some("the decision plugin is disabled (decision.enabled: false)".to_owned()))
     } else if !missing.is_empty() {
+        let what = if checkpoint == DEFAULT_CHECKPOINT {
+            "model missing:".to_owned()
+        } else {
+            format!("checkpoint missing: {MODEL_SUBDIR}-{checkpoint} —")
+        };
         (
             Mode::Off,
-            Some(format!(
-                "model missing: {} not in {}",
-                missing.join(", "),
-                model_dir.display()
-            )),
+            Some(format!("{what} {} not in {}", missing.join(", "), model_dir.display())),
         )
     } else {
         (mode, None)
@@ -502,6 +516,8 @@ pub fn mode_for(cfg: &DecisionConfig, model_dir: &Path, prefix: &str) -> ModeInf
         mode,
         effective,
         reason,
+        enabled: cfg.enabled,
+        installed: missing.is_empty(),
         budget_ms: budget.as_millis() as u64,
         escalate_budget_ms: escalate.as_millis() as u64,
     }
@@ -652,6 +668,13 @@ mod tests {
         let train: DecisionConfig = serde_yaml::from_str("families:\n  meeting: { train: true }\n").unwrap();
         assert!(train.families.iter().all(|(k, g)| g.train == k.starts_with("meeting.")), "{:?}", train.families);
         assert_eq!(train.families["meeting.kind"].mode, Mode::Shadow);
+        // 57 §7.1: `share` patches like `train` and needs it — `train: false` (explicit or default) clears it.
+        let share: DecisionConfig =
+            serde_yaml::from_str("families:\n  meeting: { train: true, share: true }\n  browser: { share: true }\n  agent.readable: { train: false, share: true }\n")
+                .unwrap();
+        assert!(share.families["meeting.kind"].share && share.families["meeting.brief"].train);
+        assert!(!share.families["browser.target"].share, "share without train is dropped");
+        assert!(!share.families["agent.readable"].share);
     }
 
     #[test]
@@ -662,7 +685,12 @@ mod tests {
         assert_eq!(m.mode, Mode::Shadow);
         assert_eq!(m.effective, Mode::Off);
         assert!(m.reason.as_deref().unwrap().starts_with("model missing: model.safetensors"));
+        assert!(m.enabled && !m.installed);
         assert_eq!((m.budget_ms, m.escalate_budget_ms), (400, 3000));
+        // A non-default checkpoint names itself (Labs shows the fetch script for it).
+        let b = mode_for(&cfg, dir.path(), "browser");
+        assert_eq!(b.effective, Mode::Off);
+        assert!(b.reason.as_deref().unwrap().starts_with("checkpoint missing: decision-browser — model.safetensors"), "{:?}", b.reason);
 
         for f in engine::MODEL_FILES {
             let p = dir.path().join(f);
@@ -671,6 +699,7 @@ mod tests {
         }
         let m = mode_for(&cfg, dir.path(), "meeting");
         assert_eq!((m.mode, m.effective, m.reason), (Mode::Shadow, Mode::Shadow, None));
+        assert!(m.installed);
 
         let off: DecisionConfig =
             serde_yaml::from_str("families:\n  meeting: { mode: off }\n").unwrap();
@@ -680,6 +709,7 @@ mod tests {
         let disabled: DecisionConfig = serde_yaml::from_str("enabled: false\n").unwrap();
         let m = mode_for(&disabled, dir.path(), "meeting");
         assert_eq!(m.effective, Mode::Off);
+        assert!(!m.enabled);
         assert!(m.reason.as_deref().unwrap().contains("disabled"));
 
         // Families disagree → the most permissive is the reported switch position.

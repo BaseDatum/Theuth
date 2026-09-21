@@ -130,14 +130,33 @@ pub struct GetTrain {
 }
 
 /// `ask` → `Result<TrainingInfo, String>`: set `train` on every family under `prefix`, written
-/// to `config.yaml` (`decision.families.<prefix>: { mode: …, train: … }`) first, then live. A
-/// failed write changes nothing.
+/// to `config.yaml` (`decision.families.<prefix>: { mode: …, train: …, share: … }`) first, then
+/// live. `on: false` also clears `share` (57 §7.1). A failed write changes nothing.
 #[derive(Clone, Debug)]
 pub struct SetTrain {
     /// See [`GetMode::prefix`].
     pub prefix: String,
     /// Capture on or off.
     pub on: bool,
+}
+
+/// `ask` → `Result<TrainingInfo, String>`: set `share` (57 §7.1 consent to upload) on every
+/// family under `prefix`, persisted like [`SetTrain`]. `Err` when turning it on while `train`
+/// is off — consent covers what capture writes.
+#[derive(Clone, Debug)]
+pub struct SetShare {
+    /// See [`GetMode::prefix`].
+    pub prefix: String,
+    /// Share on or off.
+    pub on: bool,
+}
+
+/// `ask` → `Result<TrainingInfo, String>`: remove `decisions/training/<prefix>/` (57 §7.1
+/// "Delete local data"); the switches stay as set. Answers the new (zero) counts.
+#[derive(Clone, Debug)]
+pub struct DeleteTraining {
+    /// See [`GetMode::prefix`].
+    pub prefix: String,
 }
 
 /// `tell`: one training row for `prefix` (57 §11.4). Dropped unless a family under `prefix`
@@ -285,11 +304,33 @@ impl Engine {
 
     /// Whether any family under `prefix` captures training examples.
     pub fn train(&self, prefix: &str) -> bool {
+        self.any_under(prefix, |g| g.train)
+    }
+
+    /// Whether any family under `prefix` consents to upload (57 §7.1).
+    pub fn share(&self, prefix: &str) -> bool {
+        self.any_under(prefix, |g| g.share)
+    }
+
+    fn any_under(&self, prefix: &str, f: impl Fn(&FamilyGate) -> bool) -> bool {
         let dot = format!("{prefix}.");
         self.cfg
             .families
             .iter()
-            .any(|(k, g)| k.starts_with(&dot) && g.train)
+            .any(|(k, g)| k.starts_with(&dot) && f(g))
+    }
+
+    /// Apply `f` to every family under `prefix` (live table).
+    fn patch_under(&mut self, prefix: &str, f: impl Fn(&mut FamilyGate)) {
+        let dot = format!("{prefix}.");
+        for (_, g) in self.cfg.families.iter_mut().filter(|(k, _)| k.starts_with(&dot)) {
+            f(g);
+        }
+    }
+
+    /// `GetTrain`'s answer for `prefix`.
+    fn training_info(&self, prefix: &str) -> TrainingInfo {
+        self.training.info(prefix, self.train(prefix), self.share(prefix))
     }
 
     /// `Err` unless some `<prefix>.*` family is configured.
@@ -302,10 +343,10 @@ impl Engine {
         }
     }
 
-    /// Persist the prefix's switch positions as one flow mapping — both fields every time, so
+    /// Persist the prefix's switch positions as one flow mapping — every field every time, so
     /// `SetMode` does not drop `train` and `SetTrain` does not drop `mode` (the config writer
     /// replaces the whole value).
-    fn write_prefix(&self, prefix: &str, mode: Mode, train: bool) -> Result<(), String> {
+    fn write_prefix(&self, prefix: &str, mode: Mode, train: bool, share: bool) -> Result<(), String> {
         let Some(path) = &self.config_path else {
             return Ok(());
         };
@@ -314,7 +355,7 @@ impl Engine {
             "decision",
             "families",
             prefix,
-            &format!("{{ mode: {mode}, train: {train} }}"),
+            &format!("{{ mode: {mode}, train: {train}, share: {share} }}"),
         )
         .map_err(|e| format!("config.yaml: {e}"))
     }
@@ -1009,20 +1050,14 @@ impl Message<SetMode> for Engine {
 
     async fn handle(&mut self, m: SetMode, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.check_prefix(&m.prefix)?;
-        self.write_prefix(&m.prefix, m.mode, self.train(&m.prefix))?;
-        let dot = format!("{}.", m.prefix);
-        for (_, g) in self
-            .cfg
-            .families
-            .iter_mut()
-            .filter(|(k, _)| k.starts_with(&dot))
-        {
-            g.mode = m.mode;
-        }
+        self.write_prefix(&m.prefix, m.mode, self.train(&m.prefix), self.share(&m.prefix))?;
+        self.patch_under(&m.prefix, |g| g.mode = m.mode);
         tracing::info!("decision: {}.* mode → {}", m.prefix, m.mode);
-        // The siblings have no `config_path`, so the relay is live-only there.
+        // The siblings have no `config_path`, so the relay is live-only there. `ask`, not `tell`:
+        // kameo stops an actor whose `tell` handler answers `Err`, and a sibling may refuse
+        // (unknown prefix, share before train) without that being fatal.
         for s in self.siblings() {
-            let _ = s.tell(m.clone()).await;
+            let _ = s.ask(m.clone()).await;
         }
         Ok(self.mode(&m.prefix))
     }
@@ -1032,7 +1067,7 @@ impl Message<GetTrain> for Engine {
     type Reply = TrainingInfo;
 
     async fn handle(&mut self, m: GetTrain, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.training.info(&m.prefix, self.train(&m.prefix))
+        self.training_info(&m.prefix)
     }
 }
 
@@ -1041,21 +1076,51 @@ impl Message<SetTrain> for Engine {
 
     async fn handle(&mut self, m: SetTrain, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.check_prefix(&m.prefix)?;
-        self.write_prefix(&m.prefix, self.mode(&m.prefix).mode, m.on)?;
-        let dot = format!("{}.", m.prefix);
-        for (_, g) in self
-            .cfg
-            .families
-            .iter_mut()
-            .filter(|(k, _)| k.starts_with(&dot))
-        {
+        let share = m.on && self.share(&m.prefix);
+        self.write_prefix(&m.prefix, self.mode(&m.prefix).mode, m.on, share)?;
+        self.patch_under(&m.prefix, |g| {
             g.train = m.on;
-        }
+            g.share = share;
+        });
         tracing::info!("decision: {}.* train → {}", m.prefix, m.on);
         for s in self.siblings() {
-            let _ = s.tell(m.clone()).await;
+            let _ = s.ask(m.clone()).await;
         }
-        Ok(self.training.info(&m.prefix, m.on))
+        Ok(self.training_info(&m.prefix))
+    }
+}
+
+impl Message<SetShare> for Engine {
+    type Reply = Result<TrainingInfo, String>;
+
+    async fn handle(&mut self, m: SetShare, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.check_prefix(&m.prefix)?;
+        if m.on && !self.train(&m.prefix) {
+            return Err(format!(
+                "capture is off for `{}.*`: turn Capture on before Share",
+                m.prefix
+            ));
+        }
+        self.write_prefix(&m.prefix, self.mode(&m.prefix).mode, self.train(&m.prefix), m.on)?;
+        self.patch_under(&m.prefix, |g| g.share = m.on);
+        tracing::info!("decision: {}.* share → {}", m.prefix, m.on);
+        for s in self.siblings() {
+            let _ = s.ask(m.clone()).await;
+        }
+        Ok(self.training_info(&m.prefix))
+    }
+}
+
+impl Message<DeleteTraining> for Engine {
+    type Reply = Result<TrainingInfo, String>;
+
+    async fn handle(&mut self, m: DeleteTraining, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.check_prefix(&m.prefix)?;
+        self.training
+            .delete(&m.prefix)
+            .map_err(|e| format!("delete {}: {e}", self.training.family_dir(&m.prefix).display()))?;
+        tracing::info!("decision: {}.* training data deleted", m.prefix);
+        Ok(self.training_info(&m.prefix))
     }
 }
 
@@ -1708,10 +1773,10 @@ mod tests {
             })
             .await
             .unwrap();
-        assert!(info.enabled);
+        assert!(info.enabled && !info.share);
         let yaml = std::fs::read_to_string(&config).unwrap();
         assert!(
-            yaml.contains("    meeting: { mode: shadow, train: true }"),
+            yaml.contains("    meeting: { mode: shadow, train: true, share: false }"),
             "{yaml}"
         );
         let whole: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
@@ -1744,7 +1809,20 @@ mod tests {
                 .is_err()
         );
 
-        // `SetMode` keeps `train` in the line; `SetTrain(false)` keeps the mode and stops writes.
+        // `SetShare` needs capture on; then `SetMode` keeps `train` and `share` in the line.
+        let share = |prefix: &str, on: bool| SetShare {
+            prefix: prefix.to_owned(),
+            on,
+        };
+        let refused = engine.ask(share("browser", true)).await.unwrap_err();
+        assert!(refused.to_string().contains("capture is off for `browser.*`"), "{refused}");
+        let info = engine.ask(share("meeting", true)).await.unwrap();
+        assert!(info.share);
+        let cfg: DecisionConfig = serde_yaml::from_value(
+            serde_yaml::from_str::<serde_yaml::Value>(&std::fs::read_to_string(&config).unwrap()).unwrap()["decision"].clone(),
+        )
+        .unwrap();
+        assert!(cfg.families["meeting.kind"].share && !cfg.families["browser.target"].share);
         engine
             .ask(SetMode {
                 prefix: "meeting".into(),
@@ -1755,20 +1833,23 @@ mod tests {
         assert!(
             std::fs::read_to_string(&config)
                 .unwrap()
-                .contains("meeting: { mode: active, train: true }")
+                .contains("meeting: { mode: active, train: true, share: true }")
         );
-        engine
+        // Turning capture off clears share (57 §7.1), keeps the mode, and stops writes.
+        let info = engine
             .ask(SetTrain {
                 prefix: "meeting".into(),
                 on: false,
             })
             .await
             .unwrap();
+        assert!(!info.enabled && !info.share);
         assert!(
             std::fs::read_to_string(&config)
                 .unwrap()
-                .contains("meeting: { mode: active, train: false }")
+                .contains("meeting: { mode: active, train: false, share: false }")
         );
+        engine.ask(share("meeting", false)).await.unwrap();
         engine
             .tell(Capture {
                 prefix: "meeting".into(),
@@ -1777,5 +1858,22 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(engine.ask(get("meeting")).await.unwrap().examples_total, 1);
+        // Delete removes the files, not the switches.
+        let info = engine
+            .ask(DeleteTraining {
+                prefix: "meeting".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!((info.examples_total, info.bytes, info.enabled), (0, 0, false));
+        assert!(!dir.path().join("decisions/training/meeting").exists());
+        assert!(
+            engine
+                .ask(DeleteTraining {
+                    prefix: "nobody".into()
+                })
+                .await
+                .is_err()
+        );
     }
 }

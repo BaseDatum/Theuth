@@ -305,3 +305,107 @@ One commit per section.
 ## 8. Status (as-built)
 
 _Appended by the implementer; append-only._
+
+### 2026-09-21 — shipped on `feature/pty-idle`, five section commits plus one
+
+**Built.** `tools`: `ToolsConfig.pty_idle_secs` (60); `JobEvent::Idle`
+(wire `JobIdle`); `activity::Notice`, `ActivitySink.notice` recipient,
+`Activity::notify` (no-op untracked or `Unknown`). `pty.rs`: `StartArgs.idle_secs`
+(tool clamps 1–9 → 10, `0` → off, absent → config); `StartPty.idle_after`;
+`PtyHandle` gains `touched: Mutex<Instant>`, `idle_wake: Notify`,
+`waiting: AtomicUsize`, `interacted: AtomicBool`; a small `Idle` detector
+struct in the job task (`saw(rows)` on the 500 ms dirty tick, `deadline()`,
+`fire()`), a `sleep_until` select arm and an `idle_wake` arm; `reply()` is the
+model's touch for `send`/`screen`/`wait`, `write(human = true)` the human's,
+`wait()` holds `waiting` around `await_output`; `screen_body()` split out of
+`screen_block()` for the `<job_idle>` body. `agent`: `Agents::notice()` +
+`Message<Notice>` (drops when `ledger.op_owner(op)` is `None`, else
+`spill::cap` → `job_idle()` → `inject` under `network_operation_scope`);
+`job_idle()` beside `job_result()`; REPL prompt sentence; `start`/`send`/`wait`
+description sentences; `MessageDelivered.from` doc. UIs: TUI classifier
+(`j4 idle 63s · name`, shared `unescape`), desktop `injected.ts` kind
+`job_idle` + `reduce.ts` card; bindings regenerated. Docs 14 §0.3, 22 §2.1/§9/§11,
+47 §3.2, 55 §2.3 cross-referenced.
+
+**Added on request (not in §1–§7):** a desktop Settings › Agent loop row
+"Terminal idle wake" editing `tools.pty_idle_secs` live: `ToolRegistry` holds
+`pty_idle: Arc<AtomicU64>` shared with `StartTool.idle_default`, new
+`SetPtyIdle { seconds }` (writes `tools.pty_idle_secs` in `config.yaml` via
+`runtime::write_config_value`) and `GetPtyIdle`; RPC `Info.pty_idle_secs` and
+`set_pty_idle`; desktop `extra.ts`/`api.ts`/`Loop.tsx`; 25 table row. Later
+`start` calls without `idle_secs` pick the new value up; running jobs keep theirs.
+
+**Deviations (the code wins).**
+
+- §3.4's `AtomicU64 touched` is a `Mutex<Instant>` plus an `idle_wake: Notify`.
+  A touch **must** wake the job task: with a pure atomic the task only re-read
+  `touched` when some other select arm fired, so a `send`'s reply after the
+  screen change was seen at the stale doubled deadline (`quiet = 2` instead of
+  1) and a `wait` return on a silent job was never seen at all. Tests 3 and 5
+  found both.
+- §3.4's `interval` is kept as `backoff`, consulted only when `interacted` is
+  false at deadline time; when the model touched the job the base interval is
+  used *for that stretch* (not the already-doubled one), so a `send` after a
+  nudge yields the next nudge at `idle_secs` with `nudge = 1` (§5.3 as
+  written). `fire()` resets `nudges`/`backoff` when `interacted` was set, then
+  doubles `backoff` (cap 3600 s) for the next unanswered stretch.
+- A nudge skipped because a `wait` is outstanding still disarms; the `wait`
+  reply's touch re-arms, so the next nudge is one full interval after the
+  `wait` returns (§1.5).
+- §5.4's negative control (`echo x; sleep 1.5` with a 1 s interval "never
+  idle") contradicts itself — a 1.5 s gap exceeds a 1 s interval — and is
+  built as `pty_idle_changing_screen_never_fires` with 0.4 s gaps and a
+  counter (identical `x` rows would stop changing once the screen filled).
+- §5's smoke sentence "leave it → the third comes ~120 s after the second"
+  contradicts §1.3/§6 (no heartbeat): with no screen change and no touch after
+  a nudge nothing fires again, and the smoke confirmed exactly that. The
+  doubling shows across stretches separated by screen changes, as
+  `pty_idle_backoff_doubles_without_interaction` proves (gaps 1, 2, 4 s).
+- The quiet clock starts at the 500 ms render tick, not the byte, so `quiet`
+  can read ≤ 0.5 s short of wall time; `last_change` is initialised to the
+  spawn instant, so a program that never prints is quiet from its start.
+- The compile-shim `Message<Notice> for Agents` (a logged drop) lived in the
+  section A commit so the tree built; C replaced it.
+
+**Tests.** `cargo test -p tools -p agent -p tui`: tools 96 (+9: `activity::
+notify_reaches_a_tracked_guard_only`, `pty::pty_idle_fires_once_after_quiet`,
+`_rearms_on_screen_change`, `_send_resets_and_resets_backoff`,
+`_changing_screen_never_fires`, `_backoff_doubles_without_interaction`,
+`_suppressed_while_waiting`, `_off` (incl. the clamp), `_ignores_cursor_only_redraws`;
+~30 s wall at a 1 s interval), agent 240 (+2: `job_idle_wrapper_escapes_and_names_optionals`,
+`idle_notice_injects_only_for_a_live_op` — retired op injects nothing, live op
+leaves `pending on <session>` and one `MessageDelivered { from: "job j4" }`,
+op not retired), tui 97 (+1 `injected_parses_job_idle`). Desktop `bun test`:
+102 pass / 18 fail, the 18 pre-existing (`@types/react/jsx-runtime` resolution)
+and identical on the base commit; `injected.test.ts` 10/10 with the `job_idle`
+case. Clippy: no new lint in touched lines (the repo carries pre-existing
+`-D clippy::all` failures in `tools`/`agent`; `cargo fmt` is not clean
+repo-wide, so only touched hunks were formatted).
+
+**Smoke** (`t --headless`, `THEUTH_DATA_DIR=/tmp/pty-idle/data`, default
+`pty_idle_secs` 60, claude-sonnet-4-5, a bun JSON-RPC driver logging the event
+stream; offsets from the driver's connect):
+
+- `start python3 -q` (name `py`, ready `>>> `) at 13.2 s, plus `start sleep 900
+  idle_secs: 0`; turn ended 21.3 s. `JobIdle j3 quiet=60 secs=61 nudge=1` and
+  `MessageDelivered from="job j3"` at **74.6 s** (61.4 s after `start`); the new
+  turn's first input was `<job_idle id="j3" command="python3 -q" name="py"
+  quiet="60" secs="61" nudge="1">\n>>>\ncursor: …`. The model read it and ended
+  the turn (78.9 s) — the valid "do nothing".
+- Human steer "type 1+1" → model `send` at 96.6 s (turn ended 98.0 s) →
+  `JobIdle quiet=60 secs=143 nudge=1` at **157.0 s** (60.4 s after the send,
+  `nudge` back to 1 because the model touched the job), body `>>> 1+1 / 2 / >>>`.
+- Left alone afterwards: no third wake by 325 s (see deviation above). The
+  `idle_secs: 0` job was silent for its whole 320 s.
+- `start omp` (5.6 s); the model `wait`ed 60 s for a prompt pattern that never
+  matched (suppressed the nudge meanwhile), then `send` "reply with the single
+  word pong…" at 74.8 s; omp answered `pong` (in `j1.log`) and sat at its
+  prompt; `JobIdle j1 quiet=60 secs=131 nudge=1` at **137.4 s**, 62.6 s after
+  the send — i.e. once omp's screen stopped changing, not while it worked.
+  No leftover processes after shutdown.
+
+Not exercised: the desktop card and the Settings row on a running app (unit
+tests + `tsc` on the touched files only); `user_typed` on a live wake (unit
+test `pty_idle_fires_once_after_quiet` covers it); a job an exported task
+started (scope resolution is the same `network_operation_scope` call as
+`<job_result>`).

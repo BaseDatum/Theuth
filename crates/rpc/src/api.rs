@@ -67,9 +67,9 @@ use tokio::sync::broadcast;
 use tools::git::SyncResult;
 use tools::{
     AddRepo, AddServer, Answer, Approval, ApprovalId, ApprovalsState, AskId, CancelJob, Decision,
-    Gate, GetApprovals, JOBS_ACTOR, JobId, JobView, Jobs, ListJobs, ListServers, ListTools, Mcp,
-    McpLogin, McpLogout, McpProgress, McpServer, Progress, RemoveServer, RepoInfo, Resolve,
-    SetApprovals, SetGate, SetHidden, SyncMcp, ToolRegistry, ToolSpec,
+    Gate, GetApprovals, GetPtyIdle, JOBS_ACTOR, JobId, JobView, Jobs, ListJobs, ListServers,
+    ListTools, Mcp, McpLogin, McpLogout, McpProgress, McpServer, Progress, RemoveServer, RepoInfo,
+    Resolve, SetApprovals, SetGate, SetHidden, SetPtyIdle, SyncMcp, ToolRegistry, ToolSpec,
 };
 use tools::{
     Key, ListTerminals, PtyAttach, PtyChunk, PtyInput, PtyOut, PtyResize, PtyScreen,
@@ -114,6 +114,8 @@ pub struct Info {
     pub stream_idle_secs: u64,
     /// `agent.max_salvages`: interrupted-reply recoveries per turn before it stops with an error.
     pub max_salvages: u32,
+    /// `tools.pty_idle_secs`: quiet-screen seconds before a PTY job wakes the model with `<job_idle>` (61); `0` = never.
+    pub pty_idle_secs: u64,
     /// Harness display name (`link.name`, else the hostname): what a linked
     /// device shows in its harness switcher (31 §6.4).
     pub name: String,
@@ -301,6 +303,9 @@ pub trait Api {
     /// Persist `agent.max_salvages`; new sessions use it.
     #[method(name = "set_max_salvages")]
     async fn set_max_salvages(&self, count: u32) -> RpcResult<()>;
+    /// Persist `tools.pty_idle_secs` (61 §1.6); `start` calls without `idle_secs` use it from then on. `0` = never.
+    #[method(name = "set_pty_idle")]
+    async fn set_pty_idle(&self, seconds: u64) -> RpcResult<()>;
     /// The live title model (`agent.title_model`), if set.
     #[method(name = "title_model")]
     async fn title_model(&self) -> RpcResult<Option<ModelInfo>>;
@@ -942,13 +947,21 @@ pub trait Api {
     /// `summary.md`.
     #[method(name = "meeting_summary")]
     async fn meeting_summary(&self, id: meeting::MeetingId) -> RpcResult<String>;
-    /// 57 §3.4: the meeting families' decision-oracle switch — `mode` as configured,
-    /// `effective` (`off` with `reason` when the plugin is disabled or the checkpoint is
-    /// missing), and the tier budgets.
+    /// 57 §3.4 / §7.1: the decision-oracle switch of the families under `prefix` (`meeting`,
+    /// `browser`) — `mode` as configured, `effective` (`off` with `reason` when the plugin is
+    /// disabled or the checkpoint is missing), `enabled`, `installed`, and the tier budgets.
+    #[method(name = "decision_mode")]
+    async fn decision_mode(&self, prefix: String) -> RpcResult<decision::ModeInfo>;
+    /// Persist `decision.families.<prefix>: { mode, train, share }` (`off` | `shadow` |
+    /// `active`) and apply it live; effective from the next ask. A failed config write changes
+    /// nothing. `browser` off ↔ on also changes whether `browser_run` is registered — that
+    /// part takes a restart.
+    #[method(name = "set_decision_mode")]
+    async fn set_decision_mode(&self, prefix: String, mode: decision::Mode) -> RpcResult<decision::ModeInfo>;
+    /// `decision_mode("meeting")`.
     #[method(name = "meeting_oracle_mode")]
     async fn meeting_oracle_mode(&self) -> RpcResult<decision::ModeInfo>;
-    /// Persist `decision.families.meeting: { mode }` (`off` | `shadow` | `active`) and apply
-    /// it live; effective from the next batch. A failed config write changes nothing.
+    /// `set_decision_mode("meeting", mode)`.
     #[method(name = "set_meeting_oracle_mode")]
     async fn set_meeting_oracle_mode(&self, mode: decision::Mode) -> RpcResult<decision::ModeInfo>;
     /// 57 §7: today's decision log folded per family — mode, asks, accepts, escalations by
@@ -956,17 +969,27 @@ pub trait Api {
     #[method(name = "decision_stats")]
     async fn decision_stats(&self) -> RpcResult<Vec<decision::FamilyStats>>;
     /// 57 §2.1 item 4: the decision checkpoints resident right now — `[]` at idle. `rss_mb`
-    /// is the whole daemon's resident set, repeated on every entry.
+    /// is the whole daemon's footprint, repeated on every entry.
     #[method(name = "decision_loaded")]
     async fn decision_loaded(&self) -> RpcResult<Vec<decision::LoadedInfo>>;
-    /// 57 §11.4: whether the families under `prefix` (`meeting`) capture training examples
-    /// locally, and how much is on disk (`<data_dir>/decisions/training/<prefix>/`).
+    /// 57 §11.4 / §7.1: whether the families under `prefix` (`meeting`, `browser`) capture
+    /// training examples locally (`enabled`), consent to upload them (`share`), and how much is
+    /// on disk (`<data_dir>/decisions/training/<prefix>/`).
     #[method(name = "decision_training")]
     async fn decision_training(&self, prefix: String) -> RpcResult<decision::TrainingInfo>;
-    /// Persist `decision.families.<prefix>: { mode, train }` and apply it live; effective from
-    /// the next batch. A failed config write changes nothing.
+    /// Persist `decision.families.<prefix>: { mode, train, share }` and apply it live; effective
+    /// from the next batch. Turning capture off also clears `share`. A failed config write
+    /// changes nothing.
     #[method(name = "set_decision_training")]
     async fn set_decision_training(&self, prefix: String, on: bool) -> RpcResult<decision::TrainingInfo>;
+    /// 57 §7.1: consent to upload the prefix's captured rows, persisted the same way. Refused
+    /// (`-32000`) when capture is off. No uploader reads it in this version.
+    #[method(name = "set_decision_share")]
+    async fn set_decision_share(&self, prefix: String, on: bool) -> RpcResult<decision::TrainingInfo>;
+    /// 57 §7.1: remove `<data_dir>/decisions/training/<prefix>/`; the switches stay as set.
+    /// Answers the new counts.
+    #[method(name = "delete_decision_training")]
+    async fn delete_decision_training(&self, prefix: String) -> RpcResult<decision::TrainingInfo>;
     /// Phase 5 (05 §8): the brief cache. Full-text search, best rank first (`limit` ≤ 50, default 8).
     #[method(name = "brief_search")]
     async fn brief_search(&self, query: String, limit: Option<u32>) -> RpcResult<Vec<meeting::CachedBrief>>;
@@ -1419,6 +1442,7 @@ impl ApiServer for Server {
         let max_tool_rounds = ask::<Agents, _>(agent::AGENT_ACTOR, GetMaxToolRounds).await?;
         let stream_idle_secs = ask::<Agents, _>(agent::AGENT_ACTOR, GetStreamIdle).await?;
         let max_salvages = ask::<Agents, _>(agent::AGENT_ACTOR, GetMaxSalvages).await?;
+        let pty_idle_secs = ask::<ToolRegistry, _>(tools::REGISTRY_ACTOR, GetPtyIdle).await?;
         let name = match self.rt.section::<LinkConfig>("link") {
             Ok(c) if !c.name.is_empty() => c.name,
             _ => HOSTNAME.clone(),
@@ -1436,6 +1460,7 @@ impl ApiServer for Server {
             max_tool_rounds,
             stream_idle_secs,
             max_salvages,
+            pty_idle_secs,
             name,
             communication,
             app_enabled: apps().is_ok(),
@@ -1809,6 +1834,10 @@ impl ApiServer for Server {
 
     async fn set_max_salvages(&self, count: u32) -> RpcResult<()> {
         ask::<Agents, _>(agent::AGENT_ACTOR, SetMaxSalvages { count }).await
+    }
+
+    async fn set_pty_idle(&self, seconds: u64) -> RpcResult<()> {
+        ask::<ToolRegistry, _>(tools::REGISTRY_ACTOR, SetPtyIdle { seconds }).await
     }
 
     async fn title_model(&self) -> RpcResult<Option<ModelInfo>> {
@@ -2760,25 +2789,20 @@ impl ApiServer for Server {
         send(&meeting()?, meeting::ListSpeakers).await
     }
 
+    async fn decision_mode(&self, prefix: String) -> RpcResult<decision::ModeInfo> {
+        ask::<decision::Engine, _>(decision::DECISION_ACTOR, decision::GetMode { prefix }).await
+    }
+
+    async fn set_decision_mode(&self, prefix: String, mode: decision::Mode) -> RpcResult<decision::ModeInfo> {
+        ask::<decision::Engine, _>(decision::DECISION_ACTOR, decision::SetMode { prefix, mode }).await
+    }
+
     async fn meeting_oracle_mode(&self) -> RpcResult<decision::ModeInfo> {
-        ask::<decision::Engine, _>(
-            decision::DECISION_ACTOR,
-            decision::GetMode {
-                prefix: meeting::oracle::PREFIX.to_owned(),
-            },
-        )
-        .await
+        self.decision_mode(meeting::oracle::PREFIX.to_owned()).await
     }
 
     async fn set_meeting_oracle_mode(&self, mode: decision::Mode) -> RpcResult<decision::ModeInfo> {
-        ask::<decision::Engine, _>(
-            decision::DECISION_ACTOR,
-            decision::SetMode {
-                prefix: meeting::oracle::PREFIX.to_owned(),
-                mode,
-            },
-        )
-        .await
+        self.set_decision_mode(meeting::oracle::PREFIX.to_owned(), mode).await
     }
 
     async fn decision_stats(&self) -> RpcResult<Vec<decision::FamilyStats>> {
@@ -2795,6 +2819,14 @@ impl ApiServer for Server {
 
     async fn set_decision_training(&self, prefix: String, on: bool) -> RpcResult<decision::TrainingInfo> {
         ask::<decision::Engine, _>(decision::DECISION_ACTOR, decision::SetTrain { prefix, on }).await
+    }
+
+    async fn set_decision_share(&self, prefix: String, on: bool) -> RpcResult<decision::TrainingInfo> {
+        ask::<decision::Engine, _>(decision::DECISION_ACTOR, decision::SetShare { prefix, on }).await
+    }
+
+    async fn delete_decision_training(&self, prefix: String) -> RpcResult<decision::TrainingInfo> {
+        ask::<decision::Engine, _>(decision::DECISION_ACTOR, decision::DeleteTraining { prefix }).await
     }
 
     async fn meeting_speaker_delete(&self, profile: meeting::ProfileId) -> RpcResult<()> {
