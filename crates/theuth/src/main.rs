@@ -143,6 +143,12 @@ agent:
 # knowledge:                 # design doc 10; the bundle lives in <data_dir>/knowledge/
 #   enabled: true            # false: no store, no knowledge_* tools, no hints, no harvest
 
+# documents:                 # design doc 59; Yjs documents under <data_dir>/documents/, the BlockNote editor
+#   enabled: true            # false: no store, no helper, no doc_* methods; concepts open as raw text
+#   export_debounce_ms: 400  # settle time before the derived .md is rewritten (hard cap 3 s)
+#   max_doc_bytes: 8388608   # an update that would grow a document past this is refused (DocTooLarge)
+#   snapshots_keep: 30       # automatic snapshots kept per document; labelled ones are never pruned
+
 # surface:                   # Mermaid / json-render blocks in replies (design doc 30)
 #   enabled: true            # false: no prompt block, no rendering; fences stay code blocks
 #   correct: true            # one <surface_error> fix-up round when a json-render block is invalid
@@ -471,6 +477,7 @@ async fn run() -> anyhow::Result<()> {
         vec![
             Box::new(tools::ToolsPlugin),
             Box::new(secrets::SecretsPlugin),
+            Box::new(document::DocumentPlugin),
             Box::new(knowledge::KnowledgePlugin),
             Box::new(web::WebPlugin),
             Box::new(browser::BrowserPlugin),
@@ -494,6 +501,7 @@ async fn run() -> anyhow::Result<()> {
         let mut plugins: Vec<Box<dyn Plugin>> = vec![
             Box::new(tools::ToolsPlugin),
             Box::new(secrets::SecretsPlugin),
+            Box::new(document::DocumentPlugin),
             Box::new(knowledge::KnowledgePlugin),
             Box::new(web::WebPlugin),
             Box::new(browser::BrowserPlugin),

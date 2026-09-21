@@ -79,7 +79,10 @@ tool result — [`docs/design/23-browser.md`](docs/design/23-browser.md)), `scra
 (eight `computer_*` tools: `computer_screenshot`, `_move`, `_click`, `_drag`,
 `_scroll`, `_type`, `_key`, `_open` — one composite screenshot of every
 display as an image, then native mouse and keyboard on the user's own desktop —
-[`docs/design/27-computer.md`](docs/design/27-computer.md)), `knowledge`
+[`docs/design/27-computer.md`](docs/design/27-computer.md)), `document`
+(the Yjs authority behind every BlockNote editor — `yrs` documents under
+`documents/`, derived markdown export/import, the `packages/documents` helper
+— [`docs/design/59-documents.md`](docs/design/59-documents.md)), `knowledge`
 (OKF bundle, FTS index, gix history, `knowledge_*` tools —
 [`docs/design/10-knowledge.md`](docs/design/10-knowledge.md)), `agent` (genai
 loop, sqlite sessions with compaction epochs, skills, subagents, persistent
@@ -152,7 +155,7 @@ model access, then send the request again.
 Config (`~/.theuth/`, created on first run; details in
 [`docs/design/01-config-and-subagents.md`](docs/design/01-config-and-subagents.md) §1):
 
-- `config.yaml` — every plugin reads its own section; `THEUTH_<SECTION>__<KEY>` env overrides. `agent.model` is a models.dev id (`anthropic/claude-sonnet-4-5`); `/model` rewrites that one line in place. The `agent`, `tools`, `secrets`, `knowledge`, `web`, `scrape`, `search_providers`, `browser`, `computer`, `link`, `nodes`, `schedule`, `a2a`, `update`, `artifact`, `app`, `voice` and `slack` sections with their defaults:
+- `config.yaml` — every plugin reads its own section; `THEUTH_<SECTION>__<KEY>` env overrides. `agent.model` is a models.dev id (`anthropic/claude-sonnet-4-5`); `/model` rewrites that one line in place. The `agent`, `tools`, `secrets`, `documents`, `knowledge`, `web`, `scrape`, `search_providers`, `browser`, `computer`, `link`, `nodes`, `schedule`, `a2a`, `update`, `artifact`, `app`, `voice` and `slack` sections with their defaults:
 
   ```yaml
   agent:
@@ -183,6 +186,11 @@ Config (`~/.theuth/`, created on first run; details in
     request_timeout_secs: 1800   # `secret_request` gives up (the model sees "no answer") after this
   knowledge:
     enabled: true          # false: no store, no knowledge_* tools, no hints, no harvest
+  documents:               # design doc 59; the BlockNote editor's Yjs documents
+    enabled: true          # false: no store, no helper, no doc_* methods; concepts open as raw text
+    export_debounce_ms: 400
+    max_doc_bytes: 8388608
+    snapshots_keep: 30
   web:
     engines: [google, bing, brave, qwant, duckduckgo, wikipedia, arxiv, github]   # keyless; search_web / read_url
   scrape:                         # design doc 38; scrape_url / crawl / map_site
@@ -265,6 +273,7 @@ Config (`~/.theuth/`, created on first run; details in
 - `a2a/peers.yaml` — remote A2A agents and the local sessions published to them (see Communication below); owner-edited, `/a2a reload` validates and applies it atomically. No model tool writes it.
 - `skills/` — `<name>/SKILL.md` directories, loose `*.md`, or git clones (`/skills add <url>`, `/skills sync`); see [`docs/skills.md`](docs/skills.md). `harness.md` is written here on every start: the model's manual for this data dir and its config, loaded on demand.
 - `knowledge/` — the knowledge bundle (OKF markdown, one `<id>.md` per concept, a git repo kept in-process); `knowledge.sqlite` beside it is its search index and can be deleted.
+- `documents/` — one directory per Yjs document (`meta.json`, `snapshot.yjs`, `updates.log`, `snapshots/`) behind the BlockNote editor; `index.sqlite` is its index. A knowledge concept's document is the truth while it is open in the editor and `knowledge/<id>.md` is its export; deleting a document directory loses only the editing history, the file is recreated as a document on next open.
 - `artifacts/` — content-addressed blobs of every file the agent has `show`n or published with `app`; `artifacts.sqlite` beside it is the index, and also holds one row per app invocation (which view pressed which binding, status, result). Deleting the index orphans the blobs, which are swept at the next start. `artifacts.owners/` holds one OS-locked file per running harness on this data dir: invocation rows belong to the owner that dispatched them, so a second harness (or a restart) recovers only rows whose owner is provably dead and reports them as `unknown`, never retried.
 
 TUI: `/` opens the command list; `/model` picks a model (header above the

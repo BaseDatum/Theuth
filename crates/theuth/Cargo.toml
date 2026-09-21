@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 runtime = { workspace = true }
 tools = { workspace = true }
+document = { workspace = true }
 knowledge = { workspace = true }
 web = { workspace = true }
 browser = { workspace = true }

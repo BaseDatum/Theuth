@@ -17,6 +17,7 @@ models = { path = "crates/models" }
 markdown = { path = "crates/markdown" }
 oauth = { path = "crates/oauth" }
 tools = { path = "crates/tools" }
+document = { path = "crates/document" }  # Yjs authority + derived markdown for knowledge/artifacts/notes (design doc 59)
 knowledge = { path = "crates/knowledge" }
 search = { path = "crates/search" }  # shared fuzzy matching/snippet/page envelope (design doc 49 §4.1)
 agent = { path = "crates/agent" }
@@ -124,6 +125,9 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls", "j
 # Upstream master includes PR #388; not yet in a crates.io release (21 §2.1).
 slack-morphism = { git = "https://github.com/abdolence/slack-morphism-rust", rev = "e2a4b014b2bedc82c1ccfeae1706e0f2d6a184a3", features = ["hyper"] }
 sha2 = "0.10"
+# Documents (design doc 59): `yrs` = the Yjs-compatible CRDT the harness holds as authority; `sync` = y-protocols
+# awareness. Pinned exactly: the desktop and helper pin `yjs` 13.6.32, and the two must agree on the wire.
+yrs = { version = "=0.28.0", features = ["sync"] }
 nucleo = "0.5"  # fzf/helix fuzzy scoring for session search (design doc 26)
 base64 = "0.22"
 serde = { version = "1", features = ["derive", "rc"] }

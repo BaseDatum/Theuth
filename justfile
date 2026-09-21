@@ -53,6 +53,18 @@ helper:
     build_helper
     echo "built $HELPER_SRC ($HELPER)"
 
+# Standalone documents helper (bun build --compile) → packages/documents/dist/theuth-documents (59 §3.2);
+# `--version` must print the PROTOCOL_VERSION of packages/documents/src/protocol.ts. Debug builds of `t`
+# find it there; release packaging copies it beside `t` as theuth-documents-<version>.
+documents-helper:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd packages/documents
+    [[ "${THEUTH_SKIP_BUN_INSTALL:-0}" == "1" ]] || bun install --frozen-lockfile
+    bun run build:helper
+    ./dist/theuth-documents --version
+    printf '' | ./dist/theuth-documents
+
 # Export TypeScript bindings for the RPC wire types.
 ts:
     cargo test -p rpc --features ts --quiet export_bindings
@@ -66,7 +78,7 @@ ts-desktop: ts
 # Desktop app in dev mode against `target/debug/t` (or `$THEUTH_BIN`); `THEUTH_DATA_DIR` overrides ~/.theuth.
 # `TAURI_FRONTEND_PATH`: the UI lives inside the crate (not beside it as Tauri assumes), so the
 # before*Command cwd must be pinned.
-desktop: ts-desktop
+desktop: ts-desktop documents-helper
     cargo build -p theuth
     cd crates/desktop/ui && bun install
     cd crates/desktop && TAURI_FRONTEND_PATH=ui THEUTH_BIN="${THEUTH_BIN:-$PWD/../../target/debug/t}" cargo tauri dev
