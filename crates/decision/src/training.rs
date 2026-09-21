@@ -307,6 +307,9 @@ pub struct Store {
 pub struct TrainingInfo {
     /// `decision.families.<prefix>.train`.
     pub enabled: bool,
+    /// `decision.families.<prefix>.share` (57 §7.1): consent to upload; persisted now, read by
+    /// the step-11 uploader. Never `true` while `enabled` is `false`.
+    pub share: bool,
     /// Example rows in today's file.
     pub examples_today: u64,
     /// Example rows in every file.
@@ -343,6 +346,15 @@ impl Store {
         let mut line = serde_json::to_vec(&scrubbed(row)?)?;
         line.push(b'\n');
         f.write_all(&line)
+    }
+
+    /// Remove every file of `prefix` (57 §7.1 "Delete local data"); the switch is untouched.
+    /// Nothing to delete is not an error.
+    pub fn delete(&self, prefix: &str) -> std::io::Result<()> {
+        match std::fs::remove_dir_all(self.family_dir(prefix)) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        }
     }
 
     /// The day files of `prefix` from `since` on (all when `None`), oldest first; none when the
@@ -395,10 +407,11 @@ impl Store {
     }
 
     /// Counts for [`TrainingInfo`]: examples today / in every file, bytes on disk.
-    pub fn info(&self, prefix: &str, enabled: bool) -> TrainingInfo {
+    pub fn info(&self, prefix: &str, enabled: bool, share: bool) -> TrainingInfo {
         let today = chrono::Local::now().date_naive();
         let mut info = TrainingInfo {
             enabled,
+            share,
             examples_today: 0,
             examples_total: 0,
             bytes: 0,
@@ -858,7 +871,8 @@ mod tests {
         let store = Store::new(tmp.path().join("training"));
         // Nothing written, nothing created.
         assert!(store.files("meeting", None).unwrap().is_empty());
-        assert_eq!(store.info("meeting", false).examples_total, 0);
+        assert_eq!(store.info("meeting", false, false).examples_total, 0);
+        store.delete("meeting").unwrap();
         assert!(!tmp.path().join("training").exists());
 
         let ex = example("me: the password is hunter22hunter22, don't tell");
@@ -895,10 +909,10 @@ mod tests {
         let rows = store.read("meeting", None).unwrap();
         assert_eq!(rows.len(), 3);
         assert!(matches!(&rows[1], Row::Amend(a) if a.id == ex.id));
-        let info = store.info("meeting", true);
+        let info = store.info("meeting", true, true);
         assert_eq!(
-            (info.enabled, info.examples_today, info.examples_total),
-            (true, 2, 2)
+            (info.enabled, info.share, info.examples_today, info.examples_total),
+            (true, true, 2, 2)
         );
         assert_eq!(info.bytes, std::fs::metadata(&files[0].1).unwrap().len());
         assert!(info.dir.ends_with("training/meeting"));
@@ -910,6 +924,12 @@ mod tests {
                 .is_empty()
         );
         assert!(store.read("browser", None).unwrap().is_empty());
+        // 57 §7.1 "Delete local data": the prefix's files go, nothing else does.
+        store.append("browser", &Row::Example(Box::new(example("x")))).unwrap();
+        store.delete("meeting").unwrap();
+        assert!(!tmp.path().join("training/meeting").exists());
+        assert_eq!(store.info("meeting", true, false).examples_total, 0);
+        assert_eq!(store.info("browser", true, false).examples_total, 1);
     }
 
     fn folded(tier2: Option<Tier2>, verdict: Verdict, outcome: Option<Option<Brief>>, user: Option<Reaction>) -> Folded {

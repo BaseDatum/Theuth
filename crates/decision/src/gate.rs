@@ -74,6 +74,10 @@ pub struct FamilyGate {
     /// Capture training examples for this family (57 §11): off by default, every family.
     #[serde(default)]
     pub train: bool,
+    /// Consent to upload this family's captured rows to theuth (57 §7.1); off by default,
+    /// meaningless without `train` — clearing `train` clears it. Read by the step-11 uploader.
+    #[serde(default)]
+    pub share: bool,
     /// Which `decision.checkpoints` entry answers (57 §4.1 item 6); `None` = `default`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoint: Option<String>,
@@ -126,6 +130,7 @@ impl FamilyGate {
             budget: default_budget(),
             escalate_budget: default_escalate_budget(),
             train: false,
+            share: false,
             checkpoint: None,
             none: true,
             cut_ok: false,
@@ -223,6 +228,7 @@ mod tests {
         budget: Duration::from_millis(400),
         escalate_budget: Duration::from_secs(3),
         train: false,
+        share: false,
         checkpoint: None,
         none: true,
         cut_ok: false,
