@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
 import type { PtyPage } from '@/rpc/bindings/PtyPage'
-import { EMPTY, LIVE, type Origin, type State, applyReply, nextViewport, palette, reduce } from './terminal'
+import { EMPTY, LIVE, type Origin, type State, applyReply, keyToInput, nextViewport, palette, reduce } from './terminal'
 
 const key = (job: string) => ({ harness: 'local', session: 's', job })
 const page = (over: Partial<PtyPage>): PtyPage => ({
@@ -81,4 +81,19 @@ test('palette: ansi, cube, greys', () => {
   expect(palette(231)).toBe('rgb(255,255,255)')
   expect(palette(232)).toBe('rgb(8,8,8)')
   expect(palette(255)).toBe('rgb(238,238,238)')
+})
+
+test('keyToInput: text, modifiers, named keys; browser and IME chords pass through', () => {
+  const k = (key: string, mods: Partial<{ ctrlKey: boolean; altKey: boolean; metaKey: boolean; shiftKey: boolean; isComposing: boolean }> = {}) =>
+    keyToInput({ key, ctrlKey: false, altKey: false, metaKey: false, shiftKey: false, ...mods })
+  expect(k('a')).toEqual({ text: 'a', keys: [] })
+  expect(k('é')).toEqual({ text: 'é', keys: [] })
+  expect(k('c', { ctrlKey: true })).toEqual({ text: null, keys: [{ ctrl: 'c' }] })
+  expect(k('x', { altKey: true })).toEqual({ text: null, keys: [{ alt: 'x' }] })
+  expect(k('Tab', { shiftKey: true })).toEqual({ text: null, keys: ['shift_tab'] })
+  expect(k('ArrowUp')).toEqual({ text: null, keys: ['up'] })
+  expect(k('F5')).toEqual({ text: null, keys: [{ f: 5 }] })
+  expect(k('Shift')).toBeNull()
+  expect(k('c', { metaKey: true })).toBeNull()
+  expect(k('a', { isComposing: true })).toBeNull()
 })

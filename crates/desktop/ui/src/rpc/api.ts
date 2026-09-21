@@ -85,6 +85,7 @@ import type { CloseResult } from '@/rpc/bindings/CloseResult'
 import type { CreateSessionOptions } from '@/rpc/bindings/CreateSessionOptions'
 import type { PtyScreenReply } from '@/rpc/bindings/PtyScreenReply'
 import type { PtyViewport } from '@/rpc/bindings/PtyViewport'
+import type { Key } from '@/rpc/bindings/Key'
 import type { SessionCost } from '@/rpc/bindings/SessionCost'
 import type { SessionOpen } from '@/rpc/bindings/SessionOpen'
 import type { TerminalSummary } from '@/rpc/bindings/TerminalSummary'
@@ -154,6 +155,8 @@ export interface Api {
     viewport: PtyViewport,
     if_revision: number | null,
   ): Promise<PtyScreenReply>
+  /** A human types into a running PTY job (55 §2.1): `text` verbatim, then `keys`; returns once written. */
+  pty_input(session: SessionId, job: JobId, text: string | null, keys: Key[] | null): Promise<null>
   compact(session: SessionId, style: CompactStyle | null): Promise<number>
   compact_style(): Promise<CompactStyle>
   /** Computer-control permissions and attached displays (27 §6); rejects when the plugin is disabled. */
@@ -574,6 +577,7 @@ export const METHODS = [
   'new_session',
   'peer_message',
   'pin_session',
+  'pty_input',
   'pty_screen',
   'put_attachment',
   'put_session_attachment',
@@ -611,8 +615,8 @@ export const METHODS = [
   'set_secret',
   'set_session_project',
   'set_stream_idle',
-  'set_subagent_timeout',
   'set_subagent_model',
+  'set_subagent_timeout',
   'set_title_model',
   'set_vision_model',
   'shutdown',

@@ -185,14 +185,31 @@ forward!(
 );
 
 /// The one place commands become `rpc::Api` calls. Each command runs in its
-/// own task so a slow call never delays the next one.
+/// own task so a slow call never delays the next one — except keystrokes
+/// (`PtyInput`, 55 §3), which take one serial lane so they reach the
+/// process in the order they were typed.
 async fn run_commands(
     api: Arc<Server>,
     ext: Arc<jsonrpsee::Extensions>,
     mut rx: UnboundedReceiver<Command>,
     tx: UnboundedSender<UiEvent>,
 ) {
+    let (keys_tx, mut keys_rx) = tokio::sync::mpsc::unbounded_channel::<Command>();
+    tokio::spawn({
+        let (api, ext, tx) = (api.clone(), ext.clone(), tx.clone());
+        async move {
+            while let Some(cmd) = keys_rx.recv().await {
+                if let Err(e) = execute(&api, &ext, cmd, &tx).await {
+                    let _ = tx.send(UiEvent::Error(format!("{e:#}")));
+                }
+            }
+        }
+    });
     while let Some(cmd) = rx.recv().await {
+        if matches!(cmd, Command::PtyInput { .. }) {
+            let _ = keys_tx.send(cmd);
+            continue;
+        }
         let tx = tx.clone();
         let api = api.clone();
         let ext = ext.clone();
@@ -357,6 +374,15 @@ async fn execute(
                 .await
                 .map_err(|e| e.message().to_owned()),
         },
+        Command::PtyInput {
+            session,
+            job,
+            text,
+            keys,
+        } => {
+            msg(api.pty_input(ext, session, job, text, Some(keys)).await)?;
+            return Ok(());
+        }
         Command::CreateSession(options) => {
             UiEvent::SessionOpened(msg(api.create_session(ext, options).await)?)
         }

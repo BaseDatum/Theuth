@@ -70,7 +70,10 @@ use tools::{
     McpLogin, McpLogout, McpProgress, McpServer, Progress, RemoveServer, RepoInfo, Resolve,
     SetApprovals, SetGate, SetHidden, SyncMcp, ToolRegistry, ToolSpec,
 };
-use tools::{ListTerminals, PtyScreen, PtyScreenReply, PtyViewport, Retention, TerminalSummary};
+use tools::{
+    Key, ListTerminals, PtyInput, PtyScreen, PtyScreenReply, PtyViewport, Retention,
+    TerminalSummary,
+};
 use uuid::Uuid;
 use voice::{SpeechId, VoiceStatus};
 
@@ -188,6 +191,18 @@ pub trait Api {
         viewport: PtyViewport,
         if_revision: Option<u64>,
     ) -> RpcResult<PtyScreenReply>;
+    /// A human types into a running PTY job of `session` (55 §2.1): `text`
+    /// verbatim, then `keys`, encoded for the program's current modes. Returns
+    /// once written; the viewer keeps polling `pty_screen`. Errors when the
+    /// job is unknown, finished, or the write fails.
+    #[method(name = "pty_input", with_extensions)]
+    async fn pty_input(
+        &self,
+        session: SessionId,
+        job: JobId,
+        text: Option<String>,
+        keys: Option<Vec<Key>>,
+    ) -> RpcResult<()>;
     /// Current page of `session`'s embedded browser as a base64 PNG for a live
     /// view (23 §3.2); `None` when the session has no live isolate or no open
     /// page. Polling never spawns an isolate.
@@ -1482,6 +1497,29 @@ impl ApiServer for Server {
             .await
             .map_err(|e| match e {
                 SendError::HandlerError(busy) => failed(format!("terminal busy: {busy}")),
+                other => failed(other.to_string()),
+            })
+    }
+
+    async fn pty_input(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        job: JobId,
+        text: Option<String>,
+        keys: Option<Vec<Key>>,
+    ) -> RpcResult<()> {
+        self.authorize(ext, session).await?;
+        lookup::<Jobs>(JOBS_ACTOR)?
+            .ask(PtyInput {
+                session,
+                id: job,
+                text,
+                keys: keys.unwrap_or_default(),
+            })
+            .await
+            .map_err(|e| match e {
+                SendError::HandlerError(msg) => failed(msg),
                 other => failed(other.to_string()),
             })
     }

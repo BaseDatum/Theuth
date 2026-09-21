@@ -129,6 +129,7 @@ async fn export_bindings() {
         tools::Style,
         tools::Color,
         tools::Cell,
+        tools::Key,
         tools::git::SyncResult,
         runtime::SessionId,
         runtime::TurnId,

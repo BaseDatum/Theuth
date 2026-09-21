@@ -205,7 +205,9 @@ are rewritten on every start.
   always asks unless approvals are off.
 - `start{command, name?, ready?}` runs on a pseudo-terminal; `send`/`screen`/
   `wait` drive it; use it for REPLs, servers, TUIs and prompts — `shell` for
-  anything that runs and exits (22).
+  anything that runs and exits (22). A reply ending `user attached · typed Ns
+  ago` means the user is typing into that terminal (55): read the screen
+  before sending more.
 - `browser_*` (23) when a page needs JavaScript, a form, clicking through,
   or a visual check; `read_url` for plain pages. `browser_open{url}` returns
   the readable text and element refs (`ref=eN`). Refs go stale after ANY

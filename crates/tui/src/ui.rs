@@ -290,6 +290,23 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 m.sync_slash(&v);
                 input.set(v);
             };
+            // 55 §3: the keyboard belongs to the program in the open terminal,
+            // Ctrl-C included; only Ctrl-] comes back here.
+            if m.terminal_interactive() {
+                match event {
+                    TerminalEvent::Key(KeyEvent {
+                        code,
+                        kind,
+                        modifiers,
+                        ..
+                    }) if kind != KeyEventKind::Release => {
+                        m.terminal_type(code, modifiers, &commands);
+                    }
+                    TerminalEvent::Paste(text) => m.terminal_paste(text, &commands),
+                    _ => {}
+                }
+                return;
+            }
             let TerminalEvent::Key(KeyEvent {
                 code,
                 kind,

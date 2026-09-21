@@ -59,8 +59,10 @@ run as background jobs: output within 3 s comes back inline, otherwise the
 model gets a job id and is woken with `<job_result>` when it exits —
 [`docs/design/14-jobs.md`](docs/design/14-jobs.md); `start` / `send` /
 `screen` / `wait` run a command on a pseudo-terminal (REPL, server, TUI) and
-drive it: type, read the rendered 120×40 screen, wait for a prompt or a port —
-[`docs/design/22-pty.md`](docs/design/22-pty.md)), `secrets` (an encrypted,
+drive it: type, read the rendered 120×40 screen, wait for a prompt or a port;
+you can open the same terminal from `/terminals` or the desktop and type into
+it yourself (`i` / Ctrl-] in the TUI) —
+[`docs/design/22-pty.md`](docs/design/22-pty.md), [`55`](docs/design/55-interactive-terminals.md)), `secrets` (an encrypted,
 versioned vault the agent uses by name but never reads: `{{secret:NAME}}` in
 any tool argument is swapped for the value at run time and scrubbed from the
 output; holds the provider, web and Slack keys too —

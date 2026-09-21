@@ -3,6 +3,7 @@
 // selection from painting over the current one.
 
 import type { Color } from '@/rpc/bindings/Color'
+import type { Key } from '@/rpc/bindings/Key'
 import type { PtyPage } from '@/rpc/bindings/PtyPage'
 import type { PtyScreenReply } from '@/rpc/bindings/PtyScreenReply'
 import type { PtyViewport } from '@/rpc/bindings/PtyViewport'
@@ -118,6 +119,39 @@ export function reduce(state: State, action: Action): State {
     case 'reply':
       return applyReply(state, action.reply, action.origin)
   }
+}
+
+/** What `pty_input` gets for one keydown (55 §4.2); `null` for keys the terminal has no use for (modifiers, IME composition, browser chords left to the browser). */
+export type Input = { text: string | null; keys: Key[] }
+
+const NAMED: Record<string, Key> = {
+  Enter: 'enter',
+  Tab: 'tab',
+  Escape: 'escape',
+  Backspace: 'backspace',
+  Delete: 'delete',
+  Insert: 'insert',
+  ArrowUp: 'up',
+  ArrowDown: 'down',
+  ArrowLeft: 'left',
+  ArrowRight: 'right',
+  Home: 'home',
+  End: 'end',
+  PageUp: 'page_up',
+  PageDown: 'page_down',
+}
+
+export function keyToInput(e: { key: string; ctrlKey: boolean; altKey: boolean; metaKey: boolean; shiftKey: boolean; isComposing?: boolean }): Input | null {
+  if (e.isComposing || e.metaKey) return null
+  if (e.key === 'Tab' && e.shiftKey) return { text: null, keys: ['shift_tab'] }
+  const named = NAMED[e.key]
+  if (named) return { text: null, keys: [named] }
+  const f = /^F(\d{1,2})$/.exec(e.key)
+  if (f) return { text: null, keys: [{ f: Number(f[1]) }] }
+  if ([...e.key].length !== 1) return null
+  if (e.ctrlKey) return { text: null, keys: [{ ctrl: e.key }] }
+  if (e.altKey) return { text: null, keys: [{ alt: e.key }] }
+  return { text: e.key, keys: [] }
 }
 
 // xterm's default palette: 16 ANSI colours, the 6×6×6 cube, 24 greys.

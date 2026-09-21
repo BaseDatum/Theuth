@@ -1,6 +1,6 @@
 # 55 — Interactive terminals: the human types into the model's PTY jobs
 
-Status: design v0 · 2026-09-20 · extends `22-pty.md` §1.9/§9 (input from a
+Status: **as built · 2026-09-21** (design v0 2026-09-20; §10) · extends `22-pty.md` §1.9/§9 (input from a
 human; `resize` stays rejected), `51-session-lifecycle-costs-and-terminals.md`
 §7 (reverses the "no PTY input/takeover" scope line; keeps snapshot-only
 observation), `25-desktop.md` §7 (one RPC method). §8 lists the amendments.
@@ -49,6 +49,10 @@ anything about ACP children (56).
    between human and model. `PtyHandle` records the last human write; every
    `send`/`screen`/`wait` reply carries `user attached · typed 3s ago` for
    30 s after it. That is the whole coordination story.
+   Ordering is the client's job: each frontend keeps one `pty_input` in
+   flight and sends the next only after the reply (the TUI's command loop
+   runs every other command concurrently; the smoke test typed `7*6⏎` and
+   Python received `*⏎67` before this lane existed).
 6. **Fixed 120×40 stays** (22 §1.9). Both parties look at the same grid; the
    overlay clips and pans as today and says so. Resize is §7 with its hook
    named.
@@ -302,3 +306,36 @@ Each step leaves `theuth` green and is independently useful.
 2. TUI interactive mode + modifier plumbing; spike 1.
 3. Desktop textarea, toggle, mapping, fast poll, fit; spike 2.
 4. Docs (§8), smoke, Status.
+
+## 10. Status (as built, 2026-09-21)
+
+Shipped as designed, one deviation and one addition:
+
+- **Ordering lane (§0.5 addition).** The TUI command loop runs every command
+  in its own task; the first smoke typed `7*6⏎` and Python got `*⏎67`.
+  `PtyInput` commands now take one serial lane (`tui/src/lib.rs
+  run_commands`); the desktop chains `pty_input` promises. Server side stays
+  fire-per-request.
+- **Desktop `interactive` is component state, not reducer state (§4.4
+  deviation).** It is focus state of the textarea; the reducer is untouched.
+  The trailer window is `attached_for()` in `pty.rs`, unit-tested directly
+  instead of reaching into the actor.
+
+Checks: `pty::tests::encode_follows_screen_modes`,
+`pty::tests::pty_input_types_and_marks_user_attached`,
+`tui model::tests::terminal_interactive_forwards_keys_and_detaches`,
+desktop `terminal.test.ts` (`keyToInput`) and `api.test.ts` pass.
+`pty::tests::query_responder` / `tty_holder_outliving_exit…` fail before and
+after this change (zsh as `$SHELL`; admission race) — not touched.
+
+Smoke, headless daemon with claude-haiku-4-5: model `start`ed `python3 -q`;
+`pty_input("2**10", [enter])` returned in 3 ms and the next `pty_screen`
+showed `1024`; `[{ctrl:"l"},{paste:"print('pasted')"},enter]` — Python 3.14's
+REPL took the bracketed paste as paste mode (a second Enter ran it), i.e.
+`bracketed_paste()` detection is live; `{f:13}` → `f13: only F1–F12 exist`,
+unknown job → `no such job`. The model's following `screen` result ended with
+`user attached · typed 1s ago`. Smoke, TUI on a real pty: `/terminals` → ⏎ →
+`i` → `7*6⏎` painted `42` in the overlay; Esc reached Python and did not
+close the overlay. Ctrl-] detach is covered by the unit test only (the
+process harness could not inject 0x1d). Desktop typing was not exercised in
+a browser; `tsc` and vitest are the evidence. Spike 2 (relay latency) not run.

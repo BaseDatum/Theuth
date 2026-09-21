@@ -41,6 +41,8 @@ const COLS: u16 = 120;
 const SETTLE_QUIET: Duration = Duration::from_millis(300);
 /// …or after this long regardless.
 const SETTLE_MAX: Duration = Duration::from_secs(2);
+/// A tool reply carries `user attached` this long after a human typed (55 §0.5).
+const USER_ATTACHED: Duration = Duration::from_secs(30);
 /// `wait` default / maximum seconds (22 §4.6).
 const WAIT_DEFAULT: u64 = 30;
 const WAIT_MAX: u64 = 120;
@@ -292,18 +294,28 @@ pub struct WaitArgs {
     pub timeout: Option<u64>,
 }
 
-/// A key `send` types (22 §4.5 key table).
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, JsonSchema)]
+/// A key `send` (and a human over `pty_input`, 55 §2.2) types. Encoded by
+/// [`encode`], which consults the screen's modes: arrows follow
+/// application-cursor mode, `paste` is bracketed only when the program asked.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 #[allow(missing_docs)]
 pub enum Key {
     Enter,
     Tab,
+    ShiftTab,
     Escape,
     CtrlC,
     CtrlD,
     CtrlZ,
     CtrlL,
+    /// Ctrl + a letter or one of `@ [ \ ] ^ _`.
+    Ctrl(char),
+    /// Alt (Meta) + a character.
+    Alt(char),
+    /// F1–F12.
+    F(u8),
     Up,
     Down,
     Left,
@@ -312,32 +324,96 @@ pub enum Key {
     End,
     PageUp,
     PageDown,
+    Insert,
     Backspace,
     Delete,
+    /// Text pasted in one piece.
+    Paste(String),
 }
 
 impl Key {
-    fn bytes(self) -> &'static [u8] {
-        match self {
+    fn encode(&self, out: &mut Vec<u8>, screen: &vt100::Screen) -> Result<(), String> {
+        let cursor = if screen.application_cursor() { b'O' } else { b'[' };
+        let bytes: &[u8] = match self {
             Key::Enter => b"\r",
             Key::Tab => b"\t",
+            Key::ShiftTab => b"\x1b[Z",
             Key::Escape => b"\x1b",
             Key::CtrlC => b"\x03",
             Key::CtrlD => b"\x04",
             Key::CtrlZ => b"\x1a",
             Key::CtrlL => b"\x0c",
-            Key::Up => b"\x1b[A",
-            Key::Down => b"\x1b[B",
-            Key::Right => b"\x1b[C",
-            Key::Left => b"\x1b[D",
+            Key::Ctrl(c) => {
+                let c = c.to_ascii_uppercase();
+                if !(c.is_ascii_uppercase() || matches!(c, '@' | '[' | '\\' | ']' | '^' | '_')) {
+                    return Err(format!("ctrl+{c:?} is not a control character"));
+                }
+                out.push(c as u8 & 0x1f);
+                return Ok(());
+            }
+            Key::Alt(c) => {
+                out.push(0x1b);
+                let mut b = [0; 4];
+                out.extend_from_slice(c.encode_utf8(&mut b).as_bytes());
+                return Ok(());
+            }
+            Key::F(n) => match n {
+                1 => b"\x1bOP",
+                2 => b"\x1bOQ",
+                3 => b"\x1bOR",
+                4 => b"\x1bOS",
+                5 => b"\x1b[15~",
+                6 => b"\x1b[17~",
+                7 => b"\x1b[18~",
+                8 => b"\x1b[19~",
+                9 => b"\x1b[20~",
+                10 => b"\x1b[21~",
+                11 => b"\x1b[23~",
+                12 => b"\x1b[24~",
+                _ => return Err(format!("f{n}: only F1–F12 exist")),
+            },
+            Key::Up | Key::Down | Key::Right | Key::Left => {
+                let c = match self {
+                    Key::Up => b'A',
+                    Key::Down => b'B',
+                    Key::Right => b'C',
+                    _ => b'D',
+                };
+                out.extend_from_slice(&[0x1b, cursor, c]);
+                return Ok(());
+            }
             Key::Home => b"\x1b[H",
             Key::End => b"\x1b[F",
             Key::PageUp => b"\x1b[5~",
             Key::PageDown => b"\x1b[6~",
+            Key::Insert => b"\x1b[2~",
             Key::Backspace => b"\x7f",
             Key::Delete => b"\x1b[3~",
-        }
+            Key::Paste(text) => {
+                if screen.bracketed_paste() {
+                    out.extend_from_slice(b"\x1b[200~");
+                    out.extend_from_slice(text.as_bytes());
+                    out.extend_from_slice(b"\x1b[201~");
+                } else {
+                    out.extend_from_slice(text.as_bytes());
+                }
+                return Ok(());
+            }
+        };
+        out.extend_from_slice(bytes);
+        Ok(())
     }
+}
+
+/// `text` then `keys` as the program expects them right now (55 §2.2): the
+/// one key table, read under the parser lock so the modes are current.
+fn encode(pty: &PtyHandle, text: Option<&str>, keys: &[Key]) -> Result<Vec<u8>, String> {
+    let mut out = text.map(|t| t.as_bytes().to_vec()).unwrap_or_default();
+    let p = lock(&pty.parser);
+    for k in keys {
+        k.encode(&mut out, p.screen())?;
+    }
+    Ok(out)
 }
 
 /// A signal `send` delivers to the job's process group.
@@ -378,6 +454,9 @@ pub(crate) struct PtyHandle {
     pid: u32,
     /// Set by the job task just before it finishes; `send`/`wait` loops read it.
     exit: Mutex<Option<JobExit>>,
+    /// When a human last typed into this terminal (`pty_input`, 55 §2.3);
+    /// tool replies say so for [`USER_ATTACHED`] after.
+    user_input: Mutex<Option<Instant>>,
 }
 
 /// The screen cloned under the lock, with what else a page reports.
@@ -749,6 +828,21 @@ pub struct PtyScreen {
     pub if_revision: Option<u64>,
 }
 
+/// `ask` → `Result<(), String>`: a human types into a running PTY job
+/// (55 §2.1). Bytes are written and the call returns; no settle, no screen —
+/// the viewer is already polling `pty_screen`. `Err` names the job's exit or
+/// the write failure.
+pub struct PtyInput {
+    /// Owning session.
+    pub session: SessionId,
+    /// Job (exact id; names are a tool convenience).
+    pub id: JobId,
+    /// Typed first, verbatim.
+    pub text: Option<String>,
+    /// Keys after `text`.
+    pub keys: Vec<Key>,
+}
+
 /// A resolved PTY job as the tool paths see it, detached from the actor.
 struct Live {
     id: JobId,
@@ -975,6 +1069,7 @@ impl Message<Launch<StartPty>> for Jobs {
             output: Notify::new(),
             pid: s.pid,
             exit: Mutex::new(None),
+            user_input: Mutex::new(None),
         });
         let log = Arc::new(Mutex::new(Log::new(Some(s.file))));
         let cancel = Arc::new(Notify::new());
@@ -1157,6 +1252,52 @@ impl Message<PtyScreen> for Jobs {
         });
         reply
     }
+}
+
+impl Message<PtyInput> for Jobs {
+    type Reply = DelegatedReply<Result<(), String>>;
+
+    async fn handle(&mut self, m: PtyInput, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let job = self
+            .sessions
+            .get(&m.session)
+            .and_then(|s| s.jobs.iter().find(|j| j.id == m.id));
+        let pty = match job {
+            None => Err("no such job".to_owned()),
+            Some(Job { exit: Some(e), .. }) => Err(format!("{} {e}", m.id)),
+            Some(Job { pty: None, .. }) => Err(format!("{} is not a PTY job", m.id)),
+            Some(Job { pty: Some(p), .. }) => Ok(Arc::clone(p)),
+        };
+        match pty {
+            Err(e) => tx.send(Err(e)),
+            Ok(pty) => {
+                tokio::spawn(async move { tx.send(write(&pty, m.text.as_deref(), &m.keys, true).await) });
+            }
+        }
+        reply
+    }
+}
+
+/// Encode and write to the master off the runtime (a full kernel buffer
+/// blocks). `human` stamps [`PtyHandle::user_input`].
+async fn write(pty: &Arc<PtyHandle>, text: Option<&str>, keys: &[Key], human: bool) -> Result<(), String> {
+    let data = encode(pty, text, keys)?;
+    if data.is_empty() {
+        return Ok(());
+    }
+    if human {
+        *lock(&pty.user_input) = Some(Instant::now());
+    }
+    let pty = Arc::clone(pty);
+    tokio::task::spawn_blocking(move || {
+        let mut w = lock(&pty.writer);
+        w.write_all(&data).and_then(|()| w.flush())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| format!("write to pty: {e}"))
 }
 
 /// What the spawn hands the job task and the handle.
@@ -1639,27 +1780,11 @@ async fn await_output(
 
 /// 22 §4.5: write, signal, settle, screen.
 async fn send(live: &Live, args: SendArgs) -> Result<ToolOutput, String> {
-    let mut data = Vec::new();
-    if let Some(text) = &args.text {
-        data.extend_from_slice(text.as_bytes());
-        if args.enter.unwrap_or(true) {
-            data.push(b'\r');
-        }
+    let mut text = args.text.clone().unwrap_or_default();
+    if args.text.is_some() && args.enter.unwrap_or(true) {
+        text.push('\r');
     }
-    for k in args.keys.iter().flatten() {
-        data.extend_from_slice(k.bytes());
-    }
-    if !data.is_empty() {
-        let pty = Arc::clone(&live.pty);
-        // A full kernel buffer blocks the write; keep it off the runtime.
-        tokio::task::spawn_blocking(move || {
-            let mut w = lock(&pty.writer);
-            w.write_all(&data).and_then(|()| w.flush())
-        })
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| format!("write to pty: {e}"))?;
-    }
+    write(&live.pty, Some(&text), args.keys.as_deref().unwrap_or_default(), false).await?;
     if let Some(sig) = args.signal {
         killpg(
             Pid::from_raw(live.pty.pid as i32),
@@ -1742,14 +1867,25 @@ fn reply(live: &Live, note: Option<&str>, matched: Option<&str>) -> ToolOutput {
         content.push('\n');
     }
     content.push_str(&screen_block(&rows, cursor));
+    // 55 §2.3: a hand is on the keyboard — read before typing more.
+    let user_attached = attached_for(*lock(&live.pty.user_input));
+    if let Some(ago) = user_attached {
+        let _ = write!(content, "\nuser attached · typed {}s ago", ago.as_secs());
+    }
     ToolOutput {
         content,
         is_error: false,
         structured: Some(serde_json::json!({
             "job": live.id, "rows": rows, "cursor": cursor, "matched": matched,
+            "user_attached_ms": user_attached.map(|d| d.as_millis() as u64),
         })),
         files: Vec::new(),
     }
+}
+
+/// How long ago a human last typed, while that is still worth saying.
+fn attached_for(last: Option<Instant>) -> Option<Duration> {
+    last.map(|t| t.elapsed()).filter(|ago| *ago < USER_ATTACHED)
 }
 
 /// kameo lifts a `Result` reply: the handler's `Err(String)` arrives as
@@ -1951,6 +2087,35 @@ mod tests {
     }
 
     #[test]
+    fn encode_follows_screen_modes() {
+        let enc = |feed: &[u8], keys: &[Key]| {
+            let mut p = vt100::Parser::new(ROWS, COLS, HISTORY);
+            p.process(feed);
+            let mut out = Vec::new();
+            for k in keys {
+                k.encode(&mut out, p.screen())?;
+            }
+            Ok::<_, String>(out)
+        };
+        assert_eq!(enc(b"", &[Key::Up]).unwrap(), b"\x1b[A");
+        // DECCKM on: application cursor keys.
+        assert_eq!(enc(b"\x1b[?1h", &[Key::Up]).unwrap(), b"\x1bOA");
+        let paste = [Key::Paste("hi".into())];
+        assert_eq!(enc(b"", &paste).unwrap(), b"hi");
+        assert_eq!(enc(b"\x1b[?2004h", &paste).unwrap(), b"\x1b[200~hi\x1b[201~");
+        assert_eq!(enc(b"", &[Key::Ctrl('c')]).unwrap(), b"\x03");
+        assert_eq!(enc(b"", &[Key::Ctrl('c')]).unwrap(), enc(b"", &[Key::CtrlC]).unwrap());
+        assert_eq!(enc(b"", &[Key::Ctrl(']')]).unwrap(), b"\x1d");
+        assert_eq!(enc(b"", &[Key::Alt('x'), Key::F(5), Key::ShiftTab]).unwrap(), b"\x1bx\x1b[15~\x1b[Z");
+        assert!(enc(b"", &[Key::Ctrl('1')]).is_err());
+        assert!(enc(b"", &[Key::F(13)]).is_err());
+        assert_eq!(
+            serde_json::to_value([Key::Ctrl('a'), Key::F(2), Key::Paste("p".into()), Key::Up]).unwrap(),
+            serde_json::json!([{"ctrl": "a"}, {"f": 2}, {"paste": "p"}, "up"])
+        );
+    }
+
+    #[test]
     fn render_pages_retained_history() {
         let mut feed = Vec::new();
         for i in 0..600 {
@@ -2081,6 +2246,68 @@ mod tests {
             PtyScreenReply::Unavailable
         ));
         cancel(&fx, "j1").await;
+    }
+
+    #[tokio::test]
+    async fn pty_input_types_and_marks_user_attached() {
+        let fx = fixture(Duration::from_millis(100), Duration::from_secs(60)).await;
+        let (start, _, screen, _) = tools(&fx);
+        let out = Tool::call(&start, start_args("cat"), cx(&fx)).await.unwrap();
+        assert!(out.content.starts_with("job j1 · running"), "{}", out.content);
+        let out = Tool::call(&screen, ScreenArgs { id: "j1".into() }, cx(&fx))
+            .await
+            .unwrap();
+        assert!(!out.content.contains("user attached"), "{}", out.content);
+
+        // A human types: bytes land, the call returns without a screen.
+        fx.jobs
+            .ask(PtyInput {
+                session: fx.session,
+                id: JobId("j1".into()),
+                text: Some("hello".into()),
+                keys: vec![Key::Enter],
+            })
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let out = Tool::call(&screen, ScreenArgs { id: "j1".into() }, cx(&fx))
+            .await
+            .unwrap();
+        // Typed, echoed by the tty, echoed back by cat.
+        assert_eq!(out.content.matches("hello").count(), 2, "{}", out.content);
+        assert!(out.content.ends_with("user attached · typed 0s ago"), "{}", out.content);
+        assert!(out.structured.unwrap()["user_attached_ms"].is_u64());
+
+        // The trailer expires.
+        assert!(attached_for(Some(Instant::now())).is_some());
+        assert!(attached_for(Some(Instant::now() - USER_ATTACHED)).is_none());
+        assert!(attached_for(None).is_none());
+
+        // Unknown or exited jobs refuse; no such thing as typing into a name.
+        let err = fx
+            .jobs
+            .ask(PtyInput {
+                session: fx.session,
+                id: JobId("j9".into()),
+                text: None,
+                keys: vec![],
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(&err, kameo::error::SendError::HandlerError(e) if e == "no such job"), "{err}");
+        cancel(&fx, "j1").await;
+        finished(&fx).await;
+        let err = fx
+            .jobs
+            .ask(PtyInput {
+                session: fx.session,
+                id: JobId("j1".into()),
+                text: Some("x".into()),
+                keys: vec![],
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(&err, kameo::error::SendError::HandlerError(e) if e.starts_with("j1 ")), "{err}");
     }
 
     fn tools(fx: &Fx) -> (StartTool, SendTool, ScreenTool, WaitTool) {

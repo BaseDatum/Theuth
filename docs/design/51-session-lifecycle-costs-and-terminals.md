@@ -57,8 +57,9 @@ the existing browser-live ask/poll pattern, not a streaming subsystem.
 
 Out of scope: private exports/conversion, remote-private execution, project
 configuration/search syntax, historical cost reconstruction, currency conversion,
-account billing dashboards, PTY input/resize/takeover, raw terminal replay, and
-unbounded scrollback. Bounded retained scrollback is explicitly in scope.
+account billing dashboards, PTY resize, raw terminal replay, and unbounded
+scrollback. Bounded retained scrollback is explicitly in scope. (PTY input
+was out of scope here; 55 adds it as `pty_input` on the same viewers.)
 
 ## 2. Current source and proposed changes
 
@@ -702,15 +703,16 @@ screen mode, and final state increment revision; retain final state until evicti
 TUI `/terminals` and PTY cards open a read-only overlay with owner/job state,
 monospace styled cells, visible cursor, 120-column horizontal pan, and bounded
 history scrolling. Escape closes it without releasing the private owning tree.
-No keystroke is forwarded to the process; manual refresh re-asks the owner.
+No keystroke is forwarded to the process unless the viewer is in its
+interactive mode (55 §3: `i` enters, Ctrl-] leaves); manual refresh re-asks the owner.
 
 Shared React desktop/mobile uses a responsive Dialog/Sheet like BrowserLive,
 terminal picker, fixed-cell grid with styled spans, accessible status text,
 text selection, and 44-pixel touch targets. Mobile uses a full-height sheet.
 Clients that cannot render a color or attribute ignore that style and render the
 same redacted cell text in the grid; plain degradation never falls back to ANSI.
-A child link stays within the tree. Input, signal, cancel, resize, and takeover
-controls are out of scope. Existing model tools retain their job-control powers.
+A child link stays within the tree. Input is 55 (`pty_input`); signal, cancel,
+resize, and takeover controls are out of scope. Existing model tools retain their job-control powers.
 
 ## 8. Contracts and frontend integration
 
@@ -732,6 +734,7 @@ session_cost(session) -> SessionCost
 put_session_attachment(session, bytes, ext) -> PathBuf
 list_terminals(session, descendants?) -> Vec<TerminalSummary>
 pty_screen(session, job, viewport, if_revision?) -> PtyScreenReply
+pty_input(session, job, text?, keys?) -> ()          // 55
 ```
 
 Private lifecycle/access methods obtain the authenticated `RpcPeer` from RPC

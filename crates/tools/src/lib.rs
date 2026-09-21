@@ -8,7 +8,7 @@
 //! - commands on the `"approval"` actor ([`Approval`]): [`Resolve`]
 //! - commands on the `"ask"` actor ([`AskUser`]): [`AnswerAsk`]
 //! - commands on the `"mcp"` actor ([`Mcp`]): [`ListServers`], [`SetGate`], [`Restart`], [`AddServer`], [`RemoveServer`], [`AddRepo`], [`SyncMcp`], [`McpLogin`], [`McpLogout`]
-//! - commands on the `"jobs"` actor ([`Jobs`]): [`ListJobs`], [`CancelJob`], [`ListTerminals`], [`PtyScreen`], [`CloseSessions`]
+//! - commands on the `"jobs"` actor ([`Jobs`]): [`ListJobs`], [`CancelJob`], [`ListTerminals`], [`PtyScreen`], [`PtyInput`], [`CloseSessions`]
 //! - events: [`ApprovalRequested`], [`ApprovalResolved`], [`AskRequested`], [`AskResolved`], [`JobEvent`]
 //! - activity protocol (47 §4, [`activity`]): the supervisor implements [`Admit`] and [`Settle`]
 //!   and registers an [`ActivitySink`]; producers hold an [`Activity`] guard for the real
@@ -52,8 +52,8 @@ pub use jobs::{
     CancelJob, InstallActivity, JOBS_ACTOR, JobEvent, JobExit, JobId, JobView, Jobs, ListJobs,
 };
 pub use pty::{
-    Cell, Color, ListTerminals, PtyPage, PtyScreen, PtyScreenReply, PtyViewport, Style, StyledRun,
-    TerminalSummary,
+    Cell, Color, Key, ListTerminals, PtyInput, PtyPage, PtyScreen, PtyScreenReply, PtyViewport,
+    Style, StyledRun, TerminalSummary,
 };
 pub use mcp::{
     AddRepo, AddServer, ListServers, Mcp, McpAuth, McpLogin, McpLogout, McpProgress, McpServer,

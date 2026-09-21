@@ -390,6 +390,12 @@ Each step leaves `theuth` green.
 - **Stripped-bytes view for the model** (omp). The whole point of the pty
   is programs that redraw; a screen is the only faithful reading.
 - **`resize`.** 120×40 until a transcript shows a program that needs more.
+- ~~Input from a human~~ — reversed by 55: `pty_input` (RPC, not a tool)
+  types into a PTY job from the TUI/desktop viewer; `Key` grew
+  `ctrl`/`alt`/`f`/`shift_tab`/`insert`/`paste`; arrows follow the
+  program's application-cursor mode and `paste` is bracketed when asked
+  (`send` gets the same, a fix). A `send`/`screen`/`wait` reply ends with
+  `user attached · typed Ns ago` for 30 s after a human typed.
 - **Streaming `Screen` events into the model mid-turn.** Same as 14 §9:
   cache-busting; `screen`/`wait` are explicit.
 - **brush on the pty.** brush has no way to hand a child a controlling

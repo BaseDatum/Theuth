@@ -1,14 +1,15 @@
-import { useQuery } from '@tanstack/react-query'
-import { ChevronDown, ChevronUp, ChevronsDown, ChevronsUp, SquareTerminal } from 'lucide-react'
-import { type CSSProperties, Fragment, useEffect, useReducer, useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { ChevronDown, ChevronUp, ChevronsDown, ChevronsUp, Keyboard, SquareTerminal } from 'lucide-react'
+import { type CSSProperties, Fragment, useEffect, useReducer, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Sheet, SheetClose, SheetContent, SheetTitle } from '@/components/ui/sheet'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { queryKeys, useApi } from '@/lib/rpc'
-import { EMPTY, type Nav, css, reduce } from '@/lib/terminal'
+import { EMPTY, type Nav, css, keyToInput, reduce } from '@/lib/terminal'
 import { cn } from '@/lib/utils'
 import type { Cell } from '@/rpc/bindings/Cell'
+import type { Key } from '@/rpc/bindings/Key'
 import type { PtyPage } from '@/rpc/bindings/PtyPage'
 import type { Style } from '@/rpc/bindings/Style'
 import type { StyledRun } from '@/rpc/bindings/StyledRun'
@@ -62,12 +63,12 @@ function Row({ runs, cursor }: { runs: StyledRun[]; cursor: number | null }) {
   })
 }
 
-/** One page as a fixed-cell grid: a `<pre>` of styled runs, the cursor cell inverted, wide continuations skipped. */
-export function Screen({ page }: { page: PtyPage }) {
+/** One page as a fixed-cell grid: a `<pre>` of styled runs, the cursor cell inverted, wide continuations skipped. `fontSize` shrinks the grid to the width it is given. */
+export function Screen({ page, fontSize }: { page: PtyPage; fontSize?: number }) {
   return (
     <pre
       className="m-0 min-w-max select-text p-2 font-mono text-xs leading-[1.3] whitespace-pre"
-      style={{ backgroundColor: BG, color: FG, minHeight: `${page.lines.length}lh` }}
+      style={{ backgroundColor: BG, color: FG, minHeight: `${page.lines.length}lh`, fontSize }}
     >
       {page.lines.map((runs, r) => (
         <Fragment key={r}>
@@ -79,10 +80,31 @@ export function Screen({ page }: { page: PtyPage }) {
   )
 }
 
+/** Font size at which `cols` monospace cells fit `width` px, capped at the default 12px. */
+const fit = (width: number, cols: number) => Math.min(12, Math.max(6, (width - 16) / (cols * 0.602)))
+
+/** Mobile toolbar keys (55 §4.5): what a soft keyboard lacks. */
+const TOOLBAR: [string, Key][] = [
+  ['Esc', 'escape'],
+  ['Tab', 'tab'],
+  ['↑', 'up'],
+  ['↓', 'down'],
+  ['←', 'left'],
+  ['→', 'right'],
+  ['^C', { ctrl: 'c' }],
+]
+
 function Body({ session, open }: { session: string; open: boolean }) {
   const api = useApi()
+  const queryClient = useQueryClient()
+  const mobile = useIsMobile()
   const harness = useScope().id
   const [st, dispatch] = useReducer(reduce, EMPTY)
+  // 55 §4: keys go to the process while the hidden textarea has focus.
+  const [typing, setTyping] = useState(false)
+  const input = useRef<HTMLTextAreaElement>(null)
+  const screen = useRef<HTMLDivElement>(null)
+  const [fontSize, setFontSize] = useState<number>()
   const { data: terminals = [] } = useQuery({
     queryKey: queryKeys.terminals(session),
     queryFn: () => api.list_terminals(session, true),
@@ -100,8 +122,8 @@ function Body({ session, open }: { session: string; open: boolean }) {
       origin: { queryKey: { key: key!, viewport }, epoch },
     }),
     enabled: open && !!key,
-    // One request in flight per key (an interval tick joins the pending fetch), at most one every 500 ms, none while hidden or closed.
-    refetchInterval: 500,
+    // One request in flight per key (an interval tick joins the pending fetch); 500 ms while watching, 60 ms while typing at the live screen; none while hidden or closed.
+    refetchInterval: typing && viewport.anchor === 'live' ? 60 : 500,
     refetchIntervalInBackground: false,
     retry: false,
     staleTime: 0,
@@ -114,6 +136,29 @@ function Body({ session, open }: { session: string; open: boolean }) {
   useEffect(() => {
     if (!key && first) dispatch({ type: 'select', key: { harness, session: first.session, job: first.id } })
   }, [key, first, harness])
+  const cols = st.page?.cols ?? 120
+  useEffect(() => {
+    const el = screen.current
+    if (!el) return
+    const ro = new ResizeObserver(() => setFontSize(fit(el.clientWidth, cols)))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [cols])
+  const live = !!st.page && !st.page.exit && !st.unavailable
+  useEffect(() => {
+    if (!live && typing) input.current?.blur()
+  }, [live, typing])
+  // One call in flight at a time: keystrokes reach the process in typing order.
+  const lane = useRef<Promise<unknown>>(Promise.resolve())
+  const type = (text: string | null, keys: Key[]) => {
+    if (!key || (!text && keys.length === 0)) return
+    lane.current = lane.current.then(() =>
+      api.pty_input(key.session, key.job, text, keys).then(
+        () => queryClient.invalidateQueries({ queryKey: queryKeys.ptyScreen(key.session, key.job) }),
+        () => undefined,
+      ),
+    )
+  }
 
   const current = terminals.find((t) => t.id === key?.job && t.session === key?.session)
   const page = st.page
@@ -178,27 +223,100 @@ function Body({ session, open }: { session: string; open: boolean }) {
             Live
           </Button>
         </div>
+        <Button
+          variant={typing ? 'secondary' : 'outline'}
+          size="sm"
+          className="pointer-coarse:h-11"
+          aria-pressed={typing}
+          title={typing ? 'Stop typing into the terminal (Ctrl+])' : 'Type into the terminal'}
+          disabled={!live}
+          onClick={() => (typing ? input.current?.blur() : input.current?.focus())}
+        >
+          <Keyboard />
+          {typing ? 'Typing' : 'Type'}
+        </Button>
       </div>
       <div
-        tabIndex={0}
-        aria-label="Terminal screen; arrow and page keys scroll history"
-        className="min-h-0 flex-1 overflow-auto rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        ref={screen}
+        tabIndex={typing ? -1 : 0}
+        aria-label={typing ? 'Terminal screen; keys are sent to the program' : 'Terminal screen; arrow and page keys scroll history'}
+        className={cn(
+          'relative min-h-0 flex-1 overflow-auto rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring',
+          typing && 'ring-2 ring-ring',
+        )}
         style={{ backgroundColor: BG }}
         onKeyDown={(e) => {
+          if (typing) return
           const n = NAV_KEYS[e.key]
           if (!n || !page) return
           e.preventDefault()
           nav(n)
         }}
       >
+        {/* Focus target: gives IME composition, soft keyboards and paste for free; never painted. */}
+        <textarea
+          ref={input}
+          aria-label="Type into the terminal"
+          className="absolute top-0 left-0 size-px opacity-0"
+          autoCapitalize="off"
+          autoCorrect="off"
+          spellCheck={false}
+          tabIndex={-1}
+          onFocus={() => setTyping(true)}
+          onBlur={() => setTyping(false)}
+          onKeyDown={(e) => {
+            if (e.key === ']' && e.ctrlKey) {
+              e.preventDefault()
+              e.currentTarget.blur()
+              return
+            }
+            const i = keyToInput(e)
+            if (!i) return
+            e.preventDefault()
+            e.stopPropagation()
+            type(i.text, i.keys)
+          }}
+          onCompositionEnd={(e) => {
+            type(e.data || null, [])
+            e.currentTarget.value = ''
+          }}
+          onInput={(e) => {
+            // Soft keyboards report `Unidentified` keys; the text lands here instead.
+            if (e.nativeEvent instanceof InputEvent && e.nativeEvent.isComposing) return
+            const v = e.currentTarget.value
+            e.currentTarget.value = ''
+            type(v || null, [])
+          }}
+          onPaste={(e) => {
+            e.preventDefault()
+            const t = e.clipboardData.getData('text')
+            if (t) type(null, [{ paste: t }])
+          }}
+        />
         {page ? (
-          <Screen page={page} />
+          <Screen page={page} fontSize={fontSize} />
         ) : (
           <p className="p-4 text-sm" style={{ color: FG }}>
             {st.unavailable ? 'No longer available.' : key ? 'Connecting…' : 'Pick a terminal.'}
           </p>
         )}
       </div>
+      {mobile && typing && (
+        <div className="flex gap-1 overflow-x-auto" role="group" aria-label="Terminal keys">
+          {TOOLBAR.map(([label, k]) => (
+            <Button
+              key={label}
+              variant="outline"
+              size="sm"
+              className="h-11 min-w-11 font-mono"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => type(null, [k])}
+            >
+              {label}
+            </Button>
+          ))}
+        </div>
+      )}
       <p aria-live="polite" className={cn('truncate text-xs text-fg-secondary', st.unavailable && 'text-warning')} title={status}>
         {where} · {status}
       </p>
@@ -206,7 +324,7 @@ function Body({ session, open }: { session: string; open: boolean }) {
   )
 }
 
-/** Read-only view of the session's PTY jobs (51 §7.3): dialog on desktop, full-height sheet on mobile. Polls only while open. */
+/** The session's PTY jobs (51 §7.3, 55 §4): watch, or type into one. Dialog on desktop, full-height sheet on mobile. Polls only while open. */
 export function TerminalViewer({ session, open, onOpenChange }: { session: string; open: boolean; onOpenChange(o: boolean): void }) {
   const mobile = useIsMobile()
   if (mobile)

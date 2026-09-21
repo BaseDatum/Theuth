@@ -22,7 +22,7 @@ use agent::{
     CleanupStatus, CloseResult, CostBucket, CostScope, Coverage, CreateSessionOptions, Money,
     Retention, SessionCost, SessionOpen,
 };
-use iocraft::KeyCode;
+use iocraft::{KeyCode, KeyModifiers};
 use knowledge::{Change, ChangeStatus, HarvestResult, History, Meta, Revision};
 use models::Catalog;
 use runtime::{InputId, SessionId, TurnId};
@@ -33,7 +33,7 @@ use tools::{
     AskResolved, Decision, Gate, JobEvent, JobView, McpAuth, McpProgress, McpServer, McpToolInfo,
     PolicyAction, RepoInfo,
 };
-use tools::{JobId, PtyPage, PtyScreenReply, PtyViewport, TerminalSummary};
+use tools::{JobId, Key, PtyPage, PtyScreenReply, PtyViewport, TerminalSummary};
 use uuid::Uuid;
 
 use crate::clip::Image;
@@ -709,6 +709,17 @@ pub enum Command {
         if_revision: Option<u64>,
         /// [`TerminalView::epoch`] at the time of asking, echoed by the reply.
         epoch: u64,
+    },
+    /// `pty_input`: the human types into a PTY job (55 §3).
+    PtyInput {
+        /// Owning session.
+        session: SessionId,
+        /// Job.
+        job: JobId,
+        /// Typed text.
+        text: Option<String>,
+        /// Keys after `text`.
+        keys: Vec<Key>,
     },
     /// `create_session`: explicit creation, private or durable (51 §4.1).
     CreateSession(CreateSessionOptions),
@@ -1789,6 +1800,8 @@ pub fn artifact_rows(
 
 /// Poll period of the open terminal observer (51 §7.3: at most one ask per half second).
 pub const TERMINAL_POLL_MS: u64 = 500;
+/// Poll period while the human is typing into the live screen (55 §3).
+pub const TERMINAL_INTERACTIVE_POLL_MS: u64 = 60;
 /// Rows a history page asks for.
 const TERMINAL_PAGE: u16 = 40;
 
@@ -1828,6 +1841,8 @@ pub struct TerminalView {
     pub restarted: bool,
     /// The last failed ask, shown in the status row.
     pub error: Option<String>,
+    /// Keys go to the process (55 §3); Ctrl-] returns to viewing.
+    pub interactive: bool,
 }
 
 impl TerminalView {
@@ -1853,6 +1868,7 @@ impl TerminalView {
             daemon_epoch: None,
             restarted: false,
             error: None,
+            interactive: false,
         }
     }
 
@@ -1948,6 +1964,9 @@ impl TerminalView {
                 }
                 self.revision = Some(page.revision);
                 self.unavailable = false;
+                if page.exit.is_some() {
+                    self.interactive = false;
+                }
                 self.page = Some(page);
                 true
             }
@@ -1962,7 +1981,12 @@ impl TerminalView {
         }
         self.inflight = true;
         self.dirty = false;
-        self.next_poll = now + TERMINAL_POLL_MS;
+        let period = if self.interactive && self.viewport == PtyViewport::Live {
+            TERMINAL_INTERACTIVE_POLL_MS
+        } else {
+            TERMINAL_POLL_MS
+        };
+        self.next_poll = now + period;
         Some(Command::PtyScreen {
             session: self.session,
             job: self.job.clone(),
@@ -1993,8 +2017,15 @@ impl TerminalView {
         let rev = self
             .revision
             .map_or_else(String::new, |r| format!(" · rev {r}"));
+        let keys = if self.interactive {
+            "typing · Ctrl-] to stop"
+        } else if self.page.as_ref().is_some_and(|p| p.exit.is_none()) {
+            "↑↓ PgUp PgDn history  ←→ pan  r refresh  i type  esc close"
+        } else {
+            "↑↓ PgUp PgDn history  ←→ pan  r refresh  esc close"
+        };
         format!(
-            "terminal · {} · {} · {state} · {where_}{rev}   ↑↓ PgUp PgDn history  ←→ pan  r refresh  esc close",
+            "terminal · {} · {} · {state} · {where_}{rev}   {keys}",
             short(self.session),
             self.job.0,
         )
@@ -9929,7 +9960,7 @@ impl Model {
     }
 
     /// The observer's keys (51 §7.4): history scrolling, horizontal pan,
-    /// `r` refresh, esc back to the picker. Nothing reaches the process.
+    /// `r` refresh, `i`/⏎ to type into the process (55 §3), esc back to the picker.
     fn terminal_key(&mut self, code: KeyCode, tx: &UnboundedSender<Command>) -> MenuKey {
         let Some(Menu::Terminal(v)) = &mut self.menu else {
             return MenuKey::Consumed;
@@ -9948,6 +9979,13 @@ impl Model {
                 v.revision = None;
                 v.dirty = true;
                 v.next_poll = 0;
+            }
+            // 55 §3: hand the keyboard to the program while it runs.
+            KeyCode::Char('i') | KeyCode::Enter
+                if v.page.as_ref().is_some_and(|p| p.exit.is_none()) =>
+            {
+                v.interactive = true;
+                v.set_viewport(PtyViewport::Live);
             }
             // Closes the overlay only; the owned tree is untouched (51 §4.3, §7.4).
             KeyCode::Esc => {
@@ -9978,6 +10016,90 @@ impl Model {
             send(tx, cmd);
         }
     }
+
+    /// The open observer is forwarding keys to the process (55 §3).
+    pub fn terminal_interactive(&self) -> bool {
+        matches!(&self.menu, Some(Menu::Terminal(v)) if v.interactive)
+    }
+
+    /// A key while interactive: Ctrl-] detaches, everything else is typed
+    /// into the process as structured input (`pty.rs` owns the byte table).
+    pub fn terminal_type(
+        &mut self,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+        tx: &UnboundedSender<Command>,
+    ) {
+        let Some(Menu::Terminal(v)) = &mut self.menu else {
+            return;
+        };
+        if code == KeyCode::Char(']') && modifiers.contains(KeyModifiers::CONTROL) {
+            v.interactive = false;
+            return;
+        }
+        if let Some((text, keys)) = key_input(code, modifiers) {
+            send(
+                tx,
+                Command::PtyInput {
+                    session: v.session,
+                    job: v.job.clone(),
+                    text,
+                    keys,
+                },
+            );
+            v.dirty = true;
+            if let Some(cmd) = v.poll(now_ms()) {
+                send(tx, cmd);
+            }
+        }
+    }
+
+    /// Pasted text while interactive goes in one piece (bracketed when the
+    /// program asked for it).
+    pub fn terminal_paste(&mut self, text: String, tx: &UnboundedSender<Command>) {
+        if let Some(Menu::Terminal(v)) = &mut self.menu {
+            send(
+                tx,
+                Command::PtyInput {
+                    session: v.session,
+                    job: v.job.clone(),
+                    text: None,
+                    keys: vec![Key::Paste(text)],
+                },
+            );
+            v.dirty = true;
+        }
+    }
+}
+
+/// One terminal key as `pty_input` wants it; `None` for keys with no
+/// terminal meaning (bare modifiers, media keys).
+fn key_input(code: KeyCode, modifiers: KeyModifiers) -> Option<(Option<String>, Vec<Key>)> {
+    let ctrl = modifiers.contains(KeyModifiers::CONTROL);
+    let alt = modifiers.contains(KeyModifiers::ALT);
+    let key = match code {
+        KeyCode::Char(c) if ctrl => Key::Ctrl(c),
+        KeyCode::Char(c) if alt => Key::Alt(c),
+        KeyCode::Char(c) => return Some((Some(c.to_string()), Vec::new())),
+        KeyCode::Enter => Key::Enter,
+        KeyCode::Tab => Key::Tab,
+        KeyCode::BackTab => Key::ShiftTab,
+        KeyCode::Esc => Key::Escape,
+        KeyCode::Backspace => Key::Backspace,
+        KeyCode::Delete => Key::Delete,
+        KeyCode::Insert => Key::Insert,
+        KeyCode::Up => Key::Up,
+        KeyCode::Down => Key::Down,
+        KeyCode::Left => Key::Left,
+        KeyCode::Right => Key::Right,
+        KeyCode::Home => Key::Home,
+        KeyCode::End => Key::End,
+        KeyCode::PageUp => Key::PageUp,
+        KeyCode::PageDown => Key::PageDown,
+        KeyCode::F(n) => Key::F(n),
+        _ => return None,
+    };
+    Some((None, vec![key]))
 }
 
 #[cfg(test)]
@@ -14382,6 +14504,78 @@ mod tests {
         ));
         assert_eq!(next.status().as_deref(), Some("No longer available."));
         assert!(next.wake().is_none(), "no more polls for a gone terminal");
+    }
+
+    /// 55 §3: `i` hands keys to the process (Ctrl-C and Esc included), the
+    /// poll tightens, Ctrl-] hands them back, and an exited job cannot be typed into.
+    #[test]
+    fn terminal_interactive_forwards_keys_and_detaches() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        let s = SessionId::new();
+        let t = TerminalSummary {
+            session: s,
+            id: JobId("j1".into()),
+            name: None,
+            command: "python3".into(),
+            state: "running".into(),
+            rows: 40,
+            cols: 120,
+            revision: 1,
+            epoch: None,
+        };
+        let live = PtyViewport::Live;
+        let mut v = TerminalView::new(&t, 1);
+        v.poll(0);
+        v.reply(s, &JobId("j1".into()), live, 1, Ok(PtyScreenReply::Updated(page(s, "j1", 1, live))));
+        m.menu = Some(Menu::Terminal(Box::new(v)));
+        assert!(!m.terminal_interactive());
+        // Esc in view mode closes; `i` first.
+        m.menu_key(KeyCode::Char('i'), "", &tx);
+        assert!(m.terminal_interactive());
+        while rx.try_recv().is_ok() {}
+        m.terminal_type(KeyCode::Char('c'), KeyModifiers::CONTROL, &tx);
+        m.terminal_type(KeyCode::Esc, KeyModifiers::NONE, &tx);
+        m.terminal_type(KeyCode::Char('x'), KeyModifiers::NONE, &tx);
+        m.terminal_type(KeyCode::Char('w'), KeyModifiers::SHIFT, &tx);
+        let mut sent = Vec::new();
+        while let Ok(c) = rx.try_recv() {
+            if let Command::PtyInput { text, keys, job, .. } = c {
+                assert_eq!(job, JobId("j1".into()));
+                sent.push((text, keys));
+            }
+        }
+        assert_eq!(
+            sent,
+            vec![
+                (None, vec![Key::Ctrl('c')]),
+                (None, vec![Key::Escape]),
+                (Some("x".into()), vec![]),
+                (Some("w".into()), vec![]),
+            ]
+        );
+        let Some(Menu::Terminal(v)) = &mut m.menu else { panic!() };
+        assert!(v.interactive && v.inflight);
+        v.inflight = false;
+        v.poll(5000);
+        assert_eq!(v.next_poll, 5000 + TERMINAL_INTERACTIVE_POLL_MS, "tight poll while typing");
+        // Ctrl-] detaches and sends nothing.
+        m.terminal_type(KeyCode::Char(']'), KeyModifiers::CONTROL, &tx);
+        assert!(!m.terminal_interactive());
+        assert!(rx.try_recv().is_err());
+        // The job exits: `i` no longer enters, and an open typing mode drops.
+        let Some(Menu::Terminal(v)) = &mut m.menu else { panic!() };
+        v.interactive = true;
+        v.inflight = true;
+        let mut exited = page(s, "j1", 2, live);
+        exited.exit = Some(tools::JobExit::Exited(0));
+        v.reply(s, &JobId("j1".into()), live, 1, Ok(PtyScreenReply::Updated(exited)));
+        assert!(!v.interactive);
+        m.menu_key(KeyCode::Char('i'), "", &tx);
+        assert!(!m.terminal_interactive());
+        // Esc in view mode closes the overlay.
+        m.menu_key(KeyCode::Esc, "", &tx);
+        assert!(m.menu.is_none());
     }
 
     /// 51 §4.3: leaving the owned tree for another root releases it once;
