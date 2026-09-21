@@ -5,6 +5,7 @@ import { useApi } from '@/lib/rpc'
 import type { Binding } from '@/rpc/bindings/Binding'
 import type { DocId } from '@/rpc/bindings/DocId'
 import { useConnection } from '@/store/connection'
+import { useScope } from '@/store/harness-scope'
 
 const CONNECTING: DocStatus = { kind: 'connecting' }
 const noop = () => () => {}
@@ -24,6 +25,7 @@ export type DocTarget = Binding | { doc: DocId }
 export function useDocument(target: DocTarget): LiveDocument {
   const api = useApi()
   const client = useConnection((s) => s.client)
+  const harness = useScope().id
   const known = typeof target === 'object' && 'doc' in target ? target.doc : null
   const resolved = useQuery({
     queryKey: ['doc', target],
@@ -35,13 +37,13 @@ export function useDocument(target: DocTarget): LiveDocument {
   const [provider, setProvider] = useState<HarnessProvider | null>(null)
   useEffect(() => {
     if (!id || !client) return
-    const p = acquire(client, api, id)
+    const p = acquire(client, api, id, harness)
     setProvider(p)
     return () => {
       setProvider(null)
       release(p)
     }
-  }, [id, client, api])
+  }, [id, client, api, harness])
   const status = useSyncExternalStore(provider ? (cb) => provider.onStatus(cb) : noop, () => provider?.status ?? CONNECTING)
   const error = resolved.error ?? (resolved.isSuccess && id === null ? new Error('no document for this binding') : null)
   return { provider, status, error }

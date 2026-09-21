@@ -1,14 +1,20 @@
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate, removeAwarenessStates } from 'y-protocols/awareness'
 import * as Y from 'yjs'
+import { LOCAL } from '@/link/harnesses'
 import type { Api } from '@/rpc/api'
 import type { DocEvent } from '@/rpc/bindings/DocEvent'
 import type { DocId } from '@/rpc/bindings/DocId'
 import type { DocMeta } from '@/rpc/bindings/DocMeta'
 import type { Who } from '@/rpc/bindings/Who'
 import type { RpcClient } from '@/rpc/client'
+import { DocStore, type Pending } from './queue'
 
 /** Origin tag of every change the harness sent us; never echoed back. */
 const HARNESS = 'harness'
+/** Origin of the IndexedDB state applied at start: already ours, already (or pending to be) the harness's. */
+const RESTORE = 'restore'
+/** The whole Y.Doc is written to IndexedDB this long after the last change (link devices only). */
+const SAVE_MS = 1000
 
 export type DocStatus =
   | { kind: 'connecting' }
@@ -53,6 +59,10 @@ const unb64 = (s: string): Uint8Array => Uint8Array.from(atob(s), (c) => c.charC
  * `doc_subscribe` stream comes in as `Y.applyUpdate(doc, u, 'harness')`, awareness both ways.
  * The subscription is opened before `doc_open` so nothing accepted in between is missed; a
  * dropped connection or a `Closed{slow}` re-syncs from the state vector and flushes the queue.
+ *
+ * On a link device (`harness !== LOCAL`, 31 §7.3) the document and the FIFO of unacknowledged
+ * local updates live in IndexedDB (§6.3): a killed app comes back with its offline edits and
+ * replays them on the next `open`. In-process on the Mac the queue stays in memory.
  */
 export class HarnessProvider {
   readonly id: DocId
@@ -62,8 +72,14 @@ export class HarnessProvider {
   status: DocStatus = { kind: 'connecting' }
   #api: Api
   #client: RpcClient
-  // TODO(59 step 4): persist the queue in IndexedDB so a killed app does not lose offline edits.
-  #queue: Uint8Array[] = []
+  #store: DocStore | null
+  /** IndexedDB read (state applied, FIFO loaded); local updates and `#sync` wait for it. */
+  #ready: Promise<void>
+  #loaded = false
+  #connected = false
+  /** Local updates the harness has not acknowledged, oldest first. */
+  #queue: Pending[] = []
+  #save: ReturnType<typeof setTimeout> | undefined
   #unsub: (() => Promise<void>) | null = null
   #offState: () => void
   #status = new Set<(s: DocStatus) => void>()
@@ -73,16 +89,25 @@ export class HarnessProvider {
   /** Agent edits announced since this provider opened (59 §5.5: the page menu's undo is enabled by them). */
   agentEdits = 0
 
-  constructor(client: RpcClient, api: Api, id: DocId) {
+  constructor(client: RpcClient, api: Api, id: DocId, harness: string = LOCAL) {
     this.#client = client
     this.#api = api
     this.id = id
+    this.#store = harness === LOCAL ? null : new DocStore(harness, id)
+    this.#loaded = this.#store === null
+    this.#ready = this.#store ? this.#restore(this.#store) : Promise.resolve()
     this.doc.on('update', this.#local)
     this.awareness.on('update', this.#localAwareness)
     this.#offState = client.onState((s) => {
+      this.#connected = s === 'open'
       if (s === 'open') void this.#sync()
       else if (this.status.kind === 'live') this.#set({ kind: 'offline', queued: this.#queue.length })
     })
+  }
+
+  /** Unacknowledged local updates (in memory; mirrored in IndexedDB on link devices). */
+  get queued(): number {
+    return this.#queue.length
   }
 
   onStatus(cb: (s: DocStatus) => void): () => void {
@@ -121,9 +146,33 @@ export class HarnessProvider {
     removeAwarenessStates(this.awareness, [this.doc.clientID], 'destroy')
     void this.#unsub?.()
     this.#unsub = null
+    clearTimeout(this.#save)
+    if (this.#store && this.#loaded) void this.#store.saveState(Y.encodeStateAsUpdate(this.doc))
     this.awareness.destroy()
     this.doc.destroy()
     this.#set({ kind: 'closed', reason: 'destroyed' })
+  }
+
+  async #restore(store: DocStore): Promise<void> {
+    try {
+      const { state, pending } = await store.load()
+      if (this.#destroyed) return
+      if (state) Y.applyUpdate(this.doc, state, RESTORE)
+      this.#queue.unshift(...pending)
+    } catch (e) {
+      console.warn('doc store unavailable', this.id, e)
+    }
+    this.#loaded = true
+    // Opened while the harness is unreachable: what IndexedDB had is editable now, not on the next reconnect.
+    if (!this.#connected && this.status.kind === 'connecting') this.#set({ kind: 'offline', queued: this.#queue.length })
+  }
+
+  #scheduleSave(): void {
+    if (!this.#store || this.#save) return
+    this.#save = setTimeout(() => {
+      this.#save = undefined
+      if (!this.#destroyed) void this.#store?.saveState(Y.encodeStateAsUpdate(this.doc))
+    }, SAVE_MS)
   }
 
   #set(s: DocStatus): void {
@@ -132,16 +181,27 @@ export class HarnessProvider {
   }
 
   #local = (update: Uint8Array, origin: unknown): void => {
+    if (origin === RESTORE) return
+    this.#scheduleSave()
     if (origin === HARNESS) return
+    if (!this.#loaded) {
+      // Nothing can be typed before the store is read (the editor is read-only while `connecting`); keep order anyway.
+      void this.#ready.then(() => this.#local(update, origin))
+      return
+    }
+    const p = this.#store ? this.#store.enqueue(update) : { seq: 0, update }
     if (this.status.kind !== 'live') {
-      this.#queue.push(update)
+      this.#queue.push(p)
       if (this.status.kind === 'offline') this.#set({ kind: 'offline', queued: this.#queue.length })
       return
     }
-    this.#api.doc_update(this.id, b64(update)).catch(() => {
-      this.#queue.push(update)
-      this.#set({ kind: 'offline', queued: this.#queue.length })
-    })
+    this.#api
+      .doc_update(this.id, b64(update))
+      .then(() => this.#store?.ack([p]))
+      .catch(() => {
+        this.#queue.push(p)
+        this.#set({ kind: 'offline', queued: this.#queue.length })
+      })
   }
 
   #localAwareness = (
@@ -179,9 +239,11 @@ export class HarnessProvider {
     }
   }
 
-  /** Subscribe (once), pull the missing state, flush queued local updates. */
+  /** Subscribe (once), pull the missing state (the diff against our state vector, chunked), flush the FIFO. */
   async #sync(): Promise<void> {
     if (this.#destroyed) return
+    await this.#ready
+    if (this.#destroyed || !this.#connected) return
     try {
       if (!this.#unsub) {
         this.#unsub = await this.#client.subscribeTo<DocEvent>('doc_subscribe', 'doc_unsubscribe', [this.id], this.#item)
@@ -190,6 +252,7 @@ export class HarnessProvider {
       const opened = await this.#api.doc_open(this.id, sv)
       if (this.#destroyed) return
       this.meta = opened.meta
+      // The chunks are slices of ONE v1 update (59 §4.7): joined, then applied as one transaction.
       const chunks = opened.state.map(unb64)
       const state = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0))
       let at = 0
@@ -199,9 +262,19 @@ export class HarnessProvider {
       }
       if (state.length > 0) Y.applyUpdate(this.doc, state, HARNESS)
       if (opened.awareness !== '') applyAwarenessUpdate(this.awareness, unb64(opened.awareness), HARNESS)
-      // One merged update stands for everything typed while offline.
-      const queued = this.#queue.splice(0)
-      if (queued.length > 0) await this.#api.doc_update(this.id, b64(Y.mergeUpdates(queued)))
+      // One merged update per round stands for everything typed while offline; another round picks up
+      // what was typed while that one was in flight, so nothing waits for the next reconnect.
+      while (this.#queue.length > 0) {
+        const batch = this.#queue.splice(0)
+        if (this.status.kind === 'offline') this.#set({ kind: 'offline', queued: 0 })
+        try {
+          await this.#api.doc_update(this.id, b64(Y.mergeUpdates(batch.map((p) => p.update))))
+        } catch (e) {
+          this.#queue.unshift(...batch)
+          throw e
+        }
+        await this.#store?.ack(batch)
+      }
       this.#set({ kind: 'live' })
     } catch (e) {
       if (this.#destroyed) return
@@ -213,11 +286,14 @@ export class HarnessProvider {
 
 const providers = new Map<string, { provider: HarnessProvider; refs: number }>()
 
-/** One provider per open document (§6.5): a document open in two panes shares it; `release` drops the last reference. */
-export function acquire(client: RpcClient, api: Api, id: DocId): HarnessProvider {
+/**
+ * One provider per open document (§6.5): a document open in two panes shares it; `release` drops the last
+ * reference. `harness` is the scope id (`'local'` or a link harness id, 31 §7.4) and keys the IndexedDB store.
+ */
+export function acquire(client: RpcClient, api: Api, id: DocId, harness: string = LOCAL): HarnessProvider {
   let entry = providers.get(id)
   if (!entry) {
-    entry = { provider: new HarnessProvider(client, api, id), refs: 0 }
+    entry = { provider: new HarnessProvider(client, api, id, harness), refs: 0 }
     providers.set(id, entry)
   }
   entry.refs++

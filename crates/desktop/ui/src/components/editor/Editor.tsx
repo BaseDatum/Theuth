@@ -17,6 +17,7 @@ import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import { frontmatterBlock } from '@/components/editor/FrontmatterBlock'
 import { revealExtension } from '@/components/editor/reveal'
 import type { AgentPresence, DocStatus, HarnessProvider } from '@/lib/doc/provider'
+import { deviceName } from '@/lib/platform'
 import { subscribeDark } from '@/lib/theme'
 import { cn } from 'cn'
 
@@ -38,6 +39,9 @@ const SLASH_KEYS: Record<string, true> = {
   quote: true,
   divider: true,
 }
+
+/** Remote-cursor palette for owner devices (59 §8.5); the agent's colour comes from `meta.agent.color`. */
+const CURSOR_COLORS = ['#b4531e', '#1e6fb4', '#2e8b57', '#b41e7a', '#8a6d1e', '#1e8a8a']
 
 const hhmm = (d: Date) => d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
 
@@ -70,7 +74,9 @@ export function Editor({
       collaboration: {
         provider,
         fragment: provider.doc.getXmlFragment(FRAGMENT),
-        user: { name: 'you', color: '#b4531e' },
+        // 59 §8.5: no owner-name setting exists yet; the device label (`Mac`, `iPad`, `Chrome`) tells cursors
+        // apart, the colour is picked by Yjs client id so two devices rarely share one.
+        user: { name: deviceName(), color: CURSOR_COLORS[provider.doc.clientID % CURSOR_COLORS.length] as string },
       },
       extensions: [revealExtension(provider, agentColor)],
     }),
