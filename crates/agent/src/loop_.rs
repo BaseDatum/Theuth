@@ -96,6 +96,8 @@ const RETRY_BACKOFF: [u64; 3] = [2, 10, 30];
 const RETRY_MAX_PER_TURN: u32 = 10;
 /// Wall clock on one summariser call; expiry degrades the compaction to `cut` (36 §6.1).
 const SUMMARISE_TIMEOUT: Duration = Duration::from_secs(300);
+/// Wall clock on the title side call (07 §15).
+const TITLE_TIMEOUT: Duration = Duration::from_secs(45);
 /// Smallest a tool result is shrunk to by the batch budget: a spill marker plus a hint (36 §4.2).
 const TOOL_RESULT_FLOOR_CHARS: usize = 1000;
 /// Stored payload bytes one vision consultation batch may carry (52 §5.3).
@@ -1470,6 +1472,33 @@ impl Message<CancelTurn> for Session {
         if let Some(c) = &self.inflight {
             c.cancel();
         }
+    }
+}
+
+/// 57 §2 `SideCall`: resolve the role here (the session's own model is only
+/// known here), then run it detached so the mailbox — and any running turn —
+/// never waits on the provider.
+impl Message<crate::SideCall> for Session {
+    type Reply = kameo::reply::DelegatedReply<Result<crate::SideReply, String>>;
+
+    async fn handle(
+        &mut self,
+        m: crate::SideCall,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let model = self.shared.role_model(&m.role);
+        let side = self.shared.side(self.entered.flatten());
+        tokio::spawn(async move {
+            let out = match model {
+                Ok(model) => side.call(model, &m.system, m.user, m.budget, m.kind).await,
+                Err(e) => Err(e),
+            };
+            if let Some(tx) = tx {
+                tx.send(out);
+            }
+        });
+        reply
     }
 }
 
@@ -3007,27 +3036,9 @@ impl Turn {
         ) {
             return;
         }
-        let titler = self
-            .shared
-            .title_model
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone();
-        let (current, transport) = match titler {
-            Some(model) => {
-                let c = Current::new(model, None, &self.shared.client, &self.shared.auth);
-                match c.backend.transport(&c.model).await {
-                    Ok(t) => (c, t),
-                    Err(e) => {
-                        tracing::warn!(session = %self.shared.id, model = %c.model.id, "title model: {e}");
-                        return;
-                    }
-                }
-            }
-            None => match self.resolve().await {
-                Ok(x) => x,
-                Err(_) => return,
-            },
+        let model = match self.shared.role_model(&crate::ModelRole::Title) {
+            Ok(m) => m,
+            Err(e) => return tracing::warn!(session = %self.shared.id, "title model: {e}"),
         };
         self.state.title_model = true;
         self.state.title_turns = 0;
@@ -3047,11 +3058,7 @@ impl Turn {
             Ok(r) => r,
             Err(e) => return tracing::warn!(session = %session, "title: {e:#}"),
         };
-        let digest = ChatMessage::user(title::digest(
-            &old,
-            self.state.head.as_ref(),
-            &self.state.history,
-        ));
+        let digest = title::digest(&old, self.state.head.as_ref(), &self.state.history);
         if let Some(prev) = self.state.title_task.take() {
             prev.abort();
             let _ = prev.await;
@@ -3059,66 +3066,16 @@ impl Turn {
         let closed = self.shared.closed.clone();
         let generation = self.shared.resources.generation;
         let private = self.shared.resources.is_private();
-        let turn = self.turn;
+        let side = self.shared.side(self.turn);
         self.state.title_task = Some(tokio::spawn(async move {
             let chars = |s: &str| (!private).then(|| s.chars().count());
-            let frame = Frame {
-                tools: &[],
-                system: title::SYSTEM,
-                head: None,
-                history: std::slice::from_ref(&digest),
-                vision: false,
-            };
-            let (req, opts) = frame.request(transport, session, None);
-            let request_id = Uuid::now_v7().to_string();
-            let reserved = match Reserved::open(
-                &store,
-                &rt,
-                session,
-                &request_id,
-                0,
-                turn,
-                CallKind::Title,
-                &current.model,
-            )
-            .await
+            let reply = match side
+                .call(model, title::SYSTEM, digest, TITLE_TIMEOUT, CallKind::Title)
+                .await
             {
-                Ok(r) => r,
+                Ok(r) => r.text,
                 Err(e) => return tracing::warn!(session = %session, "title: {e}"),
             };
-            let call = async {
-                let mut stream = current
-                    .backend
-                    .stream(&current.model, req, &opts, session)
-                    .await?;
-                while let Some(ev) = stream.next().await {
-                    if let ChatStreamEvent::End(end) = ev? {
-                        return Ok(end);
-                    }
-                }
-                Err::<StreamEnd, String>("stream ended without End event".into())
-            };
-            let outcome = tokio::select! {
-                _ = closed.cancelled() => Err(CallStatus::Cancelled),
-                r = tokio::time::timeout(Duration::from_secs(45), call) => match r {
-                    Ok(Ok(end)) => Ok(end),
-                    Ok(Err(e)) => {
-                        tracing::warn!(session = %session, "title: {e}");
-                        Err(CallStatus::Failed)
-                    }
-                    Err(_) => {
-                        tracing::warn!(session = %session, "title: timed out");
-                        Err(CallStatus::Failed)
-                    }
-                },
-            };
-            let (status, usage) = match &outcome {
-                Ok(end) => (CallStatus::Settled, end.captured_usage.as_ref()),
-                Err(status) => (*status, None),
-            };
-            reserved.settle(status, usage, &current.model).await;
-            let Ok(end) = outcome else { return };
-            let reply = end.captured_texts().map(|t| t.concat()).unwrap_or_default();
             let Some(new) = title::clean(&reply) else {
                 return tracing::info!(session = %session, chars = ?chars(&reply), "title: unusable reply");
             };
@@ -4860,6 +4817,8 @@ fn progress_due(prev: Option<&Progress>, now: Instant, len: usize) -> bool {
     }
 }
 
+mod side;
+
 /// 52 §10 gates against a fake provider, through a real turn.
 #[cfg(test)]
 mod vision_fallback_tests;
@@ -4867,6 +4826,7 @@ mod vision_fallback_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ModelRole;
     use crate::skills;
 
     /// 46 §8.1: only the direct `app` tool opts into fine-grained input
@@ -6446,6 +6406,132 @@ mod tests {
         assert!(err.starts_with("accounting:"), "{err}");
         assert_eq!(hits.load(Ordering::SeqCst), 0);
         assert!(calls(&store, orphan).await.is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn resolved(id: &str) -> Resolved {
+        Resolved {
+            id: id.into(),
+            genai: id.replace('/', "::"),
+            provider: id.split('/').next().map(str::to_owned),
+            model: None,
+        }
+    }
+
+    /// 57 §0.9: `Escalate` = escalate → title → session; `Title` = title →
+    /// session; `Vision` never falls back to the main model; `Session` reports
+    /// the main model's resolution error instead of a model.
+    #[tokio::test]
+    async fn role_model_inherits_escalate_title_session() {
+        let dir = std::env::temp_dir().join(format!("theuth-role-{}", Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open_memory().await.unwrap();
+        let (base_url, _hits) = fake_openai(vec![]).await;
+        let (turn, _, _, _events) = gateway_turn(&dir, store, SessionId::new(), base_url).await;
+        let shared = &turn.shared;
+        let id_of = |role: ModelRole| shared.role_model(&role).map(|r| r.id);
+
+        assert_eq!(id_of(ModelRole::Escalate).unwrap(), "fake/m");
+        assert_eq!(id_of(ModelRole::Title).unwrap(), "fake/m");
+        assert_eq!(id_of(ModelRole::Session).unwrap(), "fake/m");
+        assert!(id_of(ModelRole::Vision).unwrap_err().contains("vision"));
+
+        *shared.title_model.write().unwrap() = Some(resolved("cheap/t"));
+        assert_eq!(id_of(ModelRole::Escalate).unwrap(), "cheap/t");
+        assert_eq!(id_of(ModelRole::Title).unwrap(), "cheap/t");
+        assert_eq!(id_of(ModelRole::Session).unwrap(), "fake/m");
+
+        *shared.escalate_model.write().unwrap() = Some(resolved("cheap/e"));
+        assert_eq!(id_of(ModelRole::Escalate).unwrap(), "cheap/e");
+        assert_eq!(id_of(ModelRole::Title).unwrap(), "cheap/t");
+
+        *shared.vision_model.write().unwrap() = Some(resolved("eyes/v"));
+        assert_eq!(id_of(ModelRole::Vision).unwrap(), "eyes/v");
+
+        shared.model.lock().unwrap().error = Some("no such model".into());
+        assert_eq!(
+            id_of(ModelRole::Session).unwrap_err(),
+            "model: no such model"
+        );
+        assert_eq!(id_of(ModelRole::Escalate).unwrap(), "cheap/e");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// 57 §2 / 51 §6.1: a side call is one `escalate` attempt on the session's
+    /// ledger — settled with the provider's usage on success, `failed` when the
+    /// budget runs out — and the reply carries text, model and tokens.
+    #[tokio::test]
+    async fn side_call_settles_under_its_kind() {
+        let dir = std::env::temp_dir().join(format!("theuth-side-{}", Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open_memory().await.unwrap();
+        let id = SessionId::new();
+        store
+            .create_session(id, "fake/m", None, None, None)
+            .await
+            .unwrap();
+        let (base_url, hits) = fake_openai(vec![
+            sse(r#"{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"cost":0.25}"#),
+            http(
+                200,
+                "text/event-stream",
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"never ends\"}}]}\n\n",
+            ),
+        ])
+        .await;
+        let (turn, current, _, mut events) = gateway_turn(&dir, store.clone(), id, base_url).await;
+        let side = turn.shared.side(turn.turn);
+
+        let reply = side
+            .call(
+                current.model.clone(),
+                "s",
+                "which id?".into(),
+                Duration::from_secs(5),
+                CallKind::Escalate,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            (reply.text.as_str(), reply.model.as_str()),
+            ("hi", "fake/m")
+        );
+        assert_eq!(
+            (reply.input_tokens, reply.output_tokens),
+            (Some(10), Some(5))
+        );
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        let rows = calls(&store, id).await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            (rows[0].2.as_str(), rows[0].3.as_str()),
+            ("escalate", "settled")
+        );
+        let cost = store.session_cost(id).await.unwrap().unwrap();
+        assert_eq!(cost.direct.returned[0].nanos, 250_000_000);
+        assert_eq!(next_usage_changed(&mut events).await, (id, cost.revision));
+
+        // The second scripted stream never sends `[DONE]`; the budget ends it.
+        let err = side
+            .call(
+                current.model.clone(),
+                "s",
+                "again".into(),
+                Duration::from_millis(300),
+                CallKind::Escalate,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("timed out") || err.contains("stream ended"),
+            "{err}"
+        );
+        let rows = calls(&store, id).await;
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            (rows[1].2.as_str(), rows[1].3.as_str()),
+            ("escalate", "failed")
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

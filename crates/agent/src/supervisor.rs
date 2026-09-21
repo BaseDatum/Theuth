@@ -74,7 +74,7 @@ use crate::{
     AGENT_ACTOR, AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentConfig, AgentEvent, AgentInfo,
     AgentState, AncestorInfo, Ancestors, Cancel, Compact, CompactStyle, ContextItems,
     DeleteSession, EditTurn, ForkSession, GetCompactStyle, GetMaxSalvages, GetMaxToolRounds,
-    GetStreamIdle, GetSubagentModel, GetSubagentTimeout, GetTitleModel, GetTodos, GetVisionModel, Harvest, GetEscalateModel, SetEscalateModel, EscalateModel,
+    GetStreamIdle, GetSubagentModel, GetSubagentTimeout, GetTitleModel, GetTodos, GetVisionModel, Harvest, GetEscalateModel, SetEscalateModel, EscalateModel, SideCall, SideReply,
     HistoryEntry, ListAcp, ListAgents,
     ListLogins, ListModels, ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills,
     LoadSession, LoadSkill, Loaded, Login, LoginFinished, LoginInfo, Logout, ModelInfo,
@@ -2365,6 +2365,31 @@ impl Message<GetEscalateModel> for Agents {
     }
 }
 
+/// 57 §2 `SideCall` from another plugin: forwarded to the session's actor,
+/// which resolves the role and runs the call detached; the supervisor never
+/// waits on the provider. An external (ACP) session has no model of ours.
+impl Message<SideCall> for Agents {
+    type Reply = kameo::reply::DelegatedReply<Result<SideReply, String>>;
+
+    async fn handle(&mut self, m: SideCall, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let actor = match self.sessions.get(&m.session).map(|l| &l.actor) {
+            Some(LiveActor::Native(a)) => Ok(a.clone()),
+            Some(LiveActor::Acp(_)) => Err("session runs on an external harness".to_owned()),
+            None => Err(format!("no live session {}", m.session)),
+        };
+        tokio::spawn(async move {
+            let out = match actor {
+                Ok(a) => a.ask(m).await.map_err(|e| e.to_string()),
+                Err(e) => Err(e),
+            };
+            if let Some(tx) = tx {
+                tx.send(out);
+            }
+        });
+        reply
+    }
+}
 
 impl Message<SetSubagentModel> for Agents {
     type Reply = Result<Option<ModelInfo>, String>;

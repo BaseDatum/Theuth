@@ -172,6 +172,8 @@ str_enum! {
         Title = "title",
         /// Vision-fallback question or inspection call (52 §5).
         Vision = "vision",
+        /// Tier-2 side call of the local decision oracle (57 §0.9).
+        Escalate = "escalate",
     }
 }
 
