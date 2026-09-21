@@ -11,8 +11,8 @@
  *   printf '' | theuth-documents    → exit 0 on EOF
  */
 import * as Y from "yjs";
-import { importMarkdown, isOurs, markdown, open, outline, type Open } from "./convert.ts";
-import { PROTOCOL_VERSION, type Req, type Res } from "./protocol.ts";
+import { EditFailure, edit, importMarkdown, isOurs, markdown, open, outline, type Open } from "./convert.ts";
+import { PROTOCOL_VERSION, type Edit, type Req, type Res } from "./protocol.ts";
 
 /** Largest request line accepted; the Rust side refuses longer ones before sending. */
 export const MAX_LINE_BYTES = 16 * 1024 * 1024;
@@ -56,7 +56,9 @@ function parseRequest(line: string): Req | { id: number; ok: false; error: strin
       const blocks = "blocks" in raw ? raw.blocks : undefined;
       if (blocks !== undefined && !(Array.isArray(blocks) && blocks.every((b) => typeof b === "string")))
         return { id, ok: false, error: "blocks must be an array of block ids" };
-      return { id, op, doc, blocks: blocks as string[] | undefined };
+      const annotate = "annotate" in raw && typeof raw.annotate === "boolean" ? raw.annotate : undefined;
+      const authors = "authors" in raw && typeof raw.authors === "object" && raw.authors !== null ? (raw.authors as Record<string, string>) : undefined;
+      return { id, op, doc, blocks: blocks as string[] | undefined, annotate, authors };
     }
     case "import": {
       const md = str("markdown");
@@ -66,8 +68,13 @@ function parseRequest(line: string): Req | { id: number; ok: false; error: strin
       const frontmatter = "frontmatter" in raw && typeof raw.frontmatter === "boolean" ? raw.frontmatter : undefined;
       return { id, op, doc, markdown: md, mode, frontmatter };
     }
-    case "edit":
-      return { id, op, doc, edits: [] };
+    case "edit": {
+      const edits = "edits" in raw ? raw.edits : undefined;
+      if (!Array.isArray(edits) || !edits.every((e) => typeof e === "object" && e !== null && "op" in e && typeof e.op === "string"))
+        return { id, ok: false, error: "edits must be an array of {op, …} objects" };
+      // Shapes past `op` are checked by `edit` itself, which reports a structured error.
+      return { id, op, doc, edits: edits as Edit[] };
+    }
     default:
       return { id, ok: false, error: `unknown op ${JSON.stringify(op)}` };
   }
@@ -104,15 +111,17 @@ export async function handle(req: Req): Promise<Res> {
       case "outline":
         return { id, ok: true, result: outline(o, req.depth) };
       case "markdown":
-        return { id, ok: true, result: { markdown: await markdown(o, req.blocks) } };
+        return { id, ok: true, result: { markdown: await markdown(o, req.blocks, req.annotate ?? false, req.authors ?? {}) } };
       case "import": {
         const r = await importMarkdown(o, req.markdown, req.mode, req.frontmatter ?? false);
         return { id, ok: true, result: r };
       }
       case "edit":
-        return { id, ok: false, error: "unimplemented: edit is design 59 step 2" };
+        return { id, ok: true, result: await edit(o, req.edits) };
     }
   } catch (e) {
+    // A structured edit failure travels as JSON in `error`; the Rust side decodes it for the model.
+    if (e instanceof EditFailure) return { id, ok: false, error: e.message };
     return { id, ok: false, error: e instanceof Error ? (e.stack ?? e.message) : String(e) };
   }
 }

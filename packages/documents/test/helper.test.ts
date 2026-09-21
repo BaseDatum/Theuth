@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
+import * as Y from "yjs";
+import { blocks, importMarkdown, open } from "../src/convert.ts";
 import { PROTOCOL_VERSION, type Res } from "../src/protocol.ts";
 
 const entry = join(import.meta.dir, "..", "src", "helper.ts");
@@ -75,8 +77,29 @@ describe("theuth-documents protocol", () => {
     expect(lines[2]).toMatchObject({ id: 3, ok: true, result: { markdown: "x\n" } });
   });
 
-  test("edit answers unimplemented (step 2)", async () => {
-    const { lines } = await run(`${OPEN}${req({ id: 2, op: "edit", doc: "d", edits: [] })}`);
-    expect(lines[1]).toMatchObject({ id: 2, ok: false, error: expect.stringContaining("unimplemented") });
+  test("edit emits one ev:update (touched = inserted ids) before a result carrying the undo; a bad id is a JSON error", async () => {
+    const md = "---\ntype: fact\ntitle: t\n---\nhello\n\nworld\n";
+    const o = open(new Uint8Array());
+    await importMarkdown(o, md, "replace", true);
+    const world = blocks(o)[2]!.id;
+    const state = Buffer.from(Y.encodeStateAsUpdate(o.ydoc)).toString("base64");
+    const { lines } = await run(
+      `${req({ id: 1, op: "open", doc: "d", state })}${req({ id: 2, op: "markdown", doc: "d" })}${req({ id: 3, op: "edit", doc: "d", edits: [{ op: "replace", blocks: [world], markdown: "- W\n" }] })}${req({ id: 4, op: "markdown", doc: "d", annotate: true })}${req({ id: 5, op: "edit", doc: "d", edits: [{ op: "delete", blocks: ["nope"] }] })}`,
+    );
+    expect(lines[1]).toMatchObject({ id: 2, ok: true, result: { markdown: md } });
+    const ev = lines[2]!;
+    expect(ev).toMatchObject({ ev: "update", doc: "d", req: 3 });
+    if (!("ev" in ev)) throw new Error("unreachable");
+    expect(ev.touched).toHaveLength(1);
+    const res = lines[3]!;
+    expect(res).toMatchObject({ id: 3, ok: true, result: { removed: [world], inserted: ev.touched, touched: ev.touched } });
+    if (!("result" in res) || !res.result) throw new Error("unreachable");
+    expect((res.result as { undo: unknown[] }).undo).toHaveLength(1);
+    expect(lines[4]).toMatchObject({ id: 4, ok: true, result: { markdown: expect.stringContaining(`<!-- ${ev.touched[0]} -->\n* W\n`) } });
+    const err = lines[5]!;
+    expect(err).toMatchObject({ id: 5, ok: false });
+    if (!("error" in err)) throw new Error("unreachable");
+    expect(JSON.parse(err.error)).toMatchObject({ code: "unknown_block", id: "nope" });
+    expect(lines).toHaveLength(6);
   });
 });

@@ -5,7 +5,7 @@
  */
 import { ServerBlockNoteEditor } from "@blocknote/server-util";
 import * as Y from "yjs";
-import type { ImportMode, ImportResult, OutlineBlock } from "./protocol.ts";
+import type { Anchor, Edit, EditError, EditResult, ImportMode, ImportResult, OutlineBlock, Restore } from "./protocol.ts";
 import { type DocBlock, type DocumentSchema, FRAGMENT, schema } from "./schema.ts";
 import { emitHeader, get, parseHeader, splitFrontmatter } from "./yaml.ts";
 
@@ -49,21 +49,214 @@ export function frontmatterOf(bs: DocBlock[]): string | null {
 }
 
 /**
- * Lossy markdown of the document (or of `only` these top-level block ids). A leading
- * frontmatter block becomes the `---` YAML header (§4.5); it is never handed to BlockNote's
- * exporter, which would render it as nothing (verified: no throw, empty output).
+ * Lossy markdown of the document (or of `only` these block ids, any depth, in document order). A
+ * leading frontmatter block becomes the `---` YAML header (§4.5); it is never handed to BlockNote's
+ * exporter, which would render it as nothing (verified: no throw, empty output). `annotate` (§5.1
+ * `doc_read(format="markdown")`) prefixes each block with `<!-- <id> -->`, or `<!-- <id> by <name> -->`
+ * when `authors` names it (§11 member-authored text).
  */
-export async function markdown(o: Open, only?: string[]): Promise<string> {
+export async function markdown(o: Open, only?: string[], annotate = false, authors: Record<string, string> = {}): Promise<string> {
   const bs = blocks(o);
   const yaml = frontmatterOf(bs);
   let body = yaml === null ? bs : bs.slice(1);
   if (only) {
     const wanted: Record<string, true> = Object.fromEntries(only.map((id) => [id, true]));
-    body = body.filter((b) => wanted[b.id]);
+    body = flatten(body).filter((b) => wanted[b.id]);
   }
-  const md = body.length === 0 ? "" : await ed.blocksToMarkdownLossy(body);
+  let md: string;
+  if (body.length === 0) md = "";
+  else if (!annotate) md = await ed.blocksToMarkdownLossy(body);
+  else {
+    const parts = await Promise.all(
+      body.map(async (b) => {
+        const by = authors[b.id];
+        return `<!-- ${b.id}${by ? ` by ${by}` : ""} -->\n${(await ed.blocksToMarkdownLossy([b])).trimEnd()}\n`;
+      }),
+    );
+    md = parts.join("\n");
+  }
   if (only || yaml === null) return md;
   return `---\n${yaml.endsWith("\n") || yaml === "" ? yaml : `${yaml}\n`}---\n${md}`;
+}
+
+/** Pre-order walk of a block tree (outline order). */
+export function flatten(bs: DocBlock[]): DocBlock[] {
+  const out: DocBlock[] = [];
+  const walk = (list: DocBlock[]) => {
+    for (const b of list) {
+      out.push(b);
+      if (b.children.length > 0) walk(b.children as DocBlock[]);
+    }
+  };
+  walk(bs);
+  return out;
+}
+
+/** Where `id` lives: the array holding it (top level or a parent's children), its index, and that parent. */
+type Located = { list: DocBlock[]; index: number; parent: DocBlock | null };
+
+function locate(bs: DocBlock[], id: string, parent: DocBlock | null = null): Located | null {
+  const i = bs.findIndex((b) => b.id === id);
+  if (i !== -1) return { list: bs, index: i, parent };
+  for (const b of bs) {
+    if (b.children.length > 0) {
+      const hit = locate(b.children as DocBlock[], id, b);
+      if (hit) return hit;
+    }
+  }
+  return null;
+}
+
+/** The ids around the best prefix match of `id`, ±3 in outline order (§5.2 "nearest ids"). */
+export function nearest(bs: DocBlock[], id: string, radius = 3): string[] {
+  const ids = flatten(bs).map((b) => b.id);
+  if (ids.length === 0) return [];
+  let best = 0;
+  let bestLen = -1;
+  ids.forEach((candidate, i) => {
+    let n = 0;
+    while (n < id.length && n < candidate.length && id[n] === candidate[n]) n++;
+    if (n > bestLen) {
+      bestLen = n;
+      best = i;
+    }
+  });
+  return ids.slice(Math.max(0, best - radius), best + radius + 1);
+}
+
+export class EditFailure extends Error {
+  constructor(readonly detail: EditError) {
+    super(JSON.stringify(detail));
+  }
+}
+
+const fail = (detail: EditError): never => {
+  throw new EditFailure(detail);
+};
+
+/** Parse the model's markdown into body blocks; a frontmatter block can never come out of it. */
+async function parseBody(md: string): Promise<DocBlock[]> {
+  if (md.trim() === "") return [];
+  return (await ed.tryParseMarkdownToBlocks(md)).filter((b) => !isFrontmatter(b));
+}
+
+/** An anchor for the gap at `list[index]` (the block there, if any, comes *after* the gap) that an undo can use later. */
+function anchorOf(at: Located): Anchor {
+  const prev = at.list[at.index - 1];
+  if (prev) return { after: prev.id };
+  const next = at.list[at.index];
+  if (next && !isFrontmatter(next)) return { before: next.id };
+  if (at.parent === null) return { at: "start" };
+  return { childOf: at.parent.id };
+}
+
+/** Splice `fresh` into the tree at `anchor` (mutating `tree`); the frontmatter block always stays first. */
+function place(tree: DocBlock[], fresh: DocBlock[], anchor: Anchor): void {
+  const fmFirst = tree[0] && isFrontmatter(tree[0]) ? 1 : 0;
+  if (anchor.after !== undefined || anchor.before !== undefined) {
+    const id = (anchor.after ?? anchor.before)!;
+    const hit = locate(tree, id) ?? fail({ code: "unknown_block", id, nearest: nearest(tree, id) });
+    let at = anchor.after !== undefined ? hit.index + 1 : hit.index;
+    if (hit.list === tree && at < fmFirst) at = fmFirst;
+    hit.list.splice(at, 0, ...fresh);
+    return;
+  }
+  if (anchor.childOf !== undefined) {
+    const hit = locate(tree, anchor.childOf) ?? fail({ code: "unknown_block", id: anchor.childOf, nearest: nearest(tree, anchor.childOf) });
+    (hit.list[hit.index]!.children as DocBlock[]).splice(0, 0, ...fresh);
+    return;
+  }
+  if (anchor.at === "start") tree.splice(fmFirst, 0, ...fresh);
+  else tree.push(...fresh);
+}
+
+/** What {@link take} removed and where the first removed block sat. */
+type Taken = { removed: DocBlock[]; anchor: Anchor; list: DocBlock[]; index: number };
+
+/** Remove `ids` from the tree, in outline order; returns the removed blocks and the gap the first one left. */
+function take(tree: DocBlock[], ids: string[]): Taken {
+  if (ids.length === 0) fail({ code: "bad_edit", message: "blocks must name at least one block id" });
+  for (const id of ids) {
+    const hit = locate(tree, id) ?? fail({ code: "unknown_block", id, nearest: nearest(tree, id) });
+    if (isFrontmatter(hit.list[hit.index]!)) fail({ code: "frontmatter_immutable", id });
+  }
+  const order = flatten(tree).map((b) => b.id);
+  const sorted = [...new Set(ids)].sort((a, b) => order.indexOf(a) - order.indexOf(b));
+  // Pre-order: the first id is never inside another removed block, and no removed block precedes it in its list.
+  const first = locate(tree, sorted[0]!)!;
+  const removed: DocBlock[] = [];
+  for (const id of sorted) {
+    // A block inside an already-removed one is gone with its parent.
+    const hit = locate(tree, id);
+    if (!hit) continue;
+    removed.push(...hit.list.splice(hit.index, 1));
+  }
+  return { removed, anchor: anchorOf(first), list: first.list, index: first.index };
+}
+
+/**
+ * §5.2: apply `edits` to the block tree and write it back in ONE transaction, so one tool call is one
+ * update (`touched` = inserted ids). Throws {@link EditFailure} before touching the document; the
+ * result's `undo` (a `restore` per edit, newest first) puts the exact prior blocks back.
+ */
+export async function edit(o: Open, edits: Edit[]): Promise<EditResult> {
+  const tree = blocks(o);
+  const inserted: string[] = [];
+  const removedIds: string[] = [];
+  const undo: Restore[] = [];
+  for (const e of edits) {
+    switch (e.op) {
+      case "insert": {
+        const given = [e.after !== undefined, e.before !== undefined, e.at !== undefined].filter(Boolean).length;
+        if (given > 1) fail({ code: "bad_edit", message: "insert takes exactly one of after, before, at" });
+        const fresh = await parseBody(e.markdown);
+        if (fresh.length === 0) fail({ code: "bad_edit", message: "markdown parsed to no blocks" });
+        const anchor: Anchor = given === 0 ? { at: "end" } : { after: e.after, before: e.before, at: e.at };
+        place(tree, fresh, anchor);
+        // Nothing to put back: the anchor is unused.
+        undo.unshift({ op: "restore", remove: fresh.map((b) => b.id), blocks: [], anchor: {} });
+        inserted.push(...fresh.map((b) => b.id));
+        break;
+      }
+      case "replace": {
+        const fresh = await parseBody(e.markdown);
+        if (fresh.length === 0) fail({ code: "bad_edit", message: "markdown parsed to no blocks; use delete to remove blocks" });
+        const t = take(tree, e.blocks);
+        t.list.splice(t.index, 0, ...fresh);
+        undo.unshift({ op: "restore", remove: fresh.map((b) => b.id), blocks: t.removed, anchor: t.anchor });
+        inserted.push(...fresh.map((b) => b.id));
+        removedIds.push(...t.removed.map((b) => b.id));
+        break;
+      }
+      case "delete": {
+        const t = take(tree, e.blocks);
+        undo.unshift({ op: "restore", remove: [], blocks: t.removed, anchor: t.anchor });
+        removedIds.push(...t.removed.map((b) => b.id));
+        break;
+      }
+      case "restore": {
+        // Stored by an earlier `edit` of this helper: exact block JSON, ids included.
+        const stored = e.blocks as DocBlock[];
+        const t = e.remove.length > 0 ? take(tree, e.remove) : null;
+        if (stored.length > 0) place(tree, stored, e.anchor);
+        undo.unshift({ op: "restore", remove: stored.map((b) => b.id), blocks: t?.removed ?? [], anchor: t?.anchor ?? {} });
+        inserted.push(...stored.map((b) => b.id));
+        if (t) removedIds.push(...t.removed.map((b) => b.id));
+        break;
+      }
+      default:
+        fail({ code: "bad_edit", message: `unknown edit op ${JSON.stringify(e)}` });
+    }
+  }
+  // A body emptied by a delete keeps one paragraph, as an import does; the reveal never keys on it.
+  const fmOnly = tree.length === 0 || (tree.length === 1 && isFrontmatter(tree[0]!));
+  if (fmOnly) tree.push(emptyParagraph());
+  const touched = [...inserted];
+  const origin: Origin = { helper: true, touched };
+  o.ydoc.transact(() => {
+    ed.blocksToYXmlFragment(tree, o.fragment);
+  }, origin);
+  return { inserted, removed: removedIds, touched, undo };
 }
 /** Whitespace-insensitive markdown keys for LCS alignment (§4.4). */
 async function blockKeys(bs: DocBlock[]): Promise<string[]> {
