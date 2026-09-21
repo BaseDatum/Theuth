@@ -159,23 +159,8 @@ str_enum! {
     }
 }
 
-str_enum! {
-    /// What a native attempt was for (§6.1).
-    CallKind {
-        /// A tool round of a user turn.
-        Round = "round",
-        /// Automatic or manual compaction.
-        Compaction = "compaction",
-        /// Explicit durable harvest.
-        Harvest = "harvest",
-        /// Title generation.
-        Title = "title",
-        /// Vision-fallback question or inspection call (52 §5).
-        Vision = "vision",
-        /// Tier-2 side call of the local decision oracle (57 §0.9).
-        Escalate = "escalate",
-    }
-}
+/// What a native attempt was for (§6.1); defined in `runtime` beside `SideCall` (57 §2).
+pub use runtime::side_call::CallKind;
 
 str_enum! {
     /// Lifecycle of one native attempt (§6.1).

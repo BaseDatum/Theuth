@@ -406,58 +406,9 @@ pub struct EscalateModel {
     pub effective: Option<ModelInfo>,
 }
 
-/// Which model a [`SideCall`] runs on, resolved inside `agent` so callers never
-/// see model ids (57 §2).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ModelRole {
-    /// `agent.escalate_model` → `agent.title_model` → the session's model.
-    Escalate,
-    /// `agent.title_model` → the session's model.
-    Title,
-    /// `agent.vision_model`; an error when unset (never the main model, 52 §3).
-    Vision,
-    /// The session's own model.
-    Session,
-    /// An explicit `provider/model` or bare id.
-    Named(String),
-}
-
-/// `ask` → `Result<SideReply, String>`: one non-streaming, no-tools, no-history
-/// request on a role model (57 §2 `SideCall`), run detached from the session's
-/// turn and cost-attributed to `session` under `kind`. Fails with the
-/// provider's error, `timed out` after `budget`, or `cancelled` when the
-/// session closes. Consumers: the title turn, `decision::escalate`, the §11
-/// training composer.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SideCall {
-    /// Session the call belongs to (cost row owner; also the `Session` role's model).
-    pub session: SessionId,
-    /// Which model answers.
-    pub role: ModelRole,
-    /// System prompt.
-    pub system: String,
-    /// The single user message.
-    pub user: String,
-    /// Wall-clock budget for the whole call.
-    pub budget: std::time::Duration,
-    /// Cost tag (`model_calls.kind`): `Escalate` for the oracle, `Title` for titles.
-    pub kind: CallKind,
-}
-
-/// What a [`SideCall`] came back with.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SideReply {
-    /// The model's text, concatenated; empty when it replied with nothing.
-    pub text: String,
-    /// Canonical id of the model that answered.
-    pub model: String,
-    /// Prompt and completion tokens the provider reported, when it did.
-    pub input_tokens: Option<u32>,
-    /// See `input_tokens`.
-    pub output_tokens: Option<u32>,
-    /// Wall clock from dispatch to the final event.
-    pub latency: std::time::Duration,
-}
+// 57 §2 side-call types live in `runtime` (00 §10: `decision` sits below `agent`); re-exported
+// so `agent::SideCall` etc. keep working.
+pub use runtime::side_call::{ModelRole, SideCall, SideReply};
 
 /// `ask` → `Result<Option<ModelInfo>, String>`: persist `agent.subagents.model`
 /// and use it for every child spawned without an explicit `model`; the system
