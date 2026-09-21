@@ -579,6 +579,7 @@ impl Engine {
         self.touch(me);
 
         let qs: Vec<Question> = items.iter().map(|i| i.q.clone()).collect();
+        let batch_forward = self.cfg.batch_forward;
         let mut run = tokio::task::spawn_blocking(
             move || -> Result<(Vec<(Sequence, RowOut)>, String), Reason> {
                 let mut o = shared.lock();
@@ -587,9 +588,17 @@ impl Engine {
                     .map(|q| o.build(q))
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(Reason::HardError)?;
-                let outs = o
-                    .run(&seqs)
-                    .map_err(|e| Reason::HardError(format!("{e:#}")))?;
+                // One padded batch, or one forward per row (each padded to its own length;
+                // `examples/bench.rs` (b2)/(b3) measures which wins on this device).
+                let outs = if batch_forward || seqs.len() == 1 {
+                    o.run(&seqs)
+                } else {
+                    seqs.iter()
+                        .map(|s| o.run(std::slice::from_ref(s)))
+                        .collect::<anyhow::Result<Vec<_>>>()
+                        .map(|v| v.into_iter().flatten().collect())
+                }
+                .map_err(|e| Reason::HardError(format!("{e:#}")))?;
                 if outs.len() != seqs.len() {
                     return Err(Reason::HardError(format!(
                         "{} rows for {} questions",
@@ -1268,6 +1277,7 @@ mod tests {
                 ("meeting.off".to_owned(), FamilyGate { mode: Mode::Off, ..FamilyGate::shadow(0.5, 0.1) }),
             ]
             .into(),
+            batch_forward: true,
             ..DecisionConfig::default()
         };
         let log = Log::new(dir.path().join("d"));

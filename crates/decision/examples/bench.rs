@@ -242,6 +242,25 @@ fn main() -> anyhow::Result<()> {
         pct(&times, 0.95).as_secs_f64() * 1e3,
         if pct(&times, 0.95) <= Duration::from_millis(300) { "within" } else { "OVER" }
     );
+    // (b3) The same step as three single-row forwards, each padded only to its own length:
+    // the batch pads every row to the longest (S 1024) and our candle/Metal forward is close to
+    // linear in padded tokens, so the batch may lose to the sum of the parts.
+    let mut times = Vec::with_capacity(20);
+    for _ in 0..20 {
+        let t = Instant::now();
+        for r in &rows {
+            m.run(std::slice::from_ref(r))?;
+        }
+        times.push(t.elapsed());
+    }
+    times.sort();
+    println!(
+        "browser step (same 3 questions, three sequential single-row forwards, S {}): p50 {:.1} ms  p95 {:.1} ms  ({} the §4.1 ≤ 300 ms target)",
+        rows.iter().map(|r| r.input_ids.len().to_string()).collect::<Vec<_>>().join("/"),
+        pct(&times, 0.5).as_secs_f64() * 1e3,
+        pct(&times, 0.95).as_secs_f64() * 1e3,
+        if pct(&times, 0.95) <= Duration::from_millis(300) { "within" } else { "OVER" }
+    );
 
     // (c) The README / model-card worked example (NandhaKishorM/laya README "Quickstart",
     // convaiinnovations/laya card "Single-Model Mode"): one state, four questions, one pass.

@@ -88,6 +88,11 @@ impl Device {
     }
 }
 
+/// Default of [`DecisionConfig::batch_forward`]: `examples/bench.rs` (b2)/(b3) on an M3 Max,
+/// Metal f16, the browser step (3 rows, S 476/1024/583) — one batch padded to S 1024: p50
+/// 1034 ms; three single-row forwards: p50 569 ms. The forward is ~linear in padded tokens.
+const BATCH_FORWARD: bool = false;
+
 /// `decision:` config section (57 §2). Every field has a default; the section may be absent.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
@@ -109,6 +114,10 @@ pub struct DecisionConfig {
     pub idle_unload: Duration,
     /// Store the question text in the log, not only its hash.
     pub log_text: bool,
+    /// `AskMany`: run the batch as one padded forward (`true`) or as one forward per question,
+    /// each padded to its own length (`false`). Default from `examples/bench.rs` (b2)/(b3) on
+    /// Metal, where the forward is close to linear in padded tokens.
+    pub batch_forward: bool,
     /// Gate per decision family; a family not listed never runs. The YAML is a patch over the
     /// default table: `meeting.kind: { mode: active }` changes one field; a prefix key
     /// (`meeting: { mode: off }`, what Settings → Meetings writes) patches every family under it.
@@ -125,6 +134,7 @@ impl Default for DecisionConfig {
             device: Device::Auto,
             idle_unload: Duration::from_secs(600),
             log_text: false,
+            batch_forward: BATCH_FORWARD,
             families: default_families(),
         }
     }

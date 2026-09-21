@@ -406,8 +406,10 @@ async fn drives_fixture_page() {
 }
 
 /// A stand-in for the browser head: step 1 `TYPE_TEXT` into the first editable, step 2
-/// `CLICK` the `(button)`, step 3 `DONE`, cyclic. `build` encodes the pick in `input_ids[1]`
-/// (it sees the question; `run` sees rows), P 0.9 on the pick.
+/// `CLICK` the `(button)`, step 3 `DONE`, cyclic. The operation question (the one offering
+/// `DONE`) opens a step — counting there, not in `run`, keeps the script independent of
+/// `decision.batch_forward` (one forward per batch or per row). `build` encodes the pick in
+/// `input_ids[1]` (it sees the question; `run` sees rows), P 0.9 on the pick.
 struct Scripted {
     step: Arc<std::sync::atomic::AtomicUsize>,
 }
@@ -421,8 +423,8 @@ impl decision::Oracle for Scripted {
             return Err("choice only".into());
         };
         let ids: Vec<&str> = candidates.iter().map(|c| c.id.as_str()).collect();
-        let step = self.step.load(std::sync::atomic::Ordering::SeqCst) % 3;
         let pick = if ids.contains(&"DONE") {
+            let step = self.step.fetch_add(1, std::sync::atomic::Ordering::SeqCst) % 3;
             let want = ["TYPE_TEXT", "CLICK", "DONE"][step];
             ids.iter().position(|i| *i == want).unwrap_or(ids.len() - 1)
         } else if candidates.iter().any(|c| c.text.contains("(button)")) && !candidates.iter().any(|c| c.text.starts_with("[1] textbox")) {
@@ -452,7 +454,6 @@ impl decision::Oracle for Scripted {
         })
     }
     fn run(&mut self, rows: &[decision::laya::Sequence]) -> anyhow::Result<Vec<decision::laya::RowOut>> {
-        self.step.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(rows
             .iter()
             .map(|r| {
