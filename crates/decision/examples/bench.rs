@@ -1,17 +1,70 @@
-//! `decision bench` (57 §6 step 2 / §12.7 step 2d): cold load, RSS breakdown, warm p50/p95
-//! per K × S, the CoreML partition report and the published README example next to ours.
+//! `decision bench` (57 §6 step 2 / §12.7 step 2d / §12.8 step 2e): cold load, RSS breakdown,
+//! warm p50/p95 per K × S, the CoreML partition report and the published README example next
+//! to ours, on the ORT engine or (with `--features candle`) the candle engine.
 //!
-//! `cargo run --release -p decision --example bench -- [model_dir] [threads] [flags]`; the ONNX
-//! Runtime is found under `$THEUTH_DATA_DIR` (default `~/.theuth`) like the daemon does.
-//! Flags: `--coreml=all|ane` (CoreML EP, padded to S 512 / K 32), `--pad` (pad on CPU too),
-//! `--dump FILE` (write the README example's probabilities), `--ref FILE` (compare against a
-//! dump: argmax parity and max probability delta).
+//! `cargo run --release -p decision [--features candle] --example bench -- [model_dir] [threads] [flags]`;
+//! the ONNX Runtime is found under `$THEUTH_DATA_DIR` (default `~/.theuth`) like the daemon does.
+//! Flags: `--engine ort|candle` (default ort; candle's default dir is `models/decision-candle`),
+//! `--device metal|cpu` and `--dtype f16|f32` (candle; defaults Metal f16 on an Apple-silicon Mac,
+//! CPU f32 elsewhere), `--coreml=all|ane` (CoreML EP, padded to S 512 / K 32), `--pad` (pad on
+//! CPU too), `--dump FILE` (write the README example's probabilities), `--ref FILE` (compare
+//! against a dump: argmax parity and max probability delta).
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+#[cfg(feature = "candle")]
+use decision::candle::CandleLoaded;
 use decision::laya::{self, Loaded, Provider, Sequence, Units};
 use decision::{Candidate, Question};
+use tokenizers::Tokenizer;
+
+/// The engine under test; the rows below only need these five.
+enum M {
+    Ort(Box<Loaded>),
+    #[cfg(feature = "candle")]
+    Candle(Box<CandleLoaded>),
+}
+
+impl M {
+    fn tokenizer(&self) -> &Tokenizer {
+        match self {
+            M::Ort(m) => &m.tokenizer,
+            #[cfg(feature = "candle")]
+            M::Candle(m) => &m.tokenizer,
+        }
+    }
+    fn laya(&self) -> &laya::LayaConfig {
+        match self {
+            M::Ort(m) => &m.laya,
+            #[cfg(feature = "candle")]
+            M::Candle(m) => &m.laya,
+        }
+    }
+    /// Padding floor: the ORT session's bucket; candle pads to the row (K ≥ 2).
+    fn bucket(&self) -> (usize, usize) {
+        match self {
+            M::Ort(m) => m.bucket,
+            #[cfg(feature = "candle")]
+            M::Candle(_) => (0, 2),
+        }
+    }
+    fn build(&self, q: &Question) -> anyhow::Result<Sequence> {
+        match self {
+            M::Ort(m) => m.build(q),
+            #[cfg(feature = "candle")]
+            M::Candle(m) => m.build(q),
+        }
+        .map_err(anyhow::Error::msg)
+    }
+    fn run(&mut self, rows: &[Sequence]) -> anyhow::Result<Vec<laya::RowOut>> {
+        match self {
+            M::Ort(m) => m.run(rows),
+            #[cfg(feature = "candle")]
+            M::Candle(m) => m.run(rows),
+        }
+    }
+}
 
 fn rss_mib() -> f64 {
     let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
@@ -25,22 +78,30 @@ fn rss_mib() -> f64 {
     bytes / (1024.0 * 1024.0)
 }
 
+/// Resident set *now* (`ps -o rss=`, KiB), as opposed to `ru_maxrss`'s peak: a load-time copy
+/// that is freed before the first inference shows in the peak, not here.
+fn rss_now_mib() -> f64 {
+    std::process::Command::new("ps")
+        .args(["-o", "rss=", "-p", &std::process::id().to_string()])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|s| s.trim().parse::<f64>().ok())
+        .map_or(f64::NAN, |kib| kib / 1024.0)
+}
+
 fn pct(sorted: &[Duration], p: f64) -> Duration {
     sorted[((sorted.len() - 1) as f64 * p).round() as usize]
 }
 
 /// A state of at least `tokens` tokens (the tokenizer is the judge; prose repeated).
-fn state_of(m: &Loaded, tokens: usize) -> String {
+fn state_of(tok: &Tokenizer, tokens: usize) -> String {
     let unit = "s1: the deploy is blocked on the image tags, the pipeline retagged the release twice. \
                 s2: right, ping the on-call and check the SRE ticket before the standup. ";
     let mut s = String::new();
     loop {
         s.push_str(unit);
-        let n = m
-            .tokenizer
-            .encode(s.as_str(), false)
-            .map(|e| e.len())
-            .unwrap_or(0);
+        let n = tok.encode(s.as_str(), false).map(|e| e.len()).unwrap_or(0);
         if n >= tokens {
             return s;
         }
@@ -73,9 +134,15 @@ fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").expect("HOME")).join(".theuth"));
     let mut positional = Vec::new();
     let (mut provider, mut pad, mut dump, mut reference) = (Provider::Cpu, false, None, None);
+    let mut candle = false;
+    let mut metal = cfg!(all(target_os = "macos", target_arch = "aarch64"));
+    let mut f16 = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
+            "--engine" => candle = args.next().as_deref() == Some("candle"),
+            "--device" => metal = args.next().as_deref() == Some("metal"),
+            "--dtype" => f16 = Some(args.next().as_deref() == Some("f16")),
             "--coreml=all" => provider = Provider::CoreMl(Units::All),
             "--coreml=ane" => provider = Provider::CoreMl(Units::CpuAndNeuralEngine),
             "--pad" => pad = true,
@@ -84,70 +151,120 @@ fn main() -> anyhow::Result<()> {
             _ => positional.push(a),
         }
     }
-    let dir = positional
-        .first()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| data_dir.join("models/decision"));
+    let f16 = f16.unwrap_or(metal);
+    let dir = positional.first().map(PathBuf::from).unwrap_or_else(|| {
+        data_dir.join("models").join(if candle {
+            decision::CANDLE_SUBDIR
+        } else {
+            decision::MODEL_SUBDIR
+        })
+    });
     let threads: usize = positional.get(1).and_then(|t| t.parse().ok()).unwrap_or(4);
+    // 57 §12.8 candle criteria: RSS ≤ 1.5 GiB, cold load ≤ 3 s, p95 ≤ 50 ms; §12.6 ORT: 2 GiB.
+    let rss_cap = if candle { 1536.0 } else { 2048.0 };
+    let over = |mib: f64| -> String {
+        if mib <= rss_cap {
+            format!("≤ {rss_cap:.0} MiB")
+        } else {
+            format!("OVER {rss_cap:.0} MiB")
+        }
+    };
     println!(
-        "model dir: {}  threads: {threads}  provider: {provider:?}  rss before: {:.0} MiB",
+        "model dir: {}  threads: {threads}  engine: {}  rss before: {:.0} MiB",
         dir.display(),
+        if candle {
+            format!(
+                "candle {} {}",
+                if metal { "metal" } else { "cpu" },
+                if f16 { "f16" } else { "f32" }
+            )
+        } else {
+            format!("ort {provider:?}")
+        },
         rss_mib()
     );
 
     let t = Instant::now();
-    let mut m = Loaded::open(&dir, &data_dir, threads, provider)?;
-    if pad {
-        m.bucket = laya::BUCKET;
-    }
-    println!(
-        "cold load (incl. compile): {} ms (sha256 {}…)  rss after load: {:.0} MiB  provider: {:?}  bucket: {:?}",
-        t.elapsed().as_millis(),
-        &m.model_sha[..12],
-        rss_mib(),
-        m.provider,
-        m.bucket
-    );
-    match m.partitions {
-        Some((n, nodes, took)) => println!(
-            "coreml partitions: {n}  nodes in graph: {nodes}  nodes on CoreML: {took}  ({})",
-            if n <= 3 { "≤ 3, PASS" } else { "> 3, FAIL" }
-        ),
-        None if matches!(m.provider, Provider::CoreMl(_)) => {
-            println!("coreml partitions: (no GetCapability line seen)")
+    let mut m = if candle {
+        #[cfg(feature = "candle")]
+        {
+            let dtype = if f16 {
+                candle_core::DType::F16
+            } else {
+                candle_core::DType::F32
+            };
+            let c = CandleLoaded::open(&dir, metal, dtype)?;
+            println!(
+                "cold load: {} ms (sha256 {}…, of which hashing {} ms; {})  rss after load: {:.0} MiB  device: {:?} {:?}",
+                t.elapsed().as_millis(),
+                &c.model_sha[..12],
+                c.hash_time.as_millis(),
+                if t.elapsed() <= Duration::from_secs(3) {
+                    "≤ 3 s"
+                } else {
+                    "OVER 3 s"
+                },
+                rss_mib(),
+                c.device.location(),
+                c.dtype
+            );
+            M::Candle(Box::new(c))
         }
-        None => {}
-    }
+        #[cfg(not(feature = "candle"))]
+        anyhow::bail!("built without `--features candle`")
+    } else {
+        let mut l = Loaded::open(&dir, &data_dir, threads, provider)?;
+        if pad {
+            l.bucket = laya::BUCKET;
+        }
+        println!(
+            "cold load (incl. compile): {} ms (sha256 {}…)  rss after load: {:.0} MiB  provider: {:?}  bucket: {:?}",
+            t.elapsed().as_millis(),
+            &l.model_sha[..12],
+            rss_mib(),
+            l.provider,
+            l.bucket
+        );
+        match l.partitions {
+            Some((n, nodes, took)) => println!(
+                "coreml partitions: {n}  nodes in graph: {nodes}  nodes on CoreML: {took}  ({})",
+                if n <= 3 { "≤ 3, PASS" } else { "> 3, FAIL" }
+            ),
+            None if matches!(l.provider, Provider::CoreMl(_)) => {
+                println!("coreml partitions: (no GetCapability line seen)")
+            }
+            None => {}
+        }
+        M::Ort(Box::new(l))
+    };
     println!(
         "config: max_len {} head_max_len {} temperature {:?}",
-        m.laya.max_len, m.laya.head_max_len, m.laya.temperature
+        m.laya().max_len,
+        m.laya().head_max_len,
+        m.laya().temperature
     );
-    // First inference on its own: the RSS step from load to first run is what Core ML
-    // allocates lazily.
-    let warm = m
-        .build(&choice(2, state_of(&m, 256)))
-        .map_err(anyhow::Error::msg)?;
+    // First inference on its own: the RSS step from load to first run is what the accelerator
+    // allocates lazily (Core ML compile, Metal buffers).
+    let warm = m.build(&choice(2, state_of(m.tokenizer(), 256)))?;
     let t = Instant::now();
     m.run(std::slice::from_ref(&warm))?;
     println!(
-        "first inference: {} ms  rss after first inference: {:.0} MiB ({})",
+        "first inference: {} ms  rss after first inference: {:.0} MiB peak ({}), {:.0} MiB now ({})",
         t.elapsed().as_millis(),
         rss_mib(),
-        if rss_mib() <= 2048.0 {
-            "≤ 2 GiB"
-        } else {
-            "OVER 2 GiB"
-        }
+        over(rss_mib()),
+        rss_now_mib(),
+        over(rss_now_mib())
     );
-
     // (b) warm latency per K × S, 20 runs each after one warm-up.
-    println!("\n| K | S (tokens) | padded to | p50 ms | p95 ms | RSS after MiB |");
-    println!("|---|---|---|---|---|---|");
+    println!("\n| K | S (tokens) | padded to | p50 ms | p95 ms | ≤ 50 ms | RSS after MiB |");
+    println!("|---|---|---|---|---|---|---|");
     let mut peak = rss_mib();
+    let bucket = m.bucket();
     for &k in &[2usize, 5, 10] {
         for &target in &[256usize, 512] {
-            let q = choice(k, state_of(&m, target));
-            let seq: Sequence = m.build(&q).map_err(anyhow::Error::msg)?;
+            let q = choice(k, state_of(m.tokenizer(), target));
+            let seq: Sequence = m.build(&q)?;
             let s = seq.input_ids.len();
             m.run(std::slice::from_ref(&seq))?;
             let mut times = Vec::with_capacity(20);
@@ -159,28 +276,27 @@ fn main() -> anyhow::Result<()> {
             times.sort();
             let rss = rss_mib();
             peak = peak.max(rss);
+            let p95 = pct(&times, 0.95);
             println!(
-                "| {k} | {s}{} | S {} K {} | {:.1} | {:.1} | {rss:.0} |",
+                "| {k} | {s}{} | S {} K {} | {:.1} | {:.1} | {} | {rss:.0} |",
                 if seq.truncated {
                     " (state truncated)"
                 } else {
                     ""
                 },
-                s.max(m.bucket.0),
-                k.max(m.bucket.1),
+                s.max(bucket.0),
+                k.max(bucket.1),
                 pct(&times, 0.5).as_secs_f64() * 1e3,
-                pct(&times, 0.95).as_secs_f64() * 1e3
+                p95.as_secs_f64() * 1e3,
+                if p95 <= Duration::from_millis(50) {
+                    "yes"
+                } else {
+                    "NO"
+                }
             );
         }
     }
-    println!(
-        "rss peak: {peak:.0} MiB  ({})",
-        if peak <= 2048.0 {
-            "under 2 GiB"
-        } else {
-            "OVER 2 GiB"
-        }
-    );
+    println!("rss peak: {peak:.0} MiB  ({})", over(peak));
 
     // (c) The README / model-card worked example (NandhaKishorM/laya README "Quickstart",
     // convaiinnovations/laya card "Single-Model Mode"): one state, four questions, one pass.
@@ -236,7 +352,7 @@ fn main() -> anyhow::Result<()> {
     ];
     let rows: Vec<Sequence> = qs
         .iter()
-        .map(|(_, q)| m.build(q).map_err(anyhow::Error::msg))
+        .map(|(_, q)| m.build(q))
         .collect::<anyhow::Result<_>>()?;
     let t = Instant::now();
     let outs = m.run(&rows)?;
