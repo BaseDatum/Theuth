@@ -24,7 +24,7 @@ use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::Encode;
 use yrs::{ReadTxn, StateVector, Transact, Update};
 
-use crate::helper::{self, Helper, HelperEvent, ImportMode};
+use crate::helper::{self, Edit as BlockEdit, EditError, Helper, HelperEvent, ImportMode};
 use crate::meta::{
     AgentStyle, Binding, DocEvent, DocId, DocKind, DocMeta, DocOpen, DocSummary, Principal,
     SnapshotInfo, Who,
@@ -46,6 +46,8 @@ const EXPORT_CAP: Duration = Duration::from_secs(3);
 const CHUNK: usize = 36 * 1024;
 /// Events a slow subscriber may leave unread before it is dropped.
 const SUB_QUEUE: usize = 256;
+/// The agent's awareness state outlives its update by this (§6.4: the reveal runs ≤ 1.5 s).
+const AGENT_PRESENCE: Duration = Duration::from_secs(2);
 
 /// One loaded document.
 struct Open {
@@ -60,6 +62,25 @@ struct Open {
     export_due: Option<Instant>,
     export_first: Option<Instant>,
     exporting: bool,
+    /// The last agent edit's inverse (§5.5 "Undo last agent edit"); one level, in memory.
+    last_agent_edit: Option<LastAgentEdit>,
+    /// Bumped per agent presence; a delayed clear only fires for its own generation.
+    agent_gen: u64,
+}
+
+/// What "Undo last agent edit" reverts.
+struct LastAgentEdit {
+    session: uuid::Uuid,
+    undo: Vec<BlockEdit>,
+}
+
+/// An edit the helper is running; keyed by the helper request id. The update
+/// and the reply arrive on two tasks, so the entry lives until both did.
+struct PendingEdit {
+    doc: DocId,
+    by: Principal,
+    reply: Option<ReplySender<Result<EditOutcome, EditError>>>,
+    applied: bool,
 }
 
 struct Subscriber {
@@ -93,6 +114,15 @@ pub struct ImportOutcome {
     pub skipped: bool,
 }
 
+/// What an edit did (§5.2 tool results).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, kameo::Reply)]
+pub struct EditOutcome {
+    /// Ids inserted.
+    pub inserted: Vec<String>,
+    /// Ids removed.
+    pub removed: Vec<String>,
+}
+
 /// The [`crate::DOCUMENT_ACTOR`] actor.
 #[derive(kameo::Actor)]
 pub struct DocumentActor {
@@ -104,6 +134,7 @@ pub struct DocumentActor {
     open: HashMap<DocId, Open>,
     subs: HashMap<DocId, Vec<Subscriber>>,
     imports: HashMap<u64, Import>,
+    edits: HashMap<u64, PendingEdit>,
 }
 
 impl DocumentActor {
@@ -118,6 +149,7 @@ impl DocumentActor {
             open: HashMap::new(),
             subs: HashMap::new(),
             imports: HashMap::new(),
+            edits: HashMap::new(),
         }
     }
 
@@ -143,6 +175,8 @@ impl DocumentActor {
                     export_due: None,
                     export_first: None,
                     exporting: false,
+                    last_agent_edit: None,
+                    agent_gen: 0,
                 },
             );
             self.enforce_open_cap();
@@ -174,12 +208,14 @@ impl DocumentActor {
     }
 
     /// Apply one update from `by` (§6.2): CRDT, log, fan-out, helper mirror, export.
+    /// `touched` (a helper transaction's written ids) precedes the update as `Authored` when `by` is the agent.
     async fn apply(
         &mut self,
         doc: &DocId,
         update: Vec<u8>,
         by: Principal,
         from_helper: bool,
+        touched: Vec<String>,
     ) -> Result<(), String> {
         let max = self.cfg.max_doc_bytes;
         let store = self.store.clone();
@@ -212,6 +248,20 @@ impl DocumentActor {
         // The file already holds what a File import brought in; only other authors change the derived file.
         if by != Principal::File {
             self.schedule_export(doc);
+        }
+        if let Principal::Agent { session } = &by
+            && !touched.is_empty()
+        {
+            self.fan_out(
+                doc,
+                DocEvent::Authored {
+                    blocks: touched,
+                    by: Who::Agent {
+                        session: session.to_string(),
+                    },
+                },
+                None,
+            );
         }
         let ev = DocEvent::Update {
             update: base64::engine::general_purpose::STANDARD.encode(&update),
@@ -286,6 +336,100 @@ impl DocumentActor {
             let result = pending.import_result().await;
             let _ = me.tell(ImportDone { req, result }).await;
         });
+    }
+
+    /// Start a §5.2 edit through the helper. The transaction returns as a
+    /// [`HelperEvent::Update`] stamped `by`; the reply as [`EditDone`].
+    fn start_edit(
+        &mut self,
+        doc: &DocId,
+        edits: Vec<BlockEdit>,
+        by: Principal,
+        reply: ReplySender<Result<EditOutcome, EditError>>,
+    ) {
+        if let Err(e) = self.load(doc) {
+            reply.send(Err(EditError::Other(e)));
+            return;
+        }
+        // §6.4: the agent is present before its update lands; the touched ids follow with the update.
+        if matches!(by, Principal::Agent { .. }) {
+            self.set_agent_presence(doc, &[]);
+        }
+        let pending = self.helper.edit(doc, &edits);
+        let req = pending.id();
+        self.edits.insert(
+            req,
+            PendingEdit {
+                doc: doc.clone(),
+                by,
+                reply: Some(reply),
+                applied: false,
+            },
+        );
+        let me = self.actor_ref();
+        tokio::spawn(async move {
+            let result = pending.edit_result().await;
+            let _ = me.tell(EditDone { req, result }).await;
+        });
+    }
+
+    /// Publish the synthetic agent client's awareness state (§6.4, §8.5). The authority's own
+    /// awareness client never edits, so its state *is* the agent's; cleared [`AGENT_PRESENCE`] later.
+    fn set_agent_presence(&mut self, doc: &DocId, blocks: &[String]) {
+        let color = self.cfg.agent_color.clone();
+        let Some(o) = self.open.get_mut(doc) else {
+            return;
+        };
+        let user = serde_json::json!({ "name": "theuth", "color": color });
+        let state = serde_json::json!({
+            "user": user,
+            "name": "theuth",
+            "color": color,
+            "agent": { "doc": doc.as_str(), "blocks": blocks, "at": now_ms() },
+        });
+        if let Err(e) = o.awareness.set_local_state(state) {
+            tracing::warn!(doc = %doc, error = %e, "agent awareness state");
+            return;
+        }
+        o.agent_gen += 1;
+        let generation = o.agent_gen;
+        self.fan_out_agent_awareness(doc);
+        let me = self.actor_ref();
+        let doc = doc.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(AGENT_PRESENCE).await;
+            let _ = me
+                .tell(ClearAgentPresence {
+                    doc,
+                    generation: Some(generation),
+                })
+                .await;
+        });
+    }
+
+    fn fan_out_agent_awareness(&mut self, doc: &DocId) {
+        let Some(o) = self.open.get(doc) else {
+            return;
+        };
+        let client = o.awareness.client_id();
+        match o.awareness.update_with_clients([client]) {
+            Ok(u) => {
+                let state = b64(&u.encode_v1());
+                self.fan_out(doc, DocEvent::Awareness { state }, None);
+            }
+            Err(e) => tracing::warn!(doc = %doc, error = %e, "agent awareness update"),
+        }
+    }
+
+    fn clear_agent_presence(&mut self, doc: &DocId) {
+        let Some(o) = self.open.get_mut(doc) else {
+            return;
+        };
+        if o.awareness.local_state_raw().is_none() {
+            return;
+        }
+        o.awareness.clean_local_state();
+        self.fan_out_agent_awareness(doc);
     }
 
     fn actor_ref(&self) -> ActorRef<Self> {
@@ -484,7 +628,7 @@ impl Message<ApplyUpdate> for DocumentActor {
 
     async fn handle(&mut self, m: ApplyUpdate, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let update = unb64(&m.update)?;
-        self.apply(&m.doc, update, m.by, false).await
+        self.apply(&m.doc, update, m.by, false, Vec::new()).await
     }
 }
 
@@ -704,7 +848,8 @@ impl Message<ExportDone> for DocumentActor {
         match m.result {
             Ok((sha, title)) => {
                 o.meta.last_export = Some(sha);
-                if !title.is_empty() {
+                // A note keeps the title it was created with; the others follow their text.
+                if !title.is_empty() && o.meta.kind != DocKind::Note {
                     o.meta.title = title;
                 }
                 let meta = o.meta.clone();
@@ -727,6 +872,256 @@ impl Message<ExportDone> for DocumentActor {
                 o.export_first = Some(now);
             }
         }
+    }
+}
+
+/// `ask` → `Result<EditOutcome, EditError>`: §5.2 block edits as ONE transaction, stamped `by`
+/// (`Agent{session}` from the tools; `Owner` for the undo). The agent's inverse is kept for [`UndoLastAgentEdit`].
+#[derive(Clone, Debug)]
+pub struct Edit {
+    /// Document.
+    pub doc: DocId,
+    /// The edits, in order.
+    pub edits: Vec<BlockEdit>,
+    /// Who the change stands for.
+    pub by: Principal,
+}
+
+impl Message<Edit> for DocumentActor {
+    type Reply = DelegatedReply<Result<EditOutcome, EditError>>;
+
+    async fn handle(&mut self, m: Edit, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        self.start_edit(&m.doc, m.edits, m.by, tx);
+        reply
+    }
+}
+
+/// `tell` (internal): the helper answered an edit.
+struct EditDone {
+    req: u64,
+    result: Result<helper::EditResult, helper::Error>,
+}
+
+impl Message<EditDone> for DocumentActor {
+    type Reply = ();
+
+    async fn handle(&mut self, m: EditDone, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let Some(e) = self.edits.get_mut(&m.req) else {
+            return;
+        };
+        let Some(tx) = e.reply.take() else { return };
+        let doc = e.doc.clone();
+        let by = e.by.clone();
+        match m.result {
+            Ok(r) => {
+                // The update may still be on its way; the entry then goes with it.
+                if e.applied {
+                    self.edits.remove(&m.req);
+                }
+                if let Principal::Agent { session } = by
+                    && let Some(o) = self.open.get_mut(&doc)
+                {
+                    o.last_agent_edit = Some(LastAgentEdit {
+                        session,
+                        undo: r.undo,
+                    });
+                }
+                tx.send(Ok(EditOutcome {
+                    inserted: r.inserted,
+                    removed: r.removed,
+                }));
+            }
+            Err(err) => {
+                self.edits.remove(&m.req);
+                if matches!(by, Principal::Agent { .. }) {
+                    self.clear_agent_presence(&doc);
+                }
+                tx.send(Err(EditError::from_helper(&err)));
+            }
+        }
+    }
+}
+
+/// `ask` → `Result<EditOutcome, String>`: revert the last agent edit of `doc` as the owner (§5.5);
+/// one level, forgotten once used or when the document unloads.
+#[derive(Clone, Debug)]
+pub struct UndoLastAgentEdit {
+    /// Document.
+    pub doc: DocId,
+}
+
+impl Message<UndoLastAgentEdit> for DocumentActor {
+    type Reply = DelegatedReply<Result<EditOutcome, String>>;
+
+    async fn handle(
+        &mut self,
+        m: UndoLastAgentEdit,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let last = self.open.get_mut(&m.doc).and_then(|o| o.last_agent_edit.take());
+        let Some(last) = last else {
+            tx.send(Err("no agent edit to undo".into()));
+            return reply;
+        };
+        tracing::debug!(doc = %m.doc, session = %last.session, "undoing the last agent edit");
+        let me = ctx.actor_ref().clone();
+        tokio::spawn(async move {
+            let r = me
+                .ask(Edit {
+                    doc: m.doc,
+                    edits: last.undo,
+                    by: Principal::Owner { device: None },
+                })
+                .await
+                .map_err(|e| e.to_string());
+            tx.send(r);
+        });
+        reply
+    }
+}
+
+/// `tell` (internal): drop the agent's awareness state; `generation` guards against a newer edit's presence.
+#[derive(Clone, Debug)]
+struct ClearAgentPresence {
+    doc: DocId,
+    generation: Option<u64>,
+}
+
+impl Message<ClearAgentPresence> for DocumentActor {
+    type Reply = ();
+
+    async fn handle(
+        &mut self,
+        m: ClearAgentPresence,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        if let Some(g) = m.generation
+            && self.open.get(&m.doc).is_none_or(|o| o.agent_gen != g)
+        {
+            return;
+        }
+        self.clear_agent_presence(&m.doc);
+    }
+}
+
+/// `ask` → `Result<helper::OutlineResult, String>`: the §5.1 outline of `doc`.
+#[derive(Clone, Debug)]
+pub struct Outline {
+    /// Document.
+    pub doc: DocId,
+    /// Nesting limit.
+    pub depth: Option<u32>,
+}
+
+impl Message<Outline> for DocumentActor {
+    type Reply = DelegatedReply<Result<helper::OutlineResult, String>>;
+
+    async fn handle(&mut self, m: Outline, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        if let Err(e) = self.load(&m.doc) {
+            tx.send(Err(e));
+            return reply;
+        }
+        let helper = self.helper.clone();
+        tokio::spawn(async move {
+            tx.send(
+                helper
+                    .outline(&m.doc, m.depth)
+                    .await
+                    .map_err(|e| e.to_string()),
+            );
+        });
+        reply
+    }
+}
+
+/// `ask` → `Result<String, String>`: lossy markdown of `doc` or of `blocks`, each block preceded by `<!-- id -->` when `annotate`.
+#[derive(Clone, Debug)]
+pub struct Markdown {
+    /// Document.
+    pub doc: DocId,
+    /// Some blocks only (any depth).
+    pub blocks: Option<Vec<String>>,
+    /// Prefix every block with its id (§5.1).
+    pub annotate: bool,
+}
+
+impl Message<Markdown> for DocumentActor {
+    type Reply = DelegatedReply<Result<String, String>>;
+
+    async fn handle(&mut self, m: Markdown, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        if let Err(e) = self.load(&m.doc) {
+            tx.send(Err(e));
+            return reply;
+        }
+        let helper = self.helper.clone();
+        tokio::spawn(async move {
+            tx.send(
+                helper
+                    .markdown_of(&m.doc, m.blocks.as_deref(), m.annotate)
+                    .await
+                    .map_err(|e| e.to_string()),
+            );
+        });
+        reply
+    }
+}
+
+/// `ask` → `Result<DocId, String>`: a new `kind: note` document (§5.3) with derived file
+/// `documents/<id>/note.md`, its body imported from `markdown` and stamped `by`.
+#[derive(Clone, Debug)]
+pub struct CreateNote {
+    /// Display title.
+    pub title: String,
+    /// Initial body; empty → one empty paragraph.
+    pub markdown: String,
+    /// Who created it.
+    pub by: Principal,
+}
+
+impl Message<CreateNote> for DocumentActor {
+    type Reply = DelegatedReply<Result<DocId, String>>;
+
+    async fn handle(&mut self, m: CreateNote, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let id = DocId::new();
+        let now = now_ms();
+        let meta = DocMeta {
+            derived: Binding::Note.derived(&id),
+            id: id.clone(),
+            kind: DocKind::Note,
+            title: m.title,
+            binding: Binding::Note,
+            fragment: FRAGMENT.to_owned(),
+            members: vec![],
+            links: vec![],
+            agent: AgentStyle {
+                color: self.cfg.agent_color.clone(),
+            },
+            last_export: None,
+            created_ms: now,
+            updated_ms: now,
+        };
+        if let Err(e) = self.store.create(&meta).await {
+            tx.send(Err(format!("{e:#}")));
+            return reply;
+        }
+        self.start_import(
+            &id,
+            m.markdown,
+            m.by,
+            ImportMode::Replace,
+            ImportReply::Created(id.clone(), tx),
+        );
+        reply
     }
 }
 
@@ -932,22 +1327,34 @@ impl Message<HelperEvent> for DocumentActor {
             HelperEvent::Update {
                 doc,
                 update,
+                touched,
                 req,
                 ratio,
-                ..
             } => {
-                let (by, snapshot_first) = match self.imports.get(&req) {
-                    Some(imp) => (
+                let mut edit_done = false;
+                let (by, snapshot_first) = match (self.imports.get(&req), self.edits.get_mut(&req)) {
+                    (Some(imp), _) => (
                         imp.by.clone(),
                         imp.mode == ImportMode::Diff
                             && ratio.is_some_and(|(c, t)| t > 0 && c * 2 > t),
                     ),
-                    None => (Principal::Helper, false),
+                    (None, Some(e)) => {
+                        e.applied = true;
+                        edit_done = e.reply.is_none();
+                        (e.by.clone(), false)
+                    }
+                    (None, None) => (Principal::Helper, false),
                 };
+                if edit_done {
+                    self.edits.remove(&req);
+                }
                 if snapshot_first && let Err(e) = self.snapshot(&doc, Some("import-file")) {
                     tracing::warn!(doc = %doc, error = %e, "import-file snapshot failed");
                 }
-                if let Err(e) = self.apply(&doc, update, by, true).await {
+                if matches!(by, Principal::Agent { .. }) && !touched.is_empty() {
+                    self.set_agent_presence(&doc, &touched);
+                }
+                if let Err(e) = self.apply(&doc, update, by, true, touched).await {
                     tracing::warn!(doc = %doc, error = %e, "helper update refused");
                 }
             }

@@ -97,6 +97,128 @@ pub struct ImportResult {
     pub touched: Vec<String>,
 }
 
+/// One §5.2 block edit, as `packages/documents/src/protocol.ts` `Edit` spells it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "lowercase")]
+pub enum Edit {
+    /// Parse `markdown` (several top-level blocks allowed) and place the blocks; exactly one of after/before/at.
+    Insert {
+        /// Markdown to parse with the document schema.
+        markdown: String,
+        /// Sibling to insert after.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after: Option<String>,
+        /// Sibling to insert before.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        before: Option<String>,
+        /// `start` or `end` of the top level.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        at: Option<String>,
+    },
+    /// Remove `blocks`, put the parsed blocks where the first one was.
+    Replace {
+        /// Ids to remove.
+        blocks: Vec<String>,
+        /// Their replacement.
+        markdown: String,
+    },
+    /// Remove `blocks`.
+    Delete {
+        /// Ids to remove.
+        blocks: Vec<String>,
+    },
+    /// The inverse the helper computed for an earlier edit (§5.5); opaque here, passed back verbatim.
+    Restore {
+        /// Ids the edit inserted.
+        remove: Vec<String>,
+        /// Exact pre-edit block JSON.
+        blocks: Vec<Value>,
+        /// Where they go back.
+        anchor: Value,
+    },
+}
+
+/// `edit` result.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct EditResult {
+    /// Ids the edit inserted.
+    pub inserted: Vec<String>,
+    /// Ids the edit removed.
+    pub removed: Vec<String>,
+    /// Ids the transaction wrote (= inserted; the reveal keys on it).
+    #[serde(default)]
+    pub touched: Vec<String>,
+    /// Restores that put the exact prior blocks back, newest first.
+    #[serde(default)]
+    pub undo: Vec<Edit>,
+}
+
+/// `outline` result: the §5.1 text and the same as a tree.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct OutlineResult {
+    /// One line per block.
+    pub outline: String,
+    /// `[{id, type, text, children}]`.
+    #[serde(default)]
+    pub blocks: Vec<Value>,
+}
+
+/// Why the helper refused an `edit` (`protocol.ts` `EditError`, decoded from the error string).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "code", rename_all = "snake_case")]
+pub enum EditError {
+    /// No block has this id; `nearest` are the ids around the best match, in outline order.
+    UnknownBlock {
+        /// The id given.
+        id: String,
+        /// Candidates.
+        nearest: Vec<String>,
+    },
+    /// The frontmatter block is edited through `knowledge_put`, never here.
+    FrontmatterImmutable {
+        /// Its id.
+        id: String,
+    },
+    /// Malformed edit.
+    BadEdit {
+        /// Why.
+        message: String,
+    },
+    /// Anything else (helper crash, timeout, unreadable reply).
+    #[serde(skip)]
+    Other(String),
+}
+
+impl EditError {
+    /// Decode a helper error; non-JSON text is [`EditError::Other`].
+    pub fn from_helper(e: &Error) -> Self {
+        match e {
+            Error::Protocol(s) => serde_json::from_str(s).unwrap_or_else(|_| Self::Other(s.clone())),
+            other => Self::Other(other.to_string()),
+        }
+    }
+}
+
+impl std::fmt::Display for EditError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownBlock { id, nearest } => {
+                write!(f, "no block `{id}` in this document")?;
+                if !nearest.is_empty() {
+                    write!(f, "; nearest ids in outline order: {}", nearest.join(", "))?;
+                }
+                write!(f, ". Read the outline again and quote an id from it.")
+            }
+            Self::FrontmatterImmutable { .. } => write!(
+                f,
+                "the frontmatter block cannot be replaced or deleted; edit metadata with knowledge_put"
+            ),
+            Self::BadEdit { message } => write!(f, "bad edit: {message}"),
+            Self::Other(s) => f.write_str(s),
+        }
+    }
+}
+
 /// A line the helper pushed on its own, or the lifecycle notice.
 #[derive(Clone, Debug)]
 pub enum HelperEvent {
@@ -231,7 +353,21 @@ impl Helper {
 
     /// Lossy markdown of the whole document (frontmatter block → YAML header).
     pub async fn markdown(&self, doc: &DocId) -> Result<String, Error> {
-        let v = self.request("markdown", doc, json!({})).await?;
+        self.markdown_of(doc, None, false).await
+    }
+
+    /// Lossy markdown of `blocks` (any depth) or the whole document; `annotate` prefixes each block with `<!-- id -->` (§5.1).
+    pub async fn markdown_of(
+        &self,
+        doc: &DocId,
+        blocks: Option<&[String]>,
+        annotate: bool,
+    ) -> Result<String, Error> {
+        let mut fields = json!({ "annotate": annotate });
+        if let Some(b) = blocks {
+            fields["blocks"] = json!(b);
+        }
+        let v = self.request("markdown", doc, fields).await?;
         v.get("markdown")
             .and_then(Value::as_str)
             .map(str::to_owned)
@@ -255,15 +391,17 @@ impl Helper {
         )
     }
 
-    /// §5.1 outline text.
-    pub async fn outline(&self, doc: &DocId, depth: Option<u32>) -> Result<String, Error> {
+    /// §5.2 edits in one transaction; like `import`, the update precedes the reply ([`Pending::edit_result`]).
+    pub fn edit(&self, doc: &DocId, edits: &[Edit]) -> Pending {
+        self.request("edit", doc, json!({ "edits": edits }))
+    }
+
+    /// §5.1 outline: text plus tree.
+    pub async fn outline(&self, doc: &DocId, depth: Option<u32>) -> Result<OutlineResult, Error> {
         let v = self
             .request("outline", doc, json!({ "depth": depth }))
             .await?;
-        v.get("outline")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-            .ok_or_else(|| Error::Protocol("outline result lacks `outline`".into()))
+        serde_json::from_value(v).map_err(|e| Error::Protocol(format!("outline result: {e}")))
     }
 }
 
@@ -283,6 +421,12 @@ impl Pending {
     pub async fn import_result(self) -> Result<ImportResult, Error> {
         let v = self.await?;
         serde_json::from_value(v).map_err(|e| Error::Protocol(format!("import result: {e}")))
+    }
+
+    /// Decode an `edit` reply.
+    pub async fn edit_result(self) -> Result<EditResult, Error> {
+        let v = self.await?;
+        serde_json::from_value(v).map_err(|e| Error::Protocol(format!("edit result: {e}")))
     }
 
     /// Log a failure instead of returning it (open/update/close from the mailbox).

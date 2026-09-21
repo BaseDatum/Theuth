@@ -148,6 +148,7 @@ agent:
 #   export_debounce_ms: 400  # settle time before the derived .md is rewritten (hard cap 3 s)
 #   max_doc_bytes: 8388608   # an update that would grow a document past this is refused (DocTooLarge)
 #   snapshots_keep: 30       # automatic snapshots kept per document; labelled ones are never pruned
+#   agent_color: '#7c3aed'  # the agent's presence and typewriter reveal colour in every editor
 
 # surface:                   # Mermaid / json-render blocks in replies (design doc 30)
 #   enabled: true            # false: no prompt block, no rendering; fences stay code blocks

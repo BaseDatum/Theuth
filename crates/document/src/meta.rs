@@ -367,6 +367,14 @@ pub enum DocEvent {
         /// Author.
         by: Who,
     },
+    /// The agent (or, later, a member) wrote these blocks in the update that follows (§5.5, §6.4);
+    /// the UI keys the reveal and the hover attribution on it. Sent before the matching `Update`.
+    Authored {
+        /// Block ids the transaction inserted or replaced.
+        blocks: Vec<String>,
+        /// Author.
+        by: Who,
+    },
     /// An awareness update (base64 y-protocols) from someone else.
     Awareness {
         /// base64 awareness update.

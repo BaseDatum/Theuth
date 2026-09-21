@@ -191,6 +191,7 @@ Config (`~/.theuth/`, created on first run; details in
     export_debounce_ms: 400
     max_doc_bytes: 8388608
     snapshots_keep: 30
+    agent_color: "#7c3aed"
   web:
     engines: [google, bing, brave, qwant, duckduckgo, wikipedia, arxiv, github]   # keyless; search_web / read_url
   scrape:                         # design doc 38; scrape_url / crawl / map_site

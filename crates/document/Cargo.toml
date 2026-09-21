@@ -7,6 +7,7 @@ description = "Documents: the Yjs authority (yrs) behind every BlockNote editor,
 
 [dependencies]
 runtime = { workspace = true }
+tools = { workspace = true }
 kameo = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
@@ -26,7 +27,9 @@ ts-rs = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = "3"
+tools = { workspace = true }
 figment = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 [features]
 ts = ["dep:ts-rs", "runtime/ts"]

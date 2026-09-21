@@ -24,13 +24,15 @@ pub mod actor;
 pub mod helper;
 pub mod meta;
 pub mod store;
+pub mod tools;
 pub mod watch;
 
 pub use actor::{
-    ApplyUpdate, AwarenessUpdateMsg, Delete, DocumentActor, Ensure, ImportMarkdown, ImportOutcome,
-    ListDocs, Lookup, OpenDoc, Restore, Snapshot, Snapshots, Subscribe, Tick,
+    ApplyUpdate, AwarenessUpdateMsg, CreateNote, Delete, DocumentActor, Edit, EditOutcome, Ensure,
+    ImportMarkdown, ImportOutcome, ListDocs, Lookup, Markdown, OpenDoc, Outline, Restore,
+    Snapshot, Snapshots, Subscribe, Tick, UndoLastAgentEdit,
 };
-pub use helper::{ImportMode, helper_path, protocol_version};
+pub use helper::{Edit as BlockEdit, EditError, ImportMode, helper_path, protocol_version};
 pub use meta::*;
 
 /// Registry name of the [`DocumentActor`].
@@ -38,7 +40,7 @@ pub const DOCUMENT_ACTOR: &str = "document";
 /// Name of the `Y.XmlFragment` the blocks live in (`packages/documents/src/schema.ts` `FRAGMENT`).
 pub const FRAGMENT: &str = "document-store";
 
-/// `documents:` config section (59 §12; step 1 reads the three keys that matter now).
+/// `documents:` config section (59 §12; the keys step 1–2 read).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DocumentsConfig {
@@ -50,6 +52,8 @@ pub struct DocumentsConfig {
     pub max_doc_bytes: usize,
     /// Automatic snapshots kept per document (§4.6); labelled ones are never pruned.
     pub snapshots_keep: usize,
+    /// CSS colour of the agent's presence and reveal in every editor (§6.4, §12).
+    pub agent_color: String,
 }
 
 impl Default for DocumentsConfig {
@@ -59,6 +63,7 @@ impl Default for DocumentsConfig {
             export_debounce_ms: 400,
             max_doc_bytes: 8 * 1024 * 1024,
             snapshots_keep: 30,
+            agent_color: "#7c3aed".to_owned(),
         }
     }
 }
@@ -194,6 +199,17 @@ impl runtime::Plugin for DocumentPlugin {
                         if a.tell(Tick).await.is_err() { break; }
                     }
                 }
+            }
+        });
+        // §5: the tools and their prompt block, once the registry is up (12 §9).
+        let a = actor.clone();
+        let rt2 = rt.clone();
+        tokio::spawn(async move {
+            if let Some(reg) = rt2
+                .lookup_when::<::tools::ToolRegistry>(::tools::REGISTRY_ACTOR)
+                .await
+            {
+                tools::register(&reg, a, rt2.data_dir.clone()).await;
             }
         });
         if let Err(e) = watch::start(&rt.data_dir, actor) {

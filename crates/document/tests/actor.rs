@@ -7,12 +7,18 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use document::actor::DocumentActor;
+use document::tools::{CreateTool, DeleteTool, Docs, InsertTool, ReadTool, ReplaceTool};
 use document::{
-    ApplyUpdate, Binding, DOCUMENT_ACTOR, DocEvent, DocKind, DocumentsConfig, Ensure,
-    ImportMarkdown, ImportMode, OpenDoc, Principal, Subscribe, Tick, Who, helper, store,
+    ApplyUpdate, Binding, BlockEdit, DOCUMENT_ACTOR, DocEvent, DocKind, DocumentsConfig, Edit,
+    EditError, Ensure, ImportMarkdown, ImportMode, ListDocs, OpenDoc, Outline, Principal,
+    Subscribe, Tick, UndoLastAgentEdit, Who, helper, store,
 };
 use kameo::actor::{ActorRef, Spawn};
+use tools::{Tool, ToolCx};
 use yrs::{Doc, Text, Transact};
+
+/// Both tests register the one `DOCUMENT_ACTOR` name: one at a time.
+static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 const MD: &str = "---\ntype: fact\ntitle: A fact\ntags:\n  - x\n---\nhello there\n\nsecond block\n";
 
@@ -71,8 +77,9 @@ async fn wait_for(path: &Path, pred: impl Fn(&str) -> bool, within: Duration) ->
         }
         assert!(
             start.elapsed() < within,
-            "{} did not settle within {within:?}",
-            path.display()
+            "{} did not settle within {within:?}; now {:?}",
+            path.display(),
+            std::fs::read_to_string(path)
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -85,6 +92,7 @@ async fn stop(actor: ActorRef<DocumentActor>) {
 
 #[tokio::test]
 async fn knowledge_document_round_trip_export_import_restart() {
+    let _serial = SERIAL.lock().await;
     let Some(bin) = helper_bin() else {
         eprintln!("skipped: documents helper not built");
         return;
@@ -286,5 +294,299 @@ async fn knowledge_document_round_trip_export_import_restart() {
         .unwrap_err()
         .to_string();
     assert!(err.contains("DocTooLarge"), "{err}");
+    stop(actor).await;
+}
+
+fn cx(session: uuid::Uuid) -> ToolCx {
+    ToolCx {
+        session: runtime::SessionId(session),
+        call_id: String::new(),
+        quiet: false,
+        resources: std::sync::Arc::new(tools::SessionResources {
+            root: std::env::temp_dir(),
+            retention: tools::Retention::Durable,
+            generation: 1,
+        }),
+    }
+}
+
+async fn next_event(sub: &mut tokio::sync::mpsc::Receiver<DocEvent>) -> DocEvent {
+    tokio::time::timeout(Duration::from_secs(3), sub.recv())
+        .await
+        .expect("an event within 3 s")
+        .expect("subscription open")
+}
+
+/// Design 59 §5 / §14 row 2: the agent edits through the tools, one update per call, stamped
+/// `Agent{session}`, announced by `Authored`, revealed in the export, undone by the page menu.
+#[tokio::test]
+async fn agent_tools_edit_attribute_and_undo() {
+    let _serial = SERIAL.lock().await;
+    let _ = tracing_subscriber::fmt().with_env_filter("document=debug").with_test_writer().try_init();
+    let Some(bin) = helper_bin() else {
+        eprintln!("skipped: documents helper not built");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let derived = dir.path().join("knowledge/facts/b.md");
+    std::fs::create_dir_all(derived.parent().unwrap()).unwrap();
+    let md = "---\ntype: fact\ntitle: Bullets\n---\n## Heading\n\n* one\n* two\n* three\n";
+    std::fs::write(&derived, md).unwrap();
+    let actor = start(dir.path(), &bin).await;
+    let session = uuid::Uuid::now_v7();
+    let docs = Docs::new(actor.clone(), dir.path().to_path_buf());
+
+    // `knowledge:<id>` resolves by creating the document from the file (§7.1).
+    let read = ReadTool(docs.clone())
+        .call(
+            serde_json::from_value(serde_json::json!({ "doc": "knowledge:facts/b" })).unwrap(),
+            cx(session),
+        )
+        .await
+        .unwrap();
+    assert!(!read.is_error, "{}", read.content);
+    let outline = read.content.clone();
+    let lines: Vec<&str> = outline.lines().collect();
+    assert!(lines[0].starts_with("[fm] type=fact title=\"Bullets\""), "{outline}");
+    assert_eq!(lines.len(), 5, "{outline}");
+    let id_of = |line: &str| line.split_whitespace().next().unwrap().to_owned();
+    let two = id_of(lines[3]);
+    assert!(lines[3].ends_with("• two"), "{outline}");
+    let structured = read.structured.expect("structured");
+    let blocks = structured["blocks"].as_array().unwrap();
+    assert_eq!(blocks.len(), 5);
+    assert_eq!(blocks[3]["id"].as_str().unwrap(), two);
+    assert_eq!(blocks[3]["type"], "bulletListItem");
+    assert_eq!(structured["text"].as_str().unwrap(), outline);
+    let id = actor
+        .ask(document::Lookup {
+            binding: Binding::Knowledge("facts/b".into()),
+        })
+        .await
+        .unwrap()
+        .expect("created on demand");
+    let mut sub = actor
+        .ask(Subscribe {
+            doc: id.clone(),
+            conn: Some(1),
+        })
+        .await
+        .unwrap();
+    // Wait out the on-demand creation's export so the pre-edit file is settled.
+    let before = wait_for(&derived, |s| s.contains("* three"), Duration::from_secs(3)).await;
+    while let Ok(Some(ev)) = tokio::time::timeout(Duration::from_millis(300), sub.recv()).await {
+        assert!(matches!(ev, DocEvent::Exported | DocEvent::Awareness { .. }), "{ev:?}");
+    }
+
+    // doc_replace: one update, Agent-stamped, Authored first, revealed ids = inserted ids.
+    let r = ReplaceTool(docs.clone())
+        .call(
+            serde_json::from_value(serde_json::json!({ "doc": id.as_str(), "blocks": [two], "markdown": "* X\n" }))
+                .unwrap(),
+            cx(session),
+        )
+        .await
+        .unwrap();
+    assert!(!r.is_error, "{}", r.content);
+    let out = r.structured.unwrap();
+    assert_eq!(out["removed"], serde_json::json!([two]));
+    let x = out["inserted"][0].as_str().unwrap().to_owned();
+    // Awareness (agent present), Authored, Update, then the agent's second awareness carries the blocks.
+    let mut saw = Vec::new();
+    for _ in 0..4 {
+        saw.push(next_event(&mut sub).await);
+    }
+    let authored = saw
+        .iter()
+        .position(|e| matches!(e, DocEvent::Authored { .. }))
+        .expect("Authored delivered");
+    let update = saw
+        .iter()
+        .position(|e| matches!(e, DocEvent::Update { .. }))
+        .expect("Update delivered");
+    assert!(authored < update, "Authored precedes Update: {saw:?}");
+    match &saw[authored] {
+        DocEvent::Authored { blocks, by } => {
+            assert_eq!(blocks, &vec![x.clone()]);
+            assert_eq!(
+                by,
+                &Who::Agent {
+                    session: session.to_string()
+                }
+            );
+        }
+        _ => unreachable!(),
+    }
+    match &saw[update] {
+        DocEvent::Update { by, .. } => assert_eq!(
+            by,
+            &Who::Agent {
+                session: session.to_string()
+            }
+        ),
+        _ => unreachable!(),
+    }
+    assert!(saw.iter().any(|e| matches!(e, DocEvent::Awareness { .. })));
+    let after = wait_for(&derived, |s| s.contains("* X"), Duration::from_secs(3)).await;
+    assert_eq!(after, before.replace("* two", "* X"));
+    // The log stamps the session (tag 2 + 16 bytes).
+    let log = std::fs::read(dir.path().join(format!("documents/{id}/updates.log"))).unwrap();
+    let mut tags = Vec::new();
+    let mut at = 0;
+    while at + 5 <= log.len() {
+        let tag = log[at];
+        at += 1;
+        if tag == 2 {
+            assert_eq!(&log[at..at + 16], session.as_bytes());
+            at += 16;
+        }
+        let n = u32::from_be_bytes(log[at..at + 4].try_into().unwrap()) as usize;
+        at += 4 + n;
+        tags.push(tag);
+    }
+    assert!(tags.contains(&2), "{tags:?}");
+
+    // doc_insert after X, doc_delete it again, doc_read shows each step.
+    let r = InsertTool(docs.clone())
+        .call(
+            serde_json::from_value(serde_json::json!({ "doc": id.as_str(), "markdown": "* Y\n", "after": x }))
+                .unwrap(),
+            cx(session),
+        )
+        .await
+        .unwrap();
+    assert!(!r.is_error, "{}", r.content);
+    let y = r.structured.unwrap()["inserted"][0].as_str().unwrap().to_owned();
+    let o = actor
+        .ask(Outline {
+            doc: id.clone(),
+            depth: None,
+        })
+        .await
+        .unwrap();
+    let ol: Vec<&str> = o.outline.lines().collect();
+    assert!(ol[3].ends_with("• X") && ol[4].ends_with("• Y") && ol[5].ends_with("• three"), "{}", o.outline);
+    assert_eq!(id_of(ol[4]), y);
+    let r = DeleteTool(docs.clone())
+        .call(
+            serde_json::from_value(serde_json::json!({ "doc": id.as_str(), "blocks": [y] })).unwrap(),
+            cx(session),
+        )
+        .await
+        .unwrap();
+    assert!(!r.is_error, "{}", r.content);
+    let md_now = actor
+        .ask(document::Markdown {
+            doc: id.clone(),
+            blocks: None,
+            annotate: true,
+        })
+        .await
+        .unwrap();
+    assert!(md_now.contains(&format!("<!-- {x} -->\n* X\n")), "{md_now}");
+    assert!(!md_now.contains("* Y"));
+
+    // Errors the model can act on.
+    let r = DeleteTool(docs.clone())
+        .call(
+            serde_json::from_value(serde_json::json!({ "doc": id.as_str(), "blocks": ["nope"] })).unwrap(),
+            cx(session),
+        )
+        .await
+        .unwrap();
+    assert!(r.is_error);
+    assert!(r.content.contains("no block `nope`") && r.content.contains("nearest ids"), "{}", r.content);
+    let fm = blocks[0]["id"].as_str().unwrap();
+    let e = actor
+        .ask(Edit {
+            doc: id.clone(),
+            edits: vec![BlockEdit::Delete {
+                blocks: vec![fm.to_owned()],
+            }],
+            by: Principal::Agent { session },
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(e, kameo::error::SendError::HandlerError(EditError::FrontmatterImmutable { .. })),
+        "{e:?}"
+    );
+    assert!(e.to_string().contains("knowledge_put"), "{e}");
+
+    // "Undo last agent edit" reverts the delete of Y (the last agent edit) as the owner.
+    let u = actor
+        .ask(UndoLastAgentEdit { doc: id.clone() })
+        .await
+        .unwrap();
+    assert_eq!(u.inserted, vec![y.clone()]);
+    let restored = wait_for(&derived, |s| s.contains("* Y"), Duration::from_secs(3)).await;
+    assert_eq!(restored, before.replace("* two", "* X\n* Y"));
+    let e = actor
+        .ask(UndoLastAgentEdit { doc: id.clone() })
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("no agent edit to undo"), "{e}");
+    // The undo's update is the owner's: no Authored, no reveal.
+    let mut owner_update = false;
+    while let Ok(Some(ev)) = tokio::time::timeout(Duration::from_millis(300), sub.recv()).await {
+        match ev {
+            DocEvent::Update { by: Who::Owner, .. } => owner_update = true,
+            DocEvent::Authored { by: Who::Owner, .. } => panic!("owner undo announced as authored"),
+            _ => {}
+        }
+    }
+    assert!(owner_update);
+
+    // Byte-for-byte: undo a replace of X and the export equals the pre-edit file.
+    let pre = std::fs::read_to_string(&derived).unwrap();
+    let r = ReplaceTool(docs.clone())
+        .call(
+            serde_json::from_value(serde_json::json!({ "doc": id.as_str(), "blocks": [x], "markdown": "## Not a bullet\n\npara\n" }))
+                .unwrap(),
+            cx(session),
+        )
+        .await
+        .unwrap();
+    assert!(!r.is_error, "{}", r.content);
+    wait_for(&derived, |s| s.contains("## Not a bullet"), Duration::from_secs(3)).await;
+    actor
+        .ask(UndoLastAgentEdit { doc: id.clone() })
+        .await
+        .unwrap();
+    let back = wait_for(&derived, |s| !s.contains("Not a bullet"), Duration::from_secs(3)).await;
+    assert_eq!(back, pre);
+
+    // doc_create: a note with its derived file, listed by kind.
+    let r = CreateTool(docs.clone())
+        .call(
+            serde_json::from_value(serde_json::json!({ "title": "Scratch", "markdown": "# Scratch\n\nhello\n" })).unwrap(),
+            cx(session),
+        )
+        .await
+        .unwrap();
+    assert!(!r.is_error, "{}", r.content);
+    let out = r.structured.unwrap();
+    let note = out["doc"].as_str().unwrap().to_owned();
+    assert_eq!(out["url"], format!("theuth://notes/{note}"));
+    let note_md = wait_for(
+        &dir.path().join(format!("documents/{note}/note.md")),
+        |s| s.contains("hello"),
+        Duration::from_secs(3),
+    )
+    .await;
+    assert_eq!(note_md, "# Scratch\n\nhello\n");
+    let notes = actor
+        .ask(ListDocs {
+            kind: Some(DocKind::Note),
+            limit: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0].id.as_str(), note);
+    assert_eq!(notes[0].title, "Scratch");
+    let all = actor.ask(ListDocs::default()).await.unwrap();
+    assert_eq!(all.len(), 2);
     stop(actor).await;
 }
