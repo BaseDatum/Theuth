@@ -1,13 +1,28 @@
-import { describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import * as Y from "yjs";
 import { blocks, importMarkdown, open } from "../src/convert.ts";
 import { PROTOCOL_VERSION, type Res } from "../src/protocol.ts";
 
-const entry = join(import.meta.dir, "..", "src", "helper.ts");
+const root = join(import.meta.dir, "..");
+const binary = join(root, "dist", "theuth-documents");
+// Every test here is one stdin→EOF session asserting the exit code and the complete output, so a
+// shared long-lived process would test something else; instead spawn the compiled binary (~1 s
+// even under load; `bun run src/helper.ts` took 28 s at load average 114) and allow 60 s.
+const TIMEOUT = 60_000;
+let cmd: string[] = ["bun", "run", join(root, "src", "helper.ts")];
+
+beforeAll(async () => {
+  if (!existsSync(binary)) {
+    const build = Bun.spawn(["bun", "run", "build:helper"], { cwd: root, stdout: "inherit", stderr: "inherit" });
+    if ((await build.exited) !== 0) return; // fall back to the source entry
+  }
+  if (existsSync(binary)) cmd = [binary];
+});
 
 async function spawnHelper(stdin: string, ...args: string[]): Promise<{ code: number; stdout: string }> {
-  const proc = Bun.spawn(["bun", "run", entry, ...args], { stdin: new TextEncoder().encode(stdin), stdout: "pipe", stderr: "pipe" });
+  const proc = Bun.spawn([...cmd, ...args], { stdin: new TextEncoder().encode(stdin), stdout: "pipe", stderr: "pipe" });
   const stdout = await new Response(proc.stdout).text();
   const code = await proc.exited;
   return { code, stdout };
@@ -26,13 +41,13 @@ describe("theuth-documents protocol", () => {
     const { code, stdout } = await spawnHelper("", "--version");
     expect(code).toBe(0);
     expect(stdout.trim()).toBe(`theuth-documents ${PROTOCOL_VERSION}`);
-  });
+  }, TIMEOUT);
 
   test("EOF with no requests exits 0 and prints nothing", async () => {
     const { code, stdout } = await spawnHelper("");
     expect(code).toBe(0);
     expect(stdout).toBe("");
-  });
+  }, TIMEOUT);
 
   test("bad JSON and bad shapes yield error lines, not a crash; later requests still serve", async () => {
     const { code, lines } = await run(`{not json\n${req({ id: 7, op: "nope", doc: "d" })}${req({ id: 8, op: "markdown", doc: "missing" })}${req({ id: 9, op: "open", doc: "d" })}${OPEN}`);
@@ -43,7 +58,7 @@ describe("theuth-documents protocol", () => {
     expect(lines[2]).toMatchObject({ id: 8, ok: false, error: "document missing is not open" });
     expect(lines[3]).toMatchObject({ id: 9, ok: false });
     expect(lines[4]).toEqual({ id: 1, ok: true });
-  });
+  }, TIMEOUT);
 
   test("open → import emits exactly one ev:update before the reply; markdown reads back; close forgets", async () => {
     const md = "---\ntype: fact\ntitle: t\n---\nhello\n";
@@ -64,7 +79,7 @@ describe("theuth-documents protocol", () => {
     expect((outline.result as { outline: string }).outline).toMatch(/^\[fm\] type=fact title="t"\n[0-9a-f-]{36} hello$/);
     expect(lines[5]).toEqual({ id: 5, ok: true });
     expect(lines[6]).toMatchObject({ id: 6, ok: false });
-  });
+  }, TIMEOUT);
 
   test("an authority update is applied silently (no ev:update echo)", async () => {
     // Build a state in one process, feed it as `update` to another.
@@ -75,7 +90,7 @@ describe("theuth-documents protocol", () => {
     expect(lines).toHaveLength(3);
     expect(lines[1]).toEqual({ id: 2, ok: true });
     expect(lines[2]).toMatchObject({ id: 3, ok: true, result: { markdown: "x\n" } });
-  });
+  }, TIMEOUT);
 
   test("edit emits one ev:update (touched = inserted ids) before a result carrying the undo; a bad id is a JSON error", async () => {
     const md = "---\ntype: fact\ntitle: t\n---\nhello\n\nworld\n";
@@ -101,5 +116,5 @@ describe("theuth-documents protocol", () => {
     if (!("error" in err)) throw new Error("unreachable");
     expect(JSON.parse(err.error)).toMatchObject({ code: "unknown_block", id: "nope" });
     expect(lines).toHaveLength(6);
-  });
+  }, TIMEOUT);
 });
