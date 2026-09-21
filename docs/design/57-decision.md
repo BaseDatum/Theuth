@@ -640,3 +640,69 @@ Three of four pass; latency fails by 1.5–2×, with the cause identified as lau
 ### Checks
 
 `cargo check --workspace` green (`--all-targets` fails in `nodes` on a missing generated `bindings/methods.json` — pre-existing, unrelated); `cargo check -p decision --features candle --all-targets` green; `cargo test --release -p decision --features candle`: **33 unit + 2 candle model-gated (CPU f32 Δp 0.0000, Metal f16 Δp 0.0006) + 3 ORT model-gated**, all pass; `cargo clippy -p decision --no-deps --all-targets` clean with and without `--features candle` (one `large_enum_variant` in the bench fixed by boxing). `cargo test -p tools`' two pty failures in non-tty shells not re-run.
+
+## As built — follow-ups (1)+(2) (2026-09-21): candle is the engine; laya-rs vendored; sha256 off the load path
+
+Brief: `/tmp/laya-design/omp-followup-12.md`, executing the §12.8 Outcome's follow-ups (1) and (2). Commits on `feat/decision-default` off main `79dd8f6`: `abaad81` (vendor + NOTICE), `9b645ae` (candle is the engine — breaking), `3f76b52` (hash off the load path), this note. Machine state during this task: another agent's `cargo test -p agent`, `cargo check -p rpc` and two BoringSSL cmake builds ran in `../theuth` throughout — **load average 15–100 during every measurement below**, recorded per table. Sky's instruction: bench anyway, record the load, re-run K2/S339 once at the end.
+
+### Vendoring (`abaad81`)
+
+`crates/decision/src/candle/{model,weights,config}.rs` are laya-rs 0.1.0's `src/{model,weights,config}.rs` from the crates.io tarball, 1,210 lines; `candle/mod.rs` is the former `candle.rs`. `crates/decision/NOTICE` records license (Apache-2.0 per the crate's README — the tarball ships no LICENSE/NOTICE file, its NOTICE link points at the 404 repo), source URL, publisher and every local change:
+
+- every file: a provenance header + `#![allow(missing_docs, clippy::manual_is_multiple_of)]` (our lints: `missing_docs = warn`, `clippy::all = deny`, and this toolchain's `manual_is_multiple_of` post-dates the code);
+- `config.rs`: `laya_core::error::{Error, Result}` → a local `Error::Config(String)` + `Result<T, E = Error>`; `AgentConfig::temperature_for` (laya-core's `temp_bucket`; ours is `LayaConfig::temperature`) and the `raw: Value` field (their `convert` command) removed;
+- `model.rs`: `crate::config` → `super::config`; the Metal mask regression test gated on `cfg(target_os = "macos")` — there is no crate feature `metal` here, Metal is a target dependency.
+
+Their 14 unit tests (config validation, name sanitising, the sliding mask incl. the Metal-vs-CPU bit-for-bit check) run in ours. Dependencies: `laya-rs` and `laya-core` gone; `candle-core`/`candle-nn` 0.11 are direct workspace deps; `decision`'s macOS target table turns on `metal` + `accelerate` (the CPU fallback on a Mac is Accelerate-BLAS now); feature `cuda` forwards to candle, off by default, for 58. **Still duplicated in `Cargo.lock`, and why**: `safetensors` 0.8.0 (candle-core's pin) beside 0.7.0 (`ptts` → `voice`) and 0.4.5 (another target's tree); `tokenizers` 0.22.2 — candle-core 0.11 lists `tokenizers ^0.22` as a *normal* dependency — beside our 0.23.2. Neither goes away without patching candle-core; no conflicts.
+
+### Candle is the engine (`9b645ae`, breaking)
+
+- `laya.rs` keeps the pure functions: `build_sequence`, `collate(rows, floor)` (the "bucket" is a floor now — `Loaded::run` passes `(0, 2)`: dynamic S, K ≥ 2 because the act head indexes `slots − 2`), `postprocess`, `LayaConfig`, `RowOut`, `Batch`. Gone: the ort `Session`, `Provider`/`Units`, `BUCKET`, CoreML EP registration + cache dir, `parse_partitions`, `verify_graph`, `floats`, `f16_to_f32`, and with them the `ort`, `half` and `models` dependencies (nothing else in the crate touched them; `ort` stays in the workspace for parakeet/voice/meeting). 1,130 → 693 lines incl. tests.
+- `candle::Loaded` (was `CandleLoaded`) is the one `Oracle`. **`verify_header`** replaces `verify_graph`: before any weight is read, the safetensors header — `(name, dtype, shape)` per tensor — is checked against `encoder/config.json` + `rl_agent_config.json`: `tok_embeddings` is `[vocab_size, hidden_size]`, the last encoder layer (`encoder.layers.{L−1}.attn.Wqkv.weight`), the last head layer (`head.layers.{H−1}.self_attn.in_proj.weight`), `scorer.layers.3.weight`, `act_head.layers.2.weight`, `type_emb.weight` exist (names compared after `sanitize_name`, so the PyTorch export and an MLX export both pass), and every tensor is f16 / bf16 / f32. Failures are named (`missing tensors …`, `tok_embeddings is [..], encoder/config.json says [..]`, `` `x` is U8, expected … ``). Unit test `header_verification` covers both layouts, a layer short, a different vocabulary and a quantised export. The real file: 206 tensors, all F16 except `temperature F32 [3]`.
+- Config: `decision.engine`, `threads`, `coreml` removed (serde ignores unknown keys, so old files still load); `device: auto | cpu | metal` stays (`auto` = Metal f16 on `aarch64-apple-darwin`, else CPU f32; `metal` warns and falls back to CPU f32 when no device). **`MODEL_SUBDIR = "decision"`; `MODEL_FILES = ["model.safetensors", "encoder/config.json", "tokenizer/tokenizer.json", "rl_agent_config.json"]`** — the Hugging Face `convaiinnovations/laya` root layout; `Engine::missing_files` names exactly these (unit test `missing_model_escalates_and_is_rechecked` asserts the four, then three after one lands). `Engine::new(cfg, model_dir, log)` / `with_loader` / `Loader` lose the `data_dir` only `ort_lib` needed.
+- On this Mac: `~/.theuth/models/decision/` (fp16 ONNX + flat tokenizer) → **`~/.theuth/models/decision-onnx-ref/`** (kept, reference only; `decision-fp32/` untouched, same status); `~/.theuth/models/decision-candle/` → **`~/.theuth/models/decision/`**.
+- `scripts/release-models.sh` `REQUIRED`: the three ONNX-layout entries → the four safetensors-layout paths (the script is path-agnostic; `pocket-tts/voices/…` was already nested). `crates/desktop/src/models.rs` needed nothing: `download` does `create_dir_all(dest.parent())`, the trust check allows any run of `Normal` components, and its own test uses `m/f.bin`. Config comment in `theuth/src/main.rs` rewritten (`device`, one `model_dir` layout, no `engine`/`threads`/`coreml`).
+- Bench: `--device metal|cpu --dtype f16|f32 --dump --ref`; ORT flags and the two-engine enum gone. `tests/model.rs`: the README four questions on `Device::Auto` against `tests/fixtures/probs-cpu-fp32.json` (argmax + |Δp| ≤ 0.01; the fixture is the step-2d ORT fp32 CPU dump and stays the reference precisely because it came from an independent runtime and export — noted in the test and bench docs) + the actor end to end; `tests/candle.rs` folded in.
+
+### sha256 off the load path (`3f76b52`)
+
+Integrity is verified once, at download (`desktop/src/models.rs` streams into `Sha256` and refuses a size or digest mismatch against `models.json`). At load, the safetensors header parse *is* the size check (offsets past the file are refused) and `verify_header` the structure check. The hash is only the log's identity, so:
+
+- `Oracle::model_sha()` returns a shared **`ModelSha = Arc<Mutex<String>>`**, seeded by `Loaded::open` with **`size:<bytes>`** (`size:842609210` for this checkpoint) and overwritten by a background `std::thread` that starts **after** `DecisionModel::load` — started before the upload it competed with the mmap for the page cache (681 ms load in that variant). The engine reads it per row (`escalate`, `decide`, the blocking run) instead of copying once at load; the "model loaded" line prints whatever it is at that moment.
+- **Rows written before the hash lands carry `model_sha: "size:842609210"` and a `gate_version` derived from that string** (the brief's "size-based tag" option, not `null`: the column stays a non-empty string and the fold does not care). The window is the hash's ~2 s once per *download*, not per load: the thread caches `<hex> <size> <mtime>` in **`model.safetensors.sha256`** beside the weights and reuses it while size and mtime match, so an `idle_unload` reload every quiet ten minutes does not re-read 843 MB. A sidecar that cannot be written is a debug line.
+- `AskRow.model_sha` doc updated; `hash_time` is gone from `Loaded`.
+
+### Bench (`examples/bench.rs`, M3 Max, 20 warm runs per row, S/K dynamic, **load average 15–27 from other sessions' builds**)
+
+Outputs `/tmp/laya-design/bench-fu12-{metal-f16,cpu-f32,metal-f16-run1,metal-f16-run2,metal-f16-final}.txt`, each with `uptime` before and after.
+
+| device / dtype | load avg | cold load | first inference | RSS peak / now after first inference | K2 S339 p50/p95 ms | K2 S512 | K5 S393 | K5 S512 | K10 S473 | K10 S512 | README 4-Q | parity vs fp32 ref |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| Metal f16 (sidecar present) | 16.3 | **1177 ms** | 96 ms | 1674 / **897 MiB** | 119.1 / 163.7 | 176.8 / 184.8 | 121.1 / 131.4 | 169.8 / 184.3 | 159.3 / 204.2 | 164.2 / 182.0 | 96 ms | 4/4, **0.0006** |
+| Metal f16, final K2/S339 re-run | 26.9 | 1158 ms | 97 ms | 1674 / 897 MiB | 126.4 / 203.1 | | | | | | 114 ms | |
+| Metal f16, first load after the cutover (sidecar absent → hash thread runs during the rows) | ~30 | 1275 ms | 100 ms | 1674 / 900 MiB | 156.9 / 201.4 | 265.6 / 313.7 | 224.9 / 256.8 | 207.5 / 303.3 | 307.9 / 328.0 | 315.3 / 340.9 | — | — |
+| Metal f16, second load (sidecar hit) | ~30 | **316 ms** | 105 ms | 1674 / 898 MiB | 138.9 / 178.9 | 243.3 / 288.6 | 165.0 / 189.6 | 242.5 / 282.3 | 203.6 / 280.8 | 204.2 / 222.4 | — | — |
+| CPU f32 + Accelerate (now the default CPU build on a Mac) | 15.2 → 100 | **328 ms** | 342 ms | 2574 / 1820 MiB | 320.3 / 325.9 | 477.8 / 521.6 | 524.5 / 1024.2 | 731.7 / 1223.1 | 593.8 / 953.5 | 543.6 / 836.0 | 355 ms | 4/4, 0.0000 |
+| *step 2e, quiet machine, hash inside load, for scale* | ~1 | 2.05 s (1.87 s sha256) | 93 ms | 1680 / 903 MiB | 73.9 / 74.3 | 110.5 / 110.9 | 88.0 / 88.3 | 110.4 / 111.0 | 105.9 / 106.5 | 110.2 / 111.0 | 72 ms | 4/4, 0.0006 |
+
+Reading it:
+
+- **The hash is gone from the load**: `model id at load` is `size:842609210` in every run and the hex by the end of the bench (`model id now`). What remains of the cold load is mmap + header check + Metal upload (or the f16→f32 cast on CPU), and *that* is what the load average inflates: **316–328 ms** in the two runs that met the ≤ 0.5 s goal (one Metal, one CPU), 1.16–1.28 s in the three Metal runs that did not, versus ~0.16–0.2 s for the same work on the quiet machine in step 2e. The goal is met by construction and on the CPU path under load; the Metal upload under a load average of 16–27 is not a number this session can clean — re-measure on a quiet box before quoting it.
+- **Latency is 1.6–2.7× step 2e's** (K2 S339 p50 119–157 ms vs 74; p95 164–203 vs 74) with the same probabilities to 4 decimals, the same RSS and the same first-inference time. The per-op Metal dispatch is CPU-side work fighting 30–100 runnable threads; the final K2/S339 re-run (load 27) is in the same band, so this is the machine, not a regression — nothing in this task touches the forward pass. CPU f32 with Accelerate, oddly, came out *better* than step 2e's Accelerate run on the K2 rows (320 vs 422 ms p50) and worse on its p95s — same story.
+- **Memory unchanged**: 897–900 MiB RSS after the first inference on Metal (one fp16 copy on the GPU + runtime), 1674 MiB `ru_maxrss` peak = the upload transient; CPU f32 1820 MiB now / 2574 MiB peak.
+- Parity unchanged: Metal f16 4/4, max |Δp| 0.0006; CPU f32 4/4, 0.0000.
+
+### The daemon
+
+`cargo build --release -p theuth` with candle in: **12 m 42 s wall** (7,771 s user; load 40–70), `target/release/t` = **393,581,488 B**. Baseline at main `79dd8f6` (decision on ORT, no candle) built the same way in a throwaway worktree: **12 m 47 s** (7,948 s user), **390,310,432 B** → candle + Metal kernels + Accelerate binding cost **+3,271,056 B (+0.84 %)** and no build time (ORT is still compiled for `voice`). `t --data-dir /tmp/theuth-hl --headless` with `decision: {enabled: true}` (RPC on a free port — the app's launch environment exports `THEUTH_RPC__LISTEN`, which is why the first two attempts hit "address in use") logs `started plugin="decision"` and `rpc listening`, never loads the model (no `model loaded` line, no `decisions/` dir, RSS 100 MiB after 5 s): lazy as before.
+
+### Checks
+
+`cargo clippy -p decision --no-deps --all-targets` clean; `cargo test --release -p decision`: **44 unit** (30 ours + 14 vendored) **+ 2 model-gated** (README parity on `Device::Auto` = Metal f16, Δp 0.0006; actor end to end) pass; `cargo check --workspace --all-targets`: only the pre-existing `nodes` lib-test error (`include_str!("../../../bindings/methods.json")`; `bindings/` is gitignored and written by `cargo test -p rpc`'s export test, absent in a fresh worktree). `cargo test -p tools`' two pty failures not re-run.
+
+### Open
+
+- Follow-up (3) — the fused-kernel pass on `candle/model.rs` (zero-bias LayerNorm, flattened GEMM, fused RoPE/GeGLU) with 50 ms as the target — is now possible on vendored code; not started.
+- 2b: publish `decision/{model.safetensors,encoder/config.json,tokenizer/tokenizer.json,rl_agent_config.json}` (842,609,210 + 2,083 + 3,583,228 + 745 B) to the bucket and drop the ONNX objects; `REQUIRED` already lists them.
+- `decision.device: cuda` for 58 once the Linux build exists (`--features cuda` compiles the forward; `Device::new_cuda` is a two-line addition to `Device::metal()`'s match).
+- The `theuth` binary is 375 MiB either way — worth a look at what else is in it, unrelated to decision.
