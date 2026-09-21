@@ -67,9 +67,9 @@ use tokio::sync::broadcast;
 use tools::git::SyncResult;
 use tools::{
     AddRepo, AddServer, Answer, Approval, ApprovalId, ApprovalsState, AskId, CancelJob, Decision,
-    Gate, GetApprovals, JOBS_ACTOR, JobId, JobView, Jobs, ListJobs, ListServers, ListTools, Mcp,
-    McpLogin, McpLogout, McpProgress, McpServer, Progress, RemoveServer, RepoInfo, Resolve,
-    SetApprovals, SetGate, SetHidden, SyncMcp, ToolRegistry, ToolSpec,
+    Gate, GetApprovals, GetPtyIdle, JOBS_ACTOR, JobId, JobView, Jobs, ListJobs, ListServers,
+    ListTools, Mcp, McpLogin, McpLogout, McpProgress, McpServer, Progress, RemoveServer, RepoInfo,
+    Resolve, SetApprovals, SetGate, SetHidden, SetPtyIdle, SyncMcp, ToolRegistry, ToolSpec,
 };
 use tools::{
     Key, ListTerminals, PtyAttach, PtyChunk, PtyInput, PtyOut, PtyResize, PtyScreen,
@@ -114,6 +114,8 @@ pub struct Info {
     pub stream_idle_secs: u64,
     /// `agent.max_salvages`: interrupted-reply recoveries per turn before it stops with an error.
     pub max_salvages: u32,
+    /// `tools.pty_idle_secs`: quiet-screen seconds before a PTY job wakes the model with `<job_idle>` (61); `0` = never.
+    pub pty_idle_secs: u64,
     /// Harness display name (`link.name`, else the hostname): what a linked
     /// device shows in its harness switcher (31 §6.4).
     pub name: String,
@@ -301,6 +303,9 @@ pub trait Api {
     /// Persist `agent.max_salvages`; new sessions use it.
     #[method(name = "set_max_salvages")]
     async fn set_max_salvages(&self, count: u32) -> RpcResult<()>;
+    /// Persist `tools.pty_idle_secs` (61 §1.6); `start` calls without `idle_secs` use it from then on. `0` = never.
+    #[method(name = "set_pty_idle")]
+    async fn set_pty_idle(&self, seconds: u64) -> RpcResult<()>;
     /// The live title model (`agent.title_model`), if set.
     #[method(name = "title_model")]
     async fn title_model(&self) -> RpcResult<Option<ModelInfo>>;
@@ -1415,6 +1420,7 @@ impl ApiServer for Server {
         let max_tool_rounds = ask::<Agents, _>(agent::AGENT_ACTOR, GetMaxToolRounds).await?;
         let stream_idle_secs = ask::<Agents, _>(agent::AGENT_ACTOR, GetStreamIdle).await?;
         let max_salvages = ask::<Agents, _>(agent::AGENT_ACTOR, GetMaxSalvages).await?;
+        let pty_idle_secs = ask::<ToolRegistry, _>(tools::REGISTRY_ACTOR, GetPtyIdle).await?;
         let name = match self.rt.section::<LinkConfig>("link") {
             Ok(c) if !c.name.is_empty() => c.name,
             _ => HOSTNAME.clone(),
@@ -1432,6 +1438,7 @@ impl ApiServer for Server {
             max_tool_rounds,
             stream_idle_secs,
             max_salvages,
+            pty_idle_secs,
             name,
             communication,
             app_enabled: apps().is_ok(),
@@ -1805,6 +1812,10 @@ impl ApiServer for Server {
 
     async fn set_max_salvages(&self, count: u32) -> RpcResult<()> {
         ask::<Agents, _>(agent::AGENT_ACTOR, SetMaxSalvages { count }).await
+    }
+
+    async fn set_pty_idle(&self, seconds: u64) -> RpcResult<()> {
+        ask::<ToolRegistry, _>(tools::REGISTRY_ACTOR, SetPtyIdle { seconds }).await
     }
 
     async fn title_model(&self) -> RpcResult<Option<ModelInfo>> {

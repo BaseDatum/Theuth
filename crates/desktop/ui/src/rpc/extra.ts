@@ -27,6 +27,8 @@ export type Info = {
   stream_idle_secs?: number
   /** `agent.max_salvages`; absent on an older harness. */
   max_salvages?: number
+  /** `tools.pty_idle_secs` (61): quiet-screen seconds before a PTY job wakes the model; `0` = never. Absent on an older harness. */
+  pty_idle_secs?: number
   /** Harness display name (`link.name`, else the hostname; 31 §6.4). */
   name: string
   /** `std::env::consts::OS`: `macos`, `linux`, … (32 §15 row 2). */

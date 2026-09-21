@@ -8,6 +8,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -100,6 +101,9 @@ pub struct ToolRegistry {
     shells: Arc<Mutex<HashMap<SessionId, Shell>>>,
     /// How long [`CloseTreeAll`] waits on one participant.
     close_timeout: Duration,
+    /// `tools.pty_idle_secs`, shared with the `start` tool (61 §1.6); the
+    /// persistent knob is [`SetPtyIdle`].
+    pty_idle: Arc<AtomicU64>,
 }
 
 /// `ask` → `Vec<ToolSpec>` for every registered tool, sorted by name; with a
@@ -364,6 +368,18 @@ pub struct GetApprovals {
     /// Session to read; `None` reads the global default alone.
     pub session: Option<SessionId>,
 }
+
+/// `ask` → `()`: persist `tools.pty_idle_secs` (61 §1.6) and use it for
+/// every later `start` without `idle_secs`; `0` = never.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct SetPtyIdle {
+    /// Quiet-screen seconds before `<job_idle>`.
+    pub seconds: u64,
+}
+
+/// `ask` → `u64`: the live `tools.pty_idle_secs`.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct GetPtyIdle;
 
 /// `tell`: record that `session` is a subagent of `parent`, so it inherits
 /// the parent's approval switch.
@@ -630,6 +646,30 @@ impl Message<GetApprovals> for ToolRegistry {
         _: &mut Context<Self, Self::Reply>,
     ) -> ApprovalsState {
         self.approvals_state(m.session)
+    }
+}
+
+impl Message<SetPtyIdle> for ToolRegistry {
+    type Reply = ();
+
+    async fn handle(&mut self, m: SetPtyIdle, _: &mut Context<Self, Self::Reply>) {
+        self.pty_idle.store(m.seconds, Ordering::SeqCst);
+        if let Err(e) = runtime::write_config_value(
+            &self.config_path,
+            "tools",
+            "pty_idle_secs",
+            &m.seconds.to_string(),
+        ) {
+            tracing::warn!("config.yaml: {e}");
+        }
+    }
+}
+
+impl Message<GetPtyIdle> for ToolRegistry {
+    type Reply = u64;
+
+    async fn handle(&mut self, _: GetPtyIdle, _: &mut Context<Self, Self::Reply>) -> u64 {
+        self.pty_idle.load(Ordering::SeqCst)
     }
 }
 
@@ -1390,12 +1430,14 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
 
     let shell = shell::ShellTool::new(jobs.clone());
     let shells = shell.shells();
+    let pty_idle = Arc::new(AtomicU64::new(cfg.pty_idle_secs));
     let builtins: [DynTool; 13] = [
         Arc::new(shell),
         Arc::new(pty::StartTool::new(
             jobs.clone(),
             Arc::clone(&shells),
             Duration::from_secs(cfg.pty_ready_timeout_secs),
+            Arc::clone(&pty_idle),
         )),
         Arc::new(pty::SendTool(jobs.clone())),
         Arc::new(pty::ScreenTool(jobs.clone())),
@@ -1431,6 +1473,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
             expected: Vec::new(),
             shells,
             close_timeout: CLOSE_TIMEOUT,
+            pty_idle,
         },
         runtime::subscriber_mailbox(),
     );
@@ -1493,6 +1536,7 @@ mod tests {
             expected: Vec::new(),
             shells: Arc::default(),
             close_timeout: Duration::from_millis(100),
+            pty_idle: Arc::default(),
         }
     }
 

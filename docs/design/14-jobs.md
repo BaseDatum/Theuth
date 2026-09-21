@@ -71,7 +71,7 @@ ends") has its delivery half built and its execution half missing.
    injected as a harness input `<job_result>` through the existing
    `Agents::inject` path: idle session → a new turn starts; turn in flight
    → queued and injected after the current tool batch. No new lifecycle,
-   no polling tool.
+   no polling tool. A quiet PTY job wakes it the same way with `<job_idle>` (61).
 4. **Jobs live in one `Jobs` actor in `tools`, addressed by the bus.** It
    owns every running process group in the harness, publishes
    `JobStarted` / `JobOutput` / `JobFinished`, and kills everything on
