@@ -27,7 +27,7 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 sha2 = { workspace = true }
 humantime = { workspace = true }
-libc = { workspace = true }  # `process_rss`: proc_pidinfo on macOS
+libc = { workspace = true }  # `process_memory`: proc_pid_rusage on macOS
 ts-rs = { workspace = true, optional = true }
 # laya's fast BPE `tokenizer.json`; the same build parakeet-rs pulls (57 §1).
 tokenizers = { version = "0.23", default-features = false, features = ["onig"] }

@@ -104,7 +104,7 @@ pub fn inputs(batch: &Batch, device: &Device) -> candle_core::Result<[Tensor; 5]
 }
 
 /// The checkpoint on one device: the model, the tokenizer, the temperatures and the weights'
-/// identity for the log.
+/// identity for the log. Owns its `Device` — a fresh one per load, gone with the session.
 pub struct Loaded {
     model: DecisionModel,
     /// Where the weights live.
@@ -121,6 +121,15 @@ pub struct Loaded {
     /// Wall-clock of `open`: header check + mmap + upload, no hashing.
     pub load_time: Duration,
 }
+
+// Reclaim after drop (57 §2.1 item 3, `examples/lifecycle`, as-built step 6): Metal buffers go
+// back to the OS on their own within a few seconds of the drop (steady state +0..+2 MB over a
+// ~47 MB one-off Metal-stack baseline). On the macOS **CPU f32** path the freed weights sit in
+// libmalloc's large cache (`MALLOC_LARGE (empty)`, 64 entries, ~790 MB, reused by the next
+// load, never growing); `malloc_zone_pressure_relief` returns 0 for it and churning large
+// frees does not evict it — only `MallocLargeCache=0` in the process environment (set before
+// the allocator initialises) brings that path to +4 MB. Nothing in-process helps, so nothing
+// is done here; Metal is the Mac engine and CPU f32 the Linux/Windows path.
 
 impl Loaded {
     /// Open a laya checkpoint dir (`crate::engine::MODEL_FILES`, the Hugging Face layout) on

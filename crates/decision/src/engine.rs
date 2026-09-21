@@ -187,8 +187,9 @@ pub struct LoadedInfo {
     pub checkpoint: String,
     /// Seconds since the session was installed.
     pub since_secs: u64,
-    /// The **whole daemon's** resident set in MB, not this checkpoint's share: one number,
-    /// the same on every entry (57 §2.1 item 4).
+    /// The **whole daemon's** memory in MB, not this checkpoint's share: one number, the same
+    /// on every entry (57 §2.1 item 4). macOS `phys_footprint` (Activity Monitor's Memory);
+    /// resident set on Linux — see [`crate::ProcessMemory`].
     pub rss_mb: u64,
 }
 
@@ -491,7 +492,7 @@ impl Engine {
         Some(LoadedInfo {
             checkpoint: self.checkpoint.clone(),
             since_secs: since.elapsed().as_secs(),
-            rss_mb: crate::process_rss() / 1_000_000,
+            rss_mb: crate::process_memory().footprint / 1_000_000,
         })
     }
 }

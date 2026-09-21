@@ -107,35 +107,55 @@ impl From<CheckpointEntry> for Checkpoint {
     }
 }
 
-/// This process's resident set in bytes (`proc_pidinfo` on macOS, `/proc/self/statm` on Linux);
-/// `0` where neither works. One number for the whole daemon — the checkpoints share it.
-pub fn process_rss() -> u64 {
+/// This process's memory, one number for the whole daemon (the checkpoints share it).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ProcessMemory {
+    /// Resident set in bytes. On macOS this still counts pages `free` handed back with
+    /// `MADV_FREE_REUSABLE` until the kernel reclaims them, so a released checkpoint can stay
+    /// "resident" here for a long time while costing nothing.
+    pub resident: u64,
+    /// macOS `phys_footprint` — what Activity Monitor calls Memory and what the OS actually
+    /// charges the process; equals `resident` on Linux (`/proc/self/statm`). `0` where neither
+    /// works. This is the number [`LoadedInfo::rss_mb`] reports.
+    pub footprint: u64,
+}
+
+/// [`ProcessMemory`] now (`proc_pid_rusage` on macOS, `/proc/self/statm` on Linux).
+pub fn process_memory() -> ProcessMemory {
     #[cfg(target_os = "macos")]
     {
-        let mut info: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
-        let size = std::mem::size_of::<libc::proc_taskinfo>() as libc::c_int;
-        // SAFETY: `info` is a zeroed, correctly sized out-buffer for PROC_PIDTASKINFO.
-        let n = unsafe {
-            libc::proc_pidinfo(
+        let mut info: libc::rusage_info_v2 = unsafe { std::mem::zeroed() };
+        // SAFETY: `info` is a zeroed `rusage_info_v2`, the layout RUSAGE_INFO_V2 fills.
+        let rc = unsafe {
+            libc::proc_pid_rusage(
                 std::process::id() as libc::c_int,
-                libc::PROC_PIDTASKINFO,
-                0,
+                libc::RUSAGE_INFO_V2,
                 (&raw mut info).cast(),
-                size,
             )
         };
-        if n == size { info.pti_resident_size } else { 0 }
+        if rc == 0 {
+            ProcessMemory {
+                resident: info.ri_resident_size,
+                footprint: info.ri_phys_footprint,
+            }
+        } else {
+            ProcessMemory::default()
+        }
     }
     #[cfg(target_os = "linux")]
     {
-        std::fs::read_to_string("/proc/self/statm")
+        let resident = std::fs::read_to_string("/proc/self/statm")
             .ok()
             .and_then(|s| s.split_whitespace().nth(1)?.parse::<u64>().ok())
-            .map_or(0, |pages| pages * 4096)
+            .map_or(0, |pages| pages * 4096);
+        ProcessMemory {
+            resident,
+            footprint: resident,
+        }
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
-        0
+        ProcessMemory::default()
     }
 }
 
