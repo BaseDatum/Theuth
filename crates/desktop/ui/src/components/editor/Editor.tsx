@@ -15,8 +15,10 @@ import { FRAGMENT, createDocumentSchema } from '@theuth/documents/schema'
 import { Sparkles } from 'lucide-react'
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import { frontmatterBlock } from '@/components/editor/FrontmatterBlock'
+import { MobileToolbar } from '@/components/editor/MobileToolbar'
 import { revealExtension } from '@/components/editor/reveal'
 import type { AgentPresence, DocStatus, HarnessProvider } from '@/lib/doc/provider'
+import { usePointerCoarse } from '@/lib/mobile'
 import { deviceName } from '@/lib/platform'
 import { subscribeDark } from '@/lib/theme'
 import { cn } from 'cn'
@@ -67,6 +69,10 @@ export function Editor({
   onAsk?: (block: string) => void
 }) {
   const dark = useSyncExternalStore(subscribeDark, () => document.documentElement.classList.contains('dark'))
+  // 59 §10: fingers get the fixed toolbar instead of BlockNote's floating menus; labels on remote cursors need no hover.
+  const coarse = usePointerCoarse()
+  const [toolbar, setToolbar] = useState(false)
+  const editable = status.kind === 'live' || status.kind === 'offline'
   const agentColor = provider.meta?.agent.color ?? '#7c3aed'
   const editor = useCreateBlockNote(
     withCollaboration({
@@ -77,10 +83,11 @@ export function Editor({
         // 59 §8.5: no owner-name setting exists yet; the device label (`Mac`, `iPad`, `Chrome`) tells cursors
         // apart, the colour is picked by Yjs client id so two devices rarely share one.
         user: { name: deviceName(), color: CURSOR_COLORS[provider.doc.clientID % CURSOR_COLORS.length] as string },
+        showCursorLabels: coarse ? 'always' : 'activity',
       },
       extensions: [revealExtension(provider, agentColor)],
     }),
-    [provider, agentColor],
+    [provider, agentColor, coarse],
   )
   const [exported, setExported] = useState<Date | null>(null)
   const [fromFile, setFromFile] = useState<Date | null>(null)
@@ -113,25 +120,34 @@ export function Editor({
     [onAsk, editor],
   )
   return (
-    <div className={cn('flex min-h-0 flex-1 flex-col', className)}>
+    <div className={cn('flex min-h-0 flex-1 flex-col', className)} data-toolbar={toolbar || undefined}>
       <BlockNoteView
         editor={editor}
         theme={dark ? 'dark' : 'light'}
-        editable={status.kind === 'live' || status.kind === 'offline'}
+        editable={editable}
         slashMenu={false}
         sideMenu={false}
+        formattingToolbar={!coarse}
+        linkToolbar={!coarse}
+        tableHandles={!coarse}
         className="min-h-0 flex-1 overflow-y-auto px-6 py-4 [&_.bn-editor]:mx-auto [&_.bn-editor]:max-w-[768px]"
       >
-        <SuggestionMenuController
-          triggerCharacter="/"
-          getItems={async (query) =>
-            filterSuggestionItems(
-              [...getDefaultReactSlashMenuItems(editor).filter((item) => SLASH_KEYS[(item as { key?: string }).key ?? '']), ...askItem],
-              query,
-            )
-          }
-        />
-        <SideMenuController sideMenu={DocSideMenu} />
+        {coarse ? (
+          <MobileToolbar editor={editor} readonly={!editable} onVisible={setToolbar} />
+        ) : (
+          <>
+            <SuggestionMenuController
+              triggerCharacter="/"
+              getItems={async (query) =>
+                filterSuggestionItems(
+                  [...getDefaultReactSlashMenuItems(editor).filter((item) => SLASH_KEYS[(item as { key?: string }).key ?? '']), ...askItem],
+                  query,
+                )
+              }
+            />
+            <SideMenuController sideMenu={DocSideMenu} />
+          </>
+        )}
       </BlockNoteView>
       <footer className="flex h-7 shrink-0 items-center gap-3 border-t border-border-subtle px-4 font-mono text-[11px] text-fg-tertiary">
         <span className={cn(status.kind === 'live' && 'text-fg-secondary', status.kind === 'closed' && 'text-danger')}>

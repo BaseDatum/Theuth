@@ -325,10 +325,21 @@ html .bn-root[data-color-scheme="dark"] {
 html .bn-editor {
   padding-inline: 0;
 }
-/* The side menu (drag handle, block menu) is a pointer-fine affordance (59 §9.3); the full mobile toolbar is step 6. */
+/* Fingers (59 §10): no side menu; the fixed MobileToolbar replaces BlockNote's floating menus. Inputs stay at
+   16px so iOS does not zoom on focus; while the bar is shown the editor's scroll box keeps a bar's height clear
+   at the bottom so `scrollIntoView({block: 'nearest'})` lands the cursor's block above it. */
 @media (pointer: coarse) {
   html .bn-side-menu {
     display: none;
+  }
+  html .bn-editor,
+  html .bn-editor [data-frontmatter] input,
+  html .bn-editor [data-frontmatter] select {
+    font-size: 16px;
+  }
+  [data-toolbar] > .bn-container {
+    padding-bottom: 60px;
+    scroll-padding-bottom: 60px;
   }
 }
 

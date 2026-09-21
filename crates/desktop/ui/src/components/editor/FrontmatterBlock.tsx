@@ -128,7 +128,8 @@ export function Frontmatter({ yaml, onChange }: Props) {
           />
         </div>
       )}
-      <div className="col-span-2">
+      {/* 59 §10: fields editable on a phone, no new keys (the desktop adds them). */}
+      <div className="col-span-2 pointer-coarse:hidden">
         <Button
           variant="ghost"
           size="sm"
