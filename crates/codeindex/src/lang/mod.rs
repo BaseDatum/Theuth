@@ -156,9 +156,11 @@ fn build_or_warn(l: Language) -> Option<TagsConfiguration> {
 /// a `mod { }` body a `method`; these say `impl`/`trait` bodies are methods
 /// and `mod` bodies are functions. Appended: `const`/`static` items as
 /// `definition.constant` (60 §4 lists the kind; §16 row 1 expects
-/// `MAX_BYTES` in an outline), and `a::b()` path calls as `reference.call`
+/// `MAX_BYTES` in an outline), `a::b()` path calls as `reference.call`
 /// (the shipped query only sees bare `b()`; `Registry::new()` would be no
-/// reference at all).
+/// reference at all), and `impl<T> Foo<T> {` as an implementation tag (the
+/// shipped pattern wants a bare `type_identifier`) so its methods get an
+/// owner (60 §20.3 deviation 8).
 const RUST_PRE: &str = "\
 (impl_item body: (declaration_list (function_item name: (identifier) @name) @definition.method))
 (trait_item body: (declaration_list (function_item name: (identifier) @name) @definition.method))
@@ -168,6 +170,7 @@ const RUST_POST: &str = "\
 (const_item name: (identifier) @name) @definition.constant
 (static_item name: (identifier) @name) @definition.constant
 (call_expression function: (scoped_identifier name: (identifier) @name)) @reference.call
+(impl_item type: (generic_type type: (type_identifier) @name) !trait) @reference.implementation
 ";
 
 /// Prepended to the JS query (and so to TS/TSX): the shipped method-call
@@ -223,7 +226,9 @@ const PY_LOCALS: &str = "\
 
 /// TS: the grammar's own two-line parameter query plus the JS scopes and
 /// `variable_declarator` definitions it relies on (the grammar's
-/// `tree-sitter.json` concatenates them the same way).
+/// `tree-sitter.json` concatenates them the same way), plus destructured
+/// bindings (`const { resolve, reject } = …`, `const [a, b] = …`) which the
+/// upstream query misses (60 §21).
 const TS_LOCALS: &str = "\
 [
   (statement_block)
@@ -233,6 +238,8 @@ const TS_LOCALS: &str = "\
   (method_definition)
 ] @local.scope
 (variable_declarator name: (identifier) @local.definition)
+(variable_declarator name: (object_pattern (shorthand_property_identifier_pattern) @local.definition))
+(variable_declarator name: (array_pattern (identifier) @local.definition))
 (required_parameter (identifier) @local.definition)
 (optional_parameter (identifier) @local.definition)
 ";

@@ -191,9 +191,14 @@ pub fn parse<'c>(
             open.pop();
         }
         let name = text(r.name_range.clone());
-        let kind = cfg.syntax_type_name(r.syntax_type_id);
+        let mut kind = cfg.syntax_type_name(r.syntax_type_id);
         if lang == Language::Go && kind == "type" && GO_BUILTIN_TYPES.contains(&name.as_str()) {
             continue;
+        }
+        // Rust `name!(..)`: the shipped query tags macro invocations as
+        // `reference.call`; a macro can only resolve to a macro (60 §21).
+        if lang == Language::Rust && kind == "call" && src.get(r.name_range.end) == Some(&b'!') {
+            kind = "macro";
         }
         out_refs.push(Ref {
             qualifier: qualifier(&src[r.range.start..p]),
@@ -262,7 +267,9 @@ fn attach_impl_methods(symbols: &mut [Symbol<'_>], refs: &[tree_sitter_tags::Tag
 /// The text between a reference tag's start and its name, when it is an
 /// identifier chain ending in `::` or `.`: `a::b::` → `a::b`, `self.` →
 /// `self`, `::tools::` → `::tools` (global path, kept for the resolver).
-/// Generics, calls and casts in the prefix (`Vec::<T>::`, `f().`) → `None`.
+/// Generics and casts in a `::` prefix (`Vec::<T>::`) → `None`; a `.`
+/// prefix that is not a plain chain (`f().`, `a.b().`) → `"."`: still a
+/// receiver call, one the resolver must not take for a bare name.
 fn qualifier(prefix: &[u8]) -> Option<String> {
     let (chain, sep): (&[u8], &[u8]) = if let Some(c) = prefix.strip_suffix(b"::") {
         (c, b"::")
@@ -278,9 +285,15 @@ fn qualifier(prefix: &[u8]) -> Option<String> {
     let chain = std::str::from_utf8(chain).ok()?;
     let sep = std::str::from_utf8(sep).ok()?;
     let body = if sep == "::" { chain.strip_prefix("::").unwrap_or(chain) } else { chain };
-    (!body.is_empty() && body.split(sep).all(|s| is_ident(s.as_bytes())))
-        .then(|| chain.to_owned())
+    if !body.is_empty() && body.split(sep).all(|s| is_ident(s.as_bytes())) {
+        Some(chain.to_owned())
+    } else {
+        (sep == ".").then(|| RECEIVER.to_owned())
+    }
 }
+
+/// Qualifier of a `.`-call whose receiver is not a plain identifier chain.
+pub const RECEIVER: &str = ".";
 
 /// 60 §4: rust `pub`, ts/js `export`, go Uppercase, py not `_`-prefixed.
 /// `Other` never reaches here.
@@ -334,7 +347,8 @@ mod tests {
         assert_eq!(qualifier(b""), None);
         assert_eq!(qualifier(b"impl Foo for "), None);
         assert_eq!(qualifier(b"Vec::<T>::"), None);
-        assert_eq!(qualifier(b"f(x)."), None);
-        assert_eq!(qualifier(b"a.b()."), None);
+        assert_eq!(qualifier(b"f(x).").as_deref(), Some("."));
+        assert_eq!(qualifier(b"a.b().").as_deref(), Some("."));
+        assert_eq!(qualifier(b"f(x)::"), None);
     }
 }

@@ -27,3 +27,12 @@ const helper = (x: number): number => x + 1;
 
 export const VERSION = "1";
 
+
+export function settle(): Promise<void> {
+  // Destructured bindings are locals too: `reject(..)` is not a reference.
+  const { promise, resolve, reject } = Promise.withResolvers<void>();
+  const [first, second] = [resolve, reject];
+  setTimeout(() => (Math.random() > 0.5 ? first() : second(new Error("no"))), 1);
+  reject(new Error("never"));
+  return promise;
+}

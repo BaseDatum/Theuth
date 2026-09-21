@@ -15,8 +15,9 @@ use sqlx::{FromRow, QueryBuilder};
 use crate::parse::ParsedFile;
 
 /// Bump on any DDL change; a mismatch deletes the file (60 §4).
-/// 2: `imports.id`, `refs.qualifier` (step 2).
-pub const SCHEMA_VERSION: &str = "2";
+/// 2: `imports.id`, `refs.qualifier` (step 2). 3: receiver-call confidence
+/// and stoplist change stored `refs` rows (step 3).
+pub const SCHEMA_VERSION: &str = "3";
 
 /// Rows per multi-row `INSERT` (≤ 12 binds each; SQLite allows 32 766).
 const ROWS_PER_INSERT: usize = 500;
@@ -681,7 +682,7 @@ pub struct RefUpdate {
     pub candidates: i64,
     /// `same_file|import|package|unique|ambiguous|none`.
     pub provenance: &'static str,
-    /// 1.0 / 0.8 / 0.6 / 0.0.
+    /// 1.0 / 0.8 / 0.6 / 0.0; receiver calls 0.4 / 0.3 (60 §21).
     pub confidence: f64,
 }
 
@@ -846,6 +847,84 @@ pub async fn ambiguous_named(pool: &SqlitePool, name: &str, kind: Option<&str>) 
     .bind(name)
     .bind(kind)
     .fetch_one(pool)
+    .await?)
+}
+
+// --- rank (60 §7) ---------------------------------------------------------
+
+/// Store the unpersonalised ranks: `files.rank` for every graph node,
+/// `symbols.rank` reset to 0 then set for the ranked definitions. Two
+/// temp-table `UPDATE … FROM`s in one transaction.
+pub async fn update_ranks(pool: &SqlitePool, files: &[(i64, f64)], symbols: &[(i64, f64)]) -> anyhow::Result<()> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("CREATE TEMP TABLE IF NOT EXISTS rank_res (id INTEGER PRIMARY KEY, rank REAL NOT NULL)")
+        .execute(&mut *tx)
+        .await?;
+    for (table, rows) in [("files", files), ("symbols", symbols)] {
+        sqlx::query("DELETE FROM rank_res").execute(&mut *tx).await?;
+        for batch in rows.chunks(ROWS_PER_INSERT) {
+            let mut q = QueryBuilder::new("INSERT INTO rank_res (id, rank) ");
+            q.push_values(batch, |mut b, (id, rank)| {
+                b.push_bind(id).push_bind(rank);
+            });
+            q.build().execute(&mut *tx).await?;
+        }
+        if table == "symbols" {
+            sqlx::query("UPDATE symbols SET rank = 0.0 WHERE rank <> 0.0").execute(&mut *tx).await?;
+            sqlx::query("UPDATE symbols SET rank = r.rank FROM rank_res r WHERE symbols.id = r.id").execute(&mut *tx).await?;
+        } else {
+            sqlx::query("UPDATE files SET rank = r.rank FROM rank_res r WHERE files.id = r.id").execute(&mut *tx).await?;
+        }
+    }
+    sqlx::query("DELETE FROM rank_res").execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// The stored map: every ranked definition, best first (`code_map` without
+/// `focus` is a lookup, 60 §7).
+pub async fn ranked_tags(pool: &SqlitePool) -> anyhow::Result<Vec<crate::rank::Tag>> {
+    #[derive(FromRow)]
+    struct Row {
+        path: String,
+        line: i64,
+        kind: String,
+        name: String,
+        signature: String,
+        rank: f64,
+    }
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT f.path, s.line_start AS line, s.kind, s.name, s.signature, s.rank FROM symbols s JOIN files f ON f.id = s.file_id \
+         WHERE s.rank > 0 ORDER BY s.rank DESC, f.path, s.line_start",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| crate::rank::Tag {
+            path: r.path,
+            line: r.line,
+            kind: r.kind,
+            name: r.name,
+            signature: r.signature,
+            rank: r.rank,
+        })
+        .collect())
+}
+
+/// Refs inside a line span of a file that resolved to something
+/// (`code_symbol` callees), in source order.
+pub async fn refs_in_span(pool: &SqlitePool, path: &str, line_start: i64, line_end: i64) -> anyhow::Result<Vec<RefHit>> {
+    Ok(sqlx::query_as(concat!(
+        "SELECT ",
+        ref_cols!(),
+        " WHERE f.path = ?1 AND r.line BETWEEN ?2 AND ?3 AND r.to_symbol IS NOT NULL ORDER BY r.line LIMIT ?4"
+    ))
+    .bind(path)
+    .bind(line_start)
+    .bind(line_end)
+    .bind(ROWS_PER_INSERT as i64 * 2)
+    .fetch_all(pool)
     .await?)
 }
 

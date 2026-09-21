@@ -1,6 +1,6 @@
-//! `code_find`, `code_outline`, `code_refs` (60 §8). Risk `ReadOnly`,
-//! `DIRECT = false`, `CONSUMES_SECRETS = false`: arguments are names, paths
-//! and budgets.
+//! `code_find`, `code_outline`, `code_refs`, `code_map`, `code_symbol` (60
+//! §8). Risk `ReadOnly`, `DIRECT = false`, `CONSUMES_SECRETS = false`:
+//! arguments are names, paths and budgets.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -12,17 +12,21 @@ use tools::registry::ToolRegistry;
 use tools::{RegisterPrompt, RegisterTool, Risk, Tool, ToolCx, ToolOutput};
 
 use crate::index::{Codeindex, Reconciled, RootIndex};
-use crate::store::{self, Definition, OutlineRow};
+use crate::rank::{self, Graph, Tag};
+use crate::store::{self, Definition, OutlineRow, RefHit};
 use crate::{root, walk};
 
-/// Plugin prompt block (60 §8), the tools of steps 1–2.
-pub const PROMPT: &str = "code_find, code_outline and code_refs are runtime functions over a tree-sitter index of a \
-source tree (default root: the git repo of the cwd; first call indexes). Use them before grep/read_file when the \
-question is structural: where something is defined (code_find(name=\"X\") → rows of {path, line_start, kind, \
-signature}), what a file contains (code_outline(path=\"src/x.rs\") → imports and nested symbols), who references a \
-symbol (code_refs(symbol=\"X\") → refs with provenance/confidence saying how sure; `ambiguous` counts the same-name \
-references that could not be attributed; several definitions → `candidates`, pick one by symbol_id or path:line). \
-Results are values with a `content` text render; put m[\"content\"] into a brief instead of re-reading files.";
+/// Plugin prompt block (60 §8), the tools of steps 1–3.
+pub const PROMPT: &str = "code_find, code_outline, code_refs, code_map and code_symbol are runtime functions over a \
+tree-sitter index of a source tree (default root: the git repo of the cwd; first call indexes). Use them before \
+grep/read_file when the question is structural: where something is defined (code_find(name=\"X\") → rows of {path, \
+line_start, kind, signature}), what a file contains (code_outline(path=\"src/x.rs\") → imports and nested symbols), who \
+references a symbol (code_refs(symbol=\"X\") → refs with provenance/confidence saying how sure; `ambiguous` counts the \
+same-name references that could not be attributed; several definitions → `candidates`, pick one by symbol_id or \
+path:line), a ranked map of the tree to brief a subagent (code_map(focus=[\"X\", \"src/y.rs\"], budget=1500) → the \
+most-referenced definitions grouped by file, personalised toward focus identifiers and paths), or everything about one \
+definition in one call (code_symbol(symbol=\"X\") → definition, body, callers, callees). Results are values with a \
+`content` text render; put m[\"content\"] into a brief instead of re-reading files.";
 
 /// Default output budget in estimated tokens (60 §0.9).
 const DEFAULT_BUDGET: u32 = 4000;
@@ -43,7 +47,13 @@ pub async fn register(reg: &ActorRef<ToolRegistry>, ix: Arc<Codeindex>) {
     let _ = reg
         .ask(RegisterTool(Arc::new(CodeOutlineTool(Arc::clone(&ix)))))
         .await;
-    let _ = reg.ask(RegisterTool(Arc::new(CodeRefsTool(ix)))).await;
+    let _ = reg
+        .ask(RegisterTool(Arc::new(CodeRefsTool(Arc::clone(&ix)))))
+        .await;
+    let _ = reg
+        .ask(RegisterTool(Arc::new(CodeMapTool(Arc::clone(&ix)))))
+        .await;
+    let _ = reg.ask(RegisterTool(Arc::new(CodeSymbolTool(ix)))).await;
 }
 
 fn structured<T: Serialize>(text: String, data: T) -> ToolOutput {
@@ -78,7 +88,7 @@ impl Envelope {
 }
 
 /// Estimated tokens for code: `chars / 3` (60 §2.B).
-fn estimate_tokens(chars: usize) -> u32 {
+pub(crate) fn estimate_tokens(chars: usize) -> u32 {
     u32::try_from(chars / 3).unwrap_or(u32::MAX)
 }
 
@@ -338,7 +348,7 @@ pub struct CodeRefsArgs {
     /// `in` (default): who references this definition. `out`: what this definition references.
     #[serde(default)]
     pub direction: Option<String>,
-    /// Restrict to one reference kind: call, type, class, implementation.
+    /// Restrict to one reference kind: call, macro, type, class, implementation.
     #[serde(default)]
     pub kind: Option<String>,
     /// Repository root; default: the git top-level of the process cwd, else the cwd.
@@ -502,10 +512,366 @@ impl Tool for CodeRefsTool {
     }
 }
 
+/// Arguments for [`CodeMapTool`].
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct CodeMapArgs {
+    /// Identifiers and/or root-relative paths (files or directories) to personalise the map toward.
+    #[serde(default)]
+    pub focus: Option<Vec<String>>,
+    /// Ranked files only ({path, rank, lines, language}), no definitions.
+    #[serde(default)]
+    pub paths_only: Option<bool>,
+    /// Repository root; default: the git top-level of the process cwd, else the cwd.
+    #[serde(default)]
+    pub root: Option<PathBuf>,
+    /// Output budget in estimated tokens (chars/3); rows beyond it are dropped and counted. Default 4000.
+    #[serde(default)]
+    pub budget: Option<u32>,
+}
+
+/// `code_map`: the ranked map of a tree (60 §7), optionally personalised.
+pub struct CodeMapTool(pub Arc<Codeindex>);
+
+#[async_trait::async_trait]
+impl Tool for CodeMapTool {
+    const NAME: &'static str = "code_map";
+    const RETURNS: &'static str = "dict";
+    const RISK: Risk = Risk::ReadOnly;
+    const DIRECT: bool = false;
+    const CONSUMES_SECRETS: bool = false;
+    type Args = CodeMapArgs;
+
+    fn description(&self) -> String {
+        "Ranked map of a source tree (aider-style PageRank over the file graph: files referenced from many places rank high). Returns {rows: [{path, line, kind, name, signature, rank}], root, indexed_files, stale, pending, dropped, content}; content is the map as text (path, then indented `line: signature` per definition) fitted to budget — put it in a subagent brief. focus=[identifiers or paths] personalises toward them (their definers and importers rise); paths_only=true returns ranked files {path, rank, lines, language} instead.".into()
+    }
+
+    async fn call(&self, a: CodeMapArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
+        let (ri, r) = match open(&self.0, a.root.as_deref()).await {
+            Ok(v) => v,
+            Err(e) => return Ok(ToolOutput::err(format!("{e:#}"))),
+        };
+        let budget = a.budget.unwrap_or(DEFAULT_BUDGET);
+        let focus: Vec<String> = a.focus.unwrap_or_default().into_iter().filter(|s| !s.trim().is_empty()).collect();
+        let paths_only = a.paths_only.unwrap_or(false);
+        // Without focus the stored ranks are the answer (60 §7); a focus is a fresh personalised run.
+        let ranked = if focus.is_empty() && !paths_only {
+            None
+        } else {
+            let g = Graph::load(&ri.pool).await?;
+            let f = g.focus(&focus);
+            let rk = if focus.is_empty() { None } else { Some(g.rank(&f)) };
+            Some((g, f, rk))
+        };
+        let mut extra = serde_json::Map::new();
+        if let Some((g, f, rk)) = &ranked {
+            extra.insert("focus_files".into(), f.files.iter().map(|&i| g.files[i].path.clone()).collect::<Vec<_>>().into());
+            extra.insert("focus_idents".into(), f.idents.iter().cloned().collect::<Vec<_>>().into());
+            if let Some(rk) = rk {
+                extra.insert("pagerank_iterations".into(), rk.iterations.into());
+            }
+        }
+        let (mut text, rows, dropped) = if paths_only {
+            let (g, _, rk) = ranked.as_ref().expect("loaded for paths_only");
+            let mut files: Vec<(&rank::FileNode, f64)> = match rk {
+                Some(rk) => g.files.iter().zip(rk.files.iter().copied()).collect(),
+                None => g.files.iter().map(|f| (f, f.rank)).collect(),
+            };
+            files.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.path.cmp(&b.0.path)));
+            let lines: Vec<String> = files.iter().map(|(f, r)| format!("{}  {r:.5}  {} lines  {}", f.path, f.lines, f.language)).collect();
+            let (text, kept, dropped) = budget_render(&lines, budget);
+            let rows: Vec<serde_json::Value> = files[..kept]
+                .iter()
+                .map(|(f, r)| serde_json::json!({"path": f.path, "rank": r, "lines": f.lines, "language": f.language}))
+                .collect();
+            (text, rows, dropped)
+        } else {
+            let tags: Vec<Tag> = match &ranked {
+                Some((_, _, Some(rk))) => rk.tags.iter().map(|(_, t)| t.clone()).collect(),
+                _ => store::ranked_tags(&ri.pool).await?,
+            };
+            let (text, kept) = rank::render(&tags, budget);
+            let rows = tags[..kept].iter().map(|t| serde_json::to_value(t).unwrap_or_default()).collect();
+            (text, rows, tags.len() - kept)
+        };
+        if text.is_empty() {
+            text = "no ranked definitions: the index has no resolved cross-file references yet".into();
+        }
+        if r.stale {
+            text.push_str(&format!("\n[stale: {} files still indexing]", r.pending));
+        }
+        let e = Envelope::new(&ri, &r, dropped);
+        let mut v = serde_json::json!({
+            "root": e.root, "indexed_files": e.indexed_files, "stale": e.stale,
+            "pending": e.pending, "dropped": e.dropped, "truncated_walk": e.truncated_walk,
+            "estimated_tokens": estimate_tokens(text.len()),
+            "rows": rows,
+            "content": text,
+        });
+        if let Some(m) = v.as_object_mut() {
+            m.extend(extra);
+        }
+        Ok(structured(text, v))
+    }
+}
+
+/// Arguments for [`CodeSymbolTool`].
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct CodeSymbolArgs {
+    /// Symbol: a name (`open_db`), a definition site (`path/to/file.rs:123`), or a numeric symbol_id from code_find.
+    pub symbol: String,
+    /// Sections to return; default all of definition, body, callers, callees (cochange arrives in step 4).
+    #[serde(default)]
+    pub sections: Option<Vec<String>>,
+    /// Repository root; default: the git top-level of the process cwd, else the cwd.
+    #[serde(default)]
+    pub root: Option<PathBuf>,
+    /// Output budget in estimated tokens (chars/3), split equally over the sections. Default 4000.
+    #[serde(default)]
+    pub budget: Option<u32>,
+}
+
+/// `code_symbol`: everything about one definition in one call (60 §8).
+pub struct CodeSymbolTool(pub Arc<Codeindex>);
+
+/// Section names, in output order.
+const SECTIONS: [&str; 5] = ["definition", "body", "callers", "callees", "cochange"];
+/// Body lines shown whole; longer bodies show head/tail around a cut marker.
+const BODY_MAX: usize = 200;
+const BODY_HEAD: usize = 120;
+const BODY_TAIL: usize = 60;
+
+/// Source lines `line_start..=line_end` of `path` under `root`, cut to
+/// head + marker + tail past [`BODY_MAX`].
+fn body_lines(root: &std::path::Path, d: &Definition) -> anyhow::Result<Vec<String>> {
+    let src = std::fs::read_to_string(root.join(&d.path))?;
+    #[allow(clippy::cast_sign_loss)]
+    let (s, e) = ((d.line_start.max(1) - 1) as usize, d.line_end.max(d.line_start) as usize);
+    let lines: Vec<String> = src.lines().skip(s).take(e.saturating_sub(s)).map(str::to_owned).collect();
+    if lines.len() <= BODY_MAX {
+        return Ok(lines);
+    }
+    let cut = lines.len() - BODY_HEAD - BODY_TAIL;
+    let mut out = Vec::with_capacity(BODY_HEAD + BODY_TAIL + 1);
+    out.extend_from_slice(&lines[..BODY_HEAD]);
+    out.push(format!("… {cut} lines cut …"));
+    out.extend_from_slice(&lines[lines.len() - BODY_TAIL..]);
+    Ok(out)
+}
+
+/// `[{path, count, refs: [...]}]` for the callers section, most references first.
+fn group_by_file(refs: &[RefHit]) -> Vec<serde_json::Value> {
+    let mut groups: Vec<(&str, Vec<&RefHit>)> = Vec::new();
+    for h in refs {
+        match groups.iter_mut().find(|(p, _)| *p == h.path) {
+            Some((_, v)) => v.push(h),
+            None => groups.push((h.path.as_str(), vec![h])),
+        }
+    }
+    groups.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(b.0)));
+    groups
+        .iter()
+        .map(|(p, v)| {
+            serde_json::json!({
+                "path": p, "count": v.len(),
+                "refs": v.iter().map(|h| serde_json::json!({
+                    "line": h.line, "from_symbol": h.from_symbol, "kind": h.kind, "provenance": h.provenance, "confidence": h.confidence,
+                })).collect::<Vec<_>>(),
+            })
+        })
+        .collect()
+}
+
+/// `[{name, target, count, provenance, confidence}]` for the callees section, most calls first.
+fn group_by_target(refs: &[RefHit]) -> Vec<(String, String, usize, String, f64)> {
+    let mut groups: Vec<(String, String, usize, String, f64)> = Vec::new();
+    for h in refs {
+        let Some(t) = h.target.as_deref() else { continue };
+        match groups.iter_mut().find(|(n, tg, ..)| *n == h.name && tg == t) {
+            Some(g) => {
+                g.2 += 1;
+                if h.confidence > g.4 {
+                    g.3 = h.provenance.clone();
+                    g.4 = h.confidence;
+                }
+            }
+            None => groups.push((h.name.clone(), t.to_owned(), 1, h.provenance.clone(), h.confidence)),
+        }
+    }
+    groups.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.1.cmp(&b.1)));
+    groups
+}
+
+#[async_trait::async_trait]
+impl Tool for CodeSymbolTool {
+    const NAME: &'static str = "code_symbol";
+    const RETURNS: &'static str = "dict";
+    const RISK: Risk = Risk::ReadOnly;
+    const DIRECT: bool = false;
+    const CONSUMES_SECRETS: bool = false;
+    type Args = CodeSymbolArgs;
+
+    fn description(&self) -> String {
+        "Everything about one definition in one call: {definition: {symbol_id, name, kind, path, line_start, line_end, signature}, body: str (source, ≤ 200 lines else head/tail with a cut marker), callers: [{path, count, refs: [{line, from_symbol, kind, provenance, confidence}]}], ambiguous: n, callees: [{name, target, count, provenance, confidence}], cochange: [], root, indexed_files, stale, pending, dropped, content}. sections=[definition|body|callers|callees|cochange] selects (default the first four); the budget is split equally over them. A bare name with several definitions returns candidates and no sections: call again with the symbol_id or path:line.".into()
+    }
+
+    async fn call(&self, a: CodeSymbolArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
+        let (ri, r) = match open(&self.0, a.root.as_deref()).await {
+            Ok(v) => v,
+            Err(e) => return Ok(ToolOutput::err(format!("{e:#}"))),
+        };
+        let symbol = a.symbol.trim();
+        if symbol.is_empty() {
+            return Ok(ToolOutput::err("symbol is empty"));
+        }
+        let wanted: Vec<&str> = match &a.sections {
+            None => SECTIONS[..4].to_vec(),
+            Some(v) => {
+                let mut w = Vec::new();
+                for s in v {
+                    let s = s.trim();
+                    let Some(&known) = SECTIONS.iter().find(|k| **k == s) else {
+                        return Ok(ToolOutput::err(format!("unknown section {s:?}; one of {}", SECTIONS.join(", "))));
+                    };
+                    if !w.contains(&known) {
+                        w.push(known);
+                    }
+                }
+                if w.is_empty() {
+                    return Ok(ToolOutput::err("sections is empty"));
+                }
+                w
+            }
+        };
+        let budget = a.budget.unwrap_or(DEFAULT_BUDGET);
+        let env = |dropped: usize| Envelope::new(&ri, &r, dropped);
+        let def = match pick(&ri.pool, &ri.root, symbol).await {
+            Ok(Picked::One(d)) => d,
+            Ok(Picked::None) => {
+                let hint = if r.stale { format!("; {} files still indexing", r.pending) } else { String::new() };
+                return Ok(ToolOutput::err(format!("no definition named {symbol:?}{hint}")));
+            }
+            Ok(Picked::Several(defs)) => {
+                let lines: Vec<String> = defs
+                    .iter()
+                    .map(|d| format!("{}:{} {} {}  {}", d.path, d.line_start, d.kind, d.name, d.signature))
+                    .collect();
+                let (body, kept, dropped) = budget_render(&lines, budget);
+                let text = format!("{symbol:?} has {} definitions; pass a symbol_id or path:line to pick one\n{body}", defs.len());
+                let e = env(dropped);
+                return Ok(structured(
+                    text.clone(),
+                    serde_json::json!({
+                        "root": e.root, "indexed_files": e.indexed_files, "stale": e.stale,
+                        "pending": e.pending, "dropped": e.dropped, "truncated_walk": e.truncated_walk,
+                        "candidates": defs[..kept].iter().map(|d| serde_json::json!({
+                            "symbol_id": d.symbol_id, "path": d.path, "line": d.line_start, "kind": d.kind, "signature": d.signature,
+                        })).collect::<Vec<_>>(),
+                        "content": text,
+                    }),
+                ));
+            }
+            Err(e) => return Ok(ToolOutput::err(format!("{e:#}"))),
+        };
+        #[allow(clippy::cast_possible_truncation)]
+        let per = budget / wanted.len() as u32;
+        let mut out = serde_json::Map::new();
+        let mut text = String::new();
+        let mut dropped = 0;
+        for &s in &wanted {
+            let block = match s {
+                "definition" => {
+                    out.insert("definition".into(), serde_json::to_value(&def)?);
+                    format!("{} {} {}:{}-{}  {}", def.kind, def.name, def.path, def.line_start, def.line_end, def.signature)
+                }
+                "body" => match body_lines(&ri.root, &def) {
+                    Ok(lines) => {
+                        let (b, _, d) = budget_render(&lines, per);
+                        dropped += d;
+                        out.insert("body".into(), b.clone().into());
+                        format!("-- body {}:{}-{} --\n{b}", def.path, def.line_start, def.line_end)
+                    }
+                    Err(e) => {
+                        out.insert("body".into(), serde_json::Value::Null);
+                        format!("-- body: unreadable ({e}) --")
+                    }
+                },
+                "callers" => {
+                    let refs = store::refs_to(&ri.pool, def.symbol_id, None, FETCH_LIMIT).await?;
+                    let ambiguous = store::ambiguous_named(&ri.pool, &def.name, None).await?;
+                    let mut grouped = group_by_file(&refs);
+                    let lines: Vec<String> = refs
+                        .iter()
+                        .map(|h| {
+                            let scope = h.from_symbol.as_deref().map_or(String::new(), |s| format!(" in {s}"));
+                            format!("{}:{} {}{} [{} {:.1}]", h.path, h.line, h.kind, scope, h.provenance, h.confidence)
+                        })
+                        .collect();
+                    let (b, kept, d) = budget_render(&lines, per);
+                    dropped += d;
+                    if kept < refs.len() {
+                        grouped = group_by_file(&refs[..kept]);
+                    }
+                    out.insert("callers".into(), grouped.into());
+                    out.insert("ambiguous".into(), ambiguous.into());
+                    let note = if ambiguous > 0 { format!(", {ambiguous} ambiguous same-name references not attributed") } else { String::new() };
+                    format!("-- callers: {} reference{}{note} --\n{b}", refs.len(), if refs.len() == 1 { "" } else { "s" })
+                }
+                "callees" => {
+                    let refs = store::refs_in_span(&ri.pool, &def.path, def.line_start, def.line_end).await?;
+                    let groups = group_by_target(&refs);
+                    let lines: Vec<String> = groups
+                        .iter()
+                        .map(|(n, t, c, p, cf)| {
+                            let times = if *c > 1 { format!(" ×{c}") } else { String::new() };
+                            format!("{n} → {t}{times} [{p} {cf:.1}]")
+                        })
+                        .collect();
+                    let (b, kept, d) = budget_render(&lines, per);
+                    dropped += d;
+                    out.insert(
+                        "callees".into(),
+                        groups[..kept]
+                            .iter()
+                            .map(|(n, t, c, p, cf)| serde_json::json!({"name": n, "target": t, "count": c, "provenance": p, "confidence": cf}))
+                            .collect::<Vec<_>>()
+                            .into(),
+                    );
+                    format!("-- callees: {} resolved target{} --\n{b}", groups.len(), if groups.len() == 1 { "" } else { "s" })
+                }
+                _ => {
+                    out.insert("cochange".into(), serde_json::json!([]));
+                    out.insert("note".into(), "co-change arrives in step 4".into());
+                    "-- cochange: co-change arrives in step 4 --".into()
+                }
+            };
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(block.trim_end());
+        }
+        if r.stale {
+            text.push_str(&format!("\n[stale: {} files still indexing]", r.pending));
+        }
+        let e = env(dropped);
+        let mut v = serde_json::json!({
+            "root": e.root, "indexed_files": e.indexed_files, "stale": e.stale,
+            "pending": e.pending, "dropped": e.dropped, "truncated_walk": e.truncated_walk,
+            "sections": wanted,
+            "content": text,
+        });
+        if let Some(m) = v.as_object_mut() {
+            m.extend(out);
+        }
+        Ok(structured(text, v))
+    }
+}
+
 const _: () = {
     assert!(!<CodeFindTool as Tool>::DIRECT);
     assert!(!<CodeOutlineTool as Tool>::DIRECT);
     assert!(!<CodeRefsTool as Tool>::DIRECT);
+    assert!(!<CodeMapTool as Tool>::DIRECT);
+    assert!(!<CodeSymbolTool as Tool>::DIRECT);
 };
 
 #[cfg(test)]
