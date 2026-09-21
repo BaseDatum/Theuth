@@ -110,6 +110,9 @@ pub struct Manifest {
     /// The three files.
     #[serde(default)]
     pub tracks: Vec<TrackFile>,
+    /// The meeting's note (59 §7.4), created at start; `None` for meetings recorded before notes existed.
+    #[serde(default)]
+    pub note: Option<document::DocId>,
 }
 
 impl Manifest {
@@ -138,6 +141,7 @@ impl Manifest {
                     sample_rate: TRACK_RATE,
                 })
                 .collect(),
+            note: None,
         }
     }
 

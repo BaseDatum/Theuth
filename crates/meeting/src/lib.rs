@@ -32,6 +32,7 @@ use voice::live::Utterer;
 pub mod batch;
 pub mod cache;
 pub mod capture;
+pub mod note;
 pub mod ogg;
 pub mod oracle;
 pub mod post;
@@ -1543,6 +1544,12 @@ async fn start_task(store: &Store, mut manifest: Manifest, setup: &Setup) -> Beg
         Ok(dir) => dir,
         Err(e) => return Begun::failed(manifest, format!("{e:#}")),
     };
+    // 59 §7.4: one note per meeting, from the first second; `None` when documents are off.
+    manifest.note = note::create(
+        manifest.id,
+        manifest.title.as_deref().unwrap_or(&setup.title),
+    )
+    .await;
     let pid = manifest.process.pid;
     let file_title = setup.title.clone();
     let opened =
@@ -2709,6 +2716,7 @@ impl Message<Summarize> for Meeting {
     type Reply = Result<(), String>;
 
     /// 04 §6: `Review` → `Summarizing`; the form is the turn; `AgentEvent::TurnFinished` finishes it.
+    /// 59 §7.4: a meeting with a note is snapshotted `meeting-before-summary` first and gets the note contract.
     async fn handle(&mut self, m: Summarize, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let mut manifest = self.stored(m.meeting)?;
         if manifest.state != MeetingState::Review {
@@ -2717,7 +2725,10 @@ impl Message<Summarize> for Meeting {
         if self.summarizing.is_some() {
             return Err("another meeting is being summarized".into());
         }
-        session::deliver(manifest.session, summary::SUMMARY_FORM.to_owned(), false).await?;
+        if let Some(doc) = &manifest.note {
+            note::snapshot(doc, note::BEFORE_SUMMARY).await?;
+        }
+        session::deliver(manifest.session, summary::form_for(&manifest), false).await?;
         manifest.state = MeetingState::Summarizing;
         manifest.failure = None;
         self.save(&manifest).await;
@@ -2729,10 +2740,16 @@ impl Message<Summarize> for Meeting {
 impl Message<PostRetry> for Meeting {
     type Reply = Result<(), String>;
 
+    /// 59 §7.4: the note goes back to `meeting-before-summary` (a diff import) before the pipeline re-runs.
     async fn handle(&mut self, m: PostRetry, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let manifest = self.stored(m.meeting)?;
         if manifest.ended_at.is_none() || manifest.state == MeetingState::Summarizing {
             return Err(format!("{:?}: not a finished meeting", manifest.state));
+        }
+        if let Some(doc) = &manifest.note
+            && let Err(e) = note::restore_before_summary(doc).await
+        {
+            tracing::warn!(meeting = %manifest.id, "meeting note not restored: {e}");
         }
         self.start_post(manifest)
     }

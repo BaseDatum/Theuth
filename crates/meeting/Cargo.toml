@@ -9,6 +9,7 @@ description = "Meeting recorder: the meeting app's audio and the microphone as l
 runtime = { workspace = true }
 agent = { workspace = true }
 tools = { workspace = true }
+document = { workspace = true }  # one note per meeting; the summary turn edits it (59 §7.4)
 decision = { workspace = true }  # the oracle pre-filter on transcript batches (57 §3)
 voice = { workspace = true }
 models = { workspace = true }  # `models::onnx::ort_lib` before the diarisation sessions (57 §6 step 1)
@@ -47,7 +48,7 @@ figment = { workspace = true }
 parking_lot = { workspace = true }
 
 [features]
-ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "voice/ts", "decision/ts"]
+ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "voice/ts", "decision/ts", "document/ts"]
 
 [lints]
 workspace = true

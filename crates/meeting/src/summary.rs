@@ -1,8 +1,10 @@
-//! The guided summary (04 §6, 53 decision 7): one normal turn in the meeting's
-//! session — the form below as a `SendInput` — then the assistant's reply is
-//! `summary.md`, its `#` line the title, `knowledge_harvest` runs, and the
-//! session is compacted with the summary as head so the follow-up conversation
-//! starts from it and reaches the record through the tools.
+//! The guided summary (04 §6, 53 decision 7, 59 §7.4): one normal turn in the
+//! meeting's session — the form as a `SendInput` — then `summary.md`, the
+//! title, `knowledge_harvest`, and a compaction with the summary as head so the
+//! follow-up conversation starts from it and reaches the record through the
+//! tools. A meeting with a note (`Manifest::note`) has the turn *edit the note*
+//! with the `doc_*` tools and reply with the title only; `summary.md` is then
+//! the note's derived export. Older meetings keep the reply-is-the-summary path.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -11,18 +13,38 @@ use kameo::actor::ActorRef;
 use runtime::{Runtime, SessionId};
 
 use crate::store::{Manifest, SUMMARY, Store};
-use crate::{MeetingEvent, MeetingState};
+use crate::{MeetingEvent, MeetingState, note};
 
 /// The form's marker: the actor matches the summary turn by the `TurnStarted` echo starting with it.
 pub const SUMMARY_HEAD: &str = "[meeting summary]";
 
-/// Sent as one user input after `Reviewed`.
+/// Sent as one user input after `Reviewed` — meetings without a note (recorded before 59 step 5).
 pub const SUMMARY_FORM: &str = "[meeting summary] The meeting has ended and the transcript was \
 reviewed. Use `meeting_read` (all of it, in pieces) and `meeting_speakers`, then write the summary \
 as markdown: a `#` title line (at most 8 words), then **Topics** (what was discussed, in order, one \
 line each), **Decisions** (with who), **Action items** (owner — item — due if said), **Open \
 questions**, **Numbers and names said aloud**. Improvise sections if the meeting calls for it; keep \
 it under 400 words. Reply with the markdown only.";
+
+/// The form for `m`: the note contract when it has one, else [`SUMMARY_FORM`].
+pub fn form_for(m: &Manifest) -> String {
+    match &m.note {
+        Some(doc) => crate::note::summary_form(doc),
+        None => SUMMARY_FORM.to_owned(),
+    }
+}
+
+/// The title the note turn replied with: its first non-empty line when it looks like one (≤ 120 chars,
+/// a `#` allowed), else `None` — the caller falls back to `title_of(derived)`.
+fn reply_title(reply: &str) -> Option<String> {
+    let line = reply
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())?
+        .trim_start_matches('#')
+        .trim();
+    (!line.is_empty() && line.chars().count() <= 120 && !line.contains("`")).then(|| line.to_owned())
+}
 
 /// The title: the first `#` heading, else the first non-empty line; ≤ 200 chars.
 pub fn title_of(markdown: &str) -> String {
@@ -71,10 +93,23 @@ async fn last_reply(session: SessionId) -> Result<String, String> {
 /// After the summary turn finished: file, title, harvest, compaction, `Done`.
 async fn finish(store: &Store, m: &mut Manifest) -> Result<String, String> {
     let session = m.session;
-    let summary = last_reply(session).await?;
-    let title = title_of(&summary);
-    let path = store.meeting_dir(m.id).join(SUMMARY);
-    std::fs::write(&path, &summary).map_err(|e| format!("write {}: {e}", path.display()))?;
+    let reply = last_reply(session).await?;
+    let (summary, title) = match &m.note {
+        // 59 §7.4: the note holds the summary; snapshot it, move its export to `summary.md`.
+        Some(doc) => {
+            note::snapshot(doc, note::SUMMARY).await?;
+            let markdown = note::markdown(doc).await?;
+            note::set_summary_path(doc, m.id).await?;
+            let title = reply_title(&reply).unwrap_or_else(|| title_of(&markdown));
+            (markdown, title)
+        }
+        None => {
+            let title = title_of(&reply);
+            let path = store.meeting_dir(m.id).join(SUMMARY);
+            std::fs::write(&path, &reply).map_err(|e| format!("write {}: {e}", path.display()))?;
+            (reply, title)
+        }
+    };
     if let Ok(mut t) = store.transcript(m.id) {
         t.summarized_at = Some(chrono::Local::now().to_rfc3339());
         if let Err(e) = store.save_transcript(&t).await {
@@ -168,5 +203,14 @@ mod tests {
         assert_eq!(title_of("Just prose.\nMore."), "Just prose.");
         assert_eq!(title_of("   "), "Meeting summary");
         assert!(SUMMARY_FORM.starts_with(SUMMARY_HEAD));
+    }
+
+    #[test]
+    fn reply_title_is_one_plain_line_or_nothing() {
+        assert_eq!(reply_title("# Weekly sync\n"), Some("Weekly sync".into()));
+        assert_eq!(reply_title("\n  Budget review  \n"), Some("Budget review".into()));
+        assert_eq!(reply_title("I ran `doc_insert` and it failed"), None);
+        assert_eq!(reply_title(&"x".repeat(121)), None);
+        assert_eq!(reply_title("  \n"), None);
     }
 }
