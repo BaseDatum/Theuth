@@ -14,6 +14,7 @@ pub mod gate;
 pub mod laya;
 pub mod log;
 pub mod question;
+pub mod subject;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

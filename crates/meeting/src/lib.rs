@@ -1189,7 +1189,7 @@ impl Meeting {
         let blocked = rec.live.topics.cached_blocked_rows();
         let (rt, cache, me) = (self.rt.clone(), self.cache.clone(), me.clone());
         tokio::spawn(async move {
-            let verdict = oracle::run(rt, cache, blocked, batch, meeting).await;
+            let verdict = oracle::run(rt, cache, blocked, batch, meeting, session, oracle::side_caller()).await;
             let _ = me.tell(verdict).await;
         });
     }

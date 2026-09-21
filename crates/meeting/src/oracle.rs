@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 
 use decision::{Ask, Decision, Disposition, LogId, Mode, Question, Reason};
 use kameo::actor::ActorRef;
-use runtime::Runtime;
+use runtime::{Runtime, SessionId};
 use serde::{Deserialize, Serialize};
 
 use crate::cache::{Cache, CachedBrief};
@@ -37,6 +37,8 @@ pub const PREFIX: &str = "meeting";
 pub const KIND: &str = "meeting.kind";
 /// Family of the cached-brief `Choice` (tier 1b).
 pub const BRIEF: &str = "meeting.brief";
+/// Family of tier 2's subject extraction rows (`decision::subject`).
+pub const SUBJECT: &str = decision::subject::FAMILY;
 /// Most cached briefs offered as candidates (57 §3.5: 4, was 8).
 pub const CANDIDATES: usize = 4;
 /// Most mentions kept per batch.
@@ -379,16 +381,14 @@ pub fn top(brief: Option<&Decision>, titles: &HashMap<String, String>) -> Vec<(S
     })
 }
 
-/// The tier-3 evidence line when tier 2 did not settle it (57 §3.2): `oracle: kind subject
-/// 0.88, brief none 0.55 / SRE-2386 0.31 (escalated: tier 2: timed out)`. Data for the model,
-/// never an instruction.
-pub fn evidence(kind: &Decision, brief: Option<&Decision>, titles: &HashMap<String, String>, why: &str) -> String {
-    let mut s = String::from("oracle:");
-    match p_small_talk(kind) {
-        Some(p) if p >= 0.5 => s.push_str(&format!(" kind small talk {p:.2}")),
-        Some(p) => s.push_str(&format!(" kind subject {:.2}", 1.0 - p)),
-        None => s.push_str(" kind ?"),
-    }
+/// Tier 1's numbers as one data line: `kind subject 0.88, brief none 0.55 / SRE-2386 0.31` —
+/// what tier 2 reads and what the evidence line carries.
+pub fn numbers(kind: &Decision, brief: Option<&Decision>, titles: &HashMap<String, String>) -> String {
+    let mut s = match p_small_talk(kind) {
+        Some(p) if p >= 0.5 => format!("kind small talk {p:.2}"),
+        Some(p) => format!("kind subject {:.2}", 1.0 - p),
+        None => "kind ?".to_owned(),
+    };
     if let Some(b) = brief {
         let mut ranked: Vec<&(String, f32)> = b.probabilities.iter().collect();
         ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
@@ -399,8 +399,21 @@ pub fn evidence(kind: &Decision, brief: Option<&Decision>, titles: &HashMap<Stri
             .collect();
         s.push_str(&format!(", brief {}", two.join(" / ")));
     }
-    s.push_str(&format!(" (escalated: {why})"));
     s
+}
+
+/// The tier-3 evidence line when tier 2 did not settle it (57 §3.2): `oracle: kind subject
+/// 0.88, brief none 0.55 / SRE-2386 0.31 (escalated: tier 2: timed out)`. Data for the model,
+/// never an instruction.
+pub fn evidence(kind: &Decision, brief: Option<&Decision>, titles: &HashMap<String, String>, why: &str) -> String {
+    format!("oracle: {} (escalated: {why})", numbers(kind, brief, titles))
+}
+
+/// The tier-3 evidence line when tier 2 named a subject with no cached brief (57 §3.5 item 4):
+/// `oracle: subject "Planet Nine / Kuiper belt" — no cached brief; kind subject 0.91, brief
+/// none 0.57` — first in the batch delivery, so the research turn starts from the answer.
+pub fn subject_evidence(subject: &str, numbers: &str) -> String {
+    format!("oracle: subject {subject:?} — no cached brief; {numbers}")
 }
 
 /// The batch as the oracle reads it: one `them:`/`me:` line per utterance.
@@ -428,7 +441,8 @@ pub fn batch_id(batch: &[Utterance]) -> String {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Expected {
     /// Log ids to `Report` against: `(family log id, family, expected label)`. The kind's label
-    /// is `true` (small talk: nothing published) / `false`; the brief's a cache row id or `none`.
+    /// is `true` (small talk: nothing published) / `false`; the brief's a cache row id or `none`;
+    /// the subject's a cache row id, `lookup` (a new brief) or `skip` (nothing).
     pub rows: Vec<(LogId, String, String)>,
 }
 
@@ -436,18 +450,17 @@ pub struct Expected {
 /// `meeting_topic`. Per family: `Confirmed` when the label matches what happened, else
 /// `Corrected { actual }`; the event's `agreed` is every family confirmed. For `meeting.kind`
 /// "small talk" is confirmed by the turn publishing nothing — the same approximation step 4's
-/// topic family made, from the other side.
+/// topic family made, from the other side; for `meeting.subject` a cached publish is its row
+/// id, an uncached one `lookup`, nothing `skip`.
 pub fn outcome(expected: &Expected, published: &[(Option<BriefId>, String)]) -> (OracleOutcome, Vec<(LogId, decision::Outcome)>) {
     let mut reports = Vec::new();
     let mut agreed = true;
+    let cached = published.iter().find_map(|(row, _)| row.map(|r| r.to_string()));
     for (id, family, label) in &expected.rows {
-        let actual = if family == KIND {
-            published.is_empty().to_string()
-        } else {
-            published
-                .iter()
-                .find_map(|(row, _)| row.map(|r| r.to_string()))
-                .unwrap_or_else(|| decision::engine::NONE_ID.to_owned())
+        let actual = match family.as_str() {
+            KIND => published.is_empty().to_string(),
+            SUBJECT => cached.clone().unwrap_or_else(|| if published.is_empty() { "skip" } else { "lookup" }.to_owned()),
+            _ => cached.clone().unwrap_or_else(|| decision::engine::NONE_ID.to_owned()),
         };
         let o = if *label == actual {
             decision::Outcome::Confirmed
@@ -559,15 +572,34 @@ fn row_for<'a>(rows: &'a [CachedBrief], cid: &str) -> Option<&'a CachedBrief> {
     rows.iter().enumerate().find(|(i, _)| candidate_id(*i) == cid).map(|(_, r)| r)
 }
 
+/// The publish action for a candidate id, or `None` when the id is not in our table.
+fn publish(rows: &[CachedBrief], cid: &str) -> Option<(OracleDisposition, Action)> {
+    let row = row_for(rows, cid)?.clone();
+    Some((
+        OracleDisposition::Brief {
+            brief: row.id,
+            title: row.title.clone(),
+        },
+        Action::Publish {
+            label: row.aliases.first().cloned().unwrap_or_else(|| row.title.clone()),
+            row: Box::new(row),
+        },
+    ))
+}
+
 /// The whole pre-filter for one batch, off the mailbox: mode → mentions → the two asks →
-/// [`settle`] → the [`Verdict`]. `blocked` are the cache rows already shown or dismissed this
-/// meeting (never offered again, like the alias scan).
+/// [`settle`] → tier 2 (subject extraction through `side`, in shadow too — Sky wants the whole
+/// pipeline evaluated) → the [`Verdict`]. `blocked` are the cache rows already shown or
+/// dismissed this meeting (never offered again, like the alias scan).
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     rt: Runtime,
     cache: Option<Arc<Cache>>,
     blocked: Vec<BriefId>,
     batch: Vec<Utterance>,
     meeting: MeetingId,
+    session: SessionId,
+    side: Arc<decision::SideCaller>,
 ) -> Verdict {
     let today = |batch| Verdict {
         batch,
@@ -660,39 +692,102 @@ pub async fn run(
     };
 
     let settled = settle(&kind, brief.as_ref(), &mentions);
+    let mut subject = None;
+    let mut tier2 = None;
+    let mut subject_row: Option<(LogId, String)> = None;
     let (family, disposition, action) = match &settled {
         Settled::Skip => (KIND, OracleDisposition::Skip, Action::Skip),
-        Settled::Brief(cid) => {
-            let row = row_for(&rows, cid).cloned();
-            match row {
-                Some(row) => (
-                    BRIEF,
-                    OracleDisposition::Brief {
-                        brief: row.id,
-                        title: row.title.clone(),
-                    },
-                    Action::Publish {
-                        label: row.aliases.first().cloned().unwrap_or_else(|| row.title.clone()),
-                        row: Box::new(row),
-                    },
-                ),
-                // The id came from our own table; a miss is a bug, not a pick.
-                None => (
-                    BRIEF,
-                    OracleDisposition::Model {
-                        reason: "unknown brief id".into(),
-                    },
-                    Action::Model { evidence: None },
-                ),
+        // The id came from our own table; a miss is a bug, not a pick.
+        Settled::Brief(cid) => match publish(&rows, cid) {
+            Some((d, a)) => (BRIEF, d, a),
+            None => (
+                BRIEF,
+                OracleDisposition::Model {
+                    reason: "unknown brief id".into(),
+                },
+                Action::Model { evidence: None },
+            ),
+        },
+        Settled::Tier2(reason) => {
+            let nums = numbers(&kind, brief.as_ref(), &titles);
+            let candidates: Vec<decision::subject::Candidate> = rows
+                .iter()
+                .enumerate()
+                .map(|(i, r)| decision::subject::Candidate {
+                    id: candidate_id(i),
+                    title: r.title.clone(),
+                    aliases: r.aliases.clone(),
+                })
+                .collect();
+            let req = decision::subject::Request {
+                text: &text,
+                mentions: &mentions,
+                candidates: &candidates,
+                numbers: &nums,
+            };
+            let escalate_budget = Duration::from_millis(info.escalate_budget_ms);
+            match decision::subject::extract(&req, session, escalate_budget, &*side).await {
+                Ok((answer, log_id)) => {
+                    subject = answer.subject.clone();
+                    let label = match &answer.cached {
+                        Some(cid) => row_for(&rows, cid).map_or_else(|| cid.clone(), |r| r.id.to_string()),
+                        None => answer.choice(),
+                    };
+                    subject_row = Some((log_id, label));
+                    match (&answer.cached, &answer.subject, answer.lookup) {
+                        (Some(cid), _, _) => match publish(&rows, cid) {
+                            Some((d, a)) => {
+                                tier2 = Some(format!("cached: {}", titles.get(cid).map_or(cid.as_str(), String::as_str)));
+                                (SUBJECT, d, a)
+                            }
+                            None => {
+                                tier2 = Some(format!("unknown id {cid}"));
+                                (
+                                    SUBJECT,
+                                    OracleDisposition::Model {
+                                        reason: format!("{reason}; tier 2: unknown id"),
+                                    },
+                                    Action::Model {
+                                        evidence: Some(evidence(&kind, brief.as_ref(), &titles, reason)),
+                                    },
+                                )
+                            }
+                        },
+                        (None, Some(s), true) => {
+                            tier2 = Some(format!("{s:?} → no cached brief"));
+                            (
+                                SUBJECT,
+                                OracleDisposition::Model {
+                                    reason: format!("subject {s:?}, no cached brief"),
+                                },
+                                Action::Model {
+                                    evidence: Some(subject_evidence(s, &nums)),
+                                },
+                            )
+                        }
+                        (None, Some(s), false) => {
+                            tier2 = Some(format!("{s:?} → nothing to look up"));
+                            (SUBJECT, OracleDisposition::Skip, Action::Skip)
+                        }
+                        (None, None, _) => {
+                            tier2 = Some("nothing to look up".into());
+                            (SUBJECT, OracleDisposition::Skip, Action::Skip)
+                        }
+                    }
+                }
+                Err(e) => {
+                    tier2 = Some(e.to_string());
+                    let why = format!("{reason}; tier 2: {e}");
+                    (
+                        KIND,
+                        OracleDisposition::Model { reason: why.clone() },
+                        Action::Model {
+                            evidence: Some(evidence(&kind, brief.as_ref(), &titles, &why)),
+                        },
+                    )
+                }
             }
         }
-        Settled::Tier2(reason) => (
-            KIND,
-            OracleDisposition::Model { reason: reason.clone() },
-            Action::Model {
-                evidence: Some(evidence(&kind, brief.as_ref(), &titles, reason)),
-            },
-        ),
     };
     // Expected labels for the outcome: the brief's under its cache row id, not `b1`.
     let expected = Expected {
@@ -702,6 +797,7 @@ pub async fn run(
                     .map_or_else(|| decision::engine::NONE_ID.to_owned(), |r| r.id.to_string());
                 (b.log_id, BRIEF.to_owned(), label)
             }))
+            .chain(subject_row.into_iter().map(|(log_id, label)| (log_id, SUBJECT.to_owned(), label)))
             .collect(),
     };
     let event = OracleDecision {
@@ -711,11 +807,15 @@ pub async fn run(
         disposition,
         stages: stages(&kind, brief.as_ref(), &titles),
         mentions,
-        subject: None,
-        tier2: None,
+        subject,
+        tier: match (&action, tier2.is_some()) {
+            (Action::Model { .. }, _) => 3,
+            (_, true) => 2,
+            (_, false) => 1,
+        },
+        tier2,
         top: top(brief.as_ref(), &titles),
         latency_ms: t.elapsed().as_millis() as u64,
-        tier: if matches!(action, Action::Model { .. }) { 3 } else { 1 },
         outcome: None,
     };
     rt.publish(MeetingEvent::OracleDecision {
@@ -886,6 +986,19 @@ them: No, that's the thing. It's all inferred from the clustering.";
         let (o, _) = outcome(&exp, &[(None, "new".into())]);
         assert_eq!(o.published.as_deref(), Some("new"));
         assert!(!o.agreed);
+        // The tier-2 subject row: `lookup` is confirmed by a new brief, a row id by that cached
+        // publish, `skip` by nothing.
+        let s_id = LogId::new();
+        let exp = Expected {
+            rows: vec![(s_id, SUBJECT.into(), "lookup".into())],
+        };
+        assert_eq!(outcome(&exp, &[(None, "new".into())]).1, vec![(s_id, decision::Outcome::Confirmed)]);
+        assert_eq!(outcome(&exp, &[(Some(a), "x".into())]).1, vec![(s_id, decision::Outcome::Corrected { actual: a.to_string() })]);
+        assert_eq!(outcome(&exp, &[]).1, vec![(s_id, decision::Outcome::Corrected { actual: "skip".into() })]);
+        let exp = Expected {
+            rows: vec![(s_id, SUBJECT.into(), a.to_string())],
+        };
+        assert!(outcome(&exp, &[(Some(a), "x".into())]).0.agreed);
     }
 
     #[test]
