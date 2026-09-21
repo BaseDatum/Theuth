@@ -12,16 +12,32 @@ use kameo::message::{Context, Message};
 use parking_lot::Mutex;
 use tokio::task::JoinHandle;
 
-use crate::DecisionConfig;
 use crate::gate::{FamilyGate, Mode};
 use crate::laya::{self, Loaded, Provider, RowOut, Sequence, Units};
+use crate::{DecisionConfig, EngineKind};
 use crate::log::{AskRow, FamilyStats, Log, Row};
 use crate::question::{
     Ask, Candidate, Decision, Disposition, Family, LogId, Outcome, Question, Reason,
 };
 
-/// The checkpoint files [`Engine`] needs in `model_dir` (`release-models.sh` REQUIRED).
+/// The checkpoint files the ORT engine needs in `model_dir` (`release-models.sh` REQUIRED).
 pub const MODEL_FILES: [&str; 3] = ["model.onnx", "tokenizer.json", "rl_agent_config.json"];
+
+/// The laya `safetensors` checkpoint the candle engine needs (57 §12.8; `candle::CANDLE_FILES`).
+pub const CANDLE_FILES: [&str; 4] = [
+    "model.safetensors",
+    "encoder/config.json",
+    "tokenizer/tokenizer.json",
+    "rl_agent_config.json",
+];
+
+/// Which files [`Engine::missing_files`] checks for `engine`.
+pub fn model_files(engine: EngineKind) -> &'static [&'static str] {
+    match engine {
+        EngineKind::Ort => &MODEL_FILES,
+        EngineKind::Candle => &CANDLE_FILES,
+    }
+}
 
 /// The mandatory negative control appended to every `Choice` (57 §0.4).
 pub const NONE_ID: &str = "none";
@@ -103,23 +119,10 @@ pub struct Engine {
 }
 
 impl Engine {
-    /// An engine over `cfg` with the real [`Loaded`]; nothing loads until the first `Ask`.
+    /// An engine over `cfg` with the real checkpoint ([`Loaded`] or `candle::CandleLoaded` by
+    /// `cfg.engine`); nothing loads until the first `Ask`.
     pub fn new(cfg: DecisionConfig, model_dir: PathBuf, data_dir: PathBuf, log: Log) -> Self {
-        Self::with_loader(
-            cfg,
-            model_dir,
-            data_dir,
-            log,
-            Arc::new(|dir, data_dir, cfg| {
-                let provider = if cfg.coreml {
-                    Provider::CoreMl(Units::All)
-                } else {
-                    Provider::Cpu
-                };
-                Loaded::open(dir, data_dir, cfg.threads, provider)
-                    .map(|l| Box::new(l) as Box<dyn Oracle>)
-            }),
-        )
+        Self::with_loader(cfg, model_dir, data_dir, log, Arc::new(open))
     }
 
     /// An engine whose checkpoint comes from `loader` (tests).
@@ -148,8 +151,9 @@ impl Engine {
 
     /// The files that are not in the model dir, checked fresh each time.
     pub fn missing_files(&self) -> Vec<&'static str> {
-        MODEL_FILES
-            .into_iter()
+        model_files(self.cfg.engine)
+            .iter()
+            .copied()
             .filter(|f| !self.model_dir.join(f).is_file())
             .collect()
     }
@@ -268,6 +272,34 @@ impl Engine {
             tokio::time::sleep(idle).await;
             let _ = me.tell(Unload).await;
         });
+    }
+}
+
+/// The production [`Loader`]: ORT ([`Loaded`]) or candle by `cfg.engine`.
+fn open(dir: &Path, data_dir: &Path, cfg: &DecisionConfig) -> anyhow::Result<Box<dyn Oracle>> {
+    match cfg.engine {
+        EngineKind::Ort => {
+            let provider = if cfg.coreml {
+                Provider::CoreMl(Units::All)
+            } else {
+                Provider::Cpu
+            };
+            Loaded::open(dir, data_dir, cfg.threads, provider).map(|l| Box::new(l) as Box<dyn Oracle>)
+        }
+        #[cfg(feature = "candle")]
+        EngineKind::Candle => {
+            let metal = cfg.device.metal();
+            let dtype = if metal {
+                candle_core::DType::F16
+            } else {
+                candle_core::DType::F32
+            };
+            crate::candle::CandleLoaded::open(dir, metal, dtype).map(|l| Box::new(l) as Box<dyn Oracle>)
+        }
+        #[cfg(not(feature = "candle"))]
+        EngineKind::Candle => {
+            anyhow::bail!("decision.engine = candle, but this build has no `candle` feature")
+        }
     }
 }
 

@@ -1,12 +1,14 @@
 //! Decision plugin (design doc 57): a local typed-probability oracle — laya, a ModernBERT
-//! encoder with a decision head, through the bundled ONNX Runtime — answering [`Question`]s
-//! with a probability per option and a selective gate ([`gate`]) that says `Accept` or
-//! `Escalate(reason)`. Callers keep today's reasoning-model path on `Escalate`; every
-//! family ships in `shadow` until its log says otherwise.
+//! encoder with a decision head, through the bundled ONNX Runtime or natively in candle
+//! (`candle` feature, 57 §12.8) — answering [`Question`]s with a probability per option and a
+//! selective gate ([`gate`]) that says `Accept` or `Escalate(reason)`. Callers keep today's
+//! reasoning-model path on `Escalate`; every family ships in `shadow` until its log says otherwise.
 //!
 //! Public surface consumed by other plugins: messages on the [`DECISION_ACTOR`] actor
 //! ([`Engine`]): [`Ask`] → [`Decision`], [`Report`], [`Stats`] → [`FamilyStats`].
 
+#[cfg(feature = "candle")]
+pub mod candle;
 pub mod engine;
 pub mod gate;
 pub mod laya;
@@ -30,8 +32,46 @@ pub use question::{
 /// Registry name of the [`Engine`] actor.
 pub const DECISION_ACTOR: &str = "decision";
 
-/// The checkpoint under `<data_dir>/models/` (57 §2), published by `release-models.sh`.
+/// The ONNX checkpoint under `<data_dir>/models/` (57 §2), published by `release-models.sh`.
 pub const MODEL_SUBDIR: &str = "decision";
+
+/// The laya `safetensors` checkpoint dir for the candle engine (57 §12.8), Hugging Face layout.
+pub const CANDLE_SUBDIR: &str = "decision-candle";
+
+/// Which runtime answers (`decision.engine`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EngineKind {
+    /// ONNX Runtime over `model.onnx` (CPU EP; CoreML EP behind `coreml`).
+    #[default]
+    Ort,
+    /// laya-rs's `DecisionModel` on candle over `model.safetensors` (needs the `candle` feature).
+    Candle,
+}
+
+/// Where the candle engine runs (`decision.device`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Device {
+    /// Metal on an Apple-silicon Mac, CPU elsewhere.
+    #[default]
+    Auto,
+    /// CPU, f32.
+    Cpu,
+    /// Metal, f16; falls back to CPU with a warning when the GPU is unavailable.
+    Metal,
+}
+
+impl Device {
+    /// Whether this resolves to Metal on the running machine.
+    pub fn metal(self) -> bool {
+        match self {
+            Device::Auto => cfg!(all(target_os = "macos", target_arch = "aarch64")),
+            Device::Cpu => false,
+            Device::Metal => true,
+        }
+    }
+}
 
 /// `decision:` config section (57 §2). Every field has a default; the section may be absent.
 #[derive(Clone, Debug, Deserialize)]
@@ -39,8 +79,14 @@ pub const MODEL_SUBDIR: &str = "decision";
 pub struct DecisionConfig {
     /// `false`: the actor answers every `Ask` with `Escalate(Disabled)`.
     pub enabled: bool,
-    /// Checkpoint directory (model.onnx, tokenizer.json, rl_agent_config.json); `None` → `<data_dir>/models/decision`.
+    /// Checkpoint directory; `None` → `<data_dir>/models/decision` (ort: model.onnx, tokenizer.json,
+    /// rl_agent_config.json) or `<data_dir>/models/decision-candle` (candle: model.safetensors,
+    /// encoder/config.json, tokenizer/tokenizer.json, rl_agent_config.json).
     pub model_dir: Option<PathBuf>,
+    /// `ort` (default) or `candle`.
+    pub engine: EngineKind,
+    /// The candle engine's device: `auto` | `cpu` | `metal`.
+    pub device: Device,
     /// ONNX Runtime intra-op threads.
     pub threads: usize,
     /// Unload the session after this long unused (humantime, e.g. `10m`).
@@ -59,6 +105,8 @@ impl Default for DecisionConfig {
         DecisionConfig {
             enabled: true,
             model_dir: None,
+            engine: EngineKind::Ort,
+            device: Device::Auto,
             threads: 4,
             idle_unload: Duration::from_secs(600),
             coreml: false,
@@ -101,10 +149,12 @@ impl runtime::Plugin for DecisionPlugin {
         if !cfg.enabled {
             tracing::debug!("decision disabled by config");
         }
-        let model_dir = cfg
-            .model_dir
-            .clone()
-            .unwrap_or_else(|| rt.data_dir.join("models").join(MODEL_SUBDIR));
+        let model_dir = cfg.model_dir.clone().unwrap_or_else(|| {
+            rt.data_dir.join("models").join(match cfg.engine {
+                EngineKind::Ort => MODEL_SUBDIR,
+                EngineKind::Candle => CANDLE_SUBDIR,
+            })
+        });
         let log = log::Log::new(rt.data_dir.join("decisions"));
         Engine::spawn(Engine::new(cfg, model_dir, rt.data_dir.clone(), log))
             .register(DECISION_ACTOR)?;
