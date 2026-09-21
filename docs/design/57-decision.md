@@ -292,6 +292,12 @@ fp32 ONNX (Mattepiu `laya.onnx` 1.69 GB, tozp `model.onnx` 1.69 GB; opset 14/18)
 3. Apply the §12.6 criteria. Pass → the shipped macOS path is ORT + CoreML EP, fp32 artifact, one download. Fail → **stop and report**; Path B is briefed separately.
 4. Only then run 2b. Record everything in the as-built.
 
+### 12.8 Step 2e — candle spike (Sky, 2026-09-21 night): two native Rust ports appeared
+
+Path A failed (as-built 2d). Before Path B, two independent **candle** ports of laya surfaced (both Apache-2.0, both load the `safetensors` checkpoint directly — no ONNX, no coremltools, no export pipeline, no dylib): `laya-rs` 0.1.0 on crates.io (bob-rietveld; port of laya-mlx; CPU/CUDA/**Metal**; parity tests vs a NumPy transcription on a synthetic checkpoint; GitHub repo 404 — vendor the crate source) and `apiplant/laya-rs` 0.2.0 on GitHub (from scratch; CPU/CUDA/flash-attn, **no Metal**; RTX 4090 16-question fixture 135 ms vs PyTorch 165 ms; fixed candle slow paths; also an RLCD trainer in Rust — relevant to §11 later). §0.2 rejected candle for the porting cost; that cost is now zero. Sky: build it.
+
+**Step 2e**: `laya-rs` 0.1.0 with `metal` as a third backend behind `Oracle` (`crates/decision/src/candle.rs`), driving its `DecisionModel` forward with *our* collated tensors so `build_sequence`, calibration, gate and log are unchanged; root `model.safetensors` fp16 on Metal, f32 on CPU. Criteria (same shape as §12.6): **p95 ≤ 50 ms** warm single question on Metal (S ≈ 340–512, K 2–10, no bucketing), **RSS ≤ 1.5 GiB** after first inference (one mmapped fp16 copy), **|Δp| ≤ 0.01** vs the ORT fp32 CPU probabilities (`/tmp/laya-design/probs-cpu-fp32.json`), cold load ≤ 3 s. Pass → candle is the decision engine on every platform (Metal / CUDA / CPU), the ONNX artifacts and ORT-for-decision go in a follow-up, fine-tunes become directory drop-ins, Path B is deferred to "later, for battery". Fail → Path B as planned; the CPU numbers still inform 58.
+
 ## As built — step 1 (2026-09-21)
 
 Two commits, `cargo check --workspace` green after each; the brief was `/tmp/laya-design/omp-step1.md` plus Sky's correction that models come from the release bucket, not Hugging Face.
