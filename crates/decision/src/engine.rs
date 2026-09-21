@@ -14,7 +14,7 @@ use tokio::task::JoinHandle;
 
 use crate::DecisionConfig;
 use crate::gate::{FamilyGate, Mode};
-use crate::laya::{self, Loaded, RowOut, Sequence};
+use crate::laya::{self, Loaded, Provider, RowOut, Sequence, Units};
 use crate::log::{AskRow, FamilyStats, Log, Row};
 use crate::question::{
     Ask, Candidate, Decision, Disposition, Family, LogId, Outcome, Question, Reason,
@@ -111,7 +111,12 @@ impl Engine {
             data_dir,
             log,
             Arc::new(|dir, data_dir, cfg| {
-                Loaded::open(dir, data_dir, cfg.threads, cfg.coreml)
+                let provider = if cfg.coreml {
+                    Provider::CoreMl(Units::All)
+                } else {
+                    Provider::Cpu
+                };
+                Loaded::open(dir, data_dir, cfg.threads, provider)
                     .map(|l| Box::new(l) as Box<dyn Oracle>)
             }),
         )

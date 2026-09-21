@@ -8,14 +8,18 @@
 //! (`head_max_len`) runs out; the instructions get what the options leave (≥ 8 tokens); the
 //! state gets the rest of `max_len` and is right-truncated.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Instant;
 
 use half::f16;
+use ort::logging::LogLevel;
 use ort::session::Session;
-use ort::session::builder::GraphOptimizationLevel;
-use ort::value::{Tensor, TensorElementType, ValueType};
+use ort::session::builder::{GraphOptimizationLevel, SessionBuilder};
+use ort::value::{DynValue, Tensor, TensorElementType, ValueType};
+use parking_lot::Mutex;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tokenizers::Tokenizer;
@@ -277,9 +281,9 @@ pub struct RowOut {
 pub struct Batch {
     /// Rows.
     pub b: usize,
-    /// Longest row.
+    /// Longest row, or the bucket's S.
     pub s: usize,
-    /// Most markers.
+    /// Most markers, or the bucket's K.
     pub k: usize,
     /// `[B, S]`.
     pub input_ids: Vec<i64>,
@@ -293,11 +297,23 @@ pub struct Batch {
     pub qtype: Vec<i64>,
 }
 
-/// Pad `rows` into one batch.
-pub fn collate(rows: &[Sequence]) -> Batch {
+/// Pad `rows` into one batch; `bucket = Some((S, K))` pads at least that far so an
+/// accelerator sees one static shape (57 §12.6). Rows never shrink to the bucket.
+pub fn collate(rows: &[Sequence], bucket: Option<(usize, usize)>) -> Batch {
     let b = rows.len();
-    let s = rows.iter().map(|r| r.input_ids.len()).max().unwrap_or(0);
-    let k = rows.iter().map(|r| r.marker_pos.len()).max().unwrap_or(0);
+    let (bs, bk) = bucket.unwrap_or((0, 0));
+    let s = rows
+        .iter()
+        .map(|r| r.input_ids.len())
+        .max()
+        .unwrap_or(0)
+        .max(bs);
+    let k = rows
+        .iter()
+        .map(|r| r.marker_pos.len())
+        .max()
+        .unwrap_or(0)
+        .max(bk);
     let mut batch = Batch {
         b,
         s,
@@ -352,28 +368,49 @@ pub fn postprocess(row: &Sequence, logits: &[f32], act: &[f32], cfg: &LayaConfig
     }
 }
 
-/// f16 → f32, the outputs' element type (`ort/half`).
+/// f16 → f32, the fp16 export's output element type (`ort/half`).
 pub fn f16_to_f32(v: &[f16]) -> Vec<f32> {
     v.iter().map(|x| x.to_f32()).collect()
+}
+
+/// An output tensor as f32 whatever the export's precision: borrowed for fp32, converted for fp16.
+fn floats<'a>(v: &'a DynValue, what: &str) -> anyhow::Result<Cow<'a, [f32]>> {
+    match v.dtype() {
+        ValueType::Tensor {
+            ty: TensorElementType::Float32,
+            ..
+        } => Ok(Cow::Borrowed(v.try_extract_tensor::<f32>()?.1)),
+        ValueType::Tensor {
+            ty: TensorElementType::Float16,
+            ..
+        } => Ok(Cow::Owned(f16_to_f32(v.try_extract_tensor::<f16>()?.1))),
+        other => anyhow::bail!("model.onnx: output `{what}` is {other}, expected f32 or f16"),
+    }
 }
 
 /// One graph outlet as `(name, type)`; `Outlet` itself needs the runtime loaded to construct.
 pub type Port = (String, ValueType);
 
-/// The graph 57 §1 describes: names, element types and ranks, checked on load.
+/// The second output's names across exports: `act_logits` (sevenreasons fp16), `act` (tozp fp32).
+pub const ACT_NAMES: [&str; 2] = ["act_logits", "act"];
+
+/// The graph 57 §1 describes: names, element types and ranks, checked on load. Outputs may
+/// be f32 (tozp, opset 14) or f16 (sevenreasons, opset 18); [`floats`] picks by type at run.
 pub fn verify_graph(inputs: &[Port], outputs: &[Port]) -> Result<(), String> {
-    const INPUTS: [(&str, TensorElementType, usize); 5] = [
-        ("input_ids", TensorElementType::Int64, 2),
-        ("attention_mask", TensorElementType::Int64, 2),
-        ("marker_pos", TensorElementType::Int64, 2),
-        ("marker_mask", TensorElementType::Bool, 2),
-        ("qtype", TensorElementType::Int64, 1),
+    use TensorElementType::{Bool, Float16, Float32, Int64};
+    type Want = (&'static [&'static str], &'static [TensorElementType], usize);
+    const INPUTS: [Want; 5] = [
+        (&["input_ids"], &[Int64], 2),
+        (&["attention_mask"], &[Int64], 2),
+        (&["marker_pos"], &[Int64], 2),
+        (&["marker_mask"], &[Bool], 2),
+        (&["qtype"], &[Int64], 1),
     ];
-    const OUTPUTS: [(&str, TensorElementType, usize); 2] = [
-        ("logits", TensorElementType::Float16, 2),
-        ("act_logits", TensorElementType::Float16, 2),
+    const OUTPUTS: [Want; 2] = [
+        (&["logits"], &[Float32, Float16], 2),
+        (&ACT_NAMES, &[Float32, Float16], 2),
     ];
-    let check = |what: &str, have: &[Port], want: &[(&str, TensorElementType, usize)]| {
+    let check = |what: &str, have: &[Port], want: &[Want]| {
         if have.len() != want.len() {
             return Err(format!(
                 "model.onnx: {} {what}s ({}), expected {} ({})",
@@ -383,19 +420,26 @@ pub fn verify_graph(inputs: &[Port], outputs: &[Port]) -> Result<(), String> {
                     .collect::<Vec<_>>()
                     .join(", "),
                 want.len(),
-                want.iter().map(|w| w.0).collect::<Vec<_>>().join(", ")
+                want.iter().map(|w| w.0[0]).collect::<Vec<_>>().join(", ")
             ));
         }
-        for (name, ty, rank) in want {
+        for (names, types, rank) in want {
+            let name = names.join("|");
             let o = have
                 .iter()
-                .find(|o| o.0 == *name)
+                .find(|o| names.contains(&o.0.as_str()))
                 .ok_or_else(|| format!("model.onnx: no {what} `{name}`"))?;
             match &o.1 {
-                ValueType::Tensor { ty: t, shape, .. } if t == ty && shape.len() == *rank => {}
+                ValueType::Tensor { ty, shape, .. }
+                    if types.contains(ty) && shape.len() == *rank => {}
                 other => {
                     return Err(format!(
-                        "model.onnx: {what} `{name}` is {other}, expected {ty} rank {rank}"
+                        "model.onnx: {what} `{name}` is {other}, expected {} rank {rank}",
+                        types
+                            .iter()
+                            .map(|t| t.to_string())
+                            .collect::<Vec<_>>()
+                            .join("|")
                     ));
                 }
             }
@@ -406,8 +450,53 @@ pub fn verify_graph(inputs: &[Port], outputs: &[Port]) -> Result<(), String> {
     check("output", outputs, &OUTPUTS)
 }
 
-/// The checkpoint: one warm ort `Session` (CPU EP), the tokenizer, the temperatures and
-/// the model's sha256. `run` takes `&mut self` (rc.13), so one owner serialises callers.
+/// Core ML compute units (`MLComputeUnits`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Units {
+    /// CPU, GPU and Neural Engine.
+    All,
+    /// CPU and Neural Engine, no GPU.
+    CpuAndNeuralEngine,
+}
+
+/// Which execution provider the session runs on (57 §12.6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Provider {
+    /// The CPU EP; S padded to the checkpoint's `max_len` (tozp's fp32 export traced S = 512
+    /// into its reshapes and rejects anything else), K dynamic.
+    Cpu,
+    /// The CoreML EP (macOS only), every request padded to [`BUCKET`]; registration failure
+    /// falls back to [`Provider::Cpu`] with a warning.
+    CoreMl(Units),
+}
+
+/// The static shape the CoreML EP compiles for: S = `max_len`, K = 32 option slots.
+pub const BUCKET: (usize, usize) = (512, 32);
+
+/// `<data_dir>/cache/coreml/decision/`: the CoreML EP's compiled-model cache (`ModelCacheDirectory`).
+pub fn coreml_cache_dir(data_dir: &Path) -> std::path::PathBuf {
+    data_dir.join("cache/coreml/decision")
+}
+
+/// `(partitions, graph nodes, nodes CoreML took)`.
+pub type Partitions = (usize, usize, usize);
+
+/// [`Partitions`] from ORT's `CoreMLExecutionProvider::GetCapability, number of partitions
+/// supported by CoreML: N number of nodes in the graph: M number of nodes supported by CoreML: K`
+/// info line.
+pub fn parse_partitions(msg: &str) -> Option<Partitions> {
+    let rest = msg
+        .split_once("number of partitions supported by CoreML:")?
+        .1;
+    let mut nums = rest
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.parse::<usize>().ok());
+    Some((nums.next()??, nums.next()??, nums.next()??))
+}
+
+/// The checkpoint: one warm ort `Session`, the tokenizer, the temperatures and the model's
+/// sha256. `run` takes `&mut self` (rc.13), so one owner serialises callers.
 pub struct Loaded {
     session: Session,
     /// laya's fast BPE tokenizer.
@@ -416,27 +505,27 @@ pub struct Loaded {
     pub laya: LayaConfig,
     /// sha256 hex of `model.onnx`, part of every gate version.
     pub model_sha: String,
-    /// Wall-clock of `open`.
+    /// Wall-clock of `open` (includes the Core ML compile on the CoreML EP).
     pub load_time: std::time::Duration,
+    /// The provider that actually registered.
+    pub provider: Provider,
+    /// Padding floor for [`collate`]: [`BUCKET`] on the CoreML EP, `(max_len, 0)` on CPU.
+    pub bucket: (usize, usize),
+    /// The CoreML EP's partition report, when it logged one.
+    pub partitions: Option<Partitions>,
 }
 
 impl Loaded {
     /// Open `dir/{model.onnx,tokenizer.json,rl_agent_config.json}` after the process-wide
-    /// ONNX Runtime init (`models::onnx::ort_lib(data_dir)`), verify the graph, hash the
-    /// model. `coreml` is read and refused (57 §2: a step-2 experiment; CPU EP until it is measured).
+    /// ONNX Runtime init (`models::onnx::ort_lib(data_dir)`), verify the graph, hash the model.
     pub fn open(
         dir: &Path,
         data_dir: &Path,
         threads: usize,
-        coreml: bool,
+        provider: Provider,
     ) -> anyhow::Result<Loaded> {
         let t = Instant::now();
         models::onnx::ort_lib(data_dir).map_err(anyhow::Error::msg)?;
-        if coreml {
-            tracing::warn!(
-                "decision: coreml: true is not implemented; running on the CPU execution provider"
-            );
-        }
         let model = dir.join("model.onnx");
         let tokenizer = Tokenizer::from_file(dir.join("tokenizer.json"))
             .map_err(|e| anyhow::anyhow!("tokenizer.json: {e}"))?;
@@ -446,14 +535,43 @@ impl Loaded {
         let mut hasher = Sha256::new();
         std::io::copy(&mut std::fs::File::open(&model)?, &mut hasher)?;
         let model_sha = format!("{:x}", hasher.finalize());
-        let session = Session::builder()
-            .map_err(ort_err)?
-            .with_optimization_level(GraphOptimizationLevel::Level3)
-            .map_err(ort_err)?
-            .with_intra_threads(threads.max(1))
-            .map_err(ort_err)?
-            .commit_from_file(&model)
-            .map_err(|e| anyhow::anyhow!("load {}: {e}", model.display()))?;
+
+        let base = || -> anyhow::Result<SessionBuilder> {
+            Session::builder()
+                .map_err(ort_err)?
+                .with_optimization_level(GraphOptimizationLevel::Level3)
+                .map_err(ort_err)?
+                .with_intra_threads(threads.max(1))
+                .map_err(ort_err)
+        };
+        let commit = |mut b: SessionBuilder| {
+            b.commit_from_file(&model)
+                .map_err(|e| anyhow::anyhow!("load {}: {e}", model.display()))
+        };
+        let partitions = Arc::new(Mutex::new(None));
+        let (session, provider) = match provider {
+            Provider::Cpu => (commit(base()?)?, Provider::Cpu),
+            Provider::CoreMl(units) => {
+                let attempt = coreml(base()?, units, data_dir, &partitions).and_then(commit);
+                match attempt {
+                    Ok(s) => (s, provider),
+                    Err(e) => {
+                        tracing::warn!(
+                            "decision: CoreML EP unusable ({e}; GetCapability: {:?}); falling back to the CPU execution provider",
+                            partitions.lock().take()
+                        );
+                        (commit(base()?)?, Provider::Cpu)
+                    }
+                }
+            }
+        };
+        let partitions = *partitions.lock();
+        if let Some((n, m, k)) = partitions {
+            tracing::info!(
+                "decision: CoreML EP took {k} of {m} nodes in {n} partition{}",
+                if n == 1 { "" } else { "s" }
+            );
+        }
         let ports = |outlets: &[ort::value::Outlet]| -> Vec<Port> {
             outlets
                 .iter()
@@ -462,12 +580,19 @@ impl Loaded {
         };
         verify_graph(&ports(session.inputs()), &ports(session.outputs()))
             .map_err(anyhow::Error::msg)?;
+        let bucket = match provider {
+            Provider::CoreMl(_) => BUCKET,
+            Provider::Cpu => (laya.max_len, 0),
+        };
         Ok(Loaded {
             session,
             tokenizer,
             laya,
             model_sha,
             load_time: t.elapsed(),
+            provider,
+            bucket,
+            partitions,
         })
     }
 
@@ -476,12 +601,13 @@ impl Loaded {
         build_sequence(&self.tokenizer, q, &self.laya)
     }
 
-    /// One forward pass over `rows` (padded together), one [`RowOut`] per row.
+    /// One forward pass over `rows` (padded together, to [`Self::bucket`] at least), one
+    /// [`RowOut`] per row.
     pub fn run(&mut self, rows: &[Sequence]) -> anyhow::Result<Vec<RowOut>> {
         if rows.is_empty() {
             return Ok(Vec::new());
         }
-        let batch = collate(rows);
+        let batch = collate(rows, Some(self.bucket));
         let (b, s, k) = (batch.b as i64, batch.s as i64, batch.k as i64);
         let outputs = self.session.run(ort::inputs![
             "input_ids" => Tensor::from_array((vec![b, s], batch.input_ids))?,
@@ -490,17 +616,19 @@ impl Loaded {
             "marker_mask" => Tensor::from_array((vec![b, k], batch.marker_mask))?,
             "qtype" => Tensor::from_array((vec![b], batch.qtype))?,
         ])?;
-        let logits = outputs
-            .get("logits")
-            .ok_or_else(|| anyhow::anyhow!("model.onnx: no `logits` output"))?
-            .try_extract_tensor::<f16>()?
-            .1;
-        let act = outputs
-            .get("act_logits")
-            .ok_or_else(|| anyhow::anyhow!("model.onnx: no `act_logits` output"))?
-            .try_extract_tensor::<f16>()?
-            .1;
-        let (logits, act) = (f16_to_f32(logits), f16_to_f32(act));
+        let logits = floats(
+            outputs
+                .get("logits")
+                .ok_or_else(|| anyhow::anyhow!("model.onnx: no `logits` output"))?,
+            "logits",
+        )?;
+        let act = floats(
+            ACT_NAMES
+                .iter()
+                .find_map(|n| outputs.get(n))
+                .ok_or_else(|| anyhow::anyhow!("model.onnx: no `act_logits`/`act` output"))?,
+            "act",
+        )?;
         let kk = batch.k.max(1);
         let na = act.len() / batch.b.max(1);
         Ok(rows
@@ -516,6 +644,53 @@ impl Loaded {
             })
             .collect())
     }
+}
+
+/// Register the CoreML EP (`MLProgram`, `units`, compiled-model cache under `data_dir`) ahead
+/// of the CPU EP, with a session logger at INFO that keeps the `GetCapability` partition line.
+#[cfg(target_os = "macos")]
+fn coreml(
+    b: SessionBuilder,
+    units: Units,
+    data_dir: &Path,
+    partitions: &Arc<Mutex<Option<Partitions>>>,
+) -> anyhow::Result<SessionBuilder> {
+    use ort::ep::coreml::{ComputeUnits, ModelFormat};
+    let cache = coreml_cache_dir(data_dir);
+    std::fs::create_dir_all(&cache)?;
+    let ep = ort::ep::CoreML::default()
+        .with_model_format(ModelFormat::MLProgram)
+        .with_compute_units(match units {
+            Units::All => ComputeUnits::All,
+            Units::CpuAndNeuralEngine => ComputeUnits::CPUAndNeuralEngine,
+        })
+        .with_model_cache_dir(cache.to_string_lossy())
+        .build()
+        .error_on_failure();
+    let sink = Arc::clone(partitions);
+    b.with_log_level(LogLevel::Info)
+        .map_err(ort_err)?
+        .with_logger(Arc::new(move |level, _category, _id, _loc, msg: &str| {
+            if let Some(p) = parse_partitions(msg) {
+                *sink.lock() = Some(p);
+            } else if level >= LogLevel::Warning {
+                tracing::warn!("ort: {msg}");
+            }
+        }))
+        .map_err(ort_err)?
+        .with_execution_providers([ep])
+        .map_err(ort_err)
+}
+
+/// The CoreML EP exists only in Apple's builds of the runtime.
+#[cfg(not(target_os = "macos"))]
+fn coreml(
+    _b: SessionBuilder,
+    _units: Units,
+    _data_dir: &Path,
+    _partitions: &Arc<Mutex<Option<Partitions>>>,
+) -> anyhow::Result<SessionBuilder> {
+    anyhow::bail!("the CoreML execution provider is macOS-only")
 }
 
 /// `ort::Error<R>` is not `Send + Sync` (it carries the failed builder); stringify.
@@ -779,7 +954,7 @@ mod tests {
                 1,
             ),
         ];
-        let b = collate(&rows);
+        let b = collate(&rows, None);
         assert_eq!((b.b, b.s, b.k), (3, 12, 3));
         assert_eq!(b.input_ids.len(), 36);
         assert_eq!(b.attention_mask.len(), 36);
@@ -797,7 +972,55 @@ mod tests {
         assert_eq!(&b.marker_pos[0..3], &[3, 5, 0]);
         assert_eq!(&b.marker_mask[6..9], &[true, true, true]);
         assert_eq!(b.qtype, vec![2, 0, 1]);
-        assert_eq!(collate(&[]).b, 0);
+        assert_eq!(collate(&[], None).b, 0);
+    }
+
+    #[test]
+    fn collate_pads_to_bucket() {
+        let rows = [
+            seq(
+                vec![CLS, 1, SEP, MASK, 2, MASK, 3, SEP, 4, SEP],
+                vec![3, 5],
+                0,
+            ),
+            seq(vec![CLS, SEP, MASK, SEP], vec![2], 2),
+        ];
+        let b = collate(&rows, Some(BUCKET));
+        assert_eq!((b.b, b.s, b.k), (2, 512, 32));
+        assert_eq!(b.input_ids.len(), 2 * 512);
+        assert_eq!(b.marker_mask.len(), 2 * 32);
+        // Real tokens then [PAD]/attention 0 to S; real markers then pos 0/mask false to K.
+        assert_eq!(&b.input_ids[..10], &rows[0].input_ids[..]);
+        assert!(b.input_ids[10..512].iter().all(|&t| t == PAD));
+        assert_eq!(b.attention_mask[..512].iter().sum::<i64>(), 10);
+        assert_eq!(b.attention_mask[512..].iter().sum::<i64>(), 4);
+        assert_eq!(&b.marker_pos[..3], &[3, 5, 0]);
+        assert_eq!(b.marker_mask[..32].iter().filter(|&&m| m).count(), 2);
+        assert_eq!(b.marker_mask[32..].iter().filter(|&&m| m).count(), 1);
+        // A row longer than the bucket is never cut.
+        let long = seq(vec![7; 600], vec![1], 0);
+        assert_eq!(collate(&[long], Some(BUCKET)).s, 600);
+        // The bucket is a floor, not a fixed shape, so an unbucketed batch is unchanged.
+        assert_eq!(collate(&rows, Some((4, 1))).s, 10);
+    }
+
+    #[test]
+    fn partition_line() {
+        assert_eq!(
+            parse_partitions(
+                "CoreMLExecutionProvider::GetCapability, number of partitions supported by CoreML: 1 \
+                 number of nodes in the graph: 2470 number of nodes supported by CoreML: 2468"
+            ),
+            Some((1, 2470, 2468))
+        );
+        assert_eq!(
+            parse_partitions("Successfully registered `CoreMLExecutionProvider`"),
+            None
+        );
+        assert_eq!(
+            parse_partitions("number of partitions supported by CoreML: 1"),
+            None
+        );
     }
 
     #[test]
@@ -861,11 +1084,24 @@ mod tests {
             t("act_logits", TensorElementType::Float16, 2),
         ];
         assert_eq!(verify_graph(&good_in, &good_out), Ok(()));
-        // fp32 export: refused, names the output.
+        // tozp's fp32 export: f32 outputs, the act head named `act`.
+        let fp32 = vec![
+            t("logits", TensorElementType::Float32, 2),
+            t("act", TensorElementType::Float32, 2),
+        ];
+        assert_eq!(verify_graph(&good_in, &fp32), Ok(()));
+        // Anything else is refused and named.
         let mut out = good_out.clone();
-        out[0] = t("logits", TensorElementType::Float32, 2);
+        out[0] = t("logits", TensorElementType::Float64, 2);
         let e = verify_graph(&good_in, &out).unwrap_err();
-        assert!(e.contains("`logits`") && e.contains("f16"), "{e}");
+        assert!(e.contains("`logits`") && e.contains("f32|f16"), "{e}");
+        let mut out = good_out.clone();
+        out[1] = t("action", TensorElementType::Float16, 2);
+        assert!(
+            verify_graph(&good_in, &out)
+                .unwrap_err()
+                .contains("`act_logits|act`")
+        );
         // Missing / renamed input.
         let mut inp = good_in.clone();
         inp[4] = t("question_type", TensorElementType::Int64, 1);

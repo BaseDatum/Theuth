@@ -46,7 +46,7 @@ pub struct DecisionConfig {
     /// Unload the session after this long unused (humantime, e.g. `10m`).
     #[serde(deserialize_with = "duration")]
     pub idle_unload: Duration,
-    /// Try the CoreML execution provider (step-2 experiment).
+    /// Register the CoreML execution provider ahead of CPU (macOS; CPU fallback on failure).
     pub coreml: bool,
     /// Store the question text in the log, not only its hash.
     pub log_text: bool,

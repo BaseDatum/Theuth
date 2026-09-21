@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use decision::engine::MODEL_FILES;
-use decision::laya::Loaded;
+use decision::laya::{BUCKET, Loaded, Provider, Units};
 use decision::log::Log;
 use decision::{
     Ask, Candidate, DecisionConfig, Disposition, Engine, FamilyGate, Mode, Outcome, Question,
@@ -39,14 +39,35 @@ fn billing_state() -> String {
 }
 
 #[test]
-fn open_verifies_graph_and_answers() {
+fn open_verifies_graph_and_answers_on_cpu() {
+    answers(Provider::Cpu);
+}
+
+/// Asking for the CoreML EP must always yield a working session: on macOS it either
+/// registers (bucketed, partition report present) or falls back to CPU with a warning (57
+/// §12.6 — both root ONNX exports fall back today); elsewhere it is the CPU test twice.
+#[test]
+fn open_verifies_graph_and_answers_on_coreml() {
+    answers(Provider::CoreMl(Units::All));
+}
+
+fn answers(provider: Provider) {
     let Some((data, dir)) = model_dir() else {
         return;
     };
-    let mut m = Loaded::open(&dir, &data, 4, false).expect("open");
+    let mut m = Loaded::open(&dir, &data, 4, provider).expect("open");
+    eprintln!(
+        "asked {provider:?} → {:?}, partitions {:?}",
+        m.provider, m.partitions
+    );
     assert_eq!(m.model_sha.len(), 64);
     assert!(m.load_time > Duration::ZERO);
     assert_eq!((m.laya.max_len, m.laya.head_max_len), (512, 192));
+    let coreml = matches!(m.provider, Provider::CoreMl(_));
+    assert!(!coreml || cfg!(target_os = "macos"));
+    assert!(!coreml || provider == m.provider);
+    assert_eq!(m.bucket, if coreml { BUCKET } else { (512, 0) });
+    assert_eq!(m.partitions.is_some(), coreml);
     let q = Question::Bool {
         statement: "Does the user threaten to cancel or leave?".into(),
         state: billing_state(),
