@@ -266,11 +266,14 @@ agent:
 #                            # tokenizer/tokenizer.json, rl_agent_config.json — the Hugging Face convaiinnovations/laya layout.
 #                            # The desktop app fetches it from the release bucket at start like the speech models (54 §9,
 #                            # scripts/release-models.sh); the daemon re-checks on every ask, so no restart once it lands.
-#   checkpoints:             # one engine per checkpoint (57 §4.1 item 6), each lazily loaded and idle-unloaded on its own
-#     default: ~             # = model_dir
+#   checkpoints:             # one engine per checkpoint (57 §4.1 item 6). A checkpoint is resident only while in use (57 §2.1):
+#                            # loaded by the first question (the meeting warms it at Recording), released when the meeting stops /
+#                            # the browser session closes, and by idle_unload as the safety net. Nothing loads at daemon start.
+#     default: ~             # = model_dir; a bare path, or { dir: <path>, idle_unload: 3m }
 #     browser: ~             # cklxx/laya-browser v10, same layout; default <data_dir>/models/decision-browser
 #                            # (scripts/fetch-laya-browser.sh until release-models publishes it). A family's `checkpoint: <name>` picks one.
-#   idle_unload: 10m         # drop the model after this long unused (~1 GiB back)
+#                            # Its idle_unload defaults to 2m (loop steps are sub-second; a run never trips it).
+#   idle_unload: 3m          # drop a checkpoint after this long unused (~0.9 GB back); checkpoints.<name>.idle_unload overrides per checkpoint
 #   log_text: false          # true: store the question text in <data_dir>/decisions/*.jsonl, not only its hash
 #   families:                # gate per decision family: mode shadow | active | off; accept iff top1 ≥ tau_top and top1 − top2 ≥ tau_margin;
 #                            # budget (tier 1, default 400ms) and escalate_budget (tier 2 cheap-model call, default 3s) per family.

@@ -13,6 +13,7 @@ use kameo::actor::ActorRef;
 use kameo::message::{Context, Message};
 use kameo::reply::DelegatedReply;
 use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
 use tokio::task::JoinHandle;
 
 use crate::DecisionConfig;
@@ -159,9 +160,42 @@ pub struct Warm {
     pub budget: Duration,
 }
 
-/// `tell` from the idle watchdog: drop the session if nothing asked since.
+/// `tell`: drop the warm session now (57 §2.1 item 1) — the meeting sends it when recording
+/// stops, the browser when a session that ran `browser_run` closes. In-flight blocking runs
+/// keep their `Arc` and finish; a cold load still in flight is dropped on landing; the idle
+/// watchdog is disarmed. `checkpoint: None` = this engine's own; `Some(name)` is forwarded to
+/// that checkpoint's engine. Nothing loaded → nothing happens.
+#[derive(Clone, Debug)]
+pub struct Release {
+    /// Which checkpoint; `None` = the engine addressed.
+    pub checkpoint: Option<String>,
+    /// For the log line: `decision: <name> released (<reason>)`.
+    pub reason: &'static str,
+}
+
+/// `ask` → `Vec<LoadedInfo>`: the checkpoints resident right now (57 §2.1 item 4). The
+/// `default` engine answers for every checkpoint (it asks its siblings); another engine only
+/// for itself.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LoadedNow;
+
+/// One resident checkpoint, for `decision_loaded` and the Settings line.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct LoadedInfo {
+    /// Checkpoint name (`default`, `browser`).
+    pub checkpoint: String,
+    /// Seconds since the session was installed.
+    pub since_secs: u64,
+    /// The **whole daemon's** resident set in MB, not this checkpoint's share: one number,
+    /// the same on every entry (57 §2.1 item 4).
+    pub rss_mb: u64,
+}
+
+/// `tell` from the idle watchdog: drop the session if nothing asked since. The epoch names
+/// the arming [`Engine::touch`]; a tick from an earlier arming (before a `Release`) is stale.
 #[derive(Clone, Copy, Debug)]
-struct Unload;
+struct Unload(u64);
 
 /// The `decision` actor — one per checkpoint.
 #[derive(kameo::Actor)]
@@ -173,6 +207,8 @@ pub struct Engine {
     model_dir: PathBuf,
     /// The `default` checkpoint directory, which `mode_for` resolves the others from.
     default_dir: PathBuf,
+    /// This checkpoint's idle unload ([`DecisionConfig::idle_unload_for`]).
+    idle: Duration,
     log: Log,
     /// `<data_dir>/decisions/training`, beside the log.
     training: Store,
@@ -181,10 +217,15 @@ pub struct Engine {
     config_path: Option<PathBuf>,
     /// Warm session, shared with in-flight blocking runs.
     loaded: Option<Shared>,
+    /// When `loaded` was installed.
+    loaded_since: Option<Instant>,
     /// A cold load that outran the asking budget; polled by the next `Ask`.
     loading: Option<JoinHandle<anyhow::Result<Box<dyn Oracle>>>>,
     last_used: Instant,
-    watchdog: bool,
+    /// The armed watchdog's epoch; `None` = not armed.
+    watchdog: Option<u64>,
+    /// Armings so far; each tick carries the epoch that armed it.
+    epochs: u64,
     /// `ModelMissing` is logged once, not per `Ask`.
     missing_logged: bool,
     /// Cold-load time, written into the next logged row.
@@ -203,6 +244,7 @@ impl Engine {
     /// An engine whose checkpoint comes from `loader` (tests).
     pub fn with_loader(cfg: DecisionConfig, model_dir: PathBuf, log: Log, loader: Loader) -> Self {
         Engine {
+            idle: cfg.idle_unload_for(crate::DEFAULT_CHECKPOINT),
             cfg,
             checkpoint: crate::DEFAULT_CHECKPOINT.to_owned(),
             default_dir: model_dir.clone(),
@@ -212,9 +254,11 @@ impl Engine {
             loader,
             config_path: None,
             loaded: None,
+            loaded_since: None,
             loading: None,
             last_used: Instant::now(),
-            watchdog: false,
+            watchdog: None,
+            epochs: 0,
             missing_logged: false,
             pending_load_ms: None,
             model_sha: Arc::default(),
@@ -222,10 +266,11 @@ impl Engine {
     }
 
     /// Make this the engine of checkpoint `name` living in `dir` (57 §4.1 item 6); `new`'s
-    /// `model_dir` stays the `default` one for `mode_for`.
+    /// `model_dir` stays the `default` one for `mode_for`. The idle unload becomes `name`'s.
     pub fn with_checkpoint(mut self, name: &str, dir: PathBuf) -> Self {
         self.checkpoint = name.to_owned();
         self.model_dir = dir;
+        self.idle = self.cfg.idle_unload_for(name);
         self
     }
 
@@ -388,6 +433,7 @@ impl Engine {
                 );
                 let shared: Shared = Arc::new(Mutex::new(oracle));
                 self.loaded = Some(shared.clone());
+                self.loaded_since = Some(Instant::now());
                 self.pending_load_ms = Some(load.as_millis() as u64);
                 Ok(shared)
             }
@@ -406,15 +452,47 @@ impl Engine {
 
     fn touch(&mut self, me: ActorRef<Self>) {
         self.last_used = Instant::now();
-        if self.watchdog || self.cfg.idle_unload.is_zero() {
+        if self.watchdog.is_some() || self.idle.is_zero() {
             return;
         }
-        self.watchdog = true;
-        let idle = self.cfg.idle_unload;
+        self.epochs += 1;
+        self.watchdog = Some(self.epochs);
+        self.arm(me, self.idle, self.epochs);
+    }
+
+    /// One watchdog tick after `after`.
+    fn arm(&self, me: ActorRef<Self>, after: Duration, epoch: u64) {
         tokio::spawn(async move {
-            tokio::time::sleep(idle).await;
-            let _ = me.tell(Unload).await;
+            tokio::time::sleep(after).await;
+            let _ = me.tell(Unload(epoch)).await;
         });
+    }
+
+    /// Drop the session (57 §2.1 item 1): in-flight runs keep their `Arc`; a cold load still in
+    /// flight is detached so its result is dropped on landing; the watchdog is disarmed.
+    fn release(&mut self, reason: &str) {
+        self.watchdog = None;
+        self.loading = None;
+        let was = self.loaded.take().is_some();
+        if let Some(since) = self.loaded_since.take() {
+            tracing::info!(
+                "decision: {} released ({reason}) after {:?} resident",
+                self.checkpoint,
+                since.elapsed()
+            );
+        } else if was {
+            tracing::info!("decision: {} released ({reason})", self.checkpoint);
+        }
+    }
+
+    /// This engine's [`LoadedInfo`], if a session is resident.
+    fn loaded_info(&self) -> Option<LoadedInfo> {
+        let since = self.loaded_since.filter(|_| self.loaded.is_some())?;
+        Some(LoadedInfo {
+            checkpoint: self.checkpoint.clone(),
+            since_secs: since.elapsed().as_secs(),
+            rss_mb: crate::process_rss() / 1_000_000,
+        })
     }
 }
 
@@ -812,21 +890,60 @@ impl Message<AskMany> for Engine {
 impl Message<Unload> for Engine {
     type Reply = ();
 
-    async fn handle(&mut self, _: Unload, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        let idle = self.cfg.idle_unload;
-        let since = self.last_used.elapsed();
-        if since >= idle {
-            self.watchdog = false;
-            if self.loaded.take().is_some() {
-                tracing::info!("decision: session unloaded after {since:?} idle");
-            }
-        } else {
-            let me = ctx.actor_ref().clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(idle - since).await;
-                let _ = me.tell(Unload).await;
-            });
+    async fn handle(&mut self, Unload(epoch): Unload, ctx: &mut Context<Self, Self::Reply>) {
+        if self.watchdog != Some(epoch) {
+            return; // disarmed by a `Release` (or superseded) since this tick was armed
         }
+        let since = self.last_used.elapsed();
+        if since >= self.idle {
+            self.release(&format!("idle {since:?}"));
+        } else {
+            self.arm(ctx.actor_ref().clone(), self.idle - since, epoch);
+        }
+    }
+}
+
+impl Message<Release> for Engine {
+    type Reply = ();
+
+    async fn handle(&mut self, m: Release, _: &mut Context<Self, Self::Reply>) {
+        match m.checkpoint.as_deref().filter(|c| *c != self.checkpoint) {
+            None => self.release(m.reason),
+            Some(to) => {
+                let to = crate::actor_name(to);
+                tokio::spawn(async move {
+                    if let Some(s) = sibling(&to) {
+                        let _ = s.tell(Release { checkpoint: None, ..m }).await;
+                    }
+                });
+            }
+        }
+    }
+}
+
+impl Message<LoadedNow> for Engine {
+    type Reply = DelegatedReply<Vec<LoadedInfo>>;
+
+    async fn handle(&mut self, _: LoadedNow, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let mut own: Vec<LoadedInfo> = self.loaded_info().into_iter().collect();
+        let siblings = self.siblings();
+        if siblings.is_empty() {
+            return ctx.reply(own);
+        }
+        // Off the mailbox: a sibling mid-load holds its own mailbox for up to its budget.
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        tokio::spawn(async move {
+            for s in siblings {
+                if let Ok(Ok(more)) =
+                    tokio::time::timeout(Duration::from_secs(2), s.ask(LoadedNow)).await
+                {
+                    own.extend(more);
+                }
+            }
+            tx.send(own);
+        });
+        reply
     }
 }
 
@@ -1452,6 +1569,65 @@ mod tests {
         assert_eq!(loads.load(std::sync::atomic::Ordering::SeqCst), 1);
         tokio::time::sleep(Duration::from_millis(350)).await;
         engine.ask(ask("meeting.topic")).await.unwrap();
+        assert_eq!(loads.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    /// 57 §2.1: spawning loads nothing; a question loads; `Release` drops it now (no idle
+    /// wait) and disarms the watchdog; the next question loads again; the browser engine
+    /// gets its own, shorter idle.
+    #[tokio::test]
+    async fn release_drops_now_and_nothing_loads_at_start() {
+        let dir = tempfile::tempdir().unwrap();
+        touch_files(dir.path());
+        let cfg = DecisionConfig {
+            idle_unload: Duration::from_secs(3600),
+            families: [("meeting.topic".to_owned(), FamilyGate::shadow(0.85, 0.4))].into(),
+            ..DecisionConfig::default()
+        };
+        assert_eq!(cfg.idle_unload_for("default"), Duration::from_secs(3600));
+        assert_eq!(cfg.idle_unload_for("browser"), crate::BROWSER_IDLE_UNLOAD);
+        let loads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let n = loads.clone();
+        let loader: Loader = Arc::new(move |_, _| {
+            n.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(Box::new(Fake {
+                delay: Duration::ZERO,
+            }) as Box<dyn Oracle>)
+        });
+        let engine = Engine::spawn(Engine::with_loader(
+            cfg,
+            dir.path().into(),
+            Log::new(dir.path().join("d")),
+            loader,
+        ));
+        // Other tests register `decision/browser` engines in the same process registry; the
+        // default engine's answer includes them, so count only its own entry.
+        let mine = |infos: Vec<LoadedInfo>| infos.into_iter().filter(|i| i.checkpoint == "default").count();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(mine(engine.ask(LoadedNow).await.unwrap()), 0);
+        assert_eq!(loads.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+        engine.ask(ask("meeting.topic")).await.unwrap();
+        assert_eq!(mine(engine.ask(LoadedNow).await.unwrap()), 1);
+        engine
+            .tell(Release {
+                checkpoint: None,
+                reason: "test",
+            })
+            .await
+            .unwrap();
+        assert_eq!(mine(engine.ask(LoadedNow).await.unwrap()), 0);
+        // A `Release` naming another checkpoint leaves this one alone (and is a no-op when
+        // that checkpoint has no engine).
+        engine.ask(ask("meeting.topic")).await.unwrap();
+        engine
+            .tell(Release {
+                checkpoint: Some("nobody".into()),
+                reason: "test",
+            })
+            .await
+            .unwrap();
+        assert_eq!(mine(engine.ask(LoadedNow).await.unwrap()), 1);
         assert_eq!(loads.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 

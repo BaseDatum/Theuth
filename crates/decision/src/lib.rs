@@ -28,8 +28,8 @@ use kameo::actor::Spawn;
 use serde::{Deserialize, Serialize};
 
 pub use engine::{
-    AllStats, AskMany, Capture, Engine, GetMode, GetTrain, Loader, Oracle, Record, Report,
-    SetMode, SetTrain, Stats, Warm,
+    AllStats, AskMany, Capture, Engine, GetMode, GetTrain, LoadedInfo, LoadedNow, Loader,
+    Oracle, Record, Release, Report, SetMode, SetTrain, Stats, Warm,
 };
 pub use escalate::{EscalateError, SideCaller, escalate};
 pub use gate::{FamilyGate, Mode};
@@ -53,6 +53,91 @@ pub const DEFAULT_CHECKPOINT: &str = "default";
 /// The browser head's checkpoint name (57 §4.1 item 6): cklxx/laya-browser v10 under
 /// `<data_dir>/models/decision-browser/` unless `decision.checkpoints.browser` says otherwise.
 pub const BROWSER_CHECKPOINT: &str = "browser";
+
+/// Default of [`DecisionConfig::idle_unload`] (57 §2.1 item 2): the safety net behind the
+/// explicit [`Release`] the meeting sends at stop.
+pub const IDLE_UNLOAD: Duration = Duration::from_secs(180);
+
+/// The `browser` checkpoint's idle default (57 §2.1 item 2): loop steps are sub-second, so a
+/// run never trips it, and a session that stops calling `browser_run` frees 0.9 GB sooner.
+pub const BROWSER_IDLE_UNLOAD: Duration = Duration::from_secs(120);
+
+/// One `decision.checkpoints.<name>` entry: a bare directory (`browser: /path`, or `~` for the
+/// convention) or `{ dir, idle_unload }` with either field optional.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(from = "CheckpointEntry")]
+pub struct Checkpoint {
+    /// The checkpoint directory; `None` = the convention (`<models>/decision-<name>`).
+    pub dir: Option<PathBuf>,
+    /// This checkpoint's idle unload, overriding [`DecisionConfig::idle_unload`] and the
+    /// browser default.
+    pub idle_unload: Option<Duration>,
+}
+
+impl From<PathBuf> for Checkpoint {
+    fn from(dir: PathBuf) -> Self {
+        Checkpoint {
+            dir: Some(dir),
+            idle_unload: None,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum CheckpointEntry {
+    Dir(Option<PathBuf>),
+    Full {
+        #[serde(default)]
+        dir: Option<PathBuf>,
+        #[serde(default, deserialize_with = "opt_duration")]
+        idle_unload: Option<Duration>,
+    },
+}
+
+impl From<CheckpointEntry> for Checkpoint {
+    fn from(e: CheckpointEntry) -> Self {
+        match e {
+            CheckpointEntry::Dir(dir) => Checkpoint {
+                dir,
+                idle_unload: None,
+            },
+            CheckpointEntry::Full { dir, idle_unload } => Checkpoint { dir, idle_unload },
+        }
+    }
+}
+
+/// This process's resident set in bytes (`proc_pidinfo` on macOS, `/proc/self/statm` on Linux);
+/// `0` where neither works. One number for the whole daemon — the checkpoints share it.
+pub fn process_rss() -> u64 {
+    #[cfg(target_os = "macos")]
+    {
+        let mut info: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of::<libc::proc_taskinfo>() as libc::c_int;
+        // SAFETY: `info` is a zeroed, correctly sized out-buffer for PROC_PIDTASKINFO.
+        let n = unsafe {
+            libc::proc_pidinfo(
+                std::process::id() as libc::c_int,
+                libc::PROC_PIDTASKINFO,
+                0,
+                (&raw mut info).cast(),
+                size,
+            )
+        };
+        if n == size { info.pti_resident_size } else { 0 }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_to_string("/proc/self/statm")
+            .ok()
+            .and_then(|s| s.split_whitespace().nth(1)?.parse::<u64>().ok())
+            .map_or(0, |pages| pages * 4096)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        0
+    }
+}
 
 /// Registry name of the [`Engine`] for `checkpoint`: [`DECISION_ACTOR`] for `default`, else
 /// `decision/<name>`.
@@ -103,13 +188,16 @@ pub struct DecisionConfig {
     /// `tokenizer/tokenizer.json`, `rl_agent_config.json`); `None` → `<data_dir>/models/decision`.
     /// Kept for old config files; `checkpoints.default` wins when both are set.
     pub model_dir: Option<PathBuf>,
-    /// Checkpoint directories by name (57 §4.1 item 6): `default` (= `model_dir`) and `browser`
+    /// Checkpoints by name (57 §4.1 item 6): `default` (= `model_dir`) and `browser`
     /// (`<data_dir>/models/decision-browser`) exist unless overridden; any other name is a
-    /// new checkpoint a family may point at with `checkpoint: <name>`.
-    pub checkpoints: BTreeMap<String, PathBuf>,
+    /// new checkpoint a family may point at with `checkpoint: <name>`. Each entry is a bare
+    /// directory or `{ dir, idle_unload }` ([`Checkpoint`]).
+    pub checkpoints: BTreeMap<String, Checkpoint>,
     /// `auto` (Metal on an Apple-silicon Mac, else CPU) | `cpu` | `metal`.
     pub device: Device,
-    /// Unload the model after this long unused (humantime, e.g. `10m`).
+    /// Unload a checkpoint after this long unused (humantime, e.g. `3m`) — the safety net behind
+    /// the explicit [`Release`] (57 §2.1). `checkpoints.<name>.idle_unload` overrides it; the
+    /// `browser` checkpoint defaults to [`BROWSER_IDLE_UNLOAD`].
     #[serde(deserialize_with = "duration")]
     pub idle_unload: Duration,
     /// Store the question text in the log, not only its hash.
@@ -132,7 +220,7 @@ impl Default for DecisionConfig {
             model_dir: None,
             checkpoints: BTreeMap::new(),
             device: Device::Auto,
-            idle_unload: Duration::from_secs(600),
+            idle_unload: IDLE_UNLOAD,
             log_text: false,
             batch_forward: BATCH_FORWARD,
             families: default_families(),
@@ -146,9 +234,23 @@ impl DecisionConfig {
     pub fn model_dir_in(&self, data_dir: &Path) -> PathBuf {
         self.checkpoints
             .get(DEFAULT_CHECKPOINT)
+            .and_then(|c| c.dir.as_ref())
             .or(self.model_dir.as_ref())
             .cloned()
             .unwrap_or_else(|| data_dir.join("models").join(MODEL_SUBDIR))
+    }
+
+    /// The idle unload of `checkpoint` (57 §2.1 item 2): its own `idle_unload` if configured,
+    /// else [`BROWSER_IDLE_UNLOAD`] for `browser`, else [`Self::idle_unload`].
+    pub fn idle_unload_for(&self, checkpoint: &str) -> Duration {
+        self.checkpoints
+            .get(checkpoint)
+            .and_then(|c| c.idle_unload)
+            .unwrap_or(if checkpoint == BROWSER_CHECKPOINT {
+                BROWSER_IDLE_UNLOAD
+            } else {
+                self.idle_unload
+            })
     }
 
     /// Every checkpoint directory by name, given the `default` one: `browser` is
@@ -168,9 +270,18 @@ impl DecisionConfig {
             dirs.entry(name.to_owned())
                 .or_insert_with(|| models.join(format!("{MODEL_SUBDIR}-{name}")));
         }
-        for (name, dir) in &self.checkpoints {
-            if name != DEFAULT_CHECKPOINT {
-                dirs.insert(name.clone(), dir.clone());
+        for (name, c) in &self.checkpoints {
+            if name == DEFAULT_CHECKPOINT {
+                continue;
+            }
+            match &c.dir {
+                Some(dir) => {
+                    dirs.insert(name.clone(), dir.clone());
+                }
+                None => {
+                    dirs.entry(name.clone())
+                        .or_insert_with(|| models.join(format!("{MODEL_SUBDIR}-{name}")));
+                }
             }
         }
         dirs
@@ -481,6 +592,21 @@ mod tests {
         assert_eq!(dirs["x"], std::path::Path::new("/x"));
         assert_eq!(dirs["y"], std::path::Path::new("/decision-y"));
         assert_eq!((actor_name("default").as_str(), actor_name("browser").as_str()), ("decision", "decision/browser"));
+        // 57 §2.1 item 2: `{ dir, idle_unload }` entries; `~` keeps the convention; the
+        // browser default is 2m unless overridden, everything else follows `idle_unload`.
+        let cfg: DecisionConfig = serde_yaml::from_str(
+            "idle_unload: 5m\ncheckpoints:\n  browser: { idle_unload: 30s }\n  x: { dir: /x }\n  y: ~\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.idle_unload_for("default"), Duration::from_secs(300));
+        assert_eq!(cfg.idle_unload_for("browser"), Duration::from_secs(30));
+        assert_eq!(cfg.idle_unload_for("x"), Duration::from_secs(300));
+        let dirs = cfg.checkpoint_dirs(&default);
+        assert_eq!(dirs["browser"], std::path::Path::new("/decision-browser"));
+        assert_eq!(dirs["x"], std::path::Path::new("/x"));
+        assert_eq!(dirs["y"], std::path::Path::new("/decision-y"));
+        assert_eq!(DecisionConfig::default().idle_unload_for("browser"), BROWSER_IDLE_UNLOAD);
+        assert_eq!(DecisionConfig::default().idle_unload, IDLE_UNLOAD);
     }
 
     #[test]
