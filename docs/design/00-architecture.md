@@ -32,8 +32,12 @@ names the alternative it beat and why.
 8. **Not a coding agent.** The tool set is what an assistant needs to act on
    the user's machine: shell, files (read, write, list, `grep`, `edit`),
    MCP, python, and whatever plugins register. We do not ship coding-specific
-   natives (LSP, notebooks, git, diff review): those are a use of the
-   harness, not a product line (12 §10). oh-my-pi
+   natives (LSP, notebooks, git clients, diff review, refactoring): those are
+   a use of the harness, not a product line (12 §10). Searching, editing and
+   *understanding* files — `grep`, `edit`, and the `codeindex`
+   symbol/reference index (60) — are assistant work, not coding-agent work;
+   the line is drawn at tools that need a language toolchain or perform edits
+   by symbol. oh-my-pi
    is inspiration for loop shape, tool ergonomics, sessions, steering,
    subagents, skills — not for its tool set. Providers may be whoever mints
    the token; a provider-required identity line (05 §2.3) is not product
@@ -712,7 +716,9 @@ without a keychain), `mcp/`, `skills/`,
 (its run history; deleting it forgets, does not rebuild — 34 §7),
 `artifacts/` (content-addressed blobs shown with `show`, 35) and
 `artifacts.sqlite` (its index; deleting it orphans the blobs, swept at the
-next start — 35 §3.4), `models/pocket-tts/` (the Pocket TTS checkpoint and
+next start — 35 §3.4), `codeindex/<slug>-<hash>.sqlite` (derived tree-sitter
+symbol indexes, one per repository root; delete to rebuild — 60 §4),
+`models/pocket-tts/` (the Pocket TTS checkpoint and
 `voices/*.safetensors` the `voice` plugin reads; `voice.model_dir` points
 elsewhere — 43 §4.2), `models/parakeet-tdt/` (the Parakeet TDT ONNX
 checkpoint; `voice.stt_model_dir` — 45 §4.6)
@@ -765,6 +771,7 @@ crates/
   search-providers/   plugin: optional Firecrawl, SearXNG, OpenSERP, Brave API (`brave_api`) registered with web over the bus; only firecrawl present by default, key-gated (16)
   firecrawl-native/   library: vendored Firecrawl crawler/html heuristics (AGPL; 38)
   scrape/             plugin: scrape_url / crawl / map_site, two-tier engine, BFS crawler, `scrape` render provider (38)
+  codeindex/          plugin: tree-sitter tags → sqlite symbol/reference index per repo root, workspace-aware import resolution, aider-style ranked map, code_* runtime tools (60)
   routes/             plugin: learn a site's JSON routes from the browser session; replay them over `web::Fetcher` (44)
   signal/             plugin: Signal channel and device pairing (added in 09)
   slack/              plugin: Slack channel over Socket Mode (added in 21)
@@ -795,7 +802,7 @@ the `theuth` bin; the rest were added by the docs named beside them, each as the
 the loop must own (store, frame, compact, repl); frontends do not grow it.
 New subsystems earn a plugin. `agent/src/lib.rs` re-exports; command structs
 live next to the handler that answers them (12 §8). Dependency order:
-`runtime ← tools ← decision ← {meeting, browser}`; `runtime ← tools ← secrets ← knowledge ← agent ← link ← {signal, slack, nodes, schedule, artifact, update, voice, a2a} ← rpc ← tui ← theuth`
+`runtime ← tools ← decision ← {meeting, browser}`; `runtime ← tools ← codeindex`; `runtime ← tools ← secrets ← knowledge ← agent ← link ← {signal, slack, nodes, schedule, artifact, update, voice, a2a} ← rpc ← tui ← theuth`
 (`update` depends on `agent` and `runtime` only, `rpc` forwards
 `UpdateReady` and answers `update_status`, 39 §4.3; `voice` depends on
 `runtime` and `markdown` only, `rpc` forwards `VoiceEvent` and answers
@@ -1011,6 +1018,7 @@ Each phase ends with a runnable check, not a test suite.
 | 30 | apps (46): `app` publishes an OpenUI screen the desktop renders progressively; a press runs its Mutation with zero approval cards; edits are CAS-atomic; TUI/Slack/Signal show source | 46 §10 | done 2026-09-18 on `feature/apps`, merge with limitation (packages/apps 78 tests, desktop 150 tests + build, `crates/app` publish→open→call→edit test; real RPC smoke 14/14 incl. mutating/destructive/secret presses with zero `ApprovalRequested`, `needs_approval` for automatic asks, duplicate/mismatched IDs, stale generation, peer close, CAS conflict; relay probe 7/7 through a real local relay with the desktop's link crypto — pair, get_app, press, status, reconnect, revoke; DOM click on the fixture panel → `Healthy`, count 1; visuals accepted by the user at the production URL; frontier steering 15/15 first pass, vehicle 19/20, small model not run; performance: dev-build trace first statement 9.2 s before commit, frame interval p95 18 ms; production cold load one 146 ms long task and frame budget uncertified — accepted limitation, not a gate; **not run**: Linux runtime, phone hardware, Developer ID/notarized clean machine (signing external), a real streaming-provider capture, `add_mcp_server`-installed backend restart; 46 §12) |
 | 31 | agent communication (50): default-off global ceiling + inherited opt-out; sibling/cross-root discovery; durable exchanges with exact `reply_to`; suppression/generation revocation; `a2a` plugin over the official SDK | 50 §12.2 scenarios; 50 §12.1 library gate | implemented 2026-09-18, verification pending — code paths landed in `agent`, `tools`, `a2a`, `rpc`, frontends; no runnable check or conformance run recorded yet; not as-built until that record lands |
 | 32 | vision fallback (52): `agent.vision_model` beside the title model in TUI and shared General; text-only main model asks, tool-free vision model answers, one typed `<vision_observation>` note appended; image-capable mains bypass; Python/MCP images survive as files | 52 §10 gates, request order captured at the transport seam | built 2026-09-19 on `feature/vision-fallback`; verified per 52 §11 (wiremock contract test: question → vision → main with no `tools` on the auxiliary calls, native bypass, unset notice, malformed-reply failure without in-turn retry, cancel; headless live run over RPC incl. restart persistence and invalid-selection startup; `/vision` on a pty; shared UI settings row, slash toasts, composer warning, observation card + reload, 390×844 General). User visual sign-off pending; Anthropic/Cursor/gateway transports, iOS, and live Python/MCP image ingress not exercised |
+| 33 | codeindex (60) | on this repo: code_find("ToolRegistry") → registry.rs; code_refs("RegisterTool") lists knowledge/scrape/… call sites with provenance=import; code_map(budget=1500) ≤ 1725 est. tokens; code_impact("HEAD~1") names the symbols the last commit touched | step 1 2026-09-21 (crate, store, tags parse for rust/ts/tsx/js/py/go, reconcile-on-call, `code_find`/`code_outline`; 60 §19) |
 
 Known gaps carried forward: cancel/error paths in the loop are code-reviewed,
 not smoke-tested; the `Jobs` actor kills every process group on shutdown
