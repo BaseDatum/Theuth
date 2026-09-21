@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use sqlx::SqlitePool;
 
+use crate::parse::RECEIVER;
 use crate::store::{self, FileRef, ImportRow, ImportUpdate, RefUpdate};
 
 pub mod go;
@@ -78,15 +79,63 @@ impl Workspace {
 }
 
 /// Symbol kinds a reference kind can point at (60 §6.2): a `call` is to
-/// something callable (a class name is a constructor); `type`/`class`/
-/// `implementation` are to a type-like definition. `constant` is never a
-/// target: nothing references one by these tag kinds.
+/// something callable (a class name is a constructor); a Rust `macro`
+/// invocation only to a macro; `type`/`class`/`implementation` are to a
+/// type-like definition. `constant` is never a target: nothing references
+/// one by these tag kinds.
 fn compatible(ref_kind: &str, sym_kind: &str) -> bool {
-    if ref_kind == "call" {
-        matches!(sym_kind, "function" | "method" | "macro" | "class")
-    } else {
-        matches!(sym_kind, "class" | "interface" | "type" | "module")
+    match ref_kind {
+        "call" => matches!(sym_kind, "function" | "method" | "macro" | "class"),
+        "macro" => sym_kind == "macro",
+        _ => matches!(sym_kind, "class" | "interface" | "type" | "module"),
     }
+}
+
+/// Languages whose definitions a file of `language` can reference by name:
+/// TS/TSX/JS are one family, everything else only itself.
+fn same_family(a: &str, b: &str) -> bool {
+    let js = |l: &str| matches!(l, "typescript" | "tsx" | "javascript");
+    a == b || (js(a) && js(b))
+}
+
+/// Ubiquitous method names per language (60 §21): a `.`-receiver call to one
+/// of these never reaches rules 3–4 — `x.clone()` is not a reference to the
+/// one hand-written `fn clone` in the tree.
+fn stoplisted(language: &str, name: &str) -> bool {
+    const RUST: &[&str] = &[
+        "clone", "len", "is_empty", "push", "pop", "get", "insert", "remove", "iter", "into_iter", "map", "filter",
+        "collect", "unwrap", "expect", "unwrap_or", "ok", "err", "to_string", "to_owned", "into", "as_ref", "as_str",
+        "clone_from", "default", "new", "lock", "await",
+    ];
+    const JS: &[&str] = &[
+        "map", "filter", "reduce", "push", "pop", "get", "set", "has", "then", "catch", "toString", "length", "forEach",
+        "find", "includes", "join", "split", "slice",
+    ];
+    const PY: &[&str] = &["get", "append", "items", "keys", "values", "join", "split", "strip", "format", "pop", "update"];
+    const GO: &[&str] = &["Error", "String", "Len", "Close", "Write", "Read"];
+    let list = match language {
+        "rust" => RUST,
+        "typescript" | "tsx" | "javascript" => JS,
+        "python" => PY,
+        "go" => GO,
+        _ => return false,
+    };
+    list.contains(&name)
+}
+
+/// A qualifier that is a receiver expression (`x.f()`, `self.f()`,
+/// `FONTS.clone()`), not a path (`Type::f()`, `a::b::f()`): its head is not
+/// a CamelCase type name and, in Rust, it has no `::`. The stored qualifier
+/// drops the separator, so a lone lowercase Rust path head the module tree
+/// did not know (`m::f()`) is taken for a receiver too — it lands on the
+/// lower confidence, never a wrong target.
+fn is_receiver(language: &str, q: &str) -> bool {
+    if q == RECEIVER {
+        return true;
+    }
+    let head = q.split(['.', ':']).next().unwrap_or(q);
+    let camel = head.starts_with(|c: char| c.is_uppercase()) && head.chars().any(char::is_lowercase);
+    !camel && (language != "rust" || !q.contains("::"))
 }
 
 /// The tables as resolution reads them, plus the Rust module tree.
@@ -133,7 +182,13 @@ impl World {
         let other = |j: &usize| self.imports[*j].target_file.filter(|&g| g != t);
         rows.clone()
             .find(|&&j| other(&j).is_some() && self.names[j].as_ref().is_some_and(|v| v.iter().any(|x| x == n)))
-            .or_else(|| rows.clone().find(|&&j| self.names[j].is_none() && other(&j).is_some_and(|g| defined.contains(&(g, n)))))
+            .or_else(|| {
+                rows.clone().find(|&&j| {
+                    self.names[j].is_none()
+                        && !self.imports[j].specifier.starts_with("mod:")
+                        && other(&j).is_some_and(|g| defined.contains(&(g, n)))
+                })
+            })
             .and_then(|&j| self.imports[j].target_file)
     }
 
@@ -144,6 +199,9 @@ impl World {
     /// to the re-export's source. `None`: a receiver or an unknown head — the
     /// rules decide.
     fn qualified(&self, ws: &Workspace, file: &FileRef, q: &str, name: &str, defined: &HashSet<(i64, &str)>) -> Option<Qualified> {
+        if q == RECEIVER {
+            return None;
+        }
         let rust = file.language == "rust";
         let segs: Vec<&str> = if rust { q.split("::").collect() } else { q.split('.').collect() };
         let head = *segs.first()?;
@@ -327,7 +385,7 @@ pub async fn resolve(pool: &SqlitePool, ws: &Workspace, files: &HashSet<String>)
             .into_iter()
             .flatten()
             .copied()
-            .filter(|&i| compatible(&r.kind, &symbols[i].kind))
+            .filter(|&i| compatible(&r.kind, &symbols[i].kind) && same_family(&file.language, &w.file(symbols[i].file_id).language))
             .collect();
         let k = c0.len() as i64;
         let done = |to: Option<usize>, prov: &'static str, conf: f64| RefUpdate {
@@ -393,10 +451,14 @@ pub async fn resolve(pool: &SqlitePool, ws: &Workspace, files: &HashSet<String>)
             out.push(pick.map_or_else(|| done(None, "ambiguous", 0.0), |i| done(Some(i), "same_file", 1.0)));
             continue;
         }
-        // 2. import
+        // 2. import. A `mod x;` row (names `None`) puts `x::` in scope, not
+        // `x`'s items: it is a module-tree edge, not a glob.
         let mut imported: HashSet<i64> = HashSet::new();
         for &j in w.imports_by_file.get(&r.file_id).into_iter().flatten() {
             let Some(t) = w.imports[j].target_file else { continue };
+            if w.imports[j].specifier.starts_with("mod:") {
+                continue;
+            }
             if w.names[j].as_ref().is_none_or(|v| v.contains(&r.name)) {
                 w.extend_target(t, &mut imported);
                 // `use a::*` where `a` re-exports the name (Rust, one level).
@@ -410,16 +472,25 @@ pub async fn resolve(pool: &SqlitePool, ws: &Workspace, files: &HashSet<String>)
             out.push(if c2.len() == 1 { done(Some(c2[0]), "import", 1.0) } else { done(None, "ambiguous", 0.0) });
             continue;
         }
+        // Receiver calls no same-file/import rule explained (60 §21): a
+        // stoplisted method name is not attributed at all; any other lands
+        // on the same rules at half confidence — below the rank graph's cut.
+        let receiver = r.qualifier.as_deref().is_some_and(|q| is_receiver(&file.language, q));
+        if receiver && stoplisted(&file.language, &r.name) {
+            out.push(done(None, "ambiguous", 0.0));
+            continue;
+        }
+        let (c_pkg, c_uniq) = if receiver { (0.4, 0.3) } else { (0.8, 0.6) };
         // 3. package
         if let Some(p) = file.package.as_deref() {
             let c3: Vec<usize> = c0.iter().copied().filter(|&i| w.file(symbols[i].file_id).package.as_deref() == Some(p)).collect();
             if c3.len() == 1 {
-                out.push(done(Some(c3[0]), "package", 0.8));
+                out.push(done(Some(c3[0]), "package", c_pkg));
                 continue;
             }
         }
         // 4. unique, 5. ambiguous
-        out.push(if k == 1 { done(Some(c0[0]), "unique", 0.6) } else { done(None, "ambiguous", 0.0) });
+        out.push(if k == 1 { done(Some(c0[0]), "unique", c_uniq) } else { done(None, "ambiguous", 0.0) });
     }
     let rules_ms = t1.elapsed().as_millis();
     store::update_refs(pool, &out).await?;
@@ -455,5 +526,17 @@ mod tests {
     fn kinds() {
         assert!(compatible("call", "function") && compatible("call", "class") && !compatible("call", "constant"));
         assert!(compatible("type", "interface") && compatible("implementation", "class") && !compatible("type", "function"));
+        assert!(compatible("macro", "macro") && !compatible("macro", "function") && !compatible("call", "constant"));
+        assert!(same_family("tsx", "javascript") && same_family("rust", "rust") && !same_family("rust", "typescript"));
+    }
+
+    #[test]
+    fn receivers_and_stoplist() {
+        assert!(is_receiver("rust", "x") && is_receiver("rust", "self") && is_receiver("rust", "self.items"));
+        assert!(!is_receiver("rust", "Registry") && !is_receiver("rust", "Self") && !is_receiver("rust", "crate::a"));
+        assert!(is_receiver("typescript", "this") && !is_receiver("python", "Foo") && is_receiver("rust", RECEIVER));
+        assert!(is_receiver("rust", "FONTS") && is_receiver("rust", "CONFIG.inner") && !is_receiver("rust", "HashMap"));
+        assert!(stoplisted("rust", "clone") && stoplisted("typescript", "forEach") && stoplisted("go", "Error"));
+        assert!(!stoplisted("rust", "reconcile") && !stoplisted("other", "clone"));
     }
 }

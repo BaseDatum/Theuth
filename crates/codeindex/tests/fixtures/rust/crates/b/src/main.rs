@@ -22,4 +22,9 @@ fn main() {
     cli::run(r, s, n, m);
     fixture_a::store::sub::check("z");
     ::fixture_a::run();
+    // Receiver calls (60 §21): no same-file/import rule explains them.
+    let opts = cli::Opts;
+    let _ = opts.clone_from();
+    let _ = opts.describe();
+    let _ = opts.summarize();
 }

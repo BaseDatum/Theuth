@@ -76,8 +76,8 @@ fn rust_fixture() {
     assert_eq!(pushes, [Some("self.items"), Some("r")], "receiver qualifiers");
     let helper = p.refs.iter().find(|r| r.name == "helper" && r.kind == "call").unwrap();
     assert_eq!(helper.qualifier.as_deref(), Some("inner"));
-    // `self.items.iter().find(..).cloned()`: the prefix has calls in it → no qualifier.
-    assert!(p.refs.iter().filter(|r| r.name == "cloned").all(|r| r.qualifier.is_none()));
+    // `self.items.iter().find(..).cloned()`: the prefix has calls in it → the receiver marker `.`.
+    assert!(p.refs.iter().filter(|r| r.name == "cloned").all(|r| r.qualifier.as_deref() == Some(".")));
     let imports: Vec<(&str, Option<&[String]>)> = p.imports.iter().map(|i| (i.specifier.as_str(), i.names.as_deref())).collect();
     assert_eq!(imports[0], ("mod:store", None));
     assert_eq!(imports[1], ("store", Some(&["open_db".to_owned()][..])));
@@ -105,6 +105,12 @@ fn typescript_fixture() {
     // statement, not the class: the shipped JS query attaches no docs there.
     assert_eq!(loader.docs, None);
     assert_locals_filter(Language::TypeScript, "ts/src/app.ts");
+    // `const { resolve, reject } = …` / `const [first, second] = …`: destructured bindings are locals.
+    let names = ref_names(&p);
+    for local in ["reject", "first", "second"] {
+        assert!(!names.contains(&local), "destructured local {local} kept: {names:?}");
+    }
+    assert!(names.contains(&"setTimeout"));
 }
 
 #[test]
@@ -301,6 +307,21 @@ async fn rust_workspace_resolution() {
     // `Registry::new()` in store.rs: `crate::Registry` was imported → lib.rs → its one `new`.
     let r = rf.iter().find(|r| r.path == "crates/a/src/store.rs" && r.name == "new").unwrap();
     assert_eq!((r.qualifier.as_deref(), r.target.as_deref(), r.provenance.as_str()), (Some("Registry"), Some("crates/a/src/lib.rs:12"), "import"), "{r:?}");
+    // Receiver calls (60 §21): `opts.clone_from()` is stoplisted → not attributed to the one `fn clone_from`;
+    // `opts.describe()` → the one `describe` in the package at 0.4; `opts.summarize()` → root-wide unique at 0.3.
+    let r = rf.iter().find(|r| r.path == main && r.name == "clone_from").unwrap();
+    assert_eq!((r.qualifier.as_deref(), r.target.as_deref(), r.provenance.as_str(), r.candidates), (Some("opts"), None, "ambiguous", 1), "{r:?}");
+    let r = ref_of(&rf, main, "describe");
+    assert_eq!((r.target.as_deref(), r.provenance.as_str(), r.confidence), (Some("crates/b/src/cli.rs:19"), "package", 0.4), "{r:?}");
+    let r = ref_of(&rf, main, "summarize");
+    assert_eq!((r.target.as_deref(), r.provenance.as_str(), r.confidence), (Some("crates/a/src/store/sub.rs:11"), "unique", 0.3), "{r:?}");
+    // `impl<T> Wrapper<T>`: the generic header is an implementation tag, so the method has an owner.
+    let owner: Option<String> =
+        sqlx::query_scalar("SELECT p.name FROM symbols s JOIN symbols p ON p.id = s.parent_id WHERE s.name = 'unwrap_inner'")
+            .fetch_optional(&ri.pool)
+            .await
+            .unwrap();
+    assert_eq!(owner.as_deref(), Some("Wrapper"));
 }
 
 /// 60 §6.1 TS/JS: `tsconfig.json` `paths` alias, relative import, `node:` and
@@ -638,6 +659,146 @@ async fn tools_envelope() {
 
     let out = CodeRefsTool(ix).call(refs("NoSuchSymbolAnywhere", None, None), cx()).await.unwrap();
     assert!(out.is_error && out.content.contains("no definition"), "{}", out.content);
+}
+
+/// 60 §16 row 3 on this repository, through `Tool::call`: `code_map(budget=1500)`
+/// fits 1 725 estimated tokens; `focus` personalises; `code_symbol` on the
+/// knowledge `open_db` returns definition + body + callers + callees in one
+/// call; `code_find("new")` is ordered by rank; `code_refs("clone")` after the
+/// stoplist; rank compute time and PageRank iterations printed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn map_and_symbol() {
+    use codeindex::tools::{CodeFindArgs, CodeFindTool, CodeMapArgs, CodeMapTool, CodeRefsArgs, CodeRefsTool, CodeSymbolArgs, CodeSymbolTool};
+    use tools::Tool;
+    let data = tempdir();
+    let ix = Arc::new(Codeindex::new(CodeindexConfig::default(), &data.0).unwrap());
+    let cx = || tools::ToolCx {
+        session: runtime::SessionId::new(),
+        call_id: String::new(),
+        quiet: false,
+        resources: tools::SessionResources::durable_arc(&data.0),
+    };
+    let root = Some(repo_root());
+    let map = |focus: Option<Vec<&str>>, paths_only: bool, budget: u32| CodeMapArgs {
+        focus: focus.map(|v| v.into_iter().map(str::to_owned).collect()),
+        paths_only: Some(paths_only),
+        root: root.clone(),
+        budget: Some(budget),
+    };
+
+    let out = CodeMapTool(ix.clone()).call(map(None, false, 1500), cx()).await.unwrap();
+    assert!(!out.is_error, "{}", out.content);
+    let v = out.structured.unwrap();
+    let tokens = v["estimated_tokens"].as_u64().unwrap();
+    eprintln!("code_map(budget=1500): {tokens} estimated tokens, {} rows, {} dropped\n{}", v["rows"].as_array().unwrap().len(), v["dropped"], out.content);
+    assert!(tokens <= 1725, "{tokens} > 1725");
+    assert!(tokens >= 1000, "under-filled map: {tokens}");
+    let rows = v["rows"].as_array().unwrap();
+    assert!(!rows.is_empty() && rows[0]["rank"].as_f64().unwrap() > 0.0, "{v}");
+    assert!(rows.iter().all(|r| r["rank"].as_f64().unwrap() > 0.0));
+
+    // Ranked files (the unpersonalised `files.rank` lookup), top 15.
+    let out = CodeMapTool(ix.clone()).call(map(None, true, 400), cx()).await.unwrap();
+    let v = out.structured.unwrap();
+    let top: Vec<String> = v["rows"].as_array().unwrap().iter().take(15).map(|r| format!("{} {:.5}", r["path"].as_str().unwrap(), r["rank"].as_f64().unwrap())).collect();
+    eprintln!("code_map(paths_only) top 15:\n{}", top.join("\n"));
+    for f in ["crates/tools/src/lib.rs", "crates/runtime/src/lib.rs", "crates/agent/src/loop_.rs"] {
+        eprintln!("{f}: {}", if top.iter().any(|t| t.starts_with(f)) { "in top 15" } else { "NOT in top 15" });
+    }
+    assert!(top.iter().any(|t| t.starts_with("crates/tools/src/lib.rs")), "{top:?}");
+
+    // Focus on an identifier: `crates/scrape/*` rises.
+    let out = CodeMapTool(ix.clone()).call(map(Some(vec!["ScrapeUrlTool"]), true, 400), cx()).await.unwrap();
+    let v = out.structured.unwrap();
+    let top5: Vec<&str> = v["rows"].as_array().unwrap().iter().take(5).map(|r| r["path"].as_str().unwrap()).collect();
+    eprintln!("code_map(focus=[ScrapeUrlTool]) top 5: {top5:?}; iterations {}", v["pagerank_iterations"]);
+    assert_eq!(v["focus_idents"][0], "ScrapeUrlTool");
+    eprintln!("crates/scrape in top 5: {}", top5.iter().any(|p| p.starts_with("crates/scrape/")));
+    let out = CodeMapTool(ix.clone()).call(map(Some(vec!["ScrapeUrlTool"]), false, 1500), cx()).await.unwrap();
+    let v = out.structured.unwrap();
+    let files: Vec<&str> = out.content.lines().filter(|l| !l.starts_with(' ')).take(5).collect();
+    eprintln!("code_map(focus=[ScrapeUrlTool]) map, first files: {files:?}");
+    assert!(files.iter().any(|p| p.starts_with("crates/scrape/")), "{}", out.content);
+    assert!(v["estimated_tokens"].as_u64().unwrap() <= 1725);
+    // Focus on a path: the file itself and what it references lead.
+    let out = CodeMapTool(ix.clone()).call(map(Some(vec!["crates/scrape/src/tools.rs"]), true, 400), cx()).await.unwrap();
+    let v = out.structured.unwrap();
+    assert_eq!(v["focus_files"][0], "crates/scrape/src/tools.rs");
+    assert_eq!(v["rows"][0]["path"], "crates/scrape/src/tools.rs", "{v}");
+
+    // code_symbol on the knowledge `open_db` (60 §16 row 3).
+    let out = CodeSymbolTool(ix.clone())
+        .call(CodeSymbolArgs { symbol: "crates/knowledge/src/store.rs:377".into(), sections: None, root: root.clone(), budget: None }, cx())
+        .await
+        .unwrap();
+    assert!(!out.is_error, "{}", out.content);
+    let v = out.structured.unwrap();
+    eprintln!("code_symbol(\"crates/knowledge/src/store.rs:377\"):\n{}", out.content);
+    assert_eq!(v["definition"]["name"], "open_db");
+    assert!(v["body"].as_str().unwrap().contains("fn open_db"), "{v}");
+    assert!(!v["callers"].as_array().unwrap().is_empty(), "{v}");
+    // `open_db`'s body calls only sqlx/std → no resolvable callee; the section is present and honest.
+    let callees = v["callees"].as_array().unwrap();
+    assert!(callees.iter().all(|c| c["target"].as_str().unwrap().contains(':')));
+    assert!(out.content.contains("-- callees:"), "{}", out.content);
+    assert!(u32::try_from(out.content.len() / 3).unwrap() <= 4000 + 600, "{}", out.content.len());
+    let out = CodeSymbolTool(ix.clone())
+        .call(CodeSymbolArgs { symbol: "open_db".into(), sections: Some(vec!["cochange".into()]), root: root.clone(), budget: None }, cx())
+        .await
+        .unwrap();
+    let v = out.structured.unwrap();
+    assert!(v["candidates"].as_array().unwrap().len() >= 2, "several open_db → candidates: {v}");
+    let out = CodeSymbolTool(ix.clone())
+        .call(CodeSymbolArgs { symbol: "crates/knowledge/src/store.rs:377".into(), sections: Some(vec!["cochange".into(), "bogus".into()]), root: root.clone(), budget: None }, cx())
+        .await
+        .unwrap();
+    assert!(out.is_error && out.content.contains("unknown section"), "{}", out.content);
+
+    // code_find("new"): ordered by rank, top hit is a ranked definition.
+    let out = CodeFindTool(ix.clone())
+        .call(CodeFindArgs { name: "new".into(), kind: None, exact: Some(true), root: root.clone(), budget: None }, cx())
+        .await
+        .unwrap();
+    let v = out.structured.unwrap();
+    let rows = v["rows"].as_array().unwrap();
+    let ranks: Vec<f64> = rows.iter().map(|r| r["rank"].as_f64().unwrap()).collect();
+    eprintln!("code_find(\"new\") top: {} {} rank {}", rows[0]["path"], rows[0]["signature"], ranks[0]);
+    assert!(ranks[0] > 0.0 && ranks.windows(2).all(|w| w[0] >= w[1]), "{ranks:?}");
+
+    // code_refs("clone") after the stoplist; the count before it is the resolved rows plus the
+    // receiver calls now left ambiguous with one candidate (rules 3–4 used to take those).
+    let out = CodeRefsTool(ix.clone())
+        .call(CodeRefsArgs { symbol: "clone".into(), direction: None, kind: None, root: root.clone(), budget: Some(600) }, cx())
+        .await
+        .unwrap();
+    let by_prov: Vec<(String, i64, i64)> =
+        sqlx::query_as("SELECT provenance, count(*), min(candidates) FROM refs WHERE name = 'clone' GROUP BY provenance ORDER BY 2 DESC")
+            .fetch_all(&ix.open_root(&repo_root()).await.unwrap().pool)
+            .await
+            .unwrap();
+    eprintln!("code_refs(\"clone\"):\n{}\nrefs named clone by provenance (provenance, count, min candidates): {by_prov:?}", out.content);
+    let v = out.structured.unwrap();
+    if let Some(refs) = v["refs"].as_array() {
+        assert!(refs.iter().all(|r| r["provenance"] != "unique" && r["provenance"] != "package"), "{}", out.content);
+    }
+
+    // Rank compute cost on this repo.
+    let ri = ix.open_root(&repo_root()).await.unwrap();
+    sqlx::query("UPDATE files SET rank = 0.0").execute(&ri.pool).await.unwrap();
+    let t = std::time::Instant::now();
+    let (nodes, cold_iter) = codeindex::rank::persist(&ri.pool).await.unwrap();
+    let cold = t.elapsed();
+    let t = std::time::Instant::now();
+    let (_, warm_iter) = codeindex::rank::persist(&ri.pool).await.unwrap();
+    let warm = t.elapsed();
+    eprintln!("rank::persist: {nodes} nodes; cold {cold_iter} iterations {cold:?}; warm {warm_iter} iterations {warm:?}");
+    let t = std::time::Instant::now();
+    let g = codeindex::rank::Graph::load(&ri.pool).await.unwrap();
+    let load = t.elapsed();
+    let t = std::time::Instant::now();
+    let personalised = g.rank(&g.focus(&["crates/scrape/src/tools.rs".to_owned()]));
+    eprintln!("graph load {load:?}; personalised rank {:?}, {} iterations", t.elapsed(), personalised.iterations);
+    assert!(cold.as_millis() < 500, "rank persist must be < 0.5 s: {cold:?}");
 }
 
 /// 60 §5.3 check: over every parsed file of this repository, `symbols` are

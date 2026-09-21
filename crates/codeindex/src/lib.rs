@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 pub mod index;
 pub mod lang;
 pub mod parse;
+pub mod rank;
 pub mod resolve;
 pub mod root;
 pub mod store;

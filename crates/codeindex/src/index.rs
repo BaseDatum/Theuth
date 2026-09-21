@@ -12,6 +12,7 @@ use sqlx::SqlitePool;
 
 use crate::lang::Language;
 use crate::parse::{ParsedFile, Parsers, parse};
+use crate::rank;
 use crate::resolve::{self, Workspace};
 use crate::store::{self, FileWrite};
 use crate::walk::{self, Entry};
@@ -242,7 +243,12 @@ impl Codeindex {
         targets.extend(writes.iter().filter(|w| w.parsed.is_some()).map(|w| w.path.to_owned()));
         let t = Instant::now();
         resolve::resolve(&ri.pool, &ws, &targets).await?;
-        tracing::debug!(parse_ms, apply_ms, resolve_ms = t.elapsed().as_millis(), resolved_files = targets.len(), "codeindex write phases");
+        let resolve_ms = t.elapsed().as_millis();
+        // 60 §7: unpersonalised ranks stored after every write, so `code_map`
+        // without `focus` and `code_find`'s ordering are lookups.
+        let t = Instant::now();
+        let (nodes, iterations) = rank::persist(&ri.pool).await?;
+        tracing::debug!(parse_ms, apply_ms, resolve_ms, rank_ms = t.elapsed().as_millis(), rank_nodes = nodes, rank_iterations = iterations, resolved_files = targets.len(), "codeindex write phases");
         Ok(writes.len())
     }
 
