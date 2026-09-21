@@ -663,10 +663,14 @@ browser_tool!(
 );
 
 browser_tool!(
-    /// `browser_close` → `browser_close`.
+    /// `browser_close` → `browser_close`; also ends this session's claim on the browser
+    /// decision checkpoint (57 §2.1).
     CloseTool, "browser_close", NoArgs,
     "Close every tab of this session's browser and forget its page state (cookies stay until the session ends). The next `browser_open` starts on a blank page.",
-    |ctx, _a, cx| ctx.call(cx.session, "browser_close", json!({})).await
+    |ctx, _a, cx| {
+        let _ = ctx.actor.tell(crate::SystemOne { session: cx.session, active: false }).await;
+        ctx.call(cx.session, "browser_close", json!({})).await
+    }
 );
 
 browser_tool!(

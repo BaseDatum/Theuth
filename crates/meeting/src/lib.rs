@@ -1899,6 +1899,8 @@ impl Message<StopMeeting> for Meeting {
             tracing::warn!(meeting = %manifest.id, "meeting: clear toolset: {e}");
         }
         tools::unregister().await;
+        // 57 §2.1: the meeting checkpoint is resident only while recording.
+        oracle::release().await;
         manifest.ended_at = Some(chrono::Local::now().to_rfc3339());
         manifest.duration_ms = Some(clock.now_ms());
         // 04 §2: the post pipeline takes it from here (its task saves `Post(_)`,

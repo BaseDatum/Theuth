@@ -580,6 +580,21 @@ pub async fn warm_up() {
     }
 }
 
+/// 57 §2.1 item 1: recording stopped — drop the meeting checkpoint now instead of waiting for
+/// `idle_unload`. Post-processing never asks the oracle. A batch still in flight keeps its own
+/// `Arc` and finishes; a late question after this reloads and the idle watchdog frees it again.
+pub async fn release() {
+    let Ok(Some(engine)) = ActorRef::<decision::Engine>::lookup(decision::DECISION_ACTOR) else {
+        return;
+    };
+    let _ = engine
+        .tell(decision::Release {
+            checkpoint: None,
+            reason: "recording stopped",
+        })
+        .await;
+}
+
 /// The candidate id of the `i`th FTS row: `b1..b4` — short, so the 192-token head budget goes
 /// to titles, not UUIDs (the phrasing bench: UUID ids never pick a brief).
 fn candidate_id(i: usize) -> String {
