@@ -179,6 +179,13 @@ agent:
 #   robots: true
 #   delay_ms: 100            # per-host gap between requests; a larger robots Crawl-delay wins
 
+# codeindex:                 # design doc 60; indexes live in <data_dir>/codeindex/<slug>-<hash>.sqlite
+#   enabled: true            # false: no plugin, no code_* functions, nothing on disk
+#   sync_limit: 64           # changed files re-indexed synchronously before answering; more → answer stale, finish in background
+#   max_file_bytes: 1048576  # larger files are listed, not parsed
+#   cochange_commits: 300    # first-parent commits walked for co-change; 0 disables the git walk
+#   languages: [rust, typescript, javascript, python, go]   # subset to parse; others are files only
+
 # search_providers:          # optional external engines registered with `web` (design doc 16 §3); the
 #                            # built-in keyless engines above need none of these
 #   firecrawl:               # inert until the `firecrawl` secret exists (`t --secret-set firecrawl`)
@@ -511,6 +518,7 @@ async fn run() -> anyhow::Result<()> {
             Box::new(web::WebPlugin),
             Box::new(browser::BrowserPlugin),
             Box::new(scrape::ScrapePlugin),
+            Box::new(codeindex::CodeindexPlugin),
             Box::new(routes::RoutesPlugin),
             Box::new(computer::ComputerPlugin),
             Box::new(artifact::ArtifactPlugin),
@@ -534,6 +542,7 @@ async fn run() -> anyhow::Result<()> {
             Box::new(web::WebPlugin),
             Box::new(browser::BrowserPlugin),
             Box::new(scrape::ScrapePlugin),
+            Box::new(codeindex::CodeindexPlugin),
             Box::new(routes::RoutesPlugin),
             Box::new(computer::ComputerPlugin),
             Box::new(artifact::ArtifactPlugin),

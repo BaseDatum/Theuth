@@ -1,0 +1,36 @@
+[package]
+name = "codeindex"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license = "MIT OR Apache-2.0"
+description = "Tree-sitter tags → sqlite symbol/reference index per repository root; code_* runtime tools (design doc 60)"
+
+[dependencies]
+runtime = { workspace = true }
+tools = { workspace = true }
+tree-sitter = { workspace = true }
+tree-sitter-tags = { workspace = true }
+tree-sitter-rust = { workspace = true }
+tree-sitter-typescript = { workspace = true }
+tree-sitter-javascript = { workspace = true }
+tree-sitter-python = { workspace = true }
+tree-sitter-go = { workspace = true }
+sqlx = { workspace = true }
+gix = { workspace = true }
+ignore = { workspace = true }
+tokio = { workspace = true }
+kameo = { workspace = true }
+async-trait = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+sha2 = { workspace = true }
+
+[dev-dependencies]
+uuid = { workspace = true }
+
+[lints]
+workspace = true
