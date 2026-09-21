@@ -27,6 +27,7 @@ import type { McpServer } from '@/rpc/bindings/McpServer'
 import type { Brief } from '@/rpc/bindings/Brief'
 import type { BriefId } from '@/rpc/bindings/BriefId'
 import type { EditOp } from '@/rpc/bindings/EditOp'
+import type { EscalateModel } from '@/rpc/bindings/EscalateModel'
 import type { CachedBrief } from '@/rpc/bindings/CachedBrief'
 import type { CachedBriefPut } from '@/rpc/bindings/CachedBriefPut'
 import type { Manifest } from '@/rpc/bindings/Manifest'
@@ -187,6 +188,8 @@ export interface Api {
   fire_schedule(name: string): Promise<SessionId>
   /** New session with the conversation through the turn opened at `through` (all when `null`); `reply` stops at that 0-based assistant text of the turn instead. */
   fork_session(session: SessionId, through: number | null, reply: number | null): Promise<SessionId>
+  /** The escalation model (57 §0.9, tier 2 of the local decision oracle): what is set and what a tier-2 call resolves to (`effective === null` = the session's model). */
+  escalate_model(): Promise<EscalateModel>
   /** A committed app record: artifact, source, compatibility hash, pinned bindings, diagnostics (46 §6.3). `-32001` when apps are disabled — show the artifact's source instead. */
   get_app(record_call_id: string): Promise<AppDoc>
   get_prompt(session: SessionId | null): Promise<string>
@@ -399,6 +402,8 @@ export interface Api {
   set_communication(session: SessionId | null, enabled: boolean): Promise<CommunicationState>
   set_compact_style(style: CompactStyle): Promise<null>
   set_effort(session: SessionId | null, effort: string | null): Promise<null>
+  /** Persist `agent.escalate_model` (57 §0.9): `null` = inherit the title model; an id that is not a catalog entry rejects and leaves the selection unchanged. */
+  set_escalate_model(model: string | null): Promise<ModelInfo | null>
   /** Persist `agent.max_salvages`: interrupted-reply recoveries per turn; `0` turns recovery off. New sessions only. */
   set_max_salvages(count: number): Promise<null>
   set_max_tool_rounds(rounds: number): Promise<null>
@@ -489,6 +494,7 @@ export const METHODS = [
   'dictation_stop',
   'edit_turn',
   'enable_schedule',
+  'escalate_model',
   'export_artifact',
   'fire_schedule',
   'fork_session',
@@ -606,6 +612,7 @@ export const METHODS = [
   'set_communication',
   'set_compact_style',
   'set_effort',
+  'set_escalate_model',
   'set_max_salvages',
   'set_max_tool_rounds',
   'set_mcp_gate',

@@ -28,6 +28,11 @@ export const COMMANDS: readonly { name: string; hint: string; desc: string }[] =
     desc: 'model that inspects images when the main model cannot (off = images are omitted)',
   },
   {
+    name: '/escalate',
+    hint: '[model|off]',
+    desc: 'tier-2 model of the local decision oracle (off = inherits the title model)',
+  },
+  {
     name: '/subagent',
     hint: '[model|off]',
     desc: "model for subagents spawned without an explicit one (off = the session's model)",
@@ -269,7 +274,17 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       if (!arg) return settings(navigate, 'loop', session)
       const m = await api.set_title_model(arg === 'off' || arg === 'clear' ? null : arg)
       active().qc.setQueryData(queryKeys.titleModel, m)
+      // 57 §0.9: the escalation model inherits it.
+      void active().qc.invalidateQueries({ queryKey: queryKeys.escalateModel })
       toast(m ? `title model: ${m.id}` : 'title model: off')
+      return
+    }
+    // 57 §0.9: tier 2 of the decision oracle; the server rejects ids that are not catalog entries.
+    case '/escalate': {
+      if (!arg) return settings(navigate, 'loop', session)
+      const m = await api.set_escalate_model(arg === 'off' || arg === 'clear' ? null : arg)
+      void active().qc.invalidateQueries({ queryKey: queryKeys.escalateModel })
+      toast(m ? `escalation model: ${m.id}` : 'escalation model: off (inherits title model)')
       return
     }
     case '/subagent': {

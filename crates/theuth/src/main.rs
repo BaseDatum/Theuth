@@ -123,6 +123,8 @@ agent:
   # vision_model: anthropic/claude-haiku-4-5  # answers the main model's questions about images it cannot see (52 §3);
                              # unset: no fallback. Must be an exact catalog `provider/model` that accepts images;
                              # images then go to that provider, with extra calls. /vision or Settings → Agent loop
+  # escalate_model: anthropic/claude-haiku-4-5  # tier 2 of the local decision oracle (57 §0.9): one cheap no-tools call answers a typed question the oracle abstained on;
+                             # unset: inherits title_model, then the session's model. Must be a catalog `provider/model`. /escalate or Settings → Agent loop
   # stream_idle_secs: 120     # seconds without a stream event before a model call is abandoned (36 §2.3); Settings → Agent loop
   # max_salvages: 2           # interrupted-reply recoveries per turn (stalled stream or output cap) before the turn errors (36 §2.4); 0 = off
   # aws_profile: work          # Bedrock inference for every session; /aws or Settings → Connections

@@ -60,6 +60,8 @@ export const queryKeys = {
   subagentModel: ['subagent-model'] as const,
   /** `vision_model()` (52 §3.2); slash setters and the General dropdown invalidate this same key. */
   visionModel: ['vision-model'] as const,
+  /** `escalate_model()` (57 §0.9); the Agent loop dropdown and `/escalate` set it. */
+  escalateModel: ['escalate-model'] as const,
   signal: ['signal'] as const,
   slack: ['slack'] as const,
   computer: ['computer'] as const,
@@ -115,6 +117,7 @@ export function useInvalidateOn(): void {
       void qc.invalidateQueries({ queryKey: queryKeys.titleModel })
       void qc.invalidateQueries({ queryKey: queryKeys.subagentModel })
       void qc.invalidateQueries({ queryKey: queryKeys.visionModel })
+      void qc.invalidateQueries({ queryKey: queryKeys.escalateModel })
     }
     window.addEventListener('theuth:reload-session', models)
     const offs = [

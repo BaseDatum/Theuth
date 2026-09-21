@@ -72,13 +72,21 @@ export function Loop() {
   })
 
   const setTitleModel = useAction((id: string) => api.set_title_model(id === 'off' ? null : id), {
-    keys: [queryKeys.titleModel],
+    keys: [queryKeys.titleModel, queryKeys.escalateModel],
   })
   const setSubagentModel = useAction((id: string) => api.set_subagent_model(id === 'off' ? null : id), {
     keys: [queryKeys.subagentModel],
   })
   const setVisionModel = useAction((id: string) => api.set_vision_model(id === 'off' ? null : id), {
     keys: [queryKeys.visionModel],
+  })
+  const escalateModel = useQuery({
+    queryKey: queryKeys.escalateModel,
+    queryFn: () => api.escalate_model(),
+  })
+  // 57 §0.9: the effective model follows the title model, so both keys refresh.
+  const setEscalateModel = useAction((id: string) => api.set_escalate_model(id === 'off' ? null : id), {
+    keys: [queryKeys.escalateModel],
   })
   const setCompact = useAction((style: CompactStyle) =>
     api.set_compact_style(style).then(() => refreshInfo(api)),
@@ -228,6 +236,40 @@ export function Loop() {
                 </SelectItem>
               ))}
               {unavailable && <SelectItem value={unavailable}>{unavailable} (unavailable)</SelectItem>}
+            </SelectContent>
+          </Select>
+        </Row>
+        <Row
+          label="Escalation model"
+          description={
+            escalateModel.isError
+              ? `Could not read the escalation model: ${escalateModel.error.message}`
+              : `Tier 2 of the local decision oracle: answers a typed question the oracle abstained on, in one cheap no-tools call. Off = inherits the title model${
+                  escalateModel.data?.model === null && escalateModel.data.effective
+                    ? ` (${escalateModel.data.effective.id})`
+                    : ", then the session's model"
+                }.`
+          }
+        >
+          <Select
+            value={escalateModel.data?.model ? escalateModel.data.model.id : 'off'}
+            disabled={!escalateModel.isSuccess || setEscalateModel.isPending}
+            onValueChange={(v) => setEscalateModel.mutate(v)}
+          >
+            <SelectTrigger aria-label="Escalation model" className="max-w-64">
+              <SelectValue placeholder="inherits title model" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="off">
+                {escalateModel.data?.effective
+                  ? `Off (inherits title model ${escalateModel.data.effective.id})`
+                  : 'Off (inherits title model)'}
+              </SelectItem>
+              {models.data?.map((m) => (
+                <SelectItem key={m.id} value={m.id}>
+                  {m.id}
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
         </Row>
