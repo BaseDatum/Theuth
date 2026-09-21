@@ -10,8 +10,8 @@
 //! - commands on the `"mcp"` actor ([`Mcp`]): [`ListServers`], [`SetGate`], [`Restart`], [`AddServer`], [`RemoveServer`], [`AddRepo`], [`SyncMcp`], [`McpLogin`], [`McpLogout`]
 //! - commands on the `"jobs"` actor ([`Jobs`]): [`ListJobs`], [`CancelJob`], [`ListTerminals`], [`PtyScreen`], [`PtyInput`], [`CloseSessions`]
 //! - events: [`ApprovalRequested`], [`ApprovalResolved`], [`AskRequested`], [`AskResolved`], [`JobEvent`]
-//! - activity protocol (47 §4, [`activity`]): the supervisor implements [`Admit`] and [`Settle`]
-//!   and registers an [`ActivitySink`]; producers hold an [`Activity`] guard for the real
+//! - activity protocol (47 §4, [`activity`]): the supervisor implements [`Admit`], [`Settle`] and
+//!   [`Notice`] and registers an [`ActivitySink`]; producers hold an [`Activity`] guard for the real
 //!   lifetime of admitted work and read [`activity::current`] inside an invocation.
 
 use std::sync::Arc;
@@ -40,8 +40,8 @@ pub mod shell;
 pub mod resources;
 
 pub use activity::{
-    Activity, ActivitySink, Admission, Admit, Kind, Operation, OperationId, Rejected, Settle,
-    Tracked,
+    Activity, ActivitySink, Admission, Admit, Kind, Notice, Operation, OperationId, Rejected,
+    Settle, Tracked,
 };
 pub use approval::{Approval, ApprovalId, ApprovalRequested, ApprovalResolved, Decision, Resolve};
 pub use ask::{
@@ -419,6 +419,9 @@ pub struct ToolsConfig {
     pub job_timeout_secs: u64,
     /// `start`'s readiness deadline when `ready` gives no `timeout` (22 §6).
     pub pty_ready_timeout_secs: u64,
+    /// Seconds a PTY job's screen must stay unchanged before the model is
+    /// woken with `<job_idle>` (61 §1.6); `start.idle_secs` overrides per job.
+    pub pty_idle_secs: u64,
 }
 
 impl Default for ToolsConfig {
@@ -431,6 +434,7 @@ impl Default for ToolsConfig {
             job_grace_secs: 3,
             job_timeout_secs: 1800,
             pty_ready_timeout_secs: 30,
+            pty_idle_secs: 60,
         }
     }
 }

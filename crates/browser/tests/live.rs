@@ -13,7 +13,9 @@ use kameo::actor::Spawn;
 use kameo::message::{Context, Message};
 use runtime::SessionId;
 use serde_json::{Value, json};
-use tools::{ActivitySink, Admission, Admit, DynTool, Kind, Settle, ToolCx, ToolOutput, Tracked};
+use tools::{
+    ActivitySink, Admission, Admit, DynTool, Kind, Notice, Settle, ToolCx, ToolOutput, Tracked,
+};
 
 /// Activity supervisor double (47 §4): admits everything, records settlements.
 #[derive(kameo::Actor)]
@@ -37,6 +39,12 @@ impl Message<Settle> for Ledger {
         self.settled.lock().expect("ledger").push(m);
         self.changed.notify_one();
     }
+}
+
+impl Message<Notice> for Ledger {
+    type Reply = ();
+
+    async fn handle(&mut self, _: Notice, _: &mut Context<Self, Self::Reply>) {}
 }
 
 const PAGE: &str = r#"<!doctype html><html><head><title>Fixture</title></head><body>

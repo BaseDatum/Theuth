@@ -29,8 +29,9 @@ use tokio::task::AbortHandle;
 use tokio_util::sync::CancellationToken;
 use tools::{
     ActivitySink, Admission, Admit, ApprovalId, ApprovalRequested, ApprovalResolved,
-    InstallCommunicationAccess, JobEvent, JobExit, JobId, ListPrompts, ListTools, REGISTRY_ACTOR,
-    RegisterActivity, RegisterPrompt, RegisterTool, SetParent, Settle, ToolRegistry,
+    InstallCommunicationAccess, JobEvent, JobExit, JobId, ListPrompts, ListTools, Notice,
+    REGISTRY_ACTOR, RegisterActivity, RegisterPrompt, RegisterTool, SetParent, Settle,
+    ToolRegistry,
 };
 use uuid::Uuid;
 
@@ -1676,6 +1677,17 @@ impl Message<Settle> for Agents {
         if let Some(s) = owner {
             self.idle_check(s).await;
         }
+    }
+}
+
+/// A notice about a still-admitted operation (61 §1.8). Delivery lands with
+/// the `<job_idle>` wrapper; until then a notice is dropped.
+impl Message<Notice> for Agents {
+    type Reply = ();
+
+    async fn handle(&mut self, m: Notice, _: &mut Context<Self, Self::Reply>) {
+        let Notice::JobIdle { op, .. } = m;
+        tracing::debug!(%op, "idle notice dropped: delivery not wired");
     }
 }
 

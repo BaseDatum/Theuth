@@ -3,12 +3,12 @@
 //! is running" before continuing a yielded turn.
 //!
 //! The tools crate owns the *types*; the `agent` crate owns the ledger and the
-//! decision. `Agents` implements [`Admit`] and [`Settle`], hands the registry an
-//! [`ActivitySink`] through [`crate::RegisterActivity`], and from then on every
-//! [`crate::Invoke`] is admitted before anything runs and settled when the real
-//! work stops. Nothing here reads tool output or job rows: authority flows
-//! through these messages only; `JobEvent`, `ToolCallFinished` and the like
-//! stay observation.
+//! decision. `Agents` implements [`Admit`], [`Settle`] and [`Notice`], hands
+//! the registry an [`ActivitySink`] through [`crate::RegisterActivity`], and
+//! from then on every [`crate::Invoke`] is admitted before anything runs and
+//! settled when the real work stops. Nothing here reads tool output or job
+//! rows: authority flows through these messages only; `JobEvent`,
+//! `ToolCallFinished` and the like stay observation.
 //!
 //! # Lifetimes
 //!
@@ -24,7 +24,9 @@
 //! settles it with [`Activity::set_result`] when the producer knows the
 //! outcome. Work whose termination cannot be established calls
 //! [`Activity::unknown`]: the supervisor retains a blocker until its owner
-//! reconciles; dropping after `unknown` sends nothing more.
+//! reconciles; dropping after `unknown` sends nothing more. A still-running
+//! operation with something the model should hear now (a quiet PTY, 61)
+//! sends it with [`Activity::notify`]; the guard is unchanged.
 //!
 //! # Scope
 //!
@@ -160,6 +162,21 @@ pub enum Settle {
     },
 }
 
+/// `tell`. Something about an admitted operation the model should hear
+/// without the operation settling. The supervisor delivers it like a result
+/// (wrapped, injected under the op's scope) only while the op is still
+/// admitted; a notice for a retired op is dropped.
+#[derive(Clone, Debug)]
+pub enum Notice {
+    /// A running PTY job's screen has been unchanged for `quiet_secs` (61).
+    JobIdle {
+        /// The job's operation.
+        op: OperationId,
+        /// Always [`JobEvent::Idle`].
+        event: JobEvent,
+    },
+}
+
 /// Admission rejected or the supervisor is unreachable. Rendered to the
 /// model as an ordinary tool error.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -179,6 +196,7 @@ impl std::error::Error for Rejected {}
 pub struct ActivitySink {
     admit: ReplyRecipient<Admit, Admission>,
     settle: Recipient<Settle>,
+    notice: Recipient<Notice>,
 }
 
 impl fmt::Debug for ActivitySink {
@@ -191,14 +209,18 @@ impl fmt::Debug for ActivitySink {
 }
 
 impl ActivitySink {
-    /// Both recipients of one actor, normally `Agents`.
+    /// All recipients of one actor, normally `Agents`.
     pub fn new<A>(actor: ActorRef<A>) -> Self
     where
-        A: kameo::Actor + Message<Admit, Reply = Admission> + Message<Settle, Reply = ()>,
+        A: kameo::Actor
+            + Message<Admit, Reply = Admission>
+            + Message<Settle, Reply = ()>
+            + Message<Notice, Reply = ()>,
     {
         Self {
             admit: actor.clone().reply_recipient(),
-            settle: actor.recipient(),
+            settle: actor.clone().recipient(),
+            notice: actor.recipient(),
         }
     }
 
@@ -229,6 +251,13 @@ impl ActivitySink {
     fn settle(&self, msg: Settle) {
         if let Err(e) = self.settle.tell(msg).try_send() {
             tracing::warn!(error = %e, "activity settlement lost: supervisor gone");
+        }
+    }
+
+    /// Same delivery as [`Self::settle`], for a [`Notice`].
+    fn notify(&self, msg: Notice) {
+        if let Err(e) = self.notice.tell(msg).try_send() {
+            tracing::warn!(error = %e, "activity notice lost: supervisor gone");
         }
     }
 }
@@ -400,6 +429,23 @@ impl Activity {
         }
     }
 
+    /// Tell the supervisor something about this still-running operation
+    /// (61 §1.8): delivered to the model under the op's scope. A no-op when
+    /// untracked (nothing certified, as with results) or already
+    /// [`Self::unknown`] (the owner is reconciling; a wake would race it).
+    pub fn notify(&self, event: JobEvent) {
+        let Some(sink) = self.0.sink.get() else {
+            return;
+        };
+        if matches!(*lock(&self.0.outcome), Outcome::Unknown) {
+            return;
+        }
+        sink.notify(Notice::JobIdle {
+            op: self.id(),
+            event,
+        });
+    }
+
     /// Run `fut` with this guard as the task-local [`current`] activity. The
     /// guard lives at least as long as the future. A panic inside `fut` marks
     /// the operation [`Self::unknown`] before resuming the unwind: whatever
@@ -488,6 +534,7 @@ pub(crate) mod test_sink {
         Finished(OperationId),
         Result(OperationId),
         Unknown(OperationId, String),
+        Idle(OperationId),
     }
 
     #[derive(kameo::Actor)]
@@ -520,6 +567,14 @@ pub(crate) mod test_sink {
                 Settle::Unknown { op, failure, .. } => Seen::Unknown(op, failure),
             };
             lock(&self.seen).push(seen);
+        }
+    }
+
+    impl Message<Notice> for Ledger {
+        type Reply = ();
+        async fn handle(&mut self, msg: Notice, _: &mut Context<Self, Self::Reply>) {
+            let Notice::JobIdle { op, .. } = msg;
+            lock(&self.seen).push(Seen::Idle(op));
         }
     }
 
@@ -632,6 +687,47 @@ mod tests {
         assert_eq!(seen[1], Seen::Result(ida));
         assert_eq!(seen[3], Seen::Unknown(idu, "reader lost".into()));
         assert_eq!(seen.len(), 4, "no Finished after Unknown, no duplicates");
+    }
+
+    /// 61 §5 item 8: a notice reaches the ledger only from a tracked guard
+    /// whose outcome is not already unknown.
+    #[tokio::test]
+    async fn notify_reaches_a_tracked_guard_only() {
+        let (actor, sink, seen) = spawn(None);
+        let owner = SessionId::new();
+        let idle = || JobEvent::Idle {
+            session: owner,
+            id: JobId("j".into()),
+            command: String::new(),
+            name: None,
+            quiet_secs: 60,
+            secs: 61,
+            nudge: 1,
+            user_typed_secs: None,
+            output: ">>> ".into(),
+        };
+
+        Activity::untracked(owner, Kind::Pty(JobId("j".into()))).notify(idle());
+
+        let a = sink
+            .admit(owner, Kind::Pty(JobId("j".into())))
+            .await
+            .unwrap();
+        let op = a.id();
+        a.notify(idle());
+        a.notify(idle());
+        a.unknown("reader lost");
+        a.notify(idle());
+        drop(a);
+
+        let seen = drained(&actor, &seen).await;
+        assert_eq!(&seen[1..3], [Seen::Idle(op), Seen::Idle(op)]);
+        assert!(matches!(&seen[3], Seen::Unknown(id, _) if *id == op));
+        assert_eq!(
+            seen.len(),
+            4,
+            "nothing after Unknown; untracked sent nothing"
+        );
     }
 
     #[tokio::test]
