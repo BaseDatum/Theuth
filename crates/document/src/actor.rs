@@ -48,6 +48,8 @@ const CHUNK: usize = 36 * 1024;
 const SUB_QUEUE: usize = 256;
 /// The agent's awareness state outlives its update by this (§6.4: the reveal runs ≤ 1.5 s).
 const AGENT_PRESENCE: Duration = Duration::from_secs(2);
+/// Awareness states relayed per participant per second (§6.2); the excess is dropped, cursors are best-effort.
+const AWARENESS_RATE: u8 = 4;
 /// `.trash/` is swept this often (§7.3) …
 const TRASH_SWEEP: Duration = Duration::from_secs(3600);
 /// … of directories deleted longer ago than this.
@@ -70,6 +72,27 @@ struct Open {
     last_agent_edit: Option<LastAgentEdit>,
     /// Bumped per agent presence; a delayed clear only fires for its own generation.
     agent_gen: u64,
+    /// Per connection: start of the current one-second window and the states relayed in it (§6.2 cap).
+    awareness_rate: HashMap<Option<u64>, RateSlot>,
+}
+
+/// One participant's awareness budget: window start, states relayed since.
+#[derive(Clone, Copy, Debug)]
+struct RateSlot {
+    since: Instant,
+    sent: u8,
+}
+
+/// Whether one more awareness state fits into `slot`'s window at `now` (§6.2: ≤ [`AWARENESS_RATE`] per second).
+fn admit_awareness(slot: &mut RateSlot, now: Instant) -> bool {
+    if now.duration_since(slot.since) >= Duration::from_secs(1) {
+        *slot = RateSlot { since: now, sent: 0 };
+    }
+    if slot.sent >= AWARENESS_RATE {
+        return false;
+    }
+    slot.sent += 1;
+    true
 }
 
 /// What "Undo last agent edit" reverts.
@@ -184,6 +207,7 @@ impl DocumentActor {
                     exporting: false,
                     last_agent_edit: None,
                     agent_gen: 0,
+                    awareness_rate: HashMap::new(),
                 },
             );
             self.enforce_open_cap();
@@ -712,6 +736,15 @@ impl Message<AwarenessUpdateMsg> for DocumentActor {
         let bytes = unb64(&m.state)?;
         let u = AwarenessUpdate::decode_v1(&bytes).map_err(|e| format!("bad awareness: {e}"))?;
         let o = self.load(&m.doc)?;
+        let now = Instant::now();
+        let slot = o
+            .awareness_rate
+            .entry(m.by.conn())
+            .or_insert(RateSlot { since: now, sent: 0 });
+        if !admit_awareness(slot, now) {
+            tracing::trace!(doc = %m.doc, conn = ?m.by.conn(), "awareness over the rate cap; dropped");
+            return Ok(());
+        }
         o.awareness
             .apply_update(u)
             .map_err(|e| format!("awareness: {e}"))?;
@@ -1580,5 +1613,17 @@ mod tests {
         assert_eq!(with_heading("T", "\n\nbody\n"), "# T\n\nbody\n");
         assert_eq!(with_heading("T", "# Own\n\nbody\n"), "# Own\n\nbody\n");
         assert_eq!(with_heading("T", "## sub\n"), "# T\n\n## sub\n");
+    }
+
+    #[test]
+    fn awareness_cap_admits_four_per_second_then_resets() {
+        let t0 = Instant::now();
+        let mut slot = RateSlot { since: t0, sent: 0 };
+        for _ in 0..4 {
+            assert!(admit_awareness(&mut slot, t0 + Duration::from_millis(100)));
+        }
+        assert!(!admit_awareness(&mut slot, t0 + Duration::from_millis(900)));
+        assert!(admit_awareness(&mut slot, t0 + Duration::from_millis(1000)));
+        assert_eq!(slot.sent, 1);
     }
 }
