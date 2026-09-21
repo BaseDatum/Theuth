@@ -17,21 +17,26 @@ export type Injected =
   | { kind: 'peer'; from: string; text: string }
   | { kind: 'subagent'; name: string; text: string }
   | { kind: 'job'; id: string; command: string; exit: string; secs: string; pty: boolean; text: string }
+  /** A quiet PTY job (61 §2.3): `text` is the screen. `name` is the job's label, if any. */
+  | { kind: 'job_idle'; id: string; command: string; name?: string; quiet: string; secs: string; nudge: string; userTyped?: string; text: string }
   | { kind: 'schedule'; name: string; at: string; quiet: boolean; text: string }
   | { kind: 'harness'; notice: keyof typeof HARNESS_NOTICES; text: string }
 
 /** Wrappers that render a card, with the attribute naming the sender, and wrappers that render nothing. */
-const CARD: Record<string, string> = { subagent_result: 'name="', message: 'from="', job_result: 'id="', schedule: 'name="' }
+const CARD: Record<string, string> = { subagent_result: 'name="', message: 'from="', job_result: 'id="', job_idle: 'id="', schedule: 'name="' }
 const HIDDEN: Record<string, true> = { context_summary: true, runtime: true }
 
 /** Value of `key` (`name="`) in an open tag, up to the closing quote. */
 const attr = (open: string, key: string) => open.split(key, 2)[1]?.split('"', 1)[0]
 
+/** Undo the wrappers' XML attribute escape. */
+const unescape = (s: string) => s.replaceAll('&quot;', '"').replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&')
+
 /**
  * Classify one user input (mirrors `agent::skills::injected` and
  * `tui::model::injected`). A skill injection (`<skill name="…">…</skill>`
  * plus the user's words) is one card; an input made entirely of harness
- * wrappers (`<subagent_result>`, `<message>`, `<job_result>`, `<schedule>` blocks joined
+ * wrappers (`<subagent_result>`, `<message>`, `<job_result>`, `<job_idle>`, `<schedule>` blocks joined
  * by newlines, harness notes such as `<context_summary>`) is one card per
  * block: mid-turn notices are visible; context summaries and runtime wrappers yield none.
  * `null` for human text (or anything not entirely made of wrappers).
@@ -66,18 +71,27 @@ export function classify(text: string): Injected[] | null {
       let body = rest.slice(gt + 1, end)
       body = (body.startsWith('\n') ? body.slice(1) : body).trimEnd()
       if (name === 'job_result') {
-        const command = (attr(open, 'command="') ?? '')
-          .replaceAll('&quot;', '"')
-          .replaceAll('&lt;', '<')
-          .replaceAll('&gt;', '>')
-          .replaceAll('&amp;', '&')
         out.push({
           kind: 'job',
           id: from,
-          command,
+          command: unescape(attr(open, 'command="') ?? ''),
           exit: attr(open, 'exit="') ?? '',
           secs: attr(open, 'secs="') ?? '',
           pty: attr(open, 'pty="') === 'true',
+          text: body,
+        })
+      } else if (name === 'job_idle') {
+        const jobName = attr(open, 'name="')
+        const userTyped = attr(open, 'user_typed="')
+        out.push({
+          kind: 'job_idle',
+          id: from,
+          command: unescape(attr(open, 'command="') ?? ''),
+          ...(jobName === undefined ? {} : { name: unescape(jobName) }),
+          quiet: attr(open, 'quiet="') ?? '',
+          secs: attr(open, 'secs="') ?? '',
+          nudge: attr(open, 'nudge="') ?? '',
+          ...(userTyped === undefined ? {} : { userTyped }),
           text: body,
         })
       } else if (name === 'schedule') {
