@@ -235,6 +235,9 @@ Library, not reinvention (00 §1.2): `ignore` for the walk (gitignore, hidden, g
 
 Check: `grep pattern="lookup_when" glob="*.rs"` returns the three call sites; `edit` with an `old` that occurs twice returns `Err` and leaves the file byte-identical; with `all: true` replaces both; a successful `edit` prompts (Mutating) and shows `old`/`new` in the modal.
 
+As-built 2026-09-21: a `read_file` cut at 64 KiB is marked at both ends — a `[read_file: …]` header with exact byte/line counts of the selection and the `[truncated …]` tail (`fs::TRUNCATED_HEAD_PREFIX`/`TRUNCATED_TAIL`) — after a 74 KB doc was read, sliced in Python and written back minus its tail.
+`write_file` and `edit` (`new`) refuse content carrying either marker; nothing is written. No `structured` flag: the Python runtime returns `structured` *instead of* the text (`agent/src/repl.rs::tool_result`), so a flag there would hide the content.
+
 ## 11. Not doing
 
 - Splitting `agent` further. It is the loop plus what the loop must own; 00 §10 now says so (step 1).
