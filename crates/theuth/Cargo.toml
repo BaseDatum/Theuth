@@ -32,6 +32,7 @@ app = { workspace = true }
 voice = { workspace = true }
 meeting = { workspace = true }
 decision = { workspace = true }
+chrono = { workspace = true }  # --decision-export --since
 secrets = { workspace = true }
 rpassword = { workspace = true }
 jsonrpsee = { workspace = true, features = ["ws-client"] }

@@ -109,6 +109,20 @@ struct Cli {
     /// against it. Before config, logging or any plugin.
     #[arg(long, conflicts_with_all = ["headless", "serve", "acp", "prompt", "resume", "link_signal", "slack_manifest", "slack_setup", "link", "install_service", "uninstall_service", "secret_set", "secret_rm", "secret_list", "update"])]
     app_parser_hash: bool,
+    /// 57 §11.4: fold the captured training rows of a decision family prefix (`meeting`) into
+    /// the phrasing-bench fixture shape (or laya's typed-decisions rows with --format laya),
+    /// print (or --out) and exit. Reads <data_dir>/decisions/training/<prefix>/*.jsonl.
+    #[arg(long, value_name = "PREFIX", conflicts_with_all = ["headless", "serve", "acp", "prompt", "resume", "link_signal", "slack_manifest", "slack_setup", "link", "install_service", "uninstall_service", "secret_set", "secret_rm", "secret_list", "update"])]
+    decision_export: Option<String>,
+    /// --decision-export: only day files from this date on (YYYY-MM-DD).
+    #[arg(long, requires = "decision_export", value_name = "YYYY-MM-DD")]
+    since: Option<chrono::NaiveDate>,
+    /// --decision-export: write here instead of stdout.
+    #[arg(long, requires = "decision_export", value_name = "FILE")]
+    out: Option<PathBuf>,
+    /// --decision-export: `fixture` (default) | `laya`.
+    #[arg(long, requires = "decision_export", default_value = "fixture")]
+    format: String,
 }
 
 const DEFAULT_CONFIG: &str = "# theuth configuration. Every plugin reads its own section.
@@ -257,7 +271,8 @@ agent:
 #                            # `meeting: { mode: active }` is what Settings → Meetings → Local decision oracle writes (57 §3.4).
 #                            # Flip a family to active only after its shadow log shows acceptable agreement (57 §2; `decision_stats`).
 #                            # train: true (57 §11, default false) captures every batch the family's oracle handled — text, mentions,
-#                            # questions, tier-2 answer, outcome, tap/dismiss — to <data_dir>/decisions/training/<prefix>/<day>.jsonl, secret-scrubbed, local only.
+#                            # questions, tier-2 answer, outcome, tap/dismiss — to <data_dir>/decisions/training/<prefix>/<day>.jsonl,
+#                            # secret-scrubbed, local only; `t --decision-export meeting` folds it into the phrasing-bench fixture shape.
 #     meeting.kind:    { mode: shadow, tau_top: 0.60, tau_margin: 0.20 }  # small-talk Bool: skip at P ≥ 0.6 with no mentions (57 §3.5)
 #     meeting.brief:   { mode: shadow, tau_top: 0.60, tau_margin: 0.30 }  # ≤ 4 cached briefs: publish at P ≥ 0.6, margin ≥ 0.3
 #     meeting.subject: { mode: shadow, tau_top: 0.50, tau_margin: 0.00 }  # tier-2 subject extraction rows (cheap model, never the oracle)
@@ -400,6 +415,24 @@ async fn run() -> anyhow::Result<()> {
     if cli.update {
         let cfg: update::UpdateConfig = config.extract_inner("update").unwrap_or_default();
         return update_cli(&cfg, &data_dir).await;
+    }
+    if let Some(prefix) = cli.decision_export {
+        let format: decision::training::Format = cli.format.parse().map_err(anyhow::Error::msg)?;
+        let store = decision::training::Store::new(data_dir.join("decisions").join("training"));
+        let v = decision::training::export(&store, &prefix, cli.since, format)?;
+        let n = match &v {
+            serde_json::Value::Array(a) => a.len(),
+            other => other["batches"].as_array().map_or(0, Vec::len),
+        };
+        let text = serde_json::to_string_pretty(&v)?;
+        match cli.out {
+            Some(path) => {
+                std::fs::write(&path, text)?;
+                eprintln!("wrote {n} examples from {} to {}", store.family_dir(&prefix).display(), path.display());
+            }
+            None => println!("{text}"),
+        }
+        return Ok(());
     }
     if let Some(name) = cli.secret_set {
         let op = secret_cli::Op::Set {
