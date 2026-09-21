@@ -3833,6 +3833,7 @@ dependencies = [
  "tools",
  "tracing",
  "tracing-subscriber",
+ "ts-rs",
  "uuid",
 ]
 
@@ -10119,6 +10120,8 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "coreaudio-rs",
+ "decision",
+ "figment",
  "flexaudio",
  "hound",
  "kameo",
@@ -10131,6 +10134,7 @@ dependencies = [
  "ogg",
  "opus",
  "ort",
+ "parking_lot",
  "rtrb",
  "rubato 0.16.2",
  "runtime",
@@ -14215,6 +14219,7 @@ dependencies = [
  "base64 0.22.1",
  "browser",
  "computer",
+ "decision",
  "figment",
  "futures",
  "jsonrpsee",
