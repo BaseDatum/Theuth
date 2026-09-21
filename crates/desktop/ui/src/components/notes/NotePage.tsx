@@ -154,8 +154,8 @@ function TitleInput({
   )
 }
 
-/** `doc_snapshots` with a Restore per row (59 §4.6: a restore imports the snapshot's text as one diff, history kept). */
-function Snapshots({ id, open, onOpenChange }: { id: string; open: boolean; onOpenChange: (o: boolean) => void }) {
+/** `doc_snapshots` with a Restore per row (59 §4.6: a restore imports the snapshot's text as one diff, history kept). Notes and markdown artifacts share it. */
+export function Snapshots({ id, open, onOpenChange }: { id: string; open: boolean; onOpenChange: (o: boolean) => void }) {
   const api = useApi()
   const list = useQuery({ queryKey: ['doc', 'snapshots', id], queryFn: () => api.doc_snapshots(id), enabled: open })
   const restore = useMutation({
