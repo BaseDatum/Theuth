@@ -33,9 +33,12 @@ IDENTITY="${THEUTH_SIGN_IDENTITY:--}"
 BUNDLE_ID="io.theuth.mac"
 BUNDLE_DIR="target/release/bundle/macos"
 APP="$BUNDLE_DIR/theuth.app"
-# ONNX Runtime for speech-to-text (45 §2.1): dlopened by the sidecar from Contents/Frameworks.
-ORT_VERSION="1.27.0"
-ORT_SHA256="545e81c58152353acb0d1e8bd6ce4b62f830c0961f5b3acfedc790ffd76e477a"
+# ONNX Runtime for every ONNX model (45 §2.1, 57 §6 step 2c): dlopened by the sidecar from
+# Contents/Frameworks — first in `models::onnx::ort_lib`'s search order, because a hardened-runtime
+# app must load the copy we codesign. The pin lives in scripts/ort-version.env.
+# shellcheck source=ort-version.env
+source "$ROOT/scripts/ort-version.env"
+ORT_SHA256="$ORT_SHA256_OSX_ARM64"
 ORT_TGZ="target/onnxruntime-osx-arm64-${ORT_VERSION}.tgz"
 ENTITLEMENTS="crates/desktop/entitlements.plist"
 HELPER_ENTITLEMENTS="scripts/entitlements-app-parser.plist"

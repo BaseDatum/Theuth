@@ -1,9 +1,11 @@
-//! Speech model files the sidecar loads from `<data_dir>/models/` (43 §4.6, 45 §4.6,
-//! 54 §9, meetings 04 §0.1): whatever `models.json` on the release bucket lists and
-//! this Mac lacks is fetched at start (`scripts/release-models.sh` publishes both).
-//! Every checkpoint is opened lazily by the daemon, so a file that lands after it
-//! started is used on the next speak/dictate/meeting without a restart. The webview
-//! hears `models-progress`.
+//! Model files and the ONNX Runtime the daemon loads from `<data_dir>/models/` (43 §4.6,
+//! 45 §4.6, 54 §9, meetings 04 §0.1, 57 §2 and §6 step 2c): whatever `models.json` on the
+//! release bucket lists and this machine lacks is fetched at start
+//! (`scripts/release-models.sh` publishes both). Entries carrying a `platform` are for that
+//! rust target triple only — the runtime is published once per platform under
+//! `onnxruntime/<triple>/` and lands at `models/onnxruntime/`. Every checkpoint is opened
+//! lazily by the daemon, so a file that lands after it started is used on the next
+//! speak/dictate/meeting/ask without a restart. The webview hears `models-progress`.
 
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -31,11 +33,45 @@ struct Manifest {
 
 #[derive(Deserialize)]
 struct Entry {
-    /// `<model>/<file>`, relative to `<data_dir>/models/`.
+    /// `<model>/<file>`, relative to `<data_dir>/models/`, where the file lands.
     path: String,
     size: u64,
     sha256: String,
+    /// Rust target triple this entry is for; absent = every platform.
+    #[serde(default)]
+    platform: Option<String>,
+    /// Remote key relative to `models/` when it differs from `path` (per-platform storage).
+    #[serde(default)]
+    key: Option<String>,
 }
+
+impl Entry {
+    /// What to download: `key` when set, else `path`.
+    fn key(&self) -> &str {
+        self.key.as_deref().unwrap_or(&self.path)
+    }
+
+    /// Meant for this build. `cfg!(target_os, target_arch)` → triple: the platforms we ship
+    /// are unambiguous from those two, so no `build.rs` exporting `TARGET` is needed.
+    fn for_this_platform(&self) -> bool {
+        self.platform.as_deref().is_none_or(|p| p == TARGET_TRIPLE)
+    }
+}
+
+/// This build's rust target triple, as `release-models.sh` names it.
+const TARGET_TRIPLE: &str = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+    "aarch64-apple-darwin"
+} else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+    "x86_64-apple-darwin"
+} else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+    "x86_64-unknown-linux-gnu"
+} else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+    "aarch64-unknown-linux-gnu"
+} else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
+    "x86_64-pc-windows-msvc"
+} else {
+    "unknown"
+};
 
 /// `models-progress` payload. `done`/`total` are bytes over every missing file.
 #[derive(Clone, Serialize)]
@@ -101,7 +137,7 @@ async fn ensure(app: &AppHandle) -> anyhow::Result<usize> {
     let missing: Vec<&Entry> = manifest
         .files
         .iter()
-        .filter(|e| !present(&root, e))
+        .filter(|e| e.for_this_platform() && !present(&root, e))
         .collect();
     if missing.is_empty() {
         return Ok(0);
@@ -111,17 +147,18 @@ async fn ensure(app: &AppHandle) -> anyhow::Result<usize> {
     let mut last = Instant::now() - PROGRESS_EVERY;
     for e in &missing {
         // Trust boundary: the manifest names paths under `models/` only.
-        anyhow::ensure!(
-            Path::new(&e.path)
-                .components()
-                .all(|c| matches!(c, Component::Normal(_))),
-            "manifest path {:?} escapes the models directory",
-            e.path
-        );
+        for p in [e.path.as_str(), e.key()] {
+            anyhow::ensure!(
+                Path::new(p)
+                    .components()
+                    .all(|c| matches!(c, Component::Normal(_))),
+                "manifest path {p:?} escapes the models directory"
+            );
+        }
         tracing::info!("models: downloading {} ({} bytes)", e.path, e.size);
         download(
             &client,
-            &format!("{base}/{}", e.path),
+            &format!("{base}/{}", e.key()),
             e,
             &root.join(&e.path),
             &mut |n| {
@@ -186,6 +223,12 @@ async fn download(
             e.sha256
         );
     }
+    // The runtime is dlopened: executable bit on, like Microsoft ships it.
+    #[cfg(unix)]
+    if e.path.starts_with("onnxruntime/") && !e.path.ends_with("/VERSION") {
+        use std::os::unix::fs::PermissionsExt;
+        tokio::fs::set_permissions(&part, std::fs::Permissions::from_mode(0o755)).await?;
+    }
     tokio::fs::rename(&part, dest).await?;
     Ok(())
 }
@@ -218,6 +261,33 @@ mod tests {
             path: "m/f.bin".into(),
             size,
             sha256: format!("{:x}", Sha256::digest(body)),
+            platform: None,
+            key: None,
+        }
+    }
+
+    #[test]
+    fn platform_and_key_fields() {
+        let m: Manifest = serde_json::from_str(
+            r#"{"files":[
+                {"path":"parakeet-tdt/vocab.txt","size":1,"sha256":"00"},
+                {"path":"onnxruntime/libonnxruntime.dylib","key":"onnxruntime/aarch64-apple-darwin/libonnxruntime.dylib","platform":"aarch64-apple-darwin","size":2,"sha256":"11"},
+                {"path":"onnxruntime/libonnxruntime.so","key":"onnxruntime/x86_64-unknown-linux-gnu/libonnxruntime.so","platform":"x86_64-unknown-linux-gnu","size":3,"sha256":"22"}
+            ]}"#,
+        )
+        .unwrap();
+        assert_eq!(m.files[0].key(), "parakeet-tdt/vocab.txt");
+        assert!(m.files[0].for_this_platform());
+        assert_eq!(m.files[1].key(), "onnxruntime/aarch64-apple-darwin/libonnxruntime.dylib");
+        // Exactly one of the two runtime rows is for this build (whichever it is).
+        let mine: Vec<&str> = m.files[1..]
+            .iter()
+            .filter(|e| e.for_this_platform())
+            .map(|e| e.path.as_str())
+            .collect();
+        assert!(mine.len() <= 1, "{mine:?}");
+        if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+            assert_eq!(mine, ["onnxruntime/libonnxruntime.dylib"]);
         }
     }
 
