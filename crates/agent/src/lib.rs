@@ -381,6 +381,32 @@ pub struct SetVisionModel {
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct GetVisionModel;
 
+/// `ask` → `Result<Option<ModelInfo>, String>`: persist `agent.escalate_model`
+/// (57 §0.9, tier 2 of the decision oracle); `None` clears it (inherits the
+/// title model, then the session's model). Same validation as the title model:
+/// the id must resolve in the catalog; text capability is enough.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetEscalateModel {
+    /// `provider/model`, bare id, or `None`.
+    pub model: Option<String>,
+}
+
+/// `ask` → [`EscalateModel`]: the escalation model and what it resolves to.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct GetEscalateModel;
+
+/// The escalation slot as the UI shows it: what is set and what would answer.
+#[derive(Clone, Debug, Serialize, Deserialize, kameo::Reply)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct EscalateModel {
+    /// `agent.escalate_model`, if set.
+    pub model: Option<ModelInfo>,
+    /// The model a tier-2 call uses today: `model`, else the title model;
+    /// `None` = each session's own model.
+    pub effective: Option<ModelInfo>,
+}
+
+
 /// `ask` → `Result<Option<ModelInfo>, String>`: persist `agent.subagents.model`
 /// and use it for every child spawned without an explicit `model`; the system
 /// prompt names it. `None` clears it (children fall back to `agent.model`).
@@ -1564,6 +1590,10 @@ pub struct AgentConfig {
     /// see itself (52 §3); unset = no fallback, never the main model. Must be
     /// an exact catalog entry that accepts images through its backend.
     pub vision_model: Option<String>,
+    /// Tier-2 model of the local decision oracle (57 §0.9): answers a typed
+    /// question the oracle abstained on, in one cheap no-tools side call.
+    /// Unset = `title_model`; both unset = the session's model.
+    pub escalate_model: Option<String>,
     /// How the loop uses the knowledge plugin (12 §9.2); the store itself is `knowledge.enabled`.
     pub knowledge: KnowledgeUse,
     /// The top-level `surface:` section (design doc 30 §12), filled by
@@ -1589,6 +1619,7 @@ impl Default for AgentConfig {
             compact_style: CompactStyle::Summary,
             title_model: None,
             vision_model: None,
+            escalate_model: None,
             knowledge: KnowledgeUse::default(),
             surface: SurfaceConfig::default(),
         }

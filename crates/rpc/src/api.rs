@@ -17,7 +17,8 @@ use agent::{
     Cancel, CommunicationState, Compact, CompactStyle, ContextItems, ContextRemoval,
     ContextSnapshot, ContextTarget, DeleteSession, EditTurn, ForkSession, GetCommunication,
     GetCompactStyle, GetMaxSalvages, GetMaxToolRounds, GetPeerMessage, GetStreamIdle,
-    GetSubagentModel, GetSubagentTimeout, GetTitleModel, GetTodos, GetVisionModel, Harvest, ListAcp, ListAgents,
+    GetEscalateModel, GetSubagentModel, GetSubagentTimeout, GetTitleModel, GetTodos, GetVisionModel, Harvest, ListAcp, ListAgents,
+    EscalateModel, SetEscalateModel,
     ListLogins, ListModels, ListPeerMessages, ListPeers, ListProviders, ListQueued, ListRegistry,
     ListSessions, ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginInfo, Logout, ModelInfo,
     NewRootSession, PeerMessagePage, PeerPage, PeerReceipt, PeerRecord, PeerScope, PinSession,
@@ -297,6 +298,15 @@ pub trait Api {
     /// provider; a failed config write is an error and changes nothing.
     #[method(name = "set_vision_model")]
     async fn set_vision_model(&self, model: Option<String>) -> RpcResult<Option<ModelInfo>>;
+    /// The escalation model (`agent.escalate_model`, 57 §0.9: tier 2 of the
+    /// local decision oracle) and what a tier-2 call resolves to today.
+    #[method(name = "escalate_model")]
+    async fn escalate_model(&self) -> RpcResult<EscalateModel>;
+    /// Persist `agent.escalate_model`; `None` clears it (inherits the title
+    /// model, then the session's model). Rejects an id that is not a catalog
+    /// entry; a failed config write is an error and changes nothing.
+    #[method(name = "set_escalate_model")]
+    async fn set_escalate_model(&self, model: Option<String>) -> RpcResult<Option<ModelInfo>>;
     /// The live preferred subagent model (`agent.subagents.model`), if set.
     #[method(name = "subagent_model")]
     async fn subagent_model(&self) -> RpcResult<Option<ModelInfo>>;
@@ -1683,6 +1693,14 @@ impl ApiServer for Server {
 
     async fn set_vision_model(&self, model: Option<String>) -> RpcResult<Option<ModelInfo>> {
         ask::<Agents, _>(agent::AGENT_ACTOR, SetVisionModel { model }).await
+    }
+
+    async fn escalate_model(&self) -> RpcResult<EscalateModel> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, GetEscalateModel).await
+    }
+
+    async fn set_escalate_model(&self, model: Option<String>) -> RpcResult<Option<ModelInfo>> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, SetEscalateModel { model }).await
     }
 
     async fn subagent_model(&self) -> RpcResult<Option<ModelInfo>> {

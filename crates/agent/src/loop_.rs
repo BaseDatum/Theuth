@@ -525,6 +525,9 @@ struct Shared {
     /// Vision fallback (52 §3.1); `None` = no fallback. Shared with the
     /// supervisor; snapshotted per consultation, never held across an await.
     vision_model: Arc<RwLock<Option<Resolved>>>,
+    /// Tier-2 model of the decision oracle (57 §0.9); `None` = the title model,
+    /// then the session's model. Shared with the supervisor.
+    escalate_model: Arc<RwLock<Option<Resolved>>>,
     /// Preferred subagent model (`agent.subagents.model`); named in the system prompt. Shared with the supervisor.
     subagent_model: Arc<RwLock<Option<Resolved>>>,
     store: Store,
@@ -598,6 +601,7 @@ impl Session {
         compact_style: Arc<RwLock<CompactStyle>>,
         title_model: Arc<RwLock<Option<Resolved>>>,
         vision_model: Arc<RwLock<Option<Resolved>>>,
+        escalate_model: Arc<RwLock<Option<Resolved>>>,
         subagent_model: Arc<RwLock<Option<Resolved>>>,
         store: Store,
         client: Client,
@@ -624,6 +628,7 @@ impl Session {
                 toolset: Arc::default(),
                 title_model,
                 vision_model,
+                escalate_model,
                 subagent_model,
                 store,
                 client,
@@ -5053,6 +5058,7 @@ mod tests {
             Arc::default(),
             Arc::default(),
             Arc::default(),
+            Arc::default(),
             store.clone(),
             Client::new().unwrap(),
             Auth::stub(&dir),
@@ -5592,6 +5598,7 @@ mod tests {
             Arc::default(),
             Arc::default(),
             Arc::default(),
+            Arc::default(),
             store.clone(),
             Client::new().unwrap(),
             Auth::stub(&dir),
@@ -5715,6 +5722,7 @@ mod tests {
             Arc::default(),
             Arc::default(),
             vision_model.clone(),
+            Arc::default(),
             Arc::default(),
             store.clone(),
             Client::new().unwrap(),
@@ -6269,6 +6277,7 @@ mod tests {
             None,
             SessionState::resume(0, None, vec![]),
             Arc::new(AgentConfig::default()),
+            Arc::default(),
             Arc::default(),
             Arc::default(),
             Arc::default(),

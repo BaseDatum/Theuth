@@ -358,6 +358,7 @@ impl Harness {
             Arc::default(),
             self.vision_model.clone(),
             Arc::default(),
+            Arc::default(),
             self.store.clone(),
             self.client.clone(),
             Auth::stub(&self.dir),

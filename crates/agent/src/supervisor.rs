@@ -74,7 +74,7 @@ use crate::{
     AGENT_ACTOR, AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentConfig, AgentEvent, AgentInfo,
     AgentState, AncestorInfo, Ancestors, Cancel, Compact, CompactStyle, ContextItems,
     DeleteSession, EditTurn, ForkSession, GetCompactStyle, GetMaxSalvages, GetMaxToolRounds,
-    GetStreamIdle, GetSubagentModel, GetSubagentTimeout, GetTitleModel, GetTodos, GetVisionModel, Harvest,
+    GetStreamIdle, GetSubagentModel, GetSubagentTimeout, GetTitleModel, GetTodos, GetVisionModel, Harvest, GetEscalateModel, SetEscalateModel, EscalateModel,
     HistoryEntry, ListAcp, ListAgents,
     ListLogins, ListModels, ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills,
     LoadSession, LoadSkill, Loaded, Login, LoginFinished, LoginInfo, Logout, ModelInfo,
@@ -119,6 +119,9 @@ pub struct Agents {
     /// every native session once the loop consults it; snapshot, never hold
     /// the lock across an await.
     pub(crate) vision_model: Arc<RwLock<Option<Resolved>>>,
+    /// Live tier-2 model of the decision oracle (57 §0.9); `None` = the title
+    /// model, then each session's own model. Shared with every session.
+    escalate_model: Arc<RwLock<Option<Resolved>>>,
     /// Why `agent.vision_model` from the config file was not selected at
     /// startup (invalid id or capability; 52 §3.1). The file is left as is
     /// and only the fallback is off; cleared by a successful [`SetVisionModel`].
@@ -555,6 +558,7 @@ impl Agents {
             self.compact_style.clone(),
             self.title_model.clone(),
             self.vision_model.clone(),
+            self.escalate_model.clone(),
             self.subagent_model.clone(),
             store,
             self.client.clone(),
@@ -2301,6 +2305,66 @@ impl Message<GetTitleModel> for Agents {
             .map(ModelInfo::from)
     }
 }
+
+impl Agents {
+    /// 57 §0.9: validate → write `config.yaml` → swap the live value, so a
+    /// failed write leaves the selection as it was.
+    fn set_escalate_model(&mut self, model: Option<&str>) -> Result<Option<ModelInfo>, String> {
+        let resolved = match model {
+            Some(id) => Some(escalate_candidate(&self.catalog, &*self.configured, id)?),
+            None => None,
+        };
+        let info = resolved.as_ref().map(ModelInfo::from);
+        let path = self.rt.data_dir.join("config.yaml");
+        let value = info.as_ref().map(|i| i.id.as_str()).unwrap_or_default();
+        runtime::write_config_value(&path, "agent", "escalate_model", value)
+            .map_err(|e| format!("config.yaml: {e}"))?;
+        *self
+            .escalate_model
+            .write()
+            .unwrap_or_else(|p| p.into_inner()) = resolved;
+        Ok(info)
+    }
+
+    /// The escalation slot and what it resolves to today (57 §0.9: unset →
+    /// title model → each session's own model, which is `None` here).
+    fn escalate_model(&self) -> EscalateModel {
+        let slot = |s: &RwLock<Option<Resolved>>| {
+            s.read()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_ref()
+                .map(ModelInfo::from)
+        };
+        let model = slot(&self.escalate_model);
+        let effective = model.clone().or_else(|| slot(&self.title_model));
+        EscalateModel { model, effective }
+    }
+}
+
+impl Message<SetEscalateModel> for Agents {
+    type Reply = Result<Option<ModelInfo>, String>;
+
+    async fn handle(
+        &mut self,
+        m: SetEscalateModel,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<Option<ModelInfo>, String> {
+        self.set_escalate_model(m.model.as_deref())
+    }
+}
+
+impl Message<GetEscalateModel> for Agents {
+    type Reply = EscalateModel;
+
+    async fn handle(
+        &mut self,
+        _: GetEscalateModel,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> EscalateModel {
+        self.escalate_model()
+    }
+}
+
 
 impl Message<SetSubagentModel> for Agents {
     type Reply = Result<Option<ModelInfo>, String>;
@@ -5197,7 +5261,7 @@ const CLAUDE_CODE_UA: &str = "claude-cli/2.1.257 (external, cli)";
 /// adapter needing no key (`ollama`). `cursor` is not a genai adapter: only
 /// a login configures it. Bedrock has no key env, so SigV4 counts as
 /// configured only when [`bedrock_configured`] finds credentials to use.
-fn configured(auth: Auth) -> Arc<dyn Fn(&str) -> bool + Send + Sync> {
+pub(crate) fn configured(auth: Auth) -> Arc<dyn Fn(&str) -> bool + Send + Sync> {
     Arc::new(move |ns: &str| {
         if ns == "bedrock_sigv4" {
             return bedrock_configured(&auth);
@@ -5250,6 +5314,23 @@ fn vision_candidate(
     }
     if !crate::backend::supports_images(&resolved) {
         return Err(format!("`{}` cannot receive images", resolved.id));
+    }
+    Ok(resolved)
+}
+
+/// 57 §0.9: the escalation model must be a catalog entry (text is enough —
+/// it answers a rendered question); a unique bare id canonicalises, an unknown
+/// or ambiguous one is refused so a typo never becomes a pass-through model.
+fn escalate_candidate(
+    catalog: &Catalog,
+    configured: &dyn Fn(&str) -> bool,
+    id: &str,
+) -> Result<Resolved, String> {
+    let resolved = catalog.resolve(id, configured)?;
+    if catalog.get(&resolved.id).is_none() {
+        return Err(format!(
+            "`{id}` is not a catalog entry; name one as `provider/model` (or add it to models.json first)"
+        ));
     }
     Ok(resolved)
 }
@@ -5347,6 +5428,14 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             }
         },
     };
+    // 57 §0.9: same leniency as the title model it inherits from.
+    let escalate_model = cfg.escalate_model.as_deref().and_then(|id| {
+        escalate_candidate(&catalog, &*configured, id)
+            .map_err(|e| {
+                tracing::warn!("agent.escalate_model: {e}; tier 2 inherits the title model")
+            })
+            .ok()
+    });
     let nodes = Nodes::default();
     // 50 §2.1: the switch and where it came from; every persisted root and
     // parent link root-first, so the registry's synchronous view never sees
@@ -5379,6 +5468,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             title_model: Arc::new(RwLock::new(title_model)),
             subagent_model: Arc::new(RwLock::new(subagent_model)),
             vision_model: Arc::new(RwLock::new(vision_model)),
+            escalate_model: Arc::new(RwLock::new(escalate_model)),
             vision_error,
             catalog,
             pool,
@@ -6687,6 +6777,7 @@ pub(crate) mod tests {
             title_model: Arc::default(),
             subagent_model: Arc::default(),
             vision_model: Arc::default(),
+            escalate_model: Arc::default(),
             vision_error: None,
             catalog: Arc::new(Catalog::load(&dir)),
             pool: None,
@@ -6833,6 +6924,78 @@ pub(crate) mod tests {
         let yaml = std::fs::read_to_string(dir.join("config.yaml")).unwrap();
         assert!(yaml.contains("  vision_model: \n"), "{yaml}");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// 57 §0.9: the setter refuses an id that is not a catalog entry (or is
+    /// ambiguous) and changes nothing; a unique bare id canonicalises and is
+    /// written before the live value swaps; the getter reports the effective
+    /// model — the escalation model, else the title model, else `None` (the
+    /// session's model) — and `None` clears the slot.
+    #[tokio::test]
+    async fn set_escalate_model_validates_and_reports_effective() {
+        let mut a = agents().await;
+        let dir = a.rt.data_dir.clone();
+        a.catalog = Arc::new(vision_catalog(&dir));
+        a.configured = Arc::new(|ns: &str| ns == "testvis" || ns == "othervis");
+
+        let e = a.set_escalate_model(Some("testvis/nothing")).unwrap_err();
+        assert!(e.contains("not a catalog entry"), "{e}");
+        let e = a.set_escalate_model(Some("eyes")).unwrap_err();
+        assert!(e.contains("ambiguous"), "{e}");
+        assert!(a.escalate_model().model.is_none());
+        assert!(!dir.join("config.yaml").exists());
+
+        // Unset: inherits the title model when there is one.
+        assert!(a.escalate_model().effective.is_none());
+        *a.title_model.write().unwrap() =
+            Some(a.catalog.resolve("testvis/eyes", &|_| true).unwrap());
+        let g = a.escalate_model();
+        assert!(g.model.is_none());
+        assert_eq!(g.effective.map(|m| m.id).as_deref(), Some("testvis/eyes"));
+
+        // Text-only is enough; the bare unique id canonicalises.
+        let info = a.set_escalate_model(Some("blind")).unwrap().unwrap();
+        assert_eq!(info.id, "testvis/blind");
+        assert!(!info.image);
+        let g = a.escalate_model();
+        assert_eq!(g.model.map(|m| m.id).as_deref(), Some("testvis/blind"));
+        assert_eq!(g.effective.map(|m| m.id).as_deref(), Some("testvis/blind"));
+        let yaml = std::fs::read_to_string(dir.join("config.yaml")).unwrap();
+        assert!(yaml.contains("  escalate_model: testvis/blind\n"), "{yaml}");
+
+        // A failed write leaves the live value as it was.
+        std::fs::remove_file(dir.join("config.yaml")).unwrap();
+        std::fs::create_dir(dir.join("config.yaml")).unwrap();
+        assert!(
+            a.set_escalate_model(None)
+                .unwrap_err()
+                .starts_with("config.yaml: ")
+        );
+        assert_eq!(
+            a.escalate_model().model.map(|m| m.id).as_deref(),
+            Some("testvis/blind")
+        );
+        std::fs::remove_dir(dir.join("config.yaml")).unwrap();
+
+        assert!(a.set_escalate_model(None).unwrap().is_none());
+        let g = a.escalate_model();
+        assert!(g.model.is_none());
+        assert_eq!(g.effective.map(|m| m.id).as_deref(), Some("testvis/eyes"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// `agent.escalate_model` reads and writes like its siblings; absent = unset.
+    #[test]
+    fn escalate_model_config_round_trip() {
+        let cfg: AgentConfig =
+            serde_yaml::from_str("escalate_model: cheap/e\ntitle_model: cheap/t\n").unwrap();
+        assert_eq!(cfg.escalate_model.as_deref(), Some("cheap/e"));
+        assert_eq!(cfg.title_model.as_deref(), Some("cheap/t"));
+        let back: AgentConfig =
+            serde_yaml::from_str(&serde_yaml::to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(back.escalate_model, cfg.escalate_model);
+        let cfg: AgentConfig = serde_yaml::from_str("model: x/y\n").unwrap();
+        assert_eq!(cfg.escalate_model, None);
     }
 
     /// `ModelInfo.image` is effective input support (52 §3.2): a Cursor id
