@@ -1,12 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, getRouteApi, useNavigate } from '@tanstack/react-router'
 import { ChevronLeft, Copy, FileCode, History as HistoryIcon, PanelRight, Trash2 } from 'lucide-react'
-import { type ComponentType, type ReactNode, useMemo, useState } from 'react'
+import { type ComponentType, type ReactNode, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { Editor as BlockEditor } from '@/components/editor/Editor'
 import { useDocument } from '@/components/editor/useDocument'
 import { Backlinks, Links } from '@/components/knowledge/Backlinks'
-import { Editor } from '@/components/knowledge/Editor'
+import { Editor, type EditorHandle } from '@/components/knowledge/Editor'
 import { History } from '@/components/knowledge/History'
 import { NewDocDialog } from '@/components/knowledge/NewDocDialog'
 import { scaffold } from '@/components/knowledge/frontmatter'
@@ -71,6 +71,7 @@ function Doc({
   const api = useApi()
   const navigate = route.useNavigate()
   const [editing, setEditing] = useState(false)
+  const raw = useRef<EditorHandle>(null)
   const [missing, setMissing] = useState<{ id: string; title: string } | null>(null)
   const [railOpen, setRailOpen] = useState(true)
   const mobile = useIsMobile()
@@ -209,12 +210,20 @@ function Doc({
           </aside>
         )}
       </div>
-      {/* "Open raw": the whole file in CodeMirror (59 §9); a save is a `knowledge_write`, which re-imports into the editor by block diff. */}
-      <Sheet open={editing} onOpenChange={setEditing}>
+      {/* "Open raw": the whole file in CodeMirror (59 §9); a save is a `knowledge_write`, which re-imports into the editor by block diff.
+          Escape, outside clicks and the X go through the editor's own leave (it asks when dirty); Radix must not close on its own. */}
+      <Sheet open={editing} onOpenChange={(open) => (open ? setEditing(true) : raw.current?.leave())}>
         <SheetContent
           className="flex w-full flex-col gap-0 sm:w-[720px] sm:max-w-[720px]"
-          onEscapeKeyDown={(e) => e.preventDefault()}
-          onInteractOutside={(e) => e.preventDefault()}
+          onEscapeKeyDown={(e) => {
+            e.preventDefault()
+            raw.current?.leave()
+          }}
+          onInteractOutside={(e) => {
+            e.preventDefault()
+            raw.current?.leave()
+          }}
+          onOpenAutoFocus={(e) => e.preventDefault()}
         >
           <SheetHeader className="border-b border-border-subtle">
             <SheetTitle className="font-mono text-sm">{id}</SheetTitle>
@@ -222,6 +231,7 @@ function Doc({
           </SheetHeader>
           {editing && (
             <Editor
+              ref={raw}
               id={id}
               initial={concept.text}
               onSaved={() => setEditing(false)}

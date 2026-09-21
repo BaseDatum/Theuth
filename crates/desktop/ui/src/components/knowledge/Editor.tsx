@@ -3,7 +3,7 @@ import { yamlFrontmatter } from '@codemirror/lang-yaml'
 import { languages } from '@codemirror/language-data'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import CodeMirror, { EditorView } from '@uiw/react-codemirror'
-import { useState, useSyncExternalStore } from 'react'
+import { type Ref, useImperativeHandle, useState, useSyncExternalStore } from 'react'
 import { toast } from 'sonner'
 import {
   AlertDialog,
@@ -22,15 +22,19 @@ import type { Meta } from '@/rpc/bindings/Meta'
 
 const extensions = [yamlFrontmatter({ content: markdown({ base: markdownLanguage, codeLanguages: languages }) }), EditorView.lineWrapping]
 
+/** What a host that swallows Escape itself (a Sheet) calls instead: leave, asking first when dirty. */
+export type EditorHandle = { leave(): void }
+
 type Props = {
   id: string
   initial: string
   onSaved: (meta: Meta) => void
   onCancel: () => void
+  ref?: Ref<EditorHandle>
 }
 
 /** CodeMirror over the whole file; ⌘S writes, Esc leaves (asking first when dirty). */
-export function Editor({ id, initial, onSaved, onCancel }: Props) {
+export function Editor({ id, initial, onSaved, onCancel, ref }: Props) {
   const api = useApi()
   const qc = useQueryClient()
   const dark = useSyncExternalStore(subscribeDark, () => document.documentElement.classList.contains('dark'))
@@ -51,6 +55,7 @@ export function Editor({ id, initial, onSaved, onCancel }: Props) {
   })
 
   const leave = () => (dirty ? setConfirmDiscard(true) : onCancel())
+  useImperativeHandle(ref, () => ({ leave }))
 
   return (
     <div

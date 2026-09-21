@@ -1,6 +1,14 @@
 import { withCollaboration } from '@blocknote/core/yjs'
-import { filterSuggestionItems } from '@blocknote/core/extensions'
-import { SuggestionMenuController, getDefaultReactSlashMenuItems, useCreateBlockNote } from '@blocknote/react'
+import { SideMenuExtension, filterSuggestionItems } from '@blocknote/core/extensions'
+import {
+  SideMenu,
+  SideMenuController,
+  type SideMenuProps,
+  SuggestionMenuController,
+  getDefaultReactSlashMenuItems,
+  useCreateBlockNote,
+  useExtensionState,
+} from '@blocknote/react'
 import { BlockNoteView } from '@blocknote/shadcn'
 import '@blocknote/shadcn/style.css'
 import { FRAGMENT, createDocumentSchema } from '@theuth/documents/schema'
@@ -30,6 +38,12 @@ const SLASH_KEYS: Record<string, true> = {
 }
 
 const hhmm = (d: Date) => d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+
+/** The default side menu, except on the frontmatter block: no drag handle, no block menu, no "+" (59 §4.5). */
+function DocSideMenu(props: SideMenuProps) {
+  const type = useExtensionState(SideMenuExtension, { selector: (s) => s?.block?.type })
+  return type === 'frontmatter' ? null : <SideMenu {...props} />
+}
 
 /** BlockNote over a live `HarnessProvider` (59 §3.3); the status line of §9.4 sits under it. */
 export function Editor({ provider, status, className }: { provider: HarnessProvider; status: DocStatus; className?: string }) {
@@ -64,6 +78,7 @@ export function Editor({ provider, status, className }: { provider: HarnessProvi
         theme={dark ? 'dark' : 'light'}
         editable={status.kind === 'live' || status.kind === 'offline'}
         slashMenu={false}
+        sideMenu={false}
         className="min-h-0 flex-1 overflow-y-auto px-6 py-4 [&_.bn-editor]:mx-auto [&_.bn-editor]:max-w-[768px]"
       >
         <SuggestionMenuController
@@ -75,6 +90,7 @@ export function Editor({ provider, status, className }: { provider: HarnessProvi
             )
           }
         />
+        <SideMenuController sideMenu={DocSideMenu} />
       </BlockNoteView>
       <footer className="flex h-7 shrink-0 items-center gap-3 border-t border-border-subtle px-4 font-mono text-[11px] text-fg-tertiary">
         <span className={cn(status.kind === 'live' && 'text-fg-secondary', status.kind === 'closed' && 'text-danger')}>

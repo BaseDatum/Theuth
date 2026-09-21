@@ -301,9 +301,10 @@
   right: calc(1rem + var(--safe-right));
 }
 
-/* BlockNote (design 59 §9.1): its palette aliased onto the tokens; light/dark follow `.dark` through the tokens. */
-.bn-root,
-.bn-root[data-color-scheme="dark"] {
+/* BlockNote (design 59 §9.1): its palette aliased onto the tokens; light/dark follow `.dark` through the tokens.
+   `html` prefix: BlockNote's own sheet loads later (with the editor chunk), so equal specificity would lose. */
+html .bn-root,
+html .bn-root[data-color-scheme="dark"] {
   --bn-colors-editor-text: var(--fg-primary);
   --bn-colors-editor-background: transparent;
   --bn-colors-menu-text: var(--fg-primary);
@@ -321,12 +322,12 @@
   --bn-colors-side-menu: var(--fg-tertiary);
   --bn-font-family: inherit;
 }
-.bn-editor {
+html .bn-editor {
   padding-inline: 0;
 }
 /* The side menu (drag handle, block menu) is a pointer-fine affordance (59 §9.3); the full mobile toolbar is step 6. */
 @media (pointer: coarse) {
-  .bn-side-menu {
+  html .bn-side-menu {
     display: none;
   }
 }

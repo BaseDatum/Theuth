@@ -40,6 +40,12 @@ export function Frontmatter({ yaml, onChange }: Props) {
   const tagsEntry = entries.find((e) => e.key === 'tags')
   const tags = tagsEntry && 'list' in tagsEntry ? tagsEntry.list : value('tags') === '' ? [] : value('tags').split(/,\s*/)
   const free = entries.filter((e) => !FIXED.includes(e.key))
+  // "+ add key" stays local until it has a name: an empty key is not valid YAML and must never reach the file.
+  const [draft, setDraft] = useState<{ key: string; value: string } | null>(null)
+  const commitDraft = () => {
+    if (draft && draft.key.trim() !== '') put(draft.key.trim(), draft.value)
+    setDraft(null)
+  }
 
   return (
     <div
@@ -101,12 +107,33 @@ export function Frontmatter({ yaml, onChange }: Props) {
           />
         ),
       )}
+      {draft && (
+        <div
+          className="col-span-2 grid grid-cols-subgrid"
+          onBlur={(e) => !e.currentTarget.contains(e.relatedTarget) && commitDraft()}
+          onKeyDown={(e) => e.key === 'Enter' && commitDraft()}
+        >
+          <Input
+            className="h-8 font-mono text-xs shadow-none md:text-xs"
+            value={draft.key}
+            placeholder="key"
+            autoFocus
+            onChange={(e) => setDraft({ ...draft, key: e.target.value })}
+          />
+          <Input
+            className="h-8 shadow-none md:text-sm"
+            value={draft.value}
+            placeholder="value"
+            onChange={(e) => setDraft({ ...draft, value: e.target.value })}
+          />
+        </div>
+      )}
       <div className="col-span-2">
         <Button
           variant="ghost"
           size="sm"
           className="h-7 px-2 text-xs text-fg-tertiary"
-          onClick={() => update([...entries, { key: '', value: '' }])}
+          onClick={() => setDraft({ key: '', value: '' })}
         >
           <Plus className="size-3" /> add key
         </Button>

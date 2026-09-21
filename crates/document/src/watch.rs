@@ -19,6 +19,8 @@ const DEBOUNCE: Duration = Duration::from_millis(300);
 pub fn start(data_dir: &Path, actor: ActorRef<DocumentActor>) -> anyhow::Result<()> {
     let root = data_dir.join("knowledge");
     std::fs::create_dir_all(&root)?;
+    // FSEvents reports resolved paths (`/tmp` → `/private/tmp`); the prefix must match them.
+    let root = std::fs::canonicalize(&root)?;
     let (tx, mut rx) = mpsc::unbounded_channel::<PathBuf>();
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         if let Ok(ev) = res {

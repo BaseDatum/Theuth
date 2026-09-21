@@ -758,6 +758,8 @@ crates/
   acp/                library: agents.yaml, ACP registry, Harness (external harness process), renderers (06)
   tools/              plugin: registry, approval, shell (brush), fs, mcp (rmcp) (§6, 01)
   secrets/            plugin: encrypted versioned vault (provider keys included), keychain key, {{secret:NAME[:-N]}} expansion + output scrub hook, secret_* tools, masked request, --secret-* CLI (37)
+  document/           plugin: Yjs documents — `yrs` authority, snapshot + update log store, derived-markdown export/import by block diff, `doc_*` wire types, headless helper client (59; step 1 2026-09-21)
+  packages/documents/ TS: shared BlockNote block schema (frontmatter block) + YAML header helper, headless markdown ⇄ blocks ⇄ Yjs helper (`bun build --compile`) the `document` crate drives over stdio (59 §3.2, §9.2)
   knowledge/          plugin: OKF bundle, FTS index, gix history, knowledge_* tools, human concept/history search + read-at-commit (added in 10; extracted from agent in 12 §9; 49 §3.3–3.4)
   search/             library: nucleo query policy, prepared candidate text, snippets with scalar highlight ranges, SearchCategory/SearchPage envelope — no plugin, actor or store (49 §4.1)
   agent/              plugin: genai loop, session store, frame/compaction, context edits (`context.rs`), skills, subagents, repl, session search (§5, 07, 08, 26, 48, 49)
@@ -824,6 +826,12 @@ process-wide ONNX Runtime initialiser `models::onnx::ort_lib` and `voice`,
 `meeting`, `decision` depend on it for that, 57 §6 step 1; `decision` depends on
 `runtime`, `tools`, `models` and never on `agent` — beat: a router inside `agent`
 (god-wiring, §1.4) and a model-family crate name (branding, §1.1), 57 §10).
+
+`document` (59, added 2026-09-21) depends on `runtime` only in step 1 (its
+tools arrive in step 2, when it gains `tools`); `knowledge` depends on
+`document` (import hooks after `put`/`write`/`restore`/`sync`, delete), so the
+chain reads `runtime ← tools ← secrets ← document ← knowledge ← …`; `rpc`
+imports its wire types and `Handle` like every plugin's.
 
 `app` (46, added 2026-09-18) depends on `artifact` (typed `Commit` with
 `expected_base`, invocation rows), `tools` (`AppInvoke`, `DescribeTools`,
