@@ -149,6 +149,28 @@ It is the `decision.families.meeting.*.mode` setting (§2) for both meeting fami
 
 **Data path**: the meeting plugin emits `OracleDecision { batch_id, family, mode, disposition, top: [(label, p)], latency_ms, tier, outcome: Option<Outcome> }` on the meeting event stream the island already subscribes to (topics, level, state), `ts_rs`-exported like `MeetingState`; `store/meeting.ts` keeps the last N per meeting and the counters; `Island.tsx` and the session batch rows render from the store. The row and the chip are the only new UI; no new window, no new RPC beyond the config write.
 
+### 3.5 Revision after the first shadow session (Sky, 2026-09-21 evening): the topic question is broken; tier 2 becomes the workhorse
+
+**Evidence** (`~/.theuth/decisions/2026-09-21.jsonl`, 12 batches in shadow): `meeting.topic` answered **`false` on every batch**, with logits 12–21 against ≈0 (P(true) ≤ 0.001) — including the Kuiper-belt / Planet Nine narrative and four batches for which the model *did* publish a brief (`corrected: actual true` ×4). `meeting.brief` over 8–9 cached HV/MV titles gave a flat 0.05–0.24 spread every time (`low_top1`), `none` correctly on the astronomy batch. Two first-batch asks timed out at 401 ms while the model cold-loaded (5.1 s), so the first batch of a meeting always went to the model. Conclusion: the yes/no question as phrased is not "uncertain", it is *confidently wrong* — the gate cannot rescue it. Causes (§12.4's `laya-grounded` findings apply): the statement is about the *listener* ("…the listener may need to look up") — an abstract third-party judgement the model was never trained on; its vocabulary ("ticket, system, project, number") primes an IT context; `noul` grounding is the base checkpoint's weakest skill while routing `Choice` is its strongest; 9-way choices over long, near-identical titles flatten.
+
+**Sky's requirements**: identify the topic really well; match an existing brief when one exists; escalate when not; **never ask the classifier about the user** (it knows nothing about them); several decision steps are fine; **1–2 s per batch is fine**.
+
+**Redesign** — the classifier does what it is good at (recognise, route, match short labels); a cheap LLM (tier 2, `agent.escalate_model`) does what needs reading comprehension (name the subject); the reasoning model (tier 3) does what needs tools (research):
+
+0. **Mentions (deterministic, 0 ms).** From the batch text: capitalised n-grams not at sentence start, ticket ids (`[A-Z]{2,}-\d+`), acronyms, numbers with units, quoted terms, proper names → `mentions: Vec<String>` (`Kuiper belt`, `Mike`, `Constantin`, `Planet Nine`). Also the FTS query for cached briefs is now built from mentions ∪ batch text, and candidates are cut to the **top 4** by FTS rank + `none`.
+1. **Tier 1a — conversation kind (`Choice`, family `meeting.kind`)**: *"What is this stretch of conversation mostly about?"* → `small talk, greetings or scheduling` · `a specific named subject (a person, place, object, ticket, system, event or technical term)` · `general discussion without one specific subject`. The exact phrasing is chosen by the phrasing bench below, not by hand.
+2. **Tier 1b — cached brief (`Choice`, family `meeting.brief`)**: unchanged question, ≤ 4 candidates + `none`, labels = titles only.
+3. **Gate (asymmetric — a missed brief costs more than a wrong cached one):**
+   - **Skip** only if 1a = small-talk with P ≥ τ **and** `mentions` is empty. Either condition alone → not a skip.
+   - **Publish** if 1b picks a brief with P ≥ τ_brief (start 0.6) and margin ≥ 0.3 over the runner-up.
+   - **Everything else → tier 2**, always (shadow included — Sky accepts the cost; shadow must evaluate the whole pipeline).
+4. **Tier 2 — subject extraction (`decision::escalate`, budget 3 s)**: one JSON answer `{ "subject": string|null, "cached": <brief id>|null, "lookup": bool }` from the batch text + `mentions` + the ≤ 4 cached candidates (id, title, aliases) + tier 1's numbers as a data line. `cached` → publish that brief (same dedupe). `subject` with `lookup: true` → **tier 3 with the subject as the lead**: the evidence line becomes `oracle: subject "Planet Nine / Kuiper belt" — no cached brief; kind: named subject 0.91` so the research turn starts from the answer, not the transcript. `subject: null` → skip (carried). Invalid/timeout → tier 3 as today.
+5. **Warm-up**: when a meeting reaches `Recording`, the plugin sends a warm `Ask` so batch 1 never times out on the cold load.
+
+**Phrasing bench** (before wiring): `decision` example `phrasing` replays fixture batches (built from today's recorded meetings' transcripts in the meeting store, labelled by what the model published per `briefs.jsonl`/outcomes, plus a handful of hand-written small-talk and narrative batches) against candidate phrasings/label sets for 1a and 1b, printing per-phrasing confusion, mean P on the right label, and how many skips would have hidden a published brief. The winner goes into `oracle.rs` constants with the bench's table in the as-built.
+
+**UI**: the ⚡ row shows the stages: `⚡ kind: named subject 0.91 · mentions: Kuiper belt, Constantin · brief: none 0.57 · tier 2: "Planet Nine / Kuiper belt" → no cached brief → model`. Counters gain `tier 2 calls`.
+
 ## §4 Second integration: browser (23)
 
 Today the model lists elements (`browser_elements` / `browser_read`), reads `ref=e3 button "Sign in"` lines, then acts — two turns per action, the second one containing the whole element list. `browser_do(intent, operation?)` (Mutating, like `browser_click`):
