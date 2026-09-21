@@ -18504,6 +18504,7 @@ dependencies = [
  "brush-core",
  "figment",
  "futures",
+ "globset",
  "grep-regex",
  "grep-searcher",
  "ignore",

@@ -29,15 +29,16 @@ pub mod communication;
 pub mod doc;
 pub mod fs;
 pub mod git;
+pub mod glob;
 pub mod images;
 pub mod jobs;
 pub mod mcp;
 pub mod pty;
 pub mod registry;
+pub mod resources;
 mod schema;
 pub mod secrets;
 pub mod shell;
-pub mod resources;
 
 pub use activity::{
     Activity, ActivitySink, Admission, Admit, Kind, Notice, Operation, OperationId, Rejected,
@@ -48,16 +49,17 @@ pub use ask::{
     Answer, AnswerAsk, AskId, AskRequested, AskResolved, AskUser, Choice, PendingAsks, Question,
 };
 pub use communication::{CommunicationAccess, Disabled};
+pub use jobs::CloseSessions;
 pub use jobs::{
     CancelJob, InstallActivity, JOBS_ACTOR, JobEvent, JobExit, JobId, JobView, Jobs, ListJobs,
-};
-pub use pty::{
-    Cell, Color, Key, ListTerminals, PtyAttach, PtyAttached, PtyChunk, PtyInput, PtyOut, PtyPage,
-    PtyResize, PtyScreen, PtyScreenReply, PtyViewport, Style, StyledRun, TerminalSummary,
 };
 pub use mcp::{
     AddRepo, AddServer, ListServers, Mcp, McpAuth, McpLogin, McpLogout, McpProgress, McpServer,
     McpToolInfo, Progress, RemoveServer, RepoInfo, Restart, SetGate, SyncMcp,
+};
+pub use pty::{
+    Cell, Color, Key, ListTerminals, PtyAttach, PtyAttached, PtyChunk, PtyInput, PtyOut, PtyPage,
+    PtyResize, PtyScreen, PtyScreenReply, PtyViewport, Style, StyledRun, TerminalSummary,
 };
 pub use registry::{
     ActivityRecipient, AppInvoke, AppInvoked, ApprovalsState, DescribeTools, ExternalApproval,
@@ -66,13 +68,12 @@ pub use registry::{
     SetHidden, SetParent, SetPtyIdle, ToolInspection, ToolRegistry, UnregisterPrompt,
     UnregisterTool, UserActivation,
 };
-pub use registry::{InstallResources, RemoveResources};
-pub use resources::{Retention, SessionResources};
-pub use jobs::CloseSessions;
 pub use registry::{
     CloseTreeAll, ExpectParticipants, OpenTree, ParticipantsReady, RegisterLifecycle,
 };
+pub use registry::{InstallResources, RemoveResources};
 pub use resources::{CloseAck, CloseTree, TreeOpened};
+pub use resources::{Retention, SessionResources};
 
 /// Registry name of the [`ToolRegistry`] actor.
 pub const REGISTRY_ACTOR: &str = "tools";

@@ -27,7 +27,7 @@ use crate::jobs::{CloseSessions, InstallActivity, JOBS_ACTOR, Jobs, lock};
 use crate::resources::{CloseAck, CloseTree, SessionResources, TreeOpened};
 use crate::{
     APPROVAL_ACTOR, ASK_ACTOR, DynTool, Policy, PolicyAction, REGISTRY_ACTOR, Risk, ToolCall,
-    ToolCx, ToolOutput, ToolSource, ToolSpec, ToolsConfig, fs, jobs, pty, schema, shell,
+    ToolCx, ToolOutput, ToolSource, ToolSpec, ToolsConfig, fs, glob, jobs, pty, schema, shell,
 };
 
 /// [`CloseTreeAll`]'s wait on one participant before its ack is `timeout`.
@@ -533,7 +533,11 @@ impl Message<OpenTree> for ToolRegistry {
 impl Message<CloseTreeAll> for ToolRegistry {
     type Reply = DelegatedReply<Vec<CloseAck>>;
 
-    async fn handle(&mut self, m: CloseTreeAll, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: CloseTreeAll,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
         let tree = m.0;
@@ -1431,7 +1435,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
     let shell = shell::ShellTool::new(jobs.clone());
     let shells = shell.shells();
     let pty_idle = Arc::new(AtomicU64::new(cfg.pty_idle_secs));
-    let builtins: [DynTool; 13] = [
+    let builtins: [DynTool; 14] = [
         Arc::new(shell),
         Arc::new(pty::StartTool::new(
             jobs.clone(),
@@ -1448,6 +1452,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
         Arc::new(fs::WriteFile),
         Arc::new(fs::ListDir),
         Arc::new(fs::Grep),
+        Arc::new(glob::Glob),
         Arc::new(fs::Edit),
         Arc::new(AskUserTool(ask)),
     ];
@@ -2385,8 +2390,7 @@ mod tests {
     async fn lifecycle_barrier_waits_for_expected_and_collects_acks() {
         let reg = registry(vec![Arc::new(Root)], None);
         reg.ask(ExpectParticipants(vec!["x", "y"])).await.unwrap();
-        let Err(kameo::error::SendError::HandlerError(missing)) =
-            reg.ask(ParticipantsReady).await
+        let Err(kameo::error::SendError::HandlerError(missing)) = reg.ask(ParticipantsReady).await
         else {
             panic!("ready before anyone registered");
         };
@@ -2462,7 +2466,11 @@ mod tests {
             }))
             .await
             .unwrap();
-        let by = |o: &str| acks.iter().find(|a| a.owner == o).unwrap_or_else(|| panic!("{o}"));
+        let by = |o: &str| {
+            acks.iter()
+                .find(|a| a.owner == o)
+                .unwrap_or_else(|| panic!("{o}"))
+        };
         assert!(by("x").ok);
         assert!(!by("y").ok);
         assert_eq!(by("y").detail.as_deref(), Some("timeout"));

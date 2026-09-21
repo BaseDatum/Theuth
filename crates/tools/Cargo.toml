@@ -28,6 +28,7 @@ ts-rs = { workspace = true, optional = true }
 serde_yaml = { workspace = true }
 notify = { workspace = true }
 ignore = { workspace = true }
+globset = { workspace = true }
 grep-regex = { workspace = true }
 grep-searcher = { workspace = true }
 anydoc = { workspace = true }
