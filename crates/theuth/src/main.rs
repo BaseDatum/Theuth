@@ -243,7 +243,8 @@ agent:
 #                            # scripts/release-models.sh); the daemon re-checks on every ask, so no restart once it lands.
 #   threads: 4               # ONNX Runtime intra-op threads
 #   idle_unload: 10m         # drop the session after this long unused (~1 GiB back)
-#   coreml: false            # try the CoreML execution provider (experiment; the log shows which provider actually ran)
+#   coreml: false            # register the CoreML execution provider ahead of CPU (macOS; falls back to CPU with a warning).
+#                            # Off: neither root ONNX export compiles under it today (57 §12 step 2d as-built).
 #   log_text: false          # true: store the question text in <data_dir>/decisions/*.jsonl, not only its hash
 #   families:                # gate per decision family: mode shadow | active | off; accept iff top1 ≥ tau_top and top1 − top2 ≥ tau_margin.
 #                            # Flip a family to active only after its shadow log shows acceptable agreement (57 §2); listing any family replaces this table.

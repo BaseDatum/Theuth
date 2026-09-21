@@ -1,13 +1,16 @@
-//! `decision bench` (57 §6 step 2): cold load, RSS, warm p50/p95 per K × S, and the
-//! published README example next to ours.
+//! `decision bench` (57 §6 step 2 / §12.7 step 2d): cold load, RSS breakdown, warm p50/p95
+//! per K × S, the CoreML partition report and the published README example next to ours.
 //!
-//! `cargo run --release -p decision --example bench -- [model_dir] [threads]`; the ONNX
+//! `cargo run --release -p decision --example bench -- [model_dir] [threads] [flags]`; the ONNX
 //! Runtime is found under `$THEUTH_DATA_DIR` (default `~/.theuth`) like the daemon does.
+//! Flags: `--coreml=all|ane` (CoreML EP, padded to S 512 / K 32), `--pad` (pad on CPU too),
+//! `--dump FILE` (write the README example's probabilities), `--ref FILE` (compare against a
+//! dump: argmax parity and max probability delta).
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use decision::laya::{self, Loaded, Sequence};
+use decision::laya::{self, Loaded, Provider, Sequence, Units};
 use decision::{Candidate, Question};
 
 fn rss_mib() -> f64 {
@@ -58,39 +61,88 @@ fn choice(k: usize, state: String) -> Question {
 }
 
 fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .with_writer(std::io::stderr)
+        .init();
     let data_dir = std::env::var_os("THEUTH_DATA_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").expect("HOME")).join(".theuth"));
-    let dir = std::env::args()
-        .nth(1)
+    let mut positional = Vec::new();
+    let (mut provider, mut pad, mut dump, mut reference) = (Provider::Cpu, false, None, None);
+    let mut args = std::env::args().skip(1);
+    while let Some(a) = args.next() {
+        match a.as_str() {
+            "--coreml=all" => provider = Provider::CoreMl(Units::All),
+            "--coreml=ane" => provider = Provider::CoreMl(Units::CpuAndNeuralEngine),
+            "--pad" => pad = true,
+            "--dump" => dump = args.next().map(PathBuf::from),
+            "--ref" => reference = args.next().map(PathBuf::from),
+            _ => positional.push(a),
+        }
+    }
+    let dir = positional
+        .first()
         .map(PathBuf::from)
         .unwrap_or_else(|| data_dir.join("models/decision"));
-    let threads: usize = std::env::args()
-        .nth(2)
-        .and_then(|t| t.parse().ok())
-        .unwrap_or(4);
+    let threads: usize = positional.get(1).and_then(|t| t.parse().ok()).unwrap_or(4);
     println!(
-        "model dir: {}  threads: {threads}  rss before: {:.0} MiB",
+        "model dir: {}  threads: {threads}  provider: {provider:?}  rss before: {:.0} MiB",
         dir.display(),
         rss_mib()
     );
 
     let t = Instant::now();
-    let mut m = Loaded::open(&dir, &data_dir, threads, false)?;
+    let mut m = Loaded::open(&dir, &data_dir, threads, provider)?;
+    if pad {
+        m.bucket = laya::BUCKET;
+    }
     println!(
-        "cold load: {} ms (sha256 {}…)  rss after load: {:.0} MiB",
+        "cold load (incl. compile): {} ms (sha256 {}…)  rss after load: {:.0} MiB  provider: {:?}  bucket: {:?}",
         t.elapsed().as_millis(),
         &m.model_sha[..12],
-        rss_mib()
+        rss_mib(),
+        m.provider,
+        m.bucket
     );
+    match m.partitions {
+        Some((n, nodes, took)) => println!(
+            "coreml partitions: {n}  nodes in graph: {nodes}  nodes on CoreML: {took}  ({})",
+            if n <= 3 { "≤ 3, PASS" } else { "> 3, FAIL" }
+        ),
+        None if matches!(m.provider, Provider::CoreMl(_)) => {
+            println!("coreml partitions: (no GetCapability line seen)")
+        }
+        None => {}
+    }
     println!(
         "config: max_len {} head_max_len {} temperature {:?}",
         m.laya.max_len, m.laya.head_max_len, m.laya.temperature
     );
+    // First inference on its own: the RSS step from load to first run is what Core ML
+    // allocates lazily.
+    let warm = m
+        .build(&choice(2, state_of(&m, 256)))
+        .map_err(anyhow::Error::msg)?;
+    let t = Instant::now();
+    m.run(std::slice::from_ref(&warm))?;
+    println!(
+        "first inference: {} ms  rss after first inference: {:.0} MiB ({})",
+        t.elapsed().as_millis(),
+        rss_mib(),
+        if rss_mib() <= 2048.0 {
+            "≤ 2 GiB"
+        } else {
+            "OVER 2 GiB"
+        }
+    );
 
     // (b) warm latency per K × S, 20 runs each after one warm-up.
-    println!("\n| K | S (tokens) | p50 ms | p95 ms | RSS after MiB |");
-    println!("|---|---|---|---|---|");
+    println!("\n| K | S (tokens) | padded to | p50 ms | p95 ms | RSS after MiB |");
+    println!("|---|---|---|---|---|---|");
     let mut peak = rss_mib();
     for &k in &[2usize, 5, 10] {
         for &target in &[256usize, 512] {
@@ -108,12 +160,14 @@ fn main() -> anyhow::Result<()> {
             let rss = rss_mib();
             peak = peak.max(rss);
             println!(
-                "| {k} | {s}{} | {:.1} | {:.1} | {rss:.0} |",
+                "| {k} | {s}{} | S {} K {} | {:.1} | {:.1} | {rss:.0} |",
                 if seq.truncated {
                     " (state truncated)"
                 } else {
                     ""
                 },
+                s.max(m.bucket.0),
+                k.max(m.bucket.1),
                 pct(&times, 0.5).as_secs_f64() * 1e3,
                 pct(&times, 0.95).as_secs_f64() * 1e3
             );
@@ -121,10 +175,10 @@ fn main() -> anyhow::Result<()> {
     }
     println!(
         "rss peak: {peak:.0} MiB  ({})",
-        if peak < 1024.0 {
-            "under 1 GiB"
+        if peak <= 2048.0 {
+            "under 2 GiB"
         } else {
-            "OVER 1 GiB"
+            "OVER 2 GiB"
         }
     );
 
@@ -254,6 +308,37 @@ fn main() -> anyhow::Result<()> {
                 Some(false) => "NO",
                 None => "—",
             }
+        );
+    }
+    // (d) Parity against another run's dump (57 §12.6: argmax parity, max probability delta).
+    let probs: Vec<Vec<f32>> = outs.iter().map(|o| o.probs.clone()).collect();
+    if let Some(path) = dump {
+        std::fs::write(&path, serde_json::to_vec(&probs)?)?;
+        println!("\ndumped probabilities to {}", path.display());
+    }
+    if let Some(path) = reference {
+        let other: Vec<Vec<f32>> = serde_json::from_slice(&std::fs::read(&path)?)?;
+        let argmax = |p: &[f32]| {
+            p.iter()
+                .enumerate()
+                .max_by(|a, b| a.1.total_cmp(b.1))
+                .map(|(i, _)| i)
+        };
+        let agree = probs
+            .iter()
+            .zip(&other)
+            .filter(|(a, b)| argmax(a) == argmax(b))
+            .count();
+        let delta = probs
+            .iter()
+            .zip(&other)
+            .flat_map(|(a, b)| a.iter().zip(b).map(|(x, y)| (x - y).abs()))
+            .fold(0.0f32, f32::max);
+        println!(
+            "\nparity vs {}: argmax {agree}/{} agree ({}), max |Δp| {delta:.4}",
+            path.display(),
+            probs.len(),
+            if agree == probs.len() { "PASS" } else { "FAIL" }
         );
     }
     println!("\nrss final: {:.0} MiB", rss_mib());
