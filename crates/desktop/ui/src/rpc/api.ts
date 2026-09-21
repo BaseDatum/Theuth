@@ -5,6 +5,12 @@ import type { ApprovalId } from '@/rpc/bindings/ApprovalId'
 import type { ApprovalsState } from '@/rpc/bindings/ApprovalsState'
 import type { AskId } from '@/rpc/bindings/AskId'
 import type { Change } from '@/rpc/bindings/Change'
+import type { Binding } from '@/rpc/bindings/Binding'
+import type { DocId } from '@/rpc/bindings/DocId'
+import type { DocKind } from '@/rpc/bindings/DocKind'
+import type { DocOpen } from '@/rpc/bindings/DocOpen'
+import type { DocSummary } from '@/rpc/bindings/DocSummary'
+import type { SnapshotInfo } from '@/rpc/bindings/SnapshotInfo'
 import type { CompactStyle } from '@/rpc/bindings/CompactStyle'
 import type { CommunicationState } from '@/rpc/bindings/CommunicationState'
 import type { Concept } from '@/rpc/bindings/Concept'
@@ -179,6 +185,20 @@ export interface Api {
   dictation_stop(id: DictationId): Promise<null>
   /** What is loaded and which dictation (if any) is running (54 §4.3). */
   dictation_status(): Promise<DictationState>
+  /** Documents (59 §6.1). `doc_list`: metadata rows, newest first, optionally one kind. */
+  doc_list(kind: DocKind | null, limit: number | null): Promise<DocSummary[]>
+  /** The document bound to `binding`; a knowledge concept without one is created from its file on demand (59 §7.1). `null` when nothing is bound and nothing can be created. */
+  doc_resolve(binding: Binding): Promise<DocId | null>
+  /** Metadata, the Yjs state missing from `sv` (base64 state vector; `null` = everything) as ≤ 48 KiB base64 chunks, and current awareness. */
+  doc_open(doc: DocId, sv: string | null): Promise<DocOpen>
+  /** One base64 Yjs v1 update from this connection; `DocTooLarge` past the cap. */
+  doc_update(doc: DocId, update: string): Promise<null>
+  /** One base64 y-protocols awareness update; relayed, never stored. */
+  doc_awareness(doc: DocId, state: string): Promise<null>
+  /** Kept snapshots of `doc`, newest first (59 §4.6). */
+  doc_snapshots(doc: DocId): Promise<SnapshotInfo[]>
+  /** Import a snapshot's markdown as one diff transaction (59 §4.6). */
+  doc_restore(doc: DocId, snapshot: string): Promise<null>
   /** Rewrite a schedule's `enabled:` line (33 §3.5; the toggle); rejects with `no such schedule`. */
   enable_schedule(name: string, enabled: boolean): Promise<ScheduleInfo>
   /** Copy artifact `id`'s blob to `dest` (parent created; refuses to overwrite); returns `dest` (35 §3.5). */
@@ -502,6 +522,13 @@ export const METHODS = [
   'dictation_start',
   'dictation_status',
   'dictation_stop',
+  'doc_awareness',
+  'doc_list',
+  'doc_open',
+  'doc_resolve',
+  'doc_restore',
+  'doc_snapshots',
+  'doc_update',
   'edit_turn',
   'enable_schedule',
   'escalate_model',

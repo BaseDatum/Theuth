@@ -23,9 +23,10 @@ const PROBE_MS = 5_000
 
 type Pending = { resolve: (v: unknown) => void; reject: (e: RpcError) => void }
 type Sub = {
-  session: string | null
-  descendants: boolean | null
-  onEvent: (e: WireEvent) => void
+  method: string
+  unsubscribe: string
+  params: unknown[]
+  onItem: (item: unknown) => void
   id: unknown
 }
 type Frame = {
@@ -33,7 +34,7 @@ type Frame = {
   result?: unknown
   error?: { code: number; message: string; data?: unknown }
   method?: string
-  params?: { subscription: unknown; result: WireEvent }
+  params?: { subscription: unknown; result: unknown }
 }
 
 /**
@@ -108,19 +109,32 @@ export class RpcClient {
    * `subscribe_events`; the returned function unsubscribes. Survives reconnects,
    * and may be called before the transport is open (issued on `open`).
    */
-  async subscribe(
+  subscribe(
     session: string | null,
     descendants: boolean | null,
     onEvent: (e: WireEvent) => void,
   ): Promise<() => Promise<void>> {
-    const sub: Sub = { session, descendants, onEvent, id: null }
+    return this.subscribeTo('subscribe_events', 'unsubscribe_events', [session, descendants], onEvent)
+  }
+
+  /**
+   * Any jsonrpsee subscription pair (`doc_subscribe`/`doc_unsubscribe`, 59 §6.1): items arrive as
+   * `method` notifications keyed by `params.subscription`. Re-issued on reconnect like `subscribe`.
+   */
+  async subscribeTo<T>(
+    method: string,
+    unsubscribe: string,
+    params: unknown[],
+    onItem: (item: T) => void,
+  ): Promise<() => Promise<void>> {
+    const sub: Sub = { method, unsubscribe, params, onItem: onItem as (item: unknown) => void, id: null }
     this.#subs.add(sub)
     if (this.#state === 'open') await this.#issue(sub)
     return async () => {
       this.#subs.delete(sub)
       this.#bySubId.delete(sub.id)
       if (this.#state === 'open' && sub.id !== null) {
-        await this.call('unsubscribe_events', [sub.id]).catch(() => undefined)
+        await this.call(sub.unsubscribe, [sub.id]).catch(() => undefined)
       }
     }
   }
@@ -182,15 +196,15 @@ export class RpcClient {
   }
 
   async #issue(sub: Sub): Promise<void> {
-    const id = await this.call<unknown>('subscribe_events', [sub.session, sub.descendants])
+    const id = await this.call<unknown>(sub.method, sub.params)
     if (!this.#subs.has(sub)) return
     sub.id = id
     this.#bySubId.set(id, sub)
   }
 
   #receive(f: Frame): void {
-    if (f.method === 'subscribe_events' && f.params) {
-      this.#bySubId.get(f.params.subscription)?.onEvent(f.params.result)
+    if (f.method !== undefined && f.params) {
+      this.#bySubId.get(f.params.subscription)?.onItem(f.params.result)
       return
     }
     if (f.id === undefined) return

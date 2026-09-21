@@ -17,15 +17,10 @@ import {
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { queryKeys, useApi } from '@/lib/rpc'
+import { subscribeDark } from '@/lib/theme'
 import type { Meta } from '@/rpc/bindings/Meta'
 
 const extensions = [yamlFrontmatter({ content: markdown({ base: markdownLanguage, codeLanguages: languages }) }), EditorView.lineWrapping]
-
-const subscribeDark = (cb: () => void) => {
-  const o = new MutationObserver(cb)
-  o.observe(document.documentElement, { attributeFilter: ['class'] })
-  return () => o.disconnect()
-}
 
 type Props = {
   id: string

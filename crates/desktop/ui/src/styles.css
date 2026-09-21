@@ -300,3 +300,33 @@
   top: calc(1rem + var(--safe-top));
   right: calc(1rem + var(--safe-right));
 }
+
+/* BlockNote (design 59 §9.1): its palette aliased onto the tokens; light/dark follow `.dark` through the tokens. */
+.bn-root,
+.bn-root[data-color-scheme="dark"] {
+  --bn-colors-editor-text: var(--fg-primary);
+  --bn-colors-editor-background: transparent;
+  --bn-colors-menu-text: var(--fg-primary);
+  --bn-colors-menu-background: var(--bg-elevated);
+  --bn-colors-tooltip-text: var(--fg-primary);
+  --bn-colors-tooltip-background: var(--bg-layer-2);
+  --bn-colors-hovered-text: var(--fg-primary);
+  --bn-colors-hovered-background: var(--bg-layer-2);
+  --bn-colors-selected-text: var(--fg-inverse);
+  --bn-colors-selected-background: var(--fg-accent);
+  --bn-colors-disabled-text: var(--fg-tertiary);
+  --bn-colors-disabled-background: var(--bg-layer-1);
+  --bn-colors-shadow: var(--border-subtle);
+  --bn-colors-border: var(--border-default);
+  --bn-colors-side-menu: var(--fg-tertiary);
+  --bn-font-family: inherit;
+}
+.bn-editor {
+  padding-inline: 0;
+}
+/* The side menu (drag handle, block menu) is a pointer-fine affordance (59 §9.3); the full mobile toolbar is step 6. */
+@media (pointer: coarse) {
+  .bn-side-menu {
+    display: none;
+  }
+}

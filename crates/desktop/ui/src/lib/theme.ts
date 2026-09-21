@@ -26,3 +26,10 @@ export function initTheme(): void {
   scheme.addEventListener('change', apply)
   apply()
 }
+
+/** `useSyncExternalStore` subscribe for the `.dark` class on `<html>`; the snapshot is `classList.contains('dark')`. */
+export function subscribeDark(cb: () => void): () => void {
+  const o = new MutationObserver(cb)
+  o.observe(document.documentElement, { attributeFilter: ['class'] })
+  return () => o.disconnect()
+}
