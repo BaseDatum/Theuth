@@ -630,6 +630,39 @@ pub trait Api {
     /// Harvest `session`'s finished frame now (design doc 10 §5.2). Refused while a turn is running.
     #[method(name = "knowledge_harvest", with_extensions)]
     async fn knowledge_harvest(&self, session: SessionId) -> RpcResult<HarvestResult>;
+    /// Live documents, newest first (design doc 59 §6.1); `limit` defaults to 100.
+    #[method(name = "doc_list")]
+    async fn doc_list(
+        &self,
+        kind: Option<document::DocKind>,
+        limit: Option<u32>,
+    ) -> RpcResult<Vec<document::DocSummary>>;
+    /// The document bound to `binding`. A knowledge binding whose concept
+    /// exists but has no document yet gets one created from its file (59
+    /// §7.1, on demand); `None` only when there is nothing to bind to.
+    #[method(name = "doc_resolve")]
+    async fn doc_resolve(&self, binding: document::Binding) -> RpcResult<Option<document::DocId>>;
+    /// Open `doc`: its metadata, the Yjs state missing from `sv` (base64 v1
+    /// state vector; absent = everything) as ≤ 48 KiB base64 chunks, and the
+    /// current awareness states.
+    #[method(name = "doc_open", with_extensions)]
+    async fn doc_open(&self, doc: document::DocId, sv: Option<String>) -> RpcResult<document::DocOpen>;
+    /// One base64 v1 update from this connection; refused with `DocTooLarge` past the cap.
+    #[method(name = "doc_update", with_extensions)]
+    async fn doc_update(&self, doc: document::DocId, update: String) -> RpcResult<()>;
+    /// One base64 awareness update (y-protocols) from this connection; relayed, never stored.
+    #[method(name = "doc_awareness", with_extensions)]
+    async fn doc_awareness(&self, doc: document::DocId, state: String) -> RpcResult<()>;
+    /// Every `DocEvent` of `doc` not caused by this connection: other
+    /// clients' updates and awareness, exports, snapshots, close.
+    #[subscription(name = "doc_subscribe", unsubscribe = "doc_unsubscribe", item = document::DocEvent, with_extensions)]
+    async fn doc_subscribe(&self, doc: document::DocId) -> SubscriptionResult;
+    /// Kept snapshots of `doc`, newest first (59 §4.6).
+    #[method(name = "doc_snapshots")]
+    async fn doc_snapshots(&self, doc: document::DocId) -> RpcResult<Vec<document::SnapshotInfo>>;
+    /// Import a snapshot's markdown as one diff transaction (59 §4.6: history is kept, not rewound).
+    #[method(name = "doc_restore")]
+    async fn doc_restore(&self, doc: document::DocId, snapshot: String) -> RpcResult<()>;
     /// Write `mcp/<name>.json` and connect; returns the server with its tools.
     #[method(name = "add_mcp_server")]
     async fn add_mcp_server(&self, name: String, entry: serde_json::Value) -> RpcResult<McpServer>;
@@ -1251,6 +1284,14 @@ fn secrets() -> RpcResult<ActorRef<secrets::SecretsActor>> {
         NOT_RUNNING => {
             ErrorObjectOwned::owned(NOT_RUNNING, "secrets vault unavailable", None::<()>)
         }
+        _ => e,
+    })
+}
+
+/// The document actor; absent when `documents.enabled: false` or the plugin is not loaded.
+fn documents() -> RpcResult<ActorRef<document::DocumentActor>> {
+    lookup::<document::DocumentActor>(document::DOCUMENT_ACTOR).map_err(|e| match e.code() {
+        NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "documents are disabled", None::<()>),
         _ => e,
     })
 }
@@ -2239,6 +2280,95 @@ impl ApiServer for Server {
         send(&knowledge()?, Restore { id, commit }).await
     }
 
+    async fn doc_list(
+        &self,
+        kind: Option<document::DocKind>,
+        limit: Option<u32>,
+    ) -> RpcResult<Vec<document::DocSummary>> {
+        send(&documents()?, document::ListDocs { kind, limit }).await
+    }
+
+    async fn doc_resolve(&self, binding: document::Binding) -> RpcResult<Option<document::DocId>> {
+        let docs = documents()?;
+        if let Some(id) = send(&docs, document::Lookup { binding: binding.clone() }).await? {
+            return Ok(Some(id));
+        }
+        // On demand (59 §7.1): a knowledge concept becomes a document from its current file.
+        let document::Binding::Knowledge(concept) = &binding else {
+            return Ok(None);
+        };
+        let text = match send(&knowledge()?, Get { id: concept.clone() }).await {
+            Ok(c) => c.text,
+            Err(e) if e.code() == ASK_FAILED => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        send(
+            &docs,
+            document::Ensure {
+                binding,
+                markdown: text,
+            },
+        )
+        .await
+        .map(Some)
+    }
+
+    async fn doc_open(
+        &self,
+        ext: &Extensions,
+        doc: document::DocId,
+        sv: Option<String>,
+    ) -> RpcResult<document::DocOpen> {
+        peer(ext)?;
+        send(&documents()?, document::OpenDoc { doc, sv }).await
+    }
+
+    async fn doc_update(
+        &self,
+        ext: &Extensions,
+        doc: document::DocId,
+        update: String,
+    ) -> RpcResult<()> {
+        let device = Some(peer(ext)?.id());
+        send(
+            &documents()?,
+            document::ApplyUpdate {
+                doc,
+                update,
+                by: document::Principal::Owner { device },
+            },
+        )
+        .await
+    }
+
+    async fn doc_awareness(
+        &self,
+        ext: &Extensions,
+        doc: document::DocId,
+        state: String,
+    ) -> RpcResult<()> {
+        let device = Some(peer(ext)?.id());
+        send(
+            &documents()?,
+            document::AwarenessUpdateMsg {
+                doc,
+                state,
+                by: document::Principal::Owner { device },
+            },
+        )
+        .await
+    }
+
+    async fn doc_snapshots(&self, doc: document::DocId) -> RpcResult<Vec<document::SnapshotInfo>> {
+        send(&documents()?, document::Snapshots { doc }).await
+    }
+
+    async fn doc_restore(&self, doc: document::DocId, snapshot: String) -> RpcResult<()> {
+        send(&documents()?, document::Restore { doc, snapshot })
+            .await
+            .map(|_| ())
+    }
+
     async fn knowledge_harvest(
         &self,
         ext: &Extensions,
@@ -2859,6 +2989,42 @@ impl ApiServer for Server {
             .await
             .map_err(|e| failed(format!("{}: {e}", path.display())))?;
         Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+    }
+
+    async fn doc_subscribe(
+        &self,
+        pending: PendingSubscriptionSink,
+        ext: &Extensions,
+        doc: document::DocId,
+    ) -> SubscriptionResult {
+        // Admission and the actor's subscription before accept, so the client's first
+        // `doc_open` after this cannot race an update it would then miss (59 §6.2).
+        let admit = async {
+            let conn = Some(peer(ext)?.id());
+            send(&documents()?, document::Subscribe { doc, conn }).await
+        };
+        let mut rx = match admit.await {
+            Ok(rx) => rx,
+            Err(e) => {
+                pending.reject(e).await;
+                return Ok(());
+            }
+        };
+        let sink = pending.accept().await?;
+        tokio::spawn(async move {
+            loop {
+                let ev = tokio::select! {
+                    _ = sink.closed() => return,
+                    ev = rx.recv() => match ev { Some(ev) => ev, None => return },
+                };
+                let Ok(raw) = serde_json::value::to_raw_value(&ev) else { continue };
+                let closed = matches!(ev, document::DocEvent::Closed { .. });
+                if sink.send(SubscriptionMessage::from(raw)).await.is_err() || closed {
+                    return;
+                }
+            }
+        });
+        Ok(())
     }
 
     async fn subscribe_events(
