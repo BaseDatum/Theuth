@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use kameo::actor::ActorRef;
 use kameo::message::{Context, Message};
 use parking_lot::Mutex;
 use tokio::task::JoinHandle;
@@ -95,9 +96,24 @@ pub struct SetMode {
 }
 
 /// `tell`: a decision made outside the engine — `escalate`'s tier-2 answer — appended to the
-/// log as an ask row (`tier: 2`, no logits, the mode of its gate).
+/// log as an ask row (`tier: 2`, no logits, the mode of its gate). `note` is the one place the
+/// log carries text by design: a short subject string from tier-2 subject extraction (57 §3.5).
 #[derive(Clone, Debug)]
-pub struct Record(pub Decision);
+pub struct Record {
+    /// The decision.
+    pub decision: Decision,
+    /// A short annotation (`AskRow::note`), e.g. the extracted subject.
+    pub note: Option<String>,
+}
+
+/// `ask` → `Result<u64, String>`: load the session (checkpoint present, plugin enabled) and run
+/// one throwaway forward so a meeting's first real `Ask` pays neither the cold load nor the
+/// first-inference cost (57 §3.5 item 5). Nothing is logged; the reply is the wall clock in ms.
+#[derive(Clone, Copy, Debug)]
+pub struct Warm {
+    /// How long to wait for the load.
+    pub budget: Duration,
+}
 
 /// `tell` from the idle watchdog: drop the session if nothing asked since.
 #[derive(Clone, Copy, Debug)]
@@ -269,13 +285,12 @@ impl Engine {
         }
     }
 
-    fn touch(&mut self, ctx: &Context<Self, Decision>) {
+    fn touch(&mut self, me: ActorRef<Self>) {
         self.last_used = Instant::now();
         if self.watchdog || self.cfg.idle_unload.is_zero() {
             return;
         }
         self.watchdog = true;
-        let me = ctx.actor_ref().clone();
         let idle = self.cfg.idle_unload;
         tokio::spawn(async move {
             tokio::time::sleep(idle).await;
@@ -372,7 +387,7 @@ impl Message<Ask> for Engine {
             Ok(s) => s,
             Err(reason) => return self.escalate(&ask, Some(&gate), reason, t),
         };
-        self.touch(ctx);
+        self.touch(ctx.actor_ref().clone());
 
         let q = with_none(ask.question.clone());
         let mut run = {
@@ -583,10 +598,46 @@ impl Message<SetMode> for Engine {
 impl Message<Record> for Engine {
     type Reply = ();
 
-    async fn handle(&mut self, Record(d): Record, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(&mut self, r: Record, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let d = &r.decision;
         let mode = self.cfg.families.get(&d.family.0).map_or(Mode::Off, |g| g.mode);
         let sha = self.model_sha();
-        self.append(Row::Ask(Box::new(AskRow::new(&d, mode, &sha, &[], Vec::new(), 0.0, None))));
+        let mut row = AskRow::new(d, mode, &sha, &[], Vec::new(), 0.0, None);
+        row.note = r.note;
+        self.append(Row::Ask(Box::new(row)));
+    }
+}
+
+impl Message<Warm> for Engine {
+    type Reply = Result<u64, String>;
+
+    async fn handle(&mut self, w: Warm, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let t = Instant::now();
+        if !self.cfg.enabled {
+            return Err("disabled".into());
+        }
+        let shared = self.session(w.budget).await.map_err(|r| format!("{r:?}"))?;
+        self.touch(ctx.actor_ref().clone());
+        let run = tokio::task::spawn_blocking(move || -> Result<(), String> {
+            let mut o = shared.lock();
+            let q = Question::Bool {
+                statement: "warm-up".into(),
+                state: "warm-up".into(),
+            };
+            let seq = o.build(&q)?;
+            o.run(std::slice::from_ref(&seq)).map_err(|e| format!("{e:#}"))?;
+            Ok(())
+        });
+        match tokio::time::timeout(w.budget.saturating_sub(t.elapsed()), run).await {
+            Ok(Ok(Ok(()))) => {
+                let ms = t.elapsed().as_millis() as u64;
+                tracing::info!("decision: warm-up done in {ms} ms");
+                Ok(ms)
+            }
+            Ok(Ok(Err(e))) => Err(e),
+            Ok(Err(e)) => Err(format!("warm-up panicked: {e}")),
+            Err(_) => Err("warm-up timed out".into()),
+        }
     }
 }
 

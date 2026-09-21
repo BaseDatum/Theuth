@@ -22,7 +22,7 @@ use std::time::Duration;
 use kameo::actor::Spawn;
 use serde::{Deserialize, Serialize};
 
-pub use engine::{AllStats, Engine, GetMode, Loader, Oracle, Record, Report, SetMode, Stats};
+pub use engine::{AllStats, Engine, GetMode, Loader, Oracle, Record, Report, SetMode, Stats, Warm};
 pub use escalate::{EscalateError, SideCaller, escalate};
 pub use gate::{FamilyGate, Mode};
 pub use log::FamilyStats;
@@ -78,7 +78,7 @@ pub struct DecisionConfig {
     /// Store the question text in the log, not only its hash.
     pub log_text: bool,
     /// Gate per decision family; a family not listed never runs. The YAML is a patch over the
-    /// default table: `meeting.topic: { mode: active }` changes one field; a prefix key
+    /// default table: `meeting.kind: { mode: active }` changes one field; a prefix key
     /// (`meeting: { mode: off }`, what Settings → Meetings writes) patches every family under it.
     #[serde(deserialize_with = "families")]
     pub families: BTreeMap<String, FamilyGate>,
@@ -106,10 +106,16 @@ impl DecisionConfig {
     }
 }
 
+/// 57 §3.5: `meeting.kind` is the small-talk `Bool` (skip at P(true) ≥ 0.6, the phrasing bench's
+/// τ), `meeting.brief` the ≤ 4-candidate `Choice` (publish at P ≥ 0.6, margin ≥ 0.3), and
+/// `meeting.subject` the tier-2 subject extraction (never asked of the oracle; listed so its
+/// rows fold into `decision_stats` and the `meeting` prefix switch covers it). `meeting.topic`
+/// (step 4's `Bool`) is gone: the bench showed it confidently wrong, not uncertain.
 fn default_families() -> BTreeMap<String, FamilyGate> {
     [
-        ("meeting.topic", FamilyGate::shadow(0.85, 0.40)),
-        ("meeting.brief", FamilyGate::shadow(0.80, 0.35)),
+        ("meeting.kind", FamilyGate::shadow(0.60, 0.20)),
+        ("meeting.brief", FamilyGate::shadow(0.60, 0.30)),
+        ("meeting.subject", FamilyGate::shadow(0.50, 0.0)),
         ("browser.target", FamilyGate::shadow(0.90, 0.50)),
         ("browser.wait", FamilyGate::shadow(0.80, 0.30)),
         ("agent.readable", FamilyGate::shadow(0.85, 0.40)),
@@ -153,7 +159,7 @@ impl FamilyPatch {
 }
 
 /// Patch the default table (57 §3.4): exact family names first, then prefix keys, so
-/// `meeting: { mode: off }` + `meeting.topic: { mode: active }` still ends with `meeting.topic`
+/// `meeting: { mode: off }` + `meeting.kind: { mode: active }` still ends with `meeting.kind`
 /// off — the switch wins over a hand edit. A new fully-specified family is inserted.
 fn families<'de, D: serde::Deserializer<'de>>(
     d: D,
@@ -195,8 +201,9 @@ fn opt_duration<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Duratio
 }
 
 /// What `GetMode { prefix }` answers (57 §3.4): the switch position for the families under a
-/// prefix (`meeting` → `meeting.topic` + `meeting.brief`) and what effectively runs — `off`
-/// with a `reason` when the plugin is disabled or the checkpoint is not on disk.
+/// prefix (`meeting` → `meeting.kind` + `meeting.brief` + `meeting.subject`) and what
+/// effectively runs — `off` with a `reason` when the plugin is disabled or the checkpoint is
+/// not on disk.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ModeInfo {
@@ -299,13 +306,15 @@ mod tests {
     #[test]
     fn config_defaults_and_yaml() {
         let d = DecisionConfig::default();
-        assert_eq!(d.families.len(), 5);
+        assert_eq!(d.families.len(), 6);
         assert!(d.families.values().all(|g| g.mode == Mode::Shadow));
+        assert!(!d.families.contains_key("meeting.topic"), "step 4's topic family is gone (57 §3.5)");
         assert_eq!(d.families["browser.target"].tau_top, 0.90);
-        assert_eq!(d.families["meeting.topic"].budget, Duration::from_millis(400));
-        assert_eq!(d.families["meeting.topic"].escalate_budget, Duration::from_secs(3));
+        assert_eq!((d.families["meeting.kind"].tau_top, d.families["meeting.brief"].tau_margin), (0.60, 0.30));
+        assert_eq!(d.families["meeting.kind"].budget, Duration::from_millis(400));
+        assert_eq!(d.families["meeting.kind"].escalate_budget, Duration::from_secs(3));
         let cfg: DecisionConfig = serde_yaml::from_str(
-            "enabled: false\nidle_unload: 2h\nlog_text: true\ndevice: cpu\nfamilies:\n  meeting.topic: { mode: active, tau_top: 0.7, tau_margin: 0.2, budget: 1s }\n  new.family: { mode: shadow, tau_top: 0.5, tau_margin: 0.1 }\n",
+            "enabled: false\nidle_unload: 2h\nlog_text: true\ndevice: cpu\nfamilies:\n  meeting.kind: { mode: active, tau_top: 0.7, tau_margin: 0.2, budget: 1s }\n  new.family: { mode: shadow, tau_top: 0.5, tau_margin: 0.1 }\n",
         )
         .unwrap();
         assert!(!cfg.enabled);
@@ -314,10 +323,10 @@ mod tests {
         assert_eq!(cfg.device, Device::Cpu);
         assert!(!cfg.device.metal());
         // A listed family patches its default row; a fully specified new one is added.
-        assert_eq!(cfg.families.len(), 6);
-        assert_eq!(cfg.families["meeting.topic"].mode, Mode::Active);
-        assert_eq!(cfg.families["meeting.topic"].tau_top, 0.7);
-        assert_eq!(cfg.families["meeting.topic"].budget, Duration::from_secs(1));
+        assert_eq!(cfg.families.len(), 7);
+        assert_eq!(cfg.families["meeting.kind"].mode, Mode::Active);
+        assert_eq!(cfg.families["meeting.kind"].tau_top, 0.7);
+        assert_eq!(cfg.families["meeting.kind"].budget, Duration::from_secs(1));
         assert_eq!(cfg.families["meeting.brief"].mode, Mode::Shadow);
         assert_eq!(cfg.families["new.family"].tau_top, 0.5);
     }
@@ -325,17 +334,21 @@ mod tests {
     #[test]
     fn prefix_entry_sets_every_family_under_it_and_wins() {
         let cfg: DecisionConfig = serde_yaml::from_str(
-            "families:\n  meeting.topic: { mode: active }\n  meeting: { mode: off }\n",
+            "families:\n  meeting.kind: { mode: active }\n  meeting: { mode: off }\n",
         )
         .unwrap();
-        assert_eq!(cfg.families.len(), 5);
-        assert_eq!(cfg.families["meeting.topic"].mode, Mode::Off);
+        assert_eq!(cfg.families.len(), 6);
+        assert_eq!(cfg.families["meeting.kind"].mode, Mode::Off);
         assert_eq!(cfg.families["meeting.brief"].mode, Mode::Off);
+        assert_eq!(cfg.families["meeting.subject"].mode, Mode::Off);
+        // Sky's `config.yaml` line from step 4 (`meeting: { mode: shadow }`) still lands on every family.
+        let sky: DecisionConfig = serde_yaml::from_str("families:\n  meeting: { mode: shadow }\n").unwrap();
+        assert!(sky.families.iter().filter(|(k, _)| k.starts_with("meeting.")).all(|(_, g)| g.mode == Mode::Shadow));
         assert_eq!(cfg.families["browser.target"].mode, Mode::Shadow);
         // A partial unknown family is neither inserted nor an error.
         let cfg: DecisionConfig =
             serde_yaml::from_str("families:\n  nobody: { mode: active }\n").unwrap();
-        assert_eq!(cfg.families.len(), 5);
+        assert_eq!(cfg.families.len(), 6);
     }
 
     #[test]
@@ -368,7 +381,7 @@ mod tests {
 
         // Families disagree → the most permissive is the reported switch position.
         let mixed: DecisionConfig = serde_yaml::from_str(
-            "families:\n  meeting.topic: { mode: active }\n  meeting.brief: { mode: off }\n",
+            "families:\n  meeting.kind: { mode: active }\n  meeting.brief: { mode: off }\n",
         )
         .unwrap();
         assert_eq!(mode_for(&mixed, dir.path(), "meeting").mode, Mode::Active);

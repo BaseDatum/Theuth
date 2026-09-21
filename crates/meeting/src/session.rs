@@ -52,10 +52,11 @@ pub fn batch_line(batch: &[Utterance], live: &[String], dismissed: &[String]) ->
     batch_line_with(batch, live, dismissed, &[], None)
 }
 
-/// [`batch_line`] plus the oracle's additions (57 §3.2): `carried` are earlier batches the
+/// [`batch_line`] plus the oracle's additions (57 §3.2, §3.5): `carried` are earlier batches the
 /// oracle kept from the model (`(stamp, utterances)`), listed in the header as
 /// `earlier (oracle skipped): 00:13:10, 00:13:40` and written before this batch's rows so the
-/// turn still has them as context; `evidence` is the `oracle: …` line appended last.
+/// turn still has them as context; `evidence` is the `oracle: …` line, written **first** — right
+/// after the header — so a research turn starts from the oracle's subject, not the transcript.
 pub fn batch_line_with(
     batch: &[Utterance],
     live: &[String],
@@ -79,6 +80,10 @@ pub fn batch_line_with(
                 .join(", "),
         );
     }
+    if let Some(e) = evidence {
+        s.push('\n');
+        s.push_str(e);
+    }
     for u in carried.iter().flat_map(|(_, b)| b.iter()).chain(batch) {
         let who = match u.track {
             Track::Mic => "me",
@@ -88,10 +93,6 @@ pub fn batch_line_with(
         s.push_str(who);
         s.push_str(": ");
         s.push_str(u.text.trim());
-    }
-    if let Some(e) = evidence {
-        s.push('\n');
-        s.push_str(e);
     }
     s
 }

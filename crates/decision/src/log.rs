@@ -74,6 +74,10 @@ pub struct AskRow {
     /// Cold-load wall clock, on the first row after a load.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub load_ms: Option<u64>,
+    /// A short annotation on tier-2 rows — the subject tier-2 extracted (57 §3.5). The one
+    /// text the log carries by design; never the state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 impl AskRow {
@@ -111,6 +115,7 @@ impl AskRow {
             tier: d.tier,
             text,
             load_ms: None,
+            note: None,
         }
     }
 }

@@ -1189,7 +1189,7 @@ impl Meeting {
         let blocked = rec.live.topics.cached_blocked_rows();
         let (rt, cache, me) = (self.rt.clone(), self.cache.clone(), me.clone());
         tokio::spawn(async move {
-            let verdict = oracle::run(rt, cache, blocked, batch, meeting, session).await;
+            let verdict = oracle::run(rt, cache, blocked, batch, meeting).await;
             let _ = me.tell(verdict).await;
         });
     }
@@ -1680,6 +1680,8 @@ impl Message<Begun> for Meeting {
                     ));
                 }
                 tools::register(me).await;
+                // 57 §3.5 item 5: load the oracle now so batch 1 never pays the cold load.
+                tokio::spawn(oracle::warm_up());
                 self.rt
                     .publish(MeetingEvent::Started {
                         meeting: id,

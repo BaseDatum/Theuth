@@ -252,8 +252,9 @@ agent:
 #                            # Entries patch this table (any subset of fields); a prefix key sets every family under it:
 #                            # `meeting: { mode: active }` is what Settings → Meetings → Local decision oracle writes (57 §3.4).
 #                            # Flip a family to active only after its shadow log shows acceptable agreement (57 §2; `decision_stats`).
-#     meeting.topic:  { mode: shadow, tau_top: 0.85, tau_margin: 0.40 }
-#     meeting.brief:  { mode: shadow, tau_top: 0.80, tau_margin: 0.35 }
+#     meeting.kind:    { mode: shadow, tau_top: 0.60, tau_margin: 0.20 }  # small-talk Bool: skip at P ≥ 0.6 with no mentions (57 §3.5)
+#     meeting.brief:   { mode: shadow, tau_top: 0.60, tau_margin: 0.30 }  # ≤ 4 cached briefs: publish at P ≥ 0.6, margin ≥ 0.3
+#     meeting.subject: { mode: shadow, tau_top: 0.50, tau_margin: 0.00 }  # tier-2 subject extraction rows (cheap model, never the oracle)
 #     browser.target: { mode: shadow, tau_top: 0.90, tau_margin: 0.50 }
 #     browser.wait:   { mode: shadow, tau_top: 0.80, tau_margin: 0.30 }
 #     agent.readable: { mode: shadow, tau_top: 0.85, tau_margin: 0.40 }
