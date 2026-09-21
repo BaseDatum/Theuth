@@ -1,4 +1,7 @@
-//! Fixture: definitions, nesting, locals.
+//! Fixture: definitions, nesting, locals, and a `mod` tree with a re-export.
+
+pub mod store;
+pub use store::open_db;
 
 /// A registry.
 pub struct Registry {
