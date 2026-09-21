@@ -663,6 +663,9 @@ pub trait Api {
     /// Import a snapshot's markdown as one diff transaction (59 §4.6: history is kept, not rewound).
     #[method(name = "doc_restore")]
     async fn doc_restore(&self, doc: document::DocId, snapshot: String) -> RpcResult<()>;
+    /// Revert the last agent edit of `doc` as the owner (59 §5.5 page menu); one level, in memory.
+    #[method(name = "doc_undo_agent")]
+    async fn doc_undo_agent(&self, doc: document::DocId) -> RpcResult<()>;
     /// Write `mcp/<name>.json` and connect; returns the server with its tools.
     #[method(name = "add_mcp_server")]
     async fn add_mcp_server(&self, name: String, entry: serde_json::Value) -> RpcResult<McpServer>;
@@ -2365,6 +2368,12 @@ impl ApiServer for Server {
 
     async fn doc_restore(&self, doc: document::DocId, snapshot: String) -> RpcResult<()> {
         send(&documents()?, document::Restore { doc, snapshot })
+            .await
+            .map(|_| ())
+    }
+
+    async fn doc_undo_agent(&self, doc: document::DocId) -> RpcResult<()> {
+        send(&documents()?, document::UndoLastAgentEdit { doc })
             .await
             .map(|_| ())
     }
