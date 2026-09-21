@@ -3,6 +3,7 @@ import { getRouteApi, useNavigate } from '@tanstack/react-router'
 import { History as HistoryIcon, MessageSquare, MessageSquarePlus, Pencil, Trash2 } from 'lucide-react'
 import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
+import { prefillDraft } from '@/components/chat/Composer'
 import { Action, DocumentPage } from '@/components/editor/DocumentPage'
 import { useDocument } from '@/components/editor/useDocument'
 import { UndoAgentAction } from '@/components/knowledge/Document'
@@ -15,7 +16,7 @@ import type { HarnessProvider } from '@/lib/doc/provider'
 import { EMPTY, useNoteChat } from '@/lib/note-chat'
 import { queryKeys, useApi } from '@/lib/rpc'
 
-const route = getRouteApi('/notes/$id')
+const route = getRouteApi('/notes_/$id')
 
 /** `/notes/$id` (59 §7.3): the note in BlockNote, its title inline in the bar, the chat panel below. */
 export function NotePage() {
@@ -71,8 +72,12 @@ function Note({ id }: { id: string }) {
   })
   // 59 §9.3: the slash item "Ask theuth…" opens the panel with the block named in its composer.
   const ask = (block?: string) => {
+    if (block) {
+      // The draft is read on the composer's mount (panel closed) or on the re-seed the event asks for (panel open).
+      prefillDraft(chat.session, `about block ${block}: `, [], true)
+      if (chat.open) window.dispatchEvent(new CustomEvent('theuth:note-ask', { detail: { note: id } }))
+    }
     setChat(id, { open: true })
-    if (block) window.dispatchEvent(new CustomEvent('theuth:note-ask', { detail: { note: id, block } }))
   }
   // A deleted note's page: the provider reports `closed · deleted` in the status line; say it plainly too.
   const deleted = live.status.kind === 'closed' && live.status.reason === 'deleted'

@@ -1,14 +1,15 @@
+import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { ExternalLink, SquarePen, X } from 'lucide-react'
 import { type PointerEvent, useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { Composer, prefillDraft } from '@/components/chat/Composer'
+import { Composer } from '@/components/chat/Composer'
 import { Transcript } from '@/components/chat/Transcript'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { EMPTY, MIN_HEIGHT, useNoteChat } from '@/lib/note-chat'
 import type { DocRef } from '@/lib/pastes'
-import { useApi } from '@/lib/rpc'
+import { queryKeys, useApi } from '@/lib/rpc'
 import { useSessionField, useSessions } from '@/store/sessions'
 
 const PAGE = 60
@@ -23,22 +24,22 @@ export function NoteChat({ note, doc }: { note: string; doc: DocRef }) {
   const state = useNoteChat((s) => s.notes[note] ?? EMPTY)
   const set = useNoteChat((s) => s.set)
   const navigate = useNavigate()
+  const api = useApi()
   const session = state.session
   useLoadSession(session)
-  const title = useSessionField(session ?? '', 'title')
-  // 59 §9.3: the editor's "Ask theuth…" names a block; the composer remounts on the seeded draft.
+  // The store slice learns the title from `TitleChanged`; after a reload the session list has it.
+  const live = useSessionField(session ?? '', 'title')
+  const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions(), enabled: !!session && !live })
+  const title = live || sessions.data?.find((s) => s.id === session)?.title
+  // 59 §9.3: the page seeded the panel draft for "Ask theuth…" while this panel was open; remount the composer on it.
   const [seed, setSeed] = useState(0)
   useEffect(() => {
     const onAsk = (ev: Event) => {
-      const d = (ev as CustomEvent<{ note: string; block: string }>).detail
-      if (d.note !== note) return
-      prefillDraft(session, `about block ${d.block}: `, [], true)
-      setSeed((n) => n + 1)
-      requestAnimationFrame(() => window.dispatchEvent(new Event('theuth:focus-composer')))
+      if ((ev as CustomEvent<{ note: string }>).detail.note === note) setSeed((n) => n + 1)
     }
     window.addEventListener('theuth:note-ask', onAsk)
     return () => window.removeEventListener('theuth:note-ask', onAsk)
-  }, [note, session])
+  }, [note])
 
   // Drag the top edge: the panel grows upward, clamped to the pane.
   const onPointerDown = (e: PointerEvent<HTMLDivElement>) => {

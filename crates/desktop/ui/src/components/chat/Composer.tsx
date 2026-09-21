@@ -590,7 +590,7 @@ export function Composer({
 
   return (
     <div className={cn('mx-auto w-full max-w-[768px]', compact ? 'px-2 pb-1' : 'px-4 pb-2')}>
-      <CommunicationNotice session={session} state={comm} exports={exports} />
+      {!compact && <CommunicationNotice session={session} state={comm} exports={exports} />}
       {session && <QueuedChips session={session} onEdit={(t) => setText(t)} />}
       {session && !compact && <ContextPicker session={session} />}
       <input

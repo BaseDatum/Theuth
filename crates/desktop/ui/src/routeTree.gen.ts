@@ -22,7 +22,7 @@ import { Route as MeetingsIndexRouteImport } from './routes/meetings.index'
 import { Route as MeetingsIdRouteImport } from './routes/meetings.$id'
 import { Route as MeetingsBriefsRouteImport } from './routes/meetings.briefs'
 import { Route as MeetingsNewRouteImport } from './routes/meetings.new'
-import { Route as NotesIdRouteImport } from './routes/notes.$id'
+import { Route as NotesIdRouteImport } from './routes/notes_.$id'
 import { Route as SettingsTabRouteImport } from './routes/settings.$tab'
 
 const IndexRoute = IndexRouteImport.update({
@@ -91,9 +91,9 @@ const MeetingsNewRoute = MeetingsNewRouteImport.update({
   getParentRoute: () => rootRouteImport,
 } as any)
 const NotesIdRoute = NotesIdRouteImport.update({
-  id: '/$id',
-  path: '/$id',
-  getParentRoute: () => NotesRoute,
+  id: '/notes_/$id',
+  path: '/notes/$id',
+  getParentRoute: () => rootRouteImport,
 } as any)
 const SettingsTabRoute = SettingsTabRouteImport.update({
   id: '/settings/$tab',
@@ -107,7 +107,7 @@ export interface FileRoutesByFullPath {
   '/island': typeof IslandRoute
   '/knowledge': typeof KnowledgeRouteWithChildren
   '/link': typeof LinkRoute
-  '/notes': typeof NotesRouteWithChildren
+  '/notes': typeof NotesRoute
   '/artifacts/$callId': typeof ArtifactsCallIdRoute
   '/c/$session': typeof CSessionRoute
   '/knowledge/$': typeof KnowledgeSplatRoute
@@ -124,7 +124,7 @@ export interface FileRoutesByTo {
   '/island': typeof IslandRoute
   '/knowledge': typeof KnowledgeRouteWithChildren
   '/link': typeof LinkRoute
-  '/notes': typeof NotesRouteWithChildren
+  '/notes': typeof NotesRoute
   '/artifacts/$callId': typeof ArtifactsCallIdRoute
   '/c/$session': typeof CSessionRoute
   '/knowledge/$': typeof KnowledgeSplatRoute
@@ -142,14 +142,14 @@ export interface FileRoutesById {
   '/island': typeof IslandRoute
   '/knowledge': typeof KnowledgeRouteWithChildren
   '/link': typeof LinkRoute
-  '/notes': typeof NotesRouteWithChildren
+  '/notes': typeof NotesRoute
   '/artifacts/$callId': typeof ArtifactsCallIdRoute
   '/c/$session': typeof CSessionRoute
   '/knowledge/$': typeof KnowledgeSplatRoute
   '/meetings/$id': typeof MeetingsIdRoute
   '/meetings/briefs': typeof MeetingsBriefsRoute
   '/meetings/new': typeof MeetingsNewRoute
-  '/notes/$id': typeof NotesIdRoute
+  '/notes_/$id': typeof NotesIdRoute
   '/settings/$tab': typeof SettingsTabRoute
   '/meetings/': typeof MeetingsIndexRoute
 }
@@ -202,7 +202,7 @@ export interface FileRouteTypes {
     | '/meetings/$id'
     | '/meetings/briefs'
     | '/meetings/new'
-    | '/notes/$id'
+    | '/notes_/$id'
     | '/settings/$tab'
     | '/meetings/'
   fileRoutesById: FileRoutesById
@@ -213,11 +213,12 @@ export interface RootRouteChildren {
   IslandRoute: typeof IslandRoute
   KnowledgeRoute: typeof KnowledgeRouteWithChildren
   LinkRoute: typeof LinkRoute
-  NotesRoute: typeof NotesRouteWithChildren
+  NotesRoute: typeof NotesRoute
   CSessionRoute: typeof CSessionRoute
   MeetingsIdRoute: typeof MeetingsIdRoute
   MeetingsBriefsRoute: typeof MeetingsBriefsRoute
   MeetingsNewRoute: typeof MeetingsNewRoute
+  NotesIdRoute: typeof NotesIdRoute
   SettingsTabRoute: typeof SettingsTabRoute
   MeetingsIndexRoute: typeof MeetingsIndexRoute
 }
@@ -315,12 +316,12 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof MeetingsNewRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/notes/$id': {
-      id: '/notes/$id'
-      path: '/$id'
+    '/notes_/$id': {
+      id: '/notes_/$id'
+      path: '/notes/$id'
       fullPath: '/notes/$id'
       preLoaderRoute: typeof NotesIdRouteImport
-      parentRoute: typeof NotesRoute
+      parentRoute: typeof rootRouteImport
     }
     '/settings/$tab': {
       id: '/settings/$tab'
@@ -356,27 +357,18 @@ const KnowledgeRouteWithChildren = KnowledgeRoute._addFileChildren(
   KnowledgeRouteChildren,
 )
 
-interface NotesRouteChildren {
-  NotesIdRoute: typeof NotesIdRoute
-}
-
-const NotesRouteChildren: NotesRouteChildren = {
-  NotesIdRoute: NotesIdRoute,
-}
-
-const NotesRouteWithChildren = NotesRoute._addFileChildren(NotesRouteChildren)
-
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ArtifactsRoute: ArtifactsRouteWithChildren,
   IslandRoute: IslandRoute,
   KnowledgeRoute: KnowledgeRouteWithChildren,
   LinkRoute: LinkRoute,
-  NotesRoute: NotesRouteWithChildren,
+  NotesRoute: NotesRoute,
   CSessionRoute: CSessionRoute,
   MeetingsIdRoute: MeetingsIdRoute,
   MeetingsBriefsRoute: MeetingsBriefsRoute,
   MeetingsNewRoute: MeetingsNewRoute,
+  NotesIdRoute: NotesIdRoute,
   SettingsTabRoute: SettingsTabRoute,
   MeetingsIndexRoute: MeetingsIndexRoute,
 }
