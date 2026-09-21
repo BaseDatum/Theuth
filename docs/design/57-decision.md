@@ -282,3 +282,56 @@ Every argmax agrees; no probability is within 0.01 at either temperature, and th
 1. **Memory and latency miss the design's numbers by 4× / 3×** on the fp16 CPU path. Options for Sky: accept for shadow-mode data collection (400 ms default budget → almost every `Ask` times out today; the late rows still land in the log, so fitting data still accumulates), raise the default budget to ~1.5 s, or revisit the artifact (fp32 or INT8 export — 58's question, per the resolved §9.3). CoreML EP is the other lever and is still the step-2 experiment behind `decision.coreml`, not tried.
 2. Agreement to 0.01 needs a PyTorch reference run of *these* artifacts (README numbers are not reproducible from the hub checkpoint); one Python session with the fine-tune notebook's environment would settle it.
 3. `idle_unload` 10 m releases ~4 GiB on a quiet desktop but re-pays 2.2 s (plus a `Timeout` on the first `Ask`) each time the meeting picks up again.
+
+## As built — step 2c (2026-09-21)
+
+Brief: `/tmp/laya-design/omp-step2c.md`, Sky's direction: the ONNX Runtime is bundled by the app build, uploaded to the model bucket so it can be placed anywhere, and "putting it next to parakeet makes no sense". Commits `fc35712` (`ort_lib(data_dir)` + every caller), `7286f66` (pipeline + desktop), this note.
+
+### What landed
+
+- **One on-disk home**: `<data_dir>/models/onnxruntime/libonnxruntime.{dylib,so}` (`onnxruntime.dll` on Windows — Microsoft's own name; the brief's `libonnxruntime.dll` does not exist), unversioned, plus `VERSION` (`1.27.0`). `models::onnx::{DIR, LIB, runtime_path}` name it. Nothing else under `models/` is a runtime.
+- **`models::onnx::ort_lib(data_dir: &Path) -> Result<PathBuf, String>`**, no hint dirs: 1 bundle (`Contents/Frameworks/<LIB>` or beside the executable — first because a hardened-runtime app must dlopen the copy we codesigned), 2 `<data_dir>/models/onnxruntime/<LIB>`, 3 `$ORT_DYLIB_PATH`, 4 Homebrew `/opt/homebrew/lib`, `/usr/local/lib`. The hit is logged at debug with its source; `ort::init_from(..).commit()` still runs once per process. **Deviation**: the `OnceLock<Result<..>>` became a `Mutex<Option<PathBuf>>` — a failed search is *not* cached any more, because the desktop downloader may land the dylib while the daemon runs and the next `Ask`/dictation must find it (the old code pinned the first failure for the process lifetime). The error text still starts `no libonnxruntime.dylib …` so the existing `contains("libonnxruntime")` test guards hold, and now names location 2 as the place to put it. `ort_ready()` kept.
+- **Callers pass the data dir**: `voice::Engine::load(dir, data_dir)`, `Stream::open(dir, data_dir)`, `live::Utterer::open(dir, data_dir)` (`Transcriber` and `Dictation` carry `rt.data_dir`); `meeting::post::Paths.data_dir`, `diarize::Models.data_dir` (`diarize::models(dir, data_dir)`, `Embedder::open(&Models)`, `speech(.., data_dir, ..)`), `Setup.data_dir` for the live sessions; `decision::laya::Loaded::open(dir, data_dir, threads, coreml)`, `Engine::new(cfg, model_dir, data_dir, log)`, `Loader = Fn(&Path, &Path, &DecisionConfig)`. The `dir/../parakeet-tdt` hint from step 2 is gone. Generated-config comment for `voice.stt_model_dir` now describes the shared runtime and its location.
+- **`decision::laya::verify_graph` takes `(String, ValueType)` pairs** instead of `ort::value::Outlet`s: `Outlet::new` dlopens the runtime through ort's default path (it panicked in the release test run where `libonnxruntime.dylib` was not on the loader path), so the pure unit test must not construct one. `Loaded::open` maps `session.inputs()/outputs()` into pairs.
+- **`scripts/ort-version.env`**: `ORT_VERSION="1.27.0"`, `ORT_SHA256_OSX_ARM64`, commented `LINUX_X64` / `WIN_X64` placeholders for 58. `package-macos.sh` sources it (inline pin removed).
+- **`release-models.sh`**: header rewritten (the "libonnxruntime is not a model" line is gone); `PLATFORMS=(osx-arm64)` with `triple_of` / `lib_of` / `member_of` / `sha_of` mapping tables (`osx-arm64 → aarch64-apple-darwin → libonnxruntime.dylib`, rows for `linux-x64` and `win-x64` ready for 58); after the models it fetches Microsoft's archive into `target/` (cached, sha256-checked, same as `package-macos.sh`), extracts the bare dylib, uploads `onnxruntime/<triple>/<lib>` and `onnxruntime/<triple>/VERSION`, and adds manifest rows with `key` and `platform`; `upload`/`manifest_add` helpers replace the duplicated loop bodies; the verify step HEADs the runtime keys too. Model rows are byte-identical to before (no `platform`, no `key`).
+- **`crates/desktop/src/models.rs`**: `Entry.platform: Option<String>`, `Entry.key: Option<String>`; `for_this_platform()` against a `cfg!(target_os, target_arch)`-derived `TARGET_TRIPLE` const (chosen over a `build.rs` exporting `TARGET`: the platforms we ship are unambiguous from those two, and it is one expression instead of a build script; `match` on `&str` in a `const` is unstable, hence the `if cfg!` chain); download from `key`, land at `path`, both checked for `..`; the runtime gets `chmod 755` after the sha256 check (cfg(unix)). Module doc says "Model files and the ONNX Runtime the daemon loads". New unit test `platform_and_key_fields`.
+- The user's old `~/.theuth/models/parakeet-tdt/libonnxruntime.1.27.0.dylib` is **not deleted**; `ort_lib` simply no longer looks there — remove it by hand when convenient. Note: that copy is 29.6 MB, Microsoft's 1.27.0 release dylib is 38.3 MB (sha256 `299e5a2c…`); the canonical location now holds Microsoft's.
+
+### Checks
+
+- `cargo check --workspace --all-targets`: green.
+- `cargo test --release -p models -p voice -p meeting -p decision`: decision 30 + 2 (model-gated, loading the runtime from `~/.theuth/models/onnxruntime/` — the only copy `ort_lib(~/.theuth)` can reach on this machine: no bundle, no `$ORT_DYLIB_PATH`, no Homebrew), meeting 32, voice 9 (the TDT/streaming tests ran against the same copy), models 13; 0 failed. `cargo test -p desktop models::`: 2 passed.
+- `cargo clippy --no-deps --all-targets` on models, voice, meeting, decision, desktop: 0 warnings. `bash -n scripts/package-macos.sh scripts/release-models.sh`: ok.
+- Dry run — `.env.signing` is not present on this machine, so the AWS variables were placeholders (`AWS_ACCESS_KEY_ID=dry AWS_SECRET_ACCESS_KEY=run THEUTH_S3_DRY_RUN=1 bash scripts/release-models.sh`); every `head-object` therefore fails closed to "upload", which is what a dry run should show. Real output (full copy in `/tmp/laya-design/release-dry-run.txt`):
+
+  ```
+  ==> models from /Users/Sky.Moore/.theuth/models → s3://theuth/releases/models/ (public https://s3.rwx.dev/theuth/releases/models/, dry run: 1)
+      pocket-tts/tts_b6369a24.safetensors: upload (235738732 bytes)
+      DRY_RUN: aws s3 cp /Users/Sky.Moore/.theuth/models/pocket-tts/tts_b6369a24.safetensors s3://theuth/releases/models/pocket-tts/tts_b6369a24.safetensors
+      … (13 more model files, incl. decision/model.onnx 846269825 bytes) …
+  ==> ONNX Runtime 1.27.0 → s3://theuth/releases/models/onnxruntime/<triple>/
+      fetching onnxruntime-osx-arm64-1.27.0.tgz
+      onnxruntime/aarch64-apple-darwin/libonnxruntime.dylib: upload (38313360 bytes)
+      DRY_RUN: aws s3 cp …/aarch64-apple-darwin/libonnxruntime.dylib s3://theuth/releases/models/onnxruntime/aarch64-apple-darwin/libonnxruntime.dylib
+      onnxruntime/aarch64-apple-darwin/VERSION: upload (7 bytes)
+      DRY_RUN: aws s3 cp …/aarch64-apple-darwin/VERSION s3://theuth/releases/models/onnxruntime/aarch64-apple-darwin/VERSION
+  ==> verify via https://s3.rwx.dev/theuth/releases/models/
+      DRY_RUN: nothing to verify
+  ==> models.json
+  { "files": [ … 14 model rows unchanged …,
+      { "path": "onnxruntime/libonnxruntime.dylib", "size": 38313360,
+        "sha256": "299e5a2c6ea00531ecd6bf3217e23798c1fcba1698bb386d313c8e16d7317d60",
+        "key": "onnxruntime/aarch64-apple-darwin/libonnxruntime.dylib", "platform": "aarch64-apple-darwin" },
+      { "path": "onnxruntime/VERSION", "size": 7,
+        "sha256": "7ef1ea58fece676ff7345f6edac427e671daf20f0d7499ef2e42ada241d4fe24",
+        "key": "onnxruntime/aarch64-apple-darwin/VERSION", "platform": "aarch64-apple-darwin" } ] }
+      DRY_RUN: aws s3 cp …/models.json s3://theuth/releases/models/models.json
+  ==> done: https://s3.rwx.dev/theuth/releases/models/models.json
+  ```
+  Not run for real: nothing uploaded. `just release-models` with the real `.env.signing` is Sky's call (57 §6 step 2b covers the checkpoint at the same time).
+
+### Open
+
+- The bundle's `Contents/Frameworks/libonnxruntime.dylib` and the bucket copy are the same Microsoft artifact by construction (same `ort-version.env` pin), but nothing checks the installed `models/onnxruntime/VERSION` against the pin the binary was built with; a mismatch is only visible in the debug log line. Add a warning if it ever bites.
+- Homebrew (location 4) may hold a *different* ORT version; it is last for that reason.

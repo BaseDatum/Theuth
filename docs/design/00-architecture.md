@@ -715,13 +715,17 @@ without a keychain), `mcp/`, `skills/`,
 next start — 35 §3.4), `models/pocket-tts/` (the Pocket TTS checkpoint and
 `voices/*.safetensors` the `voice` plugin reads; `voice.model_dir` points
 elsewhere — 43 §4.2), `models/parakeet-tdt/` (the Parakeet TDT ONNX
-checkpoint plus `libonnxruntime.{dylib,so}`; `voice.stt_model_dir` — 45 §4.6)
+checkpoint; `voice.stt_model_dir` — 45 §4.6)
 and `models/nemotron-streaming-en/` (the Nemotron streaming STT ONNX
 checkpoint for live dictation; `voice.dictation_model_dir` — 54 §4.1),
 `models/decision/` (laya `model.onnx`, `tokenizer.json`, `rl_agent_config.json` —
 published by `release-models.sh`, fetched by the desktop model downloader like the
-speech models; `decision.model_dir` — 57 §2) and `decisions/*.jsonl` (the oracle's
-append-only decision log, hashes not text — 57 §2)
+speech models; `decision.model_dir` — 57 §2), `models/onnxruntime/` (the one ONNX
+Runtime every ONNX model above runs on: `libonnxruntime.{dylib,so}` unversioned plus
+`VERSION`; published per platform by `release-models.sh`, fetched by the desktop
+downloader for its own target triple; the `.app` carries its own codesigned copy in
+`Contents/Frameworks`, which `models::onnx::ort_lib` prefers — 57 §6 step 2c) and
+`decisions/*.jsonl` (the oracle's append-only decision log, hashes not text — 57 §2)
 beside it — `10-knowledge.md`. No shared `Config` struct: each plugin
 extracts its own section
 (`rt.config.extract_inner::<AgentConfig>("agent")`), so `runtime` never knows
