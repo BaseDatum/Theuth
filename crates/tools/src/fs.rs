@@ -1,5 +1,6 @@
-//! `read_file`, `write_file`, `list_dir`, `grep`, `edit` over `tokio::fs`
-//! (12 §10). `read_file` renders documents as Markdown (20 §2.2).
+//! `read_file`, `write_file`, `list_dir`, `grep` over `tokio::fs` (12 §10);
+//! `edit` lives in [`crate::edit`]. `read_file` renders documents as
+//! Markdown (20 §2.2).
 //!
 //! Paths are resolved against the process cwd; `~` is not expanded.
 
@@ -23,7 +24,7 @@ pub const TRUNCATED_TAIL: &str =
 
 /// Err when `content` carries a `read_file` truncation marker: writing it
 /// back would persist a file cut at 64 KiB (the 2026-09-21 loss).
-fn refuse_truncated(content: &str) -> anyhow::Result<()> {
+pub(crate) fn refuse_truncated(content: &str) -> anyhow::Result<()> {
     anyhow::ensure!(
         !content.contains(TRUNCATED_HEAD_PREFIX) && !content.contains(TRUNCATED_TAIL),
         "refusing to write: content contains a read_file truncation marker — the source read was cut at 64 KiB; read with offset/limit or use edit for targeted changes"
@@ -288,75 +289,6 @@ fn grep(root: &Path, pattern: &str, glob: Option<&str>, limit: usize) -> anyhow:
     Ok(out.join("\n"))
 }
 
-/// Arguments for [`Edit`].
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub struct EditArgs {
-    /// File path, absolute or relative to the process cwd (no `~`).
-    pub path: PathBuf,
-    /// Exact text to replace.
-    pub old: String,
-    /// Replacement text.
-    pub new: String,
-    /// Replace every occurrence instead of requiring exactly one.
-    #[serde(default)]
-    pub all: bool,
-}
-
-/// Replace text in a file (12 §10).
-pub struct Edit;
-
-#[async_trait::async_trait]
-impl Tool for Edit {
-    const NAME: &'static str = "edit";
-    const RISK: Risk = Risk::Mutating;
-    type Args = EditArgs;
-
-    fn description(&self) -> String {
-        "Replace `old` with `new` in a text file. `old` must match exactly once unless `all` is true; nothing is written otherwise. A `new` carrying a read_file truncation marker is refused. Paths are relative to the process cwd; `~` is not expanded.".into()
-    }
-
-    async fn call(&self, a: EditArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
-        Ok(ToolOutput::ok(edit(&a.path, &a.old, &a.new, a.all).await?))
-    }
-}
-
-/// Replace `old` in the file at `path`; written atomically (tmp + rename),
-/// nothing touched on error.
-async fn edit(path: &Path, old: &str, new: &str, all: bool) -> anyhow::Result<String> {
-    anyhow::ensure!(!old.is_empty(), "`old` must not be empty");
-    refuse_truncated(new)?;
-    let bytes = tokio::fs::read(path)
-        .await
-        .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
-    let text =
-        String::from_utf8(bytes).map_err(|_| anyhow::anyhow!("{}: not UTF-8", path.display()))?;
-    let count = text.matches(old).count();
-    anyhow::ensure!(count > 0, "`old` not found in {}", path.display());
-    anyhow::ensure!(
-        count == 1 || all,
-        "`old` occurs {count} times in {}; pass all=true or make it unique",
-        path.display()
-    );
-    let n = if all { count } else { 1 };
-    let text = text.replacen(old, new, n);
-    let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".tmp");
-    let tmp = PathBuf::from(tmp);
-    let perm = tokio::fs::metadata(path).await?.permissions();
-    tokio::fs::write(&tmp, &text)
-        .await
-        .map_err(|e| anyhow::anyhow!("{}: {e}", tmp.display()))?;
-    tokio::fs::set_permissions(&tmp, perm).await?;
-    tokio::fs::rename(&tmp, path)
-        .await
-        .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
-    Ok(format!(
-        "edited {}: {n} replacement{}",
-        path.display(),
-        if n == 1 { "" } else { "s" }
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -423,7 +355,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn write_and_edit_refuse_truncation_markers() {
+    async fn write_refuses_truncation_markers() {
         let p = scratch("keep me");
         for content in [
             format!("{TRUNCATED_HEAD_PREFIX}0–1 of 2]\nbody"),
@@ -438,11 +370,6 @@ mod tests {
                 .unwrap_err()
                 .to_string();
             assert!(err.starts_with("refusing to write:"), "{err}");
-            let err = edit(&p, "keep", &content, false)
-                .await
-                .unwrap_err()
-                .to_string();
-            assert!(err.starts_with("refusing to write:"), "{err}");
             assert_eq!(std::fs::read_to_string(&p).unwrap(), "keep me");
         }
         let a = WriteFileArgs {
@@ -451,31 +378,5 @@ mod tests {
         };
         Tool::call(&WriteFile, a, cx()).await.unwrap();
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "plain");
-    }
-
-    #[tokio::test]
-    async fn edit_ambiguous_old_errors_and_leaves_file_untouched() {
-        let p = scratch("a foo b foo c");
-        let err = edit(&p, "foo", "bar", false).await.unwrap_err().to_string();
-        assert!(err.contains("occurs 2 times"), "{err}");
-        assert_eq!(std::fs::read(&p).unwrap(), b"a foo b foo c");
-        assert!(!p.with_extension("txt.tmp").exists());
-    }
-
-    #[tokio::test]
-    async fn edit_all_replaces_every_occurrence() {
-        let p = scratch("a foo b foo c");
-        let msg = edit(&p, "foo", "bar", true).await.unwrap();
-        assert!(msg.ends_with("2 replacements"), "{msg}");
-        assert_eq!(std::fs::read_to_string(&p).unwrap(), "a bar b bar c");
-    }
-
-    #[tokio::test]
-    async fn edit_single_occurrence_writes_expected_content() {
-        let p = scratch("line one\nline two\n");
-        let msg = edit(&p, "two", "2", false).await.unwrap();
-        assert!(msg.ends_with("1 replacement"), "{msg}");
-        assert_eq!(std::fs::read_to_string(&p).unwrap(), "line one\nline 2\n");
-        assert!(edit(&p, "missing", "x", false).await.is_err());
     }
 }

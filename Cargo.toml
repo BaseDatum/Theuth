@@ -59,6 +59,7 @@ tree-sitter-go = "0.25"  # 60
 # TS/JS (tsconfig paths, package.json exports), `toml` = pyproject package dirs.
 cargo_toml = "1"  # 60
 globset = "0.4"  # 60
+similar = "3"  # 12 §10 edit/write_file unified diffs
 oxc_resolver = "11"  # 60
 toml = "1"  # 60
 # Meetings (design doc 53): `rtrb` = lock-free rings between the capture threads and the encoder;

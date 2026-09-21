@@ -27,7 +27,8 @@ use crate::jobs::{CloseSessions, InstallActivity, JOBS_ACTOR, Jobs, lock};
 use crate::resources::{CloseAck, CloseTree, SessionResources, TreeOpened};
 use crate::{
     APPROVAL_ACTOR, ASK_ACTOR, DynTool, Policy, PolicyAction, REGISTRY_ACTOR, Risk, ToolCall,
-    ToolCx, ToolOutput, ToolSource, ToolSpec, ToolsConfig, fs, glob, jobs, pty, schema, shell,
+    ToolCx, ToolOutput, ToolSource, ToolSpec, ToolsConfig, edit, fs, glob, jobs, pty, schema,
+    shell,
 };
 
 /// [`CloseTreeAll`]'s wait on one participant before its ack is `timeout`.
@@ -1453,7 +1454,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
         Arc::new(fs::ListDir),
         Arc::new(fs::Grep),
         Arc::new(glob::Glob),
-        Arc::new(fs::Edit),
+        Arc::new(edit::Edit),
         Arc::new(AskUserTool(ask)),
     ];
     let registry = ToolRegistry::spawn_with_mailbox(

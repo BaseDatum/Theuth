@@ -27,6 +27,7 @@ pub mod approval;
 pub mod ask;
 pub mod communication;
 pub mod doc;
+pub mod edit;
 pub mod fs;
 pub mod git;
 pub mod glob;

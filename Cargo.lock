@@ -18524,6 +18524,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2 0.10.9",
+ "similar 3.2.0",
  "tokio",
  "tokio-util",
  "tracing",
