@@ -99,6 +99,7 @@ async fn shadow_runs_the_pipeline_and_active_gates() {
     }
     let engine = Engine::spawn(Engine::new(cfg, dir, Log::new(tmp.path().join("decisions"))));
     engine.register(decision::DECISION_ACTOR).unwrap();
+    let training = tmp.path().join("decisions/training/meeting");
     let meeting = MeetingId::new();
     let session = SessionId::new();
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -109,6 +110,7 @@ async fn shadow_runs_the_pipeline_and_active_gates() {
     let side = fake_side(r#"{"subject": "Planet Nine", "cached": null, "lookup": true}"#, seen.clone());
     let v = oracle::run(rt.clone(), None, Vec::new(), batch(&KUIPER), meeting, session, side.clone()).await;
     assert!(matches!(v.action, Action::Model { evidence: None }), "{:?}", v.action);
+    assert!(v.example.is_none(), "train is off by default");
     let e = v.event.expect("shadow emits the verdict");
     eprintln!(
         "shadow kuiper: {:?} tier {} in {} ms, stages {:?}, mentions {:?}, tier2 {:?}",
@@ -135,7 +137,95 @@ async fn shadow_runs_the_pipeline_and_active_gates() {
     let seen_events = events.lock().clone();
     assert!(seen_events.iter().any(|e| matches!(e, MeetingEvent::OracleDeciding { batch_id, .. } if batch_id == "00:14:32")));
     assert!(seen_events.iter().any(|e| matches!(e, MeetingEvent::OracleDecision { decision, .. } if decision.mode == Mode::Shadow)));
+    assert!(!training.exists(), "57 §11.4: train off → not even an empty directory");
 
+    // 57 §11.4: `meeting.train: true` — the same shadow batch writes one `example` row with the
+    // text, mentions, both questions (title candidates), tier 2's subject and the verdict; the
+    // turn's outcome and the user's tap arrive as `amend` rows on the same id.
+    let info = engine
+        .ask(decision::SetTrain {
+            prefix: oracle::PREFIX.to_owned(),
+            on: true,
+        })
+        .await
+        .unwrap();
+    assert!(info.enabled && info.examples_total == 0);
+    // A cache with two rows, so the brief question runs and its candidates carry titles.
+    let cache = Arc::new(meeting::Cache::open(tmp.path()).await.unwrap());
+    for (title, alias) in [("Mike's onboarding checklist", "onboarding"), ("Earth observation satellite budget", "EO budget")] {
+        cache
+            .put(
+                meeting::CachedBriefPut {
+                    id: None,
+                    title: title.into(),
+                    bullets: vec!["a fact".into(), "another".into()],
+                    aliases: vec![alias.into()],
+                    tags: Vec::new(),
+                },
+                "user",
+            )
+            .await
+            .unwrap();
+    }
+    let v = oracle::run(rt.clone(), Some(cache), Vec::new(), batch(&KUIPER), meeting, session, side.clone()).await;
+    let example = v.example.expect("captured");
+    oracle::amend(
+        example,
+        decision::training::Amendment::Outcome {
+            published: Some(decision::training::Brief {
+                id: None,
+                title: "Planet Nine".into(),
+            }),
+        },
+    );
+    oracle::amend(example, decision::training::Amendment::User(decision::training::Reaction::Tapped));
+    tokio::time::sleep(Duration::from_millis(200)).await; // `amend` is a spawned tell
+    let info = engine
+        .ask(decision::GetTrain {
+            prefix: oracle::PREFIX.to_owned(),
+        })
+        .await
+        .unwrap();
+    assert_eq!((info.examples_today, info.examples_total), (1, 1));
+    let files: Vec<_> = std::fs::read_dir(&training).unwrap().map(|e| e.unwrap().path()).collect();
+    assert_eq!(files.len(), 1, "one day file: {files:?}");
+    let text = std::fs::read_to_string(&files[0]).unwrap();
+    let rows: Vec<decision::training::Row> = text.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    eprintln!("example row: {}", text.lines().next().unwrap());
+    let decision::training::Row::Example(ex) = &rows[0] else { panic!("{rows:?}") };
+    assert_eq!((ex.schema.as_str(), ex.family.as_str(), ex.mode, ex.id), ("theuth.decision.v1", "meeting", Mode::Shadow, example));
+    assert!(ex.text.starts_with("them: So Mike was telling me") && ex.text.contains("\nme: Has anyone"), "{}", ex.text);
+    assert!(ex.mentions.iter().any(|m| m == "Planet Nine"), "{:?}", ex.mentions);
+    assert!(!ex.model_sha.is_empty() && ex.gate_version != 0);
+    assert_eq!(ex.questions.len(), 2, "{:?}", ex.questions);
+    assert_eq!((ex.questions[0].family.as_str(), ex.questions[0].kind.as_str()), (oracle::KIND, "bool"));
+    assert_eq!(ex.questions[0].instructions, oracle::KIND_STATEMENT);
+    assert!(ex.questions[0].probabilities.contains_key("true") && ex.questions[0].disposition == "shadow");
+    let b = &ex.questions[1];
+    assert_eq!((b.family.as_str(), b.kind.as_str(), b.instructions.as_str()), (oracle::BRIEF, "choice", oracle::BRIEF_INSTRUCTIONS));
+    assert!(b.candidates.iter().any(|c| c.text == "Mike's onboarding checklist"), "{:?}", b.candidates);
+    assert!(b.candidates.iter().all(|c| c.id.starts_with('b')) && b.probabilities.contains_key("none"), "{b:?}");
+    assert_eq!(
+        ex.tier2,
+        Some(decision::training::Tier2::Answer {
+            subject: Some("Planet Nine".into()),
+            cached: None,
+            lookup: true
+        })
+    );
+    assert!(matches!(&ex.verdict, decision::training::Verdict::Model { reason } if reason.contains("Planet Nine")), "{:?}", ex.verdict);
+    assert!(matches!(&rows[1], decision::training::Row::Amend(a) if a.id == example
+        && matches!(&a.what, decision::training::Amendment::Outcome { published: Some(b) } if b.title == "Planet Nine")), "{:?}", rows[1]);
+    assert!(matches!(&rows[2], decision::training::Row::Amend(a) if a.id == example
+        && a.what == decision::training::Amendment::User(decision::training::Reaction::Tapped)), "{:?}", rows[2]);
+    assert_eq!(rows.len(), 3);
+    engine
+        .ask(decision::SetTrain {
+            prefix: oracle::PREFIX.to_owned(),
+            on: false,
+        })
+        .await
+        .unwrap();
     // Active: the same batch reaches tier 3 with the subject-led evidence line first.
     engine
         .ask(decision::SetMode {

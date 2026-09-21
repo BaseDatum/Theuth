@@ -21,6 +21,7 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use agent::AgentEvent;
+use decision::training::{Amendment, ExampleId, Reaction};
 use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
 use kameo::reply::DelegatedReply;
@@ -1200,7 +1201,7 @@ impl Meeting {
         &mut self,
         batch: Vec<Utterance>,
         evidence: Option<String>,
-        pending: Option<(OracleDecision, oracle::Expected)>,
+        pending: Option<(OracleDecision, oracle::Expected, Option<ExampleId>)>,
     ) {
         let Some(rec) = self.current.as_mut() else { return };
         let carried = std::mem::take(&mut rec.live.carry);
@@ -1230,25 +1231,41 @@ impl Meeting {
     }
 
     /// 57 §3.4: the model turn ended — settle every pending oracle verdict against what the
-    /// turn published, report the outcomes to the decision log and update the events.
+    /// turn published, report the outcomes to the decision log and update the events. 57 §11.4:
+    /// captured examples get an `amend { outcome }`, and the published topics are remembered
+    /// so a tap or dismiss on them amends the same examples.
     async fn settle_pending(&mut self) {
         let Some(rec) = self.current.as_mut() else { return };
         if rec.live.pending.is_empty() {
             rec.live.published.clear();
+            rec.live.published_topics.clear();
             return;
         }
         let meeting = rec.manifest.id;
         let published = std::mem::take(&mut rec.live.published);
+        let topics = std::mem::take(&mut rec.live.published_topics);
         let pending = std::mem::take(&mut rec.live.pending);
         let engine = ActorRef::<decision::Engine>::lookup(decision::DECISION_ACTOR)
             .ok()
             .flatten();
-        for (mut event, expected) in pending {
+        for (mut event, expected, example) in pending {
             let (outcome, reports) = oracle::outcome(&expected, &published);
             if let Some(engine) = &engine {
                 for (log_id, outcome) in reports {
                     let _ = engine.tell(decision::Report { log_id, outcome }).await;
                 }
+            }
+            if let Some(id) = example {
+                oracle::amend(
+                    id,
+                    Amendment::Outcome {
+                        published: published.first().map(|(row, title)| decision::training::Brief {
+                            id: row.map(|r| r.to_string()),
+                            title: title.clone(),
+                        }),
+                    },
+                );
+                rec.live.captured.extend(topics.iter().map(|t| (*t, id)));
             }
             event.outcome = Some(outcome);
             self.rt
@@ -2067,7 +2084,7 @@ impl Message<oracle::Verdict> for Meeting {
     async fn handle(&mut self, v: oracle::Verdict, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let Some(rec) = self.current.as_mut() else { return };
         let pending = match (v.event, v.expected) {
-            (Some(e), Some(x)) => Some((e, x)),
+            (Some(e), Some(x)) => Some((e, x, v.example)),
             _ => None,
         };
         match v.action {
@@ -2079,6 +2096,10 @@ impl Message<oracle::Verdict> for Meeting {
                     Ok((topic, brief, expired)) => {
                         rec.live.log_record(&Record::Topic(topic.clone()));
                         rec.live.log_record(&Record::Brief(brief));
+                        // 57 §11.4: a tap or dismiss on this topic amends the example.
+                        if let Some(id) = v.example {
+                            rec.live.captured.push((topic.id, id));
+                        }
                         self.topics_gone(expired).await;
                         self.rt
                             .publish(MeetingEvent::TopicAdded { meeting, topic })
@@ -2214,6 +2235,7 @@ impl Message<TapTopic> for Meeting {
         // `meeting_brief` from the model, if any, is a second one.
         let brief = topic.brief.and_then(|b| rec.live.topics.brief(b).cloned());
         rec.live.prompted(Prompted::Tap(topic.id), topic.label.clone());
+        rec.live.react(topic.id, Reaction::Tapped);
         self.topic_gone(topic.id, TopicGone::Viewed).await;
         if let Some(mut brief) = brief {
             brief.source = BriefSource::Tap;
@@ -2236,6 +2258,7 @@ impl Message<DismissTopic> for Meeting {
             .topics
             .dismiss(m.topic)
             .ok_or("no such live topic")?;
+        rec.live.react(topic.id, Reaction::Dismissed);
         self.topic_gone(topic.id, TopicGone::Dismissed).await;
         self.deliver(session::dismissed_line(&topic.label)).await;
         Ok(())
@@ -2414,6 +2437,7 @@ impl Message<AddTopic> for Meeting {
         // 57 §3.4: the shadow outcome compares this with what the oracle said. `learnt` is the
         // row the model named; a new brief's own cache row is not a cached pick.
         rec.live.published.push((learnt, brief.title.clone()));
+        rec.live.published_topics.push(topic.id);
         rec.live.log_record(&Record::Brief(brief));
         self.topics_gone(expired).await;
         self.rt

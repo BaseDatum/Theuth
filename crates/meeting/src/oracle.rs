@@ -23,6 +23,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use decision::training::{self, Amendment, ExampleId};
 use decision::{Ask, Decision, Disposition, LogId, Mode, Question, Reason};
 use kameo::actor::ActorRef;
 use runtime::{Runtime, SessionId};
@@ -509,6 +510,24 @@ pub struct Verdict {
     pub event: Option<OracleDecision>,
     /// What to compare the model turn against (shadow, or a tier-3 turn).
     pub expected: Option<Expected>,
+    /// The training example written for this batch (57 §11.4), when `meeting.train` is on —
+    /// the key for the outcome and tap/dismiss amend rows.
+    pub example: Option<ExampleId>,
+}
+
+/// 57 §11.4: append an `amend` row for a captured example — the turn's outcome or the user's
+/// reaction — off the caller's mailbox. The engine drops it when capture was flipped off.
+pub fn amend(id: ExampleId, what: Amendment) {
+    tokio::spawn(async move {
+        if let Ok(Some(engine)) = ActorRef::<decision::Engine>::lookup(decision::DECISION_ACTOR) {
+            let _ = engine
+                .tell(decision::Capture {
+                    prefix: PREFIX.to_owned(),
+                    row: training::Row::Amend(training::Amend::new(id, what)),
+                })
+                .await;
+        }
+    });
 }
 
 /// Sends a `SideCall` to the `agent` plugin through the registry (57 §2 / 3b's snippet).
@@ -606,6 +625,7 @@ pub async fn run(
         action: Action::Model { evidence: None },
         event: None,
         expected: None,
+        example: None,
     };
     let Ok(Some(engine)) = ActorRef::<decision::Engine>::lookup(decision::DECISION_ACTOR) else {
         return today(batch);
@@ -621,6 +641,13 @@ pub async fn run(
     if info.effective == Mode::Off {
         return today(batch);
     }
+    // 57 §11.4: capture the batch as a training example when `meeting.train` is on.
+    let train = engine
+        .ask(decision::GetTrain {
+            prefix: PREFIX.to_owned(),
+        })
+        .await
+        .is_ok_and(|i| i.enabled);
     let id = batch_id(&batch);
     rt.publish(MeetingEvent::OracleDeciding {
         meeting,
@@ -677,6 +704,9 @@ pub async fn run(
         },
         budget,
     });
+    // The questions as asked, kept for the training example (`Ask` is consumed by the engine).
+    let kind_q = train.then(|| kind_ask.question.clone());
+    let brief_q = train.then(|| brief_ask.as_ref().map(|a| a.question.clone())).flatten();
     let Some(kind) = ask(&engine, kind_ask).await else {
         return today(batch);
     };
@@ -694,6 +724,7 @@ pub async fn run(
     let settled = settle(&kind, brief.as_ref(), &mentions);
     let mut subject = None;
     let mut tier2 = None;
+    let mut tier2_result: Option<training::Tier2> = None;
     let mut subject_row: Option<(LogId, String)> = None;
     let (family, disposition, action) = match &settled {
         Settled::Skip => (KIND, OracleDisposition::Skip, Action::Skip),
@@ -729,6 +760,11 @@ pub async fn run(
             match decision::subject::extract(&req, session, escalate_budget, &*side).await {
                 Ok((answer, log_id)) => {
                     subject = answer.subject.clone();
+                    tier2_result = Some(training::Tier2::Answer {
+                        subject: answer.subject.clone(),
+                        cached: answer.cached.clone(),
+                        lookup: answer.lookup,
+                    });
                     let label = match &answer.cached {
                         Some(cid) => row_for(&rows, cid).map_or_else(|| cid.clone(), |r| r.id.to_string()),
                         None => answer.choice(),
@@ -777,6 +813,7 @@ pub async fn run(
                 }
                 Err(e) => {
                     tier2 = Some(e.to_string());
+                    tier2_result = Some(training::Tier2::Error { error: e.to_string() });
                     let why = format!("{reason}; tier 2: {e}");
                     (
                         KIND,
@@ -800,6 +837,24 @@ pub async fn run(
             .chain(subject_row.into_iter().map(|(log_id, label)| (log_id, SUBJECT.to_owned(), label)))
             .collect(),
     };
+    // 57 §11.4: the example — every question with its titles and numbers, tier 2, the verdict
+    // (Skip and Publish included: a skipped small-talk batch is a negative example). Written by
+    // the engine, which drops it if capture was flipped off meanwhile.
+    let example = kind_q.map(|kq| {
+        let mut questions = vec![training::Asked::new(&kq, &kind)];
+        if let (Some(bq), Some(b)) = (&brief_q, &brief) {
+            questions.push(training::Asked::new(bq, b));
+        }
+        let verdict = match &disposition {
+            OracleDisposition::Skip => training::Verdict::Skip,
+            OracleDisposition::Brief { brief, title } => training::Verdict::Publish {
+                id: brief.to_string(),
+                title: title.clone(),
+            },
+            OracleDisposition::Model { reason } => training::Verdict::Model { reason: reason.clone() },
+        };
+        training::Example::new(PREFIX, mode, text, mentions.clone(), questions, tier2_result.take(), verdict)
+    });
     let event = OracleDecision {
         batch_id: id,
         family: family.to_owned(),
@@ -823,6 +878,19 @@ pub async fn run(
         decision: event.clone(),
     })
     .await;
+    let example = match example {
+        Some(e) => {
+            let id = e.id;
+            let _ = engine
+                .tell(decision::Capture {
+                    prefix: PREFIX.to_owned(),
+                    row: training::Row::Example(Box::new(e)),
+                })
+                .await;
+            Some(id)
+        }
+        None => None,
+    };
     // Shadow: today's path exactly — no evidence line, so the outcome is an independent label.
     let action = match (mode, action) {
         (Mode::Shadow, _) => Action::Model { evidence: None },
@@ -834,6 +902,7 @@ pub async fn run(
         action,
         event: Some(event),
         expected,
+        example,
     }
 }
 

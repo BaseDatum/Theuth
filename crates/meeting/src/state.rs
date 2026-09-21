@@ -10,6 +10,8 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
+use decision::training::{Amendment, ExampleId, Reaction};
+
 use crate::batch::Batcher;
 use crate::capture::Capture;
 use crate::store::{Gap, Manifest};
@@ -163,10 +165,15 @@ pub struct Live {
     /// context into the next delivered batch line, then cleared. Oldest first.
     pub carry: Vec<(String, Vec<Utterance>)>,
     /// 57 §3.4: oracle verdicts whose model turn has not finished — the event to update with
-    /// the outcome and what the oracle expected.
-    pub pending: Vec<(crate::OracleDecision, crate::oracle::Expected)>,
+    /// the outcome, what the oracle expected, and the training example to amend (57 §11.4).
+    pub pending: Vec<(crate::OracleDecision, crate::oracle::Expected, Option<ExampleId>)>,
     /// Cached rows (and titles) `meeting_topic` registered since the last turn ended.
     pub published: Vec<(Option<BriefId>, String)>,
+    /// The topics behind `published`, same order, for the tap/dismiss amend rows.
+    pub published_topics: Vec<TopicId>,
+    /// 57 §11.4: live topics whose brief a captured example produced (the oracle's own publish,
+    /// or the model's in a turn that had captured batches) → the example ids to amend on tap/dismiss.
+    pub captured: Vec<(TopicId, ExampleId)>,
     /// `live.jsonl`, append-only.
     live_log: Option<File>,
     /// `briefs.jsonl`, append-only.
@@ -200,6 +207,17 @@ impl Live {
                 tracing::warn!("meeting: append log: {e}");
             }
         }
+    }
+
+    /// 57 §11.4: the user tapped or dismissed `topic` — amend every captured example behind it,
+    /// once; the topic is gone from the live set after this.
+    pub fn react(&mut self, topic: TopicId, reaction: Reaction) {
+        self.captured.retain(|(t, id)| {
+            if *t == topic {
+                crate::oracle::amend(*id, Amendment::User(reaction));
+            }
+            *t != topic
+        });
     }
 
     /// Remember a steer that a brief may answer.
@@ -262,6 +280,8 @@ impl Recording {
                 carry: Vec::new(),
                 pending: Vec::new(),
                 published: Vec::new(),
+                published_topics: Vec::new(),
+                captured: Vec::new(),
                 live_log: Live::open_log(dir, crate::LIVE_LOG),
                 briefs_log: Live::open_log(dir, crate::BRIEFS_LOG),
             },
@@ -287,6 +307,8 @@ mod tests {
             carry: Vec::new(),
             pending: Vec::new(),
             published: Vec::new(),
+            published_topics: Vec::new(),
+            captured: Vec::new(),
             live_log: None,
             briefs_log: None,
         }
