@@ -1182,3 +1182,196 @@ diffs are fine.
   that vanishes.
 - `just ts-desktop` and `just desktop` are slow (test-profile build, helper
   build); `desktop` now depends on `documents-helper`.
+
+## 18. As built — step 2 (2026-09-21)
+
+Step 2 of §14 on `feature/documents`: b376459 (helper `edit`), e935e43
+(document crate: tools, Agent principal, Authored, presence, undo),
+400b5da (rpc `doc_undo_agent`), 16801c3 (desktop: reveal, attribution,
+presence, Ask theuth), a05e9c2 (fixes from the smoke). §17 deviations
+stand. Where §5–§6 and this section differ, this section is what exists.
+
+### 18.1 What was built
+
+**Helper (`packages/documents`, protocol `59.2`).** `edit` applies
+`Edit[]` as one tree rewrite on `blocks(o)` followed by ONE
+`ydoc.transact(blocksToYXmlFragment, {helper, touched})`; a failing edit
+throws `EditFailure` *before* any write, so a batch is atomic. `insert`
+(`after` | `before` | `at: "start"|"end"`, several top-level blocks
+allowed; before-frontmatter / start lands after the frontmatter block),
+`replace` (removes the run, parses at the first removed position),
+`delete` (deleting the whole body leaves one empty paragraph), and a
+fourth variant `restore {remove, blocks, anchor}` that puts exact block
+JSON back at `Anchor{after?|before?|at?|childOf?}` — this is the undo
+payload. `EditResult {inserted, removed, touched, undo: Restore[]}` (undo
+newest-first, one per applied edit). `EditError {code: unknown_block{id,
+nearest} | frontmatter_immutable{id} | bad_edit{message}}` travels as JSON
+in the `error` string; `nearest` = ids ±3 in outline order around the
+longest-common-prefix match. `markdown` gained `blocks?`, `annotate?`
+(`<!-- id -->` / `<!-- id by name -->` per block) and `authors?`; the
+outline already matched §5.1 (golden test added). Typographic bullets the
+model copies from the outline (`• `, `◦ `, `▪ `) parse as `- `.
+
+**Document crate.** `Principal::Agent{session}` stamps every update a tool
+call produces (updates.log tag 2 + session bytes, `DocEvent::Update.by`).
+Messages: `Edit{doc, edits, by} → Result<EditOutcome{inserted,removed},
+EditError>` (helper reply and `ev:update` arrive on two tasks; the
+`PendingEdit` lives until both did), `UndoLastAgentEdit{doc}` (re-asks
+`Edit` with the stored `Restore[]` as `Principal::Owner{device: None}`,
+one level, in memory, "no agent edit to undo"), `Outline`, `Markdown`,
+`CreateNote{title, markdown, by}` (kind `note`, derived
+`documents/<id>/note.md`, title kept on export), `ClearAgentPresence`
+(generation-guarded, 2 s after the last presence). `apply(.., touched)`
+fans out `DocEvent::Authored{blocks, by: Agent}` *before* the `Update` so
+the UI has the ids when the update lands. Agent presence rides the
+authority's **own** awareness client (it never edits, so its state *is*
+the agent's): `{user:{name:"theuth",color}, name, color, agent:{doc,
+blocks, at}}`, set with `blocks: []` at edit start and again with
+`touched` when the update arrives, cleared 2 s later;
+`documents.agent_color` (default `#7c3aed`) in config and README.
+
+**Tools (`crates/document/src/tools.rs`, registered in `Plugin::start`
+via `lookup_when::<ToolRegistry>`; `document` now depends on `tools`).**
+`doc_read(doc, format="outline"|"markdown", blocks?, depth?)` — ReadOnly,
+RETURNS `dict` `{text, blocks:[{id,type,text,children}]}` (structured);
+`doc_insert(doc, markdown, after?|before?|at?)` (exactly one; default
+`at="end"`), `doc_replace(doc, blocks, markdown)`, `doc_delete(doc,
+blocks)`, `doc_create(title, markdown?) → {doc, url:
+"theuth://notes/<id>"}` — Mutating. `doc` is a DocId or
+`knowledge:<id>` (also a bare id containing `/`): `Lookup`, else read
+`<data_dir>/knowledge/<id>.md` and `Ensure` — `document` does not depend
+on `knowledge`. Model-facing errors: "no block `x` in this document;
+nearest ids in outline order: …. Read the outline again and quote an id
+from it." and "…is the frontmatter block; edit metadata with
+`knowledge_put`". Prompt block (§5.4, `PROMPT`, ~760 chars) adds one
+clause the smoke asked for: a replaced block gets a new id (returned) —
+anchor later inserts on it, or put everything in the one `doc_replace`.
+
+**RPC.** `doc_undo_agent(doc) -> ()`; `DocEvent::Authored` is in the
+subscription item type; bindings regenerated (`just ts-desktop`).
+
+**Desktop.** `HarnessProvider.onAuthored(cb)`, `agentEdits` (count since
+open), `agentPresence()` (any awareness state with an `agent` field for
+this doc). `components/editor/reveal.ts`: the §6.4 reveal as a ProseMirror
+plugin; attribution map `blockId → {who, at, session?}` fed by `Authored`
+(agent) and by local non-y-sync transactions (owner = blocks under the
+transaction's selection); node decoration `data-authored="theuth · hh:mm"`
+rendered as a hover chip by CSS under `@media (pointer: fine)`. Footer
+`theuth` chip while `agentPresence()` is non-null. Slash item and page-menu
+"Ask theuth…" prefill the new chat's composer with `[doc knowledge:<id>
+"<title>"]\n` (+ `about block <id>: ` from the slash item) and navigate to
+`/`; the user sends. Page-menu "Undo last agent edit" → `doc_undo_agent`,
+disabled until `agentEdits > 0`. `useDocument` is hoisted into
+`knowledge/Document.tsx`'s `Doc` (`LiveDocument` type). Explicit
+`prosemirror-state/view/model` deps.
+
+### 18.2 The ProseMirror hook
+
+BlockNote 0.54: `useCreateBlockNote(withCollaboration({..., extensions:
+[revealExtension(provider, color)]}))`, where `revealExtension` is
+`createExtension(({editor}) => ({key: 'theuthReveal', prosemirrorPlugins:
+[plugin], mount() {...}}))()` — `createExtension` returns a *creator*, called
+once; `mount()` runs on every editor mount and subscribes
+`provider.onAuthored` → `view.dispatch(tr.setMeta(revealKey, {type:
+'authored', blocks, at, session}))`. The plugin keeps `pending` Authored ids
+(forgotten after 5 s) and starts a reveal when a `docChanged` transaction
+contains those `blockContainer` nodes (`attrs.id`): an inline decoration
+`.theuth-reveal-hidden` (`color: transparent`, no reflow) from the k-th
+character to the block end, a node decoration `.theuth-revealing` (left
+rule in the agent colour), a widget `.theuth-agent-caret` "theuth" at the
+first revealing block; rAF ticks dispatch `tick` metas;
+`revealDuration(len) = min(1500, len / 24 × 1000)`. A selection set inside
+a revealing block ends it; `prefers-reduced-motion` → `.theuth-reveal-flash`
+600 ms. Pure helpers (`revealDuration`, `revealedChars`, `attribute`,
+`attributionLabel`) are unit-tested.
+
+### 18.3 Undo scoping — observed
+
+y-prosemirror's `yUndoPlugin` (BlockNote `YUndoExtension`) tracks only
+`ySyncPluginKey`-origin transactions; the provider applies harness updates
+with origin `'harness'`. Observed in the browser (§18.5 #3): after an agent
+`doc_replace` the `UndoManager.undoStack` was `0`; typing ` local` made it
+`1`; Cmd-Z removed ` local` and left the agent's block; two more Cmd-Z were
+no-ops. **Found and fixed on the way:** `yUndoPlugin` keeps its
+`UndoManager` in plugin *state* but `destroy`s it in `view.destroy`; any
+view remount — our `editable` prop flipping when the document goes live,
+React StrictMode in dev — left Cmd-Z dead for the whole session (step 1
+shipped like that). `reveal.ts` `reviveUndo()` re-attaches the manager on
+`mount()` (`um.trackedOrigins.add(um)`, `um.doc.on('afterTransaction',
+um.afterTransactionHandler)`; marked `ponytail:` — drop when upstream fixes
+it).
+
+### 18.4 Deviations from §5–§6
+
+1. Undo payload is `Restore[]` (exact block JSON + anchor, produced by the
+   helper), not a `doc_replace` computed from a snapshot; Rust stores it
+   opaque. One level, in memory, lost on unload.
+2. `EditError` travels as JSON in the helper's `error` string.
+3. Agent awareness is the authority's own awareness client, not a separate
+   synthetic client; the agent has no ProseMirror cursor — the footer chip
+   and the reveal plugin's own "theuth" caret label stand in.
+4. Presence is sent twice per edit (blocks `[]` at start, `touched` with the
+   update) and cleared 2 s after the last; a *failed* edit no longer clears
+   it (a05e9c2: the clear dropped a concurrent successful edit's presence).
+5. `doc_read` RETURNS `dict` = `{text, blocks}` (text included so the
+   runtime has both), not `str`.
+6. `removedBy` (member text) not implemented — no members until step 7.
+7. `document` depends on `tools` (step-1 deviation 1 undone). The two
+   integration tests in `tests/actor.rs` share the actor name and are
+   serialised with a static tokio `Mutex`.
+8. Notes keep their created title on export (`ExportDone` skips the retitle
+   for `DocKind::Note`).
+9. `knowledge:<id>` resolution reads `<data_dir>/knowledge/<id>.md`
+   directly rather than asking the knowledge actor.
+10. Composer marker: prefill the new chat's in-memory draft and navigate to
+    `/`; the user sends. The slash item appends `about block <id>: `.
+11. Owner attribution = blocks under the selection of each local
+    `docChanged` transaction (heuristic; no Yjs internals).
+12. `•`/`◦`/`▪` bullet markers in tool markdown are read as `- ` (models
+    copy the outline's marker; seen in every smoke turn).
+13. Pre-existing: `meta::tests::doc_id_…` (uuid v7 ordering) flaked once;
+    workspace clippy fails on `crates/tools` — clippy run per crate.
+
+### 18.5 Checks (§14 row 2 / brief "done when")
+
+Smoke as in step 1: `t --headless` on `127.0.0.1:7791` with
+`THEUTH_DATA_DIR=/tmp/theuth-59-data` (`THEUTH_SECRETS__KEY_STORE=file` —
+the rebuilt binary otherwise blocks on the Keychain prompt;
+`THEUTH_TOOLS__APPROVALS=false`), Vite dev with `VITE_THEUTH_URL/TOKEN`,
+headless Chromium via the omp `browser`, a scripted jsonrpsee client
+(`new_session` / `send_input` / `subscribe_events`) as the "session", model
+`anthropic/claude-sonnet-4-5`, a `doc_subscribe` watcher decoding awareness
+frames. No Tauri shell, no TUI.
+
+| # | Check | Outcome |
+|---|-------|---------|
+| 1 | `cargo check --workspace`; `cargo test -p document` (13 unit + 2 integration incl. `agent_tools_edit_attribute_and_undo`); helper `bun test` 75; UI `tsc -b` + vitest 197; `vite build`; clippy `-p document -D warnings` | all green |
+| 2 | Session: "replace the second bullet with 'X' and add a bullet 'Y' after it" | `doc_read` → one python cell with `doc_replace` + `doc_insert`; the insert anchored on the *removed* id → helper error with nearest ids → one more `doc_insert` on the new id (prompt clause added since). Each tool call = one `Update by agent`; editor revealed `• X` (3 chars, ~130 ms) and `• Y`; `KnowledgeChanged sync` 0.7–0.8 s after each edit; file diff = exactly those two lines |
+| 2b | Single `doc_replace` turns (×2) and `doc_insert` turns (×4) | one update each; 81-char insert revealed over 1489 ms (cap 1.5 s), 82 frames, caret widget present throughout; footer `theuth` chip from edit start to 2 s after the update (decoded awareness: clock n `blocks: []`, clock n+1 `blocks: [id]`, clock n+2 `null` at +2.0 s) |
+| 3 | Cmd-Z after an agent edit | undo stack 0 after the agent edit; local typing → 1; Cmd-Z undid the typing only; further Cmd-Z no-ops. Page-menu "Undo last agent edit" restored `• Y`; export md5 `84d9c484…` identical to the pre-edit file |
+| 4 | Hover the agent's block; status line during the call | `[data-authored="theuth · 08:45 PM"]`, `::after` content rendered (screenshot `/tmp/theuth-59-smoke/hover.png`); footer chip `theuth` visible in every edit's observer log |
+| 5 | `doc_create("Scratch", "# Scratch\n\nhello")` from a session; `doc_list(kind=note)` | `documents/agqmlbgmk57ybm2rdgyj7kcery/note.md` = `# Scratch\n\nhello`; `doc_list("note")` → `[{id, kind: "note", title: "Scratch", binding: "note", bytes: 491}]` |
+| 6 | "Ask theuth…" page menu | navigates to `/`, composer draft = `[doc knowledge:facts/… "BlockNote / Yjs / yrs — …"]\n` |
+
+Not captured: a mid-reveal screenshot (Puppeteer `waitForSelector` never
+saw `.theuth-revealing` although the in-page `MutationObserver` logged
+every frame — a harness quirk, not investigated). Not observed:
+`prefers-reduced-motion`, member attribution.
+
+### 18.6 Left for step 3 (and noticed on the way)
+
+- Notes UI (`theuth://notes/<id>` route, list), IndexedDB offline queue,
+  `daily` snapshot, awareness rate limit — unchanged from §17.6.
+- `removedBy` / member attribution (step 7); restamping `timestamp`/`source`
+  on editor edits (§17 deviation 3).
+- The model batches `doc_replace` + `doc_insert` in one python cell before
+  seeing the new ids (row 2). Options if the prompt clause is not enough:
+  let `doc_insert.after` accept an id the same turn's replace removed
+  (map to its replacement), or return the replacement id in the replace
+  result text more loudly.
+- Attribution map and `agentEdits` reset on reload (in memory by design);
+  "Undo last agent edit" is one level and forgotten on unload.
+- `reviveUndo` should go when BlockNote/y-prosemirror stop destroying the
+  UndoManager on view destroy.
+- Debug builds block on the macOS Keychain prompt for the vault key after
+  every rebuild; `THEUTH_SECRETS__KEY_STORE=file` for smoke data dirs.
