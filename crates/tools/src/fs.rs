@@ -115,7 +115,8 @@ pub struct WriteFileArgs {
     pub content: String,
 }
 
-/// Write (create or replace) a text file, creating parent directories.
+/// Write (create or replace) a text file atomically, creating parent
+/// directories; an overwrite reports a unified diff.
 pub struct WriteFile;
 
 #[async_trait::async_trait]
@@ -123,27 +124,80 @@ impl Tool for WriteFile {
     const NAME: &'static str = "write_file";
     const RISK: Risk = Risk::Mutating;
     type Args = WriteFileArgs;
+    const RETURNS: &'static str = "dict";
 
     fn description(&self) -> String {
-        "Create or overwrite a file with the given content; parent directories are created. Content carrying a read_file truncation marker is refused. Paths are relative to the process cwd; `~` is not expanded.".into()
+        "Create or overwrite a file with the given content; parent directories are created and the write is atomic. Overwriting an existing text file returns a unified diff of the change; identical content is a no-op. Content carrying a read_file truncation marker is refused. Paths are relative to the process cwd; `~` is not expanded.".into()
     }
 
     async fn call(&self, a: WriteFileArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
         refuse_truncated(&a.content)?;
-        if let Some(parent) = a.path.parent().filter(|p| !p.as_os_str().is_empty()) {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|e| anyhow::anyhow!("{}: {e}", parent.display()))?;
-        }
-        tokio::fs::write(&a.path, &a.content)
-            .await
-            .map_err(|e| anyhow::anyhow!("{}: {e}", a.path.display()))?;
-        Ok(ToolOutput::ok(format!(
-            "wrote {} bytes to {}",
-            a.content.len(),
-            a.path.display()
-        )))
+        let shown = a.path.display().to_string();
+        let existing = match tokio::fs::read(&a.path).await {
+            Ok(bytes) => Some(bytes),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => anyhow::bail!("{shown}: {e}"),
+        };
+        let bytes = a.content.len();
+        let mut diff = crate::edit::Diff::default();
+        let (head, replaced) = match &existing {
+            Some(old) if old.as_slice() == a.content.as_bytes() => {
+                let mut out = ToolOutput::ok(format!("{shown} unchanged ({bytes} bytes)"));
+                out.structured = Some(write_structured(&shown, bytes, false, &diff));
+                return Ok(out);
+            }
+            Some(old) => match std::str::from_utf8(old) {
+                Ok(text) => {
+                    diff = crate::edit::unified(text, &a.content, &shown);
+                    let head = format!(
+                        "wrote {bytes} bytes to {shown} (replaced {} bytes, +{} −{} lines)\n{}",
+                        old.len(),
+                        diff.added,
+                        diff.removed,
+                        diff.text
+                    );
+                    (head, true)
+                }
+                // A binary original has no line diff worth showing.
+                Err(_) => (
+                    format!(
+                        "wrote {bytes} bytes to {shown} (replaced {} non-UTF-8 bytes)",
+                        old.len()
+                    ),
+                    true,
+                ),
+            },
+            None => {
+                if let Some(parent) = a.path.parent().filter(|p| !p.as_os_str().is_empty()) {
+                    tokio::fs::create_dir_all(parent)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("{}: {e}", parent.display()))?;
+                }
+                (format!("created {shown} ({bytes} bytes)"), false)
+            }
+        };
+        crate::edit::write_atomic(&a.path, a.content.as_bytes()).await?;
+        let mut out = ToolOutput::ok(head);
+        out.structured = Some(write_structured(&shown, bytes, !replaced, &diff));
+        Ok(out)
     }
+}
+
+fn write_structured(
+    path: &str,
+    bytes: usize,
+    created: bool,
+    diff: &crate::edit::Diff,
+) -> serde_json::Value {
+    serde_json::json!({
+        "path": path,
+        "bytes": bytes,
+        "created": created,
+        "added": diff.added,
+        "removed": diff.removed,
+        "diff": diff.text,
+        "truncated": diff.truncated,
+    })
 }
 
 /// Arguments for [`ListDir`].
@@ -378,5 +432,88 @@ mod tests {
         };
         Tool::call(&WriteFile, a, cx()).await.unwrap();
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "plain");
+    }
+
+    async fn write(path: &Path, content: &str) -> anyhow::Result<ToolOutput> {
+        let a = WriteFileArgs {
+            path: path.to_owned(),
+            content: content.into(),
+        };
+        Tool::call(&WriteFile, a, cx()).await
+    }
+
+    fn no_tmp_left(path: &Path) -> bool {
+        let name = path.file_name().unwrap().to_str().unwrap().to_owned();
+        !std::fs::read_dir(path.parent().unwrap()).unwrap().any(|e| {
+            e.unwrap()
+                .file_name()
+                .to_str()
+                .unwrap()
+                .starts_with(&format!("{name}.tmp-"))
+        })
+    }
+
+    #[tokio::test]
+    async fn write_creates_with_parents() {
+        let dir = std::env::temp_dir().join(format!("theuth-write-{}", uuid::Uuid::new_v4()));
+        let p = dir.join("a/b/new.txt");
+        let out = write(&p, "hello\n").await.unwrap();
+        assert_eq!(out.content, format!("created {} (6 bytes)", p.display()));
+        let s = out.structured.unwrap();
+        assert_eq!(
+            (s["created"].as_bool(), s["bytes"].as_u64()),
+            (Some(true), Some(6))
+        );
+        assert_eq!(s["diff"], "");
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "hello\n");
+        assert!(no_tmp_left(&p));
+    }
+
+    #[tokio::test]
+    async fn write_overwrite_reports_diff_and_identical_is_a_no_op() {
+        let p = scratch("one\ntwo\n");
+        let out = write(&p, "one\n2\nthree\n").await.unwrap();
+        let shown = p.display().to_string();
+        assert_eq!(
+            out.content,
+            format!(
+                "wrote 12 bytes to {shown} (replaced 8 bytes, +2 −1 lines)\n--- a/{shown}\n+++ b/{shown}\n@@ -1,2 +1,3 @@\n one\n-two\n+2\n+three\n"
+            )
+        );
+        let s = out.structured.unwrap();
+        assert_eq!(s["created"], false);
+        assert_eq!(
+            (s["added"].as_u64(), s["removed"].as_u64()),
+            (Some(2), Some(1))
+        );
+        let before = std::fs::metadata(&p).unwrap().modified().unwrap();
+        let out = write(&p, "one\n2\nthree\n").await.unwrap();
+        assert_eq!(out.content, format!("{shown} unchanged (12 bytes)"));
+        assert_eq!(std::fs::metadata(&p).unwrap().modified().unwrap(), before);
+        assert!(no_tmp_left(&p));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_preserves_permissions_and_leaves_no_tmp_on_error() {
+        use std::os::unix::fs::PermissionsExt;
+        let p = scratch("#!/bin/sh\n");
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o700)).unwrap();
+        write(&p, "#!/bin/sh\necho\n").await.unwrap();
+        assert_eq!(
+            std::fs::metadata(&p).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+
+        let dir = std::env::temp_dir().join(format!("theuth-write-ro-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("f.txt");
+        std::fs::write(&p, "old").unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let err = write(&p, "new").await.unwrap_err().to_string();
+        assert!(err.contains(".tmp-"), "{err}");
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "old");
+        assert!(no_tmp_left(&p));
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
 }
