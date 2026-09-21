@@ -1,0 +1,40 @@
+Third-party code in this crate
+==============================
+
+crates/decision/src/candle/{model,weights,config}.rs are vendored from
+
+    laya-rs 0.1.0 — "Laya typed decisions in Rust: native candle inference for
+    choice, score and noul questions"
+    authors: "laya-rs contributors" (crates.io publisher bob-rietveld)
+    license: Apache-2.0
+    source:  https://static.crates.io/crates/laya-rs/laya-rs-0.1.0.crate
+             (src/model.rs, src/weights.rs, src/config.rs, published 2026-09-20)
+    repository as declared: https://github.com/bob-rietveld/laya-rs (404 at the
+             time of vendoring, 2026-09-21; the tarball carries no LICENSE or
+             NOTICE file — its README states Apache-2.0 and credits upstream
+             Laya (Convai Innovations, Apache-2.0) and the MLX port it follows,
+             mizorewww/laya-mlx)
+
+The crate as a whole is licensed under the repository's terms; the vendored
+files stay under Apache-2.0. Licensed under the Apache License, Version 2.0
+(the "License"); you may not use these files except in compliance with the
+License. You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+
+Local changes to the vendored files (design doc 57, follow-up 1):
+
+- every file: a provenance header and `#![allow(missing_docs, clippy::manual_is_multiple_of)]` (the crate
+  warns on undocumented public items and denies a lint newer than the code; the text is otherwise untouched)
+- config.rs: `laya_core::error::{Error, Result}` replaced by a local
+  `Error::Config(String)` + `Result` alias (laya-core is not a dependency);
+  `AgentConfig::temperature_for` (used laya-core's `temp_bucket`; ours is
+  `laya::LayaConfig::temperature`) and the `raw: Value` field (kept upstream
+  for their `convert` command) removed
+- model.rs: `use crate::config` → `use super::config`; the Metal mask
+  regression test is gated on `cfg(target_os = "macos")` instead of the
+  crate feature `metal`, which does not exist here (Metal is a target dependency)

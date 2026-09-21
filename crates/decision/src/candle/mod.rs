@@ -1,19 +1,24 @@
-//! The candle backend (57 §12.8): laya-rs's `DecisionModel` — ModernBERT + decision head — over
-//! the `safetensors` checkpoint, on Metal (f16) or CPU (f32). Only the forward pass is theirs:
-//! rendering ([`build_sequence`]), padding ([`collate`]), calibration and confidence
-//! ([`postprocess`]), the gate and the log are the ORT path's, so the two engines are
-//! interchangeable behind [`Oracle`].
+//! The candle backend (57 §12.8): laya-rs 0.1.0's `DecisionModel` — ModernBERT + decision head,
+//! vendored in [`model`], [`weights`], [`config`] — over the `safetensors` checkpoint, on Metal
+//! (f16) or CPU (f32). Only the forward pass is theirs: rendering ([`build_sequence`]), padding
+//! ([`collate`]), calibration and confidence ([`postprocess`]), the gate and the log are the ORT
+//! path's, so the two engines are interchangeable behind [`Oracle`].
+
+pub mod config;
+pub mod model;
+pub mod weights;
 
 use std::path::Path;
 use std::time::{Duration, Instant};
 
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
-use laya::config::{AgentConfig, EncoderConfig};
-use laya::model::DecisionModel;
-use laya::weights::SanitizedBackend;
 use sha2::{Digest, Sha256};
 use tokenizers::Tokenizer;
+
+use self::config::{AgentConfig, EncoderConfig};
+use self::model::DecisionModel;
+use self::weights::SanitizedBackend;
 
 use crate::engine::{CANDLE_FILES, Oracle};
 use crate::laya::{Batch, LayaConfig, RowOut, Sequence, build_sequence, collate, postprocess};
