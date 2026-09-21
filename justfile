@@ -94,6 +94,12 @@ package-update-macos:
 stage-linux:
     ./scripts/stage-linux.sh
 
+# Linux desktop bundles (.deb, .rpm, .AppImage) with the `t` sidecar, staged at s3://theuth/staging/<ver>/
+# beside the CLI tarball (scripts/package-linux.sh). Native only: run on a Linux box of the target arch.
+# THEUTH_SKIP_UPLOAD=1 stops after target/release/dist.
+package-linux:
+    ./scripts/package-linux.sh
+
 # Gates, sign, upload <ver>/, verify, latest.json, tap bump (39 §5.2-5.4). Needs THEUTH_S3_*/THEUTH_UPDATE_KEY in .env.signing.
 release-s3:
     ./scripts/release-s3.sh

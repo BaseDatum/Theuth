@@ -5,7 +5,7 @@
 import { convertFileSrc } from '@tauri-apps/api/core'
 import { LOCAL } from '@/link/harnesses'
 import type { Api } from '@/rpc/api'
-import { container } from './platform'
+import { isDesktop } from './platform'
 
 const MIME: Record<string, string> = {
   png: 'image/png',
@@ -53,8 +53,8 @@ export async function putAttachment(api: Api, file: Blob, ext: string, session?:
   return session ? api.put_session_attachment(session, b64, ext) : api.put_attachment(b64, ext)
 }
 
-/** The file is on this machine (macOS shell talking to the local daemon): paths open, reveal and `asset://` work. */
-export const isLocal = (active: string): boolean => container() === 'macos' && active === LOCAL
+/** The file is on this machine (desktop shell talking to the local daemon): paths open, reveal and `asset://` work. */
+export const isLocal = (active: string): boolean => isDesktop() && active === LOCAL
 
 const LRU_MAX = 50
 /** Blob URLs by harness path, insertion-ordered; re-inserted on hit so the oldest is first. */

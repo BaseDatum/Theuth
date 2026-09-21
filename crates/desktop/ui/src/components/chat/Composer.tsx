@@ -21,7 +21,7 @@ import * as dictation from '@/lib/dictation'
 import { extFor, putAttachment } from '@/lib/files'
 import { usePanes } from '@/lib/panes'
 import { attach, expand, type Pastes, prune, token, tokenize } from '@/lib/pastes'
-import { container, touch } from '@/lib/platform'
+import { isDesktop, touch } from '@/lib/platform'
 import { VIEW, isPrivate, usePrivate } from '@/lib/private'
 import { queryKeys, useApi } from '@/lib/rpc'
 import * as speech from '@/lib/speech'
@@ -103,8 +103,8 @@ export function Composer({
 }) {
   const api = useApi()
   const active = useHarnesses((s) => s.active)
-  // Host paths (native drop / dialog) only mean something to the daemon on this Mac.
-  const hostFiles = container() === 'macos' && active === LOCAL
+  // Host paths (native drop / dialog) only mean something to the daemon on this machine.
+  const hostFiles = isDesktop() && active === LOCAL
   const fileInput = useRef<HTMLInputElement>(null)
   const navigate = useNavigate()
   const running = useSessionField(session ?? '', 'running') ?? false
@@ -285,7 +285,7 @@ export function Composer({
   const dropRef = useRef(dropPaths)
   dropRef.current = dropPaths
   useEffect(() => {
-    if (container() !== 'macos') return
+    if (!isDesktop()) return
     const un = getCurrentWebview().onDragDropEvent((e) => {
       if (e.payload.type === 'drop') dropRef.current(e.payload.paths)
     })

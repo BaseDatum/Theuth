@@ -284,7 +284,10 @@ ChatGPT affordances with no TUI counterpart:
 ```
 crates/desktop/                 Tauri crate (workspace member by glob; kind: app, not a plugin)
   Cargo.toml                    tauri, tauri-build, portable-pty, tauri-plugin-*
-  tauri.conf.json               productName "theuth", mainBinaryName "theuth-desktop", externalBin ["binaries/t"]
+  tauri.conf.json               productName "theuth", mainBinaryName "theuth-desktop"; platform overlays (JSON merge, arrays replace):
+  tauri.macos.conf.json           macOSPrivateApi, Overlay title bar, the `island` window (53), iconAsTemplate, targets app+dmg, macOS 15 floor
+  tauri.linux.conf.json           targets deb+rpm+appimage; `scripts/package-linux.sh` adds externalBin [t, theuth-app-parser-<hash>] inline
+  tauri.bundle.conf.json          externalBin ["binaries/t"] + hardened runtime (macOS packaging only)
   capabilities/default.json     core:default, opener, notification, global-shortcut, autostart, positioner, window-state, dialog(open)
   binaries/                     t-aarch64-apple-darwin (copied by `just desktop-bundle`; gitignored)
   icons/                        template tray icon (monochrome), app icon (plain glyph, no wordmark)

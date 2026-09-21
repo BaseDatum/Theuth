@@ -33,6 +33,7 @@ import { Connections } from '@/components/settings/Connections'
 import { General } from '@/components/settings/General'
 import { Link } from '@/components/settings/Link'
 import { Loop } from '@/components/settings/Loop'
+import { useHasMeetings } from '@/components/meeting/MeetingList'
 import { Meetings } from '@/components/settings/Meetings'
 import { Nodes } from '@/components/settings/Nodes'
 import { Schedules } from '@/components/settings/Schedules'
@@ -113,9 +114,10 @@ function Pane({ tab, session, peer, onClose }: Omit<Props, 'onTab'>) {
 export function SettingsDialog({ tab, session, peer, onTab, onClose }: Props) {
   const mobile = useIsMobile()
   const [pushed, setPushed] = useState(false)
-  // Settings › Nodes only where the harness answers `list_nodes` (32 §8.3).
+  // Settings › Nodes only where the harness answers `list_nodes` (32 §8.3); Meetings not for the Linux shell's own daemon.
   const hasNodes = useHasNodes()
-  const tabs = hasNodes ? TABS : TABS.filter(([id]) => id !== 'nodes')
+  const hasMeetings = useHasMeetings()
+  const tabs = TABS.filter(([id]) => (id !== 'nodes' || hasNodes) && (id !== 'meetings' || hasMeetings))
   const label = TABS.find(([id]) => id === tab)?.[1] ?? 'Settings'
 
   if (mobile) {

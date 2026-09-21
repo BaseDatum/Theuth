@@ -11,6 +11,7 @@ import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
 import { Button } from '@/components/ui/button'
 import { useSidebar } from '@/components/ui/sidebar'
 import { isMacDesktop } from '@/lib/hotkeys'
+import { container } from '@/lib/platform'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import { LOCAL, useHarnesses } from '@/link/harnesses'
@@ -51,6 +52,9 @@ export function MeetingHeader({ title, children }: { title: ReactNode; children?
 
 /** Recording is the local Mac daemon's: not iOS, not a browser, not a harness reached over the relay. */
 export const useCanRecord = (): boolean => useHarnesses((s) => s.active) === LOCAL && isMacDesktop()
+
+/** The Linux shell's own daemon has no recorder (53: macOS only) and nothing recorded; every other harness may have meetings to read. */
+export const useHasMeetings = (): boolean => useHarnesses((s) => s.active) !== LOCAL || container() !== 'linux'
 
 /** 05 §7: briefs are a sub-feature of meetings — a tab beside the list, not a sidebar entry. */
 export function MeetingTabs() {

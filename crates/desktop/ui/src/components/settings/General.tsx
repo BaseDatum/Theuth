@@ -14,7 +14,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
-import { container } from '@/lib/platform'
+import { isDesktop } from '@/lib/platform'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { checkUpdate, installUpdate, isTauri } from '@/lib/tauri'
 import { useUpdate } from '@/lib/update'
@@ -35,8 +35,8 @@ export function General() {
   const api = useApi()
   const qc = useQueryClient()
   const info = useConnection((s) => s.info)
-  // Autostart and the window hotkey belong to the macOS shell with its own daemon (31 §9).
-  const desktop = useHarnesses((s) => s.active) === LOCAL && container() === 'macos'
+  // Autostart and the window hotkey belong to the desktop shell with its own daemon (31 §9).
+  const desktop = useHarnesses((s) => s.active) === LOCAL && isDesktop()
   const [theme, setThemeState] = useState(currentTheme)
   const autostart = useQuery({
     queryKey: AUTOSTART,
