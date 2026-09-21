@@ -87,8 +87,11 @@ export const queryKeys = {
   meetingTranscript: (id: string) => ['meeting-transcript', id] as const,
   meetingSummary: (id: string) => ['meeting-summary', id] as const,
   meetingSpeakers: ['meeting-speakers'] as const,
-  /** `meeting_oracle_mode()` (57 §3.4): Settings → Meetings switch and the island's mode badge. */
-  meetingOracleMode: ['meeting-oracle-mode'] as const,
+  // 57 §3.4 / §7.1: the decision oracle — `decision_mode(prefix)` (Labs switches, the Meetings pointer, the island's
+  // mode badge), `decision_training(prefix)` (Labs capture/share rows), `decision_stats()` (Labs counters).
+  decisionMode: (prefix: string) => ['decision-mode', prefix] as const,
+  decisionTraining: (prefix: string) => ['decision-training', prefix] as const,
+  decisionStats: ['decision-stats'] as const,
   // 53 (05 §7): the brief cache — `briefs` prefixes every list/search page; a `BriefChanged` invalidates all of it.
   briefs: ['briefs'] as const,
   briefsList: (tag: string | null) => ['briefs', 'list', tag] as const,
