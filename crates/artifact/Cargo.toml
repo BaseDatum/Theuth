@@ -10,6 +10,7 @@ runtime = { workspace = true }
 tools = { workspace = true }
 agent = { workspace = true }
 search = { workspace = true }
+document = { workspace = true }
 parking_lot = { workspace = true }
 markdown = { workspace = true }
 kameo = { workspace = true }

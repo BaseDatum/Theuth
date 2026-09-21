@@ -446,8 +446,8 @@ impl DocumentActor {
             .expect("the document actor is registered before it serves")
     }
 
-    /// Fire the export of `doc`: helper markdown → tmp + rename → [`ExportDone`].
-    fn export(&mut self, doc: &DocId) {
+    /// Fire the export of `doc`: helper markdown → tmp + rename → [`ExportDone`]; `done` hears the outcome.
+    fn export(&mut self, doc: &DocId, done: Option<tokio::sync::oneshot::Sender<Result<(), String>>>) {
         let Some(o) = self.open.get_mut(doc) else {
             return;
         };
@@ -466,6 +466,9 @@ impl DocumentActor {
                     .map_err(|e| format!("write {}: {e}", path.display())),
                 Err(e) => Err(e.to_string()),
             };
+            if let Some(done) = done {
+                let _ = done.send(result.as_ref().map(|_| ()).map_err(Clone::clone));
+            }
             let _ = me.tell(ExportDone { doc, result }).await;
         });
     }
@@ -1121,6 +1124,20 @@ pub struct CreateNote {
     pub by: Principal,
 }
 
+/// `ask` → `Result<DocSummary, String>`: a new document bound to `binding` (a meeting's note, §7.4),
+/// headed `# <title>` like a note; fails when the binding is already bound. Notes use [`CreateNote`].
+#[derive(Clone, Debug)]
+pub struct Create {
+    /// What it is bound to.
+    pub binding: Binding,
+    /// Display title.
+    pub title: String,
+    /// Initial body; empty → the heading alone.
+    pub markdown: String,
+    /// Who created it.
+    pub by: Principal,
+}
+
 /// `markdown`, headed by `# title` unless it already has a level-1 heading.
 pub fn with_heading(title: &str, markdown: &str) -> String {
     if markdown.lines().any(|l| l.starts_with("# ")) {
@@ -1140,14 +1157,42 @@ impl Message<CreateNote> for DocumentActor {
     async fn handle(&mut self, m: CreateNote, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
+        self.create_doc(Binding::Note, m.title, m.markdown, m.by, tx)
+            .await;
+        reply
+    }
+}
+
+impl Message<Create> for DocumentActor {
+    type Reply = DelegatedReply<Result<DocSummary, String>>;
+
+    async fn handle(&mut self, m: Create, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        self.create_doc(m.binding, m.title, m.markdown, m.by, tx)
+            .await;
+        reply
+    }
+}
+
+impl DocumentActor {
+    /// Meta + index row, `DocumentChanged`, then the headed body as one `replace` import.
+    async fn create_doc(
+        &mut self,
+        binding: Binding,
+        title: String,
+        markdown: String,
+        by: Principal,
+        tx: ReplySender<Result<DocSummary, String>>,
+    ) {
         let id = DocId::new();
         let now = now_ms();
         let meta = DocMeta {
-            derived: Binding::Note.derived(&id),
+            derived: binding.derived(&id),
             id: id.clone(),
-            kind: DocKind::Note,
-            title: m.title,
-            binding: Binding::Note,
+            kind: binding.kind(),
+            title,
+            binding,
             fragment: FRAGMENT.to_owned(),
             members: vec![],
             links: vec![],
@@ -1160,18 +1205,17 @@ impl Message<CreateNote> for DocumentActor {
         };
         if let Err(e) = self.store.create(&meta).await {
             tx.send(Err(format!("{e:#}")));
-            return reply;
+            return;
         }
         self.rt.publish(DocumentChanged::of(&meta, false)).await;
-        let markdown = with_heading(&meta.title, &m.markdown);
+        let markdown = with_heading(&meta.title, &markdown);
         self.start_import(
             &id,
             markdown,
-            m.by,
+            by,
             ImportMode::Replace,
             ImportReply::CreatedNote(DocSummary::from(&meta), tx),
         );
-        reply
     }
 }
 
@@ -1307,6 +1351,51 @@ impl Message<Snapshot> for DocumentActor {
     }
 }
 
+/// `ask` → `Result<(), String>`: move a document's derived file (§7.4: a meeting's `notes.md` becomes
+/// `summary.md` once the summary is in it): meta + index, the old file removed, the new path written
+/// before the reply so its readers find it at once.
+#[derive(Clone, Debug)]
+pub struct SetDerived {
+    /// Document.
+    pub doc: DocId,
+    /// New derived path relative to the data dir.
+    pub derived: String,
+}
+
+impl Message<SetDerived> for DocumentActor {
+    type Reply = DelegatedReply<Result<(), String>>;
+
+    async fn handle(&mut self, m: SetDerived, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let o = match self.load(&m.doc) {
+            Ok(o) => o,
+            Err(e) => {
+                tx.send(Err(e));
+                return reply;
+            }
+        };
+        let old = std::mem::replace(&mut o.meta.derived, m.derived);
+        let meta = o.meta.clone();
+        if let Err(e) = self.store.write_meta(&meta).await {
+            tx.send(Err(format!("meta.json: {e:#}")));
+            return reply;
+        }
+        if old != meta.derived && !old.is_empty() {
+            let _ = std::fs::remove_file(self.data_dir.join(&old));
+        }
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        self.export(&m.doc, Some(done_tx));
+        tokio::spawn(async move {
+            tx.send(match done_rx.await {
+                Ok(r) => r,
+                Err(_) => Err("export task dropped".into()),
+            });
+        });
+        reply
+    }
+}
+
 /// `ask` → `Result<Vec<SnapshotInfo>, String>`.
 #[derive(Clone, Debug)]
 pub struct Snapshots {
@@ -1351,7 +1440,8 @@ impl Message<Restore> for DocumentActor {
                 return reply;
             }
         };
-        // The snapshot's markdown comes from a throwaway mirror in the helper.
+        // The snapshot's markdown comes from a throwaway mirror in the helper. The import is the
+        // owner's (not `File`): a restore changes the document, so the derived file must follow it.
         let helper = self.helper.clone();
         let me = ctx.actor_ref().clone();
         tokio::spawn(async move {
@@ -1364,7 +1454,7 @@ impl Message<Restore> for DocumentActor {
                     .ask(ImportMarkdown {
                         doc: m.doc,
                         markdown,
-                        by: Principal::File,
+                        by: Principal::Owner { device: None },
                         mode: ImportMode::Diff,
                     })
                     .await
@@ -1524,7 +1614,7 @@ impl Message<Tick> for DocumentActor {
             }
         }
         for id in exports {
-            self.export(&id);
+            self.export(&id, None);
         }
         for id in snapshots {
             if let Err(e) = self.snapshot(&id, None) {

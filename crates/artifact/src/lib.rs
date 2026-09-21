@@ -317,6 +317,13 @@ pub struct ArtifactActor {
     stores: Arc<Stores>,
 }
 
+impl ArtifactActor {
+    /// The actor over `stores`; the caller spawns, registers and subscribes it.
+    pub fn new(stores: Arc<Stores>) -> Self {
+        Self { stores }
+    }
+}
+
 /// Id-keyed lookups carry no session: ask the durable store first, then every
 /// open private tree; the first answer `found` accepts wins, else the durable
 /// one.
@@ -620,6 +627,50 @@ impl Message<agent::AgentEvent> for ArtifactActor {
     }
 }
 
+impl Message<document::Exported> for ArtifactActor {
+    type Reply = ();
+
+    /// 59 §7.2: a settled user edit of a markdown artifact's document — the
+    /// export landed — becomes the next version of its `(session, name)`
+    /// lineage and an `artifact-v<N>` snapshot. Off the mailbox: a blob write
+    /// and a helper snapshot.
+    async fn handle(&mut self, m: document::Exported, _: &mut Context<Self, Self::Reply>) {
+        let document::Binding::Artifact { session, name } = m.binding else {
+            return;
+        };
+        let Ok(session) = session.parse::<SessionId>() else {
+            return;
+        };
+        let state = self.stores.durable().clone();
+        tokio::spawn(async move {
+            let bytes = match tokio::fs::read(&m.path).await {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::warn!(%name, "artifact export unreadable: {e}");
+                    return;
+                }
+            };
+            match state.edit_version(session, &name, bytes).await {
+                Ok(Some(a)) => {
+                    if let Some(docs) = document::Handle::lookup()
+                        && let Err(e) = docs
+                            .actor()
+                            .ask(document::Snapshot {
+                                doc: m.doc,
+                                label: format!("artifact-v{}", a.version),
+                            })
+                            .await
+                    {
+                        tracing::warn!(%name, "artifact edit snapshot: {e}");
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => tracing::warn!(%name, "artifact edit version: {e}"),
+            }
+        });
+    }
+}
+
 impl Message<::tools::TreeOpened> for ArtifactActor {
     type Reply = ();
 
@@ -703,6 +754,8 @@ impl runtime::Plugin for ArtifactPlugin {
         );
         actor.register(ARTIFACT_ACTOR)?;
         rt.subscribe::<ArtifactActor, agent::AgentEvent>(&actor)
+            .await;
+        rt.subscribe::<ArtifactActor, document::Exported>(&actor)
             .await;
 
         tokio::spawn(async move {

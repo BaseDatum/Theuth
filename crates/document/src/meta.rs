@@ -130,11 +130,15 @@ impl Binding {
         }
     }
 
-    /// The derived markdown path relative to the data dir (§4.1); a note's is set by the store.
+    /// The derived markdown path relative to the data dir (§4.1): a concept file, a meeting's `notes.md`
+    /// (renamed `summary.md` by the summary turn, §7.4), an artifact's stable export under `documents/`
+    /// (the artifact store copies each settled export into a content-addressed blob + version row, §7.2),
+    /// a note's `note.md`.
     pub fn derived(&self, id: &DocId) -> String {
         match self {
             Self::Knowledge(c) => format!("knowledge/{c}.md"),
-            Self::Artifact { .. } | Self::MeetingNote(_) => String::new(),
+            Self::Artifact { .. } => format!("documents/{id}/artifact.md"),
+            Self::MeetingNote(m) => format!("meetings/{m}/notes.md"),
             Self::Note => format!("documents/{id}/note.md"),
         }
     }
@@ -485,6 +489,18 @@ mod tests {
         assert_eq!(
             Binding::Note.derived(&id),
             format!("documents/{id}/note.md")
+        );
+        assert_eq!(
+            Binding::Artifact {
+                session: "s".into(),
+                name: "r.md".into()
+            }
+            .derived(&id),
+            format!("documents/{id}/artifact.md")
+        );
+        assert_eq!(
+            Binding::MeetingNote("m1".into()).derived(&id),
+            "meetings/m1/notes.md"
         );
     }
 
