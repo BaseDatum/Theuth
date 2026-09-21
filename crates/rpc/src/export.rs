@@ -97,6 +97,7 @@ async fn export_bindings() {
         knowledge::History,
         knowledge::Revision,
         knowledge::ChangedFile,
+        codeindex::IndexStats,
         knowledge::ChangeStatus,
         knowledge::KnowledgeChanged,
         tools::ToolSpec,

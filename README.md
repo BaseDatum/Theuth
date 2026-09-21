@@ -195,7 +195,7 @@ Config (`~/.theuth/`, created on first run; details in
     run_timeout_ms: 60000
     robots: true
     delay_ms: 100                 # per-host gap between requests; a larger robots Crawl-delay wins
-  codeindex:                      # design doc 60; code_find / code_outline over a tree-sitter index in <data_dir>/codeindex/<slug>-<hash>.sqlite
+  codeindex:                      # design doc 60; code_find / code_outline / code_refs / code_map / code_symbol / code_impact over a tree-sitter index in <data_dir>/codeindex/<slug>-<hash>.sqlite
     enabled: true
     sync_limit: 64                # changed files re-indexed before answering; more → answer stale, finish in background
     max_file_bytes: 1048576       # larger files are listed, not parsed

@@ -32,9 +32,13 @@ cargo_toml = { workspace = true }
 globset = { workspace = true }
 oxc_resolver = { workspace = true }
 toml = { workspace = true }
+ts-rs = { workspace = true, optional = true }
 
 [dev-dependencies]
 uuid = { workspace = true }
+
+[features]
+ts = ["dep:ts-rs", "runtime/ts", "tools/ts"]
 
 [lints]
 workspace = true

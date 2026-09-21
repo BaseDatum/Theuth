@@ -2847,6 +2847,7 @@ dependencies = [
  "tree-sitter-rust",
  "tree-sitter-tags",
  "tree-sitter-typescript",
+ "ts-rs",
  "uuid",
 ]
 
@@ -14335,6 +14336,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "browser",
+ "codeindex",
  "computer",
  "decision",
  "figment",

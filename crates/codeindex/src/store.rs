@@ -164,6 +164,11 @@ pub async fn set_meta(pool: &SqlitePool, key: &str, value: &str) -> anyhow::Resu
     Ok(())
 }
 
+/// One `meta` value.
+pub async fn meta(pool: &SqlitePool, key: &str) -> anyhow::Result<Option<String>> {
+    Ok(sqlx::query_scalar("SELECT value FROM meta WHERE key = ?").bind(key).fetch_optional(pool).await?)
+}
+
 /// `files` as the reconcile diff reads it: path → (id, mtime_ns, size).
 pub async fn known_files(pool: &SqlitePool) -> anyhow::Result<HashMap<String, (i64, i64, i64)>> {
     let rows: Vec<(i64, String, i64, i64)> =
@@ -177,10 +182,12 @@ pub async fn known_files(pool: &SqlitePool) -> anyhow::Result<HashMap<String, (i
 }
 
 /// Row counts for `Stats` and the envelope.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, FromRow)]
 pub struct Counts {
     /// `files` rows.
     pub files: i64,
+    /// `files` with `language <> 'other'`.
+    pub parsed_files: i64,
     /// `symbols` rows.
     pub symbols: i64,
     /// `refs` rows.
@@ -189,23 +196,27 @@ pub struct Counts {
     pub resolved: i64,
     /// `refs` with `provenance = 'ambiguous'`.
     pub ambiguous: i64,
+    /// `imports` rows.
+    pub imports: i64,
+    /// `imports` with `provenance = 'unresolved'`.
+    pub unresolved_imports: i64,
+    /// `cochanges` rows.
+    pub cochange_pairs: i64,
 }
 
-/// Count files, symbols and refs.
+/// Count files, symbols, refs, imports and co-change pairs.
 pub async fn counts(pool: &SqlitePool) -> anyhow::Result<Counts> {
-    let (files, symbols, refs, resolved, ambiguous): (i64, i64, i64, i64, i64) = sqlx::query_as(
-        "SELECT (SELECT count(*) FROM files), (SELECT count(*) FROM symbols), (SELECT count(*) FROM refs), \
-         (SELECT count(*) FROM refs WHERE to_symbol IS NOT NULL), (SELECT count(*) FROM refs WHERE provenance = 'ambiguous')",
+    Ok(sqlx::query_as(
+        "SELECT (SELECT count(*) FROM files) AS files, (SELECT count(*) FROM files WHERE language <> 'other') AS parsed_files, \
+         (SELECT count(*) FROM symbols) AS symbols, (SELECT count(*) FROM refs) AS refs, \
+         (SELECT count(*) FROM refs WHERE to_symbol IS NOT NULL) AS resolved, \
+         (SELECT count(*) FROM refs WHERE provenance = 'ambiguous') AS ambiguous, \
+         (SELECT count(*) FROM imports) AS imports, \
+         (SELECT count(*) FROM imports WHERE provenance = 'unresolved') AS unresolved_imports, \
+         (SELECT count(*) FROM cochanges) AS cochange_pairs",
     )
     .fetch_one(pool)
-    .await?;
-    Ok(Counts {
-        files,
-        symbols,
-        refs,
-        resolved,
-        ambiguous,
-    })
+    .await?)
 }
 
 /// A file to (re)write: its walk facts plus the parse result (`None` for `other`).
@@ -545,11 +556,13 @@ pub struct FileRef {
     pub language: String,
     /// `files.package`.
     pub package: Option<String>,
+    /// `files.is_test`.
+    pub is_test: bool,
 }
 
 /// Every `files` row.
 pub async fn all_files(pool: &SqlitePool) -> anyhow::Result<Vec<FileRef>> {
-    Ok(sqlx::query_as("SELECT id, path, language, package FROM files").fetch_all(pool).await?)
+    Ok(sqlx::query_as("SELECT id, path, language, package, is_test FROM files").fetch_all(pool).await?)
 }
 
 /// An `imports` row as the resolver reads and rewrites it.
@@ -926,6 +939,112 @@ pub async fn refs_in_span(pool: &SqlitePool, path: &str, line_start: i64, line_e
     .bind(ROWS_PER_INSERT as i64 * 2)
     .fetch_all(pool)
     .await?)
+}
+
+// --- git: co-change and code_impact (60 §8, §0.11) ------------------------
+
+/// Replace `cochanges` wholesale (`file_a < file_b`) and record the walked
+/// HEAD in `meta.cochange_head` and `meta.git_head`, one transaction.
+pub async fn replace_cochanges(pool: &SqlitePool, rows: &[(i64, i64, i64)], head: &str) -> anyhow::Result<()> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM cochanges").execute(&mut *tx).await?;
+    for batch in rows.chunks(ROWS_PER_INSERT) {
+        let mut q = QueryBuilder::new("INSERT INTO cochanges (file_a, file_b, count) ");
+        q.push_values(batch, |mut b, (a, c, n)| {
+            b.push_bind(a).push_bind(c).push_bind(n);
+        });
+        q.build().execute(&mut *tx).await?;
+    }
+    for key in ["cochange_head", "git_head"] {
+        sqlx::query("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+            .bind(key)
+            .bind(head)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Files that changed together with `file_id` most often: `(path, count)`.
+pub async fn cochange_partners(pool: &SqlitePool, file_id: i64, limit: i64) -> anyhow::Result<Vec<(String, i64)>> {
+    Ok(sqlx::query_as(
+        "SELECT f.path, c.count FROM cochanges c JOIN files f ON f.id = CASE WHEN c.file_a = ?1 THEN c.file_b ELSE c.file_a END \
+         WHERE c.file_a = ?1 OR c.file_b = ?1 ORDER BY c.count DESC, f.path LIMIT ?2",
+    )
+    .bind(file_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?)
+}
+
+/// Files referencing any of `symbol_ids` with `confidence ≥ 0.5` (the rank
+/// graph's cut): distinct `(file_id, name, target file_id)`.
+pub async fn referencers(pool: &SqlitePool, symbol_ids: &[i64]) -> anyhow::Result<Vec<(i64, String, i64)>> {
+    let mut out = Vec::new();
+    for batch in symbol_ids.chunks(ROWS_PER_INSERT) {
+        let mut q = QueryBuilder::new(
+            "SELECT DISTINCT r.file_id, r.name, s.file_id FROM refs r JOIN symbols s ON s.id = r.to_symbol WHERE r.confidence >= 0.5 AND r.to_symbol IN (",
+        );
+        let mut sep = q.separated(", ");
+        for id in batch {
+            sep.push_bind(id);
+        }
+        q.push(")");
+        out.extend(q.build_query_as::<(i64, String, i64)>().fetch_all(pool).await?);
+    }
+    Ok(out)
+}
+
+/// References into the changed symbols that `code_impact` does not count:
+/// resolved below the 0.5 cut, or same-name and `ambiguous`.
+pub async fn impact_skipped(pool: &SqlitePool, symbol_ids: &[i64], names: &[&str]) -> anyhow::Result<i64> {
+    let mut n = 0i64;
+    for batch in symbol_ids.chunks(ROWS_PER_INSERT) {
+        let mut q = QueryBuilder::new("SELECT count(*) FROM refs WHERE confidence < 0.5 AND to_symbol IN (");
+        let mut sep = q.separated(", ");
+        for id in batch {
+            sep.push_bind(id);
+        }
+        q.push(")");
+        n += q.build_query_scalar::<i64>().fetch_one(pool).await?;
+    }
+    for batch in names.chunks(ROWS_PER_INSERT) {
+        let mut q = QueryBuilder::new("SELECT count(*) FROM refs WHERE provenance = 'ambiguous' AND name IN (");
+        let mut sep = q.separated(", ");
+        for name in batch {
+            sep.push_bind(*name);
+        }
+        q.push(")");
+        n += q.build_query_scalar::<i64>().fetch_one(pool).await?;
+    }
+    Ok(n)
+}
+
+/// Every resolved `imports` edge `(file_id, target_file)` that is a use, not
+/// a `mod x;` declaration (60 §21).
+pub async fn import_edges(pool: &SqlitePool) -> anyhow::Result<Vec<(i64, i64)>> {
+    Ok(sqlx::query_as(
+        "SELECT DISTINCT file_id, target_file FROM imports WHERE target_file IS NOT NULL AND target_file <> file_id \
+         AND specifier NOT LIKE 'mod:%'",
+    )
+    .fetch_all(pool)
+    .await?)
+}
+
+/// `imports` rows of `file_ids` that stayed unresolved.
+pub async fn unresolved_imports_in(pool: &SqlitePool, file_ids: &[i64]) -> anyhow::Result<i64> {
+    let mut n = 0i64;
+    for batch in file_ids.chunks(ROWS_PER_INSERT) {
+        let mut q = QueryBuilder::new("SELECT count(*) FROM imports WHERE provenance = 'unresolved' AND file_id IN (");
+        let mut sep = q.separated(", ");
+        for id in batch {
+            sep.push_bind(id);
+        }
+        q.push(")");
+        n += q.build_query_scalar::<i64>().fetch_one(pool).await?;
+    }
+    Ok(n)
 }
 
 #[cfg(test)]

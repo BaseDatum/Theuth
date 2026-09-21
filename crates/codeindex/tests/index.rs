@@ -458,9 +458,10 @@ async fn indexes_this_repository() {
         .await
         .unwrap();
     eprintln!(
-        "first index: {:?}; files {} (rust {rs}); symbols {}; refs {} (resolved {}, ambiguous {})",
-        first, c.files, c.symbols, c.refs, c.resolved, c.ambiguous
+        "first index: {:?}; files {} (rust {rs}); symbols {}; refs {} (resolved {}, ambiguous {}); co-change walk (commits, ms): {:?}",
+        first, c.files, c.symbols, c.refs, c.resolved, c.ambiguous, r.cochange_walk
     );
+    assert!(r.cochange_walk.is_some_and(|(n, _)| n > 100), "{:?}", r.cochange_walk);
     assert!(rs >= 290, "rust files: {rs}");
     assert_eq!(r.reparsed as i64, c.files);
 
@@ -517,8 +518,10 @@ async fn indexes_this_repository() {
     );
 
     // Second call: nothing changed, nothing reparsed.
+    let t = std::time::Instant::now();
     let r = ix.reconcile(&ri, false).await.unwrap();
-    assert_eq!((r.reparsed, r.removed, r.stale), (0, 0, false));
+    eprintln!("second call (nothing changed): {:?}", t.elapsed());
+    assert_eq!((r.reparsed, r.removed, r.stale, r.cochange_walk), (0, 0, false, None), "HEAD unchanged → no second walk");
 
     // Touch one file (mtime only, content unchanged): exactly one reparse.
     let touched = root.join("crates/codeindex/tests/fixtures/rust/crates/a/src/lib.rs");
@@ -534,7 +537,9 @@ async fn indexes_this_repository() {
 
     let stats = ix.stats(&ri).await.unwrap();
     assert_eq!(stats.files, c.files);
-    assert!(stats.last_reconcile.is_some());
+    assert!(stats.last_reconcile_at.is_some() && stats.rank_iterations.is_some() && stats.rank_ms.is_some());
+    assert!(stats.cochange_pairs > 0 && stats.git_head.is_some(), "co-change walk on this repo: {stats:?}");
+    eprintln!("codeindex_stats: {}", serde_json::to_string_pretty(&stats).unwrap());
 
     // The store lives in the temp data dir with the §0.7 name, and nowhere else.
     let entries: Vec<_> = std::fs::read_dir(data.0.join("codeindex"))
@@ -827,4 +832,242 @@ fn locals_lower_refs_without_touching_symbols() {
     eprintln!("with locals: symbols {} refs {}; without: symbols {} refs {}", with.0, with.1, without.0, without.1);
     assert_eq!(with.0, without.0);
     assert!(with.1 < without.1, "{with:?} vs {without:?}");
+}
+
+fn git(dir: &Path, args: &[&str]) {
+    let st = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@x")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@x")
+        .status()
+        .unwrap();
+    assert!(st.success(), "git {args:?}");
+}
+
+fn cx(data: &TempDir) -> tools::ToolCx {
+    tools::ToolCx {
+        session: runtime::SessionId::new(),
+        call_id: String::new(),
+        quiet: false,
+        resources: tools::SessionResources::durable_arc(&data.0),
+    }
+}
+
+/// 60 §16 row 4 on a fixture repository: two commits, the second changing
+/// one function (`helper`) that another file calls and a test uses. Ranges,
+/// hunk → definition mapping, `files` mode, `WORKTREE`, direct/transitive/
+/// tests, `ambiguous_skipped`, and the `cochange` section of `code_symbol`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn impact_on_a_fixture_repository() {
+    use codeindex::tools::{CodeImpactArgs, CodeImpactTool, CodeSymbolArgs, CodeSymbolTool};
+    use tools::Tool;
+    let repo = tempdir();
+    let d = repo.0.canonicalize().unwrap();
+    git(&d, &["init", "-q", "-b", "main"]);
+    std::fs::create_dir_all(d.join("src")).unwrap();
+    std::fs::create_dir_all(d.join("tests")).unwrap();
+    std::fs::write(d.join("Cargo.toml"), "[package]\nname = \"fixture-impact\"\nversion = \"0.1.0\"\nedition = \"2024\"\n").unwrap();
+    std::fs::write(d.join("src/util.rs"), "pub fn helper() -> u32 {\n    1\n}\n\npub fn unrelated() -> u32 {\n    2\n}\n").unwrap();
+    std::fs::write(d.join("src/lib.rs"), "pub mod util;\nuse crate::util::helper;\n\npub fn run() -> u32 {\n    helper()\n}\n").unwrap();
+    std::fs::write(d.join("src/top.rs"), "use crate::run;\n\npub fn top() -> u32 {\n    run()\n}\n").unwrap();
+    std::fs::write(d.join("tests/it.rs"), "use fixture_impact::util::helper;\n\n#[test]\nfn t() {\n    assert_eq!(helper(), 1);\n}\n").unwrap();
+    std::fs::write(d.join("notes.yaml"), "a: 1\n").unwrap();
+    git(&d, &["add", "."]);
+    git(&d, &["commit", "-q", "-m", "one"]);
+    // Second commit: `helper`'s body and `notes.yaml`; `unrelated` untouched.
+    std::fs::write(d.join("src/util.rs"), "pub fn helper() -> u32 {\n    1 + 0\n}\n\npub fn unrelated() -> u32 {\n    2\n}\n").unwrap();
+    std::fs::write(d.join("notes.yaml"), "a: 2\n").unwrap();
+    git(&d, &["add", "."]);
+    git(&d, &["commit", "-q", "-m", "two"]);
+    // `mod top;` is missing on purpose: `src/top.rs` imports through the crate root only.
+    std::fs::write(d.join("src/lib.rs"), "pub mod util;\npub mod top;\nuse crate::util::helper;\n\npub fn run() -> u32 {\n    helper()\n}\n").unwrap();
+    git(&d, &["add", "."]);
+    git(&d, &["commit", "-q", "-m", "three"]);
+
+    let data = tempdir();
+    let ix = Arc::new(Codeindex::new(CodeindexConfig::default(), &data.0).unwrap());
+    let args = |files: Option<Vec<&str>>, range: Option<&str>, include_tests: bool| CodeImpactArgs {
+        files: files.map(|v| v.into_iter().map(PathBuf::from).collect()),
+        git_range: range.map(str::to_owned),
+        include_tests: Some(include_tests),
+        root: Some(d.clone()),
+        budget: None,
+    };
+    let tool = CodeImpactTool(ix.clone());
+    let call = |a: CodeImpactArgs| tool.call(a, cx(&data));
+
+    // The commit that changed `helper`: only `helper` is touched, `unrelated` is not.
+    let out = call(args(None, Some("HEAD~1"), false)).await.unwrap();
+    assert!(!out.is_error, "{}", out.content);
+    let v = out.structured.unwrap();
+    eprintln!("code_impact(git_range=HEAD~1) on the fixture:\n{}", out.content);
+    let changed = v["changed"].as_array().unwrap();
+    let util = changed.iter().find(|c| c["path"] == "src/util.rs").unwrap();
+    let names: Vec<&str> = util["symbols_changed"].as_array().unwrap().iter().map(|s| s["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["helper"], "{v}");
+    assert_eq!(util["status"], "modified");
+    let yaml = changed.iter().find(|c| c["path"] == "notes.yaml").unwrap();
+    assert!(yaml["symbols_changed"].as_array().unwrap().is_empty(), "files without symbols are listed: {v}");
+    let direct = v["direct"].as_array().unwrap();
+    let lib = direct.iter().find(|d| d["path"] == "src/lib.rs").expect("lib.rs references helper");
+    let via: Vec<&str> = lib["via"].as_array().unwrap().iter().map(|s| s.as_str().unwrap()).collect();
+    assert!(via.contains(&"helper") && via.contains(&"<import>"), "{via:?}");
+    assert!(!direct.iter().any(|d| d["path"] == "tests/it.rs"), "tests stay out of direct by default: {v}");
+    let tests: Vec<&str> = v["tests"].as_array().unwrap().iter().map(|s| s.as_str().unwrap()).collect();
+    assert_eq!(tests, ["tests/it.rs"]);
+    let transitive: Vec<(&str, u64)> = v["transitive"].as_array().unwrap().iter().map(|t| (t["path"].as_str().unwrap(), t["depth"].as_u64().unwrap())).collect();
+    assert_eq!(transitive, [("src/top.rs", 1)], "top.rs imports lib.rs which references helper: {v}");
+    assert_eq!(v["ambiguous_skipped"], 0);
+    assert_eq!(v["mode"], "range");
+    assert!(v["range"]["old"].is_string() && v["range"]["new"].is_string());
+
+    // include_tests: the test file joins direct too.
+    let out = call(args(None, Some("HEAD~2..HEAD~1"), true)).await.unwrap();
+    let v = out.structured.unwrap();
+    assert!(v["direct"].as_array().unwrap().iter().any(|d| d["path"] == "tests/it.rs" && d["is_test"] == true), "{v}");
+
+    // files mode: every definition of the file counts.
+    let out = call(args(Some(vec!["src/util.rs"]), None, false)).await.unwrap();
+    let v = out.structured.unwrap();
+    let names: Vec<&str> = v["changed"][0]["symbols_changed"].as_array().unwrap().iter().map(|s| s["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["helper", "unrelated"], "{v}");
+    assert_eq!(v["mode"], "files");
+
+    // WORKTREE: nothing dirty → nothing changed; dirty `top.rs` → its definition.
+    let out = call(args(None, Some("WORKTREE"), false)).await.unwrap();
+    let v = out.structured.unwrap();
+    assert!(v["changed"].as_array().unwrap().is_empty(), "{v}");
+    std::fs::write(d.join("src/top.rs"), "use crate::run;\n\npub fn top() -> u32 {\n    run() + 1\n}\n").unwrap();
+    std::fs::write(d.join("src/fresh.rs"), "pub fn fresh() {}\n").unwrap();
+    let out = call(args(None, Some("WORKTREE"), false)).await.unwrap();
+    let v = out.structured.unwrap();
+    eprintln!("code_impact(git_range=WORKTREE):\n{}", out.content);
+    let rows: Vec<(&str, &str, Vec<&str>)> = v["changed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| (c["path"].as_str().unwrap(), c["status"].as_str().unwrap(), c["symbols_changed"].as_array().unwrap().iter().map(|s| s["name"].as_str().unwrap()).collect()))
+        .collect();
+    assert_eq!(rows, [("src/fresh.rs", "added", vec!["fresh"]), ("src/top.rs", "modified", vec!["top"])], "{v}");
+
+    // Argument errors are content.
+    let out = call(args(Some(vec!["src/util.rs"]), Some("HEAD"), false)).await.unwrap();
+    assert!(out.is_error && out.content.contains("not both"));
+    let out = call(args(None, None, false)).await.unwrap();
+    assert!(out.is_error);
+    let out = call(args(None, Some("no-such-rev"), false)).await.unwrap();
+    assert!(out.is_error && out.content.contains("unknown revision"), "{}", out.content);
+    let out = call(args(Some(vec!["nope.rs"]), None, false)).await.unwrap();
+    assert!(out.is_error && out.content.contains("does not exist"), "{}", out.content);
+
+    // Co-change: commit two changed util.rs + notes.yaml, three changed lib.rs alone (below the 2-file floor),
+    // one added five files. `code_symbol(helper, cochange)` lists notes.yaml (2) and the rest (1).
+    let out = CodeSymbolTool(ix.clone())
+        .call(CodeSymbolArgs { symbol: "helper".into(), sections: Some(vec!["cochange".into()]), root: Some(d.clone()), budget: None }, cx(&data))
+        .await
+        .unwrap();
+    assert!(!out.is_error, "{}", out.content);
+    let v = out.structured.unwrap();
+    eprintln!("code_symbol(helper, cochange):\n{}", out.content);
+    let partners: Vec<(&str, u64)> = v["cochange"].as_array().unwrap().iter().map(|p| (p["path"].as_str().unwrap(), p["count"].as_u64().unwrap())).collect();
+    assert_eq!(partners[0], ("notes.yaml", 2), "{partners:?}");
+    assert!(partners.contains(&("src/lib.rs", 1)) && partners.contains(&("tests/it.rs", 1)), "{partners:?}");
+    assert!(v.get("note").is_none());
+    let ri = ix.open_root(&d).await.unwrap();
+    let stats = ix.stats(&ri).await.unwrap();
+    assert!(stats.cochange_pairs >= 10 && stats.git_head.is_some(), "{stats:?}");
+    // A new commit moves HEAD → the next call re-walks; `pending` fields stay 0.
+    git(&d, &["add", "."]);
+    git(&d, &["commit", "-q", "-m", "four"]);
+    let r = ix.reconcile(&ri, false).await.unwrap();
+    assert!(r.cochange_walk.is_some_and(|(n, _)| n == 4), "{r:?}");
+    let stats2 = ix.stats(&ri).await.unwrap();
+    assert_ne!(stats.git_head, stats2.git_head);
+}
+
+/// 60 §16 row 4 on this repository: `code_impact` of the commit that landed
+/// step 3 names the symbols it added and their referencers; `files` mode on
+/// `crates/tools/src/lib.rs` lists the plugins as `direct`; `cochanges` is
+/// non-empty and `code_symbol(…, cochange)` lists partners. Numbers printed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn impact_on_this_repository() {
+    use codeindex::tools::{CodeImpactArgs, CodeImpactTool, CodeSymbolArgs, CodeSymbolTool};
+    use tools::Tool;
+    let data = tempdir();
+    let ix = Arc::new(Codeindex::new(CodeindexConfig::default(), &data.0).unwrap());
+    let root = repo_root();
+    let args = |files: Option<Vec<&str>>, range: Option<&str>| CodeImpactArgs {
+        files: files.map(|v| v.into_iter().map(PathBuf::from).collect()),
+        git_range: range.map(str::to_owned),
+        include_tests: None,
+        root: Some(root.clone()),
+        budget: Some(2500),
+    };
+    // Step 3's commit: `176bf52^..176bf52`. Skipped (not failed) when the object is missing (shallow clone).
+    let t = std::time::Instant::now();
+    let out = CodeImpactTool(ix.clone()).call(args(None, Some("176bf52")), cx(&data)).await.unwrap();
+    let first = t.elapsed();
+    if out.is_error && out.content.contains("unknown revision") {
+        eprintln!("176bf52 not in this clone; skipping the step-3 commit check");
+    } else {
+        assert!(!out.is_error, "{}", out.content);
+        let v = out.structured.unwrap();
+        eprintln!("code_impact(git_range=\"176bf52\") ({first:?} incl. first index):\n{}", out.content);
+        let rank_syms: Vec<&str> = v["changed"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|c| c["path"] == "crates/codeindex/src/rank.rs")
+            .flat_map(|c| c["symbols_changed"].as_array().unwrap().iter().map(|s| s["name"].as_str().unwrap()))
+            .collect();
+        for s in ["Graph", "persist", "render", "rank"] {
+            assert!(rank_syms.contains(&s), "rank.rs symbol {s} missing: {rank_syms:?}");
+        }
+        let direct: Vec<(&str, Vec<&str>, bool)> = v["direct"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| (d["path"].as_str().unwrap(), d["via"].as_array().unwrap().iter().map(|s| s.as_str().unwrap()).collect(), d["changed"].as_bool().unwrap()))
+            .collect();
+        // `index.rs` and `tools.rs` are in the diff themselves: listed as direct, flagged `changed`.
+        let index_rs = direct.iter().find(|(p, ..)| *p == "crates/codeindex/src/index.rs").expect("index.rs calls rank::persist");
+        assert!(index_rs.1.contains(&"persist") && index_rs.2, "{direct:?}");
+        assert!(direct.iter().any(|(p, via, c)| *p == "crates/codeindex/src/tools.rs" && *c && via.iter().any(|v| *v == "Graph" || *v == "render")), "{direct:?}");
+        assert!(direct.iter().any(|(_, _, c)| !*c), "files outside the diff import the changed ones: {direct:?}");
+        assert!(direct.windows(2).all(|w| !w[0].2 || w[1].2), "outside-the-diff files first: {direct:?}");
+    }
+    let t = std::time::Instant::now();
+    let out = CodeImpactTool(ix.clone()).call(args(Some(vec!["crates/tools/src/lib.rs"]), None), cx(&data)).await.unwrap();
+    assert!(!out.is_error, "{}", out.content);
+    let v = out.structured.unwrap();
+    let direct = v["direct"].as_array().unwrap();
+    let top10: Vec<String> = direct.iter().take(10).map(|d| format!("{} via {}", d["path"], d["via"])).collect();
+    eprintln!("code_impact(files=[crates/tools/src/lib.rs]) in {:?}: {} direct, {} transitive, {} tests; top 10:\n{}", t.elapsed(), direct.len(), v["transitive"].as_array().unwrap().len(), v["tests"].as_array().unwrap().len(), top10.join("\n"));
+    for p in ["crates/knowledge/src/tools.rs", "crates/scrape/src/tools.rs"] {
+        let d = direct.iter().find(|d| d["path"] == p).unwrap_or_else(|| panic!("{p} not direct"));
+        assert!(d["via"].as_array().unwrap().iter().any(|v| v == "Tool"), "{d}");
+    }
+
+    let ri = ix.open_root(&root).await.unwrap();
+    let pairs: i64 = sqlx::query_scalar("SELECT count(*) FROM cochanges").fetch_one(&ri.pool).await.unwrap();
+    let top: Vec<(String, String, i64)> = sqlx::query_as(
+        "SELECT a.path, b.path, c.count FROM cochanges c JOIN files a ON a.id = c.file_a JOIN files b ON b.id = c.file_b ORDER BY c.count DESC, a.path, b.path LIMIT 5",
+    )
+    .fetch_all(&ri.pool)
+    .await
+    .unwrap();
+    eprintln!("cochanges: {pairs} pairs; top 5: {top:?}");
+    assert!(pairs > 0);
+    let out = CodeSymbolTool(ix.clone())
+        .call(CodeSymbolArgs { symbol: "crates/knowledge/src/store.rs:377".into(), sections: Some(vec!["cochange".into()]), root: Some(root.clone()), budget: None }, cx(&data))
+        .await
+        .unwrap();
+    assert!(!out.is_error, "{}", out.content);
+    let v = out.structured.unwrap();
+    eprintln!("code_symbol(\"crates/knowledge/src/store.rs:377\", cochange):\n{}", out.content);
+    assert!(!v["cochange"].as_array().unwrap().is_empty(), "{v}");
+    assert!(v.get("note").is_none());
 }
