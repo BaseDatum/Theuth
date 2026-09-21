@@ -1,6 +1,6 @@
 # 60 — Code index: symbols, references and a ranked repo map from tree-sitter tags
 
-Status: **proposed** (2026-09-21). Nothing in this doc is built. Extends `00-architecture.md` §1.8 (amended below), §4 (tools), §9 (data dir), §10 (crate table), §12 (phases); `12-course-correction.md` §10 (the `grep`/`edit` ruling it generalises); `08-repl.md` §0.4 (runtime-only tools); `10-knowledge.md` §3 (derived sqlite convention it copies). Wins over 00 §1.8 where they disagree; nothing else. Reference implementation for design only: `~/Develop/qartez-mcp` (v0.11.0, `7fdb509`; dual-licensed — read, never copy).
+Status: **step 1 built** (2026-09-21, §19; steps 2–4 proposed). Extends `00-architecture.md` §1.8 (amended below), §4 (tools), §9 (data dir), §10 (crate table), §12 (phases); `12-course-correction.md` §10 (the `grep`/`edit` ruling it generalises); `08-repl.md` §0.4 (runtime-only tools); `10-knowledge.md` §3 (derived sqlite convention it copies). Wins over 00 §1.8 where they disagree; nothing else. Reference implementation for design only: `~/Develop/qartez-mcp` (v0.11.0, `7fdb509`; dual-licensed — read, never copy).
 
 Scope: a plugin crate `codeindex` that answers structural questions about a source tree on this machine — *where is `X` defined, who references it, what is in this file, which files matter for this task, what does this diff touch* — from a derived SQLite index built with tree-sitter's shipped tag queries. Tools are runtime-only, `ReadOnly`, return structured values, and never write into the user's repository. The orchestrator uses them to brief ACP children and to check their work without paging whole files through the context window (08 §0). It is not an IDE: no language servers, no type inference, no refactoring, no editing.
 
@@ -345,4 +345,57 @@ Effort: step 1 is the largest (crate skeleton, four grammars, tags plumbing, sto
 
 ## 18. Status
 
-Proposed 2026-09-21. Nothing exercised. Reference clone at `~/Develop/qartez-mcp` (`7fdb509`); recon in `facts/qartez-mcp-recon`, `facts/codegraph-colbymchenry-recon`, `facts/code-intelligence-landscape-2026-09`, `facts/theuth-code-intelligence-boundary`, `decisions/theuth-codeindex-native-plugin`.
+Proposed 2026-09-21. Step 1 built 2026-09-21 on `feature/codeindex` (§19); steps 2–4 not started. Reference clone at `~/Develop/qartez-mcp` (`7fdb509`); recon in `facts/qartez-mcp-recon`, `facts/codegraph-colbymchenry-recon`, `facts/code-intelligence-landscape-2026-09`, `facts/theuth-code-intelligence-boundary`, `decisions/theuth-codeindex-native-plugin`.
+
+## 19. As built — step 1 (2026-09-21)
+
+Commit `a84def2` (`feat(codeindex): step 1 — …`) on `feature/codeindex` (base main `6b9df22`), this section in the commit after it. `cargo check --workspace`, `cargo test -p codeindex` (7 unit + 9 integration) and `cargo clippy -p codeindex --all-targets --no-deps -- -D warnings` green. Nothing outside `crates/codeindex/` changed beyond: workspace `Cargo.toml` (path crate + seven pins), `crates/theuth/Cargo.toml`, two plugin lines + the `# codeindex:` block in `main.rs`, README (plugin list, config list, yaml defaults), the §15 amendments to 00.
+
+### 19.1 Numbers (this repository, debug build, machine at load average ≈ 50 from three sibling worktrees compiling)
+
+| Measure | Value |
+|---|---|
+| First index from an empty temp data dir | **3.03 s** wall (17.8 s before the batched inserts in §19.3; the parse is a fraction of a second, sqlx round trips were the cost) |
+| Files | **1 011** (`rust` **301**; the rest `other` = yaml/md/toml/json/…, listed, not parsed) |
+| Symbols | **12 881** |
+| Refs, with §5.3 locals | **91 343** |
+| Refs, without locals (same parse, `Language::build(false)`) | **94 043** (−2 700, −2.9 % with locals; symbols identical file by file — `locals_lower_refs_without_touching_symbols`) |
+| Second call, nothing changed | reparsed 0, removed 0 |
+| One file touched (mtime only) | reparsed **1**, removed 0; counts unchanged |
+| `code_find("ToolRegistry")` | `crates/tools/src/registry.rs`, `kind=class`, first row (exact-name first) |
+| `code_outline("crates/tools/src/fs.rs")` | top level has `ReadFile`, `Grep`, `grep`, `MAX_BYTES`, `tests`; `mod tests` has nested functions |
+| Release binary size delta vs main | **not measured**: two release builds of the whole binary under that load were not a reasonable-time job. Proxy: debug rlibs `tree-sitter` 2.6 MiB, `tree-sitter-tags` 1.6, `-rust` 1.4, `-typescript` 3.4 (two grammars), `-javascript` 0.6, `-python` 0.7, `-go` 0.4; compiled C objects 1.1 + 2.3 + 6.4 + 1.0 + 1.1 + 0.6 MB. Expect a few MB stripped; measure on the next release build. |
+| Cold `cargo check -p codeindex` in this worktree | 3 m 07 s (fetch + compile of the six grammar crates and their deps) |
+
+### 19.2 Where things are
+
+- `crates/codeindex/src/lib.rs:31` `CODEINDEX_ACTOR`; `:39` `CodeindexConfig` (§9 keys, `defaults_match_design`); `:69` `IndexStats`; `:93` `CodeindexActor` with `Handle` `:99`, `Stats` `:104`, `Reconcile` `:111`; `:151` `CodeindexPlugin` (`start`: section → disabled `Ok(())` → `Codeindex::new` → spawn/register → `tokio::spawn(lookup_when::<ToolRegistry>)`; nothing indexed at start).
+- `src/index.rs:24` `Codeindex` (config, `<data_dir>/codeindex/`, LRU of 8 `RootIndex`); `:38` `RootIndex` (pool, `tokio::sync::Mutex` writer lock, background flag + pending count); `:52` `Reconciled`; `:81` `open_root`; `:112` `reconcile` (walk → diff → ≤ `sync_limit` or empty or `force` → synchronous write; else `stale: true, pending: n` + one background task that re-diffs under the lock); `:236` `stats`.
+- `src/store.rs:18` `SCHEMA_VERSION = "1"`; `:23` DDL (§4 verbatim, `foreign_keys = ON` so cascades work); `:89` `open` (WAL, `busy_timeout 5s`, `max_connections 4`, version mismatch or open error → remove `""`/`-wal`/`-shm`, recreate, write `meta` root/created_at); `:215` `apply` (one transaction: delete by `files.id` → cascades, FTS by rowid; insert files, then symbols/FTS/refs in 500-row `QueryBuilder` batches with ids assigned as `max(id)+1..`); `:354` `find`; `:417` `file`; `:448` `outline`.
+- `src/root.rs:11` `discover` (`args.root` | `gix::discover::upwards(cwd)` work tree | cwd; canonical; directory); `:33` `db_file_name` (`<slug>-<hash8>.sqlite`); `:44` `under_root` (§11 path escape).
+- `src/walk.rs:37` `walk` (`ignore` defaults + `.codeindexignore`, `node_modules/`, `target/`, top-level `vendor/` when `Cargo.toml`/`go.mod`, `*.min.js`/`*.pb.go`/`*_generated.*`, `> max_file_bytes`, stop at `MAX_FILES = 50 000` with `truncated`); `:104` `is_test_path`.
+- `src/lang/mod.rs:19` `Language`; `:74` `tags()` (one `LazyLock` per language; a compile failure warns and disables the language); `:94` `build(locals)`; `:216` `not_local_calls` (the §5.3 string edit); locals queries `RUST_LOCALS`, `PY_LOCALS`, `TS_LOCALS`; `src/lang/imports.rs` is the step 2 stub.
+- `src/parse.rs:69` `parse` (NUL/UTF-8 check → `generate_tags` → definitions sorted `(start, −end)` → parents by a range stack → refs' `from_symbol` by the same stack; `has_errors` kept with its tags).
+- `src/tools.rs:18` `PROMPT`; `:30` `register`; `:114` `CodeFindArgs`/`:132` `CodeFindTool`; `:190` `CodeOutlineArgs`/`:202` `CodeOutlineTool`; `budget_render` (`chars/3`, row boundaries, one `… +N more`); compile-time `assert!(!DIRECT)` at the bottom.
+- Tests: `tests/index.rs` — one fixture per language under `tests/fixtures/{rust,ts,js,py,go}` (definitions, kinds, parents, `exported`, docs, and the locals check: with locals the parameter call `f(x)` is gone and `helper(x)` stays, definitions identical), `rust_constants` on `fs.rs`, `indexes_this_repository`, `tools_envelope` (both tools through `Tool::call`: exact-name first, budget cut counted, nested outline, unknown path → `ToolOutput::err`), `locals_lower_refs_without_touching_symbols`. Temp data dir under `std::env::temp_dir()`, removed on drop; the test asserts no `.codeindex/` in the repo.
+
+### 19.3 Deviations from the spec, and why
+
+1. **`(#is-not? local)`, not `(#not-is? local)`** (§2.B, §5.3). tree-sitter's negated property predicate is spelled `#is-not?`; `#not-is?` parses as an unknown *general* predicate, is silently ignored, and `tree-sitter-tags` never sets `name_must_be_non_local`. First run measured refs identical with and without locals; with the right spelling: 94 043 → 91 343.
+2. **The Rust tags query is extended, not used verbatim** (§0.3 "nothing else per language"): (a) `const_item`/`static_item` → `definition.constant` — §4 lists the kind and §16 row 1 expects `MAX_BYTES` in an outline, and the shipped query has no constant pattern; (b) `(call_expression function: (scoped_identifier name: (identifier) @name)) @reference.call` — the shipped query only sees bare `f()`, so `Registry::new()` / `ToolRegistry::start()` were no reference at all, which step 2 needs; (c) three patterns *prepended* so they win the one-tag-per-node tie: `impl`/`trait` bodies → `method`, `mod` bodies → `function`. The shipped `(declaration_list (function_item) @definition.method)` matches `mod` bodies too and called every function in `mod tests` a method. Five lines total; everything else is the grammar's `tags.scm`.
+3. **TS/JS query pair compiled first time**; no vendored copy under `src/lang/queries/` was needed. TS locals = the grammar's two parameter lines plus the JS scopes/`variable_declarator` lines (`TS_LOCALS`), the way the grammar's own `tree-sitter.json` concatenates them.
+4. **`RETURNS = "dict"` for `code_find`**, not `list[dict]` (§8 table, brief): the Python value is the envelope (`{root, indexed_files, stale, pending, dropped, truncated_walk, rows, content}`) — §8 says the value *is* the envelope, and a `list[dict]` annotation on a dict would make the model iterate keys. `rows` is the list §8 describes. Same for `code_outline` (already `dict`).
+5. **`kind` is a free string, not a `Kind` enum**: kinds are whatever the grammar's captures say (`type` exists only for Go; `constant` only for Rust/JS/Python). An enum would reject valid kinds or need per-language variants.
+6. **`src/index.rs` added to the §3 layout**: `Codeindex`, `RootIndex`, `reconcile` had no named home (§3 lists store/root/walk/lang/parse/tools; `Index::reconcile` is named in the header). `root.rs` keeps discovery and naming only.
+7. **Batched inserts + explicit symbol ids** (§5.4 says one transaction; it did not say one statement per row). One-by-one sqlx statements cost 17.8 s for ~108 k rows; 500-row `QueryBuilder` batches with `id = max(id)+1+i` so `parent_id`/`from_symbol` are known before the insert cost 3.0 s. The transaction is the only writer (per-root lock + SQLite), so the ids cannot collide.
+8. **NUL/UTF-8 checks run at parse time on the changed set, not in the walk** (§5.1 lists them under "walk"). Reading the first 8 KiB of every file on every call would make reconcile O(files) I/O; a file that fails the check is dropped from the write and re-checked on the next call (cheap, rare). `other` files are never read: a binary file with an unknown extension gets a `files` row (`lines 0`).
+9. **Writer lock spans walk + diff + write**, not just the write. Two concurrent calls on one root otherwise both compute the same changed set and the second's `INSERT` hits `files.path UNIQUE`. Readers of the same root serialise on the walk too; `ponytail:` comment in `index.rs` names the upgrade (a read snapshot).
+10. **Rust methods are not nested under their type in `code_outline`**: `impl` blocks are not tags, so `parent_id` is `NULL` for methods; TS/JS/Python methods nest under their class, Rust functions nest under `mod`. Step 2 or 3 can attach methods via the `impl_item` type name if the outline needs it.
+11. **Locals also filter method calls**: the predicate goes on every `@reference.call` pattern (spec wording), so `let len = …; x.len()` drops the `.len()` reference in that scope. Rare; step 2 can move the predicate to the bare-identifier patterns only if the residue matters.
+12. **A disabled language (config `languages`) keeps its real `files.language`** with no symbols; re-enabling it does not reparse until the file changes (the sync key is `(mtime_ns, size)`). `rm` the index or touch the files.
+13. **`docs` for `export class X`/`export function f` in TS/JS is `NULL`**: the shipped JS pattern anchors the comment to the class/function node, and `export` puts the comment beside the `export_statement`. Upstream behaviour, recorded in the TS fixture test.
+14. **`clippy -p codeindex -- -D warnings` needs `--no-deps`**: `tools` has three pre-existing `clippy::all` denials (`pty.rs:788`, `registry.rs:91`, `:1255`) that fail any clippy run reaching it; not touched (brief).
+
+### 19.4 Not exercised
+
+The real binary (`t --headless` → `list_tools` shows `code_find`/`code_outline`, `/prompt` shows the paragraph, `codeindex.enabled: false` removes them) — the plugin start path is the knowledge/scrape shape line for line, but no headless run was made; do it with the first step 2 smoke. The `> sync_limit` background path is code-reviewed, not driven (this repo's first index is the "empty index → synchronous" branch; a 65-file change was not staged). Windows paths. The `truncated_walk` cap. Release size.
