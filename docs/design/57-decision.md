@@ -300,6 +300,8 @@ The pipeline of §3.5 changes what capture needs. Every non-skipped batch alread
 4. **Export** — `t decision export --family meeting [--since DATE] --out FILE`: folds `example` + `amend` rows into the **same fixture shape the phrasing bench reads** (`crates/decision/tests/fixtures/meeting-batches.json`: `text`, `kind`, `published`, `mentions`, plus `subject`, `cached`, `user`) and, with `--format laya`, into laya's `typed-decisions` training JSON. The bench thereby becomes the evaluation harness for captured data: `cargo run --example phrasing -- --fixture exported.json`.
 5. **Upload** (step 11, unchanged design) stays off until the relay endpoint exists; `train_keep_local` defaults true.
 
+**As built** (`52e6e7b`, `87de365`, `2795f84`): see *As built — steps 8–9* at the end — the export flag is `t --decision-export meeting` (no subcommand tree in `t`), the example carries a `verdict`, ids are uuid v7, and a tier-1 skip without tier 2 labels `small_talk` too.
+
 ## §12 Model-tree survey (2026-09-21, after step 2's numbers) — what the fast deployments actually do
 
 Step 2 measured 0.5–1.3 s per question and ~3.9 GiB warm with the fp16 ONNX on the CPU EP, against the <300 ms / 1 GiB §0 assumed. Sky's instruction: crawl the fine-tunes and quantisations under `convaiinnovations/laya` and find the correct pre-existing setup. All 17 derivatives (HF model tree: 7 fine-tunes, 10 quantisations, 0 adapters) were read — README + file lists. Facts below are from those READMEs; "claimed" means the publisher's number.
@@ -941,3 +943,89 @@ Reading: UUID ids never pick a brief (the 192-token head budget goes to the ids)
 - The `b1..b4` publishes at 0.6/0.3 include two genuinely wrong ones in 112 (table above). The asymmetric gate accepts that cost by design; if shadow shows more, raise `tau_margin` on `meeting.brief` before touching the phrasing.
 - `stages` names the Bool's winner `subject` when it means "not only small talk"; a reader of the ⚡ row may read it as a positive subject detection. Rename to `kind: talk` / `kind: small talk` if it confuses.
 - Fixture labels: three icd scheduling batches carry model-noise `published` titles and the icd briefs leak forward (created in-meeting after the batch); a `created_at` on the fixture's briefs would let the bench exclude them instead of the hand note above.
+
+## As built — steps 8–9 (2026-09-21): local training capture for the meeting oracle, `train` switch + RPC, export to the bench fixture
+
+Brief: `/tmp/laya-design/omp-step89.md` (§11.4 as the spec; §11.1 items 1, 2, 5, 6 still hold). Commits on main: `52e6e7b` (`decision::training` schema + per-day writer + scrub, `FamilyGate.train`, `GetTrain`/`SetTrain`/`Capture`, RPC), `87de365` (meeting capture: every oracle-handled batch, `amend` with outcome and tap/dismiss), `2795f84` (export: fold → fixture / laya shapes, `t --decision-export`, `phrasing --fixture`), this note. Toolchain: `export PATH="$(just toolchain):$PATH"`.
+
+### What one example looks like (`crates/decision/src/training.rs`)
+
+One JSONL row per event under `<data_dir>/decisions/training/<prefix>/<YYYY-MM-DD>.jsonl`. The row below is the Kuiper batch from the model-gated test (`crates/meeting/tests/oracle.rs`), shadow, with a two-row cache; `text` shortened and probabilities rounded here, nothing else changed:
+
+```json
+{"row":"example","schema":"theuth.decision.v1","id":"01a0c549-fdd9-7970-b852-1e71bddc410c","ts":"2026-09-21T18:45:55.801400Z",
+ "family":"meeting","harness":"1.9.2","model_sha":"891102d37268…","gate_version":3337696867,"mode":"shadow",
+ "text":"them: So Mike was telling me about this at lunch. They were looking at the orbits of a few distant objects in the Kuiper belt, way out past Neptune, […]\nme: Has anyone actually seen it?\nthem: No, that's the thing. […]",
+ "mentions":["Mike","Kuiper","Neptune","Earth","Planet Nine"],
+ "questions":[
+  {"family":"meeting.kind","type":"bool","instructions":"The speakers are only greeting, scheduling or saying goodbye","candidates":[],
+   "probabilities":{"false":1.0,"true":0.0},"disposition":"shadow","gate_version":3337696867,"tier":1,"latency_ms":55},
+  {"family":"meeting.brief","type":"choice","instructions":"which cached brief is the subject being discussed",
+   "candidates":[{"id":"b1","text":"Mike's onboarding checklist"},{"id":"b2","text":"Earth observation satellite budget"}],
+   "probabilities":{"b1":0.112,"b2":0.1184,"none":0.7695},"disposition":"shadow","gate_version":205688663,"tier":1,"latency_ms":46}],
+ "tier2":{"subject":"Planet Nine","cached":null,"lookup":true},
+ "verdict":{"action":"model","reason":"subject \"Planet Nine\", no cached brief"}}
+{"row":"amend","id":"01a0c549-fdd9-7970-b852-1e71bddc410c","ts":"2026-09-21T18:45:56Z","outcome":{"published":{"id":null,"title":"Planet Nine"}}}
+{"row":"amend","id":"01a0c549-fdd9-7970-b852-1e71bddc410c","ts":"2026-09-21T18:47:00Z","user":"tapped"}
+```
+
+- `Example`: `schema`, `id` (uuid v7 — time-ordered like a ulid, no new dependency), `ts`, `family` = the prefix, `harness` (`CARGO_PKG_VERSION`), `model_sha` (filled by the engine from the loaded checkpoint; `size:<bytes>` before the background sha lands, like the log), `gate_version` of the first question, `mode`, `text` (the `them:`/`me:` state exactly as passed to the engine — truncation is a hard error there, so whenever a question ran this is what the model read), `mentions`, `questions: [Asked]` (family, `type` choice|bool|score, instructions/statement, candidates **with titles**, probabilities as a map, disposition, reason through the shadow wrapper, gate_version, tier, latency), `tier2: {subject, cached, lookup} | {error}` when it ran, and **`verdict: skip | publish {id, title} | model {reason}`** — added beyond the brief's list so the export never re-derives `settle`.
+- `Amend`: `id`, `ts`, then one of `outcome: { published: {id: <cache row | null for a researched brief>, title} | null }` or `user: tapped | dismissed`. `ignored` exists in the enum but is never written; the export shows it for the absence.
+- Every row goes through `tools::secrets::redact_value` (new one-liner over the vault's `Secrets::redact_value`) before it is written: known vault values become `{{secret:NAME}}` placeholders. The store is append-only, one file per local day, created on the first row (`train: false` → no directory).
+- `Store::info` counts example rows by parsing only the `row` tag per line (the scrubber round-trips through `serde_json::Value`, so key order on disk is not guaranteed).
+
+### Switch and RPC
+
+- `FamilyGate.train: bool` (serde default false) on every family; the YAML patch accepts `train` like `mode` — `decision.families.meeting: { train: true }` flips the three `meeting.*` families (tested in `lib.rs`).
+- Engine: `GetTrain { prefix } → TrainingInfo { enabled, examples_today, examples_total, bytes, dir }`, `SetTrain { prefix, on } → Result<TrainingInfo, String>`, and `tell Capture { prefix, row }`, which drops the row unless a `<prefix>.*` family has `train` **now** (flipping it off stops writes mid-meeting). **`SetMode` and `SetTrain` both write the whole flow mapping `{ mode: …, train: … }`** — `write_nested_config_value` replaces the value, so `SetMode` alone would have erased `train` (and vice versa). Engine test `train_switch_writes_a_merged_prefix_patch_and_gates_capture`.
+- RPC: `decision_training(prefix)` and `set_decision_training(prefix, on)` (both → `TrainingInfo`, exported in the TS bindings for step 10). To turn capture on today: `set_decision_training("meeting", true)` over the socket, or `decision:\n  families:\n    meeting: { mode: shadow, train: true }` in `config.yaml` (live on the next batch via the engine; the config line needs a restart).
+- Headless smoke (this run, `t --headless --data-dir /tmp/tdata`, bun WebSocket client with the bearer token): `decision_training(["meeting"])` → `{enabled: false, examples_today: 1, examples_total: 1, bytes: 2114, dir: "/tmp/tdata/decisions/training/meeting"}`; `set_decision_training(["meeting", true])` → `enabled: true` and `config.yaml` reads `meeting: { mode: shadow, train: true }`; `…false` → `{ mode: shadow, train: false }`; `set_decision_training(["nobody", true])` → `-32000 no `nobody.*` decision family is configured`.
+
+### Capture in `meeting::oracle` (`87de365`)
+
+- `run` asks `GetTrain("meeting")` right after the mode check (one actor hop; nothing is cloned when off). When on, the two questions are kept as asked, and at verdict time — Skip, Publish and Model alike, shadow and active — the `Example` is built and `tell`-ed to the engine from the spawned oracle task; `Verdict.example: Option<ExampleId>` carries the id back to the actor.
+- `Live.pending` carries the example id with each `(event, expected)`; `settle_pending` writes `amend { outcome }` per captured example with the turn's first publication (`(cache row | null, title)` — the same approximation `outcome()` already makes when several batches share one turn) and remembers the published topics (`Live.published_topics`, pushed beside `published` in `meeting_topic`) against those example ids in `Live.captured`. An oracle publish (`Action::Publish`) records `(topic, example)` directly. `TapTopic` / `DismissTopic` call `Live::react`, which writes `amend { user }` for every captured example behind that topic and forgets the topic; `oracle::amend` is a spawned `tell`, so neither handler waits on the engine.
+- Model-gated `tests/oracle.rs` (this run): default config → `Verdict.example` is `None` and `decisions/training` does not exist; after `SetTrain(meeting, true)`, the shadow Kuiper batch with a two-row cache writes the row above (mentions, both questions with title candidates `b1`/`b2`, tier-2 `subject: "Planet Nine"`, verdict `model`), then two `amend` rows (`outcome.published: Planet Nine`, `user: tapped`) land on the same id; `GetTrain` counts 1/1. The first cache I tried (`Kuiper belt survey`) was published at tier 1 (P 0.77, margin 0.62) and the batch never reached tier 2 — correct pipeline behaviour, so the test's cache rows only share a mention (`Mike`, `Earth`) with the batch.
+
+### Export (`2795f84`)
+
+`t` has no subcommand tree (flat flags: `--secret-set`, `--link`, …), so the export is **`t --decision-export <prefix> [--since YYYY-MM-DD] [--out FILE] [--format fixture|laya]`**, implemented in `decision::training::{fold, label, fixture, laya, export}` (the binary only parses flags). `fold` keys `amend` rows to their example (last outcome / last reaction wins; an amend without its example is dropped).
+
+Label derivation as implemented (`training::label`, table-tested in `label_derivation_table`):
+
+| input | `kind` | `expected_brief` | `source` |
+|---|---|---|---|
+| `published` = the outcome amend when a turn ran, else a `publish` verdict, else none | — | — | — |
+| tier 2 `subject: null`, nothing published | `small_talk` | none | `tier3` if an outcome row exists, else `tier2` |
+| tier-1 skip, no tier 2, nothing published | `small_talk` | none | `oracle_only` |
+| a tier-2 subject, or anything published | `named_subject` | the published **cached** brief's candidate id (`b1..`, matched by title among the brief question's candidates); a researched brief or an unlisted title → none | `tier3` / `tier2` / `oracle_only` |
+| tier 2 failed (or nothing heard) and nothing published | `general` | none | `tier3` / `oracle_only` |
+| user `tapped` | as above | as above (confirmed) | `user` |
+| user `dismissed` | as above | **none** | `user` |
+
+- `--format fixture` (default) = `{ _doc, batches: [{ id, source, kind, state, published: [{title, cached}] | null, expected_brief, candidates: [{id, title, aliases: []}], mentions, subject, cached, user }] }` — the field names `examples/phrasing.rs` reads (`state`, not `text`; `published` as the fixture's list), plus §11.4's `subject`, `cached`, `user`, and `source` = the label's origin (the hand-built fixture used `source` for the meeting name; the bench never reads it). `phrasing --fixture FILE` replaces the built-in fixture; run this session on the exported test row: `1b` K4 `b1..bK` → `1/1`, `none` accepted right, p50 36 ms.
+- `--format laya` = the `LocalLLaMA/typed-decisions` row columns (checked against the dataset card): `id`, `workflow`, `state`, `questions` (`kind` as `noul` with the statement, `brief` as `choice` with `criteria` = candidate id → title + `none`), `gold` (`{label, probability_true}` / `{label, probabilities}`, one-hot on the derived label — we have no soft labels), `kind__label`, `brief__label`, plus `label_source`. §11.1(5)'s single-question `question/oracle/label` envelope was not used: the fine-tune notebook consumes the dataset shape, and one batch is one multi-question case there.
+- Smoke: `t --data-dir /tmp/tdata --decision-export meeting --out /tmp/exported.json` → `wrote 1 examples …`; the batch reads `kind: named_subject, source: user, user: tapped, published: [{title: "Planet Nine", cached: null}], expected_brief: null, subject: "Planet Nine"`; `--format laya` → `kind__label: false, brief__label: "none"`; `--since 2026-09-22` → 0 batches; `--format csv` → `unknown format "csv": fixture | laya`, exit 1.
+
+### Deviations from §11.4 / the brief
+
+- **`verdict` is in the example** (not in the brief's field list): the export needs the oracle's own act for `oracle_only` rows and for `published` when no turn ran; recomputing `settle` offline would drift.
+- **`text` is the state as passed, not "after truncation"**: the engine treats truncation as a hard error (`Reason::Truncated`), so a truncated batch never has model numbers; the row's `reason` says so.
+- **Ids are uuid v7**, not ulid — same ordering property, no new crate; `ExampleId` follows `LogId`.
+- **`published.id` is nullable**: a brief the turn researched has no cache row at publish time (its own row is not a cached pick, as `outcome()` already treats it); the fixture's `published[].cached: null` is the same convention.
+- **`Brief.id` for the oracle's own publish is the cache row id** (not `b1`); the export maps it back to the candidate id by title.
+- **`small_talk` also for a tier-1 skip without tier 2** — the brief's rule (`tier-2 subject: null ∧ nothing published`) would have made every skipped small-talk batch `general`; §11.4(1) calls those the negative examples.
+- **`source` on the fixture batch** carries the label origin as the brief asks; the hand-built fixture's meeting-name `source` is unread by the bench.
+- No `ignored` row is ever written (derived at export), as specified. The Settings section (step 10) and the uploader/relay (step 11) are untouched; `train_keep_local` is not read yet — nothing deletes.
+
+### Checks
+
+- `cargo check --workspace --all-targets` clean (the `block v0.1.6` future-incompat note is pre-existing). `cargo test -p decision -p meeting -p rpc`: `decision` **58 unit** (52 → 58: schema round trip incl. amend shapes and tier-2 error, per-day append-only store with a fake vault proving `hunter22hunter22` → `{{secret:PASS}}`, label table, fold, export shapes; engine `train_switch_…`; lib `train` prefix patch) + `tests/model.rs` 2; `meeting` **38 unit** + `tests/oracle.rs` 1 model-gated (extended as above); `rpc` **17**. `cargo clippy -p decision -p meeting -p theuth --no-deps --all-targets` clean; `cargo clippy -p tools` fails on three **pre-existing** lints in `pty.rs`/`registry.rs` (`obfuscated_if_else`, `type_complexity`, `too_many_arguments`) untouched here — `secrets.rs` gained one function.
+- Headless RPC smoke and the export smoke as recorded above; `phrasing --fixture /tmp/exported.json --only 1b` ran against the checkpoint.
+- Not run: a real meeting with `train: true` (no meeting was recorded during this build); the desktop app.
+
+### Open
+
+- Several pending batches in one turn all receive the turn's first publication as `outcome.published` — the same approximation `outcome()` makes for the decision log. If it skews the `brief` labels, attach publications to the batch whose `[meeting hh:mm:ss]` line the model answered (the `batch_id` is in the event already).
+- `captured` topics that expire untouched stay in `Live.captured` until the meeting ends (bounded by topics per meeting). Fine for v1; drop them in `topics_gone` if a meeting ever grows thousands of topics.
+- `harness` reads `1.9.2` from the workspace at build time; the training rows and the decision log will disagree on version only across a release boundary.
