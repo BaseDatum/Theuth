@@ -50,6 +50,10 @@ stream_idle_secs: bigint,
  */
 max_salvages: number, 
 /**
+ * `tools.pty_idle_secs`: quiet-screen seconds before a PTY job wakes the model with `<job_idle>` (61); `0` = never.
+ */
+pty_idle_secs: bigint, 
+/**
  * Harness display name (`link.name`, else the hostname): what a linked
  * device shows in its harness switcher (31 §6.4).
  */
