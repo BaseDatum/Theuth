@@ -33,10 +33,15 @@ pub const MODEL_FILES: [&str; 4] = [
 /// The mandatory negative control appended to every `Choice` (57 §0.4).
 pub const NONE_ID: &str = "none";
 
+/// The model's identity for `gate_version` and the log, shared with the oracle that fills it:
+/// `size:<bytes>` until the background sha256 lands, then the hex. Rows written in between
+/// carry the size tag (and a `gate_version` derived from it); the fold does not care.
+pub type ModelSha = Arc<Mutex<String>>;
+
 /// What the engine runs: [`Loaded`] in production, a fake in the timeout test.
 pub trait Oracle: Send {
-    /// sha256 of the model artifact, for `gate_version`.
-    fn model_sha(&self) -> &str;
+    /// The model's identity, see [`ModelSha`].
+    fn model_sha(&self) -> ModelSha;
     /// Render one question.
     fn build(&self, q: &Question) -> Result<Sequence, String>;
     /// One forward pass.
@@ -88,8 +93,8 @@ pub struct Engine {
     missing_logged: bool,
     /// Cold-load time, written into the next logged row.
     pending_load_ms: Option<u64>,
-    /// The loaded model's sha, readable without taking the session lock.
-    model_sha: String,
+    /// The loaded model's identity, readable without taking the session lock.
+    model_sha: ModelSha,
 }
 
 impl Engine {
@@ -111,7 +116,7 @@ impl Engine {
             watchdog: false,
             missing_logged: false,
             pending_load_ms: None,
-            model_sha: String::new(),
+            model_sha: Arc::default(),
         }
     }
 
@@ -124,7 +129,7 @@ impl Engine {
     }
 
     fn model_sha(&self) -> String {
-        self.model_sha.clone()
+        self.model_sha.lock().clone()
     }
 
     fn append(&self, row: Row) {
@@ -197,11 +202,11 @@ impl Engine {
         match tokio::time::timeout(budget, &mut handle).await {
             Ok(Ok(Ok(oracle))) => {
                 let load = oracle.load_time();
-                self.model_sha = oracle.model_sha().to_owned();
+                self.model_sha = oracle.model_sha();
                 tracing::info!(
-                    "decision: model loaded in {load:?} from {} (sha256 {})",
+                    "decision: model loaded in {load:?} from {} ({})",
                     self.model_dir.display(),
-                    &self.model_sha[..12.min(self.model_sha.len())]
+                    self.model_sha()
                 );
                 let shared: Shared = Arc::new(Mutex::new(oracle));
                 self.loaded = Some(shared.clone());
@@ -337,7 +342,7 @@ impl Message<Ask> for Engine {
                     .into_iter()
                     .next()
                     .ok_or_else(|| Reason::HardError("no row".into()))?;
-                Ok((seq, out, o.model_sha().to_owned()))
+                Ok((seq, out, o.model_sha().lock().clone()))
             })
         };
         let text = self.cfg.log_text.then(|| ask.question.clone());
@@ -503,8 +508,8 @@ mod tests {
     }
 
     impl Oracle for Fake {
-        fn model_sha(&self) -> &str {
-            "fake"
+        fn model_sha(&self) -> ModelSha {
+            Arc::new(Mutex::new("fake".into()))
         }
         fn build(&self, q: &Question) -> Result<Sequence, String> {
             let k = laya::labels(q).len();

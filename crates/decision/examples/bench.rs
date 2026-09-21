@@ -120,15 +120,14 @@ fn main() -> anyhow::Result<()> {
     let t = Instant::now();
     let m = Loaded::open(&dir, metal, dtype)?;
     println!(
-        "cold load: {} ms ({})  sha256 {} (hashed in {} ms)  rss after load: {:.0} MiB  device: {:?} {:?}",
+        "cold load: {} ms ({})  model id at load: {}  rss after load: {:.0} MiB  device: {:?} {:?}",
         t.elapsed().as_millis(),
         if t.elapsed() <= Duration::from_millis(500) {
             "≤ 0.5 s"
         } else {
             "OVER 0.5 s"
         },
-        &m.model_sha[..12.min(m.model_sha.len())],
-        m.hash_time.as_millis(),
+        m.model_sha.lock(),
         rss_mib(),
         m.device.location(),
         m.dtype
@@ -352,6 +351,10 @@ fn main() -> anyhow::Result<()> {
             if agree == probs.len() { "PASS" } else { "FAIL" }
         );
     }
-    println!("\nrss final: {:.0} MiB", rss_mib());
+    println!(
+        "\nrss final: {:.0} MiB  model id now: {}",
+        rss_mib(),
+        m.model_sha.lock()
+    );
     Ok(())
 }

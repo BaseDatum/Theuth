@@ -8,10 +8,12 @@ pub mod model;
 pub mod weights;
 
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
+use parking_lot::Mutex;
 use sha2::{Digest, Sha256};
 use tokenizers::Tokenizer;
 
@@ -19,7 +21,7 @@ use self::config::{AgentConfig, EncoderConfig};
 use self::model::DecisionModel;
 use self::weights::{SanitizedBackend, sanitize_name};
 
-use crate::engine::Oracle;
+use crate::engine::{ModelSha, Oracle};
 use crate::laya::{Batch, LayaConfig, RowOut, Sequence, build_sequence, collate, postprocess};
 use crate::question::Question;
 
@@ -102,7 +104,7 @@ pub fn inputs(batch: &Batch, device: &Device) -> candle_core::Result<[Tensor; 5]
 }
 
 /// The checkpoint on one device: the model, the tokenizer, the temperatures and the weights'
-/// sha256.
+/// identity for the log.
 pub struct Loaded {
     model: DecisionModel,
     /// Where the weights live.
@@ -113,12 +115,11 @@ pub struct Loaded {
     pub tokenizer: Tokenizer,
     /// Budgets and temperatures from `rl_agent_config.json`.
     pub laya: LayaConfig,
-    /// sha256 hex of `model.safetensors`, part of every gate version.
-    pub model_sha: String,
-    /// Wall-clock of `open`, hashing included.
+    /// `size:<bytes>` of `model.safetensors` until the background sha256 lands (~2 s after
+    /// `open` on this Mac), then its hex; part of every gate version and log row.
+    pub model_sha: ModelSha,
+    /// Wall-clock of `open`: header check + mmap + upload, no hashing.
     pub load_time: Duration,
-    /// The sha256 pass alone (843 MB; the part of `load_time` that is not candle).
-    pub hash_time: Duration,
 }
 
 impl Loaded {
@@ -153,11 +154,14 @@ impl Loaded {
         let agent_cfg = AgentConfig::from_value(&agent_raw, encoder_cfg.max_position_embeddings)?;
 
         let weights = dir.join("model.safetensors");
-        let th = Instant::now();
-        let mut hasher = Sha256::new();
-        std::io::copy(&mut std::fs::File::open(&weights)?, &mut hasher)?;
-        let model_sha = format!("{:x}", hasher.finalize());
-        let hash_time = th.elapsed();
+        // Integrity is the downloader's job (size + sha256 against the manifest); here the
+        // header parse is the size check (safetensors refuses offsets past the file) and the
+        // hash is only the log's identity, so it runs off the load path — after the upload,
+        // which it would otherwise compete with for the page cache.
+        let model_sha: ModelSha = Arc::new(Mutex::new(format!(
+            "size:{}",
+            std::fs::metadata(&weights)?.len()
+        )));
 
         // SAFETY: the file is read-only for the process lifetime; the mmap is what laya-rs's
         // own loader does (`Agent::load`).
@@ -177,6 +181,16 @@ impl Loaded {
         let vb = VarBuilder::from_backend(Box::new(backend), dtype, device.clone());
         let model = DecisionModel::load(vb, &encoder_cfg, &agent_cfg, dtype, &device)
             .map_err(|e| anyhow::anyhow!("load {}: {e}", weights.display()))?;
+        std::thread::spawn({
+            let (weights, model_sha) = (weights, model_sha.clone());
+            move || match sha256_cached(&weights) {
+                Ok(hex) => *model_sha.lock() = hex,
+                Err(e) => tracing::warn!(
+                    "decision: sha256 of {} failed ({e}); log rows keep the size tag",
+                    weights.display()
+                ),
+            }
+        });
         Ok(Loaded {
             model,
             device,
@@ -185,7 +199,6 @@ impl Loaded {
             laya,
             model_sha,
             load_time: t.elapsed(),
-            hash_time,
         })
     }
 
@@ -232,8 +245,8 @@ impl Loaded {
 }
 
 impl Oracle for Loaded {
-    fn model_sha(&self) -> &str {
-        &self.model_sha
+    fn model_sha(&self) -> ModelSha {
+        self.model_sha.clone()
     }
     fn build(&self, q: &Question) -> Result<Sequence, String> {
         Loaded::build(self, q)
@@ -244,6 +257,45 @@ impl Oracle for Loaded {
     fn load_time(&self) -> Duration {
         self.load_time
     }
+}
+
+/// sha256 hex of `weights`, remembered beside it in `<weights>.sha256` as `<hex> <size> <mtime>`
+/// so the 843 MB pass runs once per download, not on every load (`idle_unload` reloads every
+/// quiet ten minutes). A size or mtime mismatch rehashes; a sidecar that cannot be written is
+/// only a debug line.
+fn sha256_cached(weights: &Path) -> std::io::Result<String> {
+    let meta = std::fs::metadata(weights)?;
+    let stamp = format!(
+        "{} {}",
+        meta.len(),
+        meta.modified()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs())
+    );
+    let mut sidecar = weights.as_os_str().to_owned();
+    sidecar.push(".sha256");
+    let sidecar = Path::new(&sidecar);
+    if let Ok(text) = std::fs::read_to_string(sidecar)
+        && let Some((hex, rest)) = text.trim().split_once(' ')
+        && rest == stamp
+        && hex.len() == 64
+    {
+        return Ok(hex.to_owned());
+    }
+    let t = Instant::now();
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut std::fs::File::open(weights)?, &mut hasher)?;
+    let hex = format!("{:x}", hasher.finalize());
+    tracing::debug!(
+        "decision: {} sha256 {}… in {:?}",
+        weights.display(),
+        &hex[..12],
+        t.elapsed()
+    );
+    if let Err(e) = std::fs::write(sidecar, format!("{hex} {stamp}\n")) {
+        tracing::debug!("decision: cannot write {}: {e}", sidecar.display());
+    }
+    Ok(hex)
 }
 
 #[cfg(test)]

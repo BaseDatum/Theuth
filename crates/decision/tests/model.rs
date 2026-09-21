@@ -92,13 +92,14 @@ fn readme_questions_match_the_reference() {
     let metal = Device::Auto.metal();
     let dtype = if metal { DType::F16 } else { DType::F32 };
     let m = Loaded::open(&dir, metal, dtype).expect("open");
+    let at_load = m.model_sha.lock().clone();
     eprintln!(
-        "{:?} {:?}: load {:?} (hash {:?})",
+        "{:?} {:?}: load {:?}, model id at load {at_load}",
         m.device.location(),
         m.dtype,
-        m.load_time,
-        m.hash_time
+        m.load_time
     );
+    assert!(at_load.starts_with("size:") || at_load.len() == 64, "{at_load}");
     assert_eq!((m.laya.max_len, m.laya.head_max_len), (512, 192));
     let rows: Vec<_> = readme().iter().map(|q| m.build(q).unwrap()).collect();
     assert!(rows.iter().all(|r| !r.truncated));
