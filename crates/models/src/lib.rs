@@ -1,6 +1,11 @@
 //! Bundled models.dev catalog (`data/models.json`, refreshed by `just models`)
 //! merged with `<data_dir>/models.json`, plus `provider/model` id resolution
 //! to genai `adapter::model` ids. No network; see design doc 02 §1.
+//!
+//! [`onnx`] is the one process-wide ONNX Runtime initialiser (57 §6 step 1); it lives
+//! here because every `ort` user (`voice`, `meeting`, `decision`) already sits above `models`.
+
+pub mod onnx;
 
 use std::collections::BTreeMap;
 use std::path::Path;

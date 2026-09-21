@@ -7,7 +7,7 @@
 //! No `parakeet_rs`/`symphonia` type leaves here.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use kameo::message::{Context, Message};
@@ -32,70 +32,6 @@ const WATCH: Duration = Duration::from_secs(60);
 /// Samples per streaming window: 560 ms at 16 kHz, the Nemotron encoder's chunk
 /// (56 mel frames × 160 hop). 35 VAD frames of 256, so window edges are frame edges.
 pub const WINDOW: usize = 8_960;
-
-/// ONNX Runtime is loaded at run time, from the first of: the bundle (`Contents/Frameworks/`
-/// beside the `.app`'s `MacOS/theuth`, or the binary's own directory — `package-macos.sh` ships
-/// it there, signed), the checkpoint directory, `$ORT_DYLIB_PATH`, Homebrew's
-/// (`brew install onnxruntime`). Linked statically it brings protobuf 3.21, which cannot share
-/// a process with the protobuf-lite 3.14 inside `sentencepiece` (ptts): the TTS load aborts. As
-/// a dylib its symbols stay private to it.
-///
-/// `ort::init_from` runs once per process, on the first call — the TDT model, the streaming
-/// model and the VAD (`wavekat-vad`'s own `ort` sessions) all share it, so the first caller's
-/// `dir` decides which checkpoint directory is searched; the other locations are dir-independent.
-pub(crate) fn ort_lib(dir: &Path) -> anyhow::Result<PathBuf> {
-    static ORT: OnceLock<Result<PathBuf, String>> = OnceLock::new();
-    ORT.get_or_init(|| {
-        let lib = find_ort_lib(dir).map_err(|e| e.to_string())?;
-        ort::init_from(&lib)
-            .map_err(|e| format!("load {}: {e}", lib.display()))?
-            .commit();
-        Ok(lib)
-    })
-    .clone()
-    .map_err(anyhow::Error::msg)
-}
-
-fn find_ort_lib(dir: &Path) -> anyhow::Result<PathBuf> {
-    let ext = if cfg!(target_os = "macos") {
-        ".dylib"
-    } else {
-        ".so"
-    };
-    let name = format!("libonnxruntime{ext}");
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(Path::to_path_buf));
-    let bundled = exe_dir
-        .iter()
-        .flat_map(|d| [d.join("../Frameworks").join(&name), d.join(&name)]);
-    let in_dir = std::fs::read_dir(dir)
-        .ok()
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("libonnxruntime") && n.contains(ext))
-        });
-    let env = std::env::var_os("ORT_DYLIB_PATH").map(PathBuf::from);
-    let brew = ["/opt/homebrew/lib", "/usr/local/lib"]
-        .into_iter()
-        .map(|d| Path::new(d).join(&name));
-    bundled
-        .chain(in_dir)
-        .chain(env)
-        .chain(brew)
-        .find(|p| p.exists())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "no {name} bundled, in {} (nor $ORT_DYLIB_PATH, nor Homebrew): copy lib/libonnxruntime* from an ONNX Runtime release (github.com/microsoft/onnxruntime/releases, 1.17 or newer) there",
-                dir.display()
-            )
-        })
-}
 
 /// Any container symphonia demuxes → mono f32 at the source rate. Opus packets
 /// (webm/ogg from Chromium, the meeting tracks) go to libopus, which symphonia
@@ -215,7 +151,7 @@ impl Engine {
     /// `vocab.txt`) after the process-wide ONNX Runtime init.
     pub fn load(dir: &Path) -> anyhow::Result<Engine> {
         let t = Instant::now();
-        ort_lib(dir)?;
+        models::onnx::ort_lib(&[dir]).map_err(anyhow::Error::msg)?;
         let m = ParakeetTDT::from_pretrained(dir, None)
             .map_err(|e| anyhow::anyhow!("no STT model in {}: {e}", dir.display()))?;
         tracing::info!("voice: STT model loaded in {:?}", t.elapsed());
@@ -284,7 +220,7 @@ impl Stream {
         if !dir.is_dir() {
             anyhow::bail!("dictation model not found at {}", dir.display());
         }
-        ort_lib(dir)?;
+        models::onnx::ort_lib(&[dir]).map_err(anyhow::Error::msg)?;
         let t = Instant::now();
         let m = Nemotron::from_pretrained(dir, None)
             .map_err(|e| anyhow::anyhow!("no streaming STT model in {}: {e}", dir.display()))?;

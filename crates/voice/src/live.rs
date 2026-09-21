@@ -303,7 +303,7 @@ mod tests {
             eprintln!("skipped: no streaming model or no `say`");
             return;
         };
-        // `ort_lib` needs the dylib beside the checkpoint or `$ORT_DYLIB_PATH` (54 §2.1).
+        // `models::onnx::ort_lib` needs the dylib beside the checkpoint or `$ORT_DYLIB_PATH` (54 §2.1).
         let mut u = match Utterer::open(&dir) {
             Ok(u) => u,
             Err(e) if format!("{e:#}").contains("libonnxruntime") => {

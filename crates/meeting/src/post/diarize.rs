@@ -3,8 +3,8 @@
 //! embedding per span, greedy cosine clustering into `s1..sn`. Runs on `ort`
 //! directly with the two ONNX files `pyannote-rs` 0.3.4 loads (`BUILDING.md`)
 //! and the same windowing as its `segment.rs`; that crate itself does not
-//! compile against the workspace `ort` (04 §10). `voice::Engine::load` must
-//! have run first: it performs the process-wide `ort::init_from`.
+//! compile against the workspace `ort` (04 §10). [`session`] runs the
+//! process-wide `models::onnx::ort_lib` first (a no-op once voice has).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -71,6 +71,7 @@ fn ort_err<R>(e: ort::Error<R>) -> anyhow::Error {
 }
 
 fn session(path: &Path) -> anyhow::Result<Session> {
+    models::onnx::ort_lib(&[path.parent().unwrap_or(path)]).map_err(anyhow::Error::msg)?;
     Session::builder()
         .map_err(ort_err)?
         .with_optimization_level(GraphOptimizationLevel::Level3)

@@ -7,7 +7,7 @@
 //! script, which downloads it unless `TEN_VAD_MODEL_PATH` names a local
 //! `ten-vad.onnx` (set it in offline/release builds). Its `ort` session shares
 //! the process-wide runtime, so [`Vad::new`] must run after [`crate::stt::Stream::open`]
-//! (or any `ort_lib` call) has loaded the dylib — the caller orders that.
+//! (or any `models::onnx::ort_lib` call) has loaded the dylib — the caller orders that.
 
 use wavekat_vad::FrameAdapter;
 use wavekat_vad::backends::ten_vad::TenVad;
