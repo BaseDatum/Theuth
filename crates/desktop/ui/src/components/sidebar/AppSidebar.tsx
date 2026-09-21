@@ -1,5 +1,5 @@
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
-import { BookOpen, FolderOpen, Mic, PanelLeft, Settings, SquarePen } from 'lucide-react'
+import { BookOpen, FolderOpen, Mic, PanelLeft, Settings, SquarePen, StickyNote } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Mark } from '@/components/Mark'
 import { HarnessSwitcher } from '@/components/link/HarnessSwitcher'
@@ -84,6 +84,13 @@ export function AppSidebar({ session }: { session: string | undefined }) {
             <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5">
               <Link to="/knowledge">
                 <BookOpen /> Knowledge
+              </Link>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+          <SidebarMenuItem>
+            <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5">
+              <Link to="/notes">
+                <StickyNote /> Notes
               </Link>
             </SidebarMenuButton>
           </SidebarMenuItem>

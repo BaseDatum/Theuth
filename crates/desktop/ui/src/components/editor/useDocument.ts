@@ -3,14 +3,15 @@ import { useEffect, useState, useSyncExternalStore } from 'react'
 import { type DocStatus, type HarnessProvider, acquire, release } from '@/lib/doc/provider'
 import { useApi } from '@/lib/rpc'
 import type { Binding } from '@/rpc/bindings/Binding'
+import type { DocId } from '@/rpc/bindings/DocId'
 import { useConnection } from '@/store/connection'
 
 const CONNECTING: DocStatus = { kind: 'connecting' }
 const noop = () => () => {}
 
 /**
- * Resolve `binding` to its document (created on demand for knowledge, 59 §7.1) and hold one shared
- * provider for it while mounted (§6.5). `provider` is `null` until resolved; `error` when the harness refused.
+ * Resolve `target` — a binding (created on demand for knowledge, 59 §7.1) or a known `{ doc }` id (a note) — and
+ * hold one shared provider for it while mounted (§6.5). `provider` is `null` until resolved; `error` when the harness refused.
  */
 export type LiveDocument = {
   provider: HarnessProvider | null
@@ -18,15 +19,19 @@ export type LiveDocument = {
   error: Error | null
 }
 
-export function useDocument(binding: Binding): LiveDocument {
+export type DocTarget = Binding | { doc: DocId }
+
+export function useDocument(target: DocTarget): LiveDocument {
   const api = useApi()
   const client = useConnection((s) => s.client)
+  const known = typeof target === 'object' && 'doc' in target ? target.doc : null
   const resolved = useQuery({
-    queryKey: ['doc', binding],
-    queryFn: () => api.doc_resolve(binding),
+    queryKey: ['doc', target],
+    queryFn: () => api.doc_resolve(target as Binding),
     staleTime: Number.POSITIVE_INFINITY,
+    enabled: known === null,
   })
-  const id = resolved.data ?? null
+  const id = known ?? resolved.data ?? null
   const [provider, setProvider] = useState<HarnessProvider | null>(null)
   useEffect(() => {
     if (!id || !client) return

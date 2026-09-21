@@ -1,0 +1,150 @@
+import { Link } from '@tanstack/react-router'
+import { ChevronLeft } from 'lucide-react'
+import { type ComponentType, type ReactNode, type Ref } from 'react'
+import { Editor as BlockEditor } from '@/components/editor/Editor'
+import type { LiveDocument } from '@/components/editor/useDocument'
+import { MeetingPill } from '@/components/meeting/MeetingPill'
+import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
+import { Button } from '@/components/ui/button'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { useIsMobile } from '@/hooks/use-mobile'
+import { isMacDesktop } from '@/lib/hotkeys'
+import { cn } from 'cn'
+
+/**
+ * 52 px bar (`title` left, `actions` right) over the pane body. Under `md` a back chevron returns to `backTo`
+ * and a search trigger trails the actions (49 §5.1). Knowledge and notes share it (59 §7.3).
+ */
+export function Frame({
+  backTo,
+  backLabel,
+  title,
+  actions,
+  children,
+}: {
+  backTo: '/knowledge' | '/notes'
+  backLabel: string
+  title: ReactNode
+  actions?: ReactNode
+  children: ReactNode
+}) {
+  return (
+    <article className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <header
+        data-tauri-drag-region={isMacDesktop() || undefined}
+        className="flex h-[52px] shrink-0 items-center gap-1 border-b border-border-subtle px-3"
+      >
+        <Button asChild variant="ghost" size="icon-sm" className="md:hidden" aria-label={backLabel}>
+          <Link to={backTo}>
+            <ChevronLeft />
+          </Link>
+        </Button>
+        {title}
+        {actions}
+        <SearchTrigger className="md:hidden" />
+        <MeetingPill />
+      </header>
+      {children}
+    </article>
+  )
+}
+
+/** One icon action in the frame's bar. */
+export function Action({
+  label,
+  icon: Icon,
+  onClick,
+  pressed,
+  disabled,
+}: {
+  label: string
+  icon: ComponentType<{ className?: string }>
+  onClick: () => void
+  pressed?: boolean
+  disabled?: boolean
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          variant="ghost"
+          className="size-11 rounded-xl"
+          aria-label={label}
+          aria-pressed={pressed}
+          disabled={disabled}
+          onClick={onClick}
+        >
+          <Icon className={cn('size-[18px]', (pressed === false || disabled) && 'text-fg-tertiary')} />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
+  )
+}
+
+/** The live document in BlockNote (59 §7.1: knowledge is created from its file on first open). */
+export function Live({ provider, status, error, onAsk }: LiveDocument & { onAsk?: (block: string) => void }) {
+  if (error) {
+    return <p className="m-auto max-w-full px-6 text-center text-sm text-danger wrap-anywhere">{error.message}</p>
+  }
+  if (!provider) {
+    return (
+      <div className="mx-auto w-full max-w-[768px] space-y-3 p-6">
+        <Skeleton className="h-8 w-1/2" />
+        <Skeleton className="h-4 w-3/4" />
+        <Skeleton className="h-4 w-2/3" />
+      </div>
+    )
+  }
+  return <BlockEditor provider={provider} status={status} onAsk={onAsk} />
+}
+
+/**
+ * The live page of one document (59 §7.3): `Frame` + `Live`, with the owner's extras around the editor —
+ * `above` (a search return), `rail` (beside the body; under `md` below it), `below` (a note's chat panel),
+ * and any dialogs/sheets as `children`.
+ */
+export function DocumentPage({
+  live,
+  onAsk,
+  columnRef,
+  above,
+  rail,
+  below,
+  children,
+  ...frame
+}: {
+  live: LiveDocument
+  onAsk?: (block: string) => void
+  /** The editor column, for `useSearchFocus` (49 §7). */
+  columnRef?: Ref<HTMLDivElement>
+  above?: ReactNode
+  rail?: ReactNode
+  below?: ReactNode
+  children?: ReactNode
+  backTo: '/knowledge' | '/notes'
+  backLabel: string
+  title: ReactNode
+  actions?: ReactNode
+}) {
+  const mobile = useIsMobile()
+  return (
+    <Frame {...frame}>
+      <div className="flex min-h-0 flex-1">
+        <div ref={columnRef} tabIndex={-1} className="flex min-w-0 flex-1 flex-col outline-none">
+          {above}
+          <Live {...live} onAsk={onAsk} />
+          {mobile && rail && (
+            <section className="max-h-[40%] shrink-0 overflow-y-auto border-t border-border-subtle">{rail}</section>
+          )}
+        </div>
+        {!mobile && rail && (
+          <aside className="w-[260px] shrink-0 overflow-y-auto border-l border-border-subtle">{rail}</aside>
+        )}
+      </div>
+      {below}
+      {children}
+    </Frame>
+  )
+}

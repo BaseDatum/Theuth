@@ -1,18 +1,18 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link, getRouteApi, useNavigate } from '@tanstack/react-router'
-import { ChevronLeft, Copy, FileCode, History as HistoryIcon, PanelRight, Sparkles, Trash2, Undo2 } from 'lucide-react'
-import { type ComponentType, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
+import { getRouteApi, useNavigate } from '@tanstack/react-router'
+import { Copy, FileCode, History as HistoryIcon, MessageSquarePlus, PanelRight, Sparkles, Trash2, Undo2 } from 'lucide-react'
+import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { prefillDraft } from '@/components/chat/Composer'
-import { Editor as BlockEditor } from '@/components/editor/Editor'
-import { type LiveDocument, useDocument } from '@/components/editor/useDocument'
+import { Action, DocumentPage, Frame } from '@/components/editor/DocumentPage'
+import { useDocument } from '@/components/editor/useDocument'
 import { Backlinks, Links } from '@/components/knowledge/Backlinks'
 import { Editor, type EditorHandle } from '@/components/knowledge/Editor'
 import { History } from '@/components/knowledge/History'
 import { NewDocDialog } from '@/components/knowledge/NewDocDialog'
 import { scaffold } from '@/components/knowledge/frontmatter'
+import { ChatPicker } from '@/components/notes/ChatPicker'
 import { SearchReturn } from '@/components/sidebar/SearchReturn'
-import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -27,18 +27,13 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Skeleton } from '@/components/ui/skeleton'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { useIsMobile } from '@/hooks/use-mobile'
 import { useSearchFocus } from '@/hooks/use-search-focus'
 import type { HarnessProvider } from '@/lib/doc/provider'
-import { isMacDesktop } from '@/lib/hotkeys'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { isSearchDestination, useSearchOrigin, useSearchState } from '@/lib/search'
 import type { Concept } from '@/rpc/bindings/Concept'
 import type { HistorySearchHit } from '@/rpc/bindings/HistorySearchHit'
 import type { MatchRange } from '@/rpc/bindings/MatchRange'
-import { cn } from 'cn'
-import { MeetingPill } from '@/components/meeting/MeetingPill'
 
 const route = getRouteApi('/knowledge/$')
 
@@ -76,16 +71,16 @@ function Doc({
   const raw = useRef<EditorHandle>(null)
   const [missing, setMissing] = useState<{ id: string; title: string } | null>(null)
   const [railOpen, setRailOpen] = useState(true)
-  const mobile = useIsMobile()
+  const [attaching, setAttaching] = useState(false)
   const origin = useSearchOrigin()
   const historical = draft === undefined && change !== undefined && snapshot !== undefined
   const binding = useMemo(() => ({ knowledge: id }), [id])
   const live = useDocument(binding)
   const rootNavigate = useNavigate()
-  // 59 §5.4: "Ask theuth…" opens a new chat whose first line attaches this document (and names a block).
+  const docRef = () => ({ ref: `knowledge:${id}`, title: live.provider?.meta?.title ?? id })
+  // 59 §5.4: "Ask theuth…" opens a new chat with this document attached (and names a block).
   const ask = (block?: string) => {
-    const title = live.provider?.meta?.title ?? id
-    prefillDraft(null, `[doc knowledge:${id} "${title.replace(/"/g, '\\"')}"]\n${block ? `about block ${block}: ` : ''}`)
+    prefillDraft(null, block ? `about block ${block}: ` : '', [docRef()])
     void rootNavigate({ to: '/' })
   }
   const doc = useQuery({
@@ -118,10 +113,15 @@ function Doc({
       initial={missing ?? undefined}
     />
   )
+  const frame = {
+    backTo: '/knowledge' as const,
+    backLabel: 'Back to knowledge',
+    title: <code className="min-w-0 flex-1 truncate font-mono text-xs text-fg-tertiary">{id}</code>,
+  }
 
   if (draft !== undefined) {
     return (
-      <Frame id={id}>
+      <Frame {...frame}>
         <Editor
           id={id}
           initial={scaffold(id, draft)}
@@ -141,7 +141,7 @@ function Doc({
   if (historical) {
     return (
       <Frame
-        id={id}
+        {...frame}
         actions={<Action label="Changes" icon={HistoryIcon} onClick={() => setSheetOpen(true)} />}
       >
         <Historical id={id} change={change} snapshot={snapshot} />
@@ -151,7 +151,7 @@ function Doc({
   }
   if (doc.isPending) {
     return (
-      <Frame id={id}>
+      <Frame {...frame}>
         <div className="mx-auto w-full max-w-[768px] space-y-3 p-6">
           <Skeleton className="h-8 w-1/2" />
           <Skeleton className="h-4 w-3/4" />
@@ -163,7 +163,7 @@ function Doc({
   }
   if (doc.isError) {
     return (
-      <Frame id={id}>
+      <Frame {...frame}>
         <div className="m-auto max-w-full px-6 text-center text-sm">
           <p className="text-danger wrap-anywhere">{doc.error.message}</p>
           <div className="mt-2 flex flex-wrap justify-center gap-1">
@@ -184,18 +184,21 @@ function Doc({
     )
   }
   const concept = doc.data
-  const rail = (
-    <>
-      <Backlinks ids={concept.cited_by} />
-      <Links
-        links={concept.links}
-        onMissing={(target) => setMissing({ id: target, title: target })}
-      />
-    </>
-  )
   return (
-    <Frame
-      id={id}
+    <DocumentPage
+      {...frame}
+      live={live}
+      onAsk={ask}
+      columnRef={column}
+      above={<SearchReturn className="mx-auto mt-2 w-full max-w-[768px] px-4" />}
+      rail={
+        railOpen ? (
+          <>
+            <Backlinks ids={concept.cited_by} />
+            <Links links={concept.links} onMissing={(target) => setMissing({ id: target, title: target })} />
+          </>
+        ) : null
+      }
       actions={
         <Actions
           concept={concept}
@@ -205,24 +208,10 @@ function Doc({
           onHistory={() => setSheetOpen(true)}
           onToggleRail={() => setRailOpen((v) => !v)}
           onAsk={() => ask()}
+          onAttach={() => setAttaching(true)}
         />
       }
     >
-      <div className="flex min-h-0 flex-1">
-        <div ref={column} tabIndex={-1} className="flex min-w-0 flex-1 flex-col outline-none">
-          <SearchReturn className="mx-auto mt-2 w-full max-w-[768px] px-4" />
-          <Live {...live} onAsk={ask} />
-          {/* Under `md` the links rail has no room beside the body; it follows the body instead, still toggled by the same action. */}
-          {mobile && railOpen && (
-            <section className="max-h-[40%] shrink-0 overflow-y-auto border-t border-border-subtle">{rail}</section>
-          )}
-        </div>
-        {!mobile && railOpen && (
-          <aside className="w-[260px] shrink-0 overflow-y-auto border-l border-border-subtle">
-            {rail}
-          </aside>
-        )}
-      </div>
       {/* "Open raw": the whole file in CodeMirror (59 §9); a save is a `knowledge_write`, which re-imports into the editor by block diff.
           Escape, outside clicks and the X go through the editor's own leave (it asks when dirty); Radix must not close on its own. */}
       <Sheet open={editing} onOpenChange={(open) => (open ? setEditing(true) : raw.current?.leave())}>
@@ -253,68 +242,10 @@ function Doc({
           )}
         </SheetContent>
       </Sheet>
+      <ChatPicker open={attaching} onOpenChange={setAttaching} doc={docRef()} />
       {createMissing}
       {sheet}
-    </Frame>
-  )
-}
-
-/** The current revision in BlockNote over its live document (59 §7.1: created from the file on first open). */
-function Live({
-  provider,
-  status,
-  error,
-  onAsk,
-}: LiveDocument & { onAsk: (block: string) => void }) {
-  if (error) {
-    return <p className="m-auto max-w-full px-6 text-center text-sm text-danger wrap-anywhere">{error.message}</p>
-  }
-  if (!provider) {
-    return (
-      <div className="mx-auto w-full max-w-[768px] space-y-3 p-6">
-        <Skeleton className="h-8 w-1/2" />
-        <Skeleton className="h-4 w-3/4" />
-        <Skeleton className="h-4 w-2/3" />
-      </div>
-    )
-  }
-  return <BlockEditor provider={provider} status={status} onAsk={onAsk} />
-}
-
-/** 52 px bar (id left, actions right) over the pane body. Under `md` a back chevron returns to the tree and a search trigger trails the actions (49 §5.1). */
-function Frame({
-  id,
-  actions,
-  children,
-}: {
-  id: string
-  actions?: ReactNode
-  children: ReactNode
-}) {
-  return (
-    <article className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <header
-        data-tauri-drag-region={isMacDesktop() || undefined}
-        className="flex h-[52px] shrink-0 items-center gap-1 border-b border-border-subtle px-3"
-      >
-        <Button
-          asChild
-          variant="ghost"
-          size="icon-sm"
-          className="md:hidden"
-          aria-label="Back to knowledge"
-        >
-          <Link to="/knowledge">
-            <ChevronLeft />
-          </Link>
-        </Button>
-        <code className="min-w-0 flex-1 truncate font-mono text-xs text-fg-tertiary">{id}</code>
-        {actions}
-        <SearchTrigger className="md:hidden" />
-        <MeetingPill />
-      </header>
-      {children}
-    </article>
+    </DocumentPage>
   )
 }
 
@@ -326,6 +257,7 @@ function Actions({
   onHistory,
   onToggleRail,
   onAsk,
+  onAttach,
 }: {
   concept: Concept
   provider: HarnessProvider | null
@@ -334,6 +266,7 @@ function Actions({
   onHistory: () => void
   onToggleRail: () => void
   onAsk: () => void
+  onAttach: () => void
 }) {
   const api = useApi()
   const qc = useQueryClient()
@@ -350,31 +283,12 @@ function Actions({
     },
     onError: (e) => toast.error(e.message),
   })
-  // 59 §5.5: enabled once the agent has edited this document while it was open.
-  const [agentEdits, setAgentEdits] = useState(provider?.agentEdits ?? 0)
-  useEffect(() => {
-    if (!provider) return
-    setAgentEdits(provider.agentEdits)
-    return provider.onAuthored((a) => a.by.who === 'agent' && setAgentEdits(provider.agentEdits))
-  }, [provider])
-  const undo = useMutation({
-    mutationFn: () => api.doc_undo_agent(provider!.id),
-    onSuccess: () => {
-      toast('Undid the last agent edit')
-      setAgentEdits(0)
-    },
-    onError: (e) => toast.error(e.message),
-  })
   const cited = concept.cited_by.length
   return (
     <>
       <Action label="Ask theuth…" icon={Sparkles} onClick={onAsk} />
-      <Action
-        label="Undo last agent edit"
-        icon={Undo2}
-        onClick={() => undo.mutate()}
-        disabled={!provider || agentEdits === 0 || undo.isPending}
-      />
+      <Action label="Attach to chat…" icon={MessageSquarePlus} onClick={onAttach} />
+      <UndoAgentAction provider={provider} />
       <Action label="Open raw" icon={FileCode} onClick={onRaw} />
       <Action label="History" icon={HistoryIcon} onClick={onHistory} />
       <Action
@@ -421,35 +335,30 @@ function Actions({
   )
 }
 
-function Action({
-  label,
-  icon: Icon,
-  onClick,
-  pressed,
-  disabled,
-}: {
-  label: string
-  icon: ComponentType<{ className?: string }>
-  onClick: () => void
-  pressed?: boolean
-  disabled?: boolean
-}) {
+/** 59 §5.5 "Undo last agent edit": enabled once the agent has edited this document while it was open. */
+export function UndoAgentAction({ provider }: { provider: HarnessProvider | null }) {
+  const api = useApi()
+  const [agentEdits, setAgentEdits] = useState(provider?.agentEdits ?? 0)
+  useEffect(() => {
+    if (!provider) return
+    setAgentEdits(provider.agentEdits)
+    return provider.onAuthored((a) => a.by.who === 'agent' && setAgentEdits(provider.agentEdits))
+  }, [provider])
+  const undo = useMutation({
+    mutationFn: () => api.doc_undo_agent(provider!.id),
+    onSuccess: () => {
+      toast('Undid the last agent edit')
+      setAgentEdits(0)
+    },
+    onError: (e) => toast.error(e.message),
+  })
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Button
-          variant="ghost"
-          className="size-11 rounded-xl"
-          aria-label={label}
-          aria-pressed={pressed}
-          disabled={disabled}
-          onClick={onClick}
-        >
-          <Icon className={cn('size-[18px]', (pressed === false || disabled) && 'text-fg-tertiary')} />
-        </Button>
-      </TooltipTrigger>
-      <TooltipContent>{label}</TooltipContent>
-    </Tooltip>
+    <Action
+      label="Undo last agent edit"
+      icon={Undo2}
+      onClick={() => undo.mutate()}
+      disabled={!provider || agentEdits === 0 || undo.isPending}
+    />
   )
 }
 
