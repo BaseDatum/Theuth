@@ -1028,3 +1028,157 @@ schema knowledge).
 
 Proposed. Nothing in this document is built; §2 is what was verified in the
 repository and upstream on 2026-09-21.
+
+## 17. As built — step 1 (2026-09-21)
+
+Branch `feature/documents` (worktree off main b2b1a5e), commits
+`feat(document)`, `feat(packages/documents)`, `feat(knowledge)`,
+`feat(rpc)`, `feat(desktop)`, one `fix(document,desktop)` from the smoke,
+`docs(59)`. Not merged. §14 row 1 is done; the two provisional points named
+under §14 are settled below.
+
+### 17.1 Pinned versions
+
+- `yrs` = 0.28.0 (`sync` feature), `notify`, `sqlx` (the workspace's
+  sqlite), `uuid` v7 → 26-char base32 `DocId`.
+- `@blocknote/core`, `@blocknote/react`, `@blocknote/shadcn`,
+  `@blocknote/server-util` = 0.54.2; `yjs` = 13.6.32; `y-protocols` = 1.0.7;
+  `y-prosemirror` = 1.3.7 (peer of core; explicit in both packages). Never
+  `@blocknote/xl-ai` (the helper build refuses it). Helper binary prints
+  `theuth-documents 59.1`; `PROTOCOL_VERSION = "59.1"` checked by
+  `document::helper` at spawn.
+- API names as installed, where §2.2 differed: `withCollaboration` comes from
+  `@blocknote/core/yjs` and takes `{ collaboration: { fragment, user,
+  provider? } }` — the provider only needs `{ awareness?: Awareness }`;
+  `filterSuggestionItems` lives in `@blocknote/core/extensions`;
+  `createReactBlockSpec(config, impl)` returns a *creator* — call it once
+  (`…)()`), same as `createBlockSpec` in `schema.ts`; the shadcn package is
+  `@blocknote/shadcn` with `./style.css`.
+
+### 17.2 Helper protocol as implemented (`packages/documents/src/protocol.ts`)
+
+§3.2 verbatim plus: `open.fragment?` (default `document-store`);
+`{"ev":"update", doc, update, touched, req, changed?, total?}` — the
+`req` ties the emitted transaction to its `import`/`edit` request and
+`changed/total` is written *before* the reply so the authority can take the
+`import-file` snapshot before applying a diff that changes > 50 % of blocks;
+`import` result `{changed, total, touched}`; `markdown` → `{markdown}`;
+`outline` → `{outline, blocks}` (§5.1 text plus a typed tree; ids are the
+full 36-char BlockNote uuids — shortening is step 2's call). `edit` is typed
+and answers `unimplemented: edit is design 59 step 2`. The Rust side spawns
+`packages/documents/dist/theuth-documents` (env `THEUTH_DOCUMENTS_HELPER`
+overrides; debug builds fall back to the repo path), restarts with backoff,
+and on restart re-`open`s every loaded document from its full state.
+
+### 17.3 The §14 bet: custom block markdown
+
+`ServerBlockNoteEditor.blocksToMarkdownLossy` tolerates the `frontmatter`
+block (no throw; it contributes nothing to the output). The helper does not
+rely on that either way: `markdown` skips a leading frontmatter block and
+writes `---\n<yaml>\n---\n` itself from the block's `yaml` prop; `import`
+with `frontmatter: true` splits the header off before
+`tryParseMarkdownToBlocks` and maps it onto the existing frontmatter block
+(same id; compared after parse/emit normalisation so a reordered-but-equal
+header is not a change). The Rust-side `yrs` fallback named in §14 was not
+needed. `packages/documents/src/yaml.ts` is the flat key/value + list subset
+the store uses (mirrors okf's emitter: block lists, double-quote rules);
+unknown keys and lines outside the subset survive as `raw` entries.
+
+### 17.4 Deviations from §3–§4 and why
+
+1. `crates/document` depends on `runtime` only, not `tools` — nothing to
+   register until step 2's tools. 00 §10 says `runtime ← tools ← secrets ←
+   document ← knowledge`.
+2. Knowledge hooks (§7.1) use a lazy `document::Handle::lookup()` inside
+   `Store::write_concept`/`sync`/`delete` as fire-and-forget tasks; no
+   `documents: Option<Handle>` field on the store (start order irrelevant).
+3. Editor → file: the actor exports straight to the derived path and
+   publishes `document::Exported`; `knowledge` subscribes and runs `sync()`,
+   which indexes and commits `sync: edit <id>` (10 §3 holds). Consequence:
+   editor edits do **not** restamp `timestamp`/`source` — routing the export
+   through `Store::write` would loop (stamp → import → export …).
+4. File → doc: an import stamped `Principal::File` does **not** schedule an
+   export; `meta.last_export = sha256(text)` is set instead (unless an editor
+   edit is still pending). Otherwise every `knowledge_put` would be rewritten
+   in BlockNote's lossy formatting and race the put. On-demand creation
+   (`doc_resolve` → `Ensure` → `import replace`) *does* export once; observed
+   diff on a real concept: the blank line after the header dropped.
+5. `meta.json` carries `last_export` (sha256 hex) so an unloaded document
+   recognises its own file cheaply; `DocMeta` also carries
+   `created_ms`/`updated_ms`.
+6. `Who` has no `Helper` variant: a helper transaction is stamped with the
+   import's principal (`File` in step 1; `Agent` in step 2); a bare helper
+   update maps to `File` with a warning.
+7. Fan-out skip is by RPC connection id (`Principal::Owner{device: Some(u64)}`
+   from `link::RpcPeer::id()`), so `document` does not depend on `link`.
+8. `import-file` snapshot when the helper's pre-apply ratio says
+   `changed*2 > total` on a diff import. Not implemented: the `daily` snapshot,
+   the ≤ 4/s awareness rate limit; `bytes` in the index is snapshot + log bytes
+   (exact only at snapshot time). Restore renders the snapshot's markdown
+   through a throwaway helper mirror, then a diff import (§4.6 as written).
+9. Desktop: `RpcClient.subscribeTo(method, unsubscribe, params, onItem)` is the
+   generic subscription the provider uses (`subscribe` wraps it);
+   `#receive` dispatches any notification by `params.subscription`. The
+   provider's offline queue is in memory (IndexedDB is step 4); `Closed{slow}`
+   re-syncs from the state vector; a reconnect re-issues `doc_subscribe` then
+   `doc_open(sv)` and flushes the queue as one merged update.
+10. The live view replaced `Header`/`Body` (streamdown) in
+    `knowledge/Document.tsx`: the frontmatter block *is* the header. okf link
+    semantics (missing target → "create" dialog) exist only in the historical
+    reader now; BlockNote's link toolbar handles links in the editor. The
+    `?draft=` path still opens the CodeMirror editor full-pane (the file must
+    exist before a document can). "Open raw" is that editor in a Sheet whose
+    Escape/outside-click/X go through its dirty check (`EditorHandle.leave`).
+11. Side menu: hidden on the frontmatter block via a `SideMenuController`
+    override; on `pointer: coarse` hidden by CSS (the §10 toolbar is step 6).
+    BlockNote's palette is aliased onto the app tokens in `styles.css` under
+    `html .bn-root` (its own sheet loads later with the editor chunk, so equal
+    specificity would lose).
+12. Bindings (`bindings/`, `crates/desktop/ui/src/rpc/bindings/`) are
+    gitignored in this repo; "commit the bindings" = `just ts-desktop`
+    (≈ 8 min cold). ts-rs warns `failed to parse serde attribute transparent`
+    on `DocId` — harmless, the newtype exports as `string`.
+13. `@theuth/documents` is consumed from source like `@theuth/apps`: Vite
+    aliases for `/schema` and `/yaml`, a `documentsDeps` plugin that resolves
+    bare imports from under `packages/documents` against the UI's
+    `node_modules` (one `@blocknote/core`, one `yjs`), tsconfig `paths`
+    for the same plus `@blocknote/core` → the UI copy.
+14. Watcher: the knowledge root is canonicalised before watching — FSEvents
+    reports resolved paths (`/tmp` → `/private/tmp`) and the prefix match
+    silently dropped every event until it was.
+
+### 17.5 Checks (§14 row 1 / brief "done when")
+
+| # | check | outcome |
+|---|---|---|
+| 1 | `cargo check --workspace`; UI `tsc -b`; `cargo test -p document`; `bun test` (helper); `vitest` (UI) | green; 13 + 1 (integration vs the real helper) pass; 46 pass (one run under full compile load showed 1 fail/1 error, re-run clean — timing); 193 pass; `vite build` ok |
+| 2 | type a paragraph → `cat knowledge/<id>.md` | file updated 605 ms after the last keystroke, header first and intact, commit `sync: edit <id>` |
+| 3 | `sed -i '' s/Foo/Bar/` with the editor open | editor showed `Bar` in 483 ms, status `updated from file hh:mm`; frontmatter and unchanged paragraph kept their ids, the changed block got a new one; the store committed the external edit. Helper test: 6-block doc, block 3 changed → ids 1,2,4,5,6 identical |
+| 4 | frontmatter round-trip | `title` (quoted on export because it contains `:`), `tags` list (chip added), unknown `extra_key` added via "+ add key", `source`/`timestamp` read-only — all landed in the header; the explorer title followed. Found and fixed: "+ add key" wrote `: ""` before the key had a name |
+| 5 | `knowledge_put` on the open concept | editor updated 3 ms after the reply; `git log` shows `put <id>` and `sync: edit <id>` commits; `find knowledge -name '*.yjs'` empty |
+| 6 | restart the harness | provider back to `live` on reconnect; full page reload → identical text, identical block ids, file byte-identical; reload was snapshot-less (log replay) |
+| — | slash menu | Headings 1–3, Quote, Toggle/Numbered/Bullet/Check list, Paragraph, Code, Table, Divider; no media, emoji or toggle headings |
+
+Harness for the checks: `t --headless` with `THEUTH_DATA_DIR=/tmp/theuth-59-data`
+(three concepts copied in), the Vite dev server with
+`VITE_THEUTH_URL`/`VITE_THEUTH_TOKEN` (the path `lib/tauri.ts` documents), a
+headless Chromium; not the Tauri shell. Pre-existing, not ours: `git status`
+in any knowledge bundle (also `~/.theuth/knowledge`) reports every file as
+`D` + `??` — the gix-written index and the git CLI disagree; commits and
+diffs are fine.
+
+### 17.6 Left for step 2 (and noticed on the way)
+
+- §5 tools, helper `edit`, `Authored` events, reveal decoration, undo menu.
+- `Who::Helper`/agent stamping through `ev:update.req` is wired; the agent
+  session id is not yet carried on the request.
+- `daily` snapshot, awareness rate limit, exact `bytes`, `doc_list`/
+  `doc_snapshots`/`doc_restore` have no UI yet (RPC only).
+- Restamping `timestamp`/`source` on editor edits (deviation 3) needs a
+  loop-safe path in `knowledge` (write the header without re-importing).
+- Missing-link → create in the editor (deviation 10) if it is missed.
+- An empty paragraph typed and left in the editor exports as nothing and is
+  dropped by the next file-origin diff import — fine, but visible as a block
+  that vanishes.
+- `just ts-desktop` and `just desktop` are slow (test-profile build, helper
+  build); `desktop` now depends on `documents-helper`.
