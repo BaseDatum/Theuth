@@ -10,8 +10,8 @@ use decision::candle::Loaded;
 use decision::engine::MODEL_FILES;
 use decision::log::Log;
 use decision::{
-    Ask, Candidate, DecisionConfig, Device, Disposition, Engine, FamilyGate, Mode, Outcome,
-    Question, Reason, Report, Stats,
+    Ask, Candidate, DecisionConfig, Device, Disposition, Engine, FamilyGate, LoadedNow, Mode,
+    Outcome, Question, Reason, Release, Report, Stats, process_memory,
 };
 use kameo::actor::Spawn;
 
@@ -248,5 +248,77 @@ async fn actor_end_to_end_with_report() {
     assert!(
         text.lines().next().unwrap().contains("\"load_ms\":"),
         "{text}"
+    );
+}
+
+/// 57 §2.1 item 3: through the actor — nothing resident at spawn, a question loads,
+/// `Release` drops it and the process footprint comes back to within 50 MB of "before". The
+/// first load on a device pays a one-off runtime baseline (the Metal stack: ~90 MB), so the
+/// bound is asserted on the second load/release cycle — the steady state the daemon lives in —
+/// and the Metal driver returns its pages asynchronously, so "after" is polled for up to 15 s.
+#[tokio::test]
+async fn release_reclaims_the_checkpoint() {
+    let Some(dir) = model_dir() else {
+        return;
+    };
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::new("info"))
+        .with_test_writer()
+        .try_init();
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = DecisionConfig {
+        families: [("meeting.kind".to_owned(), FamilyGate::shadow(0.60, 0.20))].into(),
+        ..DecisionConfig::default()
+    };
+    let engine = Engine::spawn(Engine::new(cfg, dir, Log::new(tmp.path().join("decisions"))));
+    let mut ask = Ask::new(
+        "meeting.kind",
+        Question::Bool {
+            statement: "The speakers are only greeting, scheduling or saying goodbye".into(),
+            state: "them: hi all, can we push the standup to three? me: sure".into(),
+        },
+    );
+    ask.budget = Duration::from_secs(60);
+    assert!(engine.ask(LoadedNow).await.unwrap().is_empty());
+    let mb = |b: u64| b / 1_000_000;
+    let mut rows = Vec::new();
+    for cycle in 1..=2 {
+        let before = process_memory().footprint;
+        engine.ask(ask.clone()).await.unwrap();
+        let now = engine.ask(LoadedNow).await.unwrap();
+        assert_eq!(now.len(), 1, "{now:?}");
+        assert_eq!(now[0].checkpoint, "default");
+        let loaded = process_memory().footprint;
+        assert!(now[0].rss_mb.abs_diff(mb(loaded)) <= 2, "{} vs {}", now[0].rss_mb, mb(loaded));
+        engine
+            .tell(Release {
+                checkpoint: None,
+                reason: "test",
+            })
+            .await
+            .unwrap();
+        assert!(engine.ask(LoadedNow).await.unwrap().is_empty());
+        let t = std::time::Instant::now();
+        let mut released = process_memory().footprint;
+        while released > before + 50_000_000 && t.elapsed() < Duration::from_secs(15) {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            released = process_memory().footprint;
+        }
+        eprintln!(
+            "cycle {cycle}: footprint before {} MB, loaded {} MB, released {} MB after {:?}",
+            mb(before),
+            mb(loaded),
+            mb(released),
+            t.elapsed()
+        );
+        rows.push((before, loaded, released));
+    }
+    let (before, loaded, released) = rows[1];
+    assert!(loaded > before + 300_000_000, "the load did not show: {rows:?}");
+    assert!(
+        released <= before + 50_000_000,
+        "released {} MB > before {} MB + 50 MB",
+        mb(released),
+        mb(before)
     );
 }

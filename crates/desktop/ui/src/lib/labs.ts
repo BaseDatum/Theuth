@@ -2,6 +2,7 @@
 
 import { fmtBytes } from '@/lib/files'
 import type { FamilyStats } from '@/rpc/bindings/FamilyStats'
+import type { LoadedInfo } from '@/rpc/bindings/LoadedInfo'
 import type { Mode } from '@/rpc/bindings/Mode'
 import type { ModeInfo } from '@/rpc/bindings/ModeInfo'
 import type { TrainingInfo } from '@/rpc/bindings/TrainingInfo'
@@ -79,4 +80,17 @@ export function captureLine(t: TrainingInfo | undefined): string {
 export function shareState(t: TrainingInfo | undefined): { checked: boolean; disabled: boolean } {
   if (!t) return { checked: false, disabled: true }
   return { checked: t.enabled && t.share, disabled: !t.enabled }
+}
+
+/** 57 §2.1 item 4 / §7.1 header: `none` / `meeting · 903 MB · 4 min` (`default` is the meeting checkpoint; `rss_mb` is the whole daemon's footprint). */
+export function loadedText(infos: LoadedInfo[] | undefined): string {
+  if (!infos || infos.length === 0) return 'none'
+  return infos
+    .map((i) => {
+      const name = i.checkpoint === 'default' ? 'meeting' : i.checkpoint
+      const secs = Number(i.since_secs)
+      const since = secs < 60 ? `${secs} s` : `${Math.floor(secs / 60)} min`
+      return `${name} · ${i.rss_mb} MB · ${since}`
+    })
+    .join(' / ')
 }

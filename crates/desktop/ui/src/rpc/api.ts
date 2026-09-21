@@ -37,6 +37,7 @@ import type { MeetingSummary } from '@/rpc/bindings/MeetingSummary'
 import type { ModeInfo } from '@/rpc/bindings/ModeInfo'
 import type { Mode } from '@/rpc/bindings/Mode'
 import type { FamilyStats } from '@/rpc/bindings/FamilyStats'
+import type { LoadedInfo } from '@/rpc/bindings/LoadedInfo'
 import type { TrainingInfo } from '@/rpc/bindings/TrainingInfo'
 import type { MeetingTranscript } from '@/rpc/bindings/MeetingTranscript'
 import type { Permissions } from '@/rpc/bindings/Permissions'
@@ -343,6 +344,8 @@ export interface Api {
   set_decision_mode(prefix: string, mode: Mode): Promise<ModeInfo>
   /** 57 §7: today's decision log folded per family (mode, asks, accepts, escalations, tier-2 rows, p50/p95, shadow agreement). */
   decision_stats(): Promise<FamilyStats[]>
+  /** 57 §2.1 item 4: the decision checkpoints resident right now (`[]` at idle); `rss_mb` is the whole daemon's. */
+  decision_loaded(): Promise<LoadedInfo[]>
   /** 57 §11.4 / §7.1: whether the families under `prefix` capture training examples locally (`enabled`), consent to upload (`share`), and how much is on disk. */
   decision_training(prefix: string): Promise<TrainingInfo>
   /** Persist `train` for the prefix and apply it live; off also clears `share`. */
@@ -511,6 +514,7 @@ export const METHODS = [
   'computer_permissions',
   'context_items',
   'create_session',
+  'decision_loaded',
   'decision_mode',
   'decision_stats',
   'decision_training',

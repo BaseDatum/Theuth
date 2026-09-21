@@ -28,8 +28,8 @@ use kameo::actor::Spawn;
 use serde::{Deserialize, Serialize};
 
 pub use engine::{
-    AllStats, AskMany, Capture, DeleteTraining, Engine, GetMode, GetTrain, Loader, Oracle, Record,
-    Report, SetMode, SetShare, SetTrain, Stats, Warm,
+    AllStats, AskMany, Capture, DeleteTraining, Engine, GetMode, GetTrain, LoadedInfo, LoadedNow,
+    Loader, Oracle, Record, Release, Report, SetMode, SetShare, SetTrain, Stats, Warm,
 };
 pub use escalate::{EscalateError, SideCaller, escalate};
 pub use gate::{FamilyGate, Mode};
@@ -53,6 +53,111 @@ pub const DEFAULT_CHECKPOINT: &str = "default";
 /// The browser head's checkpoint name (57 §4.1 item 6): cklxx/laya-browser v10 under
 /// `<data_dir>/models/decision-browser/` unless `decision.checkpoints.browser` says otherwise.
 pub const BROWSER_CHECKPOINT: &str = "browser";
+
+/// Default of [`DecisionConfig::idle_unload`] (57 §2.1 item 2): the safety net behind the
+/// explicit [`Release`] the meeting sends at stop.
+pub const IDLE_UNLOAD: Duration = Duration::from_secs(180);
+
+/// The `browser` checkpoint's idle default (57 §2.1 item 2): loop steps are sub-second, so a
+/// run never trips it, and a session that stops calling `browser_run` frees 0.9 GB sooner.
+pub const BROWSER_IDLE_UNLOAD: Duration = Duration::from_secs(120);
+
+/// One `decision.checkpoints.<name>` entry: a bare directory (`browser: /path`, or `~` for the
+/// convention) or `{ dir, idle_unload }` with either field optional.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(from = "CheckpointEntry")]
+pub struct Checkpoint {
+    /// The checkpoint directory; `None` = the convention (`<models>/decision-<name>`).
+    pub dir: Option<PathBuf>,
+    /// This checkpoint's idle unload, overriding [`DecisionConfig::idle_unload`] and the
+    /// browser default.
+    pub idle_unload: Option<Duration>,
+}
+
+impl From<PathBuf> for Checkpoint {
+    fn from(dir: PathBuf) -> Self {
+        Checkpoint {
+            dir: Some(dir),
+            idle_unload: None,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum CheckpointEntry {
+    Dir(Option<PathBuf>),
+    Full {
+        #[serde(default)]
+        dir: Option<PathBuf>,
+        #[serde(default, deserialize_with = "opt_duration")]
+        idle_unload: Option<Duration>,
+    },
+}
+
+impl From<CheckpointEntry> for Checkpoint {
+    fn from(e: CheckpointEntry) -> Self {
+        match e {
+            CheckpointEntry::Dir(dir) => Checkpoint {
+                dir,
+                idle_unload: None,
+            },
+            CheckpointEntry::Full { dir, idle_unload } => Checkpoint { dir, idle_unload },
+        }
+    }
+}
+
+/// This process's memory, one number for the whole daemon (the checkpoints share it).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ProcessMemory {
+    /// Resident set in bytes. On macOS this still counts pages `free` handed back with
+    /// `MADV_FREE_REUSABLE` until the kernel reclaims them, so a released checkpoint can stay
+    /// "resident" here for a long time while costing nothing.
+    pub resident: u64,
+    /// macOS `phys_footprint` — what Activity Monitor calls Memory and what the OS actually
+    /// charges the process; equals `resident` on Linux (`/proc/self/statm`). `0` where neither
+    /// works. This is the number [`LoadedInfo::rss_mb`] reports.
+    pub footprint: u64,
+}
+
+/// [`ProcessMemory`] now (`proc_pid_rusage` on macOS, `/proc/self/statm` on Linux).
+pub fn process_memory() -> ProcessMemory {
+    #[cfg(target_os = "macos")]
+    {
+        let mut info: libc::rusage_info_v2 = unsafe { std::mem::zeroed() };
+        // SAFETY: `info` is a zeroed `rusage_info_v2`, the layout RUSAGE_INFO_V2 fills.
+        let rc = unsafe {
+            libc::proc_pid_rusage(
+                std::process::id() as libc::c_int,
+                libc::RUSAGE_INFO_V2,
+                (&raw mut info).cast(),
+            )
+        };
+        if rc == 0 {
+            ProcessMemory {
+                resident: info.ri_resident_size,
+                footprint: info.ri_phys_footprint,
+            }
+        } else {
+            ProcessMemory::default()
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let resident = std::fs::read_to_string("/proc/self/statm")
+            .ok()
+            .and_then(|s| s.split_whitespace().nth(1)?.parse::<u64>().ok())
+            .map_or(0, |pages| pages * 4096);
+        ProcessMemory {
+            resident,
+            footprint: resident,
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        ProcessMemory::default()
+    }
+}
 
 /// Registry name of the [`Engine`] for `checkpoint`: [`DECISION_ACTOR`] for `default`, else
 /// `decision/<name>`.
@@ -103,13 +208,16 @@ pub struct DecisionConfig {
     /// `tokenizer/tokenizer.json`, `rl_agent_config.json`); `None` → `<data_dir>/models/decision`.
     /// Kept for old config files; `checkpoints.default` wins when both are set.
     pub model_dir: Option<PathBuf>,
-    /// Checkpoint directories by name (57 §4.1 item 6): `default` (= `model_dir`) and `browser`
+    /// Checkpoints by name (57 §4.1 item 6): `default` (= `model_dir`) and `browser`
     /// (`<data_dir>/models/decision-browser`) exist unless overridden; any other name is a
-    /// new checkpoint a family may point at with `checkpoint: <name>`.
-    pub checkpoints: BTreeMap<String, PathBuf>,
+    /// new checkpoint a family may point at with `checkpoint: <name>`. Each entry is a bare
+    /// directory or `{ dir, idle_unload }` ([`Checkpoint`]).
+    pub checkpoints: BTreeMap<String, Checkpoint>,
     /// `auto` (Metal on an Apple-silicon Mac, else CPU) | `cpu` | `metal`.
     pub device: Device,
-    /// Unload the model after this long unused (humantime, e.g. `10m`).
+    /// Unload a checkpoint after this long unused (humantime, e.g. `3m`) — the safety net behind
+    /// the explicit [`Release`] (57 §2.1). `checkpoints.<name>.idle_unload` overrides it; the
+    /// `browser` checkpoint defaults to [`BROWSER_IDLE_UNLOAD`].
     #[serde(deserialize_with = "duration")]
     pub idle_unload: Duration,
     /// Store the question text in the log, not only its hash.
@@ -132,7 +240,7 @@ impl Default for DecisionConfig {
             model_dir: None,
             checkpoints: BTreeMap::new(),
             device: Device::Auto,
-            idle_unload: Duration::from_secs(600),
+            idle_unload: IDLE_UNLOAD,
             log_text: false,
             batch_forward: BATCH_FORWARD,
             families: default_families(),
@@ -146,9 +254,23 @@ impl DecisionConfig {
     pub fn model_dir_in(&self, data_dir: &Path) -> PathBuf {
         self.checkpoints
             .get(DEFAULT_CHECKPOINT)
+            .and_then(|c| c.dir.as_ref())
             .or(self.model_dir.as_ref())
             .cloned()
             .unwrap_or_else(|| data_dir.join("models").join(MODEL_SUBDIR))
+    }
+
+    /// The idle unload of `checkpoint` (57 §2.1 item 2): its own `idle_unload` if configured,
+    /// else [`BROWSER_IDLE_UNLOAD`] for `browser`, else [`Self::idle_unload`].
+    pub fn idle_unload_for(&self, checkpoint: &str) -> Duration {
+        self.checkpoints
+            .get(checkpoint)
+            .and_then(|c| c.idle_unload)
+            .unwrap_or(if checkpoint == BROWSER_CHECKPOINT {
+                BROWSER_IDLE_UNLOAD
+            } else {
+                self.idle_unload
+            })
     }
 
     /// Every checkpoint directory by name, given the `default` one: `browser` is
@@ -168,9 +290,18 @@ impl DecisionConfig {
             dirs.entry(name.to_owned())
                 .or_insert_with(|| models.join(format!("{MODEL_SUBDIR}-{name}")));
         }
-        for (name, dir) in &self.checkpoints {
-            if name != DEFAULT_CHECKPOINT {
-                dirs.insert(name.clone(), dir.clone());
+        for (name, c) in &self.checkpoints {
+            if name == DEFAULT_CHECKPOINT {
+                continue;
+            }
+            match &c.dir {
+                Some(dir) => {
+                    dirs.insert(name.clone(), dir.clone());
+                }
+                None => {
+                    dirs.entry(name.clone())
+                        .or_insert_with(|| models.join(format!("{MODEL_SUBDIR}-{name}")));
+                }
             }
         }
         dirs
@@ -497,6 +628,21 @@ mod tests {
         assert_eq!(dirs["x"], std::path::Path::new("/x"));
         assert_eq!(dirs["y"], std::path::Path::new("/decision-y"));
         assert_eq!((actor_name("default").as_str(), actor_name("browser").as_str()), ("decision", "decision/browser"));
+        // 57 §2.1 item 2: `{ dir, idle_unload }` entries; `~` keeps the convention; the
+        // browser default is 2m unless overridden, everything else follows `idle_unload`.
+        let cfg: DecisionConfig = serde_yaml::from_str(
+            "idle_unload: 5m\ncheckpoints:\n  browser: { idle_unload: 30s }\n  x: { dir: /x }\n  y: ~\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.idle_unload_for("default"), Duration::from_secs(300));
+        assert_eq!(cfg.idle_unload_for("browser"), Duration::from_secs(30));
+        assert_eq!(cfg.idle_unload_for("x"), Duration::from_secs(300));
+        let dirs = cfg.checkpoint_dirs(&default);
+        assert_eq!(dirs["browser"], std::path::Path::new("/decision-browser"));
+        assert_eq!(dirs["x"], std::path::Path::new("/x"));
+        assert_eq!(dirs["y"], std::path::Path::new("/decision-y"));
+        assert_eq!(DecisionConfig::default().idle_unload_for("browser"), BROWSER_IDLE_UNLOAD);
+        assert_eq!(DecisionConfig::default().idle_unload, IDLE_UNLOAD);
     }
 
     #[test]

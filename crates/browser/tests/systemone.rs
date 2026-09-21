@@ -140,7 +140,7 @@ async fn v10_answers_type_text_into_the_search_box() {
     let (goal, obs) = wikipedia();
     let tmp = tempfile::tempdir().unwrap();
     let mut cfg = DecisionConfig::default();
-    cfg.checkpoints.insert("browser".into(), dir.clone());
+    cfg.checkpoints.insert("browser".into(), dir.clone().into());
     for f in [systemone::FAMILY_OPERATION, systemone::FAMILY_TARGET, systemone::FAMILY_TYPE_TARGET] {
         let g: &mut FamilyGate = cfg.families.get_mut(f).unwrap();
         g.mode = Mode::Active;

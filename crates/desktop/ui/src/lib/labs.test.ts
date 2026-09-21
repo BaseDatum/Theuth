@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { blockedReason, captureLine, countersLine, shareState } from './labs'
+import { blockedReason, captureLine, countersLine, loadedText, shareState } from './labs'
 import type { FamilyStats } from '@/rpc/bindings/FamilyStats'
 import type { ModeInfo } from '@/rpc/bindings/ModeInfo'
 import type { TrainingInfo } from '@/rpc/bindings/TrainingInfo'
@@ -56,4 +56,16 @@ test('shareState: Share is off and locked while Capture is off, and never shown 
 test('captureLine', () => {
   expect(captureLine(undefined)).toBe('…')
   expect(captureLine(training({ examples_today: 3, examples_total: 41, bytes: 86016 }))).toBe('3 today · 41 total · 84 KB')
+})
+
+test('loadedText: none at idle; `default` reads as meeting; seconds under a minute, minutes after', () => {
+  expect(loadedText(undefined)).toBe('none')
+  expect(loadedText([])).toBe('none')
+  expect(loadedText([{ checkpoint: 'default', since_secs: 4, rss_mb: 1169 }])).toBe('meeting · 1169 MB · 4 s')
+  expect(
+    loadedText([
+      { checkpoint: 'default', since_secs: 250, rss_mb: 1903 },
+      { checkpoint: 'browser', since_secs: 61, rss_mb: 1903 },
+    ]),
+  ).toBe('meeting · 1903 MB · 4 min / browser · 1903 MB · 1 min')
 })

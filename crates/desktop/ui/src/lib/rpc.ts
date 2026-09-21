@@ -92,6 +92,8 @@ export const queryKeys = {
   decisionMode: (prefix: string) => ['decision-mode', prefix] as const,
   decisionTraining: (prefix: string) => ['decision-training', prefix] as const,
   decisionStats: ['decision-stats'] as const,
+  /** `decision_loaded()` (57 §2.1): the Labs header's "Decision models loaded now" line. */
+  decisionLoaded: ['decision-loaded'] as const,
   // 53 (05 §7): the brief cache — `briefs` prefixes every list/search page; a `BriefChanged` invalidates all of it.
   briefs: ['briefs'] as const,
   briefsList: (tag: string | null) => ['briefs', 'list', tag] as const,

@@ -1194,6 +1194,9 @@ impl Tool for RunTool {
     }
 
     async fn call(&self, a: RunArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        // 57 §2.1: the browser checkpoint stays resident until this session's turn ends, it
+        // calls `browser_close`, or its isolate goes (`Browsers::systemone_done`).
+        let _ = self.0.actor.tell(crate::SystemOne { session: cx.session, active: true }).await;
         let run = self.0.run(cx.session, a.goal.trim(), a.max_steps.unwrap_or(MAX_STEPS)).await;
         // TODO(capture): 57 §4.1 item 7 / §11.4 — one `Example` per step for family `browser`
         // (observation, the three questions with candidates, probabilities, the executed action,

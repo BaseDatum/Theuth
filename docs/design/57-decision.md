@@ -124,7 +124,7 @@ Today (as built through step 5): lazy load (RSS ≈ 100 MiB at daemon start, no 
 1. **Explicit release** — engine message `Release { checkpoint }` (drops the session; in-flight blocking runs finish on their own `Arc` and then the memory goes). Senders: `meeting` on leaving `Recording` (post-processing never asks the oracle); `browser` when the session closes / `browser_close`, and when a model turn ends without a further `browser_*` call after a `browser_run` (if the turn boundary is not observable from the browser plugin, the idle override below is the fallback and the as-built says so).
 2. **Idle as a safety net, shorter and per checkpoint** — default `idle_unload` **3m**; `checkpoints.<name>.idle_unload` override, browser default **2m** (loop steps are sub-second; a run never trips it). `Warm` never happens at daemon start or on config load; only the meeting `Recording` warm-up and a real question load a checkpoint.
 3. **Measured reclaim** — for both checkpoints, RSS before load / after first inference / after `Release` (Metal f16 and CPU f32); "after release" must be within ~50 MB of "before". If Metal keeps buffers alive, the session owns its `Device` and drops it; a fresh device per load. The numbers go in the as-built; a model-gated test asserts the bound.
-4. **Visible** — `decision_stats` gains `loaded: [{ checkpoint, since, rss_mb }]`; Labs shows *"Loaded now: none"* / *"meeting checkpoint · 903 MB · 4 min"*; `t --headless` smoke: start → nothing loaded; meeting `Recording` → default loaded; stop → nothing loaded within one watchdog tick.
+4. **Visible** — `decision_stats` gains `loaded: [{ checkpoint, since, rss_mb }]`; Labs shows *"Loaded now: none"* / *"meeting checkpoint · 903 MB · 4 min"*; `t --headless` smoke: start → nothing loaded; meeting `Recording` → default loaded; stop → nothing loaded within one watchdog tick. *(As built — step 6: a separate `decision_loaded` RPC, `rss_mb` = process footprint; the line is the first section of Settings → Labs after the step-10 merge.)*
 
 ## §3 First integration: meeting (53)
 
@@ -1203,3 +1203,109 @@ Brief: `/tmp/laya-design/omp-step10.md` (§7.1 as the spec). Worktree branch `fe
 - Live browser tool visibility (a mode-change event the browser plugin subscribes to, or always register `RunTool` and refuse when off) if the restart note in the pane turns out to annoy.
 - The uploader (step 11) must read `families.<p>.share` on every batch and honour `train_keep_local`; the switch and the consent text are in place, nothing reads them yet.
 - Counters are today's log only (`decision_stats` folds the current day file); a longer window needs the fold to take a `since`.
+
+## As built — step 6 (2026-09-21): checkpoint lifecycle — nothing resident at idle
+
+Brief: `/tmp/laya-design/omp-step6.md` (§2.1 as the spec). Worktree branch `feat/decision-lifecycle` off main `9a22f64`. Commits: `aca517a` (engine: `Release`, per-checkpoint `idle_unload`, `loaded_since`, `LoadedNow`, no load at start), `6507047` (meeting + browser senders), `983fb12` (measured reclaim: `examples/lifecycle.rs`, `process_memory`, model-gated bound), `1e8698d` (`decision_loaded` RPC + the Settings line), this note. Labs (sibling branch) owns `engine.rs`/`gate.rs`/`lib.rs`/`training.rs`/`api.rs` too — merge notes at the end. Toolchain `export PATH="$(just toolchain):$PATH"`; load average 20–146 throughout from other sessions' builds (recorded per table).
+
+### What releases when
+
+| event | sender | message | effect |
+|---|---|---|---|
+| `StopMeeting` (Recording \| Paused → Stopping), after the last unfiltered batch is delivered and the toolset cleared | `meeting::oracle::release()` (`lib.rs` `StopMeeting`) | `Release { checkpoint: None, reason: "recording stopped" }` → `DECISION_ACTOR` | default checkpoint dropped now; log `decision: default released (recording stopped) after 5.49s resident` |
+| model turn ends in a session that ran `browser_run` | `Browsers` (`AgentEvent::TurnFinished`; the actor now subscribes to `AgentEvent` on the unbounded subscriber mailbox) | `Release { checkpoint: Some("browser"), reason: "turn finished" }` → `DECISION_ACTOR`, forwarded to `decision/browser` | browser checkpoint dropped when **no** other session with a `browser_run` in flight remains |
+| `browser_close` tool | `CloseTool` → `Browsers` `SystemOne { active: false }` | same, reason `browser_close` | same |
+| isolate dropped: `Close`, idle `Sweep`, `CloseAll` (shutdown), `CloseTree` | `Browsers::drop_session` | same, reason `browser session closed` | same |
+| nothing asked for `idle_unload` | the engine's own watchdog (`Unload(epoch)`) | — | `decision: default released (idle 20.00s) after 20.05s resident` |
+| `browser_run` starts | `RunTool` → `Browsers` `SystemOne { active: true }` | — | the session holds the browser checkpoint until one of the three releases above |
+
+- **Turn boundary is observable**: the browser plugin already depends on `agent` (the text-helper `SideCall`), so `Browsers` subscribes to `AgentEvent` like `Meeting` does and releases on `TurnFinished` of a claiming session. Deviation from §2.1's wording "ends without a further `browser_*` call after a `browser_run`": the release fires at every turn end of a session that ran `browser_run`, whether or not other `browser_*` calls followed — the next turn's `browser_run` reloads (Metal: 160–350 ms warm-cache, 1.7–6 s first time on a busy machine). Simpler, and the 2 m idle stays the fallback for a session that never ends its turn.
+- **Loads**: only a question (`Ask`/`AskMany`) or an explicit `Warm` (meeting `Begun` → `Recording`) loads; the plugin's `start` spawns the engines and nothing else; there is no config-reload path in the decision plugin. Tested: `engine::tests::release_drops_now_and_nothing_loads_at_start` (spawn + 50 ms → `LoadedNow` empty, loader never called; ask → one entry; `Release` → empty; `Release { checkpoint: Some(other) }` leaves it alone).
+- **In flight**: a blocking run holds its own `Arc<Mutex<Box<dyn Oracle>>>` and finishes; `Release` takes the engine's `Arc` and the `loading` `JoinHandle` (a cold load still in flight lands into a dropped handle and is freed on completion) and disarms the watchdog. The watchdog tick carries the arming epoch (`Unload(u64)`); a tick from before a `Release` is ignored, so a release followed by a new question never leaves two watchdog chains running. A meeting `oracle::run` still in flight at stop (tier 1 is ~100–300 ms; the stop handler joins STT and delivers the last batch first, so this is rare) would reload on its second ask and the 3 m idle frees it — accepted.
+
+### Defaults and config
+
+- `decision.idle_unload` **3m** (`IDLE_UNLOAD`, was 10m); `decision.checkpoints.<name>` is now a bare path **or** `{ dir, idle_unload }` (`Checkpoint`; `~` keeps the convention dir); `DecisionConfig::idle_unload_for(name)` = the entry's `idle_unload` → else **2m for `browser`** (`BROWSER_IDLE_UNLOAD`, in `lib.rs` beside the checkpoint constants, not in `default_families`: it is a checkpoint property, not a family one) → else `idle_unload`. `Engine.idle` is fixed at construction (`with_checkpoint` recomputes it). Callers that built `checkpoints` maps (`browser/tests/systemone.rs`, `examples/systemone_suite.rs`) insert `dir.into()`. Generated config comment updated (`theuth/src/main.rs`).
+- `Engine.loaded_since: Option<Instant>`; `LoadedNow → Vec<LoadedInfo { checkpoint, since_secs, rss_mb }>` — the default engine appends its siblings' answers off its mailbox (2 s timeout each; a sibling mid-load holds its mailbox for up to its budget).
+
+### Measured reclaim (`examples/lifecycle.rs`, M3 Max, release, `--repeat 3 --settle 5000`, `/tmp/laya-design/lifecycle-step6-{metal-f16,cpu-f32}.txt`)
+
+Two numbers per sample, **footprint / rss** in MB: macOS `phys_footprint` (`proc_pid_rusage` — Activity Monitor's *Memory*, what the OS charges the process) and `resident_size`. RSS is the wrong metric here: it keeps counting pages `free` returned with `MADV_FREE_REUSABLE` until the kernel reclaims them, and it undercounts Metal buffers (loaded 944 rss vs 1094 footprint). `decision::process_memory()` returns both; `LoadedInfo.rss_mb` is the **footprint**, labelled in the type's doc.
+
+**Metal f16** (load average 23–56; `decision` = meeting checkpoint, `decision-browser` = browser):
+
+| checkpoint | run | before | loaded (after 1st inference) | released (immediately) | released + 5 s | settled − before | load | infer |
+|---|---|---|---|---|---|---|---|---|
+| decision | 1 | 2 / 7 | 1094 / 944 | 835 / 879 | 115 / 162 | +113 | 270 ms | 53 ms |
+| decision | 2 | 115 / 162 | 1098 / 948 | 903 / 942 | 176 / 222 | +60 | 160 ms | 34 ms |
+| decision | 3 | 176 / 222 | 1098 / 948 | 933 / 947 | 139 / 185 | −37 | 181 ms | 30 ms |
+| decision-browser | 1 | 139 / 185 | 1098 / 948 | 894 / 938 | 141 / 188 | +2 | 169 ms | 31 ms |
+| decision-browser | 2 | 141 / 188 | 1098 / 948 | 907 / 946 | 47 / 95 | −94 | 178 ms | 30 ms |
+| decision-browser | 3 | 47 / 95 | 1098 / 948 | 910 / 947 | 47 / 95 | **+0** | 165 ms | 29 ms |
+
+- The **Metal driver returns the buffers asynchronously**: immediately after the drop the footprint is still 835–933 MB; it reaches its floor within a few seconds (the +5 s column of runs 2–3 caught it mid-drain at 176/139; the next row's `before` shows where it ended). The floor is **~47 MB** = the Metal stack itself (framework, compiled kernel library, command queue) — a one-off baseline paid by the first Metal load in the process, not model memory; it does not grow with cycles. Steady state after that: **+0 to +2 MB** per load/release cycle → within the 50 MB bound. The session already owned its `Device` (`Device::new_metal(0)` per `Loaded::open`, dropped with it) — nothing to change there. `candle`'s `MetalDevice` buffer pool and residency set go with the device.
+
+**CPU f32** (Accelerate; load average 22–54; `--settle 3000`):
+
+| checkpoint | run | before | loaded | released | released + 3 s | settled − before | load | infer |
+|---|---|---|---|---|---|---|---|---|
+| decision | 1 | 2 / 7 | 1836 / 1862 | 788 / 816 | 788 / 816 | **+786** | 1499 ms | 85 ms |
+| decision | 2 | 788 / 816 | 1856 / 1883 | 813 / 841 | 813 / 841 | +24 | 291 ms | 92 ms |
+| decision-browser | 1 | 813 / 841 | 1876 / 1904 | 813 / 842 | 813 / 842 | +0 | 1433 ms | 104 ms |
+| decision-browser | 2 | 813 / 842 | 1877 / 1905 | 814 / 842 | 814 / 842 | +1 | 313 ms | 91 ms |
+| decision, `MallocLargeCache=0` | 1 | 2 / 7 | 1698 / 1744 | 6 / 56 | 6 / 56 | **+4** | 593 ms | 189 ms |
+| decision, `MallocLargeCache=0` | 2 | 6 / 56 | 1695 / 1744 | 5 / 56 | −1 | 518 ms | 193 ms |
+
+- **What holds it**: `vmmap --summary` on the settled process shows `MALLOC_LARGE (empty) 724.2M dirty, 64 regions` — libmalloc's *large cache* ("death row", 64 entries ≤ 125 MB each): the f32 layer tensors `free`d by the drop sit there, resident, for reuse by the next large `malloc` — which is exactly what the next load does (291 ms vs 1499 ms cold, and the plateau never grows: +24 / +0 / +1). The 206 MB embedding table exceeds the per-entry limit and is returned. `malloc_zone_pressure_relief(NULL, 0)` returns **0 bytes** for it (tried as a `Drop` on the session — removed again); churning 64 large allocations through the cache evicts nothing (they are served from it). Only `MallocLargeCache=0` in the process environment — read once when libmalloc initialises, before `main` — removes it (+4 MB). Not done: it would change the allocator for the whole daemon (audio/V8 churn) for the one configuration that is not the Mac engine. **The bound fails on macOS CPU f32 by design of the platform allocator**, with a documented lever; Metal f16 is the Mac path and CPU f32 the Linux/Windows one (glibc unmaps large frees — unmeasured here, no Linux box).
+
+**Model-gated test** `tests/model.rs::release_reclaims_the_checkpoint` (`cargo test --release -p decision --test model -- --test-threads=1 --nocapture`, `Device::Auto` = Metal f16, load 146): through the actor, `LoadedNow` empty at spawn → ask → one entry (`rss_mb` = footprint ± 2 MB) → `Release` → empty; the footprint after release is polled (≤ 15 s) until within 50 MB of before; asserted on the **second** cycle:
+
+```
+cycle 1: footprint before 627 MB, loaded 1099 MB, released 235 MB after 251.67ms
+cycle 2: footprint before 235 MB, loaded 1099 MB, released 148 MB after 252.44ms
+test result: ok. 3 passed
+```
+
+(The 627 MB `before` is the previous test's model still draining in the same process — single-threaded run, so the two other model-gated tests precede it.)
+
+### Visible
+
+- `decision_loaded() → Vec<LoadedInfo>` — a **new RPC**, not a field on `decision_stats`: that call returns `Vec<FamilyStats>` (per family), the wrong shape for one process-wide fact; adding a wrapper object would have broken its one consumer for no gain. `rss_mb` is the whole daemon's footprint, repeated on every entry (doc on the field; TS `number` via `ts(type)` like the other u64s the UI reads).
+- Desktop: `DecisionLoaded` in `components/settings/Meetings.tsx` under the oracle switch (the Labs pane does not exist on this branch): *Decision models loaded now* — `none` / `meeting · 903 MB · 4 min` (`default` shown as `meeting`; `/`-joined when both are resident), `useQuery` on `queryKeys.decisionLoaded` with `refetchInterval: 10_000`. One exported component + `loadedText`, so the Labs merge moves two symbols. `api.ts`/`rpc.ts` gained the method and key; `just ts-desktop` regenerated `LoadedInfo.ts`. `bun run check`: only the pre-existing `@openuidev/*` / `AppHost.tsx` errors, nothing in the touched files. Not seen in the app (`cargo tauri dev` not available here).
+
+### Headless smoke (`target/debug/t --data-dir /tmp/theuth-hl-step6 --headless`, `THEUTH_RPC__LISTEN=127.0.0.1:7791`, JSON-RPC over HTTP with the data dir's bearer token)
+
+`config.yaml`: `decision: { enabled: true, model_dir: ~/.theuth/models/decision, idle_unload: 20s, checkpoints: { browser: { idle_unload: 10s } } }`. `meeting_start` works headless with `consent: true` (system-audio tap, no session model needed for this), so the real `Recording` → `Warm` → stop → `Release` path ran:
+
+```
+start                                   → decision_loaded: []          (no `model loaded` line; rss 287 MB debug build)
+meeting_start {consent: true}           → Recording
+  log: decision: model loaded in 5.52s from ~/.theuth/models/decision (size:842609210)
+       decision: warm-up done in 10480 ms · meeting: decision oracle warm in 10480 ms
++8 s                                    → decision_loaded: [{checkpoint: "default", since_secs: 4, rss_mb: 1169}]
+meeting_stop                            → log: decision: default released (recording stopped) after 5.49s resident
++1 s                                    → decision_loaded: []
++15 s                                   → footprint 116 MB (phys_footprint_peak 1115 MB)
+cycle 2: meeting_start → +4 s loaded [{default, 3 s, 988 MB}] (model loaded in 345 ms) → meeting_stop → +1 s [] → footprint 132 MB
+idle path: meeting_start, no questions for 25 s → decision_loaded: [] ; log: decision: default released (idle 20.00s) after 20.05s resident
+```
+
+The browser release path is not reachable headless without a model session; it is covered by construction (`Browsers::systemone_done` from the four drop sites + `TurnFinished` + `browser_close`) and the browser crate's tests still pass (19 unit + `tests/live.rs` + `tests/systemone.rs` model-gated).
+
+### Checks
+
+- `cargo check -p decision -p meeting -p browser --all-targets` green after each commit; `cargo test -p decision --lib` **62 unit** (61 → 62); `-p meeting` 38 unit + `tests/oracle.rs` 1 model-gated; `-p browser` 19 unit + `tests/live.rs` 1 + `tests/systemone.rs` 2 (model-gated); `cargo test --release -p decision --test model` 3 model-gated (the new reclaim bound included). `cargo test -p rpc export_bindings` 4 (bindings regenerated). `cargo clippy -p decision -p meeting -p browser -p rpc --no-deps --all-targets`: no findings. `cargo check --workspace --all-targets`: green (only the pre-existing `block v0.1.6` future-incompat note).
+- Not run: the desktop app; a real browser session through an agent turn (the `TurnFinished` release).
+
+### Merge notes for the Labs branch (`engine.rs`, `lib.rs`, `api.rs`)
+
+- `engine.rs`: new messages `Release { checkpoint: Option<String>, reason: &'static str }`, `LoadedNow`, reply type `LoadedInfo` (serde + ts + `kameo::Reply`); `Unload` became `Unload(u64)` (epoch); `Engine` gained `idle: Duration`, `loaded_since: Option<Instant>`, `epochs: u64`, and `watchdog: bool` became `watchdog: Option<u64>`; `touch()` arms through `arm(me, after, epoch)`; new `release(reason)` and `loaded_info()`; `session()` sets `loaded_since`; `with_checkpoint` sets `idle`; the `Unload` handler compares epochs and calls `release`. New `use serde::{Deserialize, Serialize}`. Test module: `release_drops_now_and_nothing_loads_at_start` (filters `LoadedNow` to `checkpoint == "default"` because other tests register `decision/browser` engines in the same process registry).
+- `lib.rs`: `checkpoints: BTreeMap<String, Checkpoint>` (was `PathBuf`; `Checkpoint { dir, idle_unload }`, `From<PathBuf>`, untagged `CheckpointEntry`); `IDLE_UNLOAD`, `BROWSER_IDLE_UNLOAD`, `idle_unload_for`; `ProcessMemory` + `process_memory()` (libc is now a real dependency); `checkpoint_dirs` handles dir-less entries; re-exports `LoadedInfo, LoadedNow, Release`. `candle/mod.rs`: only doc/comment changes (the reclaim finding).
+- `api.rs`: one method pair `decision_loaded` after `decision_stats`; `export.rs` lists `decision::LoadedInfo`.
+- `browser/src/lib.rs`: `Browsers` gained `systemone: HashSet<SessionId>`, `SystemOne` message, `Message<agent::AgentEvent>`, `drop_session`/`systemone_done`; `Sweep`/`CloseAll`/`CloseTree`/`Close` go through `drop_session`; spawned with `spawn_with_mailbox(.., runtime::subscriber_mailbox())` + `rt.subscribe::<Browsers, agent::AgentEvent>`.
+
+### Open
+
+- The macOS CPU f32 plateau (~790 MB in libmalloc's large cache). If a Mac ever has to run CPU f32 for real, the desktop launcher can export `MallocLargeCache=0` for the daemon — measure the meeting encoder and V8 first.
+- `LoadedInfo` has no "loading" state: a checkpoint mid-cold-load (up to 30 s on a busy machine) shows as nothing until the session is installed; the footprint already includes it.
+- ~~The Settings line sits under Meetings until the Labs pane lands.~~ Merged with step 10: `DecisionLoaded` is the first section of `Labs.tsx` ("Loaded now"), `loadedText` lives in `lib/labs.ts` (tested in `labs.test.ts`); Meetings keeps only step 10's pointer row.

@@ -118,7 +118,7 @@ async fn main() -> anyhow::Result<()> {
 
     // The decision engines: default (unused here) + browser, browser families active.
     let mut dcfg = DecisionConfig::default();
-    dcfg.checkpoints.insert("browser".into(), browser_dir.clone());
+    dcfg.checkpoints.insert("browser".into(), browser_dir.clone().into());
     for g in dcfg.families.values_mut() {
         g.mode = Mode::Active;
     }

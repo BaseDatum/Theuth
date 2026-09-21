@@ -1,7 +1,8 @@
-// 57 §7.1: Settings › Labs — everything experimental about the local decision oracle in one pane: the meeting
-// oracle and browser System-1 mode switches (`decision_mode` / `set_decision_mode`), and per-family training-data
-// Capture (`set_decision_training`) and Share (`set_decision_share`) consent. Every control is a live config write;
-// each mode control shows its *effective* state. Hidden entirely when `decision.enabled` is false (`useLabsVisible`).
+// 57 §7.1: Settings › Labs — everything experimental about the local decision oracle in one pane: the header's
+// "Decision models loaded now" line (`decision_loaded`, 57 §2.1), the meeting oracle and browser System-1 mode
+// switches (`decision_mode` / `set_decision_mode`), and per-family training-data Capture (`set_decision_training`)
+// and Share (`set_decision_share`) consent. Every control is a live config write; each mode control shows its
+// *effective* state. Hidden entirely when `decision.enabled` is false (`useLabsVisible`).
 
 import { useQuery } from '@tanstack/react-query'
 import { openPath, openUrl } from '@tauri-apps/plugin-opener'
@@ -21,6 +22,7 @@ import {
   blockedReason,
   captureLine,
   countersLine,
+  loadedText,
   shareState,
 } from '@/lib/labs'
 import { queryKeys, useApi } from '@/lib/rpc'
@@ -42,6 +44,9 @@ export function Labs() {
   const stats = useQuery({ queryKey: queryKeys.decisionStats, queryFn: () => api.decision_stats(), refetchInterval: 30_000 })
   return (
     <>
+      <Section title="Loaded now">
+        <DecisionLoaded />
+      </Section>
       <Section title="Meeting oracle">
         <Blurb>
           A small local classifier (laya, 0.8 GB, on this Mac's GPU) reads each transcript batch before the assistant does: is
@@ -71,6 +76,22 @@ export function Labs() {
         <TrainingRows prefix="browser" title="Browser" />
       </Section>
     </>
+  )
+}
+
+/** 57 §2.1 item 4: what the daemon holds resident right now, refreshed every 10 s. */
+function DecisionLoaded() {
+  const api = useApi()
+  const loaded = useQuery({ queryKey: queryKeys.decisionLoaded, queryFn: () => api.decision_loaded(), refetchInterval: 10_000 })
+  return (
+    <Row
+      label="Decision models loaded now"
+      description="A checkpoint (0.9 GB each) is resident only while a meeting records or a browser session runs the loop; released at stop / close, or after a few idle minutes."
+    >
+      <span className="text-sm text-fg-secondary" aria-live="polite">
+        {loaded.isError ? errorText(loaded.error) : loadedText(loaded.data)}
+      </span>
+    </Row>
   )
 }
 

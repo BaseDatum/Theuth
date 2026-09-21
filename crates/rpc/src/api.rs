@@ -968,6 +968,10 @@ pub trait Api {
     /// reason, tier-2 rows, p50/p95, shadow agreement.
     #[method(name = "decision_stats")]
     async fn decision_stats(&self) -> RpcResult<Vec<decision::FamilyStats>>;
+    /// 57 §2.1 item 4: the decision checkpoints resident right now — `[]` at idle. `rss_mb`
+    /// is the whole daemon's footprint, repeated on every entry.
+    #[method(name = "decision_loaded")]
+    async fn decision_loaded(&self) -> RpcResult<Vec<decision::LoadedInfo>>;
     /// 57 §11.4 / §7.1: whether the families under `prefix` (`meeting`, `browser`) capture
     /// training examples locally (`enabled`), consent to upload them (`share`), and how much is
     /// on disk (`<data_dir>/decisions/training/<prefix>/`).
@@ -2803,6 +2807,10 @@ impl ApiServer for Server {
 
     async fn decision_stats(&self) -> RpcResult<Vec<decision::FamilyStats>> {
         ask::<decision::Engine, _>(decision::DECISION_ACTOR, decision::AllStats).await
+    }
+
+    async fn decision_loaded(&self) -> RpcResult<Vec<decision::LoadedInfo>> {
+        ask::<decision::Engine, _>(decision::DECISION_ACTOR, decision::LoadedNow).await
     }
 
     async fn decision_training(&self, prefix: String) -> RpcResult<decision::TrainingInfo> {
